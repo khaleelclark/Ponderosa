@@ -1,4 +1,6 @@
 import { defineConfig } from "@rsbuild/core";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { pluginReact } from "@rsbuild/plugin-react";
 import { pluginPWA } from "rsbuild-plugin-pwa";
 import { PWA_NAVIGATION_DENYLIST } from "./src/pwa-policy";
@@ -83,6 +85,11 @@ export default defineConfig({
     meta: {
       viewport: "width=device-width, initial-scale=1, viewport-fit=cover",
       description: "Self-hosted coding-agent workbench",
+      // Precached HTML retains response headers. Refresh its revision whenever
+      // server security hooks change, including otherwise server-only CSP fixes.
+      "ponderosa-security-revision": createHash("sha256")
+        .update(readFileSync(new URL("../server/src/server-request-hooks.ts", import.meta.url)))
+        .digest("hex"),
     },
   },
   server: {
