@@ -28,7 +28,7 @@ export function MasterRespondingIndicator({
   return (
     <ChatLiveBanner>
       {names} {responding.length === 1 ? "is" : "are"} responding ·{" "}
-      <Box component="span" sx={{ display: "inline-block", minWidth: "8ch", fontFamily: "monospace", fontVariantNumeric: "tabular-nums", textAlign: "right", whiteSpace: "nowrap" }}>
+      <Box component="span" sx={{ fontVariantNumeric: "tabular-nums", fontKerning: "none", whiteSpace: "nowrap" }}>
         {formatExecutionElapsed(earliest, now)}
       </Box>
     </ChatLiveBanner>
