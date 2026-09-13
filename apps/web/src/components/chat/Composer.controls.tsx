@@ -17,6 +17,8 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
 import type {
   AgentMentionBindingDto,
@@ -26,7 +28,7 @@ import type {
   EngineComposerCapability,
   ArtifactDto,
 } from "@ponderosa/core";
-import { type RefObject } from "react";
+import { type RefObject, useState } from "react";
 import { isIOSDevice } from "../../browserPlatform";
 import { compactPreviewText } from "./Composer.helpers";
 import { ComposerMentionStatus } from "./Composer.parts";
@@ -316,6 +318,9 @@ export function ComposerCapabilityPicker({
   onApplyCapability(capability: EngineComposerCapability): void;
 }): JSX.Element {
   const maximumFiles = assetLimits?.maxAssetsPerMessage ?? COMPOSER_MAX_FILES;
+  const mobile = useMediaQuery(useTheme().breakpoints.down("md"));
+  const [browseCapabilities, setBrowseCapabilities] = useState(false);
+  const showCapabilities = !mobile || browseCapabilities;
   return (
     <>
       <input
@@ -329,7 +334,7 @@ export function ComposerCapabilityPicker({
           event.target.value = "";
         }}
       />
-      <Tooltip title="Add an image, file, skill, plugin, or connector">
+      <Tooltip title={mobile ? "" : "Add an image, file, skill, plugin, or connector"}>
         <span>
           <IconButton
             aria-label="Add attachment or capability"
@@ -337,7 +342,10 @@ export function ComposerCapabilityPicker({
             aria-expanded={Boolean(menuAnchor)}
             aria-controls={menuAnchor ? listId : undefined}
             disabled={disabled}
-            onClick={event => onOpen(event.currentTarget)}
+            onClick={event => {
+              setBrowseCapabilities(false);
+              onOpen(event.currentTarget);
+            }}
           >
             <AddIcon />
           </IconButton>
@@ -354,34 +362,44 @@ export function ComposerCapabilityPicker({
             elevation={5}
             sx={{
               mb: 0.5,
-              width: "min(420px, calc(100vw - 24px))",
-              maxHeight: "min(52vh, 390px)",
+              width: mobile ? "min(340px, calc(100vw - 24px))" : "min(420px, calc(100vw - 24px))",
+              maxHeight: mobile ? "min(390px, calc(var(--ponderosa-app-viewport-block-size, 100dvh) - 80px))" : "min(52vh, 390px)",
               overflow: "hidden",
+              display: "flex",
+              flexDirection: "column",
+            }}
+            onKeyDown={event => {
+              if (event.key === "Escape") {
+                onClose();
+                menuAnchor?.focus({ preventScroll: true });
+              }
             }}
           >
-            <Box sx={{ p: 1, borderBottom: 1, borderColor: "divider" }}>
+            {showCapabilities && <Box sx={{ p: 1, borderBottom: 1, borderColor: "divider", flexShrink: 0 }}>
+              {mobile && <Button size="small" onClick={() => { setBrowseCapabilities(false); onFilterChange(""); }}>← Back</Button>}
               <TextField
-                autoFocus
+                autoFocus={!mobile}
                 fullWidth
                 size="small"
                 value={filter}
                 onChange={event => onFilterChange(event.target.value)}
-                placeholder="Find a skill, plugin, or connector"
+                placeholder={mobile ? "Search skills & connectors" : "Find a skill, plugin, or connector"}
                 inputProps={{ "aria-label": "Filter runtime capabilities" }}
                 sx={isIOSDevice() ? { "& input": { fontSize: 16 } } : undefined}
               />
-            </Box>
+            </Box>}
             <MenuList
               dense
               id={listId}
               aria-label="Add attachment or runtime capability"
               sx={{
-                maxHeight: "min(38vh, 300px)",
+                maxHeight: mobile ? 260 : "min(38vh, 300px)",
+                minHeight: 0,
                 overflowY: "auto",
                 overscrollBehavior: "contain",
               }}
             >
-              <MenuItem
+              {(!mobile || !browseCapabilities) && <MenuItem
                 disabled={!attachmentsEnabled || fileCount >= maximumFiles}
                 onClick={() => {
                   onClose();
@@ -394,19 +412,20 @@ export function ComposerCapabilityPicker({
                 }}
               >
                 <Box>
-                  <Typography variant="body2">Upload image or file</Typography>
-                  <Typography variant="caption" color="text.secondary">
+                  <Typography variant="body2">{mobile ? "Add photo or file" : "Upload image or file"}</Typography>
+                  {(!mobile || !attachmentsEnabled || fileCount >= maximumFiles) && <Typography variant="caption" color="text.secondary">
                     {!attachmentsEnabled
                       ? (attachmentsUnavailableReason ??
                         "Attachments are not supported in this chat.")
                       : fileCount >= maximumFiles
                         ? "Remove an attachment before adding another."
                         : `Up to ${maximumFiles} PNG, JPEG, WebP, HEIC, PDF, text, JSON, or ZIP files · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`}
-                  </Typography>
+                  </Typography>}
                 </Box>
-              </MenuItem>
-              <Divider />
-              {(capabilities ?? []).length === 0 ? (
+              </MenuItem>}
+              {mobile && !browseCapabilities && <MenuItem sx={{ minHeight: 48 }} onClick={() => setBrowseCapabilities(true)}>Skills &amp; connectors</MenuItem>}
+              {!mobile && <Divider />}
+              {showCapabilities && ((capabilities ?? []).length === 0 ? (
                 <MenuItem disabled sx={{ whiteSpace: "normal" }}>
                   <Typography variant="caption">
                     No runtime skills, plugins, or connectors are currently
@@ -432,7 +451,7 @@ export function ComposerCapabilityPicker({
                       sx={{
                         whiteSpace: "normal",
                         alignItems: "flex-start",
-                        minHeight: 58,
+                        minHeight: mobile ? 48 : 58,
                         py: 0.75,
                         ...(automatic
                           ? {
@@ -468,7 +487,7 @@ export function ComposerCapabilityPicker({
                             label={capability.kind}
                           />
                         </Stack>
-                        <Typography
+                        {!mobile && <Typography
                           variant="caption"
                           color="text.secondary"
                           sx={{
@@ -481,7 +500,7 @@ export function ComposerCapabilityPicker({
                           }}
                         >
                           {capability.description}
-                        </Typography>
+                        </Typography>}
                         {reason ? (
                           <Typography
                             variant="caption"
@@ -498,7 +517,7 @@ export function ComposerCapabilityPicker({
                     </MenuItem>
                   );
                 })
-              )}
+              ))}
             </MenuList>
           </Paper>
         </ClickAwayListener>
