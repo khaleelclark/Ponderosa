@@ -20,9 +20,11 @@ function Fixture(){
  useAppViewport();
  const [sent,setSent]=useState<string[]>([]);
  const mention=new URLSearchParams(location.search).has('mention');
+ const runMode=new URLSearchParams(location.search).get('run');
+ const [cancelled,setCancelled]=useState(false);
  return <Box id="app-frame" sx={{height:{xs:'var(--ponderosa-app-viewport-block-size, 100dvh)',md:'100%'},display:'flex',flexDirection:'column',minHeight:0}}>
   <div style={{flex:'1 1 0',overflow:'auto'}}><button id="dismiss">Dismiss keyboard</button><p>Isolated conversation. No real messages or provider calls.</p></div>
-  <div id="composer"><Composer enableVoiceDictation disabled={false} running={false} destinationMode="project-chat"
+  <div id="composer"><Composer enableVoiceDictation disabled={false} allowSendWhileRunning={Boolean(runMode)} running={runMode==='cancel'&&!cancelled} agentResponding={Boolean(runMode)&&!cancelled} onCancel={runMode==='cancel'?()=>setCancelled(true):undefined} onQueue={runMode?async(text)=>{setSent(previous=>[...previous,`queued:${text}`]);}:undefined} destinationMode="project-chat"
    capabilities={Array.from({length:20},(_,i)=>({id:`skill-${i}`,kind:'skill' as const,label:`Example skill ${i}`,description:'Long description that should not crowd the mobile list.',status:'available' as const,insertText:`$skill-${i}`}))}
    controls={<ComposerRuntimeSelector engine="codex" engines={[{id:'codex',label:'Codex'}]} model="astra" models={[{id:'astra',label:'GPT-6-Astra'}]} effort="medium" efforts={[{id:'medium',label:'Medium'}]} onModelChange={()=>{}} onEffortChange={()=>{}} />}
    draftStorageKey="mobile-ios-fixture" mentionHandles={['Boston']} mentionBindings={[binding]}
