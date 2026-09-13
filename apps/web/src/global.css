@@ -17,6 +17,17 @@ body {
   overflow: hidden;
 }
 
+/* iOS pans its visual viewport independently of document layout when focusing
+   an editor. Anchor the one app frame, not a second floating composer. */
+@media (max-width: 899.95px) {
+  html[data-ios-viewport="true"] #root {
+    position: fixed;
+    top: var(--ponderosa-app-viewport-top, 0px);
+    left: 0;
+    height: var(--ponderosa-app-viewport-block-size, 100dvh);
+  }
+}
+
 * {
   box-sizing: border-box;
 }

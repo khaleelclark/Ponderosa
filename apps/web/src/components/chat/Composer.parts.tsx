@@ -3,6 +3,7 @@ import PersonAddAltOutlinedIcon from "@mui/icons-material/PersonAddAltOutlined";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import {
   Button,
+  Box,
   IconButton,
   Stack,
   Tooltip,
@@ -55,13 +56,16 @@ export function ComposerProjectDestinationAction({
           variant="text"
           color="primary"
           onClick={toggleNewAgent}
+          aria-label={`Reply to ${replyDestination}; switch to a new Agent`}
           sx={{
+            minWidth: { xs: 44, md: 64 },
             whiteSpace: "nowrap",
             minHeight: { xs: 44, sm: 34 },
             "@media (pointer: coarse)": { minHeight: 44 },
           }}
         >
-          Reply to {replyDestination}
+          <PersonAddAltOutlinedIcon sx={{ display: { xs: "block", md: "none" } }} />
+          <Box component="span" sx={{ display: { xs: "none", md: "inline" } }}>Reply to {replyDestination}</Box>
         </Button>
       </Tooltip>
     );
@@ -74,14 +78,17 @@ export function ComposerProjectDestinationAction({
       color={newAgentSelected ? "primary" : "inherit"}
       startIcon={<PersonAddAltOutlinedIcon />}
       aria-pressed={newAgentSelected}
+      aria-label="New Agent"
       onClick={toggleNewAgent}
       sx={{
+        minWidth: { xs: 44, md: 64 },
+        "& .MuiButton-startIcon": { m: { xs: 0, md: undefined } },
         whiteSpace: "nowrap",
         minHeight: { xs: 44, sm: 34 },
         "@media (pointer: coarse)": { minHeight: 44 },
       }}
     >
-      New Agent
+      <Box component="span" sx={{ display: { xs: "none", md: "inline" } }}>New Agent</Box>
     </Button>
   );
 }

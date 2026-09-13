@@ -4,6 +4,7 @@ import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {ThemeProvider,Box,CssBaseline} from '@mui/material';
 import '@fontsource-variable/inter';
 import {Composer} from '../../src/components/chat/Composer';
+import {ComposerRuntimeSelector} from '../../src/components/ComposerRuntimeSelector';
 import {useAppViewport} from '../../src/hooks/useAppViewport';
 import {createPonderosaTheme} from '../../src/theme';
 import '../../src/global.css';
@@ -22,6 +23,7 @@ function Fixture(){
  return <Box id="app-frame" sx={{height:{xs:'var(--ponderosa-app-viewport-block-size, 100dvh)',md:'100%'},display:'flex',flexDirection:'column',minHeight:0}}>
   <div style={{flex:'1 1 0',overflow:'auto'}}><button id="dismiss">Dismiss keyboard</button><p>Isolated conversation. No real messages or provider calls.</p></div>
   <div id="composer"><Composer enableVoiceDictation disabled={false} running={false} destinationMode="project-chat"
+   controls={<ComposerRuntimeSelector engine="codex" engines={[{id:'codex',label:'Codex'}]} model="astra" models={[{id:'astra',label:'GPT-6-Astra'}]} effort="medium" efforts={[{id:'medium',label:'Medium'}]} onModelChange={()=>{}} onEffortChange={()=>{}} />}
    draftStorageKey="mobile-ios-fixture" mentionHandles={['Boston']} mentionBindings={[binding]}
    defaultDestination={mention?{handle:'Boston',selectionKey:'reply1',binding}:undefined}
    onSend={async(text)=>{setSent(previous=>[...previous,text]);}} /></div>

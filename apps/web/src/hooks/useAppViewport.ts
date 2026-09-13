@@ -1,4 +1,5 @@
 import { useLayoutEffect } from "react";
+import { isIOSDevice } from "../browserPlatform";
 
 export const APP_VIEWPORT_BLOCK_SIZE = "--ponderosa-app-viewport-block-size";
 
@@ -27,19 +28,28 @@ export function appViewportBlockSize({
 /**
  * Own the application height in one place. CSS dynamic viewport units remain
  * the no-JavaScript fallback; VisualViewport closes the remaining keyboard and
- * browser-chrome gaps without introducing a second fixed/sticky chat surface.
+ * browser-chrome gaps. On iOS the root frame follows the visual viewport's
+ * origin and height separately; adding the pan offset to its height would put
+ * its bottom below the visible region. Other platforms keep their layout.
  */
 export function useAppViewport(): void {
   useLayoutEffect(() => {
     const root = document.documentElement;
     const viewport = window.visualViewport;
+    const ios = isIOSDevice();
+    if (ios) root.dataset.iosViewport = "true";
     let frame: number | undefined;
 
     const update = () => {
       frame = undefined;
+      // Keep the unzoomed frame during pinch zoom; do not fight native panning.
+      if (ios && viewport && viewport.scale !== 1) return;
+      if (ios && viewport) {
+        root.style.setProperty("--ponderosa-app-viewport-top", `${viewport.offsetTop}px`);
+      }
       root.style.setProperty(
         APP_VIEWPORT_BLOCK_SIZE,
-        `${appViewportBlockSize({
+        `${ios && viewport ? Math.max(1, viewport.height) : appViewportBlockSize({
           innerHeight: window.innerHeight,
           ...(viewport ? { visualViewport: viewport } : {}),
         })}px`,
@@ -62,6 +72,8 @@ export function useAppViewport(): void {
       window.removeEventListener("resize", scheduleUpdate);
       window.removeEventListener("orientationchange", scheduleUpdate);
       root.style.removeProperty(APP_VIEWPORT_BLOCK_SIZE);
+      root.style.removeProperty("--ponderosa-app-viewport-top");
+      delete root.dataset.iosViewport;
     };
   }, []);
 }
