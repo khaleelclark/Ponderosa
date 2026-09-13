@@ -15,6 +15,8 @@ import {
   $isTextNode,
   $setSelection,
   COPY_COMMAND,
+  COMMAND_PRIORITY_HIGH,
+  INSERT_PARAGRAPH_COMMAND,
   CUT_COMMAND,
   PASTE_COMMAND,
   SKIP_DOM_SELECTION_TAG,
@@ -61,6 +63,12 @@ import {
   shouldSendComposerKey,
 } from "./composerUtils";
 import type { ComposerMenuSuggestion } from "./Composer.controls";
+
+// iPadOS can identify as a Mac. Do not change Android or desktop Return policy.
+const isIOSComposer = typeof navigator !== "undefined" && (
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+);
 
 export type ComposerMentionDescriptor = {
   start: number;
@@ -878,6 +886,17 @@ function EditorBridge({
 }): null {
   const [editor] = useLexicalComposerContext();
   const canonicalRef = useRef(text);
+  useEffect(() => {
+    if (!isIOSComposer) return;
+    // Own newline insertion inside Lexical, including soft-keyboard beforeinput.
+    // A React keydown insertion would race Lexical's native event handling.
+    return editor.registerCommand(INSERT_PARAGRAPH_COMMAND, () => {
+      const selection = $getSelection();
+      if (!$isRangeSelection(selection)) return false;
+      selection.insertLineBreak();
+      return true;
+    }, COMMAND_PRIORITY_HIGH);
+  }, [editor]);
   const descriptorsRef = useRef(mentionDescriptors);
   const structuralDestinationRef = useRef(structuralDestination);
   descriptorsRef.current = mentionDescriptors;
@@ -1318,6 +1337,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       event.stopPropagation();
       return;
     }
+    if (isIOSComposer && event.key === "Enter") {
+      if (menuOpen) onSuppressMenu();
+      // Leave Return/Shift+Return to Lexical; sending is an explicit button action.
+      return;
+    }
     if (
       event.key === "Enter" &&
       event.shiftKey
@@ -1426,7 +1450,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
             outline: 0,
             color: "text.primary",
             fontFamily: "inherit",
-            fontSize: 15,
+            // Avoid iOS focus zoom without disabling user-controlled pinch zoom.
+            fontSize: isIOSComposer ? 16 : 15,
             lineHeight: "22px",
             whiteSpace: "pre-wrap",
             overflowWrap: "anywhere",
@@ -1467,7 +1492,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
                 top: 6,
                 left: 2,
                 color: "text.disabled",
-                fontSize: 15,
+                fontSize: isIOSComposer ? 16 : 15,
                 lineHeight: "22px",
                 pointerEvents: "none",
               }}
