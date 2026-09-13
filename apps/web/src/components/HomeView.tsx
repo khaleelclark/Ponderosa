@@ -12,6 +12,7 @@ import {
   Paper,
   Stack,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
 import type {
   EngineDto,
@@ -176,7 +177,7 @@ function ItemCard({
               WebkitBoxOrient: "vertical",
               WebkitLineClamp: 2,
               lineHeight: 1.35,
-            } : undefined}
+            } : { display: { xs: "block", md: "inline" }, maxWidth: "100%" }}
           >
             {detail}
           </Typography>
@@ -251,6 +252,7 @@ export function HomeView({
   const working = activeItems;
   const automations = triggerItems;
   const recentOutcomes = outcomeItems.slice(0, 6);
+  const mobile = useMediaQuery("(max-width: 899.95px)");
   const provider = engineAvailabilityPresentation(engines);
   const activeCount = activeAgentQuery.requestState.hasResolved
     ? activeAgentQuery.data?.pages.at(-1)?.activeCount ?? 0
@@ -405,7 +407,7 @@ export function HomeView({
             )}
           </Section>
 
-          <Section title="Recent Outcomes" description="The latest finished assigned work across Projects.">
+          <Section title={mobile ? "Recent Assigned Work" : "Recent Outcomes"} description={mobile ? "Recent assigned work and its current status across Projects." : "The latest finished assigned work across Projects."}>
             {recentOutcomes.length ? (
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
                 {recentOutcomes.map(item => (

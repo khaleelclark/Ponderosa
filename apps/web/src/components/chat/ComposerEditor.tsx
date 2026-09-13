@@ -15,6 +15,8 @@ import {
   $isTextNode,
   $setSelection,
   COPY_COMMAND,
+  COMMAND_PRIORITY_HIGH,
+  INSERT_PARAGRAPH_COMMAND,
   CUT_COMMAND,
   PASTE_COMMAND,
   SKIP_DOM_SELECTION_TAG,
@@ -61,6 +63,10 @@ import {
   shouldSendComposerKey,
 } from "./composerUtils";
 import type { ComposerMenuSuggestion } from "./Composer.controls";
+import { isIOSDevice } from "../../browserPlatform";
+
+// iPadOS can identify as a Mac. Do not change Android or desktop Return policy.
+const isIOSComposer = isIOSDevice();
 
 export type ComposerMentionDescriptor = {
   start: number;
@@ -878,6 +884,17 @@ function EditorBridge({
 }): null {
   const [editor] = useLexicalComposerContext();
   const canonicalRef = useRef(text);
+  useEffect(() => {
+    if (!isIOSComposer) return;
+    // Own newline insertion inside Lexical, including soft-keyboard beforeinput.
+    // A React keydown insertion would race Lexical's native event handling.
+    return editor.registerCommand(INSERT_PARAGRAPH_COMMAND, () => {
+      const selection = $getSelection();
+      if (!$isRangeSelection(selection)) return false;
+      selection.insertLineBreak();
+      return true;
+    }, COMMAND_PRIORITY_HIGH);
+  }, [editor]);
   const descriptorsRef = useRef(mentionDescriptors);
   const structuralDestinationRef = useRef(structuralDestination);
   descriptorsRef.current = mentionDescriptors;
@@ -1318,6 +1335,13 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       event.stopPropagation();
       return;
     }
+    if (event.key === "Enter" && (isIOSComposer || (
+      event.shiftKey && window.matchMedia("(max-width: 899.95px)").matches
+    ))) {
+      if (menuOpen) onSuppressMenu();
+      // Lexical owns mobile Shift+Return. iOS also uses plain Return for a newline.
+      return;
+    }
     if (
       event.key === "Enter" &&
       event.shiftKey
@@ -1426,7 +1450,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
             outline: 0,
             color: "text.primary",
             fontFamily: "inherit",
-            fontSize: 15,
+            // Avoid iOS focus zoom without disabling user-controlled pinch zoom.
+            fontSize: isIOSComposer ? 16 : 15,
             lineHeight: "22px",
             whiteSpace: "pre-wrap",
             overflowWrap: "anywhere",
@@ -1448,10 +1473,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
               className="composer-editor-input"
               tabIndex={disabled || locked ? -1 : 0}
               aria-label="Message"
-              role={comboboxEnabled ? "combobox" : "textbox"}
+              role="textbox"
               aria-multiline="true"
               aria-autocomplete={comboboxEnabled ? "list" : undefined}
-              aria-expanded={comboboxEnabled ? menuOpen : undefined}
               aria-controls={menuOpen ? listId : undefined}
               aria-activedescendant={menuOpen
                 ? `${listId}-option-${highlighted}`
@@ -1466,8 +1490,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
                 position: "absolute",
                 top: 6,
                 left: 2,
-                color: "text.disabled",
-                fontSize: 15,
+                color: { xs: "text.secondary", md: "text.disabled" },
+                fontSize: isIOSComposer ? 16 : 15,
                 lineHeight: "22px",
                 pointerEvents: "none",
               }}

@@ -7,7 +7,8 @@ import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutl
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { messageTagTokens, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, type ComponentPropsWithoutRef, useEffect, useRef, useState } from "react";
+import useMediaQuery from "@mui/material/useMediaQuery";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../../clipboard";
@@ -23,6 +24,15 @@ import {
 
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
+}
+
+function ScrollableMessageTable({node: _node, ...props}: ComponentPropsWithoutRef<"table"> & {node?: unknown}): JSX.Element {
+  const mobile = useMediaQuery("(max-width: 899.95px)");
+  if (!mobile) return <table {...props} />;
+  return <div style={{minWidth: 0, maxWidth: "100%"}}>
+    <Typography variant="caption" color="text.secondary">Swipe or scroll sideways to read the table.</Typography>
+    <table {...props} tabIndex={0} aria-label="Scrollable message table" />
+  </div>;
 }
 
 export function linkPresentation(href: string): { url: URL; hostname: string; destination: string; loopback: boolean } | undefined {
@@ -466,8 +476,8 @@ function ChatMarkdown({
         "& > :first-of-type": { mt: 0 },
         "& > :last-child": { mb: 0 },
         fontSize: small
-          ? { xs: "0.79rem", sm: "0.82rem" }
-          : { xs: "0.875rem", sm: "0.9375rem" },
+          ? { xs: "0.9375rem", md: "0.82rem" }
+          : { xs: "1rem", md: "0.9375rem" },
         lineHeight: small ? 1.42 : { xs: 1.44, sm: 1.48 },
         "& p": { my: compact ? 0.15 : 0.35, maxWidth: "100%", whiteSpace: preserveWhitespace ? "pre-wrap" : "normal", overflowWrap: "anywhere", wordBreak: "break-word" },
         "& h1, & h2, & h3, & h4": { mt: 1.05, mb: 0.4, lineHeight: 1.22 },
@@ -483,7 +493,7 @@ function ChatMarkdown({
         "& pre": { my: 0.65, p: 1.1, maxWidth: "100%", overflowX: "auto", borderRadius: 1, bgcolor: "action.hover" },
         "& img": { display: "block", maxWidth: "100%", height: "auto", objectFit: "contain" },
         "& table": { display: "block", maxWidth: "100%", overflowX: "auto", borderCollapse: "collapse" },
-        "& th, & td": { px: 1, py: 0.5, border: 1, borderColor: "divider" },
+        "& th, & td": { px: 1, py: 0.5, border: 1, borderColor: "divider", minWidth: { xs: "7rem", md: 0 }, maxWidth: { xs: "20rem", md: "none" }, overflowWrap: { xs: "break-word", md: "anywhere" } },
         "& a": { maxWidth: "100%", color: "inherit", textDecoration: "none", overflowWrap: "anywhere", wordBreak: "break-word" },
       }}
     >
@@ -491,6 +501,7 @@ function ChatMarkdown({
         remarkPlugins={[remarkGfm, remarkMessageTags]}
         urlTransform={chatMarkdownUrlTransform}
         components={{
+          table: ScrollableMessageTable,
           pre: CopyableCodeBlock,
           img: ({ src, alt }) => {
             const projectPreview = projectFileHref(projectId ?? previewScope?.projectId, src, "preview");

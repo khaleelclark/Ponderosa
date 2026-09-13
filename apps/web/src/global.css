@@ -136,15 +136,20 @@ html {
 
 @media (max-width: 599.95px) {
   html {
-    /* A slightly denser type scale for phone layouts; controls retain their
-       deliberate per-surface sizing and no browser zoom is involved. */
-    font-size: 15px;
+    font-size: 16px;
   }
 
   .chat-message-actions {
     margin-top: 2px;
   }
 
+}
+
+@media (max-width: 899.95px) and (pointer: coarse) {
+  .chat-message-action-buttons .MuiIconButton-root {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
 
 button,

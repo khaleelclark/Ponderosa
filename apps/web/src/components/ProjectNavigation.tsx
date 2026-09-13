@@ -513,8 +513,8 @@ export function ProjectSidebarHeader({
     });
   };
   return (
-    <Box sx={{ pt: 1.75, pb: 1, pr: drawer ? 6 : 0 }}>
-      <Stack direction="row" spacing={1.25} sx={{ alignItems: "center", px: 2 }}>
+    <Box sx={{ pt: 1.75, pb: 1 }}>
+      <Stack direction="row" spacing={drawer ? 0.5 : 1.25} sx={{ alignItems: "center", px: drawer ? 1 : 2 }}>
         <Tooltip title="Open Project Overview" placement="bottom-start">
           <ButtonBase
             aria-label={`Open ${project.label} Project Overview`}
@@ -559,8 +559,8 @@ export function ProjectSidebarHeader({
               {projectInitials(project.label)}
             </Box>
             <Box sx={{ minWidth: 0, flex: 1 }}>
-              <Typography fontWeight={800} noWrap>{project.label}</Typography>
-              <Typography variant="caption" color="text.secondary" noWrap>
+              <Typography fontWeight={800} noWrap={!drawer} sx={drawer ? { overflowWrap: "anywhere", lineHeight: 1.3 } : undefined}>{project.label}</Typography>
+              <Typography variant="caption" color="text.secondary" noWrap={!drawer}>
                 {runningCount == null ? "Checking activity" : `${runningCount} active`} · {unreadCount} unread
               </Typography>
             </Box>
@@ -585,7 +585,7 @@ export function ProjectSidebarHeader({
         aria-label={`${project.label} navigation`}
         sx={{
           display: "grid",
-          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+          gridTemplateColumns: drawer ? { xs: "minmax(0, 1fr)", sm: "repeat(3, minmax(0, 1fr))" } : "repeat(3, minmax(0, 1fr))",
           gap: 0.5,
           mx: 1.25,
           mt: 1.5,
@@ -623,13 +623,14 @@ export function ProjectSidebarHeader({
               }}
               sx={{
                 minWidth: 0,
-                minHeight: 52,
+                minHeight: drawer ? { xs: 44, sm: 52 } : 52,
                 px: 0.5,
                 py: 0.6,
                 borderRadius: 1.1,
                 display: "flex",
-                flexDirection: "column",
-                gap: 0.25,
+                flexDirection: drawer ? { xs: "row", sm: "column" } : "column",
+                justifyContent: drawer ? { xs: "flex-start", sm: "center" } : "center",
+                gap: drawer ? { xs: 1, sm: 0.25 } : 0.25,
                 color: section === mode.id ? "primary.main" : "text.secondary",
                 bgcolor: section === mode.id ? "rgba(124, 200, 145, .10)" : "transparent",
                 "&:hover": { bgcolor: section === mode.id ? "rgba(124, 200, 145, .14)" : "action.hover", color: "text.primary" },
@@ -640,7 +641,7 @@ export function ProjectSidebarHeader({
                 component="span"
                 sx={{
                   maxWidth: "100%",
-                  fontSize: mode.id === "triggers" ? 8.75 : 9.5,
+                  fontSize: drawer ? { xs: 14, sm: 11 } : mode.id === "triggers" ? 8.75 : 9.5,
                   letterSpacing: mode.id === "triggers" ? "-.025em" : undefined,
                   fontWeight: 700,
                 }}
