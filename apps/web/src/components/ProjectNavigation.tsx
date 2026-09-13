@@ -172,7 +172,7 @@ function ProjectRailButton({
             justifyContent: "center",
             "& .MuiBadge-badge": {
               top: 4,
-              right: 0,
+              right: -4,
               transform: "translateY(-50%)",
               "&.MuiBadge-invisible": { transform: "translateY(-50%) scale(0)" },
               border: `1px solid ${railSurface}`,
