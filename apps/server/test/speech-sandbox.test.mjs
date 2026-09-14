@@ -30,8 +30,8 @@ test("Linux voice sandbox hides host files and the host loopback network", { ski
     await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
     const fixture = path.join(temporary, "isolation.mjs");
     await fs.writeFile(fixture, `
-      import fs from "node:fs";
-      import net from "node:net";
+      const fs = require("node:fs");
+      const net = require("node:net");
       if (fs.existsSync(${JSON.stringify(secret)})) throw new Error("host file visible");
       const socket = net.connect(${server.address().port}, "127.0.0.1");
       socket.on("connect", () => { socket.destroy(); process.exit(1); });
