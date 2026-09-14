@@ -25,14 +25,22 @@ of this release.
 
 Use the packaged Node 24 runtime. Drain active work and retain a coherent backup
 of Ponderosa-owned state before upgrading. Preserve selected Project folders.
-The dev upgrade preserved 67 Projects, 79 Chats, and 470 Agent identities; the
-legacy-history fix was verified against that snapshot and a regression fixture.
+The final dev upgrade qualification preserved 68 Projects, 81 Chats, and 471
+Agent identities. All historical Agent lookups completed; eight legacy tombstones
+intentionally have no current DTO. The earlier failed-upgrade rehearsal used a
+different snapshot (67 Projects, 79 Chats, 470 Agent identities).
 
-The integrated source passed 467 checks, typechecks, and production builds on
-Pine/Linux. Installer build success is not native OS qualification. Each
+The final release tree at `566475063f0004898436c3b022b3f126ca6c9814` passed
+471 checks (3 core, 73 agents, 182 web, 213 server), typechecks, native compilation,
+and production builds on Pine/Linux. Installer build success is not native OS qualification. Each
 candidate must retain its exact source commit, checksum, platform metadata,
-and installed-artifact evidence. Windows 11 and native adversarial filesystem
-qualification remain release gates; unsigned packages remain private candidates.
+and installed-artifact evidence. The [final native installer jobs](https://github.com/khaleelclark/Ponderosa/actions/runs/34820441234)
+passed for Linux, macOS, and Windows at that head, with matching recorded metadata
+and checksum sidecars. Their installed qualification reports still say
+`releaseQualified: false`: exact-commit target filesystem evidence, authenticated
+Codex/Claude discovery and execution on real macOS, and installed-artifact
+qualification on Windows 11 remain gates. Hosted Windows Server evidence does
+not qualify Windows 11. Unsigned packages remain private candidates.
 
 Local Kokoro hosting is currently qualified only for the private Pine/Linux
 setup. Physical iOS/Android audio behavior and native macOS/Windows local voice

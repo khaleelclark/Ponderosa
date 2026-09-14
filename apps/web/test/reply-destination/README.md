@@ -16,3 +16,17 @@ Before the fix, target loss and local reload submitted plain text without mentio
 The product change seeds a normal structural mention into an empty draft. It never rewrites a nonempty Project draft in response to a continuation update. Existing draft text/binding persistence and stale-recipient checks are reused. There is no new draft store, routing mode, or chip styling.
 
 An old draft that already lost its target cannot safely have that recipient guessed retroactively; choose the recipient explicitly once for that draft.
+
+
+Draft navigation regression (same fixture/server):
+
+```sh
+PLAYWRIGHT_PACKAGE=/path/to/package.json CHROMIUM_PATH=/path/to/chromium node test/reply-destination/draft-navigation-browser.mjs
+```
+
+This runs the actual Composer through edit → immediate Settings/unmount → return,
+then verifies send → navigate → return cannot resurrect sent text. A competing
+revision must keep the other browser's saved text and expose the existing draft
+conflict recovery UI. All API calls are intercepted; no live data is changed.
+The text recovery unit checks also cover identical visible text with changed
+mention bindings and acknowledgements from an abandoned surface.
