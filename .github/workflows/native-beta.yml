@@ -106,7 +106,7 @@ jobs:
 
       - name: Verify native voice storage recovery
         shell: bash
-        run: node --test apps/server/test/speech-sandbox.test.mjs apps/server/test/speech-cleanup-race.test.mjs apps/server/test/speech-recovery.test.mjs
+        run: node --test apps/server/test/gui-qualification-pid.test.mjs apps/server/test/speech-sandbox.test.mjs apps/server/test/speech-cleanup-race.test.mjs apps/server/test/speech-recovery.test.mjs
 
       - name: Prepare checksummed official Node 24
         shell: bash
