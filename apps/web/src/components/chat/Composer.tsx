@@ -42,6 +42,7 @@ import {
 import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
 import { readChatState, readChatStateEntries, writeChatState } from "../../chatState";
+import { acknowledgeDraftTextRecovery, recoverDraftText, writeDraftTextRecovery } from "./draftTextRecovery";
 import { createClientId, draftSurfaceClientId } from "../../clientId";
 import {
   createRecipientUploadAuthorityOutbox,
@@ -1169,7 +1170,14 @@ export function Composer({
   }, []);
 
   useEffect(() => {
-    const draft = draftQuery.data;
+    const canonicalDraft = draftQuery.data;
+    const pendingText = !draftReady.current && canonicalDraft
+      ? recoverDraftText(draftStorageKey, canonicalDraft) : undefined;
+    // Recovered edits retain their original revision. A competing save is handled
+    // by the existing 409/recovery flow, never by adopting overwrite authority.
+    const draft = canonicalDraft && pendingText
+      ? { ...canonicalDraft, text: pendingText.text, mentionBindings: pendingText.mentionBindings, pendingSubmission: undefined }
+      : canonicalDraft;
     if (
       sendingRef.current ||
       !conversationDraftId ||
@@ -1253,6 +1261,9 @@ export function Composer({
         draft.revision,
         adoptDraft,
       );
+      if (adoptDraft && pendingText) {
+        draftWriteChain.current.ownedRevision = pendingText.expectedRevision;
+      }
       if (!adoptDraft) {
         draftReady.current = true;
         setDraftReadyVersion(value => value + 1);
@@ -1318,6 +1329,10 @@ export function Composer({
       replaceText(hydrated.text);
       setKnownMentionBindings([...hydrated.mentionBindings]);
       if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
+      if (pendingText) {
+        draftLocallyEdited.current = true;
+        draftEditVersion.current += 1;
+      }
       if (failedAttachments.length || hydratedPastedText?.failure) {
         dispatchAttachments({
           type: "set_error",
@@ -1342,6 +1357,9 @@ export function Composer({
           draft.revision,
           adoptDraft,
         );
+        if (adoptDraft && pendingText) {
+          draftWriteChain.current.ownedRevision = pendingText.expectedRevision;
+        }
         if (!adoptDraft) {
           draftReady.current = true;
           setDraftReadyVersion(value => value + 1);
@@ -1420,6 +1438,10 @@ export function Composer({
         replaceText(hydrated.text);
         setKnownMentionBindings([...hydrated.mentionBindings]);
         if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
+        if (pendingText) {
+          draftLocallyEdited.current = true;
+          draftEditVersion.current += 1;
+        }
         if (!draftAttachmentsLocallyEdited.current) {
           dispatchAttachments({
             type: "replace",
@@ -1572,6 +1594,12 @@ export function Composer({
       !draftLocallyEdited.current
     )
       return;
+    writeDraftTextRecovery(draftStorageKey, {
+      text,
+      mentionBindings: knownMentionBindings,
+      expectedRevision: draftWriteChain.current.ownedRevision,
+      clientId: draftWriteChain.current.clientId,
+    });
     const scheduledGeneration = draftGeneration.current;
     const timer = window.setTimeout(() => {
       // A queued debounce must not revive a sent draft or save an empty
@@ -1650,6 +1678,7 @@ export function Composer({
             ownerId: draftOwnerId,
           });
           writeChain.ownedRevision = draft.revision;
+          acknowledgeDraftTextRecovery(draftStorageKey, clientId, { text, mentionBindings: knownMentionBindings }, draft.revision);
           const cleanupReleased = async (): Promise<void> => {
             await cleanupReleasedDraftAttachmentIds(
               writeChain.pendingDeletionIds,
@@ -1772,6 +1801,7 @@ export function Composer({
     }, 500);
     return () => window.clearTimeout(timer);
   }, [
+    draftStorageKey,
     conversationDraftId,
     draftAttachmentVersion,
     draftOwnerId,
@@ -2283,6 +2313,7 @@ export function Composer({
             ownerId: draftOwnerId,
           });
           submittedDraftWriteChain.ownedRevision = saved.revision;
+          acknowledgeDraftTextRecovery(draftStorageKey, submittedDraftWriteChain.clientId, { text: submittedText, mentionBindings: submittedMentionBindings }, saved.revision);
           submittedDraftClientId = saved.clientId;
         },
       );
@@ -2390,6 +2421,14 @@ export function Composer({
         // Clear only the exact draft incarnation that produced this submission.
         // This also preserves edits made while a runtime command is pending.
         if (submissionMayClearDraft && scopeStillActive) {
+          // Runtime commands bypass pending-message persistence, but their
+          // confirmed success retires the same exact recovery text as a send.
+          acknowledgeDraftTextRecovery(
+            draftStorageKey,
+            submittedDraftWriteChain.clientId,
+            { text: submittedText, mentionBindings: submittedMentionBindings },
+            submittedDraftWriteChain.ownedRevision,
+          );
           draftGeneration.current += 1;
           draftEditVersion.current += 1;
           draftLocallyEdited.current = false;
@@ -2876,6 +2915,7 @@ export function Composer({
                 draftEditVersion.current,
               );
               recoveryWriteChain.ownedRevision = canonical.revision;
+              acknowledgeDraftTextRecovery(draftStorageKey, recoveryWriteChain.clientId, attemptedSnapshot, canonical.revision);
               draftRevision.current = canonical.revision;
               markUserDraftMutation();
               pendingSubmissionRef.current = restored.pendingSubmission;

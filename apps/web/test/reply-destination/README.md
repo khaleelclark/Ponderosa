@@ -16,3 +16,36 @@ Before the fix, target loss and local reload submitted plain text without mentio
 The product change seeds a normal structural mention into an empty draft. It never rewrites a nonempty Project draft in response to a continuation update. Existing draft text/binding persistence and stale-recipient checks are reused. There is no new draft store, routing mode, or chip styling.
 
 An old draft that already lost its target cannot safely have that recipient guessed retroactively; choose the recipient explicitly once for that draft.
+
+
+Draft navigation regression (same fixture/server):
+
+```sh
+PLAYWRIGHT_PACKAGE=/path/to/package.json CHROMIUM_PATH=/path/to/chromium node test/reply-destination/draft-navigation-browser.mjs
+```
+
+This runs the actual Composer through edit → immediate Settings/unmount → return,
+then verifies send → navigate → return cannot resurrect sent text. A competing
+revision must keep the other browser's saved text and expose the existing draft
+conflict recovery UI. All API calls are intercepted; no live data is changed.
+The text recovery unit checks also cover identical visible text with changed
+mention bindings and acknowledgements from an abandoned surface.
+
+The delayed-empty-save case holds the response to an accepted empty autosave,
+types new work, then reloads before acknowledgement or the next debounce. The
+new text must remain in explicit conflict recovery against the accepted empty
+draft. A newer empty revision alone does not prove that this later text was sent.
+
+
+Runtime-command settlement regression (same fixture/server):
+
+```sh
+PLAYWRIGHT_PACKAGE=/path/to/package.json CHROMIUM_PATH=/path/to/chromium node test/reply-destination/runtime-command-browser.mjs
+```
+
+The fixture exposes a runtime `/status` catalog entry and a real deferred
+`onCommand` callback, separately from `onSend`. Cases cover successful command
+completion before autosave followed by navigation and reload, edits while the
+command is pending, failed-command retry text, and completion after another
+composer visit has taken ownership. Only unchanged successful command text may
+be retired; newer work and failures remain recoverable.
