@@ -194,10 +194,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          report_archive="dist/qualification-${RUNNER_OS}-${RUNNER_ARCH}-${GITHUB_SHA}.tar.gz"
+          report_archive="dist/qualification-${RUNNER_OS}-${RUNNER_ARCH}-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz"
           test -d dist/qualification
           tar -czf "$report_archive" -C dist qualification
-          gh release upload "$GITHUB_REF_NAME" "$report_archive" --clobber
+          gh release upload "$GITHUB_REF_NAME" "$report_archive"
 
       - name: Upload native evidence for manual runs
         if: always() && github.event_name == 'workflow_dispatch'
