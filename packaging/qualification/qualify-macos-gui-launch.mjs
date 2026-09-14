@@ -7,6 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -420,7 +421,7 @@ try {
   writeFileSync(path.join(projectRoot, "README.md"), "# GUI qualification\n");
   const projectResponse = await fetch(`${baseUrl}/api/projects`, {
     method: "POST",
-    headers,
+    headers: { ...headers, "idempotency-key": `gui-project-${randomUUID()}` },
     body: JSON.stringify({
       label: "GUI qualification",
       hostPath: projectRoot,
