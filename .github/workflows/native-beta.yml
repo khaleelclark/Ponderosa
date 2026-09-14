@@ -102,15 +102,11 @@ jobs:
       - name: Install Linux voice test sandbox dependencies
         if: runner.os == 'Linux'
         shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap nodejs
-          test -x /usr/bin/bwrap
-          test -x /usr/bin/node
+        run: bash .github/scripts/prepare-linux-speech-tests.sh
 
       - name: Verify native voice storage recovery
         shell: bash
-        run: node --test apps/server/test/speech-cleanup-race.test.mjs apps/server/test/speech-recovery.test.mjs
+        run: node --test apps/server/test/gui-qualification-pid.test.mjs apps/server/test/speech-sandbox.test.mjs apps/server/test/speech-cleanup-race.test.mjs apps/server/test/speech-recovery.test.mjs
 
       - name: Prepare checksummed official Node 24
         shell: bash

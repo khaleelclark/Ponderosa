@@ -1,0 +1,42 @@
+name: Release recovery checks
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/speech-recovery.yml"
+      - ".github/workflows/native-beta.yml"
+      - ".github/scripts/prepare-linux-speech-tests.sh"
+      - "apps/server/src/speech*.ts"
+      - "apps/server/test/speech*.mjs"
+      - "apps/server/test/fixtures/speech*"
+      - "packages/native-host/**"
+      - "packages/core/src/dto/speech.ts"
+      - "packaging/qualification/**"
+      - "apps/server/test/gui-qualification-pid.test.mjs"
+      - "pnpm-lock.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.16.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Prepare the Linux test sandbox
+        run: bash .github/scripts/prepare-linux-speech-tests.sh
+      - name: Verify sandbox and recovery boundaries
+        run: node --test apps/server/test/gui-qualification-pid.test.mjs apps/server/test/speech-sandbox.test.mjs apps/server/test/speech-cleanup-race.test.mjs apps/server/test/speech-recovery.test.mjs

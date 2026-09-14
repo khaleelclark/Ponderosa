@@ -11,6 +11,7 @@ import { createServer } from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { canonicalPath } from "./canonical-path.mjs";
+import { processIsAlive, readPublishedProcessState, validProcessId } from "./process-state.mjs";
 import {
   parseSuccessfulJsonResponse,
   requireSuccessfulResponse,
@@ -63,20 +64,6 @@ async function portIsAvailable(port) {
       server.close(() => resolve(true));
     });
   });
-}
-
-async function readJsonEventually(pathname, timeoutMs = 15_000) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError;
-  while (Date.now() < deadline) {
-    try {
-      return JSON.parse(readFileSync(pathname, "utf8"));
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-  throw lastError ?? new Error(`Timed out reading ${pathname}`);
 }
 
 async function waitForPathRemoval(pathname, timeoutMs = 15_000) {
@@ -243,7 +230,7 @@ async function launchFromApplication(port) {
   }
   assert(applicationPid, "Ponderosa Engine native application process did not remain alive.");
   observedApplicationPids.add(applicationPid);
-  const state = await readJsonEventually(statePath);
+  const state = await readPublishedProcessState(statePath);
   observedPids.add(state.pid);
   const stateInstallRoot = canonicalPath(state.installRoot);
   const stateDataDir = canonicalPath(state.dataDir);
@@ -260,34 +247,26 @@ async function launchFromApplication(port) {
   return { ...state, applicationPid };
 }
 
-function processIsAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code !== "ESRCH";
-  }
-}
-
 async function cleanupGuiLaunch(port) {
   const deadline = Date.now() + 15_000;
-  let lastStateError;
+  let stateReadFailed = false;
+  let lastSnapshot;
   let quietSince;
   while (Date.now() < deadline) {
     if (existsSync(statePath)) {
       try {
         const state = JSON.parse(readFileSync(statePath, "utf8"));
-        if (Number.isSafeInteger(state.pid)) observedPids.add(state.pid);
+        if (validProcessId(state.pid)) observedPids.add(state.pid);
       } catch (error) {
-        lastStateError = error;
+        stateReadFailed = true;
       }
     }
     if (existsSync(engineSupervisorPath)) {
       try {
         const supervisor = JSON.parse(readFileSync(engineSupervisorPath, "utf8"));
-        if (Number.isSafeInteger(supervisor.pid)) observedPids.add(supervisor.pid);
+        if (validProcessId(supervisor.pid)) observedPids.add(supervisor.pid);
       } catch (error) {
-        lastStateError = error;
+        stateReadFailed = true;
       }
     }
     // Attempt the authoritative launcher stop even before state is observed:
@@ -299,13 +278,17 @@ async function cleanupGuiLaunch(port) {
         try { process.kill(pid, "SIGTERM"); } catch { /* Retried until cleanup settles. */ }
       }
     }
-    const clean = (
-      !existsSync(statePath) &&
-      !existsSync(engineSupervisorPath) &&
-      [...observedPids].every((pid) => !processIsAlive(pid)) &&
-      [...observedApplicationPids].every((pid) => !processIsAlive(pid)) &&
-      await portIsAvailable(port)
-    );
+    lastSnapshot = {
+      stateFileExists: existsSync(statePath),
+      supervisorFileExists: existsSync(engineSupervisorPath),
+      aliveDaemonPids: [...observedPids].filter(pid => processIsAlive(pid)),
+      aliveApplicationPids: [...observedApplicationPids].filter(pid => processIsAlive(pid)),
+      portAvailable: await portIsAvailable(port),
+      stateReadFailed,
+    };
+    const clean = !lastSnapshot.stateFileExists && !lastSnapshot.supervisorFileExists &&
+      lastSnapshot.aliveDaemonPids.length === 0 && lastSnapshot.aliveApplicationPids.length === 0 &&
+      lastSnapshot.portAvailable;
     if (clean) {
       quietSince ??= Date.now();
     } else {
@@ -319,7 +302,7 @@ async function cleanupGuiLaunch(port) {
   }
   throw new Error(
     "GUI qualification cleanup did not observe state removal, process exit, and port release" +
-    `${lastStateError ? `: ${lastStateError.message}` : ""}`,
+    `: ${JSON.stringify(lastSnapshot ?? { stateReadFailed })}`,
   );
 }
 
@@ -368,7 +351,7 @@ await seedLegacyPwaProfile(port, persistentProfile, chromiumExecutable);
 let primaryError;
 try {
   const firstState = await launchFromApplication(port);
-  const firstSupervisor = await readJsonEventually(engineSupervisorPath);
+  const firstSupervisor = await readPublishedProcessState(engineSupervisorPath);
   assert(Number.isSafeInteger(firstSupervisor.pid) && firstSupervisor.pid > 0,
     "Ponderosa Engine did not publish its persistent desktop supervisor.");
   assert(firstSupervisor.pid !== firstState.pid,
@@ -518,7 +501,7 @@ try {
   await waitForProcessExit(firstState.applicationPid);
   const secondState = await launchFromApplication(port);
   assert(secondState.pid !== firstState.pid, "GUI reopen reused the stopped daemon pid.");
-  const secondSupervisor = await readJsonEventually(engineSupervisorPath);
+  const secondSupervisor = await readPublishedProcessState(engineSupervisorPath);
   assert(processIsAlive(secondSupervisor.pid),
     "Reopened Ponderosa Engine did not retain a desktop supervisor.");
   observedPids.add(secondSupervisor.pid);
