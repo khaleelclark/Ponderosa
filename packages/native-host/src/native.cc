@@ -52,13 +52,16 @@ bool ReadUtf8(napi_env env, napi_value value, std::string* output) {
   std::vector<char> buffer(length + 1);
   if (napi_get_value_string_utf8(env, value, buffer.data(), buffer.size(), &length) != napi_ok) return false;
   output->assign(buffer.data(), length);
-  return true;
+  // Every caller supplies an OS path or filesystem identity. Do not let a
+  // length-aware JavaScript string differ from the NUL-terminated OS input.
+  return output->find('\0') == std::string::npos;
 }
 
 bool ParseRelativePath(
     const std::string& input, std::vector<std::string>* components,
     bool allow_empty = false) {
   if ((input.empty() && !allow_empty) || input.size() > 4096 ||
+      input.find('\0') != std::string::npos ||
       (!input.empty() && (input[0] == '/' || input[0] == '\\'))) {
     return false;
   }

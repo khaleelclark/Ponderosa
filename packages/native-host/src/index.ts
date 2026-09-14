@@ -42,6 +42,7 @@ export interface SecureDirectoryEntry {
 
 /** Bounded installer-only cleanup; no pathname-based deletion fallback. */
 export function cleanupSpeechStorage(root: string, protectedLeaf = "", protectedIdentity = ""): boolean {
+  assertSafeRoot(root);
   return binding().cleanupSpeechStorage(root, protectedLeaf, protectedIdentity);
 }
 
@@ -116,8 +117,14 @@ export class WindowsProcessJob {
   }
 }
 
+function assertSafeRoot(root: string): void {
+  if (root.includes("\0")) {
+    throw new Error("secure file authority root must not contain NUL");
+  }
+}
+
 function assertSafeRelativePath(relativePath: string): void {
-  if (!relativePath || relativePath.length > 4_096 ||
+  if (!relativePath || relativePath.length > 4_096 || relativePath.includes("\0") ||
       relativePath.startsWith("/") || relativePath.startsWith("\\") ||
       /^[A-Za-z]:/u.test(relativePath) || relativePath.startsWith("//") ||
       relativePath.startsWith("\\\\")) {
@@ -168,6 +175,7 @@ export function readSecureFile(input: {
   requireNonEmpty?: boolean;
 }): Buffer | undefined {
   if (!secureFileAuthoritySupported()) return undefined;
+  assertSafeRoot(input.root);
   assertSafeRelativePath(input.relativePath);
   if (!Number.isSafeInteger(input.maxBytes) || input.maxBytes < 0 ||
       input.maxBytes > 64 * 1024 * 1024) {
@@ -193,6 +201,7 @@ export function readSecureFileAsync(
   signal?: AbortSignal,
 ): Promise<Buffer | undefined> {
   if (!secureFileAuthoritySupported()) return Promise.resolve(undefined);
+  assertSafeRoot(input.root);
   assertSafeRelativePath(input.relativePath);
   if (!Number.isSafeInteger(input.maxBytes) || input.maxBytes < 0 ||
       input.maxBytes > 64 * 1024 * 1024) {
@@ -261,6 +270,7 @@ export function listSecureDirectory(input: {
   relativePath?: string;
 }): SecureDirectoryEntry[] | undefined {
   if (!secureFileAuthoritySupported()) return undefined;
+  assertSafeRoot(input.root);
   const relativePath = input.relativePath ?? "";
   assertSafeRelativeDirectory(relativePath);
   return binding().listSecureDirectory(input.root, relativePath) ?? undefined;
@@ -280,6 +290,7 @@ export function writeSecureFileAtomic(input: {
   if (!secureFileAuthoritySupported()) {
     throw new Error("secure file publication authority is unavailable");
   }
+  assertSafeRoot(input.root);
   const relativeDirectory = input.relativeDirectory ?? "";
   assertSafeRelativeDirectory(relativeDirectory);
   assertSafeLeaf(input.leaf, "secure publication leaf");
@@ -309,6 +320,7 @@ export function removeSecureFile(input: {
   if (!secureFileAuthoritySupported()) {
     throw new Error("secure file removal authority is unavailable");
   }
+  assertSafeRoot(input.root);
   const relativeDirectory = input.relativeDirectory ?? "";
   assertSafeRelativeDirectory(relativeDirectory);
   assertSafeLeaf(input.leaf, "secure removal leaf");
