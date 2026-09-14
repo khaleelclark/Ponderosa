@@ -1,7 +1,7 @@
 # Beta 11 development qualification
 
-Beta 11 is being prepared from experimental revision
-`e477a1ff776e2110ab091b6eccf4f3a3210590bf`. This is a development candidate,
+Beta 11 includes experimental revision
+`e477a1ff776e2110ab091b6eccf4f3a3210590bf` plus reviewed PRs #503 and #504. This is a development candidate,
 not a published or cross-platform-qualified release.
 
 ## Development promotion
@@ -62,10 +62,17 @@ as store/schema open before switching the service.
 The system-model documentation now describes integrated Chat ownership,
 working copies, voice features, and fail-closed data-layout handling.
 
+## Integrated recovery verification
+
+PR #503's exact head `fd0761a0` passed independent tracked Agent review and was
+merged. The combined source passed `pnpm verify` on Pine: 467 checks, workspace
+typechecks, native compilation, and production builds. This includes the Linux
+SIGKILL and filesystem-race recovery checks. Native installer jobs now also run
+the voice-storage checks applicable to their platform; Linux-only cases remain
+explicitly skipped elsewhere.
+
 ## Remaining release gates
 
-- Independently review and integrate PR #503's interrupted local-voice recovery
-  fix, then run its native cleanup/crash checks and the full verification gate.
 - Verify current dev data upgrade, live desktop/mobile interaction, provider Runs,
   Stop/retry, attachments, dictation, browser speech, and optional local speech.
 - Investigate the existing experimental readiness report of one quarantined
