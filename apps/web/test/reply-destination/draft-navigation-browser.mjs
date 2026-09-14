@@ -3,11 +3,14 @@ import assert from 'node:assert/strict';
 const {chromium} = createRequire(process.env.PLAYWRIGHT_PACKAGE || import.meta.url)('playwright');
 const browser = await chromium.launch({headless:true, ...(process.env.CHROMIUM_PATH ? {executablePath:process.env.CHROMIUM_PATH} : {})});
 try {
-  for (const scenario of ['navigate-return', 'sent-not-restored', 'competing-revision']) {
+  for (const scenario of ['navigate-return', 'sent-not-restored', 'competing-revision', 'delayed-empty-save']) {
     const page = await browser.newPage();
     const errors = []; page.on('pageerror', error => errors.push(error.message));
     let draft = {conversationId:'diagnostic-chat', ownerId:'', text:'Persisted first line\nPersisted second line', attachmentIds:[], mentionBindings:[], revision:4, clientId:'earlier-visit', updatedAt:new Date().toISOString()};
     let conflict;
+    let acceptEmpty, releaseEmpty;
+    const emptyAccepted = new Promise(resolve => { acceptEmpty = resolve; });
+    const emptyResponse = new Promise(resolve => { releaseEmpty = resolve; });
     await page.route('**/api/**', async route => {
       const request = route.request(), url = new URL(request.url());
       if (url.pathname.endsWith('/draft')) {
@@ -18,6 +21,12 @@ try {
             return route.fulfill({status:409,json:{error:'draft revision conflict'}});
           }
           draft = {...draft, ...body, revision:draft.revision+1};
+          if (scenario === 'delayed-empty-save' && body.text === '' && draft.revision === 5) {
+            acceptEmpty();
+            await emptyResponse;
+            // Reload aborts this request before the old Composer acknowledges it.
+            return route.fulfill({json:draft}).catch(() => undefined);
+          }
         }
         return route.fulfill({json:{...draft, ownerId:draft.ownerId || url.searchParams.get('ownerId')}});
       }
@@ -28,6 +37,23 @@ try {
     const input = page.locator('.composer-editor-input');
     await input.waitFor();
     await page.waitForFunction(() => document.querySelector('.composer-editor-input')?.textContent.includes('Persisted second line'));
+    if (scenario === 'delayed-empty-save') {
+      await input.fill('');
+      await Promise.race([emptyAccepted, new Promise((_, reject) => setTimeout(() => reject(new Error('empty PUT did not start')), 5_000))]);
+      assert.equal(draft.revision,5);
+      assert.equal(draft.text,'');
+      await input.fill('New work typed after clearing');
+      await page.reload();
+      await input.waitFor();
+      await page.waitForFunction(() => document.querySelector('.composer-editor-input')?.textContent.includes('New work typed after clearing'), null, {timeout:5_000});
+      await page.getByText('This draft changed elsewhere. Your version is preserved.',{exact:false}).waitFor();
+      assert.equal(draft.text,'','ambiguous recovery must not overwrite the accepted empty draft');
+      assert.equal(conflict.displaced.expectedRevision,4);
+      assert.equal(conflict.displaced.text,'New work typed after clearing');
+      releaseEmpty();
+      assert.deepEqual(errors,[]);
+      console.log('PASS',scenario); await page.close(); continue;
+    }
     const updated = 'Persisted first line\nPersisted second line\nLatest edit before immediate navigation';
     await input.fill(updated);
     await page.getByRole('button',{name:'Settings',exact:true}).click();

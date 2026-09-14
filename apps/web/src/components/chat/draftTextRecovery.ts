@@ -42,7 +42,12 @@ export function acknowledgeDraftTextRecovery(
   else writeDraftTextRecovery(key, { ...pending, expectedRevision: revision });
 }
 
-/** A newer sent/cleared draft wins; competing nonempty edits keep their old CAS revision. */
+/**
+ * Only matching content proves this edit was saved. A newer empty draft may be
+ * an earlier clear whose response was delayed while the user typed new work.
+ * Preserve ambiguous edits with their old CAS revision for explicit recovery.
+ * Successful send persistence already consumes its exact recovery record.
+ */
 export function recoverDraftText(
   key: string | undefined,
   canonical: { revision: number; text: string; mentionBindings?: AgentMentionBindingDto[] },
@@ -50,9 +55,8 @@ export function recoverDraftText(
   const pending = readDraftTextRecovery(key);
   if (!pending) return undefined;
   if (canonical.revision >= pending.expectedRevision &&
-      ((canonical.text === pending.text &&
-        JSON.stringify(canonical.mentionBindings ?? []) === JSON.stringify(pending.mentionBindings)) ||
-        (canonical.revision > pending.expectedRevision && !canonical.text))) {
+      canonical.text === pending.text &&
+      JSON.stringify(canonical.mentionBindings ?? []) === JSON.stringify(pending.mentionBindings)) {
     acknowledgeDraftTextRecovery(key, pending.clientId, pending, canonical.revision);
     return undefined;
   }

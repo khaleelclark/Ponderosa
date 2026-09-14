@@ -30,3 +30,8 @@ revision must keep the other browser's saved text and expose the existing draft
 conflict recovery UI. All API calls are intercepted; no live data is changed.
 The text recovery unit checks also cover identical visible text with changed
 mention bindings and acknowledgements from an abandoned surface.
+
+The delayed-empty-save case holds the response to an accepted empty autosave,
+types new work, then reloads before acknowledgement or the next debounce. The
+new text must remain in explicit conflict recovery against the accepted empty
+draft. A newer empty revision alone does not prove that this later text was sent.

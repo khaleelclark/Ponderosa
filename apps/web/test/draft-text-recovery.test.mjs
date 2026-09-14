@@ -20,10 +20,12 @@ test('edit, leave before debounce, return retains text and the original revision
   assert.equal(readDraftTextRecovery('chat-a'), undefined);
 });
 
-test('acknowledged or subsequently sent draft is not resurrected on return', () => {
+test('matching canonical and acknowledged sent drafts are not resurrected on return', () => {
   writeDraftTextRecovery('chat-a', edit());
   assert.equal(recoverDraftText('chat-a', {revision: 5, text: edit().text}), undefined);
   writeDraftTextRecovery('chat-a', edit());
+  // Send persistence acknowledges the exact text/bindings before clearing it.
+  acknowledgeDraftTextRecovery('chat-a', 'visit-a', edit(), 5);
   assert.equal(recoverDraftText('chat-a', {revision: 6, text: ''}), undefined);
   assert.equal(readDraftTextRecovery('chat-a'), undefined);
   // A new edit against the already-cleared revision is real work.
@@ -56,4 +58,18 @@ test('same visible text with a new mention binding survives an older acknowledge
   acknowledgeDraftTextRecovery('chat-a','visit-a',old,5);
   assert.deepEqual(readDraftTextRecovery('chat-a'),{...newer,expectedRevision:5});
   assert.deepEqual(recoverDraftText('chat-a',{revision:5,text:old.text,mentionBindings:old.mentionBindings}),{...newer,expectedRevision:5});
+});
+
+
+test('new typing after an accepted empty PUT survives reload before its acknowledgement', () => {
+  writeDraftTextRecovery('chat-a', edit(''));
+  // Server accepts this earlier empty write as revision 5; the response is held.
+  writeDraftTextRecovery('chat-a', edit('New work typed after clearing'));
+  const canonical = {revision:5,text:'',mentionBindings:[]};
+  assert.deepEqual(recoverDraftText('chat-a', canonical), edit('New work typed after clearing'));
+  assert.deepEqual(readDraftTextRecovery('chat-a'), edit('New work typed after clearing'));
+  // If the old response arrives before leaving, it advances only the base;
+  // it must still preserve the text entered after the clear.
+  acknowledgeDraftTextRecovery('chat-a','visit-a',edit(''),5);
+  assert.deepEqual(recoverDraftText('chat-a', canonical), {...edit('New work typed after clearing'),expectedRevision:5});
 });
