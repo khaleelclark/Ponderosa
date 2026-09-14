@@ -35,3 +35,17 @@ The delayed-empty-save case holds the response to an accepted empty autosave,
 types new work, then reloads before acknowledgement or the next debounce. The
 new text must remain in explicit conflict recovery against the accepted empty
 draft. A newer empty revision alone does not prove that this later text was sent.
+
+
+Runtime-command settlement regression (same fixture/server):
+
+```sh
+PLAYWRIGHT_PACKAGE=/path/to/package.json CHROMIUM_PATH=/path/to/chromium node test/reply-destination/runtime-command-browser.mjs
+```
+
+The fixture exposes a runtime `/status` catalog entry and a real deferred
+`onCommand` callback, separately from `onSend`. Cases cover successful command
+completion before autosave followed by navigation and reload, edits while the
+command is pending, failed-command retry text, and completion after another
+composer visit has taken ownership. Only unchanged successful command text may
+be retired; newer work and failures remain recoverable.

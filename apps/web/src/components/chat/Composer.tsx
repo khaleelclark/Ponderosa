@@ -2421,6 +2421,14 @@ export function Composer({
         // Clear only the exact draft incarnation that produced this submission.
         // This also preserves edits made while a runtime command is pending.
         if (submissionMayClearDraft && scopeStillActive) {
+          // Runtime commands bypass pending-message persistence, but their
+          // confirmed success retires the same exact recovery text as a send.
+          acknowledgeDraftTextRecovery(
+            draftStorageKey,
+            submittedDraftWriteChain.clientId,
+            { text: submittedText, mentionBindings: submittedMentionBindings },
+            submittedDraftWriteChain.ownedRevision,
+          );
           draftGeneration.current += 1;
           draftEditVersion.current += 1;
           draftLocallyEdited.current = false;

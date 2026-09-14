@@ -11,6 +11,9 @@ function Fixture() {
   const [available, setAvailable] = useState(true);
   const [renamed, setRenamed] = useState(sessionStorage.getItem('renamed') === 'yes');
   const [sent, setSent] = useState('');
+  const [commandResult, setCommandResult] = useState('');
+  const commandFinish = useRef<() => void>();
+  const commandFail = useRef<() => void>();
   const [request, setRequest] = useState<{id: string; text: string}>();
   const finish = useRef<() => void>();
   const params = new URLSearchParams(location.search);
@@ -30,10 +33,20 @@ function Fixture() {
     <button onClick={()=>{sessionStorage.setItem('renamed','yes');setRenamed(true);}}>Rename and reuse handle</button>
     <button onClick={()=>setRequest({id:crypto.randomUUID(),text:'#Boston '})}>Mention Boston</button>
     <button onClick={()=>finish.current?.()}>Finish send</button>
+    <button onClick={()=>commandFinish.current?.()}>Finish command</button>
+    <button onClick={()=>commandFail.current?.()}>Fail command</button>
     {visible && <Composer
       draftStorageKey="reply-destination-check"
       conversationDraftId={params.has('durable') ? 'diagnostic-chat' : undefined}
       disabled={false} running={false} destinationMode={navigation ? undefined : "project-chat"}
+      commands={params.has('commands') ? [{name:'status',description:'Show status',source:'adapter-implemented',acceptsArguments:false,insertText:'/status',status:'available',invocation:'runtime'}] : undefined}
+      onCommand={command => {
+        setCommandResult(`started:${command.name}`);
+        return new Promise<void>((resolve,reject) => {
+          commandFinish.current = () => { setCommandResult(`completed:${command.name}`); resolve(); };
+          commandFail.current = () => { setCommandResult(`failed:${command.name}`); reject(new Error('Command failed; retry')); };
+        });
+      }}
       onSend={(...args)=>{
         setSent(JSON.stringify({text:args[0],context:args[4]}));
         if(params.has('deferred')) return new Promise<void>(resolve=>{finish.current=resolve;});
@@ -42,6 +55,7 @@ function Fixture() {
       mentionHandles={bindings.map(b=>b.currentHandle)} mentionBindings={bindings} insertTextRequest={request}
     />}
     <pre id="sent">{sent}</pre>
+    <pre id="command-result">{commandResult}</pre>
   </>;
 }
 createRoot(document.getElementById('root')!).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><Fixture/></QueryClientProvider>);
