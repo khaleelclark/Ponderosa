@@ -1510,6 +1510,8 @@ napi_value Unsupported(napi_env env, napi_callback_info) {
 
 #endif
 
+#include "speech-cleanup.inc"
+
 napi_value DarwinProcessBirthMarker(napi_env env, napi_callback_info info) {
 #ifdef __APPLE__
   size_t argc = 1;
@@ -1565,6 +1567,7 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"listSecureDirectory", nullptr, ListSecureDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"writeSecureFileAtomic", nullptr, WriteSecureFileAtomic, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"removeSecureFile", nullptr, RemoveSecureFile, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"cleanupSpeechStorage", nullptr, CleanupSpeechStorage, nullptr, nullptr, nullptr, napi_default, nullptr},
 #ifdef _WIN32
       {"createWindowsJob", nullptr, CreateWindowsJob, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"assignWindowsJob", nullptr, AssignWindowsJob, nullptr, nullptr, nullptr, napi_default, nullptr},
