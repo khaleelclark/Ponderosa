@@ -63,6 +63,13 @@ Join, has suspended correlated work, or needs a Decision. Reporting lines define
 accountability and visible organization; they do not prevent direct contact
 between Agents in the same Project.
 
+## Chats and Project ownership
+
+Every live Agent belongs to one Chat within its Project. Agent creation requires
+that Chat identity. Automations belong to the Project and name an explicit
+destination Chat and target Agent; dependent Automations must be handled before
+deletion or reassignment can proceed.
+
 ## Messages, Requests, and `next_run`
 
 A **message** is authored Communication. It has one immutable scope and a
@@ -173,7 +180,9 @@ to Agent context.
 
 ## Project files, attachments, and artifacts
 
-The current runtime opens provider work in the Project's selected host folder.
+Agents can share the Project's selected host folder or use a separate Git
+working copy. A working-copy identity records its mode, state, and root path.
+Separate copies are retained after Agent or Chat deletion until explicit cleanup.
 For a Project registered from an existing folder, that folder can live outside
 Ponderosa's data directory. When Ponderosa creates a new Project folder, it
 lives under `PONDEROSA_DATA_DIR/workspaces`. In either case, those **Project
@@ -300,35 +309,44 @@ intake can remain queued during the drain.
 Database changes use a verified launch baseline and ordered transactional schema
 extensions. During SQLite open, an existing database outside the supported
 launch baseline, including a damaged legacy schema, fails closed instead of
-being guessed into compatibility. That claim is limited to SQLite schema
-handling: at this branch head, a missing or unrecognized data-directory layout
-marker still enters the destructive V1 cutover before ownership is acquired.
-No fail-closed layout-marker correction is integrated here. A changed provider
+being guessed into compatibility. Data-directory ownership is acquired before
+layout checks. An unsupported marker, or a nonempty directory with no marker,
+fails closed without deleting its contents. Only an empty owned directory gets
+a new layout marker. A changed provider
 tool or prompt contract also invalidates the persisted session contract, so the
 next compatible Run starts with a fresh/reseeded provider session rather than
 resuming stale tools.
 
 See [Deployment](../deploy/README.md) for the drain and recovery procedure.
 
+## Dictation and read-aloud
+
+Dictation inserts recognized speech into the message composer; it is separate
+from sending the message. Read-aloud plays message text through browser/system
+speech or optional local Kokoro synthesis on the Ponderosa host. Local voices
+require explicit installation in Settings; playback never installs them.
+Willow and Cedar use US English; Hazel uses British English. Generated audio is
+an ephemeral cache and is not saved into Project or message history.
+
+Local Kokoro hosting is qualified for the private Pine/Linux deployment.
+Windows/macOS native hosting and physical mobile audio qualification remain
+separate work. There is no continuous, phone-like Agent conversation mode.
+
 ## Current limits and proposed Next behavior
 
 The following are product directions, not contracts implemented by the current
 repository state:
 
-- Runs currently share the selected Project host folder. There is no durable
-  working-copy mode or opt-in Separate Git copy, and there is no routing of
-  provider cwd, imports, review, or provenance through such an identity.
 - The current PWA has server-persisted drafts but no dedicated durable mobile
   outgoing-message outbox. Do not assume an offline send will recover after a
   page or network failure.
 - Browser push does not yet guarantee that every notification action reopens
   the exact in-app subview across clients.
-- There is no client voice dictation or read-aloud contract in the current UI.
-  No raw-audio persistence or Agent voice capability exists.
+- Continuous voice conversation, automatic turn-taking, and conversational
+  interruption are not implemented by dictation and message read-aloud.
 - Large provider-executor checkpointing and full session reconstruction remain
   outside the current design.
 
-Separate working copies, a durable mobile outbox, exact notification routing,
-and optional client-side voice may be added as Ponderosa Next slices. Until the
-corresponding contracts and implementations land, current shared-folder,
-text-first, online-client behavior remains authoritative.
+A durable mobile outbox, exact notification routing, and continuous voice
+conversation remain separate product directions. The current message and
+scheduler contracts remain authoritative for any future voice client.

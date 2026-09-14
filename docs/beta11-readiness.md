@@ -40,13 +40,32 @@ On Pine/Linux with Node 24.16.0 and pnpm 11.10.0, a fresh dedicated worktree at
 native-host compilation, and production builds. This evidence does not qualify
 Windows/macOS installers or physical mobile audio behavior.
 
+## Upgrade defect found during live qualification
+
+The first dev startup failed before accepting requests because historical lookup
+hydrated a deleted, pre-Chat-ownership Agent as a current Agent DTO. The exact
+failure was `live Agent ... has no owner Chat`. The schema-only rehearsal passed
+and preserved all 67 Projects, 79 Chats, and 470 Agent rows, so row counts and
+SQLite integrity alone were insufficient qualification. Dev was restored from
+the coherent pre-upgrade snapshot; the failed state remains preserved separately.
+
+The fix makes historical DTO lookup return unavailable for deleted Agents that
+have no owner Chat. Existing authored identity remains available to history's
+fallback presentation. It does not assign synthetic Chats, alter tombstones,
+or relax the missing-owner failure for a live Agent. Modern deleted Agents with
+an owner Chat retain their existing DTO behavior. A regression check fails on
+the previous release and passes with this fix.
+
+Future upgrade rehearsals must exercise historical Agent/message reads as well
+as store/schema open before switching the service.
+
+The system-model documentation now describes integrated Chat ownership,
+working copies, voice features, and fail-closed data-layout handling.
+
 ## Remaining release gates
 
 - Independently review and integrate PR #503's interrupted local-voice recovery
   fix, then run its native cleanup/crash checks and the full verification gate.
-- Reconcile `docs/system-model.md` with integrated Chat ownership, working copies,
-  voice features, and fail-closed data-layout handling. Its current limits section
-  contains obsolete claims; do not use it as a release qualification ledger.
 - Verify current dev data upgrade, live desktop/mobile interaction, provider Runs,
   Stop/retry, attachments, dictation, browser speech, and optional local speech.
 - Investigate the existing experimental readiness report of one quarantined
