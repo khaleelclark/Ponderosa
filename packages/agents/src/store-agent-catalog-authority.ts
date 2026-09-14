@@ -677,6 +677,9 @@ export class AgentCatalogAuthority {
 
   rowToAgentDto(id: string): AgentDto | undefined {
     const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
+    // Pre-Chat-ownership tombstones cannot form a current Agent DTO. History
+    // resolves their immutable authored identity without inventing an owner Chat.
+    if (row?.deletedAt && !row.conversationId) return undefined;
     return row ? this.agentRowToDto(row) : undefined;
   }
 
