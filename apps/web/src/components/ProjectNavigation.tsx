@@ -40,9 +40,9 @@ import {
   type ReactNode,
 } from "react";
 import type { Route } from "../routing";
+import type { ProjectSidebarSection } from "../routeRegistry";
 import type { UnreadNotificationProjection } from "../workspaceNavigation";
 import { OperatorAvatar } from "./OperatorAvatar";
-import type { ProjectSidebarSection } from "./useWorkspaceSidebarState";
 import {
   SIDEBAR_RAIL_WIDTH,
   railSurface,
@@ -117,6 +117,7 @@ function ProjectRailButton({
           width: 48,
           minWidth: 48,
           height: 48,
+          flexShrink: 0,
           borderRadius: current || expanded ? 1.5 : 2,
           bgcolor: current ? "primary.main" : expanded ? "action.selected" : color,
           outline: expanded && !current ? "2px solid" : "none",
@@ -165,8 +166,16 @@ function ProjectRailButton({
           invisible={!unread?.totalCount}
           slotProps={{ badge: { "aria-hidden": true } }}
           sx={{
+            width: "100%",
+            height: "100%",
+            alignItems: "center",
+            justifyContent: "center",
             "& .MuiBadge-badge": {
-              border: `3px solid ${railSurface}`,
+              top: 4,
+              right: -4,
+              transform: "translateY(-50%)",
+              "&.MuiBadge-invisible": { transform: "translateY(-50%) scale(0)" },
+              border: `1px solid ${railSurface}`,
               fontWeight: 850,
               color: "#fff",
             },
@@ -513,8 +522,8 @@ export function ProjectSidebarHeader({
     });
   };
   return (
-    <Box sx={{ pt: 1.75, pb: 1, pr: drawer ? 6 : 0 }}>
-      <Stack direction="row" spacing={1.25} sx={{ alignItems: "center", px: 2 }}>
+    <Box sx={{ pt: 1.75, pb: 1 }}>
+      <Stack direction="row" spacing={drawer ? 0.5 : 1.25} sx={{ alignItems: "center", px: drawer ? 1 : 2 }}>
         <Tooltip title="Open Project Overview" placement="bottom-start">
           <ButtonBase
             aria-label={`Open ${project.label} Project Overview`}
@@ -559,8 +568,8 @@ export function ProjectSidebarHeader({
               {projectInitials(project.label)}
             </Box>
             <Box sx={{ minWidth: 0, flex: 1 }}>
-              <Typography fontWeight={800} noWrap>{project.label}</Typography>
-              <Typography variant="caption" color="text.secondary" noWrap>
+              <Typography fontWeight={800} noWrap={!drawer} sx={drawer ? { overflowWrap: "anywhere", lineHeight: 1.3, fontSize: { xs: 14, sm: "0.875rem" }, fontWeight: { xs: 650, sm: 800 } } : undefined}>{project.label}</Typography>
+              <Typography variant="caption" color="text.secondary" noWrap={!drawer} sx={drawer ? { fontSize: { xs: 12, sm: "0.75rem" } } : undefined}>
                 {runningCount == null ? "Checking activity" : `${runningCount} active`} · {unreadCount} unread
               </Typography>
             </Box>
@@ -585,7 +594,7 @@ export function ProjectSidebarHeader({
         aria-label={`${project.label} navigation`}
         sx={{
           display: "grid",
-          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+          gridTemplateColumns: drawer ? { xs: "minmax(0, 1fr)", sm: "repeat(3, minmax(0, 1fr))" } : "repeat(3, minmax(0, 1fr))",
           gap: 0.5,
           mx: 1.25,
           mt: 1.5,
@@ -623,13 +632,14 @@ export function ProjectSidebarHeader({
               }}
               sx={{
                 minWidth: 0,
-                minHeight: 52,
+                minHeight: drawer ? { xs: 44, sm: 52 } : 52,
                 px: 0.5,
                 py: 0.6,
                 borderRadius: 1.1,
                 display: "flex",
-                flexDirection: "column",
-                gap: 0.25,
+                flexDirection: drawer ? { xs: "row", sm: "column" } : "column",
+                justifyContent: drawer ? { xs: "flex-start", sm: "center" } : "center",
+                gap: drawer ? { xs: 1, sm: 0.25 } : 0.25,
                 color: section === mode.id ? "primary.main" : "text.secondary",
                 bgcolor: section === mode.id ? "rgba(124, 200, 145, .10)" : "transparent",
                 "&:hover": { bgcolor: section === mode.id ? "rgba(124, 200, 145, .14)" : "action.hover", color: "text.primary" },
@@ -640,16 +650,16 @@ export function ProjectSidebarHeader({
                 component="span"
                 sx={{
                   maxWidth: "100%",
-                  fontSize: mode.id === "triggers" ? 8.75 : 9.5,
+                  fontSize: drawer ? { xs: 14, sm: 11 } : mode.id === "triggers" ? 8.75 : 9.5,
                   letterSpacing: mode.id === "triggers" ? "-.025em" : undefined,
-                  fontWeight: 700,
+                  fontWeight: drawer ? { xs: 600, sm: 700 } : 700,
                 }}
                 noWrap
               >
                 {mode.label}
               </Typography>
               {count == null ? null : (
-                <Typography component="span" sx={{ fontSize: 9, color: "text.disabled" }}>
+                <Typography component="span" sx={{ fontSize: drawer ? { xs: 12, sm: 9 } : 9, color: "text.disabled" }}>
                   {count}
                 </Typography>
               )}

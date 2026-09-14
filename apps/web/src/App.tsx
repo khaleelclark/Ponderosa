@@ -1,3 +1,4 @@
+import { stopHandedOffSpeech, stopSpeech } from "./components/speech/speechCoordinator";
 import {
   Box,
   useMediaQuery,
@@ -82,6 +83,9 @@ import {
   activeNotificationViewForRoute,
 } from "./notificationActiveView";
 import { PrimaryHeaderActionsProvider } from "./components/PrimaryHeaderActions";
+import { useMutationNotification } from "./components/MutationNotifications";
+import { WorkspacePreferencesWriter } from "./workspacePreferencesWriter";
+import { retainedDataFailure } from "./retainedData";
 
 const PUSH_CLEANUP_RETRY_INITIAL_MS = 1_000;
 const PUSH_CLEANUP_RETRY_MAX_MS = 30_000;
@@ -95,6 +99,27 @@ export default function App({
 }): JSX.Element {
   useAppViewport();
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
+  const preferencesWriter = useRef<WorkspacePreferencesWriter>();
+  preferencesWriter.current ??= new WorkspacePreferencesWriter({
+    read: () => queryClient.getQueryData(queryKeys.workspacePreferences.all),
+    publish: value => queryClient.setQueryData(queryKeys.workspacePreferences.all, value),
+    write: patch => api.updateWorkspacePreferences(patch),
+    refresh: () => api.getWorkspacePreferences(),
+    onSuccess: (previous, value, patch) => {
+      for (const kind of changedWorkspaceDirectoryKinds(previous, value)) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind(kind) });
+      }
+      if (patch.starredResourceIds !== undefined || patch.starredProjectIds !== undefined) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceResourceRecency.all });
+      }
+      if (patch.claudeModelOptions !== undefined) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.engines.all });
+        void queryClient.invalidateQueries({ queryKey: ["engine-models"] });
+      }
+    },
+    onError: () => notify({ key: "workspace-preferences", message: "Workspace settings could not be saved.", severity: "error" }),
+  });
   const { route, navigate } = useRoute();
   const [pageVisible, setPageVisible] = useState(
     () => document.visibilityState === "visible",
@@ -134,6 +159,7 @@ export default function App({
   };
   const workspaceConnection = useWorkspaceStream({
     onProjectDeleted: reconcileDeletedProject,
+    projectPreferences: value => preferencesWriter.current!.projectCanonical(value),
   });
   const [sidebarPresentation, setSidebarPresentation] = useState(() => {
     try {
@@ -155,7 +181,7 @@ export default function App({
     retry: false,
   });
   const enginesQuery = useEngines();
-  const preferencesQuery = useWorkspacePreferences();
+  const preferencesQuery = useWorkspacePreferences(preferencesWriter.current);
   const notificationsQuery = useNotifications();
   const triggerPushCleanup = useRef<() => void>(() => undefined);
   const projectOrder = preferencesQuery.data?.projectOrder ?? [];
@@ -439,7 +465,7 @@ export default function App({
     setSidebarConversationAction({ kind, conversation });
   };
 
-  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], triggerSort: "last_used" as const, triggerOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { directResponses: true, broadcasts: true }, fontFamily: "inter" as const, providerAvailability: {}, defaultUsageProvider: undefined as string | undefined, engineDefaults: {}, claudeModelOptions: [], globalInstructions: "", maxConcurrentAgentRuns: 8, contextRolloverEnabled: false, contextRolloverTokens: 150_000, contextRolloverWindowFraction: 0.7, onboardingCompletedAt: null, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
+  const preferences = preferencesQuery.data ?? { revision: 0, projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], triggerSort: "last_used" as const, triggerOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { directResponses: true, broadcasts: true }, fontFamily: "inter" as const, providerAvailability: {}, defaultUsageProvider: undefined as string | undefined, engineDefaults: {}, claudeModelOptions: [], globalInstructions: "", maxConcurrentAgentRuns: 8, contextRolloverEnabled: false, contextRolloverTokens: 150_000, contextRolloverWindowFraction: 0.7, onboardingCompletedAt: null, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
   const defaultUsageProvider = engines.some(engine =>
     engine.id === preferences.defaultUsageProvider &&
     engine.enabled !== false &&
@@ -450,25 +476,10 @@ export default function App({
         engine.enabled !== false && Boolean(engine.providerUsageCommand)
       )?.id;
   const savePreferences = (patch: Partial<typeof preferences>) => {
-    queryClient.setQueryData(queryKeys.workspacePreferences.all, { ...preferences, ...patch });
-    void api.updateWorkspacePreferences(patch).then((value) => {
-      queryClient.setQueryData(queryKeys.workspacePreferences.all, value);
-      for (const kind of changedWorkspaceDirectoryKinds(preferences, value)) {
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.workspaceDirectory.kind(kind),
-        });
-      }
-      if (patch.starredResourceIds !== undefined || patch.starredProjectIds !== undefined) {
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.workspaceResourceRecency.all,
-        });
-      }
-      if (patch.claudeModelOptions !== undefined) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.engines.all });
-        void queryClient.invalidateQueries({ queryKey: ["engine-models"] });
-      }
-    });
+    preferencesWriter.current!.enqueue(patch);
   };
+  const savePreferencesAndWait = (patch: Partial<typeof preferences>) =>
+    preferencesWriter.current!.enqueueAndWait(patch);
   const closeProjectCreator = () => {
     setProjectDialogOpen(false);
     setOnboardingProjectCreation(false);
@@ -536,9 +547,24 @@ export default function App({
     }
   };
   const navigateWorkspace = (next: Route) => {
+    stopHandedOffSpeech();
     recordWorkspaceRouteUse(next);
     navigate(next);
   };
+  useEffect(() => {
+    const openVoices = (event: Event) => {
+      if (!(event as CustomEvent<{ preservePlayback?: boolean }>).detail?.preservePlayback) stopSpeech();
+      navigate({ kind: "settings", section: "general" });
+      requestAnimationFrame(() => document.getElementById("local-voices")?.scrollIntoView({ block: "start" }));
+    };
+    const hidden = () => { if (document.visibilityState !== "visible") stopSpeech(); };
+    window.addEventListener("ponderosa:voice-settings", openVoices);
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      window.removeEventListener("ponderosa:voice-settings", openVoices);
+      document.removeEventListener("visibilitychange", hidden);
+    };
+  }, [navigate]);
   const openCreationForm = (
     kind: "project" | "chat" | "agent" | "trigger",
     context?: {
@@ -749,19 +775,48 @@ export default function App({
                     projectsLoaded={projectsQuery.isSuccess}
                     engines={engines}
                     notifications={presentedNotifications}
+                    notificationCounts={notificationsQuery.data}
                     preferences={preferences}
+                    preferencesLoaded={preferencesQuery.data !== undefined}
                     colorMode={colorMode}
                     projectBrowserRequest={projectBrowserRequest}
                     loadError={
-                      enginesQuery.isError ||
-                      (!isProjectRoute(route) && projectsQuery.isError)
+                      retainedDataFailure(
+                        enginesQuery.data !== undefined,
+                        enginesQuery.isError,
+                      ) === "initial" ||
+                      (!isProjectRoute(route) && retainedDataFailure(
+                        projectsQuery.data !== undefined,
+                        projectsQuery.isError,
+                      ) === "initial") ||
+                      ((route.kind === "profile" || route.kind === "settings") &&
+                        retainedDataFailure(
+                          preferencesQuery.data !== undefined,
+                          preferencesQuery.isError,
+                        ) === "initial")
+                    }
+                    refreshError={
+                      retainedDataFailure(
+                        enginesQuery.data !== undefined,
+                        enginesQuery.isError,
+                      ) === "refresh" ||
+                      retainedDataFailure(
+                        projectsQuery.data !== undefined,
+                        projectsQuery.isError,
+                      ) === "refresh" ||
+                      retainedDataFailure(
+                        preferencesQuery.data !== undefined,
+                        preferencesQuery.isError,
+                      ) === "refresh"
                     }
                     onRetryLoad={() => {
                       void projectsQuery.refetch();
                       void enginesQuery.refetch();
+                      void preferencesQuery.refetch();
                     }}
                     onNavigate={navigateWorkspace}
                     onPreferences={savePreferences}
+                    onSavePreferences={savePreferencesAndWait}
                     onCreate={openCreationForm}
                     onCancelCreate={cancelCreationWorkspace}
                     onOpenInbox={openNotifications}

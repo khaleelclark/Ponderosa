@@ -21,7 +21,11 @@ export function ChatLiveBanner({ children }: { children?: ReactNode }): JSX.Elem
         maxWidth: "min(1180px, calc(100% - 24px))",
         mx: "auto",
         borderRadius: 999,
-        bgcolor: (theme) => alpha(theme.palette.info.main, theme.palette.mode === "dark" ? 0.08 : 0.06),
+        bgcolor: "background.paper",
+        backgroundImage: (theme) => {
+          const tint = alpha(theme.palette.info.main, theme.palette.mode === "dark" ? 0.08 : 0.06);
+          return `linear-gradient(${tint}, ${tint})`;
+        },
       }}
     >
       <InfoOutlinedIcon color="info" sx={{ fontSize: 16, flex: "0 0 auto" }} />

@@ -1,4 +1,4 @@
-import { Box, ButtonBase, Chip, Stack } from "@mui/material";
+import { Alert, Button, ButtonBase, Chip } from "@mui/material";
 import { PONDEROSA_MESSAGE_TOOL } from "@ponderosa/core";
 import type {
   AgentActivityDto,
@@ -11,7 +11,7 @@ import type {
 import { Fragment, memo, useMemo } from "react";
 import { CopyMessageButton } from "../CopyMessageButton";
 import { MessageDeliveryStatus } from "../MessageDeliveryStatus";
-import { RequestLifecycleCard } from "../RequestLifecycleCard";
+import { MessageRequestAction } from "../MessageRequestAction";
 import { buildActivityStream } from "../activity/activityStream";
 import type { ActivityStreamEntry } from "../activity/activityStream";
 import { AgentWorkReceipt } from "./AgentWorkReceipt";
@@ -120,6 +120,7 @@ function ChatPaneComponent({
   hasOlder = false,
   loadingOlder = false,
   onLoadOlder,
+  historyError,
 }: {
   messages: MessageDto[];
   agentName?: string;
@@ -146,6 +147,7 @@ function ChatPaneComponent({
   hasOlder?: boolean;
   loadingOlder?: boolean;
   onLoadOlder?(): void;
+  historyError?: string;
 }): JSX.Element {
   const agentChat = useMemo(
     () => projectAgentChat(messages, runs),
@@ -328,6 +330,15 @@ function ChatPaneComponent({
         loading: loadingOlder,
         onLoadEarlier: () => onLoadOlder?.(),
       }}
+      beforeMessages={historyError ? (
+        <Alert
+          severity="error"
+          action={<Button color="inherit" size="small" onClick={() => onLoadOlder?.()}>Retry</Button>}
+          sx={{ m: 1.5 }}
+        >
+          {historyError}
+        </Alert>
+      ) : null}
       empty="Send a message to this agent to start the conversation."
     >
       {timeline.map(item => {
@@ -480,30 +491,6 @@ function ChatPaneComponent({
                   {message.document ? (
                     <CommunicationDocumentCard document={message.document} />
                   ) : null}
-                  {projectId && message.coordinationRequests?.length ? (
-                    <Box sx={{ mt: 1 }}>
-                      <Stack spacing={0.75}>
-                        {message.coordinationRequests.map(request => (
-                          <RequestLifecycleCard
-                            key={request.recordId}
-                            projectId={projectId}
-                            conversationId={request.conversationId ?? message.conversationId}
-                            requestId={request.recordId}
-                            state={request.state}
-                            requesterAgentId={request.requesterAgentId}
-                            recipientAgentId={request.recipientAgentId}
-                            requestText={request.preview}
-                            hasUpdates={request.hasUpdates}
-                            hasResult={request.hasResult}
-                            updatedAt={request.updatedAt}
-                            agentTitle={agentId => agentId
-                              ? agentNameForId?.(agentId) ?? "Deleted Agent"
-                              : "You"}
-                          />
-                        ))}
-                      </Stack>
-                    </Box>
-                  ) : null}
                 </>
               ),
               attachments: message.attachments,
@@ -523,7 +510,13 @@ function ChatPaneComponent({
                 ) : undefined,
               actions: (
                 <>
-                  <CopyMessageButton text={message.text} />
+                  <CopyMessageButton text={visibleAgentMessageText(message)} />
+                  <MessageRequestAction
+                    projectId={projectId}
+                    conversationId={message.conversationId}
+                    requests={message.coordinationRequests}
+                    agentTitle={agentId => agentId ? agentNameForId?.(agentId) ?? "Deleted Agent" : "You"}
+                  />
                   {message.role === "assistant" || message.authorAgentId ? (
                     <ReadAloudControls text={readAloudText} />
                   ) : null}

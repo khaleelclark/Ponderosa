@@ -83,6 +83,7 @@ export interface AgentStoreComponentPorts {
   authorizeAgentManagementPlan(
     authorization: AgentManagementAuthorization,
     targetAgentIds: readonly string[],
+    consumeApproval?: boolean,
   ): void;
   communicationIndex(projectId: string): ReturnType<AgentCommunicationJournalAuthority["communicationIndex"]>;
   communicationRevisionIndex(projectId: string): ReturnType<AgentCommunicationJournalAuthority["communicationRevisionIndex"]>;

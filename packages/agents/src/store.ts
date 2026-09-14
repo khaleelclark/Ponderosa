@@ -5,6 +5,7 @@
 // are authoritative SQLite state. Exposes NO HTTP (SPEC §7).
 
 import type Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import type {
   ArtifactDto,
   AgentActivityDto,
@@ -75,7 +76,10 @@ import type { AgentArtifactCatalog } from "./store-artifact-catalog.js";
 import type { AgentEventSessionAuthority } from "./store-event-session-authority.js";
 import type { AgentConversationProjectionReadModel } from "./store-conversation-projection-read-model.js";
 import type { AgentCommunicationProjectionLedger } from "./store-communication-projection-ledger.js";
-import type { AgentWorkspaceCatalogAuthority } from "./store-workspace-catalog-authority.js";
+import type {
+  AgentWorkspaceCatalogAuthority,
+  WorkspaceCreationIdentity,
+} from "./store-workspace-catalog-authority.js";
 import type { AgentCatalogAuthority } from "./store-agent-catalog-authority.js";
 import type { AgentCommunicationJournalAuthority } from "./store-communication-journal-authority.js";
 import type { AgentManagementAuthority } from "./store-agent-management-authority.js";
@@ -105,8 +109,10 @@ import type {
   ConversationDeliveryIntent,
   MessageDispatchRecord,
   AgentDeletionReceipt,
+  ConversationDeletionReceipt,
   ProjectDeletionReceipt,
   AgentManagementAuthorization,
+  ManagementPlan,
 } from "./store-types.js";
 export type {
   ContextReadBoundary,
@@ -115,9 +121,50 @@ export type {
   AgentSpawnOrigin,
   ConversationDeliveryIntent,
   AgentDeletionReceipt,
+  ConversationDeletionReceipt,
   ProjectDeletionReceipt,
   AgentManagementAuthorization,
 } from "./store-types.js";
+
+export type AgentCreationOperationStatus =
+  | "preparing"
+  | "canonical_committed"
+  | "completed"
+  | "rolling_back"
+  | "rolled_back";
+
+export interface AgentCreationArtifactIdentity {
+  id: string;
+  byteLength: number;
+  sha256: string;
+  generated?: {
+    agentId: string;
+    originAgentId: string;
+    executionId?: string;
+    path: string;
+    sourcePath?: string;
+    summary: string;
+    createdAt: string;
+    mediaType: string;
+  };
+}
+
+export interface AgentCreationOperation {
+  id: string;
+  projectId: string;
+  actorScope: string;
+  kind: "human" | "managed" | "import";
+  idempotencyKey: string;
+  payloadHash: string;
+  status: AgentCreationOperationStatus;
+  agentIds: string[];
+  artifactIds: string[];
+  artifactIdentities: AgentCreationArtifactIdentity[];
+  communicationEventId?: string;
+  result?: unknown;
+  lastError?: string;
+}
+
 export class AgentStore extends AgentEventSessionFacade {
   private readonly phaseReadModel!: AgentPhaseReadModel;
   private readonly db: Db;
@@ -154,7 +201,8 @@ export class AgentStore extends AgentEventSessionFacade {
     recoveryMs: number;
     totalMs: number;
     projectCount: number;
-  } = { mode: "recovery", openMs: 0, componentsMs: 0, recoveryMs: 0, totalMs: 0, projectCount: 0 };
+    recoveryIssues: ReadonlyArray<{ projectId: string; detail: string }>;
+  } = { mode: "recovery", openMs: 0, componentsMs: 0, recoveryMs: 0, totalMs: 0, projectCount: 0, recoveryIssues: [] };
 
   constructor(dataDir: string) {
     super();
@@ -182,8 +230,8 @@ export class AgentStore extends AgentEventSessionFacade {
         readEvents: agentId => this.readEvents(agentId),
         activeEngineOf: agentId => this.activeEngineOf(agentId),
         projectIdOf: agentId => this.projectIdOf(agentId),
-        authorizeAgentManagementPlan: (authorization, targetAgentIds) =>
-          this.authorizeAgentManagementPlan(authorization, targetAgentIds),
+        authorizeAgentManagementPlan: (authorization, targetAgentIds, consumeApproval) =>
+          this.authorizeAgentManagementPlan(authorization, targetAgentIds, consumeApproval),
         communicationIndex: projectId => this.communicationIndex(projectId),
         communicationRevisionIndex: projectId => this.communicationRevisionIndex(projectId),
         messageDispatches: projectId => this.messageDispatches(projectId),
@@ -217,6 +265,8 @@ export class AgentStore extends AgentEventSessionFacade {
       const components = createAgentStoreComponents(dataDir, opened, ports);
       Object.assign(this, components);
       const componentsCreatedAt = performance.now();
+      this.workspaceCatalog.recoverCreationDirectories();
+      this.agentCatalog.recoverCreationDirectories();
       // Canonical files are written before their SQLite projections. Rebuild
       // transactionally on every startup so a crash or torn append cannot leave
       // a partially repaired projection visible to ordinary requests.
@@ -238,6 +288,7 @@ export class AgentStore extends AgentEventSessionFacade {
         recoveryMs: Math.round((completedAt - componentsCreatedAt) * 10) / 10,
         totalMs: Math.round((completedAt - startupStartedAt) * 10) / 10,
         projectCount: this.listProjects().length,
+        recoveryIssues: this.projectionRebuilder.listRecoveryIssues(),
       };
     } catch (error) {
       releaseDataDirectoryOwnership(this.ownership);
@@ -697,25 +748,180 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.client;
   }
 
+  beginAgentCreationOperation(input: {
+    projectId: string;
+    actorScope: string;
+    kind: AgentCreationOperation["kind"];
+    idempotencyKey: string;
+    payloadHash: string;
+  }): { operation: AgentCreationOperation; replayed: boolean } {
+    const id = this.agentCreationOperationId(input);
+    const existing = this.getAgentCreationOperation(id);
+    if (existing) {
+      if (existing.payloadHash !== input.payloadHash) {
+        throw new Error("Agent creation idempotency key was reused with different input");
+      }
+      if (existing.status === "rolled_back") {
+        this.client.transaction(() => {
+          this.client.prepare("DELETE FROM agent_creation_operation_members WHERE operation_id = ?").run(id);
+          this.client.prepare(`
+            UPDATE agent_creation_operations
+            SET status = 'preparing', communication_event_id = NULL,
+              artifact_ids_json = '[]', artifact_identities_json = '[]', last_error = NULL,
+              updated_at = ? WHERE id = ?
+          `).run(new Date().toISOString(), id);
+        })();
+        return { operation: this.getAgentCreationOperation(id)!, replayed: false };
+      }
+      return { operation: existing, replayed: true };
+    }
+    const now = new Date().toISOString();
+    try {
+      this.client.prepare(`
+        INSERT INTO agent_creation_operations
+          (id, project_id, actor_scope, kind, idempotency_key, payload_hash, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'preparing', ?, ?)
+      `).run(id, input.projectId, input.actorScope, input.kind, input.idempotencyKey, input.payloadHash, now, now);
+    } catch (error) {
+      const raced = this.getAgentCreationOperation(id);
+      if (!raced || raced.payloadHash !== input.payloadHash) throw error;
+      return { operation: raced, replayed: true };
+    }
+    return { operation: this.getAgentCreationOperation(id)!, replayed: false };
+  }
+
+  findAgentCreationOperation(input: {
+    projectId: string;
+    actorScope: string;
+    kind: AgentCreationOperation["kind"];
+    idempotencyKey: string;
+  }): AgentCreationOperation | undefined {
+    return this.getAgentCreationOperation(this.agentCreationOperationId(input));
+  }
+
+  private agentCreationOperationId(input: {
+    projectId: string;
+    actorScope: string;
+    kind: AgentCreationOperation["kind"];
+    idempotencyKey: string;
+  }): string {
+    return `agent-create-${createHash("sha256").update(
+      `${input.projectId}\0${input.actorScope}\0${input.kind}\0${input.idempotencyKey}`,
+    ).digest("hex")}`;
+  }
+
+  getAgentCreationOperation(id: string): AgentCreationOperation | undefined {
+    const row = this.client.prepare(`
+      SELECT id, project_id, actor_scope, kind, idempotency_key, payload_hash, status,
+        communication_event_id, artifact_ids_json, artifact_identities_json, result_json, last_error
+      FROM agent_creation_operations WHERE id = ?
+    `).get(id) as {
+      id: string; project_id: string; actor_scope: string; kind: AgentCreationOperation["kind"];
+      idempotency_key: string; payload_hash: string; status: AgentCreationOperationStatus;
+      communication_event_id: string | null; artifact_ids_json: string; artifact_identities_json: string;
+      result_json: string | null; last_error: string | null;
+    } | undefined;
+    if (!row) return undefined;
+    const members = this.client.prepare(`
+      SELECT agent_id FROM agent_creation_operation_members WHERE operation_id = ? ORDER BY position
+    `).all(id) as Array<{ agent_id: string }>;
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      actorScope: row.actor_scope,
+      kind: row.kind,
+      idempotencyKey: row.idempotency_key,
+      payloadHash: row.payload_hash,
+      status: row.status,
+      agentIds: members.map((member) => member.agent_id),
+      artifactIds: JSON.parse(row.artifact_ids_json) as string[],
+      artifactIdentities: JSON.parse(row.artifact_identities_json) as AgentCreationArtifactIdentity[],
+      ...(row.communication_event_id ? { communicationEventId: row.communication_event_id } : {}),
+      ...(row.result_json ? { result: JSON.parse(row.result_json) as unknown } : {}),
+      ...(row.last_error ? { lastError: row.last_error } : {}),
+    };
+  }
+
+  listRecoverableAgentCreationOperations(): AgentCreationOperation[] {
+    return (this.client.prepare(`
+      SELECT id FROM agent_creation_operations
+      WHERE status IN ('preparing', 'canonical_committed', 'rolling_back')
+      ORDER BY created_at, id
+    `).all() as Array<{ id: string }>).flatMap(({ id }) => {
+      const operation = this.getAgentCreationOperation(id);
+      return operation ? [operation] : [];
+    });
+  }
+
+  addAgentCreationOperationMember(operationId: string, agentId: string, position: number): void {
+    this.client.prepare(`
+      INSERT INTO agent_creation_operation_members (operation_id, agent_id, position)
+      VALUES (?, ?, ?)
+      ON CONFLICT(operation_id, agent_id) DO UPDATE SET position = excluded.position
+    `).run(operationId, agentId, position);
+  }
+
+  updateAgentCreationOperation(
+    id: string,
+    patch: {
+      status?: AgentCreationOperationStatus;
+      communicationEventId?: string | null;
+      artifactIds?: readonly string[];
+      artifactIdentities?: readonly AgentCreationArtifactIdentity[];
+      result?: unknown;
+      lastError?: string | null;
+    },
+  ): AgentCreationOperation {
+    const current = this.getAgentCreationOperation(id);
+    if (!current) throw new Error("Agent creation operation not found");
+    const nextStatus = patch.status ?? current.status;
+    this.client.prepare(`
+      UPDATE agent_creation_operations
+      SET status = ?, communication_event_id = ?, artifact_ids_json = ?, artifact_identities_json = ?,
+        result_json = ?, last_error = ?, updated_at = ?
+      WHERE id = ?
+    `).run(
+      nextStatus,
+      patch.communicationEventId === undefined ? current.communicationEventId ?? null : patch.communicationEventId,
+      JSON.stringify(patch.artifactIds ?? current.artifactIds),
+      JSON.stringify(patch.artifactIdentities ?? current.artifactIdentities),
+      patch.result === undefined ? current.result === undefined ? null : JSON.stringify(current.result) : JSON.stringify(patch.result),
+      patch.lastError === undefined ? current.lastError ?? null : patch.lastError,
+      new Date().toISOString(),
+      id,
+    );
+    return this.getAgentCreationOperation(id)!;
+  }
+
   // ─── Projects ──────────────────────────────────────────────────────────────
 
-  createProject(input: Omit<CreateProjectRequest, "defaultEngine"> & { hostPath: string; defaultEngine?: CreateProjectRequest["defaultEngine"] }): ProjectDto {
-    return this.workspaceCatalog.createProject(input);
+  createProject(
+    input: Omit<CreateProjectRequest, "defaultEngine"> & {
+      hostPath: string;
+      defaultEngine?: CreateProjectRequest["defaultEngine"];
+    },
+    identity?: WorkspaceCreationIdentity,
+  ): ProjectDto {
+    return this.workspaceCatalog.createProject(input, identity);
+  }
+
+  getProjectCreation(identity: WorkspaceCreationIdentity): ProjectDto | undefined {
+    return this.workspaceCatalog.getProjectCreation(identity);
   }
 
   updateProject(id: string, input: UpdateProjectRequest): ProjectDto | undefined {
     return this.workspaceCatalog.updateProject(id, input);
   }
 
-  markProjectDeletionPending(projectId: string, now = new Date().toISOString()): void {
-    this.projectDeletion.markProjectDeletionPending(projectId, now);
+  markProjectDeletionPending(projectId: string, now = new Date().toISOString()): string[] {
+    return this.projectDeletion.markProjectDeletionPending(projectId, now);
   }
 
   recordProjectDeletionCleanupError(projectId: string, error: string): void {
     this.projectDeletion.recordProjectDeletionCleanupError(projectId, error);
   }
 
-  listPendingProjectDeletions(): Array<{ projectId: string; createdAt: string; lastError?: string }> {
+  listPendingProjectDeletions(): Array<{ projectId: string; draftSurfaceIds: string[]; createdAt: string; lastError?: string }> {
     return this.projectDeletion.listPendingProjectDeletions();
   }
 
@@ -733,6 +939,14 @@ export class AgentStore extends AgentEventSessionFacade {
 
   recordProjectDeletionReceiptCleanupError(projectId: string, error: string): void {
     this.projectDeletion.recordProjectDeletionReceiptCleanupError(projectId, error);
+  }
+
+  markProjectDeletionDraftCleanupComplete(projectId: string): void {
+    this.projectDeletion.markProjectDeletionDraftCleanupComplete(projectId);
+  }
+
+  markProjectDeletionAssetAuthorityCleanupComplete(projectId: string): void {
+    this.projectDeletion.markProjectDeletionAssetAuthorityCleanupComplete(projectId);
   }
 
   finishProjectDeletionStorageCleanup(
@@ -758,8 +972,16 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.workspaceCatalog.getAgentPreset(id);
   }
 
-  createAgentPreset(projectId: string, input: CreateAgentPresetRequest): AgentPresetDto {
-    return this.workspaceCatalog.createAgentPreset(projectId, input);
+  getAgentPresetCreation(projectId: string, identity: WorkspaceCreationIdentity): AgentPresetDto | undefined {
+    return this.workspaceCatalog.getAgentPresetCreation(projectId, identity);
+  }
+
+  createAgentPreset(
+    projectId: string,
+    input: CreateAgentPresetRequest,
+    identity?: WorkspaceCreationIdentity,
+  ): AgentPresetDto {
+    return this.workspaceCatalog.createAgentPreset(projectId, input, identity);
   }
 
   updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): AgentPresetDto | undefined {
@@ -784,8 +1006,19 @@ export class AgentStore extends AgentEventSessionFacade {
 
   // ─── Conversations ─────────────────────────────────────────────────────────
 
-  createConversation(projectId: string, input: CreateConversationRequest): ConversationDto {
-    return this.workspaceCatalog.createConversation(projectId, input);
+  createConversation(
+    projectId: string,
+    input: CreateConversationRequest,
+    identity?: WorkspaceCreationIdentity,
+  ): ConversationDto {
+    return this.workspaceCatalog.createConversation(projectId, input, identity);
+  }
+
+  getConversationCreation(
+    projectId: string,
+    identity: WorkspaceCreationIdentity,
+  ): ConversationDto | undefined {
+    return this.workspaceCatalog.getConversationCreation(projectId, identity);
   }
 
   listConversations(projectId: string): ConversationDto[] {
@@ -808,11 +1041,42 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.workspaceCatalog.updateConversation(id, patch);
   }
 
-  deleteConversation(
+  getConversationDeletionReceipt(id: string): ConversationDeletionReceipt | undefined {
+    return this.workspaceCatalog.getConversationDeletionReceipt(id);
+  }
+
+  listPendingConversationDeletionReceipts(): ConversationDeletionReceipt[] {
+    return this.workspaceCatalog.listPendingConversationDeletionReceipts();
+  }
+
+  markConversationDeletionPending(id: string): ConversationDeletionReceipt {
+    return this.workspaceCatalog.markConversationDeletionPending(id);
+  }
+
+  recordConversationDeletionCleanupError(id: string, error: string): void {
+    this.workspaceCatalog.recordConversationDeletionCleanupError(id, error);
+  }
+
+  finishConversationDeletionStorageCleanup(
+    receipt: ConversationDeletionReceipt,
+    afterTombstoneRemoval?: (conversationId: string) => void,
+  ): void {
+    this.workspaceCatalog.finishConversationDeletionStorageCleanup(receipt, afterTombstoneRemoval);
+  }
+
+  refreshConversationDeletionProjection(receipt: ConversationDeletionReceipt): void {
+    this.workspaceCatalog.refreshConversationDeletionProjection(receipt);
+  }
+
+  markConversationDeletionServerCleanupComplete(id: string): void {
+    this.workspaceCatalog.markConversationDeletionServerCleanupComplete(id);
+  }
+
+  commitConversationDeletion(
     id: string,
     beforeProjectionDelete?: (conversationId: string) => void,
-  ): boolean {
-    return this.workspaceCatalog.deleteConversation(
+  ): ConversationDeletionReceipt | undefined {
+    return this.workspaceCatalog.commitConversationDeletion(
       id,
       beforeProjectionDelete,
     );
@@ -820,7 +1084,10 @@ export class AgentStore extends AgentEventSessionFacade {
 
   appendConversationMessage(
     conversationId: string,
-    input: CreateConversationMessageRequest & { artifactIds?: string[] },
+    input: CreateConversationMessageRequest & {
+      role?: "user" | "assistant" | "system";
+      artifactIds?: string[];
+    },
     authorAgentId?: string,
     channel: ConversationChannel = "main",
     deliveryIntents?: ConversationDeliveryIntent[],
@@ -908,8 +1175,20 @@ export class AgentStore extends AgentEventSessionFacade {
 
   // ─── Agents ───────────────────────────────────────────────────────────────
 
-  createAgent(projectId: string, input: CreateAgentRequest, origin?: AgentSpawnOrigin): AgentDto {
-    return this.agentCatalog.createAgent(projectId, input, origin);
+  createAgent(
+    projectId: string,
+    input: CreateAgentRequest,
+    origin?: AgentSpawnOrigin,
+    predeterminedId?: string,
+    resolvedPresetSnapshot?: AgentDto["presetSnapshot"] | null,
+  ): AgentDto {
+    return this.agentCatalog.createAgent(
+      projectId,
+      input,
+      origin,
+      predeterminedId,
+      resolvedPresetSnapshot,
+    );
   }
 
   findAgentSpawn(agentId: string, executionId: string, idempotencyKey: string): AgentDto | undefined {
@@ -920,8 +1199,37 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentCatalog.findAgentCreation(projectId, idempotencyKey);
   }
 
-  listAgents(projectId: string): AgentDto[] {
-    return this.agentCatalog.listAgents(projectId);
+  listAgents(
+    projectId: string,
+    options: { includePendingCreation?: boolean } = {},
+  ): AgentDto[] {
+    const agents = this.agentCatalog.listAgents(projectId);
+    if (options.includePendingCreation) return agents;
+    const pending = new Set(this.pendingAgentCreationIds(projectId));
+    return pending.size ? agents.filter((agent) => !pending.has(agent.id)) : agents;
+  }
+
+  pendingAgentCreationIds(projectId?: string): string[] {
+    return (this.client.prepare(`
+      SELECT members.agent_id
+      FROM agent_creation_operation_members AS members
+      JOIN agent_creation_operations AS operations ON operations.id = members.operation_id
+      WHERE operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+        AND (? IS NULL OR operations.project_id = ?)
+      ORDER BY members.agent_id
+    `).all(projectId ?? null, projectId ?? null) as Array<{ agent_id: string }>)
+      .map((row) => row.agent_id);
+  }
+
+  agentCreationPending(agentId: string): boolean {
+    return Boolean(this.client.prepare(`
+      SELECT 1
+      FROM agent_creation_operation_members AS members
+      JOIN agent_creation_operations AS operations ON operations.id = members.operation_id
+      WHERE members.agent_id = ?
+        AND operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+      LIMIT 1
+    `).get(agentId));
   }
 
   listAgentEngineAssignments(): Array<{ id: string; activeEngine: string }> {
@@ -934,6 +1242,10 @@ export class AgentStore extends AgentEventSessionFacade {
 
   getAgent(id: string): AgentDto | undefined {
     return this.agentCatalog.getAgent(id);
+  }
+
+  getAgentProjectId(id: string): string | undefined {
+    return this.agentCatalog.getAgentProjectId(id);
   }
 
   listProjectWorkingCopies(projectId: string): Array<{
@@ -993,6 +1305,29 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentManagement.resolveAgentManagementApproval(decisionId, approved, at);
   }
 
+  createAgentManagementPlan(plan: ManagementPlan): { plan: ManagementPlan; replayed: boolean } {
+    return this.agentManagement.createAgentManagementPlan(plan);
+  }
+
+  getAgentManagementPlan(id: string): ManagementPlan | undefined {
+    return this.agentManagement.getAgentManagementPlan(id);
+  }
+
+  findAgentManagementPlan(ownerAgentId: string, runId: string, idempotencyKey: string): ManagementPlan | undefined {
+    return this.agentManagement.findAgentManagementPlan(ownerAgentId, runId, idempotencyKey);
+  }
+
+  listAgentManagementPlans(): ManagementPlan[] {
+    return this.agentManagement.listAgentManagementPlans();
+  }
+
+  updateAgentManagementPlan(
+    id: string,
+    patch: Parameters<AgentManagementAuthority["updateAgentManagementPlan"]>[1],
+  ): ManagementPlan {
+    return this.agentManagement.updateAgentManagementPlan(id, patch);
+  }
+
   authorizeAgentManagementPlan(
     authorization: AgentManagementAuthorization,
     targetAgentIds: readonly string[],
@@ -1032,6 +1367,18 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentManagement.applyAuthorizedAgentReorganization(authorization, operations);
   }
 
+  applyAuthorizedAgentReorganizationAndCompletePlan(
+    authorization: AgentManagementAuthorization,
+    operations: ReadonlyArray<{ targetAgentId: string; managerAgentId: string }>,
+    appliedAt: string,
+  ): { changedAgentIds: string[]; plan: ManagementPlan } {
+    return this.agentManagement.applyAuthorizedAgentReorganizationAndCompletePlan(
+      authorization,
+      operations,
+      appliedAt,
+    );
+  }
+
   readAgentOrganizationEvents(projectId: string): AgentOrganizationEvent[] {
     return this.agentManagement.readAgentOrganizationEvents(projectId);
   }
@@ -1054,8 +1401,11 @@ export class AgentStore extends AgentEventSessionFacade {
     );
   }
 
-  finishAgentDeletionStorageCleanup(receipt: AgentDeletionReceipt): void {
-    this.agentDeletion.finishAgentDeletionStorageCleanup(receipt);
+  finishAgentDeletionStorageCleanup(
+    receipt: AgentDeletionReceipt,
+    afterAuditRename?: (agentId: string) => void,
+  ): void {
+    this.agentDeletion.finishAgentDeletionStorageCleanup(receipt, afterAuditRename);
   }
 
   deleteAgent(id: string, beforeProjectionDelete?: (agentId: string) => void): boolean {

@@ -63,15 +63,11 @@ export class CoordinationV3RequestAuthority {
     private readonly createActivation: (input: CreateActivationV3Input) => string,
   ) {}
 
-  updateRequest(input: UpdateRequestV3Input): RequestUpdateV3Result {
-    const now = input.now ?? new Date().toISOString();
-    const initialRequest = this.support.getRequestRow(input.requestId);
-    const artifacts = this.runtimeArtifactAuthority.resolveRuntimeArtifacts(
-      initialRequest.project_id,
-      input.artifacts,
-      "request update",
-    );
-    const hash = payloadHash({
+  private updateHash(
+    input: UpdateRequestV3Input,
+    artifacts: RuntimeArtifactInputV3[],
+  ): string {
+    return payloadHash({
       requestId: input.requestId,
       kind: input.kind,
       actor: input.actor,
@@ -82,6 +78,95 @@ export class CoordinationV3RequestAuthority {
         : {}),
       artifacts,
     });
+  }
+
+  private resolvedUpdate(input: UpdateRequestV3Input, projectId: string) {
+    const artifacts = this.runtimeArtifactAuthority.resolveRuntimeArtifacts(
+      projectId,
+      input.artifacts,
+      "request update",
+    );
+    return { artifacts, hash: this.updateHash(input, artifacts) };
+  }
+
+  private existingUpdate(
+    input: UpdateRequestV3Input,
+    hash: string,
+    request: RequestRow,
+  ): RequestUpdateV3Result | undefined {
+    const existing = this.sqlite.prepare(`
+      SELECT request_id, actor_kind, actor_id, payload_hash,
+        resulting_state, resulting_version
+      FROM coordination_request_updates WHERE id = ?
+    `).get(input.updateId) as {
+      request_id: string;
+      actor_kind: Actor["kind"];
+      actor_id: string | null;
+      payload_hash: string;
+      resulting_state: CoordinationRequestState;
+      resulting_version: number;
+    } | undefined;
+    if (existing) {
+      if (
+        existing.request_id !== input.requestId ||
+        existing.actor_kind !== input.actor.kind ||
+        existing.actor_id !== (input.actor.id ?? null) ||
+        existing.payload_hash !== hash
+      ) {
+        throw new Error("request update idempotency collision");
+      }
+      return {
+        requestId: existing.request_id,
+        state: existing.resulting_state,
+        version: existing.resulting_version,
+        replayed: true,
+      };
+    }
+    const existingLate = this.sqlite.prepare(`
+      SELECT request_id, actor_agent_id, payload_hash
+      FROM coordination_request_late_results WHERE id = ?
+    `).get(input.updateId) as {
+      request_id: string;
+      actor_agent_id: string;
+      payload_hash: string;
+    } | undefined;
+    if (!existingLate) return undefined;
+    if (
+      existingLate.request_id !== input.requestId ||
+      input.actor.kind !== "agent" ||
+      existingLate.actor_agent_id !== input.actor.id ||
+      existingLate.payload_hash !== hash
+    ) {
+      throw new Error("request update idempotency collision");
+    }
+    return {
+      requestId: request.id,
+      state: request.state,
+      version: request.version,
+      replayed: true,
+    };
+  }
+
+  replayRequestUpdate(input: UpdateRequestV3Input): RequestUpdateV3Result | undefined {
+    const request = this.support.getRequestRow(input.requestId);
+    const hash = this.updateHash(input, input.artifacts ?? []);
+    return this.sqlite.transaction(() => {
+      const replay = this.existingUpdate(input, hash, request);
+      if (replay) return replay;
+      if (input.runAuthorization) {
+        this.support.requireAuthorizedRun(
+          input.runAuthorization,
+          request.conversation_id ? `conversation:${request.conversation_id}` : undefined,
+        );
+      }
+      return undefined;
+    })();
+  }
+
+  updateRequest(input: UpdateRequestV3Input): RequestUpdateV3Result {
+    const now = input.now ?? new Date().toISOString();
+    const initialRequest = this.support.getRequestRow(input.requestId);
+    const { artifacts, hash } = this.resolvedUpdate(input, initialRequest.project_id);
     return this.sqlite.transaction(() => {
       const request = this.support.getRequestRow(input.requestId);
       if (request.project_id !== initialRequest.project_id) {
@@ -89,58 +174,8 @@ export class CoordinationV3RequestAuthority {
           "request Project changed during artifact admission",
         );
       }
-      const existing = this.sqlite.prepare(`
-        SELECT request_id, actor_kind, actor_id, payload_hash,
-          resulting_state, resulting_version
-        FROM coordination_request_updates WHERE id = ?
-      `).get(input.updateId) as {
-        request_id: string;
-        actor_kind: Actor["kind"];
-        actor_id: string | null;
-        payload_hash: string;
-        resulting_state: CoordinationRequestState;
-        resulting_version: number;
-      } | undefined;
-      if (existing) {
-        if (
-          existing.request_id !== input.requestId ||
-          existing.actor_kind !== input.actor.kind ||
-          existing.actor_id !== (input.actor.id ?? null) ||
-          existing.payload_hash !== hash
-        ) {
-          throw new Error("request update idempotency collision");
-        }
-        return {
-          requestId: existing.request_id,
-          state: existing.resulting_state,
-          version: existing.resulting_version,
-          replayed: true,
-        };
-      }
-      const existingLate = this.sqlite.prepare(`
-        SELECT request_id, actor_agent_id, payload_hash
-        FROM coordination_request_late_results WHERE id = ?
-      `).get(input.updateId) as {
-        request_id: string;
-        actor_agent_id: string;
-        payload_hash: string;
-      } | undefined;
-      if (existingLate) {
-        if (
-          existingLate.request_id !== input.requestId ||
-          input.actor.kind !== "agent" ||
-          existingLate.actor_agent_id !== input.actor.id ||
-          existingLate.payload_hash !== hash
-        ) {
-          throw new Error("request update idempotency collision");
-        }
-        return {
-          requestId: request.id,
-          state: request.state,
-          version: request.version,
-          replayed: true,
-        };
-      }
+      const replay = this.existingUpdate(input, hash, request);
+      if (replay) return replay;
 
       const lateTerminal =
         request.state === "outcome_unknown" &&

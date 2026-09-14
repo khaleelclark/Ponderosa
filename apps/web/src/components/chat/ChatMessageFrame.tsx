@@ -5,6 +5,11 @@ import { MessageSenderLabel } from "../MessageSenderLabel";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "../MessageTimestamp";
 import { ChatAttachments } from "./ChatAttachments";
 import { ChatOperatorLabel } from "./ChatOperatorLabel";
+import {
+  messageSelectionIntersectsCurrentTarget,
+  messageSelectionTargetIsInteractive,
+} from "./messageSelection";
+import { observeNotificationVisibility } from "../../notificationVisibility";
 
 export function ChatMessageFrame({
   message,
@@ -33,7 +38,7 @@ export function ChatMessageFrame({
   const toggleTimestamp = (event: ReactMouseEvent<HTMLElement>) => {
     // Interactive descendants own their clicks; tapping message content on a
     // phone is the timestamp affordance.
-    if ((event.target as HTMLElement).closest("button,a,input,textarea,[role='button']")) return;
+    if (messageSelectionTargetIsInteractive(event.target, event.currentTarget)) return;
     setMobileTimestampRevealed((current) => !current);
   };
   useEffect(() => {
@@ -44,19 +49,17 @@ export function ChatMessageFrame({
       message.onVisible?.(
         intersecting && document.visibilityState === "visible" && document.hasFocus(),
       );
-    const observer = new IntersectionObserver((entries) => {
-      const entry = entries[0];
-      intersecting = Boolean(entry?.isIntersecting && entry.intersectionRatio >= 0.5);
+    const stopObserving = observeNotificationVisibility(element, visible => {
+      intersecting = visible;
       report();
-    }, { threshold: 0.5 });
+    });
     const onVisibilityChange = () => report();
-    observer.observe(element);
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onVisibilityChange);
     window.addEventListener("blur", onVisibilityChange);
     return () => {
       message.onVisible?.(false);
-      observer.disconnect();
+      stopObserving();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onVisibilityChange);
       window.removeEventListener("blur", onVisibilityChange);
@@ -85,14 +88,14 @@ export function ChatMessageFrame({
       component="article"
       className="chat-message"
       aria-label={message.ariaLabel ?? `${senderName} message`}
-      role={selectable ? "button" : undefined}
-      tabIndex={selectable ? 0 : -1}
-      onClick={selectable ? selectMessage : toggleTimestamp}
-      onKeyDown={(event) => {
-        if (!selectable || event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
-        event.preventDefault();
-        selectMessage();
-      }}
+      onClick={selectable
+        ? event => {
+            if (!messageSelectionTargetIsInteractive(event.target, event.currentTarget) &&
+                !messageSelectionIntersectsCurrentTarget(event.currentTarget)) {
+              selectMessage();
+            }
+          }
+        : toggleTimestamp}
       sx={{
         alignSelf: "center",
         width: "min(1120px, 100%)",
@@ -222,7 +225,6 @@ export function ChatMessageFrame({
             {message.afterBody}
             <ChatAttachments
               attachments={message.attachments ?? []}
-              density={message.attachmentDensity}
             />
           </Box>
           {message.belowBody}
@@ -235,6 +237,22 @@ export function ChatMessageFrame({
             status={message.status}
             footer={message.footer}
             actions={<>
+              {selectable ? <ButtonBase
+                aria-label={message.selectLabel ?? `Use source for ${senderName} message`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  selectMessage();
+                }}
+                sx={{
+                  minHeight: 28,
+                  px: 0.75,
+                  borderRadius: 0.75,
+                  color: "text.secondary",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: 2 },
+                }}
+              >Use as source</ButtonBase> : null}
               {message.actions}
             </>}
           />

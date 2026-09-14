@@ -1,12 +1,14 @@
 import type { WebPushStatusDto } from "@ponderosa/core";
 import { api } from "./api";
 import { createClientId } from "./clientId";
+import { isIOSDevice } from "./browserPlatform";
 
 const DEVICE_KEY = "ponderosa.push.device.v1";
 const STATUS_SIGNAL_KEY = "ponderosa.push.status-changed.v1";
 let fallbackDeviceId: string | undefined;
 
 export type WebPushState =
+  | { kind: "installation_required"; message: string }
   | { kind: "unsupported"; message: string }
   | { kind: "insecure_origin"; message: string }
   | { kind: "permission_default"; message: string }
@@ -19,6 +21,7 @@ export type WebPushState =
 /** A disabled action must explain the prerequisite that prevents it. */
 export function webPushEnableBlockReason(state: WebPushState): string | undefined {
   switch (state.kind) {
+    case "installation_required":
     case "host_unconfigured":
     case "unsupported":
     case "insecure_origin":
@@ -30,6 +33,8 @@ export function webPushEnableBlockReason(state: WebPushState): string | undefine
 }
 
 interface WebPushPrerequisites {
+  ios?: boolean;
+  standalone?: boolean;
   supported: boolean;
   secure: boolean;
   permission: NotificationPermission | "unsupported";
@@ -41,14 +46,20 @@ export function classifyWebPushState(
   deviceActive = false,
   failure?: string,
 ): WebPushState {
-  if (!prerequisites.supported) return { kind: "unsupported", message: "This browser does not support Web Push." };
+  if (prerequisites.ios && !prerequisites.standalone && prerequisites.secure) return {
+    kind: "installation_required",
+    message: "On iPhone or iPad, notifications require iOS/iPadOS 16.4 or later and the Home Screen app. Open Ponderosa in Safari, open Share (or More, then Share), choose Add to Home Screen, and keep Open as Web App enabled if shown. Open the new Home Screen icon, return to Settings → Notifications, then enable push.",
+  };
+  if (!prerequisites.supported) return { kind: "unsupported", message: prerequisites.ios
+    ? "Web Push is unavailable in this Home Screen app. It requires iOS/iPadOS 16.4 or later. Check for system updates and reopen Ponderosa from its Home Screen icon."
+    : "This browser does not support Web Push." };
   if (!prerequisites.secure) return { kind: "insecure_origin", message: "Browser push requires HTTPS or localhost. Open Ponderosa from a secure origin." };
   if (host && host.configuration !== "active") return {
     kind: "host_unconfigured",
     message: host.detail ?? (host.configuration === "invalid" ? "This host's Web Push configuration is invalid." : "Web Push is not set up on this host."),
   };
   if (failure) return { kind: "subscription_failed", message: `Push subscription failed: ${failure} Retry from this device.` };
-  if (prerequisites.permission === "denied") return { kind: "permission_denied", message: "Browser notification permission is blocked. Allow notifications in this site's browser settings." };
+  if (prerequisites.permission === "denied") return { kind: "permission_denied", message: prerequisites.ios ? "Notifications are blocked. Open iPhone/iPad Settings → Notifications → Ponderosa and allow notifications, then return here." : "Browser notification permission is blocked. Allow notifications in this site's browser settings." };
   if (prerequisites.permission === "default") return { kind: "permission_default", message: "Browser notification permission has not been requested. Enable push when you are ready." };
   if (deviceActive) return { kind: "active", message: "Browser push is active for this device." };
   return { kind: "permission_granted", message: "Permission is granted, but this device is not subscribed yet." };
@@ -58,6 +69,8 @@ function prerequisites(): WebPushPrerequisites {
   const supported = typeof navigator !== "undefined" && "serviceWorker" in navigator &&
     typeof window !== "undefined" && "PushManager" in window && typeof Notification !== "undefined";
   return {
+    ios: isIOSDevice(),
+    standalone: typeof window !== "undefined" && (window.matchMedia("(display-mode: standalone)").matches || (navigator as Navigator & { standalone?: boolean }).standalone === true),
     supported,
     secure: typeof window !== "undefined" && window.isSecureContext,
     permission: typeof Notification === "undefined" ? "unsupported" : Notification.permission,
@@ -137,7 +150,7 @@ export function subscribeWebPushRecovery(listener: () => void): () => void {
 
 export async function inspectWebPush(): Promise<WebPushState> {
   const initial = prerequisites();
-  if (!initial.supported || !initial.secure) return classifyWebPushState(initial);
+  if (!initial.supported || !initial.secure || (initial.ios && !initial.standalone)) return classifyWebPushState(initial);
   try {
     const status = await api.getWebPushStatus(webPushDeviceId());
     if (status.configuration !== "active" || initial.permission !== "granted") return classifyWebPushState(initial, status);
@@ -152,7 +165,7 @@ export async function inspectWebPush(): Promise<WebPushState> {
 
 export async function syncWebPush(requestPermission: boolean): Promise<WebPushState> {
   let current = prerequisites();
-  if (!current.supported || !current.secure) return classifyWebPushState(current);
+  if (!current.supported || !current.secure || (current.ios && !current.standalone)) return classifyWebPushState(current);
   let status: WebPushStatusDto;
   try {
     status = await api.getWebPushStatus(webPushDeviceId());

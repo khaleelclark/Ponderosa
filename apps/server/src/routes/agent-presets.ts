@@ -1,4 +1,5 @@
-import type { AgentStore } from "@ponderosa/agents";
+import { stableJson, type AgentStore } from "@ponderosa/agents";
+import { createHash } from "node:crypto";
 import type {
   CreateAgentPresetRequest,
   UpdateAgentPresetRequest,
@@ -20,6 +21,7 @@ export interface AgentPresetRoutesOptions {
     | "createAgentPreset"
     | "deleteAgentPreset"
     | "getAgentPreset"
+    | "getAgentPresetCreation"
     | "getProject"
     | "listAgentPresets"
     | "updateAgentPreset"
@@ -61,15 +63,37 @@ export function registerAgentPresetRoutes(
       : reply.code(404).send({ error: "project not found" }),
   );
 
-  app.post<{ Params: { id: string }; Body: CreateAgentPresetRequest }>(
+  app.post<{
+    Params: { id: string };
+    Headers: { "idempotency-key"?: string };
+    Body: CreateAgentPresetRequest;
+  }>(
     "/api/projects/:id/agent-presets",
     async (request, reply) => {
+      const idempotencyKey = request.headers["idempotency-key"]?.trim();
+      if (!idempotencyKey || !/^[A-Za-z0-9_-]{8,128}$/u.test(idempotencyKey)) {
+        return reply.code(400).send({ error: "a valid Agent preset creation idempotency key is required" });
+      }
+      const identity = {
+        idempotencyKey,
+        payloadHash: createHash("sha256").update(stableJson(request.body ?? null)).digest("hex"),
+      };
+      try {
+        const replay = options.store.getAgentPresetCreation(request.params.id, identity);
+        if (replay) return replay;
+      } catch (error) {
+        if (error instanceof Error && (error.message.includes("reused with different input") ||
+            error.message.includes("was already deleted"))) {
+          return reply.code(409).send({ error: error.message });
+        }
+        throw error;
+      }
       if (!options.store.getProject(request.params.id)) {
         return reply.code(404).send({ error: "project not found" });
       }
       const error = validatePreset(request.body ?? {}, false, request.params.id);
       if (error) return reply.code(400).send({ error });
-      return reply.code(201).send(options.store.createAgentPreset(request.params.id, request.body));
+      return reply.code(201).send(options.store.createAgentPreset(request.params.id, request.body, identity));
     },
   );
 

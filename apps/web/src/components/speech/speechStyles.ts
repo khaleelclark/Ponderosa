@@ -7,14 +7,14 @@ export const speechControlGroupSx: SxProps<Theme> = {
   gap: 0.25,
 };
 
-export const speechStatusSx: SxProps<Theme> = {
+export const speechStatusSx = {
   maxWidth: { xs: 132, sm: 240 },
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
-};
+} satisfies SxProps<Theme>;
 
-export const visuallyHiddenSpeechStatusSx: SxProps<Theme> = {
+export const visuallyHiddenSpeechStatusSx = {
   position: "absolute",
   width: 1,
   height: 1,
@@ -24,4 +24,4 @@ export const visuallyHiddenSpeechStatusSx: SxProps<Theme> = {
   clip: "rect(0 0 0 0)",
   whiteSpace: "nowrap",
   border: 0,
-};
+} satisfies SxProps<Theme>;

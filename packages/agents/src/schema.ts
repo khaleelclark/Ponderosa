@@ -23,6 +23,10 @@ export const projectDeletionPending = sqliteTable("project_deletion_pending", {
   lastError: text("last_error"),
   /** Exact hidden directory used across the filesystem/SQLite commit boundary. */
   tombstoneName: text("tombstone_name"),
+  /** Receipt-bound identity mirrored inside the exact tombstone directory. */
+  ownershipToken: text("ownership_token"),
+  /** Immutable Chat/Agent draft surface inventory captured at quarantine. */
+  draftSurfacesJson: text("draft_surfaces_json"),
 });
 
 /** Durable receipt for an irreversible Project purge and its retryable
@@ -30,7 +34,13 @@ export const projectDeletionPending = sqliteTable("project_deletion_pending", {
 export const projectDeletionReceipts = sqliteTable("project_deletion_receipts", {
   projectId: text("project_id").primaryKey(),
   tombstoneName: text("tombstone_name").notNull(),
+  ownershipToken: text("ownership_token"),
+  /** Durable boundary proving that exact owned storage was authorized for removal. */
+  removalStarted: integer("removal_started").notNull().default(0),
   storageCleanupCompleted: integer("storage_cleanup_completed").notNull().default(0),
+  draftSurfacesJson: text("draft_surfaces_json").notNull().default("[]"),
+  draftCleanupCompleted: integer("draft_cleanup_completed").notNull().default(1),
+  assetAuthorityCleanupCompleted: integer("asset_authority_cleanup_completed").notNull().default(0),
   lastError: text("last_error"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
@@ -97,10 +107,22 @@ export const continuationHandoffs = sqliteTable("continuation_handoffs", {
 });
 
 /** Authoritative crash-recovery journal for filesystem-backed Agent deletion. */
+export const agentDeletionPending = sqliteTable("agent_deletion_pending", {
+  agentId: text("agent_id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  conversationId: text("conversation_id"),
+  tombstoneName: text("tombstone_name").notNull(),
+  ownershipToken: text("ownership_token").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+/** Receipt phase for an Agent directory whose canonical rename has committed. */
 export const agentDeletionTombstones = sqliteTable("agent_deletion_tombstones", {
   agentId: text("agent_id").primaryKey(),
   projectId: text("project_id").notNull(),
+  conversationId: text("conversation_id"),
   tombstoneName: text("tombstone_name").notNull(),
+  ownershipToken: text("ownership_token"),
   createdAt: text("created_at").notNull(),
 });
 
@@ -146,6 +168,23 @@ export const conversations = sqliteTable("conversations", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   archived: integer("archived").notNull().default(0),
+});
+
+/** Durable intent and phase receipt for canonical Chat deletion and its
+ * retryable filesystem, draft, Automation, and workspace cleanup. */
+export const conversationDeletionReceipts = sqliteTable("conversation_deletion_receipts", {
+  conversationId: text("conversation_id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  tombstoneName: text("tombstone_name"),
+  ownershipToken: text("ownership_token"),
+  removalStarted: integer("removal_started").notNull().default(0),
+  canonicalDeletionCompleted: integer("canonical_deletion_completed").notNull().default(0),
+  storageCleanupCompleted: integer("storage_cleanup_completed").notNull().default(0),
+  serverCleanupCompleted: integer("server_cleanup_completed").notNull().default(0),
+  lastError: text("last_error"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  completedAt: text("completed_at"),
 });
 
 /** Rebuildable compatibility index of each live Agent's single owner Chat. */

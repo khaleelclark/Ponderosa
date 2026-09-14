@@ -175,7 +175,7 @@ export function createOperationalNotifications(context: OperationalNotifications
         const pendingDirectRecovery = Boolean(
           candidateRequest?.recoverySuccessorRequestId &&
           ["failed", "outcome_unknown"].includes(candidateRequest.state) &&
-          !coordinationV3.requestRetryStatus(candidateRequest.id).completedRequestId,
+          coordinationV3.requestRetryStatus(candidateRequest.id).successorState !== "completed",
         );
         const trace = inspector.traces.find((entry) =>
           entry.state === "attention" && entry.itemIds.includes(focusId))
@@ -200,7 +200,7 @@ export function createOperationalNotifications(context: OperationalNotifications
           ].includes(item.state)) return false;
           return !(
             ["failed", "outcome_unknown"].includes(item.state) &&
-            coordinationV3.requestRetryStatus(item.recordId).completedRequestId
+            coordinationV3.requestRetryStatus(item.recordId).successorState === "completed"
           );
         });
         const failedJoin = [...related].reverse().find((item) => item.kind === "join"
@@ -337,7 +337,10 @@ export function createOperationalNotifications(context: OperationalNotifications
       if (!key) return;
       const projectId = key.slice("project-deletion:".length);
       const receipt = store.getProjectDeletionReceipt(projectId);
-      if (receipt?.storageCleanupCompleted) resolveOperationalNotification(key);
+      if (receipt?.storageCleanupCompleted && receipt.draftCleanupCompleted &&
+          receipt.assetAuthorityCleanupCompleted) {
+        resolveOperationalNotification(key);
+      }
     });
   };
 

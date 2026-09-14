@@ -261,6 +261,13 @@ export function createServerReadModels(context: ReadModelContext) {
         FROM agent_conversation_memberships membership
         JOIN agents agent ON agent.id = membership.agent_id
         WHERE membership.conversation_id = ? AND agent.deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM agent_creation_operation_members creation_members
+            JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+            WHERE creation_members.agent_id = agent.id
+              AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+          )
       `,
       params: [conversationId],
       order: "title",
@@ -581,7 +588,7 @@ export function createServerReadModels(context: ReadModelContext) {
 
   const agentMessages = (agentId: string) => store.getProjectedAgentMessages(agentId);
 
-  function agentHealth(scope: AgentHealthProjectionDto["scope"], agents: AgentDto[]): AgentHealthProjectionDto {
+  function agentHealth(scope: AgentHealthProjectionDto["scope"], agents: AgentDto[], options?: { includeRunHistory?: boolean }): AgentHealthProjectionDto {
     const now = Date.now();
     for (const [agentId, run] of activeRuns) {
       if (run.ownershipState !== "running" || !run.lastEventReceivedAt) continue;
@@ -606,7 +613,7 @@ export function createServerReadModels(context: ReadModelContext) {
     );
     const preparingRuns = new Map(agents.flatMap((agent) => {
       if (ownership.has(agent.id)) return [];
-      const run = coordinationV3.agentSnapshot(agent.id).activeRun;
+      const run = coordinationV3.activeAgentRun(agent.id);
       return run ? [[agent.id, {
         runId: run.id,
         status: run.status,
@@ -634,7 +641,7 @@ export function createServerReadModels(context: ReadModelContext) {
       waitingPhase: (agentId) =>
         coordinationV3.activeWaitDependency(agentId, scope),
       latestEvent: (agentId) => store.latestHealthObservation(agentId),
-      runs: (agentId) => store.getRuns(agentId),
+      runs: options?.includeRunHistory === false ? undefined : (agentId) => store.getRuns(agentId),
     });
     return {
       ...projection,
@@ -657,7 +664,7 @@ export function createServerReadModels(context: ReadModelContext) {
     const selectedAgents = selectedAgentIds
       ? selectedAgentIds.flatMap((agentId) => {
         const agent = store.getAgent(agentId);
-        return agent?.projectId === projectId ? [agent] : [];
+        return agent?.projectId === projectId && !store.agentCreationPending(agentId) ? [agent] : [];
       })
       : store.listAgents(projectId);
     const agents = selectedAgents.filter((agent) =>

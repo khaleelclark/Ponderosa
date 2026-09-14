@@ -48,7 +48,7 @@ import {
 import { ProjectRelationshipLink } from "./HeaderRelationshipLinks";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
-import { RequestLifecycleCard } from "./RequestLifecycleCard";
+import { MessageRequestAction } from "./MessageRequestAction";
 import { DecisionCard } from "./decisions/DecisionCard";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
@@ -113,10 +113,7 @@ function ConversationMessageComponent({
   const senderName = fromManager
     ? (operatorProfile?.displayName ?? "You")
     : agentTitle(message.authorAgentId);
-  const resolvedCopyText = resolveMessageMentionText(
-    copyableText,
-    message.agentMentions,
-  );
+  const resolvedCopyText = visibleText;
 
   return (
     <ChatMessageFrame
@@ -213,6 +210,12 @@ function ConversationMessageComponent({
         actions: (
           <>
             <CopyMessageButton text={resolvedCopyText} />
+            {conversation === "collaboration" ? <MessageRequestAction
+              projectId={projectId}
+              conversationId={message.conversationId}
+              requests={message.coordinationRequests}
+              agentTitle={agentTitle}
+            /> : null}
             {message.authorAgentId ? (
               <ReadAloudControls
                 text={resolveMessageMentionText(
@@ -698,8 +701,6 @@ function CollaborationTimeline({
           );
         }
         const message = entry.message;
-        const linkedRequests = [...(message.coordinationRequests ?? [])]
-          .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
         return (
           <Box key={entry.id}>
             <ConversationMessage
@@ -720,26 +721,6 @@ function CollaborationTimeline({
               onOpenReview={onOpenReview}
               onOpenFileActivity={onOpenFileActivity}
             />
-            {linkedRequests.map(request => (
-              <Box
-                key={request.recordId}
-                sx={{ ml: { xs: 5, sm: 6.5 }, mt: -0.5, mb: 0.75 }}
-              >
-                <RequestLifecycleCard
-                  projectId={projectId}
-                  conversationId={request.conversationId ?? message.conversationId}
-                  requestId={request.recordId}
-                  state={request.state}
-                  requesterAgentId={request.requesterAgentId}
-                  recipientAgentId={request.recipientAgentId}
-                  requestText={request.preview}
-                  hasUpdates={request.hasUpdates}
-                  hasResult={request.hasResult}
-                  updatedAt={request.updatedAt}
-                  agentTitle={agentTitle}
-                />
-              </Box>
-            ))}
           </Box>
         );
       })}

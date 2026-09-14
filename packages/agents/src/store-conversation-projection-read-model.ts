@@ -106,8 +106,7 @@ export class AgentConversationProjectionReadModel {
         candidate.conversationId === conversationId
         && candidate.messageReceiptKey === receiptKey);
     return dispatch
-      ? this.getMessages(conversationId, dispatch.channel)
-        .find((message) => message.id === dispatch.messageId)
+      ? this.getMessageById(conversationId, dispatch.channel, dispatch.messageId)
       : undefined;
   }
 

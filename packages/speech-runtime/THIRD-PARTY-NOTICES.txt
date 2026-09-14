@@ -1,0 +1,46 @@
+Ponderosa optional local voices — private Linux x64 distribution
+
+This package is separate from the base Ponderosa application. It is prepared
+for the operator's private Pine installation, not a public multi-platform
+redistribution. No license change to the rest of Ponderosa is made here.
+
+Runtime: sherpa-onnx v1.13.8 (Apache-2.0), with ONNX Runtime 1.28.2 (MIT).
+Phonemization: eSpeak NG, revision ed530aa113046142eb5115cf2fc9157854d0ffe1
+(GPL-3.0), and piper-phonemize revision
+f3ff95afc03640bc1399e113e83361192a2fafb4 (MIT).
+Additional runtime notices include kaldi-native-fbank 1.22.3,
+kaldi-decoder 0.3.0, simple-sentencepiece 0.7, nlohmann/json 3.12.0,
+and hclust-cpp 2026-02-25, plus ONNX Runtime's third-party notices.
+The complete upstream license texts supplied with this package are in notices/.
+
+Model and voice assets: Kokoro multi-lang v1.0 / Kokoro-82M (Apache-2.0).
+Source: https://huggingface.co/hexgrad/Kokoro-82M
+Converted model distribution:
+https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models
+Willow maps to af_heart (speaker 3, en-US).
+Cedar maps to am_michael (speaker 16, en-US).
+Hazel maps to bf_emma (speaker 21, en-GB).
+These product labels do not alter the upstream assets or imply endorsement.
+
+Corresponding source access:
+The accompanying source-inputs.tar.gz contains the Ponderosa worker and build
+definition, the sherpa-onnx 1.13.8 source tree/build recipes, and the pinned
+eSpeak NG and piper-phonemize source archives. Additional upstream source
+repositories and exact dependency versions are recorded by sherpa-onnx's
+cmake/ files. ONNX Runtime source is available at:
+https://github.com/microsoft/onnxruntime/tree/v1.28.2
+All source inputs and binary package assets remain available together in the
+same private Ponderosa release. Preserve these notices and source access when
+copying the private package. Public redistribution requires a separate review
+of licensing/source obligations and platform qualification.
+
+The native speech worker runs in a network-isolated Linux sandbox, with a
+2 GiB address-space limit, disabled core dumps, two synthesis threads, and
+bounded request/output time and size. Message text is not a command argument
+and is not included in operational logs.
+
+The deployment-owned package mirror is installation media, separate from the
+installed voice files. Removing voices in Settings deletes the installed copy
+and generated-audio cache; the private package mirror remains for reinstallation.
+An administrator can remove that mirror after uninstalling if it is no longer
+needed. No Project files are part of either location.

@@ -26,10 +26,11 @@ import {
 } from "@mui/material";
 import type { AgentDto, ArtifactDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { uniqueBy } from "../collections";
 import { queryKeys } from "../queryKeys";
+import { loadRetainedData } from "../retainedData";
 import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
 import { artifactDisplayLabel, artifactSearchText } from "./filePreview/artifactPresentation";
 import {
@@ -59,6 +60,11 @@ export function ConversationFilesResults({
     hasMore: boolean;
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState<string>();
+  useEffect(() => {
+    setOlder(undefined);
+    setOlderError(undefined);
+  }, [conversationId, projectId]);
   const artifacts = useQuery({
     queryKey: queryKeys.projectArtifacts.conversation(
       projectId,
@@ -117,6 +123,29 @@ export function ConversationFilesResults({
   const previewOwner = previewArtifact
     ? agentById.get(previewArtifact.originAgentId ?? previewArtifact.agentId)
     : undefined;
+  const loadOlderFiles = async () => {
+    const cursor = older?.cursor ?? artifacts.data?.history.cursor;
+    if (!cursor || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const page = await loadRetainedData(
+        () => api.listConversationArtifacts(projectId, conversationId, 100, cursor),
+        setOlderError,
+        "Older Chat files could not be loaded.",
+      );
+      if (!page) return;
+      setOlder(current => ({
+        items: uniqueBy(
+          [...page.items, ...(current?.items ?? [])],
+          artifact => artifact.id,
+        ),
+        cursor: page.history.cursor,
+        hasMore: page.history.hasMore,
+      }));
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
 
   return (
     <Box
@@ -179,9 +208,14 @@ export function ConversationFilesResults({
           </Stack>
         ) : null}
         {artifacts.isError ? (
-          <Alert severity="error">Chat files could not be loaded. Try again.</Alert>
+          <Alert
+            severity="error"
+            action={<Button color="inherit" size="small" onClick={() => void artifacts.refetch()}>Retry</Button>}
+          >
+            Chat files could not be loaded. Try again.
+          </Alert>
         ) : null}
-        {!artifacts.isLoading && records.length === 0 ? (
+        {!artifacts.isLoading && !artifacts.isError && records.length === 0 ? (
           <Alert severity="info">
             No files or results yet. Anything created by an Agent in this Chat
             will appear here.
@@ -270,28 +304,19 @@ export function ConversationFilesResults({
             <Button
               color="inherit"
               disabled={loadingOlder}
-              onClick={() => {
-                const cursor = older?.cursor ?? artifacts.data?.history.cursor;
-                if (!cursor) return;
-                setLoadingOlder(true);
-                void api
-                  .listConversationArtifacts(projectId, conversationId, 100, cursor)
-                  .then(page =>
-                    setOlder(current => ({
-                      items: uniqueBy(
-                        [...page.items, ...(current?.items ?? [])],
-                        artifact => artifact.id,
-                      ),
-                      cursor: page.history.cursor,
-                      hasMore: page.history.hasMore,
-                    })),
-                  )
-                  .finally(() => setLoadingOlder(false));
-              }}
+              onClick={() => void loadOlderFiles()}
               sx={{ alignSelf: "center" }}
             >
               {loadingOlder ? "Loading…" : "Load Older Files"}
             </Button>
+          ) : null}
+          {olderError ? (
+            <Alert
+              severity="error"
+              action={<Button color="inherit" size="small" onClick={() => void loadOlderFiles()}>Retry</Button>}
+            >
+              {olderError}
+            </Alert>
           ) : null}
         </Stack>
       </Box>

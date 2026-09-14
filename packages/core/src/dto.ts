@@ -3,6 +3,7 @@
 // directly so the SSE/REST contract is typechecked end to end (SPEC §6, §1).
 
 export * from "./dto/common.js";
+export * from "./dto/speech.js";
 export * from "./dto/artifacts.js";
 export * from "./dto/provider-engine.js";
 export * from "./dto/projects.js";

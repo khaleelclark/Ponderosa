@@ -5,7 +5,7 @@
  * refreshes every Project roster, while `queryKeys.agents.project(id)` only
  * refreshes one Project. Components should not spell these arrays themselves.
  */
-import { AGENT_DETAIL_PAGE_SIZE } from "./agentHistoryPagination";
+import { AGENT_DETAIL_PAGE_SIZE } from "./agentHistoryPagination.js";
 
 export const queryKeys = {
   health: {
@@ -32,7 +32,11 @@ export const queryKeys = {
       projectId: string | undefined,
       agentIds: string | undefined,
       conversationId: string | undefined,
-      sort: "alphabetical" | "last_used" | "custom" | undefined,
+      sort: "alphabetical" | "last_used" | "custom" | "next_fire" | undefined,
+      active: boolean | undefined,
+      recentOutcomes: boolean | undefined,
+      onlyEnabled: boolean | undefined,
+      summary?: boolean,
     ) => [
       "workspace-directory",
       kind,
@@ -41,6 +45,10 @@ export const queryKeys = {
       agentIds ?? "",
       conversationId ?? "",
       sort ?? "",
+      active ? "active" : "",
+      recentOutcomes ? "outcomes" : "",
+      onlyEnabled ? "enabled" : "",
+      summary ? "summary" : "",
     ] as const,
   },
   workspacePreferences: {
@@ -85,6 +93,17 @@ export const queryKeys = {
       ["conversation-members", conversationId, search] as const,
     targetedNextRun: (conversationId: string) =>
       ["targeted-next-run", conversationId] as const,
+    activeDeliveryReceipts: (
+      conversationId: string,
+      communicationEventIds: string,
+      activationIds: string,
+    ) => [
+      "conversation",
+      conversationId,
+      "active-delivery-receipts",
+      communicationEventIds,
+      activationIds,
+    ] as const,
   },
   agents: {
     all: ["agents"] as const,
@@ -116,6 +135,7 @@ export const queryKeys = {
   triggers: {
     all: ["triggers"] as const,
     project: (projectId: string) => ["triggers", "project", projectId] as const,
+    projectOwnership: (projectId: string) => ["triggers", "project-ownership", projectId] as const,
     occurrencesAll: ["trigger-occurrences"] as const,
     occurrence: (triggerId: string | undefined) => ["trigger-occurrences", triggerId] as const,
     agentOccurrences: (agentId: string) => ["agent-trigger-occurrences", agentId] as const,

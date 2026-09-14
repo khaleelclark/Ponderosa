@@ -3,7 +3,6 @@ import type WebSocket from "ws";
 import type {
   Adapter,
   AgentEvent,
-  AgentDeletionPreviewDto,
   EngineAuthStatus,
   EngineAvailabilityStatus,
   EngineCapabilities,
@@ -11,7 +10,12 @@ import type {
   RuntimeProcessHandle,
   RuntimeSession,
 } from "@ponderosa/core";
-import type { AgentStore, ResolvedAgentWorkingCopy, StoredLogEvent } from "@ponderosa/agents";
+import type {
+  AgentStore,
+  ResolvedAgentWorkingCopy,
+  StoredLogEvent,
+} from "@ponderosa/agents";
+export type { ManagementOperation, ManagementPlan } from "@ponderosa/agents";
 import { ASSET_LIMITS } from "./assets.js";
 
 export type RuntimeOwnershipState = "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -42,36 +46,6 @@ export interface EngineRegistration {
   adapter: Adapter;
   authStatus?: () => Promise<EngineAuthStatus>;
   availabilityProbe?: () => Promise<EngineAvailabilityStatus>;
-}
-
-export interface ManagementOperation {
-  kind: "create_agent" | "rename_agent" | "stop_agent" | "delete_agent" | "set_manager";
-  ref?: string;
-  targetAgentId?: string;
-  parentRef?: string;
-  managerAgentId?: string | null;
-  title?: string;
-  engine?: string;
-  model?: string;
-  effort?: string;
-  instructions?: string;
-  /** Server-captured authority for stop_agent. Provider input cannot set it. */
-  targetRunId?: string;
-}
-
-export interface ManagementPlan {
-  id: string;
-  agentId: string;
-  runId: string;
-  conversationId: string;
-  idempotencyKey: string;
-  operations: ManagementOperation[];
-  deletionPreview?: AgentDeletionPreviewDto;
-  scopeHash?: string;
-  approvalDecisionId?: string;
-  createdAt: string;
-  appliedAt?: string;
-  result?: unknown;
 }
 
 export interface CreateServerOptions {

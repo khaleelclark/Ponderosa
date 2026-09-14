@@ -16,8 +16,9 @@ import { api } from "../api";
 import { mergeAgentStatuses } from "../agents";
 import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
 import { queryKeys } from "../queryKeys";
+import { retainedDataFailure } from "../retainedData";
 import { enginesWithModelCatalog } from "../conversationEngine";
-import { assertNeverRoute, routeToPath, type ProjectRoute } from "../routeRegistry";
+import { assertNeverRoute, nestedProjectRouteResources, routeToPath, type ProjectRoute } from "../routeRegistry";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
 import { AgentOrganizationTree } from "./AgentOrganizationTree";
@@ -87,6 +88,13 @@ export function ProjectShell({
 
   const conversationsQuery = useConversations(projectId);
   const agentsQuery = useAgents(projectId);
+  const routeResources = nestedProjectRouteResources(route);
+  const routeTriggerId = routeResources.triggerId;
+  const triggersQuery = useQuery({
+    queryKey: queryKeys.triggers.projectOwnership(projectId),
+    queryFn: () => api.listTriggers(projectId),
+    enabled: Boolean(routeTriggerId),
+  });
   const healthQuery = useAgentHealth(projectId);
   const conversations = conversationsQuery.data ?? [];
   const agents = agentsQuery.data ?? [];
@@ -135,7 +143,11 @@ export function ProjectShell({
   // The review surface needs changed-file and Run detail for one Agent. Fetch
   // that Agent only while the route is open instead of hydrating every roster
   // member's full history from the Project shell.
-  const reviewAgentQuery = useAgent(route.kind === "review" ? route.agentId : undefined);
+  const reviewAgentQuery = useAgent(
+    route.kind === "review" && agents.some(agent => agent.id === route.agentId)
+      ? route.agentId
+      : undefined,
+  );
   const engineCapabilities = capabilitiesQuery.data ?? [] as ProjectEngineCapabilitiesDto[];
   const refreshCapabilities = useCallback(async (context?: { engineId?: string; model?: string; agentId?: string }) => {
     const discovered = await api.getEngineCapabilities(projectId, { ...context, refresh: true });
@@ -185,8 +197,51 @@ export function ProjectShell({
   };
 
   const loading = conversationsQuery.isLoading || agentsQuery.isLoading;
+  const conversationsFailure = retainedDataFailure(
+    conversationsQuery.data !== undefined,
+    conversationsQuery.isError,
+  );
+  const agentsFailure = retainedDataFailure(
+    agentsQuery.data !== undefined,
+    agentsQuery.isError,
+  );
+  const triggersFailure = retainedDataFailure(
+    triggersQuery.data !== undefined,
+    triggersQuery.isError,
+  );
+  const projectResourcesLoaded =
+    conversationsQuery.data !== undefined && agentsQuery.data !== undefined;
+  const projectResourcesFailed =
+    conversationsQuery.isError || agentsQuery.isError;
 
-  if (conversationsQuery.isError || agentsQuery.isError) {
+  const routeAgentId = routeResources.agentId;
+  const routeConversationId = routeResources.conversationId;
+  const routeResourceLoading =
+    (Boolean(routeAgentId) && agentsQuery.isLoading) ||
+    (Boolean(routeConversationId) && conversationsQuery.isLoading) ||
+    (Boolean(routeTriggerId) && triggersQuery.isLoading);
+  const routeResourceError =
+    (Boolean(routeAgentId) && agentsFailure === "initial") ||
+    (Boolean(routeConversationId) && conversationsFailure === "initial") ||
+    (Boolean(routeTriggerId) && triggersFailure === "initial");
+  const routeResourceUnavailable =
+    (Boolean(routeAgentId) && agentsQuery.isSuccess && !agents.some(agent => agent.id === routeAgentId)) ||
+    (Boolean(routeConversationId) && conversationsQuery.isSuccess && !conversations.some(conversation => conversation.id === routeConversationId)) ||
+    (Boolean(routeTriggerId) && triggersQuery.isSuccess && !triggersQuery.data?.some(trigger => trigger.id === routeTriggerId));
+
+  if (routeResourceLoading) return <LinearProgress aria-label="Loading requested resource" />;
+  if (routeResourceError) {
+    return <Box sx={{ p: 2 }}><Alert severity="error" action={<Button onClick={() => {
+      if (routeAgentId) void agentsQuery.refetch();
+      if (routeConversationId) void conversationsQuery.refetch();
+      if (routeTriggerId) void triggersQuery.refetch();
+    }}>Retry</Button>}>The requested resource could not be checked.</Alert></Box>;
+  }
+  if (routeResourceUnavailable) {
+    return <Box sx={{ p: 2 }}><Alert severity="warning" action={<Button onClick={() => navigate({ kind: "project", projectId })}>Back to Project</Button>}>This resource is unavailable in this Project.</Alert></Box>;
+  }
+
+  if (conversationsFailure === "initial" || agentsFailure === "initial") {
     return (
       <Box sx={{ p: 2 }}>
         <Alert
@@ -439,15 +494,44 @@ export function ProjectShell({
         }}
         onOpenEngineStatus={onOpenEngineStatus}
         onOpenArtifact={openProjectArtifact}
+        projectResourcesLoaded={projectResourcesLoaded}
+        projectResourcesFailed={projectResourcesFailed}
+        onRetryProjectResources={() => {
+          void conversationsQuery.refetch();
+          void agentsQuery.refetch();
+        }}
       />
   } else {
     main = assertNeverRoute(route);
   }
 
+  const retainedResourceError = route.kind !== "project" && (
+    conversationsFailure === "refresh" ||
+    agentsFailure === "refresh" ||
+    (Boolean(routeTriggerId) && triggersFailure === "refresh")
+  );
+  const retainedResourceNotice = retainedResourceError ? (
+    <Alert
+      severity="warning"
+      action={
+        <Button color="inherit" size="small" onClick={() => {
+          if (conversationsFailure === "refresh") void conversationsQuery.refetch();
+          if (agentsFailure === "refresh") void agentsQuery.refetch();
+          if (triggersFailure === "refresh") void triggersQuery.refetch();
+        }}>
+          Retry
+        </Button>
+      }
+      sx={{ m: 1 }}
+    >
+      Some Project data could not be refreshed. The last loaded data remains available.
+    </Alert>
+  ) : null;
+
   const dialogs = (
     <>
-      <PresetManagerDialog open={presetsOpen} engines={projectEngines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={async (id, input) => {
-        const action = id ? api.updateAgentPreset(id, input) : api.createAgentPreset(projectId, input);
+      <PresetManagerDialog open={presetsOpen} engines={projectEngines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={async (id, input, idempotencyKey) => {
+        const action = id ? api.updateAgentPreset(id, input) : api.createAgentPreset(projectId, input, idempotencyKey!);
         await action;
         await queryClient.invalidateQueries({ queryKey: queryKeys.agents.presets(projectId) });
       }} onDelete={async (id) => {
@@ -462,8 +546,9 @@ export function ProjectShell({
   // and its title/engine chat-creation form must never become a second flow.
   if (isMobile) {
     return (
-      <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
+      <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: retainedResourceError ? "auto auto minmax(0, 1fr)" : "auto minmax(0, 1fr)" }}>
         {loading ? <LinearProgress /> : <Box />}
+        {retainedResourceNotice}
         <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr)" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
         {dialogs}
       </Box>
@@ -471,7 +556,8 @@ export function ProjectShell({
   }
 
   return (
-    <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "minmax(0, 1fr)" }}>
+    <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: retainedResourceError ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
+      {retainedResourceNotice}
       <Box component="section" aria-label="Project workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr)", bgcolor: "background.default" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
       {dialogs}
     </Box>

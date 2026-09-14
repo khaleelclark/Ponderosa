@@ -11,6 +11,7 @@ import {
   type RuntimeSteerResult,
   type RuntimeTurnInput,
   type RuntimeProcessHandle,
+  safeProviderConnectionUrl,
 } from "@ponderosa/core";
 import { stripVTControlCharacters } from "node:util";
 import { mapFileChangeKind, providerErrorCodeFromDetail } from "./events.js";
@@ -44,7 +45,8 @@ function normalizeElicitationRequest(params: unknown): RuntimeElicitationRequest
   const mode = value?.mode;
   if (!serverName || !message) throw new Error("invalid MCP elicitation request");
   if (mode === "url") {
-    if (typeof value.url !== "string" || !value.url.trim()) {
+    const url = safeProviderConnectionUrl(value.url);
+    if (!url) {
       throw new Error("MCP URL elicitation is missing its URL");
     }
     return {
@@ -54,7 +56,7 @@ function normalizeElicitationRequest(params: unknown): RuntimeElicitationRequest
       ...(typeof value.elicitationId === "string" && value.elicitationId.trim()
         ? { elicitationId: value.elicitationId.trim() }
         : {}),
-      url: value.url,
+      url,
     };
   }
   if (mode === "form" || mode === "openai/form") {

@@ -20,6 +20,7 @@ import type { ConversationDto, EngineDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { createClientId } from "../clientId";
 import {
   engineIsAvailable,
   engineUnavailableReason,
@@ -73,7 +74,7 @@ export function ImportAgentForm({
   const [error, setError] = useState<string>();
   const previewWorker = useRef<Worker>();
   const previewRequestId = useRef(0);
-  const importRequestId = useRef(crypto.randomUUID());
+  const importRequestId = useRef(createClientId());
   const pendingRef = useRef(false);
 
   const cancelInspection = useCallback(() => {
@@ -93,7 +94,7 @@ export function ImportAgentForm({
     setEngineMapping({});
     setAcknowledgeElevatedPermissions(false);
     setError(undefined);
-    importRequestId.current = crypto.randomUUID();
+    importRequestId.current = createClientId();
   }, [cancelInspection]);
 
   const closeForm = () => {
@@ -156,7 +157,7 @@ export function ImportAgentForm({
   });
   const inspectPackage = useCallback((blob: Blob, sourceName?: string) => {
     cancelInspection();
-    importRequestId.current = crypto.randomUUID();
+    importRequestId.current = createClientId();
     if (blob.size > MAX_IMPORT_FILE_BYTES) {
       setPackageBlob(undefined);
       setPackagePreview(undefined);

@@ -25,6 +25,7 @@ import { collectionGenerationKey, sendCollectionPageError, sqliteCollectionRevis
 
 const DEFAULT_DIRECTORY_LIMIT = 25;
 const MAX_DIRECTORY_LIMIT = 100;
+const MAX_RECENT_OUTCOMES = 100;
 
 type DirectoryQuery = {
   limit?: string;
@@ -34,12 +35,19 @@ type DirectoryQuery = {
   agentIds?: string;
   conversationId?: string;
   sort?: string;
+  active?: string;
+  outcomes?: string;
+  enabled?: string;
+  summary?: string;
 };
+
+type DirectorySort = ProjectSort | "next_fire";
 
 type CursorPosition =
   | { kind: "custom"; rank: number; title: string; id: string }
   | { kind: "alphabetical"; title: string; id: string }
-  | { kind: "last_used"; updatedAt: string; id: string };
+  | { kind: "last_used"; updatedAt: string; id: string }
+  | { kind: "next_fire"; nextFireAt: string | null; id: string };
 
 type CursorPayload = {
   v: 4;
@@ -60,6 +68,7 @@ type ResourceRow = {
   recent_conversation_title: string | null;
   recent_conversation_updated_at: string | null;
   running_agent_count: number | null;
+  next_fire_at: string | null;
   custom_rank?: number;
   sort_title?: string;
 };
@@ -74,6 +83,7 @@ interface WorkspaceDirectoryRoutesContext {
   agentHealth(
     scope: AgentHealthProjectionDto["scope"],
     agents: AgentDto[],
+    options?: { includeRunHistory?: boolean },
   ): AgentHealthProjectionDto;
   projectDisplayPath(hostPath: string): string;
 }
@@ -111,7 +121,7 @@ function encodeCursor(
 function decodeCursor(
   value: string,
   scope: string,
-  sort: ProjectSort,
+  sort: DirectorySort,
   revision: string,
 ): CursorPosition {
   try {
@@ -132,6 +142,11 @@ function decodeCursor(
     if (
       sort === "alphabetical" && position.kind === "alphabetical" &&
       typeof position.title === "string" && typeof position.id === "string"
+    ) return position;
+    if (
+      sort === "next_fire" && position.kind === "next_fire" &&
+      (position.nextFireAt === null || typeof position.nextFireAt === "string") &&
+      typeof position.id === "string"
     ) return position;
     if (
       sort === "last_used" && position.kind === "last_used" &&
@@ -189,6 +204,8 @@ function baseDirectoryQuery(
   query: DirectoryQuery,
   normalizedSearch: string,
   filteredAgentIds: readonly string[],
+  workingAgentIds: readonly string[],
+  outcomeAgentIds: readonly string[],
 ): { sql: string; params: unknown[] } {
   const where: string[] = [];
   const params: unknown[] = [];
@@ -245,6 +262,13 @@ function baseDirectoryQuery(
             WHERE active_agent.project_id = p.id
               AND active_agent.archived = 0
               AND active_agent.deleted_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM agent_creation_operation_members creation_members
+                JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+                WHERE creation_members.agent_id = active_agent.id
+                  AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+              )
               AND (
                 EXISTS (
                   SELECT 1 FROM scheduler_runs active_run
@@ -260,7 +284,8 @@ function baseDirectoryQuery(
                     )
                 )
               )
-          ) AS running_agent_count
+          ) AS running_agent_count,
+          NULL AS next_fire_at
         FROM projects p
         ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
       `,
@@ -291,7 +316,8 @@ function baseDirectoryQuery(
           NULL AS conversation_count, NULL AS recent_conversation_id,
           NULL AS recent_conversation_title,
           NULL AS recent_conversation_updated_at,
-          NULL AS running_agent_count
+          NULL AS running_agent_count,
+          NULL AS next_fire_at
         FROM conversations c
         JOIN projects p ON p.id = c.project_id
         WHERE ${where.join(" AND ")}
@@ -302,6 +328,13 @@ function baseDirectoryQuery(
 
   if (kind === "agent") {
     where.push("a.archived = 0", "a.deleted_at IS NULL");
+    where.push(`NOT EXISTS (
+      SELECT 1
+      FROM agent_creation_operation_members creation_members
+      JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+      WHERE creation_members.agent_id = a.id
+        AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+    )`);
     if (query.projectId) {
       where.push("a.project_id = ?");
       params.push(query.projectId);
@@ -318,6 +351,20 @@ function baseDirectoryQuery(
       )`);
       params.push(query.conversationId);
     }
+    if (query.active === "true") {
+      if (workingAgentIds.length === 0) where.push("0");
+      else {
+        where.push(`a.id IN (${placeholders(workingAgentIds.length)})`);
+        params.push(...workingAgentIds);
+      }
+    }
+    if (query.outcomes === "true") {
+      if (outcomeAgentIds.length === 0) where.push("0");
+      else {
+        where.push(`a.id IN (${placeholders(outcomeAgentIds.length)})`);
+        params.push(...outcomeAgentIds);
+      }
+    }
     if (normalizedSearch) {
       where.push(
         "lower(a.title || ' ' || a.active_engine || ' ' || p.label || ' ' || p.host_path) LIKE ? ESCAPE '\\'",
@@ -331,7 +378,8 @@ function baseDirectoryQuery(
           NULL AS conversation_count, NULL AS recent_conversation_id,
           NULL AS recent_conversation_title,
           NULL AS recent_conversation_updated_at,
-          NULL AS running_agent_count
+          NULL AS running_agent_count,
+          NULL AS next_fire_at
         FROM agents a
         JOIN projects p ON p.id = a.project_id
         WHERE ${where.join(" AND ")}
@@ -344,6 +392,13 @@ function baseDirectoryQuery(
     where.push("t.project_id = ?");
     params.push(query.projectId);
   }
+  where.push(`NOT EXISTS (
+    SELECT 1
+    FROM agent_creation_operation_members creation_members
+    JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+    WHERE creation_members.agent_id = a.id
+      AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+  )`);
   if (filteredAgentIds.length > 0) {
     where.push(`t.agent_id IN (${placeholders(filteredAgentIds.length)})`);
     params.push(...filteredAgentIds);
@@ -352,6 +407,7 @@ function baseDirectoryQuery(
     where.push("t.conversation_id = ?");
     params.push(query.conversationId);
   }
+  if (query.enabled === "true") where.push("t.enabled = 1");
   if (normalizedSearch) {
     where.push(`lower(
       t.name || ' ' || t.instructions || ' ' || t.source_kind ||
@@ -366,7 +422,8 @@ function baseDirectoryQuery(
         NULL AS conversation_count, NULL AS recent_conversation_id,
         NULL AS recent_conversation_title,
         NULL AS recent_conversation_updated_at,
-        NULL AS running_agent_count
+        NULL AS running_agent_count,
+        t.next_fire_at
       FROM trigger_definitions t
       JOIN agents a ON a.id = t.agent_id
         AND a.archived = 0 AND a.deleted_at IS NULL
@@ -378,7 +435,7 @@ function baseDirectoryQuery(
 }
 
 function orderingSql(
-  sort: ProjectSort,
+  sort: DirectorySort,
   order: readonly string[],
 ): { sql: string; rankSql: string; rankParams: unknown[] } {
   if (sort === "alphabetical") {
@@ -386,6 +443,9 @@ function orderingSql(
   }
   if (sort === "last_used") {
     return { sql: "updated_at DESC, id ASC", rankSql: "0", rankParams: [] };
+  }
+  if (sort === "next_fire") {
+    return { sql: "next_fire_at IS NULL ASC, next_fire_at ASC, id ASC", rankSql: "0", rankParams: [] };
   }
   if (order.length === 0) {
     return {
@@ -424,6 +484,14 @@ function cursorSql(
       params: [position.title, position.title, position.id],
     };
   }
+  if (position.kind === "next_fire") {
+    return position.nextFireAt === null
+      ? { sql: "next_fire_at IS NULL AND id > ?", params: [position.id] }
+      : {
+          sql: "(next_fire_at IS NULL OR next_fire_at > ? OR (next_fire_at = ? AND id > ?))",
+          params: [position.nextFireAt, position.nextFireAt, position.id],
+        };
+  }
   return {
     sql: "(updated_at < ? OR (updated_at = ? AND id > ?))",
     params: [position.updatedAt, position.updatedAt, position.id],
@@ -432,7 +500,7 @@ function cursorSql(
 
 function nextCursorPosition(
   row: ResourceRow,
-  sort: ProjectSort,
+  sort: DirectorySort,
 ): CursorPosition {
   if (sort === "custom") {
     return {
@@ -445,6 +513,9 @@ function nextCursorPosition(
   if (sort === "alphabetical") {
     return { kind: "alphabetical", title: row.title, id: row.id };
   }
+  if (sort === "next_fire") {
+    return { kind: "next_fire", nextFireAt: row.next_fire_at, id: row.id };
+  }
   return {
     kind: "last_used",
     updatedAt: row.updated_at,
@@ -452,25 +523,97 @@ function nextCursorPosition(
   };
 }
 
-function workspaceActiveAgentCount(sqlite: Database.Database): number {
+const WORKING_AGENT_STATUSES = new Set<AgentHealthDto["status"]>([
+  "running", "waiting", "preparing", "compacting", "blocked",
+  "stalled", "interrupted", "needs_decision",
+]);
+
+function workspaceAgentHealth(
+  context: WorkspaceDirectoryRoutesContext,
+  projectId?: string,
+  includeRunHistory = true,
+): {
+  byId: Map<string, AgentHealthDto>;
+  workingIds: string[];
+  outcomeIds: string[];
+  revision: string;
+} {
+  const rows = context.store.sqlite.prepare(`
+    SELECT a.id, a.project_id
+    FROM agents a
+    WHERE a.archived = 0 AND a.deleted_at IS NULL
+      ${projectId ? "AND a.project_id = ?" : ""}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM agent_creation_operation_members creation_members
+        JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+        WHERE creation_members.agent_id = a.id
+          AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+      )
+  `).all(...(projectId ? [projectId] : [])) as Array<{ id: string; project_id: string }>;
+  const agentsByProject = new Map<string, AgentDto[]>();
+  for (const row of rows) {
+    const agent = context.store.getAgent(row.id);
+    if (!agent) continue;
+    const agents = agentsByProject.get(row.project_id) ?? [];
+    agents.push(agent);
+    agentsByProject.set(row.project_id, agents);
+  }
+  const byId = new Map<string, AgentHealthDto>();
+  for (const [projectId, agents] of agentsByProject) {
+    for (const health of context.agentHealth(
+      { type: "project", id: projectId },
+      agents,
+      { includeRunHistory },
+    ).agents) {
+      byId.set(health.agentId, health);
+    }
+  }
+  const workingIds = [...byId.values()]
+    .filter(health => WORKING_AGENT_STATUSES.has(health.status))
+    .sort((left, right) =>
+      right.statusTimestamp.localeCompare(left.statusTimestamp) ||
+      left.agentId.localeCompare(right.agentId))
+    .map(health => health.agentId);
+  const outcomes = [...byId.values()]
+    .filter((health): health is AgentHealthDto & { assignedWorkOutcome: NonNullable<AgentHealthDto["assignedWorkOutcome"]> } =>
+      Boolean(health.assignedWorkOutcome))
+    .sort((left, right) =>
+      right.assignedWorkOutcome.updatedAt.localeCompare(left.assignedWorkOutcome.updatedAt) ||
+      left.agentId.localeCompare(right.agentId))
+    .slice(0, MAX_RECENT_OUTCOMES);
+  return {
+    byId,
+    workingIds,
+    outcomeIds: outcomes.map(health => health.agentId),
+    revision: createHash("sha256")
+      .update([...byId.values()]
+        .sort((left, right) => left.agentId.localeCompare(right.agentId))
+        .map(health => [
+        health.agentId,
+        health.status,
+        health.statusTimestamp,
+        health.assignedWorkOutcome?.runId ?? "",
+        health.assignedWorkOutcome?.status ?? "",
+        health.assignedWorkOutcome?.updatedAt ?? "",
+      ].join("\0")).join("\n"))
+      .digest("base64url"),
+  };
+}
+
+function workspaceEnabledTriggerCount(sqlite: Database.Database): number {
   const row = sqlite.prepare(`
     SELECT COUNT(*) AS count
-    FROM agents a
-    WHERE a.archived = 0
-      AND a.deleted_at IS NULL
-      AND (
-        EXISTS (
-          SELECT 1 FROM scheduler_runs r
-          WHERE r.agent_id = a.id AND r.status IN ('leased', 'running')
-        )
-        OR EXISTS (
-          SELECT 1 FROM context_rollovers c
-          WHERE c.agent_id = a.id
-            AND c.state IN (
-              'requested', 'handoff_committed',
-              'session_retiring', 'continuation_ready'
-            )
-        )
+    FROM trigger_definitions t
+    JOIN agents a ON a.id = t.agent_id
+      AND a.archived = 0 AND a.deleted_at IS NULL
+    WHERE t.enabled = 1
+      AND NOT EXISTS (
+        SELECT 1
+        FROM agent_creation_operation_members creation_members
+        JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+        WHERE creation_members.agent_id = a.id
+          AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
       )
   `).get() as { count: number };
   return row.count;
@@ -493,6 +636,24 @@ export function registerWorkspaceDirectoryRoutes(
     ) {
       return reply.code(404).send({ error: "unknown workspace directory" });
     }
+    if (request.query.active !== undefined &&
+        (kind !== "agent" || request.query.active !== "true")) {
+      return reply.code(400).send({ error: "active=true is supported only for the Agent directory" });
+    }
+    if (request.query.outcomes !== undefined &&
+        (kind !== "agent" || request.query.outcomes !== "true")) {
+      return reply.code(400).send({ error: "outcomes=true is supported only for the Agent directory" });
+    }
+    if (request.query.enabled !== undefined &&
+        (kind !== "trigger" || request.query.enabled !== "true")) {
+      return reply.code(400).send({ error: "enabled=true is supported only for the Automation directory" });
+    }
+    if (request.query.summary !== undefined && request.query.summary !== "true") {
+      return reply.code(400).send({ error: "summary must be true when provided" });
+    }
+    if (request.query.summary && request.query.cursor) {
+      return reply.code(400).send({ error: "summaries do not support cursors" });
+    }
 
     let limit: number;
     try {
@@ -506,27 +667,58 @@ export function registerWorkspaceDirectoryRoutes(
       requestedSort !== undefined &&
       requestedSort !== "alphabetical" &&
       requestedSort !== "last_used" &&
-      requestedSort !== "custom"
+      requestedSort !== "custom" &&
+      requestedSort !== "next_fire"
     ) {
       return reply.code(400).send({ error: "invalid directory sort" });
+    }
+    if (requestedSort === "next_fire" && (kind !== "trigger" || request.query.enabled !== "true")) {
+      return reply.code(400).send({ error: "next_fire sort requires enabled Automations" });
     }
 
     const preferences = context.workspace.getPreferences();
     const settings = resourceSettings(preferences, kind);
-    const sort = requestedSort ?? settings.sort;
+    const activeAgents = request.query.active === "true";
+    const recentOutcomes = request.query.outcomes === "true";
+    if (activeAgents && recentOutcomes) {
+      return reply.code(400).send({ error: "Active Agents and Recent Agent outcomes are separate directory views" });
+    }
+    if ((activeAgents || recentOutcomes) && requestedSort !== undefined) {
+      return reply.code(400).send({
+        error: activeAgents
+          ? "Active Agents have a canonical sort"
+          : "Recent Agent outcomes have a canonical sort",
+      });
+    }
+    const canonicalAgentView = activeAgents || recentOutcomes;
+    // Only canonical health-filtered views need the complete workspace projection
+    // (including its global counts and top-100 outcome selection).
+    const scopedActiveSummary = activeAgents && request.query.summary === "true";
+    const health = canonicalAgentView ? workspaceAgentHealth(
+      context,
+      scopedActiveSummary ? request.query.projectId : undefined,
+      !scopedActiveSummary,
+    ) : undefined;
+    const sort = canonicalAgentView ? "custom" : requestedSort ?? settings.sort;
     const sqlite = context.store.sqlite;
-    const order = settings.order;
+    const order = activeAgents
+      ? health?.workingIds ?? []
+      : recentOutcomes
+        ? health?.outcomeIds ?? []
+        : sort === "next_fire" ? [] : settings.order;
     const normalizedSearch = (request.query.search ?? "")
       .trim()
       .toLocaleLowerCase();
     const filteredAgentIds = [
       ...new Set((request.query.agentIds ?? "").split(",").filter(Boolean)),
     ];
+    const workingAgentIds = health?.workingIds ?? [];
+    const outcomeAgentIds = health?.outcomeIds ?? [];
 
     const directorySettingsHash = createHash("sha256")
       .update(JSON.stringify({
-        order,
-        stars: [...starredKeys(preferences)]
+        order: canonicalAgentView ? [] : order,
+        stars: canonicalAgentView ? [] : [...starredKeys(preferences)]
           .filter(key => key.startsWith(`${kind}:`))
           .sort(),
       }))
@@ -538,6 +730,9 @@ export function registerWorkspaceDirectoryRoutes(
       agentIds: [...filteredAgentIds].sort(),
       conversationId: request.query.conversationId ?? "",
       sort,
+      active: request.query.active ?? "",
+      outcomes: request.query.outcomes ?? "",
+      enabled: request.query.enabled ?? "",
       directorySettingsHash,
     });
 
@@ -546,6 +741,8 @@ export function registerWorkspaceDirectoryRoutes(
       request.query,
       normalizedSearch,
       filteredAgentIds,
+      workingAgentIds,
+      outcomeAgentIds,
     );
     const projectScope = request.query.projectId;
     const scoped = (collection: string): string => projectScope
@@ -562,14 +759,26 @@ export function registerWorkspaceDirectoryRoutes(
           ? [
               scoped("agents"),
               projectKey,
+              "scheduler_runs",
+              "context_rollovers",
               ...(request.query.conversationId
                 ? [collectionGenerationKey("memberships", `conversation:${request.query.conversationId}`)]
                 : []),
             ]
           : [scoped("triggers"), scoped("agents"), projectKey];
     const collection = sqliteCollectionRevision(sqlite, base.sql, base.params, generationKeys);
-    const revision = collection.revision;
+    const revision = kind === "agent"
+      ? `${collection.revision}:health=${health?.revision ?? ""}`
+      : collection.revision;
     const total = collection.total;
+
+    if (request.query.summary === "true") {
+      return {
+        kind, total, starredItems: [], items: [],
+        ...(health && !request.query.projectId ? { activeCount: health.workingIds.length } : {}),
+        history: { limit, hasMore: false },
+      } satisfies WorkspaceDirectoryPageDto;
+    }
 
     let cursorPosition: CursorPosition | undefined;
     if (request.query.cursor) {
@@ -580,7 +789,7 @@ export function registerWorkspaceDirectoryRoutes(
       }
     }
 
-    const stars = [...starredKeys(preferences)]
+    const stars = sort === "next_fire" || canonicalAgentView ? [] : [...starredKeys(preferences)]
       .filter(key => key.startsWith(`${kind}:`))
       .map(key => key.slice(kind.length + 1));
     let starredRows: ResourceRow[] = [];
@@ -632,7 +841,7 @@ export function registerWorkspaceDirectoryRoutes(
       return project;
     };
 
-    const agentHealthById = new Map<string, AgentHealthDto>();
+    const agentHealthById = health?.byId ?? new Map<string, AgentHealthDto>();
     if (kind === "agent") {
       const agentsByProject = new Map<string, AgentDto[]>();
       for (const row of [...starredRows, ...pageRows]) {
@@ -643,11 +852,34 @@ export function registerWorkspaceDirectoryRoutes(
         agentsByProject.set(agent.projectId, group);
       }
       for (const [projectId, agents] of agentsByProject) {
+        if (agents.every(agent => agentHealthById.has(agent.id))) continue;
+        // Relationships belong to the visible Project roster, not the page.
+        // Read identities only; off-page Agents need no detailed health.
+        const rosterQuery = baseDirectoryQuery("agent", { projectId }, "", [], [], []);
+        const roster = sqlite.prepare(`
+          SELECT a.id, a.manager_agent_id
+          FROM (${rosterQuery.sql}) visible JOIN agents a ON a.id = visible.id
+        `).all(...rosterQuery.params) as Array<{ id: string; manager_agent_id: string | null }>;
+        const rosterIds = new Set(roster.map(agent => agent.id));
+        const children = new Map<string, string[]>();
+        for (const agent of roster) {
+          if (!agent.manager_agent_id || !rosterIds.has(agent.manager_agent_id)) continue;
+          const ids = children.get(agent.manager_agent_id) ?? [];
+          ids.push(agent.id);
+          children.set(agent.manager_agent_id, ids);
+        }
+        const parents = new Map(roster.map(agent => [agent.id, agent.manager_agent_id]));
         for (const health of context.agentHealth(
           { type: "project", id: projectId },
           agents,
         ).agents) {
-          agentHealthById.set(health.agentId, health);
+          const { managerAgentId: _pageParent, ...details } = health;
+          const parent = parents.get(health.agentId);
+          agentHealthById.set(health.agentId, {
+            ...details,
+            ...(parent && rosterIds.has(parent) ? { managerAgentId: parent } : {}),
+            childAgentIds: (children.get(health.agentId) ?? []).sort(),
+          });
         }
       }
     }
@@ -688,10 +920,21 @@ export function registerWorkspaceDirectoryRoutes(
         const agent = context.store.getAgent(row.id);
         const health = agentHealthById.get(row.id);
         if (!agent || !health) return undefined;
+        const ownerConversation = context.store.getConversation(
+          agent.conversationId,
+        );
         return {
           kind: "agent",
           project: projectSummary(project),
           agent,
+          ...(ownerConversation
+            ? {
+                ownerConversation: {
+                  id: ownerConversation.id,
+                  title: ownerConversation.title,
+                },
+              }
+            : {}),
           health,
         } satisfies WorkspaceAgentDirectoryItemDto;
       }
@@ -723,8 +966,11 @@ export function registerWorkspaceDirectoryRoutes(
       starredItems,
       items,
       total,
-      ...(kind === "agent"
-        ? { activeCount: workspaceActiveAgentCount(sqlite) }
+      ...(health
+        ? { activeCount: workingAgentIds.length }
+        : {}),
+      ...(kind === "trigger"
+        ? { enabledCount: workspaceEnabledTriggerCount(sqlite) }
         : {}),
       history: {
         limit,

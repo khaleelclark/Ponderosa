@@ -1,16 +1,33 @@
 import {
   Box,
+  IconButton,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Paper,
   Stack,
+  TextField,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
-import { messageTagTokens, utf8ByteLength } from "@ponderosa/core";
+import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
+import {
+  LONG_TEXT_MAX_UTF8_BYTES,
+  messageTagTokens,
+  utf8ByteLength,
+} from "@ponderosa/core";
 import type {
   AgentMentionBindingDto,
   ArtifactDto,
-  ConversationDraftConflictDto,
+  ConversationDraftDto,
+  DraftPendingSubmissionDto,
   DraftAttachmentDto,
   EngineCommand,
   EngineComposerCapability,
+  ResolveConversationDraftConflictResponse,
+  RestoreConversationDraftConflictUnavailableResponse,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -24,18 +41,43 @@ import {
 } from "react";
 import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
-import { readChatState, writeChatState } from "../../chatState";
-import { createClientId, pageClientId } from "../../clientId";
+import { readChatState, readChatStateEntries, writeChatState } from "../../chatState";
+import { createClientId, draftSurfaceClientId } from "../../clientId";
+import {
+  createRecipientUploadAuthorityOutbox,
+  parseRecipientUploadAuthorityOutbox,
+  pendingDraftAttachmentIds,
+  pendingPastedTextAttachmentId,
+  recipientUploadAuthorityConfirmed,
+  recipientUploadAuthorityHasCapacity,
+  recipientUploadAuthorityStoragePrefix,
+  recipientUploadAuthorityStorageKey,
+  reconcileRecipientUploadAuthority,
+  serializeRecipientUploadAuthorityOutbox,
+  stableMessageActionText,
+} from "../../conversationRouting";
 import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
 import { removeHandle } from "./Composer.helpers";
 import {
+  activeComposerMention,
+  clampComposerMenuIndex,
+  composerSupportsRoutingDestinations,
   hasComposerDestination,
   NEW_AGENT_DESTINATION_HANDLE,
+  normalizeExclusiveNewAgentDestinationForMode,
   prependComposerDestination,
+  removeComposerDestinations,
+  removeComposerDestinationsAroundSelection,
   selectExclusiveNewAgentDestination,
+  singleComposerDestination,
 } from "./composerDestination";
 import type { ComposerProps } from "./Composer.types";
+import {
+  durableSubmissionMayBeReleased,
+  durableSubmissionFingerprint,
+  selectDurableSubmission,
+} from "../idempotentAttempt";
 import {
   ComposerAttachmentList,
   ComposerDestinationBar,
@@ -56,15 +98,46 @@ import {
 } from "./ComposerEditor";
 import {
   canSubmitComposerText,
+  canonicalDraftConflictFiles,
   composerAttachmentReducer,
+  composerPreparedRetryAction,
+  composerDurableRetryAction,
+  composerRecipientGateSatisfied,
   composerSubmissionText,
+  cleanupReleasedDraftAttachmentIds,
+  composerSubmissionMayClearDraft,
+  deletableSupersededDraftAttachmentIds,
+  draftContentRetryStillOwned,
+  draftWriteContinuationStillOwned,
+  durableDraftContentReady,
   engineCommandDisabledReason,
+  hydratedDraftContent,
+  hydratedPastedTextContent,
   insertComposerCapability,
   matchingComposerCapabilities,
   matchingEngineCommands,
+  ownedDraftRevisionAfterObservation,
+  pendingSubmissionAfterRuntimeObservation,
   providerSlashSubmission,
+  recoverableDraftConflict,
+  redundantDraftConflictUploadIds,
+  resolvedDraftConflictDraft,
+  retryDraftRestoreForMissingAssets,
+  refreshRecoverableDraftConflict,
+  type RecoverableDraftConflict,
+  restagedDraftConflictSnapshot,
+  restoreDraftConflictSnapshot,
+  savedPastedTextCleanMutationGeneration,
+  settledDraftWriteContinuation,
+  unresolvedRecoverableDraftConflict,
+  shouldAdoptHydratedDraft,
   shouldShowQueueControl,
 } from "./composerUtils";
+import {
+  refreshedMentionBindings,
+  resolvedMentionBinding,
+  submissionMentionBinding,
+} from "./composerMentionBindings";
 import { useComposerDraftAttachments } from "./useComposerDraftAttachments";
 import {
   useComposerDraftStorageReset,
@@ -92,6 +165,42 @@ type ComposerMentionToken = {
   agentId?: string;
 };
 
+function unavailableDraftConflictAttachmentIds(error: unknown): string[] | undefined {
+  if (!(error instanceof ApiRequestError) || ![400, 409].includes(error.status) ||
+      !error.body || typeof error.body !== "object" || Array.isArray(error.body)) return undefined;
+  const body = error.body as Partial<RestoreConversationDraftConflictUnavailableResponse>;
+  return body.error === "draft conflict attachment is unavailable" &&
+    Array.isArray(body.unavailableAttachmentIds) &&
+    body.unavailableAttachmentIds.every(id => typeof id === "string")
+    ? body.unavailableAttachmentIds
+    : undefined;
+}
+
+type FailedDraftContent = {
+  id: string;
+  name: string;
+  kind: "attachment" | "pasted-text";
+  attachment?: DraftAttachmentDto;
+};
+
+type DraftWriteChain = {
+  clientId: string;
+  cleanupRetryScheduled: boolean;
+  ownedRevision: number;
+  pendingDeletionIds: Set<string>;
+  tail: Promise<void>;
+};
+
+const createDraftWriteChain = (): DraftWriteChain => ({
+  clientId: draftSurfaceClientId(),
+  cleanupRetryScheduled: false,
+  ownedRevision: 0,
+  pendingDeletionIds: new Set(),
+  tail: Promise.resolve(),
+});
+
+const PASTED_TEXT_DRAFT_NAME = "Pasted text.txt";
+
 export type { ComposerProps } from "./Composer.types";
 
 type ComposerDefaultDestination = NonNullable<
@@ -102,13 +211,7 @@ function removeAllComposerDestinations(
   value: string,
   handle: string,
 ): string {
-  let next = value;
-  while (hasComposerDestination(next, handle)) {
-    const removed = removeHandle(next, handle);
-    if (removed === next) break;
-    next = removed;
-  }
-  return next;
+  return removeComposerDestinations(value, [handle]);
 }
 
 function providerCommandInput(
@@ -137,7 +240,8 @@ export function Composer({
   placeholder,
   projectId,
   mentionHandles,
-  mentionBindings,
+  mentionBindings: suppliedMentionBindings,
+  mentionBindingsReady = true,
   mentionSuggestionHandles,
   ambiguousMentionHandles,
   commands,
@@ -164,6 +268,10 @@ export function Composer({
   requiredRecipient,
   recipientRequiredMessage,
   removeTextRequest,
+  submissionIntentKey,
+  submissionRuntimeKey,
+  submissionRuntimeIntentKey,
+  onSubmissionIntentChange,
   onMentionedHandlesChange,
   onCommandTargetHandleChange,
   onCommandTargetAgentIdChange,
@@ -184,6 +292,8 @@ export function Composer({
   });
   const [pastedText, setPastedTextState] = useState<string>();
   const pastedTextRef = useRef<string>();
+  const [pastedTextEditorOpen, setPastedTextEditorOpen] = useState(false);
+  const [pastedTextEditorValue, setPastedTextEditorValue] = useState("");
   const [attachments, dispatchAttachments] = useReducer(
     composerAttachmentReducer,
     { files: [] },
@@ -197,15 +307,34 @@ export function Composer({
   });
   const assetLimits = assetLimitsQuery.data;
   const [sendError, setSendError] = useState<string>();
+  const [preparedRetry, setPreparedRetry] = useState<{
+    action: "send" | "queue";
+    submissionIntentKey?: string;
+  }>();
+  const preparedRetryAction = composerPreparedRetryAction(
+    preparedRetry,
+    submissionIntentKey,
+  );
   const [draftConflict, setDraftConflict] =
-    useState<ConversationDraftConflictDto>();
+    useState<RecoverableDraftConflict<
+      File,
+      AgentMentionBindingDto,
+      FailedDraftContent
+    >>();
+  const draftConflictGeneration = useRef(0);
+  const [restoringDraftConflict, setRestoringDraftConflict] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const previousDraftStorageKey = useRef(draftStorageKey);
   const previousConversationDraftId = useRef(conversationDraftId);
+  const uploadAuthorityStoragePrefix = draftStorageKey
+    ? recipientUploadAuthorityStoragePrefix(draftStorageKey)
+    : undefined;
   const draftRevision = useRef(0);
+  const pendingSubmissionRef = useRef<DraftPendingSubmissionDto>();
+  const pendingUploadAuthorityStorageKeys = useRef(new Set<string>());
   const draftReady = useRef(false);
-  const draftClientId = useRef(pageClientId());
-  const draftWriteChain = useRef<Promise<void>>(Promise.resolve());
+  const [initialDraftWriteChain] = useState(createDraftWriteChain);
+  const draftWriteChain = useRef<DraftWriteChain>(initialDraftWriteChain);
   const draftGeneration = useRef(0);
   const draftHydrationGeneration = useRef(0);
   const draftEditVersion = useRef(0);
@@ -213,11 +342,32 @@ export function Composer({
   const draftLocallyEdited = useRef(false);
   const draftAttachmentsLocallyEdited = useRef(false);
   const unrestoredDraftAttachmentIds = useRef<string[]>([]);
+  const pastedTextAttachmentId = useRef<string>();
+  const pastedTextMutationGeneration = useRef(0);
+  const pastedTextCleanMutationGeneration = useRef(0);
+  const pastedTextUploadGeneration = useRef(0);
+  const pastedTextUploadFailedFor = useRef<string>();
+  const [pastedTextUploading, setPastedTextUploading] = useState(false);
+  const [failedDraftContents, setFailedDraftContents] = useState<
+    FailedDraftContent[]
+  >([]);
+  const failedDraftContentsRef = useRef<FailedDraftContent[]>([]);
   const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
   const [sending, setSending] = useState(false);
+  const draftMutationLockedRef = useRef(false);
+  const [draftMutationLocked, setDraftMutationLocked] = useState(false);
+  const draftContentGeneration = useRef(0);
   const dictationSettlingRef = useRef(false);
   const [dictationSettling, setDictationSettling] = useState(false);
+  const mobile = useMediaQuery(useTheme().breakpoints.down("md"));
+  const [composerFocused, setComposerFocused] = useState(false);
+  const [dictationActive, setDictationActive] = useState(false);
+  const composerRoot = useRef<HTMLDivElement>(null);
+  const blurFrame = useRef<number>();
+  useEffect(() => () => {
+    if (blurFrame.current !== undefined) cancelAnimationFrame(blurFrame.current);
+  }, []);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
   const [suppressMenu, setSuppressMenu] = useState(false);
@@ -235,10 +385,84 @@ export function Composer({
   const [knownMentionBindings, setKnownMentionBindings] = useState<
     AgentMentionBindingDto[]
   >([]);
+  // Retain authored identities for display while loading, but do not permit sends
+  // until the current roster can validate them. A loaded deletion stays invalid.
+  const mentionBindings = mentionBindingsReady
+    ? suppliedMentionBindings
+    : knownMentionBindings;
   const inputRef = useRef<ComposerEditorHandle | null>(null);
+  const activeSubmissionIntentKeyRef = useRef(submissionIntentKey);
+  activeSubmissionIntentKeyRef.current = submissionIntentKey;
+  const previousSubmissionRuntimeKey = useRef(submissionRuntimeKey);
+  const previousSubmissionRuntimeIntentKey = useRef(submissionRuntimeIntentKey);
+  const activeDraftScopeRef = useRef(conversationDraftId);
+  activeDraftScopeRef.current = conversationDraftId;
+  const updateFailedDraftContents = useCallback(
+    (
+      next:
+        | FailedDraftContent[]
+        | ((current: FailedDraftContent[]) => FailedDraftContent[]),
+    ) => {
+      const resolved = typeof next === "function"
+        ? next(failedDraftContentsRef.current)
+        : next;
+      failedDraftContentsRef.current = resolved;
+      setFailedDraftContents(resolved);
+    },
+    [],
+  );
+  const pendingSubmissionWithLocalUploadAuthority = useCallback(
+    (draft: ConversationDraftDto) => {
+      pendingUploadAuthorityStorageKeys.current.clear();
+      const candidates = uploadAuthorityStoragePrefix && draftStorageKey &&
+          conversationDraftId && projectId
+        ? readChatStateEntries(uploadAuthorityStoragePrefix).flatMap(([key, raw]) => {
+            const value = parseRecipientUploadAuthorityOutbox(raw, {
+              draftId: conversationDraftId,
+              draftStorageKey,
+              projectId,
+              ownerId: draftOwnerId,
+            });
+            if (!value) writeChatState(key, "");
+            return value ? [{ key, value }] : [];
+          }).sort((left, right) => right.value.createdAt - left.value.createdAt)
+        : [];
+      for (const candidate of candidates) {
+        const reconciled = reconcileRecipientUploadAuthority(
+          draft.pendingSubmission,
+          candidate.value,
+          draft,
+        );
+        if (reconciled.retainLocal) {
+          pendingUploadAuthorityStorageKeys.current.add(candidate.key);
+          return reconciled.pending;
+        }
+        if (recipientUploadAuthorityConfirmed(
+          draft.pendingSubmission,
+          candidate.value,
+        )) {
+          writeChatState(candidate.key, "");
+        }
+      }
+      return draft.pendingSubmission;
+    },
+    [
+      conversationDraftId,
+      draftOwnerId,
+      draftStorageKey,
+      projectId,
+      uploadAuthorityStoragePrefix,
+    ],
+  );
   const markUserDraftMutation = useCallback(() => {
     userDraftMutationGeneration.current += 1;
-  }, []);
+    pendingSubmissionRef.current = undefined;
+    draftConflictGeneration.current += 1;
+    setDraftConflict(undefined);
+    setRestoringDraftConflict(false);
+    setPreparedRetry(undefined);
+    onSubmissionIntentChange?.();
+  }, [onSubmissionIntentChange]);
   const markDraftEdited = useCallback(() => {
     markUserDraftMutation();
     draftEditVersion.current += 1;
@@ -248,6 +472,8 @@ export function Composer({
     (next: string | ((current: string) => string)) => {
       const resolved =
         typeof next === "function" ? next(textRef.current) : next;
+      if (resolved === textRef.current) return;
+      draftContentGeneration.current += 1;
       textRef.current = resolved;
       setTextState(resolved);
     },
@@ -255,6 +481,7 @@ export function Composer({
   );
   const update = useCallback(
     (next: string | ((current: string) => string)) => {
+      if (draftMutationLockedRef.current) return;
       const resolved =
         typeof next === "function" ? next(textRef.current) : next;
       if (resolved === textRef.current) return;
@@ -265,6 +492,7 @@ export function Composer({
   );
   const insertDictatedText = useCallback(
     (transcript: string) => {
+      if (draftMutationLockedRef.current) return;
       const selection = inputRef.current?.getSelectionOffsets() ?? {
         start: textRef.current.length,
         end: textRef.current.length,
@@ -296,23 +524,30 @@ export function Composer({
     setDictationSettling(settling);
   }, []);
   useEffect(() => {
-    const handles = new Set(messageTagTokens(text).map(token => token.handle.toLocaleLowerCase()));
-    const currentById = new Map((mentionBindings ?? []).map(binding => [binding.agentId, binding]));
-    setKnownMentionBindings(previous => {
-      const byId = new Map(previous.map(binding => [binding.agentId, binding]));
-      for (const binding of mentionBindings ?? []) {
-        const matches = handles.has(binding.handle.toLocaleLowerCase()) ||
-          handles.has(binding.currentHandle.toLocaleLowerCase());
-        if (matches || byId.has(binding.agentId)) byId.set(binding.agentId, binding);
-      }
-      return [...byId.values()].filter(binding => {
-        const current = currentById.get(binding.agentId);
-        return handles.has(binding.handle.toLocaleLowerCase()) ||
-          handles.has(binding.currentHandle.toLocaleLowerCase()) ||
-          Boolean(current && handles.has(current.currentHandle.toLocaleLowerCase()));
-      });
-    });
+    setKnownMentionBindings(previous =>
+      refreshedMentionBindings(text, previous, mentionBindings ?? []));
   }, [mentionBindings, text]);
+  useEffect(() => {
+    if (previousSubmissionRuntimeKey.current === submissionRuntimeKey) return;
+    previousSubmissionRuntimeKey.current = submissionRuntimeKey;
+    pendingSubmissionRef.current = pendingSubmissionAfterRuntimeObservation(
+      pendingSubmissionRef.current,
+    );
+    if (pendingSubmissionRef.current) return;
+    setPreparedRetry(undefined);
+    onSubmissionIntentChange?.();
+  }, [onSubmissionIntentChange, submissionRuntimeKey]);
+  useEffect(() => {
+    if (previousSubmissionRuntimeIntentKey.current === submissionRuntimeIntentKey) return;
+    previousSubmissionRuntimeIntentKey.current = submissionRuntimeIntentKey;
+    if (!pendingSubmissionRef.current) return;
+    pendingSubmissionRef.current = undefined;
+    setPreparedRetry(undefined);
+    draftEditVersion.current += 1;
+    draftLocallyEdited.current = true;
+    setDraftReadyVersion(value => value + 1);
+    onSubmissionIntentChange?.();
+  }, [onSubmissionIntentChange, submissionRuntimeIntentKey]);
   const replacePastedText = useCallback(
     (
       next:
@@ -322,6 +557,8 @@ export function Composer({
     ) => {
       const resolved =
         typeof next === "function" ? next(pastedTextRef.current) : next;
+      if (resolved === pastedTextRef.current) return;
+      draftContentGeneration.current += 1;
       pastedTextRef.current = resolved;
       setPastedTextState(resolved);
     },
@@ -329,27 +566,60 @@ export function Composer({
   );
   const updatePastedText = useCallback(
     (next: string | undefined) => {
+      if (draftMutationLockedRef.current) return;
       if (next === pastedTextRef.current) return;
-      markUserDraftMutation();
+      pastedTextMutationGeneration.current += 1;
+      const displacedFailures = failedDraftContentsRef.current.filter(
+        item => item.kind === "pasted-text",
+      );
+      for (const failure of displacedFailures) {
+        draftWriteChain.current.pendingDeletionIds.add(failure.id);
+      }
+      if (displacedFailures.length > 0) {
+        updateFailedDraftContents(current =>
+          current.filter(item => item.kind !== "pasted-text"),
+        );
+      }
+      const previousAttachmentId = pastedTextAttachmentId.current;
+      pastedTextAttachmentId.current = undefined;
+      pastedTextUploadGeneration.current += 1;
+      setPastedTextUploading(false);
+      pastedTextUploadFailedFor.current = undefined;
+      markDraftEdited();
       replacePastedText(next);
+      if (conversationDraftId && previousAttachmentId) {
+        draftWriteChain.current.pendingDeletionIds.add(previousAttachmentId);
+      }
     },
-    [markUserDraftMutation, replacePastedText],
+    [
+      conversationDraftId,
+      draftOwnerId,
+      markDraftEdited,
+      replacePastedText,
+      updateFailedDraftContents,
+    ],
   );
   const invalidateDraftHydration = useCallback(() => {
     draftHydrationGeneration.current += 1;
   }, []);
   const markDraftAttachmentsEdited = useCallback(
     (removedAttachmentId?: string) => {
+      if (draftMutationLockedRef.current) return;
+      draftContentGeneration.current += 1;
       if (removedAttachmentId) {
+        draftWriteChain.current.pendingDeletionIds.add(removedAttachmentId);
         unrestoredDraftAttachmentIds.current =
           unrestoredDraftAttachmentIds.current.filter(
             id => id !== removedAttachmentId,
           );
+        updateFailedDraftContents(current =>
+          current.filter(item => item.id !== removedAttachmentId),
+        );
       }
       draftAttachmentsLocallyEdited.current = true;
       markDraftEdited();
     },
-    [markDraftEdited],
+    [markDraftEdited, updateFailedDraftContents],
   );
   const draftAttachments = useComposerDraftAttachments({
     assetLimits,
@@ -361,21 +631,165 @@ export function Composer({
     onBeforeClear: invalidateDraftHydration,
   });
   const {
-    addFiles,
+    addFiles: addDraftFiles,
     attachmentIds: draftAttachmentIds,
     attachmentVersion: draftAttachmentVersion,
     clear: clearDraftAttachments,
     locallyRemovedIds: locallyRemovedDraftAttachmentIds,
     mergeRestored: mergeRestoredDraftAttachments,
-    removeFile,
+    removeFile: removeDraftFile,
     replaceRestored: replaceRestoredDraftAttachments,
-    retryUpload: retryDraftUpload,
+    replaceSnapshot: replaceSnapshotDraftAttachments,
+    retryUpload: retryDraftUploadBase,
     uploadStates: draftUploadStates,
   } = draftAttachments;
-  const renderedDefaultDestination = destinationMode === "target-required"
-    ? defaultDestination
-    : activeDefaultDestination;
-  const composedText = composerSubmissionText(text, pastedText);
+  const addFiles = useCallback((candidates: File[]) => {
+    if (!draftMutationLockedRef.current) addDraftFiles(candidates);
+  }, [addDraftFiles]);
+  const removeFile = useCallback((index: number) => {
+    if (!draftMutationLockedRef.current) removeDraftFile(index);
+  }, [removeDraftFile]);
+  const retryDraftUpload = useCallback((file: File) => {
+    if (!draftMutationLockedRef.current) retryDraftUploadBase(file);
+  }, [retryDraftUploadBase]);
+  const removeFailedDraftContent = useCallback((id: string) => {
+    if (draftMutationLockedRef.current) return;
+    const failed = failedDraftContentsRef.current.find(item => item.id === id);
+    if (!failed) return;
+    if (failed.kind === "pasted-text") {
+      pastedTextMutationGeneration.current += 1;
+      pastedTextAttachmentId.current = undefined;
+      replacePastedText(undefined);
+    } else {
+      unrestoredDraftAttachmentIds.current =
+        unrestoredDraftAttachmentIds.current.filter(candidate => candidate !== id);
+    }
+    draftWriteChain.current.pendingDeletionIds.add(id);
+    locallyRemovedDraftAttachmentIds.current.add(id);
+    updateFailedDraftContents(current => current.filter(item => item.id !== id));
+    dispatchAttachments({ type: "clear_error" });
+    markDraftEdited();
+  }, [
+    dispatchAttachments,
+    locallyRemovedDraftAttachmentIds,
+    markDraftEdited,
+    replacePastedText,
+    updateFailedDraftContents,
+  ]);
+  const retryFailedDraftContent = useCallback(async (id: string) => {
+    if (draftMutationLockedRef.current) return;
+    const failed = failedDraftContentsRef.current.find(item => item.id === id);
+    if (!failed || !conversationDraftId) return;
+    const scope = conversationDraftId;
+    const hydrationGeneration = draftHydrationGeneration.current;
+    const pasteMutationGeneration = pastedTextMutationGeneration.current;
+    const stillOwnsFailure = () =>
+      draftContentRetryStillOwned({
+        capturedScope: scope,
+        currentScope: activeDraftScopeRef.current,
+        capturedHydrationGeneration: hydrationGeneration,
+        currentHydrationGeneration: draftHydrationGeneration.current,
+        removed: locallyRemovedDraftAttachmentIds.current.has(id),
+        failurePresent: failedDraftContentsRef.current.some(item =>
+          item.id === id && item.kind === failed.kind),
+      });
+    const canApplyPaste = () =>
+      stillOwnsFailure() && draftContentRetryStillOwned({
+        capturedScope: scope,
+        currentScope: activeDraftScopeRef.current,
+        capturedHydrationGeneration: hydrationGeneration,
+        currentHydrationGeneration: draftHydrationGeneration.current,
+        removed: locallyRemovedDraftAttachmentIds.current.has(id),
+        failurePresent: true,
+        capturedPasteMutationGeneration: pasteMutationGeneration,
+        currentPasteMutationGeneration: pastedTextMutationGeneration.current,
+      });
+    setSendError(undefined);
+    try {
+      const refreshedDraft = failed.attachment
+        ? undefined
+        : await api.getConversationDraft(scope, draftOwnerId);
+      if (!stillOwnsFailure()) return;
+      const attachment = failed.attachment ??
+        (failed.kind === "pasted-text"
+          ? refreshedDraft?.pastedTextAttachment
+          : refreshedDraft?.attachments?.find(item => item.id === id));
+      if (!attachment) throw new Error("The staged content is no longer available.");
+      const file = await api.downloadDraftAttachment(attachment);
+      if (failed.kind === "pasted-text" ? !canApplyPaste() : !stillOwnsFailure()) {
+        return;
+      }
+      if (failed.kind === "pasted-text") {
+        const restoredText = await file.text();
+        if (!canApplyPaste()) return;
+        pastedTextMutationGeneration.current += 1;
+        pastedTextCleanMutationGeneration.current =
+          pastedTextMutationGeneration.current;
+        pastedTextAttachmentId.current = id;
+        replacePastedText(restoredText);
+      } else {
+        mergeRestoredDraftAttachments([{ attachment, file }]);
+        unrestoredDraftAttachmentIds.current =
+          unrestoredDraftAttachmentIds.current.filter(candidate => candidate !== id);
+      }
+      if (!stillOwnsFailure()) return;
+      updateFailedDraftContents(current => current.filter(item => item.id !== id));
+      dispatchAttachments({ type: "clear_error" });
+    } catch (error) {
+      if (!stillOwnsFailure()) return;
+      setSendError(
+        error instanceof Error ? error.message : "Draft content could not be restored.",
+      );
+    }
+  }, [
+    conversationDraftId,
+    draftOwnerId,
+    dispatchAttachments,
+    mergeRestoredDraftAttachments,
+    replacePastedText,
+    updateFailedDraftContents,
+  ]);
+  const exclusiveDestinationHandles = useMemo(
+    () => [...new Set([...(mentionHandles ?? []), "broadcast", "everyone"])],
+    [mentionHandles],
+  );
+  const routingDestinationsEnabled =
+    composerSupportsRoutingDestinations(destinationMode);
+  const normalizedDestinationDraft = normalizeExclusiveNewAgentDestinationForMode(
+    destinationMode,
+    text,
+    exclusiveDestinationHandles,
+  );
+  useEffect(() => {
+    if (normalizedDestinationDraft.text !== text) {
+      update(normalizedDestinationDraft.text);
+    }
+  }, [normalizedDestinationDraft.text, text, update]);
+  const newAgentSelected =
+    routingDestinationsEnabled &&
+    hasComposerDestination(
+      normalizedDestinationDraft.text,
+      NEW_AGENT_DESTINATION_HANDLE,
+    );
+  const visibleSubmissionText = newAgentSelected
+    ? singleComposerDestination(
+        normalizedDestinationDraft.text,
+        NEW_AGENT_DESTINATION_HANDLE,
+      )
+    : normalizedDestinationDraft.text;
+  const composedText = composerSubmissionText(visibleSubmissionText, pastedText);
+  const renderedDefaultDestination = newAgentSelected
+    ? undefined
+    : destinationMode === "target-required"
+      ? defaultDestination
+      : activeDefaultDestination;
+  const durableRequest = pendingSubmissionRef.current?.request;
+  const durableRetryAction = composerDurableRetryAction(
+    preparedRetryAction,
+    durableRequest?.runtime.activeRunDelivery,
+  );
+  const renderedDestinationIdentityRef = useRef<string>();
+  renderedDestinationIdentityRef.current = renderedDefaultDestination?.selectionKey;
   const submissionText =
     (destinationMode === "project-chat" || destinationMode === "target-required") &&
     renderedDefaultDestination
@@ -387,26 +801,64 @@ export function Composer({
   const routingMentionHandles = useMemo(
     () =>
       destinationMode === "project-chat" || destinationMode === "target-required"
-        ? [...new Set([...(mentionHandles ?? []), NEW_AGENT_DESTINATION_HANDLE])]
+        ? [
+            ...new Set([
+              ...(mentionHandles ?? []),
+              ...knownMentionBindings.map(binding => binding.handle),
+              ...(durableRequest?.mentionBindings ?? []).flatMap(binding => [
+                binding.handle,
+                binding.currentHandle,
+              ]),
+              NEW_AGENT_DESTINATION_HANDLE,
+            ]),
+          ]
         : (mentionHandles ?? []),
-    [destinationMode, mentionHandles],
+    [destinationMode, durableRequest, knownMentionBindings, mentionHandles],
+  );
+  const visibleRoutingText = renderedDefaultDestination
+    ? prependComposerDestination(
+        visibleSubmissionText,
+        renderedDefaultDestination.handle,
+      )
+    : visibleSubmissionText;
+  const durableRoutingText = (durableRequest?.mentionBindings ?? []).reduce(
+    (current, binding) =>
+      hasComposerDestination(current, binding.handle) ||
+        hasComposerDestination(current, binding.currentHandle)
+        ? current
+        : prependComposerDestination(current, binding.handle),
+    visibleRoutingText,
   );
   const mentionedHandles = useMemo(
-    () => findMentionedHandles(submissionText, routingMentionHandles),
-    [routingMentionHandles, submissionText],
+    () => findMentionedHandles(durableRoutingText, routingMentionHandles),
+    [durableRoutingText, routingMentionHandles],
   );
   const mentionTokens = useMemo<ComposerMentionToken[]>(() => {
     const currentById = new Map((mentionBindings ?? []).map(binding => [binding.agentId, binding]));
     const byHandle = new Map<string, AgentMentionBindingDto>();
-    for (const binding of [...knownMentionBindings, ...(mentionBindings ?? [])]) {
+    for (const binding of mentionBindings ?? []) {
       byHandle.set(binding.handle.toLocaleLowerCase(), binding);
       byHandle.set(binding.currentHandle.toLocaleLowerCase(), binding);
     }
+    const knownByHandle = new Map<string, AgentMentionBindingDto[]>();
+    for (const binding of knownMentionBindings) {
+      for (const handle of [binding.handle, binding.currentHandle]) {
+        const normalized = handle.toLocaleLowerCase();
+        const matches = knownByHandle.get(normalized) ?? [];
+        matches.push(binding);
+        knownByHandle.set(normalized, matches);
+      }
+    }
+    for (const [handle, matches] of knownByHandle) {
+      const owners = new Set(matches.map(binding => binding.agentId));
+      if (owners.size === 1) byHandle.set(handle, matches[0]!);
+      else byHandle.delete(handle);
+    }
     const tokens: ComposerMentionToken[] = [];
     for (const token of messageTagTokens(text)) {
-      const specialTitle = SPECIAL_MENTION_TITLES.get(
-        token.handle.toLocaleLowerCase(),
-      );
+      const specialTitle = routingDestinationsEnabled
+        ? SPECIAL_MENTION_TITLES.get(token.handle.toLocaleLowerCase())
+        : undefined;
       if (specialTitle) {
         tokens.push({
           start: token.start,
@@ -424,7 +876,7 @@ export function Composer({
       tokens.push({
         start: token.start,
         end: token.end,
-        handle: current?.currentHandle ?? token.handle,
+        handle: token.handle,
         title: current?.currentTitle ?? binding.currentTitle,
         valid: Boolean(current),
         kind: "agent",
@@ -432,14 +884,11 @@ export function Composer({
       });
     }
     return tokens;
-  }, [knownMentionBindings, mentionBindings, text]);
-  const invalidMention = mentionTokens.find(token => !token.valid);
-  const newAgentSelected = mentionedHandles.some(
-      handle =>
-        handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE,
-    );
+  }, [knownMentionBindings, mentionBindings, routingDestinationsEnabled, text]);
+  const invalidMention = mentionTokens.find(token =>
+    !token.valid && (!token.agentId || !durableRequest?.recipientAgentIds.includes(token.agentId)));
   const authoredProjectDestinationHandles = destinationMode === "project-chat"
-    ? findMentionedHandles(composedText, routingMentionHandles).filter(
+    ? findMentionedHandles(visibleSubmissionText, routingMentionHandles).filter(
         handle =>
           ![
             "broadcast",
@@ -452,8 +901,8 @@ export function Composer({
     ? [
         ...new Map(
           [
-            ...(activeDefaultDestination
-              ? [activeDefaultDestination.handle]
+            ...(renderedDefaultDestination
+              ? [renderedDefaultDestination.handle]
               : []),
             ...authoredProjectDestinationHandles,
           ].map(handle => [handle.toLocaleLowerCase(), handle]),
@@ -475,7 +924,7 @@ export function Composer({
   }));
   const ambiguousTargetRequiredHandles =
     destinationMode === "target-required"
-      ? findMentionedHandles(submissionText, ambiguousMentionHandles ?? [])
+      ? findMentionedHandles(visibleRoutingText, ambiguousMentionHandles ?? [])
       : [];
   const unresolvedAmbiguousTarget = ambiguousTargetRequiredHandles.find(
     handle =>
@@ -483,7 +932,17 @@ export function Composer({
       requiredRecipient.handle.toLocaleLowerCase() !==
         handle.toLocaleLowerCase(),
   );
-  const hasBroadcastDestination = hasBroadcastMention(submissionText);
+  const unresolvedAuthoredTarget = [
+    ...authoredProjectDestinationHandles,
+    ...targetRequiredHandles,
+  ].find(handle => !resolvedMentionBinding(
+    handle,
+    knownMentionBindings,
+    mentionBindings ?? [],
+  ) && !pendingSubmissionRef.current?.request?.mentionBindings?.some(binding =>
+    binding.handle.toLocaleLowerCase() === handle.toLocaleLowerCase() ||
+    binding.currentHandle.toLocaleLowerCase() === handle.toLocaleLowerCase()));
+  const hasBroadcastDestination = hasBroadcastMention(visibleRoutingText);
   const hasEveryoneDestination =
     destinationMode === "project-chat" &&
     mentionedHandles.some(handle => handle.toLocaleLowerCase() === "everyone");
@@ -508,11 +967,8 @@ export function Composer({
     destinationMode === "project-chat" &&
       !hasBroadcastDestination &&
       !hasEveryoneDestination &&
-      activeDefaultDestination?.binding &&
-      projectDestinations.length === 1 &&
-      projectDestinations[0]?.handle.toLocaleLowerCase() ===
-        activeDefaultDestination.handle.toLocaleLowerCase()
-      ? activeDefaultDestination.binding.agentId
+      projectDestinations.length === 1
+      ? resolvedMentionBinding(projectDestinations[0]!.handle, knownMentionBindings, mentionBindings ?? [])?.agentId
       : destinationMode === "fixed"
         ? defaultDestination?.binding?.agentId
         : undefined;
@@ -525,6 +981,8 @@ export function Composer({
   const destinationError =
     invalidMention
       ? `#${invalidMention.handle} no longer identifies an available Agent. Remove it before sending.`
+      : unresolvedAuthoredTarget
+        ? `#${unresolvedAuthoredTarget} does not identify one available Agent. Remove it or choose an Agent again.`
       : destinationMode === "target-required" && hasBroadcastDestination
       ? targetRequiredDestinations.length > 0
         ? "Broadcast is only available in a Project Chat."
@@ -533,28 +991,39 @@ export function Composer({
           ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
           : undefined;
   const toggleNewAgentDestination = () => {
-    const selectingNewAgent = !hasComposerDestination(
-      textRef.current,
-      NEW_AGENT_DESTINATION_HANDLE,
-    );
+    if (draftMutationLockedRef.current) return;
+    const selectingNewAgent = !newAgentSelected;
     update(current => {
       if (!selectingNewAgent) {
-        return removeHandle(
-          current,
-          NEW_AGENT_DESTINATION_HANDLE,
-        );
+        const next = removeComposerDestinations(current, [NEW_AGENT_DESTINATION_HANDLE]);
+        return destinationMode === "project-chat" && defaultDestination
+          ? prependComposerDestination(next, defaultDestination.handle)
+          : next;
       }
-      return prependComposerDestination(current, NEW_AGENT_DESTINATION_HANDLE);
+      return prependComposerDestination(
+        removeComposerDestinations(current, [
+          NEW_AGENT_DESTINATION_HANDLE,
+          ...targetRequiredHandles,
+          ...authoredProjectDestinationHandles,
+          "broadcast",
+          "everyone",
+        ]),
+        NEW_AGENT_DESTINATION_HANDLE,
+      );
     });
+    if (selectingNewAgent) requiredRecipient?.onClear();
     setActiveDefaultDestination(
-      selectingNewAgent ? undefined : defaultDestination,
+      selectingNewAgent || destinationMode === "project-chat" ? undefined : defaultDestination,
     );
     requestAnimationFrame(() => inputRef.current?.focus());
   };
   const clearActiveDefaultDestination = useCallback(() => {
+    if (draftMutationLockedRef.current) return;
     setActiveDefaultDestination(undefined);
   }, []);
   const clearRequiredRecipient = () => {
+    if (draftMutationLockedRef.current) return;
+    markUserDraftMutation();
     const handle = targetRequiredHandles[0] ?? requiredRecipient?.handle;
     if (handle) update(current => removeHandle(current, handle));
     requiredRecipient?.onClear();
@@ -570,27 +1039,41 @@ export function Composer({
     text: submissionText,
     disabled,
     running: composerLocked,
-    allowUnmentionedSend,
+    allowUnmentionedSend:
+      allowUnmentionedSend || Boolean(durableRetryAction),
     mentionedHandles,
     mentionedBusyHandles,
   });
-  const targetRequiredRecipientTagged =
-    destinationMode !== "target-required" ||
-    newAgentSelected ||
-    Boolean(
-      requiredRecipient &&
-      targetRequiredHandles.some(handle =>
-        requiredRecipient.handle.toLocaleLowerCase() === handle.toLocaleLowerCase()),
-    );
+  const liveRequiredRecipientTagged = Boolean(
+    requiredRecipient &&
+    targetRequiredHandles.some(handle =>
+      requiredRecipient.handle.toLocaleLowerCase() === handle.toLocaleLowerCase()),
+  );
+  const targetRequiredRecipientTagged = composerRecipientGateSatisfied({
+    destinationMode,
+    newAgentSelected,
+    requiredRecipientTagged: liveRequiredRecipientTagged,
+    retryPrepared: Boolean(durableRetryAction || durableRequest),
+  });
   const draftUploadsReady =
     !conversationDraftId ||
     files.every(file => draftAttachmentIds.current.has(file));
+  const durableContentReady = durableDraftContentReady({
+    conversationDraftId,
+    filesReady: files.every(file => draftAttachmentIds.current.has(file)),
+    pastedTextPresent: Boolean(pastedText),
+    pastedTextAttachmentId: pastedTextAttachmentId.current,
+    pastedTextUploading,
+    failedRestoreCount: failedDraftContents.length,
+  });
   const canSend =
+    mentionBindingsReady &&
     !sending &&
     !dictationSettling &&
-    !destinationError &&
+    (!destinationError || Boolean(durableRetryAction) || Boolean(pendingSubmissionRef.current?.request)) &&
     targetRequiredRecipientTagged &&
     draftUploadsReady &&
+    durableContentReady &&
     (textCanSend ||
       (!disabled &&
         !composerLocked &&
@@ -617,10 +1100,10 @@ export function Composer({
     draftQuery,
     draftReady,
     draftReadyVersion,
+    mutationLocked: draftMutationLocked,
     inputRef,
     insertTextRequest,
     setCaret,
-    updateText: update,
   });
 
   useComposerMentionedHandlesChange({
@@ -651,57 +1134,195 @@ export function Composer({
     const changed = previousConversationDraftId.current !== conversationDraftId;
     previousConversationDraftId.current = conversationDraftId;
     if (changed) {
+      draftGeneration.current += 1;
+      draftWriteChain.current = createDraftWriteChain();
+      pastedTextMutationGeneration.current += 1;
+      pastedTextCleanMutationGeneration.current =
+        pastedTextMutationGeneration.current;
+      pastedTextUploadGeneration.current += 1;
+      pastedTextAttachmentId.current = undefined;
+      setPastedTextUploading(false);
+      updateFailedDraftContents([]);
+      draftConflictGeneration.current += 1;
+      setDraftConflict(undefined);
+      setRestoringDraftConflict(false);
+      replacePastedText(undefined);
       draftReady.current = false;
       draftLocallyEdited.current = false;
       draftAttachmentsLocallyEdited.current = false;
       unrestoredDraftAttachmentIds.current = [];
       draftRevision.current = 0;
+      pendingSubmissionRef.current = undefined;
+      setKnownMentionBindings([]);
       clearDraftAttachments();
     }
-  }, [conversationDraftId]);
+  }, [
+    conversationDraftId,
+    clearDraftAttachments,
+    replacePastedText,
+    updateFailedDraftContents,
+  ]);
+
+  useEffect(() => () => {
+    activeDraftScopeRef.current = undefined;
+    draftGeneration.current += 1;
+  }, []);
 
   useEffect(() => {
     const draft = draftQuery.data;
     if (
+      sendingRef.current ||
       !conversationDraftId ||
       !draft ||
       (draftReady.current && draft.revision <= draftRevision.current)
     )
       return;
     let cancelled = false;
-    const hydrationGeneration = draftHydrationGeneration.current;
+    const hydrationGeneration = ++draftHydrationGeneration.current;
+    const pastedTextCleanMutationAtStart =
+      pastedTextCleanMutationGeneration.current;
     const apply = async () => {
-      const restored = await Promise.all(
-        (draft.attachments ?? []).map(
-          async (attachment: DraftAttachmentDto) => ({
+      const attachmentById = new Map(
+        (draft.attachments ?? []).map(attachment => [attachment.id, attachment]),
+      );
+      const restoredResults = await Promise.allSettled(
+        draft.attachmentIds.map(async id => {
+          const attachment = attachmentById.get(id);
+          if (!attachment) throw new Error("Draft attachment metadata is unavailable.");
+          return {
             attachment,
             file: await api.downloadDraftAttachment(attachment),
-          }),
-        ),
+          };
+        }),
       );
+      const restored = restoredResults.flatMap(result =>
+        result.status === "fulfilled" ? [result.value] : [],
+      );
+      const failedAttachments = restoredResults.flatMap((result, index) => {
+        if (result.status === "fulfilled") return [];
+        const id = draft.attachmentIds[index]!;
+        const attachment = attachmentById.get(id);
+        return [{
+          id,
+          name: attachment?.name ?? "Staged attachment",
+          kind: "attachment" as const,
+          ...(attachment ? { attachment } : {}),
+        }];
+      }).filter(item => !locallyRemovedDraftAttachmentIds.current.has(item.id));
+      let restoredPastedText: string | undefined;
+      let failedPastedText: FailedDraftContent | undefined;
+      if (draft.pastedTextAttachmentId) {
+        try {
+          if (!draft.pastedTextAttachment) {
+            throw new Error("Pasted-text metadata is unavailable.");
+          }
+          restoredPastedText = await (
+            await api.downloadDraftAttachment(draft.pastedTextAttachment)
+          ).text();
+        } catch {
+          if (!locallyRemovedDraftAttachmentIds.current.has(
+            draft.pastedTextAttachmentId,
+          )) {
+            failedPastedText = {
+              id: draft.pastedTextAttachmentId,
+              name: "Pasted text",
+              kind: "pasted-text",
+              ...(draft.pastedTextAttachment
+                ? { attachment: draft.pastedTextAttachment }
+                : {}),
+            };
+          }
+        }
+      }
       if (
         cancelled ||
         hydrationGeneration !== draftHydrationGeneration.current ||
         draft.revision < draftRevision.current
       )
         return;
+      draftRevision.current = draft.revision;
+      const local = draftStorageKey
+        ? (readChatState(draftStorageKey) ?? "")
+        : "";
+      const adoptDraft = shouldAdoptHydratedDraft(
+        inputRef.current?.isFocused() ?? false,
+        draftLocallyEdited.current,
+      );
+      draftWriteChain.current.ownedRevision = ownedDraftRevisionAfterObservation(
+        draftWriteChain.current.ownedRevision,
+        draft.revision,
+        adoptDraft,
+      );
+      if (!adoptDraft) {
+        draftReady.current = true;
+        setDraftReadyVersion(value => value + 1);
+        return;
+      }
+      pendingSubmissionRef.current = pendingSubmissionWithLocalUploadAuthority(
+        draft,
+      );
+      draftContentGeneration.current += 1;
       if (!draftAttachmentsLocallyEdited.current) {
         replaceRestoredDraftAttachments(restored);
       } else {
         mergeRestoredDraftAttachments(restored);
       }
-      unrestoredDraftAttachmentIds.current = [];
-      draftRevision.current = draft.revision;
-      const local = draftStorageKey
-        ? (readChatState(draftStorageKey) ?? "")
-        : "";
-      const focusedOrEdited =
-        inputRef.current?.isFocused() || draftLocallyEdited.current;
-      if (!focusedOrEdited) {
-        const nextText =
-          draft.revision === 0 && local && !draft.text ? local : draft.text;
-        replaceText(nextText);
-        if (draftStorageKey) writeChatState(draftStorageKey, nextText);
+      unrestoredDraftAttachmentIds.current = failedAttachments.map(item => item.id);
+      const hydratedPastedText = hydratedPastedTextContent({
+        attachmentId: draft.pastedTextAttachmentId,
+        restoredText: restoredPastedText,
+        failure: failedPastedText,
+        cleanMutationGeneration: pastedTextCleanMutationAtStart,
+        currentMutationGeneration: pastedTextMutationGeneration.current,
+      });
+      if (
+        !hydratedPastedText &&
+        draft.pastedTextAttachmentId &&
+        pastedTextAttachmentId.current !== draft.pastedTextAttachmentId
+      ) {
+        draftWriteChain.current.pendingDeletionIds.add(
+          draft.pastedTextAttachmentId,
+        );
+      }
+      updateFailedDraftContents(current => [
+        ...failedAttachments,
+        ...(hydratedPastedText
+          ? hydratedPastedText.failure
+            ? [hydratedPastedText.failure]
+            : []
+          : current.filter(item => item.kind === "pasted-text")),
+      ]);
+      if (hydratedPastedText) {
+        const previousPastedTextAttachmentId = pastedTextAttachmentId.current;
+        if (
+          previousPastedTextAttachmentId &&
+          previousPastedTextAttachmentId !== hydratedPastedText.attachmentId
+        ) {
+          draftWriteChain.current.pendingDeletionIds.add(
+            previousPastedTextAttachmentId,
+          );
+        }
+        pastedTextAttachmentId.current = hydratedPastedText.attachmentId;
+        replacePastedText(
+          hydratedPastedText.failure ? undefined : hydratedPastedText.text,
+        );
+        pastedTextCleanMutationGeneration.current =
+          pastedTextMutationGeneration.current;
+      }
+      const hydrated = hydratedDraftContent(
+        draft.revision,
+        draft.text,
+        local,
+        draft.mentionBindings ?? [],
+      );
+      replaceText(hydrated.text);
+      setKnownMentionBindings([...hydrated.mentionBindings]);
+      if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
+      if (failedAttachments.length || hydratedPastedText?.failure) {
+        dispatchAttachments({
+          type: "set_error",
+          error: "Some staged draft content could not be restored.",
+        });
       }
       draftReady.current = true;
       setDraftReadyVersion(value => value + 1);
@@ -712,28 +1333,103 @@ export function Composer({
         hydrationGeneration === draftHydrationGeneration.current
       ) {
         draftRevision.current = draft.revision;
+        const adoptDraft = shouldAdoptHydratedDraft(
+          inputRef.current?.isFocused() ?? false,
+          draftLocallyEdited.current,
+        );
+        draftWriteChain.current.ownedRevision = ownedDraftRevisionAfterObservation(
+          draftWriteChain.current.ownedRevision,
+          draft.revision,
+          adoptDraft,
+        );
+        if (!adoptDraft) {
+          draftReady.current = true;
+          setDraftReadyVersion(value => value + 1);
+          return;
+        }
+        pendingSubmissionRef.current = pendingSubmissionWithLocalUploadAuthority(
+          draft,
+        );
+        draftContentGeneration.current += 1;
         unrestoredDraftAttachmentIds.current = draft.attachmentIds.filter(
           id => !locallyRemovedDraftAttachmentIds.current.has(id),
         );
-        const focusedOrEdited =
-          inputRef.current?.isFocused() || draftLocallyEdited.current;
+        const failedPastedText =
+          draft.pastedTextAttachmentId &&
+          !locallyRemovedDraftAttachmentIds.current.has(
+            draft.pastedTextAttachmentId,
+          )
+            ? {
+                id: draft.pastedTextAttachmentId,
+                name: "Pasted text",
+                kind: "pasted-text" as const,
+                ...(draft.pastedTextAttachment
+                  ? { attachment: draft.pastedTextAttachment }
+                  : {}),
+              }
+            : undefined;
+        const hydratedPastedText = hydratedPastedTextContent({
+          attachmentId: draft.pastedTextAttachmentId,
+          failure: failedPastedText,
+          cleanMutationGeneration: pastedTextCleanMutationAtStart,
+          currentMutationGeneration: pastedTextMutationGeneration.current,
+        });
+        if (
+          !hydratedPastedText &&
+          draft.pastedTextAttachmentId &&
+          pastedTextAttachmentId.current !== draft.pastedTextAttachmentId
+        ) {
+          draftWriteChain.current.pendingDeletionIds.add(
+            draft.pastedTextAttachmentId,
+          );
+        }
+        updateFailedDraftContents(current => [
+          ...draft.attachmentIds
+            .filter(id => !locallyRemovedDraftAttachmentIds.current.has(id))
+            .map(id => ({ id, name: "Staged attachment", kind: "attachment" as const })),
+          ...(hydratedPastedText
+            ? hydratedPastedText.failure
+              ? [hydratedPastedText.failure]
+              : []
+            : current.filter(item => item.kind === "pasted-text")),
+        ]);
+        if (hydratedPastedText) {
+          const previousPastedTextAttachmentId = pastedTextAttachmentId.current;
+          if (
+            previousPastedTextAttachmentId &&
+            previousPastedTextAttachmentId !== hydratedPastedText.attachmentId
+          ) {
+            draftWriteChain.current.pendingDeletionIds.add(
+              previousPastedTextAttachmentId,
+            );
+          }
+          pastedTextAttachmentId.current = hydratedPastedText.attachmentId;
+          replacePastedText(undefined);
+          pastedTextCleanMutationGeneration.current =
+            pastedTextMutationGeneration.current;
+        }
         const local = draftStorageKey
           ? (readChatState(draftStorageKey) ?? "")
           : "";
-        if (!focusedOrEdited && !local) {
-          replaceText(draft.text);
-          if (draftStorageKey) writeChatState(draftStorageKey, draft.text);
-        }
+        const hydrated = hydratedDraftContent(
+          draft.revision,
+          draft.text,
+          local,
+          draft.mentionBindings ?? [],
+        );
+        replaceText(hydrated.text);
+        setKnownMentionBindings([...hydrated.mentionBindings]);
+        if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
         if (!draftAttachmentsLocallyEdited.current) {
           dispatchAttachments({
             type: "replace",
             files: [],
-            error: "Some staged draft attachments could not be restored.",
+            error: "Some staged draft content could not be restored.",
           });
         } else {
           dispatchAttachments({
             type: "set_error",
-            error: "Some staged draft attachments could not be restored.",
+            error: "Some staged draft content could not be restored.",
           });
         }
         draftReady.current = true;
@@ -743,21 +1439,88 @@ export function Composer({
     return () => {
       cancelled = true;
     };
-  }, [conversationDraftId, draftQuery.data, draftStorageKey]);
+  }, [
+    conversationDraftId,
+    draftQuery.data,
+    draftStorageKey,
+    sending,
+    pendingSubmissionWithLocalUploadAuthority,
+    updateFailedDraftContents,
+  ]);
 
   useEffect(() => {
+    if (
+      !conversationDraftId ||
+      !draftReady.current ||
+      !pastedText ||
+      pastedTextAttachmentId.current ||
+      pastedTextUploading
+    ) return;
+    const fingerprint = `${conversationDraftId}\u0000${pastedText}`;
+    if (pastedTextUploadFailedFor.current === fingerprint) return;
+    const generation = ++pastedTextUploadGeneration.current;
+    setPastedTextUploading(true);
+    void api.uploadDraftAttachment(
+      conversationDraftId,
+      draftOwnerId,
+      new File([pastedText], PASTED_TEXT_DRAFT_NAME, { type: "text/plain" }),
+    ).then(attachment => {
+      if (
+        generation !== pastedTextUploadGeneration.current ||
+        pastedTextRef.current !== pastedText ||
+        previousConversationDraftId.current !== conversationDraftId
+      ) {
+        void api.deleteDraftAttachment(
+          conversationDraftId,
+          draftOwnerId,
+          attachment.id,
+        ).catch(() => undefined);
+        return;
+      }
+      pastedTextAttachmentId.current = attachment.id;
+      pastedTextUploadFailedFor.current = undefined;
+      setDraftReadyVersion(value => value + 1);
+    }).catch((error: unknown) => {
+      if (generation !== pastedTextUploadGeneration.current) return;
+      pastedTextUploadFailedFor.current = fingerprint;
+      setSendError(
+        error instanceof Error ? error.message : "Pasted text could not be staged.",
+      );
+    }).finally(() => {
+      if (generation === pastedTextUploadGeneration.current) {
+        setPastedTextUploading(false);
+      }
+    });
+  }, [
+    conversationDraftId,
+    draftOwnerId,
+    draftReadyVersion,
+    pastedText,
+    pastedTextUploading,
+  ]);
+
+  useEffect(() => {
+    // A reply can arrive through SSE before the send request acknowledges.
+    // Do not rewrite that submission's text/destination while it is settling.
+    if (sendingRef.current) return;
     if (conversationDraftId && !draftReady.current) return;
     const previous = appliedDefaultDestination.current;
     if (!defaultDestination) {
-      appliedDefaultDestination.current = undefined;
+      if (destinationMode !== "project-chat") appliedDefaultDestination.current = undefined;
       setActiveDefaultDestination(undefined);
       return;
     }
+    const selectingDestination =
+      previous?.selectionKey !== defaultDestination.selectionKey;
     if (destinationMode === "target-required") {
       appliedDefaultDestination.current = defaultDestination;
       setActiveDefaultDestination(undefined);
       const normalizedText = removeAllComposerDestinations(
-        textRef.current,
+        selectingDestination
+          ? removeComposerDestinations(textRef.current, [
+              NEW_AGENT_DESTINATION_HANDLE,
+            ])
+          : textRef.current,
         defaultDestination.handle,
       );
       if (normalizedText !== textRef.current) replaceText(normalizedText);
@@ -768,35 +1531,20 @@ export function Composer({
       setActiveDefaultDestination(undefined);
       return;
     }
-    if (previous?.selectionKey === defaultDestination.selectionKey) {
-      appliedDefaultDestination.current = defaultDestination;
-      setActiveDefaultDestination(current =>
-        current?.selectionKey === defaultDestination.selectionKey
-          ? defaultDestination
-          : current,
-      );
-      return;
-    }
+    if (previous?.selectionKey === defaultDestination.selectionKey) return;
+    const editor = inputRef.current;
+    if (!editor || draftMutationLockedRef.current) return;
+    // A continuation is a normal authored token, not an ephemeral overlay.
+    // Seed only an empty draft: refreshes/new replies must never retarget work.
+    const currentText = editor.getCanonicalText();
+    if (textRef.current.trim() || currentText.trim()) return;
     appliedDefaultDestination.current = defaultDestination;
-    const nextText = textRef.current;
-    const normalizedText = removeAllComposerDestinations(
-      nextText,
-      defaultDestination.handle,
-    );
-    const previousWasActive = Boolean(
-      previous &&
-      activeDefaultDestination?.selectionKey === previous.selectionKey,
-    );
-    const destinationWasInline = normalizedText !== nextText;
-    const mayActivate = normalizedText.trim().length === 0
-      || previousWasActive
-      || destinationWasInline;
-    if (mayActivate) {
-      setActiveDefaultDestination(defaultDestination);
-    } else {
-      setActiveDefaultDestination(undefined);
+    const nextText = prependComposerDestination(currentText, defaultDestination.handle);
+    if (defaultDestination.binding) {
+      const binding = defaultDestination.binding;
+      setKnownMentionBindings(previous => refreshedMentionBindings(nextText, previous, [binding, ...(mentionBindings ?? [])]));
     }
-    if (destinationWasInline) replaceText(normalizedText);
+    editor.replaceCanonicalRange(0, currentText.length, nextText, { focus: false });
   }, [
     conversationDraftId,
     activeDefaultDestination?.selectionKey,
@@ -805,7 +1553,9 @@ export function Composer({
     defaultDestination?.selectionKey,
     destinationMode,
     draftReadyVersion,
+    draftMutationLocked,
     replaceText,
+    sending,
   ]);
 
   useComposerDraftStorageWrite({
@@ -817,14 +1567,26 @@ export function Composer({
   useEffect(() => {
     if (
       !conversationDraftId ||
+      sendingRef.current ||
       !draftReady.current ||
-      !draftClientId.current ||
       !draftLocallyEdited.current
     )
       return;
+    const scheduledGeneration = draftGeneration.current;
     const timer = window.setTimeout(() => {
+      // A queued debounce must not revive a sent draft or save an empty
+      // snapshot after this surface has already relinquished draft ownership.
+      if (sendingRef.current || !draftLocallyEdited.current ||
+          scheduledGeneration !== draftGeneration.current) return;
+      // Store the extracted paste and its draft reference as one logical draft
+      // update. A partial write must never make a reload silently lose it.
+      if (pastedText && !pastedTextAttachmentId.current) return;
       const generation = draftGeneration.current;
       const editVersion = draftEditVersion.current;
+      const submittedPastedTextAttachmentId =
+        pastedTextAttachmentId.current;
+      const submittedPastedTextMutationGeneration =
+        pastedTextMutationGeneration.current;
       const visibleAttachmentIds = files
         .map(file => draftAttachmentIds.current.get(file))
         .filter(
@@ -842,19 +1604,95 @@ export function Composer({
       );
       const attachmentsResolved =
         visibleAttachmentIds.length === files.length;
-      const clientId = draftClientId.current!;
-      draftWriteChain.current = draftWriteChain.current.then(async () => {
-        if (generation !== draftGeneration.current) return;
+      const writeChain = draftWriteChain.current;
+      const clientId = writeChain.clientId;
+      const scope = conversationDraftId;
+      const snapshot = {
+        text,
+        attachmentIds,
+        files: files.flatMap(file => {
+          const attachmentId = draftAttachmentIds.current.get(file);
+          return attachmentId && attachmentIds.includes(attachmentId)
+            ? [{ file, attachmentId }]
+            : [];
+        }),
+        ...(pastedText !== undefined ? { pastedText } : {}),
+        ...(submittedPastedTextAttachmentId
+          ? { pastedTextAttachmentId: submittedPastedTextAttachmentId }
+          : {}),
+        mentionBindings: [...knownMentionBindings],
+        ...(pendingSubmissionRef.current
+          ? { pendingSubmission: pendingSubmissionRef.current }
+          : {}),
+        failedContents: [...failedDraftContentsRef.current],
+      };
+      writeChain.tail = settledDraftWriteContinuation(writeChain.tail, async () => {
+        const stillOwnsWrite = () => draftWriteContinuationStillOwned({
+          capturedScope: scope,
+          currentScope: activeDraftScopeRef.current,
+          capturedGeneration: generation,
+          currentGeneration: draftGeneration.current,
+        });
+        if (!stillOwnsWrite()) return;
         try {
-          const draft = await api.putConversationDraft(conversationDraftId, {
+          const draft = await api.putConversationDraft(scope, {
             text,
             attachmentIds,
-            expectedRevision: draftRevision.current,
+            ...(submittedPastedTextAttachmentId
+              ? { pastedTextAttachmentId: submittedPastedTextAttachmentId }
+              : {}),
+            mentionBindings: knownMentionBindings,
+            ...(pendingSubmissionRef.current
+              ? { pendingSubmission: pendingSubmissionRef.current }
+              : {}),
+            expectedRevision: writeChain.ownedRevision,
             clientId,
             ownerId: draftOwnerId,
           });
-          if (generation !== draftGeneration.current) return;
+          writeChain.ownedRevision = draft.revision;
+          const cleanupReleased = async (): Promise<void> => {
+            await cleanupReleasedDraftAttachmentIds(
+              writeChain.pendingDeletionIds,
+              draft,
+              id => api.deleteDraftAttachment(scope, draftOwnerId, id)
+                .catch(error => {
+                  if (
+                    error instanceof ApiRequestError &&
+                    (error.status === 404 || error.status === 409)
+                  ) return;
+                  throw error;
+                }),
+            );
+            if (
+              writeChain.cleanupRetryScheduled ||
+              deletableSupersededDraftAttachmentIds(
+                writeChain.pendingDeletionIds,
+                draft,
+              ).length === 0
+            ) return;
+            writeChain.cleanupRetryScheduled = true;
+            window.setTimeout(() => {
+              writeChain.cleanupRetryScheduled = false;
+              writeChain.tail = settledDraftWriteContinuation(
+                writeChain.tail,
+                cleanupReleased,
+              );
+            }, 5_000);
+          };
+          await cleanupReleased();
+          if (!stillOwnsWrite()) return;
           draftRevision.current = draft.revision;
+          pastedTextCleanMutationGeneration.current =
+            savedPastedTextCleanMutationGeneration({
+              cleanMutationGeneration:
+                pastedTextCleanMutationGeneration.current,
+              submittedMutationGeneration:
+                submittedPastedTextMutationGeneration,
+              currentMutationGeneration:
+                pastedTextMutationGeneration.current,
+              submittedAttachmentId: submittedPastedTextAttachmentId,
+              savedAttachmentId: draft.pastedTextAttachmentId,
+            });
           if (
             draftEditVersion.current === editVersion &&
             attachmentsResolved
@@ -862,14 +1700,18 @@ export function Composer({
             draftLocallyEdited.current = false;
             draftAttachmentsLocallyEdited.current = false;
           }
+          draftConflictGeneration.current += 1;
+          setDraftConflict(undefined);
+          setRestoringDraftConflict(false);
           queryClient.setQueryData(
             queryKeys.conversationDraft.detail(
-              conversationDraftId,
+              scope,
               draftOwnerId,
             ),
             draft,
           );
         } catch (error) {
+          if (!stillOwnsWrite()) return;
           if (!(error instanceof ApiRequestError) || error.status !== 409) {
             setSendError(
               error instanceof Error
@@ -878,25 +1720,54 @@ export function Composer({
             );
             return;
           }
-          const current = await api.getConversationDraft(
-            conversationDraftId,
-            draftOwnerId,
-          );
-          draftGeneration.current += 1;
+          let current;
+          try {
+            current = await api.getConversationDraft(scope, draftOwnerId);
+          } catch (recoveryError) {
+            if (stillOwnsWrite()) {
+              setSendError(
+                recoveryError instanceof Error
+                  ? `Draft changed elsewhere, but the current version could not be loaded: ${recoveryError.message}`
+                  : "Draft changed elsewhere, but the current version could not be loaded.",
+              );
+            }
+            return;
+          }
+          if (!stillOwnsWrite()) return;
           draftRevision.current = current.revision;
           queryClient.setQueryData(
             queryKeys.conversationDraft.detail(
-              conversationDraftId,
+              scope,
               draftOwnerId,
             ),
             current,
           );
           const conflicts = await api
-            .getConversationDraftConflicts(conversationDraftId, draftOwnerId)
+            .getConversationDraftConflicts(scope, draftOwnerId)
             .catch(() => undefined);
-          const displaced = conflicts?.conflicts.at(-1);
-          if (displaced) setDraftConflict(displaced);
+          if (!stillOwnsWrite()) return;
+          const conflict = conflicts?.conflicts
+            .filter(candidate => candidate.displaced.clientId === clientId)
+            .at(-1);
+          if (!conflict) {
+            setSendError(
+              "This draft changed elsewhere. Your text remains in the composer, but its recovery record could not be loaded.",
+            );
+            return;
+          }
+          draftConflictGeneration.current += 1;
+          setDraftConflict(recoverableDraftConflict(conflict, snapshot));
         }
+      }).catch(error => {
+        if (!draftWriteContinuationStillOwned({
+          capturedScope: scope,
+          currentScope: activeDraftScopeRef.current,
+          capturedGeneration: generation,
+          currentGeneration: draftGeneration.current,
+        })) return;
+        setSendError(
+          error instanceof Error ? error.message : "Draft could not be saved.",
+        );
       });
     }, 500);
     return () => window.clearTimeout(timer);
@@ -905,15 +1776,17 @@ export function Composer({
     draftAttachmentVersion,
     draftOwnerId,
     draftReadyVersion,
+    failedDraftContents.length,
     files,
     queryClient,
+    knownMentionBindings,
+    pastedText,
+    sending,
     text,
   ]);
 
   // Agent routing uses #; @ is reserved for project file/folder references.
-  const mentionMatch = /(?:^|\s)#([\p{L}\p{N}_-]*)$/u.exec(
-    text.slice(0, caret),
-  );
+  const mentionMatch = activeComposerMention(text.slice(0, caret));
   const autocompleteHandles = [...new Set([
     ...(mentionSuggestionHandles ?? mentionHandles ?? []),
     ...((destinationMode === "project-chat" || destinationMode === "target-required")
@@ -923,7 +1796,9 @@ export function Composer({
   const suggestions =
     mentionMatch && autocompleteHandles && autocompleteHandles.length > 0
       ? autocompleteHandles.filter(handle =>
-          handle.toLowerCase().startsWith(mentionMatch[1]!.toLowerCase()),
+          handle
+            .toLowerCase()
+            .startsWith(mentionMatch.handlePrefix.toLowerCase()),
         )
       : [];
   const fileMatch = /(?:^|\s)@([^\s@#]*)$/u.exec(text.slice(0, caret));
@@ -990,13 +1865,17 @@ export function Composer({
         ? suggestions.map(handle => ({ kind: "mention" as const, handle }))
         : fileSuggestions.map(entry => ({ kind: "file" as const, entry }));
   const menuOpen = menuSuggestions.length > 0 && !suppressMenu;
+  const effectiveHighlighted = clampComposerMenuIndex(
+    highlighted,
+    menuSuggestions.length,
+  );
 
   const applyMention = (handle: string) => {
-    const start =
-      caret - mentionMatch![0].length + mentionMatch![0].indexOf("#");
+    if (draftMutationLockedRef.current) return;
+    const start = mentionMatch!.start;
     const specialTitle = SPECIAL_MENTION_TITLES.get(handle.toLocaleLowerCase());
     if (
-      destinationMode === "target-required" &&
+      (destinationMode === "target-required" || destinationMode === "project-chat") &&
       handle.toLocaleLowerCase() === NEW_AGENT_DESTINATION_HANDLE
     ) {
       const next = selectExclusiveNewAgentDestination(
@@ -1005,7 +1884,9 @@ export function Composer({
         caret,
         [
           ...targetRequiredHandles,
-          ...(hasBroadcastDestination ? ["broadcast"] : []),
+          ...authoredProjectDestinationHandles,
+          "broadcast",
+          "everyone",
         ],
       );
       requiredRecipient?.onClear();
@@ -1041,15 +1922,31 @@ export function Composer({
             valid: true,
           }
         : undefined;
+    const selection =
+      descriptor &&
+        handle.toLocaleLowerCase() !== NEW_AGENT_DESTINATION_HANDLE &&
+        (destinationMode === "target-required" || destinationMode === "project-chat")
+        ? removeComposerDestinationsAroundSelection(
+            text,
+            start,
+            caret,
+            [NEW_AGENT_DESTINATION_HANDLE],
+          )
+        : { text, start, end: caret };
     if (inputRef.current && descriptor) {
-      inputRef.current.setSelectionOffsets(start, caret);
+      if (selection.text !== text) {
+        inputRef.current.replaceCanonicalRange(0, text.length, selection.text);
+      }
+      inputRef.current.setSelectionOffsets(selection.start, selection.end);
       inputRef.current.insertMention(descriptor);
       inputRef.current.insertText(" ");
     } else {
-      update(`${text.slice(0, start)}#${handle} ${text.slice(caret)}`);
+      update(
+        `${selection.text.slice(0, selection.start)}#${handle} ${selection.text.slice(selection.end)}`,
+      );
     }
     setHighlighted(0);
-    const nextCaret = start + handle.length + 2;
+    const nextCaret = selection.start + handle.length + 2;
     requestAnimationFrame(() => {
       inputRef.current?.focus();
       inputRef.current?.setSelectionOffsets(nextCaret, nextCaret);
@@ -1058,6 +1955,7 @@ export function Composer({
   };
 
   const applyFileReference = (entry: ArtifactDto) => {
+    if (draftMutationLockedRef.current) return;
     const start = caret - fileMatch![0].length + fileMatch![0].indexOf("@");
     const filename = entry.path.split(/[\\/]/u).filter(Boolean).at(-1) ?? entry.path;
     const descriptor: ComposerProjectFileDescriptor = {
@@ -1084,6 +1982,7 @@ export function Composer({
   };
 
   const applyCommand = (command: EngineCommand) => {
+    if (draftMutationLockedRef.current) return;
     if (engineCommandDisabledReason(command)) return;
     if (!commandDraft) return;
     inputRef.current?.replaceCanonicalRange(
@@ -1103,6 +2002,7 @@ export function Composer({
   };
 
   const applyCapability = (capability: EngineComposerCapability) => {
+    if (draftMutationLockedRef.current) return;
     const inserted = insertComposerCapability(text, caret, capability);
     if (!inserted) return;
     inputRef.current?.replaceCanonicalRange(0, text.length, inserted.text);
@@ -1130,8 +2030,16 @@ export function Composer({
       stagedDraftOwnerId?: string,
       context?: {
         mentionedAgents?: import("@ponderosa/core").AgentMentionBindingDto[];
+        newAgentRequested?: boolean;
+        retryPreparedAttempt?: boolean;
+        pendingSubmission?: DraftPendingSubmissionDto;
+        persistPendingSubmission?(
+          value: DraftPendingSubmissionDto,
+          retainOnFailure?: boolean,
+        ): Promise<void>;
       },
     ) => Promise<unknown> | unknown,
+    action: "send" | "queue",
   ) => {
     if (dictationSettlingRef.current) {
       setSendError(
@@ -1140,8 +2048,63 @@ export function Composer({
       return;
     }
     if (sendingRef.current || !canSend) return;
+    if (
+      durableRetryAction && durableRetryAction !== action
+    ) {
+      const retryHandler = durableRetryAction === "queue"
+        ? onQueue ?? onSend
+        : onSend;
+      if (retryHandler) submit(retryHandler, durableRetryAction);
+      return;
+    }
+    const retryPreparedAttempt = durableRetryAction === action;
+    const normalizedDraft = normalizeExclusiveNewAgentDestinationForMode(
+      destinationMode,
+      textRef.current,
+      exclusiveDestinationHandles,
+    ).text;
+    const safeNewAgentSelected =
+      routingDestinationsEnabled &&
+      hasComposerDestination(
+        normalizedDraft,
+        NEW_AGENT_DESTINATION_HANDLE,
+      );
+    const safeVisibleText = safeNewAgentSelected
+      ? singleComposerDestination(
+          normalizedDraft,
+          NEW_AGENT_DESTINATION_HANDLE,
+        )
+      : normalizedDraft;
+    const safeComposedText = composerSubmissionText(
+      safeVisibleText,
+      pastedTextRef.current,
+    );
+    const safeDefaultDestination = safeNewAgentSelected
+      ? undefined
+      : destinationMode === "target-required"
+        ? defaultDestination
+        : activeDefaultDestination;
+    const safeSubmissionText =
+      (destinationMode === "project-chat" || destinationMode === "target-required") &&
+      safeDefaultDestination
+        ? prependComposerDestination(
+            safeComposedText,
+            safeDefaultDestination.handle,
+          )
+        : safeComposedText;
+    const safeRoutingText = safeDefaultDestination
+      ? prependComposerDestination(
+          safeVisibleText,
+          safeDefaultDestination.handle,
+        )
+      : safeVisibleText;
+    const safeMentionedHandles = findMentionedHandles(
+      safeRoutingText,
+      routingMentionHandles,
+    );
+    if (normalizedDraft !== textRef.current) update(normalizedDraft);
     const commandSubmission = providerCommandInput(
-      submissionText,
+      safeSubmissionText,
       commandTargetHandle,
     );
     const slash =
@@ -1161,10 +2124,30 @@ export function Composer({
     sendingRef.current = true;
     setSending(true);
     setSendError(undefined);
-    const submittedText = text;
-    const submittedPastedText = pastedText;
+    const submittedText = normalizedDraft;
+    const submittedPastedText = pastedTextRef.current;
+    const submittedPastedTextAttachmentId = pastedTextAttachmentId.current;
+    const submittedMentionBindings = [...knownMentionBindings];
+    const submittedDraftScope = conversationDraftId;
+    const submittedOwnedDraftRevision = draftWriteChain.current.ownedRevision;
+    let submittedDraftClientId = draftQuery.data?.clientId ??
+      draftWriteChain.current.clientId;
+    const submittedDraftGeneration = draftGeneration.current;
+    const submittedDraftWriteChain = draftWriteChain.current;
+    const submittedSupersededPastedTextAttachmentIds = [
+      ...submittedDraftWriteChain.pendingDeletionIds,
+    ];
+    const submittedScopeStillActive = () =>
+      draftWriteContinuationStillOwned({
+        capturedScope: submittedDraftScope,
+        currentScope: activeDraftScopeRef.current,
+        capturedGeneration: submittedDraftGeneration,
+        currentGeneration: draftGeneration.current,
+      });
     const submittedUserMutationGeneration =
       userDraftMutationGeneration.current;
+    const submittedContentGeneration = draftContentGeneration.current;
+    const submittedDestinationIdentity = safeDefaultDestination?.selectionKey;
     const stagedIds = files
       .map(file => draftAttachmentIds.current.get(file))
       .filter(
@@ -1172,134 +2155,355 @@ export function Composer({
           id !== undefined &&
           !locallyRemovedDraftAttachmentIds.current.has(id),
       );
+    const durableRetry = Boolean(pendingSubmissionRef.current?.request);
     const mentionedAgentsById = new Map<string, AgentMentionBindingDto>();
-    if (activeDefaultDestination?.binding) {
+    if (safeDefaultDestination?.binding) {
       mentionedAgentsById.set(
-        activeDefaultDestination.binding.agentId,
-        activeDefaultDestination.binding,
+        safeDefaultDestination.binding.agentId,
+        safeDefaultDestination.binding,
       );
     }
-    const structurallyAuthoredHandles = destinationMode === "target-required"
-      ? targetRequiredHandles
-      : authoredProjectDestinationHandles;
+    const structurallyAuthoredHandles =
+      destinationMode === "target-required" || destinationMode === "project-chat"
+        ? safeMentionedHandles.filter(
+            handle => !["broadcast", "everyone", NEW_AGENT_DESTINATION_HANDLE]
+              .includes(handle.toLocaleLowerCase()),
+          )
+        : [];
     for (const handle of structurallyAuthoredHandles) {
-      const matchingBindings = (mentionBindings ?? []).filter((candidate) =>
-        candidate.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
-      if (matchingBindings.length === 1) {
-        const binding = matchingBindings[0]!;
+      const binding = submissionMentionBinding(
+        handle,
+        knownMentionBindings,
+        mentionBindings ?? [],
+        retryPreparedAttempt || durableRetry,
+      );
+      if (binding) {
         mentionedAgentsById.set(binding.agentId, binding);
       }
     }
+    for (const binding of pendingSubmissionRef.current?.request?.mentionBindings ?? []) {
+      mentionedAgentsById.set(binding.agentId, binding);
+    }
     const mentionedAgents = [...mentionedAgentsById.values()];
-    const submissionContext = mentionedAgents.length > 0
-      ? { mentionedAgents }
-      : undefined;
+    const exactSubmissionText = mentionedAgents.reduce(
+      (current, binding) =>
+        hasComposerDestination(current, binding.handle) ||
+          hasComposerDestination(current, binding.currentHandle)
+          ? current
+          : prependComposerDestination(current, binding.handle),
+      safeSubmissionText,
+    );
     const runtimeCommandSubmission =
       slash?.command.invocation === "runtime";
-    const operation =
-      runtimeCommandSubmission
-        ? onCommand!(slash.command, slash.argumentsText)
-        : handler(
-            submissionText,
-            files,
-            stagedIds,
-            conversationDraftId ? draftOwnerId : undefined,
-            submissionContext,
+    if (!runtimeCommandSubmission) {
+      draftMutationLockedRef.current = true;
+      setDraftMutationLocked(true);
+      setCapabilityMenuAnchor(null);
+      setSuppressMenu(true);
+    }
+    const persistPendingSubmission = async (
+      value: DraftPendingSubmissionDto | undefined,
+      retainOnFailure = false,
+    ): Promise<void> => {
+      if (!submittedDraftScope) return;
+      if (!submittedScopeStillActive()) {
+        throw new Error("The draft destination changed before it could be sent.");
+      }
+      if (retainOnFailure) {
+        pendingSubmissionRef.current = value;
+        if (draftStorageKey && projectId && value?.uploads?.some(upload =>
+            upload.recipients.some(recipient => recipient.attachmentIds.length))) {
+          const outbox = createRecipientUploadAuthorityOutbox({
+              draftId: submittedDraftScope,
+              draftStorageKey,
+              projectId,
+              ownerId: draftOwnerId,
+              baseDraftClientId: submittedDraftClientId,
+              writeClientId: submittedDraftWriteChain.clientId,
+              expectedRevision:
+                submittedDraftWriteChain.ownedRevision ||
+                submittedOwnedDraftRevision,
+              pending: value,
+            });
+          const serialized = serializeRecipientUploadAuthorityOutbox(outbox);
+          const authorityKey = recipientUploadAuthorityStorageKey(
+            draftStorageKey,
+            outbox.writeClientId,
+            value.idempotencyKey,
           );
-    void Promise.resolve(operation)
+          const existingAuthorityKeys = uploadAuthorityStoragePrefix
+            ? readChatStateEntries(uploadAuthorityStoragePrefix).flatMap(([key, raw]) => {
+                const valid = parseRecipientUploadAuthorityOutbox(raw, {
+                  draftId: submittedDraftScope,
+                  draftStorageKey,
+                  projectId,
+                  ownerId: draftOwnerId,
+                });
+                if (!valid) writeChatState(key, "");
+                return valid ? [key] : [];
+              })
+            : [];
+          if (!recipientUploadAuthorityHasCapacity(
+                existingAuthorityKeys,
+                authorityKey,
+              ) ||
+              !serialized || !writeChatState(authorityKey, serialized)) {
+            throw new ApiRequestError(
+              400,
+              "Upload cleanup authority could not be saved in this browser.",
+            );
+          }
+          pendingUploadAuthorityStorageKeys.current.add(authorityKey);
+        }
+      } else if (!value) {
+        for (const key of pendingUploadAuthorityStorageKeys.current) {
+          writeChatState(key, "");
+        }
+        pendingUploadAuthorityStorageKeys.current.clear();
+      }
+      let saved: ConversationDraftDto | undefined;
+      const write = settledDraftWriteContinuation(
+        submittedDraftWriteChain.tail,
+        async () => {
+          if (!submittedScopeStillActive()) {
+            throw new Error("The draft destination changed before it could be sent.");
+          }
+          saved = await api.putConversationDraft(submittedDraftScope, {
+            text: submittedText,
+            attachmentIds: stagedIds,
+            ...(submittedPastedTextAttachmentId
+              ? { pastedTextAttachmentId: submittedPastedTextAttachmentId }
+              : {}),
+            mentionBindings: submittedMentionBindings,
+            ...(value ? { pendingSubmission: value } : {}),
+            expectedRevision:
+              submittedDraftWriteChain.ownedRevision ||
+              submittedOwnedDraftRevision,
+            clientId: submittedDraftWriteChain.clientId,
+            ownerId: draftOwnerId,
+          });
+          submittedDraftWriteChain.ownedRevision = saved.revision;
+          submittedDraftClientId = saved.clientId;
+        },
+      );
+      submittedDraftWriteChain.tail = write;
+      await write;
+      if (!saved || !submittedScopeStillActive()) {
+        throw new Error("The draft destination changed before it could be sent.");
+      }
+      draftRevision.current = saved.revision;
+      pendingSubmissionRef.current = value;
+      for (const key of pendingUploadAuthorityStorageKeys.current) {
+        writeChatState(key, "");
+      }
+      pendingUploadAuthorityStorageKeys.current.clear();
+      queryClient.setQueryData(
+        queryKeys.conversationDraft.detail(submittedDraftScope, draftOwnerId),
+        saved,
+      );
+    };
+    const operation = Promise.resolve().then(async () => {
+      if (runtimeCommandSubmission) {
+        return onCommand!(slash.command, slash.argumentsText);
+      }
+      let pendingSubmission: DraftPendingSubmissionDto | undefined;
+      if (submittedDraftScope) {
+        const exactDraftAttachmentIds = pendingDraftAttachmentIds(
+          pendingSubmissionRef.current,
+          stagedIds,
+        );
+        const exactPastedTextAttachmentId = pendingPastedTextAttachmentId(
+          pendingSubmissionRef.current,
+          submittedPastedTextAttachmentId,
+        );
+        const fingerprint = pendingSubmissionRef.current?.request
+          ? pendingSubmissionRef.current.intentFingerprint ??
+            pendingSubmissionRef.current.fingerprint
+          : await durableSubmissionFingerprint({
+              version: 1,
+              action,
+              surface: submittedDraftScope,
+              text: stableMessageActionText(exactSubmissionText, mentionedAgents),
+              attachmentIds: exactDraftAttachmentIds,
+              pastedTextAttachmentId: exactPastedTextAttachmentId ?? null,
+              recipientAgentIds: mentionedAgents.map(item => item.agentId).sort(),
+              newAgentRequested: safeNewAgentSelected,
+              runtime: submissionRuntimeKey ?? null,
+            });
+        pendingSubmission = selectDurableSubmission(
+          pendingSubmissionRef.current,
+          fingerprint,
+          () => createClientId("send-"),
+        );
+        if (!pendingSubmission.draftAttachmentIds) {
+          pendingSubmission = {
+            ...pendingSubmission,
+            draftAttachmentIds: [...stagedIds],
+            editableDraftAttachmentIds: [...stagedIds],
+            ...(submittedPastedTextAttachmentId ? {
+              pastedTextAttachmentId: submittedPastedTextAttachmentId,
+              editablePastedTextAttachmentId: submittedPastedTextAttachmentId,
+            } : {}),
+          };
+        }
+        await persistPendingSubmission(pendingSubmission);
+        if (!submittedScopeStillActive()) {
+          throw new Error("The draft destination changed before it could be sent.");
+        }
+      }
+      const submissionContext =
+        mentionedAgents.length > 0 || safeNewAgentSelected ||
+          retryPreparedAttempt || pendingSubmission
+          ? {
+              mentionedAgents,
+              newAgentRequested: safeNewAgentSelected,
+              retryPreparedAttempt: retryPreparedAttempt || durableRetry,
+              ...(pendingSubmission ? {
+                pendingSubmission,
+                persistPendingSubmission,
+              } : {}),
+            }
+          : undefined;
+      return handler(
+        exactSubmissionText,
+        files,
+        stagedIds,
+        conversationDraftId ? draftOwnerId : undefined,
+        submissionContext,
+      );
+    });
+    void operation
       .then(() => {
-        const draftChangedAfterSubmission =
-          userDraftMutationGeneration.current !==
-          submittedUserMutationGeneration;
-        const preserveNewRuntimeDraft =
-          runtimeCommandSubmission && draftChangedAfterSubmission;
-        // A successful send can settle after this Composer has unmounted. Do
-        // not rely on controlled-input effects to clear its durable draft. A
-        // runtime command is the exception: it submits no message or files, so
-        // preserve anything the user starts composing while it is pending.
-        if (!preserveNewRuntimeDraft) {
+        if (submittedScopeStillActive()) setPreparedRetry(undefined);
+        const scopeStillActive = submittedScopeStillActive();
+        const submissionMayClearDraft = composerSubmissionMayClearDraft({
+          submittedMutationGeneration: submittedContentGeneration,
+          currentMutationGeneration: draftContentGeneration.current,
+          stillOwnsDraft:
+            scopeStillActive &&
+            draftWriteChain.current === submittedDraftWriteChain &&
+            (!runtimeCommandSubmission || (
+              activeSubmissionIntentKeyRef.current === submissionIntentKey &&
+              renderedDestinationIdentityRef.current === submittedDestinationIdentity
+            )),
+        });
+        // Clear only the exact draft incarnation that produced this submission.
+        // This also preserves edits made while a runtime command is pending.
+        if (submissionMayClearDraft && scopeStillActive) {
           draftGeneration.current += 1;
           draftEditVersion.current += 1;
           draftLocallyEdited.current = false;
           draftAttachmentsLocallyEdited.current = false;
           unrestoredDraftAttachmentIds.current = [];
           replaceText("");
+          setKnownMentionBindings([]);
           setActiveDefaultDestination(undefined);
           if (draftStorageKey) writeChatState(draftStorageKey, "");
           replacePastedText(undefined);
           clearDraftAttachments();
         }
         if (
-          !preserveNewRuntimeDraft &&
-          conversationDraftId &&
-          draftClientId.current
+          submissionMayClearDraft &&
+          submittedDraftScope
         ) {
-          const clientId = draftClientId.current;
-          draftWriteChain.current = draftWriteChain.current
+          const clientId = submittedDraftWriteChain.clientId;
+          const clearGeneration = draftGeneration.current;
+          const clearOwnsActiveScope = () =>
+            scopeStillActive &&
+            draftWriteChain.current === submittedDraftWriteChain &&
+            draftWriteContinuationStillOwned({
+              capturedScope: submittedDraftScope,
+              currentScope: activeDraftScopeRef.current,
+              capturedGeneration: clearGeneration,
+              currentGeneration: draftGeneration.current,
+            });
+          const clearChain = submittedDraftWriteChain.tail
             .catch(() => undefined)
             .then(async () => {
               const clearSavedDraft = (expectedRevision: number) =>
-                api.putConversationDraft(conversationDraftId, {
+                api.putConversationDraft(submittedDraftScope, {
                   text: "",
                   attachmentIds: [],
+                  mentionBindings: [],
                   expectedRevision,
                   clientId,
                   ownerId: draftOwnerId,
                 });
               try {
-                let clearedDraft;
-                try {
-                  clearedDraft = await clearSavedDraft(draftRevision.current);
-                } catch (error) {
-                  if (
-                    !(error instanceof ApiRequestError) ||
-                    error.status !== 409
-                  )
-                    throw error;
-                  // A save that was already in flight can commit after send
-                  // invalidates its local generation. Refresh once and clear
-                  // against that committed revision. Never loop on a second
-                  // conflict: another writer should surface as a warning.
-                  const current = await api.getConversationDraft(
-                    conversationDraftId,
-                    draftOwnerId,
-                  );
-                  // Owner IDs are shared by tabs; only this page's client ID
-                  // proves the conflicting revision came from our own chain.
-                  if (current.clientId !== clientId) throw error;
-                  clearedDraft = await clearSavedDraft(current.revision);
-                }
-                if (
-                  previousConversationDraftId.current === conversationDraftId
-                ) {
+                // Sequence behind every save captured by this surface
+                // incarnation. The server may fast-forward only this exact
+                // incarnation; a 409 from a later incarnation is terminal.
+                const clearedDraft = await clearSavedDraft(
+                  submittedDraftWriteChain.ownedRevision ||
+                    submittedOwnedDraftRevision,
+                );
+                submittedDraftWriteChain.ownedRevision = clearedDraft.revision;
+                pendingSubmissionRef.current = clearedDraft.pendingSubmission;
+                if (clearOwnsActiveScope()) {
                   draftRevision.current = clearedDraft.revision;
                 }
                 queryClient.setQueryData(
                   queryKeys.conversationDraft.detail(
-                    conversationDraftId,
+                    submittedDraftScope,
                     draftOwnerId,
                   ),
                   clearedDraft,
                 );
+                const cleanupIds = new Set([
+                  ...stagedIds,
+                  ...submittedSupersededPastedTextAttachmentIds,
+                  ...(submittedPastedTextAttachmentId
+                    ? [submittedPastedTextAttachmentId]
+                    : []),
+                ]);
+                for (const id of cleanupIds) {
+                  submittedDraftWriteChain.pendingDeletionIds.delete(id);
+                  void api.deleteDraftAttachment(
+                    submittedDraftScope,
+                    draftOwnerId,
+                    id,
+                  ).catch(() => undefined);
+                }
               } catch {
-                setSendError(
-                  "Message sent, but its saved draft could not be cleared.",
-                );
+                if (clearOwnsActiveScope()) {
+                  setSendError(
+                    "Message sent, but its saved draft could not be cleared.",
+                  );
+                }
               }
             });
+          submittedDraftWriteChain.tail = clearChain;
         }
-        if (conversationDraftId)
-          for (const id of stagedIds)
-            void api
-              .deleteDraftAttachment(conversationDraftId, draftOwnerId, id)
-              .catch(() => undefined);
-        if (!preserveNewRuntimeDraft) setCaret(0);
-      })
-      .catch((error: unknown) => {
         if (
-          userDraftMutationGeneration.current ===
-          submittedUserMutationGeneration
+          submissionMayClearDraft &&
+          submittedPastedTextAttachmentId &&
+          scopeStillActive &&
+          pastedTextAttachmentId.current === submittedPastedTextAttachmentId
         ) {
+          pastedTextAttachmentId.current = undefined;
+        }
+        if (submissionMayClearDraft && scopeStillActive) setCaret(0);
+      })
+      .catch(async (error: unknown) => {
+        if (!submittedScopeStillActive()) return;
+        if (error instanceof ApiRequestError && pendingSubmissionRef.current &&
+            durableSubmissionMayBeReleased(
+              pendingSubmissionRef.current,
+              error.status,
+              error.message,
+            )) {
+          await persistPendingSubmission(undefined).catch(() => undefined);
+        }
+        const intentUnchanged =
+          userDraftMutationGeneration.current ===
+            submittedUserMutationGeneration &&
+          activeSubmissionIntentKeyRef.current === submissionIntentKey;
+        setPreparedRetry(
+          !(error instanceof ApiRequestError) && intentUnchanged
+            ? { action, submissionIntentKey }
+            : undefined,
+        );
+        if (draftContentGeneration.current === submittedContentGeneration) {
           replaceText(submittedText);
           replacePastedText(submittedPastedText);
           if (draftStorageKey) writeChatState(draftStorageKey, submittedText);
@@ -1309,14 +2513,16 @@ export function Composer({
         );
       })
       .finally(() => {
+        draftMutationLockedRef.current = false;
+        setDraftMutationLocked(false);
         sendingRef.current = false;
         setSending(false);
       });
   };
-  const steer = () => submit(onSend);
+  const steer = () => submit(onSend, "send");
   const queue = () => {
     if (!onQueue) return;
-    submit(onQueue);
+    submit(onQueue, "queue");
   };
   const send = steer;
   const showQueue =
@@ -1329,17 +2535,39 @@ export function Composer({
         mentionedBusyHandles.length > 0,
       disabled,
     });
+  const compact = mobile && !composerFocused && !dictationActive &&
+    !dictationSettling && !capabilityMenuAnchor && !menuOpen &&
+    !pastedTextEditorOpen && !attachments.error && !sendError &&
+    !destinationError && !draftConflict && !failedDraftContents.length;
   return (
     <Paper
+      ref={composerRoot}
       className="ponderosa-composer"
+      data-compact={compact ? "true" : "false"}
       elevation={0}
       sx={composerSurfaceSx}
+      onFocusCapture={event => {
+        if ((event.target as HTMLElement).closest('.composer-editor-input')) {
+          setComposerFocused(true);
+        }
+      }}
+      onBlurCapture={() => {
+        if (blurFrame.current !== undefined) cancelAnimationFrame(blurFrame.current);
+        blurFrame.current = requestAnimationFrame(() => {
+          const active = document.activeElement;
+          if (composerRoot.current?.contains(active) ||
+              active?.closest('[role="menu"], [role="dialog"], [role="listbox"]')) return;
+          setComposerFocused(false);
+        });
+      }}
     >
+      <Box sx={{ display: compact ? "none" : "contents" }}>
       <ComposerDestinationBar
         destinationError={destinationError}
         destinationMode={destinationMode}
       />
       <ComposerAttachmentList
+        disabled={draftMutationLocked}
         draftUploadStates={draftUploadStates}
         files={files}
         removeFile={removeFile}
@@ -1349,35 +2577,532 @@ export function Composer({
         pastedText={pastedText}
         pastedTextBytes={pastedText ? utf8ByteLength(pastedText) : 0}
         error={attachments.error ?? sendError}
-        displacedDraft={draftConflict?.displaced.text}
+        draftConflict={draftConflict?.conflict}
+        failedDraftContents={failedDraftContents}
+        restoringDraft={restoringDraftConflict}
+        mutationLocked={draftMutationLocked}
         onShowPastedText={() => {
-          update(composerSubmissionText(text, pastedText ?? ""));
-          replacePastedText(undefined);
-          requestAnimationFrame(() => inputRef.current?.focus());
+          setPastedTextEditorValue(pastedText ?? "");
+          setPastedTextEditorOpen(true);
         }}
         onRemovePastedText={() => {
           updatePastedText(undefined);
         }}
         onRestoreDraft={() => {
-          if (!draftConflict) return;
-          update(draftConflict.displaced.text);
-          setDraftConflict(undefined);
-          inputRef.current?.focus();
+          if (draftMutationLockedRef.current || !draftConflict || restoringDraftConflict || !conversationDraftId) return;
+          const recovery = draftConflict;
+          const scope = conversationDraftId;
+          const recoveryWriteChain = draftWriteChain.current;
+          const scopeGeneration = draftGeneration.current;
+          const recoveryGeneration = ++draftConflictGeneration.current;
+          draftMutationLockedRef.current = true;
+          setDraftMutationLocked(true);
+          setRestoringDraftConflict(true);
+          setSendError(undefined);
+          void (async () => {
+            const uploadedIds: string[] = [];
+            let attemptedSnapshot = recovery.snapshot;
+            const discardUploads = () => Promise.all(uploadedIds.map(id =>
+              api.deleteDraftAttachment(scope, draftOwnerId, id).catch(() => undefined)));
+            try {
+              const restoredFiles: Array<{
+                file: File;
+                attachmentId: string;
+                fromId: string;
+              }> = [];
+              const unavailableAttachmentIds = new Set<string>();
+              let restoredPasteId: string | undefined;
+              const replacements = () => [
+                ...restoredFiles.map(({ fromId, attachmentId }) => ({
+                  fromId,
+                  toId: attachmentId,
+                })),
+                ...(recovery.snapshot.pastedTextAttachmentId && restoredPasteId
+                  ? [{
+                      fromId: recovery.snapshot.pastedTextAttachmentId,
+                      toId: restoredPasteId,
+                    }]
+                  : []),
+              ];
+              const putSnapshot = async (
+                snapshot: typeof recovery.snapshot,
+              ): Promise<ResolveConversationDraftConflictResponse> => {
+                const draft = await api.putConversationDraft(scope, {
+                  text: snapshot.text,
+                  attachmentIds: snapshot.attachmentIds,
+                  ...(snapshot.pastedTextAttachmentId
+                    ? { pastedTextAttachmentId: snapshot.pastedTextAttachmentId }
+                    : {}),
+                  mentionBindings: snapshot.mentionBindings,
+                  ...(snapshot.pendingSubmission
+                    ? { pendingSubmission: snapshot.pendingSubmission }
+                    : {}),
+                  expectedRevision: recovery.conflict.current.revision,
+                  clientId: recoveryWriteChain.clientId,
+                  ownerId: draftOwnerId,
+                });
+                return {
+                  conflictId: recovery.conflict.id,
+                  action: "restored",
+                  replayed: false,
+                  draft,
+                  attachmentReplacements: replacements(),
+                  unavailableAttachmentIds: [...unavailableAttachmentIds],
+                };
+              };
+              const resolution = await retryDraftRestoreForMissingAssets(
+                () => recovery.resolutionUnavailable
+                  ? putSnapshot(recovery.snapshot)
+                  : api.restoreConversationDraftConflict(
+                    scope,
+                    recovery.conflict.id,
+                    {
+                      ownerId: draftOwnerId,
+                      expectedRevision: recovery.conflict.current.revision,
+                      clientId: recoveryWriteChain.clientId,
+                    },
+                  ),
+                unavailableDraftConflictAttachmentIds,
+                async missingIds => {
+                  for (const fromId of missingIds) {
+                    const retained = recovery.snapshot.files.find(
+                      item => item.attachmentId === fromId,
+                    );
+                    if (retained) {
+                      const uploaded = await api.uploadDraftAttachment(
+                        scope,
+                        draftOwnerId,
+                        retained.file,
+                      );
+                      uploadedIds.push(uploaded.id);
+                      restoredFiles.push({
+                        file: retained.file,
+                        attachmentId: uploaded.id,
+                        fromId,
+                      });
+                    } else if (
+                      recovery.snapshot.pastedTextAttachmentId === fromId &&
+                      recovery.snapshot.pastedText !== undefined
+                    ) {
+                      const uploaded = await api.uploadDraftAttachment(
+                        scope,
+                        draftOwnerId,
+                        new File(
+                          [recovery.snapshot.pastedText],
+                          PASTED_TEXT_DRAFT_NAME,
+                          { type: "text/plain" },
+                        ),
+                      );
+                      uploadedIds.push(uploaded.id);
+                      restoredPasteId = uploaded.id;
+                    } else {
+                      unavailableAttachmentIds.add(fromId);
+                    }
+                  }
+                  attemptedSnapshot = restagedDraftConflictSnapshot(
+                    recovery.snapshot,
+                    restoredFiles,
+                    restoredPasteId,
+                    unavailableAttachmentIds,
+                  );
+                  return recovery.resolutionUnavailable
+                    ? putSnapshot(attemptedSnapshot)
+                    : api.restoreConversationDraftConflict(
+                        scope,
+                        recovery.conflict.id,
+                        {
+                          ownerId: draftOwnerId,
+                          expectedRevision: recovery.conflict.current.revision,
+                          clientId: recoveryWriteChain.clientId,
+                          attachmentReplacements: replacements(),
+                          unavailableAttachmentIds: [...unavailableAttachmentIds],
+                        },
+                      );
+                },
+              );
+              const draftQueryKey = queryKeys.conversationDraft.detail(scope, draftOwnerId);
+              const observed = queryClient.getQueryData<ConversationDraftDto>(draftQueryKey);
+              const canonical = resolvedDraftConflictDraft(resolution, observed);
+              if (!canonical) throw new Error("Restored draft state is unavailable.");
+              const applyingNewerCurrent = canonical !== resolution.draft;
+              const canonicalIds = new Set([
+                ...canonical.attachmentIds,
+                ...(canonical.pastedTextAttachmentId
+                  ? [canonical.pastedTextAttachmentId]
+                  : []),
+              ]);
+              await Promise.all(redundantDraftConflictUploadIds(uploadedIds, canonicalIds)
+                .map(id => api.deleteDraftAttachment(scope, draftOwnerId, id)
+                  .catch(() => undefined)));
+              const historicalByCanonicalId = new Map(
+                (resolution.attachmentReplacements ?? []).map(item => [
+                  item.toId,
+                  item.fromId,
+                ]),
+              );
+              const attachmentById = new Map(
+                (canonical.attachments ?? []).map(attachment => [
+                  attachment.id,
+                  attachment,
+                ]),
+              );
+              const locallyRestored = canonicalDraftConflictFiles(
+                recovery.snapshot.files,
+                canonical.attachmentIds,
+                resolution.attachmentReplacements,
+              );
+              const locallyRestoredById = new Map(
+                locallyRestored.files.map(item => [item.attachmentId, item.file]),
+              );
+              const restoredResults = await Promise.allSettled(
+                canonical.attachmentIds.map(async attachmentId => {
+                  const historicalId = historicalByCanonicalId.get(attachmentId) ??
+                    attachmentId;
+                  const retained = locallyRestoredById.get(attachmentId);
+                  if (retained) {
+                    return { file: retained, attachmentId, historicalId };
+                  }
+                  const attachment = attachmentById.get(attachmentId);
+                  if (!attachment) {
+                    throw Object.assign(
+                      new Error("Draft attachment metadata is unavailable."),
+                      { attachmentId, historicalId },
+                    );
+                  }
+                  return {
+                    file: await api.downloadDraftAttachment(attachment),
+                    attachmentId,
+                    historicalId,
+                  };
+                }),
+              );
+              const hydratedFiles = restoredResults.flatMap(result =>
+                result.status === "fulfilled" ? [result.value] : []);
+              const failedHydrations = restoredResults.flatMap((result, index) => {
+                if (result.status === "fulfilled") return [];
+                const id = canonical.attachmentIds[index]!;
+                const attachment = attachmentById.get(id);
+                return [{
+                  id,
+                  name: attachment?.name ?? "Staged attachment",
+                  kind: "attachment" as const,
+                  ...(attachment ? { attachment } : {}),
+                }];
+              });
+              let restoredPastedText: string | undefined;
+              let failedPaste: FailedDraftContent | undefined;
+              if (canonical.pastedTextAttachmentId) {
+                const historicalId = historicalByCanonicalId.get(
+                  canonical.pastedTextAttachmentId,
+                ) ?? canonical.pastedTextAttachmentId;
+                if (
+                  recovery.snapshot.pastedTextAttachmentId === historicalId &&
+                  recovery.snapshot.pastedText !== undefined
+                ) {
+                  restoredPastedText = recovery.snapshot.pastedText;
+                } else {
+                  try {
+                    if (!canonical.pastedTextAttachment) {
+                      throw new Error("Pasted-text metadata is unavailable.");
+                    }
+                    restoredPastedText = await (
+                      await api.downloadDraftAttachment(canonical.pastedTextAttachment)
+                    ).text();
+                  } catch {
+                    failedPaste = {
+                      id: canonical.pastedTextAttachmentId,
+                      name: "Pasted text",
+                      kind: "pasted-text",
+                      ...(canonical.pastedTextAttachment
+                        ? { attachment: canonical.pastedTextAttachment }
+                        : {}),
+                    };
+                  }
+                }
+              }
+              if (
+                recoveryGeneration !== draftConflictGeneration.current ||
+                scope !== activeDraftScopeRef.current ||
+                scopeGeneration !== draftGeneration.current ||
+                recoveryWriteChain !== draftWriteChain.current
+              ) {
+                return;
+              }
+              const explicitUnavailableFailures = (
+                resolution.unavailableAttachmentIds ?? []
+              ).flatMap(id => attemptedSnapshot.failedContents.some(item => item.id === id)
+                ? []
+                : [{
+                    id,
+                    name: recovery.snapshot.pastedTextAttachmentId === id
+                      ? "Pasted text"
+                      : "Staged attachment",
+                    kind: recovery.snapshot.pastedTextAttachmentId === id
+                      ? "pasted-text" as const
+                      : "attachment" as const,
+                  }]);
+              const restored = restoreDraftConflictSnapshot(
+                {
+                  ...attemptedSnapshot,
+                  text: canonical.text,
+                  attachmentIds: [...canonical.attachmentIds],
+                  files: hydratedFiles.map(({ file, attachmentId }) => ({
+                    file,
+                    attachmentId,
+                  })),
+                  ...(restoredPastedText !== undefined
+                    ? { pastedText: restoredPastedText }
+                    : { pastedText: undefined }),
+                  ...(canonical.pastedTextAttachmentId
+                    ? { pastedTextAttachmentId: canonical.pastedTextAttachmentId }
+                    : { pastedTextAttachmentId: undefined }),
+                  mentionBindings: [...(canonical.mentionBindings ?? [])],
+                  ...(canonical.pendingSubmission
+                    ? { pendingSubmission: canonical.pendingSubmission }
+                    : { pendingSubmission: undefined }),
+                  failedContents: [
+                    ...(applyingNewerCurrent
+                      ? []
+                      : attemptedSnapshot.failedContents.filter(item => {
+                          const canonicalId = (resolution.attachmentReplacements ?? [])
+                            .find(replacement => replacement.fromId === item.id)?.toId ?? item.id;
+                          return !canonicalIds.has(canonicalId);
+                        })),
+                    ...(applyingNewerCurrent ? [] : explicitUnavailableFailures),
+                    ...failedHydrations,
+                    ...(failedPaste ? [failedPaste] : []),
+                  ],
+                },
+                draftEditVersion.current,
+              );
+              recoveryWriteChain.ownedRevision = canonical.revision;
+              draftRevision.current = canonical.revision;
+              markUserDraftMutation();
+              pendingSubmissionRef.current = restored.pendingSubmission;
+              draftEditVersion.current = restored.editVersion;
+              draftLocallyEdited.current = false;
+              draftAttachmentsLocallyEdited.current = false;
+              replaceText(restored.text);
+              setKnownMentionBindings(restored.mentionBindings);
+              replaceSnapshotDraftAttachments(restored.files);
+              const restoredFileIds = new Set(
+                restored.files.map(item => item.attachmentId),
+              );
+              unrestoredDraftAttachmentIds.current = restored.attachmentIds.filter(
+                id => !restoredFileIds.has(id),
+              );
+              for (const id of restored.attachmentIds) {
+                locallyRemovedDraftAttachmentIds.current.delete(id);
+              }
+              pastedTextMutationGeneration.current += 1;
+              pastedTextUploadGeneration.current += 1;
+              pastedTextAttachmentId.current = restored.pastedTextAttachmentId;
+              pastedTextUploadFailedFor.current = undefined;
+              setPastedTextUploading(false);
+              replacePastedText(restored.pastedText);
+              if (restored.pastedTextAttachmentId) {
+                locallyRemovedDraftAttachmentIds.current.delete(
+                  restored.pastedTextAttachmentId,
+                );
+              }
+              updateFailedDraftContents(restored.failedContents);
+              queryClient.setQueryData(draftQueryKey, canonical);
+              setDraftConflict(undefined);
+              setRestoringDraftConflict(false);
+              setDraftReadyVersion(value => value + 1);
+              inputRef.current?.focus();
+            } catch (error) {
+              const stillOwnsRecovery = () =>
+                recoveryGeneration === draftConflictGeneration.current &&
+                scope === activeDraftScopeRef.current &&
+                scopeGeneration === draftGeneration.current &&
+                recoveryWriteChain === draftWriteChain.current;
+              if (!stillOwnsRecovery()) {
+                await discardUploads();
+                return;
+              }
+              if (error instanceof ApiRequestError &&
+                  (error.status === 409 || error.status === 404)) {
+                try {
+                  const [current, conflicts] = await Promise.all([
+                    api.getConversationDraft(scope, draftOwnerId),
+                    api.getConversationDraftConflicts(scope, draftOwnerId),
+                  ]);
+                  if (!stillOwnsRecovery()) return;
+                  const refreshed = refreshRecoverableDraftConflict(
+                    recovery,
+                    current,
+                    conflicts.conflicts,
+                  );
+                  const retryConflict = recovery.resolutionUnavailable
+                    ? conflicts.conflicts.findLast(candidate =>
+                        candidate.displaced.clientId === recoveryWriteChain.clientId)
+                    : undefined;
+                  queryClient.setQueryData(
+                    queryKeys.conversationDraft.detail(scope, draftOwnerId),
+                    current,
+                  );
+                  if (refreshed) {
+                    await discardUploads();
+                    setRestoringDraftConflict(false);
+                    setDraftConflict(refreshed);
+                    setSendError(
+                      "The saved draft changed again. Review your preserved version, then choose Restore again.",
+                    );
+                    return;
+                  }
+                  if (retryConflict) {
+                    recoveryWriteChain.ownedRevision = current.revision;
+                    draftRevision.current = current.revision;
+                    setDraftConflict(recoverableDraftConflict(
+                      { ...retryConflict, current },
+                      attemptedSnapshot,
+                    ));
+                    setRestoringDraftConflict(false);
+                    setSendError(
+                      "The saved draft changed again. Your preserved version is ready for an explicit Restore retry.",
+                    );
+                    return;
+                  }
+                  await discardUploads();
+                  recoveryWriteChain.ownedRevision = current.revision;
+                  draftRevision.current = current.revision;
+                  draftLocallyEdited.current = true;
+                  draftAttachmentsLocallyEdited.current = true;
+                  setDraftConflict(unresolvedRecoverableDraftConflict(recovery, current));
+                  setRestoringDraftConflict(false);
+                  setSendError(
+                    "This conflict was resolved elsewhere. Your preserved draft is unchanged; choose Restore again to save it against the latest revision.",
+                  );
+                  return;
+                } catch (refreshError) {
+                  if (!stillOwnsRecovery()) {
+                    await discardUploads();
+                    return;
+                  }
+                  await discardUploads();
+                  setRestoringDraftConflict(false);
+                  setSendError(
+                    refreshError instanceof Error
+                      ? `The draft changed again, but its current version could not be loaded: ${refreshError.message}`
+                      : "The draft changed again, but its current version could not be loaded.",
+                  );
+                  return;
+                }
+              }
+              await discardUploads();
+              setRestoringDraftConflict(false);
+              setSendError(
+                error instanceof Error
+                  ? `Your preserved draft could not be restored: ${error.message}`
+                  : "Your preserved draft could not be restored.",
+              );
+            } finally {
+              draftMutationLockedRef.current = false;
+              setDraftMutationLocked(false);
+              setRestoringDraftConflict(false);
+            }
+          })();
         }}
+        onDiscardDraft={() => {
+          if (draftMutationLockedRef.current || !draftConflict || restoringDraftConflict || !conversationDraftId) return;
+          const conflictId = draftConflict.conflict.id;
+          const scope = conversationDraftId;
+          const generation = ++draftConflictGeneration.current;
+          const scopeGeneration = draftGeneration.current;
+          draftMutationLockedRef.current = true;
+          setDraftMutationLocked(true);
+          setRestoringDraftConflict(true);
+          setSendError(undefined);
+          void api.discardConversationDraftConflict(scope, draftOwnerId, conflictId)
+            .then(() => {
+              if (generation !== draftConflictGeneration.current ||
+                  scope !== activeDraftScopeRef.current ||
+                  scopeGeneration !== draftGeneration.current) return;
+              setDraftConflict(undefined);
+              setRestoringDraftConflict(false);
+            })
+            .catch(error => {
+              if (generation !== draftConflictGeneration.current ||
+                  scope !== activeDraftScopeRef.current ||
+                  scopeGeneration !== draftGeneration.current) return;
+              setRestoringDraftConflict(false);
+              setSendError(
+                error instanceof Error
+                  ? `Your preserved draft could not be discarded: ${error.message}`
+                  : "Your preserved draft could not be discarded.",
+              );
+            })
+            .finally(() => {
+              draftMutationLockedRef.current = false;
+              setDraftMutationLocked(false);
+              setRestoringDraftConflict(false);
+            });
+        }}
+        onRetryDraftContent={id => {
+          void retryFailedDraftContent(id);
+        }}
+        onRemoveDraftContent={removeFailedDraftContent}
         onClearError={() => {
           setSendError(undefined);
           dispatchAttachments({ type: "clear_error" });
+          if (pastedText) {
+            pastedTextUploadFailedFor.current = undefined;
+            setDraftReadyVersion(value => value + 1);
+          }
         }}
       />
+      </Box>
+      <Dialog
+        open={pastedTextEditorOpen}
+        onClose={() => setPastedTextEditorOpen(false)}
+        fullWidth
+        maxWidth="md"
+      >
+        <DialogTitle>View or edit pasted text</DialogTitle>
+        <DialogContent>
+          <TextField
+            disabled={draftMutationLocked}
+            autoFocus
+            fullWidth
+            multiline
+            minRows={12}
+            maxRows={24}
+            value={pastedTextEditorValue}
+            onChange={event => setPastedTextEditorValue(event.target.value)}
+            error={utf8ByteLength(pastedTextEditorValue) > LONG_TEXT_MAX_UTF8_BYTES}
+            helperText={`${utf8ByteLength(pastedTextEditorValue).toLocaleString()} of ${LONG_TEXT_MAX_UTF8_BYTES.toLocaleString()} bytes`}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPastedTextEditorOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={draftMutationLocked || utf8ByteLength(pastedTextEditorValue) > LONG_TEXT_MAX_UTF8_BYTES}
+            onClick={() => {
+              updatePastedText(pastedTextEditorValue || undefined);
+              setPastedTextEditorOpen(false);
+            }}
+          >
+            Save
+          </Button>
+        </DialogActions>
+      </Dialog>
       <Stack
         direction="row"
         spacing={{ xs: 0.25, sm: 0.5 }}
         useFlexGap
-        sx={{ alignItems: "center", flexWrap: "wrap" }}
+        sx={{ alignItems: "center", flexWrap: compact ? "nowrap" : "wrap" }}
       >
+        <Box data-composer-toolbar sx={{
+          display: compact ? "contents" : { xs: "flex", md: "contents" },
+          alignItems: "center", gap: 0.25, flex: "1 1 0", minWidth: 0,
+          overflowX: { xs: "auto", md: "visible" },
+          "& > *": { flexShrink: { xs: 0, md: undefined } },
+        }}>
         <ComposerCapabilityPicker
           fileInput={fileInput}
-          disabled={disabled || composerLocked}
+          disabled={disabled || composerLocked || draftMutationLocked}
           menuAnchor={capabilityMenuAnchor}
           listId={capabilityListId}
           filter={capabilityFilter}
@@ -1401,14 +3126,19 @@ export function Composer({
           onApplyCapability={applyCapability}
         />
         {enableVoiceDictation ? (
+          <Box sx={{ display: "contents", "& > *": { flexShrink: { xs: 0, md: undefined }, order: compact ? 2 : undefined } }}>
           <DictationControls
             disabled={disabled || composerLocked || sending}
             onFinalTranscript={insertDictatedText}
             onSettlingChange={handleDictationSettlingChange}
+            onActiveChange={setDictationActive}
           />
+          </Box>
         ) : null}
+        <Box sx={{ display: compact ? "none" : "contents", "& > *": { flexShrink: { xs: 0, md: undefined } } }}>
         {destinationMode === "project-chat" ? (
           <ComposerProjectDestinationAction
+            disabled={draftMutationLocked}
             newAgentSelected={newAgentSelected}
             toggleNewAgent={toggleNewAgentDestination}
             replyDestination={!newAgentSelected && defaultDestination && mentionedHandles.some(
@@ -1429,17 +3159,34 @@ export function Composer({
             {controls}
           </Box>
         ) : null}
-        <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
+        </Box>
+        </Box>
+        <Box ref={anchorRef} sx={{
+          order: compact ? 1 : -1,
+          flex: compact ? "1 1 0" : "1 0 100%", minWidth: 0,
+          ...(compact ? {
+            position: "relative", overflow: "hidden", height: 44,
+            "&& .composer-editor-input": { height: 44, maxHeight: 44, overflow: "hidden", opacity: 0 },
+            "& .composer-editor-input *": { pointerEvents: "none" },
+            "& .composer-editor-input + span": { visibility: "hidden" },
+          } : {}),
+        }}>
+          {compact ? <Box data-compact-preview aria-hidden sx={{
+            position: "absolute", inset: 0, display: "flex", alignItems: "center",
+            pointerEvents: "none", color: text.trim() ? "text.primary" : "text.secondary",
+          }}><Box component="span" sx={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", fontSize: 16 }}>
+            {text.replace(/\s+/g, " ").trim() || placeholder || "Write a message…"}
+          </Box></Box> : null}
           <ComposerTextInput
             text={text}
             inputRef={inputRef}
-            disabled={disabled}
+            disabled={disabled || draftMutationLocked}
             locked={composerLocked}
             placeholder={placeholder}
             comboboxEnabled={Boolean(mentionHandles || commands?.length || projectId)}
             menuOpen={menuOpen}
             listId={mentionListId}
-            highlighted={highlighted}
+            highlighted={effectiveHighlighted}
             attachmentsEnabled={composerAttachmentsEnabled}
             pastedText={pastedText}
             menuSuggestions={menuSuggestions}
@@ -1463,11 +3210,25 @@ export function Composer({
             mentionedHandles={mentionedHandles}
             canSend={canSend}
             onTextChange={(value, nextCaret) => {
-              update(value);
+              const normalized = normalizeExclusiveNewAgentDestinationForMode(
+                destinationMode,
+                value,
+                exclusiveDestinationHandles,
+                nextCaret,
+              );
+              update(normalized.text);
               setSendError(undefined);
-              setCaret(nextCaret);
+              setCaret(normalized.caret);
               setHighlighted(0);
               setSuppressMenu(false);
+              if (normalized.text !== value) {
+                requestAnimationFrame(() => {
+                  inputRef.current?.setSelectionOffsets(
+                    normalized.caret,
+                    normalized.caret,
+                  );
+                });
+              }
             }}
             onFiles={addFiles}
             onPastedText={value => {
@@ -1486,11 +3247,11 @@ export function Composer({
             onSend={send}
           />
           <ComposerAutocompleteMenu
-            open={menuOpen}
+            open={menuOpen && !draftMutationLocked}
             anchor={anchorRef.current}
             listId={mentionListId}
             suggestions={menuSuggestions}
-            highlighted={highlighted}
+            highlighted={effectiveHighlighted}
             onDismiss={() => setSuppressMenu(true)}
             onSelect={selected => {
               if (selected.kind === "mention") applyMention(selected.handle);
@@ -1499,8 +3260,16 @@ export function Composer({
             }}
           />
         </Box>
-        <ComposerSendActions
-          allowSendWhileRunning={allowSendWhileRunning}
+        {compact && (files.length > 0 || pastedText) ? (
+          <Button size="small" aria-label="View draft attachments" onClick={() => inputRef.current?.focus()} sx={{ order: 2, minWidth: 32, px: 0.5 }}>
+            +{files.length + (pastedText ? 1 : 0)}
+          </Button>
+        ) : null}
+        <Box data-composer-send-actions sx={{ display: { xs: "flex", md: "contents" }, order: compact ? 3 : undefined, alignItems: "center", gap: 0.25, flexShrink: 0 }}>
+        {compact && showQueue && !canCancel ? (
+          <IconButton aria-label="Choose send action" onClick={() => inputRef.current?.focus()}><ArrowUpwardIcon /></IconButton>
+        ) : <ComposerSendActions
+          allowSendWhileRunning={!compact && allowSendWhileRunning}
           canCancel={canCancel}
           cancelPending={cancelPending}
           canSend={canSend}
@@ -1516,10 +3285,11 @@ export function Composer({
               : sendUnavailableReason
           }
           send={send}
-          showQueue={showQueue}
+          showQueue={!compact && showQueue}
           steer={steer}
           targetRequiredRecipientTagged={targetRequiredRecipientTagged}
-        />
+        />}
+        </Box>
       </Stack>
     </Paper>
   );

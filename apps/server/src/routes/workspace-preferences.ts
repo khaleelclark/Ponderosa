@@ -4,6 +4,7 @@ import type {
   ProjectEngineModelCatalogDto,
   UpdateWorkspacePreferencesRequest,
 } from "@ponderosa/core";
+import { validSpeechPreferences } from "@ponderosa/core";
 import type {
   AgentStore,
   CoordinationV3Store,
@@ -97,7 +98,12 @@ export function registerWorkspacePreferenceRoutes(
       if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
         return reply.code(400).send({ error: "limit must be an integer between 1 and 1000" });
       }
-      return workspace.listResourceRecency(limit);
+      const recency = workspace.listResourceRecency(limit);
+      return {
+        ...recency,
+        resources: recency.resources.filter((resource) =>
+          resource.kind !== "agent" || !store.agentCreationPending(resource.resourceId)),
+      };
     },
   );
 
@@ -124,7 +130,7 @@ export function registerWorkspacePreferenceRoutes(
         : kind === "conversation"
           ? Boolean(store.getConversation(resourceId))
           : kind === "agent"
-            ? Boolean(store.getAgent(resourceId))
+            ? Boolean(store.getAgent(resourceId)) && !store.agentCreationPending(resourceId)
             : Boolean(coordinationV3.getTriggerDefinition(resourceId));
       if (!exists) {
         return reply.code(404).send({ error: "workspace resource not found" });
@@ -138,6 +144,12 @@ export function registerWorkspacePreferenceRoutes(
 
   app.patch<{ Body: UpdateWorkspacePreferencesRequest }>("/api/workspace/preferences", async (request, reply) => {
     const patch = request.body ?? {};
+    if (patch.speech !== undefined && !validSpeechPreferences(patch.speech)) {
+      return reply.code(400).send({ error: "invalid speech preferences" });
+    }
+    if (Object.hasOwn(patch, "revision") || Object.hasOwn(patch, "updatedAt")) {
+      return reply.code(400).send({ error: "preference revision and timestamp are server-owned" });
+    }
     if (patch.projectSort && !["last_used", "alphabetical", "custom"].includes(patch.projectSort)) return reply.code(400).send({ error: "invalid project sort" });
     for (const [label, sort] of [["home", patch.homeSort], ["chat", patch.chatSort], ["agent", patch.agentSort], ["trigger", patch.triggerSort]] as const) {
       if (sort !== undefined && !["last_used", "alphabetical", "custom"].includes(sort)) return reply.code(400).send({ error: `invalid ${label} sort` });

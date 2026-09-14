@@ -1,28 +1,72 @@
-import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type {
   Adapter,
   AgentDto,
   AgentHealthProjectionDto,
   ConversationDetailDto,
+  CreateConversationRequest,
   ModelOption,
   TeamDirectoryDto,
   UpdateConversationRequest,
 } from "@ponderosa/core";
-import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import {
+  stableJson,
+  type AgentStore,
+  type ConversationDeletionReceipt,
+  type WorkspaceStore,
+} from "@ponderosa/agents";
 import { concreteRuntimeSelection, runtimeSelectionError } from "../runtime-selection.js";
 import { applyCollectionPageHeaders, collectionGenerationKey, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
 
 interface EngineRegistration {
   adapter: Adapter;
 }
+
+const CONVERSATION_CREATE_FIELDS = new Set([
+  "title",
+  "defaultEngine",
+  "defaultModel",
+  "defaultEffort",
+]);
+const CONVERSATION_PATCH_FIELDS = new Set([
+  ...CONVERSATION_CREATE_FIELDS,
+  "archived",
+]);
+
+export function conversationMutationBodyError(
+  body: unknown,
+  mutation: "create" | "patch",
+): string | undefined {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return "request body must be an object";
+  }
+  const entries = Object.entries(body);
+  if (entries.length === 0) return "request body must not be empty";
+  const allowed = mutation === "create"
+    ? CONVERSATION_CREATE_FIELDS
+    : CONVERSATION_PATCH_FIELDS;
+  for (const [key, value] of entries) {
+    if (!allowed.has(key)) return `unknown field: ${key}`;
+    if (key === "archived") {
+      if (typeof value !== "boolean") return "archived must be a boolean";
+      continue;
+    }
+    const nullableRuntimeField =
+      mutation === "patch" && key !== "title" && value === null;
+    if (!nullableRuntimeField && typeof value !== "string") {
+      return `${key} must be a string${mutation === "patch" && key !== "title" ? " or null" : ""}`;
+    }
+  }
+  return undefined;
+}
+
 export interface ConversationRouteDependencies {
   store: AgentStore;
   workspace: WorkspaceStore;
   engines: ReadonlyMap<string, EngineRegistration>;
   cachedModelOptions: (adapter: Adapter, projectId?: string) => ModelOption[];
   appendWorkspace: (event: Parameters<WorkspaceStore["append"]>[0]) => unknown;
-  publishWorkspaceSince: (cursor: number) => void;
   generateConversationTitle: (conversationId: string) => Promise<{ title: string; generated: boolean }>;
   conversationDetail: (
     conversationId: string,
@@ -34,12 +78,18 @@ export interface ConversationRouteDependencies {
   ) => AgentHealthProjectionDto;
   teamDirectory: (projectId: string, conversationId?: string, fallbackAgentId?: string, selectedAgentIds?: readonly string[]) => TeamDirectoryDto;
   hasActiveRun: (agentId: string) => boolean;
-  commitAgentDeletion(rootAgentIds: string[], previewHash: string): Promise<{ deletedAgentIds: string[] }>;
+  projectDeletionInProgress: (projectId: string) => boolean;
   deletingConversationIds: Set<string>;
   agentCreationConversationLeases: ReadonlyMap<string, number>;
-  purgeCommunicationV4Conversation: (conversationId: string) => void;
+  conversationDeliveryLeases: ReadonlyMap<string, number>;
+  reconcileConversationRuntimeCommunicationProjections: (
+    projectId: string,
+    conversationId: string,
+  ) => Promise<number>;
   refreshTriggers: () => Promise<unknown>;
-  draftAttachmentSurfaceDir: (draftId: string) => string;
+  processConversationDeletionCleanup(
+    receipt: ConversationDeletionReceipt,
+  ): Promise<boolean>;
 }
 
 export function registerConversationRoutes(
@@ -52,18 +102,18 @@ export function registerConversationRoutes(
     engines,
     cachedModelOptions,
     appendWorkspace,
-    publishWorkspaceSince,
     generateConversationTitle,
     conversationDetail,
     agentHealth,
     teamDirectory,
     hasActiveRun,
-    commitAgentDeletion,
+    projectDeletionInProgress = () => false,
     deletingConversationIds,
     agentCreationConversationLeases,
-    purgeCommunicationV4Conversation,
+    conversationDeliveryLeases,
+    reconcileConversationRuntimeCommunicationProjections,
     refreshTriggers,
-    draftAttachmentSurfaceDir,
+    processConversationDeletionCleanup,
   } = dependencies;
   app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects/:id/team-directory", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
@@ -74,6 +124,13 @@ export function registerConversationRoutes(
           SELECT id, title, updated_at
           FROM agents
           WHERE project_id = ? AND deleted_at IS NULL AND archived = 0
+            AND NOT EXISTS (
+              SELECT 1
+              FROM agent_creation_operation_members members
+              JOIN agent_creation_operations operations ON operations.id = members.operation_id
+              WHERE members.agent_id = agents.id
+                AND operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+            )
             ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE '\\\\'" : ""}
         `,
         params: normalizedSearch
@@ -130,6 +187,13 @@ export function registerConversationRoutes(
             SELECT agent.id, agent.title, agent.updated_at
             FROM agents agent
             WHERE agent.conversation_id = ? AND agent.deleted_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM agent_creation_operation_members creation_members
+                JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+                WHERE creation_members.agent_id = agent.id
+                  AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+              )
               ${normalizedSearch ? "AND lower(agent.title || ' ' || agent.active_engine || ' ' || COALESCE(agent.model, '')) LIKE ? ESCAPE '\\\\'" : ""}
           `,
           params: normalizedSearch
@@ -153,30 +217,58 @@ export function registerConversationRoutes(
 
   app.post<{
     Params: { id: string };
-    Body: { title?: string; defaultEngine?: string; defaultModel?: string; defaultEffort?: string };
+    Headers: { "idempotency-key"?: string };
+    Body: unknown;
   }>("/api/projects/:id/conversations", async (request, reply) => {
+    if (projectDeletionInProgress(request.params.id)) {
+      return reply.code(409).send({ error: "Project deletion is in progress" });
+    }
+    const idempotencyKey = request.headers["idempotency-key"]?.trim();
+    if (!idempotencyKey || !/^[A-Za-z0-9_-]{8,128}$/u.test(idempotencyKey)) {
+      return reply.code(400).send({ error: "a valid Chat creation idempotency key is required" });
+    }
+    const bodyError = conversationMutationBodyError(request.body, "create");
+    if (bodyError) return reply.code(400).send({ error: bodyError });
+    const body = request.body as CreateConversationRequest;
+    const title = body.title?.trim() || "New Chat";
+    const creationIdentity = {
+      idempotencyKey,
+      payloadHash: createHash("sha256").update(stableJson({
+        title,
+        defaultEngine: body.defaultEngine ?? null,
+        defaultModel: body.defaultModel ?? null,
+        defaultEffort: body.defaultEffort ?? null,
+      })).digest("hex"),
+    };
+    try {
+      const replay = store.getConversationCreation(request.params.id, creationIdentity);
+      if (replay) return replay;
+    } catch (error) {
+      return reply.code(409).send({
+        error: error instanceof Error ? error.message : "Chat creation replay conflict",
+      });
+    }
     const project = store.getProject(request.params.id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    const title = request.body?.title?.trim() || "New Chat";
-    if (request.body.defaultEngine && !engines.has(request.body.defaultEngine)) {
+    if (body.defaultEngine && !engines.has(body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
     }
-    if (!request.body.defaultEngine && (request.body.defaultModel || request.body.defaultEffort)) {
+    if (!body.defaultEngine && (body.defaultModel || body.defaultEffort)) {
       return reply.code(400).send({ error: "default engine is required when selecting a model or effort" });
     }
-    const defaultEngine = request.body.defaultEngine ?? project.defaultEngine;
+    const defaultEngine = body.defaultEngine ?? project.defaultEngine;
     const registration = engines.get(defaultEngine);
     if (!registration) return reply.code(400).send({ error: "unknown engine" });
     const projectModelOptions = cachedModelOptions(registration.adapter, project.id);
     const selectionError = runtimeSelectionError(
       registration.adapter,
-      request.body.defaultModel,
-      request.body.defaultEffort,
+      body.defaultModel,
+      body.defaultEffort,
       projectModelOptions,
     );
     if (selectionError) return reply.code(400).send({ error: selectionError });
     const resolved = concreteRuntimeSelection(registration.adapter, [
-      { model: request.body.defaultModel, effort: request.body.defaultEffort },
+      { model: body.defaultModel, effort: body.defaultEffort },
       project.defaultEngine === defaultEngine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
       workspace.getPreferences().engineDefaults?.[defaultEngine],
     ], projectModelOptions);
@@ -184,7 +276,7 @@ export function registerConversationRoutes(
       title,
       defaultEngine,
       ...resolved,
-    });
+    }, creationIdentity);
     appendWorkspace({ type: "conversation_changed", projectId: request.params.id, conversationId: conversation.id, action: "created" });
     appendWorkspace({ type: "project_changed", projectId: request.params.id, action: "used" });
     return conversation;
@@ -214,8 +306,11 @@ export function registerConversationRoutes(
 
   app.patch<{
     Params: { id: string };
-    Body: UpdateConversationRequest;
+    Body: unknown;
   }>("/api/conversations/:id", async (request, reply) => {
+    const bodyError = conversationMutationBodyError(request.body, "patch");
+    if (bodyError) return reply.code(400).send({ error: bodyError });
+    const body = request.body as UpdateConversationRequest;
     const current = store.getConversation(request.params.id);
     if (!current) return reply.code(404).send({ error: "conversation not found" });
     if (deletingConversationIds.has(current.id)) {
@@ -226,12 +321,17 @@ export function registerConversationRoutes(
         error: "Wait for Agent creation to finish before changing this Chat",
       });
     }
-    if (request.body?.defaultEngine && !engines.has(request.body.defaultEngine)) {
+    if (body.archived === true && (conversationDeliveryLeases.get(current.id) ?? 0) > 0) {
+      return reply.code(409).send({
+        error: "Wait for message delivery to finish before archiving this Chat",
+      });
+    }
+    if (body.defaultEngine && !engines.has(body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
     }
-    const defaultEngine = request.body.defaultEngine === null ? undefined : request.body.defaultEngine ?? current.defaultEngine;
-    const defaultModel = request.body.defaultModel === null ? undefined : request.body.defaultModel ?? current.defaultModel;
-    const defaultEffort = request.body.defaultEffort === null ? undefined : request.body.defaultEffort ?? current.defaultEffort;
+    const defaultEngine = body.defaultEngine === null ? undefined : body.defaultEngine ?? current.defaultEngine;
+    const defaultModel = body.defaultModel === null ? undefined : body.defaultModel ?? current.defaultModel;
+    const defaultEffort = body.defaultEffort === null ? undefined : body.defaultEffort ?? current.defaultEffort;
     if (!defaultEngine && (defaultModel || defaultEffort)) {
       return reply.code(400).send({ error: "default engine is required when selecting a model or effort" });
     }
@@ -246,9 +346,54 @@ export function registerConversationRoutes(
       );
       if (selectionError) return reply.code(400).send({ error: selectionError });
     }
-    const conversation = store.updateConversation(request.params.id, request.body ?? {});
+    if (body.archived !== undefined) {
+      deletingConversationIds.add(current.id);
+      let mutationCommitted = false;
+      const provisionallyUnarchived = current.archived;
+      try {
+        // Archived Chats cannot accept a room projection. Temporarily expose
+        // the room only behind the deletion/lifecycle fence, which keeps all
+        // new delivery and Agent creation out until recovery and mutation form
+        // one serialized operation.
+        if (provisionallyUnarchived) {
+          store.updateConversation(current.id, { archived: false });
+        }
+        try {
+          await reconcileConversationRuntimeCommunicationProjections(current.projectId, current.id);
+        } catch {
+          return reply.code(409).send({
+            error: "Wait for committed message recovery to finish before changing this Chat",
+          });
+        }
+        if (!store.getConversation(current.id)) {
+          return reply.code(404).send({ error: "conversation not found" });
+        }
+        if ((agentCreationConversationLeases.get(current.id) ?? 0) > 0) {
+          return reply.code(409).send({
+            error: "Wait for Agent creation to finish before changing this Chat",
+          });
+        }
+        if (body.archived === true && (conversationDeliveryLeases.get(current.id) ?? 0) > 0) {
+          return reply.code(409).send({
+            error: "Wait for message delivery to finish before archiving this Chat",
+          });
+        }
+        const conversation = store.updateConversation(request.params.id, body);
+        mutationCommitted = Boolean(conversation);
+        if (conversation) {
+          await refreshTriggers();
+          appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
+        }
+        return conversation;
+      } finally {
+        if (provisionallyUnarchived && !mutationCommitted && store.getConversation(current.id)) {
+          store.updateConversation(current.id, { archived: true });
+        }
+        deletingConversationIds.delete(current.id);
+      }
+    }
+    const conversation = store.updateConversation(request.params.id, body);
     if (conversation) {
-      if (request.body?.archived !== undefined) await refreshTriggers();
       appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
     }
     return conversation;
@@ -256,65 +401,77 @@ export function registerConversationRoutes(
 
   app.delete<{ Params: { id: string } }>("/api/conversations/:id", async (request, reply) => {
     const current = store.getConversation(request.params.id);
-    if (!current) return reply.code(404).send({ error: "conversation not found" });
-    if (deletingConversationIds.has(current.id)) {
+    const pending = store.getConversationDeletionReceipt(request.params.id);
+    if (projectDeletionInProgress(current?.projectId ?? pending?.projectId ?? "")) {
+      return reply.code(409).send({ error: "Project deletion is already in progress" });
+    }
+    if (!current) {
+      if (!pending) return reply.code(404).send({ error: "conversation not found" });
+      await processConversationDeletionCleanup(pending);
+      const refreshed = store.getConversationDeletionReceipt(pending.conversationId)!;
+      const deleted = refreshed.canonicalDeletionCompleted;
+      return reply.code(deleted ? 200 : 202).send({
+        deleted,
+        deletionReceiptId: refreshed.conversationId,
+        cleanupPending: !deleted ||
+          !(refreshed.storageCleanupCompleted && refreshed.serverCleanupCompleted),
+        ...(!deleted ? { deletionPending: true, retryable: true } : {}),
+        replayed: true,
+      });
+    }
+    if (deletingConversationIds.has(current.id) && !pending) {
       return reply.code(409).send({ error: "Chat deletion is already in progress" });
     }
-    if ((agentCreationConversationLeases.get(current.id) ?? 0) > 0) {
+    if (!pending && (agentCreationConversationLeases.get(current.id) ?? 0) > 0) {
       return reply.code(409).send({
         error: "Wait for Agent creation to finish before deleting this Chat",
       });
     }
-    const enabledAutomation = store.sqlite.prepare(`
+    if (!pending && (conversationDeliveryLeases.get(current.id) ?? 0) > 0) {
+      return reply.code(409).send({
+        error: "Wait for message delivery to finish before deleting this Chat",
+      });
+    }
+    const enabledAutomation = !pending ? store.sqlite.prepare(`
       SELECT name FROM trigger_definitions
       WHERE conversation_id = ? AND enabled = 1
       ORDER BY name LIMIT 1
-    `).get(current.id) as { name: string } | undefined;
+    `).get(current.id) as { name: string } | undefined : undefined;
     if (enabledAutomation) {
       return reply.code(409).send({
         error: `Disable or reassign the Automation “${enabledAutomation.name}” before deleting this Chat.`,
       });
     }
-    const linkedAgents = store.listAgents(current.projectId).filter((agent) => agent.conversationId === current.id);
-    const active = linkedAgents.some((agent) => hasActiveRun(agent.id));
+    const linkedAgents = pending ? [] : store.listAgents(current.projectId)
+      .filter((agent) => agent.conversationId === current.id);
+    const active = !pending && linkedAgents.some((agent) => hasActiveRun(agent.id));
     if (active) return reply.code(409).send({ error: "stop active agents before deleting this Project chat" });
 
-    // Reserve synchronously before the first await. Archiving is the durable
-    // restart fence: a crash leaves the Chat unable to accept new Agents, and
-    // retrying deletion can safely finish the same cascade.
-    deletingConversationIds.add(current.id);
-    store.updateConversation(current.id, { archived: true });
-    try {
-      if (linkedAgents.length > 0) {
-        const preview = store.previewAgentDeletion(linkedAgents.map((agent) => agent.id));
-        await commitAgentDeletion(preview.rootAgentIds, preview.previewHash);
+    let receipt = pending;
+    if (!receipt) {
+      try {
+        receipt = store.markConversationDeletionPending(current.id);
+      } catch (error) {
+        return reply.code(503).send({
+          error: error instanceof Error ? error.message : "Chat deletion intent could not be persisted",
+          cleanupPending: false,
+          retryable: true,
+        });
       }
-      const remainingAgents = store.listAgents(current.projectId)
-        .filter((agent) => agent.conversationId === current.id);
-      if (remainingAgents.length > 0) {
-        throw new Error("Chat deletion could not reach an Agent-free commit boundary");
-      }
-      const deleted = store.deleteConversation(current.id, purgeCommunicationV4Conversation);
-      if (!deleted) return reply.code(404).send({ error: "conversation not found" });
-      await refreshTriggers();
-      const cursor = workspace.cursor();
-      workspace.deleteDraft(current.id);
-      workspace.deleteDraft(`collaboration:${current.id}`);
-      await Promise.allSettled([
-        fs.rm(draftAttachmentSurfaceDir(current.id), { recursive: true, force: true }),
-        fs.rm(draftAttachmentSurfaceDir(`collaboration:${current.id}`), { recursive: true, force: true }),
-      ]);
-      workspace.append({ type: "conversation_changed", projectId: current.projectId, conversationId: current.id, action: "deleted" });
-      publishWorkspaceSince(cursor);
-      return { deleted: true };
-    } catch (error) {
-      if (store.getConversation(current.id)) {
-        store.updateConversation(current.id, { archived: current.archived });
-      }
-      throw error;
-    } finally {
-      deletingConversationIds.delete(current.id);
     }
+    if (!receipt) throw new Error("Chat deletion intent was not persisted");
+    deletingConversationIds.add(current.id);
+    await processConversationDeletionCleanup(receipt);
+    const refreshed = store.getConversationDeletionReceipt(receipt.conversationId)!;
+    const deleted = refreshed.canonicalDeletionCompleted;
+    return reply.code(deleted ? 200 : 202).send({
+      deleted,
+      deletionReceiptId: refreshed.conversationId,
+      cleanupPending: !deleted ||
+        !(refreshed.storageCleanupCompleted && refreshed.serverCleanupCompleted),
+      ...(!deleted ? { deletionPending: true, retryable: true } : {}),
+      ...(pending ? { replayed: true } : {}),
+    });
   });
 
 }

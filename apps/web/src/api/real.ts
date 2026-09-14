@@ -1,4 +1,6 @@
 import type {
+  ActiveMessageDeliveryReceiptsDto,
+  ActiveMessageDeliveryReceiptsRequest,
   AgentActivityOutputDto,
   AgentImportOperationDto,
   AssetLimitsDto,
@@ -40,6 +42,7 @@ import type {
   CommitAgentDeletionResponse,
   CommunicationDocumentContentDto,
   ConversationDetailDto,
+  ConversationMessageDto,
   ConversationDraftConflictListDto,
   ConversationDraftDto,
   ConversationDto,
@@ -96,6 +99,8 @@ import type {
   ReadinessDto,
   ProjectFolderOptionsDto,
   PutConversationDraftRequest,
+  ResolveConversationDraftConflictResponse,
+  RestoreConversationDraftConflictRequest,
   QueuedConversationMessageDto,
   ResolveDecisionRequest,
   SendMessageRequest,
@@ -113,6 +118,7 @@ import type {
   UpdateAgentOrganizationRequest,
   UpdateAgentPresetRequest,
   UpdateAgentRequest,
+  CreateAgentResponse,
   UpdateConversationRequest,
   UpdateProjectRequest,
   UpdateTriggerRequest,
@@ -136,6 +142,7 @@ import type {
   WorkspaceStatusDto,
   WorkspaceStreamStatusDto,
 } from "@ponderosa/core";
+import { createClientId } from "../clientId";
 import {
   AGENT_DETAIL_PAGE_SIZE,
   AGENT_HISTORY_PAGE_SIZE,
@@ -151,7 +158,7 @@ import { createResilientEventSource } from "./resilientEventSource";
 
 const API_BASE = "";
 
-async function requestJson<T>(path: string, init?: RequestInit, acceptedErrorStatuses: number[] = []): Promise<T> {
+export async function requestJson<T>(path: string, init?: RequestInit, acceptedErrorStatuses: number[] = []): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body != null && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
@@ -164,15 +171,17 @@ async function requestJson<T>(path: string, init?: RequestInit, acceptedErrorSta
 
   if (!response.ok && !acceptedErrorStatuses.includes(response.status)) {
     let message = `${response.status} ${response.statusText}`;
+    let errorBody: unknown;
     if (response.headers.get("content-type")?.includes("application/json")) {
       try {
         const body = await response.json() as { error?: unknown };
+        errorBody = body;
         if (typeof body.error === "string" && body.error.trim()) message = body.error.trim();
       } catch {
         // Preserve the stable HTTP fallback when an upstream JSON error is malformed.
       }
     }
-    throw new ApiRequestError(response.status, message);
+    throw new ApiRequestError(response.status, message, errorBody);
   }
 
   if (response.status === 204 || response.headers.get("content-length") === "0") {
@@ -282,9 +291,10 @@ export const realApi = {
   getProject(projectId: string): Promise<ProjectDto> {
     return requestJson<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`);
   },
-  createProject(request: CreateProjectRequest): Promise<ProjectDto> {
+  createProject(request: CreateProjectRequest, idempotencyKey: string): Promise<ProjectDto> {
     return requestJson<ProjectDto>("/api/projects", {
       method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
       body: JSON.stringify(request satisfies CreateProjectRequest),
     });
   },
@@ -366,9 +376,10 @@ export const realApi = {
   listConversationMembersPage(conversationId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<AgentDto>> {
     return requestCollectionPage<AgentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/members${toQuery({ limit: options.limit, cursor: options.cursor, search: options.search })}`);
   },
-  createConversation(projectId: string, request: CreateConversationRequest): Promise<ConversationDto> {
+  createConversation(projectId: string, request: CreateConversationRequest, idempotencyKey: string): Promise<ConversationDto> {
     return requestJson<ConversationDto>("/api/projects/" + encodeURIComponent(projectId) + "/conversations", {
       method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
       body: JSON.stringify(request satisfies CreateConversationRequest),
     });
   },
@@ -389,8 +400,11 @@ export const realApi = {
   async deleteConversation(conversationId: string): Promise<void> {
     await requestJson("/api/conversations/" + encodeURIComponent(conversationId), { method: "DELETE" });
   },
-  async sendConversationMessage(conversationId: string, request: CreateConversationMessageRequest): Promise<void> {
-    await requestJson("/api/conversations/" + encodeURIComponent(conversationId) + "/messages", {
+  sendConversationMessage(
+    conversationId: string,
+    request: CreateConversationMessageRequest,
+  ): Promise<ConversationMessageDto | { communicationEventId?: string }> {
+    return requestJson<ConversationMessageDto | { communicationEventId?: string }>("/api/conversations/" + encodeURIComponent(conversationId) + "/messages", {
       method: "POST",
       body: JSON.stringify(request satisfies CreateConversationMessageRequest),
     });
@@ -408,6 +422,26 @@ export const realApi = {
   },
   putConversationDraft(conversationId: string, request: PutConversationDraftRequest): Promise<ConversationDraftDto> {
     return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`, { method: "PUT", body: JSON.stringify(request satisfies PutConversationDraftRequest) });
+  },
+  restoreConversationDraftConflict(
+    conversationId: string,
+    conflictId: string,
+    request: RestoreConversationDraftConflictRequest,
+  ): Promise<ResolveConversationDraftConflictResponse> {
+    return requestJson<ResolveConversationDraftConflictResponse>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/draft-conflicts/${encodeURIComponent(conflictId)}/restore`,
+      { method: "POST", body: JSON.stringify(request) },
+    );
+  },
+  discardConversationDraftConflict(
+    conversationId: string,
+    ownerId: string,
+    conflictId: string,
+  ): Promise<ResolveConversationDraftConflictResponse> {
+    return requestJson<ResolveConversationDraftConflictResponse>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/draft-conflicts/${encodeURIComponent(conflictId)}?ownerId=${encodeURIComponent(ownerId)}`,
+      { method: "DELETE" },
+    );
   },
   uploadDraftAttachment(conversationId: string, ownerId: string, file: File): Promise<DraftAttachmentDto> {
     return requestJson<DraftAttachmentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments`, {
@@ -443,7 +477,11 @@ export const realApi = {
       projectId?: string;
       agentIds?: string;
       conversationId?: string;
-      sort?: ProjectSort;
+      sort?: ProjectSort | "next_fire";
+      active?: boolean;
+      outcomes?: boolean;
+      enabled?: boolean;
+      summary?: boolean;
     } = {},
   ): Promise<WorkspaceDirectoryPageDto<T>> {
     const path = `/api/workspace/directory/${encodeURIComponent(kind)}${toQuery({
@@ -454,6 +492,10 @@ export const realApi = {
         agentIds: options.agentIds,
         conversationId: options.conversationId,
         sort: options.sort,
+        active: options.active ? "true" : undefined,
+        outcomes: options.outcomes ? "true" : undefined,
+        summary: options.summary ? "true" : undefined,
+        enabled: options.enabled ? "true" : undefined,
       })}`;
     return requestJson<WorkspaceDirectoryPageDto<T>>(path).catch(async (error) => {
       if (!(error instanceof ApiRequestError) || error.status !== 409 || !options.cursor) throw error;
@@ -525,6 +567,15 @@ export const realApi = {
   },
   listQueuedConversationMessages(conversationId: string): Promise<QueuedConversationMessageDto[]> {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/queued-messages`);
+  },
+  activeMessageDeliveryReceipts(
+    conversationId: string,
+    request: ActiveMessageDeliveryReceiptsRequest,
+  ): Promise<ActiveMessageDeliveryReceiptsDto> {
+    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/message-delivery-receipts`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
   },
   cancelQueuedConversationMessage(conversationId: string, deliveryId: string, request: CancelQueuedMessageRequest): Promise<CancelQueuedMessageResponse> {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/queued-messages/${encodeURIComponent(deliveryId)}/cancel`, {
@@ -618,13 +669,13 @@ export const realApi = {
       };
     }
   },
-  createAgentRecord(projectId: string, request: CreateAgentRequest): Promise<AgentDto> {
-    return requestJson<AgentDto>(`/api/projects/${encodeURIComponent(projectId)}/agents`, {
+  createAgentRecord(projectId: string, request: CreateAgentRequest): Promise<CreateAgentResponse> {
+    return requestJson<CreateAgentResponse>(`/api/projects/${encodeURIComponent(projectId)}/agents`, {
       method: "POST",
       body: JSON.stringify(request satisfies CreateAgentRequest),
     });
   },
-  createAgent(projectId: string, conversationId: string, options: CreateAgentOptions): Promise<AgentDto> {
+  createAgent(projectId: string, conversationId: string, options: CreateAgentOptions): Promise<CreateAgentResponse> {
     return this.createAgentRecord(projectId, {
       title: options.title,
       engine: options.engine as CreateAgentRequest["engine"],
@@ -641,7 +692,7 @@ export const realApi = {
     });
   },
   listAgentPresets(projectId: string): Promise<AgentPresetDto[]> { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`); },
-  createAgentPreset(projectId: string, request: CreateAgentPresetRequest): Promise<AgentPresetDto> { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`, { method: "POST", body: JSON.stringify(request) }); },
+  createAgentPreset(projectId: string, request: CreateAgentPresetRequest, idempotencyKey: string): Promise<AgentPresetDto> { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`, { method: "POST", headers: { "idempotency-key": idempotencyKey }, body: JSON.stringify(request) }); },
   updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): Promise<AgentPresetDto> { return requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }); },
   async deleteAgentPreset(id: string): Promise<void> { await requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "DELETE" }); },
   updateAgent(agentId: string, patch: UpdateAgentRequest): Promise<AgentDto> {
@@ -707,13 +758,18 @@ export const realApi = {
   agentExportDownloadUrl(agentId: string, mode: AgentExportMode, organization: boolean = false): string {
     return `/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), download: 1 })}`;
   },
-  importAgents(projectId: string, request: ImportAgentPackageRequest): Promise<ImportAgentPackageResponse> {
-    return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, { method: "POST", body: JSON.stringify(request satisfies ImportAgentPackageRequest) });
+  importAgents(projectId: string, request: ImportAgentPackageRequest, requestId = createClientId()): Promise<ImportAgentPackageResponse> {
+    return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, {
+      method: "POST",
+      headers: { "idempotency-key": requestId },
+      body: JSON.stringify(request satisfies ImportAgentPackageRequest),
+    });
   },
   importAgentPackageBlob(
     projectId: string,
     packageBlob: Blob,
     metadata: Omit<ImportAgentPackageRequest, "package">,
+    requestId = createClientId(),
   ): Promise<ImportAgentPackageResponse> {
     const body = new Blob(
       [`${JSON.stringify(metadata)}\n`, packageBlob],
@@ -723,7 +779,7 @@ export const realApi = {
       `/api/projects/${encodeURIComponent(projectId)}/import-agent-package`,
       {
         method: "POST",
-        headers: { "content-type": body.type },
+        headers: { "content-type": body.type, "idempotency-key": requestId },
         body,
       },
     );
@@ -758,11 +814,13 @@ export const realApi = {
   copyAgent(
     projectId: string,
     request: CopyAgentPackageRequest,
+    requestId = createClientId(),
   ): Promise<ImportAgentPackageResponse> {
     return requestJson<ImportAgentPackageResponse>(
       `/api/projects/${encodeURIComponent(projectId)}/copy-agent`,
       {
         method: "POST",
+        headers: { "idempotency-key": requestId },
         body: JSON.stringify(request satisfies CopyAgentPackageRequest),
       },
     );
@@ -879,8 +937,10 @@ export const realApi = {
     });
   },
   async deleteAttachment(agentId: string, attachmentId: string): Promise<void> {
-    const response = await fetch(`/api/agents/${encodeURIComponent(agentId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" });
-    if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
+    await requestJson<void>(
+      `/api/agents/${encodeURIComponent(agentId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { method: "DELETE" },
+    );
   },
   cancelRun(agentId: string, request: CancelAgentRunRequest): Promise<CancelAgentRunResponse> {
     return requestJson<CancelAgentRunResponse>(`/api/agents/${encodeURIComponent(agentId)}/cancel`, {

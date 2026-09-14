@@ -42,6 +42,10 @@ const schemaExtensions = [
   "0006_delivery_idempotency.sql",
   "0007_structured_provider_failure_state.sql",
   "0008_public_activation_provider_failures.sql",
+  "0009_agent_creation_operations.sql",
+  "0010_agent_creation_artifact_identities.sql",
+  "0011_agent_management_plans.sql",
+  "0012_conversation_deletion_receipts.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";
@@ -50,6 +54,12 @@ const providerActivationExecutionPayloadsMigration = "0010_provider_activation_e
 const nestedProviderActivationExecutionPayloadsMigration = "0011_nested_provider_activation_execution_payloads.ts";
 const contextRolloverFailureProvenanceMigration = "0012_context_rollover_failure_provenance.ts";
 const workingCopyAuthorityMigration = "0013_working_copy_authority.ts";
+const projectDeletionOwnershipMigration = "0014_project_deletion_ownership.ts";
+const deletionRecoveryPhasesMigration = "0015_deletion_recovery_phases.ts";
+const conversationDeletionPrecommitMigration = "0016_conversation_deletion_precommit.ts";
+const projectDeletionDraftCleanupMigration = "0017_project_deletion_draft_cleanup.ts";
+const projectDeletionAssetAuthorityCleanupMigration = "0018_project_deletion_asset_authority_cleanup.ts";
+const conversationDeletionOwnershipMigration = "0019_conversation_deletion_ownership.ts";
 
 function hasApplicationSchema(sqlite: Database.Database): boolean {
   return sqlite
@@ -225,6 +235,194 @@ function establishWorkingCopyAuthoritySchema(sqlite: Database.Database): void {
     }
     sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
       .run(workingCopyAuthorityMigration, new Date().toISOString());
+  })();
+}
+
+function establishProjectDeletionOwnershipSchema(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(projectDeletionOwnershipMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    for (const table of ["project_deletion_pending", "project_deletion_receipts"] as const) {
+      const columns = new Set((sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+        .map((column) => column.name));
+      if (!columns.has("ownership_token")) {
+        sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ownership_token TEXT`);
+      }
+    }
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(projectDeletionOwnershipMigration, new Date().toISOString());
+  })();
+}
+
+function establishDeletionRecoveryPhasesSchema(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(deletionRecoveryPhasesMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS agent_deletion_pending (
+        agent_id TEXT PRIMARY KEY NOT NULL,
+        project_id TEXT NOT NULL,
+        conversation_id TEXT,
+        tombstone_name TEXT NOT NULL,
+        ownership_token TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `);
+    const agentColumns = new Set(
+      (sqlite.prepare("PRAGMA table_info(agent_deletion_tombstones)").all() as Array<{ name: string }>)
+        .map((column) => column.name),
+    );
+    if (!agentColumns.has("conversation_id")) {
+      sqlite.exec("ALTER TABLE agent_deletion_tombstones ADD COLUMN conversation_id TEXT");
+    }
+    if (!agentColumns.has("ownership_token")) {
+      sqlite.exec("ALTER TABLE agent_deletion_tombstones ADD COLUMN ownership_token TEXT");
+    }
+    const projectColumns = new Set(
+      (sqlite.prepare("PRAGMA table_info(project_deletion_receipts)").all() as Array<{ name: string }>)
+        .map((column) => column.name),
+    );
+    if (!projectColumns.has("removal_started")) {
+      sqlite.exec("ALTER TABLE project_deletion_receipts ADD COLUMN removal_started INTEGER NOT NULL DEFAULT 0");
+    }
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(deletionRecoveryPhasesMigration, new Date().toISOString());
+  })();
+}
+
+function establishConversationDeletionPrecommitSchema(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(conversationDeletionPrecommitMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    const columns = new Set(
+      (sqlite.prepare("PRAGMA table_info(conversation_deletion_receipts)").all() as Array<{ name: string }>)
+        .map((column) => column.name),
+    );
+    if (!columns.has("canonical_deletion_completed")) {
+      // Existing receipts were written only after canonical Chat deletion.
+      sqlite.exec(`
+        ALTER TABLE conversation_deletion_receipts
+        ADD COLUMN canonical_deletion_completed INTEGER NOT NULL DEFAULT 1
+      `);
+    }
+    sqlite.exec(`
+      DROP INDEX IF EXISTS idx_conversation_deletion_receipts_pending;
+      CREATE INDEX idx_conversation_deletion_receipts_pending
+        ON conversation_deletion_receipts(
+          canonical_deletion_completed,
+          storage_cleanup_completed,
+          server_cleanup_completed,
+          created_at
+        );
+    `);
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(conversationDeletionPrecommitMigration, new Date().toISOString());
+  })();
+}
+
+function establishProjectDeletionDraftCleanupSchema(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(projectDeletionDraftCleanupMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    const pendingColumns = new Set(
+      (sqlite.prepare("PRAGMA table_info(project_deletion_pending)").all() as Array<{ name: string }>)
+        .map(column => column.name),
+    );
+    if (!pendingColumns.has("draft_surfaces_json")) {
+      sqlite.exec("ALTER TABLE project_deletion_pending ADD COLUMN draft_surfaces_json TEXT");
+    }
+    const receiptColumns = new Set(
+      (sqlite.prepare("PRAGMA table_info(project_deletion_receipts)").all() as Array<{ name: string }>)
+        .map(column => column.name),
+    );
+    if (!receiptColumns.has("draft_surfaces_json")) {
+      sqlite.exec("ALTER TABLE project_deletion_receipts ADD COLUMN draft_surfaces_json TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!receiptColumns.has("draft_cleanup_completed")) {
+      // Pre-migration receipts predate durable draft cleanup authority. Do not
+      // invent authority over surfaces that can no longer be attributed.
+      sqlite.exec("ALTER TABLE project_deletion_receipts ADD COLUMN draft_cleanup_completed INTEGER NOT NULL DEFAULT 1");
+    }
+    const pending = sqlite.prepare(`
+      SELECT project_id projectId FROM project_deletion_pending
+      WHERE draft_surfaces_json IS NULL
+    `).all() as Array<{ projectId: string }>;
+    const conversations = sqlite.prepare("SELECT id FROM conversations WHERE project_id = ? ORDER BY id");
+    const agents = sqlite.prepare("SELECT id FROM agents WHERE project_id = ? ORDER BY id");
+    const update = sqlite.prepare(`
+      UPDATE project_deletion_pending SET draft_surfaces_json = ? WHERE project_id = ?
+    `);
+    for (const row of pending) {
+      const chatIds = (conversations.all(row.projectId) as Array<{ id: string }>).map(item => item.id);
+      const agentIds = (agents.all(row.projectId) as Array<{ id: string }>).map(item => item.id);
+      update.run(JSON.stringify([
+        ...chatIds.flatMap(id => [id, `collaboration:${id}`]),
+        ...agentIds.map(id => `agent:${id}`),
+      ]), row.projectId);
+    }
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(projectDeletionDraftCleanupMigration, new Date().toISOString());
+  })();
+}
+
+function establishProjectDeletionAssetAuthorityCleanupSchema(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(projectDeletionAssetAuthorityCleanupMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    const columns = new Set(
+      (sqlite.prepare("PRAGMA table_info(project_deletion_receipts)").all() as Array<{ name: string }>)
+        .map(column => column.name),
+    );
+    if (!columns.has("asset_authority_cleanup_completed")) {
+      sqlite.exec(`
+        ALTER TABLE project_deletion_receipts
+        ADD COLUMN asset_authority_cleanup_completed INTEGER NOT NULL DEFAULT 0
+      `);
+    }
+    sqlite.exec(`
+      UPDATE project_deletion_receipts
+      SET completed_at = NULL
+      WHERE asset_authority_cleanup_completed = 0
+    `);
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(projectDeletionAssetAuthorityCleanupMigration, new Date().toISOString());
+  })();
+}
+
+function establishConversationDeletionOwnershipSchema(sqlite: Database.Database): void {
+  const applied = sqlite
+    .prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(conversationDeletionOwnershipMigration) !== undefined;
+  if (applied) return;
+  sqlite.transaction(() => {
+    const columns = new Set(
+      (sqlite.prepare("PRAGMA table_info(conversation_deletion_receipts)").all() as Array<{ name: string }>)
+        .map(column => column.name),
+    );
+    if (!columns.has("tombstone_name")) {
+      sqlite.exec("ALTER TABLE conversation_deletion_receipts ADD COLUMN tombstone_name TEXT");
+    }
+    if (!columns.has("ownership_token")) {
+      sqlite.exec("ALTER TABLE conversation_deletion_receipts ADD COLUMN ownership_token TEXT");
+    }
+    if (!columns.has("removal_started")) {
+      sqlite.exec(`
+        ALTER TABLE conversation_deletion_receipts
+        ADD COLUMN removal_started INTEGER NOT NULL DEFAULT 0
+      `);
+    }
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(conversationDeletionOwnershipMigration, new Date().toISOString());
   })();
 }
 
@@ -845,6 +1043,12 @@ export function openDb(file: string): OpenedDb {
   establishContextRolloverFailureProvenance(sqlite);
   establishSchemaExtensions(sqlite);
   establishWorkingCopyAuthoritySchema(sqlite);
+  establishProjectDeletionOwnershipSchema(sqlite);
+  establishDeletionRecoveryPhasesSchema(sqlite);
+  establishConversationDeletionPrecommitSchema(sqlite);
+  establishProjectDeletionDraftCleanupSchema(sqlite);
+  establishProjectDeletionAssetAuthorityCleanupSchema(sqlite);
+  establishConversationDeletionOwnershipSchema(sqlite);
   establishPublicProviderRequestUpdates(sqlite);
   establishProviderActivationExecutionPayloads(sqlite);
   establishNestedProviderActivationExecutionPayloads(sqlite);

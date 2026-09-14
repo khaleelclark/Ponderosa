@@ -1,4 +1,4 @@
-import { Box, Button } from "@mui/material";
+import { Alert, Box, Button } from "@mui/material";
 import type {
   AgentDetailDto,
   AgentDto,
@@ -39,6 +39,8 @@ interface AgentDetailPanelsProps {
   agentIdForHandle: NonNullable<ComponentProps<typeof ChatPane>["agentIdForHandle"]>;
   chatPreviewScope: ComponentProps<typeof ChatPane>["previewScope"];
   loadingOlder: boolean;
+  olderChatError?: string;
+  olderTelemetryError?: string;
   hasOlderTelemetry: boolean;
   activeExecutionId?: string;
   focusTelemetry?: AgentTelemetryFocus;
@@ -79,6 +81,8 @@ export function AgentDetailPanels({
   agentIdForHandle,
   chatPreviewScope,
   loadingOlder,
+  olderChatError,
+  olderTelemetryError,
   hasOlderTelemetry,
   activeExecutionId,
   focusTelemetry,
@@ -141,6 +145,7 @@ export function AgentDetailPanels({
           )}
           loadingOlder={loadingOlder}
           onLoadOlder={onLoadOlderChat}
+          historyError={olderChatError}
         />
       </Box>
     ),
@@ -221,6 +226,10 @@ export function AgentDetailPanels({
       />
     ),
   };
+  const panelLabel = tab === "technical" ? "Technical details"
+    : tab === "triggers" ? "Automations"
+      : tab === "artifacts" ? "Files & Results"
+        : tab[0]!.toUpperCase() + tab.slice(1);
 
   return (
     <Box
@@ -260,7 +269,7 @@ export function AgentDetailPanels({
       {tab !== "chat" ? (
         <Box
           role="tabpanel"
-          aria-label={`${tab === "technical" ? "Technical details" : tab[0]!.toUpperCase() + tab.slice(1)} panel`}
+          aria-label={`${panelLabel} panel`}
           tabIndex={0}
           sx={{
             height: "100%",
@@ -270,10 +279,7 @@ export function AgentDetailPanels({
             overflow: tab === "technical" ? "hidden" : "auto",
             outlineOffset: -2,
             display: "grid",
-            gridTemplateRows:
-              hasOlderTelemetry
-                ? "auto minmax(0, 1fr)"
-                : "minmax(0, 1fr)",
+            gridTemplateRows: `${hasOlderTelemetry ? "auto " : ""}${olderTelemetryError ? "auto " : ""}minmax(0, 1fr)`,
           }}
         >
           {hasOlderTelemetry ? (
@@ -286,6 +292,15 @@ export function AgentDetailPanels({
             >
               {loadingOlder ? "Loading…" : "Load Earlier Records"}
             </Button>
+          ) : null}
+          {olderTelemetryError ? (
+            <Alert
+              severity="error"
+              action={<Button color="inherit" size="small" onClick={onLoadOlderTelemetry}>Retry</Button>}
+              sx={{ m: 1 }}
+            >
+              {olderTelemetryError}
+            </Alert>
           ) : null}
           {tab === "settings" ? settingsPane : panes[tab]}
         </Box>

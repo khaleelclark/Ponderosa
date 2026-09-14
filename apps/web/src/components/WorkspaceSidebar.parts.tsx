@@ -46,7 +46,7 @@ function SidebarSectionHeading({
           minWidth: 0,
           flex: 1,
           fontSize: titleCase ? 13 : 11,
-          fontWeight: 800,
+          fontWeight: { xs: 600, sm: 800 },
           letterSpacing: titleCase ? 0 : ".06em",
           textTransform: titleCase ? "none" : "uppercase",
         }}
@@ -140,6 +140,9 @@ function SharedSidebarPanel({
         gridTemplateColumns: "minmax(0, 1fr)",
         gridTemplateRows: "auto auto minmax(0, 1fr) auto",
         bgcolor: sidebarSurface,
+        "@media (max-width: 599.95px)": {
+          "& .MuiListItemText-secondary": { fontSize: 12 },
+        },
       }}
     >
       {header ?? (
@@ -168,6 +171,7 @@ function SharedSidebarPanel({
           value={searchValue}
           onChange={event => onSearchValueChange(event.target.value)}
           placeholder={searchLabel}
+          sx={{ "@media (max-width: 599.95px)": { "& input": { fontSize: 16 } } }}
           inputProps={{ "aria-label": searchLabel }}
           InputProps={{
             startAdornment: (
@@ -239,6 +243,7 @@ function SharedSidebarPanel({
             sx={{
               justifyContent: "flex-start",
               color: "text.secondary",
+              "@media (max-width: 599.95px)": { fontSize: 14, fontWeight: 600 },
             }}
           >
             {newLabel}
@@ -257,6 +262,7 @@ function SharedSidebarPanel({
             sx={{
               justifyContent: "flex-start",
               color: "text.secondary",
+              "@media (max-width: 599.95px)": { fontSize: 14, fontWeight: 600 },
             }}
           >
             {viewAllLabel}

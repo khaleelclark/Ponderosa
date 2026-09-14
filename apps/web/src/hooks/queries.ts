@@ -1,9 +1,18 @@
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import type { WorkspaceNotificationProjectionDto } from "@ponderosa/core";
+import type { WorkspaceNotificationProjectionDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useSyncExternalStore } from "react";
 import { api } from "../api";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import { queryKeys } from "../queryKeys";
+import type { WorkspacePreferencesWriter } from "../workspacePreferencesWriter";
+
+const workspacePreferenceWriters = new WeakMap<QueryClient, WorkspacePreferencesWriter>();
+
+export function writeWorkspacePreferences(queryClient: QueryClient, patch: Partial<WorkspacePreferencesDto>) {
+  const writer = workspacePreferenceWriters.get(queryClient);
+  if (!writer) return Promise.reject(new Error("Workspace preferences are not ready."));
+  return writer.enqueueAndWait(patch);
+}
 
 export function useProjects() {
   return useQuery({
@@ -12,8 +21,18 @@ export function useProjects() {
   });
 }
 
-export function useWorkspacePreferences() {
-  return useQuery({ queryKey: queryKeys.workspacePreferences.all, queryFn: () => api.getWorkspacePreferences() });
+export function useWorkspacePreferences(writer?: WorkspacePreferencesWriter) {
+  const queryClient = useQueryClient();
+  if (writer) workspacePreferenceWriters.set(queryClient, writer);
+  return useQuery({
+    queryKey: queryKeys.workspacePreferences.all,
+    queryFn: () => {
+      const activeWriter = workspacePreferenceWriters.get(queryClient);
+      return activeWriter
+        ? activeWriter.fetchCanonical(() => api.getWorkspacePreferences())
+        : api.getWorkspacePreferences();
+    },
+  });
 }
 
 interface NotificationFetchRevisionStore {

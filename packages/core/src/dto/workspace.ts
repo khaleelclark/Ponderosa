@@ -1,7 +1,8 @@
 import type { EngineId } from "../adapter.js";
+import type { SpeechPreferencesDto } from "./speech.js";
 import type { AgentDto, AgentHealthDto, AgentWorkingCopyDto } from "./agents.js";
 import type { BrowserControlOwner, BrowserSessionStatus } from "../events.js";
-import type { ConversationDto } from "./conversations.js";
+import type { AgentMentionBindingDto, ConversationDto } from "./conversations.js";
 import type { HistoryWindowDto } from "./common.js";
 import type { ProjectDto, ProjectSort } from "./projects.js";
 import type { TriggerDefinitionDto } from "./triggers.js";
@@ -13,6 +14,10 @@ export interface NotificationPreferencesDto {
 }
 
 export interface WorkspacePreferencesDto {
+  /** Absent on pre-local-voice workspaces; resolves to browser speech. */
+  speech?: SpeechPreferencesDto;
+  /** Canonical monotonic preference mutation sequence. */
+  revision: number;
   projectSort: ProjectSort;
   /** Stable project IDs in the operator's chosen order. Unknown/deleted IDs are ignored. */
   projectOrder: string[];
@@ -93,6 +98,7 @@ export interface WorkspaceAgentDirectoryItemDto {
   kind: "agent";
   project: Pick<ProjectDto, "id" | "label" | "hostPath">;
   agent: AgentDto;
+  ownerConversation?: Pick<ConversationDto, "id" | "title">;
   health: AgentHealthDto;
 }
 
@@ -120,8 +126,10 @@ export interface WorkspaceDirectoryPageDto<
   items: T[];
   /** Total matching resources, including starred resources. */
   total: number;
-  /** Workspace-wide active count, present for the Agent directory. */
+  /** Workspace-wide active count, present for health-filtered Agent views. */
   activeCount?: number;
+  /** Workspace-wide enabled count, present for the Automation directory. */
+  enabledCount?: number;
   history: HistoryWindowDto;
 }
 
@@ -163,7 +171,7 @@ export interface UploadedOperatorAvatarDto {
   url: string;
 }
 
-export type UpdateWorkspacePreferencesRequest = Partial<Omit<WorkspacePreferencesDto, "updatedAt">>;
+export type UpdateWorkspacePreferencesRequest = Partial<Omit<WorkspacePreferencesDto, "revision" | "updatedAt">>;
 
 export interface DraftAttachmentDto {
   id: string;
@@ -185,6 +193,13 @@ export interface ConversationDraftDto {
   attachmentIds: string[];
   /** Metadata for staged files still referenced by this draft. */
   attachments?: DraftAttachmentDto[];
+  /** Staged UTF-8 payload for extracted long paste, submitted as message text. */
+  pastedTextAttachmentId?: string;
+  pastedTextAttachment?: DraftAttachmentDto;
+  /** Stable structural recipients captured before display handles can change. */
+  mentionBindings?: AgentMentionBindingDto[];
+  /** Exact ambiguous send authority retained until the server settles it. */
+  pendingSubmission?: DraftPendingSubmissionDto;
   revision: number;
   updatedAt: string;
   clientId: string;
@@ -192,8 +207,75 @@ export interface ConversationDraftDto {
 
 /** A rejected stale write includes the displaced text as a recoverable copy. */
 export interface ConversationDraftConflictDto {
+  /** Stable identity used to restore or discard exactly this displaced write. */
+  id: string;
   current: ConversationDraftDto;
-  displaced: Pick<ConversationDraftDto, "conversationId" | "text" | "attachmentIds" | "clientId"> & { capturedAt: string };
+  displaced: Pick<ConversationDraftDto, "conversationId" | "text" | "attachmentIds" | "pastedTextAttachmentId" | "mentionBindings" | "pendingSubmission" | "clientId"> & { capturedAt: string };
+}
+
+export interface DraftPendingSubmissionDto {
+  /** SHA-256 of the exact durable content, routing, runtime, and action. */
+  fingerprint: string;
+  /** Pre-preparation fingerprint used to recognize the same intent on reload. */
+  intentFingerprint?: string;
+  idempotencyKey: string;
+  /** Immutable server-bound routing selected before dispatch. */
+  request?: {
+    conversationId?: string;
+    recipientAgentIds: string[];
+    mentionBindings?: AgentMentionBindingDto[];
+    broadcastAttachmentOwnerAgentId?: string;
+    runtime: {
+      activeRunDelivery: "steer" | "queue";
+      engine?: string;
+      model?: string;
+      effort?: string;
+      speed?: string;
+    };
+  };
+  /** Original request assets stay immutable while conflict recovery may replace
+   * the editable draft copies. */
+  draftAttachmentIds?: string[];
+  editableDraftAttachmentIds?: string[];
+  pastedTextAttachmentId?: string;
+  editablePastedTextAttachmentId?: string;
+  /** Generated title bound to an Agent-creation submission before dispatch. */
+  agentTitle?: string;
+  /** The compound Agent-creation step committed; later work must retain this identity. */
+  agentCreationCommitted?: boolean;
+  /** Server asset IDs prepared before dispatch, grouped by request scope. */
+  uploads?: Array<{
+    scope: string;
+    recipients: Array<{ agentId: string; attachmentIds: string[] }>;
+  }>;
+}
+
+export interface RestoreConversationDraftConflictRequest {
+  ownerId: string;
+  expectedRevision: number;
+  clientId: string;
+  /** Fresh same-surface assets replacing unavailable displaced assets. */
+  attachmentReplacements?: Array<{ fromId: string; toId: string }>;
+  /** Displaced assets whose bytes are no longer available in this browser. */
+  unavailableAttachmentIds?: string[];
+}
+
+export interface ResolveConversationDraftConflictResponse {
+  conflictId: string;
+  action: "restored" | "discarded";
+  replayed: boolean;
+  draft?: ConversationDraftDto;
+  /** Latest canonical state when an idempotent replay's original result is no longer current. */
+  currentDraft?: ConversationDraftDto;
+  /** Durable historical-to-canonical asset mapping, stable across restore replay. */
+  attachmentReplacements?: Array<{ fromId: string; toId: string }>;
+  unavailableAttachmentIds?: string[];
+}
+
+export interface RestoreConversationDraftConflictUnavailableResponse {
+  error: "draft conflict attachment is unavailable";
+  /** Historical displaced IDs requiring replacement or explicit removal. */
+  unavailableAttachmentIds: string[];
 }
 
 export interface ConversationDraftConflictListDto {
@@ -204,6 +286,9 @@ export interface ConversationDraftConflictListDto {
 export interface PutConversationDraftRequest {
   text: string;
   attachmentIds: string[];
+  pastedTextAttachmentId?: string;
+  mentionBindings?: AgentMentionBindingDto[];
+  pendingSubmission?: DraftPendingSubmissionDto;
   expectedRevision: number;
   clientId: string;
   ownerId?: string;

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { eq } from "drizzle-orm";
 import {
@@ -9,7 +9,7 @@ import {
 import type { Db } from "./db.js";
 import { EventLog } from "./eventlog.js";
 import { readRepairableJsonl } from "./append-jsonl.js";
-import { pruneArtifactDirectory, readJson, readJsonLines, writeJson } from "./store-filesystem.js";
+import { pruneArtifactDirectory, readJson, writeJson } from "./store-filesystem.js";
 import type { AgentJson, ConversationJson, PresetEvent, ProjectJson } from "./store-types.js";
 import { AgentArtifactCatalog } from "./store-artifact-catalog.js";
 import { AgentCatalogAuthority } from "./store-agent-catalog-authority.js";
@@ -35,7 +35,6 @@ import {
   workItems,
 } from "./schema.js";
 import {
-  agentDir,
   agentJsonPath,
   agentOrganizationEventsPath,
   agentPresetsPath,
@@ -45,12 +44,16 @@ import {
   conversationsDir,
   eventsPath,
   importedAgentHistoryPath,
-  projectDir,
   projectJsonPath,
   projectsDir,
 } from "./paths.js";
 
+function isBoundedRecordId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 200;
+}
+
 export class AgentProjectionRebuilder {
+  private recoveryIssues: Array<{ projectId: string; detail: string }> = [];
   constructor(
     private readonly dataDir: string,
     private readonly db: Db,
@@ -65,11 +68,15 @@ export class AgentProjectionRebuilder {
   ) {}
 
   rebuildProjections(): void {
+    // Project recovery crosses an irreversible filesystem boundary. Its receipt
+    // commits must not be rolled back when a later, unrelated projection replay
+    // fails and the broad rebuild transaction is reverted.
+    this.recoverProjectDeletionDirectories();
     this.client.transaction(() => this.rebuildProjectionsInTransaction())();
   }
 
   private rebuildProjectionsInTransaction(): void {
-    this.recoverProjectDeletionDirectories();
+    this.recoveryIssues = [];
     this.recoverAgentDeletionDirectories();
     this.client.prepare(`DELETE FROM all_chat_feed_projection`).run();
     this.client.prepare(`DELETE FROM agent_health_projection`).run();
@@ -96,15 +103,32 @@ export class AgentProjectionRebuilder {
 
     const root = projectsDir(this.dataDir);
     if (!existsSync(root)) return;
+    const canonicallyDeletedConversationIds = new Map<string, Set<string>>();
+    for (const row of this.client.prepare(`
+      SELECT project_id, conversation_id FROM conversation_deletion_receipts
+      WHERE canonical_deletion_completed = 1
+    `).all() as Array<{ project_id: string; conversation_id: string }>) {
+      const projectConversationIds = canonicallyDeletedConversationIds.get(row.project_id) ??
+        new Set<string>();
+      projectConversationIds.add(row.conversation_id);
+      canonicallyDeletedConversationIds.set(row.project_id, projectConversationIds);
+    }
 
     for (const projectId of readdirSync(root)) {
       if (projectId.startsWith(".") || projectId.endsWith(".creating")) {
-        rmSync(projectDir(this.dataDir, projectId), { recursive: true, force: true });
+        // Hidden and creation-shaped entries without a durable ownership
+        // receipt are preserved. Recovery authorities may claim an exact entry;
+        // projection rebuild must never authenticate storage by its name alone.
         continue;
       }
+      this.client.exec("SAVEPOINT ponderosa_project_projection");
+      try {
       const pj = projectJsonPath(this.dataDir, projectId);
       if (!existsSync(pj)) continue;
       const p = readJson<ProjectJson>(pj);
+      if (!isBoundedRecordId(projectId) || p.id !== projectId) {
+        throw new Error(`Project record ${p.id} does not match containing directory ${projectId}`);
+      }
       this.db
         .insert(projects)
         .values({
@@ -120,21 +144,47 @@ export class AgentProjectionRebuilder {
         })
         .run();
       const resolved = new Map<string, AgentPresetDto>();
-      for (const event of readRepairableJsonl<PresetEvent>(agentPresetsPath(this.dataDir, projectId), "agent preset journal", true)) event.type === "upsert" ? resolved.set(event.preset.id, event.preset) : resolved.delete(event.id);
+      for (const event of readRepairableJsonl<PresetEvent>(
+        agentPresetsPath(this.dataDir, projectId), "agent preset journal", true,
+      )) {
+        if (event.type === "upsert") {
+          if (event.preset.projectId !== projectId || !isBoundedRecordId(event.preset.id)) {
+            throw new Error(`Agent preset record does not belong to Project ${projectId}`);
+          }
+          resolved.set(event.preset.id, event.preset);
+        } else if (event.type === "delete") {
+          if (!isBoundedRecordId(event.id)) {
+            throw new Error(`Agent preset deletion record is invalid for Project ${projectId}`);
+          }
+          resolved.delete(event.id);
+        } else {
+          throw new Error(`Agent preset journal contains an unknown event for Project ${projectId}`);
+        }
+      }
       for (const preset of resolved.values()) this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 }).run();
       const organizationalParents = new Map<string, string | null>();
-      for (const event of readJsonLines<AgentOrganizationEvent>(agentOrganizationEventsPath(this.dataDir, projectId))) {
-        if (event.projectId === projectId && event.type === "manager_changed") {
-          organizationalParents.set(event.agentId, event.managerAgentId);
+      for (const event of readRepairableJsonl<AgentOrganizationEvent>(
+        agentOrganizationEventsPath(this.dataDir, projectId), "agent organization log", true,
+      )) {
+        if (event.projectId !== projectId || event.type !== "manager_changed" ||
+            !isBoundedRecordId(event.eventId) || !isBoundedRecordId(event.agentId) ||
+            (event.managerAgentId !== null && !isBoundedRecordId(event.managerAgentId))) {
+          throw new Error(`Agent organization record does not belong to Project ${projectId}`);
         }
+        organizationalParents.set(event.agentId, event.managerAgentId);
       }
 
       const mDir = conversationsDir(this.dataDir, projectId);
       if (existsSync(mDir)) {
         for (const conversationId of readdirSync(mDir)) {
+          if (conversationId.startsWith(".") || conversationId.endsWith(".creating")) continue;
+          if (canonicallyDeletedConversationIds.get(projectId)?.has(conversationId)) continue;
           const mj = conversationJsonPath(this.dataDir, projectId, conversationId);
           if (!existsSync(mj)) continue;
           const m = readJson<ConversationJson>(mj);
+          if (!isBoundedRecordId(conversationId) || m.id !== conversationId || m.projectId !== projectId) {
+            throw new Error(`Chat record ${m.id} does not match its containing Project and directory`);
+          }
           this.db
             .insert(conversations)
             .values({
@@ -158,12 +208,16 @@ export class AgentProjectionRebuilder {
       if (!existsSync(tDir)) continue;
       for (const agentId of readdirSync(tDir)) {
         if (agentId.startsWith(".") || agentId.endsWith(".creating")) {
-          rmSync(agentDir(this.dataDir, projectId, agentId), { recursive: true, force: true });
+          // Recovery authorities may claim exact journal-bound staging paths.
+          // Projection rebuild never derives mutation ownership from a name.
           continue;
         }
         const tj = agentJsonPath(this.dataDir, projectId, agentId);
         if (!existsSync(tj)) continue;
         const t = readJson<AgentJson>(tj);
+        if (!isBoundedRecordId(agentId) || t.id !== agentId || t.projectId !== projectId) {
+          throw new Error(`Agent record ${t.id} does not match its containing Project and directory`);
+        }
         const latestReservation = this.client.prepare(`
           SELECT handle FROM agent_handle_reservations
           WHERE project_id = ? AND agent_id = ?
@@ -274,15 +328,34 @@ export class AgentProjectionRebuilder {
         }
       }
       this.sanitizeOrganizationProjection(projectId);
+      } catch (error) {
+        this.client.exec("ROLLBACK TO ponderosa_project_projection");
+        this.recoveryIssues.push({
+          projectId,
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        this.client.exec("RELEASE ponderosa_project_projection");
+      }
     }
     // Project rows are rebuildable and are deleted/reinserted above. The
     // deletion quarantine is authoritative, so prune it only after canonical
     // Project folders have been fully reconstructed.
-    this.client.prepare(`
-      DELETE FROM project_deletion_pending
+    const quarantined = new Set(this.recoveryIssues.map((issue) => issue.projectId));
+    for (const row of this.client.prepare(`
+      SELECT project_id FROM project_deletion_pending
       WHERE project_id NOT IN (SELECT id FROM projects)
-    `).run();
+    `).all() as Array<{ project_id: string }>) {
+      if (!quarantined.has(row.project_id)) {
+        this.client.prepare("DELETE FROM project_deletion_pending WHERE project_id = ?")
+          .run(row.project_id);
+      }
+    }
     this.rebuildGlobalChatSearchProjection();
+  }
+
+  listRecoveryIssues(): ReadonlyArray<{ projectId: string; detail: string }> {
+    return this.recoveryIssues;
   }
 
 }

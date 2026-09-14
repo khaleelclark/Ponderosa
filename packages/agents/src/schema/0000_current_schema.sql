@@ -188,6 +188,32 @@ CREATE TABLE agent_conversation_memberships (
   agent_id TEXT NOT NULL, conversation_id TEXT NOT NULL, position INTEGER NOT NULL,
   PRIMARY KEY (agent_id, conversation_id)
 );
+CREATE TABLE agent_creation_operations (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  actor_scope TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('human', 'managed', 'import')),
+  idempotency_key TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('preparing', 'canonical_committed', 'completed', 'rolling_back', 'rolled_back')),
+  communication_event_id TEXT,
+  artifact_ids_json TEXT NOT NULL DEFAULT '[]',
+  result_json TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (project_id, actor_scope, kind, idempotency_key)
+);
+CREATE TABLE agent_creation_operation_members (
+  operation_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  PRIMARY KEY (operation_id, agent_id),
+  UNIQUE (operation_id, position),
+  FOREIGN KEY (operation_id) REFERENCES agent_creation_operations(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_agent_creation_operations_pending
+  ON agent_creation_operations(status, updated_at);
 CREATE TABLE agent_deletion_receipts (
   id TEXT PRIMARY KEY NOT NULL,
   project_id TEXT NOT NULL,
@@ -204,7 +230,17 @@ CREATE TABLE agent_deletion_receipts (
 CREATE TABLE agent_deletion_tombstones (
   agent_id TEXT PRIMARY KEY NOT NULL,
   project_id TEXT NOT NULL,
+  conversation_id TEXT,
   tombstone_name TEXT NOT NULL,
+  ownership_token TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE agent_deletion_pending (
+  agent_id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL,
+  conversation_id TEXT,
+  tombstone_name TEXT NOT NULL,
+  ownership_token TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 CREATE TABLE agent_event_head_projection (
@@ -234,6 +270,30 @@ CREATE TABLE agent_management_approvals (
   resolved_at TEXT,
   consumed_at TEXT
 );
+CREATE TABLE agent_management_plans (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  owner_agent_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  scope_hash TEXT NOT NULL,
+  plan_json TEXT NOT NULL CHECK (json_valid(plan_json)),
+  status TEXT NOT NULL CHECK (status IN ('planned', 'applying', 'completed')),
+  operation_progress_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(operation_progress_json)),
+  refs_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(refs_json)),
+  changed_agent_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(changed_agent_ids_json)),
+  approval_required INTEGER NOT NULL CHECK (approval_required IN (0, 1)),
+  approval_decision_id TEXT,
+  result_json TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  applied_at TEXT,
+  UNIQUE (owner_agent_id, run_id, idempotency_key)
+);
+CREATE INDEX idx_agent_management_plans_project
+  ON agent_management_plans(project_id, created_at);
 CREATE TABLE agent_presets (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL,
   description TEXT NOT NULL, guidance TEXT NOT NULL, engine TEXT NOT NULL,
@@ -441,16 +501,37 @@ CREATE TABLE project_deletion_pending (
   project_id TEXT PRIMARY KEY,
   created_at TEXT NOT NULL,
   last_error TEXT
-, tombstone_name TEXT);
+, tombstone_name TEXT, ownership_token TEXT, draft_surfaces_json TEXT);
 CREATE TABLE project_deletion_receipts (
   project_id TEXT PRIMARY KEY NOT NULL,
   tombstone_name TEXT NOT NULL,
+  ownership_token TEXT,
+  removal_started INTEGER NOT NULL DEFAULT 0,
   storage_cleanup_completed INTEGER NOT NULL DEFAULT 0,
+  draft_surfaces_json TEXT NOT NULL DEFAULT '[]',
+  draft_cleanup_completed INTEGER NOT NULL DEFAULT 1,
+  asset_authority_cleanup_completed INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   completed_at TEXT
 );
+CREATE TABLE conversation_deletion_receipts (
+  conversation_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  tombstone_name TEXT,
+  ownership_token TEXT,
+  removal_started INTEGER NOT NULL DEFAULT 0,
+  canonical_deletion_completed INTEGER NOT NULL DEFAULT 0,
+  storage_cleanup_completed INTEGER NOT NULL DEFAULT 0,
+  server_cleanup_completed INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE INDEX idx_conversation_deletion_receipts_pending
+  ON conversation_deletion_receipts(canonical_deletion_completed, storage_cleanup_completed, server_cleanup_completed, created_at);
 CREATE TABLE projects (
   id TEXT PRIMARY KEY, label TEXT NOT NULL, host_path TEXT NOT NULL,
   created_at TEXT NOT NULL, last_used_at TEXT

@@ -14,10 +14,12 @@ export function DictationControls({
   disabled,
   onFinalTranscript,
   onSettlingChange,
+  onActiveChange,
 }: {
   disabled: boolean;
   onFinalTranscript(transcript: string): void;
   onSettlingChange(settling: boolean): void;
+  onActiveChange?(active: boolean): void;
 }): JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const dictation = useDictation(
@@ -29,6 +31,9 @@ export function DictationControls({
     dictation.status,
   );
   const paused = dictation.status === "paused";
+  useEffect(() => {
+    onActiveChange?.(active || paused);
+  }, [active, paused, onActiveChange]);
   const busy = dictation.status === "pausing" || dictation.status === "stopping";
   const canStopForDisabled =
     dictation.status === "starting" ||
@@ -109,7 +114,10 @@ export function DictationControls({
           color={dictation.error ? "error" : "text.secondary"}
           role={dictation.error ? "alert" : "status"}
           variant="caption"
-          sx={speechStatusSx}
+          sx={[
+            speechStatusSx,
+            !dictation.error ? { "@media (max-width: 899.95px)": visuallyHiddenSpeechStatusSx } : {},
+          ]}
           title={statusLabel}
         >
           {statusLabel}

@@ -11,6 +11,7 @@ import type {
 import type { AssetStore, AuthoritativeRuntimeAttachment } from "./assets.js";
 import { agentMentionHandle, renderDirectMessage, renderScopedMessage } from "./agent-mentions.js";
 import type { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
+import { leaseAgentDelivery, leaseConversationDelivery } from "./delivery-leases.js";
 
 type CommunicationArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
 
@@ -18,6 +19,13 @@ interface CommunicationProjectionReconcilerContext {
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   assets: AssetStore;
+  projectDeletionInProgress(projectId: string): boolean;
+  agentDeletionInProgress(agentId: string): boolean;
+  conversationDeletionInProgress(conversationId: string): boolean;
+  attachmentDeletionInProgress(agentId: string, attachmentId: string): boolean;
+  assetReconciliationInProgress(agentId: string): boolean;
+  conversationDeliveryLeases: Map<string, number>;
+  agentDeliveryLeases: Map<string, number>;
   recordCommunication(event: CommunicationEvent): CommunicationEvent;
   projectCommunicationArtifact: CommunicationArtifactAuthority["projectCommunicationArtifact"];
   communicationArtifactAccess: CommunicationArtifactAuthority["communicationArtifactAccess"];
@@ -76,6 +84,13 @@ export function createCommunicationProjectionReconciler(
     store,
     coordinationV3,
     assets,
+    projectDeletionInProgress,
+    agentDeletionInProgress,
+    conversationDeletionInProgress,
+    attachmentDeletionInProgress,
+    assetReconciliationInProgress,
+    conversationDeliveryLeases,
+    agentDeliveryLeases,
     recordCommunication,
     projectCommunicationArtifact,
     communicationArtifactAccess,
@@ -88,6 +103,8 @@ export function createCommunicationProjectionReconciler(
   async function reconcileRuntimeCommunicationProjections(filter?: {
     projectId?: string;
     communicationEventId?: string;
+    conversationId?: string;
+    allowQuarantinedAgentIds?: ReadonlySet<string>;
   }, options: CommunicationProjectionReconciliationOptions = {}): Promise<number> {
     let repaired = 0;
     let skippedUnavailableTargets = 0;
@@ -95,10 +112,33 @@ export function createCommunicationProjectionReconciler(
     const repairedProjectIds = new Set<string>();
     const exactCanonicalEvents = new Map<string, CommunicationEvent>();
     const exactRecipientAgentIds = new Map<string, string[]>();
-    const sources = [
-      ...coordinationV3.runtimeCommunications(),
-      ...coordinationV3.requestCommunicationsNeedingProjection(),
-    ];
+    const exactCommunicationEventIds = new Set<string>();
+    const exactScope = Boolean(filter?.projectId &&
+      (filter.communicationEventId || filter.conversationId));
+    let exactRecoveryError: unknown;
+    const markExactRecoveryIncomplete = (
+      projectId: string,
+      communicationEventId: string,
+      message: string,
+    ): void => {
+      if (exactCommunicationEventIds.has(communicationEventId) &&
+          filter?.projectId === projectId) {
+        exactRecoveryError ??= new Error(message);
+      }
+    };
+    const readSources = () => {
+      const exactRuntime = filter?.communicationEventId
+        ? coordinationV3.runtimeCommunication(filter.communicationEventId)
+        : undefined;
+      if (exactRuntime) return [exactRuntime];
+      // Legacy rows can have a runtime ID different from their event ID.
+      // Preserve their recovery path, scoped to the requested Project.
+      return [
+        ...coordinationV3.runtimeCommunications(filter?.projectId),
+        ...coordinationV3.requestCommunicationsNeedingProjection(filter?.projectId, filter?.communicationEventId),
+      ];
+    };
+    const sources = readSources();
     for (const row of sources) {
       if (filter?.projectId && row.projectId !== filter.projectId) continue;
       if (options.shouldContinue && !options.shouldContinue()) break;
@@ -122,6 +162,8 @@ export function createCommunicationProjectionReconciler(
       ) continue;
       const communicationEventId = event.eventId;
       if (filter?.communicationEventId && communicationEventId !== filter.communicationEventId) continue;
+      if (filter?.conversationId && event.conversationId !== filter.conversationId) continue;
+      if (exactScope) exactCommunicationEventIds.add(communicationEventId);
       const runtimeArtifacts = row.sourceKind === "request"
         ? []
         : coordinationV3.runtimeArtifacts("communication", row.id);
@@ -133,12 +175,32 @@ export function createCommunicationProjectionReconciler(
         }
       }
       if (!artifactsAvailable) {
+        markExactRecoveryIncomplete(
+          row.projectId,
+          communicationEventId,
+          "runtime Communication artifact is unavailable",
+        );
         logError({ runtimeCommunicationId: row.id, communicationEventId }, "runtime communication artifact is unavailable; projection remains uncommitted");
         continue;
       }
       const dispatch = payload?.dispatch && typeof payload.dispatch === "object"
         ? payload.dispatch as Record<string, unknown>
         : undefined;
+      const skippedRecipientAttachments = Array.isArray(payload?.skippedRecipientAttachments)
+        ? payload.skippedRecipientAttachments.flatMap((value) => {
+            if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+            const item = value as Record<string, unknown>;
+            return typeof item.projectId === "string" && typeof item.agentId === "string" &&
+                Array.isArray(item.attachmentIds) &&
+                item.attachmentIds.every(id => typeof id === "string")
+              ? [{
+                  projectId: item.projectId,
+                  agentId: item.agentId,
+                  attachmentIds: item.attachmentIds as string[],
+                }]
+              : [];
+          })
+        : [];
 
       const recipientAgentIds = row.recipientAgentIds
         ?? coordinationV3.communicationRecipientAgentIds(row.projectId, row.id);
@@ -226,6 +288,11 @@ export function createCommunicationProjectionReconciler(
       };
       let reservedAttachments = validateReservedAttachments();
       if (!reservedAttachments) {
+        markExactRecoveryIncomplete(
+          row.projectId,
+          communicationEventId,
+          "runtime Communication attachment is unavailable",
+        );
         logError({ runtimeCommunicationId: row.id, communicationEventId },
           "runtime communication attachment is unavailable; canonical projection remains uncommitted");
         continue;
@@ -270,9 +337,78 @@ export function createCommunicationProjectionReconciler(
       }
 
       const firstRecoveredAttachments = [...attachmentsByAgent.values()].find((items) => items.length > 0);
-      if (!event.attachments?.length && firstRecoveredAttachments?.length) {
-        event = { ...event, attachments: firstRecoveredAttachments };
+      const conversationAttachmentIds = Array.isArray(dispatch?.conversationAttachmentIds) &&
+          dispatch.conversationAttachmentIds.every((id) => typeof id === "string")
+        ? dispatch.conversationAttachmentIds as string[]
+        : undefined;
+      const recoveredConversationAttachments = conversationAttachmentIds === undefined
+        ? firstRecoveredAttachments
+        : conversationAttachmentIds.flatMap((id) =>
+            [...reservedAttachments!.values()].flatMap((item) =>
+              item.attachment.id === id ? [{ ...item.attachment, state: "associated" as const }] : []));
+      if (conversationAttachmentIds &&
+          (recoveredConversationAttachments?.length ?? 0) !== conversationAttachmentIds.length) {
+        markExactRecoveryIncomplete(
+          row.projectId,
+          communicationEventId,
+          "runtime conversation attachment is unavailable",
+        );
+        logError({ runtimeCommunicationId: row.id, communicationEventId },
+          "runtime conversation attachment is unavailable; projection remains uncommitted");
+        continue;
       }
+      if (!event.attachments?.length && recoveredConversationAttachments?.length) {
+        event = { ...event, attachments: recoveredConversationAttachments };
+      }
+      if (projectDeletionInProgress(row.projectId)) {
+        markExactRecoveryIncomplete(
+          row.projectId,
+          communicationEventId,
+          "Project deletion is in progress",
+        );
+        continue;
+      }
+      const conversationId = event.conversationId;
+      if (conversationId) {
+        const conversation = store.getConversation(conversationId);
+        if (!conversation || conversation.projectId !== row.projectId ||
+            (conversation.archived && filter?.conversationId !== conversationId) ||
+            (conversationDeletionInProgress(conversationId) &&
+              filter?.conversationId !== conversationId)) {
+          markExactRecoveryIncomplete(
+            row.projectId,
+            communicationEventId,
+            "runtime Communication Chat is unavailable",
+          );
+          continue;
+        }
+      }
+      const leasedAgentIds = [...new Set([
+        ...recipientAgentIds,
+        ...expectedAttachmentOwners.values(),
+        ...runtimeArtifacts.flatMap((artifact) => artifact.originAgentId ? [artifact.originAgentId] : []),
+        ...(event.sender?.kind === "agent" ? [event.sender.agentId] : []),
+      ])];
+      if (leasedAgentIds.some((agentId) =>
+        (agentDeletionInProgress(agentId) && !filter?.allowQuarantinedAgentIds?.has(agentId)) ||
+          assetReconciliationInProgress(agentId)) ||
+          [...expectedAttachmentOwners].some(([attachmentId, agentId]) =>
+            attachmentDeletionInProgress(agentId, attachmentId))) {
+        markExactRecoveryIncomplete(
+          row.projectId,
+          communicationEventId,
+          "runtime Communication attachment association is busy",
+        );
+        continue;
+      }
+      const releaseProjectionLease = conversationId
+        ? leaseConversationDelivery(
+            conversationDeliveryLeases,
+            agentDeliveryLeases,
+            conversationId,
+            leasedAgentIds,
+          )
+        : leaseAgentDelivery(agentDeliveryLeases, leasedAgentIds);
       try {
         let canonical = store.getCommunicationEvent(row.projectId, communicationEventId);
         if (!canonical) {
@@ -283,7 +419,7 @@ export function createCommunicationProjectionReconciler(
           repairedProjectIds.add(row.projectId);
         }
         if (!canonical) continue;
-        if (filter?.projectId && filter.communicationEventId) {
+        if (exactScope) {
           exactCanonicalEvents.set(canonical.eventId, canonical);
           exactRecipientAgentIds.set(canonical.eventId, recipientAgentIds);
         }
@@ -309,7 +445,9 @@ export function createCommunicationProjectionReconciler(
           ? recipientAgentIds
           : behavior.deliveryRecipients.flatMap((recipient) =>
               recipient.kind === "agent" ? [recipient.agentId] : []);
-        const roomAttachments = canonical.attachments ?? firstRecoveredAttachments;
+        const roomAttachments = conversationAttachmentIds === undefined
+          ? canonical.attachments ?? recoveredConversationAttachments
+          : recoveredConversationAttachments;
         const role = canonical.sender.kind === "user" ? "user" : canonical.sender.kind === "system" ? "system" : "assistant";
         const requestProjectionText = row.sourceKind === "request"
           ? `${recipientAgentIds.flatMap((agentId) => {
@@ -320,10 +458,13 @@ export function createCommunicationProjectionReconciler(
         const dispatchText = typeof dispatch?.text === "string"
           ? dispatch.text
           : requestProjectionText ?? canonical.text;
+        const persistedConversationText = typeof dispatch?.conversationText === "string"
+          ? dispatch.conversationText
+          : undefined;
         const conversationText = canonical.intent === "broadcast"
-          ? canonical.sender.kind === "agent" || dispatch?.shareWithOrganization === true
-            ? dispatchText
-            : renderScopedMessage("broadcast", canonical.text)
+          ? persistedConversationText ?? (canonical.sender.kind === "agent"
+              ? dispatchText
+              : renderScopedMessage("broadcast", canonical.text))
           : canonical.schemaVersion === 2 && canonical.intent === "user_dm" && canonical.sender.kind === "agent"
             ? renderScopedMessage("user", canonical.text)
             : canonical.schemaVersion === 2 && canonical.intent === "user_dm" &&
@@ -344,8 +485,7 @@ export function createCommunicationProjectionReconciler(
           target.surface === "conversation" || target.surface === "collaboration_view");
         if (roomTarget && canonical.conversationId) {
           const channel = roomTarget.surface === "collaboration_view" ? "collaboration" : "main";
-          const roomMessage = store.getConversationMessages(canonical.conversationId, channel)
-            .find((message) => message.communicationEventId === canonical.eventId);
+          const roomMessage = store.getProjectedConversationMessageById(canonical.conversationId, channel, canonical.eventId);
           const deliveryIntents: ConversationDeliveryIntent[] = recipientIds.map((agentId) => ({
             targetAgentId: agentId,
             relayDepth: 0,
@@ -420,18 +560,39 @@ export function createCommunicationProjectionReconciler(
           }
         }
 
-        for (const [agentId, recipientAttachments] of attachmentsByAgent) {
-          if (!recipientAttachments.length) continue;
+        const associationIdsByAgent = new Map<string, string[]>();
+        for (const [attachmentId, agentId] of expectedAttachmentOwners) {
+          associationIdsByAgent.set(agentId, [
+            ...(associationIdsByAgent.get(agentId) ?? []),
+            attachmentId,
+          ]);
+        }
+        for (const [agentId, attachmentIds] of associationIdsByAgent) {
           const agent = store.getAgent(agentId);
-          if (!agent || agent.projectId !== canonical.projectId || agent.archived) continue;
-          await assets.associate(canonical.projectId, agentId, recipientAttachments.map((item) => item.id));
+          if (!agent || agent.projectId !== canonical.projectId) {
+            throw new Error("runtime Communication attachment owner is unavailable");
+          }
+          await assets.associate(canonical.projectId, agentId, attachmentIds);
+        }
+        // Cleanup is a consequence of the durable runtime row, never a
+        // pre-commit side effect. Replaying this pass safely re-enqueues it.
+        for (const skipped of skippedRecipientAttachments) {
+          for (const attachmentId of skipped.attachmentIds) {
+            await assets.enqueueRemoval(skipped.projectId, skipped.agentId, attachmentId);
+          }
         }
       } catch (error) {
+        if (exactCommunicationEventIds.has(communicationEventId) &&
+            filter?.projectId === row.projectId) {
+          exactRecoveryError = error;
+        }
         logError({
           err: error,
           runtimeCommunicationId: row.id,
           communicationEventId,
         }, "runtime communication projection recovery failed");
+      } finally {
+        releaseProjectionLease();
       }
     }
     if (skippedUnavailableTargets > 0) {
@@ -439,42 +600,70 @@ export function createCommunicationProjectionReconciler(
         "runtime communication recovery skipped unavailable historical projection surfaces");
     }
     for (const projectId of repairedProjectIds) scheduleCommunicationReconciliation(projectId);
-    if (filter?.projectId && filter.communicationEventId) {
-      const canonical = [...exactCanonicalEvents.values()][0] ??
-        store.getCommunicationEvent(filter.projectId, filter.communicationEventId);
-      // Legacy audit-first recovery can already own the one stable room
-      // dispatch under the canonical idempotency receipt while the newer V3
-      // runtime row has a different deterministic event ID. That durable
-      // dispatch is the exact-once visible placement; manufacturing a second
-      // room message would violate its identity.
-      const receiptMessage = canonical?.conversationId && canonical.idempotencyKey
-        ? store.getConversationMessageByReceiptKey(canonical.conversationId, canonical.idempotencyKey)
-        : undefined;
-      const incompleteTargets = canonical
-          ? runtimeProjectionTargets(
-            canonical,
-            exactRecipientAgentIds.get(canonical.eventId) ?? [],
-          ).filter((target) => {
-            if (target.surface === "conversation" || target.surface === "collaboration_view") {
-              const conversation = store.getConversation(target.projectionKey);
-              if (!conversation || conversation.projectId !== canonical.projectId || conversation.archived) return false;
-            } else if (target.surface === "direct_agent_audit") {
-              const agent = store.getAgent(target.projectionKey);
-              if (!agent || agent.projectId !== canonical.projectId || agent.archived) return false;
-            } else {
-              return false;
-            }
-            return !((target.surface === "conversation" || target.surface === "collaboration_view") && receiptMessage) &&
-              !store.getCommunicationProjection(
-                canonical.projectId,
-                canonical.eventId,
-                target.surface,
-                target.projectionKey,
-              )?.message;
-          })
-        : [];
-      if (!canonical || incompleteTargets.length > 0) {
-        throw new Error("runtime communication projection recovery is incomplete; exact retry remains safe");
+    if (exactScope && filter?.projectId) {
+      if (exactRecoveryError) {
+        throw new Error("runtime communication projection recovery is incomplete; exact retry remains safe", {
+          cause: exactRecoveryError,
+        });
+      }
+      // Do not let an archive/delete race past a handoff committed after this
+      // pass took its source snapshot. Its delivery lease may already have
+      // been released by the time the route checks again, so force that route
+      // to retry instead of silently stranding the new durable row.
+      const latestSources = readSources();
+      for (const row of latestSources) {
+        if (row.projectId !== filter.projectId) continue;
+        const payload = row.payload && typeof row.payload === "object"
+          ? row.payload as Record<string, unknown>
+          : undefined;
+        const candidate = payload?.communication ?? row.payload;
+        if (!candidate || typeof candidate !== "object") continue;
+        const event = candidate as Partial<CommunicationEvent>;
+        if (typeof event.eventId !== "string" || event.projectId !== row.projectId) continue;
+        if (filter.communicationEventId && event.eventId !== filter.communicationEventId) continue;
+        if (filter.conversationId && event.conversationId !== filter.conversationId) continue;
+        if (!exactCommunicationEventIds.has(event.eventId)) {
+          throw new Error("runtime communication projection scope changed during recovery; retry remains safe");
+        }
+      }
+      for (const communicationEventId of exactCommunicationEventIds) {
+        const canonical = exactCanonicalEvents.get(communicationEventId) ??
+          store.getCommunicationEvent(filter.projectId, communicationEventId);
+        // Legacy audit-first recovery can already own the one stable room
+        // dispatch under the canonical idempotency receipt while the newer V3
+        // runtime row has a different deterministic event ID. That durable
+        // dispatch is the exact-once visible placement; manufacturing a second
+        // room message would violate its identity.
+        const receiptMessage = canonical?.conversationId && canonical.idempotencyKey
+          ? store.getConversationMessageByReceiptKey(canonical.conversationId, canonical.idempotencyKey)
+          : undefined;
+        const incompleteTargets = canonical
+            ? runtimeProjectionTargets(
+              canonical,
+              exactRecipientAgentIds.get(canonical.eventId) ?? [],
+            ).filter((target) => {
+              if (target.surface === "conversation" || target.surface === "collaboration_view") {
+                const conversation = store.getConversation(target.projectionKey);
+                if (!conversation || conversation.projectId !== canonical.projectId ||
+                    (conversation.archived && filter.conversationId !== conversation.id)) return false;
+              } else if (target.surface === "direct_agent_audit") {
+                const agent = store.getAgent(target.projectionKey);
+                if (!agent || agent.projectId !== canonical.projectId || agent.archived) return false;
+              } else {
+                return false;
+              }
+              return !((target.surface === "conversation" || target.surface === "collaboration_view") && receiptMessage) &&
+                !store.getCommunicationProjection(
+                  canonical.projectId,
+                  canonical.eventId,
+                  target.surface,
+                  target.projectionKey,
+                )?.message;
+            })
+          : [];
+        if (!canonical || incompleteTargets.length > 0) {
+          throw new Error("runtime communication projection recovery is incomplete; exact retry remains safe");
+        }
       }
       // A prior crash may have left cached red evidence even when another
       // durable handoff already supplied the missing metadata. Exact replay
@@ -484,5 +673,13 @@ export function createCommunicationProjectionReconciler(
     return repaired;
   }
 
-  return { reconcileRuntimeCommunicationProjections };
+  const reconcileConversationRuntimeCommunicationProjections = (
+    projectId: string,
+    conversationId: string,
+  ): Promise<number> => reconcileRuntimeCommunicationProjections({ projectId, conversationId });
+
+  return {
+    reconcileConversationRuntimeCommunicationProjections,
+    reconcileRuntimeCommunicationProjections,
+  };
 }

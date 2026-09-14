@@ -143,6 +143,10 @@ export type MessageDeliveryReceiptState =
 export interface MessageDeliveryReceiptDto {
   activationId: string;
   targetAgentId: string;
+  /** Exact provider execution reached by this activation, once a Run starts. */
+  executionId?: string;
+  /** Exact provider execution reached by a recovery activation, when distinct. */
+  recoveryExecutionId?: string;
   state: MessageDeliveryReceiptState;
   updatedAt: string;
   /** Number of durable attempts for this message/recipient pair. */
@@ -155,6 +159,19 @@ export interface MessageDeliveryReceiptDto {
   recoveryAt?: string;
   canLetCurrentRunFinish?: boolean;
   recoveryActivationId?: string;
+}
+
+/** Narrow receipt refresh for active operations that may be outside message pagination. */
+export interface ActiveMessageDeliveryReceiptsRequest {
+  communicationEventIds: string[];
+  activationIds: string[];
+}
+
+export interface ActiveMessageDeliveryReceiptsDto {
+  items: Array<{
+    communicationEventId: string;
+    deliveryReceipts: MessageDeliveryReceiptDto[];
+  }>;
 }
 
 export interface CancelMessageDeliveryRequest {
@@ -410,7 +427,6 @@ export interface ConversationDetailDto {
 
 /** POST /api/conversations/:id/messages body. */
 export interface CreateConversationMessageRequest {
-  role?: "user" | "assistant" | "system";
   text: string;
   attachments?: AssetDto[];
   /** Immutable #handle-to-Agent bindings that select Broadcast wake recipients. */
@@ -418,6 +434,7 @@ export interface CreateConversationMessageRequest {
   /** Target-owned asset copies for safe delivery to each activated Agent. */
   recipientAttachments?: Array<{ agentId: string; attachmentIds: string[] }>;
   /** Per-turn runtime selection for every Agent activated by this message. */
+  engine?: string;
   model?: string;
   effort?: string;
   speed?: string;
@@ -470,12 +487,24 @@ export interface CreateCollaborationMessageRequest {
   idempotencyKey?: string;
 }
 
-/** POST collaboration message response; recipients are the immutable resolved audience. */
-export interface CreateCollaborationMessageResponse {
+/** POST collaboration message response after its visible projection is available. */
+export interface CompletedCollaborationMessageResponse {
   message: ConversationMessageDto;
   audience: "mention" | "everyone";
   notifiedAgentIds: string[];
 }
+
+/** Durable intake succeeded; the ordinary message projection is still repairing. */
+export interface RecoveringCollaborationMessageResponse {
+  communicationEventId: string;
+  committed: true;
+  recovering: true;
+  notifiedAgentIds: string[];
+}
+
+export type CreateCollaborationMessageResponse =
+  | CompletedCollaborationMessageResponse
+  | RecoveringCollaborationMessageResponse;
 
 export interface CreateMultiAgentDirectMessageRequest {
   text: string;
@@ -484,6 +513,7 @@ export interface CreateMultiAgentDirectMessageRequest {
   idempotencyKey: string;
   activeRunDelivery?: "steer" | "queue";
   /** Per-turn runtime selection for every Agent receiving this message. */
+  engine?: string;
   model?: string;
   effort?: string;
   speed?: string;
@@ -491,8 +521,16 @@ export interface CreateMultiAgentDirectMessageRequest {
 
 export interface MultiAgentDirectMessageResponse {
   messageId: string;
+  /** Canonical saved message, absent while projection recovery is pending. */
+  message?: ConversationMessageDto;
   replayed: boolean;
-  recipients: Array<{ agentId: string; queued: boolean; deliveryId?: string; state?: "queued" | "preparing" | "retrying" | "steered" | "started" }>;
+  recipients: Array<{
+    agentId: string;
+    queued: boolean;
+    deliveryId?: string;
+    state?: "queued" | "preparing" | "retrying" | "steered" | "started" |
+      "delivered" | "failed" | "outcome_unknown" | "cancelled";
+  }>;
   /** Addressed recipients that became unavailable before their delivery could start. */
   unavailableRecipients?: Array<{ agentId: string; reason: "missing" | "archived" | "wrong_project" }>;
 }
@@ -586,6 +624,8 @@ export interface SendMessageRequest {
   /** Stable across an exact transport retry so long-text artifact publication is idempotent. */
   idempotencyKey?: string;
   attachmentIds?: string[];
+  /** Provider engine selected for this exact user turn. */
+  engine?: string;
   model?: string;
   effort?: string;
   /** Per-turn processing tier. "standard" clears provider acceleration. */
@@ -624,8 +664,34 @@ export interface QueuedMessageResponse {
   communicationEventId?: string;
 }
 
+/** Canonical intake committed, but queue projections are still being repaired. */
+export interface RecoveringMessageResponse {
+  queued: true;
+  committed: true;
+  recovering: true;
+  position?: number;
+  deliveryId?: string;
+  communicationEventId?: string;
+}
+
+/** Exact replay after the delivery has left the queue. */
+export interface SettledMessageResponse {
+  queued: false;
+  settled: true;
+  replayed: true;
+  deliveryId: string;
+  deliveryState: "delivered" | "failed" | "outcome_unknown" | "cancelled";
+  communicationEventId?: string;
+  committed?: true;
+  recovering?: true;
+}
+
 /** A message either starts now or is accepted into the per-agent FIFO queue. */
-export type SendMessageResponse = StartedMessageResponse | QueuedMessageResponse;
+export type SendMessageResponse =
+  | StartedMessageResponse
+  | QueuedMessageResponse
+  | RecoveringMessageResponse
+  | SettledMessageResponse;
 
 /** Internal source/projection channel after the server has routed an intent. */
 export type AgentMessageChannel = "individual" | "main" | "collaboration";
@@ -731,7 +797,13 @@ export interface GlobalChatSearchResponseDto {
 
 export type AllChatSourceDto =
   | { kind: "project" | "team"; conversationId: string; title: string }
-  | { kind: "agent"; agentId: string; title: string };
+  | {
+      kind: "agent";
+      agentId: string;
+      /** Stable source Chat; optional only for pre-upgrade projections. */
+      conversationId?: string;
+      title: string;
+    };
 
 /** One canonical authored communication in the workspace-wide aggregate view. */
 export interface AllChatItemDto {
@@ -749,6 +821,8 @@ export interface AllChatItemDto {
   createdAt: string;
   attachments?: CommunicationAttachmentDto[];
   artifactIds?: string[];
+  /** Durable per-recipient execution evidence for this authored Communication. */
+  deliveryReceipts?: MessageDeliveryReceiptDto[];
   /** Present only when this source item determines one exact active DM target. */
   directMessageAgent?: Pick<AgentDto, "id" | "title" | "handle">;
 }

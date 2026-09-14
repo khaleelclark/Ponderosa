@@ -38,13 +38,14 @@ export class CoordinationV3RuntimeCommunicationReadModel {
   /** Provider coordination commits its deterministic Communication identity in
    * the Request transaction. Return only rows whose Agent audit projection is
    * incomplete so startup can close the post-commit projection crash window. */
-  requestCommunicationsNeedingProjection(projectId?: string): RuntimeCommunicationV3View[] {
+  requestCommunicationsNeedingProjection(projectId?: string, communicationEventId?: string): RuntimeCommunicationV3View[] {
     const rows = this.sqlite.prepare(`
       SELECT request.id, request.project_id, request.conversation_id,
         request.requester_agent_id, request.recipient_agent_id,
         request.communication_event_id, request.payload_json, request.created_at
       FROM coordination_requests request
       WHERE (? IS NULL OR request.project_id = ?)
+        ${communicationEventId === undefined ? "" : "AND request.communication_event_id = ?"}
         AND request.conversation_id IS NOT NULL
         AND request.requester_agent_id IS NOT NULL
         AND request.communication_event_id IS NOT NULL
@@ -64,7 +65,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           )
         )
       ORDER BY request.created_at, request.id
-    `).all(projectId ?? null, projectId ?? null) as Array<{
+    `).all(projectId ?? null, projectId ?? null, ...(communicationEventId === undefined ? [] : [communicationEventId])) as Array<{
       id: string;
       project_id: string;
       conversation_id: string;
@@ -126,15 +127,26 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       payload_json: string;
       created_at: string;
     } | undefined;
-    return row
-      ? {
+    if (!row) return undefined;
+    const activations = this.sqlite.prepare(`
+      SELECT activation_id, agent_id
+      FROM runtime_communication_activation_intake
+      WHERE communication_id = ?
+      ORDER BY recipient_index
+    `).all(id) as Array<{ activation_id: string; agent_id: string }>;
+    return {
         id: row.id,
         projectId: row.project_id,
         audience: JSON.parse(row.audience_json) as unknown,
         payload: JSON.parse(row.payload_json) as unknown,
         createdAt: row.created_at,
-      }
-      : undefined;
+        ...(activations.length ? {
+          activations: activations.map((activation) => ({
+            id: activation.activation_id,
+            agentId: activation.agent_id,
+          })),
+        } : {}),
+      };
   }
 
   runtimeArtifacts(
@@ -401,7 +413,14 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         recipientCurrentlyAuthorized,
       }) => {
         const injection = this.sqlite.prepare(`
-          SELECT injection.id, injection.kind, injection.state, injection.updated_at
+          SELECT injection.id, injection.kind, injection.state, injection.updated_at,
+            (
+              SELECT provider.execution_id
+              FROM provider_inputs provider
+              WHERE provider.scheduler_run_id = injection.run_id
+              ORDER BY provider.created_at DESC, provider.execution_id DESC
+              LIMIT 1
+            ) AS execution_id
           FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
           WHERE member.value = ?
           ORDER BY injection.created_at DESC, injection.sequence DESC LIMIT 1
@@ -410,6 +429,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           kind: "turn" | "steer";
           state: string;
           updated_at: string;
+          execution_id: string | null;
         } | undefined;
         const recovery = injection
           ? this.sqlite.prepare(`
@@ -427,6 +447,25 @@ export class CoordinationV3RuntimeCommunicationReadModel {
             updated_at: string;
             recovery_activation_id: string | null;
             recovery_activation_state: string | null;
+          } | undefined
+          : undefined;
+        const recoveryInjection = recovery?.recovery_activation_id
+          ? this.sqlite.prepare(`
+            SELECT injection.updated_at,
+              (
+                SELECT provider.execution_id
+                FROM provider_inputs provider
+                WHERE provider.scheduler_run_id = injection.run_id
+                ORDER BY provider.created_at DESC, provider.execution_id DESC
+                LIMIT 1
+              ) AS execution_id
+            FROM scheduler_prompt_injections injection,
+              json_each(injection.activation_ids_json) member
+            WHERE member.value = ?
+            ORDER BY injection.created_at DESC, injection.sequence DESC LIMIT 1
+          `).get(recovery.recovery_activation_id) as {
+            updated_at: string;
+            execution_id: string | null;
           } | undefined
           : undefined;
         let state: MessageDeliveryReceiptDto["state"];
@@ -458,10 +497,15 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         return {
           activationId: activation.id,
           targetAgentId: activation.agent_id,
+          ...(injection?.execution_id ? { executionId: injection.execution_id } : {}),
+          ...(recoveryInjection?.execution_id
+            ? { recoveryExecutionId: recoveryInjection.execution_id }
+            : {}),
           state,
           updatedAt: [
             latestAttemptAt,
             recovery?.updated_at,
+            recoveryInjection?.updated_at,
             injection?.updated_at,
             activation.updated_at,
           ].filter((value): value is string => Boolean(value)).sort().at(-1)!,

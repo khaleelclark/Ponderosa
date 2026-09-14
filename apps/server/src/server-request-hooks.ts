@@ -140,7 +140,7 @@ export function registerRequestSecurityHooks(
     reply.header("Referrer-Policy", "no-referrer");
     if (!reply.hasHeader("X-Frame-Options")) reply.header("X-Frame-Options", "DENY");
     if (!reply.hasHeader("Content-Security-Policy")) {
-      reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+      reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
     }
     if (request.url.startsWith("/api/link-previews/")) {
       // Local dev apps are untrusted content. A unique sandbox origin prevents

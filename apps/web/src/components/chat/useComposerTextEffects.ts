@@ -17,10 +17,10 @@ interface UseComposerInsertTextRequestOptions {
   draftQuery: { isError: boolean };
   draftReady: MutableRefObject<boolean>;
   draftReadyVersion: number;
+  mutationLocked: boolean;
   inputRef: RefObject<ComposerEditorHandle>;
   insertTextRequest: ComposerProps["insertTextRequest"];
   setCaret: Dispatch<SetStateAction<number>>;
-  updateText: Dispatch<SetStateAction<string>>;
 }
 
 export function useComposerInsertTextRequest({
@@ -30,21 +30,24 @@ export function useComposerInsertTextRequest({
   draftQuery,
   draftReady,
   draftReadyVersion,
+  mutationLocked,
   inputRef,
   insertTextRequest,
   setCaret,
-  updateText,
 }: UseComposerInsertTextRequestOptions): void {
   useEffect(() => {
     if (
-      !insertTextRequest ||
+      mutationLocked || !insertTextRequest ||
       appliedInsertRequest.current === insertTextRequest.id
     )
       return;
     if (conversationDraftId && !draftReady.current && !draftQuery.isError)
       return;
+    const editor = inputRef.current;
+    if (!editor) return;
     appliedInsertRequest.current = insertTextRequest.id;
-    updateText(current => {
+    const current = editor.getCanonicalText();
+    const next = (() => {
       const requested = insertTextRequest.text.trim();
       if (
         requested &&
@@ -59,7 +62,11 @@ export function useComposerInsertTextRequest({
       }
       const prefix = current && !/\s$/u.test(current) ? " " : "";
       return `${current}${prefix}${insertTextRequest.text} `;
-    });
+    })();
+    // Edit through the same Lexical transaction path as typing/paste. Updating
+    // React text first lets a pending editor selection update echo the old
+    // document back over this explicit insertion.
+    if (next !== current) editor.replaceCanonicalRange(0, current.length, next);
     const frame = window.requestAnimationFrame(() => {
       inputRef.current?.focus();
       const end = inputRef.current?.getCanonicalText().length ?? 0;
@@ -72,8 +79,8 @@ export function useComposerInsertTextRequest({
     destinationMode,
     draftQuery?.isError,
     draftReadyVersion,
+    mutationLocked,
     insertTextRequest,
-    updateText,
   ]);
 }
 

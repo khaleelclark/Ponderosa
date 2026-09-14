@@ -15,8 +15,11 @@ import {
   $isTextNode,
   $setSelection,
   COPY_COMMAND,
+  COMMAND_PRIORITY_HIGH,
+  INSERT_PARAGRAPH_COMMAND,
   CUT_COMMAND,
   PASTE_COMMAND,
+  SKIP_DOM_SELECTION_TAG,
   DecoratorNode,
   type EditorConfig,
   type LexicalNode,
@@ -51,12 +54,19 @@ import {
 } from "@ponderosa/core";
 import {
   composerSubmissionText,
+  engineCommandDisabledReason,
   filesFromClipboard,
+  removeComposerPasteSelection,
   shouldExtractLongPaste,
   shouldIgnoreComposerKey,
+  shouldConsumeComposerKey,
   shouldSendComposerKey,
 } from "./composerUtils";
 import type { ComposerMenuSuggestion } from "./Composer.controls";
+import { isIOSDevice } from "../../browserPlatform";
+
+// iPadOS can identify as a Mac. Do not change Android or desktop Return policy.
+const isIOSComposer = isIOSDevice();
 
 export type ComposerMentionDescriptor = {
   start: number;
@@ -79,6 +89,32 @@ export type ComposerProjectFileDescriptor = {
 };
 
 const PROJECT_FILE_REFERENCE_PATTERN = /\[Project file\]\(ponderosa:\/\/project-file\/([^/()\s]+)\/([^?()\s]+)\?historical=([^&()\s]*)&current=([^()\s]*)\)/gu;
+const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "[tabindex]:not([tabindex='-1'])",
+  "[contenteditable='true']",
+].join(",");
+
+function adjacentFocusableElement(
+  current: HTMLElement,
+  backwards: boolean,
+): HTMLElement | undefined {
+  const focusable = [...document.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)]
+    .filter(element =>
+      element.tabIndex >= 0 &&
+      !element.closest('[aria-hidden="true"]') &&
+      !element.closest("[inert]") &&
+      element.getClientRects().length > 0
+    );
+  const currentIndex = focusable.indexOf(current);
+  if (currentIndex < 0 || focusable.length < 2) return undefined;
+  const nextIndex = (currentIndex + (backwards ? -1 : 1) + focusable.length) % focusable.length;
+  return focusable[nextIndex];
+}
 
 export function projectFileCanonicalText(
   descriptor: ComposerProjectFileDescriptor,
@@ -120,12 +156,13 @@ function readableProjectFileReferences(text: string): string {
 }
 
 export interface ComposerEditorHandle {
+  placeCaretAfterLoneMention(): void;
   focus(): void;
   isFocused(): boolean;
   getCanonicalText(): string;
   getSelectionOffsets(): ComposerSelectionOffsets;
   setSelectionOffsets(start: number, end: number): void;
-  replaceCanonicalRange(start: number, end: number, content: string): void;
+  replaceCanonicalRange(start: number, end: number, content: string, options?: { focus?: boolean }): void;
   insertMention(descriptor: Omit<ComposerMentionDescriptor, "start" | "end">): void;
   insertProjectFile(
     descriptor: ComposerProjectFileDescriptor,
@@ -163,6 +200,7 @@ type SerializedProjectFileNode = Spread<
 const StructuralDestinationRemovalContext = createContext<
   (() => void) | undefined
 >(undefined);
+const ComposerMutationLockedContext = createContext(false);
 
 class ComposerMentionNode extends DecoratorNode<ReactNode> {
   __kind: "agent" | "special";
@@ -398,7 +436,9 @@ function ComposerProjectFileToken({
   filename: string;
 }): JSX.Element {
   const [editor] = useLexicalComposerContext();
+  const mutationLocked = useContext(ComposerMutationLockedContext);
   const remove = useCallback(() => {
+    if (mutationLocked) return;
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if (!$isComposerProjectFileNode(node)) return;
@@ -413,7 +453,7 @@ function ComposerProjectFileToken({
       }
     });
     requestAnimationFrame(() => editor.focus());
-  }, [editor, nodeKey]);
+  }, [editor, mutationLocked, nodeKey]);
 
   return (
     <Box
@@ -448,6 +488,7 @@ function ComposerProjectFileToken({
       <Box
         component="button"
         type="button"
+        disabled={mutationLocked}
         tabIndex={-1}
         aria-label={`Remove @${filename}`}
         onMouseDown={event => event.preventDefault()}
@@ -511,10 +552,12 @@ function ComposerMentionToken({
   structural: boolean;
 }): JSX.Element {
   const [editor] = useLexicalComposerContext();
+  const mutationLocked = useContext(ComposerMutationLockedContext);
   const removeStructuralDestination = useContext(
     StructuralDestinationRemovalContext,
   );
   const remove = useCallback(() => {
+    if (mutationLocked) return;
     if (structural) {
       removeStructuralDestination?.();
       return;
@@ -533,7 +576,7 @@ function ComposerMentionToken({
       }
     });
     requestAnimationFrame(() => editor.focus());
-  }, [editor, nodeKey, removeStructuralDestination, structural]);
+  }, [editor, mutationLocked, nodeKey, removeStructuralDestination, structural]);
 
   return (
     <Box
@@ -573,6 +616,7 @@ function ComposerMentionToken({
       <Box
         component="button"
         type="button"
+        disabled={mutationLocked}
         tabIndex={-1}
         aria-label={`Remove #${handle}`}
         onMouseDown={event => event.preventDefault()}
@@ -705,7 +749,11 @@ function descriptorsForCanonicalText(
   const sourceTokens = messageTagTokens(text);
   const exact = descriptors.filter(descriptor =>
     sourceTokens.some(
-      token => token.start === descriptor.start && token.end === descriptor.end,
+      token =>
+        token.start === descriptor.start &&
+        token.end === descriptor.end &&
+        token.handle.toLocaleLowerCase() ===
+          descriptor.handle.toLocaleLowerCase(),
     ),
   );
   if (exact.length > 0 || descriptors.length === 0) return exact;
@@ -792,6 +840,20 @@ function $insertCanonicalContent(
   selection.insertNodes($appendCanonicalContent(text, descriptors));
 }
 
+function $removeSelectedContent(): void {
+  const selection = $getSelection();
+  removeComposerPasteSelection(
+    $isRangeSelection(selection)
+      ? { kind: "range", removeText: () => selection.removeText() }
+      : $isNodeSelection(selection)
+        ? {
+            kind: "node",
+            removeNodes: () => selection.getNodes().forEach(node => node.remove()),
+          }
+        : { kind: "other" },
+  );
+}
+
 function EditorBridge({
   editorRef,
   text,
@@ -823,12 +885,41 @@ function EditorBridge({
 }): null {
   const [editor] = useLexicalComposerContext();
   const canonicalRef = useRef(text);
+  useEffect(() => {
+    if (!isIOSComposer) return;
+    // Own newline insertion inside Lexical, including soft-keyboard beforeinput.
+    // A React keydown insertion would race Lexical's native event handling.
+    return editor.registerCommand(INSERT_PARAGRAPH_COMMAND, () => {
+      const selection = $getSelection();
+      if (!$isRangeSelection(selection)) return false;
+      selection.insertLineBreak();
+      return true;
+    }, COMMAND_PRIORITY_HIGH);
+  }, [editor]);
   const descriptorsRef = useRef(mentionDescriptors);
   const structuralDestinationRef = useRef(structuralDestination);
   descriptorsRef.current = mentionDescriptors;
   structuralDestinationRef.current = structuralDestination;
 
   useImperativeHandle(editorRef, () => ({
+    placeCaretAfterLoneMention: () => {
+      if (editor.isComposing()) return;
+      if (editor.getRootElement()?.ownerDocument.getSelection()?.isCollapsed === false) return;
+      editor.update(() => {
+        const selection = $getSelection();
+        if (!$isRangeSelection(selection) || !selection.isCollapsed()) return;
+        const paragraph = $getRoot().getFirstChild();
+        if (!$isElementNode(paragraph)) return;
+        const children = paragraph.getChildren();
+        const mentions = children.filter($isComposerMentionNode);
+        if (mentions.length !== 1 || mentions[0]!.getDescriptor().kind !== "agent") return;
+        if (children.some(node => !$isComposerMentionNode(node) && (!$isTextNode(node) || node.getTextContent().trim()))) return;
+        // Pointer focus can land on the leading side of an atomic reply chip.
+        // Only a chip-only draft has an unambiguous intended typing position.
+        const end = $canonicalText().length;
+        $setSelectionOffsets(end, end);
+      });
+    },
     focus: () => editor.focus(),
     isFocused: () => editor.getRootElement()?.contains(document.activeElement) ?? false,
     getCanonicalText: () => canonicalRef.current,
@@ -837,13 +928,13 @@ function EditorBridge({
     setSelectionOffsets: (start, end) => {
       editor.update(() => $setSelectionOffsets(start, end));
     },
-    replaceCanonicalRange: (start, end, content) => {
+    replaceCanonicalRange: (start, end, content, options) => {
       editor.update(() => {
         $setSelectionOffsets(start, end);
         const parsed = descriptorsForCanonicalText(content, descriptorsRef.current);
         $insertCanonicalContent(content, parsed);
-      });
-      requestAnimationFrame(() => editor.focus());
+      }, { tag: options?.focus === false ? SKIP_DOM_SELECTION_TAG : undefined });
+      if (options?.focus !== false) requestAnimationFrame(() => editor.focus());
     },
     insertMention: descriptor => {
       editor.update(() => {
@@ -1025,7 +1116,6 @@ function EditorBridge({
         const reconciled = binding
           ? {
               ...current,
-              handle: binding.currentHandle,
               title: binding.currentTitle,
               valid: true,
             }
@@ -1134,6 +1224,7 @@ function EditorBridge({
         if (utf8ByteLength(combined) > LONG_TEXT_MAX_UTF8_BYTES) {
           onPasteError("Pasted text exceeds the 8 MiB limit.");
         } else {
+          $removeSelectedContent();
           onPastedText(combined);
         }
         return true;
@@ -1255,20 +1346,29 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (
+      shouldIgnoreComposerKey({
+        isComposing: event.nativeEvent.isComposing,
+        keyCode: event.nativeEvent.keyCode,
+      })
+    ) {
+      event.stopPropagation();
+      return;
+    }
+    if (event.key === "Enter" && (isIOSComposer || (
+      event.shiftKey && window.matchMedia("(max-width: 899.95px)").matches
+    ))) {
+      if (menuOpen) onSuppressMenu();
+      // Lexical owns mobile Shift+Return. iOS also uses plain Return for a newline.
+      return;
+    }
+    if (
       event.key === "Enter" &&
-      event.shiftKey &&
-      !event.nativeEvent.isComposing
+      event.shiftKey
     ) {
       event.preventDefault();
       bridgeRef.current?.insertText("\n");
       return;
     }
-    if (
-      shouldIgnoreComposerKey({
-        key: event.key,
-        isComposing: event.nativeEvent.isComposing,
-      })
-    ) return;
     if (menuOpen && event.key === "ArrowDown") {
       event.preventDefault();
       onHighlightChange((highlighted + 1) % menuSuggestions.length);
@@ -1281,19 +1381,51 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       );
       return;
     }
+    const selectedSuggestion = menuSuggestions[highlighted];
+    const selectedSuggestionDisabled = selectedSuggestion?.kind === "command" &&
+      Boolean(engineCommandDisabledReason(selectedSuggestion.command));
     if (
       menuOpen &&
-      (event.key === "Enter" || event.key === "Tab") &&
-      !event.metaKey &&
-      !event.ctrlKey
+      event.key === "Enter" &&
+      !event.shiftKey
     ) {
       event.preventDefault();
-      onApplySuggestion(menuSuggestions[highlighted]!);
+      if (
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        selectedSuggestion &&
+        !selectedSuggestionDisabled
+      ) {
+        onApplySuggestion(selectedSuggestion);
+      }
+      return;
+    }
+    if (
+      menuOpen &&
+      event.key === "Tab" &&
+      !event.shiftKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      selectedSuggestion &&
+      !selectedSuggestionDisabled
+    ) {
+      event.preventDefault();
+      onApplySuggestion(selectedSuggestion);
       return;
     }
     if (menuOpen && event.key === "Escape") {
       event.preventDefault();
       onSuppressMenu();
+      return;
+    }
+    if (event.key === "Tab") {
+      if (menuOpen) onSuppressMenu();
+      const next = adjacentFocusableElement(event.currentTarget, event.shiftKey);
+      if (next) {
+        event.preventDefault();
+        next.focus();
+      }
       return;
     }
     if (
@@ -1305,21 +1437,20 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       onClearRequiredRecipient();
       return;
     }
-    if (
-      shouldSendComposerKey({
-        key: event.key,
-        shiftKey: event.shiftKey,
-        isComposing: event.nativeEvent.isComposing,
-        repeat: event.repeat,
-      }) &&
-      canSend
-    ) {
+    const sendKey = {
+      key: event.key,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+      repeat: event.repeat,
+    };
+    if (shouldConsumeComposerKey(sendKey)) {
       event.preventDefault();
-      onSend();
+      if (canSend && shouldSendComposerKey(sendKey)) onSend();
     }
   };
 
   return (
+    <ComposerMutationLockedContext.Provider value={disabled || locked}>
     <StructuralDestinationRemovalContext.Provider
       value={inlineDestination?.onClear}
     >
@@ -1338,7 +1469,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
             outline: 0,
             color: "text.primary",
             fontFamily: "inherit",
-            fontSize: 15,
+            // Avoid iOS focus zoom without disabling user-controlled pinch zoom.
+            fontSize: isIOSComposer ? 16 : 15,
             lineHeight: "22px",
             whiteSpace: "pre-wrap",
             overflowWrap: "anywhere",
@@ -1358,16 +1490,18 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
           contentEditable={
             <ContentEditable
               className="composer-editor-input"
+              tabIndex={disabled || locked ? -1 : 0}
               aria-label="Message"
-              role={comboboxEnabled ? "combobox" : "textbox"}
+              role="textbox"
               aria-multiline="true"
               aria-autocomplete={comboboxEnabled ? "list" : undefined}
-              aria-expanded={comboboxEnabled ? menuOpen : undefined}
               aria-controls={menuOpen ? listId : undefined}
               aria-activedescendant={menuOpen
                 ? `${listId}-option-${highlighted}`
                 : undefined}
               onKeyDown={handleKeyDown}
+              onFocus={() => bridgeRef.current?.placeCaretAfterLoneMention()}
+              onClick={() => bridgeRef.current?.placeCaretAfterLoneMention()}
             />
           }
           placeholder={
@@ -1377,8 +1511,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
                 position: "absolute",
                 top: 6,
                 left: 2,
-                color: "text.disabled",
-                fontSize: 15,
+                color: { xs: "text.secondary", md: "text.disabled" },
+                fontSize: isIOSComposer ? 16 : 15,
                 lineHeight: "22px",
                 pointerEvents: "none",
               }}
@@ -1407,5 +1541,6 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       </Box>
     </LexicalComposer>
     </StructuralDestinationRemovalContext.Provider>
+    </ComposerMutationLockedContext.Provider>
   );
 });

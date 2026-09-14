@@ -7,16 +7,32 @@ import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutl
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { messageTagTokens, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
-import { type ReactNode, useEffect, useRef, useState } from "react";
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import { type ReactNode, type ComponentPropsWithoutRef, useEffect, useRef, useState } from "react";
+import useMediaQuery from "@mui/material/useMediaQuery";
+import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../../clipboard";
+import { MESSAGE_TAG_PREFIX, messageTagHandle } from "../../mentions";
 import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
 import { useProjectBrowser } from "../ProjectBrowserContext";
 import { ChatDocumentCard } from "./ChatDocumentCard";
+import {
+  chatMarkdownUrlTransform,
+  parseChatProjectFileHref,
+  renderableChatLinkHref,
+} from "./chatMarkdownLink";
 
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
+}
+
+function ScrollableMessageTable({node: _node, ...props}: ComponentPropsWithoutRef<"table"> & {node?: unknown}): JSX.Element {
+  const mobile = useMediaQuery("(max-width: 899.95px)");
+  if (!mobile) return <table {...props} />;
+  return <div style={{minWidth: 0, maxWidth: "100%"}}>
+    <Typography variant="caption" color="text.secondary">Swipe or scroll sideways to read the table.</Typography>
+    <table {...props} tabIndex={0} aria-label="Scrollable message table" />
+  </div>;
 }
 
 export function linkPresentation(href: string): { url: URL; hostname: string; destination: string; loopback: boolean } | undefined {
@@ -368,30 +384,6 @@ interface MarkdownAstNode {
   children?: MarkdownAstNode[];
 }
 
-const MESSAGE_TAG_PREFIX = "#ponderosa-tag:";
-
-function projectFileReference(href: string | undefined): {
-  projectId: string;
-  artifactId: string;
-  historicalFilename: string;
-  currentFilename: string;
-} | undefined {
-  if (!href?.startsWith("ponderosa://project-file/")) return undefined;
-  try {
-    const url = new URL(href);
-    const [projectId, artifactId] = url.pathname.split("/").filter(Boolean);
-    if (!projectId || !artifactId) return undefined;
-    return {
-      projectId: decodeURIComponent(projectId),
-      artifactId: decodeURIComponent(artifactId),
-      historicalFilename: url.searchParams.get("historical") ?? "Project file",
-      currentFilename: url.searchParams.get("current") ?? "",
-    };
-  } catch {
-    return undefined;
-  }
-}
-
 export const messageMentionSx = {
   display: "inline",
   px: 0.45,
@@ -402,6 +394,15 @@ export const messageMentionSx = {
   fontWeight: 700,
   textDecoration: "none",
   boxShadow: "inset 0 0 0 1px rgba(127, 196, 142, .18)",
+} as const;
+
+const messageHandleSx = {
+  font: "inherit",
+  ...messageMentionSx,
+  display: "inline-flex",
+  alignItems: "center",
+  minHeight: 24,
+  border: 0,
 } as const;
 
 /** Mark #tags in Markdown text nodes without touching code or existing links. */
@@ -475,9 +476,9 @@ function ChatMarkdown({
         "& > :first-of-type": { mt: 0 },
         "& > :last-child": { mb: 0 },
         fontSize: small
-          ? { xs: "0.79rem", sm: "0.82rem" }
-          : { xs: "0.875rem", sm: "0.9375rem" },
-        lineHeight: small ? 1.42 : { xs: 1.44, sm: 1.48 },
+          ? { xs: "0.9375rem", md: "0.82rem" }
+          : { xs: "0.875rem", sm: "1rem", md: "0.9375rem" },
+        lineHeight: small ? 1.42 : { xs: "20px", sm: 1.48 },
         "& p": { my: compact ? 0.15 : 0.35, maxWidth: "100%", whiteSpace: preserveWhitespace ? "pre-wrap" : "normal", overflowWrap: "anywhere", wordBreak: "break-word" },
         "& h1, & h2, & h3, & h4": { mt: 1.05, mb: 0.4, lineHeight: 1.22 },
         "& h1": { fontSize: { xs: "1.22rem", sm: "1.35rem" } },
@@ -492,19 +493,16 @@ function ChatMarkdown({
         "& pre": { my: 0.65, p: 1.1, maxWidth: "100%", overflowX: "auto", borderRadius: 1, bgcolor: "action.hover" },
         "& img": { display: "block", maxWidth: "100%", height: "auto", objectFit: "contain" },
         "& table": { display: "block", maxWidth: "100%", overflowX: "auto", borderCollapse: "collapse" },
-        "& th, & td": { px: 1, py: 0.5, border: 1, borderColor: "divider" },
+        "& th, & td": { px: 1, py: 0.5, border: 1, borderColor: "divider", minWidth: { xs: "7rem", md: 0 }, maxWidth: { xs: "20rem", md: "none" }, overflowWrap: { xs: "break-word", md: "anywhere" } },
         "& a": { maxWidth: "100%", color: "inherit", textDecoration: "none", overflowWrap: "anywhere", wordBreak: "break-word" },
       }}
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMessageTags]}
-        urlTransform={url =>
-          url.startsWith("ponderosa://project-file/")
-            ? url
-            : defaultUrlTransform(url)
-        }
+        urlTransform={chatMarkdownUrlTransform}
         components={{
-          pre: ({ children: code }) => <CopyableCodeBlock>{code}</CopyableCodeBlock>,
+          table: ScrollableMessageTable,
+          pre: CopyableCodeBlock,
           img: ({ src, alt }) => {
             const projectPreview = projectFileHref(projectId ?? previewScope?.projectId, src, "preview");
             const image = <Box component="img" src={projectPreview ?? src} alt={alt ?? "Agent-provided image"} loading="lazy" sx={{ display: "block", width: "auto", maxWidth: "100%", maxHeight: { xs: 320, md: 520 }, objectFit: "contain", borderRadius: 1.5 }} />;
@@ -513,7 +511,7 @@ function ChatMarkdown({
               : image;
           },
           a: ({ href, children: label }) => {
-            const fileReference = projectFileReference(href);
+            const fileReference = parseChatProjectFileHref(href);
             if (fileReference) {
               const filename = fileReference.currentFilename || fileReference.historicalFilename;
               if (!projectId || fileReference.projectId !== projectId) {
@@ -555,8 +553,14 @@ function ChatMarkdown({
                 </Box>
               );
             }
-            if (!href?.startsWith(MESSAGE_TAG_PREFIX)) return <ChatLink href={href ?? ""} previewScope={previewScope} projectId={projectId}>{label}</ChatLink>;
-            const handle = decodeURIComponent(href.slice(MESSAGE_TAG_PREFIX.length));
+            if (!href?.startsWith(MESSAGE_TAG_PREFIX)) {
+              const safeHref = renderableChatLinkHref(href);
+              return safeHref
+                ? <ChatLink href={safeHref} previewScope={previewScope} projectId={projectId}>{label}</ChatLink>
+                : <Box component="span">{label}</Box>;
+            }
+            const handle = messageTagHandle(href);
+            if (!handle) return <Box component="span">{label}</Box>;
             if (handle.toLocaleLowerCase() === "broadcast" && onOpenBroadcast) {
               return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open originating broadcast in Project chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "none", cursor: "pointer" }}>{label}</Box>;
             }
@@ -575,15 +579,15 @@ function ChatMarkdown({
               boundMention.authoredLabel.toLocaleLowerCase() !== boundMention.label.toLocaleLowerCase()
                 ? `Originally authored as #${boundMention.authoredLabel}`
                 : undefined;
-            if (operatorMention) return <Box component="span" sx={messageMentionSx}>{visibleLabel}</Box>;
+            if (operatorMention) return <Box component="span" sx={messageHandleSx}>{visibleLabel}</Box>;
             if (!agentId) {
               if (["broadcast", "everyone"].includes(handle.toLocaleLowerCase())) {
                 return <Box component="span" sx={messageMentionSx}>{label}</Box>;
               }
               return <>{label}</>;
             }
-            if (!onOpenAgent) return <Box component="span" title={mentionTitle} sx={messageMentionSx}>{visibleLabel}</Box>;
-            return <Box className="chat-text-navigation" component="button" type="button" title={mentionTitle} aria-label={`Open agent ${boundMention?.label ?? handle}${mentionTitle ? `. ${mentionTitle}` : ""}`} onClick={() => onOpenAgent(agentId)} sx={{ ...messageMentionSx, display: "inline-flex", alignItems: "center", minHeight: 24, border: 0, font: "inherit", cursor: "pointer" }}>{visibleLabel}</Box>;
+            if (!onOpenAgent) return <Box component="span" title={mentionTitle} sx={messageHandleSx}>{visibleLabel}</Box>;
+            return <Box className="chat-text-navigation" component="button" type="button" title={mentionTitle} aria-label={`Open agent ${boundMention?.label ?? handle}${mentionTitle ? `. ${mentionTitle}` : ""}`} onClick={() => onOpenAgent(agentId)} sx={{ ...messageHandleSx, cursor: "pointer" }}>{visibleLabel}</Box>;
           },
         }}
       >

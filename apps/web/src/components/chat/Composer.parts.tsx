@@ -3,6 +3,7 @@ import PersonAddAltOutlinedIcon from "@mui/icons-material/PersonAddAltOutlined";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import {
   Button,
+  Box,
   IconButton,
   Stack,
   Tooltip,
@@ -34,12 +35,14 @@ export function ComposerDestinationBar({
 }
 
 interface ComposerProjectDestinationActionProps {
+  disabled: boolean;
   newAgentSelected: boolean;
   toggleNewAgent(): void;
   replyDestination?: string;
 }
 
 export function ComposerProjectDestinationAction({
+  disabled,
   newAgentSelected,
   toggleNewAgent,
   replyDestination,
@@ -48,41 +51,50 @@ export function ComposerProjectDestinationAction({
     return (
       <Tooltip title="Switch to a new Agent">
         <Button
+          disabled={disabled}
           size="small"
           variant="text"
           color="primary"
           onClick={toggleNewAgent}
+          aria-label={`Reply to ${replyDestination}; switch to a new Agent`}
           sx={{
+            minWidth: { xs: 44, md: 64 },
             whiteSpace: "nowrap",
             minHeight: { xs: 44, sm: 34 },
             "@media (pointer: coarse)": { minHeight: 44 },
           }}
         >
-          Reply to {replyDestination}
+          <PersonAddAltOutlinedIcon sx={{ display: { xs: "block", md: "none" } }} />
+          <Box component="span" sx={{ display: { xs: "none", md: "inline" } }}>Reply to {replyDestination}</Box>
         </Button>
       </Tooltip>
     );
   }
   return (
     <Button
+      disabled={disabled}
       size="small"
       variant={newAgentSelected ? "contained" : "text"}
       color={newAgentSelected ? "primary" : "inherit"}
       startIcon={<PersonAddAltOutlinedIcon />}
       aria-pressed={newAgentSelected}
+      aria-label="New Agent"
       onClick={toggleNewAgent}
       sx={{
+        minWidth: { xs: 44, md: 64 },
+        "& .MuiButton-startIcon": { m: { xs: 0, md: undefined } },
         whiteSpace: "nowrap",
         minHeight: { xs: 44, sm: 34 },
         "@media (pointer: coarse)": { minHeight: 44 },
       }}
     >
-      New Agent
+      <Box component="span" sx={{ display: { xs: "none", md: "inline" } }}>New Agent</Box>
     </Button>
   );
 }
 
 interface ComposerAttachmentListProps {
+  disabled: boolean;
   draftUploadStates: Map<
     File,
     { status: DraftUploadStatus; error?: string }
@@ -105,6 +117,7 @@ function composerAttachmentKey(file: File): string {
 }
 
 function ComposerAttachmentListView({
+  disabled,
   draftUploadStates,
   files,
   removeFile,
@@ -128,6 +141,7 @@ function ComposerAttachmentListView({
             error={upload?.error}
             onRetry={() => retryDraftUpload(file)}
             onRemove={() => removeFile(index)}
+            disabled={disabled}
           />
         );
       })}

@@ -28,6 +28,7 @@ interface ComposerDraftAttachments {
   mergeRestored(restored: RestoredDraftAttachment[]): void;
   removeFile(index: number): void;
   replaceRestored(restored: RestoredDraftAttachment[]): void;
+  replaceSnapshot(restored: Array<{ file: File; attachmentId: string }>): void;
   retryUpload(file: File): void;
   uploadStates: Map<
     File,
@@ -183,12 +184,7 @@ export function useComposerDraftAttachments({
     dispatch({ type: "remove", index });
     onEdit(id);
     setAttachmentVersion(value => value + 1);
-    if (conversationDraftId && id) {
-      void api
-        .deleteDraftAttachment(conversationDraftId, draftOwnerId, id)
-        .catch(() => undefined);
-    }
-  }, [conversationDraftId, dispatch, draftOwnerId, files, onEdit]);
+  }, [dispatch, files, onEdit]);
 
   const mergeRestored = useCallback((restored: RestoredDraftAttachment[]) => {
     const existingIds = new Set(attachmentIds.current.values());
@@ -254,6 +250,27 @@ export function useComposerDraftAttachments({
     setAttachmentVersion(value => value + 1);
   }, [dispatch]);
 
+  const replaceSnapshot = useCallback((restored: Array<{
+    file: File;
+    attachmentId: string;
+  }>) => {
+    generation.current += 1;
+    pendingUploads.current = [];
+    activeUploads.current = 0;
+    for (const { attachmentId } of restored) {
+      locallyRemovedIds.current.delete(attachmentId);
+    }
+    attachmentIds.current = new Map(
+      restored.map(({ file, attachmentId }) => [file, attachmentId]),
+    );
+    setUploadStates(new Map(restored.map(({ file }) => [
+      file,
+      { status: "complete" as const },
+    ])));
+    dispatch({ type: "replace", files: restored.map(({ file }) => file) });
+    setAttachmentVersion(value => value + 1);
+  }, [dispatch]);
+
   return {
     addFiles,
     attachmentIds,
@@ -263,6 +280,7 @@ export function useComposerDraftAttachments({
     mergeRestored,
     removeFile,
     replaceRestored,
+    replaceSnapshot,
     retryUpload,
     uploadStates,
   };

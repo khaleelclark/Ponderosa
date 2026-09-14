@@ -36,13 +36,17 @@ import {
   workspaceDirectoryItems,
 } from "../hooks/useWorkspaceDirectory";
 import { queryKeys } from "../queryKeys";
+import { routeClearsProjectSidebarContext } from "../routeRegistry";
 import { routeProjectId, type Route } from "../routing";
+import { projectScopedWorkspaceDirectoryItems } from "../workspaceDirectoryScope";
 import { useAgent, useConversation, useNotificationProjection } from "../hooks/queries";
 import {
+  projectOrderPreferenceKey,
   reorderStableIds,
   resourcePreferenceKey,
   sortWorkspaceResources,
   starredWorkspaceResources,
+  synchronizeProjectRailOrder,
   toggleWorkspaceResourceStar,
 } from "../resourcePreferences";
 import {
@@ -153,10 +157,14 @@ export function WorkspaceSidebar({
     Boolean(routedProjectId),
   );
   useEffect(() => {
-    if (!routedProjectId) return;
-    setDrawerProjectId(routedProjectId);
-    setDrawerProjectPanelOpen(true);
-  }, [routedProjectId]);
+    if (routedProjectId) {
+      setDrawerProjectId(routedProjectId);
+      setDrawerProjectPanelOpen(true);
+    } else if (routeClearsProjectSidebarContext(route)) {
+      setDrawerProjectId(undefined);
+      setDrawerProjectPanelOpen(false);
+    }
+  }, [route, routedProjectId]);
   const projectContext = Boolean(drawerProjectId);
   const showingAgents = projectContext && projectSection === "agents";
   const showingChats = projectContext && projectSection === "chats";
@@ -173,18 +181,28 @@ export function WorkspaceSidebar({
       search: directorySearch,
       projectId: drawerProjectId,
       enabled: projectContext,
+      summary: !showingChats,
     });
   const agentDirectoryQuery =
     useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
       search: showingAgents ? directorySearch : "",
       projectId: drawerProjectId,
       enabled: projectContext,
+      summary: !showingAgents,
+    });
+  const activeProjectAgentQuery =
+    useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
+      projectId: drawerProjectId,
+      active: true,
+      enabled: projectContext,
+      summary: true,
     });
   const triggerDirectoryQuery =
     useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", {
       search: directorySearch,
       projectId: drawerProjectId,
       enabled: projectContext,
+      summary: !showingTriggers,
     });
   const projectDirectory = workspaceDirectoryItems(
     projectDirectoryQuery.data?.pages,
@@ -217,18 +235,18 @@ export function WorkspaceSidebar({
   const projectItems = projectDirectoryQuery.requestState.hasResolved
     ? [...projectDirectory.starredItems, ...projectDirectory.items]
     : projectFallbackItems;
-  const chatItems = [...chatDirectory.starredItems, ...chatDirectory.items];
-  const chatNamesById = new Map(
-    chatItems.map(item => [item.conversation.id, item.conversation.title] as const),
+  const chatItems = projectScopedWorkspaceDirectoryItems(
+    [...chatDirectory.starredItems, ...chatDirectory.items],
+    drawerProjectId,
   );
-  const agentItems = [
-    ...agentDirectory.starredItems,
-    ...agentDirectory.items,
-  ];
-  const triggerItems = [
-    ...triggerDirectory.starredItems,
-    ...triggerDirectory.items,
-  ];
+  const agentItems = projectScopedWorkspaceDirectoryItems(
+    [...agentDirectory.starredItems, ...agentDirectory.items],
+    drawerProjectId,
+  );
+  const triggerItems = projectScopedWorkspaceDirectoryItems(
+    [...triggerDirectory.starredItems, ...triggerDirectory.items],
+    drawerProjectId,
+  );
   const projectionConversationIds = [
     ...chatItems.map(item => item.conversation.id),
     ...(route.kind === "conversation" ? [route.conversationId] : []),
@@ -248,13 +266,16 @@ export function WorkspaceSidebar({
   for (const item of projectItems) projectById.set(item.project.id, item.project);
   const activeProjectId = drawerProjectId;
   const railProjectIds = useRef<string[]>([]);
-  const availableProjectIds = new Set(projects.map(project => project.id));
-  const stableProjectIds = railProjectIds.current.filter(projectId =>
-    availableProjectIds.has(projectId),
+  const railProjectOrderKey = useRef<string>();
+  const canonicalProjectOrderKey = projectOrderPreferenceKey(preferences, projects);
+  const canonicalProjectOrderChanged =
+    railProjectOrderKey.current !== canonicalProjectOrderKey;
+  const stableProjectIds = synchronizeProjectRailOrder(
+    railProjectIds.current,
+    projects.map(project => project.id),
+    canonicalProjectOrderChanged,
   );
-  for (const project of projects) {
-    if (!stableProjectIds.includes(project.id)) stableProjectIds.push(project.id);
-  }
+  railProjectOrderKey.current = canonicalProjectOrderKey;
   railProjectIds.current = stableProjectIds;
   const stableRailProjects = stableProjectIds.flatMap(projectId => {
     const project = projects.find(candidate => candidate.id === projectId);
@@ -273,7 +294,7 @@ export function WorkspaceSidebar({
   );
   const counts = {
     running:
-      agentDirectoryQuery.data?.pages.at(-1)?.activeCount ?? 0,
+      activeProjectAgentQuery.data?.pages.at(-1)?.total ?? 0,
     attention: notificationCounts?.unacknowledgedActionCount ?? notifications.filter(isOpenAttention).length,
     updates: notificationCounts?.unreadUpdateCount ?? notifications.filter(isUnreadNotificationUpdate).length,
   };
@@ -434,7 +455,7 @@ export function WorkspaceSidebar({
         agents: agentDirectoryQuery.requestState.hasResolved ? agentDirectory.total : undefined,
         triggers: triggerDirectoryQuery.requestState.hasResolved ? triggerDirectory.total : undefined,
       }}
-      runningCount={agentDirectoryQuery.requestState.hasResolved ? counts.running : undefined}
+      runningCount={activeProjectAgentQuery.requestState.hasResolved ? counts.running : undefined}
       unreadCount={projectUnread.get(activeProject.id)?.totalCount ?? 0}
       drawer={drawer}
       onSectionChange={section => {
@@ -617,6 +638,7 @@ export function WorkspaceSidebar({
   type AgentSidebarRow = {
     agent: (typeof agentItems)[number]["agent"];
     project: (typeof agentItems)[number]["project"];
+    ownerConversation?: WorkspaceAgentDirectoryItemDto["ownerConversation"];
     health?: WorkspaceAgentDirectoryItemDto["health"];
     status?: (typeof agentItems)[number]["health"]["status"];
   };
@@ -624,12 +646,15 @@ export function WorkspaceSidebar({
     depth: number;
     hasChildren: boolean;
   };
-  const allAgentRows: AgentSidebarRow[] = agentItems.map(({ agent, project, health }) => ({
-    agent,
-    project,
-    health,
-    status: health.status,
-  }));
+  const allAgentRows: AgentSidebarRow[] = agentItems.map(
+    ({ agent, project, ownerConversation, health }) => ({
+      agent,
+      project,
+      ownerConversation,
+      health,
+      status: health.status,
+    }),
+  );
   const agentNamesById = new Map(
     allAgentRows.map(row => [row.agent.id, row.agent.title]),
   );
@@ -638,7 +663,11 @@ export function WorkspaceSidebar({
     activeProject &&
     activeAgentQuery.data?.agent.projectId === activeProject.id &&
     !allAgentRows.some(item => item.agent.id === route.agentId)
-      ? { agent: activeAgentQuery.data.agent, project: activeProject }
+      ? {
+          agent: activeAgentQuery.data.agent,
+          project: activeProject,
+          ownerConversation: activeAgentQuery.data.ownerConversation,
+        }
       : undefined;
   const agentRows = allAgentRows;
   const agentHierarchyRows = (items: AgentSidebarRow[]): AgentSidebarTreeRow[] => {
@@ -673,7 +702,7 @@ export function WorkspaceSidebar({
     return visible;
   };
   const agentResourceRows = (items: AgentSidebarTreeRow[]) =>
-    items.map(({ agent, project: agentProject, health, status, depth, hasChildren }) => {
+    items.map(({ agent, project: agentProject, ownerConversation, health, status, depth, hasChildren }) => {
       const starred = starredResourceIds.has(
         resourcePreferenceKey("agent", agent.id),
       );
@@ -784,7 +813,7 @@ export function WorkspaceSidebar({
             </ListItemIcon>
             <ListItemText
               primary={agent.title}
-              secondary={`${chatNamesById.get(agent.conversationId) ?? "Unavailable Chat"} · ${agent.activeEngine}`}
+              secondary={`${ownerConversation?.title ?? "Unavailable Chat"} · ${agent.activeEngine}`}
               primaryTypographyProps={{
                 noWrap: true,
                 fontSize: 13,

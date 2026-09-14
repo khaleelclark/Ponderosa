@@ -12,6 +12,7 @@ import {
   unicodeCodePointLength,
   publicProviderFailureEvent,
   publicProviderFailureSummary,
+  safeProviderConnectionUrl,
 } from "@ponderosa/core";
 import { randomUUID } from "node:crypto";
 import type { LogEvent, ResolvedAgentWorkingCopy } from "@ponderosa/agents";
@@ -311,14 +312,15 @@ export function startProviderRunExecution(
             if (!currentRun || !ownsActiveRun(agent.id, currentRun) || currentRun.controller.signal.aborted) {
               return { action: "cancel" };
             }
-            if (request.mode === "url") {
-              try {
-                const parsed = new URL(request.url);
-                if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return { action: "cancel" };
-              } catch {
-                return { action: "cancel" };
-              }
+            const connectionUrl = request.mode === "url"
+              ? safeProviderConnectionUrl(request.url)
+              : undefined;
+            if (request.mode === "url" && !connectionUrl) {
+              return { action: "cancel" };
             }
+            const connectionKind = connectionUrl && new URL(connectionUrl).protocol === "https:"
+              ? "secure"
+              : "local";
             if (runtimeElicitations.allowsForRun(currentRun.runId, request)) {
               return { action: "accept", content: {} };
             }
@@ -334,12 +336,12 @@ export function startProviderRunExecution(
               ...(currentRun.v3SchedulerRunId ? { coordinationRunId: currentRun.v3SchedulerRunId } : {}),
               mode: "choice",
               question: request.mode === "url"
-                ? `${agent.title} needs a secure ${providerName} connection before it can continue.`
+                ? `${agent.title} needs a ${connectionKind} ${providerName} connection before it can continue.`
                 : rememberableConfirmation
                   ? `${agent.title} needs permission for ${providerName} before it can continue.`
                 : `${agent.title} needs information for ${providerName} before it can continue.`,
               context: request.mode === "url"
-                ? `Open the secure ${providerName} connection page, then return here to confirm.`
+                ? `Open the ${connectionKind} ${providerName} connection page, then return here to confirm.`
                 : rememberableConfirmation
                   ? `${providerName} requested confirmation. You can allow it once or for the rest of this Agent run.`
                 : `${providerName} needs this information to continue. Submitted values are sent directly to the provider and are not saved in Ponderosa.`,

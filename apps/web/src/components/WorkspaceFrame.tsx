@@ -8,6 +8,7 @@ import {
   Tabs,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
 import {
   useEffect,
@@ -74,14 +75,18 @@ export function useWorkspaceHeaderCollapse(): {
   collapsed: boolean;
   toggleCollapsed(): void;
 } {
+  const mobile = useMediaQuery("(max-width: 899.95px)");
+  const [mobileCollapsed, setMobileCollapsed] = useState(true);
   const collapsed = useSyncExternalStore(
     subscribeHeaderCollapsed,
     readHeaderCollapsed,
     () => false,
   );
   return {
-    collapsed,
-    toggleCollapsed: () => writeHeaderCollapsed(!collapsed),
+    collapsed: mobile ? mobileCollapsed : collapsed,
+    toggleCollapsed: () => mobile
+      ? setMobileCollapsed(value => !value)
+      : writeHeaderCollapsed(!collapsed),
   };
 }
 
@@ -298,7 +303,7 @@ export function TabbedWorkspaceFrame<T extends string>({
           direction="row"
           spacing={1}
           useFlexGap
-          flexWrap={{ xs: "wrap", sm: "nowrap" }}
+          flexWrap="nowrap"
           sx={{ alignItems: { xs: "flex-start", sm: "center" }, minWidth: 0 }}
         >
           <MobileNavigationButton />
@@ -317,13 +322,13 @@ export function TabbedWorkspaceFrame<T extends string>({
           </Box>
           <Stack
             direction="row"
-            spacing={1}
+            spacing={{ xs: 0, sm: 1 }}
             useFlexGap
             sx={{
               alignItems: "center",
               justifyContent: "flex-end",
-              flexWrap: "wrap",
-              flex: { xs: "1 0 100%", sm: "0 1 auto" },
+              flexWrap: { xs: "nowrap", sm: "wrap" },
+              flex: { xs: "0 0 auto", sm: "0 1 auto" },
               minWidth: 0,
               maxWidth: "100%",
             }}

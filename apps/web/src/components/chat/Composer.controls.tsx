@@ -17,15 +17,19 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
 import type {
   AgentMentionBindingDto,
   AssetLimitsDto,
+  ConversationDraftConflictDto,
   EngineCommand,
   EngineComposerCapability,
   ArtifactDto,
 } from "@ponderosa/core";
-import { type RefObject } from "react";
+import { type RefObject, useEffect, useState } from "react";
+import { isIOSDevice } from "../../browserPlatform";
 import { compactPreviewText } from "./Composer.helpers";
 import { ComposerMentionStatus } from "./Composer.parts";
 import {
@@ -44,19 +48,31 @@ export function ComposerNotices({
   pastedText,
   pastedTextBytes,
   error,
-  displacedDraft,
+  draftConflict,
+  failedDraftContents,
   onShowPastedText,
   onRemovePastedText,
   onRestoreDraft,
+  onDiscardDraft,
+  restoringDraft,
+  mutationLocked,
+  onRetryDraftContent,
+  onRemoveDraftContent,
   onClearError,
 }: {
   pastedText?: string;
   pastedTextBytes: number;
   error?: string;
-  displacedDraft?: string;
+  draftConflict?: ConversationDraftConflictDto;
+  failedDraftContents: Array<{ id: string; name: string }>;
   onShowPastedText(): void;
   onRemovePastedText(): void;
   onRestoreDraft(): void;
+  onDiscardDraft(): void;
+  restoringDraft: boolean;
+  mutationLocked: boolean;
+  onRetryDraftContent(id: string): void;
+  onRemoveDraftContent(id: string): void;
   onClearError(): void;
 }): JSX.Element {
   return (
@@ -80,17 +96,19 @@ export function ComposerNotices({
               Pasted text
             </Typography>
             <Button
+              disabled={mutationLocked}
               size="small"
               sx={{ p: 0, minWidth: 0, textTransform: "none" }}
               onClick={onShowPastedText}
             >
-              Show in Text Field
+              View or edit
             </Button>
           </Box>
           <Typography variant="caption" color="text.secondary">
             {pastedTextBytes.toLocaleString()} bytes
           </Typography>
           <IconButton
+            disabled={mutationLocked}
             size="small"
             aria-label="Remove pasted text"
             onClick={onRemovePastedText}
@@ -104,18 +122,55 @@ export function ComposerNotices({
           Message not sent. {error}
         </Alert>
       ) : null}
-      {displacedDraft ? (
+      {failedDraftContents.map(item => (
+        <Alert
+          key={item.id}
+          severity="warning"
+          sx={{ mb: 1 }}
+          action={
+            <Stack direction="row" spacing={0.5}>
+              <Button size="small" disabled={mutationLocked} onClick={() => onRetryDraftContent(item.id)}>
+                Retry
+              </Button>
+              <Button size="small" disabled={mutationLocked} onClick={() => onRemoveDraftContent(item.id)}>
+                Remove
+              </Button>
+            </Stack>
+          }
+        >
+          {item.name} could not be restored from this draft.
+        </Alert>
+      ))}
+      {draftConflict ? (
         <Alert
           severity="warning"
           sx={{ mb: 1 }}
           action={
-            <Button size="small" onClick={onRestoreDraft}>
-              Restore
-            </Button>
+            <Stack direction="row" spacing={0.5}>
+              <Button size="small" disabled={restoringDraft || mutationLocked} onClick={onDiscardDraft}>
+                Discard
+              </Button>
+              <Button size="small" disabled={restoringDraft || mutationLocked} onClick={onRestoreDraft}>
+                {restoringDraft ? "Working…" : "Restore"}
+              </Button>
+            </Stack>
           }
         >
-          This draft changed elsewhere. Your displaced text is preserved: “
-          {compactPreviewText(displacedDraft)}”
+          This draft changed elsewhere. Your version is preserved.
+          {draftConflict.displaced.text
+            ? ` Text: “${compactPreviewText(draftConflict.displaced.text)}”`
+            : ""}
+          {draftConflict.displaced.pastedTextAttachmentId
+            ? " It includes pasted text."
+            : ""}
+          {draftConflict.displaced.attachmentIds.length > 0
+            ? ` It includes ${draftConflict.displaced.attachmentIds.length} attachment${draftConflict.displaced.attachmentIds.length === 1 ? "" : "s"}.`
+            : ""}
+          {!draftConflict.displaced.text &&
+          !draftConflict.displaced.pastedTextAttachmentId &&
+          draftConflict.displaced.attachmentIds.length === 0
+            ? " It is an empty draft."
+            : ""}
         </Alert>
       ) : null}
     </>
@@ -263,20 +318,47 @@ export function ComposerCapabilityPicker({
   onApplyCapability(capability: EngineComposerCapability): void;
 }): JSX.Element {
   const maximumFiles = assetLimits?.maxAssetsPerMessage ?? COMPOSER_MAX_FILES;
+  const mobile = useMediaQuery(useTheme().breakpoints.down("md"));
+  const [browseCapabilities, setBrowseCapabilities] = useState(false);
+  const showCapabilities = !mobile || browseCapabilities;
+  const [popper, setPopper] = useState<{ update(): Promise<unknown> } | null>(null);
+  useEffect(() => {
+    if (!mobile || !menuAnchor || !popper) return;
+    let frame = 0;
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => { void popper.update(); });
+    };
+    // The iOS app frame resizes after VisualViewport events. Popper's default
+    // window listener can measure the anchor before that layout has settled.
+    const observer = new ResizeObserver(update);
+    const root = document.getElementById("root");
+    if (root) observer.observe(root);
+    const viewport = window.visualViewport;
+    viewport?.addEventListener("resize", update);
+    viewport?.addEventListener("scroll", update);
+    update();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      viewport?.removeEventListener("resize", update);
+      viewport?.removeEventListener("scroll", update);
+    };
+  }, [mobile, menuAnchor, popper]);
   return (
     <>
       <input
         ref={fileInput}
         hidden
         type="file"
-        accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,application/json,application/zip,.txt,.md,.csv,.log,.json,.zip,.pdf"
+        accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif,application/pdf,text/plain,application/json,application/zip,.txt,.md,.csv,.log,.json,.zip,.pdf"
         multiple
         onChange={event => {
           onFiles(Array.from(event.target.files ?? []));
           event.target.value = "";
         }}
       />
-      <Tooltip title="Add an image, file, skill, plugin, or connector">
+      <Tooltip title={mobile ? "" : "Add an image, file, skill, plugin, or connector"}>
         <span>
           <IconButton
             aria-label="Add attachment or capability"
@@ -284,13 +366,17 @@ export function ComposerCapabilityPicker({
             aria-expanded={Boolean(menuAnchor)}
             aria-controls={menuAnchor ? listId : undefined}
             disabled={disabled}
-            onClick={event => onOpen(event.currentTarget)}
+            onClick={event => {
+              setBrowseCapabilities(false);
+              onOpen(event.currentTarget);
+            }}
           >
             <AddIcon />
           </IconButton>
         </span>
       </Tooltip>
       <Popper
+        popperRef={setPopper}
         open={Boolean(menuAnchor)}
         anchorEl={menuAnchor}
         placement="top-start"
@@ -301,33 +387,44 @@ export function ComposerCapabilityPicker({
             elevation={5}
             sx={{
               mb: 0.5,
-              width: "min(420px, calc(100vw - 24px))",
-              maxHeight: "min(52vh, 390px)",
+              width: mobile ? "min(340px, calc(100vw - 24px))" : "min(420px, calc(100vw - 24px))",
+              maxHeight: mobile ? "min(390px, calc(var(--ponderosa-app-viewport-block-size, 100dvh) - 80px))" : "min(52vh, 390px)",
               overflow: "hidden",
+              display: "flex",
+              flexDirection: "column",
+            }}
+            onKeyDown={event => {
+              if (event.key === "Escape") {
+                onClose();
+                menuAnchor?.focus({ preventScroll: true });
+              }
             }}
           >
-            <Box sx={{ p: 1, borderBottom: 1, borderColor: "divider" }}>
+            {showCapabilities && <Box sx={{ p: 1, borderBottom: 1, borderColor: "divider", flexShrink: 0 }}>
+              {mobile && <Button size="small" onClick={() => { setBrowseCapabilities(false); onFilterChange(""); }}>← Back</Button>}
               <TextField
-                autoFocus
+                autoFocus={!mobile}
                 fullWidth
                 size="small"
                 value={filter}
                 onChange={event => onFilterChange(event.target.value)}
-                placeholder="Find a skill, plugin, or connector"
+                placeholder={mobile ? "Search skills & connectors" : "Find a skill, plugin, or connector"}
                 inputProps={{ "aria-label": "Filter runtime capabilities" }}
+                sx={isIOSDevice() ? { "& input": { fontSize: 16 } } : undefined}
               />
-            </Box>
+            </Box>}
             <MenuList
               dense
               id={listId}
               aria-label="Add attachment or runtime capability"
               sx={{
-                maxHeight: "min(38vh, 300px)",
+                maxHeight: mobile ? 260 : "min(38vh, 300px)",
+                minHeight: 0,
                 overflowY: "auto",
                 overscrollBehavior: "contain",
               }}
             >
-              <MenuItem
+              {(!mobile || !browseCapabilities) && <MenuItem
                 disabled={!attachmentsEnabled || fileCount >= maximumFiles}
                 onClick={() => {
                   onClose();
@@ -340,19 +437,20 @@ export function ComposerCapabilityPicker({
                 }}
               >
                 <Box>
-                  <Typography variant="body2">Upload image or file</Typography>
-                  <Typography variant="caption" color="text.secondary">
+                  <Typography variant="body2">{mobile ? "Add photo or file" : "Upload image or file"}</Typography>
+                  {(!mobile || !attachmentsEnabled || fileCount >= maximumFiles) && <Typography variant="caption" color="text.secondary">
                     {!attachmentsEnabled
                       ? (attachmentsUnavailableReason ??
                         "Attachments are not supported in this chat.")
                       : fileCount >= maximumFiles
                         ? "Remove an attachment before adding another."
-                        : `Up to ${maximumFiles} PNG, JPEG, WebP, PDF, text, JSON, or ZIP files · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`}
-                  </Typography>
+                        : `Up to ${maximumFiles} PNG, JPEG, WebP, HEIC, PDF, text, JSON, or ZIP files · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`}
+                  </Typography>}
                 </Box>
-              </MenuItem>
-              <Divider />
-              {(capabilities ?? []).length === 0 ? (
+              </MenuItem>}
+              {mobile && !browseCapabilities && <MenuItem sx={{ minHeight: 48 }} onClick={() => setBrowseCapabilities(true)}>Skills &amp; connectors</MenuItem>}
+              {!mobile && <Divider />}
+              {showCapabilities && ((capabilities ?? []).length === 0 ? (
                 <MenuItem disabled sx={{ whiteSpace: "normal" }}>
                   <Typography variant="caption">
                     No runtime skills, plugins, or connectors are currently
@@ -378,7 +476,7 @@ export function ComposerCapabilityPicker({
                       sx={{
                         whiteSpace: "normal",
                         alignItems: "flex-start",
-                        minHeight: 58,
+                        minHeight: mobile ? 48 : 58,
                         py: 0.75,
                         ...(automatic
                           ? {
@@ -414,7 +512,7 @@ export function ComposerCapabilityPicker({
                             label={capability.kind}
                           />
                         </Stack>
-                        <Typography
+                        {!mobile && <Typography
                           variant="caption"
                           color="text.secondary"
                           sx={{
@@ -427,7 +525,7 @@ export function ComposerCapabilityPicker({
                           }}
                         >
                           {capability.description}
-                        </Typography>
+                        </Typography>}
                         {reason ? (
                           <Typography
                             variant="caption"
@@ -444,7 +542,7 @@ export function ComposerCapabilityPicker({
                     </MenuItem>
                   );
                 })
-              )}
+              ))}
             </MenuList>
           </Paper>
         </ClickAwayListener>

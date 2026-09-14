@@ -2,10 +2,15 @@ import WebSocket from "ws";
 import type {
   AgentDeletionReceipt,
   AgentStore,
+  ConversationDeletionReceipt,
   CoordinationV3Store,
   WorkspaceStore,
 } from "@ponderosa/agents";
-import { repairManagedArtifactContent } from "@ponderosa/agents";
+import {
+  readManagedArtifactContent,
+  removeManagedArtifactContent,
+  repairManagedArtifactContent,
+} from "@ponderosa/agents";
 import type { ReadinessCheckDto } from "@ponderosa/core";
 import type { AssetStore } from "./assets.js";
 import {
@@ -29,6 +34,8 @@ import type { TriggerSourceService } from "./trigger-service.js";
 import type { WebPushDeliveryManager } from "./web-push-delivery.js";
 import type { createBrowserAuthority } from "./browser-authority.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
+import type { DraftService } from "./routes/drafts.js";
+import { finishProjectAssetAuthorityCleanup } from "./project-deletion-coordinator.js";
 
 type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
 type CommunicationJournal = ReturnType<typeof createCommunicationJournal>;
@@ -38,6 +45,150 @@ type OperationalNotifications = ReturnType<typeof createOperationalNotifications
 type RuntimeAuthority = ReturnType<typeof createRuntimeAuthority>;
 type ReadModels = ReturnType<typeof createServerReadModels>;
 type BrowserAuthority = ReturnType<typeof createBrowserAuthority>;
+
+export async function recoverCanonicalAgentCreations(input: {
+  store: AgentStore;
+  deletingAgentIds: Set<string>;
+  reconcileRuntimeCommunicationProjections(filter: {
+    projectId: string;
+    communicationEventId: string;
+    allowQuarantinedAgentIds: ReadonlySet<string>;
+  }): Promise<number>;
+  limit?: number;
+}): Promise<{ recovered: number; failures: Array<{ operationId: string; error: unknown }> }> {
+  const failures: Array<{ operationId: string; error: unknown }> = [];
+  let recovered = 0;
+  const operations = input.store.listRecoverableAgentCreationOperations()
+    .filter((operation) => operation.status === "canonical_committed" && operation.communicationEventId)
+    .slice(0, input.limit ?? 32);
+  for (const operation of operations) {
+    try {
+      await input.reconcileRuntimeCommunicationProjections({
+        projectId: operation.projectId,
+        communicationEventId: operation.communicationEventId!,
+        allowQuarantinedAgentIds: new Set(operation.agentIds),
+      });
+      input.store.updateAgentCreationOperation(operation.id, {
+        status: "completed",
+        lastError: null,
+      });
+      for (const agentId of operation.agentIds) input.deletingAgentIds.delete(agentId);
+      recovered += 1;
+    } catch (error) {
+      input.store.updateAgentCreationOperation(operation.id, {
+        lastError: error instanceof Error ? error.message : "Agent creation projection recovery failed",
+      });
+      failures.push({ operationId: operation.id, error });
+    }
+  }
+  return { recovered, failures };
+}
+
+export function recoverFailedAgentCreations(input: {
+  store: AgentStore;
+  assets: AssetStore;
+  dataDir: string;
+  deletingAgentIds: Set<string>;
+  handleAgentDeletion(agentId: string): void;
+}): { recovered: number; failures: Array<{ operationId: string; error: unknown }> } {
+  let recovered = 0;
+  const failures: Array<{ operationId: string; error: unknown }> = [];
+  for (const operation of input.store.listRecoverableAgentCreationOperations()) {
+    if (operation.status === "canonical_committed") continue;
+    input.store.updateAgentCreationOperation(operation.id, { status: "rolling_back" });
+    let rolledBack = true;
+    const authorityBlockedArtifactIds = new Set<string>();
+    for (const agentId of [...operation.agentIds].reverse()) {
+      try {
+        if (input.store.getAgent(agentId) &&
+            !input.store.deleteAgent(agentId, input.handleAgentDeletion)) {
+          rolledBack = false;
+        }
+      } catch (error) {
+        rolledBack = false;
+        failures.push({ operationId: operation.id, error });
+      }
+    }
+    const operationAgentsRemain = operation.agentIds.some((agentId) =>
+      input.store.getAgent(agentId));
+    for (const identity of operation.artifactIdentities) {
+      try {
+        if (operationAgentsRemain ||
+            !input.assets.removeCreationGeneratedArtifact(operation.projectId, identity)) {
+          authorityBlockedArtifactIds.add(identity.id);
+          rolledBack = false;
+        }
+      } catch (error) {
+        authorityBlockedArtifactIds.add(identity.id);
+        rolledBack = false;
+        failures.push({ operationId: operation.id, error });
+      }
+    }
+    for (const artifactId of operation.artifactIds) {
+      if (authorityBlockedArtifactIds.has(artifactId)) continue;
+      try {
+        const artifact = input.store.getProjectArtifact(operation.projectId, artifactId);
+        if (artifact?.originAgentId && operation.agentIds.includes(artifact.originAgentId)) {
+          input.store.deleteProjectArtifact(
+            operation.projectId,
+            artifactId,
+            "Agent creation recovery rolled back",
+          );
+          if (input.store.getProjectArtifact(operation.projectId, artifactId)) rolledBack = false;
+        }
+      } catch (error) {
+        rolledBack = false;
+        failures.push({ operationId: operation.id, error });
+      }
+    }
+    for (const identity of operation.artifactIdentities) {
+      if (authorityBlockedArtifactIds.has(identity.id)) continue;
+      try {
+        const catalogued = input.store.getProjectArtifact(operation.projectId, identity.id);
+        if (catalogued && (!catalogued.originAgentId ||
+            !operation.agentIds.includes(catalogued.originAgentId))) continue;
+        if (catalogued) {
+          rolledBack = false;
+          continue;
+        }
+        const runtime = input.assets.authoritativeRuntimeArtifactMetadataById(
+          operation.projectId,
+          identity.id,
+        );
+        if (runtime && (runtime.byteLength !== identity.byteLength ||
+            runtime.blobHash !== identity.sha256)) continue;
+        if (runtime) input.assets.removeRuntimeArtifactReservation(operation.projectId, identity.id);
+        removeManagedArtifactContent(
+          input.dataDir,
+          operation.projectId,
+          identity.id,
+          identity.byteLength,
+          identity.sha256,
+        );
+        if (readManagedArtifactContent(
+          input.dataDir,
+          operation.projectId,
+          identity.id,
+          identity.byteLength,
+          identity.sha256,
+        )) rolledBack = false;
+      } catch (error) {
+        rolledBack = false;
+        failures.push({ operationId: operation.id, error });
+      }
+    }
+    if (operationAgentsRemain) rolledBack = false;
+    if (rolledBack) {
+      input.store.updateAgentCreationOperation(operation.id, {
+        status: "rolled_back",
+        lastError: null,
+      });
+      for (const agentId of operation.agentIds) input.deletingAgentIds.delete(agentId);
+      recovered += 1;
+    }
+  }
+  return { recovered, failures };
+}
 
 type ServerLifecycleContext =
   Pick<ArtifactAuthority, "projectCommunicationArtifact" | "requestArtifactAccess"> &
@@ -63,6 +214,7 @@ type ServerLifecycleContext =
     opts: CreateServerOptions;
     store: AgentStore;
     assets: AssetStore;
+    drafts: DraftService;
     coordinationV3: CoordinationV3Store;
     workspace: WorkspaceStore;
     reconcileCommittedProjectDeletions(): void;
@@ -72,6 +224,10 @@ type ServerLifecycleContext =
     activeRuns: Map<string, ActiveRun>;
     runtimeAuthorities: Map<string, AgentRuntimeAuthority>;
     agentMessageCapabilities: Map<string, AgentMessageCapability>;
+    agentDeliveryLeases: ReadonlyMap<string, number>;
+    deletingAgentIds: Set<string>;
+    attachmentDeletionInProgress(agentId: string): boolean;
+    reconcilingAssetAgentIds: Set<string>;
     projectBrowserGrants: Map<string, unknown>;
     browserSessions: BrowserSessionManager;
     projectBrowserSessions: BrowserSessionManager;
@@ -80,9 +236,13 @@ type ServerLifecycleContext =
     coordinationV3Scheduler: CoordinationV3Scheduler;
     triggerSources: TriggerSourceService;
     processAgentDeletionCleanup(receipt: AgentDeletionReceipt): Promise<boolean>;
+    processConversationDeletionCleanup(
+      receipt: ConversationDeletionReceipt,
+    ): Promise<boolean>;
     reconcileRuntimeCommunicationProjections(filter?: {
       projectId?: string;
       communicationEventId?: string;
+      allowQuarantinedAgentIds?: ReadonlySet<string>;
     }, options?: {
       yieldEvery?: number;
       shouldContinue?(): boolean;
@@ -94,6 +254,20 @@ type ServerLifecycleContext =
     providerProcessAuthority: ProviderProcessAuthority;
   };
 
+export function leaseAgentAssetReconciliation(
+  agentDeliveryLeases: ReadonlyMap<string, number>,
+  deletingAgentIds: ReadonlySet<string>,
+  attachmentDeletionInProgress: (agentId: string) => boolean,
+  reconcilingAssetAgentIds: Set<string>,
+  agentId: string,
+): (() => void) | undefined {
+  if (deletingAgentIds.has(agentId) || attachmentDeletionInProgress(agentId) ||
+      (agentDeliveryLeases.get(agentId) ?? 0) > 0 ||
+      reconcilingAssetAgentIds.has(agentId)) return undefined;
+  reconcilingAssetAgentIds.add(agentId);
+  return () => reconcilingAssetAgentIds.delete(agentId);
+}
+
 export function registerServerLifecycle(
   app: PonderosaServer,
   context: ServerLifecycleContext,
@@ -102,6 +276,7 @@ export function registerServerLifecycle(
     opts,
     store,
     assets,
+    drafts,
     coordinationV3,
     workspace,
     reconcileCommittedProjectDeletions,
@@ -111,6 +286,10 @@ export function registerServerLifecycle(
     activeRuns,
     runtimeAuthorities,
     agentMessageCapabilities,
+    agentDeliveryLeases,
+    deletingAgentIds,
+    attachmentDeletionInProgress,
+    reconcilingAssetAgentIds,
     projectBrowserGrants,
     browserSessions,
     projectBrowserSessions,
@@ -119,6 +298,7 @@ export function registerServerLifecycle(
     coordinationV3Scheduler,
     triggerSources,
     processAgentDeletionCleanup,
+    processConversationDeletionCleanup,
     reconcileRuntimeCommunicationProjections,
     clearRunLeaseTimer,
     clearRunLivenessTimer,
@@ -156,7 +336,13 @@ export function registerServerLifecycle(
   } = context;
   let assetSweep: NodeJS.Timeout | undefined;
   let agentDeletionCleanupSweep: NodeJS.Timeout | undefined;
+  let conversationDeletionCleanupSweep: NodeJS.Timeout | undefined;
+  let agentCreationRecoverySweep: NodeJS.Timeout | undefined;
   let agentDeletionCleanupDraining = false;
+  let agentDeletionCleanupOperation: Promise<void> | undefined;
+  let conversationDeletionCleanupOperation: Promise<void> | undefined;
+  let agentCreationRecoveryOperation: Promise<void> | undefined;
+  let assetReconciliationOperation: Promise<void> | undefined;
   let linkPreviewSweep: NodeJS.Timeout | undefined;
   let startupProjectionRecoveryImmediate: NodeJS.Immediate | undefined;
   let startupProjectionRecovery: Promise<void> | undefined;
@@ -215,6 +401,58 @@ export function registerServerLifecycle(
       agentDeletionCleanupDraining = false;
     }
   };
+  const runAgentDeletionCleanup = (): Promise<void> => {
+    if (agentDeletionCleanupOperation) return agentDeletionCleanupOperation;
+    const operation = drainAgentDeletionCleanup().finally(() => {
+      if (agentDeletionCleanupOperation === operation) agentDeletionCleanupOperation = undefined;
+    });
+    agentDeletionCleanupOperation = operation;
+    return operation;
+  };
+  const runConversationDeletionCleanup = (): Promise<void> => {
+    if (conversationDeletionCleanupOperation) {
+      return conversationDeletionCleanupOperation;
+    }
+    const operation = (async () => {
+      for (const receipt of store.listPendingConversationDeletionReceipts()) {
+        if (isClosed()) break;
+        await processConversationDeletionCleanup(receipt);
+      }
+    })().catch((error) => {
+      if (!isClosed()) app.log.error({ err: error }, "Chat deletion cleanup retry failed");
+    }).finally(() => {
+      if (conversationDeletionCleanupOperation === operation) {
+        conversationDeletionCleanupOperation = undefined;
+      }
+    });
+    conversationDeletionCleanupOperation = operation;
+    return operation;
+  };
+  const runAgentCreationRecovery = (limit = 32): Promise<void> => {
+    if (agentCreationRecoveryOperation) return agentCreationRecoveryOperation;
+    const operation = recoverCanonicalAgentCreations({
+      store,
+      deletingAgentIds,
+      reconcileRuntimeCommunicationProjections,
+      limit,
+    }).then(({ recovered, failures }) => {
+      if (recovered > 0 && !isClosed()) {
+        app.log.info({ recovered }, "Agent creation projection recovery completed");
+      }
+      for (const failure of failures) {
+        if (!isClosed()) {
+          app.log.error(
+            { err: failure.error, operationId: failure.operationId },
+            "Agent creation projection recovery remains pending",
+          );
+        }
+      }
+    }).finally(() => {
+      if (agentCreationRecoveryOperation === operation) agentCreationRecoveryOperation = undefined;
+    });
+    agentCreationRecoveryOperation = operation;
+    return operation;
+  };
   app.addHook("onReady", async () => {
     const lifecycleStartedAt = performance.now();
     let lifecyclePhaseStartedAt = lifecycleStartedAt;
@@ -224,10 +462,65 @@ export function registerServerLifecycle(
       lifecyclePhases[name] = Math.round((now - lifecyclePhaseStartedAt) * 10) / 10;
       lifecyclePhaseStartedAt = now;
     };
+    // Re-establish durable draft fences before accepting traffic. Committed
+    // receipts additionally finish their idempotent projection/file/quota phase.
+    for (const pending of store.listPendingProjectDeletions()) {
+      await drafts.fenceMutationGroup(`project:${pending.projectId}`, pending.draftSurfaceIds);
+    }
+    await drafts.synchronizeAttachmentQuota();
+    completeLifecyclePhase("draft_attachment_authority_recovery");
+    for (const initial of store.listPendingProjectDeletionReceipts()) {
+      if (initial.draftCleanupCompleted) continue;
+      await drafts.fenceMutationGroup(`project:${initial.projectId}`, initial.draftSurfaceIds);
+      try {
+        for (const draftId of initial.draftSurfaceIds) {
+          workspace.deleteDraft(draftId);
+          await drafts.deleteSurface(draftId);
+        }
+        store.markProjectDeletionDraftCleanupComplete(initial.projectId);
+        drafts.releaseMutationGroup(`project:${initial.projectId}`);
+      } catch (error) {
+        store.recordProjectDeletionReceiptCleanupError(
+          initial.projectId,
+          error instanceof Error ? error.message : "Project draft cleanup failed",
+        );
+      }
+    }
+    for (const receipt of store.listPendingProjectDeletionReceipts()) {
+      try {
+        finishProjectAssetAuthorityCleanup(store, assets, receipt.projectId);
+      } catch (error) {
+        store.recordProjectDeletionReceiptCleanupError(
+          receipt.projectId,
+          error instanceof Error ? error.message : "Project asset authority cleanup failed",
+        );
+      }
+    }
+    completeLifecyclePhase("project_deletion_draft_recovery");
     // Completed deletion receipts are irreversible canonical authority. Repair
     // any crash gap in the workspace log before the listener becomes ready.
     reconcileCommittedProjectDeletions();
     completeLifecyclePhase("project_deletion_workspace_recovery");
+    await runAgentCreationRecovery(Number.POSITIVE_INFINITY);
+    const failedCreationRecovery = recoverFailedAgentCreations({
+      store,
+      assets,
+      dataDir: opts.dataDir,
+      deletingAgentIds,
+      handleAgentDeletion: (id) => coordinationV3.handleAgentDeletion(id),
+    });
+    for (const failure of failedCreationRecovery.failures) {
+      store.updateAgentCreationOperation(failure.operationId, {
+        lastError: failure.error instanceof Error
+          ? failure.error.message
+          : "Agent creation rollback remains quarantined",
+      });
+      app.log.error(
+        { err: failure.error, operationId: failure.operationId },
+        "Agent creation rollback remains quarantined",
+      );
+    }
+    completeLifecyclePhase("agent_creation_recovery");
     const orphanGraceBoundary = Date.now() - 60 * 60 * 1_000;
     const recoveredProviderProcesses = await providerProcessAuthority.recoverPreviousWorkers();
     if (recoveredProviderProcesses > 0) {
@@ -488,27 +781,83 @@ export function registerServerLifecycle(
     completeLifecyclePhase("scheduler_and_triggers");
     reconcileTriggerOperationalNotifications();
     reconcileProjectDeletionOperationalNotifications();
-    await drainAgentDeletionCleanup();
+    await runConversationDeletionCleanup();
+    await runAgentDeletionCleanup();
     completeLifecyclePhase("operational_recovery");
-    agentDeletionCleanupSweep = setInterval(() => { void drainAgentDeletionCleanup(); }, 30_000);
+    agentDeletionCleanupSweep = setInterval(() => {
+      void runAgentDeletionCleanup().catch((error) => {
+        if (!isClosed()) app.log.error({ err: error }, "Agent deletion cleanup retry failed");
+      });
+    }, 30_000);
     agentDeletionCleanupSweep.unref();
+    conversationDeletionCleanupSweep = setInterval(() => {
+      void runConversationDeletionCleanup();
+    }, 30_000);
+    conversationDeletionCleanupSweep.unref();
+    agentCreationRecoverySweep = setInterval(() => {
+      if (isClosed()) return;
+      void runAgentCreationRecovery().catch((error) => {
+        if (!isClosed()) app.log.error({ err: error }, "Agent creation recovery sweep failed");
+      });
+    }, 5_000);
+    agentCreationRecoverySweep.unref();
     webPushDelivery?.start();
     const reconcileAssets = async () => {
+      await drafts.reconcileAttachmentCleanup();
+      const pendingDraftUploads = new Map<string, Set<string>>();
+      for (const item of workspace.draftRecoveryInventory()) {
+        for (const upload of item.pendingUploads) {
+          const ids = pendingDraftUploads.get(upload.agentId) ?? new Set<string>();
+          for (const id of upload.attachmentIds) ids.add(id);
+          pendingDraftUploads.set(upload.agentId, ids);
+        }
+      }
       let processedAgents = 0;
       for (const project of store.listProjects()) {
         for (const agent of store.listAgents(project.id)) {
-          const associated = new Set(store.getMessages(agent.id).flatMap((message) => message.attachments?.map((item) => item.id) ?? []));
-          await assets.reconcile(project.id, agent.id, associated);
+          const releaseAssetReconciliation = leaseAgentAssetReconciliation(
+            agentDeliveryLeases,
+            deletingAgentIds,
+            attachmentDeletionInProgress,
+            reconcilingAssetAgentIds,
+            agent.id,
+          );
+          if (!releaseAssetReconciliation) continue;
+          try {
+            const associated = new Set(store.getMessages(agent.id).flatMap((message) => message.attachments?.map((item) => item.id) ?? []));
+            await assets.reconcile(
+              project.id,
+              agent.id,
+              associated,
+              Date.now(),
+              pendingDraftUploads.get(agent.id),
+            );
+          } finally {
+            releaseAssetReconciliation();
+          }
           processedAgents += 1;
           await new Promise<void>((resolve) => setImmediate(resolve));
           if (isClosed()) return;
         }
       }
     };
-    // Projection recovery above is authoritative. Orphan asset cleanup remains
-    // periodic maintenance so it cannot delay startup or monopolize ordinary
-    // requests immediately after the server begins accepting traffic.
-    assetSweep = setInterval(() => { if (!isClosed()) void reconcileAssets(); }, 60 * 60 * 1000);
+    const runAssetReconciliation = (): Promise<void> => {
+      if (assetReconciliationOperation) return assetReconciliationOperation;
+      const operation = reconcileAssets().finally(() => {
+        if (assetReconciliationOperation === operation) assetReconciliationOperation = undefined;
+      });
+      assetReconciliationOperation = operation;
+      return operation;
+    };
+    // Resume exact deletion receipts before accepting traffic, then keep the
+    // short orphan grace bounded with the same serialized maintenance pass.
+    await runAssetReconciliation();
+    assetSweep = setInterval(() => {
+      if (isClosed()) return;
+      void runAssetReconciliation().catch((error) => {
+        if (!isClosed()) app.log.error({ err: error }, "Agent asset reconciliation failed");
+      });
+    }, 60 * 1000);
     assetSweep.unref();
     linkPreviewSweep = setInterval(() => {
       const now = Date.now();
@@ -624,6 +973,8 @@ export function registerServerLifecycle(
     if (startupProjectionRecoveryImmediate) clearImmediate(startupProjectionRecoveryImmediate);
     if (assetSweep) clearInterval(assetSweep);
     if (agentDeletionCleanupSweep) clearInterval(agentDeletionCleanupSweep);
+    if (conversationDeletionCleanupSweep) clearInterval(conversationDeletionCleanupSweep);
+    if (agentCreationRecoverySweep) clearInterval(agentCreationRecoverySweep);
     stopCommunicationReconciliation();
     shutdownRunBrowserClosures = [];
     for (const [agentId, run] of activeRuns) {
@@ -654,6 +1005,22 @@ export function registerServerLifecycle(
       boundedBackgroundShutdown(
         "runtime communication projection recovery",
         () => startupProjectionRecovery,
+      ),
+      boundedBackgroundShutdown(
+        "Agent deletion maintenance",
+        () => agentDeletionCleanupOperation,
+      ),
+      boundedBackgroundShutdown(
+        "Chat deletion maintenance",
+        () => conversationDeletionCleanupOperation,
+      ),
+      boundedBackgroundShutdown(
+        "Agent creation recovery",
+        () => agentCreationRecoveryOperation,
+      ),
+      boundedBackgroundShutdown(
+        "Agent asset maintenance",
+        () => assetReconciliationOperation,
       ),
       ...shutdownRunBrowserClosures.map((close) => Promise.resolve().then(close)),
       Promise.resolve().then(() => browserSessions.closeAll("server_shutdown")),

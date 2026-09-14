@@ -2,252 +2,78 @@ import PauseIcon from "@mui/icons-material/Pause";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
 import VolumeUpIcon from "@mui/icons-material/VolumeUp";
-import { Box, IconButton, Tooltip } from "@mui/material";
-import { useEffect, useId, useRef, useState } from "react";
+import { Alert, Box, Button, IconButton, Snackbar, Tooltip } from "@mui/material";
+import { DEFAULT_SPEECH_PREFERENCES, type SpeechPreferencesDto } from "@ponderosa/core";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { useWorkspacePreferences, writeWorkspacePreferences } from "../../hooks/queries";
 import { speechSynthesisUnavailableReason } from "./browserSpeech";
+import { claimSpeechSuggestion, useSpeechStatus } from "./speechApi";
+import { handoffSpeechToSettings, pauseSpeech, releaseSpeechSurface, resumeSpeech, speechSnapshot, startSpeech, stopSpeech, subscribeSpeech } from "./speechCoordinator";
 import { speechControlGroupSx, visuallyHiddenSpeechStatusSx } from "./speechStyles";
 import { speakableMessageText } from "./speechText";
-import {
-  monitorSpeechSurfaceAccessibility,
-  speechSurfaceIsAccessible,
-} from "./speechSurfaceAccessibility";
+import { speechSurfaceIsAccessible } from "./speechSurfaceAccessibility";
 
-type ReadAloudStatus = "idle" | "speaking" | "paused" | "stopped" | "error";
-
-interface ActiveReadAloud {
-  ownerId: string;
-  surfaceCleanup?: () => void;
-  utterance: SpeechSynthesisUtterance;
-  stop(): Error | undefined;
+export function openVoiceSettings(preservePlayback = false): void {
+  if (preservePlayback) handoffSpeechToSettings();
+  window.dispatchEvent(new CustomEvent("ponderosa:voice-settings", { detail: { preservePlayback } }));
 }
 
-let activeReadAloud: ActiveReadAloud | undefined;
-
-export function ReadAloudControls({ text }: { text: string }): JSX.Element {
+export function ReadAloudControls({ text, previewPreferences }: { text: string; previewPreferences?: SpeechPreferencesDto }): JSX.Element {
   const ownerId = useId();
-  const rootRef = useRef<HTMLSpanElement | null>(null);
-  const utteranceRef = useRef<SpeechSynthesisUtterance>();
-  const visibilityCleanupRef = useRef<() => void>();
-  const mountedRef = useRef(true);
-  const [status, setStatus] = useState<ReadAloudStatus>("idle");
-  const [error, setError] = useState<string>();
-  const unavailable = speechSynthesisUnavailableReason();
-  const speakableText = speakableMessageText(text);
-
-  const stopVisibilityMonitoring = (owner?: ActiveReadAloud) => {
-    const cleanup = owner
-      ? owner.surfaceCleanup
-      : visibilityCleanupRef.current;
-    if (owner) owner.surfaceCleanup = undefined;
-    if (visibilityCleanupRef.current === cleanup) {
-      visibilityCleanupRef.current = undefined;
-    }
-    try {
-      cleanup?.();
-    } catch {
-      // Speech ownership must still be released if cleanup rejects.
-    }
-  };
-
-  const releaseOwner = (owner: ActiveReadAloud) => {
-    stopVisibilityMonitoring(owner);
-    if (activeReadAloud === owner) activeReadAloud = undefined;
-    if (utteranceRef.current === owner.utterance) {
-      utteranceRef.current = undefined;
-    }
-  };
-
-  const stopOwner = (owner: ActiveReadAloud): Error | undefined => {
-    if (activeReadAloud !== owner) {
-      releaseOwner(owner);
-      return undefined;
-    }
-    releaseOwner(owner);
-    let cancelError: Error | undefined;
-    try {
-      window.speechSynthesis.cancel();
-    } catch (error) {
-      cancelError =
-        error instanceof Error
-          ? error
-          : new Error("Speech cancellation failed.");
-    }
-    if (mountedRef.current) {
-      if (cancelError) {
-        setError("The browser could not read this message aloud.");
-        setStatus("error");
-      } else {
-        setError(undefined);
-        setStatus("stopped");
-      }
-    }
-    return cancelError;
-  };
-
-  const stop = () => {
-    const owner = activeReadAloud;
-    if (owner?.ownerId === ownerId) stopOwner(owner);
-  };
-
-  const start = () => {
-    if (unavailable || !speakableText) return;
-    setError(undefined);
-    let owner: ActiveReadAloud | undefined;
-    let speechMayBeQueued = false;
-    try {
-      if (!speechSurfaceIsAccessible(rootRef.current)) return;
-      const utterance = new SpeechSynthesisUtterance(speakableText);
-      owner = {
-        ownerId,
-        utterance,
-        stop: () => (owner ? stopOwner(owner) : undefined),
-      };
-      const exactOwner = owner;
-      utterance.lang = navigator.language || "en-US";
-      utterance.onstart = () => {
-        if (activeReadAloud === exactOwner && mountedRef.current) {
-          setStatus("speaking");
-        }
-      };
-      utterance.onend = () => {
-        if (activeReadAloud !== exactOwner) return;
-        releaseOwner(exactOwner);
-        if (mountedRef.current) setStatus("stopped");
-      };
-      utterance.onerror = event => {
-        if (activeReadAloud !== exactOwner) return;
-        releaseOwner(exactOwner);
-        if (!mountedRef.current) return;
-        if (event.error === "canceled" || event.error === "interrupted") {
-          setStatus("stopped");
-          return;
-        }
-        setError("The browser could not read this message aloud.");
-        setStatus("error");
-      };
-
-      const replacementError = activeReadAloud?.stop();
-      if (replacementError) throw replacementError;
-      utteranceRef.current = utterance;
-      activeReadAloud = exactOwner;
-      const cleanup = monitorSpeechSurfaceAccessibility(
-        () => rootRef.current,
-        () => stopOwner(exactOwner),
-      );
-      exactOwner.surfaceCleanup = cleanup;
-      if (activeReadAloud !== exactOwner) {
-        stopVisibilityMonitoring(exactOwner);
-        return;
-      }
-      visibilityCleanupRef.current = cleanup;
-      speechMayBeQueued = true;
-      window.speechSynthesis.speak(utterance);
-      if (activeReadAloud === exactOwner) setStatus("speaking");
-    } catch {
-      const ownsSynthesis = owner !== undefined && activeReadAloud === owner;
-      if (owner) releaseOwner(owner);
-      if (ownsSynthesis || speechMayBeQueued) {
-        try {
-          window.speechSynthesis.cancel();
-        } catch {
-          // The failed owner is fenced even if browser cancellation rejects.
-        }
-      }
-      if (!mountedRef.current) return;
-      setError("The browser could not read this message aloud.");
-      setStatus("error");
-    }
-  };
-
-  const toggle = () => {
-    if (status === "speaking" && activeReadAloud?.ownerId === ownerId) {
-      window.speechSynthesis.pause();
-      setStatus("paused");
-      return;
-    }
-    if (status === "paused" && activeReadAloud?.ownerId === ownerId) {
-      window.speechSynthesis.resume();
-      setStatus("speaking");
-      return;
-    }
-    start();
-  };
-
+  const root = useRef<HTMLSpanElement>(null);
+  const state = useSyncExternalStore(subscribeSpeech, speechSnapshot);
+  const { data: workspace } = useWorkspacePreferences();
+  const { data: capability } = useSpeechStatus();
+  const queryClient = useQueryClient();
+  const preferences = previewPreferences ?? workspace?.speech ?? DEFAULT_SPEECH_PREFERENCES;
+  const localReady = capability && ["ready", "update_available"].includes(capability.kokoro.state);
+  const engine = previewPreferences ? "kokoro" : preferences.engine === "kokoro" && localReady ? "kokoro" : "browser";
+  const status = state.ownerId === ownerId ? state.status : "idle";
+  const error = state.ownerId === ownerId ? state.error : undefined;
+  const unavailable = engine === "browser" ? speechSynthesisUnavailableReason() : undefined;
+  const speakable = speakableMessageText(text);
+  const [suggestion, setSuggestion] = useState(false);
+  const [repairNotice, setRepairNotice] = useState(false);
+  useEffect(() => () => releaseSpeechSurface(ownerId), [ownerId]);
   useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      stopVisibilityMonitoring();
-      const owner = activeReadAloud;
-      if (owner?.ownerId === ownerId) stopOwner(owner);
-      utteranceRef.current = undefined;
-    };
-  }, [ownerId]);
-
-  const label = unavailable
-    ? unavailable
-    : status === "speaking"
-      ? "Pause read aloud"
-      : status === "paused"
-        ? "Resume read aloud"
-        : "Read message aloud";
-  const liveStatus = error
-    ? error
-    : status === "speaking"
-      ? "Reading message aloud"
-      : status === "paused"
-        ? "Read aloud paused"
-        : status === "stopped"
-          ? "Read aloud stopped"
-          : "";
-
-  return (
-    <Box ref={rootRef} component="span" sx={speechControlGroupSx}>
-      <Tooltip title={label}>
-        <span>
-          <IconButton
-            size="small"
-            color={status === "speaking" ? "primary" : error ? "error" : "inherit"}
-            aria-label={label}
-            aria-pressed={status === "speaking"}
-            disabled={Boolean(unavailable) || !speakableText}
-            onClick={event => {
-              event.stopPropagation();
-              toggle();
-            }}
-          >
-            {status === "speaking" ? (
-              <PauseIcon fontSize="inherit" />
-            ) : status === "paused" ? (
-              <PlayArrowIcon fontSize="inherit" />
-            ) : (
-              <VolumeUpIcon fontSize="inherit" />
-            )}
-          </IconButton>
-        </span>
-      </Tooltip>
-      {status === "speaking" || status === "paused" ? (
-        <Tooltip title="Stop read aloud">
-          <IconButton
-            size="small"
-            aria-label="Stop read aloud"
-            onClick={event => {
-              event.stopPropagation();
-              stop();
-            }}
-          >
-            <StopIcon fontSize="inherit" />
-          </IconButton>
-        </Tooltip>
-      ) : null}
-      <Box
-        component="span"
-        aria-live="polite"
-        role={error ? "alert" : "status"}
-        sx={visuallyHiddenSpeechStatusSx}
-      >
-        {liveStatus}
-      </Box>
-    </Box>
-  );
+    if (capability && !localReady && state.ownerId === ownerId && state.engine === "kokoro") stopSpeech(ownerId);
+  }, [capability, localReady, ownerId, state.ownerId, state.engine]);
+  const start = (browser = false) => {
+    if (!speakable || !speechSurfaceIsAccessible(root.current)) return;
+    startSpeech(ownerId, speakable, browser ? "browser" : engine, preferences, () => root.current);
+    if (!previewPreferences && !browser && preferences.engine === "kokoro" && engine === "browser") setRepairNotice(true);
+    if (!previewPreferences && workspace && engine === "browser" && preferences.localVoiceSuggestion === "unseen") {
+      void claimSpeechSuggestion().then(result => {
+        if(result.show&&speechSnapshot().ownerId===ownerId&&root.current?.isConnected)setSuggestion(true);
+      }).catch(() => {});
+    }
+  };
+  const toggle = () => {
+    if (status === "speaking" || status === "loading") pauseSpeech();
+    else if (status === "paused") void resumeSpeech();
+    else start();
+  };
+  const running = status === "loading" || status === "speaking" || status === "paused";
+  const label = unavailable ?? (status === "paused" ? "Resume read aloud" : running ? "Pause read aloud" : "Read message aloud");
+  return <Box ref={root} component="span" sx={speechControlGroupSx}>
+    <Tooltip title={label}><span><IconButton size="small" aria-label={label} aria-pressed={running} disabled={Boolean(unavailable) || !speakable} color={running ? "primary" : error ? "error" : "inherit"} onClick={event => { event.stopPropagation(); toggle(); }}>
+      {status === "paused" ? <PlayArrowIcon fontSize="inherit" /> : running ? <PauseIcon fontSize="inherit" /> : <VolumeUpIcon fontSize="inherit" />}
+    </IconButton></span></Tooltip>
+    {running && <Tooltip title="Stop read aloud"><IconButton size="small" aria-label="Stop read aloud" onClick={event => { event.stopPropagation(); stopSpeech(ownerId); }}><StopIcon fontSize="inherit" /></IconButton></Tooltip>}
+    <Box component="span" aria-live="polite" role={error ? "alert" : "status"} sx={visuallyHiddenSpeechStatusSx}>{error ?? (status === "speaking" ? "Reading message aloud" : status === "loading" ? "Preparing local speech" : status === "paused" ? "Read aloud paused" : status === "stopped" ? "Read aloud stopped" : "")}</Box>
+    {error && <Box component="span">
+      {state.engine === "kokoro" && <Button size="small" disabled={Boolean(speechSynthesisUnavailableReason())} onClick={() => start(true)}>Use browser voice</Button>}
+      <Button size="small" onClick={() => start()}>Try again</Button>
+      <Button size="small" onClick={() => openVoiceSettings()}>Open voice settings</Button>
+    </Box>}
+    <Snackbar open={suggestion} autoHideDuration={10000} onClose={() => setSuggestion(false)} message="Want a more natural local voice?" action={<>
+      <Button color="inherit" onClick={() => {
+        setSuggestion(false);
+        void writeWorkspacePreferences(queryClient, { speech: { ...preferences, localVoiceSuggestion: "accepted" } }).catch(() => {});
+        openVoiceSettings(true);
+      }}>Set up local voices</Button><Button color="inherit" onClick={() => setSuggestion(false)}>Not now</Button>
+    </>} />
+    <Snackbar open={repairNotice} onClose={() => setRepairNotice(false)} autoHideDuration={10000}><Alert severity="info" action={<Button onClick={() => openVoiceSettings(true)}>Voice settings</Button>}>Using browser speech. Local voices are not ready.</Alert></Snackbar>
+  </Box>;
 }

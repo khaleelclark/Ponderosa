@@ -1,20 +1,72 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type Database from "better-sqlite3";
 import { eq } from "drizzle-orm";
 import type { AgentDeletionPreviewDto, AgentDto } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { AgentDeletionConflictError } from "./store-agent-management.js";
+import { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone-ownership.js";
 import { fsyncDirectory, readJson, writeJson } from "./store-filesystem.js";
 import type { AgentDeletionReceipt, AgentJson, AgentManagementAuthorization } from "./store-types.js";
 import {
   agentConversationMemberships,
+  agentDeletionPending,
   agentDeletionReceipts,
   agentDeletionTombstones,
   agents,
 } from "./schema.js";
-import { agentDir, agentsDir, projectsDir } from "./paths.js";
+import { agentDir, agentsDir } from "./paths.js";
+
+const AGENT_DELETION_IDENTITY_FILE = ".ponderosa-agent-deletion.json";
+
+interface AgentDeletionIdentity {
+  version: 1;
+  kind: "agent-deletion";
+  projectId: string;
+  conversationId: string | null;
+  agentId: string;
+  tombstoneName: string;
+  ownershipToken: string;
+}
+
+interface AgentDeletionDirectoryRow {
+  agentId: string;
+  projectId: string;
+  conversationId: string | null;
+  tombstoneName: string;
+  ownershipToken: string;
+  createdAt: string;
+}
+
+function validateAgentDeletionName(row: AgentDeletionDirectoryRow): void {
+  if (row.tombstoneName.includes("/") || row.tombstoneName.includes("\\") ||
+      !row.tombstoneName.startsWith(`.${row.agentId}.deleting-`) || !row.ownershipToken) {
+    throw new Error("invalid Agent deletion recovery journal");
+  }
+}
+
+function agentDeletionIdentity(row: AgentDeletionDirectoryRow): AgentDeletionIdentity {
+  return {
+    version: 1,
+    kind: "agent-deletion",
+    projectId: row.projectId,
+    conversationId: row.conversationId,
+    agentId: row.agentId,
+    tombstoneName: row.tombstoneName,
+    ownershipToken: row.ownershipToken,
+  };
+}
+
+function validateAgentDeletionDirectory(path: string, row: AgentDeletionDirectoryRow): void {
+  validateAgentDeletionName(row);
+  validateDeletionTombstone(
+    path,
+    AGENT_DELETION_IDENTITY_FILE,
+    agentDeletionIdentity(row),
+    "Agent deletion tombstone",
+  );
+}
 
 export class AgentDeletionAuthority {
   constructor(
@@ -26,6 +78,7 @@ export class AgentDeletionAuthority {
     private readonly authorizeAgentManagementPlan: (
       authorization: AgentManagementAuthorization,
       targetAgentIds: readonly string[],
+      consumeApproval?: boolean,
     ) => void,
     private readonly refreshAllChatFeedProject: (projectId: string) => void,
     private readonly forgetAgentProjection: (agentId: string) => void,
@@ -89,6 +142,9 @@ export class AgentDeletionAuthority {
     const projectId = roots[0]!.projectId;
     if (roots.some((agent) => agent!.projectId !== projectId)) throw new Error("deletion roots must belong to one Project");
     const projectAgents = this.listAgents(projectId);
+    for (const root of roots) {
+      if (!projectAgents.some((agent) => agent.id === root!.id)) projectAgents.push(root!);
+    }
     const byId = new Map(projectAgents.map((agent) => [agent.id, agent]));
     const requestedSet = new Set(requested);
     const normalizedRoots = roots.filter((agent) => {
@@ -143,9 +199,66 @@ export class AgentDeletionAuthority {
     beforeProjectionDelete?: (agentId: string) => void,
     authorization?: AgentManagementAuthorization,
   ): AgentDeletionPreviewDto {
+    const initial = this.previewAgentDeletion(rootAgentIds);
+    if (initial.previewHash !== expectedPreviewHash) throw new AgentDeletionConflictError(initial);
+    if (authorization) {
+      // Preflight without consuming a one-shot approval. Consumption remains in
+      // the irreversible projection transaction below.
+      this.client.transaction(() => this.authorizeAgentManagementPlan(
+        authorization,
+        initial.affectedAgents.map((agent) => agent.id),
+        false,
+      ))();
+    }
+    const createdAt = new Date().toISOString();
+    const stagedDirectories = new Map<string, AgentDeletionDirectoryRow & {
+      canonical: string;
+      tombstone: string;
+      renamed: boolean;
+    }>();
+    for (const affected of initial.affectedAgents) {
+      const agent = this.getAgent(affected.id);
+      if (!agent || agent.projectId !== initial.projectId) throw new AgentDeletionConflictError(initial);
+      const tombstoneName = `.${agent.id}.deleting-${randomUUID()}`;
+      const row: AgentDeletionDirectoryRow = {
+        agentId: agent.id,
+        projectId: agent.projectId,
+        conversationId: agent.conversationId ?? null,
+        tombstoneName,
+        ownershipToken: randomUUID(),
+        createdAt,
+      };
+      const canonical = agentDir(this.dataDir, row.projectId, row.agentId);
+      writeJson(join(canonical, AGENT_DELETION_IDENTITY_FILE), agentDeletionIdentity(row));
+      stagedDirectories.set(row.agentId, {
+        ...row,
+        canonical,
+        tombstone: join(agentsDir(this.dataDir, row.projectId), row.tombstoneName),
+        renamed: false,
+      });
+    }
+    // This journal commits before the first rename. A process crash at any
+    // subsequent point therefore restores only exact marker/token matches.
+    this.client.transaction(() => {
+      for (const row of stagedDirectories.values()) {
+        this.db.insert(agentDeletionPending).values({
+          agentId: row.agentId,
+          projectId: row.projectId,
+          conversationId: row.conversationId,
+          tombstoneName: row.tombstoneName,
+          ownershipToken: row.ownershipToken,
+          createdAt: row.createdAt,
+        }).run();
+      }
+    })();
     let committedPreview: AgentDeletionPreviewDto | undefined;
-    const stagedDirectories = new Map<string, { canonical: string; tombstone: string; tombstoneName: string }>();
     try {
+      for (const row of stagedDirectories.values()) {
+        validateAgentDeletionDirectory(row.canonical, row);
+        renameSync(row.canonical, row.tombstone);
+        row.renamed = true;
+      }
+      fsyncDirectory(agentsDir(this.dataDir, initial.projectId));
       this.db.transaction((tx) => {
         const current = this.previewAgentDeletion(rootAgentIds);
         if (current.previewHash !== expectedPreviewHash) throw new AgentDeletionConflictError(current);
@@ -153,18 +266,6 @@ export class AgentDeletionAuthority {
           this.authorizeAgentManagementPlan(authorization, current.affectedAgents.map((agent) => agent.id));
         }
         committedPreview = current;
-        for (const agent of current.affectedAgents) {
-          const canonical = agentDir(this.dataDir, current.projectId, agent.id);
-          const tombstoneName = `.${agent.id}.deleting-${randomUUID()}`;
-          const tombstone = join(agentsDir(this.dataDir, current.projectId), tombstoneName);
-          renameSync(canonical, tombstone);
-          stagedDirectories.set(agent.id, { canonical, tombstone, tombstoneName });
-        }
-        // Make every rename durable before SQLite is allowed to commit. The
-        // journal rows below distinguish a committed deletion from a crash
-        // before commit and let startup either finish or restore it.
-        fsyncDirectory(agentsDir(this.dataDir, current.projectId));
-        const createdAt = new Date().toISOString();
         const receiptId = `agent-deletion-${current.previewHash}`;
         tx.insert(agentDeletionReceipts).values({
           id: receiptId,
@@ -177,12 +278,30 @@ export class AgentDeletionAuthority {
           createdAt,
           updatedAt: createdAt,
         }).run();
-        for (const [agentId, staged] of stagedDirectories) tx.insert(agentDeletionTombstones).values({
-          agentId,
-          projectId: current.projectId,
-          tombstoneName: staged.tombstoneName,
-          createdAt,
-        }).run();
+        for (const row of stagedDirectories.values()) {
+          const pending = this.client.prepare(`
+            SELECT project_id, conversation_id, tombstone_name, ownership_token, created_at
+            FROM agent_deletion_pending WHERE agent_id = ?
+          `).get(row.agentId) as {
+            project_id: string; conversation_id: string | null; tombstone_name: string;
+            ownership_token: string; created_at: string;
+          } | undefined;
+          if (!pending || pending.project_id !== row.projectId ||
+              pending.conversation_id !== row.conversationId ||
+              pending.tombstone_name !== row.tombstoneName ||
+              pending.ownership_token !== row.ownershipToken || pending.created_at !== row.createdAt) {
+            throw new Error("Agent deletion pending ownership changed before commit");
+          }
+          tx.insert(agentDeletionTombstones).values({
+            agentId: row.agentId,
+            projectId: row.projectId,
+            conversationId: row.conversationId,
+            tombstoneName: row.tombstoneName,
+            ownershipToken: row.ownershipToken,
+            createdAt: row.createdAt,
+          }).run();
+          tx.delete(agentDeletionPending).where(eq(agentDeletionPending.agentId, row.agentId)).run();
+        }
         // Coordination V3 shares this SQLite connection. Its nested
         // transactions become savepoints, so all scheduler outcomes and every
         // selected Agent authority fence commit or roll back as one unit.
@@ -204,12 +323,26 @@ export class AgentDeletionAuthority {
         }
       });
     } catch (error) {
-      for (const { canonical, tombstone } of [...stagedDirectories.values()].reverse()) {
-        if (existsSync(tombstone) && !existsSync(canonical)) renameSync(tombstone, canonical);
+      for (const row of [...stagedDirectories.values()].reverse()) {
+        if (!row.renamed) continue;
+        if (pathEntryExists(row.canonical)) {
+          throw new Error("Agent deletion rollback found an ambiguous canonical directory", { cause: error });
+        }
+        if (!pathEntryExists(row.tombstone)) {
+          throw new Error("Agent deletion rollback lost its owned tombstone", { cause: error });
+        }
+        validateAgentDeletionDirectory(row.tombstone, row);
+        renameSync(row.tombstone, row.canonical);
       }
       for (const directory of new Set([...stagedDirectories.values()].map(({ canonical }) => dirname(canonical)))) {
         if (existsSync(directory)) fsyncDirectory(directory);
       }
+      this.client.transaction(() => {
+        for (const row of stagedDirectories.values()) {
+          validateAgentDeletionDirectory(row.canonical, row);
+          this.db.delete(agentDeletionPending).where(eq(agentDeletionPending.agentId, row.agentId)).run();
+        }
+      })();
       throw error;
     }
     // The irreversible SQLite commit already succeeded. Storage cleanup is an
@@ -224,44 +357,71 @@ export class AgentDeletionAuthority {
     return committedPreview!;
   }
 
-  finishAgentDeletionStorageCleanup(receipt: AgentDeletionReceipt): void {
-    if (receipt.storageCleanupCompleted) return;
+  finishAgentDeletionStorageCleanup(
+    receipt: AgentDeletionReceipt,
+    afterAuditRename?: (agentId: string) => void,
+  ): void {
+    const currentReceipt = this.getAgentDeletionReceiptByPreviewHash(receipt.previewHash);
+    if (!currentReceipt) throw new Error("Agent deletion receipt not found");
+    if (currentReceipt.storageCleanupCompleted) return;
     const touchedDirectories = new Set<string>();
-    for (const agentId of receipt.deletedAgentIds) {
+    for (const agentId of currentReceipt.deletedAgentIds) {
       const row = this.client.prepare(`
-        SELECT project_id, tombstone_name, created_at FROM agent_deletion_tombstones WHERE agent_id = ?
-      `).get(agentId) as { project_id: string; tombstone_name: string; created_at: string } | undefined;
-      if (row) {
-        const directory = agentsDir(this.dataDir, row.project_id);
-        const tombstone = join(directory, row.tombstone_name);
-        const canonical = agentDir(this.dataDir, row.project_id, agentId);
-        if (existsSync(tombstone)) {
-          // Upload staging and attachment capability state are live authority,
-          // not deletion-surviving execution audit.
-          rmSync(join(tombstone, "attachments"), { recursive: true, force: true });
-          const metadataPath = join(tombstone, "agent.json");
-          const metadata = readJson<AgentJson>(metadataPath);
-          writeJson(metadataPath, {
-            ...metadata,
-            conversationId: undefined,
-            archived: true,
-            deletedAt: row.created_at,
-            updatedAt: row.created_at,
-            managementPermissions: {
-              allowAutomaticDescendantDeletion: false,
-              allowAutomaticDescendantReorganization: false,
-            },
-          });
-          if (existsSync(canonical)) throw new Error("deleted Agent audit destination already exists");
-          renameSync(tombstone, canonical);
-        }
-        touchedDirectories.add(directory);
+        SELECT agent_id, project_id, conversation_id, tombstone_name, ownership_token, created_at
+        FROM agent_deletion_tombstones WHERE agent_id = ?
+      `).get(agentId) as {
+        agent_id: string; project_id: string; conversation_id: string | null;
+        tombstone_name: string; ownership_token: string | null; created_at: string;
+      } | undefined;
+      if (!row?.ownership_token) throw new Error("Agent deletion receipt lost its owned tombstone phase");
+      const owned: AgentDeletionDirectoryRow = {
+        agentId: row.agent_id,
+        projectId: row.project_id,
+        conversationId: row.conversation_id,
+        tombstoneName: row.tombstone_name,
+        ownershipToken: row.ownership_token,
+        createdAt: row.created_at,
+      };
+      const directory = agentsDir(this.dataDir, owned.projectId);
+      const tombstone = join(directory, owned.tombstoneName);
+      const canonical = agentDir(this.dataDir, owned.projectId, agentId);
+      const hasTombstone = pathEntryExists(tombstone);
+      const hasCanonical = pathEntryExists(canonical);
+      if (hasTombstone === hasCanonical) {
+        throw new Error(hasTombstone
+          ? "Agent deletion storage is ambiguous"
+          : "committed Agent deletion lost its audit directory");
       }
+      const auditDirectory = hasTombstone ? tombstone : canonical;
+      validateAgentDeletionDirectory(auditDirectory, owned);
+      // Upload staging and attachment capability state are live authority,
+      // not deletion-surviving execution audit.
+      rmSync(join(auditDirectory, "attachments"), { recursive: true, force: true });
+      const metadataPath = join(auditDirectory, "agent.json");
+      const metadata = readJson<AgentJson>(metadataPath);
+      writeJson(metadataPath, {
+        ...metadata,
+        conversationId: undefined,
+        archived: true,
+        deletedAt: owned.createdAt,
+        updatedAt: owned.createdAt,
+        managementPermissions: {
+          allowAutomaticDescendantDeletion: false,
+          allowAutomaticDescendantReorganization: false,
+        },
+      });
+      if (hasTombstone) {
+        validateAgentDeletionDirectory(tombstone, owned);
+        if (pathEntryExists(canonical)) throw new Error("deleted Agent audit destination already exists");
+        renameSync(tombstone, canonical);
+        afterAuditRename?.(agentId);
+      }
+      touchedDirectories.add(directory);
       this.forgetAgentProjection(agentId);
     }
     for (const directory of touchedDirectories) if (existsSync(directory)) fsyncDirectory(directory);
     this.db.transaction((tx) => {
-      for (const agentId of receipt.deletedAgentIds) {
+      for (const agentId of currentReceipt.deletedAgentIds) {
         tx.delete(agentDeletionTombstones).where(eq(agentDeletionTombstones.agentId, agentId)).run();
       }
       const now = new Date().toISOString();
@@ -269,8 +429,8 @@ export class AgentDeletionAuthority {
         storageCleanupCompleted: 1,
         lastError: null,
         updatedAt: now,
-        completedAt: receipt.serverCleanupCompleted ? now : null,
-      }).where(eq(agentDeletionReceipts.id, receipt.id)).run();
+        completedAt: currentReceipt.serverCleanupCompleted ? now : null,
+      }).where(eq(agentDeletionReceipts.id, currentReceipt.id)).run();
     });
   }
 
@@ -283,65 +443,43 @@ export class AgentDeletionAuthority {
   }
 
   recoverAgentDeletionDirectories(): void {
-    const committed = this.db.select().from(agentDeletionTombstones).all();
-    const committedNames = new Set(committed.map((row) => `${row.projectId}\0${row.tombstoneName}`));
     const touchedDirectories = new Set<string>();
-    for (const row of committed) {
-      if (row.tombstoneName.includes("/") || row.tombstoneName.includes("\\") ||
-          !row.tombstoneName.startsWith(`.${row.agentId}.deleting-`)) {
-        throw new Error("invalid Agent deletion recovery journal");
+    const pending = this.db.select().from(agentDeletionPending).all();
+    for (const row of pending) {
+      const owned: AgentDeletionDirectoryRow = { ...row };
+      validateAgentDeletionName(owned);
+      const directory = agentsDir(this.dataDir, owned.projectId);
+      const tombstone = join(directory, owned.tombstoneName);
+      const canonical = agentDir(this.dataDir, owned.projectId, owned.agentId);
+      const hasTombstone = pathEntryExists(tombstone);
+      const hasCanonical = pathEntryExists(canonical);
+      if (hasTombstone === hasCanonical) {
+        throw new Error(hasTombstone
+          ? "pending Agent deletion storage is ambiguous"
+          : "pending Agent deletion has no recoverable canonical storage");
       }
-      const directory = agentsDir(this.dataDir, row.projectId);
-      const tombstone = join(directory, row.tombstoneName);
-      const canonical = agentDir(this.dataDir, row.projectId, row.agentId);
-      const auditDirectory = existsSync(tombstone) ? tombstone : canonical;
-      if (!existsSync(auditDirectory)) throw new Error("committed Agent deletion lost its audit directory");
-      rmSync(join(auditDirectory, "attachments"), { recursive: true, force: true });
-      const metadataPath = join(auditDirectory, "agent.json");
-      const metadata = readJson<AgentJson>(metadataPath);
-      writeJson(metadataPath, {
-        ...metadata,
-        conversationId: undefined,
-        archived: true,
-        deletedAt: row.createdAt,
-        updatedAt: row.createdAt,
-        managementPermissions: {
-          allowAutomaticDescendantDeletion: false,
-          allowAutomaticDescendantReorganization: false,
-        },
-      });
-      if (auditDirectory === tombstone) {
-        if (existsSync(canonical)) throw new Error("deleted Agent audit destination already exists");
+      if (hasTombstone) {
+        validateAgentDeletionDirectory(tombstone, owned);
         renameSync(tombstone, canonical);
+        fsyncDirectory(directory);
+      } else {
+        // The journal may have committed immediately before the first rename.
+        validateAgentDeletionDirectory(canonical, owned);
       }
-      if (existsSync(directory)) touchedDirectories.add(directory);
+      touchedDirectories.add(directory);
     }
-    const root = projectsDir(this.dataDir);
-    if (existsSync(root)) for (const projectId of readdirSync(root)) {
-      const directory = agentsDir(this.dataDir, projectId);
-      if (!existsSync(directory)) continue;
-      for (const name of readdirSync(directory)) {
-        const separator = name.indexOf(".deleting-", 1);
-        if (!name.startsWith(".") || separator < 2 || committedNames.has(`${projectId}\0${name}`)) continue;
-        const agentId = name.slice(1, separator);
-        const tombstone = join(directory, name);
-        const canonical = agentDir(this.dataDir, projectId, agentId);
-        if (existsSync(canonical)) rmSync(tombstone, { recursive: true, force: true });
-        else renameSync(tombstone, canonical);
-        touchedDirectories.add(directory);
-      }
+    // Unknown deletion-shaped entries are deliberately not enumerated. A name
+    // without an exact durable journal and marker never grants mutation authority.
+    for (const row of pending) {
+      this.db.delete(agentDeletionPending).where(eq(agentDeletionPending.agentId, row.agentId)).run();
     }
     for (const directory of touchedDirectories) fsyncDirectory(directory);
-    this.db.transaction((tx) => {
-      tx.delete(agentDeletionTombstones).run();
-      const now = new Date().toISOString();
-      this.client.prepare(`
-        UPDATE agent_deletion_receipts
-        SET storage_cleanup_completed = 1, last_error = NULL, updated_at = ?,
-            completed_at = CASE WHEN server_cleanup_completed = 1 THEN ? ELSE completed_at END
-        WHERE storage_cleanup_completed = 0
-      `).run(now, now);
-    });
+    // Drive each committed receipt through the same exact-member validator as
+    // an ordinary retry. A missing per-Agent phase must fail closed rather than
+    // being hidden by a blanket "all receipts complete" update.
+    for (const receipt of this.listPendingAgentDeletionReceipts()) {
+      if (!receipt.storageCleanupCompleted) this.finishAgentDeletionStorageCleanup(receipt);
+    }
   }
 
 }
