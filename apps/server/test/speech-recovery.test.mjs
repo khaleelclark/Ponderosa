@@ -23,6 +23,7 @@ async function crash(root,after){
     const rename=fs.rename;
     fs.rename=async(...args)=>{if(${after})await rename(...args);process.kill(process.pid,'SIGKILL');await new Promise(()=>{});};
     await service.repair();await service.operation;
+    throw new Error("Crash boundary was not reached: "+JSON.stringify(service.status().kokoro));
   `;
   await new Promise((resolve,reject)=>{
     const child=spawn(process.execPath,["--input-type=module","-e",source],{stdio:["ignore","ignore","pipe"]});let stderr="";

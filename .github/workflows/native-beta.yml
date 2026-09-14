@@ -99,6 +99,15 @@ jobs:
         shell: bash
         run: pnpm build
 
+      - name: Install Linux voice test sandbox dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap nodejs
+          test -x /usr/bin/bwrap
+          test -x /usr/bin/node
+
       - name: Verify native voice storage recovery
         shell: bash
         run: node --test apps/server/test/speech-cleanup-race.test.mjs apps/server/test/speech-recovery.test.mjs
@@ -179,8 +188,19 @@ jobs:
             "$artifact.metadata.json" \
             --clobber
 
-      - name: Upload native build and qualification evidence
-        if: always()
+      - name: Retain tagged qualification evidence
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          report_archive="dist/qualification-${RUNNER_OS}-${RUNNER_ARCH}-${GITHUB_SHA}.tar.gz"
+          test -d dist/qualification
+          tar -czf "$report_archive" -C dist qualification
+          gh release upload "$GITHUB_REF_NAME" "$report_archive" --clobber
+
+      - name: Upload native evidence for manual runs
+        if: always() && github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: ponderosa-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
