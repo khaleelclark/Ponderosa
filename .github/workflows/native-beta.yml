@@ -179,8 +179,8 @@ jobs:
             "$artifact.metadata.json" \
             --clobber
 
-      - name: Upload native evidence for manual runs
-        if: always() && github.event_name == 'workflow_dispatch'
+      - name: Upload native build and qualification evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ponderosa-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
