@@ -23,10 +23,15 @@ const child = spawn(process.execPath, ['--test', '--test-concurrency=1', ...file
   env,
   stdio: 'inherit',
 });
-for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
+const forwarders = ['SIGINT', 'SIGTERM'].map(signal => {
+  const forward = () => child.kill(signal);
+  process.on(signal, forward);
+  return [signal, forward];
+});
 const [code, signal] = await new Promise((resolve, reject) => {
   child.once('error', reject);
   child.once('exit', (code, signal) => resolve([code, signal]));
 });
+for (const [name, forward] of forwarders) process.off(name, forward);
 if (signal) process.kill(process.pid, signal);
 else process.exitCode = code ?? 1;
