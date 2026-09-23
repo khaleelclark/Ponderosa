@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { createServer as createHttpServer } from 'node:http';
 import { startBrowserService, BrowserServiceClient } from '../dist/browser-service.js';
 import { BrowserDriverActionError } from '../dist/chrome-cdp-driver.js';
 import { BrowserSessionManager } from '../dist/browser-session-manager.js';
@@ -258,6 +259,64 @@ test('confirmed deployment drain does not repeat broker chooser cleanup during s
     const adopted = await replacement.driver(opened.id, () => {}, undefined, true);
     assert.equal((await adopted.pages()).activePageId, 'draft');
   } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('drained shutdown uses the status protocol supported by a previous-release broker', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-legacy-broker-'));
+  const socket = path.join(root, 'service.sock');
+  const id = randomUUID();
+  const operations = [];
+  const events = [];
+  let lease = '', retained = false, cancellations = 0;
+  const snapshot = { alive: true, manual: 'automation', viewport: { width: 1280, height: 720 } };
+  // This fixture implements the previous release's RPC surface. It rejects
+  // check_lease exactly as the persistent broker will during app-only rollout.
+  const broker = createHttpServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString());
+    operations.push(body.operation);
+    let result;
+    let error;
+    if (body.operation === 'claim') {
+      lease = randomUUID(); result = { lease, sessions: retained ? [id] : [] };
+    } else if (body.lease !== lease) error = 'Browser application lease expired.';
+    else if (body.operation === 'open' && body.id === id) {
+      retained = true; result = { snapshot };
+    } else if (body.operation === 'adopt' && retained && body.id === id) {
+      result = { snapshot, events: events.splice(0) };
+    } else if (body.operation === 'status' && retained && body.id === id) {
+      result = { snapshot, events: events.splice(0) };
+    } else if (body.operation === 'call' && retained && body.id === id && body.method === 'cancelPendingFileChooser') {
+      cancellations++; result = { value: undefined, snapshot, events: events.splice(0) };
+    } else if (body.operation === 'close' && retained && body.id === id) {
+      retained = false; result = {};
+    } else error = 'Unsupported browser operation.';
+    res.statusCode = error ? 409 : 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(error ? { error } : { result }));
+  });
+  await new Promise(resolve => broker.listen(socket, resolve));
+  try {
+    const client = new BrowserServiceClient(socket);
+    assert.deepEqual(await client.claim(), []);
+    const received = [];
+    const driver = await client.driver(id, event => received.push(event));
+    await driver.cancelPendingFileChooser('deployment_drain');
+    events.push({ type: 'page_open', pageId: 'draft', pages: { activePageId: 'draft', pages: [] } });
+    await driver.suspend(true);
+    assert.equal(cancellations, 1, 'shutdown must not repeat chooser cleanup');
+    assert.deepEqual(received, [{ type: 'page_open', pageId: 'draft', pages: { activePageId: 'draft', pages: [] } }]);
+    assert.ok(operations.includes('status'));
+    assert.ok(!operations.includes('check_lease'), 'the old broker must not receive the new operation');
+    const next = new BrowserServiceClient(socket);
+    assert.deepEqual(await next.claim(), [id]);
+    await (await next.driver(id, undefined, undefined, true)).close();
+  } finally {
+    broker.closeAllConnections();
+    await new Promise(resolve => broker.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('drained shutdown still rejects a stolen browser lease', async () => {
