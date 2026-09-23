@@ -80,21 +80,35 @@ export async function connectPlaywrightMechanics(connection: {
     const identities = new WeakMap<Page, string>();
     return {
       async page(targetId: string): Promise<Page> {
-        for (const context of browser!.contexts()) {
-          for (const page of context.pages()) {
-            if (page.isClosed()) continue;
-            let id = identities.get(page);
-            if (!id) {
-              const session = await context.newCDPSession(page);
-              const info = await session.send("Target.getTargetInfo");
-              id = info.targetInfo.targetId;
-              identities.set(page, id);
-              // Kept until browser teardown: detachment must not disturb the
-              // independent lifecycle observer's target accounting.
+        // The lifecycle observer can finish attaching a newly created target
+        // before Playwright publishes it in context.pages(). Give the second
+        // observer a bounded chance to catch up before treating the tab as lost.
+        const deadline = Date.now() + 5_000;
+        do {
+          for (const context of browser!.contexts()) {
+            for (const page of context.pages()) {
+              if (page.isClosed()) continue;
+              let id = identities.get(page);
+              if (!id) {
+                try {
+                  const session = await context.newCDPSession(page);
+                  const info = await session.send("Target.getTargetInfo");
+                  id = info.targetInfo.targetId;
+                  identities.set(page, id);
+                  // Kept until browser teardown: detachment must not disturb
+                  // the independent lifecycle observer's target accounting.
+                } catch {
+                  // A target may close while Playwright is discovering it.
+                  // Retry the live set until the bounded deadline.
+                  continue;
+                }
+              }
+              if (id === targetId) return page;
             }
-            if (id === targetId) return page;
           }
-        }
+          if (Date.now() >= deadline || !browser!.isConnected()) break;
+          await new Promise(resolve => setTimeout(resolve, 25));
+        } while (true);
         throw new Error("The selected browser tab is no longer available to Playwright");
       },
       close,
