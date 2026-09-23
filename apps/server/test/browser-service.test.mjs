@@ -13,14 +13,14 @@ import { createServer } from '../dist/app.js';
 test('supervised browser survives application shutdown with draft intact and stale application fenced', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'browser-service-'));
   const socket = path.join(root, 'service.sock');
-  let text = '', launched = 0, closed = 0;
+  let text = '', launched = 0, closed = 0, cancellations = 0;
   const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true, isNew: false, closable: false };
   const service = await startBrowserService(socket, root, async () => {
     launched++;
     return { isAlive: () => true, manualState: () => 'automation', controlRevision: () => 1,
       pages: async () => ({ activePageId: 'draft', pages: [page] }),
       pageInfo: async () => page, type: async value => { text += value; return page; },
-      inspect: async () => text, cancelPendingFileChooser: async () => {}, close: async () => { closed++; },
+      inspect: async () => text, cancelPendingFileChooser: async () => { cancellations++; }, close: async () => { closed++; },
     };
   });
   const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
@@ -33,6 +33,9 @@ test('supervised browser survives application shutdown with draft intact and sta
     assert.equal(first.authorityStatus(true).active, 0);
     // An abandoned deploy must leave the original browser usable.
     await first.operatorInput(scope, { kind: 'type', text: ' after aborted drain', expectedControlEpoch: first.get(scope.agentId).controlEpoch });
+    assert.equal(first.authorityStatus(true).active, 1, 'new browser work must revoke restart readiness');
+    await first.closeAll('server_shutdown');
+    assert.equal(cancellations, 2, 'shutdown must recheck chooser cleanup after post-drain browser work');
     await first.closeAll('server_shutdown');
     assert.equal(closed, 0);
     const nextClient = new BrowserServiceClient(socket);
@@ -225,17 +228,50 @@ test('missing retained browser is shown as failed without silently starting a re
   } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('confirmed deployment drain does not repeat broker chooser cleanup during shutdown', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-drained-shutdown-'));
+  const socket = path.join(root, 'service.sock');
+  const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true };
+  let cancellations = 0;
+  const service = await startBrowserService(socket, root, async () => ({
+    isAlive: () => true,
+    manualState: () => 'automation',
+    pages: async () => ({ activePageId: 'draft', pages: [page] }),
+    pageInfo: async () => page,
+    cancelPendingFileChooser: async () => {
+      cancellations++;
+      if (cancellations > 1) throw new Error('redundant broker cleanup would block shutdown');
+    },
+    close: async () => {},
+  }));
+  const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
+  try {
+    const firstClient = new BrowserServiceClient(socket);
+    await firstClient.claim();
+    const first = new BrowserSessionManager(root, (id, _console, _spawned, event, launch) => firstClient.driver(id, event, launch), () => {}, undefined, undefined, () => true, true);
+    const opened = await first.open(scope, undefined, 'operator', undefined, true);
+    await first.closeAll('deployment_drain');
+    assert.equal(first.authorityStatus(true).active, 0);
+    await first.closeAll('server_shutdown');
+    assert.equal(cancellations, 1);
+    const replacement = new BrowserServiceClient(socket);
+    assert.deepEqual(await replacement.claim(), [opened.id]);
+    const adopted = await replacement.driver(opened.id, () => {}, undefined, true);
+    assert.equal((await adopted.pages()).activePageId, 'draft');
+  } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('full server shutdown and startup reconnect the shared browser without inherited control', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'browser-server-restart-'));
   const dataDir = path.join(root, 'state');
   const socket = path.join(root, 'service.sock');
-  let launched = 0, closed = 0, text = '';
+  let launched = 0, closed = 0, cancellations = 0, text = '';
   const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true };
   const service = await startBrowserService(socket, dataDir, async () => {
     launched++;
     return { isAlive: () => true, manualState: () => 'automation', controlRevision: () => 1,
       pages: async () => ({ activePageId: 'draft', pages: [page] }), pageInfo: async () => page,
-      type: async value => { text += value; return page; }, cancelPendingFileChooser: async () => {}, close: async () => { closed++; } };
+      type: async value => { text += value; return page; }, cancelPendingFileChooser: async () => { cancellations++; }, close: async () => { closed++; } };
   });
   let app;
   try {
@@ -251,6 +287,7 @@ test('full server shutdown and startup reconnect the shared browser without inhe
     assert.equal(input.statusCode, 200, input.body);
     app.prepareForShutdown(); await app.close();
     assert.equal(closed, 0);
+    assert.equal(cancellations, 1, 'an unprepared shutdown must still cancel the broker chooser');
     app = createServer({ dataDir, browserServiceSocket: socket, engines: [], logger: false });
     await app.ready();
     const restored = (await app.inject(url)).json();

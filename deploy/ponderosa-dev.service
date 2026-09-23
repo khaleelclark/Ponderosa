@@ -26,7 +26,9 @@ ExecStart=%h/ponderosa-dev/current/dist/node-runtime/linux-x64/node apps/server/
 Restart=on-failure
 RestartSec=3
 KillMode=mixed
-TimeoutStopSec=90
+# Leave room for the broker RPC's 130-second failure bound on an unprepared stop.
+# Normal deployments drain first and detach without repeating chooser cleanup.
+TimeoutStopSec=180
 
 [Install]
 WantedBy=default.target

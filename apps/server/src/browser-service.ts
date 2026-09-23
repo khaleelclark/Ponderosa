@@ -285,7 +285,11 @@ export class BrowserServiceClient {
       viewport: () => state.viewport,
       activity: () => state.activity,
       close: async () => { await this.rpc({ operation: "close", id }); suspended = true; clearInterval(refresh); },
-      suspend: async () => { await call("cancelPendingFileChooser", ["application_disconnect"]); suspended = true; clearInterval(refresh); },
+      suspend: async (chooserAlreadyCancelled = false) => {
+        if (!chooserAlreadyCancelled) await call("cancelPendingFileChooser", ["application_disconnect"]);
+        suspended = true;
+        clearInterval(refresh);
+      },
     };
     return new Proxy(own as unknown as BrowserDriver, { get(target, key) {
       if (key in target) return Reflect.get(target, key);

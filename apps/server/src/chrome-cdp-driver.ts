@@ -118,7 +118,7 @@ export interface BrowserTerminationHandle {
 
 export interface BrowserDriver extends BrowserTerminationHandle {
   /** Release app access while a separately supervised service retains Chrome. */
-  suspend?(): Promise<void>;
+  suspend?(chooserAlreadyCancelled?: boolean): Promise<void>;
   openLink?(url: string): Promise<void>;
   manualState?(): "manual" | "connecting" | "automation";
   manualSocket?(readOnly?: boolean): string;
