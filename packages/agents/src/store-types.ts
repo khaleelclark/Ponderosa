@@ -57,6 +57,8 @@ export interface ArtifactProjectionReadRow {
 
 export interface ProjectJson {
   id: string;
+  /** Single Chat owning a new-format storage namespace; not a parent Project. */
+  ownerConversationId?: string;
   label: string;
   hostPath: string;
   createdAt: string;
@@ -79,6 +81,7 @@ export interface ManagedArtifactAccess {
 }
 
 export type ManagedArtifactEvent =
+  | { type: "legacy_custody"; artifactId: string; originAgentId: string; sha256: string; custodianAgentId: string; at: string }
   | { type: "created"; artifact: ArtifactDto & { projectId: string; originAgentId: string }; access?: ManagedArtifactAccess }
   | { type: "visibility"; artifactId: string; visibility: "project" | "published"; pinned: boolean; at: string }
   | { type: "deleted"; artifactId: string; at: string; reason: string };
@@ -93,6 +96,7 @@ export interface AgentJson {
   activeEngine: string;
   model?: string;
   effort?: string;
+  speed?: string;
   createdAt: string;
   updatedAt: string;
   archived: boolean;
@@ -126,9 +130,13 @@ export interface ConversationJson {
   id: string;
   projectId: string;
   title: string;
+  workingDirectory?: string;
+  instructions?: string;
+  chatOwnershipVersion?: 1;
   defaultEngine?: string;
   defaultModel?: string;
   defaultEffort?: string;
+  defaultSpeed?: string;
   createdAt: string;
   updatedAt: string;
   archived: boolean;

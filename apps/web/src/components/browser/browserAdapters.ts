@@ -3,6 +3,8 @@ import type {
   BrowserSessionDto,
   BrowserUploadReceiptDto,
   ProjectBrowserSessionDto,
+  BrowserFrameMetadata,
+  BrowserViewportSize,
 } from "@ponderosa/core";
 import { api } from "../../api";
 import { queryKeys } from "../../queryKeys";
@@ -17,6 +19,7 @@ export type UnfencedBrowserInput = BrowserOperatorInputRequest extends infer Inp
   : never;
 
 export interface BrowserControlTarget {
+  nextRun?: boolean;
   owner: "agent" | "operator";
   agentId?: string;
 }
@@ -35,7 +38,9 @@ export interface BrowserEndpointAdapter<Session extends BrowserSession> {
   cancelFileChooser(expectedControlEpoch: number): Promise<Session>;
   setControl(target: BrowserControlTarget, expectedControlEpoch: number): Promise<Session>;
   sendInput(input: UnfencedBrowserInput, expectedControlEpoch: number): Promise<Session>;
-  getFrame(): Promise<{ blob: Blob; revision: number }>;
+  getFrame(pageId?: string): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }>;
+  newPage?(expectedControlEpoch: number): Promise<Session>;
+  resizeViewport?(pageId: string, size: BrowserViewportSize, expectedControlEpoch: number): Promise<unknown>;
 }
 
 export function projectBrowserAdapter(projectId: string): BrowserEndpointAdapter<ProjectBrowserSessionDto> {
@@ -50,7 +55,8 @@ export function projectBrowserAdapter(projectId: string): BrowserEndpointAdapter
     closePage: (pageId, expectedControlEpoch) => api.closeProjectBrowserPage(projectId, pageId, expectedControlEpoch),
     upload: (artifactId, selector, expectedControlEpoch) => api.uploadProjectBrowserArtifact(projectId, artifactId, selector, expectedControlEpoch),
     cancelFileChooser: (expectedControlEpoch) => api.cancelProjectBrowserFileChooser(projectId, expectedControlEpoch),
-    setControl: ({ owner, agentId }, expectedControlEpoch) => api.setProjectBrowserControl(projectId, {
+    setControl: ({ owner, agentId, nextRun }, expectedControlEpoch) => api.setProjectBrowserControl(projectId, {
+      nextRun,
       owner,
       expectedControlEpoch,
       ...(agentId ? { agentId } : {}),
@@ -59,7 +65,9 @@ export function projectBrowserAdapter(projectId: string): BrowserEndpointAdapter
       ...input,
       expectedControlEpoch,
     } as BrowserOperatorInputRequest),
-    getFrame: () => api.getProjectBrowserFrame(projectId),
+    getFrame: pageId => api.getProjectBrowserFrame(projectId, pageId),
+    newPage: epoch => api.newBrowserPage(projectId, epoch) as Promise<ProjectBrowserSessionDto>,
+    resizeViewport: (pageId, size, epoch) => api.resizeBrowserViewport(projectId, pageId, size, epoch),
   };
 }
 
@@ -72,6 +80,7 @@ export function agentBrowserAdapter(
     queryKey: queryKeys.agentBrowsers.session(projectId, agentId, runId),
     get: () => api.getBrowserSession(projectId, agentId, runId),
     open: () => api.openBrowserSession(projectId, agentId, runId),
+    navigate: url => api.navigateAgentBrowser(projectId, agentId, runId, url),
     reconnect: () => api.reconnectBrowserSession(projectId, agentId, runId),
     close: () => api.closeBrowserSession(projectId, agentId, runId),
     activatePage: (pageId, expectedControlEpoch) => api.activateBrowserPage(projectId, agentId, runId, pageId, expectedControlEpoch),
@@ -90,6 +99,8 @@ export function agentBrowserAdapter(
       runId,
       { ...input, expectedControlEpoch } as BrowserOperatorInputRequest,
     ),
-    getFrame: () => api.getBrowserFrame(projectId, agentId, runId),
+    getFrame: pageId => api.getBrowserFrame(projectId, agentId, runId, pageId),
+    newPage: epoch => api.newBrowserPage(projectId, epoch, agentId, runId) as Promise<BrowserSessionDto>,
+    resizeViewport: (pageId, size, epoch) => api.resizeBrowserViewport(projectId, pageId, size, epoch, agentId, runId),
   };
 }

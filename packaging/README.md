@@ -76,7 +76,7 @@ The platform host must provide its packaging tool:
 - Linux AppImage: `appimagetool`
 - Ubuntu `.deb`: `dpkg-deb`
 
-Signing and notarization are optional release operations. Set
+Signing and notarization are optional for private-beta artifacts. Set
 `PONDEROSA_MACOS_SIGN_IDENTITY` and, for notarization, a preconfigured
 `PONDEROSA_MACOS_NOTARY_PROFILE`. Windows certificate-store signing uses
 `PONDEROSA_WINDOWS_CERT_SHA1` with optional `PONDEROSA_SIGNTOOL` and
@@ -84,22 +84,30 @@ Signing and notarization are optional release operations. Set
 their operating-system warning; credentials never belong in the repository,
 workflow arguments, logs, or build manifest.
 
+Production publication is currently limited to the Linux x64 private-beta
+target. The separate, manually approved workflow accepts only an annotated
+stable tag at the exact `origin/master` commit, runs full verification and
+installed-provider qualification on a dedicated Linux host, and creates
+GitHub/Sigstore provenance for the qualified `.deb`. Missing providers, target
+hosts, or approval fail closed; private-beta jobs cannot publish a production
+release. macOS and Windows recipes remain development artifacts and are not
+supported production targets.
+
 ## Qualification state
 
 The package architecture and assembly recipes cover all three operating
-systems, but qualification remains intentionally fail-closed:
+systems, but only Linux x64 is currently eligible for production:
 
 - Ubuntu/Linux: the self-contained bundle, launcher lifecycle, and `.deb`
   artifact are exercised on the Linux build host. AppImage production still
   requires a pinned `appimagetool` on the release host.
-- macOS: the DMG recipe must be built on Apple Silicon and pass Gatekeeper,
+- macOS (not production-supported): the DMG recipe must be built on Apple Silicon and pass Gatekeeper,
   browser-bootstrap, process-group, provider, and restart checks before
   distribution.
-- Windows: the native Job Object supervisor and retained-handle/reparse-safe
-  Project and managed-artifact authority are implemented, but the EXE must
-  still be built and exercised on Windows 11. Distribution remains blocked
-  until the filesystem authority and nested provider/helper trees pass
-  qualification on the exact artifact.
+- Windows (not production-supported): the data-store authority is not yet
+  handle-relative/reparse-safe. The EXE must not be distributed until that
+  native authority and the complete process trees pass Windows 11
+  qualification on the exact installed artifact.
 
 Do not weaken Doctor to turn an unqualified artifact green. Add the missing
 native filesystem evidence at the platform boundary, then qualify the exact

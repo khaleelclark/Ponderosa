@@ -117,6 +117,7 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
         workspace.createNotification({
           projectId: stored.event.projectId,
           ...(stored.event.conversationId ? { conversationId: stored.event.conversationId } : {}),
+          sourceAgentId: stored.event.sender.agentId,
           ...(stored.event.intent === "user_dm" && stored.event.sender.kind === "agent"
             ? { agentId: stored.event.sender.agentId }
             : {}),
@@ -139,12 +140,10 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
     const messages = store.getConversationMessages(conversationId, "main");
     const firstOperatorMessage = messages
       .find((message) => message.role === "user" && !message.authorAgentId);
-    const firstAgentMessage = messages.find((message) => message.role === "assistant" && Boolean(message.authorAgentId));
-    // A title is generated once the first exchange exists. This prevents a
-    // premature title from being replaced by later turns and leaves manual
-    // edits authoritative.
-    const title = firstOperatorMessage && firstAgentMessage
-      ? semanticConversationTitle(firstOperatorMessage.text, firstAgentMessage.text) ?? "Initial Conversation"
+    // The first operator message owns the automatic title. Manual edits remain
+    // authoritative because only the placeholder title is eligible.
+    const title = firstOperatorMessage
+      ? semanticConversationTitle(firstOperatorMessage.text) ?? "Initial Conversation"
       : undefined;
     if (!title) return { title: conversation.title, generated: false };
     const latest = store.getConversation(conversationId);

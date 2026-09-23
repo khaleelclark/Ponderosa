@@ -1,6 +1,7 @@
-import { promises as fs } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createBrotliCompress, createGzip } from "node:zlib";
 import type {
   DecisionDto,
   GlobalChatSearchResponseDto,
@@ -10,6 +11,7 @@ import {
   BrowserSessionError,
   type BrowserScope,
 } from "../browser-session-manager.js";
+import { BrowserProfileError } from "../browser-profile-authority.js";
 import {
   type ActiveRun,
   type AgentMessageCapability,
@@ -113,6 +115,7 @@ type ApplicationRoutesContext =
     authoritativeCommunicationDocument: Parameters<typeof registerCommunicationDocumentRoutes>[1];
     projectCommunicationToAgentAudit: Parameters<typeof registerCollaborationRoutes>[1]["projectCommunicationToAgentAudit"];
     ensureDecisionResponseActivation(decision: DecisionDto): string | undefined;
+    applyResolvedSavedBrowserApproval(decision: DecisionDto): boolean;
     vapid: {
       publicKey?: string;
       privateKey?: string;
@@ -256,6 +259,7 @@ export function registerApplicationRoutes(
     conversationDetail,
     withMessagePresentation,
     ensureDecisionResponseActivation,
+    applyResolvedSavedBrowserApproval,
     runtimeElicitations,
     publishCoordinationV3Changed,
     publishMessageDeliveryChanged,
@@ -298,6 +302,7 @@ export function registerApplicationRoutes(
     setMaxConcurrentRuns,
     drainDeploymentIdleAuthorities,
     workingCopies,
+    serverMetrics,
   } = context;
 
 app.addHook("preHandler", pendingAgentQuarantine(store));
@@ -656,6 +661,7 @@ const globalChatSearch = (query: {
 
 registerSearchRoutes(app, {
   ...serverContext,
+  store,
   globalChatSearch,
   workspace,
   coordinationV3,
@@ -760,6 +766,16 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
   if (deletingProjectIds.has(current.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
   if (current.status !== "pending") {
     if (current.status === "resolved") {
+      if (current.approvalScope?.kind === "saved_browser" && current.response?.optionId === "approve") {
+        try {
+          if (!applyResolvedSavedBrowserApproval(current)) {
+            return reply.code(409).send({ error: "This saved-browser approval is no longer valid. No access was granted." });
+          }
+        } catch (error) {
+          return reply.code(error instanceof BrowserProfileError ? error.statusCode : 503)
+            .send({ error: "Saved-browser approval is recorded, but access is not ready. Retry this Decision response." });
+        }
+      }
       ensureDecisionResponseActivation(current);
       notifyScheduler();
     }
@@ -804,8 +820,36 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
       return reply.code(409).send({ error: error instanceof Error ? error.message : "management approval could not be resolved" });
     }
   }
+  const savedBrowserRequest = current.approvalScope?.kind === "saved_browser" ? current.approvalScope : undefined;
+  if (savedBrowserRequest && optionId === "approve") {
+    const saved = browserProfiles.savedBrowser();
+    const agent = store.getAgent(savedBrowserRequest.agentId);
+    if (!saved || saved.profileId !== savedBrowserRequest.profileId ||
+        current.projectId !== savedBrowserRequest.projectId || current.agentId !== savedBrowserRequest.agentId ||
+        agent?.projectId !== savedBrowserRequest.projectId || deletingAgentIds.has(savedBrowserRequest.agentId)) {
+      return reply.code(409).send({ error: "This saved-browser request is no longer valid. No access was granted." });
+    }
+    try {
+      browserProfiles.prepareSavedBrowserApproval(
+        current.id, savedBrowserRequest.profileId, savedBrowserRequest.projectId, savedBrowserRequest.agentId,
+      );
+    } catch (error) {
+      return reply.code(error instanceof BrowserProfileError ? error.statusCode : 503)
+        .send({ error: error instanceof Error ? error.message : "Saved-browser approval could not be prepared." });
+    }
+  }
   const cursor = workspace.cursor();
   const decision = workspace.resolveDecision(current.id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}), respondedAt })!;
+  if (savedBrowserRequest && optionId === "approve") {
+    try {
+      if (!applyResolvedSavedBrowserApproval(decision)) {
+        return reply.code(409).send({ error: "This saved-browser approval was revoked or changed. No access was granted." });
+      }
+    } catch (error) {
+      return reply.code(error instanceof BrowserProfileError ? error.statusCode : 503)
+        .send({ error: "The Decision was recorded, but saved-browser access is not ready. Retry this Decision response." });
+    }
+  }
   publishWorkspaceSince(cursor);
   if (current.runtimeAction) {
     if (text) {
@@ -853,6 +897,7 @@ registerStreamRoutes(app, {
   agentSubscriberCount: (agentId) => subscribers.get(agentId)?.size ?? 0,
   subscribe,
   liveSseClosures,
+  serverMetrics,
 });
 
 registerBrowserRoutes(app, {
@@ -975,10 +1020,24 @@ if (opts.webDist) {
       if (!targetExists && !(await pathExists(file))) return reply.code(404).send();
       const [rootReal, fileReal] = await Promise.all([fs.realpath(root), fs.realpath(file)]);
       if (fileReal !== rootReal && !fileReal.startsWith(rootReal + path.sep)) return reply.code(404).send();
+      const contentType = contentTypeForStatic(file);
+      const accepts = String(request.headers["accept-encoding"] ?? "");
+      const compressible = /^(?:text\/|application\/(?:javascript|json|manifest\+json))/u.test(contentType);
+      const encoding = compressible && /(?:^|,)\s*br\s*(?:,|$)/iu.test(accepts)
+        ? "br"
+        : compressible && /(?:^|,)\s*gzip\s*(?:,|$)/iu.test(accepts)
+          ? "gzip"
+          : undefined;
+      const body = encoding === "br"
+        ? createReadStream(file).pipe(createBrotliCompress())
+        : encoding === "gzip"
+          ? createReadStream(file).pipe(createGzip())
+          : createReadStream(file);
+      if (encoding) reply.header("Content-Encoding", encoding).header("Vary", "Accept-Encoding");
       return reply
         .header("Cache-Control", cacheControlForStatic(file))
-        .type(contentTypeForStatic(file))
-        .send(await fs.readFile(file));
+        .type(contentType)
+        .send(body);
     } catch {
       return reply.code(404).send();
     }

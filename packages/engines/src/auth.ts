@@ -3,6 +3,7 @@
 // (invariant 1); it asks the CLI for its auth mode so the UI can show an auth
 // badge without Ponderosa reading token files (SPEC §8 /api/engines, §9).
 
+import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -18,18 +19,18 @@ import { runtimeEnvironment } from "./runtime-environment.js";
 type AuthCommandRunner = (
   bin: string,
   args: string[],
-  options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number },
+  options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number; cwd?: string },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 async function containedAuthCommand(
   bin: string,
   args: string[],
-  options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number },
+  options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number; cwd?: string },
 ): Promise<{ stdout: string; stderr: string }> {
   const spawned = spawnContainedCli({
     bin,
     args,
-    cwd: process.cwd(),
+    cwd: options.cwd ?? process.cwd(),
     env: options.env,
     stdin: "ignore",
   });
@@ -122,6 +123,71 @@ export async function codexAuthStatus(
   }
 }
 
+/** One bounded, read-only provider round trip from the installed Codex CLI.
+ * Login status is not reachability evidence, and this probe never starts a
+ * Ponderosa Run or grants the model tool or workspace authority. */
+export async function codexAvailabilityStatus(
+  env: NodeJS.ProcessEnv = process.env,
+  run: AuthCommandRunner = containedAuthCommand,
+  readAuth: () => Promise<EngineAuthStatus> = () => codexAuthStatus(env),
+): Promise<EngineAvailabilityStatus> {
+  const auth = await readAuth();
+  if (!auth.authenticated) {
+    return { available: false, failureCategory: "authentication", detail: auth.detail };
+  }
+  const bin = env.PONDEROSA_CODEX_BIN?.trim() || "codex";
+  const marker = "PONDEROSA_RUNTIME_READY";
+  const cwd = mkdtempSync(path.join(os.tmpdir(), "ponderosa-codex-probe-"));
+  try {
+    const { stdout } = await run(bin, [
+      "exec", "--json", "--ephemeral", "--sandbox", "read-only",
+      "--ignore-user-config", "--skip-git-repo-check",
+      `Reply exactly ${marker}. Do not use tools or inspect the environment.`,
+    ], {
+      env: runtimeEnvironment(env),
+      timeout: 60_000,
+      maxBuffer: 2 * 1024 * 1024,
+      cwd,
+    });
+    let completed = false;
+    let answer: string | undefined;
+    for (const line of stdout.split("\n")) {
+      if (!line.trim()) continue;
+      let event: unknown;
+      try { event = JSON.parse(line); }
+      catch { return { available: false, failureCategory: "unavailable", detail: "Codex returned invalid probe events" }; }
+      if (!event || typeof event !== "object" || Array.isArray(event)) {
+        return { available: false, failureCategory: "unavailable", detail: "Codex returned invalid probe events" };
+      }
+      const item = (event as { item?: { type?: unknown; text?: unknown } }).item;
+      // A successful qualification must be tool-free, even if a future CLI
+      // version adds tools to a nominally read-only invocation.
+      if (item && item.type !== "agent_message" && item.type !== "reasoning") {
+        return { available: false, failureCategory: "unavailable", detail: "Codex probe attempted a tool" };
+      }
+      if ((event as { type?: unknown }).type === "item.completed" &&
+          item?.type === "agent_message" && typeof item.text === "string") answer = item.text;
+      if ((event as { type?: unknown }).type === "turn.completed") completed = true;
+      if ((event as { type?: unknown }).type === "turn.failed") {
+        return { available: false, failureCategory: "unavailable", detail: "Codex did not complete the test request" };
+      }
+    }
+    return completed && answer?.trim() === marker
+      ? { available: true, detail: "Codex accepted a subscription-backed test request" }
+      : { available: false, failureCategory: "unavailable", detail: "Codex did not return the test marker" };
+  } catch (error) {
+    const failure = error as Error & { stderr?: string; stdout?: string };
+    const detail = failure.stderr?.trim() || failure.stdout?.trim() || failure.message || String(error);
+    return {
+      available: false,
+      failureCategory: classifyProviderFailure(detail),
+      detail: detail.slice(0, 1_000),
+    };
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}
+
 /**
  * Report whether Claude Code (`claude`) is logged in with a Claude Pro/Max
  * subscription (an OAuth account in `~/.claude.json`). We never read the token —
@@ -170,6 +236,7 @@ export async function claudeAvailabilityStatus(
     return { available: false, failureCategory: "authentication", detail: auth.detail };
   }
   const bin = env.PONDEROSA_CLAUDE_BIN?.trim() || "claude";
+  const marker = "PONDEROSA_RUNTIME_READY";
   try {
     const { stdout } = await run(bin, [
       "--print",
@@ -178,22 +245,35 @@ export async function claudeAvailabilityStatus(
       "--tools", "",
       "--safe-mode",
       "--no-session-persistence",
-      "Reply exactly PONDEROSA_RUNTIME_READY and do nothing else.",
+      `Reply exactly ${marker} and do nothing else.`,
     ], {
       env: runtimeEnvironment(env),
       timeout: 60_000,
       maxBuffer: 2 * 1024 * 1024,
     });
-    try {
-      const result = JSON.parse(stdout) as { is_error?: boolean; subtype?: string; error?: string };
-      if (result.is_error || result.subtype === "error") {
-        const detail = result.error ?? "Claude rejected the subscription-backed test request";
-        return { available: false, failureCategory: classifyProviderFailure(detail), detail };
-      }
-    } catch {
-      if (!stdout.trim()) {
-        return { available: false, failureCategory: "unavailable", detail: "Claude returned no entitlement-test result" };
-      }
+    let parsed: unknown;
+    try { parsed = JSON.parse(stdout); }
+    catch {
+      return { available: false, failureCategory: "unavailable", detail: "Claude returned an invalid entitlement-test result" };
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { available: false, failureCategory: "unavailable", detail: "Claude returned an invalid entitlement-test result" };
+    }
+    const result = parsed as {
+      type?: unknown; subtype?: unknown; is_error?: unknown;
+      result?: unknown; error?: unknown;
+    };
+    if (result.type !== "result" || result.subtype !== "success" || result.is_error !== false) {
+      const hint = typeof result.error === "string" ? result.error
+        : typeof result.result === "string" ? result.result : "";
+      return {
+        available: false,
+        failureCategory: classifyProviderFailure(hint),
+        detail: "Claude did not complete the subscription-backed test request",
+      };
+    }
+    if (typeof result.result !== "string" || result.result.trim() !== marker) {
+      return { available: false, failureCategory: "unavailable", detail: "Claude did not return the entitlement-test marker" };
     }
     return { available: true, detail: "Claude accepted a subscription-backed test request" };
   } catch (error) {

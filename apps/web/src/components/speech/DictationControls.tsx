@@ -2,7 +2,7 @@ import MicNoneIcon from "@mui/icons-material/MicNone";
 import PauseIcon from "@mui/icons-material/Pause";
 import StopIcon from "@mui/icons-material/Stop";
 import { Box, IconButton, Tooltip, Typography } from "@mui/material";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   speechControlGroupSx,
   speechStatusSx,
@@ -67,6 +67,13 @@ export function DictationControls({
               : dictation.status === "stopped"
                 ? "Dictation stopped"
                 : undefined;
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
+  useEffect(() => {
+    setNoticeDismissed(false);
+    if (!statusLabel || active || paused || dictation.error) return;
+    const timer = setTimeout(() => setNoticeDismissed(true), 3000);
+    return () => clearTimeout(timer);
+  }, [statusLabel, active, paused, dictation.error]);
 
   return (
     <Box ref={rootRef} sx={speechControlGroupSx}>
@@ -108,7 +115,7 @@ export function DictationControls({
           </span>
         </Tooltip>
       ) : null}
-      {statusLabel ? (
+      {statusLabel && !noticeDismissed ? (
         <Typography
           aria-live="polite"
           color={dictation.error ? "error" : "text.secondary"}

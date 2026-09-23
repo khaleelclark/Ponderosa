@@ -7,7 +7,6 @@ type RouteOfKind<Kind extends RouteKind> = Extract<Route, { kind: Kind }>;
 export type ProjectRoute = Extract<Route, { projectId: string }>;
 export type RouteSidebarSection =
   | "home"
-  | "projects"
   | "chats"
   | "agents"
   | "triggers"
@@ -60,7 +59,7 @@ type RouteRegistry = {
 
 const ROUTE_REGISTRY = {
   home: {
-    toPath: () => "/",
+    toPath: () => "/home",
     scope: "global",
     initialSidebarSection: "home",
   },
@@ -77,30 +76,23 @@ const ROUTE_REGISTRY = {
     scope: "global",
     initialSidebarSection: "home",
   },
-  projects: {
-    toPath: () => "/projects",
-    scope: "global",
-    initialSidebarSection: "projects",
-  },
   allChat: {
     toPath: () => "/messages",
     scope: "global",
     initialSidebarSection: "home",
   },
-  allChats: {
-    toPath: route =>
-      `/chats${route.filterProjectId ? `?project=${encodeURIComponent(route.filterProjectId)}` : ""}`,
+  manageChats: {
+    toPath: () => "/manage/chats",
     scope: "global",
     initialSidebarSection: "chats",
   },
-  allAgents: {
-    toPath: route =>
-      `/agents${route.filterProjectId ? `?project=${encodeURIComponent(route.filterProjectId)}` : ""}`,
+  manageAgents: {
+    toPath: () => "/manage/agents",
     scope: "global",
     initialSidebarSection: "agents",
   },
-  allTriggers: {
-    toPath: () => "/triggers",
+  manageAutomations: {
+    toPath: () => "/manage/automations",
     scope: "global",
     initialSidebarSection: "triggers",
   },
@@ -111,9 +103,10 @@ const ROUTE_REGISTRY = {
     synchronizedSidebarSection: "settings",
   },
   profile: {
-    toPath: () => "/profile",
+    toPath: () => "/settings/profile",
     scope: "global",
-    initialSidebarSection: "home",
+    initialSidebarSection: "settings",
+    synchronizedSidebarSection: "settings",
   },
   usage: {
     toPath: route =>
@@ -125,7 +118,7 @@ const ROUTE_REGISTRY = {
   project: {
     toPath: route => {
       const query = new URLSearchParams();
-      if (route.view && route.view !== "overview") query.set("view", route.view);
+      if (route.view) query.set("view", route.view);
       if (route.focusArtifactId) query.set("artifact", route.focusArtifactId);
       return `/projects/${encodeURIComponent(route.projectId)}${query.size ? `?${query.toString()}` : ""}`;
     },
@@ -182,12 +175,6 @@ const ROUTE_REGISTRY = {
     scope: "project",
     initialSidebarSection: "home",
   },
-  agents: {
-    toPath: route =>
-      `/projects/${encodeURIComponent(route.projectId)}/agents`,
-    scope: "project",
-    initialSidebarSection: "home",
-  },
   agent: {
     toPath: route => {
       const query = new URLSearchParams();
@@ -207,7 +194,7 @@ const ROUTE_REGISTRY = {
   },
   automation: {
     toPath: route =>
-      `/projects/${encodeURIComponent(route.projectId)}/automations${route.triggerId ? `/${encodeURIComponent(route.triggerId)}` : ""}`,
+      `/projects/${encodeURIComponent(route.projectId)}/automations/${encodeURIComponent(route.triggerId)}`,
     scope: "project",
     initialSidebarSection: "triggers",
   },
@@ -245,7 +232,7 @@ export function projectSidebarSectionForRoute(
   route: Route,
 ): ProjectSidebarSection | undefined {
   if (route.kind === "conversation") return "chats";
-  if (route.kind === "agents" || route.kind === "review") return "agents";
+  if (route.kind === "review") return "agents";
   if (route.kind === "automation") return "triggers";
   if (route.kind === "agent") {
     return route.view === "triggers" ? "triggers" : "agents";

@@ -5,11 +5,6 @@ import { AgentOrganizationDialog, AgentRenameDialog } from "./AgentDetail.parts"
 import { ConfirmDialog } from "./ConfirmationDialogs";
 
 interface AgentDetailDialogsProps {
-  elevatedCopy: {
-    open: boolean;
-    onCancel(): void;
-    onConfirm(): void;
-  };
   recheckEngine: {
     open: boolean;
     pending: boolean;
@@ -23,7 +18,6 @@ interface AgentDetailDialogsProps {
 }
 
 export function AgentDetailDialogs({
-  elevatedCopy,
   recheckEngine,
   deletion,
   rename,
@@ -31,18 +25,6 @@ export function AgentDetailDialogs({
 }: AgentDetailDialogsProps): JSX.Element {
   return (
     <>
-      <ConfirmDialog
-        open={elevatedCopy.open}
-        title="Copy Elevated Agent Permissions?"
-        confirmLabel="Copy Agent"
-        onCancel={elevatedCopy.onCancel}
-        onConfirm={elevatedCopy.onConfirm}
-      >
-        <Typography sx={{ pt: 1 }}>
-          This Agent can automatically delete or reorganize descendants. The
-          copied Agent will retain those elevated organization permissions.
-        </Typography>
-      </ConfirmDialog>
       <ConfirmDialog
         open={recheckEngine.open}
         title="Test Provider Access?"

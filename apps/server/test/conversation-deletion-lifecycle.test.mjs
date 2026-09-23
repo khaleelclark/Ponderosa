@@ -34,6 +34,18 @@ const noCleanup = {
   finishDraftSurfaceCleanup: () => {},
 };
 
+test("chat deletion removes only its folder membership and preserves unrelated groups",async t=>{
+  const {chat,project,store,workspace,drafts}=fixture(t);
+  const other=store.createConversation(project.id,{title:"Keep"});
+  const projectFolders=[{id:"p",name:"Projects",projectIds:[project.id],expanded:true}];
+  workspace.updatePreferences({projectFolders,chatFolders:[{id:"f",name:"Chats",conversationIds:[chat.id,other.id],expanded:true}]});
+  const authority=deletionAuthority({store,workspace,drafts});
+  const receipt=store.markConversationDeletionPending(chat.id);
+  assert.equal(await authority.processConversationDeletionCleanup(receipt),true);
+  assert.deepEqual(workspace.getPreferences().chatFolders[0].conversationIds,[other.id]);
+  assert.deepEqual(workspace.getPreferences().projectFolders,projectFolders);
+});
+
 function fixture(t) {
   const dataDir = mkdtempSync(join(tmpdir(), "ponderosa-chat-deletion-"));
   const store = new AgentStore(dataDir);
@@ -443,6 +455,57 @@ test("Chat DELETE reports committed cleanup pending and replays its receipt", as
   assert.equal(replay.json().cleanupPending, true);
   assert.equal(replay.json().replayed, true);
   assert.equal(replay.json().deletionReceiptId, first.json().deletionReceiptId);
+});
+
+test("Chat DELETE rejects a changed Agent list before starting destructive cleanup", async (t) => {
+  const { chat, drafts, project, store, workspace } = fixture(t);
+  const agent = store.createAgent(project.id, {
+    title: "Assigned Agent",
+    engine: "codex",
+    conversationId: chat.id,
+  });
+  const app = Fastify();
+  t.after(() => app.close());
+  const authority = deletionAuthority({
+    drafts,
+    store,
+    workspace,
+    commitAgentDeletion: async rootAgentIds => {
+      for (const id of rootAgentIds) store.deleteAgent(id);
+    },
+  });
+  registerConversationRoutes(app, {
+    store,
+    workspace,
+    engines: new Map(),
+    cachedModelOptions: () => [],
+    appendWorkspace: () => {},
+    generateConversationTitle: async () => ({ title: chat.title, generated: false }),
+    conversationDetail: () => undefined,
+    agentHealth: () => ({}),
+    teamDirectory: () => ({}),
+    hasActiveRun: () => false,
+    deletingConversationIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    conversationDeliveryLeases: new Map(),
+    reconcileConversationRuntimeCommunicationProjections: async () => 0,
+    refreshTriggers: async () => {},
+    processConversationDeletionCleanup: authority.processConversationDeletionCleanup,
+  });
+
+  const url = `/api/conversations/${chat.id}`;
+  const changed = await app.inject({ method: "DELETE", url, payload: { expectedAgentIds: [] } });
+  assert.equal(changed.statusCode, 409, changed.body);
+  assert.match(changed.json().error, /Assigned Agents changed/u);
+  assert.equal(store.getConversationDeletionReceipt(chat.id), undefined);
+  assert.ok(store.getAgent(agent.id));
+  assert.ok(store.getConversation(chat.id));
+
+  const confirmed = await app.inject({ method: "DELETE", url, payload: { expectedAgentIds: [agent.id] } });
+  assert.equal(confirmed.statusCode, 200, confirmed.body);
+  assert.equal(confirmed.json().deleted, true);
+  assert.equal(store.getAgent(agent.id), undefined);
+  assert.equal(store.getConversation(chat.id), undefined);
 });
 
 test("Chat deletion resumes after failure immediately after archive", async (t) => {

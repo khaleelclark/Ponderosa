@@ -51,6 +51,7 @@ export function AgentDeletionDialog({
       result.deletedAgentIds.forEach((agentId) => queryClient.removeQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) }));
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") }),
         queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
         queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll }),
       ]);
@@ -98,7 +99,7 @@ export function AgentDeletionDialog({
       {preview.isError ? <Alert severity="error">{String(preview.error)}</Alert> : null}
       {preview.data ? <>
         <Alert severity="error" sx={{ mb: 2 }}>
-          This permanently deletes {affected.length} server-verified Agent {affected.length === 1 ? "identity" : "identities"}, including runs, work logs, private attachments, and descendants. Active work is cancelled. Project artifacts and Project-chat history remain intact.
+          This permanently deletes {affected.length} server-verified Agent {affected.length === 1 ? "identity" : "identities"}, including runs, work logs, private attachments, and descendants. Active work is cancelled. Project artifacts, Project-chat history, and files saved in machine working folders remain intact.
         </Alert>
         <Typography variant="subtitle2" sx={{ mb: 0.5 }}>Agents that will be deleted</Typography>
         <Stack spacing={0.25} sx={{ mb: confirmationText ? 2 : 0 }}>

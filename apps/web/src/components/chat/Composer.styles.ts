@@ -1,17 +1,19 @@
 import type { SxProps, Theme } from "@mui/material";
 
+export const composerSurfaceWidth = {
+  xs: "calc(100% - 16px)",
+  sm: "calc(100% - 32px)",
+  md: "min(1180px, calc(100% - 48px))",
+  xl: "min(1240px, calc(100% - 64px))",
+} as const;
+
 export const composerSurfaceSx: SxProps<Theme> = {
   position: "relative",
   zIndex: 3,
   border: 1,
   borderColor: "divider",
   borderRadius: { xs: 2, sm: 2.25 },
-  width: {
-    xs: "calc(100% - 16px)",
-    sm: "calc(100% - 32px)",
-    md: "min(1180px, calc(100% - 48px))",
-    xl: "min(1240px, calc(100% - 64px))",
-  },
+  width: composerSurfaceWidth,
   mx: "auto",
   mb: { xs: 1, sm: 1.5 },
   minWidth: 0,

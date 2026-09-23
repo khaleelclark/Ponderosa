@@ -11,6 +11,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import {
+  DataDirectoryAuthority,
+  dataDirectoryAuthoritySupported,
+} from "@ponderosa/native-host";
 
 const DATA_DIRECTORY_LOCK_FILE = ".ponderosa-daemon.lock";
 const DATA_LAYOUT_MARKER_FILE = ".ponderosa-layout-version";
@@ -19,6 +23,8 @@ const DATA_DIRECTORY_LOCK_STAGE_PREFIX = `${DATA_DIRECTORY_LOCK_FILE}.`;
 interface DataDirectoryOwnership {
   path: string;
   token: string;
+  dataDir: string;
+  authority?: DataDirectoryAuthority;
 }
 
 function readOwnership(path: string): { pid: number; token: string } {
@@ -45,7 +51,7 @@ function fsyncDataDirectory(dataDir: string): void {
   finally { closeSync(descriptor); }
 }
 
-function acquireDataDirectoryOwnership(dataDir: string): DataDirectoryOwnership {
+function acquireLegacyDataDirectoryOwnership(dataDir: string): DataDirectoryOwnership {
   const path = join(dataDir, DATA_DIRECTORY_LOCK_FILE);
   const token = randomUUID();
   const stagingPath = join(dataDir, `${DATA_DIRECTORY_LOCK_STAGE_PREFIX}${token}.tmp`);
@@ -68,7 +74,7 @@ function acquireDataDirectoryOwnership(dataDir: string): DataDirectoryOwnership 
         // therefore never observe and steal an empty or partially written lock.
         linkSync(stagingPath, path);
         fsyncDataDirectory(dataDir);
-        return { path, token };
+        return { path, token, dataDir };
       } catch (error) {
         const code = error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
         if (code !== "EEXIST") throw error;
@@ -110,8 +116,43 @@ function acquireDataDirectoryOwnership(dataDir: string): DataDirectoryOwnership 
   }
 }
 
+function acquireDataDirectoryOwnership(dataDir: string): DataDirectoryOwnership {
+  if (!dataDirectoryAuthoritySupported()) {
+    return acquireLegacyDataDirectoryOwnership(dataDir);
+  }
+  const authority = new DataDirectoryAuthority(dataDir);
+  const rootedDataDir = authority.rootPath;
+  const path = join(rootedDataDir, DATA_DIRECTORY_LOCK_FILE);
+  const token = randomUUID();
+  try {
+    // This file is diagnostic only. O_EXCL ensures an attacker-controlled
+    // symlink is never followed; the kernel-held directory lease is the
+    // authoritative ownership record and remains valid if this entry changes.
+    try {
+      writeFileSync(path, JSON.stringify({
+        pid: process.pid,
+        token,
+        createdAt: new Date().toISOString(),
+      }), { encoding: "utf8", flag: "wx", mode: 0o600 });
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : undefined;
+      if (code !== "EEXIST") throw error;
+    }
+    return { path, token, dataDir: rootedDataDir, authority };
+  } catch (error) {
+    authority.close();
+    throw error;
+  }
+}
+
 function releaseDataDirectoryOwnership(ownership: DataDirectoryOwnership | undefined): void {
   if (!ownership) return;
+  if (ownership.authority) {
+    ownership.authority.close();
+    return;
+  }
   try {
     const current = readOwnership(ownership.path);
     if (current.token === ownership.token) {

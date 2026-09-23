@@ -1,19 +1,19 @@
-import { stopHandedOffSpeech, stopSpeech } from "./components/speech/speechCoordinator";
+import { stopSpeech } from "./components/speech/speechCoordinator";
 import {
   Box,
   useMediaQuery,
   useTheme,
 } from "@mui/material";
 import type { ConversationDto } from "@ponderosa/core";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { ApiRequestError } from "./api/types";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { WorkspaceConnectionNotice } from "./components/WorkspaceConnectionNotice";
+import { WorkspaceRefreshProvider } from "./components/WorkspaceRefreshContext";
 import { WorkspaceConnectionProvider } from "./components/WorkspaceConnectionContext";
-import { ProviderStatusFlow } from "./components/ProviderStatusFlow";
 import {
   GlobalChatSearch,
   isGlobalSearchShortcut,
@@ -58,6 +58,7 @@ import {
   ProjectBrowserContext,
   type ProjectBrowserRequest,
 } from "./components/ProjectBrowserContext";
+import { BrowserWorkspaceHost } from "./components/browser/BrowserWorkspaceHost";
 import { recheckProvider } from "./providerAuthRefresh";
 import { changedWorkspaceDirectoryKinds } from "./resourcePreferences";
 import {
@@ -86,9 +87,32 @@ import { PrimaryHeaderActionsProvider } from "./components/PrimaryHeaderActions"
 import { useMutationNotification } from "./components/MutationNotifications";
 import { WorkspacePreferencesWriter } from "./workspacePreferencesWriter";
 import { retainedDataFailure } from "./retainedData";
+import { useReloadBlocker } from "./reloadSafety";
 
 const PUSH_CLEANUP_RETRY_INITIAL_MS = 1_000;
 const PUSH_CLEANUP_RETRY_MAX_MS = 30_000;
+
+function routeDocumentTitle(route: Route, projectLabel?: string): string {
+  switch (route.kind) {
+    case "home": return "Home";
+    case "create": return route.resource === "chat" ? "New Chat" : route.resource === "agent" ? "New Agent" : route.resource === "trigger" ? "New Automation" : "New Project";
+    case "allChat": return "Messages Across Ponderosa";
+    case "manageChats": return "Manage Chats";
+    case "manageAgents": return "Manage Agents";
+    case "manageAutomations": return "Manage Automations";
+    case "settings": return "Settings";
+    case "profile": return "Operator Profile";
+    case "usage": return "Provider Activity";
+    case "project": return projectLabel ?? "Chat";
+    case "workspaceFile": return "File";
+    case "projectWork": return "Agent Work";
+    case "browser": return "Browser";
+    case "conversation": return "Chat";
+    case "agent": return "Agent";
+    case "automation": return "Automation";
+    case "review": return "Review";
+  }
+}
 
 export default function App({
   colorMode,
@@ -98,6 +122,8 @@ export default function App({
   onToggleColorMode(): void;
 }): JSX.Element {
   useAppViewport();
+  const activeMutations = useIsMutating();
+  useReloadBlocker("canonical-mutation", activeMutations > 0);
   const queryClient = useQueryClient();
   const notify = useMutationNotification();
   const preferencesWriter = useRef<WorkspacePreferencesWriter>();
@@ -154,7 +180,7 @@ export default function App({
     reconcileDeletedProjectClientState(queryClient, projectId, at);
     if (routeProjectId(routeRef.current) === projectId) {
       setCreationRequest(current => current?.projectId === projectId ? undefined : current);
-      navigate({ kind: "projects" }, { replace: true });
+      navigate({ kind: "home" }, { replace: true });
     }
   };
   const workspaceConnection = useWorkspaceStream({
@@ -209,6 +235,26 @@ export default function App({
       ) || a.id.localeCompare(b.id)
     );
   });
+  const routedProjectLabel = projects.find(project => project.id === routedProjectId)?.label;
+  useEffect(() => {
+    // Conversation and Agent views own their resolved entity titles. Skipping
+    // them here prevents a later Project-list refresh from restoring a generic
+    // "Chat" or "Agent" title over the resolved title.
+    if (route.kind === "conversation" || route.kind === "agent") return;
+    document.title = `${routeDocumentTitle(route, routedProjectLabel)} · Ponderosa`;
+  }, [route, routedProjectLabel]);
+  useEffect(() => {
+    // New Chat suppresses composer autofocus on narrow/coarse devices to avoid
+    // opening the software keyboard. Give that route a real focus destination.
+    // Desktop creation views continue to focus their editable field themselves.
+    if (route.kind === "create" &&
+        (route.resource !== "chat" ||
+          !window.matchMedia("(pointer: coarse), (max-width: 899.95px)").matches)) return;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById("main-content")?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [route]);
   const presentedNotifications = useMemo(
     () => projectsQuery.isSuccess
       ? notificationsForAvailableProjects(
@@ -232,7 +278,6 @@ export default function App({
   const [onboardingCompleteOpen, setOnboardingCompleteOpen] = useState(false);
   const onboardingPrompted = useRef(false);
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
-  const [engineStatusOpen, setEngineStatusOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const overlayReturnFocus = useRef<HTMLElement>();
@@ -241,6 +286,9 @@ export default function App({
   const [projectBrowserRequest, setProjectBrowserRequest] =
     useState<ProjectBrowserRequest>();
   const projectBrowserRequestId = useRef(0);
+  const [browserPanelProjectId, setBrowserPanelProjectId] = useState<string>();
+  const [browserDockWidth, setBrowserDockWidth] = useState(0);
+  const [browserPanelAgent, setBrowserPanelAgent] = useState<{ id: string; runId: string }>();
   const rememberOverlayTrigger = () => {
     overlayReturnFocus.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
@@ -258,7 +306,7 @@ export default function App({
       }
       const stableNavigationTarget = [
         ...document.querySelectorAll<HTMLElement>(
-          '[aria-label="Open workspace navigation"], nav[aria-label="Project navigation"] [aria-label="Home"]',
+          '[aria-label="Open workspace navigation"], nav[aria-label="Workspace sections"] [aria-label="Open All Chats"]',
         ),
       ].find(candidate => (
         candidate.getClientRects().length > 0 &&
@@ -289,24 +337,14 @@ export default function App({
     restoreOverlayTrigger();
   };
   const openEngineStatus = () => {
-    rememberOverlayTrigger();
-    setEngineStatusOpen(true);
-  };
-  const closeEngineStatus = () => {
-    setEngineStatusOpen(false);
-    restoreOverlayTrigger();
+    stopSpeech();
+    navigate({ kind: "settings", section: "activity" });
   };
   const setMobileNavigationOpen = (open: boolean) => {
     if (open) rememberOverlayTrigger();
     setMobileNavOpen(open);
     if (!open) restoreOverlayTrigger();
   };
-  const readinessQuery = useQuery({
-    queryKey: queryKeys.readiness.all,
-    queryFn: () => api.getReadiness(),
-    enabled: engineStatusOpen,
-    staleTime: 30_000,
-  });
   useEffect(() => {
     if (mobileWorkspace || !mobileNavOpen) return;
     const drawerTrigger = overlayReturnFocus.current;
@@ -495,8 +533,7 @@ export default function App({
       return;
     if (projects.length > 0 || preferences.onboardingCompletedAt) return;
     onboardingPrompted.current = true;
-    setOnboardingProjectCreation(true);
-    setProjectDialogOpen(true);
+    // A fresh workspace starts in the unsaved Chat composer, not Project setup.
   }, [
     engines,
     enginesQuery.isSuccess,
@@ -547,21 +584,14 @@ export default function App({
     }
   };
   const navigateWorkspace = (next: Route) => {
-    stopHandedOffSpeech();
+    stopSpeech();
     recordWorkspaceRouteUse(next);
     navigate(next);
   };
   useEffect(() => {
-    const openVoices = (event: Event) => {
-      if (!(event as CustomEvent<{ preservePlayback?: boolean }>).detail?.preservePlayback) stopSpeech();
-      navigate({ kind: "settings", section: "general" });
-      requestAnimationFrame(() => document.getElementById("local-voices")?.scrollIntoView({ block: "start" }));
-    };
     const hidden = () => { if (document.visibilityState !== "visible") stopSpeech(); };
-    window.addEventListener("ponderosa:voice-settings", openVoices);
     document.addEventListener("visibilitychange", hidden);
     return () => {
-      window.removeEventListener("ponderosa:voice-settings", openVoices);
       document.removeEventListener("visibilitychange", hidden);
     };
   }, [navigate]);
@@ -574,6 +604,10 @@ export default function App({
       agentId?: string;
     },
   ) => {
+    if (kind === "chat") {
+      navigate({ kind: "create", resource: "chat", surface: "workspace" });
+      return;
+    }
     setCreationRequest({
       resource: kind,
       ...(context?.projectId ? { projectId: context.projectId } : {}),
@@ -584,12 +618,13 @@ export default function App({
   };
   const openProjectBrowser = (url?: string) => {
     if (!selectedProjectId) return;
+    setBrowserPanelAgent(undefined);
     projectBrowserRequestId.current += 1;
     setProjectBrowserRequest({
       ...(url ? { url } : {}),
       requestId: projectBrowserRequestId.current,
     });
-    navigateWorkspace({ kind: "browser", projectId: selectedProjectId });
+    setBrowserPanelProjectId(selectedProjectId);
   };
   useEffect(() => {
     const openNotificationRoute = (event: MessageEvent) => {
@@ -618,9 +653,7 @@ export default function App({
       ? current.kind === "conversation" && current.projectId === removedRoute.projectId && current.conversationId === removedRoute.conversationId
       : current.kind === "agent" && current.projectId === removedRoute.projectId && current.agentId === removedRoute.agentId;
     if (!removedCurrent) return;
-    navigateWorkspace(removedRoute.kind === "conversation"
-      ? { kind: "project", projectId: removedRoute.projectId }
-      : { kind: "agents", projectId: removedRoute.projectId });
+    navigateWorkspace({ kind: "home" });
   };
   const handleProjectDeleted = (projectId: string) => {
     reconcileDeletedProject(projectId);
@@ -630,9 +663,26 @@ export default function App({
   };
   return (
     <ProjectBrowserContext.Provider
-      value={{ projectId: selectedProjectId, open: openProjectBrowser }}
+      value={{ projectId: selectedProjectId, open: openProjectBrowser, openAgent: (id, runId) => {
+        if (!selectedProjectId) return;
+        setProjectBrowserRequest(undefined);
+        setBrowserPanelAgent({ id, runId });
+        setBrowserPanelProjectId(selectedProjectId);
+      } }}
     >
-      <MobileNavigationProvider onOpen={() => setMobileNavigationOpen(true)}>
+      <MobileNavigationProvider
+        desktopVisible={!mobileWorkspace && sidebarPresentation.collapsed}
+        onOpen={() => {
+          if (mobileWorkspace) {
+            setMobileNavigationOpen(true);
+            return;
+          }
+          setSidebarPresentation(current => ({ ...current, collapsed: false }));
+          window.requestAnimationFrame(() => {
+            document.querySelector<HTMLElement>('[aria-label="Collapse workspace navigation"]')?.focus();
+          });
+        }}
+      >
         <MobileWorkspaceActionsProvider>
         <Box
         sx={{
@@ -685,6 +735,7 @@ export default function App({
               xs: "minmax(0, 1fr)",
               md: "auto minmax(0, 1fr)",
             },
+            mr: { xs: 0, md: `${browserDockWidth}px` },
           }}
         >
           <Box
@@ -714,7 +765,6 @@ export default function App({
               onProjectDeleted={handleProjectDeleted}
               onSearch={openGlobalSearch}
               onOpenNotifications={openNotifications}
-              onOpenEngineStatus={openEngineStatus}
               collapsed={sidebarPresentation.collapsed}
               width={sidebarPresentation.width}
               onCollapsedChange={collapsed =>
@@ -745,6 +795,7 @@ export default function App({
                 position: "relative",
               }}
             >
+              <WorkspaceRefreshProvider>
               <WorkspaceConnectionNotice connection={workspaceConnection} />
               <Box
                 sx={{
@@ -774,6 +825,7 @@ export default function App({
                     projects={projects}
                     projectsLoaded={projectsQuery.isSuccess}
                     engines={engines}
+                    enginesLoaded={enginesQuery.data !== undefined}
                     notifications={presentedNotifications}
                     notificationCounts={notificationsQuery.data}
                     preferences={preferences}
@@ -836,6 +888,7 @@ export default function App({
               </WorkspaceConnectionProvider>
               </ActiveNotificationViewProvider>
               </Box>
+              </WorkspaceRefreshProvider>
             </Box>
           </Box>
         </Box>
@@ -856,7 +909,6 @@ export default function App({
           onProjectDeleted={handleProjectDeleted}
           onSearch={openGlobalSearch}
           onOpenNotifications={openNotifications}
-          onOpenEngineStatus={openEngineStatus}
         />
 
         <SidebarConversationDialogs
@@ -878,7 +930,7 @@ export default function App({
           onClose={closeGlobalSearch}
           onSelect={selection => {
             saveLastProjectId(selection.projectId);
-            if (selection.chat.kind === "conversation") {
+            if ("chat" in selection && selection.chat.kind === "conversation") {
               void api.markProjectUsed(selection.projectId, selection.chat.id);
             }
             const destination = routeForGlobalSearchSelection(selection);
@@ -927,21 +979,16 @@ export default function App({
           onNavigate={navigateWorkspace}
           onOpenSettings={openSettings}
         />
-        <ProviderStatusFlow
-          open={engineStatusOpen}
-          engines={engines}
-          networkSecurity={readinessQuery.data?.networkSecurity}
-          networkSecurityLoading={readinessQuery.isLoading}
-          networkSecurityError={
-            readinessQuery.isError ? String(readinessQuery.error) : undefined
-          }
-          onOpenSettings={() => {
-            closeEngineStatus();
-            openSettings();
-          }}
-          onClose={closeEngineStatus}
-        />
         </Box>
+        {browserPanelProjectId ? <BrowserWorkspaceHost
+          projectId={browserPanelProjectId}
+          projects={projects}
+          agent={browserPanelAgent}
+          onDockWidth={setBrowserDockWidth}
+          request={projectBrowserRequest}
+          onRequestHandled={(requestId) => setProjectBrowserRequest(current => consumeProjectBrowserRequest(current, requestId))}
+          onClose={() => setBrowserPanelProjectId(undefined)}
+        /> : null}
         </MobileWorkspaceActionsProvider>
       </MobileNavigationProvider>
     </ProjectBrowserContext.Provider>

@@ -1,4 +1,4 @@
-import { Box, CircularProgress, LinearProgress, Stack, Typography } from "@mui/material";
+import { Box, CircularProgress, Stack, Typography } from "@mui/material";
 
 export function LoadingState({
   resource,
@@ -34,8 +34,8 @@ export function LoadingState({
         py: variant === "route" ? 6 : 2,
       }}
     >
-      <Stack spacing={1} sx={{ mx: "auto", maxWidth: variant === "route" ? 480 : undefined }}>
-        <LinearProgress sx={{ "@media (prefers-reduced-motion: reduce)": { "& .MuiLinearProgress-bar": { transition: "none", animation: "none" } } }} />
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mx: "auto", maxWidth: variant === "route" ? 480 : undefined }}>
+        <CircularProgress size={16} color="inherit" sx={{ color: "text.secondary", "@media (prefers-reduced-motion: reduce)": { animation: "none" } }} />
         <Typography variant="body2" color="text.secondary">
           {label}
         </Typography>

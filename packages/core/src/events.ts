@@ -3,6 +3,7 @@
 // projectors, and UI all render uniformly and never see runtime-specific shapes.
 
 import type { ProviderFailureCategory } from "./provider-failure-summary.js";
+import type { ToolFailureCategory } from "./tool-failure.js";
 
 /**
  * Status of an engine-reported work item inside an agent run.
@@ -85,7 +86,14 @@ export type AgentEvent =
   | { type: "text"; delta: string } // ordinary response delta → Work log
   | { type: "reasoning"; delta: string } // transient reasoning → Work log
   | { type: "tool_call"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; id: string; output: string; isError?: boolean }
+  | {
+      type: "tool_result";
+      id: string;
+      output: string;
+      isError?: boolean;
+      failureCategory?: ToolFailureCategory;
+      retryable?: boolean;
+    }
   | { type: "command"; command: string; cwd: string; callId?: string } // → Run activity / Artifact
   | { type: "file_change"; path: string; kind: FileChangeKind; diff?: string; callId?: string } // → Artifact
   | { type: "test_result"; passed: boolean; summary: string } // → Artifact

@@ -2,7 +2,7 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
-import { Alert, Button, ButtonBase, Dialog, DialogActions, DialogContent, DialogTitle, Stack, Tooltip, Typography } from "@mui/material";
+import { Alert, Box, Button, ButtonBase, Dialog, DialogActions, DialogContent, DialogTitle, Stack, Tooltip, Typography } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import type { MessageDeliveryReceiptDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
@@ -10,6 +10,20 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
+
+function runtimeLabel(receipt: MessageDeliveryReceiptDto): string | undefined {
+  const runtime = receipt.runtime;
+  if (!runtime) return undefined;
+  const effort = runtime.effort
+    ? `${runtime.effort === "xhigh" ? "Extra high" : runtime.effort[0]!.toLocaleUpperCase() + runtime.effort.slice(1)} reasoning`
+    : "Default reasoning";
+  const speed = runtime.speed === "priority"
+    ? "Fast"
+    : runtime.speed === "standard" || !runtime.speed
+      ? "Normal speed"
+      : runtime.speed;
+  return `${runtime.model ?? runtime.engine ?? "Default model"} · ${effort} · ${speed}`;
+}
 
 function deliveryLabel(
   receipt: MessageDeliveryReceiptDto,
@@ -74,6 +88,7 @@ export function MessageDeliveryStatus({
   receipts,
   recipientName,
   onOpenAgent,
+  compact = false,
   compactSuccess = false,
   compactSuccessTooltip = true,
 }: {
@@ -81,6 +96,7 @@ export function MessageDeliveryStatus({
   receipts?: MessageDeliveryReceiptDto[];
   recipientName(agentId: string): string;
   onOpenAgent?(agentId: string): void;
+  compact?: boolean;
   compactSuccess?: boolean;
   compactSuccessTooltip?: boolean;
 }): JSX.Element | null {
@@ -98,28 +114,63 @@ export function MessageDeliveryStatus({
     return () => window.clearInterval(timer);
   }, [hasCountdown]);
   if (!receipts?.length) return null;
-  if (
-    compactSuccess &&
-    receipts.every(receipt => severity(receipt) === "success")
-  ) {
-    const label = receipts
-      .map(receipt =>
-        deliveryLabel(receipt, recipientName(receipt.targetAgentId), now),
-      )
-      .join(" ");
-    const compactLabel = receipts
-      .map(receipt => compactDeliveryLabel(receipt))
-      .join(". ");
-    const statusIcon = (
-      <CheckCircleOutlineIcon
-        role="status"
-        aria-label={compactSuccessTooltip ? label : compactLabel}
-        sx={{ fontSize: 14, color: "success.main" }}
-      />
+  const allSuccessful = receipts.every(receipt => severity(receipt) === "success");
+  if (compact || (compactSuccess && allSuccessful)) {
+    const tones = receipts.map(receipt =>
+      receipt.state === "queued"
+        ? "warning"
+        : receipt.state === "cancelled"
+          ? "error"
+          : severity(receipt),
     );
-    return compactSuccessTooltip ? (
-      <Tooltip title={label}>{statusIcon}</Tooltip>
-    ) : statusIcon;
+    const tone = tones.includes("error")
+      ? "error"
+      : tones.includes("warning")
+        ? "warning"
+        : tones.includes("info")
+          ? "info"
+          : "success";
+    const StatusIcon = tone === "success"
+      ? CheckCircleOutlineIcon
+      : tone === "warning"
+        ? WarningAmberOutlinedIcon
+        : tone === "error"
+          ? ErrorOutlineIcon
+          : InfoOutlinedIcon;
+    const label = receipts
+      .map(receipt => {
+        const delivery = deliveryLabel(
+          receipt,
+          recipientName(receipt.targetAgentId),
+          now,
+        );
+        const runtime = receipt.state === "started" ? runtimeLabel(receipt) : undefined;
+        return runtime ? `${delivery} ${runtime}.` : delivery;
+      })
+      .join(" ");
+    const compactLabel = receipts.map(compactDeliveryLabel).join(". ");
+    const indicator = (
+      <Box
+        component="span"
+        role="status"
+        aria-label={compact || compactSuccessTooltip ? label : compactLabel}
+        tabIndex={compact ? 0 : undefined}
+        onClick={compact ? event => event.stopPropagation() : undefined}
+        sx={compact ? {
+          width: 28,
+          height: 28,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          borderRadius: "50%",
+        } : undefined}
+      >
+        <StatusIcon sx={{ fontSize: 14, color: `${tone}.main` }} />
+      </Box>
+    );
+    return compact || compactSuccessTooltip
+      ? <Tooltip title={label}>{indicator}</Tooltip>
+      : indicator;
   }
   const letRunFinish = async (receipt: MessageDeliveryReceiptDto) => {
     if (!receipt.injectionId) return;
@@ -186,6 +237,9 @@ export function MessageDeliveryStatus({
     {receipts.map((receipt) => {
       const tone = severity(receipt);
       const name = recipientName(receipt.targetAgentId);
+      const label = deliveryLabel(receipt, name, now);
+      const runtime = receipt.state === "started" ? runtimeLabel(receipt) : undefined;
+      const detailedLabel = runtime ? `${label} ${runtime}.` : label;
       const StatusIcon = tone === "success"
         ? CheckCircleOutlineIcon
         : tone === "warning"
@@ -196,7 +250,8 @@ export function MessageDeliveryStatus({
       return <Stack key={receipt.activationId} direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ justifyContent: "flex-end", maxWidth: "100%" }}>
         <ButtonBase
           role="status"
-          aria-label={onOpenAgent ? `${deliveryLabel(receipt, name, now)} Open direct chat with ${name}.` : deliveryLabel(receipt, name, now)}
+          aria-label={onOpenAgent ? `${detailedLabel} Open direct chat with ${name}.` : detailedLabel}
+          title={runtime}
           disabled={!onOpenAgent}
           onClick={() => onOpenAgent?.(receipt.targetAgentId)}
           sx={{
@@ -210,11 +265,12 @@ export function MessageDeliveryStatus({
             cursor: onOpenAgent ? "pointer" : "default",
             "&.Mui-disabled": { color: `${tone}.main`, opacity: 1 },
             "&:hover": onOpenAgent ? { bgcolor: (theme) => alpha(theme.palette[tone].main, theme.palette.mode === "dark" ? 0.14 : 0.1) } : undefined,
+            "@media (pointer: coarse)": { minHeight: 44 },
           }}
         >
           <StatusIcon sx={{ mr: 0.5, fontSize: 16, flex: "0 0 auto" }} />
           <Typography variant="caption" component="span" sx={{ display: { xs: "none", sm: "inline" }, color: "text.secondary", fontWeight: 650, overflowWrap: "anywhere", textAlign: "right" }}>
-            {deliveryLabel(receipt, name, now)}
+            {label}
           </Typography>
           <Typography variant="caption" component="span" sx={{ display: { xs: "inline", sm: "none" }, color: "text.secondary", fontWeight: 650 }}>
             {compactDeliveryLabel(receipt)}

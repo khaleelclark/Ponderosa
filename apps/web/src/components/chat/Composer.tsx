@@ -1,6 +1,5 @@
 import {
   Box,
-  IconButton,
   Button,
   Dialog,
   DialogActions,
@@ -9,10 +8,7 @@ import {
   Paper,
   Stack,
   TextField,
-  useMediaQuery,
-  useTheme,
 } from "@mui/material";
-import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
   messageTagTokens,
@@ -21,6 +17,7 @@ import {
 import type {
   AgentMentionBindingDto,
   ArtifactDto,
+  ConversationDraftConflictDto,
   ConversationDraftDto,
   DraftPendingSubmissionDto,
   DraftAttachmentDto,
@@ -104,6 +101,7 @@ import {
   composerPreparedRetryAction,
   composerDurableRetryAction,
   composerRecipientGateSatisfied,
+  composerShouldSeedContinuationDestination,
   composerSubmissionText,
   cleanupReleasedDraftAttachmentIds,
   composerSubmissionMayClearDraft,
@@ -177,6 +175,30 @@ function unavailableDraftConflictAttachmentIds(error: unknown): string[] | undef
     : undefined;
 }
 
+function rejectedDraftConflict(
+  error: unknown,
+  current: ConversationDraftDto,
+): ConversationDraftConflictDto | undefined {
+  if (!(error instanceof ApiRequestError) || error.status !== 409 ||
+      !error.body || typeof error.body !== "object" || Array.isArray(error.body)) return undefined;
+  const body = error.body as { id?: unknown; displaced?: unknown };
+  if (typeof body.id !== "string" || !body.id ||
+      !body.displaced || typeof body.displaced !== "object" || Array.isArray(body.displaced)) return undefined;
+  const displaced = body.displaced as Record<string, unknown>;
+  if (typeof displaced.conversationId !== "string" ||
+      typeof displaced.text !== "string" ||
+      !Array.isArray(displaced.attachmentIds) ||
+      displaced.attachmentIds.some(id => typeof id !== "string") ||
+      typeof displaced.clientId !== "string" ||
+      typeof displaced.capturedAt !== "string" ||
+      (displaced.mentionBindings !== undefined && !Array.isArray(displaced.mentionBindings))) return undefined;
+  return {
+    id: body.id,
+    current,
+    displaced: displaced as ConversationDraftConflictDto["displaced"],
+  };
+}
+
 type FailedDraftContent = {
   id: string;
   name: string;
@@ -247,6 +269,8 @@ export function Composer({
   ambiguousMentionHandles,
   commands,
   capabilities,
+  menuActions,
+  capabilityButtonRef,
   onCapabilitiesOpen,
   attachmentsEnabled = true,
   attachmentsUnavailableReason,
@@ -361,13 +385,16 @@ export function Composer({
   const draftContentGeneration = useRef(0);
   const dictationSettlingRef = useRef(false);
   const [dictationSettling, setDictationSettling] = useState(false);
-  const mobile = useMediaQuery(useTheme().breakpoints.down("md"));
-  const [composerFocused, setComposerFocused] = useState(false);
-  const [dictationActive, setDictationActive] = useState(false);
   const composerRoot = useRef<HTMLDivElement>(null);
-  const blurFrame = useRef<number>();
-  useEffect(() => () => {
-    if (blurFrame.current !== undefined) cancelAnimationFrame(blurFrame.current);
+  const [narrowComposer, setNarrowComposer] = useState(() => typeof window !== "undefined" && window.innerWidth < 520);
+  useEffect(() => {
+    const root = composerRoot.current;
+    if (!root) return;
+    const observer = new ResizeObserver(entries => {
+      if (entries[0]) setNarrowComposer(entries[0].contentRect.width < 520);
+    });
+    observer.observe(root);
+    return () => observer.disconnect();
   }, []);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
@@ -986,7 +1013,7 @@ export function Composer({
         ? `#${unresolvedAuthoredTarget} does not identify one available Agent. Remove it or choose an Agent again.`
       : destinationMode === "target-required" && hasBroadcastDestination
       ? targetRequiredDestinations.length > 0
-        ? "Broadcast is only available in a Project Chat."
+        ? "Broadcast is only available in a Chat."
         : "#broadcast is not available in Messages Across Ponderosa. Choose an Agent."
       : destinationMode === "target-required" && unresolvedAmbiguousTarget
           ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
@@ -1553,13 +1580,24 @@ export function Composer({
       setActiveDefaultDestination(undefined);
       return;
     }
-    if (previous?.selectionKey === defaultDestination.selectionKey) return;
     const editor = inputRef.current;
     if (!editor || draftMutationLockedRef.current) return;
     // A continuation is a normal authored token, not an ephemeral overlay.
-    // Seed only an empty draft: refreshes/new replies must never retarget work.
+    // Seed only an empty draft with no retained destination: refreshes/new
+    // replies must never duplicate or retarget an already selected recipient.
     const currentText = editor.getCanonicalText();
-    if (textRef.current.trim() || currentText.trim()) return;
+    if (!composerShouldSeedContinuationDestination({
+      previousSelectionKey: previous?.selectionKey,
+      nextSelectionKey: defaultDestination.selectionKey,
+      retainedSelectionKey: activeDefaultDestination?.selectionKey,
+      localText: textRef.current,
+      editorText: currentText,
+    })) {
+      if (activeDefaultDestination) {
+        appliedDefaultDestination.current = defaultDestination;
+      }
+      return;
+    }
     appliedDefaultDestination.current = defaultDestination;
     const nextText = prependComposerDestination(currentText, defaultDestination.handle);
     if (defaultDestination.binding) {
@@ -1779,6 +1817,17 @@ export function Composer({
             .filter(candidate => candidate.displaced.clientId === clientId)
             .at(-1);
           if (!conflict) {
+            const rejected = rejectedDraftConflict(error, current);
+            if (rejected) {
+              writeChain.ownedRevision = current.revision;
+              setDraftConflict({
+                conflict: rejected,
+                snapshot,
+                resolutionUnavailable: true,
+              });
+              setSendError(undefined);
+              return;
+            }
             setSendError(
               "This draft changed elsewhere. Your text remains in the composer, but its recovery record could not be loaded.",
             );
@@ -2215,6 +2264,18 @@ export function Composer({
       mentionedAgentsById.set(binding.agentId, binding);
     }
     const mentionedAgents = [...mentionedAgentsById.values()];
+    const retainedAgentDestination =
+      destinationMode === "project-chat" &&
+      !safeNewAgentSelected &&
+      !hasBroadcastMention(safeRoutingText) &&
+      !findMentionedHandles(safeRoutingText, ["everyone"]).length &&
+      mentionedAgents.length === 1
+        ? {
+            handle: mentionedAgents[0]!.currentHandle,
+            binding: mentionedAgents[0]!,
+            selectionKey: `agent:${mentionedAgents[0]!.agentId}:${mentionedAgents[0]!.currentTitle}`,
+          }
+        : undefined;
     const exactSubmissionText = mentionedAgents.reduce(
       (current, binding) =>
         hasComposerDestination(current, binding.handle) ||
@@ -2435,8 +2496,10 @@ export function Composer({
           draftAttachmentsLocallyEdited.current = false;
           unrestoredDraftAttachmentIds.current = [];
           replaceText("");
-          setKnownMentionBindings([]);
-          setActiveDefaultDestination(undefined);
+          setKnownMentionBindings(retainedAgentDestination
+            ? [retainedAgentDestination.binding]
+            : []);
+          setActiveDefaultDestination(retainedAgentDestination);
           if (draftStorageKey) writeChatState(draftStorageKey, "");
           replacePastedText(undefined);
           clearDraftAttachments();
@@ -2574,33 +2637,15 @@ export function Composer({
         mentionedBusyHandles.length > 0,
       disabled,
     });
-  const compact = mobile && !composerFocused && !dictationActive &&
-    !dictationSettling && !capabilityMenuAnchor && !menuOpen &&
-    !pastedTextEditorOpen && !attachments.error && !sendError &&
-    !destinationError && !draftConflict && !failedDraftContents.length;
   return (
     <Paper
       ref={composerRoot}
       className="ponderosa-composer"
-      data-compact={compact ? "true" : "false"}
+      data-compact="false"
       elevation={0}
       sx={composerSurfaceSx}
-      onFocusCapture={event => {
-        if ((event.target as HTMLElement).closest('.composer-editor-input')) {
-          setComposerFocused(true);
-        }
-      }}
-      onBlurCapture={() => {
-        if (blurFrame.current !== undefined) cancelAnimationFrame(blurFrame.current);
-        blurFrame.current = requestAnimationFrame(() => {
-          const active = document.activeElement;
-          if (composerRoot.current?.contains(active) ||
-              active?.closest('[role="menu"], [role="dialog"], [role="listbox"]')) return;
-          setComposerFocused(false);
-        });
-      }}
     >
-      <Box sx={{ display: compact ? "none" : "contents" }}>
+      <Box sx={{ display: "contents" }}>
       <ComposerDestinationBar
         destinationError={destinationError}
         destinationMode={destinationMode}
@@ -3048,6 +3093,7 @@ export function Composer({
           if (draftMutationLockedRef.current || !draftConflict || restoringDraftConflict || !conversationDraftId) return;
           const conflictId = draftConflict.conflict.id;
           const scope = conversationDraftId;
+          const recoveryWriteChain = draftWriteChain.current;
           const generation = ++draftConflictGeneration.current;
           const scopeGeneration = draftGeneration.current;
           draftMutationLockedRef.current = true;
@@ -3055,10 +3101,31 @@ export function Composer({
           setRestoringDraftConflict(true);
           setSendError(undefined);
           void api.discardConversationDraftConflict(scope, draftOwnerId, conflictId)
-            .then(() => {
+            .then(async resolution => {
               if (generation !== draftConflictGeneration.current ||
                   scope !== activeDraftScopeRef.current ||
-                  scopeGeneration !== draftGeneration.current) return;
+                  scopeGeneration !== draftGeneration.current ||
+                  recoveryWriteChain !== draftWriteChain.current) return;
+              const current = resolution.currentDraft ??
+                await api.getConversationDraft(scope, draftOwnerId);
+              if (generation !== draftConflictGeneration.current ||
+                  scope !== activeDraftScopeRef.current ||
+                  scopeGeneration !== draftGeneration.current ||
+                  recoveryWriteChain !== draftWriteChain.current) return;
+              recoveryWriteChain.ownedRevision = current.revision;
+              draftRevision.current = current.revision;
+              draftLocallyEdited.current = true;
+              draftAttachmentsLocallyEdited.current = true;
+              writeDraftTextRecovery(draftStorageKey, {
+                text: textRef.current,
+                mentionBindings: knownMentionBindings,
+                expectedRevision: current.revision,
+                clientId: recoveryWriteChain.clientId,
+              });
+              queryClient.setQueryData(
+                queryKeys.conversationDraft.detail(scope, draftOwnerId),
+                current,
+              );
               setDraftConflict(undefined);
               setRestoringDraftConflict(false);
             })
@@ -3132,12 +3199,12 @@ export function Composer({
         direction="row"
         spacing={{ xs: 0.25, sm: 0.5 }}
         useFlexGap
-        sx={{ alignItems: "center", flexWrap: compact ? "nowrap" : "wrap" }}
+        sx={{ alignItems: "center", flexWrap: "wrap" }}
       >
         <Box data-composer-toolbar sx={{
-          display: compact ? "contents" : { xs: "flex", md: "contents" },
+          display: { xs: "flex", md: "contents" },
           alignItems: "center", gap: 0.25, flex: "1 1 0", minWidth: 0,
-          overflowX: { xs: "auto", md: "visible" },
+          overflowX: narrowComposer ? "visible" : { xs: "auto", md: "visible" },
           "& > *": { flexShrink: { xs: 0, md: undefined } },
         }}>
         <ComposerCapabilityPicker
@@ -3151,6 +3218,8 @@ export function Composer({
           fileCount={files.length}
           assetLimits={assetLimits}
           capabilities={capabilities}
+          menuActions={menuActions}
+          buttonRef={capabilityButtonRef}
           visibleCapabilities={visibleCapabilities}
           onFiles={addFiles}
           onOpen={anchor => {
@@ -3165,17 +3234,43 @@ export function Composer({
           onFilterChange={setCapabilityFilter}
           onApplyCapability={applyCapability}
         />
-        {enableVoiceDictation ? (
-          <Box sx={{ display: "contents", "& > *": { flexShrink: { xs: 0, md: undefined }, order: compact ? 2 : undefined } }}>
-          <DictationControls
+        {narrowComposer ? <Box sx={{ display: "contents", "& > *": { flexShrink: 0 } }}>
+        {destinationMode === "project-chat" ? (
+          <ComposerProjectDestinationAction
+            disabled={draftMutationLocked}
+            newAgentSelected={newAgentSelected}
+            toggleNewAgent={toggleNewAgentDestination}
+            replyDestination={!newAgentSelected && defaultDestination && mentionedHandles.some(
+              handle => handle.toLocaleLowerCase() === defaultDestination.handle.toLocaleLowerCase(),
+            )
+              ? defaultDestination.binding?.currentTitle ?? defaultDestination.handle
+              : undefined}
+          />
+        ) : null}
+        {leadingControls ? (
+          <Box sx={{ minWidth: 0, maxWidth: "100%" }}>
+            {leadingControls}
+          </Box>
+        ) : null}
+        <Box sx={{
+          display: "flex",
+          alignItems: "center",
+          flexShrink: 0,
+          gap: 0.25,
+          ml: "auto",
+        }}>
+          {controls ? (
+            <Box sx={{ minWidth: 44, maxWidth: "100%" }}>
+              {controls}
+            </Box>
+          ) : null}
+          {enableVoiceDictation ? <DictationControls
             disabled={disabled || composerLocked || sending}
             onFinalTranscript={insertDictatedText}
             onSettlingChange={handleDictationSettlingChange}
-            onActiveChange={setDictationActive}
-          />
-          </Box>
-        ) : null}
-        <Box sx={{ display: compact ? "none" : "contents", "& > *": { flexShrink: { xs: 0, md: undefined } } }}>
+          /> : null}
+        </Box>
+        </Box> : <Box sx={{ display: "contents", "& > *": { flexShrink: { xs: 0, md: undefined } } }}>
         {destinationMode === "project-chat" ? (
           <ComposerProjectDestinationAction
             disabled={draftMutationLocked}
@@ -3199,24 +3294,9 @@ export function Composer({
             {controls}
           </Box>
         ) : null}
+        </Box>}
         </Box>
-        </Box>
-        <Box ref={anchorRef} sx={{
-          order: compact ? 1 : -1,
-          flex: compact ? "1 1 0" : "1 0 100%", minWidth: 0,
-          ...(compact ? {
-            position: "relative", overflow: "hidden", height: 44,
-            "&& .composer-editor-input": { height: 44, maxHeight: 44, overflow: "hidden", opacity: 0 },
-            "& .composer-editor-input *": { pointerEvents: "none" },
-            "& .composer-editor-input + span": { visibility: "hidden" },
-          } : {}),
-        }}>
-          {compact ? <Box data-compact-preview aria-hidden sx={{
-            position: "absolute", inset: 0, display: "flex", alignItems: "center",
-            pointerEvents: "none", color: text.trim() ? "text.primary" : "text.secondary",
-          }}><Box component="span" sx={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", fontSize: 16 }}>
-            {text.replace(/\s+/g, " ").trim() || placeholder || "Write a message…"}
-          </Box></Box> : null}
+        <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
           <ComposerTextInput
             text={text}
             inputRef={inputRef}
@@ -3300,19 +3380,18 @@ export function Composer({
             }}
           />
         </Box>
-        {compact && (files.length > 0 || pastedText) ? (
-          <Button size="small" aria-label="View draft attachments" onClick={() => inputRef.current?.focus()} sx={{ order: 2, minWidth: 32, px: 0.5 }}>
-            +{files.length + (pastedText ? 1 : 0)}
-          </Button>
-        ) : null}
-        <Box data-composer-send-actions sx={{ display: { xs: "flex", md: "contents" }, order: compact ? 3 : undefined, alignItems: "center", gap: 0.25, flexShrink: 0 }}>
-        {compact && showQueue && !canCancel ? (
-          <IconButton aria-label="Choose send action" onClick={() => inputRef.current?.focus()}><ArrowUpwardIcon /></IconButton>
-        ) : <ComposerSendActions
-          allowSendWhileRunning={!compact && allowSendWhileRunning}
+        <Box data-composer-send-actions sx={{ display: { xs: "flex", md: "contents" }, alignItems: "center", gap: 0.25, flexShrink: 0 }}>
+        {!narrowComposer && enableVoiceDictation ? <DictationControls
+          disabled={disabled || composerLocked || sending}
+          onFinalTranscript={insertDictatedText}
+          onSettlingChange={handleDictationSettlingChange}
+        /> : null}
+        <ComposerSendActions
+          allowSendWhileRunning={allowSendWhileRunning}
           canCancel={canCancel}
           cancelPending={cancelPending}
           canSend={canSend}
+          compact={narrowComposer}
           destinationError={destinationError}
           destinationMode={destinationMode}
           mentionedBusyHandles={mentionedBusyHandles}
@@ -3325,10 +3404,10 @@ export function Composer({
               : sendUnavailableReason
           }
           send={send}
-          showQueue={!compact && showQueue}
+          showQueue={showQueue}
           steer={steer}
           targetRequiredRecipientTagged={targetRequiredRecipientTagged}
-        />}
+        />
         </Box>
       </Stack>
     </Paper>

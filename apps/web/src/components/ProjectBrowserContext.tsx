@@ -8,6 +8,7 @@ export interface ProjectBrowserRequest {
 export interface ProjectBrowserContextValue {
   projectId?: string;
   open(url?: string): void;
+  openAgent?(agentId: string, runId: string): void;
 }
 
 export function consumeProjectBrowserRequest(

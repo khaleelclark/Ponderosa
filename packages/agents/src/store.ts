@@ -95,6 +95,11 @@ import {
 import { AgentStoreSupport } from "./store-support.js";
 import { AgentEventSessionFacade } from "./store-event-session-facade.js";
 import {
+  consumeProjectionCheckpoint,
+  projectionSourceFingerprint,
+  writeProjectionCheckpoint,
+} from "./projection-checkpoint.js";
+import {
   releaseDataDirectoryOwnership,
   type DataDirectoryOwnership,
 } from "./store-data-directory.js";
@@ -187,7 +192,10 @@ export class AgentStore extends AgentEventSessionFacade {
   private readonly auditReadModel!: AgentAuditReadModel;
   private readonly support: AgentStoreSupport;
   private ownership?: DataDirectoryOwnership;
+  private dataDirectory = "";
   private closed = false;
+  private checkpointBaselineChanges?: number;
+  private checkpointBaselineFingerprint?: string;
   private compactionHistoryMaterialization = {
     indexedRows: 0,
     relationCandidateRows: 0,
@@ -207,8 +215,10 @@ export class AgentStore extends AgentEventSessionFacade {
   constructor(dataDir: string) {
     super();
     const startupStartedAt = performance.now();
-    this.support = new AgentStoreSupport(dataDir);
     const opened = openAgentStoreData(dataDir);
+    dataDir = opened.dataDir;
+    this.dataDirectory = dataDir;
+    this.support = new AgentStoreSupport(dataDir);
     const openedAt = performance.now();
     this.db = opened.db;
     this.client = opened.client;
@@ -270,7 +280,12 @@ export class AgentStore extends AgentEventSessionFacade {
       // Canonical files are written before their SQLite projections. Rebuild
       // transactionally on every startup so a crash or torn append cannot leave
       // a partially repaired projection visible to ordinary requests.
-      this.rebuildProjections();
+      let cleanProjectionCheckpoint = consumeProjectionCheckpoint(dataDir, this.client);
+      if (!cleanProjectionCheckpoint) this.rebuildProjections();
+      if (this.workspaceCatalog.migrateChatOwnership()) {
+        this.rebuildProjections();
+        cleanProjectionCheckpoint = false;
+      }
       for (const project of this.listProjects()) {
         this.ensureCommunicationProjectionLedger(project.id);
         reconcileCompactionHistoryIndex(
@@ -282,7 +297,7 @@ export class AgentStore extends AgentEventSessionFacade {
       }
       const completedAt = performance.now();
       this.startupProfileData = {
-        mode: "recovery",
+        mode: cleanProjectionCheckpoint ? "clean" : "recovery",
         openMs: Math.round((openedAt - startupStartedAt) * 10) / 10,
         componentsMs: Math.round((componentsCreatedAt - openedAt) * 10) / 10,
         recoveryMs: Math.round((completedAt - componentsCreatedAt) * 10) / 10,
@@ -290,6 +305,15 @@ export class AgentStore extends AgentEventSessionFacade {
         projectCount: this.listProjects().length,
         recoveryIssues: this.projectionRebuilder.listRecoveryIssues(),
       };
+      try {
+        this.checkpointBaselineChanges = (
+          this.client.prepare("SELECT total_changes() value").get() as { value: number }
+        ).value;
+        this.checkpointBaselineFingerprint = projectionSourceFingerprint(dataDir);
+      } catch {
+        this.checkpointBaselineChanges = undefined;
+        this.checkpointBaselineFingerprint = undefined;
+      }
     } catch (error) {
       releaseDataDirectoryOwnership(this.ownership);
       this.ownership = undefined;
@@ -297,7 +321,15 @@ export class AgentStore extends AgentEventSessionFacade {
     }
   }
 
-  startupProfile(): Readonly<typeof this.startupProfileData> {
+  startupProfile(): Readonly<{
+    mode: "clean" | "recovery";
+    openMs: number;
+    componentsMs: number;
+    recoveryMs: number;
+    totalMs: number;
+    projectCount: number;
+    recoveryIssues: ReadonlyArray<{ projectId: string; detail: string }>;
+  }> {
     return { ...this.startupProfileData };
   }
 
@@ -898,6 +930,7 @@ export class AgentStore extends AgentEventSessionFacade {
   createProject(
     input: Omit<CreateProjectRequest, "defaultEngine"> & {
       hostPath: string;
+      chatOwned?: boolean;
       defaultEngine?: CreateProjectRequest["defaultEngine"];
     },
     identity?: WorkspaceCreationIdentity,
@@ -1027,6 +1060,10 @@ export class AgentStore extends AgentEventSessionFacade {
 
   getConversation(id: string): ConversationDto | undefined {
     return this.workspaceCatalog.getConversation(id);
+  }
+
+  getChatContext(id: string): ProjectDto | undefined {
+    return this.workspaceCatalog.getChatContext(id);
   }
 
   getConversationDetail(id: string): ConversationDetailDto | undefined {
@@ -1641,8 +1678,8 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.artifactCatalog.agentCanReadProjectArtifact(projectId, artifactIdValue, agentId);
   }
 
-  getProjectContextArtifacts(projectId: string, limit = 100): ArtifactDto[] {
-    return this.artifactCatalog.getProjectContextArtifacts(projectId, limit);
+  getProjectContextArtifacts(projectId: string, limit = 100, conversationId?: string): ArtifactDto[] {
+    return this.artifactCatalog.getProjectContextArtifacts(projectId, limit, conversationId);
   }
 
   recordProjectArtifact(
@@ -1707,12 +1744,35 @@ export class AgentStore extends AgentEventSessionFacade {
     this.projectionRebuilder.rebuildProjections();
   }
 
-  close(): void {
+  close(options: { checkpointWrites?: boolean } = {}): void {
     if (this.closed) return;
     this.closed = true;
-    this.client.close();
-    releaseDataDirectoryOwnership(this.ownership);
-    this.ownership = undefined;
+    // A checkpoint is an optimization, never shutdown authority. Canonical
+    // files are committed before their projections. A write-active lifetime is
+    // replayed once during orderly shutdown before minting its checkpoint, so
+    // a failure between canonical and projection writes cannot be certified as
+    // clean. The following startup is fast; a crash still leaves no marker.
+    try {
+      const currentChanges = (
+        this.client.prepare("SELECT total_changes() value").get() as { value: number }
+      ).value;
+      const unchanged = this.checkpointBaselineChanges !== undefined &&
+        currentChanges === this.checkpointBaselineChanges &&
+        this.checkpointBaselineFingerprint !== undefined &&
+        projectionSourceFingerprint(this.dataDirectory) === this.checkpointBaselineFingerprint;
+      if (!unchanged && options.checkpointWrites) {
+        this.rebuildProjections();
+      }
+      if (unchanged || options.checkpointWrites) {
+        writeProjectionCheckpoint(this.dataDirectory, this.client);
+      }
+    }
+    catch { /* full projection recovery remains authoritative */ }
+    try { this.client.close(); }
+    finally {
+      releaseDataDirectoryOwnership(this.ownership);
+      this.ownership = undefined;
+    }
   }
 
   // ─── internals ─────────────────────────────────────────────────────────────

@@ -46,6 +46,7 @@ const schemaExtensions = [
   "0010_agent_creation_artifact_identities.sql",
   "0011_agent_management_plans.sql",
   "0012_conversation_deletion_receipts.sql",
+  "0013_runtime_speed_defaults.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";
@@ -53,6 +54,7 @@ const publicProviderRequestUpdatesMigration = "0009_public_provider_request_upda
 const providerActivationExecutionPayloadsMigration = "0010_provider_activation_execution_payloads.ts";
 const nestedProviderActivationExecutionPayloadsMigration = "0011_nested_provider_activation_execution_payloads.ts";
 const contextRolloverFailureProvenanceMigration = "0012_context_rollover_failure_provenance.ts";
+const contextRolloverCyclesMigration = "0020_context_rollover_cycles.ts";
 const workingCopyAuthorityMigration = "0013_working_copy_authority.ts";
 const projectDeletionOwnershipMigration = "0014_project_deletion_ownership.ts";
 const deletionRecoveryPhasesMigration = "0015_deletion_recovery_phases.ts";
@@ -918,6 +920,36 @@ function establishContextRolloverFailureProvenance(sqlite: Database.Database): v
   })();
 }
 
+/** A provider session may compact natively more than once. Preserve every
+ * historical row while assigning a stable ordinal to each durable attempt. */
+function establishContextRolloverCycles(sqlite: Database.Database): void {
+  if (sqlite.prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(contextRolloverCyclesMigration)) return;
+  sqlite.transaction(() => {
+    const columns = new Set(
+      (sqlite.pragma("table_info(context_rollovers)") as Array<{ name: string }>)
+        .map(column => column.name),
+    );
+    if (!columns.has("cycle_number")) {
+      sqlite.exec("ALTER TABLE context_rollovers ADD COLUMN cycle_number INTEGER NOT NULL DEFAULT 1 CHECK (cycle_number > 0)");
+    }
+    sqlite.exec(`
+      UPDATE context_rollovers SET cycle_number = (
+        SELECT COUNT(*) FROM context_rollovers prior
+        WHERE prior.agent_id = context_rollovers.agent_id
+          AND prior.provider_session_generation = context_rollovers.provider_session_generation
+          AND prior.rowid <= context_rollovers.rowid
+      );
+      DROP INDEX IF EXISTS idx_context_rollovers_generation_owner;
+      CREATE UNIQUE INDEX idx_context_rollovers_generation_cycle
+        ON context_rollovers (agent_id, provider_session_generation, cycle_number);
+    `);
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`).run(
+      contextRolloverCyclesMigration, new Date().toISOString(),
+    );
+  })();
+}
+
 /** Additive read indexes are safe to establish for both adopted and already
  * baselined databases without rewriting canonical rows. */
 function establishReadIndexes(sqlite: Database.Database): void {
@@ -1041,6 +1073,7 @@ export function openDb(file: string): OpenedDb {
   establishAgentMentionHandles(sqlite);
   establishContextRolloverAtomicitySchema(sqlite);
   establishContextRolloverFailureProvenance(sqlite);
+  establishContextRolloverCycles(sqlite);
   establishSchemaExtensions(sqlite);
   establishWorkingCopyAuthoritySchema(sqlite);
   establishProjectDeletionOwnershipSchema(sqlite);

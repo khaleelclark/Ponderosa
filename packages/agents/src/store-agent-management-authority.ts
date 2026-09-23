@@ -328,6 +328,7 @@ export class AgentManagementAuthority {
     const activeEngine = patch.activeEngine?.trim() || row.activeEngine;
     const model = patch.model === undefined ? row.model ?? undefined : patch.model?.trim() || undefined;
     const effort = patch.effort === undefined ? row.effort ?? undefined : patch.effort?.trim() || undefined;
+    const speed = patch.speed === undefined ? row.speed ?? undefined : patch.speed?.trim() || undefined;
     const managementPermissions = patch.managementPermissions
       ? requireManagementPermissions(patch.managementPermissions)
       : {
@@ -358,6 +359,7 @@ export class AgentManagementAuthority {
       activeEngine,
       model,
       effort,
+      speed,
       managementPermissions,
       updatedAt: now,
     });
@@ -378,6 +380,7 @@ export class AgentManagementAuthority {
         activeEngine,
         model: model ?? null,
         effort: effort ?? null,
+        speed: speed ?? null,
         allowAutomaticDescendantDeletion: managementPermissions.allowAutomaticDescendantDeletion ? 1 : 0,
         allowAutomaticDescendantReorganization: managementPermissions.allowAutomaticDescendantReorganization ? 1 : 0,
         updatedAt: now,

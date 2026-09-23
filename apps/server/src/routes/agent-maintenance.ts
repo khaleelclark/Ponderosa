@@ -16,7 +16,7 @@ import {
 } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type { ActiveRun, EngineRegistration, PersistentRuntime } from "../app-contracts.js";
-import { runtimeSelectionError } from "../runtime-selection.js";
+import { runtimeSelectionError, runtimeSpeedSelectionError } from "../runtime-selection.js";
 import type { TriggerSourceService } from "../trigger-service.js";
 import type { AgentWorkingCopyService } from "../agent-working-copy-service.js";
 
@@ -116,7 +116,7 @@ export function registerAgentMaintenanceRoutes(
       const current = store.getAgent(request.params.id);
       if (!current) return reply.code(404).send({ error: "agent not found" });
       const body = request.body ?? {};
-      const allowedFields = new Set(["title", "archived", "activeEngine", "model", "effort", "workingCopyMode", "managementPermissions"]);
+      const allowedFields = new Set(["title", "archived", "activeEngine", "model", "effort", "speed", "workingCopyMode", "managementPermissions"]);
       if (Object.keys(body).some((key) => !allowedFields.has(key))) {
         return reply.code(400).send({ error: "unknown agent field" });
       }
@@ -152,6 +152,9 @@ export function registerAgentMaintenanceRoutes(
       }
       if (body.effort !== undefined && body.effort !== null && typeof body.effort !== "string") {
         return reply.code(400).send({ error: "effort must be a string or null" });
+      }
+      if (body.speed !== undefined && body.speed !== null && typeof body.speed !== "string") {
+        return reply.code(400).send({ error: "speed must be a string or null" });
       }
       if (body.workingCopyMode !== undefined &&
           body.workingCopyMode !== "shared" && body.workingCopyMode !== "separate_git") {
@@ -196,8 +199,8 @@ export function registerAgentMaintenanceRoutes(
           releaseModeChange?.();
         }
       }
-      const runtimeSettingsChanged = body.activeEngine !== undefined || body.model !== undefined || body.effort !== undefined;
-      let runtimePatch: Pick<UpdateAgentRequest, "activeEngine" | "model" | "effort"> = {};
+      const runtimeSettingsChanged = body.activeEngine !== undefined || body.model !== undefined || body.effort !== undefined || body.speed !== undefined;
+      let runtimePatch: Pick<UpdateAgentRequest, "activeEngine" | "model" | "effort" | "speed"> = {};
       if (runtimeSettingsChanged) {
         const activeEngine = body.activeEngine?.trim() || current.activeEngine;
         const engineChanged = activeEngine !== current.activeEngine;
@@ -205,14 +208,18 @@ export function registerAgentMaintenanceRoutes(
         if (!configured) return reply.code(400).send({ error: "unknown engine" });
         const model = body.model === undefined ? (engineChanged ? undefined : current.model) : body.model?.trim() || undefined;
         const effort = body.effort === undefined ? (engineChanged ? undefined : current.effort) : body.effort?.trim() || undefined;
+        const speed = body.speed === undefined ? (engineChanged ? undefined : current.speed) : body.speed?.trim() || undefined;
+        const modelOptions = cachedModelOptions(configured.adapter, current.projectId);
         const selectionError = runtimeSelectionError(
           configured.adapter,
           model,
           effort,
-          cachedModelOptions(configured.adapter, current.projectId),
+          modelOptions,
         );
         if (selectionError) return reply.code(400).send({ error: selectionError });
-        runtimePatch = { activeEngine, model: model ?? null, effort: effort ?? null };
+        const speedError = runtimeSpeedSelectionError(configured.adapter, model, speed, modelOptions);
+        if (speedError) return reply.code(400).send({ error: speedError });
+        runtimePatch = { activeEngine, model: model ?? null, effort: effort ?? null, speed: speed ?? null };
       }
       const agent = store.updateAgent(request.params.id, {
         ...body,
@@ -225,6 +232,7 @@ export function registerAgentMaintenanceRoutes(
           activeEngine: agent.activeEngine,
           ...(agent.model ? { model: agent.model } : {}),
           ...(agent.effort ? { effort: agent.effort } : {}),
+          ...(agent.speed ? { speed: agent.speed } : {}),
         });
         if (recovery.activationIds.length > 0) notifyScheduler();
       }

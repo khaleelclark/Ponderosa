@@ -187,8 +187,10 @@ export function TriggersPane({
   onTriggerCreated,
   onCreateFlowComplete,
   onCancelCreate,
+  selectedTriggerId,
   settingsTriggerId,
   onCloseTriggerSettings,
+  onTriggerDeleted,
 }: {
   projectId: string;
   agents: AgentDto[];
@@ -204,8 +206,10 @@ export function TriggersPane({
   onTriggerCreated?(trigger: TriggerDefinitionDto): void;
   onCreateFlowComplete?(): void;
   onCancelCreate?(): void;
+  selectedTriggerId?: string;
   settingsTriggerId?: string;
   onCloseTriggerSettings?(): void;
+  onTriggerDeleted?(triggerId: string): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const notify = useMutationNotification();
@@ -241,6 +245,12 @@ export function TriggersPane({
       ? items.filter(trigger => trigger.targetAgentId === filterTargetAgentId)
       : items;
   }, [filterTargetAgentId, triggers.data?.pages]);
+  const selectedTrigger = selectedTriggerId
+    ? triggerItems.find(trigger => trigger.id === selectedTriggerId)
+    : undefined;
+  const visibleTriggerItems = selectedTriggerId
+    ? selectedTrigger ? [selectedTrigger] : []
+    : triggerItems;
   const conversations = useQuery({
     queryKey: queryKeys.conversations.project(projectId),
     queryFn: () => api.listConversations(projectId),
@@ -377,7 +387,10 @@ export function TriggersPane({
     if (trigger) openEditor(trigger);
   }, [editing?.id, settingsTriggerId, triggerItems]);
   const inlineSettings = Boolean(
-    settingsTriggerId && editing?.id === settingsTriggerId,
+    editing && (
+      editing.id === settingsTriggerId ||
+      editing.id === selectedTriggerId
+    ),
   );
 
   const create = useMutation({
@@ -416,7 +429,7 @@ export function TriggersPane({
       void queryClient.invalidateQueries({ queryKey });
       setCreateOpen(false);
       setEditing(undefined);
-      onCloseTriggerSettings?.();
+      if (settingsTriggerId) onCloseTriggerSettings?.();
       notify({ key: `automation-updated:${editing?.id ?? "automation"}`, message: "Automation updated." });
     },
   });
@@ -429,9 +442,10 @@ export function TriggersPane({
   });
   const remove = useMutation({
     mutationFn: (trigger: TriggerDefinitionDto) => api.deleteTrigger(trigger.id),
-    onSuccess: () => {
+    onSuccess: (_result, trigger) => {
       void queryClient.invalidateQueries({ queryKey });
       setDeleteTrigger(undefined);
+      onTriggerDeleted?.(trigger.id);
       notify({ key: "automation-deleted", message: "Automation deleted." });
     },
   });
@@ -478,7 +492,7 @@ export function TriggersPane({
   const closeCreateEditor = (): void => {
     setCreateOpen(false);
     setEditing(undefined);
-    if (inlineSettings) onCloseTriggerSettings?.();
+    if (inlineSettings && settingsTriggerId) onCloseTriggerSettings?.();
     else if (!editing) (onCancelCreate ?? onCreateFlowComplete)?.();
   };
   const closeSecret = (): void => {
@@ -580,7 +594,7 @@ export function TriggersPane({
             onClick={closeCreateEditor}
             sx={{ mb: 1 }}
           >
-            Back to Automations
+            {selectedTriggerId ? "Back to Automation" : "Back to Automations"}
           </Button>
           <Typography variant="h5" component="h2" fontWeight={800}>
             Automation Settings
@@ -594,33 +608,59 @@ export function TriggersPane({
       </Stack>
     ) : null}
     <Stack spacing={2} sx={{ display: createOnly || inlineSettings ? "none" : undefined }}>
-      <Alert severity="warning">
-        <strong>Automations run automatically with the selected Agent&apos;s full access.</strong> External event payloads are untrusted data and stay separate from your instructions, but an Automation can still change files, run commands, use connected tools, and contact collaborators. Use narrow instructions and accept only trusted sources.
-      </Alert>
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-        <Box sx={{ flex: 1 }}>
-          <Typography variant="h6">Automations</Typography>
-          <Typography variant="body2" color="text.secondary">Automations belong to the Project. Each one sends work to a destination Chat and an execution Agent.</Typography>
+      {selectedTriggerId ? (
+        <Box>
+          <Button
+            color="inherit"
+            startIcon={<ArrowBackIcon />}
+            onClick={onCloseTriggerSettings}
+            sx={{ mb: 1 }}
+          >
+            Back to Automations
+          </Button>
+          <Typography variant="h5" component="h2" fontWeight={800}>
+            Automation
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {selectedTrigger
+              ? `Manage ${selectedTrigger.name}: run, enable, inspect, or edit it.`
+              : "Loading Automation…"}
+          </Typography>
         </Box>
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={() => {
-            if (onCreateTrigger) {
-              onCreateTrigger();
-              return;
-            }
-            resetEditor();
-            setCreateOpen(true);
-          }}
-        >
-          New Automation
-        </Button>
-      </Stack>
+      ) : (
+        <>
+          <Alert severity="warning">
+            <strong>Automations run automatically with the selected Agent&apos;s full access.</strong> External event payloads are untrusted data and stay separate from your instructions, but an Automation can still change files, run commands, use connected tools, and contact collaborators. Use narrow instructions and accept only trusted sources.
+          </Alert>
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+            <Box sx={{ flex: 1 }}>
+              <Typography variant="h6">Automations</Typography>
+              <Typography variant="body2" color="text.secondary">Automations belong to the Project. Each one sends work to a destination Chat and an execution Agent.</Typography>
+            </Box>
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={() => {
+                if (onCreateTrigger) {
+                  onCreateTrigger();
+                  return;
+                }
+                resetEditor();
+                setCreateOpen(true);
+              }}
+            >
+              New Automation
+            </Button>
+          </Stack>
+        </>
+      )}
       {triggers.isLoading ? <Typography color="text.secondary">Loading Automations…</Typography> : null}
       {triggers.isError ? <Alert severity="error">{triggers.error.message}</Alert> : null}
-      {(triggerItems).length === 0 && !triggers.isLoading ? <Typography color="text.secondary">No Automations yet.</Typography> : null}
-      {(triggerItems).map((trigger) => {
+      {selectedTriggerId && !selectedTrigger && !triggers.isLoading && !triggers.isError ? (
+        <Alert severity="warning">This Automation could not be found. It may have been deleted.</Alert>
+      ) : null}
+      {!selectedTriggerId && triggerItems.length === 0 && !triggers.isLoading ? <Typography color="text.secondary">No Automations yet.</Typography> : null}
+      {visibleTriggerItems.map((trigger) => {
         const latestOccurrence = latestOccurrences.get(trigger.id);
         const currentFailure = latestOccurrence?.lastError
           ?? (latestOccurrence?.state === "dead_lettered" ? "The latest occurrence could not start." : undefined);
@@ -637,7 +677,7 @@ export function TriggersPane({
             {trigger.runBudget && trigger.budgetState ? <Chip size="small" color={trigger.budgetState.held ? "warning" : "default"} label={`${trigger.budgetState.used}/${trigger.runBudget.limit + trigger.budgetState.allowance} automatic Runs · ${trigger.runBudget.period}`} /> : <Chip size="small" label="Unlimited Runs" />}
           </Stack>
           <Typography variant="body2" sx={{ mt: 1, whiteSpace: "pre-wrap" }}>{trigger.instructions}</Typography>
-          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Project chat: {currentChatLabel(trigger.conversationId)}</Typography>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Chat: {currentChatLabel(trigger.conversationId)}</Typography>
           <Typography variant="caption" color="text.secondary" display="block">Runs as: {agents.find(agent => agent.id === trigger.targetAgentId)?.title ?? "Unavailable Agent"}</Typography>
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Source configuration: <code>{JSON.stringify(trigger.sourceConfig)}</code></Typography>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={{ xs: 0.25, sm: 2 }} sx={{ mt: 1 }}>
@@ -680,7 +720,7 @@ export function TriggersPane({
         </Collapse>
       </Card>;
       })}
-      <CollectionPagination
+      {!selectedTriggerId ? <CollectionPagination
         resourceLabel="Automations"
         request={{
           hasResolved: Boolean(triggers.data),
@@ -693,8 +733,8 @@ export function TriggersPane({
           retry: triggers.refetch,
           fetchNextPage: triggers.fetchNextPage,
         }}
-      />
-      {deletedTriggerOccurrences.length ? <Card variant="outlined">
+      /> : null}
+      {!selectedTriggerId && deletedTriggerOccurrences.length ? <Card variant="outlined">
         <CardContent>
           <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Deleted Automation history</Typography>
           <Typography variant="body2" color="text.secondary">Immutable occurrence records remain inspectable after their Automation is deleted.</Typography>

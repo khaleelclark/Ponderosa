@@ -252,7 +252,7 @@ export function HomeSidebarPanel({
               primaryTypographyProps={{
                 noWrap: true,
                 fontSize: 13,
-                fontWeight: unread?.totalCount ? 800 : starred ? 750 : 500,
+                fontWeight: unread?.totalCount ? 800 : starred && item.route.kind !== "conversation" ? 750 : 500,
               }}
               secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
             />

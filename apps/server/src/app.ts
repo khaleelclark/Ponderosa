@@ -1,7 +1,7 @@
 import { AgentStore, CoordinationV3Store, ProjectDeletionInProgressError, WorkspaceStore, type LogEvent } from "@ponderosa/agents";
 import { windowsJobObjectsSupported } from "@ponderosa/native-host";
-import { registerSpeechRoutes } from "./routes/speech.js";
 import type {
+  DecisionDto,
   TokenUsageRangeDto,
   TokenUsageSummaryDto,
   WorkspaceEventEnvelope
@@ -82,6 +82,7 @@ import {
 } from "./server-request-hooks.js";
 import { TriggerSourceService } from "./trigger-service.js";
 import { createWebPushConfiguration } from "./web-push-configuration.js";
+import { ServerMetrics } from "./server-metrics.js";
 export {
   collectReachableArtifactIds,
   rewritePortableArtifactReferences
@@ -122,6 +123,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   // Provider processes and their opaque sessions do not survive a daemon
   // restart, so no runtime-only attachment path can remain authoritative.
   cleanupAllRuntimeAttachments(opts.dataDir);
+  const store = opts.store ?? new AgentStore(opts.dataDir);
   const {
     networkSecurity,
     launcherNow,
@@ -129,11 +131,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     launcherBootstrapTtlMs,
     launcherSessionTtlMs,
     launcherBootstraps,
-    launcherSessions,
+    issueLauncherSession,
     purgeLauncherSecurityState,
     validLauncherSession,
-  } = createLauncherSecurity(opts);
-  const store = opts.store ?? new AgentStore(opts.dataDir);
+  } = createLauncherSecurity(opts, store.sqlite);
   const publicWebAssets = publicWebAssetPaths(opts.webDist);
   const artifactFilesystem = descriptorRelativeFilesystemCapability(opts.dataDir);
   const processContainment = process.platform === "win32"
@@ -368,7 +369,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     runtimeAuthority(agentId)?.oneShots.get(runId);
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
   const engineAuthStatuses = new EngineAuthStatusCache();
-  const engineAvailability = new EngineAvailabilityStore(opts.dataDir);
+  const engineAvailability = new EngineAvailabilityStore(
+    opts.dataDir,
+    opts.buildRevision?.trim() || "development",
+  );
   const providerUsage = new ProviderUsageCache(opts.dataDir, undefined, undefined, (handle, providerId) => {
     providerProcessAuthority.register(handle, { purpose: `${providerId} provider usage` });
   }, (event) => {
@@ -424,10 +428,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     browserSessions,
     closeAgentBrowsers,
     closeRunBrowser,
+    closeRunBrowserAfterRun,
     projectBrowserDto,
     projectBrowserGrants,
     projectBrowserScope,
     projectBrowserSessions,
+    restoreSharedBrowsers,
   } = createBrowserAuthority({
     dataDir: opts.dataDir,
     store,
@@ -441,6 +447,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       !deletingAgentIds.has(scope.agentId) &&
       !(scope.actorAgentId && deletingAgentIds.has(scope.actorAgentId)),
   });
+  const applyResolvedSavedBrowserApproval = (decision: DecisionDto): boolean => {
+    const scope = decision.approvalScope;
+    if (scope?.kind !== "saved_browser" || decision.status !== "resolved" ||
+        decision.response?.optionId !== "approve") return true;
+    const agent = store.getAgent(scope.agentId);
+    if (decision.projectId !== scope.projectId || decision.agentId !== scope.agentId ||
+        !agent || agent.projectId !== scope.projectId || agent.archived ||
+        deletingProjectIds.has(scope.projectId) || deletingAgentIds.has(scope.agentId) ||
+        browserProfiles.savedBrowser()?.profileId !== scope.profileId) return false;
+    return browserProfiles.applySavedBrowserApproval(decision.id, scope.profileId, scope.projectId, scope.agentId);
+  };
   const managedWorkspacesRoot = path.resolve(opts.dataDir, "workspaces");
   const projectFolderPathBoundary = createProjectFolderPathBoundary({
     managedWorkspacesRoot,
@@ -576,7 +593,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     openingRuntime,
     closingRuntime,
     clearAgentResumeSession,
-    closeRunBrowser,
+    closeRunBrowser: closeRunBrowserAfterRun,
     closeLinkPreviewsForAgent,
     publish: (agentId, stored) => publish(agentId, stored),
     publishMessageDeliveryChanged: (agentId) => publishMessageDeliveryChanged(agentId),
@@ -601,6 +618,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     scheduleRuntimeLivenessHeartbeat,
     transitionRun,
   } = createRuntimeEventAuthority({
+    onRunClaimed: (agentId, run) => {
+      const agent = store.getAgent(agentId);
+      if (agent) {
+        projectBrowserSessions.bindNextRun(projectBrowserScope(agent.projectId), agentId, run.runId, run.conversationId);
+        projectBrowserSessions.bindNextRun(projectBrowserScope("saved-browser"), agentId, run.runId, run.conversationId);
+      }
+    },
     opts,
     activeRuns,
     store,
@@ -614,7 +638,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     clearExecutionLeaseTimer,
     leaseExpiry,
     ownsActiveRunForAuditDrain,
-    closeRunBrowser,
+    closeRunBrowser: closeRunBrowserAfterRun,
     closeLinkPreviewsForAgent,
     publish: (agentId, stored) => publish(agentId, stored),
     publishMessageDeliveryChanged: (agentId) => publishMessageDeliveryChanged(agentId),
@@ -662,6 +686,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   const app = Fastify({
     bodyLimit: ASSET_LIMITS.maxRequestBytes,
+    requestTimeout: 30_000,
+    connectionTimeout: 10_000,
+    keepAliveTimeout: 72_000,
+    maxRequestsPerSocket: 1_000,
     // Startup recovery intentionally completes before the listener accepts work.
     // Large durable datasets can require several minutes to reconcile, so
     // keep the boundary bounded without forcing a restart loop.
@@ -673,6 +701,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       },
     },
   }) as unknown as PonderosaServer;
+  const serverMetrics = new ServerMetrics(opts.dataDir, store.startupProfile());
+  serverMetrics.install(app);
+  app.addHook("onReady", restoreSharedBrowsers);
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ProjectDeletionInProgressError) {
       return reply.code(409).send({ error: error.message });
@@ -796,7 +827,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     closeLinkPreviewsForAgent,
     reconcileTriggerOperationalNotifications,
     terminateRuntimeHandle,
-    closeRunBrowser,
+    closeRunBrowser: closeRunBrowserAfterRun,
     persistentRuntimeForTermination,
     clearRunLeaseTimer,
     clearRunLivenessTimer,
@@ -813,6 +844,8 @@ app.server.on("upgrade", linkPreviewUpgrade);
     deploymentControl.drainIdleAuthorities();
   }
   deploymentControl = createDeploymentControl(app, {
+    dataDir: opts.dataDir,
+    startDrained: opts.startDrained,
     store,
     coordinationV3,
     activeRuns,
@@ -972,9 +1005,10 @@ app.server.on("upgrade", linkPreviewUpgrade);
     resolveOperationalNotification,
     drainProviderRuntimeAuthority,
     ensureDecisionResponseActivation,
+    applyResolvedSavedBrowserApproval,
     refreshCommunicationReconciliation,
     stopCommunicationReconciliation,
-    closeRunBrowser,
+    closeRunBrowser: closeRunBrowserAfterRun,
     providerProcessAuthority,
   });
 
@@ -1015,6 +1049,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     assets,
     browserSessions,
     projectBrowserSessions,
+    browserProfiles,
     projectBrowserGrants,
     projectBrowserScope,
     teamDirectory,
@@ -1043,7 +1078,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     launcherBootstrapTtlMs,
     launcherSessionTtlMs,
     launcherBootstraps,
-    launcherSessions,
+    issueLauncherSession,
     purgeLauncherSecurityState,
     networkSecurity,
     artifactFilesystem,
@@ -1057,14 +1092,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     drainDeploymentIdleAuthorities,
     refreshTriggerSources: () => triggerSources.refresh(),
     runtimeStatus,
-  });
-
-  registerSpeechRoutes(app, {
-    dataDir: opts.dataDir,
-    workspace,
-    changed: () => { appendWorkspace({ type: "speech_status_changed" }); },
-    observe: (event, fields) => { app.log.info({ speechEvent: event, ...fields }, "local speech operation"); },
-    publishWorkspaceSince,
+    serverMetrics,
   });
 
   registerApplicationRoutes(app, {
@@ -1180,6 +1208,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     conversationDetail,
     withMessagePresentation,
     ensureDecisionResponseActivation,
+    applyResolvedSavedBrowserApproval,
     publishCoordinationV3Changed,
     publishMessageDeliveryChanged,
     teamDirectory,
@@ -1221,6 +1250,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     notifyScheduler: () => coordinationV3Scheduler.notify(),
     setMaxConcurrentRuns: (value) => coordinationV3Scheduler.setMaxConcurrentRuns(value),
     workingCopies,
+    serverMetrics,
   });
 
   return app;

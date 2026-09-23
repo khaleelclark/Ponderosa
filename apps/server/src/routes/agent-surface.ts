@@ -48,6 +48,7 @@ interface AgentSurfaceContext {
   assets: AssetStore;
   browserSessions: RuntimeToolRoutes["browserSessions"];
   projectBrowserSessions: RuntimeToolRoutes["projectBrowserSessions"];
+  browserProfiles: RuntimeToolRoutes["browserProfiles"];
   projectBrowserGrants: RuntimeToolRoutes["projectBrowserGrants"];
   projectBrowserScope: RuntimeToolRoutes["projectBrowserScope"];
   teamDirectory: DirectoryRoutes["teamDirectory"];
@@ -96,6 +97,7 @@ export function registerAgentSurface(
     assets,
     browserSessions,
     projectBrowserSessions,
+    browserProfiles,
     projectBrowserGrants,
     projectBrowserScope,
     teamDirectory,
@@ -175,6 +177,9 @@ registerAgentRuntimeToolRoutes(app, {
   activeRuns,
   browserSessions,
   projectBrowserSessions,
+  browserProfiles,
+  workspace,
+  publishWorkspaceSince,
   projectBrowserGrants,
   deletingProjectIds,
   deletingAgentIds,

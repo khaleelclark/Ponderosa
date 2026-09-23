@@ -19,6 +19,7 @@ import type {
   UpdateProjectRequest,
 } from "@ponderosa/core";
 import type { Db } from "./db.js";
+import { auditChatOwnership } from "./chat-ownership-audit.js";
 import { appendFsyncedJsonl, readRepairableJsonl, writeAtomicFsyncedJsonl } from "./append-jsonl.js";
 import { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone-ownership.js";
 import { fsyncDirectory, readJson, writeJson } from "./store-filesystem.js";
@@ -375,6 +376,7 @@ export class AgentWorkspaceCatalogAuthority {
   createProject(
     input: Omit<CreateProjectRequest, "defaultEngine"> & {
       hostPath: string;
+      chatOwned?: boolean;
       defaultEngine?: CreateProjectRequest["defaultEngine"];
     },
     identity?: WorkspaceCreationIdentity,
@@ -389,6 +391,7 @@ export class AgentWorkspaceCatalogAuthority {
     const defaultEngine = input.defaultEngine ?? "codex";
     const record: ProjectJson = {
       id,
+      ...(input.chatOwned ? { ownerConversationId: conversationId } : {}),
       label: input.label,
       hostPath: input.hostPath,
       createdAt: now,
@@ -404,8 +407,10 @@ export class AgentWorkspaceCatalogAuthority {
     };
     const conversation: ConversationJson = {
       id: conversationId, projectId: id, title: "New Chat", defaultEngine,
+      workingDirectory: input.hostPath, instructions: "", chatOwnershipVersion: 1,
       ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}),
       ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}),
+      ...(input.defaultSpeed ? { defaultSpeed: input.defaultSpeed } : {}),
       createdAt: now, updatedAt: now, archived: false,
     };
     const stagingId = `.${id}.creating`;
@@ -448,7 +453,7 @@ export class AgentWorkspaceCatalogAuthority {
       fsyncDirectory(projectsDir(this.dataDir));
       this.db.transaction((tx) => {
         tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, lastConversationId: conversationId }).run();
-        tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, createdAt: now, updatedAt: now, archived: 0 }).run();
+        tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, defaultSpeed: input.defaultSpeed ?? null, createdAt: now, updatedAt: now, archived: 0 }).run();
         for (const event of presets) {
           tx.insert(agentPresets).values({ ...event.preset, enabled: 1 }).run();
         }
@@ -475,6 +480,7 @@ export class AgentWorkspaceCatalogAuthority {
     if (!this.getProject(id)) return undefined;
     this.assertProjectMetadataMutable(id);
     const canonicalCurrent = readJson<ProjectJson>(projectJsonPath(this.dataDir, id));
+    if (canonicalCurrent.ownerConversationId) throw new Error("Update the owning Chat settings, not its storage namespace");
     const current: ProjectDto = {
       ...canonicalCurrent,
       defaultEngine: canonicalCurrent.defaultEngine as ProjectDto["defaultEngine"],
@@ -698,6 +704,52 @@ export class AgentWorkspaceCatalogAuthority {
 
   // ─── Conversations ─────────────────────────────────────────────────────────
 
+  /** Snapshot inherited context once. Each atomic canonical write is its own
+   * migration receipt, so a restart resumes without replacing edited Chat data. */
+  migrateChatOwnership(): boolean {
+    const pending: Array<{ file: string; record: ConversationJson; project: ProjectDto }> = [];
+    for (const project of this.listProjects()) {
+      for (const row of this.db.select().from(conversations).where(eq(conversations.projectId, project.id)).all()) {
+        const file = conversationJsonPath(this.dataDir, project.id, row.id);
+        const record = readJson<ConversationJson>(file);
+        if (record.chatOwnershipVersion === 1) continue;
+        if (record.chatOwnershipVersion !== undefined) throw new Error("Unsupported Chat ownership version");
+        if (record.id !== row.id || record.projectId !== project.id) throw new Error("Chat ownership metadata mismatch");
+        pending.push({ file, record, project });
+      }
+    }
+    if (!pending.length) return false;
+    // Fail before the first metadata write. This is a necessary startup guard,
+    // not a substitute for offline canonical-history and rollback qualification.
+    const audit = auditChatOwnership(join(this.dataDir, "ponderosa.db"));
+    if (audit.findings.length) {
+      throw new Error(`Chat ownership migration blocked: ${audit.findings.map(finding => `${finding.code} (${finding.count})`).join(", ")}. Qualify and resolve an offline copy before promotion.`);
+    }
+    for (const { file, record, project } of pending) {
+      writeJson(file, {
+        ...record,
+        workingDirectory: record.workingDirectory ?? project.hostPath,
+        instructions: record.instructions ?? project.instructions ?? "",
+        defaultEngine: record.defaultEngine ?? project.defaultEngine,
+        defaultModel: record.defaultModel ?? ((!record.defaultEngine || record.defaultEngine === project.defaultEngine) ? project.defaultModel : undefined),
+        defaultEffort: record.defaultEffort ?? ((!record.defaultEngine || record.defaultEngine === project.defaultEngine) ? project.defaultEffort : undefined),
+        chatOwnershipVersion: 1,
+      } satisfies ConversationJson);
+    }
+    return true;
+  }
+
+  getChatContext(id: string): ProjectDto | undefined {
+    const chat = this.getConversation(id);
+    if (!chat || !chat.workingDirectory || chat.archived) return undefined;
+    return {
+      id: chat.projectId, label: chat.title, hostPath: chat.workingDirectory,
+      createdAt: chat.createdAt, defaultEngine: chat.defaultEngine ?? "codex",
+      defaultModel: chat.defaultModel, defaultEffort: chat.defaultEffort,
+      instructions: chat.instructions, lastConversationId: chat.id,
+    };
+  }
+
   getConversationCreation(
     projectId: string,
     identity: WorkspaceCreationIdentity,
@@ -723,6 +775,9 @@ export class AgentWorkspaceCatalogAuthority {
   ): ConversationDto {
     const project = this.getProject(projectId);
     if (!project) throw new Error(`unknown project: ${projectId}`);
+    if (readJson<ProjectJson>(projectJsonPath(this.dataDir, projectId)).ownerConversationId) {
+      throw new Error("Create a separate Chat rather than nesting Chats inside a Chat");
+    }
     const replay = identity ? this.getConversationCreation(projectId, identity) : undefined;
     if (replay) return replay;
     const id = identity ? creationId("conversation", projectId, identity.idempotencyKey) : randomUUID();
@@ -731,9 +786,13 @@ export class AgentWorkspaceCatalogAuthority {
       id,
       projectId,
       title: input.title || "New Chat",
+      workingDirectory: project.hostPath,
+      instructions: "",
+      chatOwnershipVersion: 1,
       defaultEngine: input.defaultEngine ?? project.defaultEngine,
       defaultModel: input.defaultModel,
       defaultEffort: input.defaultEffort,
+      defaultSpeed: input.defaultSpeed,
       createdAt: now,
       updatedAt: now,
       archived: false,
@@ -788,6 +847,7 @@ export class AgentWorkspaceCatalogAuthority {
           defaultEngine: record.defaultEngine ?? null,
           defaultModel: record.defaultModel ?? null,
           defaultEffort: record.defaultEffort ?? null,
+          defaultSpeed: record.defaultSpeed ?? null,
           createdAt: now,
           updatedAt: now,
           archived: 0,
@@ -863,22 +923,28 @@ export class AgentWorkspaceCatalogAuthority {
     );
     const next = {
       title: patch.title ?? canonical.title,
+      instructions: patch.instructions ?? canonical.instructions ?? "",
       defaultEngine: patch.defaultEngine === undefined ? canonical.defaultEngine : patch.defaultEngine,
       defaultModel: patch.defaultModel === undefined ? canonical.defaultModel : patch.defaultModel,
       defaultEffort: patch.defaultEffort === undefined ? canonical.defaultEffort : patch.defaultEffort,
+      defaultSpeed: patch.defaultSpeed === undefined ? canonical.defaultSpeed : patch.defaultSpeed,
       archived: patch.archived ?? canonical.archived,
     };
-    const changed = next.title !== canonical.title || next.defaultEngine !== canonical.defaultEngine ||
+    const changed = next.title !== canonical.title || next.instructions !== (canonical.instructions ?? "") || next.defaultEngine !== canonical.defaultEngine ||
       next.defaultModel !== canonical.defaultModel || next.defaultEffort !== canonical.defaultEffort ||
+      next.defaultSpeed !== canonical.defaultSpeed ||
       next.archived !== canonical.archived;
     const updatedAt = changed ? new Date().toISOString() : canonical.updatedAt;
     const result: ConversationDto = {
       id: row.id,
       projectId: row.projectId,
       title: next.title,
+      workingDirectory: canonical.workingDirectory,
+      instructions: next.instructions,
       defaultEngine: next.defaultEngine ?? undefined,
       defaultModel: next.defaultModel ?? undefined,
       defaultEffort: next.defaultEffort ?? undefined,
+      defaultSpeed: next.defaultSpeed ?? undefined,
       createdAt: canonical.createdAt,
       updatedAt,
       archived: next.archived,
@@ -894,6 +960,7 @@ export class AgentWorkspaceCatalogAuthority {
           defaultEngine: next.defaultEngine ?? undefined,
           defaultModel: next.defaultModel ?? undefined,
           defaultEffort: next.defaultEffort ?? undefined,
+          defaultSpeed: next.defaultSpeed ?? undefined,
           updatedAt,
         });
       }
@@ -905,6 +972,7 @@ export class AgentWorkspaceCatalogAuthority {
           defaultEngine: next.defaultEngine,
           defaultModel: next.defaultModel,
           defaultEffort: next.defaultEffort,
+          defaultSpeed: next.defaultSpeed,
           archived: next.archived ? 1 : 0,
           updatedAt,
         })
@@ -1170,13 +1238,22 @@ export class AgentWorkspaceCatalogAuthority {
   }
 
   private conversationRowToDto(row: typeof conversations.$inferSelect): ConversationDto {
+    let context: Partial<ConversationJson> = {};
+    try { context = readJson<ConversationJson>(conversationJsonPath(this.dataDir, row.projectId, row.id)); }
+    catch (error) {
+      // Historical/stale deletion projections remain readable but never gain runtime context.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     return {
       id: row.id,
       projectId: row.projectId,
       title: row.title,
+      workingDirectory: context.workingDirectory,
+      instructions: context.instructions,
       defaultEngine: row.defaultEngine ?? undefined,
       defaultModel: row.defaultModel ?? undefined,
       defaultEffort: row.defaultEffort ?? undefined,
+      defaultSpeed: row.defaultSpeed ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       archived: row.archived === 1,

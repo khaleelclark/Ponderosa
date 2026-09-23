@@ -34,7 +34,7 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
     conversationId: owner.id,
   });
   const workingAgents = new Map([[agent.id, "running"]]);
-  const assignedOutcomes = new Map();
+  const assignedOutcomes = new Map([[agent.id, "2027-01-01T00:00:00.000Z"]]);
   for (const [title, status] of [
     ["Waiting Agent", "waiting"],
     ["Provider Blocked Agent", "blocked"],
@@ -94,7 +94,7 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
         ...(assignedOutcomes.has(id) ? {
           assignedWorkOutcome: {
             runId: `outcome-${id}`,
-            status: "completed",
+            status: id === agent.id ? "running" : "completed",
             reason: { kind: "completed" },
             updatedAt: assignedOutcomes.get(id),
           },
@@ -115,6 +115,16 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
   });
   assert.equal(firstChatPage.json().history.hasMore, true);
   assert.notEqual(firstChatPage.json().items[0].conversation.id, owner.id);
+  assert.equal(firstChatPage.json().items[0].runningAgentCount, 0);
+  const activityCount = async () => {
+    const result = await app.inject({ method: "GET", url: `/api/workspace/directory/conversation?conversationId=${owner.id}` });
+    assert.equal(result.statusCode, 200, result.body);
+    return result.json().items[0].runningAgentCount;
+  };
+  assert.equal(await activityCount(), 1, "Only canonical running work counts, not assigned idle or blocked agents");
+  store.sqlite.prepare("UPDATE scheduler_runs SET status = 'completed' WHERE id = 'run-a'").run();
+  assert.equal(await activityCount(), 0, "The indicator clears when work completes");
+  store.sqlite.prepare("UPDATE scheduler_runs SET status = 'running' WHERE id = 'run-a'").run();
 
   const response = await app.inject({
     method: "GET",
@@ -185,6 +195,8 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
     url: "/api/workspace/directory/agent?outcomes=true&limit=6",
   });
   assert.equal(recentOutcomes.statusCode, 200, recentOutcomes.body);
+  assert.equal(recentOutcomes.json().items.some(item => item.agent.id === agent.id), false,
+    "an assigned Run that is still running is not a finished outcome");
   assert.deepEqual(
     recentOutcomes.json().items.map(item => item.agent.title),
     ["Later Agent 29", "Later Agent 28", "Later Agent 27", "Later Agent 26", "Later Agent 25", "Later Agent 24"],

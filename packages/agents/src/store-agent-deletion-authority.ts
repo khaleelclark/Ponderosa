@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import type { AgentDeletionPreviewDto, AgentDto } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { AgentDeletionConflictError } from "./store-agent-management.js";
-import { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone-ownership.js";
+import { pathEntryExists } from "./deletion-tombstone-ownership.js";
 import { fsyncDirectory, readJson, writeJson } from "./store-filesystem.js";
 import type { AgentDeletionReceipt, AgentJson, AgentManagementAuthorization } from "./store-types.js";
 import {
@@ -17,56 +17,15 @@ import {
   agents,
 } from "./schema.js";
 import { agentDir, agentsDir } from "./paths.js";
+import {
+  AGENT_DELETION_IDENTITY_FILE,
+  agentDeletionIdentity,
+  type AgentDeletionDirectoryIdentity,
+  validateAgentDeletionDirectory,
+  validateAgentDeletionName,
+} from "./agent-deletion-identity.js";
 
-const AGENT_DELETION_IDENTITY_FILE = ".ponderosa-agent-deletion.json";
-
-interface AgentDeletionIdentity {
-  version: 1;
-  kind: "agent-deletion";
-  projectId: string;
-  conversationId: string | null;
-  agentId: string;
-  tombstoneName: string;
-  ownershipToken: string;
-}
-
-interface AgentDeletionDirectoryRow {
-  agentId: string;
-  projectId: string;
-  conversationId: string | null;
-  tombstoneName: string;
-  ownershipToken: string;
-  createdAt: string;
-}
-
-function validateAgentDeletionName(row: AgentDeletionDirectoryRow): void {
-  if (row.tombstoneName.includes("/") || row.tombstoneName.includes("\\") ||
-      !row.tombstoneName.startsWith(`.${row.agentId}.deleting-`) || !row.ownershipToken) {
-    throw new Error("invalid Agent deletion recovery journal");
-  }
-}
-
-function agentDeletionIdentity(row: AgentDeletionDirectoryRow): AgentDeletionIdentity {
-  return {
-    version: 1,
-    kind: "agent-deletion",
-    projectId: row.projectId,
-    conversationId: row.conversationId,
-    agentId: row.agentId,
-    tombstoneName: row.tombstoneName,
-    ownershipToken: row.ownershipToken,
-  };
-}
-
-function validateAgentDeletionDirectory(path: string, row: AgentDeletionDirectoryRow): void {
-  validateAgentDeletionName(row);
-  validateDeletionTombstone(
-    path,
-    AGENT_DELETION_IDENTITY_FILE,
-    agentDeletionIdentity(row),
-    "Agent deletion tombstone",
-  );
-}
+type AgentDeletionDirectoryRow = AgentDeletionDirectoryIdentity;
 
 export class AgentDeletionAuthority {
   constructor(
@@ -421,9 +380,6 @@ export class AgentDeletionAuthority {
     }
     for (const directory of touchedDirectories) if (existsSync(directory)) fsyncDirectory(directory);
     this.db.transaction((tx) => {
-      for (const agentId of currentReceipt.deletedAgentIds) {
-        tx.delete(agentDeletionTombstones).where(eq(agentDeletionTombstones.agentId, agentId)).run();
-      }
       const now = new Date().toISOString();
       tx.update(agentDeletionReceipts).set({
         storageCleanupCompleted: 1,

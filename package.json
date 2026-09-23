@@ -11,6 +11,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm --filter @ponderosa/core build && pnpm --filter @ponderosa/native-host build && pnpm --filter @ponderosa/agents build && pnpm --filter @ponderosa/engines build && pnpm -r typecheck",
     "test": "pnpm typecheck && pnpm -r --if-present test:built",
+    "test:speech-browser": "node apps/web/test/speech-browser.check.mjs",
     "verify": "pnpm test && pnpm build",
     "clean": "pnpm -r exec rm -rf dist",
     "start:prod": "NODE_ENV=production node apps/server/dist/main.js",

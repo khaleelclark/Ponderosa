@@ -2,10 +2,12 @@
 
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -18,6 +20,12 @@ import { createServer } from "node:net";
 import { pathToFileURL } from "node:url";
 import os from "node:os";
 import path from "node:path";
+import {
+  findChromiumExecutable,
+  qualifyPersistentPwaUpgrade,
+  seedLegacyPwaProfile,
+} from "./persistent-pwa-upgrade.mjs";
+import { qualifyProviderReachability } from "./provider-reachability.mjs";
 
 function option(name, fallback) {
   const inline = process.argv.find((argument) => argument.startsWith(`--${name}=`));
@@ -159,6 +167,16 @@ function hostOsIdentity() {
 
 mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 const port = await availablePort();
+const persistentPwaProfile = path.join(dataDir, "persistent-pwa-profile");
+const browserExecutable = findChromiumExecutable();
+const requiresInstalledPwaProof = process.platform === "linux" &&
+  buildManifest.channel === "production";
+if (requiresInstalledPwaProof) {
+  assert(browserExecutable, "production Linux qualification requires Chromium for installed PWA proof");
+}
+if (browserExecutable && (requiresInstalledPwaProof || process.platform === "darwin")) {
+  await seedLegacyPwaProfile(port, persistentPwaProfile, browserExecutable);
+}
 let started = false;
 let firstPid;
 try {
@@ -227,6 +245,50 @@ try {
     status: "pass",
     detail: "one-use bootstrap exchanged into an HttpOnly SameSite=Strict session",
   });
+  if (browserExecutable && (requiresInstalledPwaProof || process.platform === "darwin")) {
+    const pwaBootstrap = await fetch(`${baseUrl}/api/launcher/bootstrap`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${state.controlToken}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    assert(pwaBootstrap.ok, "PWA qualification could not create a browser bootstrap");
+    const pwaBootstrapBody = await pwaBootstrap.json();
+    const pwa = await qualifyPersistentPwaUpgrade({
+      port,
+      profileDir: persistentPwaProfile,
+      webDist: path.join(installRoot, "app", "web", "dist"),
+      bootstrapUrl: `${baseUrl}/__ponderosa_bootstrap#${encodeURIComponent(pwaBootstrapBody.token)}`,
+      browserExecutable,
+    });
+    checks.push({
+      id: "installed-pwa-controllerchange",
+      status: "pass",
+      detail: `persistent legacy profile activated and retained the installed build across restart (${pwa.publicAssetCount} assets)`,
+    });
+  }
+  const providerProof = await qualifyProviderReachability({
+    baseUrl,
+    cookie: cookie.split(";", 1)[0],
+    expectedRevision: buildManifest.commit,
+  });
+  // A degraded provider may recover during the explicit recheck. Readiness
+  // measured before the recheck must not veto that new, installed-build proof.
+  const readinessAfterProbe = await fetch(`${baseUrl}/api/ready`, {
+    signal: AbortSignal.timeout(10_000),
+  });
+  const readinessAfterProbeBody = await readinessAfterProbe.json();
+  const providerProbePassed = providerProof.passed && readinessAfterProbe.ok &&
+    readinessAfterProbeBody?.checks?.runtimes?.ok === true;
+  checks.push({
+    id: "exact-platform-provider-readiness",
+    status: providerProbePassed ? "pass" : "fail",
+    evidence: providerProof.evidence,
+    ...(providerProof.discoveryFailureCategory
+      ? { discoveryFailureCategory: providerProof.discoveryFailureCategory } : {}),
+    detail: providerProbePassed
+      ? "installed application observed a reachable subscription runtime within five minutes"
+      : "installed application has no recent, reachable subscription runtime",
+  });
 
   const dataSentinel = path.join(dataDir, "data", "qualification-preserve.txt");
   mkdirSync(path.dirname(dataSentinel), { recursive: true });
@@ -270,6 +332,11 @@ try {
   checks.push({ id: "shutdown-observed", status: "pass", detail: "launcher observed server cleanup before removing instance state" });
 
   let secureReadPassed = false;
+  const adversarialChecks = [];
+  const recordAdversarialCheck = async (id, detail, operation) => {
+    await operation();
+    adversarialChecks.push({ id, status: "pass", detail });
+  };
   const serverRequire = createRequire(path.join(installRoot, "app", "server", "package.json"));
   const nativeHost = serverRequire("@ponderosa/native-host");
   if (nativeHost.secureFileAuthoritySupported()) {
@@ -441,6 +508,171 @@ try {
       managed.sha256,
     )?.body.toString() === "managed-safe",
     "Managed-artifact repair changed a referenced immutable leaf.");
+
+    await recordAdversarialCheck(
+      "root-replacement",
+      "a retained data-directory descriptor remained bound to the original inode after pathname replacement",
+      async () => {
+        const parent = path.join(dataDir, "adversarial-root-replacement");
+        const root = path.join(parent, "root");
+        const displaced = path.join(parent, "displaced");
+        mkdirSync(root, { recursive: true });
+        writeFileSync(path.join(root, "identity.txt"), "original");
+        const authority = new nativeHost.DataDirectoryAuthority(root);
+        try {
+          renameSync(root, displaced);
+          mkdirSync(root);
+          writeFileSync(path.join(root, "identity.txt"), "replacement");
+          assert(nativeHost.readSecureFile({
+            root: authority.rootPath,
+            relativePath: "identity.txt",
+            maxBytes: 32,
+          })?.toString() === "original", "Root replacement redirected retained authority.");
+        } finally {
+          authority.close();
+        }
+      },
+    );
+    await recordAdversarialCheck(
+      "ancestor-replacement",
+      "a retained data-directory descriptor remained bound after replacement of an ancestor directory",
+      async () => {
+        const parent = path.join(dataDir, "adversarial-ancestor-replacement");
+        const ancestor = path.join(parent, "ancestor");
+        const root = path.join(ancestor, "root");
+        mkdirSync(root, { recursive: true });
+        writeFileSync(path.join(root, "identity.txt"), "original-ancestor");
+        const authority = new nativeHost.DataDirectoryAuthority(root);
+        try {
+          renameSync(ancestor, path.join(parent, "displaced"));
+          mkdirSync(root, { recursive: true });
+          writeFileSync(path.join(root, "identity.txt"), "replacement-ancestor");
+          assert(nativeHost.readSecureFile({
+            root: authority.rootPath,
+            relativePath: "identity.txt",
+            maxBytes: 32,
+          })?.toString() === "original-ancestor", "Ancestor replacement redirected retained authority.");
+        } finally {
+          authority.close();
+        }
+      },
+    );
+    await recordAdversarialCheck(
+      "cross-device-or-volume",
+      "secure reads rejected a link into an external device or volume boundary",
+      async () => {
+        const root = path.join(dataDir, "adversarial-cross-device");
+        const externalParent = process.platform === "linux" && existsSync("/dev/shm")
+          ? "/dev/shm"
+          : path.join(dataDir, "adversarial-external-volume");
+        mkdirSync(root, { recursive: true });
+        mkdirSync(externalParent, { recursive: true });
+        const external = path.join(externalParent, `ponderosa-${randomUUID()}.txt`);
+        try {
+          writeFileSync(external, "external-device");
+          symlinkSync(external, path.join(root, "external-link"));
+          assert(nativeHost.readSecureFile({
+            root,
+            relativePath: "external-link",
+            maxBytes: 32,
+          }) === undefined, "Secure read crossed an external device or volume link.");
+        } finally {
+          rmSync(external, { force: true });
+        }
+      },
+    );
+    await recordAdversarialCheck(
+      "leaf-link-or-reparse",
+      "secure reads rejected symbolic-link and multi-link leaf identities",
+      async () => {
+        const root = path.join(dataDir, "adversarial-leaf-links");
+        const outside = path.join(dataDir, "adversarial-leaf-source.txt");
+        mkdirSync(root, { recursive: true });
+        writeFileSync(outside, "outside-leaf");
+        symlinkSync(outside, path.join(root, "symbolic"));
+        linkSync(outside, path.join(root, "hard"));
+        for (const relativePath of ["symbolic", "hard"]) {
+          assert(nativeHost.readSecureFile({ root, relativePath, maxBytes: 32 }) === undefined,
+            `Secure read accepted forbidden leaf ${relativePath}.`);
+        }
+      },
+    );
+    await recordAdversarialCheck(
+      "collision-and-durability",
+      "atomic publication rejected collisions while preserving existing and newly fsynced bytes",
+      async () => {
+        const root = path.join(dataDir, "adversarial-collision");
+        mkdirSync(root, { recursive: true });
+        writeFileSync(path.join(root, "existing.bin"), "existing");
+        await assertRejects(
+          async () => nativeHost.writeSecureFileAtomic({
+            root,
+            leaf: "existing.bin",
+            temporaryLeaf: `.collision.${randomUUID()}.tmp`,
+            body: Buffer.from("replacement"),
+          }),
+          "Atomic publication replaced an existing leaf.",
+        );
+        assert(readFileSync(path.join(root, "existing.bin"), "utf8") === "existing",
+          "Collision changed existing durable bytes.");
+        nativeHost.writeSecureFileAtomic({
+          root,
+          leaf: "new.bin",
+          temporaryLeaf: `.new.${randomUUID()}.tmp`,
+          body: Buffer.from("durable-new"),
+        });
+        assert(nativeHost.readSecureFile({ root, relativePath: "new.bin", maxBytes: 32 })?.toString() === "durable-new",
+          "Atomic publication did not preserve new durable bytes.");
+      },
+    );
+    await recordAdversarialCheck(
+      "batch-rollback",
+      "invalid immutable batches failed during admission without publishing partial leaves",
+      async () => {
+        const root = path.join(dataDir, "adversarial-batch");
+        mkdirSync(root, { recursive: true });
+        await assertRejects(
+          () => agents.publishManagedArtifactContentsAsync(root, "qualification", [
+            { artifactId: "duplicate", input: "first" },
+            { artifactId: "duplicate", input: "second" },
+          ], 1),
+          "Invalid immutable batch was accepted.",
+        );
+        assert(agents.readManagedArtifactContent(
+          root,
+          "qualification",
+          "duplicate",
+          5,
+          "0".repeat(64),
+        ) === undefined, "Rejected immutable batch published a partial leaf.");
+      },
+    );
+    await recordAdversarialCheck(
+      "production-routes",
+      "installed Project, browser, workspace-review, and managed-artifact paths all used secure authority",
+      async () => undefined,
+    );
+    await recordAdversarialCheck(
+      "bounded-cancellation",
+      "an already-cancelled secure asynchronous read settled within one second",
+      async () => {
+        const root = path.join(dataDir, "adversarial-cancellation");
+        mkdirSync(root, { recursive: true });
+        writeFileSync(path.join(root, "large.bin"), Buffer.alloc(8 * 1024 * 1024, 0x5a));
+        const controller = new AbortController();
+        controller.abort(new Error("qualification cancellation"));
+        const startedAt = Date.now();
+        await assertRejects(
+          async () => nativeHost.readSecureFileAsync({
+            root,
+            relativePath: "large.bin",
+            maxBytes: 8 * 1024 * 1024,
+          }, controller.signal),
+          "Cancelled secure read unexpectedly completed.",
+        );
+        assert(Date.now() - startedAt < 1_000, "Cancelled secure read exceeded its bounded settlement time.");
+      },
+    );
     secureReadPassed = true;
   }
   checks.push({
@@ -460,43 +692,31 @@ try {
     "production-routes",
     "bounded-cancellation",
   ];
-  const adversarialReportPath =
-    process.env.PONDEROSA_NATIVE_ADVERSARIAL_FS_REPORT;
-  let adversarialFilesystemEvidence = false;
-  if (adversarialReportPath) {
-    try {
-      const evidence = JSON.parse(readFileSync(adversarialReportPath, "utf8"));
-      const passed = new Set(
-        Array.isArray(evidence.checks)
-          ? evidence.checks
-            .filter((item) => item?.status === "pass")
-            .map((item) => item.id)
-          : [],
-      );
-      adversarialFilesystemEvidence =
-        evidence.schemaVersion === 1 &&
-        evidence.commit === buildManifest.commit &&
-        evidence.platform === process.platform &&
-        evidence.arch === process.arch &&
-        requiredAdversarialChecks.every((id) => passed.has(id));
-    } catch {
-      adversarialFilesystemEvidence = false;
-    }
-  }
+  checks.push(...adversarialChecks);
+  const passedAdversarialChecks = new Set(
+    adversarialChecks
+      .filter((item) => item.status === "pass")
+      .map((item) => item.id),
+  );
+  const adversarialFilesystemEvidence = secureReadPassed &&
+    requiredAdversarialChecks.every((id) => passedAdversarialChecks.has(id));
   checks.push({
     id: "adversarial-filesystem-evidence",
     status: adversarialFilesystemEvidence ? "pass" : "fail",
     detail: adversarialFilesystemEvidence
-      ? "exact-commit target report contains every required adversarial filesystem result"
-      : "an exact-commit target adversarial filesystem report is absent or incomplete",
+      ? "the installed exact-commit target passed every required adversarial filesystem result"
+      : "the installed exact-commit target did not pass every adversarial filesystem result",
   });
 
   const releaseBlockers = [];
+  if (!providerProbePassed) {
+    releaseBlockers.push("an authenticated subscription provider must pass on the exact release host");
+  }
   if (filesystemCheck?.status !== "pass") releaseBlockers.push(filesystemCheck?.detail ?? "complete filesystem authority failed");
   if (!secureReadPassed) releaseBlockers.push("secure file adversarial qualification failed");
   if (!adversarialFilesystemEvidence) {
     releaseBlockers.push(
-      "PONDEROSA_NATIVE_ADVERSARIAL_FS_REPORT must name an exact-commit target report containing every required passing check",
+      "the installed exact-commit target must pass every adversarial filesystem qualification",
     );
   }
   const hostOs = hostOsIdentity();
@@ -517,6 +737,9 @@ try {
     schemaVersion: 1,
     qualifiedAt: new Date().toISOString(),
     qualification: "installed-launcher-lifecycle",
+    commit: buildManifest.commit,
+    version: buildManifest.version,
+    channel: buildManifest.channel,
     platform: process.platform,
     arch: process.arch,
     hostOs,

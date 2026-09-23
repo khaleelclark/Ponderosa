@@ -45,6 +45,8 @@ export interface CreateProjectRequest {
   defaultEngine: EngineId;
   defaultModel?: string;
   defaultEffort?: string;
+  /** Initial Chat processing tier; Projects themselves do not own this setting. */
+  defaultSpeed?: string;
   /** Existing absolute host folder. Omit to use a new managed empty workspace. */
   hostPath?: string;
   /** Create a named empty folder below Ponderosa's managed workspace root. */

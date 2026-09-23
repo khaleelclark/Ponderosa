@@ -86,6 +86,8 @@ export interface AgentDto {
   model?: string;
   /** Durable reasoning-effort selection used when a turn does not override it. */
   effort?: string;
+  /** Durable provider processing tier used when a turn does not override it. */
+  speed?: string;
   state: AgentState;
   createdAt: string;
   updatedAt: string;
@@ -154,6 +156,8 @@ export interface ImportAgentPackageRequest {
 export interface CopyAgentPackageRequest {
   sourceAgentId: string;
   conversationId: string;
+  /** Optional new name for the copied organization root; descendants retain their names. */
+  rootTitle?: string;
   /** Template copies omit history, files, and Triggers. Defaults to full. */
   mode?: "template" | "full";
   /** Copy the source Agent's complete managed descendant organization. */
@@ -278,6 +282,8 @@ export interface UpdateAgentRequest {
   model?: string | null;
   /** Durable next-Run reasoning effort. Null clears the Agent override. */
   effort?: string | null;
+  /** Durable next-Run processing tier. Null clears the Agent override. */
+  speed?: string | null;
   /** Changes the next-Run filesystem identity. Never falls back to Shared. */
   workingCopyMode?: AgentWorkingCopyMode;
   managementPermissions?: AgentManagementPermissionsDto;

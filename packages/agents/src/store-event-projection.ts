@@ -79,13 +79,14 @@ export class AgentEventProjectionStore {
     return this.logFor(agentId, projectId).readAll();
   }
 
-  readSince(agentId: string, sinceSeq: number): StoredLogEvent[] {
+  readSince(agentId: string, sinceSeq: number, limit?: number): StoredLogEvent[] {
     return (this.client.prepare(`
       SELECT seq, created_at, payload_json
       FROM events
       WHERE agent_id = ? AND seq > ?
       ORDER BY seq
-    `).all(agentId, sinceSeq) as Array<{
+      ${limit === undefined ? "" : "LIMIT ?"}
+    `).all(...(limit === undefined ? [agentId, sinceSeq] : [agentId, sinceSeq, limit])) as Array<{
       seq: number;
       created_at: string;
       payload_json: string;

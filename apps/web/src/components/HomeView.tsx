@@ -12,7 +12,6 @@ import {
   Paper,
   Stack,
   Typography,
-  useMediaQuery,
 } from "@mui/material";
 import type {
   EngineDto,
@@ -55,10 +54,10 @@ function Section({
 }): JSX.Element {
   return (
     <Box component="section">
-      <Stack direction="row" spacing={2} sx={{ alignItems: "end", mb: 1.25 }}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: { xs: 0.75, sm: 1.25 }, minWidth: 0 }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="h6" component="h2" fontWeight={800}>{title}</Typography>
-          <Typography variant="body2" color="text.secondary">{description}</Typography>
+          <Typography variant="h6" component="h2" fontWeight={800} noWrap>{title}</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ "@container (max-width: 680px)": { display: "none" } }}>{description}</Typography>
         </Box>
         {action}
       </Stack>
@@ -81,13 +80,13 @@ function SummaryCard({
   onClick?(): void;
 }): JSX.Element {
   const content = (
-    <Stack spacing={0.25} sx={{ p: 1.5, minWidth: 0, textAlign: "left" }}>
-      <Typography variant="h5" fontWeight={800} noWrap>
+    <Stack spacing={0} sx={{ p: { xs: 1, sm: 1.5 }, minWidth: 0, textAlign: "left" }}>
+      <Typography variant="h5" component="div" fontWeight={800} noWrap sx={{ fontSize: { xs: 19, sm: undefined } }}>
         {compactValue === undefined ? value : (
           <><Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>{compactValue}</Box><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{value}</Box></>
         )}
       </Typography>
-      <Typography variant="body2" color="text.secondary" noWrap>
+      <Typography variant="body2" color="text.secondary" noWrap sx={{ fontSize: { xs: 12, sm: undefined } }}>
         {compactLabel === undefined ? label : (
           <><Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>{compactLabel}</Box><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{label}</Box></>
         )}
@@ -187,7 +186,8 @@ function ItemCard({
             <SemanticStatus
               status={status}
               label={statusLabel}
-              detail={statusDetail ?? statusAccessibleLabel}
+              accessibleLabel={statusAccessibleLabel}
+              detail={statusDetail}
             />
           </Box>
         ) : null}
@@ -214,6 +214,7 @@ export function HomeView({
   projects,
   projectsLoaded,
   engines,
+  enginesLoaded,
   notifications,
   notificationCounts,
   onNavigate,
@@ -223,6 +224,7 @@ export function HomeView({
   projects: ProjectDto[];
   projectsLoaded: boolean;
   engines: EngineDto[];
+  enginesLoaded: boolean;
   notifications: WorkspaceNotificationDto[];
   notificationCounts?: Pick<WorkspaceNotificationPageDto, "openActionCount">;
   onNavigate(route: Route): void;
@@ -252,47 +254,56 @@ export function HomeView({
   const working = activeItems;
   const automations = triggerItems;
   const recentOutcomes = outcomeItems.slice(0, 6);
-  const mobile = useMediaQuery("(max-width: 899.95px)");
   const provider = engineAvailabilityPresentation(engines);
   const activeCount = activeAgentQuery.requestState.hasResolved
     ? activeAgentQuery.data?.pages.at(-1)?.activeCount ?? 0
-    : "—";
+    : activeAgentQuery.requestState.isInitialError ? "Unavailable" : "Loading";
   const enabledAutomationCount = triggerQuery.requestState.hasResolved
     ? triggerQuery.data?.pages.at(-1)?.enabledCount ?? 0
-    : "—";
+    : triggerQuery.requestState.isInitialError ? "Unavailable" : "Loading";
   const attentionCount = notificationOpenActionCount(notifications, notificationCounts);
+  const homeLoading = !projectsLoaded || !enginesLoaded ||
+    activeAgentQuery.requestState.isInitialLoading ||
+    triggerQuery.requestState.isInitialLoading || outcomeQuery.requestState.isInitialLoading;
 
   return (
-    <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto" }}>
+    <Box className="ponderosa-scroll" aria-busy={homeLoading} sx={{ minHeight: 0, overflowY: "auto" }}>
+      <Box
+        component="span"
+        role="status"
+        sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0, 0, 0, 0)", whiteSpace: "nowrap", border: 0 }}
+      >
+        {homeLoading ? "Loading Home summary" : "Home summary loaded"}
+      </Box>
       <CompactWorkspaceHeader
         icon={<HomeOutlinedIcon />}
         title="Home"
-        context="Across every Project"
+        context="Across your chats"
       />
-      <Box sx={{ p: { xs: 2, sm: 3, lg: 4 }, containerType: "inline-size" }}>
-        <Stack spacing={3} sx={{ width: "100%", maxWidth: 1320, mx: "auto" }}>
+      <Box sx={{ p: { xs: 1.5, sm: 3, lg: 4 }, containerType: "inline-size" }}>
+        <Stack spacing={{ xs: 2, sm: 3 }} sx={{ width: "100%", maxWidth: 1320, mx: "auto" }}>
           <Box sx={{
             display: "grid",
             gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-            gap: 1.25,
+            gap: { xs: 1, sm: 1.25 },
             "@container (min-width: 760px)": {
               gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
             },
           }}>
-            <SummaryCard label="Active Agents" value={activeCount} onClick={() => onNavigate({ kind: "allAgents" })} />
+            <SummaryCard label="Active Agents" value={activeCount} />
             <SummaryCard label="Needs Attention" value={attentionCount} onClick={onOpenInbox} />
-            <SummaryCard label="Enabled Automations" compactLabel="Automations" value={enabledAutomationCount} onClick={() => onNavigate({ kind: "allTriggers" })} />
+            <SummaryCard label="Enabled Automations" compactLabel="Automations" value={enabledAutomationCount} />
             <SummaryCard label="Provider Health" value={provider.label} compactValue={provider.label === "Engine ready" ? "Ready" : provider.label} />
           </Box>
 
           {projectsLoaded && projects.length === 0 ? (
             <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
               <FolderOutlinedIcon color="action" sx={{ fontSize: 42, mb: 1 }} />
-              <Typography variant="h6" fontWeight={800}>Create Your First Project</Typography>
+              <Typography variant="h6" component="h2" fontWeight={800}>Start Your First Chat</Typography>
               <Typography color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
-                Projects organize the Chats, Agents, files, and Automations for a workstream.
+                Chats bring your messages, agents, files, and automations together.
               </Typography>
-              <Button variant="contained" onClick={onCreateProject}>Create Project</Button>
+              <Button variant="contained" onClick={onCreateProject}>New Chat</Button>
             </Paper>
           ) : null}
 
@@ -342,7 +353,6 @@ export function HomeView({
           <Section
             title="Working Now"
             description="Active and waiting Agent work across the organization."
-            action={<Button onClick={() => onNavigate({ kind: "allAgents" })}>View all Agents</Button>}
           >
             {working.length ? (
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
@@ -357,7 +367,7 @@ export function HomeView({
                       key={item.agent.id}
                       icon={<SmartToyOutlinedIcon />}
                       title={item.agent.title}
-                      detail={item.project.label}
+                      detail={`Chat: ${item.ownerConversation?.title ?? "Unavailable"}`}
                       status={semanticAgentStatus(item.health.status)}
                       statusLabel={presentation.label}
                       statusAccessibleLabel={presentation.accessibleLabel}
@@ -381,7 +391,6 @@ export function HomeView({
           <Section
             title="Automations"
             description="Enabled schedules and events, ordered by what runs next."
-            action={<Button onClick={() => onNavigate({ kind: "allTriggers" })}>View all Automations</Button>}
           >
             {automations.length ? (
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
@@ -390,7 +399,7 @@ export function HomeView({
                     key={item.trigger.id}
                     icon={<BoltOutlinedIcon />}
                     title={item.trigger.name}
-                    detail={`${item.project.label} · ${item.targetAgent?.title ?? "Reassignment required"}`}
+                    detail={`${item.targetAgent?.title ?? "Reassignment required"}`}
                     status={item.trigger.enabled ? "enabled" : "disabled"}
                     onClick={() => onNavigate({ kind: "automation", projectId: item.project.id, triggerId: item.trigger.id })}
                   />
@@ -407,15 +416,15 @@ export function HomeView({
             )}
           </Section>
 
-          <Section title={mobile ? "Recent Assigned Work" : "Recent Outcomes"} description={mobile ? "Recent assigned work and its current status across Projects." : "The latest finished assigned work across Projects."}>
+          <Section title="Recent Outcomes" description="Recently finished assigned work across chats.">
             {recentOutcomes.length ? (
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
                 {recentOutcomes.map(item => (
                   <ItemCard
                     key={item.agent.id}
-                    icon={<CheckCircleOutlineIcon />}
+                    icon={<SmartToyOutlinedIcon />}
                     title={item.agent.title}
-                    detail={item.project.label}
+                    detail={`Chat: ${item.ownerConversation?.title ?? "Unavailable"}`}
                     status={semanticAgentStatus(item.health.assignedWorkOutcome!.status)}
                     statusLabel={humanizeStatus(item.health.assignedWorkOutcome!.status)}
                     onClick={() => onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.agent.id })}

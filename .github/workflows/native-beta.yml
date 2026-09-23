@@ -38,6 +38,7 @@ jobs:
       CI: "true"
       PONDEROSA_RELEASE_CHANNEL: beta
       PONDEROSA_NODE_VERSION: 24.16.0
+      PONDEROSA_EXPECTED_SHA: ${{ github.sha }}
       MACOSX_DEPLOYMENT_TARGET: "14.0"
 
     steps:
@@ -61,7 +62,7 @@ jobs:
       - name: Assert exact source and toolchain
         shell: bash
         run: |
-          expected="${{ github.sha }}"
+          expected="$PONDEROSA_EXPECTED_SHA"
           test "$(git rev-parse HEAD)" = "$expected"
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             git merge-base --is-ancestor origin/master "$expected"
@@ -91,13 +92,9 @@ jobs:
         shell: bash
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
+      - name: Full verification
         shell: bash
-        run: pnpm typecheck
-
-      - name: Production build
-        shell: bash
-        run: pnpm build
+        run: pnpm verify
 
       - name: Install Linux voice test sandbox dependencies
         if: runner.os == 'Linux'
@@ -143,7 +140,7 @@ jobs:
         run: |
           artifact="$(find dist/installers -maxdepth 1 -type f -name '*.${{ matrix.format }}' -print -quit)"
           test -n "$artifact"
-          report="dist/qualification/native-installed-artifact.json"
+          report="dist/qualification/${{ matrix.format }}-native-installed-artifact.json"
           qualifier_args=(--artifact "$artifact" --report "$report")
           if [ "$RUNNER_OS" = "macOS" ]; then
             qualifier_args+=(--skip-provider-qualification)
@@ -161,6 +158,9 @@ jobs:
                 '- Release qualified: **' + (result.releaseQualified === true ? 'yes' : 'no') + '**\\n' +
                 '- External/manual blockers: ' + (blockers.length ? blockers.join('; ') : 'none') + '\\n',
             );
+            if (result.releaseQualified !== true || blockers.length > 0) {
+              throw new Error('installed artifact did not qualify for release');
+            }
           " "$report"
 
       - name: Record safe failure context
@@ -170,30 +170,27 @@ jobs:
           mkdir -p dist/qualification
           node -e "require('node:fs').writeFileSync('dist/qualification/native-failure.json', JSON.stringify({commit:process.env.GITHUB_SHA,runner:process.env.RUNNER_OS,arch:process.arch,note:'Inspect redacted workflow step logs; no provider or signing credentials were supplied.'},null,2)+'\n')"
 
-      - name: Upload tagged release assets
-        if: success() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          artifact="$(find dist/installers -maxdepth 1 -type f -name '*.${{ matrix.format }}' -print -quit)"
-          test -n "$artifact"
-          gh release upload "$GITHUB_REF_NAME" \
-            "$artifact" \
-            "$artifact.sha256" \
-            "$artifact.metadata.json" \
-            --clobber
+      - name: Stage qualified target for atomic promotion
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-${{ matrix.format }}-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ matrix.artifact_glob }}
+            dist/installers/*.sha256
+            dist/installers/*.metadata.json
+            dist/qualification/*.json
 
-      - name: Retain tagged qualification evidence
-        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          report_archive="dist/qualification-${RUNNER_OS}-${RUNNER_ARCH}-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz"
-          test -d dist/qualification
-          tar -czf "$report_archive" -C dist qualification
-          gh release upload "$GITHUB_REF_NAME" "$report_archive"
+      - name: Retain failure qualification evidence
+        if: failure() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-failure-${{ matrix.format }}-${{ github.sha }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: dist/qualification/*.json
 
       - name: Upload native evidence for manual runs
         if: always() && github.event_name == 'workflow_dispatch'
@@ -210,3 +207,41 @@ jobs:
             dist/beta/*/Ponderosa/build-manifest.json
             dist/beta/*/qualification-report.json
             dist/qualification/*.json
+
+  publish:
+    name: Publish complete private-beta matrix
+    needs: native
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: beta-*-${{ github.sha }}
+          path: release
+          merge-multiple: true
+
+      - name: Require every qualified target before publication
+        shell: bash
+        run: |
+          test "$(find release -type f -name '*.deb' | wc -l | tr -d ' ')" = 1
+          test "$(find release -type f -name '*.dmg' | wc -l | tr -d ' ')" = 1
+          test "$(find release -type f -name '*.exe' | wc -l | tr -d ' ')" = 1
+          test "$(find release -type f -name '*-native-installed-artifact.json' | wc -l | tr -d ' ')" = 3
+
+      - name: Upload to a draft, then publish atomically
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
+              --title "Ponderosa $GITHUB_REF_NAME" \
+              --notes "Qualified private-beta artifacts for all supported beta targets."
+          fi
+          find release -type f -print0 | \
+            xargs -0 gh release upload "$GITHUB_REF_NAME" --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease

@@ -84,8 +84,10 @@ import {
 import { ConversationFilesResults } from "./ConversationFilesResults";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { CollectionPagination } from "./CollectionPrimitives";
+import { ChatContextSettings } from "./ChatContextSettings";
 
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
+import { replaceCachedConversationAgent } from "../conversationAgentCache";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import {
@@ -184,9 +186,10 @@ export function ConversationView({
   const preferencesQuery = useWorkspacePreferences();
   const projectsQuery = useProjects();
   const [renameOpen, setRenameOpen] = useState(false);
+  const [contextSettingsOpen, setContextSettingsOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
+  const [addAgentsOpen, setAddAgentsOpen] = useState(false);
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const collaborationVisited = useRef(activeView === "collaboration");
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
@@ -198,7 +201,7 @@ export function ConversationView({
   const [memberSearch, setMemberSearch] = useState("");
   // The runtime shown by the composer. With one exact Agent destination this
   // mirrors that Agent's durable next-Run selection; otherwise it is the
-  // Project Chat default used for newly spawned Agents.
+  // Chat default used for newly spawned Agents.
   const [engine, setEngine] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
@@ -206,6 +209,12 @@ export function ConversationView({
   const [submissionRuntimeIntent, setSubmissionRuntimeIntent] = useState(0);
   const runtimeMutationGenerationByOwner = useRef(new Map<string, number>());
   const runtimeCanonicalKeyByOwner = useRef(new Map<string, string>());
+  const optimisticRuntimeByOwner = useRef(new Map<string, {
+    engine: string;
+    model: string;
+    effort: string;
+    speed: string;
+  }>());
   const runtimeOwnerRef = useRef<string>();
   const currentRuntimeCanonicalKeyRef = useRef<string>();
   const { focusedMessage, focusedMessageHighlightDisposer } =
@@ -224,6 +233,9 @@ export function ConversationView({
   useConversationActiveViewPersistence(activeView, conversationId);
 
   const conversation = detailQuery.data?.conversation;
+  useEffect(() => {
+    if (conversation?.title) document.title = `${conversation.title} · Ponderosa`;
+  }, [conversation?.title]);
   const projectAgentsQuery = useAgents(conversation?.projectId);
   const routingAgents = projectAgentsQuery.data ?? agents;
   const activeBrowsers = useQuery({
@@ -335,8 +347,15 @@ export function ConversationView({
       defaultEngine?: EngineDto["id"];
       defaultModel?: string | null;
       defaultEffort?: string | null;
+      defaultSpeed?: string | null;
     }) => api.updateConversation(conversationId, patch),
-    onSuccess: () => {
+    onSuccess: updated => {
+      queryClient.setQueriesData<unknown>(
+        { queryKey: queryKeys.conversations.detailPrefix(conversationId) },
+        (current: unknown) => current && typeof current === "object" && "conversation" in current
+          ? { ...current, conversation: updated }
+          : current,
+      );
       void queryClient.invalidateQueries({
         queryKey: queryKeys.conversations.detailPrefix(conversationId),
       });
@@ -352,13 +371,19 @@ export function ConversationView({
       activeEngine,
       model,
       effort,
+      speed,
     }: {
       agentId: string;
       activeEngine: EngineDto["id"];
       model: string | null;
       effort: string | null;
-    }) => api.updateAgent(agentId, { activeEngine, model, effort }),
+      speed: string | null;
+    }) => api.updateAgent(agentId, { activeEngine, model, effort, speed }),
     onSuccess: updated => {
+      queryClient.setQueriesData<unknown>(
+        { queryKey: queryKeys.conversations.detailPrefix(conversationId) },
+        (current: unknown) => replaceCachedConversationAgent(current, updated),
+      );
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.detailPrefix(updated.id),
       });
@@ -386,11 +411,13 @@ export function ConversationView({
         engine: commandTargetAgent.activeEngine,
         model: commandTargetAgent.model,
         effort: commandTargetAgent.effort,
+        speed: commandTargetAgent.speed,
       }
     : {
         engine: conversation?.defaultEngine ?? runtimeProject?.defaultEngine,
         model: conversation?.defaultModel,
         effort: conversation?.defaultEffort,
+        speed: conversation?.defaultSpeed,
       });
   runtimeOwnerRef.current = runtimeOwner;
   currentRuntimeCanonicalKeyRef.current = currentRuntimeCanonicalKey;
@@ -404,15 +431,20 @@ export function ConversationView({
           engine: commandTargetAgent.activeEngine,
           model: commandTargetAgent.model,
           effort: commandTargetAgent.effort,
-          speedKey: `agent.${commandTargetAgent.id}.speed`,
+          speed: commandTargetAgent.speed,
+          legacySpeedKey: `agent.${commandTargetAgent.id}.speed`,
         }
       : {
           engine: conversation.defaultEngine ?? project?.defaultEngine,
           model: conversation.defaultModel,
           effort: conversation.defaultEffort,
-          speedKey: `conversation.${conversation.id}.speed`,
+          speed: conversation.defaultSpeed,
+          legacySpeedKey: `conversation.${conversation.id}.speed`,
         };
     const canonicalKey = runtimeCanonicalKey(source);
+    const optimistic = optimisticRuntimeByOwner.current.get(runtimeOwner);
+    if (optimistic && runtimeCanonicalKey(optimistic) !== canonicalKey) return;
+    if (optimistic) optimisticRuntimeByOwner.current.delete(runtimeOwner);
     recordRuntimeCanonicalKey(
       runtimeMutationGenerationByOwner.current,
       runtimeCanonicalKeyByOwner.current,
@@ -431,7 +463,7 @@ export function ConversationView({
       {
         model: source.model,
         effort: source.effort,
-        speed: readChatState(chatStateKey("runtime", source.speedKey)),
+        speed: source.speed ?? readChatState(chatStateKey("runtime", source.legacySpeedKey)),
       },
     );
     setEngine(resolvedEngine);
@@ -442,11 +474,13 @@ export function ConversationView({
     conversation?.defaultEffort,
     conversation?.defaultEngine,
     conversation?.defaultModel,
+    conversation?.defaultSpeed,
     conversation?.id,
     conversation?.projectId,
     commandTargetAgent?.activeEngine,
     commandTargetAgent?.effort,
     commandTargetAgent?.model,
+    commandTargetAgent?.speed,
     engines,
     preferencesQuery.data,
     projectsQuery.data,
@@ -484,6 +518,7 @@ export function ConversationView({
     captured: ReturnType<typeof captureRuntimeMutation>,
     optimisticSpeed: string,
   ) => {
+    optimisticRuntimeByOwner.current.delete(captured.owner);
     if (!runtimeMutationOwnsAuthority({
       capturedOwner: captured.owner,
       currentOwner: runtimeOwnerRef.current,
@@ -499,6 +534,18 @@ export function ConversationView({
     setModel(captured.previous.model);
     setEffort(captured.previous.effort);
     setSpeed(captured.previous.speed);
+  };
+
+  const rememberOptimisticRuntime = (
+    nextEngine: string,
+    selection: { model?: string; effort?: string; speed?: string },
+  ) => {
+    optimisticRuntimeByOwner.current.set(runtimeOwner, {
+      engine: nextEngine,
+      model: selection.model ?? "",
+      effort: selection.effort ?? "",
+      speed: selection.speed ?? "",
+    });
   };
 
   const rename = useMutation({
@@ -525,16 +572,13 @@ export function ConversationView({
     const hasOperatorMessage = messages.some(
       message => message.role === "user",
     );
-    const hasAgentMessage = messages.some(
-      message => message.role === "assistant",
-    );
-    if (!hasOperatorMessage || !hasAgentMessage) return;
+    if (!hasOperatorMessage) return;
     titleGenerationRequested.current = conversationId;
     generateTitle.mutate();
   }, [conversation?.title, conversationId, generateTitle, messages]);
 
   const deleteConversation = useMutation({
-    mutationFn: () => api.deleteConversation(conversationId),
+    mutationFn: (expectedAgentIds: string[]) => api.deleteConversation(conversationId, expectedAgentIds),
     onSuccess: () => {
       queryClient.removeQueries({
         queryKey: queryKeys.conversations.detailPrefix(conversationId),
@@ -547,6 +591,9 @@ export function ConversationView({
       });
       setDeleteOpen(false);
       onDeleted();
+    },
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey: ["chat-deletion-agents", conversationId] });
     },
   });
 
@@ -733,7 +780,7 @@ export function ConversationView({
             </Button>
           }
         >
-          This Project chat could not be loaded. Check the server connection and
+          This Chat could not be loaded. Check the server connection and
           try again.
         </Alert>
       </Box>
@@ -743,7 +790,7 @@ export function ConversationView({
   if (!detailQuery.data || !conversation) {
     return (
       <Box sx={{ p: 2 }}>
-        <Alert severity="warning">Project chat not found.</Alert>
+        <Alert severity="warning">Chat not found.</Alert>
       </Box>
     );
   }
@@ -828,6 +875,7 @@ export function ConversationView({
         efforts={efforts}
         speed={selectedRuntime.speed}
         speeds={speeds}
+        scopeLabel={commandTargetAgent ? `${commandTargetAgent.title} next Run` : "Chat default"}
         disabled={persistTargetRuntime.isPending || persistDefaults.isPending}
         onEngineChange={next => {
           setSubmissionRuntimeIntent(value => value + 1);
@@ -842,6 +890,7 @@ export function ConversationView({
           setModel(resolved.model);
           setEffort(resolved.effort);
           setSpeed(resolved.speed ?? "");
+          rememberOptimisticRuntime(next, resolved);
           writeChatState(
             chatStateKey(
               "runtime",
@@ -858,6 +907,7 @@ export function ConversationView({
                 activeEngine: next as EngineDto["id"],
                 model: resolved.model || null,
                 effort: resolved.effort || null,
+                speed: resolved.speed || null,
               },
               { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
             );
@@ -867,6 +917,7 @@ export function ConversationView({
                 defaultEngine: next as EngineDto["id"],
                 defaultModel: resolved.model || null,
                 defaultEffort: resolved.effort || null,
+                defaultSpeed: resolved.speed || null,
               },
               { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
             );
@@ -876,6 +927,7 @@ export function ConversationView({
           setSubmissionRuntimeIntent(value => value + 1);
           const captured = captureRuntimeMutation();
           const resolved = selectedRuntime.selectModel(next);
+          rememberOptimisticRuntime(engine, resolved);
           if (commandTargetAgent) {
             persistTargetRuntime.mutate(
               {
@@ -883,6 +935,7 @@ export function ConversationView({
                 activeEngine: engine as EngineDto["id"],
                 model: resolved.model || null,
                 effort: resolved.effort || null,
+                speed: resolved.speed || null,
               },
               { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
             );
@@ -891,6 +944,7 @@ export function ConversationView({
               {
                 defaultModel: resolved.model,
                 defaultEffort: resolved.effort || null,
+                defaultSpeed: resolved.speed || null,
               },
               { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
             );
@@ -900,6 +954,7 @@ export function ConversationView({
           setSubmissionRuntimeIntent(value => value + 1);
           const captured = captureRuntimeMutation();
           const resolved = selectedRuntime.selectEffort(next);
+          rememberOptimisticRuntime(engine, resolved);
           if (commandTargetAgent) {
             persistTargetRuntime.mutate(
               {
@@ -907,19 +962,39 @@ export function ConversationView({
                 activeEngine: engine as EngineDto["id"],
                 model: resolved.model || null,
                 effort: resolved.effort || null,
+                speed: resolved.speed || null,
               },
               { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
             );
           } else {
             persistDefaults.mutate(
-              { defaultEffort: resolved.effort },
+              { defaultEffort: resolved.effort, defaultSpeed: resolved.speed || null },
               { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
             );
           }
         }}
         onSpeedChange={next => {
           setSubmissionRuntimeIntent(value => value + 1);
-          selectedRuntime.selectSpeed(next);
+          const captured = captureRuntimeMutation();
+          const resolved = selectedRuntime.selectSpeed(next);
+          rememberOptimisticRuntime(engine, resolved);
+          if (commandTargetAgent) {
+            persistTargetRuntime.mutate(
+              {
+                agentId: commandTargetAgent.id,
+                activeEngine: engine as EngineDto["id"],
+                model: resolved.model || null,
+                effort: resolved.effort || null,
+                speed: resolved.speed || null,
+              },
+              { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
+            );
+          } else {
+            persistDefaults.mutate(
+              { defaultSpeed: resolved.speed || null },
+              { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
+            );
+          }
         }}
       />
     ) : null;
@@ -939,6 +1014,7 @@ export function ConversationView({
         activeView={activeView}
         agentWorkOpen={agentWorkOpen}
         conversation={conversation}
+        onChatSettings={() => setContextSettingsOpen(true)}
         projectLabel={project?.label}
         transcriptMarkdown={transcriptMarkdown}
         transcriptTitle={transcriptTitle}
@@ -947,8 +1023,7 @@ export function ConversationView({
         setAgentWorkOpen={setAgentWorkOpen}
         setRenameValue={setRenameValue}
         setRenameOpen={setRenameOpen}
-        onNewAgent={onNewAgent}
-        setImportOpen={setImportOpen}
+        setAddAgentsOpen={setAddAgentsOpen}
         setDeleteOpen={setDeleteOpen}
         setActiveView={next => {
           setActiveView(next);
@@ -956,13 +1031,14 @@ export function ConversationView({
         }}
       />
 
+      {contextSettingsOpen ? <ChatContextSettings key={conversation.id} chat={conversation} open onClose={()=>setContextSettingsOpen(false)} /> : null}
       {detailRefreshFailed ? (
         <Alert
           severity="warning"
           action={<Button color="inherit" size="small" onClick={() => void detailQuery.refetch()}>Retry</Button>}
           sx={{ m: 1 }}
         >
-          This Project chat could not be refreshed. The last loaded messages remain available.
+          This Chat could not be refreshed. The last loaded messages remain available.
         </Alert>
       ) : null}
 
@@ -976,9 +1052,10 @@ export function ConversationView({
         }}
       >
         <Box
+          id="chat-workspace-main-panel"
           role="tabpanel"
-          aria-label="Project chat messages"
-          tabIndex={!agentWorkOpen && activeView === "main" ? 0 : -1}
+          aria-labelledby="chat-workspace-main-tab"
+          tabIndex={-1}
           hidden={agentWorkOpen || activeView !== "main"}
           sx={{
             height: "100%",
@@ -990,7 +1067,7 @@ export function ConversationView({
           <ChatSurface
             layout="project"
             layoutKey={`main:${visibleMessageLayoutKey}`}
-            label="Project chat messages"
+            label="Chat messages"
             follow={{
               kind: "latest",
               storageKey: chatStateKey(
@@ -1034,6 +1111,8 @@ export function ConversationView({
                       <Alert
                         key={session.id}
                         severity="info"
+                        role="region"
+                        aria-label={`${agentTitle} browser status`}
                         action={
                           <Button
                             color="inherit"
@@ -1078,9 +1157,10 @@ export function ConversationView({
 
         {collaborationVisited.current ? (
           <Box
+            id="chat-workspace-collaboration-panel"
             role="tabpanel"
-            aria-label="Team chat messages"
-            tabIndex={!agentWorkOpen && activeView === "collaboration" ? 0 : -1}
+            aria-labelledby="chat-workspace-collaboration-tab"
+            tabIndex={-1}
             hidden={agentWorkOpen || activeView !== "collaboration"}
             sx={{
               height: "100%",
@@ -1177,7 +1257,7 @@ export function ConversationView({
             onClose={() => setAgentWorkOpen(false)}
           />
         ) : activeView === "files" ? (
-          <ConversationFilesResults
+          <Box id="chat-workspace-files-panel" role="tabpanel" aria-labelledby="chat-workspace-files-tab" sx={{ minHeight: 0, minWidth: 0 }}><ConversationFilesResults
             projectId={conversation.projectId}
             projectRoot={
               projectsQuery.data?.find(
@@ -1186,9 +1266,9 @@ export function ConversationView({
             }
             conversationId={conversation.id}
             agents={conversationAgents}
-          />
+          /></Box>
         ) : activeView === "agents" ? (
-          <AgentsTab
+          <Box id="chat-workspace-agents-panel" role="tabpanel" aria-labelledby="chat-workspace-agents-tab" sx={{ minHeight: 0, minWidth: 0 }}><AgentsTab
             searchValue={memberSearch}
             onSearchValueChange={setMemberSearch}
             agents={conversationAgents}
@@ -1229,9 +1309,9 @@ export function ConversationView({
                 }}
               />
             )}
-          />
+          /></Box>
         ) : activeView === "triggers" ? (
-          <AllTriggersWorkspace
+          <Box id="chat-workspace-triggers-panel" role="tabpanel" aria-labelledby="chat-workspace-triggers-tab" sx={{ minHeight: 0, minWidth: 0 }}><AllTriggersWorkspace
             projects={project ? [project] : []}
             filterProjectId={conversation.projectId}
             filterConversationId={conversation.id}
@@ -1247,7 +1327,7 @@ export function ConversationView({
                   : undefined,
               )
             }
-          />
+          /></Box>
         ) : null}
         {activeView === "main" && !agentWorkOpen ? (
           <Box
@@ -1451,7 +1531,8 @@ export function ConversationView({
       <ConversationDialogs
         conversation={conversation}
         engines={engines}
-        importOpen={importOpen}
+        addAgentsOpen={addAgentsOpen}
+        onCreateAgent={() => onNewAgent(conversation)}
         stopError={cancelOperationError?.message}
         stopPending={cancelOperationPending}
         stopConfirmation={stopConfirmation}
@@ -1466,7 +1547,7 @@ export function ConversationView({
             ? String(deleteConversation.error)
             : undefined
         }
-        onImportClose={() => setImportOpen(false)}
+        onAddAgentsClose={() => setAddAgentsOpen(false)}
         onStopCancel={() => {
           if (!cancelOperationPending) setStopConfirmation(undefined);
         }}
@@ -1475,7 +1556,7 @@ export function ConversationView({
         onRenameValueChange={setRenameValue}
         onRename={() => rename.mutate(renameValue.trim())}
         onDeleteClose={() => setDeleteOpen(false)}
-        onDelete={() => deleteConversation.mutate()}
+        onDelete={(expectedAgentIds) => deleteConversation.mutate(expectedAgentIds)}
       />
 
     </Box>

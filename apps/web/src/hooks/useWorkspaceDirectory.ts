@@ -4,6 +4,7 @@ import type {
   WorkspaceDirectoryKind,
   WorkspaceDirectoryPageDto,
   WorkspacePreferencesDto,
+  WorkspaceProjectDirectoryItemDto,
 } from "@ponderosa/core";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
@@ -140,6 +141,15 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
       fetchNextPage: query.fetchNextPage,
     } satisfies WorkspaceDirectoryRequestState,
   };
+}
+
+/** The rail shows every Project, not only the first bounded directory page. */
+export function useProjectRailDirectory() {
+  const query = useWorkspaceDirectory<WorkspaceProjectDirectoryItemDto>("project", { search: "", enabled: true });
+  useEffect(() => {
+    if (query.hasNextPage && !query.isFetchingNextPage && !query.isError) void query.fetchNextPage();
+  }, [query.hasNextPage, query.isFetchingNextPage, query.isError, query.fetchNextPage]);
+  return query;
 }
 
 export function workspaceDirectoryItems<T extends WorkspaceDirectoryItemDto>(

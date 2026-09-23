@@ -4,6 +4,7 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DataObjectOutlinedIcon from "@mui/icons-material/DataObjectOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
@@ -11,12 +12,13 @@ import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import { Button, Link, Stack, Typography } from "@mui/material";
 import type { AgentDto, AgentHealthDto } from "@ponderosa/core";
+import { copyText } from "../clipboard";
 import {
   agentStatusLabel,
   agentStatusPresentation,
   type AgentStatus,
 } from "../agents";
-import { transcriptFileName } from "../chatTranscript";
+import { downloadMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { formatExecutionElapsed } from "../time";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import type { AgentTab } from "./AgentDetail.helpers";
@@ -112,18 +114,19 @@ interface AgentDetailHeaderProps {
   stopping: boolean;
   tab: AgentTab;
   showSubagents: boolean;
+  showAutomations: boolean;
   transcriptMarkdown: string;
   transcriptTitle: string;
   onOpenProject(): void;
   onOpenChat(conversationId: string): void;
   onOpenAgent(agentId: string): void;
   onStop(): void;
-  onCopyPackage(mode: "template" | "full", organization?: boolean): void;
-  onDownloadPackage(mode: "template" | "full", organization?: boolean): void;
+  onExportPackage(): void;
+  onDuplicate?(): void;
+  onNotice(message: string): void;
   onOpenTechnical(): void;
   onRename(): void;
   onCreateAgent(): void;
-  onQuickCopy?: () => void;
   onChangeReportingLine(): void;
   onDelete(): void;
   onTabChange(tab: AgentTab): void;
@@ -146,18 +149,19 @@ export function AgentDetailHeader({
   stopping,
   tab,
   showSubagents,
+  showAutomations,
   transcriptMarkdown,
   transcriptTitle,
   onOpenProject,
   onOpenChat,
   onOpenAgent,
   onStop,
-  onCopyPackage,
-  onDownloadPackage,
+  onExportPackage,
+  onDuplicate,
+  onNotice,
   onOpenTechnical,
   onRename,
   onCreateAgent,
-  onQuickCopy,
   onChangeReportingLine,
   onDelete,
   onTabChange,
@@ -240,36 +244,7 @@ export function AgentDetailHeader({
             label="Agent Chat Actions"
             transcriptMarkdown={transcriptMarkdown}
             transcriptFileName={transcriptFileName(transcriptTitle)}
-            copyActions={[
-              { label: "Agent Template", onSelect: () => onCopyPackage("template") },
-              { label: "Full Agent", onSelect: () => onCopyPackage("full") },
-              {
-                label: "Organization Template",
-                onSelect: () => onCopyPackage("template", true),
-              },
-              {
-                label: "Full Organization",
-                onSelect: () => onCopyPackage("full", true),
-              },
-            ]}
-            downloadActions={[
-              {
-                label: "Agent Template",
-                onSelect: () => onDownloadPackage("template"),
-              },
-              {
-                label: "Full Agent",
-                onSelect: () => onDownloadPackage("full"),
-              },
-              {
-                label: "Organization Template",
-                onSelect: () => onDownloadPackage("template", true),
-              },
-              {
-                label: "Full Organization",
-                onSelect: () => onDownloadPackage("full", true),
-              },
-            ]}
+            showExports={false}
             actions={[
               {
                 label: "Technical Details",
@@ -286,15 +261,32 @@ export function AgentDetailHeader({
                 icon: <PersonAddAlt1Icon fontSize="small" />,
                 onSelect: onCreateAgent,
               },
-              ...(onQuickCopy
+              ...(onDuplicate
                 ? [
                     {
-                      label: "Duplicate Agent into Project Chat",
+                      label: "Duplicate…",
                       icon: <ContentCopyOutlinedIcon fontSize="small" />,
-                      onSelect: onQuickCopy,
+                      onSelect: onDuplicate,
                     },
                   ]
                 : []),
+              {
+                label: "Export Agent package…",
+                icon: <DownloadOutlinedIcon fontSize="small" />,
+                onSelect: onExportPackage,
+              },
+              {
+                label: "Copy chat transcript",
+                icon: <ContentCopyOutlinedIcon fontSize="small" />,
+                onSelect: () => void copyText(transcriptMarkdown)
+                  .then(() => onNotice("Chat transcript copied."))
+                  .catch(error => onNotice(error instanceof Error ? error.message : "Chat transcript could not be copied.")),
+              },
+              {
+                label: "Download chat transcript",
+                icon: <DownloadOutlinedIcon fontSize="small" />,
+                onSelect: () => downloadMarkdownTranscript(transcriptMarkdown, transcriptFileName(transcriptTitle)),
+              },
               {
                 label: "Delegated Under",
                 icon: <AccountTreeOutlinedIcon fontSize="small" />,
@@ -316,7 +308,8 @@ export function AgentDetailHeader({
         value: tab === "technical" ? false : tab,
         onChange: onTabChange,
         items: AGENT_DETAIL_TABS.filter(item =>
-          item.value !== "subagents" || showSubagents
+          (item.value !== "subagents" || showSubagents) &&
+          (item.value !== "triggers" || showAutomations)
         ),
       }}
     />

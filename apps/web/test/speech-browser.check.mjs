@@ -8,7 +8,7 @@ import { createRsbuild } from "@rsbuild/core";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const output = await mkdtemp(path.join(tmpdir(), "ponderosa-speech-browser-"));
-const { chromium } = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? "playwright");
+const { chromium } = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? new URL("../../server/node_modules/playwright-core/index.mjs", import.meta.url).href);
 let browser; let server;
 try {
   const build = await createRsbuild({ cwd: root, rsbuildConfig: {
@@ -26,32 +26,32 @@ try {
     } catch { response.writeHead(404).end(); }
   }).listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
-  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH }); const page = await browser.newPage();
+  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH, args: process.env.CI === "true" ? ["--no-sandbox"] : [] }); const page = await browser.newPage();
   const errors = []; page.on("pageerror", error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.waitForFunction(() => Boolean(window.speechTest));
   const call = (method, ...args) => page.evaluate(({ method, args }) => window.speechTest[method](...args), { method, args });
-  await call("start", "one", "browser"); assert.equal((await call("speechSnapshot")).status, "speaking");
+  await call("start", "one"); assert.equal((await call("speechSnapshot")).status, "speaking");
   await call("pauseSpeech"); assert.equal((await call("speechSnapshot")).status, "paused");
-  await call("resumeSpeech"); await call("handoff");
-  await page.evaluate(() => { document.getElementById("one").hidden = true; });
-  await page.waitForTimeout(80); assert.equal((await call("speechSnapshot")).status, "speaking");
-  await page.evaluate(() => { document.getElementById("two").hidden = true; });
-  await page.waitForFunction(() => window.speechTest.speechSnapshot().status === "stopped");
-  await page.evaluate(() => { document.getElementById("one").hidden = false; document.getElementById("two").hidden = false; });
-  await call("start", "one", "kokoro", "A complete sentence with enough words for segmentation. ".repeat(15));
-  await page.waitForFunction(() => window.speechTest.speechSnapshot().status === "speaking");
-  await page.waitForTimeout(50);
-  assert.equal(await page.evaluate(() => window.speechTest.stats.requests), 2);
-  await call("pauseSpeech"); await call("resumeSpeech"); await call("start", "two", "browser");
+  await call("resumeSpeech"); assert.equal((await call("speechSnapshot")).status, "speaking");
+  await page.evaluate(() => { window.staleEnd = window.speechTest.staleEnd(); });
+  await call("start", "two");
+  await page.evaluate(() => window.staleEnd());
   assert.equal((await call("speechSnapshot")).ownerId, "two");
-  assert.equal(await page.evaluate(() => window.speechTest.stats.urls === window.speechTest.stats.revokes), true);
-  await page.evaluate(() => { window.speechTest.stats.delay = true; });
-  await call("start", "one", "kokoro"); await call("stopSpeech");
-  await page.waitForFunction(() => window.speechTest.stats.aborts === 1);
+  assert.equal((await call("speechSnapshot")).status, "speaking");
+  await call("end");
+  assert.deepEqual(await call("speechSnapshot"), { ownerId: "two", status: "stopped" });
+  await call("start", "one");
+  await page.evaluate(() => { document.getElementById("one").hidden = true; });
+  await page.waitForFunction(() => window.speechTest.speechSnapshot().status === "stopped");
+  await page.evaluate(() => { document.getElementById("one").hidden = false; });
+  await call("start", "one"); await call("fail");
+  assert.equal((await call("speechSnapshot")).status, "error");
+  await call("start", "two"); await call("releaseSpeechSurface", "two");
   assert.equal((await call("speechSnapshot")).status, "stopped");
+  assert.equal(await page.evaluate(() => window.speechTest.stats.requests), 0);
   assert.deepEqual(errors, []);
-  console.log("PASS browser/local ownership, pause/resume, Settings handoff, hidden-surface cleanup, bounded prefetch, supersession, URL cleanup, and in-flight abort (Chromium fixture).");
+  console.log("PASS browser-only playback, pause/resume, completion, hidden-surface cleanup, supersession, stale callbacks, failure and zero synthesis requests.");
 } finally {
   await browser?.close(); await new Promise(resolve => server ? server.close(resolve) : resolve());
   await rm(output, { recursive: true, force: true });

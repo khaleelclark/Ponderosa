@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import {
-  cleanupSpeechStorage, listSecureDirectory, readSecureFile, readSecureFileAsync,
+  listSecureDirectory, readSecureFile, readSecureFileAsync,
   removeSecureFile, secureFileAuthoritySupported, writeSecureFileAtomic,
 } from '../dist/index.js';
 
@@ -33,7 +33,6 @@ test('native entry points reject embedded terminators in roots before filesystem
     assert.equal(native.listSecureDirectory(root, ''), null);
     assert.throws(() => native.writeSecureFileAtomic(root, 'new/nested', 'new.txt', '.new.tmp', body), /invalid secure atomic file publication/);
     assert.throws(() => native.removeSecureFile(root, '', 'sentinel.txt', '.quarantine', ''), /invalid secure file removal/);
-    assert.equal(native.cleanupSpeechStorage(root, '', ''), false);
     f.unchanged();
   }
 });
@@ -66,7 +65,6 @@ test('public APIs validate malformed roots and relative paths before native call
     assert.throws(() => listSecureDirectory({root}), /root must not contain NUL/);
     assert.throws(() => writeSecureFileAtomic({root, relativeDirectory:'new/nested', leaf:'new.txt', temporaryLeaf:'.new.tmp', body}), /root must not contain NUL/);
     assert.throws(() => removeSecureFile({root, leaf:'sentinel.txt'}), /root must not contain NUL/);
-    assert.throws(() => cleanupSpeechStorage(root), /root must not contain NUL/);
     f.unchanged();
   }
   for (const relative of ['sentinel.txt\0suffix', 'new\0suffix/nested', '..\0/nested']) {
@@ -103,8 +101,5 @@ test('ordinary valid paths and binary content still work through native and publ
   assert.deepEqual(await readSecureFileAsync({root:f.root, relativePath:'public/nested/valid.txt', maxBytes:1024}), body);
   const entry = listSecureDirectory({root:f.root, relativePath:'public/nested'})[0];
   assert.equal(removeSecureFile({root:f.root, relativeDirectory:'public/nested', leaf:entry.name, expectedIdentity:entry.identity}), true);
-  const cleanupRoot = path.join(f.root, 'cleanup');
-  mkdirSync(cleanupRoot);
-  assert.equal(cleanupSpeechStorage(cleanupRoot), true);
   assert.deepEqual(readFileSync(path.join(f.root, 'sentinel.txt')), body);
 });

@@ -194,6 +194,7 @@ export class AgentProjectionRebuilder {
               defaultEngine: m.defaultEngine ?? null,
               defaultModel: m.defaultModel ?? null,
               defaultEffort: m.defaultEffort ?? null,
+              defaultSpeed: m.defaultSpeed ?? null,
               createdAt: m.createdAt,
               updatedAt: m.updatedAt,
               archived: m.archived ? 1 : 0,
@@ -203,9 +204,11 @@ export class AgentProjectionRebuilder {
       }
 
       this.artifactCatalog.rebuildProjectProjection(projectId);
-
       const tDir = agentsDir(this.dataDir, projectId);
-      if (!existsSync(tDir)) continue;
+      if (!existsSync(tDir)) {
+        this.artifactCatalog.rebuildLegacyCustody(projectId);
+        continue;
+      }
       for (const agentId of readdirSync(tDir)) {
         if (agentId.startsWith(".") || agentId.endsWith(".creating")) {
           // Recovery authorities may claim exact journal-bound staging paths.
@@ -269,6 +272,7 @@ export class AgentProjectionRebuilder {
             activeEngine: t.activeEngine,
             model: t.model ?? null,
             effort: t.effort ?? null,
+            speed: t.speed ?? null,
             createdAt: t.createdAt,
             updatedAt: t.updatedAt,
             deletedAt: t.deletedAt ?? null,
@@ -327,6 +331,8 @@ export class AgentProjectionRebuilder {
           }).where(eq(agents.id, t.id)).run();
         }
       }
+      // Artifact recovery validates custody against the rebuilt Agent/Chat catalog.
+      this.artifactCatalog.rebuildLegacyCustody(projectId);
       this.sanitizeOrganizationProjection(projectId);
       } catch (error) {
         this.client.exec("ROLLBACK TO ponderosa_project_projection");

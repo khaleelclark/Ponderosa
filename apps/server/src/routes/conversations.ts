@@ -16,7 +16,7 @@ import {
   type ConversationDeletionReceipt,
   type WorkspaceStore,
 } from "@ponderosa/agents";
-import { concreteRuntimeSelection, runtimeSelectionError } from "../runtime-selection.js";
+import { concreteRuntimeSelection, runtimeSelectionError, runtimeSpeedSelectionError } from "../runtime-selection.js";
 import { applyCollectionPageHeaders, collectionGenerationKey, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
 
 interface EngineRegistration {
@@ -28,10 +28,12 @@ const CONVERSATION_CREATE_FIELDS = new Set([
   "defaultEngine",
   "defaultModel",
   "defaultEffort",
+  "defaultSpeed",
 ]);
 const CONVERSATION_PATCH_FIELDS = new Set([
   ...CONVERSATION_CREATE_FIELDS,
   "archived",
+  "instructions",
 ]);
 
 export function conversationMutationBodyError(
@@ -48,6 +50,10 @@ export function conversationMutationBodyError(
     : CONVERSATION_PATCH_FIELDS;
   for (const [key, value] of entries) {
     if (!allowed.has(key)) return `unknown field: ${key}`;
+    if (key === "instructions") {
+      if (typeof value !== "string" || value.length > 100_000) return "instructions must be a string of at most 100000 characters";
+      continue;
+    }
     if (key === "archived") {
       if (typeof value !== "boolean") return "archived must be a boolean";
       continue;
@@ -238,6 +244,7 @@ export function registerConversationRoutes(
         defaultEngine: body.defaultEngine ?? null,
         defaultModel: body.defaultModel ?? null,
         defaultEffort: body.defaultEffort ?? null,
+        defaultSpeed: body.defaultSpeed ?? null,
       })).digest("hex"),
     };
     try {
@@ -253,8 +260,8 @@ export function registerConversationRoutes(
     if (body.defaultEngine && !engines.has(body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
     }
-    if (!body.defaultEngine && (body.defaultModel || body.defaultEffort)) {
-      return reply.code(400).send({ error: "default engine is required when selecting a model or effort" });
+    if (!body.defaultEngine && (body.defaultModel || body.defaultEffort || body.defaultSpeed)) {
+      return reply.code(400).send({ error: "default engine is required when selecting a model, effort, or speed" });
     }
     const defaultEngine = body.defaultEngine ?? project.defaultEngine;
     const registration = engines.get(defaultEngine);
@@ -272,10 +279,18 @@ export function registerConversationRoutes(
       project.defaultEngine === defaultEngine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
       workspace.getPreferences().engineDefaults?.[defaultEngine],
     ], projectModelOptions);
+    const speedError = runtimeSpeedSelectionError(
+      registration.adapter,
+      resolved.model,
+      body.defaultSpeed,
+      projectModelOptions,
+    );
+    if (speedError) return reply.code(400).send({ error: speedError });
     const conversation = store.createConversation(request.params.id, {
       title,
       defaultEngine,
       ...resolved,
+      ...(body.defaultSpeed ? { defaultSpeed: body.defaultSpeed } : {}),
     }, creationIdentity);
     appendWorkspace({ type: "conversation_changed", projectId: request.params.id, conversationId: conversation.id, action: "created" });
     appendWorkspace({ type: "project_changed", projectId: request.params.id, action: "used" });
@@ -332,8 +347,9 @@ export function registerConversationRoutes(
     const defaultEngine = body.defaultEngine === null ? undefined : body.defaultEngine ?? current.defaultEngine;
     const defaultModel = body.defaultModel === null ? undefined : body.defaultModel ?? current.defaultModel;
     const defaultEffort = body.defaultEffort === null ? undefined : body.defaultEffort ?? current.defaultEffort;
-    if (!defaultEngine && (defaultModel || defaultEffort)) {
-      return reply.code(400).send({ error: "default engine is required when selecting a model or effort" });
+    const defaultSpeed = body.defaultSpeed === null ? undefined : body.defaultSpeed ?? current.defaultSpeed;
+    if (!defaultEngine && (defaultModel || defaultEffort || defaultSpeed)) {
+      return reply.code(400).send({ error: "default engine is required when selecting a model, effort, or speed" });
     }
     if (defaultEngine) {
       const configuredDefaultEngine = engines.get(defaultEngine);
@@ -345,6 +361,13 @@ export function registerConversationRoutes(
         cachedModelOptions(configuredDefaultEngine.adapter, current.projectId),
       );
       if (selectionError) return reply.code(400).send({ error: selectionError });
+      const speedError = runtimeSpeedSelectionError(
+        configuredDefaultEngine.adapter,
+        defaultModel,
+        defaultSpeed,
+        cachedModelOptions(configuredDefaultEngine.adapter, current.projectId),
+      );
+      if (speedError) return reply.code(400).send({ error: speedError });
     }
     if (body.archived !== undefined) {
       deletingConversationIds.add(current.id);
@@ -399,7 +422,20 @@ export function registerConversationRoutes(
     return conversation;
   });
 
-  app.delete<{ Params: { id: string } }>("/api/conversations/:id", async (request, reply) => {
+  app.delete<{ Params: { id: string }; Body: unknown }>("/api/conversations/:id", async (request, reply) => {
+    const body = request.body;
+    if (body !== undefined && (
+      !body || typeof body !== "object" || Array.isArray(body) ||
+      Object.keys(body).some(key => key !== "expectedAgentIds") ||
+      !Array.isArray((body as { expectedAgentIds?: unknown }).expectedAgentIds) ||
+      (body as { expectedAgentIds: unknown[] }).expectedAgentIds.some(id =>
+        typeof id !== "string" || !id || id.length > 200) ||
+      new Set((body as { expectedAgentIds: string[] }).expectedAgentIds).size !==
+        (body as { expectedAgentIds: string[] }).expectedAgentIds.length
+    )) return reply.code(400).send({ error: "expectedAgentIds must be a list of distinct Agent IDs" });
+    const expectedAgentIds = body === undefined
+      ? undefined
+      : (body as { expectedAgentIds: string[] }).expectedAgentIds;
     const current = store.getConversation(request.params.id);
     const pending = store.getConversationDeletionReceipt(request.params.id);
     if (projectDeletionInProgress(current?.projectId ?? pending?.projectId ?? "")) {
@@ -444,6 +480,15 @@ export function registerConversationRoutes(
     }
     const linkedAgents = pending ? [] : store.listAgents(current.projectId)
       .filter((agent) => agent.conversationId === current.id);
+    if (!pending && expectedAgentIds) {
+      const actual = linkedAgents.map(agent => agent.id).sort();
+      const expected = [...expectedAgentIds].sort();
+      if (actual.length !== expected.length || actual.some((id, index) => id !== expected[index])) {
+        return reply.code(409).send({
+          error: "Assigned Agents changed. Review the current list before deleting this Chat.",
+        });
+      }
+    }
     const active = !pending && linkedAgents.some((agent) => hasActiveRun(agent.id));
     if (active) return reply.code(409).send({ error: "stop active agents before deleting this Project chat" });
 

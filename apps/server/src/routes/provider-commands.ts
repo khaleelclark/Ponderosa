@@ -93,10 +93,13 @@ interface ProviderCommandRoutesContext {
 export function authorizedManualRolloverConversationId(
   agent: { conversationId: string },
   sourceConversationId?: string,
+  sourceRunHasCommunication = sourceConversationId !== undefined,
 ): string | undefined {
-  return sourceConversationId && agent.conversationId === sourceConversationId
-    ? sourceConversationId
-    : undefined;
+  // Internal handoff Runs have no authored Communication of their own. Their
+  // accepted provider session can still contain collaboration from the
+  // Agent's owning Chat, which must retain that exact Chat authority.
+  if (!sourceRunHasCommunication) return agent.conversationId;
+  return sourceConversationId === agent.conversationId ? agent.conversationId : undefined;
 }
 
 function publicProviderCommandFailure(error: unknown): {
@@ -339,8 +342,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
   async (request, reply) => {
     const agent = store.getAgent(request.params.id);
     if (!agent) return reply.code(404).send({ error: "agent not found" });
-    const project = store.getProject(agent.projectId);
-    if (!project) return reply.code(404).send({ error: "project not found" });
+    const project = store.getChatContext(agent.conversationId);
+    if (!project || project.id !== agent.projectId) return reply.code(409).send({ error: "Agent Chat context is unavailable" });
     const engine = engines.get(agent.activeEngine);
     if (!engine) return reply.code(400).send({ error: "unknown engine" });
     const name = request.body?.name?.trim().replace(/^\/+/, "") ?? "";
@@ -632,6 +635,7 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
   const rolloverConversationId = authorizedManualRolloverConversationId(
     agent,
     sourceCommunication?.conversationId,
+    Boolean(latestRun.communicationEventId),
   );
   let rolloverBoundary: ReturnType<typeof store.bindContextRolloverBoundary>;
   try {

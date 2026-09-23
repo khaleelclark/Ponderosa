@@ -1,4 +1,5 @@
 import {
+  classifyToolFailure,
   truncateUnicodeCodePoints,
   type AgentEvent,
   type EngineCapabilities,
@@ -963,6 +964,22 @@ export function mapCodexTokenUsage(value: unknown): TokenUsage | undefined {
   };
 }
 
+function normalizedToolResult(
+  id: string,
+  output: string,
+  isError: boolean,
+): Extract<AgentEvent, { type: "tool_result" }> {
+  const failure = classifyToolFailure(output, isError);
+  const canonicalIsError = isError || failure !== undefined;
+  return {
+    type: "tool_result",
+    id,
+    output,
+    ...(canonicalIsError ? { isError: true } : {}),
+    ...(failure ? { failureCategory: failure.category, retryable: failure.retryable } : {}),
+  };
+}
+
 export function mapCodexAppServerNotification(
   notification: JsonRpcNotification,
   cwd: string,
@@ -1049,12 +1066,12 @@ export function mapCodexAppServerNotification(
     }];
   }
   if (notification.method === "item/completed" && item.type === "mcpToolCall") {
-    return [{
-      type: "tool_result",
-      id: typeof item.id === "string" ? item.id : "mcp",
-      output: JSON.stringify(item.result ?? item.error ?? ""),
-      ...(item.error ? { isError: true } : {}),
-    }];
+    const isError = Boolean(item.error);
+    return [normalizedToolResult(
+      typeof item.id === "string" ? item.id : "mcp",
+      JSON.stringify(item.result ?? item.error ?? ""),
+      isError,
+    )];
   }
   if (notification.method === "item/started" && item.type === "dynamicToolCall") {
     const namespace = typeof item.namespace === "string" && item.namespace ? `${item.namespace}.` : "";
@@ -1066,12 +1083,12 @@ export function mapCodexAppServerNotification(
     }];
   }
   if (notification.method === "item/completed" && item.type === "dynamicToolCall") {
-    return [{
-      type: "tool_result",
-      id: typeof item.id === "string" ? item.id : "dynamic-tool",
-      output: JSON.stringify(item.contentItems ?? []),
-      ...(item.success === false ? { isError: true } : {}),
-    }];
+    const isError = item.success === false;
+    return [normalizedToolResult(
+      typeof item.id === "string" ? item.id : "dynamic-tool",
+      JSON.stringify(item.contentItems ?? []),
+      isError,
+    )];
   }
   return [];
 }

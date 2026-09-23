@@ -171,7 +171,7 @@ export function speedOptionsForModel(
     ?.serviceTiers;
   if (!serviceTiers?.length) return [];
   return [
-    { id: "standard", label: "Standard", detail: "Default speed" },
+    { id: "standard", label: "Normal", detail: "Default speed" },
     ...serviceTiers.map(tier => ({
       id: tier.id,
       label: tier.label,
@@ -314,6 +314,7 @@ export function runtimeSelectionAfterChange(
   if ("model" in change) {
     const resolved = resolveRuntimeSelection(engine, preferences, project, {
       model: change.model,
+      effort: current.effort,
       speed: current.speed,
     });
     return {

@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ponderosa Local Browser</title><link rel="stylesheet" href="popup.css"></head><body>
+<h1>Ponderosa</h1><p>Connect this browser window</p><p id="status" role="status"></p>
+<label>Ponderosa address<input id="server" type="url" placeholder="https://your-ponderosa.example" autocomplete="off"></label>
+<label>Pairing code<input id="code" autocomplete="off" spellcheck="false" maxlength="32"></label>
+<label class="consent"><input id="consent" type="checkbox">Allow Ponderosa to view, interact with, open, and close application tabs in this window—including tabs added later. Use a dedicated window. You can pause access at any time.</label>
+<button id="connect">Connect this window</button><button id="pause" hidden>Pause for manual control</button><button id="resume" hidden>Resume browser access</button><button id="disconnect" hidden>Disconnect window</button>
+<small>Sign-in pauses browser control without losing your pairing. Finish manually, then resume. Other windows stay outside access. No cookies or passwords are copied.</small>
+<script type="module" src="popup.js"></script></body></html>

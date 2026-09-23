@@ -181,6 +181,19 @@ export function composerSubmissionMayClearDraft(input: {
     input.submittedMutationGeneration === input.currentMutationGeneration;
 }
 
+export function composerShouldSeedContinuationDestination(input: {
+  previousSelectionKey?: string;
+  nextSelectionKey: string;
+  retainedSelectionKey?: string;
+  localText: string;
+  editorText: string;
+}): boolean {
+  return !input.retainedSelectionKey &&
+    input.previousSelectionKey !== input.nextSelectionKey &&
+    !input.localText.trim() &&
+    !input.editorText.trim();
+}
+
 export function settledDraftWriteContinuation(
   tail: Promise<void>,
   continuation: () => Promise<void>,

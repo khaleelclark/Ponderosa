@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { SAVED_BROWSER_SCOPE_ID, type SavedBrowserDto } from "@ponderosa/core";
 import type {
   BrowserAgentPreferenceDto,
   BrowserProfileDto,
@@ -46,8 +47,8 @@ interface ActiveLaunch {
 }
 
 function boundedCapacity(value: string | undefined): number {
-  const parsed = Number(value ?? 4);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? Math.min(parsed, 64) : 4;
+  const parsed = Number(value ?? 8);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? Math.min(parsed, 64) : 8;
 }
 
 function cleanName(value: string): string {
@@ -60,9 +61,9 @@ function cleanName(value: string): string {
 
 const PROFILE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
-/** Durable profile catalog plus process-local browser leases. Chrome processes
- * cannot survive the owning server, so startup intentionally begins with no
- * active lease while retaining only trusted profile data and assignments. */
+/** Durable profile catalog plus app-local admission leases. Supervised shared
+ * browsers reacquire these leases before startup admits new browser requests;
+ * the independent service additionally enforces live profile exclusivity. */
 export class BrowserProfileAuthority {
   private readonly db: Database.Database;
   private readonly profileRoot: string;
@@ -85,7 +86,7 @@ export class BrowserProfileAuthority {
     this.db.pragma("busy_timeout = 500");
     this.db.pragma("foreign_keys = ON");
     const version = this.db.pragma("user_version", { simple: true }) as number;
-    if (version !== 0 && version !== 1) {
+    if (version !== 0 && version !== 1 && version !== 2) {
       throw new BrowserProfileError(409, "Browser profile authority schema is incompatible.");
     }
     this.db.exec(`
@@ -110,6 +111,41 @@ export class BrowserProfileAuthority {
       );
       CREATE INDEX IF NOT EXISTS browser_agent_preferences_project
         ON browser_agent_preferences(project_id, agent_id);
+      CREATE TABLE IF NOT EXISTS browser_chat_profiles (
+        project_id TEXT PRIMARY KEY,
+        profile_id TEXT NOT NULL REFERENCES browser_profiles(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS saved_browser (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        profile_id TEXT NOT NULL REFERENCES browser_profiles(id) ON DELETE CASCADE,
+        promoted_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS saved_browser_access (
+        profile_id TEXT NOT NULL REFERENCES browser_profiles(id) ON DELETE CASCADE,
+        project_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(profile_id, project_id, agent_id)
+      );
+      CREATE INDEX IF NOT EXISTS saved_browser_access_agent
+        ON saved_browser_access(agent_id, project_id);
+      CREATE TABLE IF NOT EXISTS saved_browser_access_fences (
+        profile_id TEXT NOT NULL REFERENCES browser_profiles(id) ON DELETE CASCADE,
+        project_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        generation INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(profile_id, project_id, agent_id)
+      );
+      CREATE TABLE IF NOT EXISTS saved_browser_approval_intents (
+        decision_id TEXT PRIMARY KEY,
+        profile_id TEXT NOT NULL REFERENCES browser_profiles(id) ON DELETE CASCADE,
+        project_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('pending','applied','revoked'))
+      );
+      -- The access table is additive. Keep version 1 so the preceding
+      -- experimental release can reopen this database during rollback.
       PRAGMA user_version=1;
     `);
   }
@@ -226,6 +262,9 @@ export class BrowserProfileAuthority {
       }
       this.db.exec("BEGIN IMMEDIATE");
       this.db.prepare("DELETE FROM browser_agent_preferences WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM saved_browser_access WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM saved_browser_access_fences WHERE project_id=?").run(projectId);
+      this.db.prepare("DELETE FROM saved_browser_approval_intents WHERE project_id=?").run(projectId);
       this.db.prepare("DELETE FROM browser_profiles WHERE project_id=?").run(projectId);
       this.db.exec("COMMIT");
     } catch (error) {
@@ -284,8 +323,143 @@ export class BrowserProfileAuthority {
   }
 
   removeAgent(agentId: string): void {
-    try { this.db.prepare("DELETE FROM browser_agent_preferences WHERE agent_id=?").run(agentId); }
+    try {
+      this.db.transaction(() => {
+        this.db.prepare("DELETE FROM browser_agent_preferences WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM saved_browser_access WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM saved_browser_access_fences WHERE agent_id=?").run(agentId);
+        this.db.prepare("DELETE FROM saved_browser_approval_intents WHERE agent_id=?").run(agentId);
+      })();
+    }
     catch (error) { this.mapped(error); }
+  }
+
+  savedBrowser(): SavedBrowserDto | undefined {
+    return this.db.prepare("SELECT profile_id profileId, promoted_at promotedAt FROM saved_browser WHERE singleton=1").get() as SavedBrowserDto | undefined;
+  }
+
+  /** An explicit Agent-in-chat authorization, never a Run lease. The current
+   * saved profile identity is part of the key so replacing a saved browser
+   * cannot silently transfer account access. */
+  hasSavedBrowserAccess(projectId: string, agentId: string): boolean {
+    const saved = this.savedBrowser();
+    if (!saved) return false;
+    return Boolean(this.db.prepare("SELECT 1 FROM saved_browser_access WHERE profile_id=? AND project_id=? AND agent_id=?")
+      .get(saved.profileId, projectId, agentId));
+  }
+
+  savedBrowserAccess(projectId: string): string[] {
+    const saved = this.savedBrowser();
+    if (!saved) return [];
+    return (this.db.prepare("SELECT agent_id agentId FROM saved_browser_access WHERE profile_id=? AND project_id=? ORDER BY created_at, agent_id")
+      .all(saved.profileId, projectId) as Array<{ agentId: string }>).map(row => row.agentId);
+  }
+
+  setSavedBrowserAccess(projectId: string, agentId: string, allowed: boolean): void {
+    const saved = this.savedBrowser();
+    if (!saved) throw new BrowserProfileError(404, "Saved browser was not found.");
+    try {
+      if (allowed) this.db.prepare("INSERT OR IGNORE INTO saved_browser_access(profile_id,project_id,agent_id,created_at) VALUES(?,?,?,?)")
+        .run(saved.profileId, projectId, agentId, new Date().toISOString());
+      else this.db.transaction(() => {
+        // Revocation also fences any approval committed in the workspace but
+        // not yet applied here. Replaying an old Decision cannot restore access.
+        this.db.prepare(`INSERT INTO saved_browser_access_fences(profile_id,project_id,agent_id,generation)
+          VALUES(?,?,?,1) ON CONFLICT(profile_id,project_id,agent_id)
+          DO UPDATE SET generation=generation+1`).run(saved.profileId, projectId, agentId);
+        this.db.prepare("UPDATE saved_browser_approval_intents SET state='revoked' WHERE profile_id=? AND project_id=? AND agent_id=?")
+          .run(saved.profileId, projectId, agentId);
+        this.db.prepare("DELETE FROM saved_browser_access WHERE profile_id=? AND project_id=? AND agent_id=?")
+          .run(saved.profileId, projectId, agentId);
+      })();
+    } catch (error) { this.mapped(error); }
+  }
+
+  /** Stage an inert approval intent before resolving its canonical Decision.
+   * The revocation generation is captured in this database, so a later revoke
+   * fences even a workspace resolution whose access write has not yet run. */
+  prepareSavedBrowserApproval(decisionId: string, profileId: string, projectId: string, agentId: string): void {
+    try {
+      this.db.transaction(() => {
+        if (this.savedBrowser()?.profileId !== profileId) throw new BrowserProfileError(409, "The saved browser changed. No access was granted.");
+        const generation = (this.db.prepare(`SELECT generation FROM saved_browser_access_fences
+          WHERE profile_id=? AND project_id=? AND agent_id=?`).get(profileId, projectId, agentId) as { generation: number } | undefined)?.generation ?? 0;
+        this.db.prepare(`INSERT OR IGNORE INTO saved_browser_approval_intents(decision_id,profile_id,project_id,agent_id,generation,state)
+          VALUES(?,?,?,?,?,'pending')`).run(decisionId, profileId, projectId, agentId, generation);
+        const existing = this.db.prepare(`SELECT profile_id profileId,project_id projectId,agent_id agentId,generation,state
+          FROM saved_browser_approval_intents WHERE decision_id=?`).get(decisionId) as {
+          profileId: string; projectId: string; agentId: string; generation: number; state: string;
+        };
+        if (existing.profileId !== profileId || existing.projectId !== projectId || existing.agentId !== agentId ||
+            existing.generation !== generation || existing.state === "revoked") {
+          throw new BrowserProfileError(409, "This saved-browser approval was superseded or revoked. Ask the Agent to request access again.");
+        }
+      })();
+    } catch (error) { this.mapped(error); }
+  }
+
+  /** Apply only a durably resolved approval with its previously staged intent.
+   * The access row and consumed intent commit together. Missing legacy intents
+   * never create new access, but an existing grant remains readable. */
+  applySavedBrowserApproval(decisionId: string, profileId: string, projectId: string, agentId: string): boolean {
+    try {
+      return this.db.transaction(() => {
+        const intent = this.db.prepare(`SELECT profile_id profileId,project_id projectId,agent_id agentId,generation,state
+          FROM saved_browser_approval_intents WHERE decision_id=?`).get(decisionId) as {
+          profileId: string; projectId: string; agentId: string; generation: number; state: string;
+        } | undefined;
+        if (!intent) return this.hasSavedBrowserAccess(projectId, agentId);
+        if (intent.state === "revoked") return false;
+        if (intent.profileId !== profileId || intent.projectId !== projectId || intent.agentId !== agentId) {
+          throw new BrowserProfileError(409, "Saved-browser approval scope changed. No access was granted.");
+        }
+        if (this.savedBrowser()?.profileId !== profileId) throw new BrowserProfileError(409, "The saved browser changed. No access was granted.");
+        const generation = (this.db.prepare(`SELECT generation FROM saved_browser_access_fences
+          WHERE profile_id=? AND project_id=? AND agent_id=?`).get(profileId, projectId, agentId) as { generation: number } | undefined)?.generation ?? 0;
+        if (generation !== intent.generation) {
+          this.db.prepare("UPDATE saved_browser_approval_intents SET state='revoked' WHERE decision_id=?").run(decisionId);
+          return false;
+        }
+        if (intent.state === "applied") return this.hasSavedBrowserAccess(projectId, agentId);
+        this.db.prepare("INSERT OR IGNORE INTO saved_browser_access(profile_id,project_id,agent_id,created_at) VALUES(?,?,?,?)")
+          .run(profileId, projectId, agentId, new Date().toISOString());
+        this.db.prepare("UPDATE saved_browser_approval_intents SET state='applied' WHERE decision_id=? AND state='pending'").run(decisionId);
+        return true;
+      })();
+    } catch (error) { return this.mapped(error); }
+  }
+
+
+  promoteSavedBrowser(projectId: string, profileId: string): void {
+    this.db.transaction(() => {
+      if (this.savedBrowser()) throw new BrowserProfileError(409, "A saved browser already exists. It has not been replaced.");
+      if (!this.getProfile(projectId, profileId)) throw new BrowserProfileError(404, "Browser profile does not belong to this chat.");
+      this.db.prepare("DELETE FROM browser_agent_preferences WHERE profile_id=?").run(profileId);
+      this.db.prepare("DELETE FROM browser_chat_profiles WHERE profile_id=?").run(profileId);
+      this.db.prepare("UPDATE browser_profiles SET project_id=? WHERE id=? AND project_id=?").run(SAVED_BROWSER_SCOPE_ID, profileId, projectId);
+      this.setPreference(SAVED_BROWSER_SCOPE_ID, `project-browser:${SAVED_BROWSER_SCOPE_ID}`, "trusted", profileId);
+      this.db.prepare("INSERT INTO saved_browser(singleton,profile_id,promoted_at) VALUES(1,?,?)").run(profileId, new Date().toISOString());
+    })();
+  }
+
+  setChatRememberSignIns(projectId: string, browserAgentId: string, remember: boolean): void {
+    this.db.transaction(() => {
+      if (!remember) {
+        this.setPreference(projectId, browserAgentId, "disposable");
+        return;
+      }
+      const saved = this.db.prepare("SELECT profile_id FROM browser_chat_profiles WHERE project_id=?").get(projectId) as { profile_id: string } | undefined;
+      const previous = this.preference(projectId, browserAgentId);
+      let profile = this.getProfile(projectId, saved?.profile_id ?? previous.profileId ?? "");
+      if (!profile) {
+        const names = new Set(this.listProfiles(projectId).map(item => item.name));
+        let name = "Chat browser", suffix = 2;
+        while (names.has(name)) name = `Chat browser ${suffix++}`;
+        profile = this.createProfile(projectId, name);
+      }
+      this.db.prepare("INSERT INTO browser_chat_profiles(project_id,profile_id) VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET profile_id=excluded.profile_id").run(projectId, profile.id);
+      this.setPreference(projectId, browserAgentId, "trusted", profile.id);
+    })();
   }
 
   description(scope: BrowserScope, forceProfileId?: string): BrowserLaunchDescription {

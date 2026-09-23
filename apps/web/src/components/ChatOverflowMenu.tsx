@@ -133,7 +133,7 @@ export function ChatOverflowMenu({
         aria-haspopup="menu"
         aria-expanded={anchor ? "true" : undefined}
         onClick={(event) => setAnchor(event.currentTarget)}
-        sx={{ display: { xs: "none", md: "inline-flex" } }}
+        sx={{ display: "inline-flex" }}
       >
         <MoreVertIcon />
       </IconButton>

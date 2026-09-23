@@ -1,6 +1,7 @@
 import type { AllChatPageDto } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import type { SearchRoutesContext } from "../server-context.js";
+import { searchWorkspaceFiles } from "../file-search.js";
 import {
   communicationRecipientAgentIds,
   recipientMentionIdentities,
@@ -11,6 +12,16 @@ export function registerSearchRoutes(
   app: FastifyInstance,
   { globalChatSearch, store, workspace, coordinationV3 }: SearchRoutesContext,
 ): void {
+  let filesInFlight = 0;
+  app.get<{ Querystring: { q?: string; limit?: string } }>("/api/search/files", async (request, reply) => {
+    const q = request.query.q ?? "";
+    const limit = Number(request.query.limit ?? 25);
+    if (typeof q !== "string" || q.length > 200 || !Number.isInteger(limit) || limit < 1 || limit > 50) return reply.code(400).send({ error: "invalid file search query" });
+    if (filesInFlight >= 2) return reply.code(429).send({ error: "file search is busy; try again" });
+    filesInFlight++;
+    try { return await searchWorkspaceFiles(store.listProjects(), q, limit); }
+    finally { filesInFlight--; }
+  });
   app.get<{ Querystring: { q?: string; limit?: string; kind?: string } }>("/api/search", async (request, reply) => {
     try {
       return globalChatSearch(request.query);

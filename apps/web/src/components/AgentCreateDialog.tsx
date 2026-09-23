@@ -27,6 +27,7 @@ import {
   soleAvailableEngineId,
 } from "../conversationEngine";
 import { useAgentPresets, useConversation } from "../hooks/queries";
+import { useProjectAgents, useProjectConversations } from "../hooks/useProjectCollections";
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
 import { fixedCreateConversationMatchesProject } from "../routeRegistry";
@@ -424,7 +425,7 @@ export function AgentCreateForm({
             </Button>
           ) : undefined}
         >
-          The requested Chat is not available in this Project. Choose another Chat.
+          The requested Chat is not available. Choose another Chat.
         </Alert>
       ) : null}
       {!fixedConversationRequested || fixedConversationInvalid ? (
@@ -461,7 +462,7 @@ export function AgentCreateForm({
         </FormControl>
       ) : (
         <TextField
-          label="Project chat"
+          label="Chat"
           value={fixedConversation?.title ?? "Checking Chat…"}
           helperText="This Agent will join the Chat where creation was started."
           InputProps={{ readOnly: true }}
@@ -572,7 +573,41 @@ export function AgentCreateDialog({
   );
 }
 
-export function AgentCreateSurface({
+export function AgentCreateSurface(props: AgentCreateSurfaceProps): JSX.Element {
+  const scopedProjectId = props.fixedProjectId ?? (props.fixedConversationId ? props.initialProjectId : undefined);
+  const projects = scopedProjectId ? props.projects.filter(project => project.id === scopedProjectId) : props.projects;
+  const queries = useProjectConversations(projects);
+  const agentQueries = useProjectAgents(props.initialManagerAgentId ? projects : []);
+  const manager = agentQueries.flatMap(query => query.data ?? []).find(agent => agent.id === props.initialManagerAgentId);
+  const chats = projects.flatMap((project, index) =>
+    (queries[index]?.data ?? []).filter(chat => !chat.archived && !chat.deletedAt && (!props.fixedProjectId || project.id === props.fixedProjectId))
+      .map(chat => ({ chat, projectId: project.id })),
+  );
+  const [selectedId, setSelectedId] = useState("");
+  const [pending, setPending] = useState(false);
+  const selected = selectedId ? chats.find(item => item.chat.id === selectedId)
+    : (props.fixedConversationId ? chats.find(item => item.chat.id === props.fixedConversationId && (!props.initialProjectId || item.projectId === props.initialProjectId))
+      : props.initialManagerAgentId ? chats.find(item => item.chat.id === manager?.conversationId)
+      : chats.find(item => item.projectId === props.initialProjectId) ?? chats[0]);
+  useEffect(() => { if (selected && !selectedId) setSelectedId(selected.chat.id); }, [selected?.chat.id, selectedId]);
+  if (props.fixedProjectId && props.fixedConversationId) return <ScopedAgentCreateSurface {...props} />;
+  if (props.fixedConversationId && selected) return <ScopedAgentCreateSurface {...props} fixedProjectId={selected.projectId} />;
+  return <Stack spacing={2}>
+    <FormControl fullWidth size="small" disabled={pending}>
+      <InputLabel id="agent-destination-chat-label">Chat</InputLabel>
+      <Select labelId="agent-destination-chat-label" label="Chat" value={selected?.chat.id ?? ""}
+        onChange={event => setSelectedId(event.target.value)}>
+        {chats.map(({chat}) => <MenuItem key={chat.id} value={chat.id}>{chat.title}</MenuItem>)}
+      </Select>
+    </FormControl>
+    {selected ? <ScopedAgentCreateSurface key={selected.chat.id} {...props}
+      fixedProjectId={selected.projectId} fixedConversationId={selected.chat.id}
+      onPendingChange={value => { setPending(value); props.onPendingChange?.(value); }} />
+      : <Alert severity="info">{queries.some(query => query.isPending) ? "Loading Chats…" : "Create a Chat before adding an Agent."}</Alert>}
+  </Stack>;
+}
+
+function ScopedAgentCreateSurface({
   projects,
   engines,
   initialProjectId,
@@ -623,9 +658,9 @@ export function AgentCreateSurface({
           sx={{ alignItems: "center", justifyContent: "space-between" }}
         >
           <div>
-            <Typography variant="h6">Import Agent or Organization</Typography>
+            <Typography variant="h6">Import Agent package</Typography>
             <Typography variant="body2" color="text.secondary">
-              Restore an exported Agent package into a Project.
+              Import one Agent or an organization into a chat.
             </Typography>
           </div>
           <Button
@@ -634,7 +669,7 @@ export function AgentCreateSurface({
             disabled={pending}
             onClick={() => setMode("create")}
           >
-            Create New
+            Create new Agent
           </Button>
         </Stack>
         {!fixedProjectId ? (
@@ -660,13 +695,15 @@ export function AgentCreateSurface({
             projectId={importProjectId}
             engines={engines}
             conversations={conversations}
+            fixedConversationId={fixedConversationId}
+            requireDestinationSelection={!fixedConversationId}
             initialConversationId={
               fixedConversationId &&
               conversations.some(
                 conversation => conversation.id === fixedConversationId,
               )
                 ? fixedConversationId
-                : conversations[0]?.id
+                : undefined
             }
             onCancel={onCancel}
             onPendingChange={updatePending}
@@ -674,7 +711,7 @@ export function AgentCreateSurface({
           />
         ) : (
           <Alert severity="info">
-            Create a Project before importing an Agent.
+            Create a Chat before importing an Agent.
           </Alert>
         )}
       </Stack>
@@ -692,7 +729,7 @@ export function AgentCreateSurface({
         <div>
           <Typography variant="h6">Create Agent</Typography>
           <Typography variant="body2" color="text.secondary">
-            Add a managed worker or restore one from an export.
+            Create a managed Agent in a chat.
           </Typography>
         </div>
         <Button
@@ -701,7 +738,7 @@ export function AgentCreateSurface({
           disabled={pending}
           onClick={() => setMode("import")}
         >
-          Import Agent
+          Import Agent package
         </Button>
       </Stack>
       <AgentCreateForm

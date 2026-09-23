@@ -148,6 +148,10 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     authDetail?: string;
     availabilityDetail?: string;
     availabilityCategory?: ProviderFailureCategory;
+    availabilityObservedAt?: string;
+    availabilitySource?: "provider_run" | "operator_probe";
+    availabilityBuildRevision?: string;
+    availabilityInstanceId?: string;
   }> => {
     let auth: { authenticated: boolean; detail?: string };
     try {
@@ -181,6 +185,12 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       authentication: auth.authenticated ? "authenticated" : "unauthenticated",
       intakeReady: enabled && auth.authenticated && !denial,
       reachability: evidence ? (evidence.available ? "reachable" : "degraded") : "unverified",
+      ...(evidence ? {
+        availabilityObservedAt: evidence.observedAt,
+        availabilitySource: evidence.source,
+        ...(evidence.buildRevision ? { availabilityBuildRevision: evidence.buildRevision } : {}),
+        ...(evidence.instanceId ? { availabilityInstanceId: evidence.instanceId } : {}),
+      } : {}),
       ...(authDetail ? { authDetail } : {}),
       ...(evidence && !evidence.available
         ? { availabilityCategory: evidence.failureCategory ?? "unknown" }
@@ -240,6 +250,8 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         ...(defaultEffort ? { defaultEffort } : {}),
         modelCatalogKnown: !adapter.modelSpecificEfforts || models.some((model) => Boolean(model.id)),
         enabled: providerEnabled(adapter.id),
+        servingBuildRevision: engineAvailability.servingBuildRevision,
+        servingInstanceId: engineAvailability.servingInstanceId,
         ...status,
       };
     } catch (error) {

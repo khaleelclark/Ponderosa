@@ -56,6 +56,7 @@ import { Composer } from "./chat/Composer";
 import { copyText } from "../clipboard";
 import { AttentionSurface } from "./AttentionSurface";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
 import { uniqueBy } from "../collections";
@@ -149,7 +150,6 @@ import {
   allChatSourceConversationId,
   allChatSourceIdentity,
   eligibleAllChatTargets,
-  parseAllChatReplyTarget,
   parseAllChatSourceIdentity,
   reduceAllChatSubmissionIntent,
   recordRuntimeCanonicalKey,
@@ -210,7 +210,7 @@ function allChatDecisionChoice(item: AllChatDecisionEventDto): string | undefine
 }
 
 function sourceLabel(item: AllChatItemDto): string {
-  return `${item.project.label} · ${item.source.title}`;
+  return item.source.title;
 }
 
 function allChatSourceAccessibleName(item: AllChatItemDto): string {
@@ -248,9 +248,7 @@ export function AllChatView({
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [olderError, setOlderError] = useState<string>();
   const [selectedId, setSelectedId] = useState<string>();
-  const [replyTarget, setReplyTarget] = useState<AllChatReplyTarget | undefined>(
-    () => parseAllChatReplyTarget(readChatState(ALL_CHAT_REPLY_TARGET_KEY)),
-  );
+  const [replyTarget, setReplyTarget] = useState<AllChatReplyTarget>();
   const [composerSource, setComposerSource] = useState<
     AllChatSourceIdentity | undefined
   >(() => parseAllChatSourceIdentity(readChatState(ALL_CHAT_SOURCE_KEY)));
@@ -366,7 +364,7 @@ export function AllChatView({
     composerConversationId,
   );
   const allProjectAgentsQuery = useQuery({
-    queryKey: [...queryKeys.agents.all, "all-chat"],
+    queryKey: queryKeys.agents.allChat,
     queryFn: async () => {
       const byId = new Map<string, WorkspaceAgentDirectoryItemDto>();
       let cursor: string | undefined;
@@ -562,6 +560,7 @@ export function AllChatView({
         engine: selectedAgent.data.agent.activeEngine,
         model: selectedAgent.data.agent.model,
         effort: selectedAgent.data.agent.effort,
+        speed: selectedAgent.data.agent.speed,
       }),
     };
   }
@@ -586,11 +585,9 @@ export function AllChatView({
     });
   }, [projectAgentsQuery.data]);
   useEffect(() => {
-    writeChatState(
-      ALL_CHAT_REPLY_TARGET_KEY,
-      replyTarget ? JSON.stringify(replyTarget) : "",
-    );
-  }, [replyTarget]);
+    // A restored draft is not permission to reply from the global feed.
+    writeChatState(ALL_CHAT_REPLY_TARGET_KEY, "");
+  }, []);
   useEffect(() => {
     if (!selected) return;
     const identity = allChatSourceIdentity(
@@ -699,6 +696,7 @@ export function AllChatView({
       engine: agent.activeEngine,
       model: agent.model,
       effort: agent.effort,
+      speed: agent.speed,
     });
     recordRuntimeCanonicalKey(
       runtimeMutationGenerationByAgent.current,
@@ -721,7 +719,7 @@ export function AllChatView({
           workspacePreferences.data,
           project,
         ).effort,
-      speed: readChatState(
+      speed: agent.speed ?? readChatState(
         chatStateKey("runtime", `agent.${agent.id}.speed`),
       ),
     });
@@ -746,16 +744,19 @@ export function AllChatView({
       activeEngine,
       model: nextModel,
       effort: nextEffort,
+      speed: nextSpeed,
     }: {
       agentId: string;
       activeEngine: EngineDto["id"];
       model: string | null;
       effort: string | null;
+      speed: string | null;
     }) =>
       api.updateAgent(agentId, {
         activeEngine,
         model: nextModel,
         effort: nextEffort,
+        speed: nextSpeed,
       }),
     onSuccess: updated => {
       queryClient.setQueryData<AgentDetailDto>(
@@ -859,13 +860,19 @@ export function AllChatView({
         retainOnFailure?: boolean,
       ) => Promise<void>;
     }) => {
+      if (!replyTargetRef.current || !submissionTargetId || replyTargetRef.current.id !== submissionTargetId) {
+        throw new Error("Choose a message to reply to first.");
+      }
+      if (pendingSubmission?.request?.recipientAgentIds && !pendingSubmission.request.recipientAgentIds.includes(submissionTargetId)) {
+        throw new Error("Choose the original recipient’s message to retry this reply.");
+      }
       const previous = sendAttempt.current;
       let attempt = preparedIdempotentAttemptForRetry(
         previous,
         retryPreparedAttempt,
       );
       if (!attempt) {
-        if (!activeProjectId) throw new Error("Select a message to establish a Project first");
+        if (!activeProjectId) throw new Error("Select a message to reply to first");
         if (!body.trim() && files.length === 0)
           throw new Error("Message text or an attachment is required");
         const selectedConversationId = composerConversationId;
@@ -921,7 +928,7 @@ export function AllChatView({
             !conversationsQuery.data?.some(candidate =>
               candidate.id === currentConversationId))
         ) {
-          throw new Error("This Project has no active Chat for the new Agent");
+          throw new Error("No active Chat is available for the new Agent");
         }
         const fingerprint = JSON.stringify({
           activeProjectId,
@@ -1288,27 +1295,8 @@ export function AllChatView({
   };
   const syncReplyTargetFromMentions = useCallback((handles: string[]) => {
     mentionedHandlesRef.current = handles;
-    const agentHandles = handles.filter(
-      (handle) => !["broadcast", "user", "everyone", "new-agent"].includes(handle.toLocaleLowerCase()),
-    );
-    const resolved = agentHandles.flatMap(handle => {
-      const target = composerTargets.targetByHandle.get(handle.toLocaleLowerCase());
-      return target ? [target] : [];
-    });
-    setReplyTarget((current) => {
-      if (current && pendingMentionTargetId.current === current.id) {
-        if (agentHandles.some(handle =>
-          current.handle.toLocaleLowerCase() === handle.toLocaleLowerCase())) {
-          pendingMentionTargetId.current = undefined;
-        }
-        return current;
-      }
-      if (current && agentHandles.some(handle =>
-        current.handle.toLocaleLowerCase() === handle.toLocaleLowerCase())) return current;
-      if (resolved.length === 1) return resolved[0];
-      return undefined;
-    });
-  }, [composerTargets.targetByHandle]);
+    // Mentions (including restored drafts) must never select a reply target.
+  }, []);
   const mentionItem = (item: AllChatItemDto) => {
     selectItem(item);
     if (!item.directMessageAgent) return;
@@ -1394,6 +1382,7 @@ export function AllChatView({
             engine: selectedAgent.data.agent.activeEngine,
             model: selectedAgent.data.agent.model,
             effort: selectedAgent.data.agent.effort,
+            speed: selectedAgent.data.agent.speed,
           });
           const speedKey = chatStateKey(
             "runtime",
@@ -1425,6 +1414,7 @@ export function AllChatView({
               activeEngine: next as EngineDto["id"],
               model: resolved.model || null,
               effort: resolved.effort || null,
+              speed: resolved.speed || null,
             },
             {
               onError: () => {
@@ -1455,17 +1445,38 @@ export function AllChatView({
         onModelChange={next => {
           if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
           setSubmissionRuntimeIntent(value => value + 1);
-          selectedRuntime.selectModel(next);
+          const resolved = selectedRuntime.selectModel(next);
+          if (selectedAgentId && selectedEngineId) updateRuntimeEngine.mutate({
+            agentId: selectedAgentId,
+            activeEngine: selectedEngineId,
+            model: resolved.model || null,
+            effort: resolved.effort || null,
+            speed: resolved.speed || null,
+          });
         }}
         onEffortChange={next => {
           if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
           setSubmissionRuntimeIntent(value => value + 1);
-          selectedRuntime.selectEffort(next);
+          const resolved = selectedRuntime.selectEffort(next);
+          if (selectedAgentId && selectedEngineId) updateRuntimeEngine.mutate({
+            agentId: selectedAgentId,
+            activeEngine: selectedEngineId,
+            model: resolved.model || null,
+            effort: resolved.effort || null,
+            speed: resolved.speed || null,
+          });
         }}
         onSpeedChange={next => {
           if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
           setSubmissionRuntimeIntent(value => value + 1);
-          selectedRuntime.selectSpeed(next);
+          const resolved = selectedRuntime.selectSpeed(next);
+          if (selectedAgentId && selectedEngineId) updateRuntimeEngine.mutate({
+            agentId: selectedAgentId,
+            activeEngine: selectedEngineId,
+            model: resolved.model || null,
+            effort: resolved.effort || null,
+            speed: resolved.speed || null,
+          });
         }}
       />
     ) : null;
@@ -1558,7 +1569,7 @@ export function AllChatView({
                 title={entry.item.decision.question}
                 context={entry.item.decision.context}
               />
-              <Typography variant="caption" color="text.secondary">{entry.item.project.label} · {entry.item.source.title}</Typography>
+              <Typography variant="caption" color="text.secondary">{entry.item.source.title}</Typography>
               </Box>;
               return notification ? <NotificationAcknowledgementBoundary
                 key={entry.id}
@@ -1688,26 +1699,6 @@ export function AllChatView({
                       <ButtonBase
                         onClick={event => {
                           event.stopPropagation();
-                          onNavigate({
-                            kind: "project",
-                            projectId: item.project.id,
-                          });
-                        }}
-                        sx={{
-                          borderRadius: 0.75,
-                          typography: "caption",
-                          fontWeight: 650,
-                          px: 0.25,
-                        }}
-                      >
-                        {item.project.label}
-                      </ButtonBase>
-                      <Typography variant="caption" aria-hidden>
-                        ·
-                      </Typography>
-                      <ButtonBase
-                        onClick={event => {
-                          event.stopPropagation();
                           onNavigate(allChatSourceRoute(item));
                         }}
                         sx={{
@@ -1720,6 +1711,20 @@ export function AllChatView({
                       </ButtonBase>
                     </Stack>
                   ),
+                  status:
+                    fromUser && item.deliveryReceipts?.length ? (
+                      <MessageDeliveryStatus
+                        projectId={item.project.id}
+                        receipts={item.deliveryReceipts}
+                        recipientName={agentId =>
+                          item.directMessageAgents?.find(agent => agent.id === agentId)?.title ??
+                          (item.directMessageAgent?.id === agentId
+                            ? item.directMessageAgent.title
+                            : allChatAgentTitle(agentId))
+                        }
+                        compact
+                      />
+                    ) : undefined,
                   actions: (
                     <>
                       <Tooltip title="Copy">
@@ -1754,11 +1759,11 @@ export function AllChatView({
                       ) : null}
                       {!fromUser && item.directMessageAgent ? (
                         <Tooltip
-                          title={`Mention ${item.directMessageAgent.title}`}
+                          title={`Reply to ${item.directMessageAgent.title}`}
                         >
                           <IconButton
                             size="small"
-                            aria-label={`Mention ${item.directMessageAgent.title}`}
+                            aria-label={`Reply to ${item.directMessageAgent.title}`}
                             onClick={event => {
                               event.stopPropagation();
                               mentionItem(item);
@@ -1906,7 +1911,7 @@ export function AllChatView({
           recipientRequiredMessage={
             selected && !selected.directMessageAgent
               ? "This message does not identify an active Agent you can message."
-              : "Tag an Agent with # to choose a recipient."
+              : "Choose a message’s Reply action first."
           }
           mentionHandles={composerTargets.handles}
           mentionBindings={composerTargets.mentionBindings}
@@ -1929,6 +1934,7 @@ export function AllChatView({
           onCommand={activeReplyTarget ? invokeCommand : undefined}
           controls={runtimeControls}
           disabled={
+            !activeReplyTarget ||
             send.isPending ||
             updateRuntimeEngine.isPending ||
             Boolean(selectedAgentId && !runtimeSelectionReady)
@@ -1950,7 +1956,7 @@ export function AllChatView({
           placeholder={
             activeReplyTarget
               ? `Message ${activeReplyTarget.title} directly`
-              : "Select an Agent with # then write a message"
+              : "Choose a message to reply to"
           }
           removeTextRequest={mentionRemoveRequest}
           submissionIntentKey={String(submissionIntent.epoch)}

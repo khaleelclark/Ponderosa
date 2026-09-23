@@ -1,4 +1,5 @@
 import SearchIcon from "@mui/icons-material/Search";
+import SortIcon from "@mui/icons-material/Sort";
 import {
   Alert,
   Box,
@@ -6,6 +7,7 @@ import {
   FormControl,
   InputAdornment,
   InputLabel,
+  Menu,
   MenuItem,
   Paper,
   Select,
@@ -39,6 +41,7 @@ export interface CollectionWorkspaceProps {
   icon?: ReactNode;
   scope?: ReactNode;
   primaryAction?: ReactNode;
+  compactPrimaryAction?: ReactNode;
   toolbar: ReactNode;
   children: ReactNode;
   listLabel: string;
@@ -49,6 +52,7 @@ export interface CollectionWorkspaceProps {
 const CollectionAnnouncementContext = createContext<(message: string) => void>(
   () => undefined,
 );
+const CollectionCompactContext = createContext(false);
 
 export const COLLECTION_PROGRESSIVE_BATCH_SIZE = 25;
 
@@ -120,7 +124,17 @@ export function CollectionHeader({
   icon,
   scope,
   primaryAction,
-}: Pick<CollectionWorkspaceProps, "title" | "detail" | "icon" | "scope" | "primaryAction">): JSX.Element {
+  compactPrimaryAction,
+}: Pick<CollectionWorkspaceProps, "title" | "detail" | "icon" | "scope" | "primaryAction" | "compactPrimaryAction">): JSX.Element {
+  const compact = useContext(CollectionCompactContext);
+  if (compact) return <Stack component="header" direction="row" spacing={0.5} sx={{ px: 1, minHeight: 48, alignItems: "center", minWidth: 0, borderBottom: 1, borderColor: "divider" }}>
+    <MobileNavigationButton />
+    <Box sx={{ flex: 1, minWidth: 0 }} title={detail}>
+      {icon ? <IconTitle icon={icon} title={title} component="h1" /> : <Typography variant="h6" component="h1" fontWeight={800} noWrap>{title}</Typography>}
+    </Box>
+    <PrimaryHeaderActionsOutlet />
+    {compactPrimaryAction ?? primaryAction}
+  </Stack>;
   return <Stack
     component="header"
     direction="row"
@@ -171,6 +185,7 @@ export function CollectionWorkspace({
   icon,
   scope,
   primaryAction,
+  compactPrimaryAction,
   toolbar,
   children,
   listLabel,
@@ -179,8 +194,21 @@ export function CollectionWorkspace({
 }: CollectionWorkspaceProps): JSX.Element {
   const embedded = variant === "embedded";
   const [reorderAnnouncement, setReorderAnnouncement] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [compact, setCompact] = useState(() => typeof window !== "undefined" && window.innerWidth < 820);
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const observer = new ResizeObserver(entries => {
+      if (entries[0]) setCompact(entries[0].contentRect.width < 820);
+    });
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, []);
   return <CollectionAnnouncementContext.Provider value={setReorderAnnouncement}>
+    <CollectionCompactContext.Provider value={compact}>
     <Box
+      ref={rootRef}
       className={embedded ? undefined : "ponderosa-scroll"}
       sx={{
         height: "100%",
@@ -193,7 +221,7 @@ export function CollectionWorkspace({
         gridTemplateRows: embedded ? "auto minmax(0, 1fr)" : undefined,
       }}
     >
-      {embedded ? null : <CollectionHeader title={title} detail={detail} icon={icon} scope={scope} primaryAction={primaryAction} />}
+      {embedded ? null : <CollectionHeader title={title} detail={detail} icon={icon} scope={scope} primaryAction={primaryAction} compactPrimaryAction={compactPrimaryAction} />}
       {toolbar}
       <Stack
         className={embedded ? "ponderosa-scroll" : undefined}
@@ -229,6 +257,7 @@ export function CollectionWorkspace({
         {reorderAnnouncement}
       </Box>
     </Box>
+    </CollectionCompactContext.Provider>
   </CollectionAnnouncementContext.Provider>;
 }
 
@@ -238,6 +267,7 @@ export interface CollectionToolbarProps {
   searchLabel: string;
   searchMaxWidth?: number;
   reorderHint?: boolean;
+  compactControls?: ReactNode;
   children?: ReactNode;
 }
 
@@ -247,16 +277,18 @@ export function CollectionToolbar({
   searchLabel,
   searchMaxWidth,
   reorderHint = false,
+  compactControls,
   children,
 }: CollectionToolbarProps): JSX.Element {
+  const compact = useContext(CollectionCompactContext);
   return <Box
     component="section"
     aria-label="Collection controls"
     sx={{
-      px: { xs: 2, md: 3 },
-      py: 1.5,
+      px: compact ? 2 : { xs: 2, md: 3 },
+      py: compact ? 1 : 1.5,
       display: "grid",
-      gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "minmax(160px, 1fr) auto" },
+      gridTemplateColumns: compact ? "minmax(0, 1fr) auto" : "minmax(160px, 1fr) auto",
       alignItems: "center",
       gap: 1.25,
     }}
@@ -274,10 +306,12 @@ export function CollectionToolbar({
         maxWidth: searchMaxWidth ? { lg: searchMaxWidth } : undefined,
       }}
     />
-    {children ? (
+    {compact && compactControls ? <Box sx={{ flexShrink: 0 }}>{compactControls}</Box> : null}
+    {children && (!compact || !compactControls) ? (
       <Box
         sx={theme => ({
-          display: { xs: "grid", lg: "flex" },
+          display: compact ? "grid" : "flex",
+          gridColumn: compact ? "1 / -1" : undefined,
           gridTemplateColumns: {
             xs: "minmax(0, 1fr)",
             sm: "repeat(2, minmax(0, 1fr))",
@@ -310,16 +344,31 @@ export function CollectionToolbar({
         {children}
       </Box>
     ) : null}
-    {reorderHint ? (
+    {reorderHint && !compact ? (
       <Typography
         variant="caption"
         color="text.secondary"
-        sx={{ gridColumn: "1 / -1", whiteSpace: "nowrap" }}
+        sx={{ gridColumn: "1 / -1", whiteSpace: "nowrap", "@media (hover: none)": { display: "none" } }}
       >
         Reorder: Alt+Shift+↑/↓
       </Typography>
     ) : null}
   </Box>;
+}
+
+export function CollectionSortButton({ sort, onSort }: {
+  sort: ProjectSort;
+  onSort(value: ProjectSort): void;
+}): JSX.Element {
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  return <>
+    <Button size="small" color="inherit" startIcon={<SortIcon />} onClick={event => setAnchor(event.currentTarget)} aria-label="Sort collection" aria-haspopup="menu" aria-expanded={Boolean(anchor)} sx={{ minWidth: 44, minHeight: 40, px: 1 }}>
+      Sort
+    </Button>
+    <Menu anchorEl={anchor} open={Boolean(anchor)} onClose={() => setAnchor(null)}>
+      {([["last_used", "Recent Activity"], ["alphabetical", "Alphabetical"], ["custom", "Custom Order"]] as const).map(([value, label]) => <MenuItem key={value} selected={sort === value} onClick={() => { onSort(value); setAnchor(null); }}>{label}</MenuItem>)}
+    </Menu>
+  </>;
 }
 
 export function CollectionDirectoryControls({
@@ -429,7 +478,7 @@ export function CollectionStateFeedback({
   compact?: boolean;
 }): JSX.Element | null {
   if (request.isInitialLoading) {
-    return <LoadingState resource={resourceLabel} variant={compact ? "section" : "route"} />;
+    return <LoadingState resource={resourceLabel} variant={compact ? "inline" : "route"} />;
   }
   if (request.isInitialError) {
     return <Alert

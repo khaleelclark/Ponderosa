@@ -5,8 +5,9 @@ import type {
   FileChangeKind,
   MessageDto,
   RunOutputDto,
+  ToolFailureCategory,
 } from "@ponderosa/core";
-import { unifiedDiffLineTotals } from "@ponderosa/core";
+import { classifyToolFailure, unifiedDiffLineTotals } from "@ponderosa/core";
 
 export interface ActivityStreamInput {
   activity: AgentActivityDto[];
@@ -23,6 +24,9 @@ export interface ActivityStreamResult {
   completedAt: string;
   output: string;
   isError: boolean;
+  failureCategory?: ToolFailureCategory;
+  retryable?: boolean;
+  retryState?: "retrying" | "retried" | "recovered";
   outputPreview?: AgentActivityDto["outputPreview"];
 }
 
@@ -98,6 +102,9 @@ const INTERNAL_COMMUNICATION_COMMAND =
 
 function activityResult(item: AgentActivityDto): ActivityStreamResult | undefined {
   if (item.event.type !== "tool_result") return undefined;
+  const failure = item.event.failureCategory
+    ? { category: item.event.failureCategory, retryable: item.event.retryable === true }
+    : classifyToolFailure(item.event.output, item.event.isError === true);
   return {
     activityId: item.id,
     agentId: item.agentId,
@@ -105,8 +112,63 @@ function activityResult(item: AgentActivityDto): ActivityStreamResult | undefine
     completedAt: item.createdAt,
     output: item.event.output,
     isError: item.event.isError === true,
+    ...(failure ? { failureCategory: failure.category, retryable: failure.retryable } : {}),
     ...(item.outputPreview ? { outputPreview: item.outputPreview } : {}),
   };
+}
+
+function retryFingerprint(entry: Extract<ActivityStreamEntry, { kind: "tool" }>): string {
+  try {
+    if (entry.input && typeof entry.input === "object" && !Array.isArray(entry.input)) {
+      const { link_id: _linkId, ...semanticInput } = entry.input as Record<string, unknown>;
+      return `${entry.name}\0${JSON.stringify(semanticInput)}`;
+    }
+    return `${entry.name}\0${JSON.stringify(entry.input)}`;
+  } catch {
+    return entry.name;
+  }
+}
+
+function markToolRetries(candidates: Candidate[]): Candidate[] {
+  const result = [...candidates];
+  const lastTemporaryFailure = new Map<string, number>();
+  for (let index = 0; index < result.length; index += 1) {
+    const candidate = result[index]!;
+    if (candidate.entry.kind !== "tool") continue;
+    const key = retryFingerprint(candidate.entry);
+    const previousIndex = lastTemporaryFailure.get(key);
+    if (previousIndex !== undefined) {
+      const previous = result[previousIndex]!;
+      if (previous.entry.kind === "tool" && previous.entry.result) {
+        result[previousIndex] = {
+          ...previous,
+          entry: {
+            ...previous.entry,
+            result: {
+              ...previous.entry.result,
+              retryState: candidate.entry.result ? "retried" : "retrying",
+            },
+          },
+        };
+      }
+      if (candidate.entry.result && !candidate.entry.result.isError) {
+        result[index] = {
+          ...candidate,
+          entry: {
+            ...candidate.entry,
+            result: { ...candidate.entry.result, retryState: "recovered" },
+          },
+        };
+      }
+    }
+    const current = result[index]!;
+    if (current.entry.kind === "tool" && current.entry.result?.failureCategory === "temporary_connection_failure") {
+      lastTemporaryFailure.set(key, index);
+    } else {
+      lastTemporaryFailure.delete(key);
+    }
+  }
+  return result;
 }
 
 function activityCandidate(item: AgentActivityDto): Candidate | undefined {
@@ -284,7 +346,7 @@ function pairResults(activity: AgentActivityDto[], candidates: Candidate[]): Can
       },
     });
   }
-  return pairedCandidates;
+  return markToolRetries(pairedCandidates);
 }
 
 /** Pure chronological projection for the read-only Agent Activity inspection surface. */

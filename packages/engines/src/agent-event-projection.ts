@@ -1,4 +1,10 @@
-import type { AgentEvent, ProviderErrorCode, ProviderFailureCategory, TokenUsage } from "@ponderosa/core";
+import type {
+  AgentEvent,
+  ProviderErrorCode,
+  ProviderFailureCategory,
+  TokenUsage,
+  ToolFailureCategory,
+} from "@ponderosa/core";
 import { isProxy } from "node:util/types";
 
 const MAX_BYTES = 4 * 1024 * 1024;
@@ -17,6 +23,10 @@ const FAILURE_CATEGORIES = [
   "authentication", "rate_limit", "capacity", "context_length", "invalid_request",
   "unavailable", "unknown",
 ] as const satisfies readonly ProviderFailureCategory[];
+const TOOL_FAILURE_CATEGORIES = [
+  "operation_not_provided", "temporary_connection_failure", "authentication_required",
+  "permission_denied", "invalid_input", "permanent_failure",
+] as const satisfies readonly ToolFailureCategory[];
 
 export class AgentEventProjectionError extends Error {
   readonly code = "invalid_agent_event";
@@ -264,7 +274,7 @@ export function projectAgentEvent(value: unknown): AgentEvent {
     "sessionId", "providerSessionId", "providerSessionGeneration", "usedTokens", "aggregateTokens", "windowTokens",
     "executionId", "rolloverId", "lowWaterMark", "seedPromptUtf8Bytes", "contextSections",
     "previousProviderSessionId", "replacementProviderSessionId", "startingOccupancy", "delta", "id", "name", "input",
-    "output", "isError", "command", "cwd", "callId", "path", "kind", "diff", "passed", "summary", "status",
+    "output", "isError", "failureCategory", "retryable", "command", "cwd", "callId", "path", "kind", "diff", "passed", "summary", "status",
     "controlOwner", "controlEpoch", "url", "title", "reason", "actor", "action", "level", "text", "artifactId",
     "width", "height", "size", "sha256", "workItemId", "usage", "providerRequestUsage", "message", "code",
     "category", "remediation",
@@ -329,9 +339,23 @@ export function projectAgentEvent(value: unknown): AgentEvent {
       return { type, id: identifier(row, "id", budget, 2), name: identifier(row, "name", budget, 2), input: jsonValue(row.get("input"), budget, 2) };
     }
     case "tool_result": {
-      const row = exact(value, ["id", "output", "isError"], budget);
+      const row = exact(value, ["id", "output", "isError", "failureCategory", "retryable"], budget);
       const isError = optionalBoolean(row, "isError", budget, 2);
-      return { type, id: identifier(row, "id", budget, 2), output: string(row, "output", budget, 2), ...(isError === undefined ? {} : { isError }) };
+      const hasFailureCategory = row.has("failureCategory");
+      const hasRetryable = row.has("retryable");
+      if (hasFailureCategory !== hasRetryable) reject();
+      const failureCategory = hasFailureCategory
+        ? enumeration(row, "failureCategory", TOOL_FAILURE_CATEGORIES, budget, 2)
+        : undefined;
+      const retryable = hasRetryable ? boolean(row, "retryable", budget, 2) : undefined;
+      if (failureCategory !== undefined && isError !== true) reject();
+      return {
+        type,
+        id: identifier(row, "id", budget, 2),
+        output: string(row, "output", budget, 2),
+        ...(isError === undefined ? {} : { isError }),
+        ...(failureCategory === undefined ? {} : { failureCategory, retryable: retryable! }),
+      };
     }
     case "command": {
       const row = exact(value, ["command", "cwd", "callId"], budget);

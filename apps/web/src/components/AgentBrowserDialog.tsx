@@ -8,12 +8,11 @@ import {
   DialogTitle,
   IconButton,
   Stack,
-  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
 import type { BrowserSessionDto } from "@ponderosa/core";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { BrowserViewport } from "./browser/BrowserViewport";
 import { BrowserPageStrip } from "./browser/BrowserPageStrip";
 import { BrowserArtifactUpload } from "./browser/BrowserArtifactUpload";
@@ -42,7 +41,6 @@ export function AgentBrowserDialog({
     [agentId, projectId, runId],
   );
   const browser = useBrowserController<BrowserSessionDto>({ adapter, enabled: true });
-  const [typeText, setTypeText] = useState("");
   const session = browser.session;
   const operator = session?.status === "ready" && session.controlOwner === "operator";
   const controlOwnerLabel = operator ? "You have control" : `${agentTitle} has control`;
@@ -50,11 +48,6 @@ export function AgentBrowserDialog({
     ? `Trusted · ${session.profileName ?? "Profile"}`
     : "Disposable";
 
-  const submitText = () => {
-    if (!typeText) return;
-    browser.sendInput({ kind: "type", text: typeText });
-    setTypeText("");
-  };
   const unavailable = browser.missing || session?.status === "closed" || session?.status === "failed";
   const queryError = browser.queryError instanceof Error
     ? browser.queryError.message
@@ -164,17 +157,21 @@ export function AgentBrowserDialog({
           <Box sx={{ display: "grid", gap: 1, minHeight: 0 }}>
             <BrowserPageStrip
               pages={session?.pages ?? []}
-              activePageId={session?.activePageId}
+              activePageId={browser.viewedPageId}
+              agentPageId={!operator ? session?.activePageId : undefined}
               canManage={operator}
-              busy={browser.activatePage.isPending || browser.closePage.isPending}
-              onActivate={(pageId) => browser.activatePage.mutate(pageId)}
+              busy={browser.inputPending || browser.activatePage.isPending || browser.closePage.isPending}
+              onActivate={browser.viewPage}
+              onNew={() => browser.newPage.mutate()}
               onClose={(pageId) => browser.closePage.mutate(pageId)}
             />
+          {!operator && session?.status === "ready" ? <Button size="small" aria-pressed={browser.followAgent} onClick={() => browser.setFollowAgent(!browser.followAgent)}>{browser.followAgent ? "Following agent" : "Follow agent"}</Button> : null}
           <BrowserViewport
             adapter={adapter}
             session={session}
+            viewedPageId={browser.viewedPageId}
             active
-            operatorControl={operator}
+            operatorControl={operator && !browser.inputError}
             sendInput={browser.sendInput}
             refreshFrame={browser.refreshFrame}
             accent="info.main"
@@ -193,22 +190,6 @@ export function AgentBrowserDialog({
           </Box>
           {session?.status === "ready" ? operator ? (
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-              <TextField
-                size="small"
-                fullWidth
-                label="Type into focused page control"
-                value={typeText}
-                onChange={(event) => setTypeText(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    submitText();
-                  }
-                }}
-              />
-              <Button variant="outlined" disabled={!typeText || browser.input.isPending} onClick={submitText}>
-                Type
-              </Button>
               <Button
                 color="info"
                 variant="outlined"
@@ -232,7 +213,7 @@ export function AgentBrowserDialog({
               </Button>
             </Stack>
           ) : null}
-          {session?.capabilities.fileUpload && (operator || session.pendingFileChooser) ? (
+          {session?.capabilities.fileUpload && session.pendingFileChooser ? (
             <BrowserArtifactUpload
               projectId={projectId}
               disabled={browser.upload.isPending || browser.cancelFileChooser.isPending}
@@ -244,6 +225,7 @@ export function AgentBrowserDialog({
               onCancel={() => browser.cancelFileChooser.mutate()}
             />
           ) : null}
+          {browser.inputError ? <Alert severity="warning" action={<Button onClick={browser.resumeInput}>Continue</Button>}>{browser.inputError.message}</Alert> : null}
           {browser.error ? (
             <Alert severity="error">
               {browser.error instanceof Error ? browser.error.message : String(browser.error)}

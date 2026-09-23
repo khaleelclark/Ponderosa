@@ -122,6 +122,7 @@ const output = path.resolve(option("output", path.join("dist", "installers")));
 const format = option("format", process.platform === "darwin" ? "dmg" : process.platform === "win32" ? "exe" : "appimage");
 const manifest = JSON.parse(readFileSync(path.join(bundle, "build-manifest.json"), "utf8"));
 const artifactBase = `Ponderosa-${manifest.version}-${manifest.target.platform}-${manifest.target.arch}`;
+const requireSignedRelease = process.env.PONDEROSA_REQUIRE_SIGNED_RELEASE === "true";
 mkdirSync(output, { recursive: true });
 auditPortableSymlinkTree(bundle, { label: "pre-package native bundle" });
 
@@ -182,6 +183,12 @@ if (format === "dmg") {
     ["PonderosaBuildCommit", identity.exactCommit],
   ]) setPlistString(plist, key, value);
   const signingIdentity = process.env.PONDEROSA_MACOS_SIGN_IDENTITY?.trim();
+  const notaryProfile = process.env.PONDEROSA_MACOS_NOTARY_PROFILE?.trim();
+  if (requireSignedRelease && (!signingIdentity || !notaryProfile)) {
+    throw new Error(
+      "Production macOS packaging requires both PONDEROSA_MACOS_SIGN_IDENTITY and PONDEROSA_MACOS_NOTARY_PROFILE.",
+    );
+  }
   if (signingIdentity) {
     run("codesign", [
       "--force",
@@ -197,7 +204,6 @@ if (format === "dmg") {
   rmSync(target, { force: true });
   run("hdiutil", ["create", "-volname", "Ponderosa Engine", "-srcfolder", stage, "-ov", "-format", "UDZO", target]);
   rmSync(stage, { recursive: true, force: true });
-  const notaryProfile = process.env.PONDEROSA_MACOS_NOTARY_PROFILE?.trim();
   if (notaryProfile) {
     if (!signingIdentity) throw new Error("Notarization requires PONDEROSA_MACOS_SIGN_IDENTITY.");
     run("xcrun", ["notarytool", "submit", target, "--keychain-profile", notaryProfile, "--wait"]);
@@ -348,6 +354,9 @@ Filename: "{app}\\Ponderosa Engine.exe"; Description: "Open Ponderosa Engine"; F
   rmSync(electronOutput, { recursive: true, force: true });
   const target = path.join(output, `${artifactBase}.exe`);
   const signingCertificate = process.env.PONDEROSA_WINDOWS_CERT_SHA1?.trim();
+  if (requireSignedRelease && !signingCertificate) {
+    throw new Error("Production Windows packaging requires PONDEROSA_WINDOWS_CERT_SHA1.");
+  }
   if (signingCertificate) {
     const signtool = process.env.PONDEROSA_SIGNTOOL?.trim() || "signtool.exe";
     const timestampUrl = process.env.PONDEROSA_WINDOWS_TIMESTAMP_URL?.trim() ||

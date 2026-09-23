@@ -1,6 +1,5 @@
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import {
-  Alert,
   Box,
   Button,
   Dialog,
@@ -14,7 +13,8 @@ import type { ConversationDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
-import { ResourceDeletionDialog, TextInputDialog } from "./ConfirmationDialogs";
+import { TextInputDialog } from "./ConfirmationDialogs";
+import { ChatDeletionDialog } from "./ChatDeletionDialog";
 
 export type SidebarConversationAction = {
   kind: "rename" | "delete";
@@ -42,10 +42,15 @@ export function SidebarConversationDialogs({
     },
   });
   const remove = useMutation({
-    mutationFn: (conversation: ConversationDto) => api.deleteConversation(conversation.id),
-    onSuccess: (_deleted, conversation) => {
+    mutationFn: ({ conversation, expectedAgentIds }: { conversation: ConversationDto; expectedAgentIds: string[] }) =>
+      api.deleteConversation(conversation.id, expectedAgentIds),
+    onSuccess: (_deleted, { conversation }) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.project(conversation.projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(conversation.projectId) });
       onDeleted(conversation);
+    },
+    onError: (_error, { conversation }) => {
+      void queryClient.invalidateQueries({ queryKey: ["chat-deletion-agents", conversation.id] });
     },
   });
 
@@ -53,14 +58,14 @@ export function SidebarConversationDialogs({
     <>
       <TextInputDialog
         open={action?.kind === "rename"}
-        title="Rename Project chat"
-        label="Project chat name"
+        title="Rename Chat"
+        label="Chat name"
         initialValue={action?.conversation.title ?? ""}
         confirmLabel="Save"
         pendingLabel="Saving…"
         pending={rename.isPending}
         error={rename.isError ? String(rename.error) : undefined}
-        validate={(value) => value.trim() ? undefined : "Enter a Project chat name."}
+        validate={(value) => value.trim() ? undefined : "Enter a Chat name."}
         onCancel={() => {
           rename.reset();
           onClose();
@@ -69,27 +74,19 @@ export function SidebarConversationDialogs({
           if (action?.kind === "rename") rename.mutate({ conversation: action.conversation, title: title.trim() });
         }}
       />
-      <ResourceDeletionDialog
+      <ChatDeletionDialog
         open={action?.kind === "delete"}
-        resourceType="Chat"
-        resourceName={action?.conversation.title}
-        pendingLabel="Deleting…"
+        conversation={action?.conversation}
         pending={remove.isPending}
         error={remove.isError ? String(remove.error) : undefined}
-        onCancel={() => {
+        onClose={() => {
           remove.reset();
           onClose();
         }}
-        onConfirm={() => {
-          if (action?.kind === "delete") remove.mutate(action.conversation);
+        onDelete={(expectedAgentIds) => {
+          if (action?.kind === "delete") remove.mutate({ conversation: action.conversation, expectedAgentIds });
         }}
-      >
-        <Alert severity="warning">
-          This permanently deletes the Chat and its history. Assigned Agents
-          are preserved and become unassigned. Related Automations and pending
-          work are cancelled. Stop any active assigned Agent before deleting.
-        </Alert>
-      </ResourceDeletionDialog>
+      />
     </>
   );
 }

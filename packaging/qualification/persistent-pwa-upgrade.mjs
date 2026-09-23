@@ -24,7 +24,7 @@ function executable(pathname) {
   }
 }
 
-export function findMacosChromiumExecutable(
+export function findChromiumExecutable(
   configured = process.env.PONDEROSA_BROWSER_EXECUTABLE,
   home = process.env.HOME,
 ) {
@@ -38,9 +38,15 @@ export function findMacosChromiumExecutable(
     "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
     "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
   ].filter(Boolean);
   return candidates.find((candidate) => existsSync(candidate) && executable(candidate));
 }
+
+export const findMacosChromiumExecutable = findChromiumExecutable;
 
 export function documentAssetPaths(indexHtml) {
   const assets = new Set();
@@ -466,9 +472,9 @@ export async function qualifyPersistentPwaUpgrade({
   profileDir,
   webDist,
   bootstrapUrl,
-  browserExecutable = findMacosChromiumExecutable(),
+  browserExecutable = findChromiumExecutable(),
 }) {
-  assert(browserExecutable, "macOS PWA upgrade qualification requires an installed Chromium browser");
+  assert(browserExecutable, "PWA upgrade qualification requires an installed Chromium browser");
   const expectedAssets = documentAssetPaths(readFileSync(path.join(webDist, "index.html"), "utf8"));
   assert(expectedAssets.length > 0, "installed web index did not reference fingerprinted assets");
   const baseUrl = `http://127.0.0.1:${port}`;

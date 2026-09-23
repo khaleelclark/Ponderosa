@@ -93,8 +93,8 @@ export class AgentEventSessionAuthority {
     return this.eventProjection.readAll(agentId, this.projectIdOf(agentId));
   }
 
-  readEventsSince(agentId: string, sinceSeq: number): StoredLogEvent[] {
-    return this.eventProjection.readSince(agentId, sinceSeq);
+  readEventsSince(agentId: string, sinceSeq: number, limit?: number): StoredLogEvent[] {
+    return this.eventProjection.readSince(agentId, sinceSeq, limit);
   }
 
   lastSeqOf(agentId: string): number {

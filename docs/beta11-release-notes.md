@@ -13,11 +13,8 @@ of this release.
   restored Project Chat dictation, HEIC photo uploads, and attachment browsing.
 - More reliable replies, mentions, draft handling, message delivery, Stop retry
   identities, and retained views during temporary refresh failures.
-- Optional local Kokoro read-aloud on the private Pine/Linux host, with Willow,
-  Cedar, and Hazel voices. Browser/system read-aloud remains available without
-  installing the optional package.
-- Interrupted local-voice installation now reconciles leftover managed files,
-  preserves the active version, and exposes retryable repair when cleanup fails.
+- Browser/system read-aloud. The optional hosted-voice integration from this
+  historical release has been removed in the current experimental branch.
 - Upgrade history reads tolerate deleted pre-Chat-ownership Agent records without
   assigning synthetic Chats or relaxing validation for live Agents.
 
@@ -42,7 +39,5 @@ Codex/Claude discovery and execution on real macOS, and installed-artifact
 qualification on Windows 11 remain gates. Hosted Windows Server evidence does
 not qualify Windows 11. Unsigned packages remain private candidates.
 
-Local Kokoro hosting is currently qualified only for the private Pine/Linux
-setup. Physical iOS/Android audio behavior and native macOS/Windows local voice
-hosting are not claimed. Dictation and read-aloud are separate controls, not a
-phone-like voice conversation.
+Physical iOS/Android audio behavior requires real-device qualification. Talk in
+the later experimental branch remains turn-based, using browser speech only.

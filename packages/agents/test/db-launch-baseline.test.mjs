@@ -44,6 +44,7 @@ test("creates the canonical launch baseline for a fresh database", () => {
         "0011_nested_provider_activation_execution_payloads.ts",
         "0012_context_rollover_failure_provenance.ts",
         "0012_conversation_deletion_receipts.sql",
+        "0013_runtime_speed_defaults.sql",
         "0013_working_copy_authority.ts",
         "0014_project_deletion_ownership.ts",
         "0015_deletion_recovery_phases.ts",
@@ -51,6 +52,7 @@ test("creates the canonical launch baseline for a fresh database", () => {
         "0017_project_deletion_draft_cleanup.ts",
         "0018_project_deletion_asset_authority_cleanup.ts",
         "0019_conversation_deletion_ownership.ts",
+        "0020_context_rollover_cycles.ts",
       ],
     );
   } finally {

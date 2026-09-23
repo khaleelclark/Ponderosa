@@ -1,6 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { WorkspacePreferencesWriter } from "../src/workspacePreferencesWriter.js";
+import { WorkspacePreferencesWriter, rebaseChatFolderChange } from "../src/workspacePreferencesWriter.js";
+
+test("chat-folder star survives concurrent folder edits and can be intentionally cleared", () => {
+  const before = [{ id: "folder", name: "Original", conversationIds: ["chat-1"], expanded: false, starred: false }];
+  const starredElsewhere = [{ ...before[0], name: "Renamed elsewhere", conversationIds: ["chat-1", "chat-2"], starred: true }];
+  const expanded = [{ ...before[0], expanded: true }];
+  assert.deepEqual(rebaseChatFolderChange(starredElsewhere, before, expanded), [
+    { ...starredElsewhere[0], expanded: true },
+  ]);
+
+  const starred = [{ ...before[0], starred: true }];
+  assert.deepEqual(rebaseChatFolderChange(starredElsewhere.map(folder => ({ ...folder, starred: false })), before, starred), [
+    { ...starredElsewhere[0], starred: true },
+  ]);
+
+  const unstarred = [{ ...starredElsewhere[0], starred: false }];
+  assert.deepEqual(rebaseChatFolderChange(starredElsewhere, starredElsewhere, unstarred), unstarred);
+});
 
 const deferred = () => {
   let resolve;

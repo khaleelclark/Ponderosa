@@ -31,7 +31,9 @@ export function PrimaryHeaderActionsProvider({
   children: ReactNode;
 }): JSX.Element {
   const theme = useTheme();
-  const mobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const narrow = useMediaQuery(theme.breakpoints.down("sm"));
+  const coarsePointer = useMediaQuery("(pointer: coarse)");
+  const mobile = narrow || coarsePointer;
   const [fallbackOutlet, setFallbackOutlet] = useState<HTMLDivElement | null>(null);
   const [outlets, setOutlets] = useState<HTMLElement[]>([]);
   const register = useCallback<RegisterHeaderActionOutlet>((element) => {

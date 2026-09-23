@@ -236,25 +236,7 @@ export function ChatMessageFrame({
             value={message.createdAt}
             status={message.status}
             footer={message.footer}
-            actions={<>
-              {selectable ? <ButtonBase
-                aria-label={message.selectLabel ?? `Use source for ${senderName} message`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  selectMessage();
-                }}
-                sx={{
-                  minHeight: 28,
-                  px: 0.75,
-                  borderRadius: 0.75,
-                  color: "text.secondary",
-                  fontSize: 12,
-                  fontWeight: 700,
-                  "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: 2 },
-                }}
-              >Use as source</ButtonBase> : null}
-              {message.actions}
-            </>}
+            actions={message.actions}
           />
         </Box>
       </Stack>

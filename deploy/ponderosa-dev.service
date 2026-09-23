@@ -1,0 +1,32 @@
+[Unit]
+Description=Ponderosa development channel
+After=network-online.target
+Wants=network-online.target
+Requires=ponderosa-browser-dev.service
+After=ponderosa-browser-dev.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ponderosa-dev/current
+Environment=NODE_ENV=production
+Environment=PONDEROSA_DATA_DIR=%h/.ponderosa-dev
+Environment=PONDEROSA_PORT=8789
+Environment=PONDEROSA_HOST=127.0.0.1
+Environment=PONDEROSA_RELEASE_CHANNEL=dev
+Environment=PONDEROSA_CODEX_SANDBOX=danger-full-access
+Environment=PONDEROSA_BROWSER_EXECUTABLE=/usr/bin/google-chrome-stable
+Environment=PONDEROSA_BROWSER_MULTI_PAGE=1
+Environment=PONDEROSA_BROWSER_FILE_UPLOAD=1
+Environment=PONDEROSA_BROWSER_SERVICE_SOCKET=%t/ponderosa-browser-dev/browser.sock
+Environment=PATH=%h/ponderosa-dev/current/dist/node-runtime/linux-x64:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:%h/.npm-global/bin
+# Deployment writes the exact immutable release identity here before restart.
+EnvironmentFile=-%h/.config/ponderosa/dev.env
+ExecStartPre=/usr/bin/timeout 15 /bin/sh -c 'until test -S "%t/ponderosa-browser-dev/browser.sock"; do sleep 0.1; done'
+ExecStart=%h/ponderosa-dev/current/dist/node-runtime/linux-x64/node apps/server/dist/main.js
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target

@@ -15,7 +15,7 @@ export function mobileRouteAfterResourceRemoval(
 ): Route | undefined {
   if (removed.kind === "project") {
     return routeProjectId(current) === removed.projectId
-      ? { kind: "projects" }
+      ? { kind: "home" }
       : undefined;
   }
   if (
@@ -24,13 +24,13 @@ export function mobileRouteAfterResourceRemoval(
     current.projectId === removed.projectId &&
     current.conversationId === removed.conversationId
   ) {
-    return { kind: "project", projectId: removed.projectId };
+    return { kind: "home" };
   }
   if (
     removed.kind === "agent" && current.kind === "agent" &&
     current.projectId === removed.projectId && current.agentId === removed.agentId
   ) {
-    return { kind: "agents", projectId: removed.projectId };
+    return { kind: "home" };
   }
   return undefined;
 }
@@ -62,7 +62,6 @@ interface MobileWorkspaceDrawerProps {
   onProjectDeleted(projectId: string): void;
   onSearch(): void;
   onOpenNotifications(): void;
-  onOpenEngineStatus(): void;
 }
 
 export function MobileWorkspaceDrawer({
@@ -81,7 +80,6 @@ export function MobileWorkspaceDrawer({
   onProjectDeleted,
   onSearch,
   onOpenNotifications,
-  onOpenEngineStatus,
 }: MobileWorkspaceDrawerProps): JSX.Element {
   const close = () => onOpenChange(false);
   return (
@@ -90,7 +88,12 @@ export function MobileWorkspaceDrawer({
       onOpen={() => onOpenChange(true)}
       onClose={close}
       disableDiscovery
-      swipeAreaWidth={8}
+      // MUI disables opening on iOS by default; reserve only the edge strip,
+      // and keep native horizontal history gestures from claiming that strip.
+      disableSwipeToOpen={false}
+      swipeAreaWidth={24}
+      SwipeAreaProps={{ style: { touchAction: "pan-y" } }}
+      hysteresis={0.25}
       ModalProps={{ disableRestoreFocus: true }}
       PaperProps={{
         sx: {
@@ -139,10 +142,6 @@ export function MobileWorkspaceDrawer({
           onOpenNotifications={() => {
             close();
             onOpenNotifications();
-          }}
-          onOpenEngineStatus={() => {
-            close();
-            onOpenEngineStatus();
           }}
           onDismiss={close}
         />

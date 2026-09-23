@@ -15,7 +15,6 @@ import {
   ListItemText,
   Stack,
   TextField,
-  Tooltip,
   Typography,
   useMediaQuery,
   useTheme,
@@ -35,10 +34,12 @@ import { useNotifications } from "../hooks/queries";
 import { linkPresentation } from "./chat/ChatMessages";
 
 export type GlobalSearchSelection =
+  | { projectId: string; file: { path: string } }
   | { projectId: string; chat: GlobalChatSearchResultDto["chat"]; messageId: string }
   | { projectId: string; chat: RecentGlobalChatDto["chat"] };
 
 export function routeForGlobalSearchSelection(selection: GlobalSearchSelection): Route {
+  if ("file" in selection) return { kind: "workspaceFile", projectId: selection.projectId, path: selection.file.path };
   const focusMessageId = "messageId" in selection ? selection.messageId : undefined;
   return selection.chat.kind === "conversation"
     ? { kind: "conversation", projectId: selection.projectId, conversationId: selection.chat.id, ...(focusMessageId ? { focusMessageId } : {}) }
@@ -173,7 +174,7 @@ function GlobalSearchResultItem({ result, query, onSelect, active = false, id, o
         <Typography variant="caption" color="text.secondary" noWrap sx={{ ml: "auto !important", flexShrink: 0 }}>{new Date(result.timestamp).toLocaleString()}</Typography>
       </Stack>}
     secondary={<Stack spacing={.25} component="span">
-        <Typography component="span" variant="caption" color="text.secondary">{result.project.label} · {result.chat.kind === "agent" ? "Agent" : "Project chat"} · {result.author.label}</Typography>
+        <Typography component="span" variant="caption" color="text.secondary">{result.chat.kind === "agent" ? "Agent" : "Chat"} · {result.author.label}</Typography>
         <SearchSnippet snippet={result.snippet} ranges={result.highlights} query={query} />
       </Stack>}
   />;
@@ -197,26 +198,10 @@ function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
         {recent.unreadCount > 0 ? <Typography variant="caption" color="primary" sx={{ fontWeight: 800 }}>{recent.unreadCount} unread</Typography> : null}
       </Stack>}
     secondary={<Stack component="span" spacing={.25}>
-        <Typography component="span" variant="caption" color="text.secondary">{recent.project.label} · {recent.chat.kind === "agent" ? "Agent" : "Project chat"}</Typography>
+        <Typography component="span" variant="caption" color="text.secondary">{recent.chat.kind === "agent" ? "Agent" : "Chat"}</Typography>
         {recent.snippet ? <Typography component="span" variant="body2" color="text.secondary" noWrap>{plainGlobalSearchSnippet(recent.snippet)}</Typography> : null}
       </Stack>}
   />;
-}
-
-export function UnavailableGlobalSearchScopeChip({ scope }: { scope: "Projects" | "Files" }): JSX.Element {
-  const label = `${scope} · Coming later`;
-  const reason = `${scope} search is coming later because ${scope.toLocaleLowerCase()} discovery is not indexed yet`;
-  return <Tooltip title={reason}>
-    <Chip
-      label={label}
-      variant="outlined"
-      role="button"
-      aria-disabled="true"
-      aria-label={`${label}. ${reason}`}
-      tabIndex={0}
-      sx={{ opacity: 0.62, cursor: "not-allowed" }}
-    />
-  </Tooltip>;
 }
 
 export function GlobalChatSearch({ open, onClose, onSelect }: {
@@ -228,7 +213,7 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const notifications = useNotifications();
   const [query, setQuery] = useState("");
-  const [scope, setScope] = useState<"all" | "chats" | "agents">("all");
+  const [scope, setScope] = useState<"all" | "chats" | "agents" | "files">("all");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
   const [resultLimit, setResultLimit] = useState(25);
@@ -247,17 +232,26 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
   const search = useQuery({
     queryKey: queryKeys.globalSearch.results(debouncedQuery, resultLimit, resultKind),
     queryFn: () => api.searchGlobalChats(debouncedQuery, resultLimit, resultKind),
-    enabled: open,
+    enabled: open && scope !== "files",
     staleTime: 5_000,
     refetchOnReconnect: true,
   });
+  const filesEnabled = open && (scope === "all" || scope === "files");
+  const files = useQuery({
+    queryKey: ["global-search-files", debouncedQuery, resultLimit],
+    queryFn: () => api.searchGlobalFiles(debouncedQuery, resultLimit),
+    enabled: filesEnabled,
+    staleTime: 5_000,
+    retry: false,
+  });
+  const fileResults = filesEnabled ? files.data?.results ?? [] : [];
   const matchingAgents = useQuery({
     queryKey: ["global-search-agent-titles", debouncedQuery, resultLimit],
     queryFn: () => api.getWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>(
       "agent",
       { search: debouncedQuery, limit: resultLimit },
     ),
-    enabled: open && Boolean(debouncedQuery) && scope !== "chats",
+    enabled: open && Boolean(debouncedQuery) && (scope === "all" || scope === "agents"),
     staleTime: 5_000,
     refetchOnReconnect: true,
   });
@@ -276,15 +270,15 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
       messageId: "",
       author: { kind: "agent" as const, label: item.agent.title, agentId: item.agent.id },
       timestamp: item.agent.updatedAt,
-      snippet: `Agent in ${item.project.label}`,
+      snippet: "Agent",
       highlights: [],
       unread: false,
     }));
   }, [matchingAgents.data, search.data?.results]);
-  const agentTitleSearchEnabled = open && Boolean(debouncedQuery) && scope !== "chats";
-  const isSearching = search.isFetching ||
+  const agentTitleSearchEnabled = open && Boolean(debouncedQuery) && (scope === "all" || scope === "agents");
+  const isSearching = (scope !== "files" && search.isFetching) || (filesEnabled && files.isFetching) ||
     (agentTitleSearchEnabled && matchingAgents.isFetching);
-  const unread = useMemo(() => search.data?.results.filter((result) => result.unread) ?? [], [search.data]);
+  const unread = useMemo(() => scope === "files" ? [] : search.data?.results.filter((result) => result.unread) ?? [], [search.data, scope]);
   const openAttentionCount = notifications.data?.openActionCount ?? 0;
   const visibleResults = useMemo(() => [...(search.data?.results ?? []), ...titleMatches].filter((result) => {
     if (scope === "all") return true;
@@ -292,7 +286,7 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
     if (scope === "agents") return result.chat.kind === "agent";
     return false;
   }), [scope, search.data, titleMatches]);
-  const entries = useMemo(() => debouncedQuery
+  const chatEntries = useMemo(() => debouncedQuery
     ? visibleResults.map((result) => ({
       key: `result:${result.chat.kind}:${result.chat.id}:${result.messageId}`,
       selection: { projectId: result.project.id, chat: result.chat, messageId: result.messageId } satisfies GlobalSearchSelection,
@@ -302,11 +296,15 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
         key: `unread:${result.chat.kind}:${result.chat.id}:${result.messageId}`,
         selection: { projectId: result.project.id, chat: result.chat, messageId: result.messageId } satisfies GlobalSearchSelection,
       })),
-      ...(search.data?.recentChats ?? []).map((recent) => ({
+      ...(scope === "files" ? [] : search.data?.recentChats ?? []).map((recent) => ({
         key: `recent:${recent.chat.kind}:${recent.chat.id}`,
         selection: { projectId: recent.project.id, chat: recent.chat } satisfies GlobalSearchSelection,
       })),
-    ], [debouncedQuery, search.data?.recentChats, unread, visibleResults]);
+    ], [debouncedQuery, scope, search.data?.recentChats, unread, visibleResults]);
+  const entries = [...chatEntries, ...fileResults.map(file => ({
+    key: `file:${file.project.id}:${file.path}`,
+    selection: { projectId: file.project.id, file: { path: file.path } } satisfies GlobalSearchSelection,
+  }))];
   const entryIdentity = entries.map((entry) => entry.key).join("\u0000");
   useEffect(() => { setActiveIndex(-1); }, [open, query, scope]);
   useEffect(() => {
@@ -339,7 +337,7 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
       <Typography
         id="global-chat-search-title"
         component="h2"
-        sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}
+        sx={{ position: "absolute", width: "1px", height: "1px", p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}
       >
         Search Ponderosa
       </Typography>
@@ -365,12 +363,10 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
     </Box>
     <DialogContent sx={{ px: { xs: 1.5, sm: 2 }, pt: "16px !important", pb: 1.5, minHeight: { sm: 520 } }}>
       <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
-        {(["all", "chats", "agents"] as const).map((value) => <Chip key={value} clickable aria-pressed={scope === value} label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
-        <UnavailableGlobalSearchScopeChip scope="Projects" />
-        <UnavailableGlobalSearchScopeChip scope="Files" />
+        {(["all", "chats", "agents", "files"] as const).map((value) => <Chip key={value} clickable aria-pressed={scope === value} label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
       </Stack>
       {isSearching ? <LinearProgress aria-label="Searching Ponderosa" sx={{ mb: 1 }} /> : null}
-      {search.isError || (agentTitleSearchEnabled && matchingAgents.isError) ? <Alert severity="error" sx={{ mb: 1 }}>Search is unavailable. Check the server connection and try again.</Alert> : null}
+      {(scope !== "files" && search.isError) || (agentTitleSearchEnabled && matchingAgents.isError) || (filesEnabled && files.isError) ? <Alert severity="error" sx={{ mb: 1 }}>Search is unavailable. Check the server connection and try again.</Alert> : null}
       <Box id="global-search-results" role="listbox" aria-label="Global search suggestions">
       {debouncedQuery ? visibleResults.length > 0 ?
         <Box role="group" aria-label={scope === "all" ? "Results" : scope}>
@@ -401,7 +397,7 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
             />)}
           </List>
         </Box> : null}
-        {(search.data?.recentChats.length ?? 0) > 0 ? <Box role="group" aria-label="Recent chats">
+        {scope !== "files" && (search.data?.recentChats.length ?? 0) > 0 ? <Box role="group" aria-label="Recent chats">
           <Typography aria-hidden="true" variant="overline" color="text.secondary">Recent chats</Typography>
           <List component="div" disablePadding role="presentation">
             {(search.data?.recentChats ?? []).map((recent, recentIndex) => {
@@ -418,10 +414,28 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
           </List>
         </Box> : null}
       </>}
+      {fileResults.length > 0 ? <Box role="group" aria-label={debouncedQuery ? "Files" : "Recent files"}>
+        <Typography variant="overline" color="text.secondary">{debouncedQuery ? "Files" : "Recent files"}</Typography>
+        {!debouncedQuery ? <Typography variant="caption" color="text.secondary" component="p">Recently modified workspace files</Typography> : null}
+        <List component="div" disablePadding role="presentation">
+          {fileResults.map((file, fileIndex) => {
+            const index = chatEntries.length + fileIndex;
+            return <SearchResultRow key={`file:${file.project.id}:${file.path}`} id={`global-search-option-${index}`}
+              active={activeIndex === index} onActive={() => setActiveIndex(index)}
+              ariaLabel={`Open file ${file.name}`}
+              onSelect={() => chooseSelection({ projectId: file.project.id, file: { path: file.path } })}
+              primary={<Typography fontWeight={700} sx={{ overflowWrap: "anywhere" }}>{file.name}</Typography>}
+              secondary={<Typography component="span" variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{file.path}</Typography>} />;
+          })}
+        </List>
+      </Box> : null}
       </Box>
-      {debouncedQuery && !isSearching && visibleResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{`No ${scope === "all" ? "messages or Agents" : scope} match “${debouncedQuery}”.`}</Typography> : null}
-      {!debouncedQuery && !isSearching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>{openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention.` : "You’re all caught up."}</Typography> : null}
-      {search.data?.truncated ? <Stack spacing={1} sx={{ mt: 1 }}>
+      {filesEnabled && (files.data?.truncated || files.data?.unavailableRoots) ? <Typography variant="caption" color="text.secondary" component="p">File search covered a limited set of accessible folders. Some files may not be listed.</Typography> : null}
+      {filesEnabled && files.data?.truncated && resultLimit < 50 && !(scope !== "files" && search.data?.truncated) ? <Button color="inherit" onClick={() => setResultLimit(50)}>Show more results</Button> : null}
+      {scope === "files" && !debouncedQuery && !isSearching && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 1 }}>No recent files are available. Search files by name or path.</Typography> : null}
+      {debouncedQuery && !isSearching && visibleResults.length === 0 && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{`No ${scope === "all" ? "messages, Agents or files" : scope} match “${debouncedQuery}”.`}</Typography> : null}
+      {scope !== "files" && !debouncedQuery && !isSearching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>{openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention.` : "You’re all caught up."}</Typography> : null}
+      {scope !== "files" && search.data?.truncated ? <Stack spacing={1} sx={{ mt: 1 }}>
         <Alert severity="info">Showing the newest matches from a bounded search. Add more terms to narrow the result.</Alert>
         {resultLimit < 50 ? <Button
           color="inherit"

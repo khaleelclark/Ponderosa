@@ -1,59 +1,22 @@
-import { Alert, Box } from "@mui/material";
+import { Alert, Box, Button, Stack, Typography } from "@mui/material";
+import { useState } from "react";
 import type { WorkspaceConnectionState } from "../hooks/useWorkspaceStream";
+import { useWorkspaceRefreshIssues } from "./WorkspaceRefreshContext";
 
-export function WorkspaceConnectionNotice({
-  connection,
-}: {
-  connection: WorkspaceConnectionState;
-}): JSX.Element {
-  const lastSync = connection.lastSuccessfulSyncAt
-    ? new Date(connection.lastSuccessfulSyncAt).toLocaleTimeString([], {
-        hour: "numeric",
-        minute: "2-digit",
-      })
-    : undefined;
-  const message = connection.status === "connecting"
-    ? "Connecting live workspace updates…"
-    : connection.status === "reconnecting"
-      ? `Reconnecting live workspace updates${lastSync ? ` · Last synced ${lastSync}` : ""}…`
-      : connection.status === "stale"
-        ? `Live workspace updates are stale${lastSync ? ` · Last synced ${lastSync}` : ""}. Displayed data may be out of date.`
-        : connection.status === "unavailable"
-          ? "Live workspace updates are unavailable. Displayed data may be out of date."
-          : undefined;
-
-  return (
-    <>
-      {message ? (
-        <Alert
-          severity={connection.prolongedDisconnect ? "warning" : "info"}
-          variant="outlined"
-          sx={{
-            borderRadius: 0,
-            borderInline: 0,
-            py: 0,
-            "& .MuiAlert-message": { py: 0.5 },
-          }}
-        >
-          {message}
-        </Alert>
-      ) : null}
-      <Box
-        aria-live="polite"
-        sx={{
-          position: "absolute",
-          width: 1,
-          height: 1,
-          p: 0,
-          m: -1,
-          overflow: "hidden",
-          clip: "rect(0, 0, 0, 0)",
-          whiteSpace: "nowrap",
-          border: 0,
-        }}
-      >
-        {connection.announcement}
-      </Box>
-    </>
-  );
+export function WorkspaceConnectionNotice({ connection }: { connection: WorkspaceConnectionState }): JSX.Element {
+  const issues = Object.values(useWorkspaceRefreshIssues());
+  const [expanded, setExpanded] = useState(false);
+  const disconnected = connection.status === "stale" || connection.status === "unavailable" || connection.prolongedDisconnect;
+  const visible = disconnected || issues.length > 0;
+  return <>
+    {visible ? <Alert severity="warning" variant="outlined" sx={{ borderRadius: 0, borderInline: 0, py: 0, flexWrap: { xs: "wrap", sm: "nowrap" }, "& .MuiAlert-message": { py: .5, minWidth: 0, flex: 1, overflowWrap: "anywhere" }, "& .MuiAlert-action": { alignItems: "flex-start", justifyContent: "flex-end", width: { xs: "100%", sm: "auto" }, ml: { xs: 0, sm: 2 }, mr: 0, p: 0 } }}
+      action={<Stack direction="row"><Button size="small" color="inherit" onClick={() => { if (disconnected) connection.retry?.(); issues.forEach(issue => issue.retry()); }}>Retry</Button><Button size="small" color="inherit" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>Details</Button></Stack>}>
+      {disconnected ? "Connection interrupted—showing saved data." : "Some data could not refresh—showing saved data."}
+      {expanded ? <Box sx={{ mt: .5 }}>
+        {disconnected ? <Typography variant="caption" component="p">Live workspace updates are {connection.status}.{connection.lastSuccessfulSyncAt ? ` Last synced ${new Date(connection.lastSuccessfulSyncAt).toLocaleTimeString()}.` : ""}</Typography> : null}
+        {issues.map((issue, index) => <Typography key={index} variant="caption" component="p">{issue.detail}</Typography>)}
+      </Box> : null}
+    </Alert> : null}
+    <Box aria-live="polite" sx={{ position: "absolute", width: "1px", height: "1px", overflow: "hidden", clip: "rect(0, 0, 0, 0)" }}>{connection.announcement}</Box>
+  </>;
 }

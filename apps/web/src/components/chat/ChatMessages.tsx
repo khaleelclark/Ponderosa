@@ -8,7 +8,6 @@ import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, 
 import { messageTagTokens, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
 import { type ReactNode, type ComponentPropsWithoutRef, useEffect, useRef, useState } from "react";
-import useMediaQuery from "@mui/material/useMediaQuery";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../../clipboard";
@@ -21,17 +20,18 @@ import {
   parseChatProjectFileHref,
   renderableChatLinkHref,
 } from "./chatMarkdownLink";
+export { resolveMessageMentionText } from "./messageMentionPresentation";
+import { resolveMessageMentionText } from "./messageMentionPresentation";
 
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
 }
 
 function ScrollableMessageTable({node: _node, ...props}: ComponentPropsWithoutRef<"table"> & {node?: unknown}): JSX.Element {
-  const mobile = useMediaQuery("(max-width: 899.95px)");
-  if (!mobile) return <table {...props} />;
   return <div style={{minWidth: 0, maxWidth: "100%"}}>
-    <Typography variant="caption" color="text.secondary">Swipe or scroll sideways to read the table.</Typography>
-    <table {...props} tabIndex={0} aria-label="Scrollable message table" />
+    <div role="region" tabIndex={0} aria-label="Scrollable message table" style={{maxWidth: "100%", overflowX: "auto", overscrollBehaviorX: "contain"}}>
+      <table {...props} />
+    </div>
   </div>;
 }
 
@@ -67,39 +67,6 @@ function stripLeadingRoutingHandle(text: string, handle: string): string {
   }
   const remainder = visible.slice(match[0].length);
   return remainder.trim() ? remainder.trimStart() : text;
-}
-
-const RESERVED_PRESENTATION_HANDLES = new Set([
-  "broadcast",
-  "everyone",
-  "new-agent",
-  "operator",
-  "pto",
-  "user",
-]);
-
-/** One authoritative name-resolution path shared by rendering, copy, and export. */
-export function resolveMessageMentionText(
-  text: string,
-  mentions: readonly AgentMentionBindingDto[] | undefined,
-): string {
-  const tokens = messageTagTokens(text);
-  if (!tokens.length) return text;
-  let cursor = 0;
-  let resolved = "";
-  for (const token of tokens) {
-    resolved += text.slice(cursor, token.start);
-    const binding = mentions?.find(mention =>
-      mention.handle.toLocaleLowerCase() === token.handle.toLocaleLowerCase());
-    if (binding) resolved += `#${binding.currentHandle}`;
-    else if (RESERVED_PRESENTATION_HANDLES.has(token.handle.toLocaleLowerCase())) {
-      resolved += text.slice(token.start, token.end);
-    } else {
-      resolved += `[Unavailable Agent: ${token.handle}]`;
-    }
-    cursor = token.end;
-  }
-  return resolved + text.slice(cursor);
 }
 
 function canonicalRecipientPrefix(
@@ -200,6 +167,10 @@ function ChatLink({ href, children, previewScope, projectId }: { href: string; c
   if (projectFilePreview) return <a className="chat-text-navigation" href={projectFilePreview} target="_blank" rel="noreferrer">{children}</a>;
   if (!link) return <a className="chat-text-navigation" href={href}>{children}</a>;
   const activate = (event: React.MouseEvent) => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    if (!link.loopback && projectBrowser.projectId) {
+      event.preventDefault(); projectBrowser.open(link.url.href); return;
+    }
     if (!link.loopback) return;
     event.preventDefault();
     setChooserOpen(true);
@@ -218,8 +189,8 @@ function ChatLink({ href, children, previewScope, projectId }: { href: string; c
     finally { setOpening(false); }
   };
   return <>
-    <Box className="chat-text-navigation" component="a" href={href} target={link.loopback ? undefined : "_blank"} rel={link.loopback ? undefined : "noreferrer"} onClick={activate} aria-label={`Open link to ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
-      <Box component="span" sx={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{link.destination}</Box>
+    <Box className="chat-text-navigation" component="a" href={href} target={link.loopback ? undefined : "_blank"} rel={link.loopback ? undefined : "noreferrer"} onClick={activate} onContextMenu={event => { event.preventDefault(); setChooserOpen(true); setError(undefined); }} aria-label={`Open link to ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
+      <Box component="span" title={link.url.href} sx={{ minWidth: 0, maxWidth: "18rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{children}</Box>
       <OpenInNewIcon aria-hidden sx={{ fontSize: 14, flex: "0 0 auto" }} />
     </Box>
     <Dialog open={chooserOpen} onClose={() => setChooserOpen(false)} aria-labelledby="link-open-title" maxWidth="xs" fullWidth>
@@ -492,8 +463,10 @@ function ChatMarkdown({
         "& :not(pre) > code": { px: 0.5, py: 0.125, borderRadius: 0.75, bgcolor: "action.hover" },
         "& pre": { my: 0.65, p: 1.1, maxWidth: "100%", overflowX: "auto", borderRadius: 1, bgcolor: "action.hover" },
         "& img": { display: "block", maxWidth: "100%", height: "auto", objectFit: "contain" },
-        "& table": { display: "block", maxWidth: "100%", overflowX: "auto", borderCollapse: "collapse" },
-        "& th, & td": { px: 1, py: 0.5, border: 1, borderColor: "divider", minWidth: { xs: "7rem", md: 0 }, maxWidth: { xs: "20rem", md: "none" }, overflowWrap: { xs: "break-word", md: "anywhere" } },
+        "& table": { width: "100%", borderCollapse: "collapse" },
+        "& th, & td": { px: 1, py: 0.5, border: 1, borderColor: "divider", minWidth: "7rem", maxWidth: "24rem", verticalAlign: "top", overflowWrap: "break-word", wordBreak: "normal" },
+        "& th:first-child, & td:first-child": { minWidth: "3rem" },
+        "& td a, & th a": { maxWidth: "16rem" },
         "& a": { maxWidth: "100%", color: "inherit", textDecoration: "none", overflowWrap: "anywhere", wordBreak: "break-word" },
       }}
     >
@@ -562,7 +535,7 @@ function ChatMarkdown({
             const handle = messageTagHandle(href);
             if (!handle) return <Box component="span">{label}</Box>;
             if (handle.toLocaleLowerCase() === "broadcast" && onOpenBroadcast) {
-              return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open originating broadcast in Project chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "none", cursor: "pointer" }}>{label}</Box>;
+              return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open originating broadcast in Chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "none", cursor: "pointer" }}>{label}</Box>;
             }
             const boundMention = agentMentionForHandle?.(handle);
             const agentId = boundMention?.agentId ?? agentIdForHandle?.(handle);
@@ -649,7 +622,7 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
           {expanded ? "Show Less" : "Show Full Message"}
         </Button>
       ) : null}
-      {citations?.length ? <Box component="aside" aria-label="Sources" sx={{ mt: 1, pt: 1, borderTop: 1, borderColor: "divider" }}><Typography variant="caption" sx={{ display: "block", fontWeight: 700, mb: .5 }}>Sources</Typography>{citations.map((citation) => <Typography key={citation.url} variant="caption" component="div"><a href={citation.url} target="_blank" rel="noreferrer">{citation.title}</a></Typography>)}</Box> : null}
+      {citations?.length ? <Box component="aside" aria-label="Sources" sx={{ mt: 1, pt: 1, borderTop: 1, borderColor: "divider" }}><Typography variant="caption" sx={{ display: "block", fontWeight: 700, mb: .5 }}>Sources</Typography>{citations.map((citation) => <Typography key={citation.url} variant="caption" component="div"><ChatLink href={citation.url} projectId={projectId} previewScope={previewScope}>{citation.title}</ChatLink></Typography>)}</Box> : null}
     </Box>
   );
 }

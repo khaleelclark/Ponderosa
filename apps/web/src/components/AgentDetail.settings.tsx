@@ -39,6 +39,7 @@ import { useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { HostPathPresentation } from "./HostPathPresentation";
+import { ResourceNotificationSettings } from "./ResourceNotificationSettings";
 import { useMutationNotification } from "./MutationNotifications";
 
 function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
@@ -373,6 +374,7 @@ export function AgentSettingsPane({
         </Typography>
       </Paper>
       <AgentWorkingCopySettings agent={agent} />
+      <Paper variant="outlined" sx={{ p: 2 }}><ResourceNotificationSettings kind="agent" id={agent.id} /></Paper>
       <AgentBrowserProfileSettings agent={agent} />
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Typography variant="subtitle1" fontWeight={800}>

@@ -1,43 +1,26 @@
-import { createHash } from "node:crypto";
 import { parentPort, workerData } from "node:worker_threads";
+import { readFileSync } from "node:fs";
 
 type CodecWorkerInput =
-  | { operation: "encode"; body: Uint8Array }
-  | { operation: "decode"; dataBase64: string }
-  | { operation: "parse-upload"; body: Uint8Array }
+  | { operation: "parse-file"; pathname: string }
   | { operation: "stringify-package"; portable: unknown };
 
 try {
   const input = workerData as CodecWorkerInput;
-  if (input.operation === "encode") {
-    parentPort?.postMessage({
-      dataBase64: Buffer.from(input.body).toString("base64"),
-    });
-  } else if (input.operation === "decode") {
-    const body = Buffer.from(input.dataBase64, "base64");
-    if (
-      body.toString("base64").replace(/=+$/u, "") !==
-      input.dataBase64.replace(/=+$/u, "")
-    ) {
-      throw new Error("portable artifact has invalid base64 data");
-    }
-    const transferable = new Uint8Array(body.length);
-    transferable.set(body);
-    parentPort?.postMessage({
-      body: transferable,
-      sha256: createHash("sha256").update(body).digest("hex"),
-    }, [transferable.buffer]);
-  } else if (input.operation === "parse-upload") {
-    const body = Buffer.from(input.body);
+  if (input.operation === "parse-file") {
+    const body = readFileSync(input.pathname);
     const separator = body.indexOf(0x0a);
     if (separator < 1 || separator > 16 * 1024) {
       throw new Error("Agent package upload metadata is invalid");
     }
     const decoder = new TextDecoder("utf-8", { fatal: true });
-    parentPort?.postMessage({
-      metadata: JSON.parse(decoder.decode(body.subarray(0, separator))),
-      portable: JSON.parse(decoder.decode(body.subarray(separator + 1))),
-    });
+    const metadata = JSON.parse(decoder.decode(body.subarray(0, separator)));
+    const portable = body.subarray(separator + 1);
+    // Validate in the resource-limited worker, but transfer bytes rather than
+    // structured-cloning the entire parsed object into the application heap.
+    JSON.parse(decoder.decode(portable));
+    const portableBytes = Uint8Array.from(portable).buffer;
+    parentPort?.postMessage({ metadata, portableBytes }, [portableBytes]);
   } else {
     parentPort?.postMessage({
       body: JSON.stringify(input.portable),

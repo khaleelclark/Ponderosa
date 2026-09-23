@@ -1,9 +1,9 @@
 import type { BrowserSession } from "./browserAdapters";
 import type { BrowserControlTarget, BrowserEndpointAdapter, UnfencedBrowserInput } from "./browserAdapters";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiRequestError } from "../../api/types";
-import { mergeBrowserScrollInputs, type BrowserScrollInput } from "../../browserInteraction";
+import { createBrowserInputQueue } from "../../browserInputQueue";
 
 export function useBrowserController<Session extends BrowserSession>({
   adapter,
@@ -16,8 +16,11 @@ export function useBrowserController<Session extends BrowserSession>({
 }) {
   const queryClient = useQueryClient();
   const sessionRef = useRef<Session>();
+  const [inputError, setInputError] = useState<Error>();
+  const [inputPending, setInputPending] = useState(false);
+  const [followAgent, setFollowAgent] = useState(true);
+  const [selectedPageId, setSelectedPageId] = useState<string>();
   const inputBusy = useRef(false);
-  const queuedScroll = useRef<BrowserScrollInput>();
   const refreshFrame = useRef<() => void>(() => undefined);
 
   const query = useQuery({
@@ -29,20 +32,29 @@ export function useBrowserController<Session extends BrowserSession>({
   });
   const missing = query.error instanceof ApiRequestError && query.error.status === 404;
   const queryError = missing ? undefined : query.error;
-  const session = missing || queryError ? undefined : query.data;
+  const candidate = missing || queryError ? undefined : query.data;
+  const session = candidate && sessionRef.current?.id === candidate.id && sessionRef.current.controlEpoch > candidate.controlEpoch
+    ? sessionRef.current : candidate;
   sessionRef.current = session;
+  const viewedPageId = session?.controlOwner === "operator" || followAgent || !session?.pages.some(page => page.id === selectedPageId)
+    ? session?.activePageId : selectedPageId;
   const update = useCallback((next: Session) => {
+    if (sessionRef.current?.id === next.id && sessionRef.current.controlEpoch > next.controlEpoch) return;
     sessionRef.current = next;
     queryClient.setQueryData(adapter.queryKey, next);
     onSession?.(next);
   }, [adapter.queryKey, onSession, queryClient]);
 
   const open = useMutation({ mutationFn: (url?: string) => adapter.open!(url), onSuccess: update });
-  const navigate = useMutation({ mutationFn: (url: string) => adapter.navigate!(url), onSuccess: update });
+  const navigate = useMutation({ mutationFn: (url: string) => {
+    if (inputBusy.current) throw new Error("Wait for pending browser input before navigating.");
+    return adapter.navigate!(url);
+  }, onSuccess: update });
   const reconnect = useMutation({ mutationFn: adapter.reconnect, onSuccess: update });
   const close = useMutation({ mutationFn: adapter.close, onSuccess: update });
   const activatePage = useMutation({
     mutationFn: (pageId: string) => {
+      if (inputBusy.current) throw new Error("Wait for pending browser input before switching tabs.");
       const session = sessionRef.current;
       if (!session) throw new Error("The browser session changed. Refresh and try again.");
       return adapter.activatePage(pageId, session.controlEpoch);
@@ -52,6 +64,7 @@ export function useBrowserController<Session extends BrowserSession>({
   });
   const closePage = useMutation({
     mutationFn: (pageId: string) => {
+      if (inputBusy.current) throw new Error("Wait for pending browser input before closing a tab.");
       const session = sessionRef.current;
       if (!session) throw new Error("The browser session changed. Refresh and try again.");
       return adapter.closePage(pageId, session.controlEpoch);
@@ -59,6 +72,10 @@ export function useBrowserController<Session extends BrowserSession>({
     onSuccess: (next) => { update(next); refreshFrame.current(); },
     onError: () => { void queryClient.invalidateQueries({ queryKey: adapter.queryKey }); },
   });
+  const newPage = useMutation({ mutationFn: () => {
+    if (inputBusy.current || !sessionRef.current || !adapter.newPage) throw new Error("Wait for browser input to finish before opening a tab.");
+    return adapter.newPage(sessionRef.current.controlEpoch);
+  }, onSuccess: next => { update(next); refreshFrame.current(); } });
   const upload = useMutation({
     mutationFn: ({ artifactId, selector }: { artifactId: string; selector?: string }) => {
       const session = sessionRef.current;
@@ -93,42 +110,33 @@ export function useBrowserController<Session extends BrowserSession>({
     onSuccess: update,
     onError: () => { void queryClient.invalidateQueries({ queryKey: adapter.queryKey }); },
   });
-  const input = useMutation({
-    mutationFn: (value: UnfencedBrowserInput) => {
-      const session = sessionRef.current;
-      if (!session || session.controlOwner !== "operator") {
-        throw new Error("Browser control changed before the input was sent.");
-      }
-      return adapter.sendInput(value, session.controlEpoch);
+
+  const updateRef = useRef(update);
+  updateRef.current = update;
+  const inputQueue = useMemo(() => createBrowserInputQueue<UnfencedBrowserInput>({
+    context: () => {
+      const current = sessionRef.current;
+      return current?.status === "ready" && current.controlOwner === "operator"
+        ? JSON.stringify([current.id, current.controlEpoch, current.activePageId]) : undefined;
     },
-    onSuccess: (next) => {
-      update(next);
+    dispatch: async (value, context) => {
+      const [, epoch, pageId] = JSON.parse(context) as [string, number, string];
+      const next = await adapter.sendInput({ ...value, expectedPageId: value.expectedPageId ?? pageId }, epoch);
+      updateRef.current(next);
       refreshFrame.current();
     },
-    onError: () => { void queryClient.invalidateQueries({ queryKey: adapter.queryKey }); },
-  });
+    onError: setInputError,
+    onBusy: busy => { inputBusy.current = busy; setInputPending(busy); },
+  }), [adapter]);
+  const sendInput = useCallback((value: UnfencedBrowserInput) => inputQueue.enqueue(value), [inputQueue]);
 
-  const sendInput = useCallback((value: UnfencedBrowserInput): void => {
-    if (sessionRef.current?.controlOwner !== "operator") return;
-    if (inputBusy.current) {
-      if (value.kind === "scroll") queuedScroll.current = mergeBrowserScrollInputs(queuedScroll.current, value);
-      return;
-    }
-    inputBusy.current = true;
-    input.mutate(value, {
-      onSettled: (_data, error) => {
-        inputBusy.current = false;
-        const next = queuedScroll.current;
-        queuedScroll.current = undefined;
-        if (!error && next) sendInput(next);
-      },
-    });
-  }, [input]);
-
-  useEffect(() => () => {
-    queuedScroll.current = undefined;
-    refreshFrame.current = () => undefined;
-  }, [adapter]);
+  useEffect(() => {
+    inputQueue.activate();
+    return () => {
+      inputQueue.dispose();
+      refreshFrame.current = () => undefined;
+    };
+  }, [inputQueue]);
 
   return {
     query,
@@ -141,13 +149,23 @@ export function useBrowserController<Session extends BrowserSession>({
     close,
     activatePage,
     closePage,
+    newPage,
+    viewedPageId,
+    followAgent,
+    setFollowAgent,
+    viewPage(pageId: string) {
+      if (session?.controlOwner === "operator") activatePage.mutate(pageId);
+      else { setSelectedPageId(pageId); setFollowAgent(false); }
+    },
     upload,
     cancelFileChooser,
     control,
-    input,
     sendInput,
     refreshFrame,
-    error: open.error ?? navigate.error ?? reconnect.error ?? close.error ?? activatePage.error ?? closePage.error ?? upload.error ?? cancelFileChooser.error ?? control.error ?? input.error,
+    inputError,
+    inputPending,
+    resumeInput() { inputQueue.reset(); setInputError(undefined); },
+    error: open.error ?? navigate.error ?? reconnect.error ?? close.error ?? activatePage.error ?? closePage.error ?? newPage.error ?? upload.error ?? cancelFileChooser.error ?? control.error,
     resetMutations() {
       open.reset();
       navigate.reset();
@@ -158,7 +176,6 @@ export function useBrowserController<Session extends BrowserSession>({
       upload.reset();
       cancelFileChooser.reset();
       control.reset();
-      input.reset();
     },
   };
 }

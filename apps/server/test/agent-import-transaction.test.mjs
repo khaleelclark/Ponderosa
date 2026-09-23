@@ -133,18 +133,28 @@ test("JSON copy and synchronous import fingerprints ignore object key order", as
   const copyA = { sourceAgentId: "source-a", conversationId: "chat-a", organization: false };
   const copyB = { organization: false, conversationId: "chat-a", sourceAgentId: "source-a" };
   await app.inject({ method: "POST", url: "/api/projects/project-a/copy-agent",
-    headers: { "idempotency-key": "copy-a" }, payload: copyA });
+    headers: { "idempotency-key": "copy-key-a" }, payload: copyA });
   await app.inject({ method: "POST", url: "/api/projects/project-a/copy-agent",
-    headers: { "idempotency-key": "copy-b" }, payload: copyB });
+    headers: { "idempotency-key": "copy-key-b" }, payload: copyB });
   assert.equal(hashes[0], hashes[1]);
+  await app.inject({ method: "POST", url: "/api/projects/project-a/copy-agent",
+    headers: { "idempotency-key": "copy-key-c" }, payload: { ...copyA, rootTitle: "New root" } });
+  assert.notEqual(hashes[0], hashes[2]);
+  await app.inject({ method: "POST", url: "/api/projects/project-a/copy-agent",
+    headers: { "idempotency-key": "copy-key-d" }, payload: { ...copyA, rootTitle: " New root " } });
+  assert.equal(hashes[2], hashes[3]);
+  const invalidName = await app.inject({ method: "POST", url: "/api/projects/project-a/copy-agent",
+    headers: { "idempotency-key": "copy-key-invalid" }, payload: { ...copyA, rootTitle: "   " } });
+  assert.equal(invalidName.statusCode, 400);
+  assert.equal(hashes.length, 4);
 
   const importA = { package: {}, conversationId: "chat-a", engineMapping: { old: "new" } };
   const importB = { engineMapping: { old: "new" }, conversationId: "chat-a", package: {} };
   await app.inject({ method: "POST", url: "/api/projects/project-a/import-agents",
-    headers: { "idempotency-key": "import-a" }, payload: importA });
+    headers: { "idempotency-key": "import-key-a" }, payload: importA });
   await app.inject({ method: "POST", url: "/api/projects/project-a/import-agents",
-    headers: { "idempotency-key": "import-b" }, payload: importB });
-  assert.equal(hashes[2], hashes[3]);
+    headers: { "idempotency-key": "import-key-b" }, payload: importB });
+  assert.equal(hashes[4], hashes[5]);
 });
 
 test("generated-file import rollback clears its exact authority before retry", async (t) => {

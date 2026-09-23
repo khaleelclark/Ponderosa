@@ -21,9 +21,13 @@ export interface ConversationDto {
   id: string;
   projectId: string;
   title: string;
+  /** Chat-owned execution context. Legacy projectId only locates stored history. */
+  workingDirectory?: string;
+  instructions?: string;
   defaultEngine?: EngineId;
   defaultModel?: string;
   defaultEffort?: string;
+  defaultSpeed?: string;
   createdAt: string;
   updatedAt: string;
   archived: boolean;
@@ -37,14 +41,17 @@ export interface CreateConversationRequest {
   defaultEngine?: EngineId;
   defaultModel?: string;
   defaultEffort?: string;
+  defaultSpeed?: string;
 }
 
 /** PATCH /api/conversations/:id body. */
 export interface UpdateConversationRequest {
   title?: string;
+  instructions?: string;
   defaultEngine?: EngineId | null;
   defaultModel?: string | null;
   defaultEffort?: string | null;
+  defaultSpeed?: string | null;
   archived?: boolean;
 }
 
@@ -159,6 +166,13 @@ export interface MessageDeliveryReceiptDto {
   recoveryAt?: string;
   canLetCurrentRunFinish?: boolean;
   recoveryActivationId?: string;
+  /** Exact runtime selection attached to this delivery. */
+  runtime?: {
+    engine?: string;
+    model?: string;
+    effort?: string;
+    speed?: string;
+  };
 }
 
 /** Narrow receipt refresh for active operations that may be outside message pagination. */
@@ -791,6 +805,12 @@ export interface GlobalChatSearchResponseDto {
   recentChats: RecentGlobalChatDto[];
   scannedMessages: number;
   truncated: boolean;
+}
+
+export interface GlobalFileSearchResponseDto {
+  results: Array<{ project: { id: string; label: string }; path: string; name: string }>;
+  truncated: boolean;
+  unavailableRoots: number;
 }
 
 // ─── Messages ───────────────────────────────────────────────────────────────────────

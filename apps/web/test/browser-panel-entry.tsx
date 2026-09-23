@@ -1,0 +1,72 @@
+import { createRoot } from "react-dom/client";
+import { StrictMode, useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { CssBaseline, ThemeProvider, createTheme } from "@mui/material";
+import { ProjectBrowserDialog } from "../src/components/ProjectBrowserDialog";
+import { BrowserWorkspaceHost } from "../src/components/browser/BrowserWorkspaceHost";
+import { api } from "../src/api";
+const session: any = { id: "fixture", projectId: "p", status: "ready", controlOwner: "operator", controlEpoch: 1, capabilities: { fileUpload: true, hostedHeaded: true }, url: "https://example.test/form", title: "Application form", activePageId: "one", pages: [{ id: "one", title: "Application form", active: true, closable: false }], pageRevision: 1, frameRevision: 1 };
+const inputs: unknown[] = [];
+const sizes = new Map<string, { width: number; height: number }>();
+(window as any).browserSession = session;
+(window as any).resizes = [];
+(window as any).inputs = inputs;
+const parameters = new URLSearchParams(window.location.search);
+if (parameters.has("tabs")) session.pages = Array.from({ length: Number(parameters.get("tabs")) }, (_, index) => ({ id: index ? `tab-${index}` : "one", title: `Research tab ${index + 1}`, active: index === 0, closable: true }));
+const workspaceProjects = [{ id: "p", label: "Trip research" }, { id: "q", label: "Job search" }, { id: "r", label: "Hotels" }, { id: "s", label: "Flights" }, { id: "t", label: "Activities" }];
+session.manualControl = parameters.has("manual") ? "manual" : "automation";
+session.privateSignIn = parameters.has("private");
+session.capabilities.nativeDisplay = parameters.has("native");
+const savedSession = { ...session, id: "saved-fixture", projectId: "saved-browser", activePageId: "saved-tab", pages: [{ id: "saved-tab", title: "Saved research", active: true, closable: false }] };
+if (parameters.has("failed")) { savedSession.status = "failed"; savedSession.failure = "The browser service connection was lost."; }
+const secondSession = { ...session, id: "second-fixture", projectId: "q", title: "Other chat page", activePageId: "q-one", pages: [{ id: "q-one", title: "Other chat page", active: true, closable: false }] };
+api.getProjectBrowser = async id => structuredClone(id === "saved-browser" ? savedSession : id === "q" ? secondSession : session);
+api.hostedBrowserControl = async (_id, action) => {
+  if (!parameters.has("manual")) throw new Error("Ordinary takeover must not disconnect or reconnect Chrome");
+  (window as any).connectionAction = action;
+  (window as any).connectionCalls = ((window as any).connectionCalls ?? 0) + 1;
+  if (parameters.has("reject")) throw new Error("Chrome approval required");
+  const target = _id === "saved-browser" ? savedSession : session;
+  target.manualControl = action === "resume" || action === "connect" ? "automation" : "manual";
+  target.privateSignIn = action === "pause";
+  target.controlEpoch++;
+  return structuredClone(target);
+};
+api.getChatBrowserPreferences = async () => ({ rememberSignIns: false });
+api.getSavedBrowser = async () => ({ browser: { profileId: "saved-profile", promotedAt: "2026-09-17T00:00:00Z" } });
+const savedAccess = new Set<string>();
+api.getSavedBrowserAccess = async () => ({ agentIds: [...savedAccess] });
+api.setSavedBrowserAccess = async (_projectId, agentId, allowed) => { if (allowed) savedAccess.add(agentId); else savedAccess.delete(agentId); (window as any).lastSavedAccess = { agentId, allowed }; return { agentIds: [...savedAccess] }; };
+api.getAgentBrowserLocation = async () => ({ kind: parameters.has("agent") ? "run" : savedAccess.has("assistant") ? "saved" : "none", runId: "run" });
+api.openProjectBrowser = async id => { (window as any).lastBrowserOpen = id; if (id === "saved-browser") { savedSession.status = "ready"; savedSession.failure = undefined; } return structuredClone(id === "saved-browser" ? savedSession : session); };
+api.navigateProjectBrowser = async (_id, url) => { session.url = url; return { ...session }; };
+api.listAgents = async () => [{ id: "assistant", title: "Assistant" }] as any;
+api.getBrowserSession = async () => structuredClone(session);
+api.setBrowserControl = async (_projectId, _agentId, _runId, target) => {
+  (window as any).lastAgentControl = target;
+  session.controlOwner = target.owner;
+  session.controlEpoch++;
+  return structuredClone(session);
+};
+api.getBrowserFrame = async (_projectId, _agentId, _runId, pageId) => api.getProjectBrowserFrame("p", pageId);
+api.setProjectBrowserControl = async (_project, target) => {
+  (window as any).lastBrowserGrant = target;
+  session.nextRunAgentId = (target.nextRun || target.currentOrNext) && target.owner === "agent" ? target.agentId : undefined;
+  session.controlEpoch++;
+  return structuredClone(session);
+};
+api.getAgentHealth = (async () => ({ agents: [] })) as any;
+api.resizeBrowserViewport = async (project, pageId, next) => { sizes.set(`${project}:${pageId}`, next); (window as any).resizes.push({ pageId, ...next }); return { ok: true }; };
+api.getProjectBrowserFrame = async (project, pageId) => { const size = sizes.get(`${project}:${pageId}`) ?? { width: 1280, height: 720 }; return { revision: 1, metadata: { pageId: pageId ?? session.activePageId, viewport: size }, blob: new Blob([`<svg xmlns="http://www.w3.org/2000/svg" width="${size.width}" height="${size.height}"><rect width="100%" height="100%" fill="#fff"/><text x="20" y="60" font-size="20">Application form — ${pageId}</text><rect x="20" y="120" width="250" height="60" fill="#eee"/></svg>`], { type: "image/svg+xml" }) }; };
+api.newBrowserPage = async () => { session.pages.push({ id: "two", title: "Second tab", url: "about:blank", closable: true }); session.activePageId = "two"; return structuredClone(session); };
+api.activateProjectBrowserPage = async (_project, pageId) => { session.activePageId = pageId; return { ...session }; };
+api.closeProjectBrowserPage = async (_project, pageId) => { session.pages = session.pages.filter((page: any) => page.id !== pageId); session.activePageId = "one"; return { ...session }; };
+api.sendProjectBrowserInput = async (_id, input) => { inputs.push(input); await new Promise(resolve => setTimeout(resolve, 30)); return { ...session }; };
+function App() {
+  const [open, setOpen] = useState(true);
+  const [request, setRequest] = useState<{ requestId: number; url?: string }>();
+  (window as any).openFixtureLink = () => setRequest({ requestId: Date.now(), url: 'https://example.test/another' });
+  const [dockWidth, setDockWidth] = useState(0);
+  return <ThemeProvider theme={createTheme({ palette: { mode: "dark" } })}><CssBaseline /><main style={{ marginRight: dockWidth }}>Chat stays here</main><button onClick={() => setOpen(true)}>Open browser</button>{open ? parameters.has("workspaces") ? <BrowserWorkspaceHost projectId="p" request={request} projects={workspaceProjects} onRequestHandled={() => setRequest(undefined)} onDockWidth={setDockWidth} onClose={() => setOpen(false)} /> : <ProjectBrowserDialog projectId="p" agent={parameters.has("agent") ? { id: "assistant", runId: "run" } : undefined} open onDockWidth={setDockWidth} onClose={() => setOpen(false)} /> : null}</ThemeProvider>;
+}
+createRoot(document.getElementById("root")!).render(<StrictMode><QueryClientProvider client={new QueryClient()}><App /></QueryClientProvider></StrictMode>);

@@ -11,7 +11,7 @@ const BEARER_CREDENTIAL = /(\bbearer\s+)([a-z0-9._~+/=-]{8,})/gi;
 export class BrowserSessionError extends Error {
   constructor(
     message: string,
-    readonly statusCode: 400 | 403 | 404 | 409 | 413 | 415 | 503 = 400,
+    readonly statusCode: 400 | 401 | 403 | 404 | 409 | 410 | 413 | 415 | 429 | 503 | 504 = 400,
     readonly code?: string,
   ) {
     super(message);
@@ -150,8 +150,10 @@ interface SnapshotBounds {
   arrayLimit: number;
 }
 
-function boundedSnapshotValue(value: unknown, stringLimit: number, arrayLimit: number): unknown {
+function boundedSnapshotValue(value: unknown, stringLimit: number, arrayLimit: number, field?: string): unknown {
   if (typeof value === "string") {
+    // An abbreviated selector is not a valid reference to a control.
+    if (field === "selector" || field === "controlId") return value;
     if (value.length <= stringLimit) return value;
     return stringLimit > 0 ? `${value.slice(0, Math.max(0, stringLimit - 1))}…` : "";
   }
@@ -161,7 +163,7 @@ function boundedSnapshotValue(value: unknown, stringLimit: number, arrayLimit: n
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, child]) => [
       key,
-      boundedSnapshotValue(child, stringLimit, arrayLimit),
+      boundedSnapshotValue(child, stringLimit, arrayLimit, key),
     ]));
   }
   return value;

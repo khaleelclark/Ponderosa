@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   projectSidebarSectionForRoute,
   routeClearsProjectSidebarContext,
+  routeInitialSidebarSection,
 } from "../src/routeRegistry.js";
 
 test("Automation routes select the Project Automations sidebar", () => {
@@ -16,6 +17,15 @@ test("Automation routes select the Project Automations sidebar", () => {
   );
 });
 
+test("management workspaces open their matching sidebar section", () => {
+  assert.equal(routeInitialSidebarSection({ kind: "manageChats" }), "chats");
+  assert.equal(routeInitialSidebarSection({ kind: "manageAgents" }), "agents");
+  assert.equal(
+    routeInitialSidebarSection({ kind: "manageAutomations" }),
+    "triggers",
+  );
+});
+
 test("synchronized global routes clear stale Project sidebar context", () => {
   for (const route of [
     { kind: "settings", section: "providers" },
@@ -24,7 +34,7 @@ test("synchronized global routes clear stale Project sidebar context", () => {
   ]) {
     assert.equal(routeClearsProjectSidebarContext(route), true);
   }
-  assert.equal(routeClearsProjectSidebarContext({ kind: "allAgents" }), false);
+  assert.equal(routeClearsProjectSidebarContext({ kind: "home" }), false);
   assert.equal(
     routeClearsProjectSidebarContext({ kind: "project", projectId: "project-a" }),
     false,

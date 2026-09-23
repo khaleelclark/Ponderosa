@@ -3,18 +3,17 @@ import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
 import CloseIcon from "@mui/icons-material/Close";
-import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
-import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
-import SpeedOutlinedIcon from "@mui/icons-material/SpeedOutlined";
+import ViewSidebarOutlinedIcon from "@mui/icons-material/ViewSidebarOutlined";
 import {
   Badge,
   Box,
@@ -31,8 +30,10 @@ import {
 import type {
   OperatorProfileDto,
   ProjectDto,
+  ProjectFolderDto,
 } from "@ponderosa/core";
 import {
+  useEffect,
   useRef,
   useState,
   type DragEvent,
@@ -43,11 +44,13 @@ import type { Route } from "../routing";
 import type { ProjectSidebarSection } from "../routeRegistry";
 import type { UnreadNotificationProjection } from "../workspaceNavigation";
 import { OperatorAvatar } from "./OperatorAvatar";
+import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import {
   SIDEBAR_RAIL_WIDTH,
   railSurface,
 } from "./WorkspaceSidebar.helpers";
 import { RailButton } from "./WorkspaceSidebar.parts";
+import { ProjectFolderRail } from "./ProjectFolderRail";
 
 const PROJECT_COLORS = [
   "#315B49",
@@ -74,14 +77,17 @@ function projectInitials(label: string): string {
   return `${words[0]![0] ?? ""}${words.at(-1)?.[0] ?? ""}`.toLocaleUpperCase();
 }
 
-function ProjectRailButton({
+export function ProjectRailButton({
   project,
   current,
   expanded,
   unread,
+  runningCount = 0,
+  activityUnknown = false,
   dragging,
   dropPosition,
   onClick,
+  onContextMenu,
   onDragStart,
   onDragEnd,
   onDragOver,
@@ -91,9 +97,12 @@ function ProjectRailButton({
   current: boolean;
   expanded: boolean;
   unread?: UnreadNotificationProjection;
+  runningCount?: number;
+  activityUnknown?: boolean;
   dragging: boolean;
   dropPosition?: "before" | "after";
   onClick(): void;
+  onContextMenu?(event: MouseEvent<HTMLButtonElement>): void;
   onDragStart(event: DragEvent<HTMLButtonElement>): void;
   onDragEnd(): void;
   onDragOver(event: DragEvent<HTMLButtonElement>): void;
@@ -101,13 +110,20 @@ function ProjectRailButton({
 }): JSX.Element {
   const color = PROJECT_COLORS[hashLabel(project.id || project.label) % PROJECT_COLORS.length];
   return (
-    <Tooltip title={project.label} placement="right">
+    <Tooltip title={`${project.label}${runningCount ? ` · ${runningCount} agents working` : ""}`} placement="right">
       <ButtonBase
         aria-label={`${project.label}${unread?.importantCount ? `, ${unread.importantCount} important unread` : ""}${unread?.ordinaryCount ? `, ${unread.ordinaryCount} ordinary unread` : ""}`}
         aria-current={current ? "page" : undefined}
         aria-expanded={expanded}
         draggable
         onClick={onClick}
+        onContextMenu={onContextMenu}
+        onKeyDown={event => {
+          if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+            event.preventDefault();
+            event.currentTarget.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+          }
+        }}
         onDragStart={onDragStart}
         onDragEnd={onDragEnd}
         onDragOver={onDragOver}
@@ -183,11 +199,15 @@ function ProjectRailButton({
         >
           <span>{projectInitials(project.label)}</span>
         </Badge>
+        {runningCount > 0 ? <Box sx={{ position: "absolute", right: 2, bottom: 2, display: "flex", border: `2px solid ${railSurface}`, borderRadius: "50%" }}>
+          <AgentStatusIndicator status="running" />
+        </Box> : null}
+        {activityUnknown ? <Box component="span" role="img" aria-label="Activity not yet available" title="Activity not yet available" sx={{ position: "absolute", right: 2, bottom: 2, fontSize: 10 }}>?</Box> : null}
         {unread?.importantCount && unread.ordinaryCount ? (
           <Box
             component="span"
             aria-hidden
-            sx={{ position: "absolute", right: 3, bottom: 3, width: 8, height: 8, borderRadius: "50%", bgcolor: "text.secondary", border: `2px solid ${railSurface}` }}
+            sx={{ position: "absolute", left: 3, bottom: 3, width: 8, height: 8, borderRadius: "50%", bgcolor: "text.secondary", border: `2px solid ${railSurface}` }}
           />
         ) : null}
       </ButtonBase>
@@ -196,6 +216,7 @@ function ProjectRailButton({
 }
 
 export function ProjectRail({
+  sections,
   drawer,
   projects,
   activeProjectId,
@@ -206,20 +227,26 @@ export function ProjectRail({
   attentionNotifications,
   unreadNotificationUpdates,
   projectUnread,
+  folders = [],
+  onFoldersChange,
+  onRenameProject,
+  onProjectSettings,
+  onDeleteProject,
+  projectRunningCounts,
   onReorderProject,
   onOpenHome,
   onOpenAllMessages,
+  onManageSection,
   onOpenProject,
   onOpenCreate,
   createProjectOpen = false,
   onOpenSearch,
   onOpenNotifications,
-  onOpenUsage,
-  onOpenEngineStatus,
   onOpenSettings,
-  onOpenProfile,
+  onCollapse,
   onClose,
 }: {
+  sections?: { active?: ProjectSidebarSection; agentsWorking?: boolean; onSelect(section: ProjectSidebarSection): void };
   drawer: boolean;
   projects: ProjectDto[];
   activeProjectId?: string;
@@ -230,6 +257,12 @@ export function ProjectRail({
   attentionNotifications: number;
   unreadNotificationUpdates: number;
   projectUnread: ReadonlyMap<string, UnreadNotificationProjection>;
+  folders?: ProjectFolderDto[];
+  onFoldersChange(folders: ProjectFolderDto[]): void;
+  onRenameProject(project: ProjectDto): void;
+  onProjectSettings(project: ProjectDto): void;
+  onDeleteProject(project: ProjectDto): void;
+  projectRunningCounts?: ReadonlyMap<string, number>;
   onReorderProject(
     sourceProjectId: string,
     targetProjectId: string,
@@ -237,34 +270,49 @@ export function ProjectRail({
   ): void;
   onOpenHome(): void;
   onOpenAllMessages(): void;
+  onManageSection(section: ProjectSidebarSection): void;
   onOpenProject(project: ProjectDto): void;
   onOpenCreate(): void;
   createProjectOpen?: boolean;
   onOpenSearch(): void;
   onOpenNotifications(): void;
-  onOpenUsage(): void;
-  onOpenEngineStatus(): void;
   onOpenSettings(): void;
-  onOpenProfile(): void;
+  onCollapse?(): void;
   onClose?(): void;
 }): JSX.Element {
   const railWidth = drawer ? 64 : SIDEBAR_RAIL_WIDTH;
+  const mobile = drawer && Boolean(sections);
   const [operatorAnchor, setOperatorAnchor] = useState<HTMLElement>();
-  const [draggedProjectId, setDraggedProjectId] = useState<string>();
-  const [dropTarget, setDropTarget] = useState<{
-    projectId: string;
-    position: "before" | "after";
+  const [sectionMenu, setSectionMenu] = useState<{
+    anchor: HTMLElement;
+    section: ProjectSidebarSection;
   }>();
-  const suppressProjectClick = useRef<string>();
-  const finishProjectDrag = (projectId: string) => {
-    setDraggedProjectId(undefined);
-    setDropTarget(undefined);
-    window.setTimeout(() => {
-      if (suppressProjectClick.current === projectId) {
-        suppressProjectClick.current = undefined;
-      }
-    }, 0);
+  const sectionLongPressTimer = useRef<number | undefined>(undefined);
+  const suppressSectionClick = useRef(false);
+  const cancelSectionLongPress = () => {
+    if (sectionLongPressTimer.current !== undefined) {
+      window.clearTimeout(sectionLongPressTimer.current);
+      sectionLongPressTimer.current = undefined;
+    }
   };
+  useEffect(() => {
+    if (!sectionMenu) return;
+    const switchSectionMenu = (event: globalThis.MouseEvent) => {
+      const button = document.elementsFromPoint(event.clientX, event.clientY)
+        .map(element => element.closest<HTMLElement>("[data-sidebar-section]"))
+        .find((element): element is HTMLElement => Boolean(element));
+      const section = button?.dataset.sidebarSection as ProjectSidebarSection | undefined;
+      if (!button || !section || !PROJECT_MODES.some(mode => mode.id === section)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setSectionMenu({ anchor: button, section });
+    };
+    // MUI's menu backdrop sits above the other tabs. Inspecting the elements
+    // under the pointer lets a second right-click replace the open menu instead
+    // of falling through to the browser's native context menu.
+    window.addEventListener("contextmenu", switchSectionMenu, true);
+    return () => window.removeEventListener("contextmenu", switchSectionMenu, true);
+  }, [sectionMenu]);
   const closeOperatorMenu = () => {
     const trigger = operatorAnchor;
     setOperatorAnchor(undefined);
@@ -278,10 +326,310 @@ export function ProjectRail({
       action();
     });
   };
+  if (sections) {
+    const notificationBadge = attentionNotifications ||
+      (unreadNotificationUpdates ? unreadNotificationUpdates : undefined);
+    return (
+      <>
+        <Stack
+          component="nav"
+          aria-label="Workspace navigation"
+          direction="row"
+          data-workspace-sidebar-header
+          sx={{
+            gridRow: 1,
+            minWidth: 0,
+            alignItems: "center",
+            gap: 0.25,
+            px: 1.25,
+            py: 0.75,
+          }}
+        >
+          <ButtonBase
+            aria-label="Home"
+            aria-current={route.kind === "home" ? "page" : undefined}
+            onClick={onOpenHome}
+            sx={{
+              minWidth: 0,
+              flex: drawer ? "0 0 40px" : 1,
+              minHeight: drawer ? 44 : 36,
+              alignItems: "center",
+              justifyContent: drawer ? "center" : "flex-start",
+              gap: 0.75,
+              px: 0.5,
+              py: 0.25,
+              mr: 0,
+              borderRadius: 1.5,
+              bgcolor: route.kind === "home" ? "action.selected" : "transparent",
+              "&:hover": { bgcolor: "action.hover" },
+            }}
+          >
+            <Box
+              component="img"
+              src="/icons/app-icon.png"
+              alt=""
+              sx={{ width: 32, height: 32, flex: "0 0 32px", borderRadius: 1, objectFit: "cover" }}
+            />
+            {!drawer ? (
+              <Typography noWrap sx={{ minWidth: 0, fontSize: 16, fontWeight: 750 }}>
+                Ponderosa
+              </Typography>
+            ) : null}
+          </ButtonBase>
+          {drawer ? (
+            <Tooltip title="Messages across Ponderosa">
+              <IconButton
+                aria-label={`Messages across Ponderosa${allMessagesUnread.importantCount ? `, ${allMessagesUnread.importantCount} important unread` : ""}${allMessagesUnread.ordinaryCount ? `, ${allMessagesUnread.ordinaryCount} ordinary unread` : ""}`}
+                aria-current={route.kind === "allChat" ? "page" : undefined}
+                onClick={onOpenAllMessages}
+                sx={{ width: 36, height: 36, flex: "0 0 36px" }}
+              >
+                <Badge
+                  color={allMessagesUnread.importantCount ? "error" : "default"}
+                  badgeContent={allMessagesUnread.importantCount || undefined}
+                  max={99}
+                  variant={!allMessagesUnread.importantCount && allMessagesUnread.ordinaryCount ? "dot" : "standard"}
+                  invisible={!allMessagesUnread.totalCount}
+                  slotProps={{ badge: { "aria-hidden": true } }}
+                  sx={{ "& .MuiBadge-badge": { color: "#fff", fontWeight: 800 } }}
+                >
+                  <ForumOutlinedIcon fontSize="small" />
+                </Badge>
+              </IconButton>
+            </Tooltip>
+          ) : null}
+          {drawer ? <Box aria-hidden sx={{ flex: 1 }} /> : null}
+          {!drawer && onCollapse ? (
+            <Tooltip title="Collapse sidebar">
+              <IconButton aria-label="Collapse workspace navigation" onClick={onCollapse} sx={{ width: 36, height: 36, flex: "0 0 36px" }}>
+                <ViewSidebarOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          ) : null}
+          <Tooltip title="Search">
+            <IconButton aria-label="Search" onClick={onOpenSearch} sx={{ width: 36, height: 36, flex: "0 0 36px" }}>
+              <SearchIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Notifications">
+            <IconButton
+              aria-label={notificationBadge ? `Notifications, ${notificationBadge} unread` : "Notifications"}
+              onClick={onOpenNotifications}
+              sx={{ width: 36, height: 36, flex: "0 0 36px" }}
+            >
+              <Badge
+                color={attentionNotifications ? "error" : "primary"}
+                badgeContent={notificationBadge}
+                max={99}
+                invisible={!notificationBadge}
+                slotProps={{ badge: { "aria-hidden": true } }}
+                sx={{ "& .MuiBadge-badge": { color: "#fff", fontWeight: 800 } }}
+              >
+                <NotificationsOutlinedIcon fontSize="small" />
+              </Badge>
+            </IconButton>
+          </Tooltip>
+          {drawer && onClose ? (
+            <Tooltip title="Close navigation">
+              <IconButton aria-label="Close workspace navigation" onClick={onClose} sx={{ width: 36, height: 36, flex: "0 0 36px" }}>
+                <CloseIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          ) : null}
+        </Stack>
+
+        <Box
+          component="nav"
+          aria-label="Workspace sections"
+          data-workspace-sidebar-sections
+          sx={{
+            gridRow: 2,
+            display: "grid",
+            gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+            gap: 0.5,
+            px: 1.25,
+            pb: 0.75,
+          }}
+        >
+          {!drawer ? <ButtonBase
+            aria-label={`Messages across Ponderosa${allMessagesUnread.importantCount ? `, ${allMessagesUnread.importantCount} important unread` : ""}${allMessagesUnread.ordinaryCount ? `, ${allMessagesUnread.ordinaryCount} ordinary unread` : ""}`}
+            aria-current={route.kind === "allChat" ? "page" : undefined}
+            onClick={onOpenAllMessages}
+            sx={{
+              gridColumn: "1 / -1",
+              minWidth: 0,
+              minHeight: 36,
+              justifyContent: "center",
+              gap: 1,
+              px: 1,
+              borderRadius: 1.5,
+              color: "text.secondary",
+              bgcolor: "transparent",
+              "&:hover": { bgcolor: "action.hover" },
+            }}
+          >
+            <Badge
+              color={allMessagesUnread.importantCount ? "error" : "default"}
+              badgeContent={allMessagesUnread.importantCount || undefined}
+              max={99}
+              variant={!allMessagesUnread.importantCount && allMessagesUnread.ordinaryCount ? "dot" : "standard"}
+              invisible={!allMessagesUnread.totalCount}
+              slotProps={{ badge: { "aria-hidden": true } }}
+              sx={{
+                flex: "0 0 auto",
+                "& .MuiBadge-badge": { top: 1, right: 1, color: "#fff", fontWeight: 800 },
+              }}
+            >
+              <ForumOutlinedIcon sx={{ fontSize: 18 }} />
+            </Badge>
+            <Typography component="span" noWrap sx={{ minWidth: 0, fontSize: 12, fontWeight: 700 }}>
+              Messages across Ponderosa
+            </Typography>
+          </ButtonBase> : null}
+          {PROJECT_MODES.map(mode => (
+            <ButtonBase
+              key={mode.id}
+              data-sidebar-section={mode.id}
+              aria-label={mode.label}
+              aria-pressed={sections.active === mode.id}
+              aria-haspopup="menu"
+              aria-expanded={sectionMenu?.section === mode.id || undefined}
+              onClick={() => {
+                if (suppressSectionClick.current) {
+                  suppressSectionClick.current = false;
+                  return;
+                }
+                sections.onSelect(mode.id);
+              }}
+              onPointerDown={event => {
+                if (event.pointerType === "mouse") return;
+                cancelSectionLongPress();
+                const anchor = event.currentTarget;
+                sectionLongPressTimer.current = window.setTimeout(() => {
+                  suppressSectionClick.current = true;
+                  setSectionMenu({ anchor, section: mode.id });
+                }, 550);
+              }}
+              onPointerUp={cancelSectionLongPress}
+              onPointerCancel={cancelSectionLongPress}
+              onPointerLeave={cancelSectionLongPress}
+              onContextMenu={event => {
+                event.preventDefault();
+                setSectionMenu({ anchor: event.currentTarget, section: mode.id });
+              }}
+              onKeyDown={event => {
+                if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+                event.preventDefault();
+                setSectionMenu({ anchor: event.currentTarget, section: mode.id });
+              }}
+              sx={{
+                minWidth: 0,
+                minHeight: drawer ? 44 : 40,
+                gap: 0.5,
+                px: 0.5,
+                borderRadius: 2,
+                color: sections.active === mode.id ? "primary.main" : "text.secondary",
+                bgcolor: sections.active === mode.id ? "action.selected" : "transparent",
+                "&:hover": { bgcolor: sections.active === mode.id ? "action.selected" : "action.hover" },
+                "& > .MuiSvgIcon-root": { flex: "0 0 auto", fontSize: 18 },
+              }}
+            >
+              {mode.icon}
+              <Typography component="span" noWrap sx={{ minWidth: 0, fontSize: 12, fontWeight: 700 }}>
+                {mode.label}
+              </Typography>
+              {mode.id === "agents" && sections.agentsWorking ? <AgentStatusIndicator status="running" /> : null}
+            </ButtonBase>
+          ))}
+          <Menu
+            anchorEl={sectionMenu?.anchor}
+            open={Boolean(sectionMenu)}
+            onClose={() => {
+              const trigger = sectionMenu?.anchor;
+              setSectionMenu(undefined);
+              window.requestAnimationFrame(() => trigger?.isConnected && trigger.focus());
+            }}
+          >
+            <MenuItem onClick={() => {
+              const section = sectionMenu?.section;
+              setSectionMenu(undefined);
+              if (section) onManageSection(section);
+            }}>
+              <ListItemIcon><EditOutlinedIcon fontSize="small" /></ListItemIcon>
+              <ListItemText>
+                {sectionMenu?.section === "agents"
+                  ? "Manage agents"
+                  : sectionMenu?.section === "triggers"
+                    ? "Manage automations"
+                    : "Manage chats"}
+              </ListItemText>
+            </MenuItem>
+          </Menu>
+        </Box>
+
+        <Box
+          data-workspace-sidebar-profile
+          sx={{
+            gridRow: 4,
+            minWidth: 0,
+            borderTop: 1,
+            borderColor: "divider",
+            px: 1,
+            pt: 0.75,
+            pb: drawer ? "max(6px, env(safe-area-inset-bottom))" : 0.75,
+          }}
+        >
+          <ButtonBase
+            aria-label="Open operator menu"
+            aria-haspopup="menu"
+            aria-expanded={Boolean(operatorAnchor)}
+            onClick={event => setOperatorAnchor(event.currentTarget)}
+            sx={{
+              width: "100%",
+              minWidth: 0,
+              minHeight: 48,
+              justifyContent: "flex-start",
+              gap: 1,
+              px: 0.75,
+              borderRadius: 1.5,
+              textAlign: "left",
+              "&:hover": { bgcolor: "action.hover" },
+            }}
+          >
+            <OperatorAvatar profile={profile} size={34} />
+            <Box sx={{ minWidth: 0, flex: 1 }}>
+              <Typography noWrap sx={{ fontSize: 14, fontWeight: 700 }}>
+                {profile.displayName || "Operator"}
+              </Typography>
+              {profile.handle ? (
+                <Typography noWrap variant="caption" color="text.secondary">
+                  @{profile.handle.replace(/^@/, "")}
+                </Typography>
+              ) : null}
+            </Box>
+            <MoreVertIcon fontSize="small" sx={{ color: "text.secondary", flex: "0 0 auto" }} />
+          </ButtonBase>
+          <Menu
+            anchorEl={operatorAnchor}
+            open={Boolean(operatorAnchor)}
+            onClose={closeOperatorMenu}
+            anchorOrigin={{ vertical: "top", horizontal: "right" }}
+            transformOrigin={{ vertical: "bottom", horizontal: "right" }}
+            slotProps={{ paper: { sx: { minWidth: 230, mb: 0.75 } } }}
+          >
+            <MenuItem onClick={() => runOperatorAction(onOpenSettings)}>
+              <ListItemIcon><SettingsOutlinedIcon /></ListItemIcon>
+              <ListItemText>Settings</ListItemText>
+            </MenuItem>
+          </Menu>
+        </Box>
+      </>
+    );
+  }
   return (
     <Box
       component="nav"
-      aria-label={drawer ? "Project navigation drawer" : "Project navigation"}
+      aria-label={sections ? "Workspace sections" : drawer ? "Project navigation drawer" : "Project navigation"}
       sx={{
         width: railWidth,
         minWidth: railWidth,
@@ -290,16 +638,16 @@ export function ProjectRail({
         borderRight: 1,
         borderColor: "var(--ponderosa-rail-border)",
         bgcolor: railSurface,
-        display: "grid",
+        display: mobile ? "contents" : "grid",
         gridTemplateRows: "auto minmax(0, 1fr) auto",
         justifyItems: "center",
         py: 1.5,
       }}
     >
-      <Stack spacing={0.6} sx={{ alignItems: "center" }}>
+      <Stack spacing={0.6} sx={{ alignItems: "center", ...(mobile ? { gridRow: 1, flexDirection: "row", px: 1.5, py: 0.25 } : {}) }}>
         {drawer && onClose ? (
           <Tooltip title="Close navigation" placement="right">
-            <IconButton aria-label="Close workspace navigation" onClick={onClose} sx={{ width: 42, height: 42, mb: 1.5 }}>
+            <IconButton aria-label="Close workspace navigation" onClick={onClose} sx={{ width: 44, height: 44, mb: mobile ? 0 : 1.5, order: mobile ? 2 : undefined, ml: mobile ? "auto !important" : undefined }}>
               <CloseIcon />
             </IconButton>
           </Tooltip>
@@ -310,17 +658,18 @@ export function ProjectRail({
             aria-current={route.kind === "home" ? "page" : undefined}
             onClick={onOpenHome}
             sx={{
-              width: 48,
-              height: 48,
-              mb: 1.1,
+              width: mobile ? 40 : 48,
+              height: mobile ? 44 : 48,
+              mb: mobile ? 0 : 1.1,
               borderRadius: 1.5,
               bgcolor: route.kind === "home" ? "action.selected" : "transparent",
               "&:hover": { bgcolor: "action.hover" },
             }}
           >
-            <Box component="img" src="/icons/app-icon.png" alt="" sx={{ width: 42, height: 42, p: 0.25, borderRadius: 1, objectFit: "cover" }} />
+            <Box component="img" src="/icons/app-icon.png" alt="" sx={{ width: mobile ? 32 : 42, height: mobile ? 32 : 42, p: 0.25, borderRadius: 1, objectFit: "cover" }} />
           </ButtonBase>
         </Tooltip>
+        {mobile ? <Typography sx={{ fontWeight: 750, fontSize: 16 }}>Ponderosa</Typography> : null}
         <RailButton
           label="All Messages"
           selected={route.kind === "allChat"}
@@ -333,7 +682,7 @@ export function ProjectRail({
         >
           <ForumOutlinedIcon />
         </RailButton>
-        <Box aria-hidden sx={{ width: 32, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", my: 0.25 }} />
+        {!mobile ? <Box aria-hidden sx={{ width: 32, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", my: 0.25 }} /> : null}
       </Stack>
 
       <Stack
@@ -348,68 +697,21 @@ export function ProjectRail({
           py: 0.5,
           scrollbarWidth: "none",
           "&::-webkit-scrollbar": { display: "none" },
+          ...(mobile ? { gridRow: 2, flexDirection: "row", px: 1.5, gap: 0.5, py: 0, overflow: "visible", "& > *": { marginTop: "0 !important" } } : {}),
         }}
       >
-        {projects.map(project => (
-          <ProjectRailButton
-            key={project.id}
-            project={project}
-            current={project.id === currentProjectId}
-            expanded={project.id === activeProjectId}
-            unread={projectUnread.get(project.id)}
-            dragging={project.id === draggedProjectId}
-            dropPosition={
-              dropTarget?.projectId === project.id
-                ? dropTarget.position
-                : undefined
-            }
-            onClick={() => {
-              if (suppressProjectClick.current === project.id) return;
-              onOpenProject(project);
-            }}
-            onDragStart={event => {
-              suppressProjectClick.current = project.id;
-              setDraggedProjectId(project.id);
-              setDropTarget(undefined);
-              event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData("text/plain", project.id);
-            }}
-            onDragEnd={() => finishProjectDrag(project.id)}
-            onDragOver={event => {
-              if (!draggedProjectId || draggedProjectId === project.id) return;
-              event.preventDefault();
-              event.dataTransfer.dropEffect = "move";
-              const bounds = event.currentTarget.getBoundingClientRect();
-              setDropTarget({
-                projectId: project.id,
-                position: event.clientY >= bounds.top + bounds.height / 2
-                  ? "after"
-                  : "before",
-              });
-            }}
-            onDrop={event => {
-              event.preventDefault();
-              if (!draggedProjectId || draggedProjectId === project.id) return;
-              const bounds = event.currentTarget.getBoundingClientRect();
-              onReorderProject(
-                draggedProjectId,
-                project.id,
-                event.clientY >= bounds.top + bounds.height / 2
-                  ? "after"
-                  : "before",
-              );
-              setDraggedProjectId(undefined);
-              setDropTarget(undefined);
-            }}
-          />
-        ))}
+        <ProjectFolderRail projects={projects} folders={folders} onChange={onFoldersChange}
+          currentProjectId={currentProjectId} activeProjectId={activeProjectId}
+          unread={projectUnread} running={projectRunningCounts}
+          onOpen={onOpenProject} onReorder={onReorderProject}
+          onRename={onRenameProject} onSettings={onProjectSettings} onDelete={onDeleteProject} />
       </Stack>
 
-      <Stack spacing={0.55} sx={{ alignItems: "center" }}>
+      <Stack spacing={0.55} sx={{ alignItems: "center", ...(mobile ? { gridRow: 4, flexDirection: "row", justifyContent: "space-around", borderTop: 1, borderColor: "divider", py: 0, pb: "env(safe-area-inset-bottom)", "& > *": { marginTop: "0 !important" }, "& .MuiIconButton-root": { width: 44, height: 44 }, "& .MuiSvgIcon-root": { fontSize: 21 } } : {}) }}>
         <RailButton label="Create Project" selected={createProjectOpen || (route.kind === "create" && route.resource === "project")} onClick={onOpenCreate}>
           <AddIcon />
         </RailButton>
-        <Box aria-hidden sx={{ width: 32, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", my: 0.25 }} />
+        {!mobile ? <Box aria-hidden sx={{ width: 32, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", my: 0.25 }} /> : null}
         <RailButton label="Search" selected={false} onClick={onOpenSearch}>
           <SearchIcon />
         </RailButton>
@@ -445,18 +747,6 @@ export function ProjectRail({
           transformOrigin={{ vertical: "bottom", horizontal: "left" }}
           slotProps={{ paper: { sx: { minWidth: 230, ml: 1 } } }}
         >
-          <MenuItem onClick={() => runOperatorAction(onOpenProfile)}>
-            <ListItemIcon><PersonOutlineIcon /></ListItemIcon>
-            <ListItemText>Operator Profile</ListItemText>
-          </MenuItem>
-          <MenuItem onClick={() => runOperatorAction(onOpenUsage)}>
-            <ListItemIcon><DataUsageOutlinedIcon /></ListItemIcon>
-            <ListItemText>Provider Activity</ListItemText>
-          </MenuItem>
-          <MenuItem onClick={() => runOperatorAction(onOpenEngineStatus)}>
-            <ListItemIcon><SpeedOutlinedIcon /></ListItemIcon>
-            <ListItemText>Provider Status</ListItemText>
-          </MenuItem>
           <MenuItem onClick={() => runOperatorAction(onOpenSettings)}>
             <ListItemIcon><SettingsOutlinedIcon /></ListItemIcon>
             <ListItemText>Settings</ListItemText>

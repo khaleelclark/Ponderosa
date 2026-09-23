@@ -52,6 +52,8 @@ export interface CreateServerOptions {
   dataDir: string;
   /** Starts only canonical crash cleanup, never listeners, triggers, or Run leasing. */
   startupMode?: "serve" | "shutdown_recovery";
+  /** Qualification instances accept explicit inspection but lease no Runs until resumed. */
+  startDrained?: boolean;
   /** Launcher-owned data root. Runtime state remains under dataDir. */
   launcherDataDir?: string;
   /** Exact installed launcher generation used to fence shutdown receipts. */
@@ -73,6 +75,17 @@ export interface CreateServerOptions {
   };
   /** Validated production listener boundary. Embedded servers default safely to loopback. */
   networkSecurity?: ReadinessDto["networkSecurity"];
+  /** Exact browser-facing origins admitted by Host/Origin validation. */
+  operatorOrigins?: string[];
+  /** Exact lower-cased identities asserted by the trusted loopback proxy. */
+  operatorIdentities?: string[];
+  /** Global admission limits. Tests and embedded servers may omit them. */
+  requestLimits?: {
+    maxRequestsPerMinute: number;
+    maxInflight: number;
+    /** Response deadline; admission remains held until the handler settles. */
+    handlerDeadlineMs?: number;
+  };
   /** Deterministic limits for the opaque localhost-preview transport. */
   linkPreviewScheduling?: {
     registrationTtlMs?: number;

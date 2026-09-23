@@ -1,0 +1,10 @@
+import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { CssBaseline, ThemeProvider, createTheme } from "@mui/material";
+import { ProjectBrowserDialog } from "../src/components/ProjectBrowserDialog";
+import { api } from "../src/api";
+api.listAgents = async () => [{ id: 'assistant', title: 'Assistant' }] as any;
+api.getChatBrowserPreferences = async () => ({ rememberSignIns: false });
+api.getSavedBrowser = async () => ({ browser: null });
+api.getAgentHealth = (async () => ({ agents: [] })) as any;
+createRoot(document.getElementById("root")!).render(<QueryClientProvider client={new QueryClient()}><ThemeProvider theme={createTheme({ palette: { mode: "dark" } })}><CssBaseline /><ProjectBrowserDialog projectId="fixture" open onClose={() => {}} /></ThemeProvider></QueryClientProvider>);

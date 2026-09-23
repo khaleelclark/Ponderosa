@@ -1,0 +1,28 @@
+# Optional bridge for a verified identity-aware reverse proxy that cannot
+# inject Ponderosa's backend bearer itself. Edit paths/user before installing.
+# The front proxy must target the private Unix socket, never the backend port.
+[Unit]
+Description=Ponderosa verified-operator credential bridge
+After=network-online.target ponderosa.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=khaleel
+WorkingDirectory=/home/khaleel/ponderosa
+# The same restricted file as Ponderosa may supply PONDEROSA_AUTH_TOKEN and
+# PONDEROSA_OPERATOR_IDENTITIES; no second copy of the credential is needed.
+EnvironmentFile=/home/khaleel/.config/ponderosa/release.env
+Environment=PONDEROSA_PROXY_BACKEND_PORT=8787
+Environment=PONDEROSA_PROXY_PUBLIC_ORIGIN=https://ponderosa.example.ts.net
+Environment=PONDEROSA_PROXY_IDENTITY_HEADER=Tailscale-User-Login
+Environment=PONDEROSA_PROXY_SOCKET_PATH=/run/ponderosa-operator-proxy/operator.sock
+RuntimeDirectory=ponderosa-operator-proxy
+RuntimeDirectoryMode=0700
+ExecStart=/home/khaleel/ponderosa/current/dist/node-runtime/linux-x64/node apps/server/dist/operator-auth-proxy.js
+Restart=on-failure
+RestartSec=3
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

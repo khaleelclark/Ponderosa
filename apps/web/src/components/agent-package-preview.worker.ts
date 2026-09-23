@@ -10,6 +10,7 @@ interface PortableAgentPreview {
   agentCount: number;
   artifactCount: number;
   historyMessageCount: number;
+  agentTitles: string[];
   sourceEngines: string[];
   elevatedAgentRefs: string[];
   invalidPermissionShape: boolean;
@@ -39,11 +40,13 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
       || typeof value.sourceLabel !== "string"
       || !Array.isArray(value.agents)
       || value.agents.length < 1
+      || value.agents.length > 100
     ) {
       throw new Error("Choose or paste a ponderosa.agent-package.v1 document.");
     }
     worker.postMessage({ id, phase: "Preparing summary" });
     const sourceEngines = new Set<string>();
+    const agentTitles: string[] = [];
     const elevatedAgentRefs: string[] = [];
     let invalidPermissionShape = false;
     let artifactCount = 0;
@@ -53,6 +56,10 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
         throw new Error("The Agent package contains an invalid Agent entry.");
       }
       const node = candidate as Record<string, unknown>;
+      if (typeof node.title !== "string") {
+        throw new Error("Every Agent in the package needs a name.");
+      }
+      agentTitles.push(node.title.trim().slice(0, 80) || "Imported Agent");
       if (typeof node.engine === "string" && node.engine.trim()) {
         sourceEngines.add(node.engine);
       }
@@ -89,6 +96,7 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
         agentCount: value.agents.length,
         artifactCount,
         historyMessageCount,
+        agentTitles,
         sourceEngines: [...sourceEngines],
         elevatedAgentRefs,
         invalidPermissionShape,

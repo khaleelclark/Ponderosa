@@ -1,7 +1,6 @@
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { Box, Button, Stack } from "@mui/material";
-import { PONDEROSA_MESSAGE_TOOL } from "@ponderosa/core";
 import type {
   AgentRunDto,
   ResponseFileActivityDto,
@@ -20,6 +19,7 @@ import {
 } from "../activity/ActivityRows";
 import type { ActivityStreamEntry } from "../activity/activityStream";
 import { SemanticStatus, semanticAgentStatus } from "../SemanticStatus";
+import { receiptActivityEntries } from "./receiptActivityEntries";
 
 function workDuration(run: AgentRunDto): string | undefined {
   if (!run.completedAt) return undefined;
@@ -65,31 +65,6 @@ function receiptStatus(run: AgentRunDto): {
   return undefined;
 }
 
-function isRenderedMessageDelivery(entry: ActivityStreamEntry): boolean {
-  return entry.kind === "tool" &&
-    entry.name === PONDEROSA_MESSAGE_TOOL.name &&
-    entry.result?.isError !== true;
-}
-
-export function receiptActivityEntry(
-  entry: ActivityStreamEntry,
-  runStatus: AgentRunDto["status"] | undefined,
-): ActivityStreamEntry {
-  return runStatus === "completed" &&
-    entry.kind === "tool" &&
-    entry.name === PONDEROSA_MESSAGE_TOOL.name &&
-    entry.result?.isError === true
-    ? {
-        id: entry.id,
-        seq: entry.seq,
-        createdAt: entry.createdAt,
-        kind: "notice",
-        title: "Message delivery failed; task completed",
-        detail: "Only the communication attempt failed. The Agent’s completed work remains available.",
-      }
-    : entry;
-}
-
 export function AgentWorkReceipt({
   agentName,
   run,
@@ -118,9 +93,7 @@ export function AgentWorkReceipt({
     if (containsFocus || active) setExpanded(true);
   }, [active, containsFocus]);
   const visibleEntries = useMemo(
-    () => entries
-      .filter(entry => entry.kind !== "run_header" && !isRenderedMessageDelivery(entry))
-      .map(entry => receiptActivityEntry(entry, run?.status)),
+    () => receiptActivityEntries(entries, run?.status),
     [entries, run?.status],
   );
   const displayEntries = useMemo(

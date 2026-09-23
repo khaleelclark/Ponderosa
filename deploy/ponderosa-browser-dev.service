@@ -1,0 +1,26 @@
+[Unit]
+Description=Ponderosa development browser supervisor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ponderosa-dev/current
+Environment=NODE_ENV=production
+Environment=PONDEROSA_DATA_DIR=%h/.ponderosa-dev
+Environment=PONDEROSA_BROWSER_SERVICE_SOCKET=%t/ponderosa-browser-dev/browser.sock
+Environment=PONDEROSA_BROWSER_EXECUTABLE=/usr/bin/google-chrome-stable
+Environment=PONDEROSA_BROWSER_MULTI_PAGE=1
+Environment=PONDEROSA_BROWSER_FILE_UPLOAD=1
+Environment=PATH=%h/ponderosa-dev/current/dist/node-runtime/linux-x64:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:%h/.npm-global/bin
+RuntimeDirectory=ponderosa-browser-dev
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStart=%h/ponderosa-dev/current/dist/node-runtime/linux-x64/node apps/server/dist/browser-service-main.js
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target

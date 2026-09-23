@@ -1,4 +1,8 @@
 import type {
+  LocalBrowserConnectionDto,
+  LocalBrowserPairingDto,
+  BrowserFrameMetadata,
+  BrowserViewportSize,
   ActiveMessageDeliveryReceiptsDto,
   ActiveMessageDeliveryReceiptsRequest,
   AgentActivityOutputDto,
@@ -364,6 +368,9 @@ export const realApi = {
       `/api/search${toQuery({ q: query, limit, kind })}`,
     );
   },
+  searchGlobalFiles(query: string, limit = 25): Promise<import("@ponderosa/core").GlobalFileSearchResponseDto> {
+    return requestJson(`/api/search/files${toQuery({ q: query, limit })}`);
+  },
   getAllChat(limit: number = 50, cursor?: string): Promise<AllChatPageDto> {
     return requestJson<AllChatPageDto>(`/api/all-chat${toQuery({ limit: String(limit), cursor })}`);
   },
@@ -376,11 +383,19 @@ export const realApi = {
   listConversationMembersPage(conversationId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<AgentDto>> {
     return requestCollectionPage<AgentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/members${toQuery({ limit: options.limit, cursor: options.cursor, search: options.search })}`);
   },
+  listConversationMembers(conversationId: string): Promise<AgentDto[]> {
+    return collectCollectionPages<AgentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/members`);
+  },
   createConversation(projectId: string, request: CreateConversationRequest, idempotencyKey: string): Promise<ConversationDto> {
     return requestJson<ConversationDto>("/api/projects/" + encodeURIComponent(projectId) + "/conversations", {
       method: "POST",
       headers: { "idempotency-key": idempotencyKey },
       body: JSON.stringify(request satisfies CreateConversationRequest),
+    });
+  },
+  createChat(request: CreateProjectRequest, idempotencyKey: string): Promise<ConversationDto> {
+    return requestJson<ConversationDto>("/api/chats", {
+      method: "POST", headers: { "idempotency-key": idempotencyKey }, body: JSON.stringify(request),
     });
   },
   getConversation(conversationId: string, limit: number = 100, cursor?: string, focusId?: string): Promise<ConversationDetailDto> {
@@ -397,8 +412,11 @@ export const realApi = {
       body: JSON.stringify(patch satisfies UpdateConversationRequest),
     });
   },
-  async deleteConversation(conversationId: string): Promise<void> {
-    await requestJson("/api/conversations/" + encodeURIComponent(conversationId), { method: "DELETE" });
+  async deleteConversation(conversationId: string, expectedAgentIds?: string[]): Promise<void> {
+    await requestJson("/api/conversations/" + encodeURIComponent(conversationId), {
+      method: "DELETE",
+      ...(expectedAgentIds ? { body: JSON.stringify({ expectedAgentIds }) } : {}),
+    });
   },
   sendConversationMessage(
     conversationId: string,
@@ -468,6 +486,9 @@ export const realApi = {
     return requestJson<GenerateConversationTitleResponse>(`/api/conversations/${encodeURIComponent(conversationId)}/generate-title`, { method: "POST" });
   },
   getWorkspacePreferences(): Promise<WorkspacePreferencesDto> { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences"); },
+  setNotificationMode(kind: "agent" | "conversation", id: string, mode: "all" | "attention" | "muted" | "inherit"): Promise<WorkspacePreferencesDto> {
+    return requestJson<WorkspacePreferencesDto>(`/api/notification-settings/${kind}/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify({ mode }) });
+  },
   getWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     kind: WorkspaceDirectoryKind,
     options: {
@@ -871,7 +892,7 @@ export const realApi = {
     return requestJson<HealthDto>("/api/health");
   },
   getReadiness(): Promise<ReadinessDto> {
-    return requestJson<ReadinessDto>("/api/ready", undefined, [503]);
+    return requestJson<ReadinessDto>("/api/diagnostics/ready", undefined, [503]);
   },
   updateEngine(engineId: string, request: { enabled: boolean }): Promise<EngineDto> {
     return requestJson<EngineDto>(`/api/engines/${encodeURIComponent(engineId)}`, { method: "PATCH", body: JSON.stringify(request) });
@@ -897,6 +918,9 @@ export const realApi = {
   },
   getFiles(projectId: string, path?: string): Promise<FilesResponse> {
     return requestJson<FilesResponse>(`/api/files${toQuery({ projectId, path })}`);
+  },
+  getConversationFiles(conversationId: string, path?: string): Promise<FilesResponse> {
+    return requestJson<FilesResponse>(`/api/conversations/${encodeURIComponent(conversationId)}/files${toQuery({ path })}`);
   },
   getWorkspaceStatus(agentId: string): Promise<WorkspaceStatusDto> {
     return requestJson<WorkspaceStatusDto>(`/api/agents/${encodeURIComponent(agentId)}/workspace`);
@@ -1034,17 +1058,52 @@ export const realApi = {
       method: "POST", body: JSON.stringify(request satisfies BrowserOperatorInputRequest),
     });
   },
-  async getBrowserFrame(projectId: string, agentId: string, runId: string): Promise<{ blob: Blob; revision: number }> {
-    const response = await fetch(`${browserPath(projectId, agentId, runId)}/frame`, { cache: "no-store" });
+  async getBrowserFrame(projectId: string, agentId: string, runId: string, pageId?: string): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }> {
+    const response = await fetch(`${browserPath(projectId, agentId, runId)}/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, { cache: "no-store" });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
-    return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0) };
+    return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0), metadata: JSON.parse(response.headers.get("x-ponderosa-browser-frame") ?? "null") ?? undefined };
   },
   getProjectBrowser(projectId: string): Promise<ProjectBrowserSessionDto> {
     return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser`);
   },
-  openProjectBrowser(projectId: string, url?: string): Promise<ProjectBrowserSessionDto> {
+  getChatBrowserPreferences(projectId: string): Promise<{ rememberSignIns: boolean }> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/browser/preferences`);
+  },
+  getSavedBrowser(): Promise<{ browser: import("@ponderosa/core").SavedBrowserDto | null }> {
+    return requestJson("/api/saved-browser");
+  },
+  getAgentBrowserLocation(projectId: string, agentId: string): Promise<{ kind: "saved" | "chat" | "run" | "none"; runId?: string; status?: string }> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/browser-location`);
+  },
+  getSavedBrowserAccess(projectId: string): Promise<{ agentIds: string[] }> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/saved-browser-access`);
+  },
+  setSavedBrowserAccess(projectId: string, agentId: string, allowed: boolean): Promise<{ agentIds: string[] }> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/saved-browser-access/${encodeURIComponent(agentId)}`, {
+      method: "PUT", body: JSON.stringify({ allowed }),
+    });
+  },
+  promoteBrowser(projectId: string, sessionId: string, expectedControlEpoch: number): Promise<ProjectBrowserSessionDto> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/browser/promote`, {
+      method: "POST", body: JSON.stringify({ sessionId, expectedControlEpoch, confirmInstanceSharing: true }),
+    });
+  },
+  hostedBrowserControl(projectId: string, action: "open" | "pause" | "resume" | "connect", sessionId?: string, expectedControlEpoch?: number): Promise<ProjectBrowserSessionDto> {
+    return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser/manual`, {
+      method: "POST", body: JSON.stringify({ action, sessionId, expectedControlEpoch }),
+    });
+  },
+  resizeHostedDisplay(projectId: string, sessionId: string, expectedControlEpoch: number, width: number, height: number): Promise<{ ok: boolean }> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/browser/manual`, { method: "POST", body: JSON.stringify({ action: "resize", sessionId, expectedControlEpoch, width, height }) });
+  },
+  hostedBrowserTicket(projectId: string, sessionId: string, expectedControlEpoch: number): Promise<{ path: string; protocol: string }> {
+    return requestJson<{ path: string; protocol: string }>(`/api/projects/${encodeURIComponent(projectId)}/browser/manual`, {
+      method: "POST", body: JSON.stringify({ action: "ticket", sessionId, expectedControlEpoch }),
+    });
+  },
+  openProjectBrowser(projectId: string, url?: string, rememberSignIns?: boolean): Promise<ProjectBrowserSessionDto> {
     return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser`, {
-      method: "POST", body: JSON.stringify(url ? { url } : {}),
+      method: "POST", body: JSON.stringify({ url, rememberSignIns }),
     });
   },
   navigateProjectBrowser(projectId: string, url: string): Promise<ProjectBrowserSessionDto> {
@@ -1088,10 +1147,30 @@ export const realApi = {
       method: "POST", body: JSON.stringify(request satisfies BrowserOperatorInputRequest),
     });
   },
-  async getProjectBrowserFrame(projectId: string): Promise<{ blob: Blob; revision: number }> {
-    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/browser/frame`, { cache: "no-store" });
+  newBrowserPage(projectId: string, expectedControlEpoch: number, agentId?: string, runId?: string): Promise<BrowserSessionDto | ProjectBrowserSessionDto> {
+    const base = agentId && runId ? browserPath(projectId, agentId, runId) : `/api/projects/${encodeURIComponent(projectId)}/browser`;
+    return requestJson(`${base}/pages`, { method: "POST", body: JSON.stringify({ expectedControlEpoch }) });
+  },
+  pairLocalBrowser(projectId: string): Promise<LocalBrowserPairingDto> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/local-browser/pair`, { method: "POST" });
+  },
+  listLocalBrowsers(projectId: string): Promise<LocalBrowserConnectionDto[]> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/local-browser`);
+  },
+  connectLocalBrowser(projectId: string, id: string): Promise<{ ok: boolean }> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/local-browser/${encodeURIComponent(id)}/connect`, { method: "POST" });
+  },
+  navigateAgentBrowser(projectId: string, agentId: string, runId: string, url: string): Promise<BrowserSessionDto> {
+    return requestJson(`${browserPath(projectId, agentId, runId)}/navigate`, { method: "POST", body: JSON.stringify({ url }) });
+  },
+  resizeBrowserViewport(projectId: string, pageId: string, size: BrowserViewportSize, expectedControlEpoch: number, agentId?: string, runId?: string): Promise<{ ok: boolean }> {
+    const base = agentId && runId ? browserPath(projectId, agentId, runId) : `/api/projects/${encodeURIComponent(projectId)}/browser`;
+    return requestJson(`${base}/pages/${encodeURIComponent(pageId)}/viewport`, { method: "PUT", body: JSON.stringify({ ...size, expectedControlEpoch }) });
+  },
+  async getProjectBrowserFrame(projectId: string, pageId?: string): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }> {
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/browser/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, { cache: "no-store" });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
-    return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0) };
+    return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0), metadata: JSON.parse(response.headers.get("x-ponderosa-browser-frame") ?? "null") ?? undefined };
   },
   subscribeAgent(agentId: string, lastSeenSeq: number | undefined, handlers: StreamHandlers): StreamSubscription {
     let cursor = lastSeenSeq;
@@ -1118,7 +1197,7 @@ export const realApi = {
   subscribeWorkspace(lastSeenId: number | undefined, handlers: WorkspaceStreamHandlers): StreamSubscription {
     let cursor = lastSeenId;
     return createResilientEventSource({
-      createSource: () => new EventSource(`/api/workspace/stream${toQuery({ lastEventId: cursor })}`),
+      createSource: () => new EventSource(`/api/workspace/stream${toQuery({ lastEventId: cursor, bootstrap: true })}`),
       onOpen: () => handlers.onOpen?.(),
       onError: (event) => handlers.onError?.(event),
       configure(source) {
@@ -1129,7 +1208,8 @@ export const realApi = {
         });
         source.addEventListener("workspace_status", (event) => {
           const status = JSON.parse(event.data as string) as WorkspaceStreamStatusDto;
-          if (status.reset) cursor = 0;
+          if (status.snapshot) cursor = status.cursor;
+          else if (status.reset) cursor = 0;
           handlers.onStatus?.(status);
         });
       },

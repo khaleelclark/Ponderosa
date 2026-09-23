@@ -87,6 +87,20 @@ export function registerWorkspacePreferenceRoutes(
   ]);
 
   registerOperatorProfileImageRoutes(app, opts);
+  app.put<{ Params: { kind: string; id: string }; Body: { mode?: string } }>("/api/notification-settings/:kind/:id", async (request, reply) => {
+    const { kind, id } = request.params;
+    if (kind !== "agent" && kind !== "conversation") return reply.code(400).send({ error: "invalid notification scope" });
+    if (!(kind === "agent" ? store.getAgent(id) : store.getConversation(id))) return reply.code(404).send({ error: "resource not found" });
+    const mode = request.body?.mode;
+    if (!["all", "attention", "muted", ...(kind === "agent" ? ["inherit"] : [])].includes(mode ?? "")) return reply.code(400).send({ error: "invalid notification mode" });
+    const scopes = { ...workspace.getPreferences().notificationScopes };
+    if (mode === "inherit") delete scopes[`${kind}:${id}`];
+    else scopes[`${kind}:${id}`] = mode as "all" | "attention" | "muted";
+    const cursor = workspace.cursor();
+    const preferences = workspace.updatePreferences({ notificationScopes: scopes });
+    publishWorkspaceSince(cursor);
+    return preferences;
+  });
 
   app.get("/api/workspace/preferences", async () => workspace.getPreferences());
 
@@ -144,6 +158,25 @@ export function registerWorkspacePreferenceRoutes(
 
   app.patch<{ Body: UpdateWorkspacePreferencesRequest }>("/api/workspace/preferences", async (request, reply) => {
     const patch = request.body ?? {};
+    if (patch.notificationScopes !== undefined) return reply.code(400).send({ error: "use the resource notification settings endpoint" });
+    for (const key of ["projectFolders", "chatFolders"] as const) {
+      if (patch[key] === undefined) continue;
+      const folders = patch[key];
+      const memberKey = key === "projectFolders" ? "projectIds" : "conversationIds";
+      const ids = new Set<string>();
+      const members = new Set<string>();
+      if (!Array.isArray(folders) || folders.length > 1000 || folders.some(folder => {
+        if (!folder || typeof folder !== "object" || typeof folder.id !== "string" || !folder.id || folder.id.length > 200 || ids.has(folder.id) ||
+          typeof folder.name !== "string" || !folder.name.trim() || folder.name.length > 100 || typeof folder.expanded !== "boolean" ||
+          (key === "chatFolders" && "starred" in folder && folder.starred !== undefined && typeof folder.starred !== "boolean") ||
+          !Array.isArray((folder as unknown as Record<string, unknown[]>)[memberKey]) || (folder as unknown as Record<string, unknown[]>)[memberKey]!.length > 10000) return true;
+        ids.add(folder.id);
+        return (folder as unknown as Record<string, unknown[]>)[memberKey]!.some(id => {
+          if (typeof id !== "string" || !id || id.length > 200 || members.has(id) || members.size >= 10000) return true;
+          members.add(id); return false;
+        });
+      })) return reply.code(400).send({ error: `invalid ${key}` });
+    }
     if (patch.speech !== undefined && !validSpeechPreferences(patch.speech)) {
       return reply.code(400).send({ error: "invalid speech preferences" });
     }
@@ -235,6 +268,17 @@ export function registerWorkspacePreferenceRoutes(
       patch.profile = { ...profile, handle };
     }
     const previousPreferences = workspace.getPreferences();
+    if (patch.projectFolders !== undefined && patch.projectFoldersRevision !== previousPreferences.revision) {
+      return reply.code(409).send({ error: "Project folders changed; refresh and reapply the folder action." });
+    }
+    delete patch.projectFoldersRevision;
+    if (patch.chatFolders !== undefined && patch.chatFoldersRevision !== previousPreferences.revision) {
+      return reply.code(409).send({ error: "Chat folders changed; refresh and reapply the folder action." });
+    }
+    if (patch.chatFolders?.some(folder => folder.conversationIds.some(id => !store.getConversation(id)))) {
+      return reply.code(400).send({ error: "A chat in this folder no longer exists. Refresh and retry." });
+    }
+    delete patch.chatFoldersRevision;
     const globalInstructionsChanged = patch.globalInstructions !== undefined && patch.globalInstructions !== previousPreferences.globalInstructions;
     const profileChanged = patch.profile !== undefined && JSON.stringify(patch.profile) !== JSON.stringify(previousPreferences.profile);
     const cursor = workspace.cursor();

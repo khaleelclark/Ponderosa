@@ -4,7 +4,16 @@ import type {
   EngineCommand,
   EngineComposerCapability,
 } from "@ponderosa/core";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
+
+export interface ComposerMenuAction {
+  id: string;
+  label: string;
+  description?: string;
+  icon?: ReactNode;
+  disabled?: boolean;
+  onSelect(): void;
+}
 
 export interface ChatComposerContract {
   disabled: boolean;
@@ -46,6 +55,10 @@ export interface ChatComposerContract {
   onCommand?(command: EngineCommand, argumentsText?: string): Promise<unknown> | unknown;
   commands?: EngineCommand[];
   capabilities?: EngineComposerCapability[];
+  /** Additional context-specific actions shown in the attachment/capability menu. */
+  menuActions?: ComposerMenuAction[];
+  /** Optional persistent focus anchor for context-specific composer flows. */
+  capabilityButtonRef?: RefObject<HTMLButtonElement>;
   /** Controls placed beside the attachment/capability button. */
   leadingControls?: ReactNode;
   controls?: ReactNode;

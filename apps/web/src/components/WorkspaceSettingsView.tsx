@@ -1,5 +1,5 @@
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
-import { LocalVoicesSettings } from "./speech/LocalVoicesSettings";
+import { BrowserVoiceSettings } from "./speech/BrowserVoiceSettings";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import {
   Alert,
@@ -34,6 +34,8 @@ import {
 } from "../conversationEngine";
 import type { ColorMode } from "../theme";
 import { ProviderActivitySettingsSection } from "./WorkspaceResourceViews";
+import { ProviderStatusDetails } from "./ProviderStatusDialog";
+import { ConfirmDialog } from "./ConfirmationDialogs";
 import {
   inspectWebPush,
   syncWebPush,
@@ -59,6 +61,7 @@ import {
   draftChangedSinceSubmission,
   synchronizePristineDraft,
 } from "./settingsDrafts";
+import { useReloadBlocker } from "../reloadSafety";
 
 const GLOBAL_AGENT_INSTRUCTIONS_LABEL = "Global Agent Instructions";
 const GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT =
@@ -157,7 +160,7 @@ function GeneralSettingsSection({
     rolloverTokensError === undefined && rolloverFractionError === undefined;
   return (
     <Stack spacing={2.5}>
-      <LocalVoicesSettings preferences={preferences} onPreferences={onPreferences} />
+      <BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences} />
       <Paper variant="outlined" sx={{ p: 2.5 }}>
         <Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>
           Appearance
@@ -323,7 +326,7 @@ function NotificationSettingsSection({
         Notifications
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Choose which Agent updates appear in Notifications and browser push. Decisions, blockers, failures, and operational issues always appear because they require action.
+        Choose which Agent updates appear in Notifications and browser push. Chat and Agent notification settings can further limit these alerts, including those that need attention.
       </Typography>
       <Stack>
         {NOTIFICATION_LABELS.map(([key, label]) => (
@@ -831,7 +834,7 @@ export function WorkspaceSettingsView({
   onSavePreferences(
     patch: Partial<WorkspacePreferencesDto>,
   ): Promise<WorkspacePreferencesDto>;
-  section?: "general" | "providers" | "notifications" | "activity";
+  section?: "profile" | "general" | "providers" | "notifications" | "activity";
   activityProjectId?: string;
 }): JSX.Element {
   const queryClient = useQueryClient();
@@ -841,6 +844,12 @@ export function WorkspaceSettingsView({
     queryFn: () => api.getEngineModels(validationProject!.id, "claude"),
     enabled: Boolean(validationProject && engines.some((engine) => engine.id === "claude")),
     staleTime: 5 * 60_000,
+  });
+  const readinessQuery = useQuery({
+    queryKey: queryKeys.readiness.all,
+    queryFn: () => api.getReadiness(),
+    enabled: section === "activity",
+    staleTime: 30_000,
   });
   const settingsEngines = enginesWithModelCatalog(engines, modelCatalogQuery.data);
   const [instructions, setInstructions] = useState(
@@ -859,6 +868,10 @@ export function WorkspaceSettingsView({
   const [limitDirty, setLimitDirty] = useState(false);
   const [rolloverTokensDirty, setRolloverTokensDirty] = useState(false);
   const [rolloverFractionDirty, setRolloverFractionDirty] = useState(false);
+  useReloadBlocker(
+    "workspace-settings",
+    instructionsDirty || limitDirty || rolloverTokensDirty || rolloverFractionDirty,
+  );
   const instructionsRef = useRef(instructions);
   const limitRef = useRef(limit);
   instructionsRef.current = instructions;
@@ -868,6 +881,7 @@ export function WorkspaceSettingsView({
     message: "Checking browser push status…",
   });
   const [pushBusy, setPushBusy] = useState(false);
+  const [engineToTest, setEngineToTest] = useState<EngineDto>();
   useEffect(() => {
     let active = true;
     const refresh = () => {
@@ -928,6 +942,7 @@ export function WorkspaceSettingsView({
   });
   const recheckEngine = useMutation({
     mutationFn: (engineId: string) => recheckProvider(queryClient, engineId),
+    onSuccess: () => setEngineToTest(undefined),
   });
   const saveAgentDefaults = useMutation({
     mutationFn: (patch: {
@@ -964,6 +979,12 @@ export function WorkspaceSettingsView({
     <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflow: "auto" }}>
       <SettingsHeader />
       <Box sx={{ maxWidth: 900, mx: "auto", p: { xs: 2, md: 4 } }}>
+        {section === "profile" ? (
+          <OperatorProfileSettingsSection
+            preferences={preferences}
+            onPreferences={onPreferences}
+          />
+        ) : null}
         {section === "general" ? (
           <GeneralSettingsSection
             preferences={preferences}
@@ -1064,13 +1085,81 @@ export function WorkspaceSettingsView({
           />
         ) : null}
         {section === "activity" ? (
-          <ProviderActivitySettingsSection
-            projects={projects}
-            projectId={activityProjectId}
-          />
+          <Stack spacing={2.5}>
+            <Paper variant="outlined" sx={{ p: 2.5 }}>
+              <Typography variant="h6" fontWeight={800}>Provider Status</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                Sign-in, runtime access, and network availability for configured AI providers.
+              </Typography>
+              <ProviderStatusDetails
+                engines={engines}
+                networkSecurity={readinessQuery.data?.networkSecurity}
+                networkSecurityLoading={readinessQuery.isLoading}
+                networkSecurityError={readinessQuery.isError ? String(readinessQuery.error) : undefined}
+                recheckingEngineId={recheckEngine.isPending ? recheckEngine.variables : undefined}
+                error={recheckEngine.isError ? String(recheckEngine.error) : undefined}
+                onTestAccess={engine => {
+                  recheckEngine.reset();
+                  setEngineToTest(engine);
+                }}
+              />
+            </Paper>
+            <ProviderActivitySettingsSection
+              projects={projects}
+              projectId={activityProjectId}
+            />
+          </Stack>
         ) : null}
       </Box>
+      <ConfirmDialog
+        open={Boolean(engineToTest)}
+        title={`Test ${engineToTest?.displayName ?? "provider"} access?`}
+        confirmLabel="Test Access"
+        pendingLabel="Testing…"
+        pending={recheckEngine.isPending}
+        error={recheckEngine.isError ? String(recheckEngine.error) : undefined}
+        onCancel={() => {
+          recheckEngine.reset();
+          setEngineToTest(undefined);
+        }}
+        onConfirm={() => {
+          if (engineToTest) recheckEngine.mutate(engineToTest.id);
+        }}
+      >
+        <Typography sx={{ pt: 1 }}>This sends one minimal subscription-backed request.</Typography>
+      </ConfirmDialog>
     </Box>
+  );
+}
+
+function OperatorProfileSettingsSection({
+  preferences,
+  onPreferences,
+}: {
+  preferences: WorkspacePreferencesDto;
+  onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+}): JSX.Element {
+  const form = useOperatorProfileForm(preferences.profile);
+  return (
+    <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 } }}>
+      <OperatorProfileEditor
+        form={form}
+        avatarSize={72}
+        nameLabel="What Agents Call You"
+        handleHelperText="Used as your stable #handle. Historical structured mentions continue to follow this identity."
+        pictureLabelId="profile-picture"
+        avatarFirst
+        showDescription
+      />
+      <Button
+        variant="contained"
+        disabled={form.busy || !form.valid}
+        onClick={() => onPreferences({ profile: form.profile })}
+        sx={{ alignSelf: "flex-start", mt: 2.25 }}
+      >
+        Save Profile
+      </Button>
+    </Paper>
   );
 }
 
@@ -1081,30 +1170,14 @@ export function OperatorProfileWorkspace({
   preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
 }): JSX.Element {
-  const form = useOperatorProfileForm(preferences.profile);
   return (
     <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflow: "auto" }}>
       <SettingsHeader profile />
       <Box sx={{ maxWidth: 720, mx: "auto", p: { xs: 2, md: 4 } }}>
-        <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 } }}>
-          <OperatorProfileEditor
-            form={form}
-            avatarSize={72}
-            nameLabel="What Agents Call You"
-            handleHelperText="Used as your stable #handle. Historical structured mentions continue to follow this identity."
-            pictureLabelId="profile-picture"
-            avatarFirst
-            showDescription
-          />
-          <Button
-            variant="contained"
-            disabled={form.busy || !form.valid}
-            onClick={() => onPreferences({ profile: form.profile })}
-            sx={{ alignSelf: "flex-start", mt: 2.25 }}
-          >
-            Save Profile
-          </Button>
-        </Paper>
+        <OperatorProfileSettingsSection
+          preferences={preferences}
+          onPreferences={onPreferences}
+        />
       </Box>
     </Box>
   );

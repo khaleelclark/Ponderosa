@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -30,7 +36,7 @@ test("initializes a fresh owned data directory", () => {
   const directory = temporaryDataDirectory();
   const ownership = acquireDataDirectoryOwnership(directory);
   try {
-    ensureCurrentDataLayout(directory);
+    ensureCurrentDataLayout(ownership.dataDir);
     assert.equal(readFileSync(join(directory, ".ponderosa-layout-version"), "utf8"), "1\n");
   } finally {
     releaseDataDirectoryOwnership(ownership);
@@ -73,50 +79,51 @@ test("preserves and rejects an unknown data layout", () => {
   }
 });
 
-test("does not steal an incompletely published lock from a live initializer", async () => {
+test("replacing the diagnostic lock cannot steal a live kernel lease", () => {
   const directory = temporaryDataDirectory();
   const lockPath = join(directory, ".ponderosa-daemon.lock");
-  const initializer = spawn(process.execPath, ["-e", `
-    const { closeSync, openSync, writeFileSync } = require("node:fs");
-    const descriptor = openSync(process.argv[1], "wx", 0o600);
-    writeFileSync(descriptor, "{");
-    process.send("ready");
-    process.on("message", () => {
-      closeSync(descriptor);
-      process.exit(0);
-    });
-  `, lockPath], { stdio: ["ignore", "ignore", "inherit", "ipc"] });
+  const ownership = acquireDataDirectoryOwnership(directory);
   try {
-    await once(initializer, "message");
+    rmSync(lockPath, { force: true });
+    writeFileSync(lockPath, JSON.stringify({ pid: 999_999, token: "replacement" }));
     assert.throws(
       () => acquireDataDirectoryOwnership(directory),
-      /incomplete or malformed; refusing to replace/u,
+      /already owned by another Ponderosa process/u,
     );
-    assert.equal(readFileSync(lockPath, "utf8"), "{");
-    assert.equal(initializer.exitCode, null);
   } finally {
-    initializer.send("close");
-    await once(initializer, "exit");
-    rmSync(lockPath, { force: true });
+    releaseDataDirectoryOwnership(ownership);
   }
 });
 
-test("recovers an atomically published lock after its owner exits", async () => {
+test("ignores a stale diagnostic lock when the kernel lease is free", () => {
   const directory = temporaryDataDirectory();
-  const exitedOwner = spawn(process.execPath, ["-e", "process.exit(0)"]);
-  const stalePid = exitedOwner.pid;
-  await once(exitedOwner, "exit");
   writeFileSync(join(directory, ".ponderosa-daemon.lock"), JSON.stringify({
-    pid: stalePid,
+    pid: 999_999,
     token: "stale-owner",
   }));
 
   const ownership = acquireDataDirectoryOwnership(directory);
   try {
-    const current = JSON.parse(readFileSync(ownership.path, "utf8"));
-    assert.equal(current.pid, process.pid);
-    assert.equal(current.token, ownership.token);
+    assert.equal(ownership.dataDir.includes("/fd/"), true);
   } finally {
     releaseDataDirectoryOwnership(ownership);
+  }
+});
+
+test("ancestor replacement cannot redirect an open store", () => {
+  const parent = temporaryDataDirectory();
+  const directory = join(parent, "data");
+  const retained = join(parent, "retained-data");
+  mkdirSync(directory);
+  const opened = openAgentStoreData(directory);
+  try {
+    renameSync(directory, retained);
+    mkdirSync(directory);
+    writeFileSync(opened.deliverySequenceFile, '{"sequence":7}\n', { flag: "a" });
+    assert.match(readFileSync(join(retained, "delivery-order.jsonl"), "utf8"), /"sequence":7/u);
+    assert.deepEqual(readdirSync(directory), []);
+  } finally {
+    opened.client.close();
+    releaseDataDirectoryOwnership(opened.ownership);
   }
 });

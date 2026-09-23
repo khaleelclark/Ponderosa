@@ -27,6 +27,7 @@ function boundedInternalRolloverFailure(error: string): string {
 interface RolloverRow {
   id: string; project_id: string; agent_id: string; state: ContextRolloverState;
   old_provider_session_id: string; provider_session_generation: string;
+  cycle_number: number;
   detected_occupancy: number; aggregate_tokens: number | null; threshold: number;
   context_window: number | null; low_water_mark: number;
   low_water_confirmation_required: number; source_run_id: string;
@@ -80,14 +81,24 @@ export class CoordinationV3ContextRolloverAuthority {
       throw new Error("context rollover requires a bounded unique content-hash-bound recent tail");
     }
     return this.sqlite.transaction(() => {
-      const existing = this.sqlite.prepare(`
+      const latest = this.sqlite.prepare(`
         SELECT * FROM context_rollovers
         WHERE agent_id = ? AND provider_session_generation = ?
-        ORDER BY created_at DESC, rowid DESC LIMIT 1
+        ORDER BY cycle_number DESC LIMIT 1
       `).get(input.agentId, input.providerSessionGeneration) as RolloverRow | undefined;
-      // Automatic pressure owns at most one rollover attempt for an opaque
-      // provider generation, including after failure, so a failed handoff can
-      // never manufacture a rollover loop. A human may explicitly retry only
+      // A delayed duplicate from an earlier completed cycle must resolve to
+      // its original record even after a newer cycle has been requested.
+      const matchingBoundary = this.sqlite.prepare(`
+        SELECT * FROM context_rollovers
+        WHERE agent_id = ? AND provider_session_generation = ?
+          AND compaction_cutoff_ordinal = ? AND compaction_cutoff_event_id = ?
+        ORDER BY cycle_number DESC LIMIT 1
+      `).get(input.agentId, input.providerSessionGeneration,
+        input.compactionCutoffOrdinal, input.compactionCutoffEventId) as RolloverRow | undefined;
+      const existing = matchingBoundary ?? latest;
+      // Automatic pressure owns at most one attempt per durable cycle. A
+      // confirmed native compaction can start a later cycle in a later Run.
+      // Failed handoffs cannot manufacture a rollover loop. A human may retry only
       // an attempt that failed before either a handoff or replacement candidate
       // became durable. That retry receives a new rollover ID and fresh frozen
       // boundary; recovery of a committed handoff remains bound to the original
@@ -96,18 +107,23 @@ export class CoordinationV3ContextRolloverAuthority {
         const terminalFailure = ["failed", "outcome_unknown"].includes(existing.state);
         const explicitSafeRetry = input.triggerKind === "human" &&
           terminalFailure &&
+          existing.id === latest?.id &&
           existing.handoff_event_id === null &&
           existing.replacement_run_id === null;
+        const nextNativeCycle = existing.id === latest?.id && !matchingBoundary &&
+          existing.state === "completed" && existing.completion_reason === "native_compaction" &&
+          existing.compaction_cutoff_ordinal < input.compactionCutoffOrdinal &&
+          existing.source_run_id !== input.sourceRunId;
         if (existing.project_id !== input.projectId ||
             existing.old_provider_session_id !== input.oldProviderSessionId ||
-            (!terminalFailure && (
+            (!terminalFailure && !nextNativeCycle && (
               existing.compaction_cutoff_ordinal !== input.compactionCutoffOrdinal ||
               existing.compaction_cutoff_event_id !== input.compactionCutoffEventId ||
               existing.recent_tail_event_ids_json !== JSON.stringify(input.recentTail.map((binding) => binding.communicationEventId)) ||
               existing.recent_tail_hashes_json !== JSON.stringify(input.recentTail.map((binding) => binding.contentSha256))))) {
           throw new Error("context rollover provider generation replay conflicts with its durable owner");
         }
-        if (!explicitSafeRetry) {
+        if (!explicitSafeRetry && !nextNativeCycle) {
           return { rollover: this.view(existing), created: false };
         }
       }
@@ -115,7 +131,7 @@ export class CoordinationV3ContextRolloverAuthority {
       this.sqlite.prepare(`
         INSERT INTO context_rollovers (
           id, project_id, agent_id, state, old_provider_session_id,
-          provider_session_generation, detected_occupancy, aggregate_tokens,
+          provider_session_generation, cycle_number, detected_occupancy, aggregate_tokens,
           threshold, context_window, low_water_mark, low_water_confirmation_required, source_run_id,
           trigger_kind,
           compaction_cutoff_ordinal, compaction_cutoff_event_id, recent_tail_event_ids_json,
@@ -123,10 +139,11 @@ export class CoordinationV3ContextRolloverAuthority {
           source_activation_ids_json, scope_key, conversation_id, reply_authority_json,
           visible_response_committed, visible_response_committed_at,
           created_at, updated_at
-        ) VALUES (?, ?, ?, 'requested', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, 'requested', ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id, input.projectId, input.agentId, input.oldProviderSessionId,
-        input.providerSessionGeneration, input.detectedOccupancy, input.aggregateTokens ?? null,
+        input.providerSessionGeneration, (latest?.cycle_number ?? 0) + 1,
+        input.detectedOccupancy, input.aggregateTokens ?? null,
         input.threshold, input.contextWindow ?? null, input.lowWaterMark,
         input.sourceRunId,
         input.triggerKind ?? "automatic",
@@ -177,7 +194,7 @@ export class CoordinationV3ContextRolloverAuthority {
     const row = this.sqlite.prepare(`
       SELECT * FROM context_rollovers
       WHERE agent_id = ? AND provider_session_generation = ?
-      ORDER BY created_at DESC, rowid DESC
+      ORDER BY cycle_number DESC
       LIMIT 1
     `).get(agentId, providerSessionGeneration) as RolloverRow | undefined;
     return row ? this.view(row) : undefined;
@@ -1003,6 +1020,7 @@ export class CoordinationV3ContextRolloverAuthority {
       id: row.id, projectId: row.project_id, agentId: row.agent_id, state: row.state,
       oldProviderSessionId: row.old_provider_session_id,
       providerSessionGeneration: row.provider_session_generation,
+      cycleNumber: row.cycle_number,
       detectedOccupancy: row.detected_occupancy,
       ...(row.aggregate_tokens !== null ? { aggregateTokens: row.aggregate_tokens } : {}),
       threshold: row.threshold,

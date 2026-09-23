@@ -11,14 +11,15 @@ import type {
   ConversationDto,
   EngineDto,
 } from "@ponderosa/core";
-import { ResourceDeletionDialog } from "./ConfirmationDialogs";
-import { ImportAgentDialog } from "./ImportAgentDialog";
+import { AddAgentsFlow } from "./AddAgentsFlow";
 import { ActiveOperationStopDialog } from "./ActiveOperationStopDialog";
+import { ChatDeletionDialog } from "./ChatDeletionDialog";
 
 interface ConversationDialogsProps {
   conversation: ConversationDto;
   engines: EngineDto[];
-  importOpen: boolean;
+  addAgentsOpen: boolean;
+  onCreateAgent(): void;
   stopPending: boolean;
   stopError?: string;
   stopConfirmation?: {
@@ -32,7 +33,7 @@ interface ConversationDialogsProps {
   deleteOpen: boolean;
   deletePending: boolean;
   deleteError?: string;
-  onImportClose(): void;
+  onAddAgentsClose(): void;
   onStopCancel(): void;
   onStopConfirm(
     targets: { agentId: string; runId: string }[],
@@ -42,13 +43,14 @@ interface ConversationDialogsProps {
   onRenameValueChange(value: string): void;
   onRename(): void;
   onDeleteClose(): void;
-  onDelete(): void;
+  onDelete(expectedAgentIds: string[]): void;
 }
 
 export function ConversationDialogs({
   conversation,
   engines,
-  importOpen,
+  addAgentsOpen,
+  onCreateAgent,
   stopPending,
   stopError,
   stopConfirmation,
@@ -59,7 +61,7 @@ export function ConversationDialogs({
   deleteOpen,
   deletePending,
   deleteError,
-  onImportClose,
+  onAddAgentsClose,
   onStopCancel,
   onStopConfirm,
   onRenameClose,
@@ -70,13 +72,14 @@ export function ConversationDialogs({
 }: ConversationDialogsProps): JSX.Element {
   return (
     <>
-      <ImportAgentDialog
-        open={importOpen}
-        projectId={conversation.projectId}
-        engines={engines}
+      <AddAgentsFlow
+        open={addAgentsOpen}
+        fixedProjectId={conversation.projectId}
+        initialConversation={conversation}
         conversations={[conversation]}
-        initialConversationId={conversation.id}
-        onClose={onImportClose}
+        engines={engines}
+        onCreate={onCreateAgent}
+        onClose={onAddAgentsClose}
       />
 
       <ActiveOperationStopDialog
@@ -91,12 +94,12 @@ export function ConversationDialogs({
       />
 
       <Dialog open={renameOpen} onClose={onRenameClose} fullWidth maxWidth="xs">
-        <DialogTitle>Rename Project chat</DialogTitle>
+        <DialogTitle>Rename Chat</DialogTitle>
         <DialogContent>
           <TextField
             autoFocus
             fullWidth
-            label="Project chat name"
+            label="Chat name"
             value={renameValue}
             onChange={event => onRenameValueChange(event.target.value)}
             sx={{ mt: 1 }}
@@ -119,22 +122,14 @@ export function ConversationDialogs({
         </DialogActions>
       </Dialog>
 
-      <ResourceDeletionDialog
+      <ChatDeletionDialog
         open={deleteOpen}
-        resourceType="Chat"
-        resourceName={conversation.title}
-        pendingLabel="Deleting…"
+        conversation={conversation}
         pending={deletePending}
         error={deleteError}
-        onCancel={onDeleteClose}
-        onConfirm={onDelete}
-      >
-        <Alert severity="warning">
-          This permanently deletes the Chat and its history. Assigned Agents
-          are preserved and become unassigned. Related Automations and pending
-          work are cancelled. Stop any active assigned Agent before deleting.
-        </Alert>
-      </ResourceDeletionDialog>
+        onClose={onDeleteClose}
+        onDelete={onDelete}
+      />
     </>
   );
 }

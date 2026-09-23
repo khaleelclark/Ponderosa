@@ -1,18 +1,24 @@
 import AddIcon from "@mui/icons-material/Add";
 import SearchIcon from "@mui/icons-material/Search";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
 import {
   Badge,
   Box,
   Button,
+  ButtonBase,
   IconButton,
   InputAdornment,
   List,
+  Menu,
+  MenuItem,
   Stack,
   TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
-import { Children, type ReactNode } from "react";
+import type { ProjectSort } from "@ponderosa/core";
+import { Children, useState, type ReactNode } from "react";
 import { useInfiniteScrollSentinel } from "../hooks/useInfiniteScrollSentinel";
 import { IconTitle } from "./IconTitle";
 import { LoadingState } from "./LoadingState";
@@ -20,11 +26,13 @@ import { railSurface, sidebarSurface } from "./WorkspaceSidebar.helpers";
 
 function SidebarSectionHeading({
   children,
+  endAdornment,
   actionLabel,
   onAction,
   titleCase = false,
 }: {
   children: ReactNode;
+  endAdornment?: ReactNode;
   actionLabel?: string;
   onAction?(): void;
   titleCase?: boolean;
@@ -34,12 +42,14 @@ function SidebarSectionHeading({
       direction="row"
       sx={{
         alignItems: "center",
-        px: 1,
+        pl: 1,
+        pr: 0,
         mb: 0.5,
       }}
     >
       <Typography
         variant="subtitle2"
+        component="div"
         color="text.secondary"
         noWrap
         sx={{
@@ -53,6 +63,7 @@ function SidebarSectionHeading({
       >
         {children}
       </Typography>
+      {endAdornment}
       {actionLabel && onAction ? (
         <Tooltip title={actionLabel}>
           <IconButton
@@ -96,6 +107,8 @@ function SharedSidebarPanel({
   viewAllIcon,
   onViewAll,
   onViewAllContextMenu,
+  sort,
+  onSort,
   createLabel,
   onCreate,
   drawer,
@@ -126,11 +139,21 @@ function SharedSidebarPanel({
   viewAllIcon?: ReactNode;
   onViewAll?(): void;
   onViewAllContextMenu?(anchor: HTMLElement): void;
+  sort?: ProjectSort;
+  onSort?(sort: ProjectSort): void;
   createLabel?: string;
   onCreate?(): void;
   drawer: boolean;
 }): JSX.Element {
   const hasStarredRows = Children.count(starredRows) > 0;
+  const [collapsedStars, setCollapsedStars] = useState<Record<string, boolean>>({});
+  const [sortAnchor, setSortAnchor] = useState<HTMLElement>();
+  const starsCollapsed = Boolean(collapsedStars[title]);
+  const sortLabel = sort === "last_used"
+    ? "Recent"
+    : sort === "alphabetical"
+      ? "A–Z"
+      : "Custom";
   return (
     <Box
       sx={{
@@ -139,7 +162,13 @@ function SharedSidebarPanel({
         display: "grid",
         gridTemplateColumns: "minmax(0, 1fr)",
         gridTemplateRows: "auto auto minmax(0, 1fr) auto",
+        flex: 1,
         bgcolor: sidebarSurface,
+        ...(drawer ? {
+          "& .MuiListItemIcon-root": { minWidth: 30 },
+          "& .MuiListItemIcon-root .MuiSvgIcon-root": { fontSize: 20 },
+          "& .MuiListItemButton-root": { borderRadius: 1.25 },
+        } : {}),
         "@media (max-width: 599.95px)": {
           "& .MuiListItemText-secondary": { fontSize: 12 },
         },
@@ -164,14 +193,14 @@ function SharedSidebarPanel({
           </Typography>}
         </Stack>
       )}
-      {hideSearch ? <Box /> : <Box sx={{ px: 1.75, pb: 1.5 }}>
+      {hideSearch ? <Box /> : <Box sx={{ px: drawer ? 1.5 : 1.75, pb: drawer ? 0.75 : 1.5 }}>
         <TextField
           fullWidth
           size="small"
           value={searchValue}
           onChange={event => onSearchValueChange(event.target.value)}
           placeholder={searchLabel}
-          sx={{ "@media (max-width: 599.95px)": { "& input": { fontSize: 16 } } }}
+          sx={{ "@media (max-width: 599.95px)": { "& input": { fontSize: 16 } }, ...(drawer ? { "& .MuiInputBase-root": { height: 44 }, "& .MuiSvgIcon-root": { fontSize: 20 } } : {}) }}
           inputProps={{ "aria-label": searchLabel }}
           InputProps={{
             startAdornment: (
@@ -191,19 +220,71 @@ function SharedSidebarPanel({
           overflowX: "hidden",
           overflowY: "auto",
           px: 1.25,
-          pb: 1.5,
+          pb: 3,
+          scrollPaddingBlockEnd: 24,
         }}
       >
         {topContent}
         {hasStarredRows ? (
-          <Box component="section" sx={{ mb: 2 }}>
-            <SidebarSectionHeading>Starred</SidebarSectionHeading>
-            <List disablePadding>{starredRows}</List>
+          <Box component="section" sx={{ mb: drawer ? 1 : 2 }}>
+            <ButtonBase aria-label="Starred" aria-expanded={!starsCollapsed} onClick={() => setCollapsedStars(current => ({ ...current, [title]: !current[title] }))}
+              sx={{ width: "100%", justifyContent: "flex-start", minHeight: drawer ? 36 : 28, px: .5, gap: .5, color: "text.secondary", borderRadius: 1 }}>
+              {starsCollapsed ? <KeyboardArrowRightIcon sx={{ fontSize: 16 }} /> : <KeyboardArrowDownIcon sx={{ fontSize: 16 }} />}
+              <Typography sx={{ fontSize: 11, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase" }}>Starred</Typography>
+            </ButtonBase>
+            {!starsCollapsed ? <List disablePadding>{starredRows}</List> : null}
           </Box>
         ) : null}
         <Box component="section">
           <SidebarSectionHeading
             titleCase={title !== "Home"}
+            endAdornment={sort && onSort ? <>
+              <ButtonBase
+                aria-label={`Sort ${title}: ${sortLabel}`}
+                aria-haspopup="menu"
+                aria-expanded={Boolean(sortAnchor)}
+                onClick={event => setSortAnchor(event.currentTarget)}
+                sx={{
+                  minWidth: 0,
+                  minHeight: drawer ? 44 : 28,
+                  gap: 0.15,
+                  px: 0.65,
+                  mr: -1.5,
+                  borderRadius: 1,
+                  color: "text.secondary",
+                  "&:hover": { bgcolor: "action.hover", color: "text.primary" },
+                }}
+              >
+                <Typography component="span" noWrap sx={{ fontSize: 12, fontWeight: 600 }}>
+                  {sortLabel}
+                </Typography>
+                <KeyboardArrowDownIcon sx={{ fontSize: 16 }} />
+              </ButtonBase>
+              <Menu
+                anchorEl={sortAnchor}
+                open={Boolean(sortAnchor)}
+                onClose={() => setSortAnchor(undefined)}
+                anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+                transformOrigin={{ vertical: "top", horizontal: "right" }}
+              >
+                {([
+                  ["last_used", "Recent"],
+                  ["alphabetical", "A–Z"],
+                  ["custom", "Custom"],
+                ] as const).map(([value, label]) => (
+                  <MenuItem
+                    key={value}
+                    selected={sort === value}
+                    onClick={() => {
+                      onSort(value);
+                      setSortAnchor(undefined);
+                    }}
+                  >
+                    {label}
+                  </MenuItem>
+                ))}
+              </Menu>
+            </> : undefined}
             actionLabel={createLabel}
             onAction={onCreate}
           >
@@ -223,9 +304,16 @@ function SharedSidebarPanel({
         ) : null}
       </Box>
       {(newLabel && onNew) || (viewAllLabel && onViewAll) ? <Box
+        data-sidebar-footer
         sx={{
-          p: 1.75,
-          boxShadow: theme => `inset 0 1px 0 ${theme.palette.divider}`,
+          p: drawer ? 0 : 1.75,
+          pb: drawer ? "env(safe-area-inset-bottom, 0px)" : 1.75,
+          ...(drawer ? { "& .MuiButton-root": { minHeight: 44, py: 0.5, px: 2, fontSize: 13, borderRadius: 0 }, "& .MuiButton-startIcon > *": { fontSize: 18 } } : {}),
+          borderTop: 2,
+          borderColor: "divider",
+          bgcolor: sidebarSurface,
+          position: "relative",
+          zIndex: 1,
         }}
       >
         {newLabel && onNew ? (

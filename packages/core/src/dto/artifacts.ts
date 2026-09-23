@@ -79,6 +79,8 @@ export interface ArtifactDto {
   agentId: string;
   /** Agent that created the artifact; retained after that Agent is deleted. */
   originAgentId?: string;
+  /** Explicit legacy custody, never a replacement for original creator provenance. */
+  legacyRecovery?: { custodianAgentId: string; recoveredAt: string };
   executionId?: string;
   kind: ArtifactKind;
   /** Relative path under the agent's `artifacts/` dir. */

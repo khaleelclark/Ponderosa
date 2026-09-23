@@ -11,7 +11,6 @@ import type {
 } from "./workspace.js";
 
 export type WorkspaceEvent =
-  | { type: "speech_status_changed" }
   | { type: "preferences_updated"; preferences: WorkspacePreferencesDto }
   | { type: "resource_used"; kind: WorkspaceResourceKind; resourceId: string }
   | { type: "project_changed"; projectId: string; action: "created" | "updated" | "deleted" | "used" }
@@ -47,6 +46,8 @@ export interface WorkspaceStreamStatusDto {
   instanceId: string;
   cursor: number;
   reset: boolean;
+  /** Client must refresh current projections instead of replaying pre-baseline events. */
+  snapshot?: boolean;
 }
 
 export interface ContextRolloverTriggeredEvent {

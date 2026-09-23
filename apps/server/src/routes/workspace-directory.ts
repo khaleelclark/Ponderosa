@@ -4,6 +4,7 @@ import type {
   AgentDto,
   AgentHealthDto,
   AgentHealthProjectionDto,
+  AgentRunStatus,
   ProjectDto,
   ProjectSort,
   WorkspaceAgentDirectoryItemDto,
@@ -159,6 +160,27 @@ function decodeCursor(
   }
 }
 
+/** Shared activity projection for Project and Chat directory indicators. */
+function runningAgentCountSql(scope: "active_agent.project_id = p.id" | "active_agent.conversation_id = c.id"): string {
+  return `(SELECT COUNT(*) FROM agents active_agent
+    WHERE ${scope}
+      AND active_agent.archived = 0 AND active_agent.deleted_at IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM agent_creation_operation_members creation_members
+        JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
+        WHERE creation_members.agent_id = active_agent.id
+          AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
+      )
+      AND (EXISTS (
+        SELECT 1 FROM scheduler_runs active_run
+        WHERE active_run.agent_id = active_agent.id AND active_run.status IN ('leased', 'running')
+      ) OR EXISTS (
+        SELECT 1 FROM context_rollovers active_rollover
+        WHERE active_rollover.agent_id = active_agent.id
+          AND active_rollover.state IN ('requested', 'handoff_committed', 'session_retiring', 'continuation_ready')
+      )))`;
+}
+
 function resourceSettings(
   preferences: WorkspacePreferencesDto,
   kind: WorkspaceDirectoryKind,
@@ -257,34 +279,7 @@ function baseDirectoryQuery(
             WHERE recent.project_id = p.id AND recent.archived = 0
             ORDER BY recent.updated_at DESC, recent.id ASC LIMIT 1
           ) AS recent_conversation_updated_at,
-          (
-            SELECT COUNT(*) FROM agents active_agent
-            WHERE active_agent.project_id = p.id
-              AND active_agent.archived = 0
-              AND active_agent.deleted_at IS NULL
-              AND NOT EXISTS (
-                SELECT 1
-                FROM agent_creation_operation_members creation_members
-                JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
-                WHERE creation_members.agent_id = active_agent.id
-                  AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
-              )
-              AND (
-                EXISTS (
-                  SELECT 1 FROM scheduler_runs active_run
-                  WHERE active_run.agent_id = active_agent.id
-                    AND active_run.status IN ('leased', 'running')
-                )
-                OR EXISTS (
-                  SELECT 1 FROM context_rollovers active_rollover
-                  WHERE active_rollover.agent_id = active_agent.id
-                    AND active_rollover.state IN (
-                      'requested', 'handoff_committed',
-                      'session_retiring', 'continuation_ready'
-                    )
-                )
-              )
-          ) AS running_agent_count,
+          ${runningAgentCountSql("active_agent.project_id = p.id")} AS running_agent_count,
           NULL AS next_fire_at
         FROM projects p
         ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
@@ -316,7 +311,7 @@ function baseDirectoryQuery(
           NULL AS conversation_count, NULL AS recent_conversation_id,
           NULL AS recent_conversation_title,
           NULL AS recent_conversation_updated_at,
-          NULL AS running_agent_count,
+          ${runningAgentCountSql("active_agent.conversation_id = c.id")} AS running_agent_count,
           NULL AS next_fire_at
         FROM conversations c
         JOIN projects p ON p.id = c.project_id
@@ -527,6 +522,9 @@ const WORKING_AGENT_STATUSES = new Set<AgentHealthDto["status"]>([
   "running", "waiting", "preparing", "compacting", "blocked",
   "stalled", "interrupted", "needs_decision",
 ]);
+const FINISHED_ASSIGNED_WORK_STATUSES = new Set<AgentRunStatus>([
+  "completed", "failed", "cancelled",
+]);
 
 function workspaceAgentHealth(
   context: WorkspaceDirectoryRoutesContext,
@@ -577,7 +575,8 @@ function workspaceAgentHealth(
     .map(health => health.agentId);
   const outcomes = [...byId.values()]
     .filter((health): health is AgentHealthDto & { assignedWorkOutcome: NonNullable<AgentHealthDto["assignedWorkOutcome"]> } =>
-      Boolean(health.assignedWorkOutcome))
+      health.assignedWorkOutcome !== undefined &&
+      FINISHED_ASSIGNED_WORK_STATUSES.has(health.assignedWorkOutcome.status))
     .sort((left, right) =>
       right.assignedWorkOutcome.updatedAt.localeCompare(left.assignedWorkOutcome.updatedAt) ||
       left.agentId.localeCompare(right.agentId))
@@ -914,6 +913,7 @@ export function registerWorkspaceDirectoryRoutes(
           kind: "conversation",
           project: projectSummary(project),
           conversation,
+          runningAgentCount: row.running_agent_count ?? 0,
         } satisfies WorkspaceConversationDirectoryItemDto;
       }
       if (kind === "agent") {

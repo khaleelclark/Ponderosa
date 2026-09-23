@@ -352,11 +352,11 @@ export function ProjectArtifactsView({
                     </Button>
                   }
                 >
-                  Project Chats and Agents could not be refreshed.
+                  Chats and Agents could not be refreshed.
                 </Alert>
               ) : null}
               {projectResourceState === "loading" ? (
-                <LinearProgress aria-label="Loading Project Chats and Agents" />
+                <LinearProgress aria-label="Loading Chats and Agents" />
               ) : null}
               {projectResourceState === "ready" ? <ProjectOverview
                 project={project}

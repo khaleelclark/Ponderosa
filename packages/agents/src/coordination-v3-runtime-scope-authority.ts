@@ -26,15 +26,6 @@ export class CoordinationV3RuntimeScopeAuthority {
         ? root.communication as Record<string, unknown>
         : root;
       if (typeof communication.conversationId === "string" && communication.conversationId) {
-        // Broadcasts may activate any active Agent in the Project. Direct
-        // messages remain inside the addressed Agent's owning Chat.
-        if (
-          communication.intent === "broadcast"
-          && !this.sqlite.prepare(`
-            SELECT 1 FROM agent_conversation_memberships
-            WHERE conversation_id = ? AND agent_id = ?
-          `).get(communication.conversationId, agentId)
-        ) return `agent:${agentId}`;
         return `conversation:${communication.conversationId}`;
       }
     }
@@ -135,6 +126,7 @@ export class CoordinationV3RuntimeScopeAuthority {
 
     const audienceAgentIds = new Set(this.communicationAudienceAgentIds(audience));
     const identityAgentIds = new Set(audienceAgentIds);
+    for (const activation of input.activations) identityAgentIds.add(activation.agentId);
     if (sender.kind === "agent") {
       identityAgentIds.add(sender.agentId);
     }
@@ -221,11 +213,7 @@ export class CoordinationV3RuntimeScopeAuthority {
           WHERE conversation_id = ? AND agent_id = ?
         `).get(conversationId, agentId)
       ) {
-        const projectScopedWake = input.intent === "broadcast"
-          && input.activations.some((activation) =>
-            activation.agentId === agentId
-            && activation.scopeKey === `agent:${agentId}`);
-        if (!projectScopedWake) return false;
+        return false;
       }
     }
     for (const conversationId of conversationIds) {
@@ -249,8 +237,8 @@ export class CoordinationV3RuntimeScopeAuthority {
           ? activation.scopeKey !== expectedConversationScope
             && !(
               (
-                input.intent === "broadcast"
-                || (!requireCurrentAuthorization && input.intent === "user_dm")
+                !requireCurrentAuthorization
+                && (input.intent === "broadcast" || input.intent === "user_dm")
               )
               && activation.scopeKey === expectedAgentScope
             )

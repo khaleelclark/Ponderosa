@@ -1,4 +1,5 @@
 import type { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
+import type { ReadinessDto } from "@ponderosa/core";
 import type {
   ActiveRun,
   AgentRuntimeAuthority,
@@ -7,8 +8,11 @@ import type {
 } from "./app-contracts.js";
 import type { BrowserSessionManager } from "./browser-session-manager.js";
 import type { ProviderUsageCache } from "./provider-usage-cache.js";
+import { browserResidueCleanupBlockers, browserResidueCleanupStatus } from "./browser-session-residue.js";
 
 interface DeploymentControlContext {
+  dataDir: string;
+  startDrained?: boolean;
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   activeRuns: Map<string, ActiveRun>;
@@ -33,6 +37,7 @@ export function createDeploymentControl(
 ) {
   const {
     store,
+    dataDir,
     coordinationV3,
     activeRuns,
     runtimeAuthorities,
@@ -45,7 +50,7 @@ export function createDeploymentControl(
     pendingRuntimeAuthorityCount,
     teardownPersistentRuntimeInBackground,
   } = context;
-  let deploymentDraining = false;
+  let deploymentDraining = context.startDrained ?? false;
   let shutdownPrepared = false;
   app.prepareForShutdown = (): void => {
     if (shutdownPrepared) return;
@@ -61,7 +66,7 @@ export function createDeploymentControl(
     }
     app.server.closeIdleConnections();
   };
-  const snapshot = () => {
+  const snapshot = (): ReadinessDto["deploymentDrain"] => {
     const schedulerRuns = coordinationV3.activeRunCount();
     const localRuns = activeRuns.size;
     const authorities = [...runtimeAuthorities.values()];
@@ -73,7 +78,7 @@ export function createDeploymentControl(
     const runtimeFailures = authorities.reduce((total, authority) => total +
       Number(Boolean(authority.opening?.lastError)) + Number(Boolean(authority.closing?.lastError)) +
       [...authority.oneShots.values()].filter((state) => Boolean(state.lastError)).length, 0);
-    const browser = [browserSessions.authorityStatus(), projectBrowserSessions.authorityStatus()];
+    const browser = [browserSessions.authorityStatus(), projectBrowserSessions.authorityStatus(deploymentDraining)];
     const browserAuthorities = browser.reduce((total, status) =>
       total + status.openings + status.active + status.pendingCleanup, 0);
     const browserCleanupOperations = browser.reduce((total, status) => total + status.pendingCleanup, 0);
@@ -81,13 +86,48 @@ export function createDeploymentControl(
     const projectCleanup = store.listPendingProjectDeletions();
     const committedProjectCleanup = store.listPendingProjectDeletionReceipts();
     const agentCleanup = store.listPendingAgentDeletionReceipts();
-    const pendingCleanupOperations = runtimeCleanupOperations + browserCleanupOperations +
+    const browserResidue = browserResidueCleanupStatus(dataDir);
+    const pendingCleanupOperations = runtimeCleanupOperations + browserCleanupOperations + browserResidue.pending +
       projectCleanup.length + committedProjectCleanup.length + agentCleanup.length;
-    const retainedTeardownFailures = runtimeFailures + browserFailures +
+    const retainedTeardownFailures = runtimeFailures + browserFailures + browserResidue.failed +
       projectCleanup.filter((entry) => Boolean(entry.lastError)).length +
       committedProjectCleanup.filter((entry) => Boolean(entry.lastError)).length +
       agentCleanup.filter((entry) => Boolean(entry.lastError)).length;
     const activeRunsCount = Math.max(schedulerRuns, localRuns);
+    const blockers: ReadinessDto["deploymentDrain"]["blockers"] = [];
+    if (schedulerRuns > 0) blockers.push({
+      kind: "run",
+      reason: `${schedulerRuns} active scheduler Run lease(s); ${localRuns} represented by this process`,
+      status: "scheduler",
+    });
+    for (const [agentId, run] of activeRuns) blockers.push({
+      kind: "run",
+      reason: "active local Run",
+      agentId,
+      runId: run.runId,
+      id: run.executionId,
+      status: run.ownershipState,
+    });
+    for (const [agentId, authority] of runtimeAuthorities) {
+      const reasons = [
+        authority.opening ? "provider opening" : undefined,
+        authority.closing ? `provider cleanup${authority.closing.lastError ? ` failed: ${authority.closing.lastError}` : " pending"}` : undefined,
+        authority.oneShots.size ? `${authority.oneShots.size} one-shot provider cleanup(s)` : undefined,
+      ].filter((reason): reason is string => Boolean(reason));
+      if (reasons.length > 0) blockers.push({ kind: "provider", reason: reasons.join("; "), agentId });
+    }
+    if (providerUsage.pendingCount() > 0) blockers.push({
+      kind: "provider",
+      reason: `${providerUsage.pendingCount()} provider usage request(s) pending`,
+    });
+    blockers.push(
+      ...browserSessions.authorityBlockers("run_browser"),
+      ...projectBrowserSessions.authorityBlockers("project_browser", deploymentDraining),
+      ...browserResidueCleanupBlockers(dataDir).map((reason) => ({ kind: "browser_residue" as const, reason })),
+      ...projectCleanup.map((entry) => ({ kind: "project_cleanup" as const, reason: entry.lastError ? `cleanup failed: ${entry.lastError}` : "cleanup pending", projectId: entry.projectId })),
+      ...committedProjectCleanup.map((entry) => ({ kind: "project_cleanup" as const, reason: entry.lastError ? `cleanup failed: ${entry.lastError}` : "cleanup receipt pending", projectId: entry.projectId })),
+      ...agentCleanup.map((entry) => ({ kind: "agent_cleanup" as const, reason: entry.lastError ? `cleanup failed: ${entry.lastError}` : "cleanup receipt pending", projectId: entry.projectId, id: entry.id })),
+    );
     return {
       state: deploymentDraining ? "draining" as const : "accepting" as const,
       readyForRestart: deploymentDraining && activeRunsCount === 0 && providerAuthorities === 0 &&
@@ -99,6 +139,7 @@ export function createDeploymentControl(
       browserAuthorities,
       pendingCleanupOperations,
       retainedTeardownFailures,
+      blockers: blockers.slice(0, 50),
     };
   };
   const drainIdleAuthorities = (): void => {

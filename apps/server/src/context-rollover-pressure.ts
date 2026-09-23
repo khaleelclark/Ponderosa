@@ -27,3 +27,12 @@ export function evaluateContextRolloverPressure(
     lowWaterMark: Math.max(1, Math.floor(threshold * 0.6)),
   };
 }
+
+/** A pending handoff already owns this pressure cycle. Its next Run can report
+ * higher usage without freezing a second, conflicting canonical boundary. */
+export function shouldRequestAutomaticContextRollover(
+  pressure: { shouldRequest: boolean },
+  activeRollover: object | undefined,
+): boolean {
+  return pressure.shouldRequest && activeRollover === undefined;
+}

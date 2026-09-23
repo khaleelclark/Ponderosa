@@ -810,7 +810,7 @@ function $appendCanonicalContent(
 function $resetCanonicalDocument(
   text: string,
   descriptors: readonly ComposerMentionDescriptor[],
-  selection?: ComposerSelectionOffsets,
+  selection?: ComposerSelectionOffsets | null,
   structuralDestination?: Omit<ComposerMentionDescriptor, "start" | "end">,
 ): void {
   const root = $getRoot();
@@ -824,6 +824,10 @@ function $resetCanonicalDocument(
     }));
   }
   paragraph.append(...$appendCanonicalContent(text, descriptors));
+  if (selection === null) {
+    $setSelection(null);
+    return;
+  }
   const next = selection ?? { start: text.length, end: text.length };
   $setSelectionOffsets(
     Math.min(next.start, text.length),
@@ -1335,10 +1339,13 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       throw error;
     },
     editorState: () => {
+      const navigationShouldNotFocusComposer = window.matchMedia(
+        "(max-width: 899.95px), (pointer: coarse)",
+      ).matches;
       $resetCanonicalDocument(
         initialTextRef.current,
         initialDescriptorsRef.current,
-        undefined,
+        navigationShouldNotFocusComposer ? null : undefined,
         initialStructuralDestinationRef.current,
       );
     },

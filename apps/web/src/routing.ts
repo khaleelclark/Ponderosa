@@ -1,14 +1,10 @@
 // Lightweight URL-driven navigation (no router dependency). Durable URLs let a
 // refresh or browser back/forward restore the exact project + selection:
 //
-//   / (Home overview)
+//   / (restore last workspace, otherwise Home)
 //   /messages (messages to and from the operator)
-//   /chats (All Chats)
 //   /projects/:projectId/chats/:conversationId
-//   /projects/:projectId/agents
 //   /projects/:projectId/agents/:agentId
-//   /projects
-//   /agents
 //
 // Lightweight navigation preferences, such as the last selected project, are
 // persisted locally; all real data still comes from the server.
@@ -76,12 +72,11 @@ export type Route =
       agentId?: string;
       surface?: "workspace";
     }
-  | { kind: "projects" }
   | { kind: "allChat" }
-  | { kind: "allChats"; filterProjectId?: string }
-  | { kind: "allAgents"; filterProjectId?: string }
-  | { kind: "allTriggers" }
-  | { kind: "settings"; section?: "general" | "providers" | "notifications" | "activity" }
+  | { kind: "manageChats" }
+  | { kind: "manageAgents" }
+  | { kind: "manageAutomations" }
+  | { kind: "settings"; section?: "profile" | "general" | "providers" | "notifications" | "activity" }
   | { kind: "profile" }
   | { kind: "usage"; projectId?: string }
   | { kind: "project"; projectId: string; view?: ProjectDetailView; focusArtifactId?: string }
@@ -89,9 +84,8 @@ export type Route =
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string; conversationId?: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; view?: ConversationDetailView; urlDriven?: boolean }
-  | { kind: "agents"; projectId: string }
   | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; triggerId?: string }
-  | { kind: "automation"; projectId: string; triggerId?: string }
+  | { kind: "automation"; projectId: string; triggerId: string }
   | { kind: "review"; projectId: string; agentId: string; path?: string };
 
 const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
@@ -104,7 +98,7 @@ function decodeRouteSegment(value: string): string | undefined {
   }
 }
 
-export function parseRoute(pathname: string, search = ""): Route {
+function parseLegacyRoute(pathname: string, search = ""): Route {
   const [cleanPathname, inlineSearch = ""] = pathname.split("?", 2);
   const query = new URLSearchParams(search || (inlineSearch ? `?${inlineSearch}` : ""));
   const focusMessageId = query.get("message")?.trim() || undefined;
@@ -129,7 +123,8 @@ export function parseRoute(pathname: string, search = ""): Route {
   const projectView = isProjectDetailView(requestedAgentView) ? requestedAgentView : undefined;
   const focusArtifactId = query.get("artifact")?.trim() || undefined;
   const parts = cleanPathname!.split("/").filter(Boolean);
-  if (parts.length === 0) return { kind: "home" };
+  if (parts[0] === "create" && parts[1] === "project") return {kind:"create",resource:"chat",surface:"workspace"};
+  if (parts.length === 0 || parts[0] === "home") return { kind: "home" };
   if (
     parts[0] === "create" &&
     ["project", "chat", "agent", "trigger"].includes(parts[1] ?? "")
@@ -155,13 +150,21 @@ export function parseRoute(pathname: string, search = ""): Route {
     };
   }
   if (parts.length === 1 && parts[0] === "messages") return { kind: "allChat" };
-  if (parts.length === 1 && parts[0] === "projects") return { kind: "projects" };
-  if (parts.length === 1 && parts[0] === "chats") return { kind: "allChats", ...(query.get("project") ? { filterProjectId: query.get("project")! } : {}) };
-  if (parts.length === 1 && parts[0] === "agents") return { kind: "allAgents", ...(query.get("project") ? { filterProjectId: query.get("project")! } : {}) };
-  if (parts.length === 1 && parts[0] === "triggers") return { kind: "allTriggers" };
+  if (parts.length === 2 && parts[0] === "manage" && parts[1] === "chats") {
+    return { kind: "manageChats" };
+  }
+  if (parts.length === 2 && parts[0] === "manage" && parts[1] === "agents") {
+    return { kind: "manageAgents" };
+  }
+  if (parts.length === 2 && parts[0] === "manage" && parts[1] === "automations") {
+    return { kind: "manageAutomations" };
+  }
+  if (parts.length === 1 && ["projects", "chats", "agents", "triggers"].includes(parts[0]!)) {
+    return { kind: "home" };
+  }
   if (parts[0] === "settings") {
     const section = parts[1];
-    return { kind: "settings", ...(["general", "providers", "notifications", "activity"].includes(section ?? "") ? { section: section as "general" | "providers" | "notifications" | "activity" } : {}) };
+    return { kind: "settings", ...(["profile", "general", "providers", "notifications", "activity"].includes(section ?? "") ? { section: section as "profile" | "general" | "providers" | "notifications" | "activity" } : {}) };
   }
   if (parts.length === 1 && parts[0] === "profile") return { kind: "profile" };
   if (parts.length === 1 && parts[0] === "usage") return { kind: "usage", ...(query.get("project") ? { projectId: query.get("project")! } : {}) };
@@ -197,11 +200,9 @@ export function parseRoute(pathname: string, search = ""): Route {
       ? decodeRouteSegment(parts[3])
       : undefined;
     if (parts[3] && !triggerId) return { kind: "home" };
-    return {
-      kind: "automation",
-      projectId,
-      ...(triggerId ? { triggerId } : {}),
-    };
+    return triggerId
+      ? { kind: "automation", projectId, triggerId }
+      : { kind: "home" };
   }
   if (parts[2] === "chats" && parts[3]) {
     const conversationId = decodeRouteSegment(parts[3]);
@@ -235,9 +236,7 @@ export function parseRoute(pathname: string, search = ""): Route {
       ? { kind: "review", projectId, agentId, ...(reviewPath ? { path: reviewPath } : {}) }
       : { kind: "home" };
   }
-  if (parts[2] === "agents") {
-    return { kind: "agents", projectId };
-  }
+  if (parts[2] === "agents") return { kind: "home" };
   return {
     kind: "project",
     projectId,
@@ -246,19 +245,49 @@ export function parseRoute(pathname: string, search = ""): Route {
   };
 }
 
+export function parseRoute(pathname: string, search = ""): Route {
+  const route = parseLegacyRoute(pathname, search);
+  return route.kind === "project" ? { kind: "home" } : route;
+}
+
 export function parseRouteLocation(
   pathname: string,
   search = "",
-): { route: Route; replacement?: "/" } {
+): { route: Route; replacement?: string } {
   const route = parseRoute(pathname, search);
   const cleanPathname = pathname.split("?", 1)[0] ?? pathname;
-  return decodeRouteSegment(cleanPathname)
-    ? { route }
-    : { route, replacement: "/" };
+  if (!decodeRouteSegment(cleanPathname)) return { route, replacement: "/" };
+  if (
+    ["/projects", "/chats", "/agents", "/triggers"].includes(cleanPathname) ||
+    /^\/projects\/[^/]+\/?$/u.test(cleanPathname) ||
+    /^\/projects\/[^/]+\/(?:agents|automations)\/?$/u.test(cleanPathname)
+  ) return { route, replacement: "/home" };
+  if (route.kind === "home" && cleanPathname !== "/" && cleanPathname !== "/home") {
+    return { route, replacement: "/home" };
+  }
+  return { route };
 }
 
 export function routeProjectId(route: Route): string | undefined {
   return "projectId" in route ? route.projectId : undefined;
+}
+
+export const LAST_WORKSPACE_PATH_KEY = "ponderosa.lastWorkspacePath.v1";
+export function resolveStartupLocation(pathname: string, search = "", remembered?: string | null): { route: Route; replacement?: string } {
+  if (pathname !== "/" || search) return parseRouteLocation(pathname, search);
+  if (remembered?.startsWith("/") && !remembered.startsWith("//") && remembered.length < 4096) {
+    const url = new URL(remembered, "https://ponderosa.invalid");
+    const route = parseRoute(url.pathname, url.search);
+    if (route.kind !== "home" && route.kind !== "create" && route.kind !== "browser") return { route, replacement: routeToPath(route) };
+  }
+  const route: Route = { kind: "home" };
+  return { route, replacement: routeToPath(route) };
+}
+
+function initialWorkspaceLocation(): { route: Route; replacement?: string } {
+  let remembered: string | null = null;
+  try { remembered = window.localStorage.getItem(LAST_WORKSPACE_PATH_KEY); } catch { /* Private mode still supports navigation. */ }
+  return resolveStartupLocation(window.location.pathname, window.location.search, remembered);
 }
 
 export function saveLastProjectId(projectId: string): void {
@@ -273,8 +302,7 @@ export function useRoute(): {
   route: Route;
   navigate(route: Route, options?: { replace?: boolean }): void;
 } {
-  const [route, setRoute] = useState<Route>(() =>
-    parseRoute(window.location.pathname, window.location.search));
+  const [route, setRoute] = useState<Route>(() => initialWorkspaceLocation().route);
 
   useEffect(() => {
     const onPop = () => {
@@ -287,12 +315,20 @@ export function useRoute(): {
       }
       setRoute(next.route);
     };
-    onPop();
+    const initial = initialWorkspaceLocation();
+    if (initial.replacement) window.history.replaceState(null, "", initial.replacement);
+    setRoute(initial.route);
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
+  useEffect(() => {
+    if (route.kind === "create" || route.kind === "browser" || route.kind === "home") return;
+    try { window.localStorage.setItem(LAST_WORKSPACE_PATH_KEY, routeToPath(route)); } catch { /* Storage is optional. */ }
+  }, [route]);
+
   const navigate = useCallback((next: Route, options?: { replace?: boolean }) => {
+    if (next.kind === "create" && next.resource === "project") next = {kind:"create",resource:"chat",surface:"workspace"};
     const path = routeToPath(next);
     if (path === `${window.location.pathname}${window.location.search}`) {
       setRoute(next);

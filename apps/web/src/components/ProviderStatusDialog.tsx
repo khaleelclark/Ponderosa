@@ -28,12 +28,44 @@ export function ProviderStatusDialog({
   return <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
     <DialogTitle>AI provider status</DialogTitle>
     <DialogContent>
+      <ProviderStatusDetails
+        engines={engines}
+        networkSecurity={networkSecurity}
+        networkSecurityLoading={networkSecurityLoading}
+        networkSecurityError={networkSecurityError}
+        recheckingEngineId={recheckingEngineId}
+        error={error}
+        onTestAccess={onTestAccess}
+      />
+    </DialogContent>
+    <DialogActions><Button onClick={onOpenSettings}>Provider Settings</Button><Button onClick={onClose}>Close</Button></DialogActions>
+  </Dialog>;
+}
+
+export function ProviderStatusDetails({
+  engines,
+  networkSecurity,
+  networkSecurityLoading = false,
+  networkSecurityError,
+  recheckingEngineId,
+  error,
+  onTestAccess,
+}: {
+  engines: EngineDto[];
+  networkSecurity?: NetworkSecurityPostureDto;
+  networkSecurityLoading?: boolean;
+  networkSecurityError?: string;
+  recheckingEngineId?: string;
+  error?: string;
+  onTestAccess(engine: EngineDto): void;
+}): JSX.Element {
+  return (
       <Stack spacing={1.5} sx={{ pt: 1 }}>
         <Box>
           <Typography variant="subtitle1" fontWeight={750}>Network access</Typography>
-          {networkSecurity ? <Alert severity={networkSecurity.mode === "trusted_tailnet" ? "warning" : "success"} sx={{ mt: 1 }}>
+          {networkSecurity ? <Alert severity={networkSecurity.warning ? "warning" : "success"} sx={{ mt: 1 }}>
             <Typography variant="body2" fontWeight={700}>
-              {networkSecurity.mode === "trusted_tailnet" ? "Trusted Tailnet" : networkSecurity.mode === "authenticated" ? "Authenticated Listener" : "Loopback Only"}
+              {networkSecurity.mode === "trusted_tailnet" ? "Trusted Tailnet" : networkSecurity.mode === "reverse_proxy" ? "Reverse Proxy" : networkSecurity.mode === "authenticated" ? "Authenticated Listener" : "Loopback Only"}
             </Typography>
             <Typography variant="body2">{networkSecurity.detail} Bound to {networkSecurity.bindHost}.</Typography>
             {networkSecurity.warning ? <Typography variant="body2" fontWeight={700} sx={{ mt: 0.5 }}>{networkSecurity.warning}</Typography> : null}
@@ -62,7 +94,5 @@ export function ProviderStatusDialog({
         })}
         {error ? <Alert severity="error">{error}</Alert> : null}
       </Stack>
-    </DialogContent>
-    <DialogActions><Button onClick={onOpenSettings}>Provider Settings</Button><Button onClick={onClose}>Close</Button></DialogActions>
-  </Dialog>;
+  );
 }

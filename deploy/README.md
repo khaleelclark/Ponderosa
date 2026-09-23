@@ -11,7 +11,15 @@ sudo systemctl enable --now ponderosa
 ```
 
 Before installing the unit, update its `User`, `WorkingDirectory`, data directory,
-and `PATH` for the host.
+bundled Node path, and `PATH` for the host. Write the exact release identity before
+starting it; the unit intentionally does not fall back to the host's system Node:
+
+```sh
+install -d -m 700 ~/.config/ponderosa
+printf 'PONDEROSA_BUILD_VERSION=%s\nPONDEROSA_BUILD_SHA=%s\n' "$release" "$commit" \
+  >~/.config/ponderosa/release.env.next
+mv ~/.config/ponderosa/release.env.next ~/.config/ponderosa/release.env
+```
 
 ## Choose the network boundary explicitly
 
@@ -41,6 +49,85 @@ unless one of these protections is configured:
 `GET /api/ready` reports the active `networkSecurity` posture without exposing
 credentials. The provider-status dialog shows the same posture and highlights
 the trusted-tailnet operator-access warning.
+
+When TLS terminates at a reverse proxy, set every browser-facing origin
+explicitly so Host and Origin validation cannot be widened by an incoming Host
+header:
+
+```ini
+Environment=PONDEROSA_OPERATOR_ORIGINS=https://ponderosa.example.com
+```
+
+The proxy must authenticate the operator and inject the backend bearer token.
+Keep the backend loopback-only and deny direct access to it. `/api/health` and
+the redacted `/api/ready` are the only unauthenticated probes; detailed readiness
+is available at authenticated `/api/diagnostics/ready`.
+
+For an identity-aware front proxy that **cannot** inject the bearer itself,
+Ponderosa includes an optional, local Unix-socket bridge at
+`apps/server/dist/operator-auth-proxy.js`. This does not add an app sign-in or
+send a credential to the browser. The front proxy must overwrite a verified
+identity header and connect only to the bridge's mode-0600 socket; the bridge
+checks an exact identity allowlist, replaces any browser-supplied Authorization
+header with the backend bearer, and forwards to Ponderosa on loopback. The
+socket directory must be private to the service user. Do not expose the bridge
+on TCP or use a front proxy that merely preserves caller-supplied identity
+headers. This pattern is optional: a proxy that authenticates and injects the
+bearer itself needs no bridge.
+
+For example, with Tailscale Serve on Linux, use its documented identity header
+and Unix-socket target. `tailscale serve` removes caller-supplied identity
+headers before setting its own. Keep the exact Tailscale login allowlisted in
+both the bridge and Ponderosa, and apply matching tailnet grants. Set the
+Ponderosa backend to `127.0.0.1` with a high-entropy
+`PONDEROSA_AUTH_TOKEN`, `PONDEROSA_TRUSTED_REVERSE_PROXY=true`, the exact
+`PONDEROSA_OPERATOR_ORIGINS`, and `PONDEROSA_OPERATOR_IDENTITIES` as described
+above. The bridge may load the same restricted environment file as Ponderosa
+for `PONDEROSA_AUTH_TOKEN` and `PONDEROSA_OPERATOR_IDENTITIES`; set only:
+
+```ini
+PONDEROSA_PROXY_BACKEND_PORT=8787
+PONDEROSA_PROXY_PUBLIC_ORIGIN=https://ponderosa.example.ts.net
+PONDEROSA_PROXY_IDENTITY_HEADER=Tailscale-User-Login
+```
+
+Alternatively, supply `PONDEROSA_PROXY_BACKEND_TOKEN` and
+`PONDEROSA_PROXY_ALLOWED_IDENTITIES` from a separate mode-0600 service file.
+
+Run the bridge with a private socket path (the example
+`deploy/ponderosa-operator-auth-proxy.service` uses
+`/run/ponderosa-operator-proxy/operator.sock`), then point only the selected
+Serve HTTPS port at `unix:/run/ponderosa-operator-proxy/operator.sock`. The
+browser's normal bookmark now works after cookie expiration or clearing because
+every verified request receives backend authorization server-side. Local
+launcher installations need no bridge. Other self-hosted identity proxies can
+use their own verified header name; with bearer injection and exact origin
+configured, Ponderosa does not require Tailscale.
+The bridge restores the configured public Host before forwarding: some Unix
+socket front proxies change Host to `localhost`, which otherwise makes
+browser-originated writes fail Ponderosa's Host/Origin check. If the front
+proxy supplies `X-Forwarded-Host`, it must match the configured public origin.
+
+To require a second exact identity check inside Ponderosa, configure the
+trusted reverse-proxy identity allowlist as well as the backend bearer:
+
+```ini
+Environment=PONDEROSA_TRUSTED_REVERSE_PROXY=true
+Environment=PONDEROSA_OPERATOR_IDENTITIES=operator@example.com
+```
+
+The proxy must overwrite (not append or preserve) `Tailscale-User-Login`, and
+the configured identities are compared exactly after case normalization.
+Current production configuration requires a high-entropy
+`PONDEROSA_AUTH_TOKEN` alongside this identity declaration; the identity header
+alone is never sufficient. Readiness reports `reverse_proxy` rather than
+incorrectly claiming the effective deployment is loopback-only. Apply the least-privilege grant in
+`deploy/tailscale-grants.example.hujson` so only the named operator can reach
+the published port.
+
+Ponderosa is a **single-operator system**. A proxy, VPN, or shared bearer token
+admits the caller as that one operator; it does not create tenant or Project
+isolation. Do not grant mutually untrusted users access to the same deployment.
 
 ## Required Linux procfs capability
 
@@ -94,6 +181,90 @@ curl -sS -X POST -H "Authorization: Bearer $PONDEROSA_TOKEN" \
 ```
 
 Do not leave a healthy old daemon in the drained state after an aborted deploy.
+
+## Take and rehearse a pre-migration backup
+
+After the deployment drain reaches `readyForRestart: true`, stop the application
+and create an offline, checksummed snapshot before starting a revision that may
+run schema migrations:
+
+```sh
+systemctl --user stop ponderosa.service
+pnpm --filter @ponderosa/agents data -- backup \
+  --data-dir "$PONDEROSA_DATA_DIR" \
+  --output "$HOME/.local/state/ponderosa-backups/$PONDEROSA_BUILD_SHA" \
+  --external-projects copy
+```
+
+The command acquires the same kernel-held data-directory lease as the daemon,
+so it refuses to overlap a live writer. It copies SQLite, WAL state, JSONL,
+artifacts, host secrets, persistent application state, and every configured
+external Project working directory; it fsyncs the snapshot and records file
+sizes and SHA-256 checksums. Transient browser sessions are not backed up. The
+CLI requires an explicit `copy` or `exclude` policy so an incomplete snapshot
+cannot be mistaken for complete coverage.
+
+Rehearse restore to a new, nonexistent path and verify the restored service
+before treating a backup as usable:
+
+```sh
+pnpm --filter @ponderosa/agents data -- restore \
+  --backup "$HOME/.local/state/ponderosa-backups/$PONDEROSA_BUILD_SHA" \
+  --data-dir "$HOME/.ponderosa-restore-rehearsal"
+```
+
+Restore never overlays an existing data directory and rejects changed or
+escaping files. Do not start an older binary against a data directory after a
+newer binary has migrated it; restore the pre-migration snapshot to a new path,
+switch configuration atomically, and retain the failed directory for diagnosis.
+Encrypt backup storage, restrict it to the operator, and set retention/RPO/RTO
+according to the deployment. For the single-host private deployment, the
+recommended minimum is one snapshot before every migration and a quarterly
+restore rehearsal.
+
+For disaster recovery after an external Project root is lost, add
+`--restore-external-projects`. Every original destination must be an absent
+absolute path; restore never overlays a surviving working directory. Routine
+restore rehearsals should omit the flag and verify the included external
+checksums without replacing live repositories.
+
+Qualification sandboxes should start with `PONDEROSA_START_DRAINED=1`. Resume
+leasing explicitly only for a live Run qualification, drain again immediately
+afterward, and stop the sandbox when review is complete. This prevents an old
+PR sandbox from silently leasing durable work while it remains reachable.
+
+### Pine development service
+
+Pine's development channel uses the checked-in user unit so a disconnected SSH
+scope cannot orphan the daemon:
+
+```sh
+mkdir -p ~/.config/systemd/user ~/.config/ponderosa
+cp deploy/ponderosa-browser-dev.service ~/.config/systemd/user/ponderosa-browser-dev.service
+cp deploy/ponderosa-dev.service ~/.config/systemd/user/ponderosa-dev.service
+printf 'PONDEROSA_BUILD_VERSION=%s\nPONDEROSA_BUILD_SHA=%s\n' "$release" "$commit" \
+  >~/.config/ponderosa/dev.env.next
+mv ~/.config/ponderosa/dev.env.next ~/.config/ponderosa/dev.env
+systemctl --user daemon-reload
+systemctl --user enable --now ponderosa-browser-dev.service ponderosa-dev.service
+```
+
+The deploy operation must still drain the currently running revision and wait
+for `deploymentDrain.readyForRestart`. Update the `current` symlink and the
+environment file atomically, restart the user unit, then verify `/api/ready`
+reports the exact commit. Do not start an additional SSH-owned daemon beside
+the unit. If startup verification fails, restore both the previous symlink and
+environment file before restarting the unit.
+
+The browser supervisor is a separate user unit so a shared Project browser can
+survive an application restart. The application waits for its owner-only Unix
+socket before starting. Do not restart the browser supervisor during an ordinary
+application-only deployment. When a release changes the browser-service protocol
+or implementation, first explicitly close all shared Project browsers, verify
+the drain reports zero browser authorities, update `current`, restart
+`ponderosa-browser-dev.service`, and only then restart `ponderosa-dev.service`.
+This ordering prevents a new application from talking to a stale broker without
+silently discarding open tabs or unsaved forms.
 
 ### Initial upgrade from a daemon without deployment drain
 

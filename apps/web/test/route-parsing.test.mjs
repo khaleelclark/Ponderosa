@@ -6,7 +6,19 @@ import {
   routeToPath,
   routeWaitsForWorkspacePreferences,
 } from "../src/routeRegistry.js";
-import { parseRoute, parseRouteLocation } from "../src/routing.js";
+import { parseRoute, parseRouteLocation, resolveStartupLocation } from "../src/routing.js";
+
+test("fresh launch opens Home, returning launch restores workspace, explicit Home wins", () => {
+  const fresh = {kind:"home"};
+  assert.deepEqual(resolveStartupLocation("/"), {route:fresh,replacement:routeToPath(fresh)});
+  assert.equal(resolveStartupLocation("/", "", "/agents").route.kind,"home");
+  assert.equal(resolveStartupLocation("/chats", "", "/agents").route.kind,"home");
+  assert.equal(resolveStartupLocation("/projects/p/chats/c", "", "/agents").route.kind,"conversation");
+  assert.equal(resolveStartupLocation("/", "", "/create/chat").route.kind,"home");
+  assert.equal(resolveStartupLocation("/", "", "//evil.example").route.kind,"home");
+  assert.equal(resolveStartupLocation("/home", "", "/agents").route.kind,"home");
+  assert.equal(routeToPath({kind:"home"}),"/home");
+});
 
 test("malformed encoded route segments fall back without throwing", () => {
   for (const path of [
@@ -43,8 +55,28 @@ test("initial and popstate-equivalent malformed locations request a stable URL",
     });
   }
   assert.deepEqual(parseRouteLocation("/projects/caf%C3%A9"), {
-    route: { kind: "project", projectId: "café" },
+    route: { kind: "home" }, replacement: "/home",
   });
+});
+
+test("retired collection pages redirect to Home without breaking owned resource links", () => {
+  for (const path of ["/projects", "/chats", "/agents", "/triggers", "/projects/p", "/projects/p?view=settings", "/projects/p/agents", "/projects/p/automations"]) {
+    const url=new URL(path,"https://example.test");
+    assert.deepEqual(parseRouteLocation(url.pathname,url.search),{route:{kind:"home"},replacement:"/home"});
+  }
+  assert.equal(routeToPath({kind:"project",projectId:"p",view:"settings"}),"/projects/p?view=settings");
+  assert.deepEqual(parseRoute("/projects/p/files/view","?path=docs%2Freport.txt"),{kind:"workspaceFile",projectId:"p",path:"docs/report.txt"});
+  assert.equal(resolveStartupLocation("/","","/projects/p").replacement,"/home");
+});
+
+test("bulk-management workspaces retain durable routes", () => {
+  for (const route of [
+    { kind: "manageChats" },
+    { kind: "manageAgents" },
+    { kind: "manageAutomations" },
+  ]) {
+    assert.deepEqual(parseRoute(routeToPath(route)), route);
+  }
 });
 
 test("nested Project routes expose every resource that must match the Project", () => {
@@ -77,4 +109,13 @@ test("editable preference routes cannot mount before canonical preferences hydra
   assert.equal(routeWaitsForWorkspacePreferences(settings, false), true);
   assert.equal(routeWaitsForWorkspacePreferences(settings, true), false);
   assert.equal(routeWaitsForWorkspacePreferences({ kind: "home" }, false), false);
+});
+
+test("operator profile lives in Settings while legacy profile links remain compatible", () => {
+  assert.deepEqual(parseRoute("/settings/profile"), {
+    kind: "settings",
+    section: "profile",
+  });
+  assert.equal(routeToPath({ kind: "profile" }), "/settings/profile");
+  assert.deepEqual(parseRoute("/profile"), { kind: "profile" });
 });

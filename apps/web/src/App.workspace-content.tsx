@@ -1,4 +1,5 @@
-import { Alert, Box, Button, LinearProgress, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button } from "@mui/material";
+import { LoadingState } from "./components/LoadingState";
 import type {
   ConversationDto,
   EngineDto,
@@ -7,7 +8,6 @@ import type {
   WorkspaceNotificationPageDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import { HomeView } from "./components/HomeView";
 import type { ProjectBrowserRequest } from "./components/ProjectBrowserContext";
 import { RecoverableLazyRoute } from "./components/RecoverableLazyRoute";
 import type { Route } from "./routing";
@@ -24,13 +24,12 @@ type RemovableWorkspaceResourceRoute = Extract<
 >;
 
 const loadAllChatView = () => import("./components/AllChatView").then(module => ({ default: module.AllChatView }));
+const loadManageChatsWorkspace = () => import("./components/ManageChatsWorkspace").then(module => ({ default: module.ManageChatsWorkspace }));
+const loadManageAgentsWorkspace = () => import("./components/WorkspaceResourceViews").then(module => ({ default: module.AllAgentsWorkspace }));
+const loadManageAutomationsWorkspace = () => import("./components/ManageAutomationsWorkspace").then(module => ({ default: module.ManageAutomationsWorkspace }));
+const loadHomeView = () => import("./components/HomeView").then(module => ({ default: module.HomeView }));
 const loadCreateWorkspace = () => import("./components/CreateWorkspace").then(module => ({ default: module.CreateWorkspace }));
 const loadProjectShell = () => import("./components/ProjectShell").then(module => ({ default: module.ProjectShell }));
-const loadAllProjectsView = () => import("./components/WorkspaceOverview").then(module => ({ default: module.AllProjectsView }));
-const workspaceResourceViews = () => import("./components/WorkspaceResourceViews");
-const loadAllAgentsWorkspace = () => workspaceResourceViews().then(module => ({ default: module.AllAgentsWorkspace }));
-const loadAllChatsWorkspace = () => workspaceResourceViews().then(module => ({ default: module.AllChatsWorkspace }));
-const loadAllTriggersWorkspace = () => workspaceResourceViews().then(module => ({ default: module.AllTriggersWorkspace }));
 const workspaceSettingsViews = () => import("./components/WorkspaceSettingsView");
 const loadWorkspaceSettingsView = () => workspaceSettingsViews().then(module => ({ default: module.WorkspaceSettingsView }));
 const loadOperatorProfileWorkspace = () => workspaceSettingsViews().then(module => ({ default: module.OperatorProfileWorkspace }));
@@ -43,6 +42,7 @@ interface WorkspaceRouteOutletProps {
   projects: ProjectDto[];
   projectsLoaded: boolean;
   engines: EngineDto[];
+  enginesLoaded: boolean;
   notifications: WorkspaceNotificationDto[];
   notificationCounts?: Pick<WorkspaceNotificationPageDto, "openActionCount">;
   preferences: WorkspacePreferencesDto;
@@ -87,6 +87,7 @@ export function WorkspaceRouteOutlet({
   projects,
   projectsLoaded,
   engines,
+  enginesLoaded,
   notifications,
   notificationCounts,
   preferences,
@@ -100,8 +101,8 @@ export function WorkspaceRouteOutlet({
   onPreferences,
   onSavePreferences,
   onCreate,
-  onCancelCreate,
   onOpenInbox,
+  onCancelCreate,
   onProjectDeleted,
   onConversationAction,
   onOpenEngineStatus,
@@ -147,12 +148,7 @@ export function WorkspaceRouteOutlet({
           </Alert>
         </Box>
       ) : routeWaitsForWorkspacePreferences(route, preferencesLoaded) ? (
-        <Stack role="status" aria-live="polite" spacing={1} sx={{ p: 3 }}>
-          <LinearProgress />
-          <Typography color="text.secondary">
-            Loading {route.kind === "profile" ? "profile" : "settings"}…
-          </Typography>
-        </Stack>
+        <LoadingState resource={route.kind === "profile" ? "profile" : "settings"} variant="route" />
       ) : route.kind === "create" ? (
         <RecoverableLazyRoute
           key={[
@@ -167,87 +163,43 @@ export function WorkspaceRouteOutlet({
           componentProps={{ route, projects, engines, preferences, onCancel: onCancelCreate, onNavigate }}
         />
       ) : route.kind === "home" ? (
-        <Box
-          sx={{ display: "contents" }}
-        >
-          <HomeView
-            projects={projects}
-            projectsLoaded={projectsLoaded}
-            engines={engines}
-            notifications={notifications}
-            notificationCounts={notificationCounts}
-            onNavigate={onNavigate}
-            onCreateProject={() => onCreate("project")}
-            onOpenInbox={onOpenInbox}
-          />
-        </Box>
+        <RecoverableLazyRoute key="home" load={loadHomeView} componentProps={{ projects, projectsLoaded, engines, enginesLoaded, notifications, notificationCounts, onNavigate, onCreateProject: () => onCreate("chat"), onOpenInbox }} />
       ) : route.kind === "allChat" ? (
         <RecoverableLazyRoute
           key="all-chat"
           load={loadAllChatView}
           componentProps={{ onNavigate, notifications }}
         />
-      ) : route.kind === "projects" ? (
+      ) : route.kind === "manageChats" ? (
         <RecoverableLazyRoute
-          key="projects"
-          load={loadAllProjectsView}
-          componentProps={{
-            projects,
-            preferences,
-            onNavigate,
-            onCreateProject: () => onCreate("project"),
-            onProjectDeleted,
-            onPreferences,
-          }}
+          key="manage-chats"
+          load={loadManageChatsWorkspace}
+          componentProps={{ onNavigate }}
         />
-      ) : route.kind === "allAgents" ? (
+      ) : route.kind === "manageAgents" ? (
         <RecoverableLazyRoute
-          key="all-agents"
-          load={loadAllAgentsWorkspace}
+          key="manage-agents"
+          load={loadManageAgentsWorkspace}
           componentProps={{
             projects,
             engines,
-            filterProjectId: route.filterProjectId,
             preferences,
             onPreferences,
             onNavigate,
-            onCreate: (projectId, managerAgentId, conversationId) =>
-              onCreate("agent", {
-                ...(projectId ? { projectId } : {}),
-                ...(conversationId ? { conversationId } : {}),
-                ...(managerAgentId ? { managerAgentId } : {}),
-              }),
-            onAgentsDeleted: (projectId, agentIds) =>
-              agentIds.forEach(agentId =>
-                onResourceDeleted({ kind: "agent", projectId, agentId }),
-              ),
+            managementMode: true,
+            onCreate: (
+              projectId?: string,
+              managerAgentId?: string,
+              conversationId?: string,
+            ) => onCreate("agent", { projectId, managerAgentId, conversationId }),
+            onAgentsDeleted: () => undefined,
           }}
         />
-      ) : route.kind === "allChats" ? (
+      ) : route.kind === "manageAutomations" ? (
         <RecoverableLazyRoute
-          key="all-chats"
-          load={loadAllChatsWorkspace}
-          componentProps={{
-            projects,
-            filterProjectId: route.filterProjectId,
-            preferences,
-            onPreferences,
-            onNavigate,
-            onCreate: projectId => onCreate("chat", { projectId }),
-            onConversationAction,
-          }}
-        />
-      ) : route.kind === "allTriggers" ? (
-        <RecoverableLazyRoute
-          key="all-triggers"
-          load={loadAllTriggersWorkspace}
-          componentProps={{
-            projects,
-            preferences,
-            onPreferences,
-            onNavigate,
-            onCreate: () => onCreate("trigger"),
-          }}
+          key="manage-automations"
+          load={loadManageAutomationsWorkspace}
+          componentProps={{ onNavigate }}
         />
       ) : route.kind === "settings" ? (
         <RecoverableLazyRoute
@@ -313,17 +265,14 @@ export function WorkspaceRouteOutlet({
             }}
           />
         ) : projectResolution === "loading" ? (
-          <Stack role="status" aria-live="polite" spacing={1} sx={{ p: 3 }}>
-            <LinearProgress />
-            <Typography color="text.secondary">Loading Project...</Typography>
-          </Stack>
+          <LoadingState resource="Project" variant="route" />
         ) : projectResolution === "missing" ? (
           <Box sx={{ p: 3 }}>
             <Alert
               severity="warning"
               action={
-                <Button onClick={() => onNavigate({ kind: "projects" })}>
-                  View Projects
+                <Button onClick={() => onNavigate({ kind: "home" })}>
+                  Go Home
                 </Button>
               }
             >

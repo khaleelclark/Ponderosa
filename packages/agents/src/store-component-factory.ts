@@ -127,6 +127,7 @@ export interface AgentStoreComponentPorts {
 }
 
 export interface OpenAgentStoreData {
+  dataDir: string;
   db: Db;
   client: Database.Database;
   ownership: DataDirectoryOwnership;
@@ -157,17 +158,24 @@ export interface AgentStoreComponents {
 export function openAgentStoreData(dataDir: string): OpenAgentStoreData {
   mkdirSync(dataDir, { recursive: true });
   const ownership = acquireDataDirectoryOwnership(dataDir);
+  const rootedDataDir = ownership.dataDir;
   try {
-    ensureCurrentDataLayout(dataDir);
-    mkdirSync(projectsDir(dataDir), { recursive: true });
-    const deliverySequenceFile = `${dataDir}/delivery-order.jsonl`;
+    ensureCurrentDataLayout(rootedDataDir);
+    mkdirSync(projectsDir(rootedDataDir), { recursive: true });
+    const deliverySequenceFile = `${rootedDataDir}/delivery-order.jsonl`;
     const deliverySequence = readRepairableJsonl<{ sequence: number }>(
       deliverySequenceFile,
       "delivery order journal",
       true,
     ).reduce((maximum, record) => Math.max(maximum, record.sequence), 0);
-    const opened = openDb(dbPath(dataDir));
-    return { ...opened, ownership, deliverySequenceFile, deliverySequence };
+    const opened = openDb(dbPath(rootedDataDir));
+    return {
+      ...opened,
+      dataDir: rootedDataDir,
+      ownership,
+      deliverySequenceFile,
+      deliverySequence,
+    };
   } catch (error) {
     releaseDataDirectoryOwnership(ownership);
     throw error;

@@ -14,7 +14,13 @@
 //   {"type":"result","subtype":"success","is_error":false,"result":"...","usage":{...}}
 //   {"type":"rate_limit_event", ...}  (informational — ignored)
 
-import type { AgentEvent, FileChangeKind, ProviderErrorCode, TokenUsage } from "@ponderosa/core";
+import {
+  classifyToolFailure,
+  type AgentEvent,
+  type FileChangeKind,
+  type ProviderErrorCode,
+  type TokenUsage,
+} from "@ponderosa/core";
 import type { CodexMapContext } from "./events.js";
 import { claudeProviderErrorCode } from "./claude-models.js";
 
@@ -232,11 +238,16 @@ function mapUser(message: RawMessage | undefined): AgentEvent[] {
   const out: AgentEvent[] = [];
   for (const b of blocks) {
     if (b.type === "tool_result") {
+      const output = toolResultText(b.content);
+      const isError = b.is_error === true;
+      const failure = classifyToolFailure(output, isError);
+      const canonicalIsError = isError || failure !== undefined;
       out.push({
         type: "tool_result",
         id: b.tool_use_id ?? "",
-        output: toolResultText(b.content),
-        isError: b.is_error === true,
+        output,
+        ...(canonicalIsError ? { isError: true } : {}),
+        ...(failure ? { failureCategory: failure.category, retryable: failure.retryable } : {}),
       });
     }
   }

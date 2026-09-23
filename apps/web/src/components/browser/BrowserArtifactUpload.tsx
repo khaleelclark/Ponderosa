@@ -44,7 +44,6 @@ export function BrowserArtifactUpload({
     Boolean(artifact.size && artifact.sha256 && artifact.mediaType && artifact.downloadUrl),
   );
   const [artifactId, setArtifactId] = useState("");
-  const [selector, setSelector] = useState("");
 
   useEffect(() => {
     if (artifactId && !choices.some((artifact) => artifact.id === artifactId)) setArtifactId("");
@@ -68,7 +67,7 @@ export function BrowserArtifactUpload({
         >
           <Typography variant="body2" component="span">
             {displayOrigin(pageUrl)} is requesting {chooser.mode === "selectMultiple" ? "one or more files" : "a file"}.
-            {operator ? " Choose a managed Project artifact below." : " Take control to choose or cancel it."}
+            {operator ? " Choose a file from Files & Results below." : " Take control to choose or cancel it."}
           </Typography>
         </Alert>
       ) : null}
@@ -77,7 +76,7 @@ export function BrowserArtifactUpload({
           <TextField
             select
             size="small"
-            label="Project artifact"
+            label="Files & Results"
             value={artifactId}
             onChange={(event) => setArtifactId(event.target.value)}
             disabled={disabled || artifacts.isPending || choices.length === 0}
@@ -89,27 +88,16 @@ export function BrowserArtifactUpload({
               </MenuItem>
             ))}
           </TextField>
-          {!chooser ? (
-            <TextField
-              size="small"
-              label="File input selector (optional)"
-              placeholder='input[type="file"]'
-              value={selector}
-              onChange={(event) => setSelector(event.target.value)}
-              disabled={disabled}
-              sx={{ minWidth: { md: 220 }, flex: 1 }}
-            />
-          ) : null}
           <Button
             variant="outlined"
             startIcon={<UploadFileIcon />}
             disabled={disabled || pending || !artifactId}
-            onClick={() => onUpload(artifactId, chooser ? undefined : selector.trim() || undefined)}
+            onClick={() => onUpload(artifactId)}
           >
             {chooser ? "Choose file" : "Upload"}
           </Button>
           {!artifacts.isPending && choices.length === 0 ? (
-            <Typography variant="caption" color="text.secondary">No managed Project artifacts are available.</Typography>
+            <Typography variant="caption" color="text.secondary">No files are available in Files & Results.</Typography>
           ) : null}
         </Stack>
       ) : null}
