@@ -20,8 +20,12 @@ test('agent coordinate actions require current page, bounded coordinates, and co
     await assert.rejects(manager.act(scope, { action: 'pointer', page_id: 'one', x: 900, y: 10 }), /range/);
     await manager.act(scope, { action: 'pointer', page_id: 'one', x: 20, y: 30 });
     await manager.act(scope, { action: 'scroll', page_id: 'one', delta_x: 0, delta_y: 500 });
+    await manager.act(scope, { action: 'scroll', page_id: 'one', delta_y: 557 });
+    await manager.act(scope, { action: 'scroll', page_id: 'one', delta_x: -120 });
+    await assert.rejects(manager.act(scope, { action: 'scroll', page_id: 'one' }), /requires delta_x or delta_y/);
+    await assert.rejects(manager.act(scope, { action: 'scroll', page_id: 'one', delta_y: Number.NaN }), /Finite coordinates/);
     await manager.setControl(scope, 'operator', session.controlEpoch);
     await assert.rejects(manager.act(scope, { action: 'pointer', page_id: 'one', x: 20, y: 30 }), /controlled/);
-    assert.deepEqual(actions, [['pointer',20,30],['scroll',0,500]]);
+    assert.deepEqual(actions, [['pointer',20,30],['scroll',0,500],['scroll',0,557],['scroll',-120,0]]);
   } finally { await manager.closeAll('test'); await rm(root, { recursive: true, force: true }); }
 });

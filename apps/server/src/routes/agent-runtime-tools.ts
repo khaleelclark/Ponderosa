@@ -61,6 +61,14 @@ function browserDriverSessionError(error: BrowserDriverActionError): BrowserSess
       return new BrowserSessionError("The browser selector is invalid.", 400, error.reason);
     case "selector_not_found":
       return new BrowserSessionError("The browser could not find that page element.", 404, error.reason);
+    case "selector_ambiguous":
+      return new BrowserSessionError("The selector matched multiple elements. Inspect and use a unique selector.", 409, error.reason);
+    case "selector_not_interactable":
+      return new BrowserSessionError("The selected element is covered or not currently interactable. Inspect before retrying.", 409, error.reason);
+    case "click_unconfirmed":
+      return new BrowserSessionError("The click could not be confirmed and may have taken effect. Inspect before any retry.", 409, error.reason);
+    case "fill_unconfirmed":
+      return new BrowserSessionError("The field input could not be confirmed and may have partially changed the field. Inspect before retrying.", 409, error.reason);
     case "selector_not_editable":
       return new BrowserSessionError("The selected page element cannot be edited.", 409, error.reason);
     case "upload_disabled":

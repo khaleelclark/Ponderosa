@@ -16,6 +16,7 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     if (req.url === "/scroll") { res.end('<style>body{margin:0}div{height:1000px;background:red}div+div{background:blue}</style><div></div><div></div>'); return; }
     if (req.url === "/embedded") { res.end('<p>Embedded frame region</p><input id="embedded-field" aria-label="Embedded answer">'); return; }
     if (req.url === "/frames") { res.end('<iframe src="/embedded"></iframe><input id="rejecting" oninput="this.value=\'\'">'); return; }
+    if (req.url === "/controls") { res.end(`<main>${Array.from({ length: 90 }, (_, i) => `<button data-testid="control-${i}">Control ${i}</button>`).join('')}<section id="workflow"><label for="child">Child workflow</label><select id="child"><option>Choose workflow</option></select><button aria-label="Search" onclick="document.body.dataset.clicked='first'">Search</button><button aria-label="Search" onclick="document.body.dataset.clicked='second'">Search</button></section></main>`); return; }
     res.end(req.url === "/popup" ? '<title>Popup</title><input id="popup">' : `<title>Fixture</title><main><input id="password" type="password" value="FAKE_SECRET"><input id="file" type="file" accept="text/plain"><button id="popup" onclick="window.open('/popup')">Popup</button><div id="shadow"></div></main><script>document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<input id="shadow-field">';setTimeout(()=>document.querySelector('main').insertAdjacentHTML('beforeend','<input id="delayed">'),600);</script>`);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -35,9 +36,16 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     await driver.fill("#shadow-field", "shadow works");
     await assert.rejects(driver.fill("[", "FAKE_SECRET_LEAK"), error => {
       assert.ok(!error.message.includes("FAKE_SECRET_LEAK"));
-      assert.match(error.message, /could not be confirmed/);
+      assert.match(error.message, /invalid_selector/);
       return true;
     });
+    await driver.navigate(`http://127.0.0.1:${server.address().port}/controls`);
+    assert.ok(!JSON.parse(await driver.inspect()).controls.some(control => control.selector === '#child'), 'global snapshot is bounded');
+    const scoped = JSON.parse(await driver.inspect('#workflow'));
+    assert.equal(scoped._ponderosa.scope, 'requested_region');
+    assert.ok(scoped.controls.some(control => control.selector === '#child' && control.name === 'Child workflow'));
+    await assert.rejects(driver.click('button[aria-label="Search"]'), { reason: 'selector_ambiguous' });
+    assert.ok(!(await driver.inspect()).includes('data-clicked'), 'ambiguous click did not activate either target');
     const first = (await driver.pages()).activePageId;
     await driver.resizeViewport(first, { width: 640, height: 480 });
     const compactLayout = JSON.parse(await driver.inspect()).viewport;

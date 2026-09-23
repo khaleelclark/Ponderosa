@@ -49,7 +49,7 @@ export interface BrowserDriverLaunchOptions {
 
 export class BrowserDriverActionError extends Error {
   constructor(
-    readonly reason: "invalid_selector" | "selector_not_found" | "selector_not_editable" | "page_not_found" | "last_page" | "upload_disabled" | "selector_not_file_input" | "file_input_disabled" | "file_type_not_accepted" | "no_pending_file_chooser" | "stale_file_chooser" | "unsupported_file_chooser" | "stale_upload_context" | "upload_verification_failed",
+    readonly reason: "invalid_selector" | "selector_not_found" | "selector_ambiguous" | "selector_not_interactable" | "click_unconfirmed" | "fill_unconfirmed" | "selector_not_editable" | "page_not_found" | "last_page" | "upload_disabled" | "selector_not_file_input" | "file_input_disabled" | "file_type_not_accepted" | "no_pending_file_chooser" | "stale_file_chooser" | "unsupported_file_chooser" | "stale_upload_context" | "upload_verification_failed",
   ) {
     super(reason);
     this.name = "BrowserDriverActionError";
@@ -391,6 +391,23 @@ export class ChromeCdpDriver implements BrowserDriver {
     const entry = this.frameReferences.get(reference[1]!);
     if (!entry || entry.targetId !== page.targetId || entry.frame.isDetached() || entry.frame.url() !== entry.url) throw new Error("Embedded frame changed. Inspect the page again.");
     return entry.frame.locator(reference[2]!);
+  }
+  private async uniqueActionLocator(selector: string) {
+    let locator: Awaited<ReturnType<ChromeCdpDriver["actionLocator"]>>;
+    try { locator = await this.actionLocator(selector); }
+    catch { throw new BrowserDriverActionError("selector_not_interactable"); }
+    let count: number;
+    try { count = await locator.count(); }
+    catch { throw new BrowserDriverActionError("invalid_selector"); }
+    if (count === 0) {
+      try { await locator.first().waitFor({ state: "attached", timeout: 10_000 }); }
+      catch { throw new BrowserDriverActionError("selector_not_found"); }
+      try { count = await locator.count(); }
+      catch { throw new BrowserDriverActionError("invalid_selector"); }
+    }
+    if (count === 0) throw new BrowserDriverActionError("selector_not_found");
+    if (count > 1) throw new BrowserDriverActionError("selector_ambiguous");
+    return locator;
   }
   private readonly viewportSizes = new Map<string, BrowserViewportSize>();
   private lastActivity?: BrowserActivityDto;
@@ -972,12 +989,17 @@ export class ChromeCdpDriver implements BrowserDriver {
       const REGION_LIMIT = 4200;
       const CONTROL_LIMIT = 80;
       const viewport = { width: innerWidth, height: innerHeight, scrollX, scrollY };
-      const intersectsViewport = (el) => {
-        if (!(el instanceof Element)) return false;
+      const rendered = (el) => {
+        if (!(el instanceof Element) || el.closest('[aria-hidden="true"],[inert]')) return false;
         const style = getComputedStyle(el);
         if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
         const r = el.getBoundingClientRect();
-        return r.width > 0 && r.height > 0 && r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth;
+        return r.width > 0 && r.height > 0;
+      };
+      const intersectsViewport = (el) => {
+        if (!rendered(el)) return false;
+        const r = el.getBoundingClientRect();
+        return r.bottom >= 0 && r.right >= 0 && r.top <= innerHeight && r.left <= innerWidth;
       };
       const uniqueSelector = (candidate) => {
         try { return document.querySelectorAll(candidate).length === 1 ? candidate : null; } catch { return null; }
@@ -1036,7 +1058,7 @@ export class ChromeCdpDriver implements BrowserDriver {
         let node;
         while ((node = walker.nextNode())) {
           const value = (node.nodeValue || '').replace(/\\s+/g, ' ').trim();
-          if (!value || (visibleOnly && !intersectsViewport(node.parentElement))) continue;
+          if (!value || !rendered(node.parentElement) || (visibleOnly && !intersectsViewport(node.parentElement))) continue;
           const range = document.createRange();
           range.selectNodeContents(node);
           const rect = range.getBoundingClientRect();
@@ -1065,10 +1087,14 @@ export class ChromeCdpDriver implements BrowserDriver {
         regionRoots.push({ root: document.body, kind: 'viewport', id: 'viewport:body:0', label: 'Visible viewport', visibleOnly: true });
       }
       let requestedRegionError = null;
+      let requestedRoot = null;
       if (requestedSelector) {
         try {
-          const requestedRoot = document.querySelector(requestedSelector);
-          if (requestedRoot) {
+          requestedRoot = document.querySelector(requestedSelector);
+          if (requestedRoot && !rendered(requestedRoot)) {
+            requestedRoot = null;
+            requestedRegionError = 'selector_not_visible';
+          } else if (requestedRoot) {
             regionRoots.push({ root: requestedRoot, kind: 'requested', id: 'requested:' + requestedSelector, label: requestedSelector, visibleOnly: false });
           } else {
             requestedRegionError = 'selector_not_found';
@@ -1078,8 +1104,10 @@ export class ChromeCdpDriver implements BrowserDriver {
         }
       }
       const regions = regionRoots.map((entry) => ({ id: entry.id, kind: entry.kind, label: entry.label, ...textFrom(entry.root, entry.visibleOnly) }));
-      const controls = [...document.querySelectorAll('a[href],button,input,textarea,select,[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=menuitem],[role=tab]')]
-        .filter(intersectsViewport)
+      const controlSelector = 'a[href],button,input,textarea,select,[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=menuitem],[role=tab],[role=combobox],[role=option],[role=radio],[role=switch],[role=spinbutton],[role=slider],[tabindex]';
+      const controlRoot = requestedRoot || document;
+      const controls = [...(requestedRoot?.matches(controlSelector) ? [requestedRoot] : []), ...controlRoot.querySelectorAll(controlSelector)]
+        .filter(requestedRoot ? rendered : intersectsViewport)
         .slice(0, CONTROL_LIMIT)
         .map((el) => {
           const identity = stableSelector(el);
@@ -1092,7 +1120,7 @@ export class ChromeCdpDriver implements BrowserDriver {
             addressable: Boolean(identity.selector),
             tag: el.tagName.toLowerCase(),
             role: el.getAttribute('role') || '',
-            name: (el.getAttribute('aria-label') || el.getAttribute('name') || el.getAttribute('placeholder') || '').trim().slice(0, 160),
+            name: (el.getAttribute('aria-label') || (el.getAttribute('aria-labelledby') || '').split(/\\s+/).map(id=>document.getElementById(id)?.textContent || '').join(' ') || (el.labels ? [...el.labels].map(label=>label.textContent || '').join(' ') : '') || el.getAttribute('name') || el.getAttribute('placeholder') || '').trim().slice(0, 160),
             text: valueRedacted ? '[redacted]' : (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el.value : el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 240),
             valueRedacted,
             disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true'),
@@ -1173,19 +1201,26 @@ export class ChromeCdpDriver implements BrowserDriver {
         returnedCharacters: JSON.stringify(changed).length + JSON.stringify(snapshot.controls).length,
       },
       _ponderosa: {
-        scope: "visible_viewport",
+        scope: regionSelector ? "requested_region" : "visible_viewport",
         stableControlIdentity: true,
-        offscreenContentOmitted: true,
+        offscreenContentOmitted: !regionSelector,
         unchangedRegionsOmitted: Boolean(previous),
       },
     }, null, 2);
   }
 
   private async selectorPoint(selector: string): Promise<{ x: number; y: number }> {
-    const result = await this.evaluate<{ status: "ok"; x: number; y: number } | { status: "invalid_selector" | "selector_not_found" }>(`(() => {
-      let el; try { el = document.querySelector(${JSON.stringify(selector)}); } catch { return {status:'invalid_selector'}; }
-      if (!el) return {status:'selector_not_found'}; el.scrollIntoView({block:'center',inline:'center'});
-      const r=el.getBoundingClientRect(); return {status:'ok',x:r.left+r.width/2,y:r.top+r.height/2};
+    const result = await this.evaluate<{ status: "ok"; x: number; y: number } | { status: "invalid_selector" | "selector_not_found" | "selector_ambiguous" | "selector_not_interactable" }>(`(async () => {
+      let matches; try { matches = document.querySelectorAll(${JSON.stringify(selector)}); } catch { return {status:'invalid_selector'}; }
+      if (!matches.length) return {status:'selector_not_found'};
+      if (matches.length > 1) return {status:'selector_ambiguous'};
+      const el = matches[0]; el.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (!el.isConnected) return {status:'selector_not_found'};
+      const r=el.getBoundingClientRect(), x=r.left+r.width/2, y=r.top+r.height/2;
+      const hit=document.elementFromPoint(x,y);
+      if (!r.width || !r.height || !hit || (hit!==el && !el.contains(hit))) return {status:'selector_not_interactable'};
+      return {status:'ok',x,y};
     })()`);
     if (result.status !== "ok") throw new BrowserDriverActionError(result.status);
     return { x: result.x, y: result.y };
@@ -1200,17 +1235,22 @@ export class ChromeCdpDriver implements BrowserDriver {
   }
 
   async click(selector: string): Promise<BrowserPageInfo> {
-    this.markInteraction();
     if (this.playwright) {
       const page = this.currentPage();
-      const locator = await this.actionLocator(selector);
-      await locator.scrollIntoViewIfNeeded({ timeout: 10_000 });
-      const bounds = await locator.boundingBox();
-      await locator.click({ timeout: 10_000 });
+      const locator = await this.uniqueActionLocator(selector);
+      try { await locator.scrollIntoViewIfNeeded({ timeout: 10_000 }); }
+      catch { throw new BrowserDriverActionError("selector_not_interactable"); }
+      let bounds: Awaited<ReturnType<typeof locator.boundingBox>>;
+      try { bounds = await locator.boundingBox(); }
+      catch { throw new BrowserDriverActionError("selector_not_interactable"); }
+      this.markInteraction();
+      try { await locator.click({ timeout: 10_000 }); }
+      catch { throw new BrowserDriverActionError("click_unconfirmed"); }
       this.lastActivity = bounds ? { pageId: page.pageId, kind: "click", x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2, at: Date.now() } : undefined;
       return this.pageInfo();
     }
     const point = await this.selectorPoint(selector);
+    this.markInteraction();
     await this.pointer(point.x, point.y, false);
     return this.pageInfo();
   }
@@ -1219,15 +1259,17 @@ export class ChromeCdpDriver implements BrowserDriver {
     if (this.playwright) {
       try {
         const page = this.currentPage();
-        const locator = await this.actionLocator(selector);
-        await locator.fill(text, { timeout: 10_000 });
+        const locator = await this.uniqueActionLocator(selector);
+        try { await locator.fill(text, { timeout: 10_000 }); }
+        catch { throw new BrowserDriverActionError("fill_unconfirmed"); }
         const retained = await locator.evaluate((element: { value?: unknown; textContent: string | null }) => "value" in element ? String(element.value) : element.textContent ?? "");
         if (retained !== text) throw new Error("Field did not retain the supplied value.");
         const bounds = await locator.boundingBox();
         this.lastActivity = bounds ? { pageId: page.pageId, kind: "fill", ...bounds, at: Date.now() } : undefined;
-      } catch {
+      } catch (error) {
+        if (error instanceof BrowserDriverActionError) throw error;
         // Playwright call logs can contain the supplied value, including passwords.
-        throw new Error("Browser field input could not be confirmed. Check the page before retrying.");
+        throw new BrowserDriverActionError("fill_unconfirmed");
       }
       return this.pageInfo();
     }

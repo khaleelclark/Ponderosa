@@ -1557,9 +1557,10 @@ export class BrowserSessionManager {
       summary = `pressed ${input.key}`;
     } else if (action === "pointer" || action === "scroll") {
       if (typeof input.page_id !== "string" || input.page_id !== session.dto.activePageId) throw new BrowserSessionError("Inspect the active page again before coordinate actions.", 409);
+      if (action === "scroll" && input.delta_x === undefined && input.delta_y === undefined) throw new BrowserSessionError("scroll requires delta_x or delta_y");
       const pageId = input.page_id;
-      const x = action === "pointer" ? input.x : input.delta_x;
-      const y = action === "pointer" ? input.y : input.delta_y;
+      const x = action === "pointer" ? input.x : input.delta_x === undefined ? 0 : input.delta_x;
+      const y = action === "pointer" ? input.y : input.delta_y === undefined ? 0 : input.delta_y;
       if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) throw new BrowserSessionError("Finite coordinates are required.");
       const size = session.driver.viewport?.() ?? VIEWPORT;
       if (action === "pointer" ? x < 0 || y < 0 || x > size.width || y > size.height : Math.abs(x) > 4000 || Math.abs(y) > 4000) throw new BrowserSessionError("Coordinates are outside the supported range.");
@@ -1577,12 +1578,16 @@ export class BrowserSessionManager {
       } catch (error) {
         if (!(error instanceof BrowserDriverActionError)) throw error;
         const selector = typeof input.selector === "string" ? input.selector : "";
-        const detail = error.reason === "invalid_selector"
-          ? "is not valid CSS"
-          : error.reason === "selector_not_found"
-            ? "matched no element"
-            : "is not editable";
-        throw new BrowserSessionError(`browser ${String(action)} selector ${JSON.stringify(selector)} ${detail}`);
+        const detail = error.reason === "invalid_selector" ? "is not valid CSS"
+          : error.reason === "selector_not_found" ? "matched no element"
+            : error.reason === "selector_ambiguous" ? "matched multiple elements; inspect and use a unique selector"
+              : error.reason === "selector_not_interactable" ? "is covered or not currently interactable; inspect before retrying"
+                : error.reason === "click_unconfirmed" ? "could not be confirmed and may have taken effect; inspect before any retry"
+                  : error.reason === "fill_unconfirmed" ? "could not be confirmed and may have partially changed the field; inspect before retrying"
+                    : "is not editable";
+        const status = error.reason === "selector_not_found" ? 404
+          : error.reason === "invalid_selector" ? 400 : 409;
+        throw new BrowserSessionError(`browser ${String(action)} selector ${JSON.stringify(selector)} ${detail}`, status, error.reason);
       }
     };
     return this.pageAction(scope, session, "agent", undefined, contextualWork, (info) => {

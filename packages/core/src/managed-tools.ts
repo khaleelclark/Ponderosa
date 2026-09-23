@@ -336,7 +336,7 @@ export const PONDEROSA_MANAGE_TOOL: RuntimeDynamicToolSpec = {
 export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
   {
     name: "ponderosa_browser_open",
-    description: "Open a temporary browser by default unless the operator explicitly granted a chat browser for this Run. To use the operator's signed-in saved browser, explicitly choose browser: saved; this requires prior authorization for this Agent in this Project, does not replace the saved browser, and persists across Runs until revoked. Close an active temporary or chat browser explicitly before switching. Open the saved browser without a URL, inspect its tabs, then navigate or open a new tab deliberately. Only http(s) URLs are accepted. Returns a bounded semantic page snapshot.",
+    description: "Open a temporary browser by default unless the operator explicitly granted a chat browser for this Run. Temporary browser-local edits are lost when the Run ends or fails. For editing work that must survive multiple Runs, ask the operator to grant the persistent Project browser and save or publish edits before ending work. To use the operator's signed-in saved browser, explicitly choose browser: saved; this requires prior authorization for this Agent in this Project, does not replace the saved browser, and persists across Runs until revoked. Close an active temporary or chat browser explicitly before switching. Open the saved browser without a URL, inspect its tabs, then navigate or open a new tab deliberately. Only http(s) URLs are accepted. Returns a bounded semantic page snapshot.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: { url: { type: "string", minLength: 1, maxLength: 2048 }, browser: { type: "string", enum: ["temporary", "saved"] } },
@@ -392,7 +392,7 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
   },
   {
     name: "ponderosa_browser_act",
-    description: "Operate the owned browser by an inspected selector (including frame-scoped selectors), key, coordinate pointer click, or scroll. Coordinate actions require the current page_id from inspection and CSS viewport coordinates; inspect again after switching tabs. Fails while the operator has control. Fill verifies the immediate resulting value; check later site validation separately. Fill text is never copied into the activity summary. Before an action that may submit, purchase, send, or change an account, declare consequence and a stable attempt_id so retries are visible and distinguishable in the audit trail.",
+    description: "Operate the owned browser by an inspected selector (including frame-scoped selectors), key, coordinate pointer click, or scroll. Coordinate actions require the current page_id from inspection; scroll may specify only delta_x or delta_y and the omitted axis defaults to zero. Inspect again after switching tabs. Fails while the operator has control. Fill verifies the immediate resulting value; check later site validation separately. Fill text is never copied into the activity summary. Before an action that may submit, purchase, send, or change an account, declare consequence and a stable attempt_id so retries are visible and distinguishable in the audit trail.",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["action"],
       properties: {
