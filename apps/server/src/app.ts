@@ -123,6 +123,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   // Provider processes and their opaque sessions do not survive a daemon
   // restart, so no runtime-only attachment path can remain authoritative.
   cleanupAllRuntimeAttachments(opts.dataDir);
+  const store = opts.store ?? new AgentStore(opts.dataDir);
   const {
     networkSecurity,
     launcherNow,
@@ -130,11 +131,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     launcherBootstrapTtlMs,
     launcherSessionTtlMs,
     launcherBootstraps,
-    launcherSessions,
+    issueLauncherSession,
     purgeLauncherSecurityState,
     validLauncherSession,
-  } = createLauncherSecurity(opts);
-  const store = opts.store ?? new AgentStore(opts.dataDir);
+  } = createLauncherSecurity(opts, store.sqlite);
   const publicWebAssets = publicWebAssetPaths(opts.webDist);
   const artifactFilesystem = descriptorRelativeFilesystemCapability(opts.dataDir);
   const processContainment = process.platform === "win32"
@@ -1078,7 +1078,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     launcherBootstrapTtlMs,
     launcherSessionTtlMs,
     launcherBootstraps,
-    launcherSessions,
+    issueLauncherSession,
     purgeLauncherSecurityState,
     networkSecurity,
     artifactFilesystem,

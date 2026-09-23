@@ -13,6 +13,7 @@ import {
 import { secretEqual } from "./security.js";
 import { isAgentToolRoute } from "./agent-tool-route-classification.js";
 import { localBrowserTransportPath } from "./routes/local-browsers.js";
+import { browserSessionCookie } from "./launcher-security.js";
 
 export function registerBodyParsers(
   app: FastifyInstance,
@@ -50,7 +51,10 @@ interface RequestSecurityHooksContext {
   v3DispatchKey: string;
   agentMessageCapabilities: Map<string, AgentMessageCapability>;
   deletingAgentIds: ReadonlySet<string>;
-  validLauncherSession(header: string | undefined): boolean;
+  validLauncherSession(
+    header: string | undefined,
+    onRenew?: (token: string, maxAgeSeconds: number) => void,
+  ): boolean;
   artifactFilesystemError(): string | undefined;
   isArtifactDependentWorkIntake(method: string, url: string, body?: unknown): boolean;
   isPublicWebAssetRequest(method: string, url: string): boolean;
@@ -168,7 +172,18 @@ export function registerRequestSecurityHooks(
       return;
     }
     if (request.url === "/api/health" || request.url === "/api/ready" || request.url.startsWith("/api/trigger-webhooks/")) return;
-    const validBrowserSession = validLauncherSession(request.headers.cookie);
+    const validBrowserSession = (): boolean => validLauncherSession(
+      request.headers.cookie,
+      (token, maxAgeSeconds) => {
+        const trustedHttpsProxy = opts.networkSecurity?.mode === "reverse_proxy" &&
+          Boolean(opts.operatorOrigins?.some((origin) => origin.startsWith("https://")));
+        reply.header("Set-Cookie", browserSessionCookie(
+          token,
+          maxAgeSeconds,
+          request.protocol === "https" || trustedHttpsProxy,
+        ));
+      },
+    );
     if (opts.networkSecurity?.mode === "reverse_proxy") {
       if (allowedProxyIdentities.size > 0) {
         const asserted = request.headers["tailscale-user-login"];
@@ -179,12 +194,12 @@ export function registerRequestSecurityHooks(
       }
       if ((opts.launcherSecurity || opts.authToken) &&
           (browserBootstrapPath || launcherExchange)) return;
-      if (opts.authToken && !validBrowserSession && !secretEqual(provided, opts.authToken)) {
+      if (opts.authToken && !validBrowserSession() && !secretEqual(provided, opts.authToken)) {
         return reply.code(401).send({ error: "reverse proxy backend authentication required" });
       }
       return;
     }
-    if (opts.launcherSecurity && validBrowserSession) return;
+    if (opts.launcherSecurity && validBrowserSession()) return;
     if (opts.authToken && secretEqual(provided, opts.authToken)) return;
     if (opts.authToken || opts.launcherSecurity) {
       return reply.code(401).send({ error: "unauthorized" });

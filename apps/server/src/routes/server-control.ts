@@ -27,6 +27,8 @@ import { processBirthMarker } from "@ponderosa/engines";
 import { browserResidueCleanupStatus } from "../browser-session-residue.js";
 import type { ServerMetrics } from "../server-metrics.js";
 import { secretEqual } from "../security.js";
+import { browserSessionCookie } from "../launcher-security.js";
+export { browserSessionCookie } from "../launcher-security.js";
 
 interface ServerControlRoutesContext {
   opts: CreateServerOptions;
@@ -40,7 +42,7 @@ interface ServerControlRoutesContext {
   launcherBootstrapTtlMs: number;
   launcherSessionTtlMs: number;
   launcherBootstraps: Map<string, number>;
-  launcherSessions: Map<string, number>;
+  issueLauncherSession(): string;
   purgeLauncherSecurityState(): void;
   networkSecurity: ReadinessDto["networkSecurity"];
   artifactFilesystem: ReadinessCheckDto;
@@ -74,17 +76,6 @@ interface ServerControlRoutesContext {
 
 const ENGINE_LOG_TAIL_BYTES = 64 * 1024;
 const READINESS_RUNTIME_BUDGET_MS = 500;
-
-export function browserSessionCookie(
-  session: string,
-  maxAgeSeconds: number,
-  secure: boolean,
-): string {
-  const name = secure ? "__Host-ponderosa_session" : "ponderosa_session";
-  return `${name}=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAgeSeconds}${
-    secure ? "; Secure" : ""
-  }`;
-}
 
 async function engineLogTail(
   pathname: string | undefined,
@@ -151,7 +142,7 @@ export function registerServerControlRoutes(
     launcherBootstrapTtlMs,
     launcherSessionTtlMs,
     launcherBootstraps,
-    launcherSessions,
+    issueLauncherSession,
     purgeLauncherSecurityState,
     networkSecurity,
     artifactFilesystem,
@@ -234,8 +225,7 @@ app.post<{ Body: { token?: string } }>("/api/launcher/session-exchange", async (
   // operator bearer remains a host-managed secret and is cleared from the URL
   // fragment by the bootstrap page before this request is made.
   if (validLauncherBootstrap) launcherBootstraps.delete(token!);
-  const session = launcherRandomToken();
-  launcherSessions.set(session, launcherNow() + launcherSessionTtlMs);
+  const session = issueLauncherSession();
   const trustedHttpsProxy = networkSecurity.mode === "reverse_proxy" &&
     Boolean(opts.operatorOrigins?.some((origin) => origin.startsWith("https://")));
   const secure = request.protocol === "https" || trustedHttpsProxy;

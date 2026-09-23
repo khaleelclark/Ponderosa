@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import test from "node:test";
 import Fastify from "fastify";
+import Database from "better-sqlite3";
 import { registerRequestSecurityHooks } from "../dist/server-request-hooks.js";
+import { createLauncherSecurity } from "../dist/launcher-security.js";
 
 async function fixture(options = {}, contextOverrides = {}, handler = async () => ({ ok: true })) {
   const app = Fastify({ logger: false });
@@ -208,6 +210,63 @@ test("reverse proxy browser sessions never bypass asserted identity", async t =>
       "tailscale-user-login": "operator@example.com",
     },
   })).statusCode, 200);
+});
+
+test("an active browser session renews its HttpOnly cookie without operator action", async t => {
+  const db = new Database(":memory:");
+  t.after(() => db.close());
+  let now = 1_700_000_000_000;
+  const opts = {
+    authToken: "backend-secret",
+    launcherSecurity: { controlToken: "launcher-secret", sessionTtlMs: 60_000 },
+    operatorOrigins: ["https://ponderosa.example"],
+    operatorIdentities: ["operator@example.com"],
+    networkSecurity: {
+      mode: "reverse_proxy",
+      bindHost: "127.0.0.1",
+      authenticationRequired: true,
+      detail: "test",
+    },
+  };
+  const security = createLauncherSecurity({ dataDir: "/tmp/unused", engines: [], ...opts }, db, () => now);
+  const token = security.issueLauncherSession();
+  const app = await fixture(opts, { validLauncherSession: security.validLauncherSession });
+  t.after(() => app.close());
+  now += 31_000;
+  const headers = {
+    host: "ponderosa.example",
+    "tailscale-user-login": "operator@example.com",
+    cookie: `__Host-ponderosa_session=${token}`,
+  };
+  const wrongIdentity = await app.inject({
+    method: "GET", url: "/api/projects",
+    headers: { ...headers, "tailscale-user-login": "another@example.com" },
+  });
+  assert.equal(wrongIdentity.statusCode, 401);
+  assert.equal(wrongIdentity.headers["set-cookie"], undefined);
+  const response = await app.inject({ method: "GET", url: "/api/projects", headers });
+  assert.equal(response.statusCode, 200);
+  assert.match(response.headers["set-cookie"], /^__Host-ponderosa_session=.+; HttpOnly; SameSite=Strict; Path=\/; Max-Age=60; Secure$/u);
+  now += 30_000;
+  assert.equal((await app.inject({ method: "GET", url: "/api/projects", headers })).statusCode, 200);
+});
+
+test("an installed loopback browser session renews without a bearer or proxy", async t => {
+  const db = new Database(":memory:");
+  t.after(() => db.close());
+  let now = 1_700_000_000_000;
+  const opts = { launcherSecurity: { controlToken: "launcher-secret", sessionTtlMs: 60_000 } };
+  const security = createLauncherSecurity({ dataDir: "/tmp/unused", engines: [], ...opts }, db, () => now);
+  const token = security.issueLauncherSession();
+  const app = await fixture(opts, { validLauncherSession: security.validLauncherSession });
+  t.after(() => app.close());
+  now += 31_000;
+  const response = await app.inject({
+    method: "GET", url: "/api/projects",
+    headers: { cookie: `ponderosa_session=${token}` },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.match(response.headers["set-cookie"], /^ponderosa_session=.+; HttpOnly; SameSite=Strict; Path=\/; Max-Age=60$/u);
 });
 
 test("unauthorized requests cannot exhaust the operator admission bucket", async t => {
