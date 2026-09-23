@@ -115,7 +115,7 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     assert.equal(region.requestedRegion.error, null);
     assert.match(region.changedRegions[0].text, /Embedded frame region/);
     await driver.fill(embedded.selector, 'embedded answer');
-    await assert.rejects(driver.fill('#rejecting', 'rejected value'), /could not be confirmed/);
+    await assert.rejects(driver.fill('#rejecting', 'rejected value'), { reason: 'fill_unconfirmed' });
     if (!hostedHeaded) {
       while ((await driver.pages()).pages.length < 30) await driver.newPage();
       await assert.rejects(driver.newPage(), /tab limit/);
