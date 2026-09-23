@@ -13,6 +13,13 @@ export interface NotificationPreferencesDto {
   broadcasts: boolean;
 }
 
+export interface ChatFolderDto {
+  id: string;
+  name: string;
+  conversationIds: string[];
+  expanded: boolean;
+}
+
 export interface ProjectFolderDto {
   id: string;
   name: string;
@@ -21,8 +28,12 @@ export interface ProjectFolderDto {
 }
 
 export interface WorkspacePreferencesDto {
+  /** Absent Agent entries inherit their Chat's notification mode. */
+  notificationScopes?: Record<string, "all" | "attention" | "muted">;
   /** Presentation-only, single-level Project groups in the navigation rail. */
   projectFolders?: ProjectFolderDto[];
+  /** Presentation only; membership never changes a conversation's Project. */
+  chatFolders?: ChatFolderDto[];
   /** Absent on pre-local-voice workspaces; resolves to browser speech. */
   speech?: SpeechPreferencesDto;
   /** Canonical monotonic preference mutation sequence. */
@@ -185,6 +196,7 @@ export interface UploadedOperatorAvatarDto {
 export type UpdateWorkspacePreferencesRequest = Partial<Omit<WorkspacePreferencesDto, "revision" | "updatedAt">> & {
   /** Required compare-and-swap revision when replacing folder preferences. */
   projectFoldersRevision?: number;
+  chatFoldersRevision?: number;
 };
 
 export interface DraftAttachmentDto {
@@ -315,6 +327,8 @@ export interface GenerateConversationTitleResponse {
 
 export interface WorkspaceNotificationDto {
   id: string;
+  /** Authored source for notification policy, independent of navigation target. */
+  sourceAgentId?: string;
   projectId?: string;
   conversationId?: string;
   /** Every Project chat where the affected Agent currently participates. */

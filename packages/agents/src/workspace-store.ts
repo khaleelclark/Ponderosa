@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { normalizeSpeechPreferences } from "@ponderosa/core";
 import type {
   ConversationDraftDto,
   DecisionDto,
@@ -272,7 +273,15 @@ export class WorkspaceStore {
   }
 
   private notificationSearchIndexEligible(item: WorkspaceNotificationDto): boolean {
-    return notificationLiveKind(item) === "update";
+    return this.notificationAllowed(item) && notificationLiveKind(item) === "update";
+  }
+
+  notificationAllowed(item: Pick<WorkspaceNotificationDto, "agentId" | "sourceAgentId" | "conversationId" | "kind" | "severity">): boolean {
+    const scopes = this.preferences.notificationScopes ?? {};
+    const agentId = item.sourceAgentId ?? item.agentId;
+    const mode = (agentId ? scopes[`agent:${agentId}`] : undefined)
+      ?? (item.conversationId ? scopes[`conversation:${item.conversationId}`] : undefined) ?? "all";
+    return mode === "all" || (mode === "attention" && (item.kind === "decision" || item.kind === "operational" || item.severity === "attention" || item.severity === "urgent"));
   }
 
   private updateNotificationSearchIndex(item: WorkspaceNotificationDto, add: boolean): void {
@@ -344,6 +353,7 @@ export class WorkspaceStore {
   }
 
   private insertActiveNotification(item: WorkspaceNotificationDto): void {
+    if (!this.notificationAllowed(item)) return;
     const kind = notificationLiveKind(item);
     if (!kind) return;
     let low = 0;
@@ -382,6 +392,7 @@ export class WorkspaceStore {
         ...preferences,
         revision,
         notifications: normalizeNotifications(preferences.notifications),
+        speech: normalizeSpeechPreferences(preferences.speech),
         projectOrder: preferences.projectOrder ?? [],
         homeOrder: preferences.homeOrder ?? [],
         homeSort: preferences.homeSort ?? "last_used",
@@ -409,7 +420,20 @@ export class WorkspaceStore {
         profile: normalizeProfile(preferences.profile),
       };
       record.event = { ...record.event, preferences: normalized };
+      const notificationScopesChanged = JSON.stringify(this.preferences.notificationScopes) !== JSON.stringify(normalized.notificationScopes);
       this.preferences = normalized;
+      if (notificationScopesChanged) {
+      this.activeNotifications.length = 0;
+      this.notificationOpenActionCount = 0;
+      this.notificationUnacknowledgedActionCount = 0;
+      this.notificationUnreadUpdateCount = 0;
+      this.unreadNotificationIdsByCommunication.clear();
+      this.unreadNotificationIdsByConversation.clear();
+      for (const item of this.notifications.values()) {
+        this.insertActiveNotification(item);
+        this.updateNotificationSearchIndex(item, true);
+      }
+      }
     }
     if (record.mutation?.kind === "draft") this.drafts.set(this.draftKey(record.mutation.draft.conversationId, record.mutation.draft.ownerId), record.mutation.draft);
     if (record.mutation?.kind === "draft_conflict") {
@@ -948,6 +972,7 @@ export class WorkspaceStore {
       ...patch,
       revision: this.preferences.revision + 1,
       notifications,
+      speech: normalizeSpeechPreferences(patch.speech ?? this.preferences.speech),
       projectOrder: patch.projectOrder ?? this.preferences.projectOrder,
       homeOrder: patch.homeOrder ?? this.preferences.homeOrder,
       homeSort: patch.homeSort ?? this.preferences.homeSort,
@@ -979,6 +1004,14 @@ export class WorkspaceStore {
       updatedAt: new Date().toISOString(),
     };
     this.append({ type: "preferences_updated", preferences });
+    if (patch.notificationScopes !== undefined) {
+      for (const delivery of this.pushDeliveries.values()) {
+        const notification = this.notifications.get(delivery.notificationId);
+        if (delivery.status === "pending" && notification && !this.notificationAllowed(notification)) {
+          this.updatePushDelivery({ notificationId: delivery.notificationId, deviceId: delivery.deviceId, status: "abandoned", lastError: "Suppressed by notification setting" });
+        }
+      }
+    }
     return preferences;
   }
 
@@ -1349,7 +1382,7 @@ export class WorkspaceStore {
       id: randomUUID(),
       createdAt: new Date().toISOString(),
     };
-    const pushTargets = queueWebPush
+    const pushTargets = queueWebPush && this.notificationAllowed(notification)
       ? [...this.pushSubscriptions.values()].map(({ deviceId, updatedAt }) => ({ deviceId, subscriptionUpdatedAt: updatedAt }))
       : undefined;
     this.append(
@@ -1426,7 +1459,7 @@ export class WorkspaceStore {
   activeNotificationIds(notificationIds: readonly string[]): string[] {
     return notificationIds.filter((id) => {
       const notification = this.notifications.get(id);
-      return notification ? Boolean(notificationLiveKind(notification)) : false;
+      return notification ? this.notificationAllowed(notification) && Boolean(notificationLiveKind(notification)) : false;
     });
   }
 
@@ -1479,6 +1512,7 @@ export class WorkspaceStore {
     }
 
     for (const item of this.notifications.values()) {
+      if (!this.notificationAllowed(item)) continue;
       const kind = unreadProjectionKind(item);
       if (!kind) continue;
       const navigationConversationIds = new Set([
@@ -1780,7 +1814,7 @@ export class WorkspaceStore {
       const subscription = this.pushSubscriptions.get(delivery.deviceId);
       // A replaced/rotated subscription must not receive work queued for the
       // old endpoint. Its new subscription begins with the next notification.
-      if (!notification || !subscription || subscription.updatedAt !== delivery.subscriptionUpdatedAt) continue;
+      if (!notification || !this.notificationAllowed(notification) || !subscription || subscription.updatedAt !== delivery.subscriptionUpdatedAt) continue;
       result.push({ delivery, notification, subscription });
     }
     return result;

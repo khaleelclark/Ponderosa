@@ -1,6 +1,13 @@
-import type { ProjectFolderDto, WorkspacePreferencesDto, UpdateWorkspacePreferencesRequest } from "@ponderosa/core";
+import type { ChatFolderDto, ProjectFolderDto, WorkspacePreferencesDto, UpdateWorkspacePreferencesRequest } from "@ponderosa/core";
 
-type PreferencePatch = Partial<WorkspacePreferencesDto> & Pick<UpdateWorkspacePreferencesRequest, "projectFoldersRevision">;
+type PreferencePatch = Partial<WorkspacePreferencesDto> & Pick<UpdateWorkspacePreferencesRequest, "projectFoldersRevision" | "chatFoldersRevision">;
+
+/** Reuse the same reviewed membership merge without touching Project ownership. */
+export function rebaseChatFolderChange(current: ChatFolderDto[], before: ChatFolderDto[], after: ChatFolderDto[]): ChatFolderDto[] {
+  const toMembers = (folders: ChatFolderDto[]) => folders.map(({ conversationIds, ...folder }) => ({ ...folder, projectIds: conversationIds }));
+  return rebaseFolderChange(toMembers(current), toMembers(before), toMembers(after))
+    .map(({ projectIds, ...folder }) => ({ ...folder, conversationIds: projectIds }));
+}
 
 /** Reapply changed fields/membership only; untouched concurrent intent survives. */
 export function rebaseFolderChange(current: ProjectFolderDto[], before: ProjectFolderDto[], after: ProjectFolderDto[]): ProjectFolderDto[] {
@@ -84,7 +91,7 @@ export class WorkspacePreferencesWriter {
           response = await this.operations.write(patch);
           break;
         } catch (error) {
-          if (!entry.patch.projectFolders || attempt === 2 || (error as { status?: number }).status !== 409) throw error;
+          if ((!entry.patch.projectFolders && !entry.patch.chatFolders) || attempt === 2 || (error as { status?: number }).status !== 409) throw error;
           this.projectCanonical(await this.operations.refresh());
         }
       }
@@ -110,14 +117,17 @@ export class WorkspacePreferencesWriter {
 
   private projectPending(): WorkspacePreferencesDto {
     return this.pending.reduce((current, pending) => {
-      const { projectFoldersRevision: _revision, ...patch } = this.rebasePatch(pending, current);
+      const { projectFoldersRevision: _revision, chatFoldersRevision: _chatRevision, ...patch } = this.rebasePatch(pending, current);
       return { ...current, ...patch };
     }, this.canonical!);
   }
 
   private rebasePatch(entry: PendingWrite, current: WorkspacePreferencesDto): PreferencePatch {
-    if (!entry.patch.projectFolders) return entry.patch;
-    return { ...entry.patch, projectFoldersRevision: current.revision,
-      projectFolders: rebaseFolderChange(current.projectFolders ?? [], entry.previous?.projectFolders ?? [], entry.patch.projectFolders) };
+    return { ...entry.patch,
+      ...(entry.patch.projectFolders ? { projectFoldersRevision: current.revision,
+        projectFolders: rebaseFolderChange(current.projectFolders ?? [], entry.previous?.projectFolders ?? [], entry.patch.projectFolders) } : {}),
+      ...(entry.patch.chatFolders ? { chatFoldersRevision: current.revision,
+        chatFolders: rebaseChatFolderChange(current.chatFolders ?? [], entry.previous?.chatFolders ?? [], entry.patch.chatFolders) } : {}),
+    };
   }
 }

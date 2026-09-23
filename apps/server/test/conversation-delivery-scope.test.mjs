@@ -218,9 +218,13 @@ function agentCreationTransactionApp({
   prepareUserCommunicationText = async ({ text }) => ({ publishedText: text }),
   recordRuntimeCommunication = () => { throw new Error("unexpected opening communication"); },
   reconcileRuntimeCommunicationProjections = async () => 1,
+  chatDefaults = {},
+  projectDefaults = {},
+  runtimeOverrides = {},
+  onCreate = () => {},
 } = {}) {
-  const chat = { id: "chat-a", projectId: "project-a", archived: false };
-  const project = { id: chat.projectId, defaultEngine: "codex" };
+  const chat = { id: "chat-a", projectId: "project-a", archived: false, ...chatDefaults };
+  const project = { id: chat.projectId, defaultEngine: "codex", ...projectDefaults };
   const agent = {
     id: "agent-a",
     projectId: project.id,
@@ -243,6 +247,7 @@ function agentCreationTransactionApp({
       getConversation: () => chat,
       findAgentCreation: () => created ? agent : undefined,
       createAgent: (_projectId, _input, _preset, id) => {
+        onCreate(_input);
         created = true;
         agent.id = id;
         return agent;
@@ -290,6 +295,7 @@ function agentCreationTransactionApp({
     reconcileRuntimeCommunicationProjections,
     publishMessageDeliveryChanged: () => {},
     notifyScheduler: () => {},
+    ...runtimeOverrides,
   });
   return {
     agent,
@@ -301,6 +307,16 @@ function agentCreationTransactionApp({
     wasDeleted: () => deleted,
   };
 }
+
+test("new Agent with a cleared Chat model inherits workspace rather than legacy Project",async(t)=>{
+  let selection;
+  const {app}=agentCreationTransactionApp({
+    chatDefaults:{defaultEngine:"codex"},projectDefaults:{defaultModel:"legacy-model"},onCreate:input=>{selection=input;},
+    runtimeOverrides:{workspace:{getPreferences:()=>({engineDefaults:{codex:{model:"workspace-model",effort:"high"}}})}},
+  });t.after(()=>app.close());
+  const response=await app.inject({method:"POST",url:"/api/projects/project-a/agents",payload:{title:"Agent",engine:"codex",conversationId:"chat-a"}});
+  assert.equal(response.statusCode,200,response.body);assert.equal(selection.model,"workspace-model");
+});
 
 test("completed Agent creation replays before destination Chat validation", async (t) => {
   const { app, chat } = agentCreationTransactionApp();
@@ -720,9 +736,13 @@ function agentMessageValidationApp({
   coordinationV3 = {},
   reconcileRuntimeCommunicationProjections = async () => 0,
   agentPresent = true,
+  chatOverrides = {},
+  projectOverrides = {},
+  runtimeOverrides = {},
+  runs = [],
 } = {}) {
-  const chat = { id: "chat-a", projectId: "project-a", archived: false };
-  const project = { id: chat.projectId, defaultEngine: "codex" };
+  const chat = { id: "chat-a", projectId: "project-a", archived: false, defaultEngine: "codex", workingDirectory: "/chat", ...chatOverrides };
+  const project = { id: chat.projectId, defaultEngine: "codex", ...projectOverrides };
   const agent = {
     id: "agent-a",
     projectId: project.id,
@@ -739,8 +759,9 @@ function agentMessageValidationApp({
       getAgent: () => agentPresent ? agent : undefined,
       getAgentProjectId: () => project.id,
       getProject: () => project,
+      getChatContext: () => chat.archived ? undefined : { ...chat, id: chat.projectId, hostPath: chat.workingDirectory },
       getConversation: (id) => id === chat.id ? chat : undefined,
-      getRuns: () => [],
+      getRuns: () => runs,
     },
     workspace: { getPreferences: () => ({}) },
     coordinationV3,
@@ -781,9 +802,63 @@ function agentMessageValidationApp({
     assetMetadata,
     reconcileRuntimeCommunicationProjections,
     cachedModelOptions: () => [],
+    ...runtimeOverrides,
   });
   return { app, removed, staged };
 }
+
+test("run route resolves owning Chat defaults before capability discovery, preserving overrides and active Runs", async (t) => {
+  for (const scenario of [
+    { name: "existing Agent", expected: "chat-model" },
+    { name: "queued message", payload: { activeRunDelivery: "queue" }, expected: "chat-model" },
+    { name: "stale Agent model", agent: { model: "removed-model", effort: "removed-effort" }, expected: "chat-model" },
+    { name: "Agent override", agent: { model: "agent-model" }, expected: "agent-model" },
+    { name: "explicit override", payload: { model: "explicit-model" }, expected: "explicit-model" },
+    { name: "active Run", runs: [{ status: "running", engine: "codex", model: "active-model", effort: "high" }], payload: { model: "explicit-model" }, expected: "active-model" },
+    { name: "cleared Chat default", chat: { defaultModel: undefined, defaultEffort: undefined }, expected: "workspace-model" },
+    { name: "stale Chat default", chat: { defaultModel: "removed-model" }, expected: "workspace-model" },
+  ]) await t.test(scenario.name, async () => {
+    let observed;
+    const adapter = { id: "codex", capabilities: () => {}, listModels: () =>
+      ["chat", "project", "agent", "explicit", "active", "workspace"].map(name => ({ id: `${name}-model`, label: name })),
+      listEfforts: () => [{ id: "high", label: "High" }] };
+    const {app} = agentMessageValidationApp({
+      agentOverrides: scenario.agent, runs: scenario.runs,
+      projectOverrides: { defaultModel: "project-model", hostPath: "/legacy" },
+      chatOverrides: { defaultModel: "chat-model", defaultEffort: "high", ...scenario.chat },
+      runtimeOverrides: {
+        engines: new Map([["codex", {adapter}]]),
+        workspace: { getPreferences: () => ({engineDefaults: {codex: {model: "workspace-model"}}}) },
+        discoverEngineCapabilities: (_id, cwd, _adapter, model) => { observed = {cwd,model}; throw new Error("probe stops before provider execution"); },
+      },
+    });
+    try {
+      const response = await app.inject({method:"POST",url:"/api/agents/agent-a/messages",payload:{text:"/status",...scenario.payload}});
+      assert.equal(response.statusCode,500);
+      assert.deepEqual(observed,{cwd:"/chat",model:scenario.expected});
+    } finally {await app.close();}
+  });
+});
+
+test("scheduler dispatch validates reasoning against Chat defaults before preparing any provider work", async () => {
+  let preparationReached = false;
+  const adapter = { id:"codex", trustedSystemPromptChannel:true,
+    listModels:()=>[{id:"chat-model",label:"Chat",efforts:[{id:"chat-effort",label:"Chat effort"}]},{id:"project-model",label:"Project",efforts:[{id:"project-effort",label:"Project effort"}]}],
+    listEfforts:()=>[],
+  };
+  const {app}=agentMessageValidationApp({
+    projectOverrides:{defaultModel:"project-model",defaultEffort:"project-effort"},
+    chatOverrides:{defaultModel:"chat-model",defaultEffort:"chat-effort"},
+    runtimeOverrides:{opts:{agentBaseUrl:"http://localhost"},engines:new Map([["codex",{adapter}]]),reconcileProjectWorkspace:async()=>undefined,
+      workingCopies:{assertRunAdmission:()=>{},resolve:async()=>{preparationReached=true;throw new Error("probe stops before provider execution");}},
+    },
+  });
+  try {
+    const response=await app.inject({method:"POST",url:"/api/agents/agent-a/messages",headers:{"x-ponderosa-v3-dispatch":"dispatch-key"},payload:{text:"Scheduled work",effort:"chat-effort",v3SchedulerRunId:"scheduled",v3FencingToken:1,v3InjectionId:"injection",v3FreshProviderSession:true,v3ActivationPrompt:"Scheduled work"}});
+    assert.equal(response.statusCode,500);
+    assert.equal(preparationReached,true,JSON.stringify(response.json()));
+  } finally {await app.close();}
+});
 
 function agentCommunicationArtifactApp({
   stageCommunicationArtifact,

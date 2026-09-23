@@ -45,6 +45,27 @@ const projectCreationArtifacts = async (root) => (await readdir(root))
   .filter((name) => name.startsWith(".project-creation-"))
   .sort();
 
+test("standalone Chat creation is idempotent and cannot reuse a Project identity", async t => {
+  const root = await mkdtemp(path.join(tmpdir(),"ponderosa-chat-create-"));
+  const store = new AgentStore(root);
+  const app = Fastify();
+  t.after(async()=>{await app.close();store.close();await rm(root,{recursive:true,force:true});});
+  registerBasicProjectRoutes(app,store,path.join(root,"managed"));
+  const headers = {"idempotency-key":"standalone-chat-test"};
+  const payload = {label:"New Chat",defaultEngine:"codex"};
+  const first = await app.inject({method:"POST",url:"/api/chats",headers,payload});
+  assert.equal(first.statusCode,200,first.body);
+  const chat = first.json();
+  assert.equal(chat.title,"New Chat");
+  assert.ok(chat.workingDirectory.includes("chat-"));
+  const replay = await app.inject({method:"POST",url:"/api/chats",headers,payload});
+  assert.equal(replay.statusCode,200,replay.body);
+  assert.equal(replay.json().id,chat.id);
+  assert.throws(()=>store.updateProject(chat.projectId,{instructions:"Wrong owner"}),/owning Chat/);
+  const collision = await app.inject({method:"POST",url:"/api/projects",headers,payload});
+  assert.equal(collision.statusCode,409,collision.body);
+});
+
 function managedCreationReceipt(managedWorkspacesRoot, idempotencyKey, payload) {
   const hostPath = path.join(managedWorkspacesRoot, payload.createFolderName);
   return {

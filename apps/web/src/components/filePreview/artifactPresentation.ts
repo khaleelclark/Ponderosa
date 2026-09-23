@@ -1,7 +1,7 @@
 import type { ArtifactDto } from "@ponderosa/core";
 import { presentProjectPath } from "../../projectPathPresentation";
 
-type PresentedArtifact = Pick<ArtifactDto, "kind" | "path" | "sourcePath" | "summary">;
+type PresentedArtifact = Pick<ArtifactDto, "kind" | "path" | "sourcePath" | "summary" | "legacyRecovery">;
 
 /** Resolve the workspace path represented by an immutable file-change artifact. */
 export function artifactSourcePath(
@@ -35,6 +35,7 @@ export function artifactDisplayLabel(
   artifact: PresentedArtifact,
   displayPath = artifactDisplayPath(artifact),
 ): string {
+  if (artifact.legacyRecovery) return `Recovered legacy file · ${displayPath}`;
   const action = artifact.summary?.trim().match(/^(create|edit|delete)(?:\s|$)/iu)?.[1];
   const actionLabel = action
     ? action[0]!.toLocaleUpperCase() + action.slice(1).toLocaleLowerCase()

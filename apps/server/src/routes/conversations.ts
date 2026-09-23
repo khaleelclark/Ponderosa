@@ -32,6 +32,7 @@ const CONVERSATION_CREATE_FIELDS = new Set([
 const CONVERSATION_PATCH_FIELDS = new Set([
   ...CONVERSATION_CREATE_FIELDS,
   "archived",
+  "instructions",
 ]);
 
 export function conversationMutationBodyError(
@@ -48,6 +49,10 @@ export function conversationMutationBodyError(
     : CONVERSATION_PATCH_FIELDS;
   for (const [key, value] of entries) {
     if (!allowed.has(key)) return `unknown field: ${key}`;
+    if (key === "instructions") {
+      if (typeof value !== "string" || value.length > 100_000) return "instructions must be a string of at most 100000 characters";
+      continue;
+    }
     if (key === "archived") {
       if (typeof value !== "boolean") return "archived must be a boolean";
       continue;

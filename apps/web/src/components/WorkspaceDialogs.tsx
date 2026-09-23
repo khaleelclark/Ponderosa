@@ -53,14 +53,14 @@ export function SidebarConversationDialogs({
     <>
       <TextInputDialog
         open={action?.kind === "rename"}
-        title="Rename Project chat"
-        label="Project chat name"
+        title="Rename Chat"
+        label="Chat name"
         initialValue={action?.conversation.title ?? ""}
         confirmLabel="Save"
         pendingLabel="Saving…"
         pending={rename.isPending}
         error={rename.isError ? String(rename.error) : undefined}
-        validate={(value) => value.trim() ? undefined : "Enter a Project chat name."}
+        validate={(value) => value.trim() ? undefined : "Enter a Chat name."}
         onCancel={() => {
           rename.reset();
           onClose();

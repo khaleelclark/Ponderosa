@@ -215,6 +215,7 @@ export function ProjectRailButton({
 }
 
 export function ProjectRail({
+  sections,
   drawer,
   projects,
   activeProjectId,
@@ -245,6 +246,7 @@ export function ProjectRail({
   onOpenProfile,
   onClose,
 }: {
+  sections?: { active?: ProjectSidebarSection; agentsWorking?: boolean; onSelect(section: ProjectSidebarSection): void };
   drawer: boolean;
   projects: ProjectDto[];
   activeProjectId?: string;
@@ -280,6 +282,7 @@ export function ProjectRail({
   onClose?(): void;
 }): JSX.Element {
   const railWidth = drawer ? 64 : SIDEBAR_RAIL_WIDTH;
+  const mobile = drawer && Boolean(sections);
   const [operatorAnchor, setOperatorAnchor] = useState<HTMLElement>();
   const closeOperatorMenu = () => {
     const trigger = operatorAnchor;
@@ -297,7 +300,7 @@ export function ProjectRail({
   return (
     <Box
       component="nav"
-      aria-label={drawer ? "Project navigation drawer" : "Project navigation"}
+      aria-label={sections ? "Workspace sections" : drawer ? "Project navigation drawer" : "Project navigation"}
       sx={{
         width: railWidth,
         minWidth: railWidth,
@@ -306,16 +309,16 @@ export function ProjectRail({
         borderRight: 1,
         borderColor: "var(--ponderosa-rail-border)",
         bgcolor: railSurface,
-        display: "grid",
+        display: mobile ? "contents" : "grid",
         gridTemplateRows: "auto minmax(0, 1fr) auto",
         justifyItems: "center",
         py: 1.5,
       }}
     >
-      <Stack spacing={0.6} sx={{ alignItems: "center" }}>
+      <Stack spacing={0.6} sx={{ alignItems: "center", ...(mobile ? { gridRow: 1, flexDirection: "row", px: 1.5, py: 0.25 } : {}) }}>
         {drawer && onClose ? (
           <Tooltip title="Close navigation" placement="right">
-            <IconButton aria-label="Close workspace navigation" onClick={onClose} sx={{ width: 42, height: 42, mb: 1.5 }}>
+            <IconButton aria-label="Close workspace navigation" onClick={onClose} sx={{ width: 44, height: 44, mb: mobile ? 0 : 1.5, order: mobile ? 2 : undefined, ml: mobile ? "auto !important" : undefined }}>
               <CloseIcon />
             </IconButton>
           </Tooltip>
@@ -326,17 +329,18 @@ export function ProjectRail({
             aria-current={route.kind === "home" ? "page" : undefined}
             onClick={onOpenHome}
             sx={{
-              width: 48,
-              height: 48,
-              mb: 1.1,
+              width: mobile ? 40 : 48,
+              height: mobile ? 44 : 48,
+              mb: mobile ? 0 : 1.1,
               borderRadius: 1.5,
               bgcolor: route.kind === "home" ? "action.selected" : "transparent",
               "&:hover": { bgcolor: "action.hover" },
             }}
           >
-            <Box component="img" src="/icons/app-icon.png" alt="" sx={{ width: 42, height: 42, p: 0.25, borderRadius: 1, objectFit: "cover" }} />
+            <Box component="img" src="/icons/app-icon.png" alt="" sx={{ width: mobile ? 32 : 42, height: mobile ? 32 : 42, p: 0.25, borderRadius: 1, objectFit: "cover" }} />
           </ButtonBase>
         </Tooltip>
+        {mobile ? <Typography sx={{ fontWeight: 750, fontSize: 16 }}>Ponderosa</Typography> : null}
         <RailButton
           label="All Messages"
           selected={route.kind === "allChat"}
@@ -349,7 +353,7 @@ export function ProjectRail({
         >
           <ForumOutlinedIcon />
         </RailButton>
-        <Box aria-hidden sx={{ width: 32, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", my: 0.25 }} />
+        {!mobile ? <Box aria-hidden sx={{ width: 32, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", my: 0.25 }} /> : null}
       </Stack>
 
       <Stack
@@ -364,20 +368,32 @@ export function ProjectRail({
           py: 0.5,
           scrollbarWidth: "none",
           "&::-webkit-scrollbar": { display: "none" },
+          ...(mobile ? { gridRow: 2, flexDirection: "row", px: 1.5, gap: 0.5, py: 0, overflow: "visible", "& > *": { marginTop: "0 !important" } } : {}),
         }}
       >
-        <ProjectFolderRail projects={projects} folders={folders} onChange={onFoldersChange}
+        {mobile && sections ? PROJECT_MODES.map(mode => <ButtonBase key={mode.id} aria-label={mode.label} aria-pressed={sections.active === mode.id} onClick={() => sections.onSelect(mode.id)} sx={{ flex: 1, minWidth: 0, minHeight: 44, gap: 0.5, borderRadius: 2.5, borderBlock: "5px solid transparent", backgroundClip: "padding-box", fontSize: 12, fontWeight: 700, "& > .MuiSvgIcon-root": { fontSize: 18 }, bgcolor: sections.active === mode.id ? "action.selected" : "transparent", color: sections.active === mode.id ? "primary.main" : "text.secondary" }}>
+          {mode.icon}{mode.label}{mode.id === "agents" && sections.agentsWorking ? <AgentStatusIndicator status="running" /> : null}
+        </ButtonBase>) : sections ? <>
+          <RailButton label="Chats" selected={sections.active === "chats"} onClick={() => sections.onSelect("chats")}><ChatBubbleOutlineIcon /></RailButton>
+          <RailButton label="Agents" selected={sections.active === "agents"} onClick={() => sections.onSelect("agents")}>
+            <Box sx={{ position: "relative", display: "flex" }}>
+              <SmartToyOutlinedIcon />
+              {sections.agentsWorking ? <Box sx={{ position: "absolute", right: -4, bottom: -3, display: "flex", border: `2px solid ${railSurface}`, borderRadius: "50%" }}><AgentStatusIndicator status="running" /></Box> : null}
+            </Box>
+          </RailButton>
+          <RailButton label="Automations" selected={sections.active === "triggers"} onClick={() => sections.onSelect("triggers")}><BoltOutlinedIcon /></RailButton>
+        </> : <ProjectFolderRail projects={projects} folders={folders} onChange={onFoldersChange}
           currentProjectId={currentProjectId} activeProjectId={activeProjectId}
           unread={projectUnread} running={projectRunningCounts}
           onOpen={onOpenProject} onReorder={onReorderProject}
-          onRename={onRenameProject} onSettings={onProjectSettings} onDelete={onDeleteProject} />
+          onRename={onRenameProject} onSettings={onProjectSettings} onDelete={onDeleteProject} />}
       </Stack>
 
-      <Stack spacing={0.55} sx={{ alignItems: "center" }}>
-        <RailButton label="Create Project" selected={createProjectOpen || (route.kind === "create" && route.resource === "project")} onClick={onOpenCreate}>
+      <Stack spacing={0.55} sx={{ alignItems: "center", ...(mobile ? { gridRow: 4, flexDirection: "row", justifyContent: "space-around", borderTop: 1, borderColor: "divider", py: 0, pb: "env(safe-area-inset-bottom)", "& > *": { marginTop: "0 !important" }, "& .MuiIconButton-root": { width: 44, height: 44 }, "& .MuiSvgIcon-root": { fontSize: 21 } } : {}) }}>
+        {!sections ? <RailButton label="Create Project" selected={createProjectOpen || (route.kind === "create" && route.resource === "project")} onClick={onOpenCreate}>
           <AddIcon />
-        </RailButton>
-        <Box aria-hidden sx={{ width: 32, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", my: 0.25 }} />
+        </RailButton> : null}
+        {!mobile ? <Box aria-hidden sx={{ width: 32, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", my: 0.25 }} /> : null}
         <RailButton label="Search" selected={false} onClick={onOpenSearch}>
           <SearchIcon />
         </RailButton>
@@ -390,7 +406,7 @@ export function ProjectRail({
         >
           <NotificationsOutlinedIcon />
         </RailButton>
-        <RailButton label="Settings" selected={route.kind === "settings" || route.kind === "usage"} onClick={onOpenSettings}>
+        <RailButton label="Settings" selected={sections ? sections.active === undefined : route.kind === "settings" || route.kind === "usage"} onClick={onOpenSettings}>
           <SettingsOutlinedIcon />
         </RailButton>
         <Tooltip title={profile.displayName || "Operator profile"} placement="right">

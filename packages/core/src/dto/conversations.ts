@@ -21,6 +21,9 @@ export interface ConversationDto {
   id: string;
   projectId: string;
   title: string;
+  /** Chat-owned execution context. Legacy projectId only locates stored history. */
+  workingDirectory?: string;
+  instructions?: string;
   defaultEngine?: EngineId;
   defaultModel?: string;
   defaultEffort?: string;
@@ -42,6 +45,7 @@ export interface CreateConversationRequest {
 /** PATCH /api/conversations/:id body. */
 export interface UpdateConversationRequest {
   title?: string;
+  instructions?: string;
   defaultEngine?: EngineId | null;
   defaultModel?: string | null;
   defaultEffort?: string | null;
@@ -791,6 +795,12 @@ export interface GlobalChatSearchResponseDto {
   recentChats: RecentGlobalChatDto[];
   scannedMessages: number;
   truncated: boolean;
+}
+
+export interface GlobalFileSearchResponseDto {
+  results: Array<{ project: { id: string; label: string }; path: string; name: string }>;
+  truncated: boolean;
+  unavailableRoots: number;
 }
 
 // ─── Messages ───────────────────────────────────────────────────────────────────────

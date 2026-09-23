@@ -71,6 +71,7 @@ export type WorkspaceConnectionStatus =
   | "unavailable";
 
 export interface WorkspaceConnectionState {
+  retry?(): void;
   status: WorkspaceConnectionStatus;
   /** Canonical phase-bearing queries have reconciled after stream catch-up. */
   phaseEvidenceFresh: boolean;
@@ -518,6 +519,7 @@ export function useWorkspaceStream(
   options: WorkspaceStreamOptions = {},
 ): WorkspaceConnectionState {
   const queryClient = useQueryClient();
+  const [retryGeneration, setRetryGeneration] = useState(0);
   const onProjectDeleted = useRef(options.onProjectDeleted);
   onProjectDeleted.current = options.onProjectDeleted;
   const cursor = useRef(initialCursor());
@@ -643,7 +645,6 @@ export function useWorkspaceStream(
       schedulePhaseReconciliation();
     });
     const invalidateAll = () => {
-      void queryClient.invalidateQueries({ queryKey: ["speech-status"] });
       directoryInvalidator.dispose();
       agentWorkInvalidator.dispose();
       agentDetailInvalidator.dispose();
@@ -683,10 +684,6 @@ export function useWorkspaceStream(
       cursor.current = reconciliation.cursor;
       persistWorkspaceCursor(reconciliation.cursor, instanceId.current ?? undefined);
       const event = envelope.event;
-      if (event.type === "speech_status_changed") {
-        void queryClient.invalidateQueries({ queryKey: ["speech-status"] });
-        if (!reconciliation.gap) return;
-      }
       const changesPhaseEvidence = workspaceAgentEventChangesPhase(event)
         || event.type === "coordination_changed"
         || (event.type === "notification_changed" && Boolean(event.decisionId));
@@ -703,6 +700,7 @@ export function useWorkspaceStream(
       > = [];
       let preferenceStarsChanged = false;
       if (event.type === "preferences_updated") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
         const previousPreferences = queryClient.getQueryData<
           WorkspacePreferencesDto
         >(queryKeys.workspacePreferences.all);
@@ -947,7 +945,18 @@ export function useWorkspaceStream(
           phaseCatchUpCursor = status.cursor;
           noteConnected();
           instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
-          if (status.reset || cursor.current > status.cursor) {
+          if (status.snapshot) {
+            cursor.current = status.cursor;
+            // A pre-baseline HTTP request may still be in flight. Cancel it
+            // before refreshing, so an older response cannot win the bootstrap.
+            void queryClient.cancelQueries().then(() => {
+              if (stopped) return;
+              // Include bootstrap queries such as preferences, not just the
+              // event-specific projections covered by invalidateAll.
+              void queryClient.invalidateQueries();
+              schedulePhaseReconciliation();
+            });
+          } else if (status.reset || cursor.current > status.cursor) {
             cursor.current = 0;
             invalidateAll();
           }
@@ -976,8 +985,8 @@ export function useWorkspaceStream(
       collaborationChatInvalidator.dispose();
       decisionConversationInvalidator.dispose();
     };
-  }, [queryClient]);
-  return connection;
+  }, [queryClient, retryGeneration]);
+  return { ...connection, retry: () => setRetryGeneration(value => value + 1) };
 }
 
 export { createWorkspaceRecencyInvalidator, workspaceEventChangesResourceRecency };

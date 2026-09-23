@@ -271,6 +271,7 @@ export class AgentStore extends AgentEventSessionFacade {
       // transactionally on every startup so a crash or torn append cannot leave
       // a partially repaired projection visible to ordinary requests.
       this.rebuildProjections();
+      if (this.workspaceCatalog.migrateChatOwnership()) this.rebuildProjections();
       for (const project of this.listProjects()) {
         this.ensureCommunicationProjectionLedger(project.id);
         reconcileCompactionHistoryIndex(
@@ -898,6 +899,7 @@ export class AgentStore extends AgentEventSessionFacade {
   createProject(
     input: Omit<CreateProjectRequest, "defaultEngine"> & {
       hostPath: string;
+      chatOwned?: boolean;
       defaultEngine?: CreateProjectRequest["defaultEngine"];
     },
     identity?: WorkspaceCreationIdentity,
@@ -1027,6 +1029,10 @@ export class AgentStore extends AgentEventSessionFacade {
 
   getConversation(id: string): ConversationDto | undefined {
     return this.workspaceCatalog.getConversation(id);
+  }
+
+  getChatContext(id: string): ProjectDto | undefined {
+    return this.workspaceCatalog.getChatContext(id);
   }
 
   getConversationDetail(id: string): ConversationDetailDto | undefined {
@@ -1641,8 +1647,8 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.artifactCatalog.agentCanReadProjectArtifact(projectId, artifactIdValue, agentId);
   }
 
-  getProjectContextArtifacts(projectId: string, limit = 100): ArtifactDto[] {
-    return this.artifactCatalog.getProjectContextArtifacts(projectId, limit);
+  getProjectContextArtifacts(projectId: string, limit = 100, conversationId?: string): ArtifactDto[] {
+    return this.artifactCatalog.getProjectContextArtifacts(projectId, limit, conversationId);
   }
 
   recordProjectArtifact(

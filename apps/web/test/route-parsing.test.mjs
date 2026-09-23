@@ -6,7 +6,19 @@ import {
   routeToPath,
   routeWaitsForWorkspacePreferences,
 } from "../src/routeRegistry.js";
-import { parseRoute, parseRouteLocation } from "../src/routing.js";
+import { parseRoute, parseRouteLocation, resolveStartupLocation } from "../src/routing.js";
+
+test("fresh launch opens Home, returning launch restores workspace, explicit Home wins", () => {
+  const fresh = {kind:"home"};
+  assert.deepEqual(resolveStartupLocation("/"), {route:fresh,replacement:routeToPath(fresh)});
+  assert.equal(resolveStartupLocation("/", "", "/agents").route.kind,"allAgents");
+  assert.equal(resolveStartupLocation("/chats", "", "/agents").route.kind,"allChats");
+  assert.equal(resolveStartupLocation("/projects/p/chats/c", "", "/agents").route.kind,"conversation");
+  assert.equal(resolveStartupLocation("/", "", "/create/chat").route.kind,"home");
+  assert.equal(resolveStartupLocation("/", "", "//evil.example").route.kind,"home");
+  assert.equal(resolveStartupLocation("/home", "", "/agents").route.kind,"home");
+  assert.equal(routeToPath({kind:"home"}),"/home");
+});
 
 test("malformed encoded route segments fall back without throwing", () => {
   for (const path of [
@@ -43,8 +55,19 @@ test("initial and popstate-equivalent malformed locations request a stable URL",
     });
   }
   assert.deepEqual(parseRouteLocation("/projects/caf%C3%A9"), {
-    route: { kind: "project", projectId: "café" },
+    route: { kind: "allChats" }, replacement: "/chats",
   });
+});
+
+test("retired Project pages redirect to Chats without breaking owned resource links", () => {
+  for (const path of ["/projects", "/projects/p", "/projects/p?view=settings"]) {
+    const url=new URL(path,"https://example.test");
+    assert.deepEqual(parseRouteLocation(url.pathname,url.search),{route:{kind:"allChats"},replacement:"/chats"});
+  }
+  assert.equal(routeToPath({kind:"project",projectId:"p",view:"settings"}),"/chats");
+  assert.equal(routeToPath({kind:"projects"}),"/chats");
+  assert.deepEqual(parseRoute("/projects/p/files/view","?path=docs%2Freport.txt"),{kind:"workspaceFile",projectId:"p",path:"docs/report.txt"});
+  assert.equal(resolveStartupLocation("/","","/projects/p").replacement,"/chats");
 });
 
 test("nested Project routes expose every resource that must match the Project", () => {

@@ -429,7 +429,7 @@ export function CollectionStateFeedback({
   compact?: boolean;
 }): JSX.Element | null {
   if (request.isInitialLoading) {
-    return <LoadingState resource={resourceLabel} variant={compact ? "section" : "route"} />;
+    return <LoadingState resource={resourceLabel} variant={compact ? "inline" : "route"} />;
   }
   if (request.isInitialError) {
     return <Alert

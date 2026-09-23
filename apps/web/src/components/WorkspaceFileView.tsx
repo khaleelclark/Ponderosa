@@ -16,7 +16,7 @@ export function WorkspaceFileView({ projectId, path, onBack }: { projectId: stri
   const name = file?.name ?? path.split("/").at(-1) ?? path;
   return <Box sx={{ height: "100%", minHeight: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
     <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0, px: { xs: 1, md: 2.5 }, py: 1, borderBottom: 1, borderColor: "divider" }}>
-      <Tooltip title="Back to Project"><IconButton aria-label="Back to Project" onClick={onBack}><ArrowBackIcon /></IconButton></Tooltip>
+      <Tooltip title="Back to Chats"><IconButton aria-label="Back to Chats" onClick={onBack}><ArrowBackIcon /></IconButton></Tooltip>
       <Box sx={{ minWidth: 0, flex: 1 }}>
         <Typography variant="h6" component="h1" fontWeight={850} noWrap>{name}</Typography>
         <Typography variant="body2" color="text.secondary" noWrap>

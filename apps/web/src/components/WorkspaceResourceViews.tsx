@@ -80,16 +80,16 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
         ? scopedProject
           ? `${directory.total} ${directory.total === 1 ? "Chat" : "Chats"} in ${scopedProject.label}`
           : filtersActive
-            ? `${directory.total} matching Project ${directory.total === 1 ? "Chat" : "Chats"}`
-            : `${directory.total} Project ${directory.total === 1 ? "Chat" : "Chats"} across Ponderosa`
+            ? `${directory.total} matching ${directory.total === 1 ? "Chat" : "Chats"}`
+            : `${directory.total} ${directory.total === 1 ? "Chat" : "Chats"} across Ponderosa`
         : undefined
     }
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={() => onCreate(projectId || undefined)}>New Chat</Button>}
     toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Chats" reorderHint>
       <CollectionDirectoryControls
-        projects={filterProjectId ? undefined : projects}
-        projectId={filterProjectId ? undefined : projectId}
-        onProject={filterProjectId ? undefined : setProjectId}
+        projects={undefined}
+        projectId={undefined}
+        onProject={undefined}
         sort={sort}
         onSort={value => onPreferences(workspaceResourceSortPatch("chat", value))}
       />
@@ -105,7 +105,7 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
         key={conversation.id}
         resourceIdentity={`conversation:${conversation.id}`}
         label={conversation.title}
-        description={filterProjectId ? undefined : project.label}
+        description={undefined}
         icon={<ChatBubbleOutlineIcon />}
         meta={<CollectionTimestamp value={conversation.updatedAt} />}
         starAction={<Tooltip title={starred.has(key) ? "Unstar Chat" : "Star Chat"}><IconButton aria-label={starred.has(key) ? `Unstar ${conversation.title}` : `Star ${conversation.title}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "conversation", conversation.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
@@ -147,7 +147,7 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
       emptyTitle="No Chats Yet"
       emptyDetail="Create a Chat to get started."
       noMatchTitle="No Chats match these filters"
-      noMatchDetail={filterProjectId ? "Try a different search." : "Try a different search or Project filter."}
+      noMatchDetail={filterProjectId ? "Try a different search." : "Try a different search."}
       onClearFilters={() => { setSearch(""); if (!filterProjectId) setProjectId(""); }}
     />
     <ResourceContextMenu
@@ -235,7 +235,7 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   const loadCompleteAgentCollection = async (): Promise<void> => {
     if (search.trim() || conversationId !== "all")
       throw new Error(
-        "Clear the Agent search and Project Chat filter before loading the complete organization.",
+        "Clear the Agent search and Chat filter before loading the complete organization.",
       );
     let hasNextPage = agentDirectoryQuery.requestState.hasNextPage;
     while (hasNextPage) {
@@ -269,7 +269,7 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
         emptyTitle="No Agents Yet"
         emptyDetail="Create an Agent to get started."
         noMatchTitle="No Agents match these filters"
-        noMatchDetail="Try a different search, status, Project, or Chat filter."
+        noMatchDetail="Try a different search, status, or Chat filter."
         onClearFilters={() => {
           setSearch("");
           setConversationId("all");
@@ -278,12 +278,6 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
       />}
       toolbarControls={<>
         <CollectionDirectoryControls
-          projects={projects}
-          projectId={projectId}
-          onProject={(value) => {
-            setProjectId(value);
-            setConversationId("all");
-          }}
           sort={sort}
           onSort={value => onPreferences(workspaceResourceSortPatch("agent", value))}
           compact
@@ -415,7 +409,7 @@ export function AllTriggersWorkspace({
   );
   return <CollectionWorkspace
     icon={<BoltOutlinedIcon />}
-    title={scopeTitle ?? (scopedProject ? "Project Automations" : "All Automations")}
+    title={scopeTitle ?? (scopedProject ? "Automations" : "All Automations")}
     detail={
       directoryQuery.requestState.hasResolved
         ? scopedProject
@@ -428,9 +422,9 @@ export function AllTriggersWorkspace({
     primaryAction={createButton}
     toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Automations" reorderHint>
       <CollectionDirectoryControls
-        projects={filterProjectId ? undefined : projects}
-        projectId={filterProjectId ? undefined : projectId}
-        onProject={filterProjectId ? undefined : setProjectId}
+        projects={undefined}
+        projectId={undefined}
+        onProject={undefined}
         sort={sort}
         onSort={value => onPreferences(workspaceResourceSortPatch("trigger", value))}
       />
@@ -448,7 +442,7 @@ export function AllTriggersWorkspace({
         key={trigger.id}
         resourceIdentity={`trigger:${trigger.id}`}
         label={trigger.name}
-        description={`${filterProjectId ? "" : `${project.label} · `}${targetAgent?.title ?? "Reassignment required"} · ${trigger.sourceKind.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase())}`}
+        description={`${targetAgent?.title ?? "Reassignment required"} · ${trigger.sourceKind.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase())}`}
         icon={<BoltOutlinedIcon />}
         meta={<Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
           <Chip
@@ -501,7 +495,7 @@ export function AllTriggersWorkspace({
       emptyTitle="No Automations Yet"
       emptyDetail="Create an Automation to automate Agent work."
       noMatchTitle="No Automations match these filters"
-      noMatchDetail={filterProjectId ? "Try a different search." : "Try a different search or Project filter."}
+      noMatchDetail={filterProjectId ? "Try a different search." : "Try a different search."}
       onClearFilters={() => { setSearch(""); if (!filterProjectId) setProjectId(""); }}
     />
     <ResourceContextMenu

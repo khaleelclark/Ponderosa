@@ -60,7 +60,7 @@ type RouteRegistry = {
 
 const ROUTE_REGISTRY = {
   home: {
-    toPath: () => "/",
+    toPath: () => "/home",
     scope: "global",
     initialSidebarSection: "home",
   },
@@ -78,7 +78,7 @@ const ROUTE_REGISTRY = {
     initialSidebarSection: "home",
   },
   projects: {
-    toPath: () => "/projects",
+    toPath: () => "/chats",
     scope: "global",
     initialSidebarSection: "projects",
   },
@@ -123,12 +123,7 @@ const ROUTE_REGISTRY = {
     synchronizedSidebarSection: "settings",
   },
   project: {
-    toPath: route => {
-      const query = new URLSearchParams();
-      if (route.view && route.view !== "overview") query.set("view", route.view);
-      if (route.focusArtifactId) query.set("artifact", route.focusArtifactId);
-      return `/projects/${encodeURIComponent(route.projectId)}${query.size ? `?${query.toString()}` : ""}`;
-    },
+    toPath: () => "/chats",
     scope: "project",
     initialSidebarSection: "home",
   },

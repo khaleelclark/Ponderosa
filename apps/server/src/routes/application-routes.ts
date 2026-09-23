@@ -656,6 +656,7 @@ const globalChatSearch = (query: {
 
 registerSearchRoutes(app, {
   ...serverContext,
+  store,
   globalChatSearch,
   workspace,
   coordinationV3,

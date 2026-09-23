@@ -986,7 +986,7 @@ export function Composer({
         ? `#${unresolvedAuthoredTarget} does not identify one available Agent. Remove it or choose an Agent again.`
       : destinationMode === "target-required" && hasBroadcastDestination
       ? targetRequiredDestinations.length > 0
-        ? "Broadcast is only available in a Project Chat."
+        ? "Broadcast is only available in a Chat."
         : "#broadcast is not available in Messages Across Ponderosa. Choose an Agent."
       : destinationMode === "target-required" && unresolvedAmbiguousTarget
           ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`

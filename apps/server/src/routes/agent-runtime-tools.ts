@@ -355,7 +355,7 @@ export function registerAgentRuntimeToolRoutes(
         error: "toolCallId must identify the provider tool call",
       });
     }
-    const project = store.getProject(agent.projectId);
+    const project = store.getChatContext(agent.conversationId);
     if (!project) {
       return reply.code(404).send({ error: "run Project is unavailable" });
     }

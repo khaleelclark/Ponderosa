@@ -342,8 +342,8 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
   async (request, reply) => {
     const agent = store.getAgent(request.params.id);
     if (!agent) return reply.code(404).send({ error: "agent not found" });
-    const project = store.getProject(agent.projectId);
-    if (!project) return reply.code(404).send({ error: "project not found" });
+    const project = store.getChatContext(agent.conversationId);
+    if (!project || project.id !== agent.projectId) return reply.code(409).send({ error: "Agent Chat context is unavailable" });
     const engine = engines.get(agent.activeEngine);
     if (!engine) return reply.code(400).send({ error: "unknown engine" });
     const name = request.body?.name?.trim().replace(/^\/+/, "") ?? "";

@@ -12,7 +12,7 @@ import { routeProjectId, type Route } from "../routing";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import type { ResourceContextMenuState } from "./ResourceContextMenu";
 
-export function useWorkspaceSidebarNavigation(route: Route) {
+export function useWorkspaceSidebarNavigation(route: Route, globalLists = false) {
   const [sidebarSection, setSidebarSection] =
     useState<RouteSidebarSection>(() => routeInitialSidebarSection(route));
   const previousRoute = useRef(route);
@@ -43,7 +43,7 @@ export function useWorkspaceSidebarNavigation(route: Route) {
     const projectId = routeProjectId(route);
     if (projectId) {
       const nextProjectSection = projectSidebarSectionForRoute(route);
-      if (previousProjectId !== projectId) {
+      if (!globalLists && previousProjectId !== projectId) {
         setProjectSection(nextProjectSection ?? "chats");
         setFilter("");
       } else if (
@@ -64,7 +64,7 @@ export function useWorkspaceSidebarNavigation(route: Route) {
       }
       return;
     }
-  }, [route]);
+  }, [route, globalLists]);
 
   return {
     sidebarSection,

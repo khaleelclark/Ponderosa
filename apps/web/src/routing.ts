@@ -1,7 +1,7 @@
 // Lightweight URL-driven navigation (no router dependency). Durable URLs let a
 // refresh or browser back/forward restore the exact project + selection:
 //
-//   / (Home overview)
+//   / (restore last workspace, otherwise Home)
 //   /messages (messages to and from the operator)
 //   /chats (All Chats)
 //   /projects/:projectId/chats/:conversationId
@@ -104,7 +104,7 @@ function decodeRouteSegment(value: string): string | undefined {
   }
 }
 
-export function parseRoute(pathname: string, search = ""): Route {
+function parseLegacyRoute(pathname: string, search = ""): Route {
   const [cleanPathname, inlineSearch = ""] = pathname.split("?", 2);
   const query = new URLSearchParams(search || (inlineSearch ? `?${inlineSearch}` : ""));
   const focusMessageId = query.get("message")?.trim() || undefined;
@@ -129,7 +129,8 @@ export function parseRoute(pathname: string, search = ""): Route {
   const projectView = isProjectDetailView(requestedAgentView) ? requestedAgentView : undefined;
   const focusArtifactId = query.get("artifact")?.trim() || undefined;
   const parts = cleanPathname!.split("/").filter(Boolean);
-  if (parts.length === 0) return { kind: "home" };
+  if (parts[0] === "create" && parts[1] === "project") return {kind:"create",resource:"chat",surface:"workspace"};
+  if (parts.length === 0 || parts[0] === "home") return { kind: "home" };
   if (
     parts[0] === "create" &&
     ["project", "chat", "agent", "trigger"].includes(parts[1] ?? "")
@@ -246,12 +247,18 @@ export function parseRoute(pathname: string, search = ""): Route {
   };
 }
 
+export function parseRoute(pathname: string, search = ""): Route {
+  const route = parseLegacyRoute(pathname, search);
+  return route.kind === "project" || route.kind === "projects" ? { kind: "allChats" } : route;
+}
+
 export function parseRouteLocation(
   pathname: string,
   search = "",
-): { route: Route; replacement?: "/" } {
+): { route: Route; replacement?: "/" | "/chats" } {
   const route = parseRoute(pathname, search);
   const cleanPathname = pathname.split("?", 1)[0] ?? pathname;
+  if (route.kind === "allChats" && cleanPathname.startsWith("/projects")) return { route, replacement: "/chats" };
   return decodeRouteSegment(cleanPathname)
     ? { route }
     : { route, replacement: "/" };
@@ -259,6 +266,24 @@ export function parseRouteLocation(
 
 export function routeProjectId(route: Route): string | undefined {
   return "projectId" in route ? route.projectId : undefined;
+}
+
+export const LAST_WORKSPACE_PATH_KEY = "ponderosa.lastWorkspacePath.v1";
+export function resolveStartupLocation(pathname: string, search = "", remembered?: string | null): { route: Route; replacement?: string } {
+  if (pathname !== "/" || search) return parseRouteLocation(pathname, search);
+  if (remembered?.startsWith("/") && !remembered.startsWith("//") && remembered.length < 4096) {
+    const url = new URL(remembered, "https://ponderosa.invalid");
+    const route = parseRoute(url.pathname, url.search);
+    if (route.kind !== "home" && route.kind !== "create" && route.kind !== "browser") return { route, replacement: routeToPath(route) };
+  }
+  const route: Route = { kind: "home" };
+  return { route, replacement: routeToPath(route) };
+}
+
+function initialWorkspaceLocation(): { route: Route; replacement?: string } {
+  let remembered: string | null = null;
+  try { remembered = window.localStorage.getItem(LAST_WORKSPACE_PATH_KEY); } catch { /* Private mode still supports navigation. */ }
+  return resolveStartupLocation(window.location.pathname, window.location.search, remembered);
 }
 
 export function saveLastProjectId(projectId: string): void {
@@ -273,8 +298,7 @@ export function useRoute(): {
   route: Route;
   navigate(route: Route, options?: { replace?: boolean }): void;
 } {
-  const [route, setRoute] = useState<Route>(() =>
-    parseRoute(window.location.pathname, window.location.search));
+  const [route, setRoute] = useState<Route>(() => initialWorkspaceLocation().route);
 
   useEffect(() => {
     const onPop = () => {
@@ -287,12 +311,21 @@ export function useRoute(): {
       }
       setRoute(next.route);
     };
-    onPop();
+    const initial = initialWorkspaceLocation();
+    if (initial.replacement) window.history.replaceState(null, "", initial.replacement);
+    setRoute(initial.route);
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
+  useEffect(() => {
+    if (route.kind === "create" || route.kind === "browser" || route.kind === "home") return;
+    try { window.localStorage.setItem(LAST_WORKSPACE_PATH_KEY, routeToPath(route)); } catch { /* Storage is optional. */ }
+  }, [route]);
+
   const navigate = useCallback((next: Route, options?: { replace?: boolean }) => {
+    if (next.kind === "create" && next.resource === "project") next = {kind:"create",resource:"chat",surface:"workspace"};
+    if (next.kind === "project" || next.kind === "projects") next = { kind: "allChats" };
     const path = routeToPath(next);
     if (path === `${window.location.pathname}${window.location.search}`) {
       setRoute(next);

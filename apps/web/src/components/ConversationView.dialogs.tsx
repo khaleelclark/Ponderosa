@@ -91,12 +91,12 @@ export function ConversationDialogs({
       />
 
       <Dialog open={renameOpen} onClose={onRenameClose} fullWidth maxWidth="xs">
-        <DialogTitle>Rename Project chat</DialogTitle>
+        <DialogTitle>Rename Chat</DialogTitle>
         <DialogContent>
           <TextField
             autoFocus
             fullWidth
-            label="Project chat name"
+            label="Chat name"
             value={renameValue}
             onChange={event => onRenameValueChange(event.target.value)}
             sx={{ mt: 1 }}

@@ -291,7 +291,7 @@ export function AgentDetailHeader({
               ...(onQuickCopy
                 ? [
                     {
-                      label: "Duplicate Agent into Project Chat",
+                      label: "Duplicate Agent into Chat",
                       icon: <ContentCopyOutlinedIcon fontSize="small" />,
                       onSelect: onQuickCopy,
                     },

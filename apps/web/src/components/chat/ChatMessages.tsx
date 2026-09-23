@@ -565,7 +565,7 @@ function ChatMarkdown({
             const handle = messageTagHandle(href);
             if (!handle) return <Box component="span">{label}</Box>;
             if (handle.toLocaleLowerCase() === "broadcast" && onOpenBroadcast) {
-              return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open originating broadcast in Project chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "none", cursor: "pointer" }}>{label}</Box>;
+              return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open originating broadcast in Chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "none", cursor: "pointer" }}>{label}</Box>;
             }
             const boundMention = agentMentionForHandle?.(handle);
             const agentId = boundMention?.agentId ?? agentIdForHandle?.(handle);

@@ -323,14 +323,10 @@ See [Deployment](../deploy/README.md) for the drain and recovery procedure.
 
 Dictation inserts recognized speech into the message composer; it is separate
 from sending the message. Read-aloud plays message text through browser/system
-speech or optional local Kokoro synthesis on the Ponderosa host. Local voices
-require explicit installation in Settings; playback never installs them.
-Willow and Cedar use US English; Hazel uses British English. Generated audio is
-an ephemeral cache and is not saved into Project or message history.
-
-Local Kokoro hosting is qualified for the private Pine/Linux deployment.
-Windows/macOS native hosting and physical mobile audio qualification remain
-separate work. There is no continuous, phone-like Agent conversation mode.
+speech only. No server-side synthesis, model download, or custom voice package is used.
+Talk remains a turn-based conversation: listen, review, send, and hear the completed
+reply. Browser/device support determines recognition and playback availability.
+There is no continuous, phone-like Agent conversation mode.
 
 ## Current limits and proposed Next behavior
 

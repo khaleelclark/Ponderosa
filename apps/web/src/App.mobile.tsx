@@ -90,7 +90,12 @@ export function MobileWorkspaceDrawer({
       onOpen={() => onOpenChange(true)}
       onClose={close}
       disableDiscovery
-      swipeAreaWidth={8}
+      // MUI disables opening on iOS by default; reserve only the edge strip,
+      // and keep native horizontal history gestures from claiming that strip.
+      disableSwipeToOpen={false}
+      swipeAreaWidth={24}
+      SwipeAreaProps={{ style: { touchAction: "pan-y" } }}
+      hysteresis={0.25}
       ModalProps={{ disableRestoreFocus: true }}
       PaperProps={{
         sx: {

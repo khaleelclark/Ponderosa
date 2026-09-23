@@ -33,7 +33,7 @@ export function registerStreamRoutes(
     liveSseClosures,
   } = context;
 
-  app.get<{ Querystring: { lastEventId?: string } }>(
+  app.get<{ Querystring: { lastEventId?: string; bootstrap?: string } }>(
     "/api/workspace/stream",
     async (request, reply) => {
       if (serverClosed()) return reply.code(503).send({ error: "server is shutting down" });
@@ -45,7 +45,8 @@ export function registerStreamRoutes(
       const requestedCursor = Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
       const highWaterMark = workspace.cursor();
       const reset = requestedCursor > highWaterMark;
-      const replayFrom = reset ? 0 : requestedCursor;
+      const snapshot = request.query.bootstrap === "true" && (requestedCursor === 0 || reset);
+      const replayFrom = snapshot ? highWaterMark : reset ? 0 : requestedCursor;
       reply.hijack();
       reply.raw.writeHead(200, {
         "content-type": "text/event-stream; charset=utf-8",
@@ -57,6 +58,7 @@ export function registerStreamRoutes(
         instanceId: workspace.instanceId(),
         cursor: highWaterMark,
         reset,
+        ...(snapshot ? { snapshot: true } : {}),
       } satisfies import("@ponderosa/core").WorkspaceStreamStatusDto);
       writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() });
       let cursor = replayFrom;
@@ -77,7 +79,7 @@ export function registerStreamRoutes(
         else writeEvent(event);
       };
       workspaceSubscribers.add(subscriber);
-      for (const event of workspace.readSince(replayFrom)) writeEvent(event, true);
+      if (!snapshot) for (const event of workspace.readSince(replayFrom)) writeEvent(event, true);
       replaying = false;
       for (const event of queued) writeEvent(event);
       const heartbeat = setInterval(() => {

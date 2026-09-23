@@ -32,6 +32,7 @@ import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
 import { WorkspaceReviewPane } from "./files/WorkspaceReviewPane";
 import { WorkspaceFileView } from "./WorkspaceFileView";
 import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
+import { useReportWorkspaceRefresh } from "./WorkspaceRefreshContext";
 import { TriggersPane } from "./TriggersPane";
 
 type RemovableWorkspaceResourceRoute = Extract<
@@ -229,6 +230,18 @@ export function ProjectShell({
     (Boolean(routeConversationId) && conversationsQuery.isSuccess && !conversations.some(conversation => conversation.id === routeConversationId)) ||
     (Boolean(routeTriggerId) && triggersQuery.isSuccess && !triggersQuery.data?.some(trigger => trigger.id === routeTriggerId));
 
+  const retainedResourceError = route.kind !== "project" && (
+    conversationsFailure === "refresh" ||
+    agentsFailure === "refresh" ||
+    (Boolean(routeTriggerId) && triggersFailure === "refresh")
+  );
+  useReportWorkspaceRefresh(retainedResourceError ? "Some workspace data could not refresh. The last loaded data remains available." : undefined, () => {
+    if (conversationsFailure === "refresh") void conversationsQuery.refetch();
+    if (agentsFailure === "refresh") void agentsQuery.refetch();
+    if (triggersFailure === "refresh") void triggersQuery.refetch();
+  });
+
+
   if (routeResourceLoading) return <LinearProgress aria-label="Loading requested resource" />;
   if (routeResourceError) {
     return <Box sx={{ p: 2 }}><Alert severity="error" action={<Button onClick={() => {
@@ -238,7 +251,7 @@ export function ProjectShell({
     }}>Retry</Button>}>The requested resource could not be checked.</Alert></Box>;
   }
   if (routeResourceUnavailable) {
-    return <Box sx={{ p: 2 }}><Alert severity="warning" action={<Button onClick={() => navigate({ kind: "project", projectId })}>Back to Project</Button>}>This resource is unavailable in this Project.</Alert></Box>;
+    return <Box sx={{ p: 2 }}><Alert severity="warning" action={<Button onClick={() => navigate({ kind: "allChats" })}>Back to Chats</Button>}>This resource is unavailable in this Project.</Alert></Box>;
   }
 
   if (conversationsFailure === "initial" || agentsFailure === "initial") {
@@ -287,7 +300,7 @@ export function ProjectShell({
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
         projectAgents={agents}
-        onOpenProject={() => navigate({ kind: "project", projectId })}
+        onOpenProject={() => navigate({ kind: "allChats" })}
         onOpenProjectBrowser={() => navigate({ kind: "browser", projectId })}
         onOpenAgent={(agentId, view, technicalFocusId) => view
           ? navigate({ kind: "agent", projectId, agentId, view, ...(technicalFocusId ? { technicalFocusId } : {}) })
@@ -350,7 +363,7 @@ export function ProjectShell({
         healthByAgentId={healthByAgentId}
         agents={agents}
         conversations={conversations}
-        onOpenProject={() => navigate({ kind: "project", projectId })}
+        onOpenProject={() => navigate({ kind: "allChats" })}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onOpenAgentSettings={(agentId) =>
           navigate({ kind: "agent", projectId, agentId, view: "settings" })}
@@ -403,8 +416,8 @@ export function ProjectShell({
       embedded
       request={browserRequest}
       onRequestHandled={onBrowserRequestHandled}
-      backLabel="Back to Project"
-      onClose={() => navigate({ kind: "project", projectId })}
+      backLabel="Back to Chats"
+      onClose={() => navigate({ kind: "allChats" })}
     />
   );
   } else if (route.kind === "automation") {
@@ -452,7 +465,7 @@ export function ProjectShell({
       onBack={() => navigate({ kind: "agent", projectId, agentId: route.agentId })}
     />;
   } else if (route.kind === "workspaceFile") {
-    main = <WorkspaceFileView projectId={projectId} path={route.path} onBack={() => navigate({ kind: "project", projectId })} />;
+    main = <WorkspaceFileView projectId={projectId} path={route.path} onBack={() => navigate({ kind: "allChats" })} />;
   } else if (route.kind === "projectWork") {
     main = <AgentWorkInspector
       key={`${projectId}:${route.conversationId ?? ""}:${route.focusId ?? ""}`}
@@ -460,8 +473,8 @@ export function ProjectShell({
       projectId={projectId}
       conversationId={route.conversationId}
       focus={route.focusId ? { id: route.focusId } : undefined}
-      backLabel={route.conversationId ? "Back to Chat" : "Back to Project"}
-      onClose={() => navigate(route.conversationId ? { kind: "conversation", projectId, conversationId: route.conversationId } : { kind: "project", projectId })}
+      backLabel={route.conversationId ? "Back to Chat" : "Back to Chats"}
+      onClose={() => navigate(route.conversationId ? { kind: "conversation", projectId, conversationId: route.conversationId } : { kind: "allChats" })}
     />;
   } else if (route.kind === "project") {
     main =
@@ -507,28 +520,6 @@ export function ProjectShell({
     main = assertNeverRoute(route);
   }
 
-  const retainedResourceError = route.kind !== "project" && (
-    conversationsFailure === "refresh" ||
-    agentsFailure === "refresh" ||
-    (Boolean(routeTriggerId) && triggersFailure === "refresh")
-  );
-  const retainedResourceNotice = retainedResourceError ? (
-    <Alert
-      severity="warning"
-      action={
-        <Button color="inherit" size="small" onClick={() => {
-          if (conversationsFailure === "refresh") void conversationsQuery.refetch();
-          if (agentsFailure === "refresh") void agentsQuery.refetch();
-          if (triggersFailure === "refresh") void triggersQuery.refetch();
-        }}>
-          Retry
-        </Button>
-      }
-      sx={{ m: 1 }}
-    >
-      Some Project data could not be refreshed. The last loaded data remains available.
-    </Alert>
-  ) : null;
 
   const dialogs = (
     <>
@@ -548,9 +539,8 @@ export function ProjectShell({
   // and its title/engine chat-creation form must never become a second flow.
   if (isMobile) {
     return (
-      <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: retainedResourceError ? "auto auto minmax(0, 1fr)" : "auto minmax(0, 1fr)" }}>
+      <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
         {loading ? <LinearProgress /> : <Box />}
-        {retainedResourceNotice}
         <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr)" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
         {dialogs}
       </Box>
@@ -558,8 +548,7 @@ export function ProjectShell({
   }
 
   return (
-    <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: retainedResourceError ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
-      {retainedResourceNotice}
+    <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "minmax(0, 1fr)" }}>
       <Box component="section" aria-label="Project workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr)", bgcolor: "background.default" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
       {dialogs}
     </Box>

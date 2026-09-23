@@ -848,18 +848,19 @@ export function registerProjectRoutes(
     }
   };
 
-  app.post<{ Body: CreateProjectRequest; Headers: { "idempotency-key"?: string } }>("/api/projects", async (request, reply) => {
+  for (const creationPath of ["/api/projects", "/api/chats"]) app.post<{ Body: CreateProjectRequest; Headers: { "idempotency-key"?: string } }>(creationPath, async (request, reply) => {
+    const standaloneChat = creationPath === "/api/chats";
     const idempotencyKey = request.headers["idempotency-key"]?.trim();
     if (!idempotencyKey || !/^[A-Za-z0-9_-]{8,128}$/u.test(idempotencyKey)) {
       return reply.code(400).send({ error: "a valid Project creation idempotency key is required" });
     }
-    const label = request.body?.label?.trim();
+    const label = request.body?.label?.trim() || (standaloneChat ? "New Chat" : "");
     if (!label) return reply.code(400).send({ error: "label is required" });
     const defaultEngine = request.body?.defaultEngine;
     if (!defaultEngine) return reply.code(400).send({ error: "a configured default engine is required" });
     if (request.body.hostPath && request.body.createFolderName) return reply.code(400).send({ error: "choose an existing folder or create a new one, not both" });
     const requestedName = request.body.createFolderName?.trim() ||
-      `project-${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 12)}`;
+      `${standaloneChat ? "chat" : "project"}-${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 12)}`;
     if (!request.body.hostPath &&
         (!/^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(requestedName) ||
           requestedName === "." || requestedName === "..")) {
@@ -871,6 +872,7 @@ export function registerProjectRoutes(
     const creationIdentity = {
       idempotencyKey,
       payloadHash: createHash("sha256").update(stableJson({
+        ...(standaloneChat ? { ownership: "chat" } : {}),
         label,
         hostPath,
         defaultEngine,
@@ -900,7 +902,7 @@ export function registerProjectRoutes(
     }
     if (replay) {
       if (managedIdentity) await finishManagedProjectFolder(managedWorkspacesRoot, managedIdentity);
-      return replay;
+      return standaloneChat ? store.getConversation(replay.lastConversationId!) : replay;
     }
     if (!engines.has(defaultEngine)) return reply.code(400).send({ error: "a configured default engine is required" });
     const creationAdapter = engines.get(defaultEngine)!.adapter;
@@ -943,6 +945,7 @@ export function registerProjectRoutes(
     try {
       project = store.createProject({
         label,
+        chatOwned: standaloneChat,
         hostPath,
         defaultEngine,
         ...(request.body.defaultModel ? { defaultModel: request.body.defaultModel } : {}),
@@ -973,7 +976,7 @@ export function registerProjectRoutes(
     appendWorkspace({ type: "project_changed", projectId: project.id, action: "created" });
     refreshCommunicationReconciliation(project.id);
     if (project.lastConversationId) appendWorkspace({ type: "conversation_changed", projectId: project.id, conversationId: project.lastConversationId, action: "created" });
-    return project;
+    return standaloneChat ? store.getConversation(project.lastConversationId!) : project;
     } finally {
       releaseCreationClaim?.();
     }

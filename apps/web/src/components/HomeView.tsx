@@ -267,7 +267,7 @@ export function HomeView({
       <CompactWorkspaceHeader
         icon={<HomeOutlinedIcon />}
         title="Home"
-        context="Across every Project"
+        context="Across your chats"
       />
       <Box sx={{ p: { xs: 2, sm: 3, lg: 4 }, containerType: "inline-size" }}>
         <Stack spacing={3} sx={{ width: "100%", maxWidth: 1320, mx: "auto" }}>
@@ -288,11 +288,11 @@ export function HomeView({
           {projectsLoaded && projects.length === 0 ? (
             <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
               <FolderOutlinedIcon color="action" sx={{ fontSize: 42, mb: 1 }} />
-              <Typography variant="h6" fontWeight={800}>Create Your First Project</Typography>
+              <Typography variant="h6" fontWeight={800}>Start Your First Chat</Typography>
               <Typography color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
-                Projects organize the Chats, Agents, files, and Automations for a workstream.
+                Chats bring your messages, agents, files, and automations together.
               </Typography>
-              <Button variant="contained" onClick={onCreateProject}>Create Project</Button>
+              <Button variant="contained" onClick={onCreateProject}>New Chat</Button>
             </Paper>
           ) : null}
 
@@ -357,7 +357,7 @@ export function HomeView({
                       key={item.agent.id}
                       icon={<SmartToyOutlinedIcon />}
                       title={item.agent.title}
-                      detail={item.project.label}
+                      detail=""
                       status={semanticAgentStatus(item.health.status)}
                       statusLabel={presentation.label}
                       statusAccessibleLabel={presentation.accessibleLabel}
@@ -390,7 +390,7 @@ export function HomeView({
                     key={item.trigger.id}
                     icon={<BoltOutlinedIcon />}
                     title={item.trigger.name}
-                    detail={`${item.project.label} · ${item.targetAgent?.title ?? "Reassignment required"}`}
+                    detail={`${item.targetAgent?.title ?? "Reassignment required"}`}
                     status={item.trigger.enabled ? "enabled" : "disabled"}
                     onClick={() => onNavigate({ kind: "automation", projectId: item.project.id, triggerId: item.trigger.id })}
                   />
@@ -407,7 +407,7 @@ export function HomeView({
             )}
           </Section>
 
-          <Section title={mobile ? "Recent Assigned Work" : "Recent Outcomes"} description={mobile ? "Recent assigned work and its current status across Projects." : "The latest finished assigned work across Projects."}>
+          <Section title={mobile ? "Recent Assigned Work" : "Recent Outcomes"} description={mobile ? "Recent assigned work and its current status across chats." : "The latest finished assigned work across chats."}>
             {recentOutcomes.length ? (
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
                 {recentOutcomes.map(item => (
@@ -415,7 +415,7 @@ export function HomeView({
                     key={item.agent.id}
                     icon={<CheckCircleOutlineIcon />}
                     title={item.agent.title}
-                    detail={item.project.label}
+                    detail=""
                     status={semanticAgentStatus(item.health.assignedWorkOutcome!.status)}
                     statusLabel={humanizeStatus(item.health.assignedWorkOutcome!.status)}
                     onClick={() => onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.agent.id })}

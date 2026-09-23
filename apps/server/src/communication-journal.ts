@@ -117,6 +117,7 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
         workspace.createNotification({
           projectId: stored.event.projectId,
           ...(stored.event.conversationId ? { conversationId: stored.event.conversationId } : {}),
+          sourceAgentId: stored.event.sender.agentId,
           ...(stored.event.intent === "user_dm" && stored.event.sender.kind === "agent"
             ? { agentId: stored.event.sender.agentId }
             : {}),

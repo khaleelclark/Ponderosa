@@ -225,7 +225,6 @@ export class AgentCommunicationJournalAuthority {
       if (
         event.conversationId
         && agent.conversationId !== event.conversationId
-        && !(event.intent === "user_dm" && event.sender.kind === "user")
       ) throw new Error("communication recipient must belong to its conversation");
     }
     if (event.intent === "collaboration") {

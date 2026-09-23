@@ -364,6 +364,9 @@ export const realApi = {
       `/api/search${toQuery({ q: query, limit, kind })}`,
     );
   },
+  searchGlobalFiles(query: string, limit = 25): Promise<import("@ponderosa/core").GlobalFileSearchResponseDto> {
+    return requestJson(`/api/search/files${toQuery({ q: query, limit })}`);
+  },
   getAllChat(limit: number = 50, cursor?: string): Promise<AllChatPageDto> {
     return requestJson<AllChatPageDto>(`/api/all-chat${toQuery({ limit: String(limit), cursor })}`);
   },
@@ -381,6 +384,11 @@ export const realApi = {
       method: "POST",
       headers: { "idempotency-key": idempotencyKey },
       body: JSON.stringify(request satisfies CreateConversationRequest),
+    });
+  },
+  createChat(request: CreateProjectRequest, idempotencyKey: string): Promise<ConversationDto> {
+    return requestJson<ConversationDto>("/api/chats", {
+      method: "POST", headers: { "idempotency-key": idempotencyKey }, body: JSON.stringify(request),
     });
   },
   getConversation(conversationId: string, limit: number = 100, cursor?: string, focusId?: string): Promise<ConversationDetailDto> {
@@ -468,6 +476,9 @@ export const realApi = {
     return requestJson<GenerateConversationTitleResponse>(`/api/conversations/${encodeURIComponent(conversationId)}/generate-title`, { method: "POST" });
   },
   getWorkspacePreferences(): Promise<WorkspacePreferencesDto> { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences"); },
+  setNotificationMode(kind: "agent" | "conversation", id: string, mode: "all" | "attention" | "muted" | "inherit"): Promise<WorkspacePreferencesDto> {
+    return requestJson<WorkspacePreferencesDto>(`/api/notification-settings/${kind}/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify({ mode }) });
+  },
   getWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     kind: WorkspaceDirectoryKind,
     options: {
@@ -898,6 +909,9 @@ export const realApi = {
   getFiles(projectId: string, path?: string): Promise<FilesResponse> {
     return requestJson<FilesResponse>(`/api/files${toQuery({ projectId, path })}`);
   },
+  getConversationFiles(conversationId: string, path?: string): Promise<FilesResponse> {
+    return requestJson<FilesResponse>(`/api/conversations/${encodeURIComponent(conversationId)}/files${toQuery({ path })}`);
+  },
   getWorkspaceStatus(agentId: string): Promise<WorkspaceStatusDto> {
     return requestJson<WorkspaceStatusDto>(`/api/agents/${encodeURIComponent(agentId)}/workspace`);
   },
@@ -1118,7 +1132,7 @@ export const realApi = {
   subscribeWorkspace(lastSeenId: number | undefined, handlers: WorkspaceStreamHandlers): StreamSubscription {
     let cursor = lastSeenId;
     return createResilientEventSource({
-      createSource: () => new EventSource(`/api/workspace/stream${toQuery({ lastEventId: cursor })}`),
+      createSource: () => new EventSource(`/api/workspace/stream${toQuery({ lastEventId: cursor, bootstrap: true })}`),
       onOpen: () => handlers.onOpen?.(),
       onError: (event) => handlers.onError?.(event),
       configure(source) {
@@ -1129,7 +1143,8 @@ export const realApi = {
         });
         source.addEventListener("workspace_status", (event) => {
           const status = JSON.parse(event.data as string) as WorkspaceStreamStatusDto;
-          if (status.reset) cursor = 0;
+          if (status.snapshot) cursor = status.cursor;
+          else if (status.reset) cursor = 0;
           handlers.onStatus?.(status);
         });
       },

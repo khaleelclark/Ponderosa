@@ -1,5 +1,5 @@
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
-import { LocalVoicesSettings } from "./speech/LocalVoicesSettings";
+import { BrowserVoiceSettings } from "./speech/BrowserVoiceSettings";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import {
   Alert,
@@ -157,7 +157,7 @@ function GeneralSettingsSection({
     rolloverTokensError === undefined && rolloverFractionError === undefined;
   return (
     <Stack spacing={2.5}>
-      <LocalVoicesSettings preferences={preferences} onPreferences={onPreferences} />
+      <BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences} />
       <Paper variant="outlined" sx={{ p: 2.5 }}>
         <Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>
           Appearance
@@ -323,7 +323,7 @@ function NotificationSettingsSection({
         Notifications
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Choose which Agent updates appear in Notifications and browser push. Decisions, blockers, failures, and operational issues always appear because they require action.
+        Choose which Agent updates appear in Notifications and browser push. Chat and Agent notification settings can further limit these alerts, including those that need attention.
       </Typography>
       <Stack>
         {NOTIFICATION_LABELS.map(([key, label]) => (

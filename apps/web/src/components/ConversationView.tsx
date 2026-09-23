@@ -84,6 +84,7 @@ import {
 import { ConversationFilesResults } from "./ConversationFilesResults";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { CollectionPagination } from "./CollectionPrimitives";
+import { ChatContextSettings } from "./ChatContextSettings";
 
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
@@ -184,6 +185,7 @@ export function ConversationView({
   const preferencesQuery = useWorkspacePreferences();
   const projectsQuery = useProjects();
   const [renameOpen, setRenameOpen] = useState(false);
+  const [contextSettingsOpen, setContextSettingsOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -198,7 +200,7 @@ export function ConversationView({
   const [memberSearch, setMemberSearch] = useState("");
   // The runtime shown by the composer. With one exact Agent destination this
   // mirrors that Agent's durable next-Run selection; otherwise it is the
-  // Project Chat default used for newly spawned Agents.
+  // Chat default used for newly spawned Agents.
   const [engine, setEngine] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
@@ -733,7 +735,7 @@ export function ConversationView({
             </Button>
           }
         >
-          This Project chat could not be loaded. Check the server connection and
+          This Chat could not be loaded. Check the server connection and
           try again.
         </Alert>
       </Box>
@@ -743,7 +745,7 @@ export function ConversationView({
   if (!detailQuery.data || !conversation) {
     return (
       <Box sx={{ p: 2 }}>
-        <Alert severity="warning">Project chat not found.</Alert>
+        <Alert severity="warning">Chat not found.</Alert>
       </Box>
     );
   }
@@ -939,6 +941,7 @@ export function ConversationView({
         activeView={activeView}
         agentWorkOpen={agentWorkOpen}
         conversation={conversation}
+        onChatSettings={() => setContextSettingsOpen(true)}
         projectLabel={project?.label}
         transcriptMarkdown={transcriptMarkdown}
         transcriptTitle={transcriptTitle}
@@ -956,13 +959,14 @@ export function ConversationView({
         }}
       />
 
+      {contextSettingsOpen ? <ChatContextSettings key={conversation.id} chat={conversation} open onClose={()=>setContextSettingsOpen(false)} /> : null}
       {detailRefreshFailed ? (
         <Alert
           severity="warning"
           action={<Button color="inherit" size="small" onClick={() => void detailQuery.refetch()}>Retry</Button>}
           sx={{ m: 1 }}
         >
-          This Project chat could not be refreshed. The last loaded messages remain available.
+          This Chat could not be refreshed. The last loaded messages remain available.
         </Alert>
       ) : null}
 
@@ -977,7 +981,7 @@ export function ConversationView({
       >
         <Box
           role="tabpanel"
-          aria-label="Project chat messages"
+          aria-label="Chat messages"
           tabIndex={!agentWorkOpen && activeView === "main" ? 0 : -1}
           hidden={agentWorkOpen || activeView !== "main"}
           sx={{
@@ -990,7 +994,7 @@ export function ConversationView({
           <ChatSurface
             layout="project"
             layoutKey={`main:${visibleMessageLayoutKey}`}
-            label="Project chat messages"
+            label="Chat messages"
             follow={{
               kind: "latest",
               storageKey: chatStateKey(

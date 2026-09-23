@@ -313,7 +313,8 @@ export function registerAgentPackageRoutes(
       throw new AssetError(409, "Agent creation is still being recovered");
     }
     const included = new Set(nodes.map((agent) => agent.id));
-    const project = store.getProject(root.projectId)!;
+    const chat = store.getConversation(root.conversationId);
+    const project = { ...store.getProject(root.projectId)!, label: chat?.title ?? root.title, instructions: chat?.instructions };
     let portableArtifactBytes = 0;
     const canonicalUserDocuments = store.readCommunicationEvents(root.projectId)
       .filter((event) =>

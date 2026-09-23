@@ -47,6 +47,7 @@ export interface ServerContext {
 }
 
 export interface SearchRoutesContext extends ServerContext {
+  readonly store: ServerContext["store"] & Pick<AgentStore, "listProjects">;
   readonly globalChatSearch: (query: {
     q?: string;
     limit?: string | number;

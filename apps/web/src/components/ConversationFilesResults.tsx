@@ -1,4 +1,5 @@
 import CloseIcon from "@mui/icons-material/Close";
+import { ConversationWorkspaceFiles } from "./files/ConversationWorkspaceFiles";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import SearchIcon from "@mui/icons-material/Search";
@@ -199,6 +200,7 @@ export function ConversationFilesResults({
       </Stack>
 
       <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", p: { xs: 1, sm: 1.5 } }}>
+        <ConversationWorkspaceFiles key={conversationId} conversationId={conversationId} />
         {artifacts.isLoading && records.length === 0 ? (
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", p: 2 }}>
             <CircularProgress size={18} />

@@ -223,7 +223,7 @@ export function AgentsTab({
   projectId?: string;
   engines: EngineDto[];
   conversations: ConversationDto[];
-  /** Optional server-backed Project Chat filter for paginated directories. */
+  /** Optional server-backed Chat filter for paginated directories. */
   conversationFilterValue?: string;
   onConversationFilterValueChange?(value: string): void;
   conversationFilterRequest?: WorkspaceDirectoryRequestState;
@@ -345,7 +345,7 @@ export function AgentsTab({
     }
     if (organizationScopeFiltered) {
       setBulkError(
-        "Clear the Agent search and Project Chat filter before loading the complete hierarchy.",
+        "Clear the Agent search and Chat filter before loading the complete hierarchy.",
       );
       return;
     }
@@ -412,7 +412,7 @@ export function AgentsTab({
     );
     if (conversation) return conversation.title;
     return scopeConversationId || agent.conversationId
-      ? "Unknown Project Chat"
+      ? "Unknown Chat"
       : "Unassigned";
   };
 
@@ -555,7 +555,7 @@ export function AgentsTab({
       const owningProjectId = projectByAgentId?.get(agentId)?.id ?? projectId;
       if (!owningProjectId) {
         setBulkError(
-          "Ponderosa could not determine the Project for every selected Agent.",
+          "Ponderosa could not determine the owning Chat for every selected Agent.",
         );
         return;
       }
@@ -714,7 +714,7 @@ export function AgentsTab({
                 <Tooltip
                   title={
                     organizationScopeFiltered && onLoadOrganizationData
-                      ? "Clear search and Project Chat filters to load hierarchy"
+                      ? "Clear search and Chat filters to load hierarchy"
                       : organizationDataComplete
                         ? "Hierarchy"
                         : loadingOrganizationData
@@ -803,11 +803,11 @@ export function AgentsTab({
                   sx={{ minWidth: 155, width: { xs: "100%", sm: "auto" } }}
                 >
                   <InputLabel id="agents-master-filter-label">
-                    Project Chat
+                    Chat
                   </InputLabel>
                   <Select
                     labelId="agents-master-filter-label"
-                    label="Project Chat"
+                    label="Chat"
                     value={effectiveMasterFilter}
                     disabled={Boolean(
                       conversationFilterRequest?.isInitialLoading ||
@@ -821,7 +821,7 @@ export function AgentsTab({
                       setEffectiveMasterFilter(event.target.value);
                     }}
                   >
-                    <MenuItem value="all">All Project Chats</MenuItem>
+                    <MenuItem value="all">All Chats</MenuItem>
                     {conversations.map(master => (
                       <MenuItem key={master.id} value={master.id}>
                         {master.title}
@@ -834,10 +834,10 @@ export function AgentsTab({
                         disabled={conversationFilterRequest.isFetchingNextPage}
                       >
                         {conversationFilterRequest.isPaginationError
-                          ? "Retry loading Project Chats"
+                          ? "Retry loading Chats"
                           : conversationFilterRequest.isFetchingNextPage
-                            ? "Loading more Project Chats..."
-                            : "Load more Project Chats..."}
+                            ? "Loading more Chats..."
+                            : "Load more Chats..."}
                       </MenuItem>
                     ) : null}
                   </Select>
@@ -891,7 +891,7 @@ export function AgentsTab({
                 ? organizationRootAgentId
                   ? "Create a delegated Agent to build this organization."
                   : "Create an Agent to get started."
-                : "Try a different search, status, Project, or Chat filter."
+                : "Try a different search, status, or Chat filter."
             }
             action={
               statusFilters.length > 0 || masterFilter !== "all" || effectiveSearch
@@ -1296,7 +1296,7 @@ export function AgentsTab({
           rootAgentIds={deleteSelectedGroups[0].agentIds}
           title={
             deleteSelectedGroups.length > 1
-              ? `Delete selected agents? (${deleteSelectedGroups.length} Projects remaining)`
+              ? `Delete selected agents? (${deleteSelectedGroups.length} groups remaining)`
               : "Delete selected agents?"
           }
           confirmationText="DELETE SELECTED"

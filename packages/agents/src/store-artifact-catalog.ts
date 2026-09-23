@@ -4,10 +4,11 @@ import type {
   ArtifactDto,
   ArtifactKind,
   HistoryPageDto,
+  CommunicationEvent,
 } from "@ponderosa/core";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
-import { managedArtifactContentPath, managedArtifactsLogPath } from "./paths.js";
+import { communicationEventsPath, managedArtifactContentPath, managedArtifactsLogPath } from "./paths.js";
 import type {
   ArtifactProjectionReadRow,
   ManagedArtifactAccess,
@@ -16,9 +17,10 @@ import type {
 
 type CursorBoundary = { orderKey: string; rowKey: string };
 type CursorInput = CursorBoundary & { stream: string; scope: string };
-type ArtifactAgent = { projectId: string; archived?: boolean };
+type ArtifactAgent = { projectId: string; conversationId?: string; archived?: boolean };
 
 export class AgentArtifactCatalog {
+  private readonly pendingLegacyCustody = new Map<string, Extract<ManagedArtifactEvent, { type: "legacy_custody" }>[]>();
   constructor(
     private readonly dataDir: string,
     private readonly client: Database.Database,
@@ -218,11 +220,12 @@ export class AgentArtifactCatalog {
   }
 
   rebuildProjectProjection(projectId: string): void {
+    this.pendingLegacyCustody.set(projectId, []);
     for (const event of readRepairableJsonl<ManagedArtifactEvent>(
       managedArtifactsLogPath(this.dataDir, projectId),
       `managed artifacts for project ${projectId}`,
     )) {
-      if (!["created", "visibility", "deleted"].includes(event.type)) {
+      if (!["created", "visibility", "deleted", "legacy_custody"].includes(event.type)) {
         throw new Error(`managed artifact record does not belong to Project ${projectId}`);
       }
       const artifactId = event.type === "created" ? event.artifact.id : event.artifactId;
@@ -230,8 +233,19 @@ export class AgentArtifactCatalog {
           (event.type === "created" && event.artifact.projectId !== projectId)) {
         throw new Error(`managed artifact record does not belong to Project ${projectId}`);
       }
-      this.projectManagedArtifactEvent(projectId, event);
+      if (event.type === "legacy_custody") {
+        this.pendingLegacyCustody.get(projectId)!.push(event);
+      } else {
+        if (event.type === "deleted") this.pendingLegacyCustody.set(projectId,
+          this.pendingLegacyCustody.get(projectId)!.filter(item => item.artifactId !== event.artifactId));
+        this.projectManagedArtifactEvent(projectId, event);
+      }
     }
+  }
+
+  rebuildLegacyCustody(projectId: string): void {
+    for (const event of this.pendingLegacyCustody.get(projectId) ?? []) this.projectManagedArtifactEvent(projectId, event);
+    this.pendingLegacyCustody.delete(projectId);
   }
 
   /** Bounded Project-wide file/result catalog. SQLite applies the boundary to
@@ -277,7 +291,7 @@ export class AgentArtifactCatalog {
       WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
         ${conversationId ? `AND EXISTS (
           SELECT 1 FROM agent_conversation_memberships membership
-          WHERE membership.agent_id = json_extract(artifact_json, '$.originAgentId')
+          WHERE membership.agent_id = COALESCE(json_extract(artifact_json, '$.legacyRecovery.custodianAgentId'), json_extract(artifact_json, '$.originAgentId'))
             AND membership.conversation_id = ?
         )` : ""}
         ${boundary ? "AND (created_at < ? OR (created_at = ? AND artifact_id < ?))" : ""}
@@ -433,6 +447,16 @@ export class AgentArtifactCatalog {
     const agent = this.agentById(agentId);
     const access = this.getProjectArtifactAccess(projectId, artifactIdValue);
     if (!agent || agent.projectId !== projectId || agent.archived || !access) return false;
+    const artifact = this.getProjectArtifact(projectId, artifactIdValue);
+    const originId = artifact?.legacyRecovery?.custodianAgentId ?? artifact?.originAgentId ?? artifact?.agentId;
+    const origin = originId ? this.agentById(originId) : undefined;
+    let ownerChat = origin?.conversationId;
+    if (!ownerChat && access.ownerKind === "communication") {
+      ownerChat = readRepairableJsonl<CommunicationEvent>(
+        communicationEventsPath(this.dataDir, projectId), "communication log", true,
+      ).find(event => event.eventId === access.ownerId)?.conversationId;
+    }
+    if (!ownerChat || ownerChat !== agent.conversationId) return false;
     if (access.audience.kind === "organization") return true;
     if (access.senderAgentId === agentId) return true;
     if (
@@ -443,14 +467,16 @@ export class AgentArtifactCatalog {
     return access.audience.kind === "user_agent" && access.audience.agentId === agentId;
   }
 
-  getProjectContextArtifacts(projectId: string, limit = 100): ArtifactDto[] {
+  getProjectContextArtifacts(projectId: string, limit = 100, conversationId?: string): ArtifactDto[] {
     const boundedLimit = Math.max(1, Math.min(limit, 500));
     const rows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
       WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
         AND (pinned = 1 OR visibility = 'published')
+        AND (? IS NULL OR COALESCE(json_extract(artifact_json, '$.legacyRecovery.custodianAgentId'), json_extract(artifact_json, '$.originAgentId')) IN
+          (SELECT id FROM agents WHERE conversation_id = ?))
       ORDER BY created_at DESC, artifact_id DESC LIMIT ?
-    `).all(projectId, boundedLimit) as Array<{ artifact_json: string }>;
+    `).all(projectId, conversationId ?? null, conversationId ?? null, boundedLimit) as Array<{ artifact_json: string }>;
     return rows.map((row) =>
       this.withProjectUrls(
         projectId,
@@ -495,6 +521,7 @@ export class AgentArtifactCatalog {
       };
       if (
         artifact.projectId !== projectId
+        || artifact.legacyRecovery !== undefined
         || ids.has(artifact.id)
         || !artifact.summary?.trim()
         || !artifact.mediaType?.trim()
@@ -610,6 +637,7 @@ export class AgentArtifactCatalog {
     event: ManagedArtifactEvent,
   ): void {
     if (event.type === "created") {
+      if (event.artifact.legacyRecovery !== undefined) throw new Error("Legacy custody requires a separate recovery record");
       const access = event.access ?? {
         ownerKind: "project" as const,
         ownerId: event.artifact.id,
@@ -665,11 +693,31 @@ export class AgentArtifactCatalog {
       SELECT artifact_json FROM managed_artifact_projection
       WHERE project_id = ? AND artifact_id = ?
     `).get(projectId, event.artifactId) as { artifact_json: string } | undefined;
-    if (!row) return;
+    if (!row) {
+      if (event.type === "legacy_custody") throw new Error("Legacy custody refers to a missing artifact");
+      return;
+    }
     const artifact = JSON.parse(row.artifact_json) as ArtifactDto & {
       projectId: string;
       originAgentId: string;
     };
+    if (event.type === "legacy_custody") {
+      const origin = this.client.prepare("SELECT conversation_id, deleted_at FROM agents WHERE id=? AND project_id=?")
+        .get(event.originAgentId, projectId) as { conversation_id: string | null; deleted_at: string | null } | undefined;
+      const custodian = this.client.prepare(`SELECT a.id FROM agents a JOIN conversations c ON c.id=a.conversation_id
+        WHERE a.id=? AND a.project_id=? AND c.project_id=a.project_id AND a.deleted_at IS NULL`)
+        .get(event.custodianAgentId, projectId);
+      const recovery = { custodianAgentId: event.custodianAgentId, recoveredAt: event.at };
+      if (!origin?.deleted_at || origin.conversation_id || !custodian
+        || artifact.originAgentId !== event.originAgentId || artifact.sha256 !== event.sha256
+        || !Number.isFinite(Date.parse(event.at))
+        || (artifact.legacyRecovery && JSON.stringify(artifact.legacyRecovery) !== JSON.stringify(recovery))) {
+        throw new Error("Invalid legacy artifact custody assignment");
+      }
+      this.client.prepare("UPDATE managed_artifact_projection SET artifact_json=? WHERE project_id=? AND artifact_id=?")
+        .run(JSON.stringify({ ...artifact, legacyRecovery: recovery }), projectId, event.artifactId);
+      return;
+    }
     this.client.prepare(`
       UPDATE managed_artifact_projection SET visibility = ?, pinned = ?, artifact_json = ?
       WHERE project_id = ? AND artifact_id = ?

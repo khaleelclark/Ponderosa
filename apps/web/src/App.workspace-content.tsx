@@ -1,4 +1,5 @@
-import { Alert, Box, Button, LinearProgress, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button } from "@mui/material";
+import { LoadingState } from "./components/LoadingState";
 import type {
   ConversationDto,
   EngineDto,
@@ -7,7 +8,6 @@ import type {
   WorkspaceNotificationPageDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import { HomeView } from "./components/HomeView";
 import type { ProjectBrowserRequest } from "./components/ProjectBrowserContext";
 import { RecoverableLazyRoute } from "./components/RecoverableLazyRoute";
 import type { Route } from "./routing";
@@ -24,9 +24,9 @@ type RemovableWorkspaceResourceRoute = Extract<
 >;
 
 const loadAllChatView = () => import("./components/AllChatView").then(module => ({ default: module.AllChatView }));
+const loadHomeView = () => import("./components/HomeView").then(module => ({ default: module.HomeView }));
 const loadCreateWorkspace = () => import("./components/CreateWorkspace").then(module => ({ default: module.CreateWorkspace }));
 const loadProjectShell = () => import("./components/ProjectShell").then(module => ({ default: module.ProjectShell }));
-const loadAllProjectsView = () => import("./components/WorkspaceOverview").then(module => ({ default: module.AllProjectsView }));
 const workspaceResourceViews = () => import("./components/WorkspaceResourceViews");
 const loadAllAgentsWorkspace = () => workspaceResourceViews().then(module => ({ default: module.AllAgentsWorkspace }));
 const loadAllChatsWorkspace = () => workspaceResourceViews().then(module => ({ default: module.AllChatsWorkspace }));
@@ -100,8 +100,8 @@ export function WorkspaceRouteOutlet({
   onPreferences,
   onSavePreferences,
   onCreate,
-  onCancelCreate,
   onOpenInbox,
+  onCancelCreate,
   onProjectDeleted,
   onConversationAction,
   onOpenEngineStatus,
@@ -147,12 +147,7 @@ export function WorkspaceRouteOutlet({
           </Alert>
         </Box>
       ) : routeWaitsForWorkspacePreferences(route, preferencesLoaded) ? (
-        <Stack role="status" aria-live="polite" spacing={1} sx={{ p: 3 }}>
-          <LinearProgress />
-          <Typography color="text.secondary">
-            Loading {route.kind === "profile" ? "profile" : "settings"}…
-          </Typography>
-        </Stack>
+        <LoadingState resource={route.kind === "profile" ? "profile" : "settings"} variant="route" />
       ) : route.kind === "create" ? (
         <RecoverableLazyRoute
           key={[
@@ -167,38 +162,12 @@ export function WorkspaceRouteOutlet({
           componentProps={{ route, projects, engines, preferences, onCancel: onCancelCreate, onNavigate }}
         />
       ) : route.kind === "home" ? (
-        <Box
-          sx={{ display: "contents" }}
-        >
-          <HomeView
-            projects={projects}
-            projectsLoaded={projectsLoaded}
-            engines={engines}
-            notifications={notifications}
-            notificationCounts={notificationCounts}
-            onNavigate={onNavigate}
-            onCreateProject={() => onCreate("project")}
-            onOpenInbox={onOpenInbox}
-          />
-        </Box>
+        <RecoverableLazyRoute key="home" load={loadHomeView} componentProps={{ projects, projectsLoaded, engines, notifications, notificationCounts, onNavigate, onCreateProject: () => onCreate("chat"), onOpenInbox }} />
       ) : route.kind === "allChat" ? (
         <RecoverableLazyRoute
           key="all-chat"
           load={loadAllChatView}
           componentProps={{ onNavigate, notifications }}
-        />
-      ) : route.kind === "projects" ? (
-        <RecoverableLazyRoute
-          key="projects"
-          load={loadAllProjectsView}
-          componentProps={{
-            projects,
-            preferences,
-            onNavigate,
-            onCreateProject: () => onCreate("project"),
-            onProjectDeleted,
-            onPreferences,
-          }}
         />
       ) : route.kind === "allAgents" ? (
         <RecoverableLazyRoute
@@ -223,13 +192,13 @@ export function WorkspaceRouteOutlet({
               ),
           }}
         />
-      ) : route.kind === "allChats" ? (
+      ) : (route.kind === "allChats" || route.kind === "project" || route.kind === "projects") ? (
         <RecoverableLazyRoute
           key="all-chats"
           load={loadAllChatsWorkspace}
           componentProps={{
             projects,
-            filterProjectId: route.filterProjectId,
+            filterProjectId: route.kind === "allChats" ? route.filterProjectId : undefined,
             preferences,
             onPreferences,
             onNavigate,
@@ -313,10 +282,7 @@ export function WorkspaceRouteOutlet({
             }}
           />
         ) : projectResolution === "loading" ? (
-          <Stack role="status" aria-live="polite" spacing={1} sx={{ p: 3 }}>
-            <LinearProgress />
-            <Typography color="text.secondary">Loading Project...</Typography>
-          </Stack>
+          <LoadingState resource="Project" variant="route" />
         ) : projectResolution === "missing" ? (
           <Box sx={{ p: 3 }}>
             <Alert

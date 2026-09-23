@@ -34,6 +34,18 @@ const noCleanup = {
   finishDraftSurfaceCleanup: () => {},
 };
 
+test("chat deletion removes only its folder membership and preserves unrelated groups",async t=>{
+  const {chat,project,store,workspace,drafts}=fixture(t);
+  const other=store.createConversation(project.id,{title:"Keep"});
+  const projectFolders=[{id:"p",name:"Projects",projectIds:[project.id],expanded:true}];
+  workspace.updatePreferences({projectFolders,chatFolders:[{id:"f",name:"Chats",conversationIds:[chat.id,other.id],expanded:true}]});
+  const authority=deletionAuthority({store,workspace,drafts});
+  const receipt=store.markConversationDeletionPending(chat.id);
+  assert.equal(await authority.processConversationDeletionCleanup(receipt),true);
+  assert.deepEqual(workspace.getPreferences().chatFolders[0].conversationIds,[other.id]);
+  assert.deepEqual(workspace.getPreferences().projectFolders,projectFolders);
+});
+
 function fixture(t) {
   const dataDir = mkdtempSync(join(tmpdir(), "ponderosa-chat-deletion-"));
   const store = new AgentStore(dataDir);

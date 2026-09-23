@@ -63,6 +63,7 @@ import { ProviderAvailabilityAlerts } from "./ProviderAvailabilityAlerts";
 import { TriggersPane } from "./TriggersPane";
 import { AgentCreateSurface } from "./AgentCreateDialog";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
+import { NewChatComposer } from "./NewChatComposer";
 
 const anchoredCreationActionsSx = {
   position: "absolute",
@@ -97,13 +98,13 @@ const resourcePresentation = {
   },
   chat: {
     icon: <ChatBubbleOutlineIcon />,
-    title: "Create Chat",
-    description: "Start a shared Project conversation for requests, decisions, and Agent work.",
+    title: "New Chat",
+    description: "Start a conversation with its own team and working context.",
   },
   agent: {
     icon: <SmartToyOutlinedIcon />,
     title: "Create Agent",
-    description: "Add a managed worker with its own role, runtime, and Project authority.",
+    description: "Add a managed worker with its own role and runtime to a Chat.",
   },
   trigger: {
     icon: <BoltOutlinedIcon />,
@@ -330,78 +331,6 @@ function ProjectCreateForm({
   );
 }
 
-function ChatCreateForm({
-  projects,
-  initialProjectId,
-  onCancel,
-  onCreated,
-  anchoredActions = false,
-}: {
-  projects: ProjectDto[];
-  initialProjectId?: string;
-  onCancel(): void;
-  onCreated(projectId: string, conversationId: string): void;
-  anchoredActions?: boolean;
-}): JSX.Element {
-  const queryClient = useQueryClient();
-  const [projectId, setProjectId] = useState(
-    projects.some(project => project.id === initialProjectId)
-      ? initialProjectId!
-      : projects[0]?.id ?? "",
-  );
-  const creationAttempt = useRef<{ projectId: string; idempotencyKey: string }>();
-  useEffect(() => {
-    if (!projects.length) return;
-    setProjectId(current => {
-      if (projects.some(project => project.id === current)) return current;
-      if (initialProjectId && projects.some(project => project.id === initialProjectId)) {
-        return initialProjectId;
-      }
-      return projects[0]!.id;
-    });
-  }, [initialProjectId, projects]);
-  const create = useMutation({
-    mutationFn: () => {
-      if (creationAttempt.current?.projectId !== projectId) {
-        creationAttempt.current = {
-          projectId,
-          idempotencyKey: createClientId("chat-create-"),
-        };
-      }
-      return api.createConversation(
-        projectId,
-        { title: "New Chat" },
-        creationAttempt.current.idempotencyKey,
-      );
-    },
-    onSuccess: async conversation => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.project(projectId) });
-      onCreated(projectId, conversation.id);
-    },
-  });
-  return (
-    <Stack spacing={2.25}>
-      <FormControl fullWidth>
-        <InputLabel id="create-chat-project-label">Project</InputLabel>
-        <Select autoFocus labelId="create-chat-project-label" label="Project" value={projectId} onChange={event => setProjectId(event.target.value)}>
-          {projects.map(project => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}
-        </Select>
-      </FormControl>
-      {!projects.length ? <Alert severity="info">Create a Project before creating a Chat.</Alert> : null}
-      {create.isError ? <Alert severity="error">{String(create.error)}</Alert> : null}
-      <Stack
-        direction="row"
-        spacing={1}
-        sx={anchoredActions ? anchoredCreationActionsSx : { justifyContent: "flex-end" }}
-      >
-        <Button disabled={create.isPending} onClick={onCancel}>Cancel</Button>
-        <Button variant="contained" disabled={!projectId || create.isPending} onClick={() => create.mutate()}>
-          {create.isPending ? "Creating…" : "Create Chat"}
-        </Button>
-      </Stack>
-    </Stack>
-  );
-}
 
 function TriggerCreateForm({
   projects,
@@ -437,10 +366,11 @@ function TriggerCreateForm({
       return projects[0]!.id;
     });
   }, [initialProjectId, projects]);
-  const selectedProjectIndex = projects.findIndex(project => project.id === projectId);
-  const chats = selectedProjectIndex >= 0
-    ? (conversationQueries[selectedProjectIndex]?.data ?? []).filter(chat => !chat.deletedAt && !chat.archived)
-    : [];
+  const chats = projects.flatMap((project, index) =>
+    (conversationQueries[index]?.data ?? [])
+      .filter(chat => !chat.deletedAt && !chat.archived)
+      .map(chat => ({ ...chat, projectId: project.id })),
+  );
   const [conversationId, setConversationId] = useState(initialConversationId ?? "");
   useEffect(() => {
     setConversationId(current => {
@@ -448,12 +378,13 @@ function TriggerCreateForm({
       if (initialConversationId && chats.some(chat => chat.id === initialConversationId)) {
         return initialConversationId;
       }
-      return chats[0]?.id ?? "";
+      return chats.find(chat => chat.projectId === projectId)?.id ?? chats[0]?.id ?? "";
     });
   }, [initialConversationId, projectId, chats.map(chat => chat.id).join(":")]);
+  const selectedChat = chats.find(chat => chat.id === conversationId);
   const options = projects
     .flatMap((project, index) => {
-      if (project.id !== projectId) return [];
+      if (project.id !== selectedChat?.projectId) return [];
       const chats = conversationQueries[index]?.data ?? [];
       return (agentQueries[index]?.data ?? []).flatMap(agent => {
         if (agent.archived) return [];
@@ -484,20 +415,6 @@ function TriggerCreateForm({
   return (
     <Stack spacing={2.25}>
       <FormControl fullWidth>
-        <InputLabel id="create-automation-project-label">Project</InputLabel>
-        <Select
-          autoFocus
-          labelId="create-automation-project-label"
-          label="Project"
-          value={projectId}
-          onChange={event => setProjectId(event.target.value)}
-        >
-          {projects.map(project => (
-            <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>
-          ))}
-        </Select>
-      </FormControl>
-      <FormControl fullWidth>
         <InputLabel id="create-automation-chat-label">Destination Chat</InputLabel>
         <Select
           labelId="create-automation-chat-label"
@@ -524,7 +441,7 @@ function TriggerCreateForm({
             <TextField
               {...params}
               label="Runs As"
-              placeholder="Search Agents or Projects"
+              placeholder="Search Agents"
               helperText={
                 selectedOption?.chatTitle
                   ? `Uses ${selectedOption.chatTitle}`
@@ -539,8 +456,7 @@ function TriggerCreateForm({
                   {option.agent.title}
                 </Typography>
                 <Typography variant="caption" color="text.secondary" noWrap>
-                  {option.project.label}
-                  {option.chatTitle ? ` · ${option.chatTitle}` : ""}
+                  {option.chatTitle}
                 </Typography>
               </Box>
             </Box>
@@ -643,16 +559,14 @@ function CreateFormContent({
       anchoredActions={anchoredActions}
     />
   ) : route.resource === "chat" ? (
-    <ChatCreateForm
-      projects={projects}
-      initialProjectId={route.projectId}
-      onCancel={onCancel}
+    <NewChatComposer
+      engines={engines}
+      preferences={preferences}
       onCreated={(projectId, conversationId) => {
         refresh("conversation");
         refresh("project");
         onNavigate({ kind: "conversation", projectId, conversationId });
       }}
-      anchoredActions={anchoredActions}
     />
   ) : route.resource === "agent" ? (
     <AgentCreateSurface

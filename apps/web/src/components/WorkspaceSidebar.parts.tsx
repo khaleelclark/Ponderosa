@@ -1,9 +1,12 @@
 import AddIcon from "@mui/icons-material/Add";
 import SearchIcon from "@mui/icons-material/Search";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
 import {
   Badge,
   Box,
   Button,
+  ButtonBase,
   IconButton,
   InputAdornment,
   List,
@@ -12,7 +15,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { Children, type ReactNode } from "react";
+import { Children, useState, type ReactNode } from "react";
 import { useInfiniteScrollSentinel } from "../hooks/useInfiniteScrollSentinel";
 import { IconTitle } from "./IconTitle";
 import { LoadingState } from "./LoadingState";
@@ -131,6 +134,8 @@ function SharedSidebarPanel({
   drawer: boolean;
 }): JSX.Element {
   const hasStarredRows = Children.count(starredRows) > 0;
+  const [collapsedStars, setCollapsedStars] = useState<Record<string, boolean>>({});
+  const starsCollapsed = Boolean(collapsedStars[title]);
   return (
     <Box
       sx={{
@@ -139,7 +144,13 @@ function SharedSidebarPanel({
         display: "grid",
         gridTemplateColumns: "minmax(0, 1fr)",
         gridTemplateRows: "auto auto minmax(0, 1fr) auto",
+        flex: 1,
         bgcolor: sidebarSurface,
+        ...(drawer ? {
+          "& .MuiListItemIcon-root": { minWidth: 30 },
+          "& .MuiListItemIcon-root .MuiSvgIcon-root": { fontSize: 20 },
+          "& .MuiListItemButton-root": { borderRadius: 1.25 },
+        } : {}),
         "@media (max-width: 599.95px)": {
           "& .MuiListItemText-secondary": { fontSize: 12 },
         },
@@ -164,14 +175,14 @@ function SharedSidebarPanel({
           </Typography>}
         </Stack>
       )}
-      {hideSearch ? <Box /> : <Box sx={{ px: 1.75, pb: 1.5 }}>
+      {hideSearch ? <Box /> : <Box sx={{ px: drawer ? 1.5 : 1.75, pb: drawer ? 0.75 : 1.5 }}>
         <TextField
           fullWidth
           size="small"
           value={searchValue}
           onChange={event => onSearchValueChange(event.target.value)}
           placeholder={searchLabel}
-          sx={{ "@media (max-width: 599.95px)": { "& input": { fontSize: 16 } } }}
+          sx={{ "@media (max-width: 599.95px)": { "& input": { fontSize: 16 } }, ...(drawer ? { "& .MuiInputBase-root": { height: 36 }, "& .MuiSvgIcon-root": { fontSize: 20 } } : {}) }}
           inputProps={{ "aria-label": searchLabel }}
           InputProps={{
             startAdornment: (
@@ -196,9 +207,13 @@ function SharedSidebarPanel({
       >
         {topContent}
         {hasStarredRows ? (
-          <Box component="section" sx={{ mb: 2 }}>
-            <SidebarSectionHeading>Starred</SidebarSectionHeading>
-            <List disablePadding>{starredRows}</List>
+          <Box component="section" sx={{ mb: drawer ? 1 : 2 }}>
+            <ButtonBase aria-label="Starred" aria-expanded={!starsCollapsed} onClick={() => setCollapsedStars(current => ({ ...current, [title]: !current[title] }))}
+              sx={{ width: "100%", justifyContent: "flex-start", minHeight: drawer ? 36 : 28, px: .5, gap: .5, color: "text.secondary", borderRadius: 1 }}>
+              {starsCollapsed ? <KeyboardArrowRightIcon sx={{ fontSize: 16 }} /> : <KeyboardArrowDownIcon sx={{ fontSize: 16 }} />}
+              <Typography sx={{ fontSize: 11, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase" }}>Starred</Typography>
+            </ButtonBase>
+            {!starsCollapsed ? <List disablePadding>{starredRows}</List> : null}
           </Box>
         ) : null}
         <Box component="section">
@@ -224,7 +239,8 @@ function SharedSidebarPanel({
       </Box>
       {(newLabel && onNew) || (viewAllLabel && onViewAll) ? <Box
         sx={{
-          p: 1.75,
+          p: drawer ? 0 : 1.75,
+          ...(drawer ? { "& .MuiButton-root": { minHeight: 44, py: 0.5, px: 2, fontSize: 13, borderRadius: 0 }, "& .MuiButton-startIcon > *": { fontSize: 18 } } : {}),
           boxShadow: theme => `inset 0 1px 0 ${theme.palette.divider}`,
         }}
       >

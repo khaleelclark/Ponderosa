@@ -83,11 +83,12 @@ export function EngineModelEffortFields({
     <Stack direction={runtimeDirection} spacing={runtimeSpacing}>
       {showModel ? (
         <FormControl fullWidth disabled={disabled} size={size}>
-          <InputLabel id={modelLabelId}>{modelLabel}</InputLabel>
+          <InputLabel id={modelLabelId} shrink>{modelLabel}</InputLabel>
           <Select
             labelId={modelLabelId}
             label={modelLabel}
             value={modelValue}
+            displayEmpty
             onChange={(event: SelectChangeEvent) => {
               const model = event.target.value;
               const resetEffort = resetEffortOnModelChange === "always"
@@ -113,11 +114,12 @@ export function EngineModelEffortFields({
       ) : null}
       {showEffort ? (
         <FormControl fullWidth disabled={disabled} size={size}>
-          <InputLabel id={effortLabelId}>{effortLabel}</InputLabel>
+          <InputLabel id={effortLabelId} shrink>{effortLabel}</InputLabel>
           <Select
             labelId={effortLabelId}
             label={effortLabel}
             value={effortValue}
+            displayEmpty
             onChange={(event: SelectChangeEvent) => onChange({
               model: selection.model,
               effort: event.target.value,

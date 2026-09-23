@@ -279,8 +279,8 @@ export function ImportAgentForm({
         Use a Full Agent, Full organization, Agent template, or Organization template export.
       </Typography> : null}
       <FormControl fullWidth>
-        <InputLabel id="import-chat-label">Destination Project chat</InputLabel>
-        <Select labelId="import-chat-label" label="Destination Project chat" value={conversationId} onChange={(event: SelectChangeEvent) => setConversationId(event.target.value)}>
+        <InputLabel id="import-chat-label">Destination Chat</InputLabel>
+        <Select labelId="import-chat-label" label="Destination Chat" value={conversationId} onChange={(event: SelectChangeEvent) => setConversationId(event.target.value)}>
           {conversations.map((conversation) => <MenuItem key={conversation.id} value={conversation.id}>{conversation.title}</MenuItem>)}
         </Select>
       </FormControl>

@@ -290,7 +290,6 @@ export function registerAgentCreationRoutes(
         const resolvedRuntime = concreteRuntimeSelection(requestedAdapter, [
           { model: request.body.model, effort: request.body.effort },
           conversationDefaults?.defaultEngine === request.body.engine ? { model: conversationDefaults.defaultModel, effort: conversationDefaults.defaultEffort } : undefined,
-          project.defaultEngine === request.body.engine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
           workspace.getPreferences().engineDefaults?.[request.body.engine],
         ], projectModelOptions);
         request.body.model = resolvedRuntime.model;

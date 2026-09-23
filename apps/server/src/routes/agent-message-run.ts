@@ -336,7 +336,9 @@ export function registerAgentMessageRunRoute(
       const agent = store.getAgent(agentId);
       const projectId = agent?.projectId ?? store.getAgentProjectId(agentId);
       if (!projectId) return reply.code(404).send({ error: "agent not found" });
-      const project = store.getProject(projectId);
+      // Historical delivery receipts must remain replayable after Chat/Agent deletion.
+      // Resolve live Chat context only after the historical replay path below.
+      let project = store.getProject(projectId);
       if (!project) return reply.code(404).send({ error: "project not found" });
       const text = request.body?.text?.trim() ?? "";
       const userMessageIdempotencyKey = request.body?.idempotencyKey?.trim();
@@ -479,6 +481,13 @@ export function registerAgentMessageRunRoute(
           conversationDeletionInProgress(agent.conversationId))) {
         return reply.code(409).send({ error: "Agent Chat is unavailable; retry safely" });
       }
+      const chatContext = store.getChatContext(agent.conversationId);
+      if (!chatContext || chatContext.id !== projectId) {
+        return reply.code(409).send({ error: "Agent Chat context is unavailable; retry safely" });
+      }
+      // Defaults, capability discovery and workspace checks must use the same
+      // owner as run preparation, including queued and scheduler dispatches.
+      project = chatContext;
       if (assetReconciliationInProgress(agent.id)) {
         return reply.code(409).send({ error: "Agent asset maintenance is in progress; retry safely" });
       }

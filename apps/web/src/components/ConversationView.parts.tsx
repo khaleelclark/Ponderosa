@@ -250,6 +250,7 @@ function ConversationMessageComponent({
 const ConversationMessage = memo(ConversationMessageComponent);
 
 function ConversationHeader({
+  onChatSettings,
   activeView,
   agentWorkOpen,
   conversation,
@@ -267,6 +268,7 @@ function ConversationHeader({
   setActiveView,
 }: {
   activeView: "main" | "collaboration" | "files" | "agents" | "triggers";
+  onChatSettings(): void;
   agentWorkOpen: boolean;
   conversation: ConversationDto;
   projectLabel?: string;
@@ -307,6 +309,7 @@ function ConversationHeader({
             transcriptMarkdown={transcriptMarkdown}
             transcriptFileName={transcriptFileName(transcriptTitle)}
             actions={[
+              { label: "Chat settings", onSelect: onChatSettings },
               {
                 label: "Work",
                 icon: <AccountTreeOutlinedIcon fontSize="small" />,

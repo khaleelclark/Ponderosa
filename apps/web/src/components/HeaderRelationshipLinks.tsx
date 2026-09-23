@@ -23,26 +23,8 @@ export function orderedAgentHeaderChats(
   });
 }
 
-export function ProjectRelationshipLink({
-  projectLabel,
-  onOpenProject,
-  compact = false,
-}: {
-  projectLabel?: string;
-  onOpenProject(): void;
-  compact?: boolean;
-}): JSX.Element {
-  const label = projectLabel ?? "Project";
-  return <Link
-    component="button"
-    variant="caption"
-    color="text.secondary"
-    aria-label={`Open project ${projectLabel ?? "overview"}`}
-    onClick={onOpenProject}
-    noWrap
-  >
-    {compact ? "Project" : label}
-  </Link>;
+export function ProjectRelationshipLink(_props: { projectLabel?: string; onOpenProject(): void; compact?: boolean }): null {
+  return null;
 }
 
 export function AgentHeaderRelationships({
@@ -74,8 +56,7 @@ export function AgentHeaderRelationships({
     >
       <ProjectRelationshipLink projectLabel={projectLabel} onOpenProject={onOpenProject} />
       {primaryChat ? <>
-        <Typography variant="caption" color="text.secondary" aria-hidden="true">·</Typography>
-        <Link component="button" variant="caption" aria-label={`Open Project Chat ${primaryChat.title}`} onClick={() => onOpenChat(primaryChat.id)} noWrap>
+        <Link component="button" variant="caption" aria-label={`Open Chat ${primaryChat.title}`} onClick={() => onOpenChat(primaryChat.id)} noWrap>
           {primaryChat.title}
         </Link>
       </> : null}
@@ -84,7 +65,7 @@ export function AgentHeaderRelationships({
         <Link
           component="button"
           variant="caption"
-          aria-label={`Show ${additionalChats.length} more Project ${additionalChats.length === 1 ? "Chat" : "Chats"}`}
+          aria-label={`Show ${additionalChats.length} more ${additionalChats.length === 1 ? "Chat" : "Chats"}`}
           aria-haspopup="menu"
           aria-expanded={menuOpen || undefined}
           aria-controls={menuOpen ? "agent-header-chat-menu" : undefined}
@@ -104,11 +85,10 @@ export function AgentHeaderRelationships({
     >
       <ProjectRelationshipLink compact projectLabel={projectLabel} onOpenProject={onOpenProject} />
       {primaryChat ? <>
-        <Typography variant="caption" color="text.secondary" aria-hidden="true">·</Typography>
         {chats.length === 1 ? <Link
           component="button"
           variant="caption"
-          aria-label={`Open Project Chat ${primaryChat.title}`}
+          aria-label={`Open Chat ${primaryChat.title}`}
           onClick={() => onOpenChat(primaryChat.id)}
           noWrap
         >
@@ -116,7 +96,7 @@ export function AgentHeaderRelationships({
         </Link> : <Link
           component="button"
           variant="caption"
-          aria-label={`Show ${chats.length} Project Chats`}
+          aria-label={`Show ${chats.length} Chats`}
           aria-haspopup="menu"
           aria-expanded={menuOpen || undefined}
           aria-controls={menuOpen ? "agent-header-chat-menu" : undefined}
@@ -132,11 +112,11 @@ export function AgentHeaderRelationships({
       anchorEl={chatMenu.anchor}
       open
       onClose={() => setChatMenu(undefined)}
-      MenuListProps={{ id: "agent-header-chat-menu", dense: true, "aria-label": "Project Chats" }}
+      MenuListProps={{ id: "agent-header-chat-menu", dense: true, "aria-label": "Chats" }}
     >
       {chatMenu.chats.map((chat) => <MenuItem
         key={chat.id}
-        aria-label={`Open Project Chat ${chat.title}`}
+        aria-label={`Open Chat ${chat.title}`}
         onClick={() => openChat(chat)}
       >
         {chat.title}

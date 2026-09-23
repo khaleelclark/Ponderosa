@@ -1,4 +1,4 @@
-import { stopHandedOffSpeech, stopSpeech } from "./components/speech/speechCoordinator";
+import { stopSpeech } from "./components/speech/speechCoordinator";
 import {
   Box,
   useMediaQuery,
@@ -12,6 +12,7 @@ import { ApiRequestError } from "./api/types";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { WorkspaceConnectionNotice } from "./components/WorkspaceConnectionNotice";
+import { WorkspaceRefreshProvider } from "./components/WorkspaceRefreshContext";
 import { WorkspaceConnectionProvider } from "./components/WorkspaceConnectionContext";
 import { ProviderStatusFlow } from "./components/ProviderStatusFlow";
 import {
@@ -258,7 +259,7 @@ export default function App({
       }
       const stableNavigationTarget = [
         ...document.querySelectorAll<HTMLElement>(
-          '[aria-label="Open workspace navigation"], nav[aria-label="Project navigation"] [aria-label="Home"]',
+          '[aria-label="Open workspace navigation"], nav[aria-label="Workspace sections"] [aria-label="Open All Chats"]',
         ),
       ].find(candidate => (
         candidate.getClientRects().length > 0 &&
@@ -495,8 +496,7 @@ export default function App({
       return;
     if (projects.length > 0 || preferences.onboardingCompletedAt) return;
     onboardingPrompted.current = true;
-    setOnboardingProjectCreation(true);
-    setProjectDialogOpen(true);
+    // A fresh workspace starts in the unsaved Chat composer, not Project setup.
   }, [
     engines,
     enginesQuery.isSuccess,
@@ -547,21 +547,14 @@ export default function App({
     }
   };
   const navigateWorkspace = (next: Route) => {
-    stopHandedOffSpeech();
+    stopSpeech();
     recordWorkspaceRouteUse(next);
     navigate(next);
   };
   useEffect(() => {
-    const openVoices = (event: Event) => {
-      if (!(event as CustomEvent<{ preservePlayback?: boolean }>).detail?.preservePlayback) stopSpeech();
-      navigate({ kind: "settings", section: "general" });
-      requestAnimationFrame(() => document.getElementById("local-voices")?.scrollIntoView({ block: "start" }));
-    };
     const hidden = () => { if (document.visibilityState !== "visible") stopSpeech(); };
-    window.addEventListener("ponderosa:voice-settings", openVoices);
     document.addEventListener("visibilitychange", hidden);
     return () => {
-      window.removeEventListener("ponderosa:voice-settings", openVoices);
       document.removeEventListener("visibilitychange", hidden);
     };
   }, [navigate]);
@@ -574,6 +567,10 @@ export default function App({
       agentId?: string;
     },
   ) => {
+    if (kind === "chat") {
+      navigate({ kind: "create", resource: "chat", surface: "workspace" });
+      return;
+    }
     setCreationRequest({
       resource: kind,
       ...(context?.projectId ? { projectId: context.projectId } : {}),
@@ -745,6 +742,7 @@ export default function App({
                 position: "relative",
               }}
             >
+              <WorkspaceRefreshProvider>
               <WorkspaceConnectionNotice connection={workspaceConnection} />
               <Box
                 sx={{
@@ -836,6 +834,7 @@ export default function App({
               </WorkspaceConnectionProvider>
               </ActiveNotificationViewProvider>
               </Box>
+              </WorkspaceRefreshProvider>
             </Box>
           </Box>
         </Box>
@@ -878,7 +877,7 @@ export default function App({
           onClose={closeGlobalSearch}
           onSelect={selection => {
             saveLastProjectId(selection.projectId);
-            if (selection.chat.kind === "conversation") {
+            if ("chat" in selection && selection.chat.kind === "conversation") {
               void api.markProjectUsed(selection.projectId, selection.chat.id);
             }
             const destination = routeForGlobalSearchSelection(selection);

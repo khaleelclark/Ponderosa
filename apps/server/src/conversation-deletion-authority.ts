@@ -135,6 +135,14 @@ export function createConversationDeletionAuthority(context: {
       errors.push(error instanceof Error ? error.message : "Automation refresh failed");
     }
     try {
+      const folders = context.workspace.getPreferences().chatFolders;
+      if (folders?.some(folder => folder.conversationIds.includes(receipt.conversationId))) {
+        const cursor = context.workspace.cursor();
+        context.workspace.updatePreferences({ chatFolders: folders.map(folder => ({ ...folder,
+          conversationIds: folder.conversationIds.filter(id => id !== receipt.conversationId),
+        })).filter(folder => folder.conversationIds.length) });
+        for (const event of context.workspace.readSince(cursor)) context.publishWorkspace(event);
+      }
       context.publishWorkspace(context.workspace.reconcileConversationDeletion(
         receipt.projectId,
         receipt.conversationId,
