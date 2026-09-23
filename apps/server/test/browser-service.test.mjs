@@ -279,6 +279,8 @@ test('browser-service action reasons remain typed through IPC so stale pages are
     isAlive: () => true, manualState: () => 'automation',
     pages: async () => ({ activePageId: 'current', pages: [{ pageId: 'current', url: 'about:blank', title: 'Blank', active: true }] }),
     closePage: async () => { throw new BrowserDriverActionError('page_not_found'); },
+    click: async () => { throw new BrowserDriverActionError('selector_ambiguous'); },
+    fill: async () => { throw new BrowserDriverActionError('fill_unconfirmed'); },
     close: async () => {}, cancelPendingFileChooser: async () => {},
   }));
   const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
@@ -289,6 +291,19 @@ test('browser-service action reasons remain typed through IPC so stale pages are
     await assert.rejects(manager.closePage(scope, 'stale', 'operator', session.controlEpoch), error => {
       assert.equal(error.statusCode, 404);
       assert.match(error.message, /page not found/i);
+      return true;
+    });
+    await manager.setControl(scope, 'agent', session.controlEpoch);
+    await assert.rejects(manager.act(scope, { action: 'click', selector: 'button[aria-label="Search"]' }), error => {
+      assert.equal(error.statusCode, 409);
+      assert.equal(error.code, 'selector_ambiguous');
+      assert.match(error.message, /unique selector/);
+      return true;
+    });
+    await assert.rejects(manager.act(scope, { action: 'fill', selector: '#draft', text: 'sensitive input' }), error => {
+      assert.equal(error.statusCode, 409);
+      assert.equal(error.code, 'fill_unconfirmed');
+      assert.doesNotMatch(error.message, /sensitive input/);
       return true;
     });
     await manager.close(scope);
