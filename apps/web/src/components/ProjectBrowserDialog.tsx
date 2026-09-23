@@ -173,7 +173,9 @@ export function ProjectBrowserDialog({ projectId, agent, open, request, onReques
         {!agents.data?.length ? <MenuItem disabled>No agents in this chat</MenuItem> : null}
       </Menu>
       {localSetup && projectId ? <LocalBrowserSetup projectId={projectId} session={session} onClose={() => setLocalSetup(false)} onConnected={() => { setLocalSetup(false); void browser.query.refetch(); }} /> : null}
-      {!failed && manualControl.error ? <Alert severity="error" action={<Button onClick={() => manualControl.mutate("resume")}>Retry connection</Button>} onClose={() => manualControl.reset()}>{manualControl.error.message}</Alert> : null}
+      {!failed && manualControl.error ? <Alert severity="error" action={nativeDisplay || session?.privateSignIn
+        ? <Button onClick={() => { manualControl.reset(); void browser.query.refetch(); }}>Refresh state</Button>
+        : <Button onClick={() => manualControl.mutate("resume")}>Retry connection</Button>} onClose={() => manualControl.reset()}>{manualControl.error.message}</Alert> : null}
       {!failed && handoff.error ? <Alert severity="error" onClose={() => handoff.reset()}>{handoff.error.message}</Alert> : null}
       {revokeSavedAccess.error ? <Alert severity="error" onClose={() => revokeSavedAccess.reset()}>{revokeSavedAccess.error.message}</Alert> : null}
       {view === "saved" && savedAccess.error ? <Alert severity="warning" action={<Button onClick={() => void savedAccess.refetch()}>Retry</Button>}>Saved-browser permissions could not be loaded.</Alert> : null}

@@ -1,4 +1,5 @@
 import { createServer, request as httpRequest, type IncomingHttpHeaders, type Server } from "node:http";
+import type { Duplex } from "node:stream";
 import { existsSync, lstatSync, mkdirSync, chmodSync, statSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,10 @@ export interface OperatorAuthProxyOptions {
   publicOrigin: string;
   identityHeader: string;
   allowedIdentities: readonly string[];
+}
+
+export interface OperatorAuthProxyServer extends Server {
+  closeUpgrades(): void;
 }
 
 const hopByHop = new Set([
@@ -41,7 +46,7 @@ function forwardedHeaders(headers: IncomingHttpHeaders, backendToken: string, pu
   return forwarded;
 }
 
-export function createOperatorAuthProxy(options: OperatorAuthProxyOptions): Server {
+export function createOperatorAuthProxy(options: OperatorAuthProxyOptions): OperatorAuthProxyServer {
   if (!isAbsolute(options.socketPath)) throw new Error("proxy socket path must be absolute");
   if (!Number.isInteger(options.backendPort) || options.backendPort < 1 || options.backendPort > 65_535) {
     throw new Error("proxy backend port is invalid");
@@ -61,18 +66,21 @@ export function createOperatorAuthProxy(options: OperatorAuthProxyOptions): Serv
   const allowed = new Set(options.allowedIdentities.map((value) => value.trim().toLowerCase()).filter(Boolean));
   if (allowed.size === 0) throw new Error("proxy requires at least one allowed identity");
 
-  return createServer((incoming, response) => {
-    const asserted = incoming.headers[identityHeader];
+  const deniedStatus = (headers: IncomingHttpHeaders): 401 | 421 | undefined => {
+    const asserted = headers[identityHeader];
     const identity = typeof asserted === "string" ? asserted.trim().toLowerCase() : "";
-    if (!allowed.has(identity)) {
-      response.writeHead(401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-      response.end('{"error":"operator identity required"}');
-      return;
-    }
-    const forwardedHost = incoming.headers["x-forwarded-host"];
-    if (forwardedHost !== undefined && forwardedHost !== publicOrigin.host) {
-      response.writeHead(421, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-      response.end('{"error":"unrecognized proxy host"}');
+    if (!allowed.has(identity)) return 401;
+    const forwardedHost = headers["x-forwarded-host"];
+    if (forwardedHost !== undefined && forwardedHost !== publicOrigin.host) return 421;
+    return undefined;
+  };
+
+  const upgradedSockets = new Set<Duplex>();
+  const server = createServer((incoming, response) => {
+    const denied = deniedStatus(incoming.headers);
+    if (denied) {
+      response.writeHead(denied, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      response.end(denied === 401 ? '{"error":"operator identity required"}' : '{"error":"unrecognized proxy host"}');
       return;
     }
     const upstream = httpRequest({
@@ -98,6 +106,54 @@ export function createOperatorAuthProxy(options: OperatorAuthProxyOptions): Serv
     response.on("close", () => upstream.destroy());
     incoming.pipe(upstream);
   });
+  server.on("upgrade", (incoming, socket, head) => {
+    const reject = (status: number) => {
+      if (!socket.destroyed) socket.end(`HTTP/1.1 ${status} ${status === 401 ? "Unauthorized" : status === 421 ? "Misdirected Request" : status === 404 ? "Not Found" : "Bad Gateway"}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    };
+    const denied = deniedStatus(incoming.headers);
+    if (denied) return reject(denied);
+    // These are the only browser WebSocket routes. The backend still validates
+    // the one-use desktop ticket or the sandboxed preview capability.
+    if (incoming.method !== "GET" || incoming.headers.upgrade?.toLowerCase() !== "websocket" ||
+        (incoming.url !== "/api/hosted-browser/desktop" && !incoming.url?.startsWith("/api/link-previews/"))) return reject(404);
+    const headers = forwardedHeaders(incoming.headers, options.backendToken, publicOrigin.host);
+    headers.connection = "Upgrade";
+    headers.upgrade = "websocket";
+    const upstream = httpRequest({
+      hostname: "127.0.0.1", port: options.backendPort, path: incoming.url, method: "GET", headers,
+    });
+    let peer: Duplex | undefined;
+    let upgraded = false;
+    const destroy = () => { upstream.destroy(); peer?.destroy(); socket.destroy(); };
+    socket.once("error", destroy);
+    socket.once("close", () => { upstream.destroy(); peer?.destroy(); upgradedSockets.delete(socket); });
+    upstream.setTimeout(10_000, () => upstream.destroy());
+    upstream.once("error", () => { if (upgraded) destroy(); else reject(502); });
+    upstream.once("response", (response) => {
+      response.resume();
+      response.once("end", () => reject(response.statusCode ?? 502));
+    });
+    upstream.once("upgrade", (response, backendSocket, backendHead) => {
+      upgraded = true;
+      upstream.setTimeout(0);
+      peer = backendSocket;
+      upgradedSockets.add(socket);
+      peer.once("error", destroy);
+      peer.once("close", () => socket.destroy());
+      const lines = ["HTTP/1.1 101 Switching Protocols"];
+      for (let index = 0; index < response.rawHeaders.length; index += 2) {
+        lines.push(`${response.rawHeaders[index]}: ${response.rawHeaders[index + 1]}`);
+      }
+      socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+      if (backendHead.length) socket.write(backendHead);
+      if (head.length) peer.write(head);
+      socket.pipe(peer).pipe(socket);
+    });
+    upstream.end();
+  });
+  const proxy = server as OperatorAuthProxyServer;
+  proxy.closeUpgrades = () => { for (const socket of upgradedSockets) socket.destroy(); };
+  return proxy;
 }
 
 function prepareSocket(path: string): void {
@@ -119,7 +175,7 @@ function prepareSocket(path: string): void {
   }
 }
 
-export async function listenOperatorAuthProxy(options: OperatorAuthProxyOptions): Promise<Server> {
+export async function listenOperatorAuthProxy(options: OperatorAuthProxyOptions): Promise<OperatorAuthProxyServer> {
   prepareSocket(options.socketPath);
   const server = createOperatorAuthProxy(options);
   await new Promise<void>((resolve, reject) => {
@@ -144,9 +200,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   };
   const server = await listenOperatorAuthProxy(options);
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.once(signal, () => server.close(() => {
+    process.once(signal, () => { server.closeUpgrades(); server.close(() => {
       try { unlinkSync(options.socketPath); } catch { /* Node may already have removed it. */ }
       process.exit(0);
-    }));
+    }); });
   }
 }

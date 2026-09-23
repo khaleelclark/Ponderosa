@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import Fastify from "fastify";
 import { createOperatorAuthProxy, listenOperatorAuthProxy } from "../dist/operator-auth-proxy.js";
 import { registerRequestSecurityHooks } from "../dist/server-request-hooks.js";
+import { createHostedDesktopAccess } from "../dist/hosted-desktop-access.js";
+import { WebSocket, WebSocketServer } from "ws";
 
 const token = "a".repeat(48);
 const identity = "operator@example.com";
@@ -157,4 +160,72 @@ test("Unix-target Host rewriting still admits real Ponderosa browser mutations",
   assert.equal(await send({ origin: "https://other.test" }), 403);
   assert.equal(await send({ "x-forwarded-host": "other.test" }), 421);
   assert.equal(await send({ "tailscale-user-login": "other@example.com" }), 401);
+});
+
+test("verified operator can use the desktop WebSocket through the Unix proxy", { timeout: 10_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "ponderosa-proxy-desktop-"));
+  const desktopPath = join(root, "desktop.sock");
+  const desktop = createNetServer(socket => {
+    socket.write("RFB 003.008\n");
+    socket.on("data", bytes => socket.write(bytes));
+  });
+  const backend = createServer();
+  const access = createHostedDesktopAccess(backend);
+  const preview = new WebSocketServer({ noServer: true });
+  backend.on("upgrade", (request, socket, head) => {
+    if (request.url !== "/api/link-previews/00000000-0000-0000-0000-000000000001/__ws" || request.headers.origin !== "null") return;
+    preview.handleUpgrade(request, socket, head, connection => connection.on("message", message => connection.send(message)));
+  });
+  let proxy;
+  let ws;
+  try {
+    await listen(desktop, desktopPath);
+    await listen(backend, 0);
+    const socketPath = join(root, "operator.sock");
+    proxy = await listenOperatorAuthProxy({
+      socketPath, backendPort: backend.address().port, backendToken: token,
+      publicOrigin: "https://example.test:25443", identityHeader: "x-verified-operator",
+      allowedIdentities: [identity],
+    });
+    const origin = "https://example.test:25443";
+    const ticket = access.issue(origin, () => desktopPath);
+    const connect = headers => new WebSocket(`ws+unix://${socketPath}:${ticket.path}`, ["binary", ticket.protocol], { origin, headers });
+    const denied = async (headers, status) => {
+      const attempt = connect(headers);
+      attempt.on("error", () => {});
+      const [_, response] = await once(attempt, "unexpected-response");
+      assert.equal(response.statusCode, status);
+      response.resume();
+      attempt.terminate();
+    };
+    await denied({}, 401);
+    await denied({ "x-verified-operator": identity, "x-forwarded-host": "other.test" }, 421);
+    ws = connect({ "x-verified-operator": identity, "x-forwarded-host": "example.test:25443" });
+    const greeting = once(ws, "message");
+    await once(ws, "open");
+    assert.match((await greeting)[0].toString(), /^RFB/u);
+    const echoed = once(ws, "message");
+    ws.send(Buffer.from("browser input"));
+    assert.equal((await echoed)[0].toString(), "browser input");
+    const previewSocket = new WebSocket(`ws+unix://${socketPath}:/api/link-previews/00000000-0000-0000-0000-000000000001/__ws`, "vite-hmr", {
+      origin: "null", headers: { "x-verified-operator": identity, "x-forwarded-host": "example.test:25443" },
+    });
+    await once(previewSocket, "open");
+    const previewEcho = once(previewSocket, "message");
+    previewSocket.send("preview update");
+    assert.equal((await previewEcho)[0].toString(), "preview update");
+    previewSocket.terminate();
+    const closed = once(ws, "close");
+    proxy.closeUpgrades();
+    await closed;
+  } finally {
+    ws?.terminate();
+    proxy?.closeUpgrades();
+    access.close();
+    preview.close();
+    if (proxy) await close(proxy);
+    if (backend.listening) await close(backend);
+    if (desktop.listening) await close(desktop);
+    rmSync(root, { recursive: true, force: true });
+  }
 });

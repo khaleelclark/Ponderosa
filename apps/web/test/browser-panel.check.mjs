@@ -241,6 +241,15 @@ try {
   await rejected.waitForTimeout(300);
   assert.equal(await rejected.evaluate(() => window.connectionCalls), 2);
   await rejected.close();
+  const privateRejected = await browser.newPage();
+  await privateRejected.goto(`http://127.0.0.1:${server.address().port}/?native=1&manual=1&private=1&reject=1`);
+  await privateRejected.getByRole('button', { name: 'Done signing in', exact: true }).click();
+  await privateRejected.getByText('Chrome approval required', { exact: true }).waitFor();
+  assert.equal(await privateRejected.getByRole('button', { name: 'Retry connection', exact: true }).count(), 0, 'native private sign-in must not suggest a blind retry');
+  await privateRejected.getByRole('button', { name: 'Refresh state', exact: true }).click();
+  await privateRejected.getByRole('button', { name: 'Done signing in', exact: true }).waitFor();
+  assert.equal(await privateRejected.evaluate(() => window.connectionCalls), 1, 'refreshing state does not reissue browser control');
+  await privateRejected.close();
   const native = await browser.newPage();
   await native.goto(`http://127.0.0.1:${server.address().port}/?native=1&manual=1`);
   await native.locator('[aria-label="Manual Chrome browser"]').waitFor();
