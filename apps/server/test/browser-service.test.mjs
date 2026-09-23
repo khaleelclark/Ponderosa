@@ -260,6 +260,51 @@ test('confirmed deployment drain does not repeat broker chooser cleanup during s
   } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('drained server closes without repeating retained browser cleanup', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-drained-server-'));
+  const dataDir = path.join(root, 'state');
+  const socket = path.join(root, 'service.sock');
+  const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true };
+  let cancellations = 0;
+  const service = await startBrowserService(socket, dataDir, async () => ({
+    isAlive: () => true,
+    manualState: () => 'automation',
+    pages: async () => ({ activePageId: 'draft', pages: [page] }),
+    pageInfo: async () => page,
+    cancelPendingFileChooser: async () => {
+      cancellations++;
+      if (cancellations > 1) throw new Error('shutdown repeated broker cleanup');
+    },
+    close: async () => {},
+  }));
+  let app;
+  try {
+    const store = new AgentStore(dataDir);
+    const project = store.createProject({ label: 'Drained server', hostPath: root, defaultEngine: 'codex' });
+    app = createServer({ dataDir, browserServiceSocket: socket, store, engines: [], logger: false });
+    await app.ready();
+    const opened = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/browser`, payload: { rememberSignIns: true } });
+    assert.equal(opened.statusCode, 200, opened.body);
+    const drain = await app.inject({ method: 'POST', url: '/api/deployment/drain' });
+    assert.equal(drain.statusCode, 200, drain.body);
+    let readyForRestart = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const status = (await app.inject('/api/ready')).json().deploymentDrain;
+      if (status.readyForRestart) { readyForRestart = true; break; }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(readyForRestart, true, 'the browser drain must be confirmed before shutdown');
+    app.prepareForShutdown();
+    await app.close();
+    app = undefined;
+    assert.equal(cancellations, 1);
+    assert.deepEqual(await new BrowserServiceClient(socket).claim(), [opened.json().id]);
+  } finally {
+    if (app) { app.prepareForShutdown(); await app.close(); }
+    await service.close(); await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('full server shutdown and startup reconnect the shared browser without inherited control', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'browser-server-restart-'));
   const dataDir = path.join(root, 'state');
