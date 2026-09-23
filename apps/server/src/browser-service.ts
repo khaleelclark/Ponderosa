@@ -154,7 +154,8 @@ export async function startBrowserService(socketPath: string, dataDir: string, f
           const driver = entry.driver;
           entry.openingToken = undefined;
           entry.launchAbort = undefined;
-          if (body.operation === "adopt" || body.operation === "status") result = { snapshot: snapshot(entry), events: entry.events.splice(0) };
+          if (body.operation === "check_lease") result = {};
+          else if (body.operation === "adopt" || body.operation === "status") result = { snapshot: snapshot(entry), events: entry.events.splice(0) };
           else {
             // A Chrome approval handshake can occupy this browser's action
             // queue for up to two minutes. Reject automation immediately while
@@ -287,9 +288,9 @@ export class BrowserServiceClient {
       close: async () => { await this.rpc({ operation: "close", id }); suspended = true; clearInterval(refresh); },
       suspend: async (chooserAlreadyCancelled = false) => {
         if (chooserAlreadyCancelled) {
-          // The drain already settled chooser cleanup. A non-queued status RPC
-          // still proves this app owns the browser lease before it detaches.
-          await this.rpc({ operation: "status", id }, 15_000);
+          // The drain already settled chooser cleanup. A non-queued check
+          // proves this app still owns the lease without consuming page events.
+          await this.rpc({ operation: "check_lease", id }, 15_000);
         } else {
           await call("cancelPendingFileChooser", ["application_disconnect"]);
         }
