@@ -75,6 +75,7 @@ test("private proxy requires identity, replaces browser authorization, and prese
   assert.equal(seen.length, 0);
   const result = await send({
     "x-verified-operator": "OPERATOR@example.com",
+    "tailscale-user-login": "spoofed@example.com",
     authorization: "Bearer browser-supplied-secret",
   });
   assert.equal(result.status, 200);
@@ -83,7 +84,8 @@ test("private proxy requires identity, replaces browser authorization, and prese
   assert.equal(seen.length, 1);
   assert.equal(seen[0].headers.authorization, `Bearer ${token}`);
   assert.equal(seen[0].headers.host, "example.test");
-  assert.equal(seen[0].headers["x-verified-operator"], "OPERATOR@example.com");
+  assert.equal(seen[0].headers["x-verified-operator"], undefined);
+  assert.equal(seen[0].headers["tailscale-user-login"], identity);
   assert.equal(seen[0].url, "/api/projects?first=1");
   assert.equal(seen[0].body, "payload");
 });
@@ -162,6 +164,62 @@ test("Unix-target Host rewriting still admits real Ponderosa browser mutations",
   assert.equal(await send({ "tailscale-user-login": "other@example.com" }), 401);
 });
 
+test("custom proxy identity binds backend authorization despite a spoofed canonical header", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ponderosa-proxy-identity-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const alice = "alice@example.test";
+  const bob = "bob@example.test";
+  const app = Fastify({ logger: false });
+  registerRequestSecurityHooks(app, {
+    opts: {
+      dataDir: root,
+      engines: [],
+      authToken: token,
+      operatorOrigins: ["https://example.test"],
+      operatorIdentities: [alice],
+      networkSecurity: {
+        mode: "reverse_proxy", bindHost: "127.0.0.1", authenticationRequired: true, detail: "test",
+      },
+    },
+    v3DispatchKey: "dispatch",
+    agentMessageCapabilities: new Map(),
+    deletingAgentIds: new Set(),
+    validLauncherSession: () => false,
+    artifactFilesystemError: () => undefined,
+    isArtifactDependentWorkIntake: () => false,
+    isPublicWebAssetRequest: () => false,
+  });
+  app.post("/api/harmless", async () => ({ accepted: true }));
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  t.after(() => app.close());
+  const socketPath = join(root, "operator.sock");
+  const proxy = await listenOperatorAuthProxy({
+    socketPath,
+    backendPort: app.server.address().port,
+    backendToken: token,
+    publicOrigin: "https://example.test",
+    identityHeader: "X-Verified-Operator",
+    allowedIdentities: [alice, bob],
+  });
+  t.after(() => close(proxy));
+
+  const send = (headers) => new Promise((resolve, reject) => {
+    const outgoing = httpRequest({ socketPath, path: "/api/harmless", method: "POST", headers: {
+      host: "localhost", origin: "https://example.test", ...headers,
+    } }, (response) => {
+      response.resume();
+      response.on("end", () => resolve(response.statusCode));
+    });
+    outgoing.on("error", reject);
+    outgoing.end();
+  });
+
+  assert.equal(await send({ "x-verified-operator": bob, "tailscale-user-login": alice }), 401);
+  assert.equal(await send({ "x-verified-operator": alice }), 200);
+  assert.equal(await send({ "x-verified-operator": alice, "tailscale-user-login": bob }), 200);
+  assert.equal(await send({ "tailscale-user-login": alice }), 401);
+});
+
 test("verified operator can use the desktop WebSocket through the Unix proxy", { timeout: 10_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), "ponderosa-proxy-desktop-"));
   const desktopPath = join(root, "desktop.sock");
@@ -172,7 +230,9 @@ test("verified operator can use the desktop WebSocket through the Unix proxy", {
   const backend = createServer();
   const access = createHostedDesktopAccess(backend);
   const preview = new WebSocketServer({ noServer: true });
+  const forwardedIdentities = [];
   backend.on("upgrade", (request, socket, head) => {
+    forwardedIdentities.push({ canonical: request.headers["tailscale-user-login"], custom: request.headers["x-verified-operator"] });
     if (request.url !== "/api/link-previews/00000000-0000-0000-0000-000000000001/__ws" || request.headers.origin !== "null") return;
     preview.handleUpgrade(request, socket, head, connection => connection.on("message", message => connection.send(message)));
   });
@@ -200,7 +260,7 @@ test("verified operator can use the desktop WebSocket through the Unix proxy", {
     };
     await denied({}, 401);
     await denied({ "x-verified-operator": identity, "x-forwarded-host": "other.test" }, 421);
-    ws = connect({ "x-verified-operator": identity, "x-forwarded-host": "example.test:25443" });
+    ws = connect({ "x-verified-operator": identity, "tailscale-user-login": "spoofed@example.com", "x-forwarded-host": "example.test:25443" });
     const greeting = once(ws, "message");
     await once(ws, "open");
     assert.match((await greeting)[0].toString(), /^RFB/u);
@@ -208,12 +268,16 @@ test("verified operator can use the desktop WebSocket through the Unix proxy", {
     ws.send(Buffer.from("browser input"));
     assert.equal((await echoed)[0].toString(), "browser input");
     const previewSocket = new WebSocket(`ws+unix://${socketPath}:/api/link-previews/00000000-0000-0000-0000-000000000001/__ws`, "vite-hmr", {
-      origin: "null", headers: { "x-verified-operator": identity, "x-forwarded-host": "example.test:25443" },
+      origin: "null", headers: { "x-verified-operator": identity, "tailscale-user-login": "spoofed@example.com", "x-forwarded-host": "example.test:25443" },
     });
     await once(previewSocket, "open");
     const previewEcho = once(previewSocket, "message");
     previewSocket.send("preview update");
     assert.equal((await previewEcho)[0].toString(), "preview update");
+    assert.deepEqual(forwardedIdentities, [
+      { canonical: identity, custom: undefined },
+      { canonical: identity, custom: undefined },
+    ]);
     previewSocket.terminate();
     const closed = once(ws, "close");
     proxy.closeUpgrades();
