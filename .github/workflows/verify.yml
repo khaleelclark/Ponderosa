@@ -36,17 +36,20 @@ jobs:
       - name: Install exact dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install the pinned Chromium for browser checks
+        run: pnpm --filter @ponderosa/server exec playwright-core install --with-deps chromium
+
       - name: Verify tests, types, and production build
         # GitHub's hosted Ubuntu runner disables the user namespaces Chromium's
         # sandbox requires. This exception is confined to the CI test process.
         env:
           PONDEROSA_BROWSER_DISABLE_SANDBOX: "1"
-        run: pnpm verify
+        run: |
+          export PONDEROSA_BROWSER_EXECUTABLE="$(pnpm --filter @ponderosa/server exec node -p "require('playwright-core').chromium.executablePath()")"
+          pnpm verify
 
       - name: Check read-aloud in Chromium
-        run: |
-          pnpm --filter @ponderosa/server exec playwright-core install --with-deps chromium
-          pnpm test:speech-browser
+        run: pnpm test:speech-browser
 
       - name: Qualify production-scale startup recovery
         run: pnpm --filter @ponderosa/agents qualify:startup
