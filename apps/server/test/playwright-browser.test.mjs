@@ -16,7 +16,14 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     if (req.url === "/scroll") { res.end('<style>body{margin:0}div{height:1000px;background:red}div+div{background:blue}</style><div></div><div></div>'); return; }
     if (req.url === "/embedded") { res.end('<p>Embedded frame region</p><input id="embedded-field" aria-label="Embedded answer">'); return; }
     if (req.url === "/frames") { res.end('<iframe src="/embedded"></iframe><input id="rejecting" oninput="this.value=\'\'">'); return; }
-    res.end(req.url === "/popup" ? '<title>Popup</title><input id="popup">' : `<title>Fixture</title><main><input id="password" type="password" value="FAKE_SECRET"><input id="file" type="file" accept="text/plain"><button id="popup" onclick="window.open('/popup')">Popup</button><div id="shadow"></div></main><script>document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<input id="shadow-field">';setTimeout(()=>document.querySelector('main').insertAdjacentHTML('beforeend','<input id="delayed">'),600);</script>`);
+    if (req.url === "/popup") {
+      // The DOM and title appear before DOMContentLoaded, as they can in a
+      // real popup. Inspection can see the field while Playwright catches up.
+      res.write('<title>Popup</title><input id="popup">');
+      setTimeout(() => res.end(), 200);
+      return;
+    }
+    res.end(`<title>Fixture</title><main><input id="password" type="password" value="FAKE_SECRET"><input id="file" type="file" accept="text/plain"><button id="popup" onclick="window.open('/popup')">Popup</button><div id="shadow"></div></main><script>document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<input id="shadow-field">';setTimeout(()=>document.querySelector('main').insertAdjacentHTML('beforeend','<input id="delayed">'),600);</script>`);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   let driver;

@@ -125,14 +125,18 @@ export function registerBrowserRoutes(
     try {
       browserProfiles.setSavedBrowserAccess(projectId, agentId, request.body.allowed);
       if (!request.body.allowed) {
+        const scope = projectBrowserScope(SAVED_BROWSER_SCOPE_ID);
         const grant = getProjectBrowserGrant(SAVED_BROWSER_SCOPE_ID);
-        if (grant?.agentId === agentId) {
-          deleteProjectBrowserGrant(SAVED_BROWSER_SCOPE_ID);
-          const scope = projectBrowserScope(SAVED_BROWSER_SCOPE_ID);
-          const session = projectBrowserSessions.get(scope.agentId);
-          if (session?.status === "ready") await projectBrowserSessions.revokeAgentControl(scope);
+        const session = projectBrowserSessions.get(scope.agentId);
+        if (session?.status === "ready" && (grant?.agentId === agentId || !grant)) {
+          // Keep the exact grant until native/chooser cleanup succeeds. A
+          // repeated revocation can then retry an incomplete operator handoff.
+          await projectBrowserSessions.revokeAgentControl(scope);
         }
-        projectBrowserSessions.expireNextRun(projectBrowserScope(SAVED_BROWSER_SCOPE_ID), agentId);
+        if (grant?.agentId === agentId && getProjectBrowserGrant(SAVED_BROWSER_SCOPE_ID) === grant) {
+          deleteProjectBrowserGrant(SAVED_BROWSER_SCOPE_ID);
+        }
+        projectBrowserSessions.expireNextRun(scope, agentId);
       }
       return { agentIds: browserProfiles.savedBrowserAccess(projectId) };
     } catch (error) { return browserRouteError(reply, error); }
@@ -388,7 +392,10 @@ export function registerBrowserRoutes(
         if (request.body.owner === "operator") {
           const current = projectBrowserSessions.get(projectBrowserScope(projectId).agentId);
           if (current?.status === "ready" && current.controlOwner === "operator" && !previousGrant) {
-            return projectBrowserDto(projectId, current);
+            // Ownership can already say operator while native/chooser cleanup
+            // is still pending from a failed revocation.
+            const reconciled = await projectBrowserSessions.revokeAgentControl(projectBrowserScope(projectId));
+            return projectBrowserDto(projectId, reconciled);
           }
           const session = await projectBrowserSessions.setControl(
             projectBrowserScope(projectId, previousGrant),

@@ -387,9 +387,18 @@ export class ChromeCdpDriver implements BrowserDriver {
     const page = this.currentPage();
     if (!this.playwright) throw new Error("Browser frame controls require Playwright.");
     const reference = /^frame:([a-f0-9-]{36}) >> ([\s\S]+)$/.exec(selector);
-    if (!reference) return (await this.playwright.page(page.targetId)).locator(selector);
+    if (!reference) {
+      const selected = await this.playwright.page(page.targetId);
+      // CDP can publish a popup and its DOM before Playwright has settled the
+      // corresponding main-frame navigation. Wait for action-frame readiness,
+      // not just page discovery, before handing out a locator.
+      await selected.waitForLoadState("domcontentloaded", { timeout: 10_000 });
+      return selected.locator(selector);
+    }
     const entry = this.frameReferences.get(reference[1]!);
     if (!entry || entry.targetId !== page.targetId || entry.frame.isDetached() || entry.frame.url() !== entry.url) throw new Error("Embedded frame changed. Inspect the page again.");
+    await entry.frame.waitForLoadState("domcontentloaded", { timeout: 10_000 });
+    if (entry.frame.isDetached() || entry.frame.url() !== entry.url) throw new Error("Embedded frame changed. Inspect the page again.");
     return entry.frame.locator(reference[2]!);
   }
   private async uniqueActionLocator(selector: string) {

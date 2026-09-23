@@ -258,6 +258,15 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     ]).then(() => undefined);
   }
 
+  function closeRunBrowserAfterRun(agentId: string, run: ActiveRun, reason: string): Promise<void> {
+    // Run settlement must not become an unhandled rejection when a browser
+    // handoff fails. The managers retain the browser and its cleanup blocker;
+    // shutdown still uses the rejecting closeRunBrowser so it cannot drain.
+    return closeRunBrowser(agentId, run, reason).catch((error) => {
+      logWarn({ err: error, agentId, runId: run.runId, reason }, "Run browser cleanup remains pending; retry the retained browser handoff");
+    });
+  }
+
   async function closeAgentBrowsers(agentId: string, reason: string): Promise<void> {
     await releaseProjectBrowserGrant(agentId, reason);
     await browserSessions.closeAgent(agentId, reason);
@@ -323,6 +332,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     browserSessions,
     closeAgentBrowsers,
     closeRunBrowser,
+    closeRunBrowserAfterRun,
     projectBrowserDto,
     projectBrowserGrants,
     projectBrowserScope,

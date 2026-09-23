@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
 import { createBrowserAuthority } from '../dist/browser-authority.js';
+import { createRuntimeEventAuthority } from '../dist/runtime-event-authority.js';
+import { registerBrowserRoutes } from '../dist/routes/browsers.js';
 import { registerAgentRuntimeToolRoutes } from '../dist/routes/agent-runtime-tools.js';
 
 async function fixture(projectId = 'chat') {
@@ -14,10 +16,11 @@ async function fixture(projectId = 'chat') {
   let alive = true;
   let draft = 'Unpublished browser-local work';
   let cancelFailures = 0;
+  const warnings = [];
   const authority = createBrowserAuthority({
     dataDir: root,
     store: { getAgent: id => id === 'agent' ? { id, projectId: 'chat', title: 'Agent' } : undefined },
-    activeRuns, publish: () => {}, logWarn: () => {}, persistRuntimeEvent: async () => undefined,
+    activeRuns, publish: () => {}, logWarn: (meta, message) => warnings.push({ meta, message }), persistRuntimeEvent: async () => undefined,
     providerProcessAuthority: { register: () => {} }, browserAdmissionAllowed: () => true,
     driverFactory: async () => ({
       isAlive: () => alive,
@@ -34,7 +37,7 @@ async function fixture(projectId = 'chat') {
   authority.projectBrowserGrants.set(projectId, grant);
   await authority.projectBrowserSessions.setControl(scope, 'agent', opened.controlEpoch);
   return {
-    authority, scope, run, activeRuns, grant,
+    authority, scope, run, activeRuns, grant, warnings,
     setCancelFailures: count => { cancelFailures = count; },
     alive: () => alive, draft: () => draft,
     async cleanup() {
@@ -92,6 +95,77 @@ test('failed chooser cleanup fences and retains a saved browser until a retry fi
     assert.equal(f.alive(), true);
     assert.equal(f.draft(), 'Unpublished browser-local work');
   } finally { await f.cleanup(); }
+});
+
+test('actual Run settlement catches a failed browser handoff and retains its cleanup blocker', async () => {
+  const f = await fixture('saved-browser');
+  try {
+    f.run.v3SchedulerRunId = 'scheduled';
+    f.run.v3FencingToken = 1;
+    const events = createRuntimeEventAuthority({
+      activeRuns: f.activeRuns,
+      coordinationV3: { ownsRunForCleanup: () => true }, coordinationV3WorkerId: 'worker',
+      closeRunBrowser: f.authority.closeRunBrowserAfterRun,
+      closeLinkPreviewsForAgent: () => {}, clearRunLeaseTimer: () => {}, clearRunLivenessTimer: () => {},
+      drainDeploymentIdleAuthorities: () => {},
+    });
+    f.setCancelFailures(2);
+    assert.equal(events.releaseActiveRun('agent', f.run, 'completed'), true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.activeRuns.size, 0, 'Run settlement still completes');
+    assert.equal(f.authority.projectBrowserSessions.authorityStatus(true).pendingCleanup, 1);
+    assert.equal(f.authority.projectBrowserGrants.get('saved-browser'), f.grant);
+    assert.match(f.warnings.at(-1)?.message ?? '', /cleanup remains pending/);
+    await f.authority.closeRunBrowser('agent', f.run, 'run_completed');
+    assert.equal(f.authority.projectBrowserSessions.authorityStatus(true).pendingCleanup, 0);
+  } finally { await f.cleanup(); }
+});
+
+for (const recovery of ['repeated revoke', 'operator takeover', 'operator takeover without grant']) test(`failed saved-browser revocation retries through ${recovery}`, async () => {
+  const f = await fixture('saved-browser');
+  const app = Fastify();
+  const profile = f.authority.browserProfiles.createProfile('chat', 'Saved');
+  f.authority.browserProfiles.promoteSavedBrowser('chat', profile.id);
+  f.authority.browserProfiles.setSavedBrowserAccess('chat', 'agent', true);
+  registerBrowserRoutes(app, {
+    browserProfiles: f.authority.browserProfiles,
+    browserSessions: f.authority.browserSessions,
+    projectBrowserSessions: f.authority.projectBrowserSessions,
+    projectExists: id => id === 'chat', projectDeletionInProgress: () => false,
+    agentExists: (projectId, agentId) => projectId === 'chat' && agentId === 'agent', agentDeletionInProgress: () => false,
+    projectBrowserScope: f.authority.projectBrowserScope, projectBrowserDto: f.authority.projectBrowserDto,
+    getProjectBrowserGrant: id => f.authority.projectBrowserGrants.get(id),
+    setProjectBrowserGrant: (id, grant) => f.authority.projectBrowserGrants.set(id, grant),
+    deleteProjectBrowserGrant: id => f.authority.projectBrowserGrants.delete(id),
+    activeProjectBrowserController: () => undefined,
+  });
+  const revoke = () => app.inject({ method: 'PUT', url: '/api/projects/chat/saved-browser-access/agent', payload: { allowed: false } });
+  const takeControl = () => app.inject({ method: 'PUT', url: '/api/projects/saved-browser/browser/control', payload: {
+    owner: 'operator', expectedControlEpoch: f.authority.projectBrowserSessions.get(f.scope.agentId).controlEpoch,
+  } });
+  try {
+    f.setCancelFailures(recovery === 'operator takeover' ? 2 : 1);
+    assert.equal((await revoke()).statusCode, 500);
+    assert.equal(f.authority.browserProfiles.hasSavedBrowserAccess('chat', 'agent'), false, 'access is fenced immediately');
+    assert.equal(f.authority.projectBrowserGrants.get('saved-browser'), f.grant, 'grant remains for retry');
+    assert.equal(f.authority.projectBrowserSessions.authorityStatus(true).pendingCleanup, 1);
+    if (recovery === 'repeated revoke') {
+      assert.equal((await revoke()).statusCode, 200, 'a repeated revoke completes cleanup');
+    } else {
+      if (recovery === 'operator takeover') {
+        assert.equal((await revoke()).statusCode, 500, 'a repeated revoke retries cleanup');
+      } else {
+        // Simulate the older route that erased its grant before cleanup.
+        f.authority.projectBrowserGrants.delete('saved-browser');
+      }
+      assert.equal((await takeControl()).statusCode, 200, 'operator takeover retries and completes cleanup');
+    }
+    assert.equal(f.authority.projectBrowserSessions.authorityStatus(true).pendingCleanup, 0);
+    assert.equal(f.authority.projectBrowserGrants.has('saved-browser'), false);
+    assert.equal((await revoke()).statusCode, 200, 'revocation is idempotent after reconciliation');
+    assert.equal(f.alive(), true);
+    assert.equal(f.draft(), 'Unpublished browser-local work');
+  } finally { await app.close(); await f.cleanup(); }
 });
 
 test('failed explicit release retains its exact grant for Run-settlement recovery', async () => {
