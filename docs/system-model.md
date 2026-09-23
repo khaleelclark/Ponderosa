@@ -324,8 +324,7 @@ See [Deployment](../deploy/README.md) for the drain and recovery procedure.
 Dictation inserts recognized speech into the message composer; it is separate
 from sending the message. Read-aloud plays message text through browser/system
 speech only. No server-side synthesis, model download, or custom voice package is used.
-Talk remains a turn-based conversation: listen, review, send, and hear the completed
-reply. Browser/device support determines recognition and playback availability.
+Browser/device support determines recognition and playback availability.
 There is no continuous, phone-like Agent conversation mode.
 
 ## Current limits and proposed Next behavior
