@@ -13,6 +13,10 @@ interface NativeJobBinding {
   windowsJobActiveProcesses(job: unknown): number;
   closeWindowsJob(job: unknown): void;
   secureFileAuthoritySupported(): boolean;
+  dataDirectoryAuthoritySupported(): boolean;
+  acquireDataDirectoryAuthority(root: string): unknown;
+  dataDirectoryAuthorityPath(authority: unknown): string;
+  releaseDataDirectoryAuthority(authority: unknown): void;
   readSecureFile(root: string, relativePath: string, maxBytes: number, requireNonEmpty: boolean): Buffer | null;
   listSecureDirectory(root: string, relativePath: string): SecureDirectoryEntry[] | null;
   writeSecureFileAtomic(
@@ -107,6 +111,43 @@ export class WindowsProcessJob {
     if (this.#closed) return;
     this.#closed = true;
     binding().closeWindowsJob(this.#authority);
+  }
+}
+
+export function dataDirectoryAuthoritySupported(
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform !== "linux" && platform !== "darwin") return false;
+  try {
+    return binding().dataDirectoryAuthoritySupported();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A kernel-held exclusive lease on one physical data-directory inode.
+ * rootPath is descriptor-backed, so later pathname or ancestor replacement
+ * cannot redirect storage opened through this authority.
+ */
+export class DataDirectoryAuthority {
+  readonly #authority: unknown;
+  readonly rootPath: string;
+  #closed = false;
+
+  constructor(root: string) {
+    if (!dataDirectoryAuthoritySupported()) {
+      throw new Error("descriptor-rooted data-directory authority is unavailable");
+    }
+    assertSafeRoot(root);
+    this.#authority = binding().acquireDataDirectoryAuthority(root);
+    this.rootPath = binding().dataDirectoryAuthorityPath(this.#authority);
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    binding().releaseDataDirectoryAuthority(this.#authority);
   }
 }
 

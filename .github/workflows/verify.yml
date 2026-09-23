@@ -1,0 +1,50 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - codex/browser-experience-recovery
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.16.0
+          cache: pnpm
+
+      - name: Install exact dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify tests, types, and production build
+        # GitHub's hosted Ubuntu runner disables the user namespaces Chromium's
+        # sandbox requires. This exception is confined to the CI test process.
+        env:
+          PONDEROSA_BROWSER_DISABLE_SANDBOX: "1"
+        run: pnpm verify
+
+      - name: Qualify production-scale startup recovery
+        run: pnpm --filter @ponderosa/agents qualify:startup
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level=high

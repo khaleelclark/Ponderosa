@@ -25,6 +25,8 @@ import { projectedProjectCount } from "../readiness.js";
 import { writeLauncherShutdownReceipt } from "../launcher-shutdown-receipt.js";
 import { processBirthMarker } from "@ponderosa/engines";
 import { browserResidueCleanupStatus } from "../browser-session-residue.js";
+import type { ServerMetrics } from "../server-metrics.js";
+import { secretEqual } from "../security.js";
 
 interface ServerControlRoutesContext {
   opts: CreateServerOptions;
@@ -67,10 +69,22 @@ interface ServerControlRoutesContext {
     authDetail?: string;
     availabilityDetail?: string;
   }>;
+  serverMetrics: ServerMetrics;
 }
 
 const ENGINE_LOG_TAIL_BYTES = 64 * 1024;
 const READINESS_RUNTIME_BUDGET_MS = 500;
+
+export function browserSessionCookie(
+  session: string,
+  maxAgeSeconds: number,
+  secure: boolean,
+): string {
+  const name = secure ? "__Host-ponderosa_session" : "ponderosa_session";
+  return `${name}=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAgeSeconds}${
+    secure ? "; Secure" : ""
+  }`;
+}
 
 async function engineLogTail(
   pathname: string | undefined,
@@ -151,6 +165,7 @@ export function registerServerControlRoutes(
     drainDeploymentIdleAuthorities,
     refreshTriggerSources,
     runtimeStatus,
+    serverMetrics,
   } = context;
 
 registerHealthRoutes(app, serverContext);
@@ -198,21 +213,39 @@ app.post("/api/launcher/bootstrap", async (_request, reply) => {
 
 app.post<{ Body: { token?: string } }>("/api/launcher/session-exchange", async (request, reply) => {
   reply.header("Cache-Control", "no-store");
-  if (!opts.launcherSecurity) return reply.code(404).send({ error: "launcher session bootstrap is disabled" });
+  const reverseProxyBootstrap = networkSecurity.mode === "reverse_proxy" && Boolean(opts.authToken);
+  if (!opts.launcherSecurity && !reverseProxyBootstrap) {
+    return reply.code(404).send({ error: "browser session bootstrap is disabled" });
+  }
   purgeLauncherSecurityState();
   const token = request.body?.token;
   const expiresAt = typeof token === "string" ? launcherBootstraps.get(token) : undefined;
-  if (!token || !expiresAt || expiresAt <= launcherNow()) {
-    if (token) launcherBootstraps.delete(token);
+  const validLauncherBootstrap = Boolean(
+    opts.launcherSecurity && token && expiresAt && expiresAt > launcherNow(),
+  );
+  const validReverseProxyBootstrap = Boolean(
+    reverseProxyBootstrap && token && opts.authToken && secretEqual(token, opts.authToken),
+  );
+  if (!validLauncherBootstrap && !validReverseProxyBootstrap) {
+    if (token && opts.launcherSecurity) launcherBootstraps.delete(token);
     return reply.code(401).send({ error: "browser bootstrap is invalid or expired" });
   }
-  // Consume before issuing the browser session. Concurrent replay loses.
-  launcherBootstraps.delete(token);
+  // Consume launcher bootstraps before issuing the browser session. The
+  // operator bearer remains a host-managed secret and is cleared from the URL
+  // fragment by the bootstrap page before this request is made.
+  if (validLauncherBootstrap) launcherBootstraps.delete(token!);
   const session = launcherRandomToken();
   launcherSessions.set(session, launcherNow() + launcherSessionTtlMs);
+  const trustedHttpsProxy = networkSecurity.mode === "reverse_proxy" &&
+    Boolean(opts.operatorOrigins?.some((origin) => origin.startsWith("https://")));
+  const secure = request.protocol === "https" || trustedHttpsProxy;
   reply.header(
     "Set-Cookie",
-    `ponderosa_session=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(launcherSessionTtlMs / 1_000)}`,
+    browserSessionCookie(
+      session,
+      Math.floor(launcherSessionTtlMs / 1_000),
+      secure,
+    ),
   );
   return reply.code(204).send();
 });
@@ -402,6 +435,19 @@ app.get("/api/communication-v3/metrics", async (_request, reply) => {
   };
 });
 
+app.get("/api/metrics", { logLevel: "silent" }, async (_request, reply) => {
+  const browserCleanup = browserResidueCleanupStatus(opts.dataDir);
+  return reply
+    .header("Cache-Control", "no-store")
+    .type("text/plain; version=0.0.4; charset=utf-8")
+    .send(serverMetrics.render({
+      activeRuns: activeRuns.size,
+      deploymentBlockers: deploymentDrainSnapshot().blockers.length,
+      browserCleanupPending: browserCleanup.pending,
+      browserCleanupFailed: browserCleanup.failed,
+    }));
+});
+
 app.post<{
   Params: { id: string };
   Body: { projectId?: string; idempotencyKey?: string; reason?: string };
@@ -439,16 +485,16 @@ app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
   try {
     await fs.access(opts.dataDir, fsConstants.R_OK | fsConstants.W_OK);
     dataDirectory = { ok: true, detail: "data directory is readable and writable" };
-  } catch (error) {
-    dataDirectory = { ok: false, detail: `data directory unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  } catch {
+    dataDirectory = { ok: false, detail: "data directory unavailable" };
   }
   let projections: ReadinessDto["checks"]["projections"];
   let projectCount = 0;
   try {
     projectCount = projectedProjectCount(store.sqlite);
     projections = { ok: true, detail: "projection database query succeeded" };
-  } catch (error) {
-    projections = { ok: false, detail: `projection database unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  } catch {
+    projections = { ok: false, detail: "projection database unavailable" };
   }
   const runtimeStatuses = await Promise.all([...engines.entries()].map(async ([id, registration]) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -487,12 +533,11 @@ app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
   }));
   const intakeReady = runtimeStatuses.filter((runtime) => runtime.intakeReady).length;
   const reachable = runtimeStatuses.filter((runtime) => runtime.reachability === "reachable").length;
-  const degraded = runtimeStatuses.filter((runtime) => runtime.reachability === "degraded").length;
   const runtimes = {
     ok: intakeReady > 0,
-    detail: engines.size === 0
-      ? "no runtimes are configured"
-      : `${intakeReady} of ${engines.size} configured runtimes intake-ready; ${reachable} reachable, ${degraded} degraded`,
+    detail: intakeReady > 0
+      ? "at least one configured runtime can accept work"
+      : "no configured runtime can currently accept work",
   };
   const evidence = [...communicationReconciliation.values()];
   const driftedProjects = evidence.filter((item) => item.state === "verified" && !item.report.ok).length;
@@ -520,11 +565,27 @@ app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
     status: canAcceptWork ? "ready" : "not_ready",
     service: "ponderosa",
     version: opts.buildVersion?.trim() || "0.0.0",
+    revision: opts.buildRevision?.trim() || "development",
     canAcceptWork,
     networkSecurity,
     acceptingDurableIntake,
     leasingRuns,
-    deploymentDrain: deploymentDrainSnapshot(),
+    deploymentDrain: (() => {
+      const snapshot = deploymentDrainSnapshot();
+      return {
+        ...snapshot,
+        blockers: snapshot.blockers.map(({ kind, status }) => {
+          const publicStatus = status && /^[a-z0-9_-]{1,40}$/iu.test(status)
+            ? status.toLowerCase()
+            : undefined;
+          return {
+            kind,
+            reason: `${kind}:${publicStatus ?? "active"}`,
+            ...(publicStatus ? { status: publicStatus } : {}),
+          };
+        }),
+      };
+    })(),
     checks: {
       daemon: { ok: !isClosed(), detail: isClosed() ? "daemon is shutting down" : "daemon request loop is running" },
       dataDirectory,
@@ -535,7 +596,9 @@ app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
       runtimes,
       communicationMigration,
     },
-    runtimes: runtimeStatuses,
+    // Provider identities and authentication/reachability detail belong to the
+    // authenticated diagnostics endpoint, not the public load-balancer probe.
+    runtimes: [],
   };
   app.log.info({
     readinessMode: "bounded",
@@ -636,6 +699,7 @@ app.get("/api/diagnostics/ready", async (_request, reply): Promise<ReadinessDto>
     status: canAcceptWork ? "ready" : "not_ready",
     service: "ponderosa",
     version: opts.buildVersion?.trim() || "0.0.0",
+    revision: opts.buildRevision?.trim() || "development",
     canAcceptWork,
     networkSecurity,
     acceptingDurableIntake,

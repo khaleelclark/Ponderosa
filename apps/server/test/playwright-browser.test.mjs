@@ -22,7 +22,12 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
   let driver;
   const handles = [];
   try {
-    driver = await playwrightBrowserDriverFactory(root)("fixture", () => {}, handle => handles.push(handle), undefined, { hostedHeaded });
+    driver = await playwrightBrowserDriverFactory(root)("fixture", () => {}, handle => handles.push(handle), undefined, {
+      hostedHeaded,
+      // GitHub's hosted Ubuntu runner disables the user namespaces Chromium's
+      // sandbox requires. Production launches do not set this explicit escape.
+      disableSandbox: process.env.CI === "true",
+    });
     await driver.navigate(`http://127.0.0.1:${server.address().port}`);
     await driver.fill("#delayed", "waited correctly");
     assert.ok((await driver.inspect()).includes("waited correctly"));
@@ -63,9 +68,15 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     assert.ok(!JSON.stringify(driver.activity()).includes("activity marker"), "activity contains geometry, not input values");
     await driver.click("#popup");
     let pages;
-    for (let i = 0; i < 50; i++) { pages = await driver.pages(); if (pages.pages.length === 2) break; await new Promise(resolve => setTimeout(resolve, 20)); }
+    for (let i = 0; i < 250; i++) {
+      pages = await driver.pages();
+      const candidate = pages.pages.find(page => page.pageId !== first);
+      if (candidate?.url.endsWith("/popup") && candidate.title === "Popup") break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
     assert.equal(pages.pages.length, 2);
     const popup = pages.pages.find(page => page.pageId !== first);
+    assert.equal(popup.title, "Popup", "new popup is loaded before it receives input");
     await driver.activatePage(popup.pageId);
     await driver.fill("#popup", "popup works");
     assert.ok((await driver.inspect()).includes("popup works"));

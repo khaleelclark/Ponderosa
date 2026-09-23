@@ -17,6 +17,7 @@
 #include <cerrno>
 #include <dirent.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -123,6 +124,23 @@ bool SameIdentity(const struct stat& left, const struct stat& right) {
       (left.st_mode & S_IFMT) == (right.st_mode & S_IFMT);
 }
 
+bool IsDescriptorRootPath(const std::string& root) {
+#ifdef __linux__
+  const std::string prefix = "/proc/self/fd/";
+#else
+  const std::string prefix = "/dev/fd/";
+#endif
+  if (root.rfind(prefix, 0) != 0 || root.size() == prefix.size()) return false;
+  return std::all_of(
+      root.begin() + static_cast<std::ptrdiff_t>(prefix.size()), root.end(),
+      [](unsigned char value) { return value >= '0' && value <= '9'; });
+}
+
+int OpenRootDirectory(const std::string& root) {
+  const int no_follow = IsDescriptorRootPath(root) ? 0 : O_NOFOLLOW;
+  return open(root.c_str(), O_RDONLY | O_DIRECTORY | no_follow | O_CLOEXEC);
+}
+
 bool SameContentState(const struct stat& left, const struct stat& right) {
 #ifdef __APPLE__
   return left.st_size == right.st_size &&
@@ -164,7 +182,7 @@ napi_value ReadSecureFile(napi_env env, napi_callback_info info) {
 
   DescriptorSet descriptors;
   std::vector<struct stat> identities;
-  const int root_fd = open(root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  const int root_fd = OpenRootDirectory(root);
   if (root_fd < 0) return Null(env);
   descriptors.values.push_back(root_fd);
   struct stat root_identity{};
@@ -211,7 +229,7 @@ napi_value ReadSecureFile(napi_env env, napi_callback_info info) {
     return Null(env);
   }
 
-  const int current_root = open(root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  const int current_root = OpenRootDirectory(root);
   if (current_root < 0) return Null(env);
   struct stat current_root_identity{};
   const bool root_stable =
@@ -246,13 +264,139 @@ std::string PosixError(const char* operation) {
       std::strerror(errno);
 }
 
+struct DataDirectoryAuthority {
+  int descriptor = -1;
+  std::string rooted_path;
+};
+
+void CloseDataDirectoryAuthority(DataDirectoryAuthority* authority) {
+  if (!authority || authority->descriptor < 0) return;
+  flock(authority->descriptor, LOCK_UN);
+  close(authority->descriptor);
+  authority->descriptor = -1;
+}
+
+void FinalizeDataDirectoryAuthority(napi_env, void* data, void*) {
+  auto* authority = static_cast<DataDirectoryAuthority*>(data);
+  CloseDataDirectoryAuthority(authority);
+  delete authority;
+}
+
+DataDirectoryAuthority* ReadDataDirectoryAuthority(
+    napi_env env, napi_value value) {
+  void* data = nullptr;
+  if (napi_get_value_external(env, value, &data) != napi_ok || !data) {
+    Throw(env, "invalid data-directory authority");
+    return nullptr;
+  }
+  auto* authority = static_cast<DataDirectoryAuthority*>(data);
+  if (authority->descriptor < 0) {
+    Throw(env, "data-directory authority is closed");
+    return nullptr;
+  }
+  return authority;
+}
+
+napi_value AcquireDataDirectoryAuthority(
+    napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  std::string root;
+  if (argc != 1 || !ReadUtf8(env, args[0], &root)) {
+    Throw(env, "data-directory authority requires one path");
+    return nullptr;
+  }
+  const int descriptor = open(
+      root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (descriptor < 0) {
+    Throw(env, PosixError("open data directory"));
+    return nullptr;
+  }
+  struct stat identity{};
+  if (fstat(descriptor, &identity) != 0 || !S_ISDIR(identity.st_mode)) {
+    const std::string detail = PosixError("inspect data directory");
+    close(descriptor);
+    Throw(env, detail);
+    return nullptr;
+  }
+  if (flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
+    const int lock_error = errno;
+    close(descriptor);
+    if (lock_error == EWOULDBLOCK || lock_error == EAGAIN) {
+      ThrowCode(
+          env, "DATA_DIRECTORY_OWNED",
+          "data directory is already owned by another Ponderosa process");
+    } else {
+      errno = lock_error;
+      Throw(env, PosixError("lock data directory"));
+    }
+    return nullptr;
+  }
+
+#ifdef __linux__
+  const std::string rooted_path = "/proc/self/fd/" + std::to_string(descriptor);
+#else
+  const std::string rooted_path = "/dev/fd/" + std::to_string(descriptor);
+#endif
+  const int verification = OpenRootDirectory(rooted_path);
+  struct stat verified{};
+  const bool stable = verification >= 0 &&
+      fstat(verification, &verified) == 0 && SameIdentity(identity, verified);
+  if (verification >= 0) close(verification);
+  if (!stable) {
+    flock(descriptor, LOCK_UN);
+    close(descriptor);
+    Throw(env, "could not establish descriptor-rooted data-directory authority");
+    return nullptr;
+  }
+
+  auto* authority = new DataDirectoryAuthority{descriptor, rooted_path};
+  napi_value result;
+  if (napi_create_external(
+          env, authority, FinalizeDataDirectoryAuthority, nullptr, &result) != napi_ok) {
+    CloseDataDirectoryAuthority(authority);
+    delete authority;
+    Throw(env, "could not publish data-directory authority");
+    return nullptr;
+  }
+  return result;
+}
+
+napi_value DataDirectoryAuthorityPath(
+    napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  DataDirectoryAuthority* authority =
+      argc == 1 ? ReadDataDirectoryAuthority(env, args[0]) : nullptr;
+  if (!authority) return nullptr;
+  napi_value result;
+  napi_create_string_utf8(
+      env, authority->rooted_path.c_str(), authority->rooted_path.size(), &result);
+  return result;
+}
+
+napi_value ReleaseDataDirectoryAuthority(
+    napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  void* data = nullptr;
+  if (argc == 1 && napi_get_value_external(env, args[0], &data) == napi_ok && data) {
+    CloseDataDirectoryAuthority(static_cast<DataDirectoryAuthority*>(data));
+  }
+  napi_value undefined;
+  napi_get_undefined(env, &undefined);
+  return undefined;
+}
+
 bool OpenSecureDirectory(
     const std::string& root, const std::string& relative, bool create,
     DescriptorSet* descriptors, std::vector<struct stat>* identities,
     std::vector<std::string>* components) {
   if (!ParseRelativePath(relative, components, true)) return false;
-  const int root_fd = open(
-      root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  const int root_fd = OpenRootDirectory(root);
   if (root_fd < 0) return false;
   descriptors->values.push_back(root_fd);
   struct stat root_identity{};
@@ -290,8 +434,7 @@ bool SecureDirectoryStillCurrent(
     const std::string& root, const std::vector<std::string>& components,
     const DescriptorSet& descriptors,
     const std::vector<struct stat>& identities) {
-  const int current_root = open(
-      root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  const int current_root = OpenRootDirectory(root);
   if (current_root < 0) return false;
   struct stat root_identity{};
   const bool root_stable =
@@ -1560,15 +1703,40 @@ napi_value SecureFileAuthoritySupported(napi_env env, napi_callback_info) {
   return value;
 }
 
+napi_value DataDirectoryAuthoritySupported(napi_env env, napi_callback_info) {
+  napi_value value;
+#ifdef _WIN32
+  napi_get_boolean(env, false, &value);
+#else
+  napi_get_boolean(env, true, &value);
+#endif
+  return value;
+}
+
+napi_value DataDirectoryAuthorityUnavailable(napi_env env, napi_callback_info) {
+  Throw(env, "descriptor-rooted data-directory authority is unavailable on this platform");
+  return nullptr;
+}
+
 napi_value Initialize(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
       {"windowsJobObjectsSupported", nullptr, WindowsJobObjectsSupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"darwinProcessBirthMarker", nullptr, DarwinProcessBirthMarker, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"secureFileAuthoritySupported", nullptr, SecureFileAuthoritySupported, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"dataDirectoryAuthoritySupported", nullptr, DataDirectoryAuthoritySupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"readSecureFile", nullptr, ReadSecureFile, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"listSecureDirectory", nullptr, ListSecureDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"writeSecureFileAtomic", nullptr, WriteSecureFileAtomic, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"removeSecureFile", nullptr, RemoveSecureFile, nullptr, nullptr, nullptr, napi_default, nullptr},
+#ifdef _WIN32
+      {"acquireDataDirectoryAuthority", nullptr, DataDirectoryAuthorityUnavailable, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"dataDirectoryAuthorityPath", nullptr, DataDirectoryAuthorityUnavailable, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"releaseDataDirectoryAuthority", nullptr, DataDirectoryAuthorityUnavailable, nullptr, nullptr, nullptr, napi_default, nullptr},
+#else
+      {"acquireDataDirectoryAuthority", nullptr, AcquireDataDirectoryAuthority, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"dataDirectoryAuthorityPath", nullptr, DataDirectoryAuthorityPath, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"releaseDataDirectoryAuthority", nullptr, ReleaseDataDirectoryAuthority, nullptr, nullptr, nullptr, napi_default, nullptr},
+#endif
 #ifdef _WIN32
       {"createWindowsJob", nullptr, CreateWindowsJob, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"assignWindowsJob", nullptr, AssignWindowsJob, nullptr, nullptr, nullptr, napi_default, nullptr},

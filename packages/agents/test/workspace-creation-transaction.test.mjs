@@ -87,11 +87,14 @@ test("Project creation rollback preserves an ABA replacement", async (t) => {
       SELECT RAISE(FAIL, 'injected projection failure');
     END
   `);
+  // Some filesystems can immediately reuse the removed directory's inode. In
+  // that case the missing receipt marker, rather than the inode comparison,
+  // proves that the replacement is not owned by this creation attempt.
   assert.throws(() => store.createProject({
     label: "ABA",
     hostPath: "/tmp/aba",
     defaultEngine: "codex",
-  }, attempt), /not the owned directory/u);
+  }, attempt), /not the owned directory|has no readable ownership marker/u);
   assert.equal(await readFile(sentinel, "utf8"), "keep");
 });
 

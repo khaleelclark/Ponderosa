@@ -11,7 +11,15 @@ sudo systemctl enable --now ponderosa
 ```
 
 Before installing the unit, update its `User`, `WorkingDirectory`, data directory,
-and `PATH` for the host.
+bundled Node path, and `PATH` for the host. Write the exact release identity before
+starting it; the unit intentionally does not fall back to the host's system Node:
+
+```sh
+install -d -m 700 ~/.config/ponderosa
+printf 'PONDEROSA_BUILD_VERSION=%s\nPONDEROSA_BUILD_SHA=%s\n' "$release" "$commit" \
+  >~/.config/ponderosa/release.env.next
+mv ~/.config/ponderosa/release.env.next ~/.config/ponderosa/release.env
+```
 
 ## Choose the network boundary explicitly
 
@@ -41,6 +49,41 @@ unless one of these protections is configured:
 `GET /api/ready` reports the active `networkSecurity` posture without exposing
 credentials. The provider-status dialog shows the same posture and highlights
 the trusted-tailnet operator-access warning.
+
+When TLS terminates at a reverse proxy, set every browser-facing origin
+explicitly so Host and Origin validation cannot be widened by an incoming Host
+header:
+
+```ini
+Environment=PONDEROSA_OPERATOR_ORIGINS=https://ponderosa.example.com
+```
+
+The proxy must authenticate the operator and inject the backend bearer token.
+Keep the backend loopback-only and deny direct access to it. `/api/health` and
+the redacted `/api/ready` are the only unauthenticated probes; detailed readiness
+is available at authenticated `/api/diagnostics/ready`.
+
+If a private identity-aware proxy is itself the authentication boundary and
+cannot inject a bearer token, that trust must be explicit:
+
+```ini
+Environment=PONDEROSA_TRUSTED_REVERSE_PROXY=true
+Environment=PONDEROSA_OPERATOR_IDENTITIES=operator@example.com
+```
+
+The proxy must overwrite (not append or preserve) `Tailscale-User-Login`, and
+the configured identities are compared exactly after case normalization. When
+both a trusted identity boundary and `PONDEROSA_AUTH_TOKEN` are configured,
+Ponderosa requires both proofs. Without either a backend bearer token or this
+explicit identity declaration, Ponderosa refuses to start with external origins
+configured. Readiness reports `reverse_proxy` rather than incorrectly claiming
+the effective deployment is loopback-only. Apply the least-privilege grant in
+`deploy/tailscale-grants.example.hujson` so only the named operator can reach
+the published port.
+
+Ponderosa is a **single-operator system**. A proxy, VPN, or shared bearer token
+admits the caller as that one operator; it does not create tenant or Project
+isolation. Do not grant mutually untrusted users access to the same deployment.
 
 ## Required Linux procfs capability
 
@@ -94,6 +137,52 @@ curl -sS -X POST -H "Authorization: Bearer $PONDEROSA_TOKEN" \
 ```
 
 Do not leave a healthy old daemon in the drained state after an aborted deploy.
+
+## Take and rehearse a pre-migration backup
+
+After the deployment drain reaches `readyForRestart: true`, stop the application
+and create an offline, checksummed snapshot before starting a revision that may
+run schema migrations:
+
+```sh
+systemctl --user stop ponderosa.service
+pnpm --filter @ponderosa/agents data -- backup \
+  --data-dir "$PONDEROSA_DATA_DIR" \
+  --output "$HOME/.local/state/ponderosa-backups/$PONDEROSA_BUILD_SHA" \
+  --external-projects copy
+```
+
+The command acquires the same kernel-held data-directory lease as the daemon,
+so it refuses to overlap a live writer. It copies SQLite, WAL state, JSONL,
+artifacts, host secrets, persistent application state, and every configured
+external Project working directory; it fsyncs the snapshot and records file
+sizes and SHA-256 checksums. Transient browser sessions are not backed up. The
+CLI requires an explicit `copy` or `exclude` policy so an incomplete snapshot
+cannot be mistaken for complete coverage.
+
+Rehearse restore to a new, nonexistent path and verify the restored service
+before treating a backup as usable:
+
+```sh
+pnpm --filter @ponderosa/agents data -- restore \
+  --backup "$HOME/.local/state/ponderosa-backups/$PONDEROSA_BUILD_SHA" \
+  --data-dir "$HOME/.ponderosa-restore-rehearsal"
+```
+
+Restore never overlays an existing data directory and rejects changed or
+escaping files. Do not start an older binary against a data directory after a
+newer binary has migrated it; restore the pre-migration snapshot to a new path,
+switch configuration atomically, and retain the failed directory for diagnosis.
+Encrypt backup storage, restrict it to the operator, and set retention/RPO/RTO
+according to the deployment. For the single-host private deployment, the
+recommended minimum is one snapshot before every migration and a quarterly
+restore rehearsal.
+
+For disaster recovery after an external Project root is lost, add
+`--restore-external-projects`. Every original destination must be an absent
+absolute path; restore never overlays a surviving working directory. Routine
+restore rehearsals should omit the flag and verify the included external
+checksums without replacing live repositories.
 
 Qualification sandboxes should start with `PONDEROSA_START_DRAINED=1`. Resume
 leasing explicitly only for a live Run qualification, drain again immediately

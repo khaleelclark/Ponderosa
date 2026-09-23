@@ -1,6 +1,7 @@
-import { promises as fs } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createBrotliCompress, createGzip } from "node:zlib";
 import type {
   DecisionDto,
   GlobalChatSearchResponseDto,
@@ -301,6 +302,7 @@ export function registerApplicationRoutes(
     setMaxConcurrentRuns,
     drainDeploymentIdleAuthorities,
     workingCopies,
+    serverMetrics,
   } = context;
 
 app.addHook("preHandler", pendingAgentQuarantine(store));
@@ -895,6 +897,7 @@ registerStreamRoutes(app, {
   agentSubscriberCount: (agentId) => subscribers.get(agentId)?.size ?? 0,
   subscribe,
   liveSseClosures,
+  serverMetrics,
 });
 
 registerBrowserRoutes(app, {
@@ -1017,10 +1020,24 @@ if (opts.webDist) {
       if (!targetExists && !(await pathExists(file))) return reply.code(404).send();
       const [rootReal, fileReal] = await Promise.all([fs.realpath(root), fs.realpath(file)]);
       if (fileReal !== rootReal && !fileReal.startsWith(rootReal + path.sep)) return reply.code(404).send();
+      const contentType = contentTypeForStatic(file);
+      const accepts = String(request.headers["accept-encoding"] ?? "");
+      const compressible = /^(?:text\/|application\/(?:javascript|json|manifest\+json))/u.test(contentType);
+      const encoding = compressible && /(?:^|,)\s*br\s*(?:,|$)/iu.test(accepts)
+        ? "br"
+        : compressible && /(?:^|,)\s*gzip\s*(?:,|$)/iu.test(accepts)
+          ? "gzip"
+          : undefined;
+      const body = encoding === "br"
+        ? createReadStream(file).pipe(createBrotliCompress())
+        : encoding === "gzip"
+          ? createReadStream(file).pipe(createGzip())
+          : createReadStream(file);
+      if (encoding) reply.header("Content-Encoding", encoding).header("Vary", "Accept-Encoding");
       return reply
         .header("Cache-Control", cacheControlForStatic(file))
-        .type(contentTypeForStatic(file))
-        .send(await fs.readFile(file));
+        .type(contentType)
+        .send(body);
     } catch {
       return reply.code(404).send();
     }

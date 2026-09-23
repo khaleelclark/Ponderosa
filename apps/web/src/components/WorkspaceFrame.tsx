@@ -98,6 +98,7 @@ export interface TabbedWorkspaceFrameProps<T extends string> {
   status?: ReactNode;
   actions?: ReactNode;
   tabs: {
+    idPrefix?: string;
     activeLabel?: string;
     value: T | false;
     items: readonly WorkspaceTabItem<T>[];
@@ -106,11 +107,12 @@ export interface TabbedWorkspaceFrameProps<T extends string> {
   };
 }
 
-function WorkspaceTabBar<T extends string>({ value, items, onChange, label }: {
+function WorkspaceTabBar<T extends string>({ value, items, onChange, label, idPrefix }: {
   value: T | false;
   items: readonly WorkspaceTabItem<T>[];
   onChange(value: T): void;
   label: string;
+  idPrefix?: string;
 }): JSX.Element {
   const [visualValue, setVisualValue] = useState<T | false>(value);
   useEffect(() => setVisualValue(value), [value]);
@@ -142,6 +144,8 @@ function WorkspaceTabBar<T extends string>({ value, items, onChange, label }: {
     >
       {items.map((item) => <Tab
         key={item.value}
+        id={idPrefix ? `${idPrefix}-${item.value}-tab` : undefined}
+        aria-controls={idPrefix ? `${idPrefix}-${item.value}-panel` : undefined}
         value={item.value}
         icon={item.icon}
         iconPosition="start"

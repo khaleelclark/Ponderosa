@@ -106,6 +106,11 @@ export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
 export { appendFsyncedJsonl, readRepairableJsonl, writeAtomicFsyncedJsonl } from "./append-jsonl.js";
 export { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone-ownership.js";
 export { openDb } from "./db.js";
+export {
+  createOfflineDataDirectoryBackup,
+  restoreOfflineDataDirectoryBackup,
+  type DataDirectoryBackupManifest,
+} from "./data-directory-backup.js";
 export { stableJson } from "./coordination-v3-canonical-json.js";
 export {
   artifactContentPath, artifactsDir, managedArtifactsDir, managedArtifactsLogPath, managedArtifactContentPath, attachmentPath, attachmentsDir,

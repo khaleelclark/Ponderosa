@@ -58,11 +58,13 @@ export function semanticAgentStatus(status: string): SemanticStatusKind {
 export function SemanticStatus({
   status,
   label,
+  accessibleLabel,
   detail,
   size = "small",
 }: {
   status: SemanticStatusKind;
   label?: string;
+  accessibleLabel?: string;
   detail?: string;
   size?: "small" | "medium";
 }): JSX.Element {
@@ -74,7 +76,7 @@ export function SemanticStatus({
       label={visibleLabel}
       color={presentation.color}
       variant="filled"
-      aria-label={detail ? `${visibleLabel}. ${detail}` : visibleLabel}
+      aria-label={accessibleLabel ?? visibleLabel}
       title={detail}
     />
   );

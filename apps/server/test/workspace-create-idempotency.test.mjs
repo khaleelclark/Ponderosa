@@ -78,6 +78,7 @@ function managedCreationReceipt(managedWorkspacesRoot, idempotencyKey, payload) 
         defaultEngine: payload.defaultEngine,
         defaultModel: null,
         defaultEffort: null,
+        defaultSpeed: null,
       })).digest("hex"),
       hostPath,
     },

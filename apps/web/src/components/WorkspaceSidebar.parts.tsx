@@ -49,6 +49,7 @@ function SidebarSectionHeading({
     >
       <Typography
         variant="subtitle2"
+        component="div"
         color="text.secondary"
         noWrap
         sx={{
@@ -199,7 +200,7 @@ function SharedSidebarPanel({
           value={searchValue}
           onChange={event => onSearchValueChange(event.target.value)}
           placeholder={searchLabel}
-          sx={{ "@media (max-width: 599.95px)": { "& input": { fontSize: 16 } }, ...(drawer ? { "& .MuiInputBase-root": { height: 36 }, "& .MuiSvgIcon-root": { fontSize: 20 } } : {}) }}
+          sx={{ "@media (max-width: 599.95px)": { "& input": { fontSize: 16 } }, ...(drawer ? { "& .MuiInputBase-root": { height: 44 }, "& .MuiSvgIcon-root": { fontSize: 20 } } : {}) }}
           inputProps={{ "aria-label": searchLabel }}
           InputProps={{
             startAdornment: (

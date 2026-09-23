@@ -14,7 +14,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node copy-build-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:built": "node --test test/*.test.mjs"
+    "test:built": "node --test test/*.test.mjs",
+    "data": "node tools/data-directory.mjs",
+    "qualify:startup": "node tools/qualify-startup-scale.mjs"
   },
   "dependencies": {
     "@ponderosa/core": "workspace:*",

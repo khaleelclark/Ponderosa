@@ -69,7 +69,17 @@ export default defineConfig({
           navigateFallbackDenylist: PWA_NAVIGATION_DENYLIST,
           importScripts: ["/push-handler.js"],
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-          runtimeCaching: [],
+          // Keep the install transaction small. Lazy route chunks are immutable
+          // and can be populated on demand instead of delaying first use.
+          globIgnores: ["static/js/**"],
+          runtimeCaching: [{
+            urlPattern: /\/static\/js\//u,
+            handler: "CacheFirst",
+            options: {
+              cacheName: "ponderosa-javascript",
+              expiration: { maxEntries: 80, maxAgeSeconds: 30 * 24 * 60 * 60 },
+            },
+          }],
         },
       },
     }),

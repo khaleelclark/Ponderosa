@@ -892,7 +892,7 @@ export const realApi = {
     return requestJson<HealthDto>("/api/health");
   },
   getReadiness(): Promise<ReadinessDto> {
-    return requestJson<ReadinessDto>("/api/ready", undefined, [503]);
+    return requestJson<ReadinessDto>("/api/diagnostics/ready", undefined, [503]);
   },
   updateEngine(engineId: string, request: { enabled: boolean }): Promise<EngineDto> {
     return requestJson<EngineDto>(`/api/engines/${encodeURIComponent(engineId)}`, { method: "PATCH", body: JSON.stringify(request) });

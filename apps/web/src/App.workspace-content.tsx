@@ -42,6 +42,7 @@ interface WorkspaceRouteOutletProps {
   projects: ProjectDto[];
   projectsLoaded: boolean;
   engines: EngineDto[];
+  enginesLoaded: boolean;
   notifications: WorkspaceNotificationDto[];
   notificationCounts?: Pick<WorkspaceNotificationPageDto, "openActionCount">;
   preferences: WorkspacePreferencesDto;
@@ -86,6 +87,7 @@ export function WorkspaceRouteOutlet({
   projects,
   projectsLoaded,
   engines,
+  enginesLoaded,
   notifications,
   notificationCounts,
   preferences,
@@ -161,7 +163,7 @@ export function WorkspaceRouteOutlet({
           componentProps={{ route, projects, engines, preferences, onCancel: onCancelCreate, onNavigate }}
         />
       ) : route.kind === "home" ? (
-        <RecoverableLazyRoute key="home" load={loadHomeView} componentProps={{ projects, projectsLoaded, engines, notifications, notificationCounts, onNavigate, onCreateProject: () => onCreate("chat"), onOpenInbox }} />
+        <RecoverableLazyRoute key="home" load={loadHomeView} componentProps={{ projects, projectsLoaded, engines, enginesLoaded, notifications, notificationCounts, onNavigate, onCreateProject: () => onCreate("chat"), onOpenInbox }} />
       ) : route.kind === "allChat" ? (
         <RecoverableLazyRoute
           key="all-chat"

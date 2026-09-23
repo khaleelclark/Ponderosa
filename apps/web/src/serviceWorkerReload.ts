@@ -1,8 +1,11 @@
 import type { HealthDto } from "@ponderosa/core";
+import { reloadBlockers } from "./reloadSafety";
 
 const RELOAD_STATE_KEY = "ponderosa:service-worker-reload";
 const MINIMUM_RELOAD_INTERVAL_MS = 15_000;
 const BUILD_IDENTITY_TIMEOUT_MS = 5_000;
+const BUILD_CONVERGENCE_WINDOW_MS = 2 * 60_000;
+const BUILD_CONVERGENCE_RETRY_MS = 1_000;
 
 interface ReloadState {
   buildIdentity: string;
@@ -15,11 +18,18 @@ type ReloadDecision =
   | "reload_in_flight"
   | "recent_reload"
   | "missing_build_identity"
+  | "unsafe_to_reload"
   | "storage_unavailable";
 
 let installed = false;
 let reloadDecisionInFlight = false;
 let deferredReloadTimer: number | undefined;
+let controllerChangedAt: number | undefined;
+
+function withinBuildConvergenceWindow(): boolean {
+  return controllerChangedAt !== undefined &&
+    Date.now() - controllerChangedAt < BUILD_CONVERGENCE_WINDOW_MS;
+}
 
 function deferReloadDecision(delayMs: number): void {
   if (deferredReloadTimer !== undefined) return;
@@ -154,12 +164,14 @@ async function reloadForNewController(): Promise<void> {
         previousBuildIdentity: previous?.buildIdentity,
         error,
       });
+      if (withinBuildConvergenceWindow()) deferReloadDecision(BUILD_CONVERGENCE_RETRY_MS);
       return;
     }
     if (!observedBuildIdentity) {
       diagnostic("missing_build_identity", {
         previousBuildIdentity: previous?.buildIdentity,
       });
+      if (withinBuildConvergenceWindow()) deferReloadDecision(BUILD_CONVERGENCE_RETRY_MS);
       return;
     }
 
@@ -171,6 +183,19 @@ async function reloadForNewController(): Promise<void> {
         previousBuildIdentity: current.buildIdentity,
         observedBuildIdentity,
       });
+      // A new worker can take control just before the reverse proxy switches
+      // to the matching server. Retry for a bounded deploy window.
+      if (withinBuildConvergenceWindow()) deferReloadDecision(BUILD_CONVERGENCE_RETRY_MS);
+      return;
+    }
+    const blockers = reloadBlockers();
+    if (blockers.length > 0) {
+      diagnostic("unsafe_to_reload", {
+        previousBuildIdentity: current?.buildIdentity,
+        observedBuildIdentity,
+        error: blockers.join(", "),
+      });
+      deferReloadDecision(BUILD_CONVERGENCE_RETRY_MS);
       return;
     }
     const now = Date.now();
@@ -210,6 +235,7 @@ export function installServiceWorkerReloadGuard(): void {
   if (installed || !("serviceWorker" in navigator)) return;
   installed = true;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
+    controllerChangedAt = Date.now();
     void reloadForNewController();
   });
 }

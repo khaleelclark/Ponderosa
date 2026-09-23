@@ -233,6 +233,9 @@ export function ConversationView({
   useConversationActiveViewPersistence(activeView, conversationId);
 
   const conversation = detailQuery.data?.conversation;
+  useEffect(() => {
+    if (conversation?.title) document.title = `${conversation.title} · Ponderosa`;
+  }, [conversation?.title]);
   const projectAgentsQuery = useAgents(conversation?.projectId);
   const routingAgents = projectAgentsQuery.data ?? agents;
   const activeBrowsers = useQuery({
@@ -1049,9 +1052,10 @@ export function ConversationView({
         }}
       >
         <Box
+          id="chat-workspace-main-panel"
           role="tabpanel"
-          aria-label="Chat messages"
-          tabIndex={!agentWorkOpen && activeView === "main" ? 0 : -1}
+          aria-labelledby="chat-workspace-main-tab"
+          tabIndex={-1}
           hidden={agentWorkOpen || activeView !== "main"}
           sx={{
             height: "100%",
@@ -1107,6 +1111,8 @@ export function ConversationView({
                       <Alert
                         key={session.id}
                         severity="info"
+                        role="region"
+                        aria-label={`${agentTitle} browser status`}
                         action={
                           <Button
                             color="inherit"
@@ -1151,9 +1157,10 @@ export function ConversationView({
 
         {collaborationVisited.current ? (
           <Box
+            id="chat-workspace-collaboration-panel"
             role="tabpanel"
-            aria-label="Team chat messages"
-            tabIndex={!agentWorkOpen && activeView === "collaboration" ? 0 : -1}
+            aria-labelledby="chat-workspace-collaboration-tab"
+            tabIndex={-1}
             hidden={agentWorkOpen || activeView !== "collaboration"}
             sx={{
               height: "100%",
@@ -1250,7 +1257,7 @@ export function ConversationView({
             onClose={() => setAgentWorkOpen(false)}
           />
         ) : activeView === "files" ? (
-          <ConversationFilesResults
+          <Box id="chat-workspace-files-panel" role="tabpanel" aria-labelledby="chat-workspace-files-tab" sx={{ minHeight: 0, minWidth: 0 }}><ConversationFilesResults
             projectId={conversation.projectId}
             projectRoot={
               projectsQuery.data?.find(
@@ -1259,9 +1266,9 @@ export function ConversationView({
             }
             conversationId={conversation.id}
             agents={conversationAgents}
-          />
+          /></Box>
         ) : activeView === "agents" ? (
-          <AgentsTab
+          <Box id="chat-workspace-agents-panel" role="tabpanel" aria-labelledby="chat-workspace-agents-tab" sx={{ minHeight: 0, minWidth: 0 }}><AgentsTab
             searchValue={memberSearch}
             onSearchValueChange={setMemberSearch}
             agents={conversationAgents}
@@ -1302,9 +1309,9 @@ export function ConversationView({
                 }}
               />
             )}
-          />
+          /></Box>
         ) : activeView === "triggers" ? (
-          <AllTriggersWorkspace
+          <Box id="chat-workspace-triggers-panel" role="tabpanel" aria-labelledby="chat-workspace-triggers-tab" sx={{ minHeight: 0, minWidth: 0 }}><AllTriggersWorkspace
             projects={project ? [project] : []}
             filterProjectId={conversation.projectId}
             filterConversationId={conversation.id}
@@ -1320,7 +1327,7 @@ export function ConversationView({
                   : undefined,
               )
             }
-          />
+          /></Box>
         ) : null}
         {activeView === "main" && !agentWorkOpen ? (
           <Box

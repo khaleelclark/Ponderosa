@@ -934,7 +934,11 @@ export function registerServerLifecycle(
   const closeShutdownStorageIfReady = (): void => {
     if (!providerRuntimeShutdownFinalized || !shutdownBackgroundCleanupSucceeded || shutdownStorageClosed) return;
     assets.close();
-    store.close();
+    // All provider and background cleanup has settled, so an orderly server
+    // shutdown may replay write-active projections once and mint the clean
+    // checkpoint used by the next startup. Direct store.close() remains the
+    // crash-simulation/fail-closed path used by recovery tooling and tests.
+    store.close({ checkpointWrites: true });
     shutdownStorageClosed = true;
   };
   const finalizeProviderRuntimeShutdown = async (): Promise<void> => {

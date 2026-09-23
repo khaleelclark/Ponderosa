@@ -187,7 +187,7 @@ export function agentStatusPresentation(
     ].filter(Boolean).join("; ");
     return {
       label,
-      accessibleLabel: `Agent status: ${label}; ${identities}`,
+      accessibleLabel: `Agent status: ${label}`,
       detail: `Agent status: ${label}; ${identities}`,
     };
   }
@@ -204,7 +204,7 @@ export function agentStatusPresentation(
     ].filter(Boolean).join("; ");
     return {
       label: "Stopping",
-      accessibleLabel: `Agent status: Stopping${identities ? `; ${identities}` : ""}`,
+      accessibleLabel: "Agent status: Stopping",
       detail: `Agent status: Stopping${identities ? `; ${identities}` : ""}`,
     };
   }
@@ -228,6 +228,9 @@ export function agentStatusPresentation(
         phase.requestIds.length ? `Requests ${phase.requestIds.join(", ")}` : undefined,
       ].filter(Boolean).join("; ")
     : `Request ${phase.requestId}`;
+  const counterpartyNames = phase.counterpartyAgentIds
+    .map(agentId => options.agentNameForId?.(agentId))
+    .filter((name): name is string => Boolean(name));
   const counterparties = phase.counterpartyAgentIds.length
     ? `Agents ${phase.counterpartyAgentIds.map((agentId) => {
         const name = options.agentNameForId?.(agentId);
@@ -240,7 +243,11 @@ export function agentStatusPresentation(
     identity,
     `${phase.dependencyCount} unresolved ${phase.dependencyCount === 1 ? "request" : "requests"}`,
   ].filter(Boolean).join("; ");
-  return { label, accessibleLabel: detail, detail };
+  const accessibleLabel = [
+    `Agent status: ${label}`,
+    counterpartyNames.length ? counterpartyNames.join(", ") : undefined,
+  ].filter(Boolean).join("; ");
+  return { label, accessibleLabel, detail };
 }
 
 /** Provider retry metadata may coexist with a newer active Run. Only the

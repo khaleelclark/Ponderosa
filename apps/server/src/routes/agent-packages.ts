@@ -43,8 +43,9 @@ import {
 import {
   decodePortableArtifact,
   encodePortableArtifact,
-  parsePortablePackageUpload,
+  parsePortablePackageFile,
   stringifyPortablePackage,
+  withAgentImportAdmission,
 } from "../agent-package-codec.js";
 
 interface AgentPackageRoutesContext {
@@ -96,11 +97,71 @@ export function registerAgentPackageRoutes(
   const operationPath = (id: string) => path.join(importOperationDirectory, `${id}.json`);
   const payloadPath = (id: string) => path.join(importOperationDirectory, `${id}.payload`);
   const copySnapshotPath = (id: string) => path.join(importOperationDirectory, `${id}.copy.payload`);
+  const removeCopySnapshot = async (id: string): Promise<void> => {
+    let removed = false;
+    await fs.unlink(copySnapshotPath(id))
+      .then(() => { removed = true; })
+      .catch((error) => {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      });
+    if (removed && process.platform !== "win32") {
+      const directory = await fs.open(importOperationDirectory, "r");
+      try { await directory.sync(); } finally { await directory.close(); }
+    }
+  };
   const operationByRequest = new Map<string, string>();
   const operationCache = new Map<string, AgentImportOperationDto>();
   const quarantinedOperationIds = new Set<string>();
   const projectImportTails = new Map<string, Promise<void>>();
   const activeCopyOperations = new Set<string>();
+  type StagedImportUpload = {
+    pathname: string;
+    sha256: string;
+    size: number;
+    reservationId: string;
+  };
+  const maximumImportBytes = 96 * 1024 * 1024;
+  const maximumStagedImportBytes = 2 * maximumImportBytes;
+  let stagedImportBytes = 0;
+  const stagedReservations = new Map<string, number>();
+  const operationReservations = new Map<string, string>();
+  const reserveStagedBytes = (reservationId: string, bytes: number): void => {
+    if (bytes <= 0) return;
+    if (stagedImportBytes + bytes > maximumStagedImportBytes) {
+      throw Object.assign(
+        new Error("Agent import staging capacity is currently full"),
+        { statusCode: 503 },
+      );
+    }
+    stagedImportBytes += bytes;
+    stagedReservations.set(
+      reservationId,
+      (stagedReservations.get(reservationId) ?? 0) + bytes,
+    );
+  };
+  const releaseStagedReservation = (reservationId: string | undefined): void => {
+    if (!reservationId) return;
+    const bytes = stagedReservations.get(reservationId);
+    if (bytes === undefined) return;
+    stagedReservations.delete(reservationId);
+    stagedImportBytes = Math.max(0, stagedImportBytes - bytes);
+  };
+  const sha256File = async (pathname: string): Promise<string> => {
+    const hash = createHash("sha256");
+    const handle = await fs.open(pathname, "r");
+    const buffer = Buffer.allocUnsafe(256 * 1024);
+    try {
+      for (let offset = 0;;) {
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+        if (!bytesRead) break;
+        hash.update(buffer.subarray(0, bytesRead));
+        offset += bytesRead;
+      }
+    } finally {
+      await handle.close();
+    }
+    return hash.digest("hex");
+  };
   const withProjectImportLock = async <T>(projectId: string, work: () => Promise<T>): Promise<T> => {
     const previous = projectImportTails.get(projectId) ?? Promise.resolve();
     let release!: () => void;
@@ -270,10 +331,11 @@ export function registerAgentPackageRoutes(
         const payloadMatch = /^([0-9a-f-]{36})\.payload$/u.exec(name);
         const copyMatch = /^(agent-create-[0-9a-f]{64})\.copy\.payload$/u.exec(name);
         const temporary = name.endsWith(".tmp");
+        const abandonedUpload = name.startsWith(".incoming-");
         const liveCopy = copyMatch
           ? store.getAgentCreationOperation(copyMatch[1]!)
           : undefined;
-        if (!temporary && (
+        if (!temporary && !abandonedUpload && (
           (payloadMatch && (
             quarantinedOperationIds.has(payloadMatch[1]!) ||
             (durableIds.has(payloadMatch[1]!) &&
@@ -290,11 +352,57 @@ export function registerAgentPackageRoutes(
         const directory = await fs.open(importOperationDirectory, "r");
         try { await directory.sync(); } finally { await directory.close(); }
       }
+      // Pending payloads consume the same bounded staging budget after a
+      // restart. Admission is initialized before new uploads are accepted.
+      for (const [id, operation] of operationCache) {
+        if (operation.status !== "pending") continue;
+        const reservationId = `operation:${id}`;
+        const stat = await fs.stat(payloadPath(id)).catch(() => undefined);
+        if (!stat?.isFile()) continue;
+        stagedImportBytes += stat.size;
+        stagedReservations.set(reservationId, stat.size);
+        operationReservations.set(id, reservationId);
+      }
     });
   app.addContentTypeParser(
     blobImportContentType,
-    { parseAs: "buffer" },
-    (_request, body, done) => done(null, body),
+    (request, payload, done) => {
+      void (async () => {
+        await operationHydration;
+        await fs.mkdir(importOperationDirectory, { recursive: true });
+        const pathname = path.join(importOperationDirectory, `.incoming-${randomUUID()}`);
+        const reservationId = `upload:${randomUUID()}`;
+        const handle = await fs.open(pathname, "wx", 0o600);
+        const hash = createHash("sha256");
+        let size = 0;
+        try {
+          for await (const chunk of payload) {
+            const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            size += bytes.length;
+            if (size > maximumImportBytes) {
+              throw Object.assign(new Error("Agent package exceeds 96 MiB"), { statusCode: 413 });
+            }
+            reserveStagedBytes(reservationId, bytes.length);
+            hash.update(bytes);
+            await handle.write(bytes);
+          }
+          await handle.sync();
+          await handle.close();
+          done(null, {
+            pathname,
+            sha256: hash.digest("hex"),
+            size,
+            reservationId,
+          } satisfies StagedImportUpload);
+        } catch (error) {
+          await handle.close().catch(() => undefined);
+          await fs.unlink(pathname).catch(() => undefined);
+          releaseStagedReservation(reservationId);
+          request.log.warn({ err: error }, "Agent package upload was rejected before admission");
+          done(error as Error);
+        }
+      })().catch((error) => done(error as Error));
+    },
   );
 
   const buildPortablePackage = async (
@@ -1322,6 +1430,10 @@ export function registerAgentPackageRoutes(
         agentIds: [...created.values()].map((agent) => agent.id),
       };
       if (creationOperationId) {
+        // Copy snapshots are retry authority only until the canonical import
+        // commits. Remove and fsync them before acknowledging completion so the
+        // caller cannot observe success with stale recovery data.
+        await removeCopySnapshot(creationOperationId);
         store.updateAgentCreationOperation(creationOperationId, {
           status: "completed",
           result: response,
@@ -1426,7 +1538,8 @@ export function registerAgentPackageRoutes(
     },
   );
 
-  const runBackgroundImport = async (operationId: string): Promise<void> => {
+  const runBackgroundImport = async (operationId: string): Promise<void> =>
+    withAgentImportAdmission(async () => {
     await operationHydration;
     let operation = await readOperation(operationId);
     if (!operation || operation.status !== "pending") return;
@@ -1452,11 +1565,11 @@ export function registerAgentPackageRoutes(
     let committedResult: ImportAgentPackageResponse | undefined;
     let retainPayloadForRecovery = false;
     try {
-      const raw = await fs.readFile(payloadPath(operationId));
-      if (createHash("sha256").update(raw).digest("hex") !== operation.payloadHash) {
+      const durablePayloadPath = payloadPath(operationId);
+      if (await sha256File(durablePayloadPath) !== operation.payloadHash) {
         throw new Error("Import payload no longer matches its durable operation");
       }
-      const { metadata, portable } = await parsePortablePackageUpload(raw);
+      const { metadata, portable } = await parsePortablePackageFile(durablePayloadPath);
       await update({ sourceLabel: portable.sourceLabel.slice(0, 240) });
       const creationOperation = store.beginAgentCreationOperation({
         projectId: operation.projectId,
@@ -1548,26 +1661,35 @@ export function registerAgentPackageRoutes(
       } catch { /* failure state is durable */ }
     } finally {
       if (!retainPayloadForRecovery) {
-        await fs.unlink(payloadPath(operationId)).catch(() => undefined);
+        const removed = await fs.unlink(payloadPath(operationId))
+          .then(() => true)
+          .catch(() => false);
+        if (removed) {
+          releaseStagedReservation(operationReservations.get(operationId));
+          operationReservations.delete(operationId);
+        }
       }
     }
-  };
+  });
 
   app.post<{
     Params: { id: string };
     Headers: { "idempotency-key"?: string };
-    Body: Buffer;
+    Body: StagedImportUpload;
   }>(
     "/api/projects/:id/agent-import-operations",
-    { bodyLimit: 96 * 1024 * 1024 },
+    { bodyLimit: maximumImportBytes },
     async (request, reply) => withProjectImportLock(request.params.id, async () => {
-      await operationHydration;
-      const requestId = validIdempotencyKey(request.headers["idempotency-key"]);
+      const staged = request.body;
+      let transferredReservation = false;
+      try {
+        await operationHydration;
+        const requestId = validIdempotencyKey(request.headers["idempotency-key"]);
       if (!requestId) {
         return reply.code(400).send({ error: "a valid import idempotency key is required" });
       }
       const requestKey = requestOperationKey(request.params.id, requestId);
-      const requestPayloadHash = createHash("sha256").update(request.body).digest("hex");
+      const requestPayloadHash = staged.sha256;
       const existingId = operationByRequest.get(requestKey);
       if (existingId) {
         const existing = operationCache.get(existingId) ?? await readOperation(existingId);
@@ -1602,18 +1724,24 @@ export function registerAgentPackageRoutes(
       };
       try {
         await fs.mkdir(importOperationDirectory, { recursive: true });
-        const payload = await fs.open(payloadPath(id), "wx", 0o600);
-        try {
-          await payload.writeFile(request.body);
-          await payload.sync();
-        } finally {
-          await payload.close();
+        await fs.rename(staged.pathname, payloadPath(id));
+        operationReservations.set(id, staged.reservationId);
+        transferredReservation = true;
+        if (process.platform !== "win32") {
+          const directory = await fs.open(importOperationDirectory, "r");
+          try { await directory.sync(); } finally { await directory.close(); }
         }
         await writeOperation(operation);
       } catch (error) {
         operationByRequest.delete(requestKey);
         operationCache.delete(id);
-        await fs.unlink(payloadPath(id)).catch(() => undefined);
+        const removed = await fs.unlink(payloadPath(id))
+          .then(() => true)
+          .catch(() => false);
+        if (removed) {
+          releaseStagedReservation(operationReservations.get(id));
+          operationReservations.delete(id);
+        }
         throw error;
       }
       setImmediate(() => void runBackgroundImport(id));
@@ -1629,6 +1757,14 @@ export function registerAgentPackageRoutes(
         });
       } catch { /* the durable queue and scheduled worker remain authoritative */ }
       return reply.code(202).send(operation);
+      } finally {
+        const removed = await fs.unlink(staged.pathname)
+          .then(() => true)
+          .catch(() => false);
+        if (removed || !transferredReservation) {
+          releaseStagedReservation(staged.reservationId);
+        }
+      }
     }),
   );
 
@@ -1656,36 +1792,39 @@ export function registerAgentPackageRoutes(
   app.post<{
     Params: { id: string };
     Headers: { "idempotency-key"?: string };
-    Body: Buffer;
+    Body: StagedImportUpload;
   }>(
     "/api/projects/:id/import-agent-package",
-    { bodyLimit: 96 * 1024 * 1024 },
+    { bodyLimit: maximumImportBytes },
     async (request, reply) => {
-      const idempotencyKey = validIdempotencyKey(request.headers["idempotency-key"]);
-      if (!idempotencyKey) {
-        return reply.code(400).send({ error: "a valid import idempotency key is required" });
-      }
       try {
-        const { metadata, portable } = await parsePortablePackageUpload(
-          request.body,
-        );
-        return importPackage(
-          request.params.id,
-          { ...metadata, package: portable },
-          reply,
-          undefined,
-          undefined,
-          {
-            idempotencyKey,
-            rawPayloadHash: createHash("sha256").update(request.body).digest("hex"),
-          },
-        );
+        const idempotencyKey = validIdempotencyKey(request.headers["idempotency-key"]);
+        if (!idempotencyKey) {
+          return reply.code(400).send({ error: "a valid import idempotency key is required" });
+        }
+        return await withAgentImportAdmission(async () => {
+          const { metadata, portable } = await parsePortablePackageFile(request.body.pathname);
+          return importPackage(
+            request.params.id,
+            { ...metadata, package: portable },
+            reply,
+            undefined,
+            undefined,
+            {
+              idempotencyKey,
+              rawPayloadHash: request.body.sha256,
+            },
+          );
+        });
       } catch (error) {
         return reply.code(400).send({
           error: error instanceof Error
             ? error.message
             : "invalid Ponderosa Agent package",
         });
+      } finally {
+        await fs.unlink(request.body.pathname).catch(() => undefined);
+        releaseStagedReservation(request.body.reservationId);
       }
     },
   );
@@ -1876,7 +2015,7 @@ export function registerAgentPackageRoutes(
       ).finally(async () => {
         activeCopyOperations.delete(creationOperation.id);
         if (store.getAgentCreationOperation(creationOperation.id)?.status === "completed") {
-          await fs.unlink(copySnapshotPath(creationOperation.id)).catch(() => undefined);
+          await removeCopySnapshot(creationOperation.id);
         }
       });
     },

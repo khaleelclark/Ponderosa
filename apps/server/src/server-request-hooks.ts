@@ -71,6 +71,71 @@ export function registerRequestSecurityHooks(
     isPublicWebAssetRequest,
   } = context;
 
+  const normalizedHostname = (value: string): string =>
+    value.toLowerCase().replace(/^\[|\]$/gu, "");
+  const allowedHostnames = new Set(["localhost", "127.0.0.1", "::1"]);
+  if (opts.networkSecurity?.bindHost) allowedHostnames.add(normalizedHostname(opts.networkSecurity.bindHost));
+  const allowedOrigins = new Set<string>();
+  const allowedProxyIdentities = new Set(
+    (opts.operatorIdentities ?? []).map((identity) => identity.toLocaleLowerCase()),
+  );
+  for (const rawOrigin of opts.operatorOrigins ?? []) {
+    const origin = new URL(rawOrigin);
+    allowedOrigins.add(origin.origin.toLowerCase());
+    allowedHostnames.add(normalizedHostname(origin.hostname));
+  }
+  const requestBuckets = new Map<string, { startedAt: number; count: number }>();
+  let inflight = 0;
+  const admitted = new WeakSet<IncomingMessage>();
+  const activeHandlers = new WeakSet<IncomingMessage>();
+  const handlerDeadlines = new WeakMap<IncomingMessage, ReturnType<typeof setTimeout>>();
+
+  app.addHook("onRequest", async (request, reply) => {
+    const host = request.headers.host;
+    let hostname: string;
+    try {
+      hostname = normalizedHostname(new URL(`http://${host ?? ""}`).hostname);
+    } catch {
+      return reply.code(400).send({ error: "invalid Host header" });
+    }
+    if (!allowedHostnames.has(hostname)) {
+      return reply.code(421).send({ error: "unrecognized Ponderosa host" });
+    }
+    const fetchSite = request.headers["sec-fetch-site"];
+    if (fetchSite === "cross-site" && request.url.startsWith("/api/")) {
+      return reply.code(403).send({ error: "cross-site API request forbidden" });
+    }
+  });
+  const releaseAdmission = (request: { raw: IncomingMessage }): void => {
+    const deadline = handlerDeadlines.get(request.raw);
+    if (deadline) {
+      clearTimeout(deadline);
+      handlerDeadlines.delete(request.raw);
+    }
+    if (!admitted.delete(request.raw)) return;
+    inflight = Math.max(0, inflight - 1);
+  };
+  // A 504 closes the client response, not the underlying handler. Hold its
+  // admission slot until the handler actually settles so timed-out work cannot
+  // accumulate outside the concurrency limit. Fastify awaits streamed replies.
+  app.addHook("onRoute", (route) => {
+    const handler = route.handler;
+    route.handler = async function(request, reply) {
+      activeHandlers.add(request.raw);
+      try { return await handler.call(this, request, reply); }
+      finally {
+        activeHandlers.delete(request.raw);
+        releaseAdmission(request);
+      }
+    };
+  });
+  app.addHook("onResponse", async (request) => {
+    if (!activeHandlers.has(request.raw)) releaseAdmission(request);
+  });
+  app.addHook("onError", async (request) => {
+    if (!activeHandlers.has(request.raw)) releaseAdmission(request);
+  });
+
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     // Only the narrow extension transport uses its own unguessable, tab-scoped
@@ -91,7 +156,8 @@ export function registerRequestSecurityHooks(
       typeof request.headers["x-ponderosa-v3-dispatch"] === "string" &&
       secretEqual(request.headers["x-ponderosa-v3-dispatch"], v3DispatchKey);
     if (internalV3Dispatch) return;
-    if (opts.launcherSecurity && (browserBootstrapPath || launcherExchange)) return;
+    if (opts.launcherSecurity && opts.networkSecurity?.mode !== "reverse_proxy" &&
+        (browserBootstrapPath || launcherExchange)) return;
     if (isPublicWebAssetRequest(request.method, request.url)) return;
     const agentToolRequest = isAgentToolRoute(request.url);
     const capability = agentToolRequest && provided ? agentMessageCapabilities.get(provided) : undefined;
@@ -102,10 +168,73 @@ export function registerRequestSecurityHooks(
       return;
     }
     if (request.url === "/api/health" || request.url === "/api/ready" || request.url.startsWith("/api/trigger-webhooks/")) return;
-    if (opts.launcherSecurity && validLauncherSession(request.headers.cookie)) return;
+    const validBrowserSession = validLauncherSession(request.headers.cookie);
+    if (opts.networkSecurity?.mode === "reverse_proxy") {
+      if (allowedProxyIdentities.size > 0) {
+        const asserted = request.headers["tailscale-user-login"];
+        const identity = typeof asserted === "string" ? asserted.trim().toLocaleLowerCase() : "";
+        if (!identity || !allowedProxyIdentities.has(identity)) {
+          return reply.code(401).send({ error: "trusted proxy operator identity required" });
+        }
+      }
+      if ((opts.launcherSecurity || opts.authToken) &&
+          (browserBootstrapPath || launcherExchange)) return;
+      if (opts.authToken && !validBrowserSession && !secretEqual(provided, opts.authToken)) {
+        return reply.code(401).send({ error: "reverse proxy backend authentication required" });
+      }
+      return;
+    }
+    if (opts.launcherSecurity && validBrowserSession) return;
     if (opts.authToken && secretEqual(provided, opts.authToken)) return;
     if (opts.authToken || opts.launcherSecurity) {
       return reply.code(401).send({ error: "unauthorized" });
+    }
+  });
+
+  // Admission follows authentication so an untrusted peer cannot consume the
+  // authenticated operator's rate or concurrency budget. Long-lived SSE
+  // streams have their own subscriber, replay, byte, and backpressure bounds.
+  app.addHook("onRequest", async (request, reply) => {
+    if (!opts.requestLimits) return;
+    const now = Date.now();
+    const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const capability = provided ? agentMessageCapabilities.get(provided) : undefined;
+    const asserted = request.headers["tailscale-user-login"];
+    const proxyIdentity = typeof asserted === "string"
+      ? asserted.trim().toLocaleLowerCase()
+      : "";
+    const source = capability
+      ? `agent:${capability.agentId}`
+      : opts.networkSecurity?.mode === "reverse_proxy"
+        ? `operator:${proxyIdentity}`
+        : opts.authToken || opts.launcherSecurity
+          ? "operator"
+          : request.ip;
+    const current = requestBuckets.get(source);
+    const bucket = !current || now - current.startedAt >= 60_000
+      ? { startedAt: now, count: 0 }
+      : current;
+    bucket.count += 1;
+    requestBuckets.set(source, bucket);
+    if (requestBuckets.size > 10_000) {
+      for (const [key, value] of requestBuckets) {
+        if (now - value.startedAt >= 60_000) requestBuckets.delete(key);
+      }
+    }
+    if (bucket.count > opts.requestLimits.maxRequestsPerMinute) {
+      reply.header("Retry-After", Math.max(1, Math.ceil((bucket.startedAt + 60_000 - now) / 1_000)));
+      return reply.code(429).send({ error: "request rate limit exceeded" });
+    }
+    if (inflight >= opts.requestLimits.maxInflight) {
+      reply.header("Retry-After", "1");
+      return reply.code(503).send({ error: "server request concurrency limit reached" });
+    }
+    inflight += 1;
+    admitted.add(request.raw);
+    if (!/^\/api\/(?:workspace\/stream|agents\/[^/?]+\/stream)(?:\?|$)/u.test(request.url)) {
+      handlerDeadlines.set(request.raw, setTimeout(() => {
+        if (!reply.sent) void reply.code(504).send({ error: "request handler deadline exceeded" });
+      }, opts.requestLimits.handlerDeadlineMs ?? 60_000).unref());
     }
   });
 
@@ -128,14 +257,19 @@ export function registerRequestSecurityHooks(
     const origin = request.headers.origin;
     if (localBrowserTransportPath(request.url) && origin && /^chrome-extension:\/\/[a-p]{32}$/.test(origin)) return;
     if (!origin) return; // Non-browser clients and host-local runtime bridges.
-    let originHost: string;
+    let parsedOrigin: URL;
     try {
-      originHost = new URL(origin).host.toLowerCase();
+      parsedOrigin = new URL(origin);
     } catch {
       return reply.code(403).send({ error: "cross-origin mutation forbidden" });
     }
     const requestHost = request.headers.host?.toLowerCase();
-    if (!requestHost || originHost !== requestHost) {
+    const exactOriginAllowed = allowedOrigins.has(parsedOrigin.origin.toLowerCase());
+    const originHostname = normalizedHostname(parsedOrigin.hostname);
+    const loopbackOriginAllowed = allowedHostnames.has(originHostname) &&
+      ["localhost", "127.0.0.1", "::1"].includes(originHostname);
+    if ((!exactOriginAllowed && !loopbackOriginAllowed) || !requestHost ||
+        parsedOrigin.host.toLowerCase() !== requestHost) {
       return reply.code(403).send({ error: "cross-origin mutation forbidden" });
     }
   });
@@ -143,6 +277,9 @@ export function registerRequestSecurityHooks(
   app.addHook("onSend", async (request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");
+    if (opts.operatorOrigins?.some((origin) => origin.startsWith("https://"))) {
+      reply.header("Strict-Transport-Security", "max-age=31536000");
+    }
     if (!reply.hasHeader("X-Frame-Options")) reply.header("X-Frame-Options", "DENY");
     if (!reply.hasHeader("Content-Security-Policy")) {
       reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");

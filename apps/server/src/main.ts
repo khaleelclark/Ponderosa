@@ -6,10 +6,19 @@ import { processBirthMarker } from "@ponderosa/engines";
 import { createServer } from "./app.js";
 import { writeLauncherShutdownReceipt } from "./launcher-shutdown-receipt.js";
 import { installProcessShutdownHandlers } from "./shutdown.js";
+import { assertProductionBuildIdentity } from "./build-identity.js";
 
 const config = loadConfig();
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webDist = path.resolve(here, "../../web/dist");
+const buildManifest = path.resolve(here, "../../../build-manifest.json");
+
+assertProductionBuildIdentity({
+  releaseChannel: process.env.PONDEROSA_RELEASE_CHANNEL,
+  buildRevision: process.env.PONDEROSA_BUILD_SHA,
+  buildVersion: process.env.PONDEROSA_BUILD_VERSION,
+  manifestPath: buildManifest,
+});
 
 const launcherControlToken = process.env.PONDEROSA_LAUNCHER_CONTROL_TOKEN?.trim();
 delete process.env.PONDEROSA_LAUNCHER_CONTROL_TOKEN;
@@ -41,6 +50,9 @@ const app = createServer({
   webDist,
   authToken: config.authToken,
   networkSecurity: config.networkSecurity,
+  operatorOrigins: config.operatorOrigins,
+  operatorIdentities: config.operatorIdentities,
+  requestLimits: { maxRequestsPerMinute: 600, maxInflight: 128 },
   buildRevision: process.env.PONDEROSA_BUILD_SHA,
   buildVersion: process.env.PONDEROSA_BUILD_VERSION,
   releaseChannel: process.env.PONDEROSA_RELEASE_CHANNEL,

@@ -816,7 +816,7 @@ export interface ReadinessCheckDto {
 }
 
 export interface NetworkSecurityPostureDto {
-  mode: "loopback" | "authenticated" | "trusted_tailnet";
+  mode: "loopback" | "authenticated" | "trusted_tailnet" | "reverse_proxy";
   /** Exact configured listener host. Never contains credentials. */
   bindHost: string;
   authenticationRequired: boolean;
@@ -829,6 +829,8 @@ export interface ReadinessDto {
   status: "ready" | "not_ready";
   service: "ponderosa";
   version: string;
+  /** Exact deployed source revision captured when this daemon started. */
+  revision: string;
   canAcceptWork: boolean;
   networkSecurity: NetworkSecurityPostureDto;
   /** Durable API intake remains available while deployment draining pauses

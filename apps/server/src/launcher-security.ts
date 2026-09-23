@@ -40,7 +40,8 @@ export function createLauncherSecurity(
       ?.slice(name.length + 1);
   const validLauncherSession = (header: string | undefined): boolean => {
     purgeLauncherSecurityState();
-    const token = cookieValue(header, "ponderosa_session");
+    const token = cookieValue(header, "__Host-ponderosa_session") ??
+      cookieValue(header, "ponderosa_session");
     return Boolean(token && (launcherSessions.get(token) ?? 0) > launcherNow());
   };
   return {

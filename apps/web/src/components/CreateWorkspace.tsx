@@ -64,6 +64,7 @@ import { TriggersPane } from "./TriggersPane";
 import { AgentCreateSurface } from "./AgentCreateDialog";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 import { NewChatComposer } from "./NewChatComposer";
+import { useReloadBlocker } from "../reloadSafety";
 
 const anchoredCreationActionsSx = {
   position: "absolute",
@@ -642,6 +643,7 @@ export function ContextualCreateDialog({
   const [dirty, setDirty] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [pending, setPending] = useState(false);
+  useReloadBlocker("contextual-create", dirty || pending);
   useEffect(() => {
     if (request) {
       setDirty(false);

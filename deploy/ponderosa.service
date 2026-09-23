@@ -31,6 +31,8 @@ WorkingDirectory=/home/khaleel/ponderosa
 Environment=NODE_ENV=production
 # The one greppable, portable data dir (event logs + SQLite projections, SPEC §7).
 Environment=PONDEROSA_DATA_DIR=/home/khaleel/.ponderosa
+EnvironmentFile=%h/.config/ponderosa/release.env
+Environment=PONDEROSA_RELEASE_CHANNEL=production
 # Ponderosa creates and protects a stable Web Push identity under its data root.
 # Keep the optional environment file only for operator-managed VAPID overrides.
 EnvironmentFile=-%h/.config/ponderosa/push.env
@@ -44,6 +46,15 @@ Environment=PONDEROSA_CODEX_SANDBOX=danger-full-access
 # Never place PONDEROSA_AUTH_TOKEN in browser code or localStorage.
 # Environment=PONDEROSA_HOST=100.100.101.102
 # Environment=PONDEROSA_TRUSTED_TAILNET=true
+# Reverse-proxy publication requires both the exact HTTPS origin and an exact
+# identity allowlist asserted by the loopback proxy. See deploy/README.md.
+# Environment=PONDEROSA_OPERATOR_ORIGINS=https://ponderosa.example.ts.net
+# Environment=PONDEROSA_TRUSTED_REVERSE_PROXY=true
+# Environment=PONDEROSA_OPERATOR_IDENTITIES=operator@example.com
+# Reverse-proxy publication also requires a random 32+ character backend
+# bearer. Open /__ponderosa_bootstrap#TOKEN once to exchange it for the secure,
+# HttpOnly browser-session cookie; never expose the token in proxy logs.
+# Environment=PONDEROSA_AUTH_TOKEN=replace-with-at-least-32-random-characters
 # Optional runtime callback origin (defaults to http://127.0.0.1:PONDEROSA_PORT).
 # Environment=PONDEROSA_AGENT_BASE_URL=http://127.0.0.1:8787
 # Optional warm-runtime pool size. Active runs are never evicted; idle agents
@@ -60,9 +71,12 @@ Environment=PONDEROSA_CODEX_SANDBOX=danger-full-access
 # (A system Node install puts npm globals in /usr/local/bin, already covered; nvm/
 # fnm/custom-prefix installs do NOT — add that dir here.)
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/khaleel/.npm-global/bin
-ExecStart=/usr/bin/node apps/server/dist/main.js
+ExecStart=/home/khaleel/ponderosa/current/dist/node-runtime/linux-x64/node apps/server/dist/main.js
 Restart=on-failure
 RestartSec=3
+TimeoutStopSec=180
+KillMode=mixed
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

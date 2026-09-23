@@ -6,7 +6,7 @@ import { registerRequestSecurityHooks } from '../dist/server-request-hooks.js';
 
 test('manual browser routes require operator credentials, same origin and exact session identity', async () => {
   const app = Fastify();
-  registerRequestSecurityHooks(app, { opts: { authToken: 'operator-secret' }, v3DispatchKey: 'internal', agentMessageCapabilities: new Map([['agent-secret', { agentId: 'agent' }]]), deletingAgentIds: new Set(), validLauncherSession: () => false, artifactFilesystemError: () => undefined, isArtifactDependentWorkIntake: () => false, isPublicWebAssetRequest: () => false });
+  registerRequestSecurityHooks(app, { opts: { authToken: 'operator-secret', operatorOrigins: ['http://ponderosa.test'] }, v3DispatchKey: 'internal', agentMessageCapabilities: new Map([['agent-secret', { agentId: 'agent' }]]), deletingAgentIds: new Set(), validLauncherSession: () => false, artifactFilesystemError: () => undefined, isArtifactDependentWorkIntake: () => false, isPublicWebAssetRequest: () => false });
   let sockets = 0;
   registerBrowserRoutes(app, {
     projectExists: id => id === 'chat', projectDeletionInProgress: () => false,

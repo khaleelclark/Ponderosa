@@ -26,7 +26,7 @@ export function OperatorAvatar({ profile, size = 36, compactOnMobile = false, fa
   return <Avatar
     aria-label={`${name} avatar`}
     src={operatorAvatarUrl(profile?.avatarId)}
-    imgProps={{ referrerPolicy: "no-referrer" }}
+    imgProps={{ alt: "", referrerPolicy: "no-referrer" }}
     sx={{
       width: compactOnMobile ? { xs: 32, sm: size } : size,
       height: compactOnMobile ? { xs: 32, sm: size } : size,

@@ -13,10 +13,10 @@ function envelope(agentId: string, stored: StoredLogEvent, replayed = false): Ss
   return { agentId, seq: stored.seq, ts: stored.ts, event: stored.event, ...(replayed ? { replayed: true } : {}) };
 }
 
-function writeSse(res: NodeJS.WritableStream, name: string, id: number | undefined, data: unknown): void {
-  if (id !== undefined) res.write(`id: ${id}\n`);
-  res.write(`event: ${name}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
+function writeSse(res: NodeJS.WritableStream, name: string, id: number | undefined, data: unknown): boolean {
+  return res.write(
+    `${id === undefined ? "" : `id: ${id}\n`}event: ${name}\ndata: ${JSON.stringify(data)}\n\n`,
+  );
 }
 
 export {

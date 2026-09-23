@@ -218,6 +218,14 @@ export interface EngineDto {
   reachability: "unverified" | "checking" | "reachable" | "degraded";
   /** Positive/negative provider evidence behind reachability and intake. */
   availabilityDetail?: string;
+  /** Timestamp and source of the last actual provider observation. */
+  availabilityObservedAt?: string;
+  availabilitySource?: "provider_run" | "operator_probe";
+  /** Serving artifact and startup generation; historical evidence may lack these. */
+  servingBuildRevision: string;
+  servingInstanceId: string;
+  availabilityBuildRevision?: string;
+  availabilityInstanceId?: string;
   /** Canonical static-detail category; absent for positive/unverified status. */
   availabilityCategory?: ProviderFailureCategory;
 }

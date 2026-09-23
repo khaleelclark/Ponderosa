@@ -880,7 +880,7 @@ export class WorkspaceStore {
     });
   }
 
-  readSince(id: number): WorkspaceEventEnvelope[] {
+  readSince(id: number, limit?: number): WorkspaceEventEnvelope[] {
     // Reconnects usually ask for a small tail of a long canonical log. Locate
     // that tail without rescanning every prior event.
     let low = 0;
@@ -890,7 +890,8 @@ export class WorkspaceStore {
       if (this.events[middle]!.id <= id) low = middle + 1;
       else high = middle;
     }
-    return this.events.slice(low).map(({ mutation: _mutation, ...event }) => event);
+    return this.events.slice(low, limit === undefined ? undefined : low + limit)
+      .map(({ mutation: _mutation, ...event }) => event);
   }
 
   cursor(): number { return this.events.at(-1)?.id ?? 0; }

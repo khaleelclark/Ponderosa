@@ -18,7 +18,7 @@ export type { CodexMapContext } from "./events.js";
 export { streamProcess } from "./process.js";
 export { processBirthMarker, processGroupAlive, recoveredRuntimeProcessHandle, runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
 export { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer, parseJsonLine, parseJsonlChunks } from "./jsonl.js";
-export { codexAuthStatus, codexHome, claudeAuthStatus, claudeAvailabilityStatus } from "./auth.js";
+export { codexAuthStatus, codexAvailabilityStatus, codexHome, claudeAuthStatus, claudeAvailabilityStatus } from "./auth.js";
 export { shouldRolloverEngineSession, classifyProviderFailure } from "./session-recovery.js";
 export type { ProviderFailureKind } from "./session-recovery.js";
 export {
@@ -33,7 +33,7 @@ export { composerCapabilities, discoverEnginePlugins, discoverMarkdownCommands, 
 export type { Adapter, AgentEvent, EngineAuthStatus, EngineAvailabilityStatus } from "@ponderosa/core";
 
 import type { Adapter, EngineAuthStatus, EngineAvailabilityStatus } from "@ponderosa/core";
-import { claudeAuthStatus, claudeAvailabilityStatus, codexAuthStatus } from "./auth.js";
+import { claudeAuthStatus, claudeAvailabilityStatus, codexAuthStatus, codexAvailabilityStatus } from "./auth.js";
 import { CodexAdapter } from "./codex.js";
 import { ClaudeAdapter } from "./claude.js";
 
@@ -61,6 +61,7 @@ export function defaultEngineRegistrations(
     {
       adapter: new CodexAdapter({ bin: codexBin }),
       authStatus: () => codexAuthStatus(env),
+      availabilityProbe: () => codexAvailabilityStatus(env),
     },
     {
       adapter: new ClaudeAdapter({

@@ -336,6 +336,7 @@ function ConversationHeader({
         </>
       }
       tabs={{
+        idPrefix: "chat-workspace",
         activeLabel: agentWorkOpen ? "Work" : undefined,
         label: "Chat views",
         value: agentWorkOpen ? false : activeView,

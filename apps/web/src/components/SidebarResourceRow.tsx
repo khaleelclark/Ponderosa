@@ -11,13 +11,14 @@ export function SidebarResourceRow({ id, label, title, detail, subtitle, icon, s
   selected?: boolean; starred: boolean; emphasis?: boolean; boldWhenStarred?: boolean; nested?: boolean; status?: ReactNode;
   onOpen(): void; onStar(): void; onContextAction?(anchor: HTMLElement): void;
 }) {
-  const control = { width: { xs: 44, sm: 32 }, height: { xs: 44, sm: 32 }, minHeight: { xs: 44, sm: 32 }, minWidth: { xs: 44, sm: 32 }, flexShrink: 0 };
+  const coarseTarget = { "@media (pointer: coarse)": { width: 44, height: 44, minWidth: 44, minHeight: 44 } };
+  const control = { width: { xs: 44, sm: 32 }, height: { xs: 44, sm: 32 }, minHeight: { xs: 44, sm: 32 }, minWidth: { xs: 44, sm: 32 }, flexShrink: 0, ...coarseTarget };
   const rowHeight = subtitle ? { xs: 52, sm: 44 } : { xs: 44, sm: 32 };
   return <Box sx={{ display: "flex", flex: 1, minWidth: 0, alignItems: "center", "@media (hover: hover) and (pointer: fine)": { "& .sidebar-secondary": { opacity: 0 }, "&:hover .sidebar-secondary, &:focus-within .sidebar-secondary": { opacity: 1 } } }}>
     <Tooltip title={detail ? `${title} · ${detail}` : title} placement="right" disableInteractive>
       <ListItemButton data-resource-id={id} aria-label={label} aria-haspopup={onContextAction ? "menu" : undefined} selected={selected} onClick={onOpen}
         onKeyDown={event => { if (onContextAction && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) { event.preventDefault(); onContextAction(event.currentTarget); } }}
-        sx={theme => ({ borderRadius: 1.25, px: 1, py: 0, minWidth: 0, height: rowHeight, minHeight: rowHeight, ...(nested ? {
+        sx={theme => ({ borderRadius: 1.25, px: 1, py: 0, minWidth: 0, height: rowHeight, minHeight: rowHeight, "@media (pointer: coarse)": { minHeight: subtitle ? 52 : 44, height: subtitle ? 52 : 44 }, ...(nested ? {
           bgcolor: alpha(theme.palette.primary.main, .07),
           boxShadow: `inset 2px 0 ${alpha(theme.palette.primary.main, .55)}`,
           "&:hover": { bgcolor: alpha(theme.palette.primary.main, .12) },

@@ -529,7 +529,7 @@ export function WorkspaceSidebar({
         ? { label: "Create Automation", run: () => onCreate("trigger", { projectId: activeProjectId ?? projects[0]?.id }) }
         : undefined;
   const panelHeader = <Stack direction="row" sx={{ alignItems: "center", pl: 2, pr: .25, pt: drawer ? .75 : 1.5, pb: 1 }}>
-    <Typography component="h2" sx={{ minWidth: 0, flex: 1, fontSize: 15, fontWeight: 700 }}>{showingAgents ? "Agents" : showingTriggers ? "Automations" : "Chats"}</Typography>
+    <Typography component="div" sx={{ minWidth: 0, flex: 1, fontSize: 15, fontWeight: 700 }}>{showingAgents ? "Agents" : showingTriggers ? "Automations" : "Chats"}</Typography>
     {panelCreate ? <Tooltip title={panelCreate.label}><IconButton size="small" aria-label={panelCreate.label} onClick={panelCreate.run}><AddIcon fontSize="small" /></IconButton></Tooltip> : null}
   </Stack>;
   const allChatRows = chatItems;

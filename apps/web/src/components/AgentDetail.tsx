@@ -83,6 +83,7 @@ import {
   recordRuntimeCanonicalKey,
   runtimeCanonicalKey,
 } from "./allChatRouting";
+import { useReloadBlocker } from "../reloadSafety";
 
 export function AgentDetail({
   agentId,
@@ -209,6 +210,15 @@ export function AgentDetail({
       olderTelemetry,
     );
   }, [agentQuery.data, olderMessages, olderTelemetry]);
+  const runtimeSettingsDirty = Boolean(detail) && (
+    settingsEngine !== detail!.agent.activeEngine ||
+    settingsModel !== (detail!.agent.model ?? "") ||
+    settingsEffort !== (detail!.agent.effort ?? "")
+  );
+  useReloadBlocker(`agent-runtime-settings:${agentId}`, runtimeSettingsDirty);
+  useEffect(() => {
+    if (detail?.agent.title) document.title = `${detail.agent.title} · Ponderosa`;
+  }, [detail?.agent.title]);
   if (detail) {
     currentRuntimeCanonical.current = {
       agentId,
@@ -748,10 +758,6 @@ export function AgentDetail({
   });
   const settingsModels = settingsRuntime.models;
   const settingsEfforts = settingsRuntime.efforts;
-  const runtimeSettingsDirty =
-    settingsEngine !== detail.agent.activeEngine ||
-    settingsModel !== (detail.agent.model ?? "") ||
-    settingsEffort !== (detail.agent.effort ?? "");
   const relationships = agentRelationshipPresentation(
     detail.agent,
     agents,
@@ -1130,6 +1136,8 @@ export function AgentDetail({
           {activeBrowser ? (
             <Alert
               severity="info"
+              role="region"
+              aria-label="Agent browser status"
               action={
                 <Button color="inherit" size="small" onClick={() => onOpenBrowser(activeBrowser.runId)}>
                   View Browser

@@ -3,6 +3,7 @@ import { Alert, Divider, IconButton, ListSubheader, Menu, MenuItem, Snackbar, To
 import ViewQuiltIcon from "@mui/icons-material/ViewQuilt";
 import { ProjectBrowserDialog } from "../ProjectBrowserDialog";
 import type { ProjectBrowserRequest } from "../ProjectBrowserContext";
+import { browserDockIsAvailable } from "./browserWindowSizing";
 
 type Panel = { key: string; projectId: string; agent?: { id: string; runId: string }; request?: ProjectBrowserRequest };
 const keyFor = (projectId: string, agent?: Panel["agent"]) => `${projectId}:${agent?.id ?? "shared"}`;
@@ -24,6 +25,7 @@ export function BrowserWorkspaceHost({ projectId, agent, request, projects, onRe
   const [limitNotice, setLimitNotice] = useState(false);
   const lastExternal = useRef<{ key: string; requestId?: number; agent?: Panel["agent"] }>();
   const mobile = useMediaQuery("(max-width: 899px)");
+  const canDock = useMediaQuery("(min-width: 1400px)");
   const label = (panel: Panel) => `${projects.find(item => item.id === panel.projectId)?.label ?? "Chat"}${panel.agent ? " · Agent" : ""}`;
   const activate = (key: string) => setPanels(current => current.at(-1)?.key === key ? current : [...current.filter(item => item.key !== key), ...current.filter(item => item.key === key)]);
   const openPanel = (next: Panel) => {
@@ -43,8 +45,11 @@ export function BrowserWorkspaceHost({ projectId, agent, request, projects, onRe
       const others = current.filter(item => item.key !== key);
       return [...others, { ...found, key, projectId, agent, request }];
     });
-    setDocked(key);
+    setDocked(browserDockIsAvailable(window.innerWidth) ? key : undefined);
   }, [projectId, agent, request?.requestId]);
+  useEffect(() => {
+    if (!canDock) setDocked(undefined);
+  }, [canDock]);
   useEffect(() => { onDockWidth(docked ? widths[docked] ?? 0 : 0); }, [docked, widths, onDockWidth]);
   useEffect(() => () => onDockWidth(0), [onDockWidth]);
   return <>
@@ -56,7 +61,7 @@ export function BrowserWorkspaceHost({ projectId, agent, request, projects, onRe
           onRequestHandled(requestId);
         }}
         onDockWidth={width => setWidths(current => current[panel.key] === width ? current : { ...current, [panel.key]: width })}
-        windowOptions={{ docked: docked === panel.key, onDock: () => setDocked(panel.key), onUndock: () => setDocked(current => current === panel.key ? undefined : current), onActivate: () => activate(panel.key), layer: index, offset: index, label: `Browser · ${label(panel)}` }}
+        windowOptions={{ docked: docked === panel.key, onDock: () => { if (browserDockIsAvailable(window.innerWidth)) setDocked(panel.key); }, onUndock: () => setDocked(current => current === panel.key ? undefined : current), onActivate: () => activate(panel.key), layer: index, offset: index, label: `Browser · ${label(panel)}` }}
         workspaceControls={<Tooltip title="Browser workspaces"><IconButton size="small" aria-label="Browser workspaces" onClick={event => setMenu(event.currentTarget)}><ViewQuiltIcon /></IconButton></Tooltip>}
         onClose={() => {
           setPanels(current => current.filter(item => item.key !== panel.key));

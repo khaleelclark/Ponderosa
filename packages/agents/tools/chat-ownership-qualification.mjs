@@ -11,7 +11,8 @@ import { openManagedArtifactContent } from "../dist/managed-artifact-files.js";
 const markerName = ".chat-ownership-snapshot.json";
 const hash = value => createHash("sha256").update(value).digest("hex");
 const json = value => JSON.stringify(value, (_key, item) => typeof item === "bigint" ? item.toString() : item);
-const ignored = name => name === markerName || name === ".ponderosa-daemon.lock" || /(?:-wal|-shm)$/.test(name);
+const ignored = name => name === markerName || name === ".ponderosa-daemon.lock" ||
+  name === ".projection-clean-shutdown.json" || /(?:-wal|-shm)$/u.test(name);
 const database = name => /(?:\.db|\.sqlite)$/.test(name);
 const quote = name => `"${name.replaceAll('"', '""')}"`;
 function same(actual, expected, message) { if (json(actual)!==json(expected)) throw new Error(message); }

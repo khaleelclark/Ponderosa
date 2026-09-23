@@ -20,8 +20,8 @@ export abstract class AgentEventSessionFacade {
     return this.eventSession.readEvents(agentId);
   }
 
-  readEventsSince(agentId: string, sinceSeq: number): StoredLogEvent[] {
-    return this.eventSession.readEventsSince(agentId, sinceSeq);
+  readEventsSince(agentId: string, sinceSeq: number, limit?: number): StoredLogEvent[] {
+    return this.eventSession.readEventsSince(agentId, sinceSeq, limit);
   }
 
   lastSeqOf(agentId: string): number {

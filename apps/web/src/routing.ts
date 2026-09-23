@@ -262,6 +262,9 @@ export function parseRouteLocation(
     /^\/projects\/[^/]+\/?$/u.test(cleanPathname) ||
     /^\/projects\/[^/]+\/(?:agents|automations)\/?$/u.test(cleanPathname)
   ) return { route, replacement: "/home" };
+  if (route.kind === "home" && cleanPathname !== "/" && cleanPathname !== "/home") {
+    return { route, replacement: "/home" };
+  }
   return { route };
 }
 

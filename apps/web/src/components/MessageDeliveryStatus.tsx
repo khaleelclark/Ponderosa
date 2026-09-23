@@ -265,6 +265,7 @@ export function MessageDeliveryStatus({
             cursor: onOpenAgent ? "pointer" : "default",
             "&.Mui-disabled": { color: `${tone}.main`, opacity: 1 },
             "&:hover": onOpenAgent ? { bgcolor: (theme) => alpha(theme.palette[tone].main, theme.palette.mode === "dark" ? 0.14 : 0.1) } : undefined,
+            "@media (pointer: coarse)": { minHeight: 44 },
           }}
         >
           <StatusIcon sx={{ mr: 0.5, fontSize: 16, flex: "0 0 auto" }} />

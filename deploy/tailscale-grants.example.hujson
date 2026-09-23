@@ -1,0 +1,14 @@
+{
+  // Merge this least-privilege grant into the tailnet policy and replace the
+  // example identities/tags. Do not grant the Ponderosa Serve port tailnet-wide.
+  "grants": [
+    {
+      "src": ["operator@example.com"],
+      "dst": ["tag:ponderosa"],
+      "ip": ["tcp:443", "tcp:10443"]
+    }
+  ],
+  "tagOwners": {
+    "tag:ponderosa": ["operator@example.com"]
+  }
+}

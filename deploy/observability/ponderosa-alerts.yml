@@ -1,0 +1,73 @@
+groups:
+  - name: ponderosa-production
+    rules:
+      - alert: PonderosaUnavailable
+        expr: up{job="ponderosa"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: Ponderosa metrics endpoint is unavailable
+      - alert: PonderosaHttpErrorRate
+        expr: >-
+          sum(rate(ponderosa_http_requests_total{status_class=~"5xx"}[5m]))
+          / clamp_min(sum(rate(ponderosa_http_requests_total[5m])), 0.001) > 0.05
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: More than 5% of Ponderosa requests are failing
+      - alert: PonderosaHttpLatency
+        expr: >-
+          histogram_quantile(0.99,
+            sum by (le) (rate(ponderosa_http_request_duration_seconds_bucket[5m]))) > 2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: Ponderosa p99 request latency exceeds two seconds
+      - alert: PonderosaEventLoopStalled
+        expr: ponderosa_event_loop_delay_seconds{quantile="0.99"} > 0.25
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: Ponderosa event-loop p99 delay exceeds 250 ms
+      - alert: PonderosaDiskPressure
+        expr: ponderosa_storage_free_bytes < 5368709120
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: Fewer than 5 GiB remain on the Ponderosa data filesystem
+      - alert: PonderosaMemoryPressure
+        expr: ponderosa_process_memory_bytes{kind="rss"} > 2147483648
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: Ponderosa resident memory exceeds 2 GiB
+      - alert: PonderosaWalGrowth
+        expr: ponderosa_storage_bytes{kind="wal"} > 1073741824
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: Ponderosa SQLite WAL exceeds 1 GiB
+      - alert: PonderosaSseBackpressure
+        expr: increase(ponderosa_sse_backpressure_disconnects_total[10m]) > 10
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: Ponderosa is repeatedly disconnecting slow SSE readers
+      - alert: PonderosaBrowserCleanupFailed
+        expr: ponderosa_browser_cleanup_failed > 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: Browser authority cleanup has failed
+      - alert: PonderosaDeploymentBlocked
+        expr: ponderosa_deployment_blockers > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: Ponderosa has retained deployment blockers for 15 minutes
+      - alert: PonderosaStartupRecoverySlow
+        expr: ponderosa_startup_duration_seconds{phase="total"} > 30
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: Ponderosa startup recovery exceeded its 30-second SLO

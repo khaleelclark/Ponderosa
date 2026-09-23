@@ -5,7 +5,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { ConversationDto } from "@ponderosa/core";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { ApiRequestError } from "./api/types";
@@ -87,9 +87,32 @@ import { PrimaryHeaderActionsProvider } from "./components/PrimaryHeaderActions"
 import { useMutationNotification } from "./components/MutationNotifications";
 import { WorkspacePreferencesWriter } from "./workspacePreferencesWriter";
 import { retainedDataFailure } from "./retainedData";
+import { useReloadBlocker } from "./reloadSafety";
 
 const PUSH_CLEANUP_RETRY_INITIAL_MS = 1_000;
 const PUSH_CLEANUP_RETRY_MAX_MS = 30_000;
+
+function routeDocumentTitle(route: Route, projectLabel?: string): string {
+  switch (route.kind) {
+    case "home": return "Home";
+    case "create": return route.resource === "chat" ? "New Chat" : route.resource === "agent" ? "New Agent" : route.resource === "trigger" ? "New Automation" : "New Project";
+    case "allChat": return "Messages Across Ponderosa";
+    case "manageChats": return "Manage Chats";
+    case "manageAgents": return "Manage Agents";
+    case "manageAutomations": return "Manage Automations";
+    case "settings": return "Settings";
+    case "profile": return "Operator Profile";
+    case "usage": return "Provider Activity";
+    case "project": return projectLabel ?? "Chat";
+    case "workspaceFile": return "File";
+    case "projectWork": return "Agent Work";
+    case "browser": return "Browser";
+    case "conversation": return "Chat";
+    case "agent": return "Agent";
+    case "automation": return "Automation";
+    case "review": return "Review";
+  }
+}
 
 export default function App({
   colorMode,
@@ -99,6 +122,8 @@ export default function App({
   onToggleColorMode(): void;
 }): JSX.Element {
   useAppViewport();
+  const activeMutations = useIsMutating();
+  useReloadBlocker("canonical-mutation", activeMutations > 0);
   const queryClient = useQueryClient();
   const notify = useMutationNotification();
   const preferencesWriter = useRef<WorkspacePreferencesWriter>();
@@ -210,6 +235,26 @@ export default function App({
       ) || a.id.localeCompare(b.id)
     );
   });
+  const routedProjectLabel = projects.find(project => project.id === routedProjectId)?.label;
+  useEffect(() => {
+    // Conversation and Agent views own their resolved entity titles. Skipping
+    // them here prevents a later Project-list refresh from restoring a generic
+    // "Chat" or "Agent" title over the resolved title.
+    if (route.kind === "conversation" || route.kind === "agent") return;
+    document.title = `${routeDocumentTitle(route, routedProjectLabel)} · Ponderosa`;
+  }, [route, routedProjectLabel]);
+  useEffect(() => {
+    // New Chat suppresses composer autofocus on narrow/coarse devices to avoid
+    // opening the software keyboard. Give that route a real focus destination.
+    // Desktop creation views continue to focus their editable field themselves.
+    if (route.kind === "create" &&
+        (route.resource !== "chat" ||
+          !window.matchMedia("(pointer: coarse), (max-width: 899.95px)").matches)) return;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById("main-content")?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [route]);
   const presentedNotifications = useMemo(
     () => projectsQuery.isSuccess
       ? notificationsForAvailableProjects(
@@ -780,6 +825,7 @@ export default function App({
                     projects={projects}
                     projectsLoaded={projectsQuery.isSuccess}
                     engines={engines}
+                    enginesLoaded={enginesQuery.data !== undefined}
                     notifications={presentedNotifications}
                     notificationCounts={notificationsQuery.data}
                     preferences={preferences}

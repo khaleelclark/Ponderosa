@@ -43,6 +43,8 @@ export interface BrowserDriverLaunchOptions {
   playwright?: boolean;
   nativeManual?: boolean;
   initialUrl?: string;
+  /** Explicitly relaxes Chrome isolation for constrained test containers only. */
+  disableSandbox?: boolean;
 }
 
 export class BrowserDriverActionError extends Error {
@@ -512,8 +514,11 @@ export class ChromeCdpDriver implements BrowserDriver {
     }
     throwIfLaunchAborted(launch.signal);
     try {
+      const disableSandbox = launch.disableSandbox ||
+        process.env.PONDEROSA_BROWSER_DISABLE_SANDBOX === "1";
       child = spawn(executable, [
         ...(!display ? ["--headless=new"] : []), "--remote-debugging-pipe", `--user-data-dir=${profileDir}`,
+        ...(disableSandbox ? ["--no-sandbox"] : []),
         // Playwright's normal launch disables BFCache so history navigation
         // produces the lifecycle signals its navigation waits consume.
         ...(launch.playwright ? ["--disable-back-forward-cache", "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling"] : []),

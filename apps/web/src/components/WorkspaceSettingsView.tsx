@@ -61,6 +61,7 @@ import {
   draftChangedSinceSubmission,
   synchronizePristineDraft,
 } from "./settingsDrafts";
+import { useReloadBlocker } from "../reloadSafety";
 
 const GLOBAL_AGENT_INSTRUCTIONS_LABEL = "Global Agent Instructions";
 const GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT =
@@ -867,6 +868,10 @@ export function WorkspaceSettingsView({
   const [limitDirty, setLimitDirty] = useState(false);
   const [rolloverTokensDirty, setRolloverTokensDirty] = useState(false);
   const [rolloverFractionDirty, setRolloverFractionDirty] = useState(false);
+  useReloadBlocker(
+    "workspace-settings",
+    instructionsDirty || limitDirty || rolloverTokensDirty || rolloverFractionDirty,
+  );
   const instructionsRef = useRef(instructions);
   const limitRef = useRef(limit);
   instructionsRef.current = instructions;

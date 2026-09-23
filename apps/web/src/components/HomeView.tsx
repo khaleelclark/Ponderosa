@@ -81,7 +81,7 @@ function SummaryCard({
 }): JSX.Element {
   const content = (
     <Stack spacing={0} sx={{ p: { xs: 1, sm: 1.5 }, minWidth: 0, textAlign: "left" }}>
-      <Typography variant="h5" fontWeight={800} noWrap sx={{ fontSize: { xs: 19, sm: undefined } }}>
+      <Typography variant="h5" component="div" fontWeight={800} noWrap sx={{ fontSize: { xs: 19, sm: undefined } }}>
         {compactValue === undefined ? value : (
           <><Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>{compactValue}</Box><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{value}</Box></>
         )}
@@ -186,7 +186,8 @@ function ItemCard({
             <SemanticStatus
               status={status}
               label={statusLabel}
-              detail={statusDetail ?? statusAccessibleLabel}
+              accessibleLabel={statusAccessibleLabel}
+              detail={statusDetail}
             />
           </Box>
         ) : null}
@@ -213,6 +214,7 @@ export function HomeView({
   projects,
   projectsLoaded,
   engines,
+  enginesLoaded,
   notifications,
   notificationCounts,
   onNavigate,
@@ -222,6 +224,7 @@ export function HomeView({
   projects: ProjectDto[];
   projectsLoaded: boolean;
   engines: EngineDto[];
+  enginesLoaded: boolean;
   notifications: WorkspaceNotificationDto[];
   notificationCounts?: Pick<WorkspaceNotificationPageDto, "openActionCount">;
   onNavigate(route: Route): void;
@@ -259,9 +262,19 @@ export function HomeView({
     ? triggerQuery.data?.pages.at(-1)?.enabledCount ?? 0
     : triggerQuery.requestState.isInitialError ? "Unavailable" : "Loading";
   const attentionCount = notificationOpenActionCount(notifications, notificationCounts);
+  const homeLoading = !projectsLoaded || !enginesLoaded ||
+    activeAgentQuery.requestState.isInitialLoading ||
+    triggerQuery.requestState.isInitialLoading || outcomeQuery.requestState.isInitialLoading;
 
   return (
-    <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto" }}>
+    <Box className="ponderosa-scroll" aria-busy={homeLoading} sx={{ minHeight: 0, overflowY: "auto" }}>
+      <Box
+        component="span"
+        role="status"
+        sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0, 0, 0, 0)", whiteSpace: "nowrap", border: 0 }}
+      >
+        {homeLoading ? "Loading Home summary" : "Home summary loaded"}
+      </Box>
       <CompactWorkspaceHeader
         icon={<HomeOutlinedIcon />}
         title="Home"
@@ -286,7 +299,7 @@ export function HomeView({
           {projectsLoaded && projects.length === 0 ? (
             <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
               <FolderOutlinedIcon color="action" sx={{ fontSize: 42, mb: 1 }} />
-              <Typography variant="h6" fontWeight={800}>Start Your First Chat</Typography>
+              <Typography variant="h6" component="h2" fontWeight={800}>Start Your First Chat</Typography>
               <Typography color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
                 Chats bring your messages, agents, files, and automations together.
               </Typography>

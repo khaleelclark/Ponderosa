@@ -1,6 +1,12 @@
 packages:
   - "apps/*"
   - "packages/*"
+overrides:
+  find-my-way: 9.9.0
+  fast-uri: 3.1.6
+  brace-expansion@2: 2.1.4
+  brace-expansion@5: 5.0.9
+  browserslist: 4.28.7
 allowBuilds:
   '@ponderosa/native-host@file:packages/native-host': true
   better-sqlite3: true

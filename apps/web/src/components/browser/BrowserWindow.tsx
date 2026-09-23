@@ -3,6 +3,11 @@ import OpenInFullIcon from "@mui/icons-material/OpenInFull";
 import PictureInPictureAltIcon from "@mui/icons-material/PictureInPictureAlt";
 import VerticalSplitIcon from "@mui/icons-material/VerticalSplit";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  browserDockIsAvailable,
+  clampBrowserDockWidth,
+  PREFERRED_BROWSER_DOCK_WIDTH,
+} from "./browserWindowSizing";
 
 type Mode = "docked" | "floating" | "expanded";
 type Bounds = { x: number; y: number; width: number; height: number };
@@ -28,10 +33,18 @@ export function BrowserWindow({ children, onDockWidth, onClose, docked, onDock, 
   onClose(): void;
 } & BrowserWindowOptions): JSX.Element {
   const mobile = useMediaQuery("(max-width: 899px)");
-  const [requestedMode, setMode] = useState<Mode>("docked");
+  // A dock plus the expanded workspace rail leaves the primary Chat unusably
+  // narrow on common laptop widths. Keep side-by-side as an explicit choice
+  // until the viewport can preserve both surfaces.
+  const [requestedMode, setMode] = useState<Mode>(() =>
+    window.innerWidth >= 1440 ? "docked" : "floating"
+  );
   const mode = requestedMode === "expanded" ? "expanded" : docked === undefined ? requestedMode : docked ? "docked" : "floating";
   const [bounds, setBounds] = useState<Bounds>(() => fit({ x: docked === undefined ? window.innerWidth - 740 : 24 + offset * 28, y: 80 + offset * 28, width: 720, height: 520 }));
-  const [dockWidth, setDockWidth] = useState(() => Math.min(900, window.innerWidth * .5));
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  const [dockWidth, setDockWidth] = useState(() =>
+    clampBrowserDockWidth(PREFERRED_BROWSER_DOCK_WIDTH, window.innerWidth)
+  );
   const gesture = useRef<{ kind: "move" | "resize" | "dock"; x: number; y: number; bounds: Bounds; dock: number }>();
   const surface = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -41,10 +54,15 @@ export function BrowserWindow({ children, onDockWidth, onClose, docked, onDock, 
     return () => { if (element?.contains(document.activeElement)) previous?.focus({ preventScroll: true }); };
   }, []);
   useEffect(() => {
-    const resize = () => { setBounds(value => fit(value)); setDockWidth(value => Math.min(value, window.innerWidth * .7)); };
+    const resize = () => {
+      setViewportWidth(window.innerWidth);
+      setBounds(value => fit(value));
+      setDockWidth(value => clampBrowserDockWidth(value, window.innerWidth));
+    };
     window.addEventListener("resize", resize);
     return () => window.removeEventListener("resize", resize);
   }, []);
+  const dockAvailable = browserDockIsAvailable(viewportWidth);
   const reportDockWidth = useRef(onDockWidth); reportDockWidth.current = onDockWidth;
   useEffect(() => { reportDockWidth.current?.(!mobile && mode === "docked" ? dockWidth : 0); return () => reportDockWidth.current?.(0); }, [mobile, mode, dockWidth]);
   const start = (event: React.PointerEvent<HTMLElement>, kind: "move" | "resize" | "dock") => {
@@ -55,7 +73,7 @@ export function BrowserWindow({ children, onDockWidth, onClose, docked, onDock, 
   };
   const controls = !mobile ? <>
     {([ ["docked", "Dock browser", <VerticalSplitIcon />], ["floating", "Float browser", <PictureInPictureAltIcon />], ["expanded", "Expand browser", <OpenInFullIcon />] ] as const).map(([value, label, icon]) =>
-      <Tooltip key={value} title={label}><IconButton size="small" aria-label={label} aria-pressed={mode === value} color={mode === value ? "primary" : "default"} onClick={() => { setMode(value); if (value === "docked") onDock?.(); else onUndock?.(); }}>{icon}</IconButton></Tooltip>)}
+      <Tooltip key={value} title={value === "docked" && !dockAvailable ? "Docking needs a wider window" : label}><span><IconButton size="small" aria-label={label} aria-pressed={mode === value} disabled={value === "docked" && !dockAvailable} color={mode === value ? "primary" : "default"} onClick={() => { setMode(value); if (value === "docked") onDock?.(); else onUndock?.(); }}>{icon}</IconButton></span></Tooltip>)}
   </> : null;
   const full = mobile || mode === "expanded";
   return <Portal><Paper ref={surface} tabIndex={-1} role="dialog" aria-modal="false" aria-label={label} elevation={mode === "floating" ? 18 : 4}
@@ -69,7 +87,7 @@ export function BrowserWindow({ children, onDockWidth, onClose, docked, onDock, 
       const current = gesture.current;
       if (!current) return;
       const dx = event.clientX - current.x, dy = event.clientY - current.y;
-      if (current.kind === "dock") setDockWidth(Math.min(window.innerWidth * .7, Math.max(360, current.dock - dx)));
+      if (current.kind === "dock") setDockWidth(clampBrowserDockWidth(current.dock - dx, window.innerWidth));
       else setBounds(fit(current.kind === "move" ? { ...current.bounds, x: current.bounds.x + dx, y: current.bounds.y + dy } : { ...current.bounds, width: current.bounds.width + dx, height: current.bounds.height + dy }));
     }}
     onPointerUp={() => { gesture.current = undefined; }} onPointerCancel={() => { gesture.current = undefined; }}
@@ -78,7 +96,7 @@ export function BrowserWindow({ children, onDockWidth, onClose, docked, onDock, 
     {children(controls)}
     {!mobile && mode === "docked" ? <Box role="separator" aria-label="Resize browser panel" aria-orientation="vertical" tabIndex={0}
       onPointerDown={event => start(event, "dock")}
-      onKeyDown={event => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); setDockWidth(value => Math.min(window.innerWidth * .7, Math.max(360, value + (event.key === "ArrowLeft" ? 32 : -32)))); } }}
+      onKeyDown={event => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); setDockWidth(value => clampBrowserDockWidth(value + (event.key === "ArrowLeft" ? 32 : -32), window.innerWidth)); } }}
       sx={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 6, cursor: "col-resize", touchAction: "none", "&:hover, &:focus-visible": { bgcolor: "primary.main" } }} /> : null}
     {!mobile && mode === "floating" ? <Box role="button" aria-label="Resize floating browser" tabIndex={0}
       onPointerDown={event => start(event, "resize")}

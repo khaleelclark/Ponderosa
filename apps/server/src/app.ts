@@ -82,6 +82,7 @@ import {
 } from "./server-request-hooks.js";
 import { TriggerSourceService } from "./trigger-service.js";
 import { createWebPushConfiguration } from "./web-push-configuration.js";
+import { ServerMetrics } from "./server-metrics.js";
 export {
   collectReachableArtifactIds,
   rewritePortableArtifactReferences
@@ -368,7 +369,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     runtimeAuthority(agentId)?.oneShots.get(runId);
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
   const engineAuthStatuses = new EngineAuthStatusCache();
-  const engineAvailability = new EngineAvailabilityStore(opts.dataDir);
+  const engineAvailability = new EngineAvailabilityStore(
+    opts.dataDir,
+    opts.buildRevision?.trim() || "development",
+  );
   const providerUsage = new ProviderUsageCache(opts.dataDir, undefined, undefined, (handle, providerId) => {
     providerProcessAuthority.register(handle, { purpose: `${providerId} provider usage` });
   }, (event) => {
@@ -681,6 +685,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   const app = Fastify({
     bodyLimit: ASSET_LIMITS.maxRequestBytes,
+    requestTimeout: 30_000,
+    connectionTimeout: 10_000,
+    keepAliveTimeout: 72_000,
+    maxRequestsPerSocket: 1_000,
     // Startup recovery intentionally completes before the listener accepts work.
     // Large durable datasets can require several minutes to reconcile, so
     // keep the boundary bounded without forcing a restart loop.
@@ -692,6 +700,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       },
     },
   }) as unknown as PonderosaServer;
+  const serverMetrics = new ServerMetrics(opts.dataDir, store.startupProfile());
+  serverMetrics.install(app);
   app.addHook("onReady", restoreSharedBrowsers);
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ProjectDeletionInProgressError) {
@@ -1081,6 +1091,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     drainDeploymentIdleAuthorities,
     refreshTriggerSources: () => triggerSources.refresh(),
     runtimeStatus,
+    serverMetrics,
   });
 
   registerApplicationRoutes(app, {
@@ -1238,6 +1249,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     notifyScheduler: () => coordinationV3Scheduler.notify(),
     setMaxConcurrentRuns: (value) => coordinationV3Scheduler.setMaxConcurrentRuns(value),
     workingCopies,
+    serverMetrics,
   });
 
   return app;

@@ -19,6 +19,10 @@ export interface PonderosaConfig {
   authToken?: string;
   /** Validated listener boundary reported by readiness and operator UI. */
   networkSecurity: NetworkSecurityPostureDto;
+  /** Exact browser-facing origins admitted through an operator-controlled proxy. */
+  operatorOrigins: string[];
+  /** Exact identities admitted by the trusted reverse proxy. */
+  operatorIdentities: string[];
   /** NODE_ENV passthrough. */
   nodeEnv: string;
 }
@@ -65,26 +69,99 @@ export function isTailscaleAddress(host: string): boolean {
   return prefix.length === 3 && prefix[0] === "fd7a" && prefix[1] === "115c" && prefix[2] === "a1e0";
 }
 
-function trustedTailnetEnabled(value: string | undefined): boolean {
+function strictBoolean(name: string, value: string | undefined): boolean {
   if (value === undefined || value.trim() === "") return false;
   if (value.trim().toLowerCase() === "true") return true;
-  throw new Error("PONDEROSA_TRUSTED_TAILNET must be exactly true when enabled");
+  throw new Error(`${name} must be exactly true when enabled`);
+}
+
+function configuredOperatorOrigins(
+  value: string | undefined,
+  env: NodeJS.ProcessEnv,
+): string[] {
+  if (!value?.trim()) return [];
+  const unsafeDevelopmentHttp = strictBoolean(
+    "PONDEROSA_ALLOW_UNSAFE_HTTP_ORIGINS",
+    env.PONDEROSA_ALLOW_UNSAFE_HTTP_ORIGINS,
+  );
+  return [...new Set(value.split(",").map((item) => {
+    const origin = new URL(item.trim());
+    if (!/^https?:$/u.test(origin.protocol) || origin.username || origin.password ||
+        origin.pathname !== "/" || origin.search || origin.hash) {
+      throw new Error("PONDEROSA_OPERATOR_ORIGINS must contain comma-separated HTTP(S) origins");
+    }
+    if (origin.protocol === "http:" &&
+        (env.NODE_ENV === "production" || !unsafeDevelopmentHttp || !isLoopbackHost(origin.hostname))) {
+      throw new Error("HTTP operator origins require an explicit unsafe-development opt-in and a literal loopback host");
+    }
+    return origin.origin;
+  }))];
+}
+
+function configuredOperatorIdentities(value: string | undefined): string[] {
+  if (!value?.trim()) return [];
+  const identities = [...new Set(value.split(",")
+    .map((item) => item.trim().toLocaleLowerCase())
+    .filter(Boolean))];
+  if (identities.some((identity) => identity.length > 320 || /[\r\n\0]/u.test(identity))) {
+    throw new Error("PONDEROSA_OPERATOR_IDENTITIES contains an invalid identity");
+  }
+  return identities;
 }
 
 export function resolveNetworkSecurity(env: NodeJS.ProcessEnv = process.env): {
   host: string;
   authToken?: string;
+  operatorOrigins: string[];
+  operatorIdentities: string[];
   posture: NetworkSecurityPostureDto;
 } {
   const host = env.PONDEROSA_HOST?.trim() || "127.0.0.1";
   const authToken = env.PONDEROSA_AUTH_TOKEN?.trim() || undefined;
-  const trustedTailnet = trustedTailnetEnabled(env.PONDEROSA_TRUSTED_TAILNET);
+  const trustedTailnet = strictBoolean("PONDEROSA_TRUSTED_TAILNET", env.PONDEROSA_TRUSTED_TAILNET);
+  const operatorOrigins = configuredOperatorOrigins(env.PONDEROSA_OPERATOR_ORIGINS, env);
+  const operatorIdentities = configuredOperatorIdentities(env.PONDEROSA_OPERATOR_IDENTITIES);
+  const trustedReverseProxy = strictBoolean(
+    "PONDEROSA_TRUSTED_REVERSE_PROXY",
+    env.PONDEROSA_TRUSTED_REVERSE_PROXY,
+  );
+  if (trustedReverseProxy && operatorOrigins.length === 0) {
+    throw new Error("PONDEROSA_TRUSTED_REVERSE_PROXY requires PONDEROSA_OPERATOR_ORIGINS");
+  }
+  if (trustedReverseProxy && operatorIdentities.length === 0) {
+    throw new Error("PONDEROSA_TRUSTED_REVERSE_PROXY requires PONDEROSA_OPERATOR_IDENTITIES");
+  }
+  if (trustedReverseProxy && (!authToken || authToken.length < 32)) {
+    throw new Error("PONDEROSA_TRUSTED_REVERSE_PROXY requires a high-entropy PONDEROSA_AUTH_TOKEN of at least 32 characters");
+  }
+  if (operatorIdentities.length > 0 && !trustedReverseProxy) {
+    throw new Error("PONDEROSA_OPERATOR_IDENTITIES requires PONDEROSA_TRUSTED_REVERSE_PROXY=true");
+  }
+  if (operatorOrigins.length > 0 && !authToken && !trustedReverseProxy) {
+    throw new Error("PONDEROSA_OPERATOR_ORIGINS requires PONDEROSA_AUTH_TOKEN or PONDEROSA_TRUSTED_REVERSE_PROXY=true");
+  }
   if (trustedTailnet && !isTailscaleAddress(host)) {
     throw new Error("PONDEROSA_TRUSTED_TAILNET requires PONDEROSA_HOST to be a literal Tailscale IPv4 (100.64.0.0/10) or IPv6 (fd7a:115c:a1e0::/48) address");
   }
   if (isLoopbackHost(host)) {
+    if (operatorOrigins.length > 0) {
+      return {
+        host,
+        operatorOrigins,
+        operatorIdentities,
+        ...(authToken ? { authToken } : {}),
+        posture: {
+          mode: "reverse_proxy",
+          bindHost: host,
+          authenticationRequired: true,
+          detail: `Operator access is published through ${operatorOrigins.length} configured origin(s) and requires both an allowed proxy identity and backend bearer-backed browser session.`,
+        },
+      };
+    }
     return {
       host,
+      operatorOrigins: [],
+      operatorIdentities: [],
       ...(authToken ? { authToken } : {}),
       posture: {
         mode: authToken ? "authenticated" : "loopback",
@@ -100,6 +177,8 @@ export function resolveNetworkSecurity(env: NodeJS.ProcessEnv = process.env): {
     return {
       host,
       authToken,
+      operatorOrigins,
+      operatorIdentities,
       posture: {
         mode: "authenticated",
         bindHost: host,
@@ -111,6 +190,8 @@ export function resolveNetworkSecurity(env: NodeJS.ProcessEnv = process.env): {
   if (trustedTailnet && isTailscaleAddress(host)) {
     return {
       host,
+      operatorOrigins,
+      operatorIdentities,
       posture: {
         mode: "trusted_tailnet",
         bindHost: host,
@@ -140,6 +221,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PonderosaConfi
     port,
     host: network.host,
     ...(network.authToken ? { authToken: network.authToken } : {}),
+    operatorOrigins: network.operatorOrigins,
+    operatorIdentities: network.operatorIdentities,
     networkSecurity: network.posture,
     nodeEnv: env.NODE_ENV ?? "development",
   };
