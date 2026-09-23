@@ -732,8 +732,12 @@ export function registerAgentRuntimeToolRoutes(
           if (borrowingProjectBrowser) {
             const session = sessionManager.get(scope.agentId);
             if (!session) throw new BrowserSessionError("project browser session is unavailable", 404);
-            projectBrowserGrants.delete(ownerProjectId);
-            return { session: await sessionManager.setControl(scope, "operator", session.controlEpoch) };
+            const released = await sessionManager.setControl(scope, "operator", session.controlEpoch).catch((error: unknown) => {
+              if (error instanceof BrowserSessionError) throw error;
+              throw new BrowserSessionError("Browser handoff did not finish. Its tabs and Agent grant were preserved; retry or ask the operator to take control.", 409, "browser_handoff_incomplete");
+            });
+            if (projectBrowserGrants.get(ownerProjectId) === projectGrant) projectBrowserGrants.delete(ownerProjectId);
+            return { session: released };
           }
           return { session: await sessionManager.close(scope, "agent_closed") };
         }
@@ -741,7 +745,7 @@ export function registerAgentRuntimeToolRoutes(
           return reply.code(400).send({ error: "unknown browser operation" });
       }
     } catch (error) {
-      if (error instanceof BrowserSessionError) return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof BrowserSessionError) return reply.code(error.statusCode).send({ error: error.message, ...(error.code ? { code: error.code } : {}) });
       if (error instanceof BrowserDriverActionError) {
         const mapped = browserDriverSessionError(error);
         return reply.code(mapped.statusCode).send({ error: mapped.message });

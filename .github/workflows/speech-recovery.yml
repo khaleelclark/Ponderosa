@@ -2,18 +2,6 @@ name: Release recovery checks
 
 on:
   pull_request:
-    paths:
-      - ".github/workflows/speech-recovery.yml"
-      - ".github/workflows/native-beta.yml"
-      - ".github/scripts/prepare-linux-speech-tests.sh"
-      - "apps/server/src/speech*.ts"
-      - "apps/server/test/speech*.mjs"
-      - "apps/server/test/fixtures/speech*"
-      - "packages/native-host/**"
-      - "packages/core/src/dto/speech.ts"
-      - "packaging/qualification/**"
-      - "apps/server/test/gui-qualification-pid.test.mjs"
-      - "pnpm-lock.yaml"
 
 permissions:
   contents: read

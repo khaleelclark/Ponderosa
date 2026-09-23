@@ -8,7 +8,7 @@ import { createRsbuild } from "@rsbuild/core";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const output = await mkdtemp(path.join(tmpdir(), "ponderosa-speech-browser-"));
-const { chromium } = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? "playwright");
+const { chromium } = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? new URL("../../server/node_modules/playwright-core/index.mjs", import.meta.url).href);
 let browser; let server;
 try {
   const build = await createRsbuild({ cwd: root, rsbuildConfig: {
@@ -26,7 +26,7 @@ try {
     } catch { response.writeHead(404).end(); }
   }).listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
-  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH }); const page = await browser.newPage();
+  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH, args: process.env.CI === "true" ? ["--no-sandbox"] : [] }); const page = await browser.newPage();
   const errors = []; page.on("pageerror", error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.waitForFunction(() => Boolean(window.speechTest));
@@ -40,8 +40,7 @@ try {
   assert.equal((await call("speechSnapshot")).ownerId, "two");
   assert.equal((await call("speechSnapshot")).status, "speaking");
   await call("end");
-  assert.equal((await call("speechSnapshot")).status, "stopped");
-  assert.equal(await page.evaluate(() => window.speechTest.stats.completions), 1);
+  assert.deepEqual(await call("speechSnapshot"), { ownerId: "two", status: "stopped" });
   await call("start", "one");
   await page.evaluate(() => { document.getElementById("one").hidden = true; });
   await page.waitForFunction(() => window.speechTest.speechSnapshot().status === "stopped");

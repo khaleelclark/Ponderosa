@@ -169,6 +169,10 @@ type BrowserAuditEvent = Extract<AgentEvent, {
 
 interface ManagedSession {
   safeForRestart?: boolean;
+  /** A failed Agent-to-operator handoff keeps the browser alive and fenced
+   * until chooser/native-control cleanup can be retried. */
+  controlRevocationPending?: boolean;
+  controlRevocationError?: string;
   detaching?: Promise<void>;
   nextRun?: { agentId: string; epoch: number; runId?: string; conversationId?: string; claim?: Promise<boolean> };
   localRevision?: number;
@@ -349,10 +353,11 @@ export class BrowserSessionManager {
       active: sessions.filter((session) => Boolean(session.driver) && !(allowRetained && session.driver?.suspend && session.safeForRestart)).length,
       pendingCleanup: sessions.filter((session) => Boolean(
         session.closingDriver || session.cleanup || session.lateCleanups.size || session.cleanupError ||
+        session.controlRevocationPending ||
         ((session.dto.status === "closed" || session.dto.status === "failed") &&
           (session.spawnHandles.size || (session.launchLease && session.launchFactoryPending))),
       )).length,
-      retainedFailures: sessions.filter((session) => Boolean(session.cleanupError)).length,
+      retainedFailures: sessions.filter((session) => Boolean(session.cleanupError || session.controlRevocationError)).length,
     };
   }
 
@@ -371,6 +376,8 @@ export class BrowserSessionManager {
         session.driver && !(allowRetained && session.driver.suspend && session.safeForRestart) ? "live browser authority" : undefined,
         session.closingDriver || session.cleanup || session.lateCleanups.size ? "cleanup pending" : undefined,
         session.cleanupError ? `cleanup failed: ${session.cleanupError}` : undefined,
+        session.controlRevocationPending ? "operator handoff cleanup pending" : undefined,
+        session.controlRevocationError ? session.controlRevocationError : undefined,
         (session.dto.status === "closed" || session.dto.status === "failed") &&
           (session.spawnHandles.size || (session.launchLease && session.launchFactoryPending))
           ? "published launch authority pending cleanup"
@@ -1056,10 +1063,14 @@ export class BrowserSessionManager {
 
   async setControl(scope: BrowserScope, owner: BrowserControlOwner, expectedEpoch?: number): Promise<BrowserSessionDto> {
     const session = this.ready(scope);
-    if (owner === "agent" && session.driver.manualState?.() && session.driver.manualState() !== "automation") throw new BrowserSessionError("Resume automation explicitly before giving an agent control.", 409);
     if (expectedEpoch !== undefined && expectedEpoch !== session.dto.controlEpoch) {
       throw new BrowserSessionError("browser control changed in another tab; refresh before interacting", 409);
     }
+    if (session.controlRevocationPending) {
+      if (owner === "agent") throw new BrowserSessionError("Finish the pending operator handoff before granting Agent control.", 409);
+      return this.revokeAgentControl(scope);
+    }
+    if (owner === "agent" && session.driver.manualState?.() && session.driver.manualState() !== "automation") throw new BrowserSessionError("Resume automation explicitly before giving an agent control.", 409);
     return this.pageAction(scope, session, undefined, undefined, async () => {
       if (expectedEpoch !== undefined && expectedEpoch !== session.dto.controlEpoch) {
         throw new BrowserSessionError("browser control changed in another tab; refresh before interacting", 409);
@@ -1090,23 +1101,35 @@ export class BrowserSessionManager {
    * command cannot continue into the operator's private session. */
   async revokeAgentControl(scope: BrowserScope): Promise<BrowserSessionDto> {
     const session = this.ready(scope);
-    if (session.dto.controlOwner !== "agent") return publicDto(session);
-    session.dto = {
-      ...session.dto,
-      controlOwner: "operator",
-      controlEpoch: session.dto.controlEpoch + 1,
-      nextRunAgentId: undefined,
-      pendingFileChooser: undefined,
-      updatedAt: new Date().toISOString(),
-    };
-    session.nextRun = undefined;
-    session.lastFrame = undefined;
-    session.agentActivity = undefined;
-    this.lifecycle(session, "control_revoked");
-    if (session.driver?.pauseAutomation) await session.driver.pauseAutomation();
-    await session.driver?.cancelPendingFileChooser("control_changed");
-    this.syncLocalState(session);
-    return publicDto(session);
+    if (session.dto.controlOwner === "agent") {
+      session.dto = {
+        ...session.dto,
+        controlOwner: "operator",
+        controlEpoch: session.dto.controlEpoch + 1,
+        nextRunAgentId: undefined,
+        pendingFileChooser: undefined,
+        updatedAt: new Date().toISOString(),
+      };
+      session.nextRun = undefined;
+      session.lastFrame = undefined;
+      session.agentActivity = undefined;
+      session.controlRevocationPending = true;
+      this.lifecycle(session, "control_revoked");
+    }
+    if (!session.controlRevocationPending) return publicDto(session);
+    try {
+      if (session.driver.pauseAutomation && session.driver.manualState?.() !== "manual") {
+        await session.driver.pauseAutomation();
+      }
+      await session.driver.cancelPendingFileChooser("control_changed");
+      this.syncLocalState(session);
+      session.controlRevocationPending = false;
+      session.controlRevocationError = undefined;
+      return publicDto(session);
+    } catch (error) {
+      session.controlRevocationError = "operator handoff cleanup failed";
+      throw error;
+    }
   }
 
   private assertControl(session: ManagedSession, owner: BrowserControlOwner, expectedEpoch?: number): void {
@@ -1772,6 +1795,8 @@ export class BrowserSessionManager {
       }
       rmSync(path.join(this.dataDir, "retained-browser-sessions", `${session.dto.id}.json`), { force: true });
       await fs.rm(path.join(this.dataDir, "retained-browser-uploads", session.dto.id), { recursive: true, force: true });
+      session.controlRevocationPending = false;
+      session.controlRevocationError = undefined;
       return publicDto(session);
     } finally {
       if (session.dto.status === "closed" && session.opening === opening) session.opening = undefined;
@@ -1795,6 +1820,7 @@ export class BrowserSessionManager {
     const retaining = reason === "server_shutdown" || reason === "deployment_drain";
     const results = await Promise.allSettled([...this.sessions.values()].map(async session => {
       if (session.detaching) return session.detaching;
+      if (retaining && session.dto.status === "ready" && session.controlRevocationPending) await this.revokeAgentControl(session.dto);
       if (this.retainShared && retaining && session.driver?.suspend && session.dto.status === "ready" && !session.cleanupError) {
         const driver = session.driver;
         const operation = (async () => {

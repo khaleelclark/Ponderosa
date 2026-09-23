@@ -43,6 +43,11 @@ jobs:
           PONDEROSA_BROWSER_DISABLE_SANDBOX: "1"
         run: pnpm verify
 
+      - name: Check read-aloud in Chromium
+        run: |
+          pnpm --filter @ponderosa/server exec playwright-core install --with-deps chromium
+          pnpm test:speech-browser
+
       - name: Qualify production-scale startup recovery
         run: pnpm --filter @ponderosa/agents qualify:startup
 

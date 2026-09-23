@@ -213,22 +213,37 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     projectBrowserSessions.expireNextRun(projectBrowserScope(projectId), agentId, exactRunId);
     const grant = projectBrowserGrants.get(projectId);
     if (!grant || grant.agentId !== agentId || (exactRunId !== undefined && grant.runId !== exactRunId)) return;
-    projectBrowserGrants.delete(projectId);
     const projectScope = projectBrowserScope(projectId);
     const session = projectBrowserSessions.get(projectScope.agentId);
     if (session?.status === "opening") {
       // An opening has no safe control handoff point. Close it and await its
       // retained process/lease cleanup before releasing the owner authority.
       await projectBrowserSessions.close(projectScope, reason);
-    } else if (session?.status === "ready" && session.controlOwner === "agent") {
-      try {
-        await projectBrowserSessions.setControl(projectScope, "operator", session.controlEpoch);
-      } catch {
-        // A browser whose former controller cannot be returned safely is
-        // closed rather than left stranded under a removed grant.
-        await projectBrowserSessions.close(projectScope, reason);
+    } else if (session?.status === "ready") {
+      if (session.controlOwner === "agent") {
+        try {
+          await projectBrowserSessions.setControl(projectScope, "operator", session.controlEpoch);
+        } catch (error) {
+          // An operator may have completed the handoff while our queued call
+          // held the old epoch. Never close their draft-bearing browser.
+          if (projectBrowserGrants.get(projectId) !== grant) return;
+          const current = projectBrowserSessions.get(projectScope.agentId);
+          if (current?.id !== session.id || current.status !== "ready") throw error;
+          if (current.controlOwner === "agent") {
+            // Fence Agent input before retryable chooser/native cleanup. A
+            // failure retains both the browser and its exact grant.
+            await projectBrowserSessions.revokeAgentControl(projectScope);
+          }
+        }
       }
+      if (projectBrowserGrants.get(projectId) !== grant) return;
+      const current = projectBrowserSessions.get(projectScope.agentId);
+      if (current?.id !== session.id || current.status !== "ready") {
+        throw new BrowserSessionError("Project browser changed during Run handoff; operator recovery is required.", 409);
+      }
+      await projectBrowserSessions.setControl(projectScope, "operator", current.controlEpoch);
     }
+    if (projectBrowserGrants.get(projectId) === grant) projectBrowserGrants.delete(projectId);
   }
 
   function closeRunBrowser(
