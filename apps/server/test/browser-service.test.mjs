@@ -261,6 +261,61 @@ test('confirmed deployment drain does not repeat broker chooser cleanup during s
   } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('a file chooser arriving after drain revokes browser restart readiness', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-drain-event-'));
+  const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
+  const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true };
+  let onPageEvent;
+  const manager = new BrowserSessionManager(root, async (_id, _console, _spawned, event) => {
+    onPageEvent = event;
+    return { isAlive: () => true, manualState: () => 'automation', pages: async () => ({ activePageId: 'draft', pages: [page] }),
+      capture: async () => Buffer.from('frame'),
+      cancelPendingFileChooser: async () => onPageEvent({ type: 'file_chooser_clear', reason: 'deployment_drain', pageId: 'draft', pages: { activePageId: 'draft', pages: [page] } }),
+      suspend: async () => {}, close: async () => {} };
+  }, () => {}, undefined, undefined, () => true, true);
+  try {
+    await manager.open(scope, undefined, 'operator', undefined, true);
+    await manager.closeAll('deployment_drain');
+    assert.equal(manager.authorityStatus(true).active, 0);
+    await manager.captureFrame(scope);
+    assert.equal(manager.authorityStatus(true).active, 0, 'read-only viewing must not undo a successful drain');
+    onPageEvent({ type: 'file_chooser_open', pageId: 'draft', pages: { activePageId: 'draft', pages: [page] } });
+    assert.equal(manager.authorityStatus(true).active, 1, 'an observed chooser must immediately block restart');
+    assert.match(manager.authorityBlockers('project_browser', true)[0].reason, /live browser authority/);
+    await manager.closeAll('deployment_drain');
+    assert.equal(manager.authorityStatus(true).active, 0, 'a fresh drain may restore readiness');
+  } finally { await manager.closeAll('server_shutdown'); await rm(root, { recursive: true, force: true }); }
+});
+
+test('operator input admitted during drain cannot be hidden by its later acknowledgment', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-drain-race-'));
+  const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
+  const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true };
+  let releaseCancel, beganCancel, typed = '';
+  const cancelStarted = new Promise(resolve => { beganCancel = resolve; });
+  const cancelGate = new Promise(resolve => { releaseCancel = resolve; });
+  let cancellations = 0;
+  const manager = new BrowserSessionManager(root, async () => ({
+    isAlive: () => true, manualState: () => 'automation',
+    pages: async () => ({ activePageId: 'draft', pages: [page] }),
+    type: async text => { typed += text; return page; },
+    cancelPendingFileChooser: async () => { if (++cancellations === 1) { beganCancel(); await cancelGate; } },
+    suspend: async () => {}, close: async () => {},
+  }), () => {}, undefined, undefined, () => true, true);
+  try {
+    await manager.open(scope, undefined, 'operator', undefined, true);
+    const drain = manager.closeAll('deployment_drain');
+    await cancelStarted;
+    const input = manager.operatorInput(scope, { kind: 'type', text: 'draft edit', expectedControlEpoch: manager.get(scope.agentId).controlEpoch });
+    releaseCancel();
+    await Promise.all([drain, input]);
+    assert.equal(typed, 'draft edit');
+    assert.equal(manager.authorityStatus(true).active, 1, 'intervening input must remain a restart blocker');
+    await manager.closeAll('deployment_drain');
+    assert.equal(manager.authorityStatus(true).active, 0);
+  } finally { releaseCancel?.(); await manager.closeAll('server_shutdown'); await rm(root, { recursive: true, force: true }); }
+});
+
 test('drained shutdown uses the status protocol supported by a previous-release broker', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'browser-legacy-broker-'));
   const socket = path.join(root, 'service.sock');

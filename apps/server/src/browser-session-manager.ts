@@ -169,6 +169,8 @@ type BrowserAuditEvent = Extract<AgentEvent, {
 
 interface ManagedSession {
   safeForRestart?: boolean;
+  /** Changes when browser work is admitted or observed during a drain. */
+  activityGeneration?: number;
   /** A failed Agent-to-operator handoff keeps the browser alive and fenced
    * until chooser/native-control cleanup can be retried. */
   controlRevocationPending?: boolean;
@@ -318,7 +320,6 @@ export class BrowserSessionManager {
 
   async promote(scope: BrowserScope, destination: BrowserScope, sessionId: string, expectedControlEpoch: number, persist: (profileId: string) => void): Promise<BrowserSessionDto> {
     const session = this.ready(scope);
-    session.safeForRestart = false;
     return this.serialized(session, async () => {
       this.assertAdmission(scope);
       if (this.ready(scope) !== session || session.dto.id !== sessionId) throw new BrowserSessionError("The browser changed before promotion.", 409);
@@ -440,7 +441,7 @@ export class BrowserSessionManager {
   }
 
   private lifecycle(session: ManagedSession, reason?: string): void {
-    session.safeForRestart = false;
+    if (reason !== "prepared_for_application_restart" && reason !== "application_detached") this.markActivity(session);
     if ((session.driver?.suspend || this.retainShared) && session.dto.location === "hosted" && (session.dto.status === "opening" || session.dto.status === "ready")) {
       const directory = path.join(this.dataDir, "retained-browser-sessions");
       mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -463,10 +464,16 @@ export class BrowserSessionManager {
     });
   }
 
-  private async serialized<T>(session: ManagedSession, work: () => Promise<T>): Promise<T> {
+  private async serialized<T>(session: ManagedSession, work: () => Promise<T>, affectsRestartReadiness = true): Promise<T> {
+    if (affectsRestartReadiness) this.markActivity(session);
     const result = session.queue.then(work, work);
     session.queue = result.catch(() => undefined);
     return result;
+  }
+
+  private markActivity(session: ManagedSession): void {
+    session.safeForRestart = false;
+    session.activityGeneration = (session.activityGeneration ?? 0) + 1;
   }
 
   private authority(handle: BrowserTerminationHandle): object {
@@ -650,6 +657,7 @@ export class BrowserSessionManager {
     expectedControlEpoch: number | undefined,
     work: (driver: BrowserDriver) => Promise<T>,
     commit: (result: T) => U,
+    affectsRestartReadiness?: boolean,
   ): Promise<U>;
   private async pageAction<T, U>(
     scope: BrowserScope,
@@ -658,13 +666,13 @@ export class BrowserSessionManager {
     expectedControlEpoch: number | undefined,
     work: (driver: BrowserDriver) => Promise<T>,
     commit?: (result: T) => U,
+    affectsRestartReadiness = true,
   ): Promise<T | U> {
     const driver = session.driver;
     this.syncLocalState(session);
     const driverRevision = driver.controlRevision?.();
     const lifecycleEpoch = session.lifecycleEpoch;
     const controlEpoch = expectedControlEpoch ?? session.dto.controlEpoch;
-    if (owner) session.safeForRestart = false;
     return this.serialized(session, async (): Promise<T | U> => {
       this.syncLocalState(session);
       if (driver.controlRevision?.() !== driverRevision || (owner && driver.paused?.())) throw new BrowserSessionError("Local browser control paused or changed. This action was discarded.", 409);
@@ -676,7 +684,7 @@ export class BrowserSessionManager {
       this.assertLifecycle(scope, session, driver, lifecycleEpoch);
       if (owner) this.assertControl(session, owner, controlEpoch);
       return commit ? commit(result) : result;
-    });
+    }, affectsRestartReadiness);
   }
 
   open(scope: BrowserScope, url?: string, initialOwner: BrowserControlOwner = "agent", localFactory?: BrowserDriverFactory, nativeManual = false): Promise<BrowserSessionDto> {
@@ -1038,6 +1046,7 @@ export class BrowserSessionManager {
     const session = this.ready(scope);
     if (automatic && session.dto.privateSignIn) throw new BrowserSessionError("Private sign-in is active. Choose Done signing in to return to browsing.", 409);
     if (session.dto.controlEpoch !== expectedEpoch || session.dto.controlOwner !== "operator" || session.driver.manualState?.() !== "manual" || !session.driver.resumeAutomation) throw new BrowserSessionError("Browser control changed or this browser is not awaiting an explicit resume.", 409);
+    this.markActivity(session);
     const driver = session.driver, lifecycleEpoch = session.lifecycleEpoch;
     const resuming = driver.resumeAutomation!();
     this.syncLocalState(session);
@@ -1103,6 +1112,7 @@ export class BrowserSessionManager {
    * command cannot continue into the operator's private session. */
   async revokeAgentControl(scope: BrowserScope): Promise<BrowserSessionDto> {
     const session = this.ready(scope);
+    this.markActivity(session);
     if (session.dto.controlOwner === "agent") {
       session.dto = {
         ...session.dto,
@@ -1192,6 +1202,7 @@ export class BrowserSessionManager {
     lifecycleEpoch: number,
     event: BrowserPageEvent,
   ): void {
+    if (event.type !== "file_chooser_clear" || event.reason !== "deployment_drain") this.markActivity(session);
     const queued = session.queue.then(async () => {
       if (this.sessions.get(scope.agentId) !== session || session.lifecycleEpoch !== lifecycleEpoch || session.dto.status === "closed") return;
       if ((event.type === "page_close" || event.type === "page_navigate") && event.pageId) {
@@ -1245,7 +1256,7 @@ export class BrowserSessionManager {
         session.dto = { ...session.dto, localPaused: session.driver.paused?.() };
         this.updatePages(session, pages);
         return publicDto(session);
-      });
+      }, false);
     } catch (error) {
       if (!session.driver?.isAlive()) return this.close(scope, "local_window_disconnected");
       if (session.driver.paused?.()) { session.dto = { ...session.dto, localPaused: true }; return publicDto(session); }
@@ -1515,7 +1526,6 @@ export class BrowserSessionManager {
   async openLink(scope: BrowserScope, url: string): Promise<BrowserSessionDto> {
     const target = validateBrowserUrl(url);
     const session = this.ready(scope), epoch = session.dto.controlEpoch;
-    session.safeForRestart = false;
     return this.serialized(session, async () => {
       if (this.ready(scope) !== session || session.dto.controlOwner !== "operator" || session.dto.controlEpoch !== epoch || session.dto.manualControl === "connecting") throw new BrowserSessionError("Take control before opening a link. Existing tabs were preserved.", 409);
       if (session.driver.openLink) await session.driver.openLink(target);
@@ -1542,7 +1552,7 @@ export class BrowserSessionManager {
         actor: "agent", action: "inspect", summary: `inspected ${session.dto.url}`, url: session.dto.url,
       });
       return { snapshot: boundBrowserSnapshot(snapshot, MAX_SNAPSHOT_TEXT), info };
-    }).then(({ snapshot }) => snapshot);
+    }, false).then(({ snapshot }) => snapshot);
   }
 
   async act(scope: BrowserScope, input: {
@@ -1717,7 +1727,7 @@ export class BrowserSessionManager {
       session.dto = { ...session.dto, frameRevision: session.dto.frameRevision + 1, updatedAt: new Date().toISOString() };
       session.lastFrame = { body, revision: session.dto.frameRevision, capturedAt: Date.now(), metadata };
       return { body, revision: session.dto.frameRevision, metadata };
-    }).finally(() => { session.frameCapture = undefined; });
+    }, false).finally(() => { session.frameCapture = undefined; });
     return session.frameCapture;
   }
 
@@ -1737,7 +1747,7 @@ export class BrowserSessionManager {
       const imageSize = captured.length >= 24 && captured.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
         ? { width: captured.readUInt32BE(16), height: captured.readUInt32BE(20) } : size;
       return { body: captured, size: imageSize };
-    });
+    }, false);
     const artifactId = randomUUID();
     const relative = path.posix.join("browser", `${artifactId}.png`);
     const published = await publishManagedArtifactContentAsync(
@@ -1827,19 +1837,23 @@ export class BrowserSessionManager {
       if (this.retainShared && retaining && session.driver?.suspend && session.dto.status === "ready" && !session.cleanupError) {
         const driver = session.driver;
         const operation = (async () => {
+          if (reason === "deployment_drain") session.safeForRestart = false;
+          const activityGeneration = session.activityGeneration ?? 0;
           if (reason === "server_shutdown") ++session.lifecycleEpoch;
           session.nextRun = undefined;
           session.dto = { ...session.dto, controlOwner: "operator", controlEpoch: session.dto.controlEpoch + 1, nextRunAgentId: undefined };
           await session.queue.catch(() => undefined);
           if (reason === "deployment_drain") {
             await driver.cancelPendingFileChooser("deployment_drain");
+            await session.queue.catch(() => undefined);
             this.lifecycle(session, "prepared_for_application_restart");
-            session.safeForRestart = true;
+            session.safeForRestart = session.activityGeneration === activityGeneration;
           } else {
             // Drain already received broker acknowledgment for chooser cleanup.
             // Repeating that queued RPC during shutdown can outlive the host's
             // stop deadline while the retained browser is otherwise safe.
             const chooserAlreadyCancelled = session.safeForRestart === true;
+            session.safeForRestart = false;
             this.lifecycle(session, "application_detached");
             await driver.suspend!(chooserAlreadyCancelled);
             session.driver = undefined;
