@@ -97,7 +97,12 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     const popupSnapshot = JSON.parse(await driver.inspect());
     assert.ok(popupSnapshot.controls.some(control => control.selector === '#popup' && control.tag === 'input'), 'the selected popup is ready for input');
     stage("filling popup");
-    await driver.fill("#popup", "popup works");
+    try { await driver.fill("#popup", "popup works"); }
+    catch (error) {
+      const retained = await driver.inspect().then(snapshot => snapshot.includes("popup works"), () => false);
+      stage(`popup fill failed; value retained=${retained}`);
+      throw error;
+    }
     stage("filled popup");
     assert.ok((await driver.inspect()).includes("popup works"));
     await driver.closePage(popup.pageId);
