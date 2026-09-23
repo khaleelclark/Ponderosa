@@ -29,6 +29,7 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
       disableSandbox: process.env.CI === "true",
     });
     await driver.navigate(`http://127.0.0.1:${server.address().port}`);
+    console.log('browser fixture: initial navigation');
     await driver.fill("#delayed", "waited correctly");
     assert.ok((await driver.inspect()).includes("waited correctly"));
     assert.ok(!(await driver.inspect()).includes("FAKE_SECRET"));
@@ -67,6 +68,7 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     assert.ok(driver.activity().width > 0);
     assert.ok(!JSON.stringify(driver.activity()).includes("activity marker"), "activity contains geometry, not input values");
     await driver.click("#popup");
+    console.log('browser fixture: popup click');
     let pages;
     for (let i = 0; i < 250; i++) {
       pages = await driver.pages();
@@ -78,15 +80,19 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     const popup = pages.pages.find(page => page.pageId !== first);
     assert.equal(popup.title, "Popup", "new popup is loaded before it receives input");
     await driver.activatePage(popup.pageId);
+    console.log('browser fixture: popup activated');
     await driver.fill("#popup", "popup works");
+    console.log('browser fixture: popup filled');
     assert.ok((await driver.inspect()).includes("popup works"));
     await driver.closePage(popup.pageId);
     await driver.activatePage(first);
     await driver.click("#file");
+    console.log('browser fixture: file click');
     for (let i = 0; i < 50 && !(await driver.pages()).pendingFileChooser; i++) await new Promise(resolve => setTimeout(resolve, 20));
     assert.ok((await driver.pages()).pendingFileChooser, "page chooser remains available for authorized upload");
     const file = join(root, "fixture.txt"); writeFileSync(file, "fixture");
     const receipt = await driver.upload({ uploadId: "fixture", stagedPath: file, expectedName: "fixture.txt", expectedSize: 7, expectedMediaType: "text/plain" });
+    console.log('browser fixture: file uploaded');
     assert.equal(receipt.input.name, "fixture.txt");
     assert.ok((await driver.capture()).length > 100);
     await driver.clearUploadedFiles();
@@ -97,6 +103,7 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     const pixel = await sharp(await driver.capture(first)).extract({ left: 200, top: 200, width: 1, height: 1 }).removeAlpha().raw().toBuffer();
     assert.deepEqual([...pixel], [0, 0, 255], "capture follows the scrolled viewport, not the top of the document");
     await driver.navigate(`http://127.0.0.1:${server.address().port}/frames`);
+    console.log('browser fixture: frames navigation');
     let embedded;
     for (let i = 0; i < 50 && !embedded; i++) { embedded = JSON.parse(await driver.inspect()).frameControls.find(control => control.id === 'embedded-field'); if (!embedded) await new Promise(resolve => setTimeout(resolve, 20)); }
     assert.ok(embedded, 'inspection exposes an actionable embedded frame control');
