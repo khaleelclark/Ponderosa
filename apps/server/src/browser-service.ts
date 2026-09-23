@@ -10,7 +10,8 @@ import { BrowserDriverActionError } from "./chrome-cdp-driver.js";
 const methods = new Set(["pages", "pageInfo", "activatePage", "closePage", "newPage", "openLink", "navigate", "inspect", "click", "fill", "key", "pointer", "type", "scroll", "capture", "resizeViewport", "resizeDesktop", "upload", "clearUploadedFiles", "cancelPendingFileChooser", "pauseAutomation", "resumeAutomation"]);
 const automationMethods = new Set(["pageInfo", "activatePage", "closePage", "newPage", "navigate", "inspect", "click", "fill", "key", "pointer", "type", "scroll", "capture", "resizeViewport", "upload"]);
 const driverActionReasons = new Set([
-  "invalid_selector", "selector_not_found", "selector_not_editable", "page_not_found", "last_page",
+  "invalid_selector", "selector_not_found", "selector_ambiguous", "selector_not_interactable",
+  "click_unconfirmed", "fill_unconfirmed", "selector_not_editable", "page_not_found", "last_page",
   "upload_disabled", "selector_not_file_input", "file_input_disabled", "file_type_not_accepted",
   "no_pending_file_chooser", "stale_file_chooser", "unsupported_file_chooser",
   "stale_upload_context", "upload_verification_failed",
