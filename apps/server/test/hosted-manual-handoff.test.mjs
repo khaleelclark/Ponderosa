@@ -36,14 +36,35 @@ test('native display is independent of automation and server-selects read-only v
   } finally { await manager.closeAll('test cleanup'); await rm(root, { recursive: true, force: true }); }
 });
 
-test('resuming an over-capacity manual browser never closes existing tabs', async () => {
+for (const { label, multiPage, tabCount } of [
+  { label: 'single-page', multiPage: false, tabCount: 2 },
+  { label: '30-tab', multiPage: true, tabCount: 31 },
+]) test(`resuming an over-capacity ${label} manual browser never closes existing tabs`, async () => {
+  const previousMultiPage = process.env.PONDEROSA_BROWSER_MULTI_PAGE;
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  process.env.PONDEROSA_BROWSER_MULTI_PAGE = multiPage ? '1' : '0';
   const commands = [];
-  const connection = { send: async method => {
-    commands.push(method);
-    return { targetInfos: Array.from({ length: 9 }, (_, index) => ({ type: 'page', targetId: String(index) })) };
-  } };
-  await assert.rejects(ChromeCdpDriver.attachOwned({}, {}, connection, '/unused', () => {}, () => {}, {}), /remains open in manual mode/);
-  assert.deepEqual(commands, ['Target.getTargets']);
+  const connection = {
+    send: async method => {
+      commands.push(method);
+      if (method === 'Target.getTargets') return {
+        targetInfos: Array.from({ length: tabCount }, (_, index) => ({ type: 'page', targetId: String(index) })),
+      };
+      return {};
+    },
+    onEvent: () => () => {},
+    onClose: () => () => {},
+  };
+  try {
+    await assert.rejects(ChromeCdpDriver.attachOwned({}, {}, connection, '/unused', () => {}, () => {}, {}), /remains open in manual mode/);
+    assert.deepEqual(commands, ['Target.getTargets']);
+  } finally {
+    if (previousMultiPage === undefined) delete process.env.PONDEROSA_BROWSER_MULTI_PAGE;
+    else process.env.PONDEROSA_BROWSER_MULTI_PAGE = previousMultiPage;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  }
 });
 
 test('hosted manual handoff fences automation and desktop access without replacing the browser', async () => {

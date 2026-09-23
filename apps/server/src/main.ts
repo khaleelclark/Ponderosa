@@ -42,6 +42,7 @@ function internalAgentBaseUrl(host: string, port: number): string {
 
 const app = createServer({
   dataDir: config.dataDir,
+  browserServiceSocket: process.env.PONDEROSA_BROWSER_SERVICE_SOCKET,
   startDrained: process.env.PONDEROSA_START_DRAINED === "1",
   startupMode: shutdownRecovery ? "shutdown_recovery" : "serve",
   launcherDataDir: process.env.PONDEROSA_LAUNCHER_DATA_DIR,
