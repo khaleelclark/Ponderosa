@@ -12,19 +12,20 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
   process.env.PONDEROSA_BROWSER_MULTI_PAGE = "1";
   process.env.PONDEROSA_BROWSER_FILE_UPLOAD = "1";
   const root = mkdtempSync(join(tmpdir(), "playwright-browser-"));
+  const popupUrlSuffix = "/popup?q={a,b}";
   const server = createServer((req, res) => {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     if (req.url === "/scroll") { res.end('<style>body{margin:0}div{height:1000px;background:red}div+div{background:blue}</style><div></div><div></div>'); return; }
     if (req.url === "/embedded") { res.end('<p>Embedded frame region</p><input id="embedded-field" aria-label="Embedded answer">'); return; }
     if (req.url === "/frames") { res.end('<iframe src="/embedded"></iframe><input id="rejecting" oninput="this.value=\'\'">'); return; }
-    if (req.url === "/popup") {
+    if (req.url === "/popup" || req.url === popupUrlSuffix) {
       // The DOM and title appear before DOMContentLoaded, as they can in a
       // real popup. Inspection can see the field while Playwright catches up.
       res.write('<title>Popup</title><input id="popup">');
       setTimeout(() => res.end(), 200);
       return;
     }
-    res.end(`<title>Fixture</title><main><input id="password" type="password" value="FAKE_SECRET"><input id="file" type="file" accept="text/plain"><button id="popup" onclick="window.open('/popup')">Popup</button><div id="shadow"></div></main><script>document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<input id="shadow-field">';setTimeout(()=>document.querySelector('main').insertAdjacentHTML('beforeend','<input id="delayed">'),600);</script>`);
+    res.end(`<title>Fixture</title><main><input id="password" type="password" value="FAKE_SECRET"><input id="file" type="file" accept="text/plain"><button id="popup" onclick="window.open('${popupUrlSuffix}')">Popup</button><div id="shadow"></div></main><script>document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<input id="shadow-field">';setTimeout(()=>document.querySelector('main').insertAdjacentHTML('beforeend','<input id="delayed">'),600);</script>`);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   let driver;
@@ -85,12 +86,12 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     let pages;
     for (let i = 0; i < 250; i++) {
       pages = await driver.pages();
-      const candidate = pages.pages.find(page => page.pageId !== first && page.url.endsWith('/popup'));
-      if (candidate?.url.endsWith("/popup") && candidate.title === "Popup") break;
+      const candidate = pages.pages.find(page => page.pageId !== first && page.url.endsWith(popupUrlSuffix));
+      if (candidate?.url.endsWith(popupUrlSuffix) && candidate.title === "Popup") break;
       await new Promise(resolve => setTimeout(resolve, 20));
     }
     assert.equal(pages.pages.length, initialPages.pages.length + 1);
-    const popup = pages.pages.find(page => page.pageId !== first && page.url.endsWith('/popup'));
+    const popup = pages.pages.find(page => page.pageId !== first && page.url.endsWith(popupUrlSuffix));
     assert.ok(popup, 'the opened popup is present independently of startup tabs');
     assert.equal(popup.title, "Popup", "new popup is loaded before it receives input");
     await driver.activatePage(popup.pageId);

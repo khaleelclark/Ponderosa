@@ -394,7 +394,8 @@ export class ChromeCdpDriver implements BrowserDriver {
       // succeed on the popup's initial about:blank document, then leave fill
       // waiting on a different frame. Bind readiness to the inspected URL.
       if (page.openerPageId && page.url !== "about:blank") {
-        await selected.waitForURL(page.url, { waitUntil: "domcontentloaded", timeout: 10_000 });
+        const expectedUrl = page.url;
+        await selected.waitForURL(url => url.href === expectedUrl, { waitUntil: "domcontentloaded", timeout: 10_000 });
       } else {
         await selected.waitForLoadState("domcontentloaded", { timeout: 10_000 });
       }
