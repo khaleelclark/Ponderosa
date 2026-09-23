@@ -912,6 +912,7 @@ export function registerServerLifecycle(
   });
 
   app.addHook("preClose", async () => {
+    app.log.info("Ponderosa shutdown HTTP pre-close started");
     app.prepareForShutdown();
     app.server.off("upgrade", linkPreviewUpgrade);
     if (linkPreviewSweep) clearInterval(linkPreviewSweep);
@@ -926,6 +927,7 @@ export function registerServerLifecycle(
     }
     linkPreviewWss.close();
     app.server.closeAllConnections();
+    app.log.info("Ponderosa shutdown HTTP pre-close completed");
   });
 
   let providerRuntimeShutdownFinalized = false;
@@ -943,6 +945,7 @@ export function registerServerLifecycle(
   };
   const finalizeProviderRuntimeShutdown = async (): Promise<void> => {
     if (!providerRuntimeShutdownFinalized) {
+      app.log.info("Ponderosa shutdown provider cleanup started");
       const results = await Promise.allSettled([
         drainProviderRuntimeAuthority("server_shutdown"),
         drainEngineCapabilityDiscoveries(),
@@ -958,6 +961,7 @@ export function registerServerLifecycle(
       engineModelCatalogDiscoveries.clear();
       activeRuns.clear();
       providerRuntimeShutdownFinalized = true;
+      app.log.info("Ponderosa shutdown provider cleanup completed");
     }
     closeShutdownStorageIfReady();
   };
@@ -1039,8 +1043,16 @@ export function registerServerLifecycle(
         () => assetReconciliationOperation,
       ),
       ...shutdownRunBrowserClosures.map((close) => Promise.resolve().then(close)),
-      Promise.resolve().then(() => browserSessions.closeAll("server_shutdown")),
-      Promise.resolve().then(() => projectBrowserSessions.closeAll("server_shutdown")),
+      Promise.resolve().then(async () => {
+        app.log.info({ scope: "run" }, "Ponderosa shutdown browser cleanup started");
+        await browserSessions.closeAll("server_shutdown");
+        app.log.info({ scope: "run" }, "Ponderosa shutdown browser cleanup completed");
+      }),
+      Promise.resolve().then(async () => {
+        app.log.info({ scope: "project" }, "Ponderosa shutdown browser cleanup started");
+        await projectBrowserSessions.closeAll("server_shutdown");
+        app.log.info({ scope: "project" }, "Ponderosa shutdown browser cleanup completed");
+      }),
     ]);
     const results = await backgroundOperation;
     const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
@@ -1049,6 +1061,7 @@ export function registerServerLifecycle(
     closeShutdownStorageIfReady();
   };
   const finalizeShutdownCleanup = async (): Promise<void> => {
+    app.log.info("Ponderosa strict shutdown cleanup started");
     prepareStrictShutdown();
     // Provider authority revocation is an independent barrier. No earlier
     // watcher, scheduler, push, or browser failure can skip it.
@@ -1079,6 +1092,7 @@ export function registerServerLifecycle(
         providerResult.status === "rejected";
       throw error;
     }
+    app.log.info("Ponderosa strict shutdown cleanup completed");
   };
   app.retryShutdownCleanup = finalizeShutdownCleanup;
 

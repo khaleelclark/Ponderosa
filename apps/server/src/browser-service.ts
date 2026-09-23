@@ -94,7 +94,7 @@ export async function startBrowserService(socketPath: string, dataDir: string, f
           ? cleanupCancelledEntry(id, entry)
           : entry.queue.catch(() => undefined)));
         if (lease !== claimed) throw new Error("Another application claimed the browser service.");
-        result = { lease: claimed, sessions: [...entries].flatMap(([id, entry]) =>
+        result = { lease: claimed, supportsCheckLease: true, sessions: [...entries].flatMap(([id, entry]) =>
           !entry.cancelled && entry.driver ? [id] : []) };
       } else {
         if (!lease || body.lease !== lease) throw new Error("Browser application lease expired.");
@@ -154,7 +154,8 @@ export async function startBrowserService(socketPath: string, dataDir: string, f
           const driver = entry.driver;
           entry.openingToken = undefined;
           entry.launchAbort = undefined;
-          if (body.operation === "adopt" || body.operation === "status") result = { snapshot: snapshot(entry), events: entry.events.splice(0) };
+          if (body.operation === "check_lease") result = {};
+          else if (body.operation === "adopt" || body.operation === "status") result = { snapshot: snapshot(entry), events: entry.events.splice(0) };
           else {
             // A Chrome approval handshake can occupy this browser's action
             // queue for up to two minutes. Reject automation immediately while
@@ -209,6 +210,7 @@ export async function startBrowserService(socketPath: string, dataDir: string, f
 
 export class BrowserServiceClient {
   private lease = "";
+  private supportsCheckLease = false;
   constructor(private readonly socketPath: string) {}
   private rpc(body: Record<string, unknown>, timeoutMs = 130_000): Promise<any> {
     return new Promise((resolve, reject) => {
@@ -233,7 +235,7 @@ export class BrowserServiceClient {
       req.on("error", reject); req.end(JSON.stringify({ ...body, lease: this.lease }));
     });
   }
-  async claim(): Promise<string[]> { const result = await this.rpc({ operation: "claim" }); this.lease = result.lease; return result.sessions; }
+  async claim(): Promise<string[]> { const result = await this.rpc({ operation: "claim" }); this.lease = result.lease; this.supportsCheckLease = result.supportsCheckLease === true; return result.sessions; }
   async driver(id: string, event: Parameters<BrowserDriverFactory>[3], launch?: BrowserDriverLaunchOptions, adopt = false): Promise<BrowserDriver> {
     const profileId = launch?.retainProfile && launch.profileDir ? path.basename(launch.profileDir) : undefined;
     const openingToken = adopt ? undefined : randomUUID();
@@ -285,7 +287,24 @@ export class BrowserServiceClient {
       viewport: () => state.viewport,
       activity: () => state.activity,
       close: async () => { await this.rpc({ operation: "close", id }); suspended = true; clearInterval(refresh); },
-      suspend: async () => { await call("cancelPendingFileChooser", ["application_disconnect"]); suspended = true; clearInterval(refresh); },
+      suspend: async (chooserAlreadyCancelled = false) => {
+        if (chooserAlreadyCancelled) {
+          // The drain already settled chooser cleanup. A non-queued check
+          // proves this app still owns the lease. An older persistent broker
+          // has no check_lease operation, so use its non-queued status path.
+          // Forward any events it consumes rather than discarding them.
+          if (this.supportsCheckLease) await this.rpc({ operation: "check_lease", id }, 15_000);
+          else {
+            const result = await this.rpc({ operation: "status", id }, 15_000);
+            state = result.snapshot;
+            for (const item of result.events ?? []) event?.(item);
+          }
+        } else {
+          await call("cancelPendingFileChooser", ["application_disconnect"]);
+        }
+        suspended = true;
+        clearInterval(refresh);
+      },
     };
     return new Proxy(own as unknown as BrowserDriver, { get(target, key) {
       if (key in target) return Reflect.get(target, key);

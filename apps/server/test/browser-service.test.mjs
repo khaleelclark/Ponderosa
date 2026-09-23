@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { createServer as createHttpServer } from 'node:http';
 import { startBrowserService, BrowserServiceClient } from '../dist/browser-service.js';
 import { BrowserDriverActionError } from '../dist/chrome-cdp-driver.js';
 import { BrowserSessionManager } from '../dist/browser-session-manager.js';
@@ -13,14 +14,14 @@ import { createServer } from '../dist/app.js';
 test('supervised browser survives application shutdown with draft intact and stale application fenced', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'browser-service-'));
   const socket = path.join(root, 'service.sock');
-  let text = '', launched = 0, closed = 0;
+  let text = '', launched = 0, closed = 0, cancellations = 0;
   const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true, isNew: false, closable: false };
   const service = await startBrowserService(socket, root, async () => {
     launched++;
     return { isAlive: () => true, manualState: () => 'automation', controlRevision: () => 1,
       pages: async () => ({ activePageId: 'draft', pages: [page] }),
       pageInfo: async () => page, type: async value => { text += value; return page; },
-      inspect: async () => text, cancelPendingFileChooser: async () => {}, close: async () => { closed++; },
+      inspect: async () => text, cancelPendingFileChooser: async () => { cancellations++; }, close: async () => { closed++; },
     };
   });
   const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
@@ -33,7 +34,9 @@ test('supervised browser survives application shutdown with draft intact and sta
     assert.equal(first.authorityStatus(true).active, 0);
     // An abandoned deploy must leave the original browser usable.
     await first.operatorInput(scope, { kind: 'type', text: ' after aborted drain', expectedControlEpoch: first.get(scope.agentId).controlEpoch });
+    assert.equal(first.authorityStatus(true).active, 1, 'new browser work must revoke restart readiness');
     await first.closeAll('server_shutdown');
+    assert.equal(cancellations, 2, 'shutdown must recheck chooser cleanup after post-drain browser work');
     assert.equal(closed, 0);
     const nextClient = new BrowserServiceClient(socket);
     const ids = await nextClient.claim();
@@ -225,17 +228,235 @@ test('missing retained browser is shown as failed without silently starting a re
   } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('confirmed deployment drain does not repeat broker chooser cleanup during shutdown', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-drained-shutdown-'));
+  const socket = path.join(root, 'service.sock');
+  const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true };
+  let cancellations = 0;
+  const service = await startBrowserService(socket, root, async () => ({
+    isAlive: () => true,
+    manualState: () => 'automation',
+    pages: async () => ({ activePageId: 'draft', pages: [page] }),
+    pageInfo: async () => page,
+    cancelPendingFileChooser: async () => {
+      cancellations++;
+      if (cancellations > 1) throw new Error('redundant broker cleanup would block shutdown');
+    },
+    close: async () => {},
+  }));
+  const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
+  try {
+    const firstClient = new BrowserServiceClient(socket);
+    await firstClient.claim();
+    const first = new BrowserSessionManager(root, (id, _console, _spawned, event, launch) => firstClient.driver(id, event, launch), () => {}, undefined, undefined, () => true, true);
+    const opened = await first.open(scope, undefined, 'operator', undefined, true);
+    await first.closeAll('deployment_drain');
+    assert.equal(first.authorityStatus(true).active, 0);
+    await first.closeAll('server_shutdown');
+    assert.equal(cancellations, 1);
+    const replacement = new BrowserServiceClient(socket);
+    assert.deepEqual(await replacement.claim(), [opened.id]);
+    const adopted = await replacement.driver(opened.id, () => {}, undefined, true);
+    assert.equal((await adopted.pages()).activePageId, 'draft');
+  } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('a file chooser arriving after drain revokes browser restart readiness', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-drain-event-'));
+  const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
+  const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true };
+  let onPageEvent;
+  const manager = new BrowserSessionManager(root, async (_id, _console, _spawned, event) => {
+    onPageEvent = event;
+    return { isAlive: () => true, manualState: () => 'automation', pages: async () => ({ activePageId: 'draft', pages: [page] }),
+      capture: async () => Buffer.from('frame'),
+      cancelPendingFileChooser: async () => onPageEvent({ type: 'file_chooser_clear', reason: 'deployment_drain', pageId: 'draft', pages: { activePageId: 'draft', pages: [page] } }),
+      suspend: async () => {}, close: async () => {} };
+  }, () => {}, undefined, undefined, () => true, true);
+  try {
+    await manager.open(scope, undefined, 'operator', undefined, true);
+    await manager.closeAll('deployment_drain');
+    assert.equal(manager.authorityStatus(true).active, 0);
+    await manager.captureFrame(scope);
+    assert.equal(manager.authorityStatus(true).active, 0, 'read-only viewing must not undo a successful drain');
+    onPageEvent({ type: 'file_chooser_open', pageId: 'draft', pages: { activePageId: 'draft', pages: [page] } });
+    assert.equal(manager.authorityStatus(true).active, 1, 'an observed chooser must immediately block restart');
+    assert.match(manager.authorityBlockers('project_browser', true)[0].reason, /live browser authority/);
+    await manager.closeAll('deployment_drain');
+    assert.equal(manager.authorityStatus(true).active, 0, 'a fresh drain may restore readiness');
+  } finally { await manager.closeAll('server_shutdown'); await rm(root, { recursive: true, force: true }); }
+});
+
+test('operator input admitted during drain cannot be hidden by its later acknowledgment', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-drain-race-'));
+  const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
+  const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true };
+  let releaseCancel, beganCancel, typed = '';
+  const cancelStarted = new Promise(resolve => { beganCancel = resolve; });
+  const cancelGate = new Promise(resolve => { releaseCancel = resolve; });
+  let cancellations = 0;
+  const manager = new BrowserSessionManager(root, async () => ({
+    isAlive: () => true, manualState: () => 'automation',
+    pages: async () => ({ activePageId: 'draft', pages: [page] }),
+    type: async text => { typed += text; return page; },
+    cancelPendingFileChooser: async () => { if (++cancellations === 1) { beganCancel(); await cancelGate; } },
+    suspend: async () => {}, close: async () => {},
+  }), () => {}, undefined, undefined, () => true, true);
+  try {
+    await manager.open(scope, undefined, 'operator', undefined, true);
+    const drain = manager.closeAll('deployment_drain');
+    await cancelStarted;
+    const input = manager.operatorInput(scope, { kind: 'type', text: 'draft edit', expectedControlEpoch: manager.get(scope.agentId).controlEpoch });
+    releaseCancel();
+    await Promise.all([drain, input]);
+    assert.equal(typed, 'draft edit');
+    assert.equal(manager.authorityStatus(true).active, 1, 'intervening input must remain a restart blocker');
+    await manager.closeAll('deployment_drain');
+    assert.equal(manager.authorityStatus(true).active, 0);
+  } finally { releaseCancel?.(); await manager.closeAll('server_shutdown'); await rm(root, { recursive: true, force: true }); }
+});
+
+test('drained shutdown uses the status protocol supported by a previous-release broker', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-legacy-broker-'));
+  const socket = path.join(root, 'service.sock');
+  const id = randomUUID();
+  const operations = [];
+  const events = [];
+  let lease = '', retained = false, cancellations = 0;
+  const snapshot = { alive: true, manual: 'automation', viewport: { width: 1280, height: 720 } };
+  // This fixture implements the previous release's RPC surface. It rejects
+  // check_lease exactly as the persistent broker will during app-only rollout.
+  const broker = createHttpServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString());
+    operations.push(body.operation);
+    let result;
+    let error;
+    if (body.operation === 'claim') {
+      lease = randomUUID(); result = { lease, sessions: retained ? [id] : [] };
+    } else if (body.lease !== lease) error = 'Browser application lease expired.';
+    else if (body.operation === 'open' && body.id === id) {
+      retained = true; result = { snapshot };
+    } else if (body.operation === 'adopt' && retained && body.id === id) {
+      result = { snapshot, events: events.splice(0) };
+    } else if (body.operation === 'status' && retained && body.id === id) {
+      result = { snapshot, events: events.splice(0) };
+    } else if (body.operation === 'call' && retained && body.id === id && body.method === 'cancelPendingFileChooser') {
+      cancellations++; result = { value: undefined, snapshot, events: events.splice(0) };
+    } else if (body.operation === 'close' && retained && body.id === id) {
+      retained = false; result = {};
+    } else error = 'Unsupported browser operation.';
+    res.statusCode = error ? 409 : 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(error ? { error } : { result }));
+  });
+  await new Promise(resolve => broker.listen(socket, resolve));
+  try {
+    const client = new BrowserServiceClient(socket);
+    assert.deepEqual(await client.claim(), []);
+    const received = [];
+    const driver = await client.driver(id, event => received.push(event));
+    await driver.cancelPendingFileChooser('deployment_drain');
+    events.push({ type: 'page_open', pageId: 'draft', pages: { activePageId: 'draft', pages: [] } });
+    await driver.suspend(true);
+    assert.equal(cancellations, 1, 'shutdown must not repeat chooser cleanup');
+    assert.deepEqual(received, [{ type: 'page_open', pageId: 'draft', pages: { activePageId: 'draft', pages: [] } }]);
+    assert.ok(operations.includes('status'));
+    assert.ok(!operations.includes('check_lease'), 'the old broker must not receive the new operation');
+    const next = new BrowserServiceClient(socket);
+    assert.deepEqual(await next.claim(), [id]);
+    await (await next.driver(id, undefined, undefined, true)).close();
+  } finally {
+    broker.closeAllConnections();
+    await new Promise(resolve => broker.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('drained shutdown still rejects a stolen browser lease', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-stale-shutdown-'));
+  const socket = path.join(root, 'service.sock');
+  const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true };
+  const service = await startBrowserService(socket, root, async () => ({
+    isAlive: () => true,
+    manualState: () => 'automation',
+    pages: async () => ({ activePageId: 'draft', pages: [page] }),
+    pageInfo: async () => page,
+    cancelPendingFileChooser: async () => {},
+    close: async () => {},
+  }));
+  const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
+  try {
+    const firstClient = new BrowserServiceClient(socket);
+    await firstClient.claim();
+    const first = new BrowserSessionManager(root, (id, _console, _spawned, event, launch) => firstClient.driver(id, event, launch), () => {}, undefined, undefined, () => true, true);
+    const opened = await first.open(scope, undefined, 'operator', undefined, true);
+    await first.closeAll('deployment_drain');
+    const replacement = new BrowserServiceClient(socket);
+    assert.deepEqual(await replacement.claim(), [opened.id]);
+    await assert.rejects(first.closeAll('server_shutdown'), /browser cleanup did not complete/);
+    assert.equal(first.authorityStatus(true).active, 1, 'a stolen lease must remain a shutdown blocker');
+    assert.equal((await (await replacement.driver(opened.id, () => {}, undefined, true)).pages()).activePageId, 'draft');
+  } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('drained server closes without repeating retained browser cleanup', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-drained-server-'));
+  const dataDir = path.join(root, 'state');
+  const socket = path.join(root, 'service.sock');
+  const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true };
+  let cancellations = 0;
+  const service = await startBrowserService(socket, dataDir, async () => ({
+    isAlive: () => true,
+    manualState: () => 'automation',
+    pages: async () => ({ activePageId: 'draft', pages: [page] }),
+    pageInfo: async () => page,
+    cancelPendingFileChooser: async () => {
+      cancellations++;
+      if (cancellations > 1) throw new Error('shutdown repeated broker cleanup');
+    },
+    close: async () => {},
+  }));
+  let app;
+  try {
+    const store = new AgentStore(dataDir);
+    const project = store.createProject({ label: 'Drained server', hostPath: root, defaultEngine: 'codex' });
+    app = createServer({ dataDir, browserServiceSocket: socket, store, engines: [], logger: false });
+    await app.ready();
+    const opened = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/browser`, payload: { rememberSignIns: true } });
+    assert.equal(opened.statusCode, 200, opened.body);
+    const drain = await app.inject({ method: 'POST', url: '/api/deployment/drain' });
+    assert.equal(drain.statusCode, 200, drain.body);
+    let readyForRestart = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const status = (await app.inject('/api/ready')).json().deploymentDrain;
+      if (status.readyForRestart) { readyForRestart = true; break; }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(readyForRestart, true, 'the browser drain must be confirmed before shutdown');
+    app.prepareForShutdown();
+    await app.close();
+    app = undefined;
+    assert.equal(cancellations, 1);
+    assert.deepEqual(await new BrowserServiceClient(socket).claim(), [opened.json().id]);
+  } finally {
+    if (app) { app.prepareForShutdown(); await app.close(); }
+    await service.close(); await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('full server shutdown and startup reconnect the shared browser without inherited control', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'browser-server-restart-'));
   const dataDir = path.join(root, 'state');
   const socket = path.join(root, 'service.sock');
-  let launched = 0, closed = 0, text = '';
+  let launched = 0, closed = 0, cancellations = 0, text = '';
   const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true };
   const service = await startBrowserService(socket, dataDir, async () => {
     launched++;
     return { isAlive: () => true, manualState: () => 'automation', controlRevision: () => 1,
       pages: async () => ({ activePageId: 'draft', pages: [page] }), pageInfo: async () => page,
-      type: async value => { text += value; return page; }, cancelPendingFileChooser: async () => {}, close: async () => { closed++; } };
+      type: async value => { text += value; return page; }, cancelPendingFileChooser: async () => { cancellations++; }, close: async () => { closed++; } };
   });
   let app;
   try {
@@ -251,6 +472,7 @@ test('full server shutdown and startup reconnect the shared browser without inhe
     assert.equal(input.statusCode, 200, input.body);
     app.prepareForShutdown(); await app.close();
     assert.equal(closed, 0);
+    assert.equal(cancellations, 1, 'an unprepared shutdown must still cancel the broker chooser');
     app = createServer({ dataDir, browserServiceSocket: socket, engines: [], logger: false });
     await app.ready();
     const restored = (await app.inject(url)).json();
