@@ -201,8 +201,7 @@ export function useDictation(
       activeRecognition.lang = navigator.language || "en-US";
       activeRecognition.maxAlternatives = 1;
       // Newer browsers can infer punctuation from speech without spoken commands.
-      // Only opt in for Dictate; Talk uses a separate turn-based workflow.
-      if (continuous && "unspokenPunctuation" in activeRecognition) {
+      if ("unspokenPunctuation" in activeRecognition) {
         activeRecognition.unspokenPunctuation = true;
       }
       // Results contain the session's final-result history, not only new words.

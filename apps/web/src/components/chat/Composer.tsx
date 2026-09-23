@@ -3268,7 +3268,6 @@ export function Composer({
             disabled={disabled || composerLocked || sending}
             onFinalTranscript={insertDictatedText}
             onSettlingChange={handleDictationSettlingChange}
-            onActiveChange={setDictationActive}
           /> : null}
         </Box>
         </Box> : <Box sx={{ display: "contents", "& > *": { flexShrink: { xs: 0, md: undefined } } }}>
@@ -3386,7 +3385,6 @@ export function Composer({
           disabled={disabled || composerLocked || sending}
           onFinalTranscript={insertDictatedText}
           onSettlingChange={handleDictationSettlingChange}
-          onActiveChange={setDictationActive}
         /> : null}
         <ComposerSendActions
           allowSendWhileRunning={allowSendWhileRunning}
