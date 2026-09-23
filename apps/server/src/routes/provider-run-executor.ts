@@ -28,7 +28,10 @@ import type {
   OpeningPersistentRuntime,
   PersistentRuntime,
 } from "../app-contracts.js";
-import { evaluateContextRolloverPressure } from "../context-rollover-pressure.js";
+import {
+  evaluateContextRolloverPressure,
+  shouldRequestAutomaticContextRollover,
+} from "../context-rollover-pressure.js";
 import type { ContextCursor } from "../context-cursors.js";
 import { providerUnavailableNotificationBody } from "../provider-availability-detail.js";
 import { readProviderSessionIdentifier } from "../provider-session-success.js";
@@ -969,7 +972,10 @@ export function startProviderRunExecution(
               if (preferences.contextRolloverEnabled &&
                   !store.continuationHandoffForRun(agent.id, runId)) {
                 const pressure = evaluateContextRolloverPressure(event, preferences);
-                if (pressure.shouldRequest) {
+                if (shouldRequestAutomaticContextRollover(
+                  pressure,
+                  coordinationV3.activeContextRollover(agent.id),
+                )) {
                   let rolloverBoundary: ReturnType<typeof store.bindContextRolloverBoundary>;
                   try {
                     const acceptedSessionTail =
@@ -1093,7 +1099,17 @@ export function startProviderRunExecution(
       if (workspaceIssue) runFailureClassification = undefined;
       runError = workspaceIssue ?? message;
       if (!providerFailure && !workspaceIssue) {
-        app.log.error({ runId, agentId: agent.id }, "internal provider Run orchestration failed");
+        const conflict = err instanceof Error &&
+          err.message === "context rollover provider generation replay conflicts with its durable owner";
+        const exactBoundary = err instanceof Error &&
+          err.message.startsWith("context rollover requires an exact positive canonical boundary");
+        app.log.error({
+          runId, agentId: agent.id,
+          category: conflict ? "context_rollover_conflict" : exactBoundary ? "context_rollover_boundary" : "run_orchestration",
+          diagnostic: conflict ? "generation cycle rejected a changed canonical boundary"
+            : exactBoundary ? "exact canonical boundary unavailable"
+              : "unclassified internal exception",
+        }, "internal provider Run orchestration failed");
       }
       await persistRuntimeEvent(
         agent.id,

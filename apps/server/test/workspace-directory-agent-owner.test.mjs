@@ -115,6 +115,16 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
   });
   assert.equal(firstChatPage.json().history.hasMore, true);
   assert.notEqual(firstChatPage.json().items[0].conversation.id, owner.id);
+  assert.equal(firstChatPage.json().items[0].runningAgentCount, 0);
+  const activityCount = async () => {
+    const result = await app.inject({ method: "GET", url: `/api/workspace/directory/conversation?conversationId=${owner.id}` });
+    assert.equal(result.statusCode, 200, result.body);
+    return result.json().items[0].runningAgentCount;
+  };
+  assert.equal(await activityCount(), 1, "Only canonical running work counts, not assigned idle or blocked agents");
+  store.sqlite.prepare("UPDATE scheduler_runs SET status = 'completed' WHERE id = 'run-a'").run();
+  assert.equal(await activityCount(), 0, "The indicator clears when work completes");
+  store.sqlite.prepare("UPDATE scheduler_runs SET status = 'running' WHERE id = 'run-a'").run();
 
   const response = await app.inject({
     method: "GET",

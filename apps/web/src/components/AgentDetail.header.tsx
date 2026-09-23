@@ -112,6 +112,7 @@ interface AgentDetailHeaderProps {
   stopping: boolean;
   tab: AgentTab;
   showSubagents: boolean;
+  showAutomations: boolean;
   transcriptMarkdown: string;
   transcriptTitle: string;
   onOpenProject(): void;
@@ -146,6 +147,7 @@ export function AgentDetailHeader({
   stopping,
   tab,
   showSubagents,
+  showAutomations,
   transcriptMarkdown,
   transcriptTitle,
   onOpenProject,
@@ -316,7 +318,8 @@ export function AgentDetailHeader({
         value: tab === "technical" ? false : tab,
         onChange: onTabChange,
         items: AGENT_DETAIL_TABS.filter(item =>
-          item.value !== "subagents" || showSubagents
+          (item.value !== "subagents" || showSubagents) &&
+          (item.value !== "triggers" || showAutomations)
         ),
       }}
     />

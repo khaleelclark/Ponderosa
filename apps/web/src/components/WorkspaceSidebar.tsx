@@ -33,6 +33,7 @@ import { api } from "../api";
 import { isOpenAttention, isUnreadNotificationUpdate } from "../attention";
 import {
   useWorkspaceDirectory,
+  useProjectRailDirectory,
   workspaceDirectoryItems,
 } from "../hooks/useWorkspaceDirectory";
 import { queryKeys } from "../queryKeys";
@@ -171,11 +172,7 @@ export function WorkspaceSidebar({
   const showingTriggers = projectContext && projectSection === "triggers";
   const showingSettings = !projectContext && sidebarSection === "settings";
   const directorySearch = projectContext ? filter : "";
-  const projectDirectoryQuery =
-    useWorkspaceDirectory<WorkspaceProjectDirectoryItemDto>("project", {
-      search: "",
-      enabled: true,
-    });
+  const projectDirectoryQuery = useProjectRailDirectory();
   const chatDirectoryQuery =
     useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
       search: directorySearch,
@@ -420,6 +417,12 @@ export function WorkspaceSidebar({
       attentionNotifications={counts.attention}
       unreadNotificationUpdates={counts.updates}
       projectUnread={projectUnread}
+      folders={preferences.projectFolders ?? []}
+      onFoldersChange={projectFolders => onPreferences({ projectFolders })}
+      onRenameProject={setRenamingProject}
+      onProjectSettings={project => onNavigate({ kind: "project", projectId: project.id, view: "settings" })}
+      onDeleteProject={setDeletingProject}
+      projectRunningCounts={new Map([...projectDirectory.starredItems, ...projectDirectory.items].map(item => [item.project.id, item.runningAgentCount]))}
       onReorderProject={reorderRailProject}
       onOpenHome={() => showNavigation({ kind: "home" })}
       onOpenAllMessages={() => showNavigation({ kind: "allChat" })}
@@ -484,7 +487,7 @@ export function WorkspaceSidebar({
       : undefined;
   const chatRows = chatItems;
   const globalChatResourceRows = (items: typeof chatRows) =>
-    items.map(({ project: chatProject, conversation }) => {
+    items.map(({ project: chatProject, conversation, runningAgentCount = 0 }) => {
       const starred = starredResourceIds.has(
         resourcePreferenceKey("conversation", conversation.id),
       );
@@ -533,21 +536,21 @@ export function WorkspaceSidebar({
             data-resource-id={`sidebar-conversation:${conversation.id}`}
             aria-label={`Open Chat ${conversation.title}${unread.importantCount ? `, ${unread.importantCount} important unread` : ""}${unread.ordinaryCount ? `, ${unread.ordinaryCount} ordinary unread` : ""}`}
             onClick={() => openChat(chatProject, conversation)}
-            sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0 }}
+            sx={{ borderRadius: 1.25, px: 1, py: 0, minWidth: 0, height: { xs: 44, sm: 32 }, minHeight: { xs: 44, sm: 32 } }}
           >
             <ListItemIcon sx={{ minWidth: 38 }}>
               <ChatBubbleOutlineIcon fontSize="small" />
             </ListItemIcon>
             <ListItemText
               primary={conversation.title}
-              secondary={projectDisambiguator(chatProject, projects)}
+              sx={{ my: 0, mr: 1, minWidth: 0, flex: "1 1 0" }}
               primaryTypographyProps={{
                 noWrap: true,
                 fontSize: 13,
                 fontWeight: unread.totalCount ? 800 : starred ? 750 : 500,
               }}
-              secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
             />
+            {runningAgentCount > 0 ? <AgentStatusIndicator status="running" /> : null}
             {unread.importantCount ? (
               <Chip
                 size="small"
@@ -577,6 +580,7 @@ export function WorkspaceSidebar({
               size="small"
               aria-label={`${starred ? "Unstar" : "Star"} ${conversation.title}`}
               onClick={() => toggleStar("conversation", conversation.id)}
+              sx={{ width: { xs: 44, sm: 32 }, height: { xs: 44, sm: 32 }, minWidth: { xs: 44, sm: 32 }, minHeight: { xs: 44, sm: 32 }, flexShrink: 0 }}
             >
               {starred ? (
                 <StarRoundedIcon sx={{ color: starColor }} fontSize="small" />

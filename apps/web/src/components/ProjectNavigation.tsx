@@ -31,9 +31,9 @@ import {
 import type {
   OperatorProfileDto,
   ProjectDto,
+  ProjectFolderDto,
 } from "@ponderosa/core";
 import {
-  useRef,
   useState,
   type DragEvent,
   type MouseEvent,
@@ -43,11 +43,13 @@ import type { Route } from "../routing";
 import type { ProjectSidebarSection } from "../routeRegistry";
 import type { UnreadNotificationProjection } from "../workspaceNavigation";
 import { OperatorAvatar } from "./OperatorAvatar";
+import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import {
   SIDEBAR_RAIL_WIDTH,
   railSurface,
 } from "./WorkspaceSidebar.helpers";
 import { RailButton } from "./WorkspaceSidebar.parts";
+import { ProjectFolderRail } from "./ProjectFolderRail";
 
 const PROJECT_COLORS = [
   "#315B49",
@@ -74,14 +76,17 @@ function projectInitials(label: string): string {
   return `${words[0]![0] ?? ""}${words.at(-1)?.[0] ?? ""}`.toLocaleUpperCase();
 }
 
-function ProjectRailButton({
+export function ProjectRailButton({
   project,
   current,
   expanded,
   unread,
+  runningCount = 0,
+  activityUnknown = false,
   dragging,
   dropPosition,
   onClick,
+  onContextMenu,
   onDragStart,
   onDragEnd,
   onDragOver,
@@ -91,9 +96,12 @@ function ProjectRailButton({
   current: boolean;
   expanded: boolean;
   unread?: UnreadNotificationProjection;
+  runningCount?: number;
+  activityUnknown?: boolean;
   dragging: boolean;
   dropPosition?: "before" | "after";
   onClick(): void;
+  onContextMenu?(event: MouseEvent<HTMLButtonElement>): void;
   onDragStart(event: DragEvent<HTMLButtonElement>): void;
   onDragEnd(): void;
   onDragOver(event: DragEvent<HTMLButtonElement>): void;
@@ -101,13 +109,20 @@ function ProjectRailButton({
 }): JSX.Element {
   const color = PROJECT_COLORS[hashLabel(project.id || project.label) % PROJECT_COLORS.length];
   return (
-    <Tooltip title={project.label} placement="right">
+    <Tooltip title={`${project.label}${runningCount ? ` · ${runningCount} agents working` : ""}`} placement="right">
       <ButtonBase
         aria-label={`${project.label}${unread?.importantCount ? `, ${unread.importantCount} important unread` : ""}${unread?.ordinaryCount ? `, ${unread.ordinaryCount} ordinary unread` : ""}`}
         aria-current={current ? "page" : undefined}
         aria-expanded={expanded}
         draggable
         onClick={onClick}
+        onContextMenu={onContextMenu}
+        onKeyDown={event => {
+          if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+            event.preventDefault();
+            event.currentTarget.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+          }
+        }}
         onDragStart={onDragStart}
         onDragEnd={onDragEnd}
         onDragOver={onDragOver}
@@ -183,11 +198,15 @@ function ProjectRailButton({
         >
           <span>{projectInitials(project.label)}</span>
         </Badge>
+        {runningCount > 0 ? <Box sx={{ position: "absolute", right: 2, bottom: 2, display: "flex", border: `2px solid ${railSurface}`, borderRadius: "50%" }}>
+          <AgentStatusIndicator status="running" />
+        </Box> : null}
+        {activityUnknown ? <Box component="span" role="img" aria-label="Activity not yet available" title="Activity not yet available" sx={{ position: "absolute", right: 2, bottom: 2, fontSize: 10 }}>?</Box> : null}
         {unread?.importantCount && unread.ordinaryCount ? (
           <Box
             component="span"
             aria-hidden
-            sx={{ position: "absolute", right: 3, bottom: 3, width: 8, height: 8, borderRadius: "50%", bgcolor: "text.secondary", border: `2px solid ${railSurface}` }}
+            sx={{ position: "absolute", left: 3, bottom: 3, width: 8, height: 8, borderRadius: "50%", bgcolor: "text.secondary", border: `2px solid ${railSurface}` }}
           />
         ) : null}
       </ButtonBase>
@@ -206,6 +225,12 @@ export function ProjectRail({
   attentionNotifications,
   unreadNotificationUpdates,
   projectUnread,
+  folders = [],
+  onFoldersChange,
+  onRenameProject,
+  onProjectSettings,
+  onDeleteProject,
+  projectRunningCounts,
   onReorderProject,
   onOpenHome,
   onOpenAllMessages,
@@ -230,6 +255,12 @@ export function ProjectRail({
   attentionNotifications: number;
   unreadNotificationUpdates: number;
   projectUnread: ReadonlyMap<string, UnreadNotificationProjection>;
+  folders?: ProjectFolderDto[];
+  onFoldersChange(folders: ProjectFolderDto[]): void;
+  onRenameProject(project: ProjectDto): void;
+  onProjectSettings(project: ProjectDto): void;
+  onDeleteProject(project: ProjectDto): void;
+  projectRunningCounts?: ReadonlyMap<string, number>;
   onReorderProject(
     sourceProjectId: string,
     targetProjectId: string,
@@ -250,21 +281,6 @@ export function ProjectRail({
 }): JSX.Element {
   const railWidth = drawer ? 64 : SIDEBAR_RAIL_WIDTH;
   const [operatorAnchor, setOperatorAnchor] = useState<HTMLElement>();
-  const [draggedProjectId, setDraggedProjectId] = useState<string>();
-  const [dropTarget, setDropTarget] = useState<{
-    projectId: string;
-    position: "before" | "after";
-  }>();
-  const suppressProjectClick = useRef<string>();
-  const finishProjectDrag = (projectId: string) => {
-    setDraggedProjectId(undefined);
-    setDropTarget(undefined);
-    window.setTimeout(() => {
-      if (suppressProjectClick.current === projectId) {
-        suppressProjectClick.current = undefined;
-      }
-    }, 0);
-  };
   const closeOperatorMenu = () => {
     const trigger = operatorAnchor;
     setOperatorAnchor(undefined);
@@ -350,59 +366,11 @@ export function ProjectRail({
           "&::-webkit-scrollbar": { display: "none" },
         }}
       >
-        {projects.map(project => (
-          <ProjectRailButton
-            key={project.id}
-            project={project}
-            current={project.id === currentProjectId}
-            expanded={project.id === activeProjectId}
-            unread={projectUnread.get(project.id)}
-            dragging={project.id === draggedProjectId}
-            dropPosition={
-              dropTarget?.projectId === project.id
-                ? dropTarget.position
-                : undefined
-            }
-            onClick={() => {
-              if (suppressProjectClick.current === project.id) return;
-              onOpenProject(project);
-            }}
-            onDragStart={event => {
-              suppressProjectClick.current = project.id;
-              setDraggedProjectId(project.id);
-              setDropTarget(undefined);
-              event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData("text/plain", project.id);
-            }}
-            onDragEnd={() => finishProjectDrag(project.id)}
-            onDragOver={event => {
-              if (!draggedProjectId || draggedProjectId === project.id) return;
-              event.preventDefault();
-              event.dataTransfer.dropEffect = "move";
-              const bounds = event.currentTarget.getBoundingClientRect();
-              setDropTarget({
-                projectId: project.id,
-                position: event.clientY >= bounds.top + bounds.height / 2
-                  ? "after"
-                  : "before",
-              });
-            }}
-            onDrop={event => {
-              event.preventDefault();
-              if (!draggedProjectId || draggedProjectId === project.id) return;
-              const bounds = event.currentTarget.getBoundingClientRect();
-              onReorderProject(
-                draggedProjectId,
-                project.id,
-                event.clientY >= bounds.top + bounds.height / 2
-                  ? "after"
-                  : "before",
-              );
-              setDraggedProjectId(undefined);
-              setDropTarget(undefined);
-            }}
-          />
-        ))}
+        <ProjectFolderRail projects={projects} folders={folders} onChange={onFoldersChange}
+          currentProjectId={currentProjectId} activeProjectId={activeProjectId}
+          unread={projectUnread} running={projectRunningCounts}
+          onOpen={onOpenProject} onReorder={onReorderProject}
+          onRename={onRenameProject} onSettings={onProjectSettings} onDelete={onDeleteProject} />
       </Stack>
 
       <Stack spacing={0.55} sx={{ alignItems: "center" }}>

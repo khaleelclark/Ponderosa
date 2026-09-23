@@ -408,14 +408,16 @@ export function ProjectShell({
     />
   );
   } else if (route.kind === "automation") {
-    main = <TriggersPane
-      projectId={projectId}
-      agents={agents}
-      settingsTriggerId={route.triggerId}
-      onCloseTriggerSettings={() => navigate({ kind: "automation", projectId })}
-      onOpenAgentWork={occurrenceId => navigate({ kind: "projectWork", projectId, focusId: `trigger:${occurrenceId}` })}
-      onCreateTrigger={() => onCreate("trigger", { projectId })}
-    />;
+    main = <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "auto" }}>
+      <TriggersPane
+        projectId={projectId}
+        agents={agents}
+        settingsTriggerId={route.triggerId}
+        onCloseTriggerSettings={() => navigate({ kind: "automation", projectId })}
+        onOpenAgentWork={occurrenceId => navigate({ kind: "projectWork", projectId, focusId: `trigger:${occurrenceId}` })}
+        onCreateTrigger={() => onCreate("trigger", { projectId })}
+      />
+    </Box>;
   } else if (route.kind === "agents") {
     main = (
       <AgentOrganizationTree

@@ -583,8 +583,8 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       setError(reason instanceof Error ? reason.message : "Notification could not be updated.");
     }
   };
-  return <><Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="sm" aria-labelledby="notifications-title">
-    <Box component="header" sx={{ px: 3, pt: 2, pb: 1 }}>
+  return <><Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="md" aria-labelledby="notifications-title" PaperProps={{ sx: { overflow: "hidden", maxHeight: fullScreen ? "100%" : "85dvh" } }}>
+    <Box component="header" sx={{ px: 3, pt: 2, pb: 1, flexShrink: 0 }}>
       <Typography
         id="notifications-title"
         component="h2"
@@ -604,7 +604,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       <Tab value="attention" label={`Needs Action (${openActionCount})`} sx={{ minHeight: 42 }} />
       <Tab value="updates" label={`Updates (${unreadUpdateCount})`} sx={{ minHeight: 42 }} />
     </Tabs>
-    <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5 }}>
+    <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5, overflowX: "hidden", minWidth: 0 }}>
       {error ? <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert> : null}
       <Stack spacing={1}>
         {groups.map((group) => {
@@ -620,23 +620,28 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
             </Button>
             </Stack>
             <List dense disablePadding aria-label={`Notifications for ${project?.label ?? "Ponderosa"}`}>
-              {group.items.map((item) => <ListItem key={item.id} disablePadding>
+              {group.items.map((item) => <ListItem key={item.id} disablePadding sx={{ "& > [data-notification-id]": { width: "100%", minWidth: 0 } }}>
                 <NotificationAcknowledgementBoundary notificationId={item.id} acknowledged={Boolean(item.acknowledgedAt) || !isOpenAttention(item)} onAcknowledge={acknowledgePresentedNotifications}>
                 <ListItemButton selected={filter === "updates" ? !item.readAt : !item.acknowledgedAt} onClick={() => navigateToNotification(item)} alignItems="flex-start" sx={{ gap: 1, mx: .75, my: .45, py: 1, borderRadius: 1.5 }}>
                   <Box aria-hidden sx={{ width: 8, height: 8, mt: .75, borderRadius: "50%", bgcolor: filter === "updates" ? "primary.main" : item.acknowledgedAt ? "action.disabled" : item.severity === "urgent" ? "error.main" : "warning.main", flex: "0 0 auto" }} />
                   <ListItemText
+                    sx={{ minWidth: 0, overflowWrap: "anywhere" }}
                     primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={(filter === "attention" ? item.acknowledgedAt : item.readAt) ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{item.title}</Typography>{filter === "attention" && !item.acknowledgedAt ? <Chip size="small" color="primary" label="New" /> : item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Issue"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(item.createdAt)}</Typography></Stack>}
                     secondary={<Stack spacing={0.5}>{affectedAgentLabel(item) ? <Typography variant="caption" color="text.secondary">Affected Agent · {affectedAgentLabel(item)}</Typography> : null}{item.conversationId && conversations.get(item.conversationId) ? <Typography variant="caption" color="text.secondary">{conversations.get(item.conversationId)!.title}</Typography> : null}<Typography variant="body2" color="text.secondary" sx={{ display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 2 }}>{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open"
                       ? <DecisionActions decision={notificationDecision(item)!} compact />
-                      : item.kind === "operational" && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={1}><Button size="small" onClick={(event) => { event.stopPropagation(); void setStatus(item, "resolved"); }}>Mark Resolved</Button><Button size="small" color="inherit" onClick={(event) => { event.stopPropagation(); void setStatus(item, "dismissed"); }}>Dismiss</Button></Stack> : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
-                    {item.projectId && (item.kind === "operational" || ["coordination", "trigger", "decision"].includes(item.category ?? "")) ? <Button size="small" sx={{ alignSelf: "flex-start" }} onClick={(event) => {
+                      : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
+                    <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: .5 }}>
+                    {item.kind === "operational" && (item.status ?? "open") === "open" ? <Button size="small" onClick={(event) => { event.stopPropagation(); void setStatus(item, "resolved"); }}>Mark Resolved</Button> : null}
+                    {item.projectId && (item.kind === "operational" || ["coordination", "trigger", "decision"].includes(item.category ?? "")) ? <Button size="small" onClick={(event) => {
                       event.stopPropagation();
                       const route = notificationWorkRoute(item, availableProjectIds);
                       if (route) {
                         onClose();
                         onNavigate(route);
                       }
-                    }}>Review Work Details</Button> : null}</Stack>}
+                    }}>Review Work Details</Button> : null}
+                    {item.kind === "operational" && (item.status ?? "open") === "open" ? <Button size="small" color="inherit" sx={{ ml: "auto" }} onClick={(event) => { event.stopPropagation(); void setStatus(item, "dismissed"); }}>Dismiss</Button> : null}
+                    </Box></Stack>}
                     secondaryTypographyProps={{ component: "div" }}
                   />
                 </ListItemButton>

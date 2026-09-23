@@ -3165,16 +3165,6 @@ export function Composer({
           onFilterChange={setCapabilityFilter}
           onApplyCapability={applyCapability}
         />
-        {enableVoiceDictation ? (
-          <Box sx={{ display: "contents", "& > *": { flexShrink: { xs: 0, md: undefined }, order: compact ? 2 : undefined } }}>
-          <DictationControls
-            disabled={disabled || composerLocked || sending}
-            onFinalTranscript={insertDictatedText}
-            onSettlingChange={handleDictationSettlingChange}
-            onActiveChange={setDictationActive}
-          />
-          </Box>
-        ) : null}
         <Box sx={{ display: compact ? "none" : "contents", "& > *": { flexShrink: { xs: 0, md: undefined } } }}>
         {destinationMode === "project-chat" ? (
           <ComposerProjectDestinationAction
@@ -3306,6 +3296,12 @@ export function Composer({
           </Button>
         ) : null}
         <Box data-composer-send-actions sx={{ display: { xs: "flex", md: "contents" }, order: compact ? 3 : undefined, alignItems: "center", gap: 0.25, flexShrink: 0 }}>
+        {enableVoiceDictation ? <DictationControls
+          disabled={disabled || composerLocked || sending}
+          onFinalTranscript={insertDictatedText}
+          onSettlingChange={handleDictationSettlingChange}
+          onActiveChange={setDictationActive}
+        /> : null}
         {compact && showQueue && !canCancel ? (
           <IconButton aria-label="Choose send action" onClick={() => inputRef.current?.focus()}><ArrowUpwardIcon /></IconButton>
         ) : <ComposerSendActions

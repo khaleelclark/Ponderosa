@@ -756,6 +756,7 @@ export function useWorkspaceStream(
       } else if (workspaceAgentEventChangesPhase(event)) {
         if (event.category === "lifecycle") {
           directoryInvalidator.schedule("project", event.projectId);
+          directoryInvalidator.schedule("conversation", event.projectId);
         }
       }
       if (event.type === "preferences_updated") return;

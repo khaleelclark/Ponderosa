@@ -28,10 +28,11 @@ function isLoopbackLink(url: URL): boolean {
 
 function ScrollableMessageTable({node: _node, ...props}: ComponentPropsWithoutRef<"table"> & {node?: unknown}): JSX.Element {
   const mobile = useMediaQuery("(max-width: 899.95px)");
-  if (!mobile) return <table {...props} />;
   return <div style={{minWidth: 0, maxWidth: "100%"}}>
-    <Typography variant="caption" color="text.secondary">Swipe or scroll sideways to read the table.</Typography>
-    <table {...props} tabIndex={0} aria-label="Scrollable message table" />
+    {mobile ? <Typography variant="caption" color="text.secondary">Swipe or scroll sideways to read the table.</Typography> : null}
+    <div role="region" tabIndex={0} aria-label="Scrollable message table" style={{maxWidth: "100%", overflowX: "auto", overscrollBehaviorX: "contain"}}>
+      <table {...props} />
+    </div>
   </div>;
 }
 
@@ -219,7 +220,7 @@ function ChatLink({ href, children, previewScope, projectId }: { href: string; c
   };
   return <>
     <Box className="chat-text-navigation" component="a" href={href} target={link.loopback ? undefined : "_blank"} rel={link.loopback ? undefined : "noreferrer"} onClick={activate} aria-label={`Open link to ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
-      <Box component="span" sx={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{link.destination}</Box>
+      <Box component="span" title={link.url.href} sx={{ minWidth: 0, maxWidth: "18rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{children}</Box>
       <OpenInNewIcon aria-hidden sx={{ fontSize: 14, flex: "0 0 auto" }} />
     </Box>
     <Dialog open={chooserOpen} onClose={() => setChooserOpen(false)} aria-labelledby="link-open-title" maxWidth="xs" fullWidth>
@@ -492,8 +493,10 @@ function ChatMarkdown({
         "& :not(pre) > code": { px: 0.5, py: 0.125, borderRadius: 0.75, bgcolor: "action.hover" },
         "& pre": { my: 0.65, p: 1.1, maxWidth: "100%", overflowX: "auto", borderRadius: 1, bgcolor: "action.hover" },
         "& img": { display: "block", maxWidth: "100%", height: "auto", objectFit: "contain" },
-        "& table": { display: "block", maxWidth: "100%", overflowX: "auto", borderCollapse: "collapse" },
-        "& th, & td": { px: 1, py: 0.5, border: 1, borderColor: "divider", minWidth: { xs: "7rem", md: 0 }, maxWidth: { xs: "20rem", md: "none" }, overflowWrap: { xs: "break-word", md: "anywhere" } },
+        "& table": { width: "100%", borderCollapse: "collapse" },
+        "& th, & td": { px: 1, py: 0.5, border: 1, borderColor: "divider", minWidth: "7rem", maxWidth: "24rem", verticalAlign: "top", overflowWrap: "break-word", wordBreak: "normal" },
+        "& th:first-child, & td:first-child": { minWidth: "3rem" },
+        "& td a, & th a": { maxWidth: "16rem" },
         "& a": { maxWidth: "100%", color: "inherit", textDecoration: "none", overflowWrap: "anywhere", wordBreak: "break-word" },
       }}
     >

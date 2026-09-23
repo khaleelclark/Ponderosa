@@ -93,10 +93,13 @@ interface ProviderCommandRoutesContext {
 export function authorizedManualRolloverConversationId(
   agent: { conversationId: string },
   sourceConversationId?: string,
+  sourceRunHasCommunication = sourceConversationId !== undefined,
 ): string | undefined {
-  return sourceConversationId && agent.conversationId === sourceConversationId
-    ? sourceConversationId
-    : undefined;
+  // Internal handoff Runs have no authored Communication of their own. Their
+  // accepted provider session can still contain collaboration from the
+  // Agent's owning Chat, which must retain that exact Chat authority.
+  if (!sourceRunHasCommunication) return agent.conversationId;
+  return sourceConversationId === agent.conversationId ? agent.conversationId : undefined;
 }
 
 function publicProviderCommandFailure(error: unknown): {
@@ -632,6 +635,7 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
   const rolloverConversationId = authorizedManualRolloverConversationId(
     agent,
     sourceCommunication?.conversationId,
+    Boolean(latestRun.communicationEventId),
   );
   let rolloverBoundary: ReturnType<typeof store.bindContextRolloverBoundary>;
   try {

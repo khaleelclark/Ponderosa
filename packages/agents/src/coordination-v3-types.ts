@@ -159,6 +159,7 @@ export interface ContextRolloverV3 {
   state: ContextRolloverState;
   oldProviderSessionId: string;
   providerSessionGeneration: string;
+  cycleNumber: number;
   detectedOccupancy: number;
   aggregateTokens?: number;
   threshold: number;

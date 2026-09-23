@@ -1,3 +1,4 @@
+import { useWorkspaceDirectory } from "../hooks/useWorkspaceDirectory";
 import {
   Alert,
   Box,
@@ -216,6 +217,18 @@ export function AgentDetail({
     };
   }
   const showSubagents = detail?.hasSubagentHistory === true;
+  const automationSummary = useWorkspaceDirectory("trigger", {
+    projectId: detail?.agent.projectId,
+    agentIds: [agentId],
+    enabled: Boolean(detail),
+    summary: true,
+  });
+  const showAutomations = (automationSummary.data?.pages.at(-1)?.total ?? 0) > 0;
+  useEffect(() => {
+    if (tab !== "triggers" || !automationSummary.requestState.hasResolved || showAutomations) return;
+    setTab("chat");
+    onViewChange?.("chat");
+  }, [automationSummary.requestState.hasResolved, onViewChange, showAutomations, tab]);
   useEffect(() => {
     if (tab !== "subagents" || !detail || showSubagents) return;
     setTab("chat");
@@ -1065,6 +1078,7 @@ export function AgentDetail({
         stopping={cancelRun.isPending}
         tab={tab}
         showSubagents={showSubagents}
+        showAutomations={showAutomations}
         transcriptMarkdown={transcriptMarkdown}
         transcriptTitle={transcriptTitle}
         onOpenProject={onOpenProject}

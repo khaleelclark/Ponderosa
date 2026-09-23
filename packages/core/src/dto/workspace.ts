@@ -13,7 +13,16 @@ export interface NotificationPreferencesDto {
   broadcasts: boolean;
 }
 
+export interface ProjectFolderDto {
+  id: string;
+  name: string;
+  projectIds: string[];
+  expanded: boolean;
+}
+
 export interface WorkspacePreferencesDto {
+  /** Presentation-only, single-level Project groups in the navigation rail. */
+  projectFolders?: ProjectFolderDto[];
   /** Absent on pre-local-voice workspaces; resolves to browser speech. */
   speech?: SpeechPreferencesDto;
   /** Canonical monotonic preference mutation sequence. */
@@ -92,6 +101,8 @@ export interface WorkspaceConversationDirectoryItemDto {
   kind: "conversation";
   project: Pick<ProjectDto, "id" | "label" | "hostPath">;
   conversation: ConversationDto;
+  /** Canonical active-work count; omitted by older servers. */
+  runningAgentCount?: number;
 }
 
 export interface WorkspaceAgentDirectoryItemDto {
@@ -171,7 +182,10 @@ export interface UploadedOperatorAvatarDto {
   url: string;
 }
 
-export type UpdateWorkspacePreferencesRequest = Partial<Omit<WorkspacePreferencesDto, "revision" | "updatedAt">>;
+export type UpdateWorkspacePreferencesRequest = Partial<Omit<WorkspacePreferencesDto, "revision" | "updatedAt">> & {
+  /** Required compare-and-swap revision when replacing folder preferences. */
+  projectFoldersRevision?: number;
+};
 
 export interface DraftAttachmentDto {
   id: string;

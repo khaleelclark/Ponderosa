@@ -144,6 +144,21 @@ export function registerWorkspacePreferenceRoutes(
 
   app.patch<{ Body: UpdateWorkspacePreferencesRequest }>("/api/workspace/preferences", async (request, reply) => {
     const patch = request.body ?? {};
+    if (patch.projectFolders !== undefined) {
+      const folders = patch.projectFolders;
+      const ids = new Set<string>();
+      const members = new Set<string>();
+      if (!Array.isArray(folders) || folders.length > 1000 || folders.some(folder => {
+        if (!folder || typeof folder !== "object" || typeof folder.id !== "string" || !folder.id || folder.id.length > 200 || ids.has(folder.id) ||
+          typeof folder.name !== "string" || !folder.name.trim() || folder.name.length > 100 || typeof folder.expanded !== "boolean" ||
+          !Array.isArray(folder.projectIds) || folder.projectIds.length > 10000) return true;
+        ids.add(folder.id);
+        return folder.projectIds.some(id => {
+          if (typeof id !== "string" || !id || id.length > 200 || members.has(id) || members.size >= 10000) return true;
+          members.add(id); return false;
+        });
+      })) return reply.code(400).send({ error: "invalid project folders" });
+    }
     if (patch.speech !== undefined && !validSpeechPreferences(patch.speech)) {
       return reply.code(400).send({ error: "invalid speech preferences" });
     }
@@ -235,6 +250,10 @@ export function registerWorkspacePreferenceRoutes(
       patch.profile = { ...profile, handle };
     }
     const previousPreferences = workspace.getPreferences();
+    if (patch.projectFolders !== undefined && patch.projectFoldersRevision !== previousPreferences.revision) {
+      return reply.code(409).send({ error: "Project folders changed; refresh and reapply the folder action." });
+    }
+    delete patch.projectFoldersRevision;
     const globalInstructionsChanged = patch.globalInstructions !== undefined && patch.globalInstructions !== previousPreferences.globalInstructions;
     const profileChanged = patch.profile !== undefined && JSON.stringify(patch.profile) !== JSON.stringify(previousPreferences.profile);
     const cursor = workspace.cursor();
