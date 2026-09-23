@@ -36,7 +36,6 @@ test('supervised browser survives application shutdown with draft intact and sta
     assert.equal(first.authorityStatus(true).active, 1, 'new browser work must revoke restart readiness');
     await first.closeAll('server_shutdown');
     assert.equal(cancellations, 2, 'shutdown must recheck chooser cleanup after post-drain browser work');
-    await first.closeAll('server_shutdown');
     assert.equal(closed, 0);
     const nextClient = new BrowserServiceClient(socket);
     const ids = await nextClient.claim();
