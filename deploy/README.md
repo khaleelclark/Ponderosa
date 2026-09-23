@@ -87,6 +87,7 @@ for `PONDEROSA_AUTH_TOKEN` and `PONDEROSA_OPERATOR_IDENTITIES`; set only:
 
 ```ini
 PONDEROSA_PROXY_BACKEND_PORT=8787
+PONDEROSA_PROXY_PUBLIC_ORIGIN=https://ponderosa.example.ts.net
 PONDEROSA_PROXY_IDENTITY_HEADER=Tailscale-User-Login
 ```
 
@@ -102,6 +103,10 @@ every verified request receives backend authorization server-side. Local
 launcher installations need no bridge. Other self-hosted identity proxies can
 use their own verified header name; with bearer injection and exact origin
 configured, Ponderosa does not require Tailscale.
+The bridge restores the configured public Host before forwarding: some Unix
+socket front proxies change Host to `localhost`, which otherwise makes
+browser-originated writes fail Ponderosa's Host/Origin check. If the front
+proxy supplies `X-Forwarded-Host`, it must match the configured public origin.
 
 To require a second exact identity check inside Ponderosa, configure the
 trusted reverse-proxy identity allowlist as well as the backend bearer:

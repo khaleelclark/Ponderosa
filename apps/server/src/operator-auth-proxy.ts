@@ -13,6 +13,7 @@ export interface OperatorAuthProxyOptions {
   socketPath: string;
   backendPort: number;
   backendToken: string;
+  publicOrigin: string;
   identityHeader: string;
   allowedIdentities: readonly string[];
 }
@@ -22,7 +23,7 @@ const hopByHop = new Set([
   "te", "trailer", "transfer-encoding", "upgrade",
 ]);
 
-function forwardedHeaders(headers: IncomingHttpHeaders, backendToken: string): IncomingHttpHeaders {
+function forwardedHeaders(headers: IncomingHttpHeaders, backendToken: string, publicHost: string): IncomingHttpHeaders {
   const removed = new Set([...hopByHop, "authorization"]);
   const connection = headers.connection;
   if (typeof connection === "string") {
@@ -33,6 +34,10 @@ function forwardedHeaders(headers: IncomingHttpHeaders, backendToken: string): I
     if (!removed.has(name)) forwarded[name] = value;
   }
   forwarded.authorization = `Bearer ${backendToken}`;
+  // Some front proxies (including Tailscale Serve for Unix targets) rewrite
+  // Host to localhost. The configured public origin, not a forwarded claim,
+  // is authoritative for Ponderosa's Host/Origin mutation check.
+  forwarded.host = publicHost;
   return forwarded;
 }
 
@@ -42,6 +47,13 @@ export function createOperatorAuthProxy(options: OperatorAuthProxyOptions): Serv
     throw new Error("proxy backend port is invalid");
   }
   if (options.backendToken.length < 32) throw new Error("proxy backend token must have at least 32 characters");
+  let publicOrigin: URL;
+  try { publicOrigin = new URL(options.publicOrigin); }
+  catch { throw new Error("proxy public origin must be an exact HTTPS origin"); }
+  if (publicOrigin.protocol !== "https:" || publicOrigin.origin !== options.publicOrigin ||
+      publicOrigin.username || publicOrigin.password) {
+    throw new Error("proxy public origin must be an exact HTTPS origin");
+  }
   const identityHeader = options.identityHeader.trim().toLowerCase();
   if (!/^[a-z0-9-]+$/u.test(identityHeader) || ["authorization", "host", "cookie"].includes(identityHeader)) {
     throw new Error("proxy identity header is invalid");
@@ -57,12 +69,18 @@ export function createOperatorAuthProxy(options: OperatorAuthProxyOptions): Serv
       response.end('{"error":"operator identity required"}');
       return;
     }
+    const forwardedHost = incoming.headers["x-forwarded-host"];
+    if (forwardedHost !== undefined && forwardedHost !== publicOrigin.host) {
+      response.writeHead(421, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      response.end('{"error":"unrecognized proxy host"}');
+      return;
+    }
     const upstream = httpRequest({
       hostname: "127.0.0.1",
       port: options.backendPort,
       path: incoming.url,
       method: incoming.method,
-      headers: forwardedHeaders(incoming.headers, options.backendToken),
+      headers: forwardedHeaders(incoming.headers, options.backendToken, publicOrigin.host),
     }, (result) => {
       const headers: IncomingHttpHeaders = {};
       for (const [name, value] of Object.entries(result.headers)) {
@@ -120,6 +138,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     socketPath: process.env.PONDEROSA_PROXY_SOCKET_PATH ?? "",
     backendPort: Number(process.env.PONDEROSA_PROXY_BACKEND_PORT),
     backendToken: process.env.PONDEROSA_PROXY_BACKEND_TOKEN ?? process.env.PONDEROSA_AUTH_TOKEN ?? "",
+    publicOrigin: process.env.PONDEROSA_PROXY_PUBLIC_ORIGIN ?? "",
     identityHeader: process.env.PONDEROSA_PROXY_IDENTITY_HEADER ?? "",
     allowedIdentities: (process.env.PONDEROSA_PROXY_ALLOWED_IDENTITIES ?? process.env.PONDEROSA_OPERATOR_IDENTITIES ?? "").split(","),
   };

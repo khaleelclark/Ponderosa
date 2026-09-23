@@ -14,6 +14,7 @@ WorkingDirectory=/home/khaleel/ponderosa
 # PONDEROSA_OPERATOR_IDENTITIES; no second copy of the credential is needed.
 EnvironmentFile=/home/khaleel/.config/ponderosa/release.env
 Environment=PONDEROSA_PROXY_BACKEND_PORT=8787
+Environment=PONDEROSA_PROXY_PUBLIC_ORIGIN=https://ponderosa.example.ts.net
 Environment=PONDEROSA_PROXY_IDENTITY_HEADER=Tailscale-User-Login
 Environment=PONDEROSA_PROXY_SOCKET_PATH=/run/ponderosa-operator-proxy/operator.sock
 RuntimeDirectory=ponderosa-operator-proxy
