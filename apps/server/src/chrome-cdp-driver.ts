@@ -390,9 +390,14 @@ export class ChromeCdpDriver implements BrowserDriver {
     if (!reference) {
       const selected = await this.playwright.page(page.targetId);
       // CDP can publish a popup and its DOM before Playwright has settled the
-      // corresponding main-frame navigation. Wait for action-frame readiness,
-      // not just page discovery, before handing out a locator.
-      await selected.waitForLoadState("domcontentloaded", { timeout: 10_000 });
+      // corresponding main-frame navigation. A bare load-state wait can
+      // succeed on the popup's initial about:blank document, then leave fill
+      // waiting on a different frame. Bind readiness to the inspected URL.
+      if (page.openerPageId && page.url !== "about:blank") {
+        await selected.waitForURL(page.url, { waitUntil: "domcontentloaded", timeout: 10_000 });
+      } else {
+        await selected.waitForLoadState("domcontentloaded", { timeout: 10_000 });
+      }
       return selected.locator(selector);
     }
     const entry = this.frameReferences.get(reference[1]!);
