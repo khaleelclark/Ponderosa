@@ -20,6 +20,7 @@
     "@lexical/react": "^0.49.0",
     "@mui/icons-material": "^6.5.0",
     "@mui/material": "^6.3.0",
+    "@novnc/novnc": "1.5.0",
     "@ponderosa/core": "workspace:*",
     "@tanstack/react-query": "^5.101.2",
     "lexical": "^0.49.0",

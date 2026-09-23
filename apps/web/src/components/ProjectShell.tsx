@@ -28,7 +28,7 @@ import { ProjectArtifactsView } from "./ProjectArtifactsView";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
 import { AgentBrowserDialog } from "./AgentBrowserDialog";
-import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
+import { useProjectBrowser, type ProjectBrowserRequest } from "./ProjectBrowserContext";
 import { WorkspaceReviewPane } from "./files/WorkspaceReviewPane";
 import { WorkspaceFileView } from "./WorkspaceFileView";
 import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
@@ -83,6 +83,7 @@ export function ProjectShell({
     },
   ): void;
 }): JSX.Element {
+  const projectBrowser = useProjectBrowser();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const queryClient = useQueryClient();
@@ -301,7 +302,7 @@ export function ProjectShell({
         healthByAgentId={healthByAgentId}
         projectAgents={agents}
         onOpenProject={() => navigate({ kind: "allChats" })}
-        onOpenProjectBrowser={() => navigate({ kind: "browser", projectId })}
+        onOpenProjectBrowser={() => projectBrowser.open()}
         onOpenAgent={(agentId, view, technicalFocusId) => view
           ? navigate({ kind: "agent", projectId, agentId, view, ...(technicalFocusId ? { technicalFocusId } : {}) })
           : navigate({ kind: "agent", projectId, agentId })}
@@ -311,13 +312,7 @@ export function ProjectShell({
           )}
         onOpenReview={openAgentReview}
         onOpenAgentWork={(focusId) => navigate({ kind: "projectWork", projectId, conversationId: route.conversationId, ...(focusId ? { focusId } : {}) })}
-        onOpenBrowser={(agentId, runId) => navigate({
-          kind: "browser",
-          projectId,
-          agentId,
-          runId,
-          conversationId: route.conversationId,
-        })}
+        onOpenBrowser={(agentId, runId) => projectBrowser.openAgent?.(agentId, runId)}
         onOpenFileActivity={openAgentFileActivity}
         onNewAgent={(master, managerAgentId) => onCreate("agent", {
           projectId,
@@ -379,7 +374,7 @@ export function ProjectShell({
         }}
         onOpenArtifact={(artifactId) => openProjectArtifact(route.agentId, artifactId)}
         onOpenReview={(path) => navigate({ kind: "review", projectId, agentId: route.agentId, ...(path ? { path } : {}) })}
-        onOpenBrowser={(runId) => navigate({ kind: "browser", projectId, agentId: route.agentId, runId })}
+        onOpenBrowser={(runId) => projectBrowser.openAgent?.(route.agentId, runId)}
         onNewSubagent={openNewSubagent}
         onCreateTrigger={() => onCreate("trigger", {
           projectId,

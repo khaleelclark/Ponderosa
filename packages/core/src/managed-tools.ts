@@ -367,6 +367,11 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
     },
   },
   {
+    name: "ponderosa_browser_new_page",
+    description: "Create and activate a new blank tab in the existing authorized browser, preserving all existing tabs and its signed-in session. Does not launch or replace a browser. Then use ponderosa_browser_navigate to open the target URL. Do not use keyboard shortcuts to create tabs.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+  },
+  {
     name: "ponderosa_browser_close_page",
     description: "Close an admitted browser page by its opaque page ID. The browser keeps a safe fallback page when necessary.",
     inputSchema: {
@@ -387,11 +392,16 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
   },
   {
     name: "ponderosa_browser_act",
-    description: "Operate the owned browser by CSS selector or key. Fails while the operator has control. Fill text is never copied into the activity summary. Before an action that may submit, purchase, send, or change an account, declare consequence and a stable attempt_id so retries are visible and distinguishable in the audit trail.",
+    description: "Operate the owned browser by an inspected selector (including frame-scoped selectors), key, coordinate pointer click, or scroll. Coordinate actions require the current page_id from inspection and CSS viewport coordinates; inspect again after switching tabs. Fails while the operator has control. Fill verifies the immediate resulting value; check later site validation separately. Fill text is never copied into the activity summary. Before an action that may submit, purchase, send, or change an account, declare consequence and a stable attempt_id so retries are visible and distinguishable in the audit trail.",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["action"],
       properties: {
-        action: { type: "string", enum: ["click", "fill", "key"] },
+        action: { type: "string", enum: ["click", "fill", "key", "pointer", "scroll"] },
+        page_id: { type: "string", description: "Required for pointer/scroll. Exact current page ID from inspection." },
+        x: { type: "number", description: "Pointer X in CSS viewport pixels, not high-density screenshot pixels." },
+        y: { type: "number", description: "Pointer Y in CSS viewport pixels." },
+        delta_x: { type: "number", minimum: -4000, maximum: 4000 },
+        delta_y: { type: "number", minimum: -4000, maximum: 4000 },
         selector: { type: "string", minLength: 1, maxLength: 500 },
         text: { type: "string" },
         key: { type: "string", minLength: 1, maxLength: 40 },

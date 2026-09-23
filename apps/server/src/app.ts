@@ -427,6 +427,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     projectBrowserGrants,
     projectBrowserScope,
     projectBrowserSessions,
+    restoreSharedBrowsers,
   } = createBrowserAuthority({
     dataDir: opts.dataDir,
     store,
@@ -600,6 +601,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     scheduleRuntimeLivenessHeartbeat,
     transitionRun,
   } = createRuntimeEventAuthority({
+    onRunClaimed: (agentId, run) => {
+      const agent = store.getAgent(agentId);
+      if (agent) {
+        projectBrowserSessions.bindNextRun(projectBrowserScope(agent.projectId), agentId, run.runId, run.conversationId);
+        projectBrowserSessions.bindNextRun(projectBrowserScope("saved-browser"), agentId, run.runId, run.conversationId);
+      }
+    },
     opts,
     activeRuns,
     store,
@@ -672,6 +680,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       },
     },
   }) as unknown as PonderosaServer;
+  app.addHook("onReady", restoreSharedBrowsers);
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ProjectDeletionInProgressError) {
       return reply.code(409).send({ error: error.message });

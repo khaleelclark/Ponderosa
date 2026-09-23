@@ -557,6 +557,7 @@ export interface WorkspaceFileViewDto {
 
 export interface BrowserPageDto {
   id: string;
+  loading?: boolean;
   title?: string;
   url?: string;
   openerPageId?: string;
@@ -601,6 +602,10 @@ export interface BrowserCapabilitiesDto {
   hostedHeaded: boolean;
   /** The server can retain explicitly configured browser profiles. */
   persistentProfiles: boolean;
+  /** Live process belongs to the independent browser service. */
+  retainedAcrossAppRestart?: boolean;
+  /** Responsive native window display, independent of the automation connection. */
+  nativeDisplay?: boolean;
 }
 
 export type BrowserProfileMode = "disposable" | "trusted";
@@ -638,6 +643,12 @@ export interface UpdateBrowserAgentPreferenceRequest {
 /** One host browser bound to an exact active Run. Browser process ownership is
  * always ephemeral; only an explicitly selected trusted profile is retained. */
 export interface BrowserSessionDto {
+  nextRunAgentId?: string;
+  location?: "hosted" | "local";
+  localPaused?: boolean;
+  manualControl?: "manual" | "connecting" | "automation";
+  /** Explicit private sign-in pause; viewers must not reconnect automatically. */
+  privateSignIn?: boolean;
   id: string;
   projectId: string;
   agentId: string;
@@ -668,12 +679,20 @@ export interface BrowserSessionDto {
 
 /** One operator-owned browser that persists for the lifetime of a Project. */
 export interface ProjectBrowserSessionDto {
+  profileMode?: BrowserProfileMode;
+  nextRunAgentId?: string;
+  location?: "hosted" | "local";
+  localPaused?: boolean;
+  manualControl?: "manual" | "connecting" | "automation";
+  privateSignIn?: boolean;
   id: string;
   projectId: string;
   status: BrowserSessionStatus;
   controlOwner: BrowserControlOwner;
   /** Present only while an exact active Run has borrowed control. */
   controllerAgentId?: string;
+  controllerAgentTitle?: string;
+  controllerProjectId?: string;
   controllerRunId?: string;
   controlEpoch: number;
   capabilities: BrowserCapabilitiesDto;
@@ -689,7 +708,19 @@ export interface ProjectBrowserSessionDto {
   failure?: string;
 }
 
+/** Reserved browser ownership namespace, not a chat or a user identity. */
+export const SAVED_BROWSER_SCOPE_ID = "saved-browser";
+export interface SavedBrowserDto {
+  profileId: string;
+  promotedAt: string;
+}
+
 export interface ProjectBrowserControlRequest extends BrowserControlRequest {
+  /** Required when granting the instance-wide saved browser to a chat's Agent. */
+  controllerProjectId?: string;
+  nextRun?: boolean;
+  /** Resolve current versus next Run on the server, without a client health race. */
+  currentOrNext?: boolean;
   /** Required when handing control to an agent; ignored when reclaiming it. */
   agentId?: string;
 }
@@ -698,16 +729,39 @@ export interface ProjectBrowserNavigateRequest {
   url: string;
 }
 
+export interface ProjectBrowserOpenRequest {
+  url?: string;
+  rememberSignIns?: boolean;
+}
+
 export interface BrowserControlRequest {
   owner: BrowserControlOwner;
   expectedControlEpoch: number;
 }
 
-export type BrowserOperatorInputRequest =
+export interface BrowserViewportSize { width: number; height: number }
+export interface BrowserActivityDto {
+  pageId: string;
+  kind: "click" | "fill";
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+  at: number;
+}
+export interface BrowserFrameMetadata {
+  pageId: string;
+  viewport: BrowserViewportSize;
+  activity?: BrowserActivityDto;
+}
+export type BrowserOperatorInputRequest = (
   | { kind: "click"; x: number; y: number; expectedControlEpoch: number }
   | { kind: "type"; text: string; expectedControlEpoch: number }
   | { kind: "key"; key: string; expectedControlEpoch: number }
-  | { kind: "scroll"; deltaX: number; deltaY: number; expectedControlEpoch: number };
+  | { kind: "scroll"; deltaX: number; deltaY: number; expectedControlEpoch: number }) & {
+    expectedPageId?: string;
+    expectedViewport?: BrowserViewportSize;
+  };
 
 // ─── Files (scoped file browser, SPEC §8/§11) ────────────────────────────────
 

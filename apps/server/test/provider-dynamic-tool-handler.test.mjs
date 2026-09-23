@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   PONDEROSA_IMPORT_FILE_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
+  PONDEROSA_BROWSER_TOOLS,
 } from "@ponderosa/core";
 import Fastify from "fastify";
 import { createProviderDynamicToolHandler } from "../dist/routes/provider-dynamic-tool-handler.js";
@@ -21,9 +22,11 @@ test("provider tools retain their Run capability and special route payloads", as
   app.post("/api/agent-browser", async (request) => request.body);
 
   const browserTool = { name: "ponderosa_browser_navigate", description: "", inputSchema: {} };
+  const newTab = PONDEROSA_BROWSER_TOOLS.find(tool => tool.name === "ponderosa_browser_new_page");
+  assert.ok(newTab, "new-tab operation must be published to providers");
   const handler = createProviderDynamicToolHandler(
     app,
-    [PONDEROSA_TEAM_DIRECTORY_TOOL, PONDEROSA_IMPORT_FILE_TOOL, browserTool],
+    [PONDEROSA_TEAM_DIRECTORY_TOOL, PONDEROSA_IMPORT_FILE_TOOL, browserTool, newTab],
     "run-capability",
   );
 
@@ -56,4 +59,5 @@ test("provider tools retain their Run capability and special route payloads", as
     success: false,
     text: "Unavailable Ponderosa tool for this Run: ponderosa_message",
   });
+  assert.deepEqual(JSON.parse((await handler({ id: "new-tab", name: newTab.name, arguments: {} })).text), { operation: "new_page" });
 });

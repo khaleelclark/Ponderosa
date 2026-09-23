@@ -1,4 +1,8 @@
 import type {
+  LocalBrowserConnectionDto,
+  LocalBrowserPairingDto,
+  BrowserFrameMetadata,
+  BrowserViewportSize,
   ActiveMessageDeliveryReceiptsDto,
   ActiveMessageDeliveryReceiptsRequest,
   AgentActivityOutputDto,
@@ -1048,17 +1052,41 @@ export const realApi = {
       method: "POST", body: JSON.stringify(request satisfies BrowserOperatorInputRequest),
     });
   },
-  async getBrowserFrame(projectId: string, agentId: string, runId: string): Promise<{ blob: Blob; revision: number }> {
-    const response = await fetch(`${browserPath(projectId, agentId, runId)}/frame`, { cache: "no-store" });
+  async getBrowserFrame(projectId: string, agentId: string, runId: string, pageId?: string): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }> {
+    const response = await fetch(`${browserPath(projectId, agentId, runId)}/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, { cache: "no-store" });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
-    return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0) };
+    return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0), metadata: JSON.parse(response.headers.get("x-ponderosa-browser-frame") ?? "null") ?? undefined };
   },
   getProjectBrowser(projectId: string): Promise<ProjectBrowserSessionDto> {
     return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser`);
   },
-  openProjectBrowser(projectId: string, url?: string): Promise<ProjectBrowserSessionDto> {
+  getChatBrowserPreferences(projectId: string): Promise<{ rememberSignIns: boolean }> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/browser/preferences`);
+  },
+  getSavedBrowser(): Promise<{ browser: import("@ponderosa/core").SavedBrowserDto | null }> {
+    return requestJson("/api/saved-browser");
+  },
+  promoteBrowser(projectId: string, sessionId: string, expectedControlEpoch: number): Promise<ProjectBrowserSessionDto> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/browser/promote`, {
+      method: "POST", body: JSON.stringify({ sessionId, expectedControlEpoch, confirmInstanceSharing: true }),
+    });
+  },
+  hostedBrowserControl(projectId: string, action: "open" | "pause" | "resume" | "connect", sessionId?: string, expectedControlEpoch?: number): Promise<ProjectBrowserSessionDto> {
+    return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser/manual`, {
+      method: "POST", body: JSON.stringify({ action, sessionId, expectedControlEpoch }),
+    });
+  },
+  resizeHostedDisplay(projectId: string, sessionId: string, expectedControlEpoch: number, width: number, height: number): Promise<{ ok: boolean }> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/browser/manual`, { method: "POST", body: JSON.stringify({ action: "resize", sessionId, expectedControlEpoch, width, height }) });
+  },
+  hostedBrowserTicket(projectId: string, sessionId: string, expectedControlEpoch: number): Promise<{ path: string; protocol: string }> {
+    return requestJson<{ path: string; protocol: string }>(`/api/projects/${encodeURIComponent(projectId)}/browser/manual`, {
+      method: "POST", body: JSON.stringify({ action: "ticket", sessionId, expectedControlEpoch }),
+    });
+  },
+  openProjectBrowser(projectId: string, url?: string, rememberSignIns?: boolean): Promise<ProjectBrowserSessionDto> {
     return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser`, {
-      method: "POST", body: JSON.stringify(url ? { url } : {}),
+      method: "POST", body: JSON.stringify({ url, rememberSignIns }),
     });
   },
   navigateProjectBrowser(projectId: string, url: string): Promise<ProjectBrowserSessionDto> {
@@ -1102,10 +1130,30 @@ export const realApi = {
       method: "POST", body: JSON.stringify(request satisfies BrowserOperatorInputRequest),
     });
   },
-  async getProjectBrowserFrame(projectId: string): Promise<{ blob: Blob; revision: number }> {
-    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/browser/frame`, { cache: "no-store" });
+  newBrowserPage(projectId: string, expectedControlEpoch: number, agentId?: string, runId?: string): Promise<BrowserSessionDto | ProjectBrowserSessionDto> {
+    const base = agentId && runId ? browserPath(projectId, agentId, runId) : `/api/projects/${encodeURIComponent(projectId)}/browser`;
+    return requestJson(`${base}/pages`, { method: "POST", body: JSON.stringify({ expectedControlEpoch }) });
+  },
+  pairLocalBrowser(projectId: string): Promise<LocalBrowserPairingDto> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/local-browser/pair`, { method: "POST" });
+  },
+  listLocalBrowsers(projectId: string): Promise<LocalBrowserConnectionDto[]> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/local-browser`);
+  },
+  connectLocalBrowser(projectId: string, id: string): Promise<{ ok: boolean }> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/local-browser/${encodeURIComponent(id)}/connect`, { method: "POST" });
+  },
+  navigateAgentBrowser(projectId: string, agentId: string, runId: string, url: string): Promise<BrowserSessionDto> {
+    return requestJson(`${browserPath(projectId, agentId, runId)}/navigate`, { method: "POST", body: JSON.stringify({ url }) });
+  },
+  resizeBrowserViewport(projectId: string, pageId: string, size: BrowserViewportSize, expectedControlEpoch: number, agentId?: string, runId?: string): Promise<{ ok: boolean }> {
+    const base = agentId && runId ? browserPath(projectId, agentId, runId) : `/api/projects/${encodeURIComponent(projectId)}/browser`;
+    return requestJson(`${base}/pages/${encodeURIComponent(pageId)}/viewport`, { method: "PUT", body: JSON.stringify({ ...size, expectedControlEpoch }) });
+  },
+  async getProjectBrowserFrame(projectId: string, pageId?: string): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }> {
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/browser/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, { cache: "no-store" });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
-    return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0) };
+    return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0), metadata: JSON.parse(response.headers.get("x-ponderosa-browser-frame") ?? "null") ?? undefined };
   },
   subscribeAgent(agentId: string, lastSeenSeq: number | undefined, handlers: StreamHandlers): StreamSubscription {
     let cursor = lastSeenSeq;

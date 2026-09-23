@@ -188,6 +188,10 @@ export function registerAgentRuntimeToolRoutes(
   app.post<{
     Body: {
       action?: unknown;
+      x?: unknown;
+      y?: unknown;
+      delta_x?: unknown;
+      delta_y?: unknown;
       query?: unknown;
       communicationEventId?: unknown;
       limit?: unknown;
@@ -482,7 +486,7 @@ export function registerAgentRuntimeToolRoutes(
 
   app.post<{
     Body: {
-      operation?: "open" | "navigate" | "inspect" | "switch_page" | "close_page" | "upload" | "act" | "screenshot" | "take_control" | "close";
+      operation?: "open" | "navigate" | "inspect" | "new_page" | "switch_page" | "close_page" | "upload" | "act" | "screenshot" | "take_control" | "close";
       url?: string;
       action?: unknown;
       selector?: unknown;
@@ -504,11 +508,25 @@ export function registerAgentRuntimeToolRoutes(
     if (deletingProjectIds.has(agent.projectId) || deletingAgentIds.has(agent.id)) {
       return reply.code(409).send({ error: "browser owner deletion is in progress" });
     }
-    const projectGrant = projectBrowserGrants.get(agent.projectId);
+    try {
+      const savedPending = projectBrowserSessions.get(projectBrowserScope("saved-browser").agentId)?.nextRunAgentId === agent.id;
+      const ownerProjectId = savedPending ? "saved-browser" : agent.projectId;
+      if (await projectBrowserSessions.claimNextRun(projectBrowserScope(ownerProjectId), agent.id, active.runId, active.conversationId)) {
+        if (activeRuns.get(agent.id) !== active || !capabilityOwnsAuthoritativeRun(capability, active)) {
+          const current = projectBrowserSessions.get(projectBrowserScope(ownerProjectId).agentId);
+          if (current) await projectBrowserSessions.setControl(projectBrowserScope(ownerProjectId), "operator", current.controlEpoch);
+          return reply.code(409).send({ error: "Run ended before browser access could be granted." });
+        }
+        projectBrowserGrants.set(ownerProjectId, { agentId: agent.id, runId: active.runId });
+      }
+    } catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : "Browser authorization changed." }); }
+    const savedGrant = projectBrowserGrants.get("saved-browser");
+    const ownerProjectId = savedGrant?.agentId === agent.id && savedGrant.runId === active.runId ? "saved-browser" : agent.projectId;
+    const projectGrant = projectBrowserGrants.get(ownerProjectId);
     const borrowingProjectBrowser = projectGrant?.agentId === agent.id && projectGrant.runId === active.runId;
     const sessionManager = borrowingProjectBrowser ? projectBrowserSessions : browserSessions;
     const scope: BrowserScope = borrowingProjectBrowser
-      ? projectBrowserScope(agent.projectId, projectGrant)
+      ? projectBrowserScope(ownerProjectId, projectGrant)
       : {
           projectId: agent.projectId,
           agentId: agent.id,
@@ -536,6 +554,12 @@ export function registerAgentRuntimeToolRoutes(
             pages: session ? { activePageId: session.activePageId, pages: session.pages } : undefined,
             snapshot: await sessionManager.inspect(scope, request.body.selector as string | undefined),
           };
+        }
+        case "new_page": {
+          const current = sessionManager.get(scope.agentId);
+          if (!current) throw new BrowserSessionError("browser session is unavailable", 404);
+          const session = await sessionManager.newPage(scope, current.controlEpoch, "agent");
+          return { session, pages: { activePageId: session.activePageId, pages: session.pages } };
         }
         case "switch_page": {
           if (typeof request.body.page_id !== "string") throw new BrowserSessionError("page_id is required");

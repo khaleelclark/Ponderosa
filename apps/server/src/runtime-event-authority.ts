@@ -19,6 +19,7 @@ import type {
 import { readWorkspaceArtifactFileAsync } from "./project-file-access.js";
 
 interface RuntimeEventAuthorityContext {
+  onRunClaimed?(agentId: string, run: ActiveRun): void;
   opts: CreateServerOptions;
   activeRuns: Map<string, ActiveRun>;
   store: AgentStore;
@@ -327,6 +328,7 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
 
   function claimActiveRun(agentId: string, run: ActiveRun): void {
     activeRuns.set(agentId, run);
+    context.onRunClaimed?.(agentId, run);
     renewExecutionLease(agentId, run);
   }
 

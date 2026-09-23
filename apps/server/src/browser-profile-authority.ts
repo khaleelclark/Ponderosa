@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { SAVED_BROWSER_SCOPE_ID, type SavedBrowserDto } from "@ponderosa/core";
 import type {
   BrowserAgentPreferenceDto,
   BrowserProfileDto,
@@ -46,8 +47,8 @@ interface ActiveLaunch {
 }
 
 function boundedCapacity(value: string | undefined): number {
-  const parsed = Number(value ?? 4);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? Math.min(parsed, 64) : 4;
+  const parsed = Number(value ?? 8);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? Math.min(parsed, 64) : 8;
 }
 
 function cleanName(value: string): string {
@@ -60,9 +61,9 @@ function cleanName(value: string): string {
 
 const PROFILE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
-/** Durable profile catalog plus process-local browser leases. Chrome processes
- * cannot survive the owning server, so startup intentionally begins with no
- * active lease while retaining only trusted profile data and assignments. */
+/** Durable profile catalog plus app-local admission leases. Supervised shared
+ * browsers reacquire these leases before startup admits new browser requests;
+ * the independent service additionally enforces live profile exclusivity. */
 export class BrowserProfileAuthority {
   private readonly db: Database.Database;
   private readonly profileRoot: string;
@@ -110,6 +111,15 @@ export class BrowserProfileAuthority {
       );
       CREATE INDEX IF NOT EXISTS browser_agent_preferences_project
         ON browser_agent_preferences(project_id, agent_id);
+      CREATE TABLE IF NOT EXISTS browser_chat_profiles (
+        project_id TEXT PRIMARY KEY,
+        profile_id TEXT NOT NULL REFERENCES browser_profiles(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS saved_browser (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        profile_id TEXT NOT NULL REFERENCES browser_profiles(id) ON DELETE CASCADE,
+        promoted_at TEXT NOT NULL
+      );
       PRAGMA user_version=1;
     `);
   }
@@ -286,6 +296,42 @@ export class BrowserProfileAuthority {
   removeAgent(agentId: string): void {
     try { this.db.prepare("DELETE FROM browser_agent_preferences WHERE agent_id=?").run(agentId); }
     catch (error) { this.mapped(error); }
+  }
+
+  savedBrowser(): SavedBrowserDto | undefined {
+    return this.db.prepare("SELECT profile_id profileId, promoted_at promotedAt FROM saved_browser WHERE singleton=1").get() as SavedBrowserDto | undefined;
+  }
+
+  promoteSavedBrowser(projectId: string, profileId: string): void {
+    this.db.transaction(() => {
+      if (this.savedBrowser()) throw new BrowserProfileError(409, "A saved browser already exists. It has not been replaced.");
+      if (!this.getProfile(projectId, profileId)) throw new BrowserProfileError(404, "Browser profile does not belong to this chat.");
+      this.db.prepare("DELETE FROM browser_agent_preferences WHERE profile_id=?").run(profileId);
+      this.db.prepare("DELETE FROM browser_chat_profiles WHERE profile_id=?").run(profileId);
+      this.db.prepare("UPDATE browser_profiles SET project_id=? WHERE id=? AND project_id=?").run(SAVED_BROWSER_SCOPE_ID, profileId, projectId);
+      this.setPreference(SAVED_BROWSER_SCOPE_ID, `project-browser:${SAVED_BROWSER_SCOPE_ID}`, "trusted", profileId);
+      this.db.prepare("INSERT INTO saved_browser(singleton,profile_id,promoted_at) VALUES(1,?,?)").run(profileId, new Date().toISOString());
+    })();
+  }
+
+  setChatRememberSignIns(projectId: string, browserAgentId: string, remember: boolean): void {
+    this.db.transaction(() => {
+      if (!remember) {
+        this.setPreference(projectId, browserAgentId, "disposable");
+        return;
+      }
+      const saved = this.db.prepare("SELECT profile_id FROM browser_chat_profiles WHERE project_id=?").get(projectId) as { profile_id: string } | undefined;
+      const previous = this.preference(projectId, browserAgentId);
+      let profile = this.getProfile(projectId, saved?.profile_id ?? previous.profileId ?? "");
+      if (!profile) {
+        const names = new Set(this.listProfiles(projectId).map(item => item.name));
+        let name = "Chat browser", suffix = 2;
+        while (names.has(name)) name = `Chat browser ${suffix++}`;
+        profile = this.createProfile(projectId, name);
+      }
+      this.db.prepare("INSERT INTO browser_chat_profiles(project_id,profile_id) VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET profile_id=excluded.profile_id").run(projectId, profile.id);
+      this.setPreference(projectId, browserAgentId, "trusted", profile.id);
+    })();
   }
 
   description(scope: BrowserScope, forceProfileId?: string): BrowserLaunchDescription {

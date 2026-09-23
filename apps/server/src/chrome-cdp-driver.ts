@@ -3,11 +3,14 @@ import { randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
-import type { RuntimeProcessIdentity } from "@ponderosa/core";
+import type { RuntimeProcessIdentity, BrowserViewportSize, BrowserActivityDto } from "@ponderosa/core";
 import { processGroupAlive, runtimeProcessIdentity, terminateProcessGroup } from "@ponderosa/engines";
 import { redactBrowserText } from "./browser-security.js";
+import { connectPlaywrightMechanics } from "./playwright-browser-mechanics.js";
+import type { BrowserProtocolConnection } from "./approved-chrome-connection.js";
 
 const VIEWPORT = { width: 1280, height: 720 } as const;
+export const MAX_BROWSER_TABS = 30;
 const MAX_BROWSER_LAUNCH_ERROR = 4_000;
 
 export interface BrowserRuntimeCapabilities {
@@ -33,6 +36,10 @@ export interface BrowserDriverLaunchOptions {
   retainProfile?: boolean;
   /** Request a host display backed headed Chrome process. */
   hostedHeaded?: boolean;
+  /** Internal adapter selection; does not alter browser ownership. */
+  playwright?: boolean;
+  nativeManual?: boolean;
+  initialUrl?: string;
 }
 
 export class BrowserDriverActionError extends Error {
@@ -51,6 +58,7 @@ export interface BrowserPageInfo {
 
 export interface ManagedBrowserPageInfo extends BrowserPageInfo {
   pageId: string;
+  loading?: boolean;
   openerPageId?: string;
   active: boolean;
   isNew: boolean;
@@ -71,7 +79,7 @@ export interface BrowserPagesInfo {
 }
 
 export interface BrowserPageEvent {
-  type: "page_open" | "page_activate" | "page_close" | "page_navigate" | "page_limit" | "file_chooser_open" | "file_chooser_clear";
+  type: "page_open" | "page_activate" | "page_close" | "page_navigate" | "page_info" | "page_limit" | "file_chooser_open" | "file_chooser_clear";
   pageId?: string;
   openerPageId?: string;
   automatic?: boolean;
@@ -104,6 +112,16 @@ export interface BrowserTerminationHandle {
 }
 
 export interface BrowserDriver extends BrowserTerminationHandle {
+  /** Release app access while a separately supervised service retains Chrome. */
+  suspend?(): Promise<void>;
+  openLink?(url: string): Promise<void>;
+  manualState?(): "manual" | "connecting" | "automation";
+  manualSocket?(readOnly?: boolean): string;
+  resizeDesktop?(size: BrowserViewportSize): Promise<void>;
+  pauseAutomation?(): Promise<void>;
+  resumeAutomation?(): Promise<void>;
+  paused?(): boolean;
+  controlRevision?(): number;
   pageInfo(): Promise<BrowserPageInfo>;
   pages(): Promise<BrowserPagesInfo>;
   activatePage(pageId: string): Promise<BrowserPagesInfo>;
@@ -119,7 +137,11 @@ export interface BrowserDriver extends BrowserTerminationHandle {
   pointer(x: number, y: number): Promise<BrowserPageInfo>;
   type(text: string): Promise<BrowserPageInfo>;
   scroll(deltaX: number, deltaY: number): Promise<BrowserPageInfo>;
-  capture(): Promise<Buffer>;
+  capture(pageId?: string): Promise<Buffer>;
+  newPage?(): Promise<BrowserPagesInfo>;
+  resizeViewport?(pageId: string, size: BrowserViewportSize): Promise<void>;
+  viewport?(pageId?: string): BrowserViewportSize;
+  activity?(): BrowserActivityDto | undefined;
   close(): Promise<void>;
 }
 
@@ -140,7 +162,7 @@ export type BrowserDriverFactory = (
   launch?: BrowserDriverLaunchOptions,
 ) => Promise<BrowserDriver>;
 
-interface HostedDisplay {
+export interface HostedDisplay {
   child: ChildProcess;
   display: string;
   reservationPath: string;
@@ -171,9 +193,10 @@ async function waitForDisplay(child: ChildProcess, displayNumber: number): Promi
   throw new Error("host browser display did not become ready");
 }
 
-async function spawnHostedDisplay(
+export async function spawnHostedDisplay(
   executable: string,
   publish?: (display: HostedDisplay) => boolean,
+  size: { width: number; height: number } = VIEWPORT,
 ): Promise<HostedDisplay> {
   for (let attempt = 0; attempt < 64; attempt += 1) {
     const displayNumber = 100 + Math.floor(Math.random() * 900);
@@ -198,7 +221,7 @@ async function spawnHostedDisplay(
     }
     const child = spawn(executable, [
       `:${displayNumber}`,
-      "-screen", "0", `${VIEWPORT.width}x${VIEWPORT.height}x24`,
+      "-screen", "0", `${size.width}x${size.height}x24`,
       "-nolisten", "tcp", "-noreset",
     ], {
       stdio: ["ignore", "ignore", "pipe"],
@@ -276,6 +299,7 @@ class CdpConnection {
   private buffer = Buffer.alloc(0);
   private readonly pending = new Map<number, { resolve(value: Record<string, unknown>): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
   private readonly listeners = new Set<(message: CdpReply) => void>();
+  private readonly closeListeners = new Set<() => void>();
 
   constructor(private readonly input: Writable, output: Readable) {
     input.on("error", (error) => this.fail(error));
@@ -287,6 +311,11 @@ class CdpConnection {
   onEvent(listener: (message: CdpReply) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  onClose(listener: () => void): () => void {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
   }
 
   private consume(chunk: Buffer): void {
@@ -313,6 +342,8 @@ class CdpConnection {
   }
 
   private fail(error: Error): void {
+    for (const listener of this.closeListeners) listener();
+    this.closeListeners.clear();
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(error);
@@ -337,6 +368,7 @@ class CdpConnection {
 
 interface ManagedBrowserPage {
   pageId: string;
+  loadingFrames?: Set<string>;
   targetId: string;
   cdpSessionId: string;
   openerPageId?: string;
@@ -348,7 +380,46 @@ interface ManagedBrowserPage {
   isNew: boolean;
 }
 
-class ChromeCdpDriver implements BrowserDriver {
+export class ChromeCdpDriver implements BrowserDriver {
+  private readonly frameReferences = new Map<string, { frame: import("playwright-core").Frame; targetId: string; url: string }>();
+
+  private async actionLocator(selector: string) {
+    const page = this.currentPage();
+    if (!this.playwright) throw new Error("Browser frame controls require Playwright.");
+    const reference = /^frame:([a-f0-9-]{36}) >> ([\s\S]+)$/.exec(selector);
+    if (!reference) return (await this.playwright.page(page.targetId)).locator(selector);
+    const entry = this.frameReferences.get(reference[1]!);
+    if (!entry || entry.targetId !== page.targetId || entry.frame.isDetached() || entry.frame.url() !== entry.url) throw new Error("Embedded frame changed. Inspect the page again.");
+    return entry.frame.locator(reference[2]!);
+  }
+  private readonly viewportSizes = new Map<string, BrowserViewportSize>();
+  private lastActivity?: BrowserActivityDto;
+  viewport(pageId = this.activePageId): BrowserViewportSize { return this.viewportSizes.get(pageId) ?? VIEWPORT; }
+  activity(): BrowserActivityDto | undefined { return this.lastActivity; }
+  async resizeViewport(pageId: string, size: BrowserViewportSize): Promise<void> {
+    const page = this.pagesById.get(pageId);
+    if (!page?.initialized) throw new BrowserDriverActionError("page_not_found");
+    if (this.playwright) await (await this.playwright.page(page.targetId)).setViewportSize(size);
+    // The lifecycle observer also owns an emulation session. Keep both sessions
+    // aligned so capture, DOM layout and Playwright input share one geometry.
+    await this.connection.send("Emulation.setDeviceMetricsOverride", { ...size, deviceScaleFactor: 2, mobile: false }, page.cdpSessionId);
+    this.viewportSizes.set(pageId, { ...size });
+    this.lastActivity = undefined;
+  }
+  async newPage(): Promise<BrowserPagesInfo> {
+    await this.eventQueue;
+    if (!this.multiPageEnabled || this.pagesById.size >= MAX_BROWSER_TABS) throw new Error("Browser tab limit reached (30 tabs).");
+    const result = await this.connection.send("Target.createTarget", { url: "about:blank" });
+    const deadline = Date.now() + 5_000;
+    while (!this.pagesById.get(this.pageIdByTarget.get(String(result.targetId)) ?? "")?.initialized && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      await this.eventQueue;
+    }
+    const id = this.pageIdByTarget.get(String(result.targetId));
+    if (!id) throw new Error("The new browser tab could not be opened.");
+    return this.activatePage(id);
+  }
+  private playwright?: Awaited<ReturnType<typeof connectPlaywrightMechanics>>;
   private readonly pagesById = new Map<string, ManagedBrowserPage>();
   private readonly pageIdByTarget = new Map<string, string>();
   private readonly pageIdBySession = new Map<string, string>();
@@ -379,7 +450,7 @@ class ChromeCdpDriver implements BrowserDriver {
   private constructor(
     private readonly child: ChildProcess,
     private readonly display: HostedDisplay | undefined,
-    private readonly connection: CdpConnection,
+    private readonly connection: BrowserProtocolConnection,
     private readonly profileDir: string,
     private readonly retainProfile: boolean,
     private readonly onConsole: Parameters<BrowserDriverFactory>[1],
@@ -442,6 +513,9 @@ class ChromeCdpDriver implements BrowserDriver {
     try {
       child = spawn(executable, [
         ...(!display ? ["--headless=new"] : []), "--remote-debugging-pipe", `--user-data-dir=${profileDir}`,
+        // Playwright's normal launch disables BFCache so history navigation
+        // produces the lifecycle signals its navigation waits consume.
+        ...(launch.playwright ? ["--disable-back-forward-cache", "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling"] : []),
         `--window-size=${VIEWPORT.width},${VIEWPORT.height}`, "--no-first-run",
         "--no-default-browser-check", "--disable-background-networking", "--disable-component-update",
         "--disable-dev-shm-usage", "--disable-features=Translate,OptimizationHints", "about:blank",
@@ -485,9 +559,40 @@ class ChromeCdpDriver implements BrowserDriver {
         capabilities.fileUpload,
         terminationAuthority, processIdentity,
       );
+      await driver.initialize(launch.playwright === true);
+      return driver;
+    } catch (error) {
+      if (!externallyOwned) await closeAll();
+      const primary = error instanceof Error ? error.message : String(error);
+      const diagnostics = redactBrowserText(launchError.trim());
+      throw new Error(diagnostics ? `${primary}\n${diagnostics}` : primary);
+    }
+  }
+
+  static async attachOwned(child: ChildProcess, display: HostedDisplay, connection: BrowserProtocolConnection, profileDir: string, onConsole: Parameters<BrowserDriverFactory>[1], onPageEvent: Parameters<BrowserDriverFactory>[3], authority: object): Promise<ChromeCdpDriver> {
+    const capabilities = browserRuntimeCapabilities();
+    const targets = await connection.send("Target.getTargets");
+    const pages = Array.isArray(targets.targetInfos) ? targets.targetInfos.filter(value => value && typeof value === "object" && (value as Record<string, unknown>).type === "page") : [];
+    // Existing user tabs are not disposable launch targets. Until admission is
+    // upgraded, decline attachment rather than pruning a manual browser.
+    if (pages.length > (capabilities.multiPage ? MAX_BROWSER_TABS : 1)) throw new Error("Too many tabs for automation (30 maximum). Your browser remains open in manual mode.");
+    const driver = new ChromeCdpDriver(child, display, connection, profileDir, true, onConsole, onPageEvent, capabilities.multiPage, capabilities.fileUpload, authority, runtimeProcessIdentity(child));
+    await driver.initialize(true);
+    return driver;
+  }
+
+  detachMechanics(): void {
+    this.closing = true;
+    this.lifecycleGeneration++;
+    this.clearPendingChooser("manual_control");
+    this.playwright?.close();
+  }
+
+  private async initialize(usePlaywright: boolean): Promise<void> {
+      const driver = this, connection = this.connection;
       connection.onEvent((message) => driver.enqueueEvent(message));
       await connection.send("Target.setDiscoverTargets", { discover: true });
-      if (driver.multiPageEnabled) {
+      if (driver.multiPageEnabled && !usePlaywright) {
         await connection.send("Target.setAutoAttach", {
           autoAttach: true, waitForDebuggerOnStart: false, flatten: true,
         }).catch(() => undefined);
@@ -511,13 +616,7 @@ class ChromeCdpDriver implements BrowserDriver {
       await driver.eventQueue;
       if (!driver.activePageId) driver.activateFallback();
       driver.emitPageEvent("page_activate", driver.activePageId, undefined, false, "initial");
-      return driver;
-    } catch (error) {
-      if (!externallyOwned) await closeAll();
-      const primary = error instanceof Error ? error.message : String(error);
-      const diagnostics = redactBrowserText(launchError.trim());
-      throw new Error(diagnostics ? `${primary}\n${diagnostics}` : primary);
-    }
+      if (usePlaywright) driver.playwright = await connectPlaywrightMechanics(connection);
   }
 
   private enqueueEvent(message: CdpReply): void {
@@ -537,6 +636,7 @@ class ChromeCdpDriver implements BrowserDriver {
         if (page) {
           if (typeof info.url === "string") page.url = info.url;
           if (typeof info.title === "string") page.title = info.title;
+          this.emitPageEvent("page_info", page.pageId);
         }
         return;
       }
@@ -572,6 +672,16 @@ class ChromeCdpDriver implements BrowserDriver {
         return typeof value === "string" ? value : JSON.stringify(value);
       }).join(" ");
       this.onConsole(level, text);
+      return;
+    }
+    if ((message.method === "Page.frameStartedLoading" || message.method === "Page.frameStoppedLoading") && message.sessionId) {
+      const page = this.pagesById.get(this.pageIdBySession.get(message.sessionId) ?? "");
+      if (page && typeof params.frameId === "string") {
+        page.loadingFrames ??= new Set();
+        if (message.method === "Page.frameStartedLoading") page.loadingFrames.add(params.frameId);
+        else page.loadingFrames.delete(params.frameId);
+        this.emitPageEvent("page_info", page.pageId);
+      }
       return;
     }
     if (message.method === "Page.frameNavigated" && message.sessionId) {
@@ -625,8 +735,7 @@ class ChromeCdpDriver implements BrowserDriver {
       await this.connection.send("Target.closeTarget", { targetId }).catch(() => undefined);
       return;
     }
-    if (this.pagesById.size >= 8) {
-      await this.connection.send("Target.closeTarget", { targetId }).catch(() => undefined);
+    if (this.pagesById.size >= MAX_BROWSER_TABS) {
       this.emitPageEvent("page_limit", undefined, undefined, false, "page_limit");
       return;
     }
@@ -639,8 +748,8 @@ class ChromeCdpDriver implements BrowserDriver {
   private async registerTarget(info: Record<string, unknown>, cdpSessionId: string): Promise<void> {
     const targetId = String(info.targetId ?? "");
     if (!targetId || this.pageIdByTarget.has(targetId)) return;
-    if (this.pagesById.size >= 8) {
-      await this.connection.send("Target.closeTarget", { targetId }).catch(() => undefined);
+    if (this.pagesById.size >= MAX_BROWSER_TABS) {
+      await this.connection.send("Target.detachFromTarget", { sessionId: cdpSessionId }).catch(() => undefined);
       this.emitPageEvent("page_limit", undefined, undefined, false, "page_limit");
       return;
     }
@@ -664,7 +773,7 @@ class ChromeCdpDriver implements BrowserDriver {
         this.connection.send("Console.enable", {}, cdpSessionId),
         this.connection.send("DOM.enable", {}, cdpSessionId),
         this.connection.send("Emulation.setDeviceMetricsOverride", {
-          width: VIEWPORT.width, height: VIEWPORT.height, deviceScaleFactor: 1, mobile: false,
+          width: VIEWPORT.width, height: VIEWPORT.height, deviceScaleFactor: 2, mobile: false,
         }, cdpSessionId),
         ...(this.uploadEnabled
           ? [this.connection.send("Page.setInterceptFileChooserDialog", { enabled: true }, cdpSessionId).catch(() => ({}))]
@@ -706,6 +815,8 @@ class ChromeCdpDriver implements BrowserDriver {
     const page = this.pagesById.get(pageId);
     if (!page) return;
     this.pagesById.delete(pageId);
+    this.viewportSizes.delete(pageId);
+    if (this.lastActivity?.pageId === pageId) this.lastActivity = undefined;
     this.pageIdByTarget.delete(page.targetId);
     this.pageIdBySession.delete(page.cdpSessionId);
     this.uploadedInputs.delete(pageId);
@@ -732,6 +843,7 @@ class ChromeCdpDriver implements BrowserDriver {
       activePageId: this.activePageId,
       pages: values.map((page) => ({
         pageId: page.pageId, url: page.url, title: page.title,
+        loading: Boolean(page.loadingFrames?.size),
         ...(page.openerPageId ? { openerPageId: page.openerPageId } : {}),
         active: page.pageId === this.activePageId, isNew: page.isNew, closable: values.length > 1,
       })),
@@ -808,6 +920,10 @@ class ChromeCdpDriver implements BrowserDriver {
     const page = this.currentPage();
     await this.clearUploadedFiles(page.pageId);
     this.clearPendingChooser("navigation");
+    if (this.playwright) {
+      await (await this.playwright.page(page.targetId)).goto(url, { waitUntil: "domcontentloaded", timeout: 15_000 });
+      return this.refreshPage(page);
+    }
     await this.connection.send("Page.navigate", { url }, page.cdpSessionId);
     await new Promise((resolve) => setTimeout(resolve, 250));
     return this.refreshPage(page);
@@ -815,6 +931,13 @@ class ChromeCdpDriver implements BrowserDriver {
 
   async inspect(regionSelector?: string): Promise<string> {
     const page = this.currentPage();
+    if (regionSelector?.startsWith("frame:")) {
+      const locator = await this.actionLocator(regionSelector);
+      const text = await locator.first().innerText({ timeout: 5000 });
+      return JSON.stringify({ url: (await this.pageInfo()).url, requestedRegion: { selector: regionSelector, error: null },
+        changedRegions: [{ id: regionSelector, kind: "requested", text: redactBrowserText(text.slice(0, 4200)), truncated: text.length > 4200, originalCharacters: text.length }],
+        _ponderosa: { scope: "requested_frame_region" } });
+    }
     const snapshot = await this.evaluate<{
       url: string;
       title: string;
@@ -940,6 +1063,7 @@ class ChromeCdpDriver implements BrowserDriver {
         .map((el) => {
           const identity = stableSelector(el);
           const rect = el.getBoundingClientRect();
+          const valueRedacted = el instanceof HTMLInputElement && el.type === 'password';
           return {
             controlId: identity.selector || ('unaddressable:' + (el.getAttribute('role') || el.tagName.toLowerCase()) + ':' + (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 80)),
             selector: identity.selector,
@@ -948,7 +1072,8 @@ class ChromeCdpDriver implements BrowserDriver {
             tag: el.tagName.toLowerCase(),
             role: el.getAttribute('role') || '',
             name: (el.getAttribute('aria-label') || el.getAttribute('name') || el.getAttribute('placeholder') || '').trim().slice(0, 160),
-            text: (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el.value : el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 240),
+            text: valueRedacted ? '[redacted]' : (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el.value : el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 240),
+            valueRedacted,
             disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true'),
             x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height),
           };
@@ -987,7 +1112,30 @@ class ChromeCdpDriver implements BrowserDriver {
     const cachedCharacters = unchangedRegionIds.reduce((sum, id) => sum + (regionCharacters[id] ?? 0), 0);
     this.inspectionCache.set(page.pageId, { regions: encodedRegions, characters: regionCharacters });
 
+    const frameControls: Array<Record<string, unknown>> = [];
+    const frames: Array<{ selector: string; url: string }> = [];
+    if (this.playwright) {
+      for (const [key, value] of this.frameReferences) if (value.frame.isDetached() || value.frame.url() !== value.url) this.frameReferences.delete(key);
+      const current = await this.playwright.page(page.targetId);
+      for (const frame of current.frames().slice(0, 10)) {
+        if (frameControls.length >= 80) break;
+        let reference = [...this.frameReferences].find(([, value]) => value.frame === frame && value.targetId === page.targetId)?.[0];
+        if (!reference) { reference = randomUUID(); this.frameReferences.set(reference, { frame, targetId: page.targetId, url: frame.url() }); }
+        frames.push({ selector: `frame:${reference} >> body`, url: redactBrowserText(frame.url()) });
+        const controls = await frame.locator('input, textarea, select, button, [contenteditable="true"]').evaluateAll(elements => elements.slice(0, 80).map((element, index) => ({
+          index, tag: element.tagName.toLowerCase(), id: element.id,
+          name: element.getAttribute('name') ?? '', label: element.getAttribute('aria-label') ?? element.getAttribute('placeholder') ?? (element.tagName === 'BUTTON' ? element.textContent?.slice(0, 120) : '') ?? '',
+          type: element.getAttribute('type') ?? '',
+        }))).catch(() => []);
+        for (const control of controls.slice(0, 80 - frameControls.length)) {
+          const selector = `:nth-match(input, textarea, select, button, [contenteditable="true"], ${control.index + 1})`;
+          frameControls.push({ ...control, selector: `frame:${reference} >> ${selector}`, frameUrl: redactBrowserText(frame.url()), value: undefined });
+        }
+      }
+    }
     return JSON.stringify({
+      frames,
+      frameControls,
       url: snapshot.url,
       title: snapshot.title,
       viewport: snapshot.viewport,
@@ -1032,12 +1180,36 @@ class ChromeCdpDriver implements BrowserDriver {
 
   async click(selector: string): Promise<BrowserPageInfo> {
     this.markInteraction();
+    if (this.playwright) {
+      const page = this.currentPage();
+      const locator = await this.actionLocator(selector);
+      await locator.scrollIntoViewIfNeeded({ timeout: 10_000 });
+      const bounds = await locator.boundingBox();
+      await locator.click({ timeout: 10_000 });
+      this.lastActivity = bounds ? { pageId: page.pageId, kind: "click", x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2, at: Date.now() } : undefined;
+      return this.pageInfo();
+    }
     const point = await this.selectorPoint(selector);
     await this.pointer(point.x, point.y, false);
     return this.pageInfo();
   }
 
   async fill(selector: string, text: string): Promise<BrowserPageInfo> {
+    if (this.playwright) {
+      try {
+        const page = this.currentPage();
+        const locator = await this.actionLocator(selector);
+        await locator.fill(text, { timeout: 10_000 });
+        const retained = await locator.evaluate((element: { value?: unknown; textContent: string | null }) => "value" in element ? String(element.value) : element.textContent ?? "");
+        if (retained !== text) throw new Error("Field did not retain the supplied value.");
+        const bounds = await locator.boundingBox();
+        this.lastActivity = bounds ? { pageId: page.pageId, kind: "fill", ...bounds, at: Date.now() } : undefined;
+      } catch {
+        // Playwright call logs can contain the supplied value, including passwords.
+        throw new Error("Browser field input could not be confirmed. Check the page before retrying.");
+      }
+      return this.pageInfo();
+    }
     const result = await this.evaluate<"ok" | "invalid_selector" | "selector_not_found" | "selector_not_editable">(`(() => {
       let el; try { el=document.querySelector(${JSON.stringify(selector)}); } catch { return 'invalid_selector'; }
       if (!el) return 'selector_not_found';
@@ -1049,18 +1221,56 @@ class ChromeCdpDriver implements BrowserDriver {
     const page = this.currentPage();
     await this.connection.send("Input.insertText", { text }, page.cdpSessionId);
     await this.evaluate("(() => { const el=document.activeElement; el?.dispatchEvent(new Event('input',{bubbles:true})); el?.dispatchEvent(new Event('change',{bubbles:true})); return true; })()");
+    const retained = await this.evaluate<string>(`(() => { const el=document.activeElement; return el && 'value' in el ? String(el.value) : el?.textContent ?? ''; })()`);
+    if (retained !== text) throw new Error("Browser field input could not be confirmed. Check the page before retrying.");
     return this.pageInfo();
   }
 
   async key(key: string): Promise<BrowserPageInfo> {
-    const page = this.currentPage(); const text = key.length === 1 ? key : undefined;
-    await this.connection.send("Input.dispatchKeyEvent", { type: "keyDown", key, ...(text ? { text } : {}) }, page.cdpSessionId);
-    await this.connection.send("Input.dispatchKeyEvent", { type: "keyUp", key }, page.cdpSessionId);
+    const page = this.currentPage();
+    if (this.playwright) {
+      const current = await this.playwright.page(page.targetId);
+      if (key === "BrowserBack") await current.goBack({ waitUntil: "domcontentloaded", timeout: 15_000 });
+      else if (key === "BrowserForward") await current.goForward({ waitUntil: "domcontentloaded", timeout: 15_000 });
+      else if (key === "BrowserRefresh") await current.reload({ waitUntil: "domcontentloaded", timeout: 15_000 });
+      else await current.keyboard.press(key);
+      return this.pageInfo();
+    }
+    if (key === "BrowserBack" || key === "BrowserForward" || key === "BrowserRefresh") {
+      if (key === "BrowserRefresh") {
+        await this.connection.send("Page.reload", {}, page.cdpSessionId);
+      } else {
+        const history = await this.connection.send("Page.getNavigationHistory", {}, page.cdpSessionId);
+        const entries = history.entries as { id: number }[];
+        const index = Number(history.currentIndex) + (key === "BrowserBack" ? -1 : 1);
+        const entry = entries[index];
+        if (entry) await this.connection.send("Page.navigateToHistoryEntry", { entryId: entry.id }, page.cdpSessionId);
+      }
+      this.inspectionCache.delete(page.pageId);
+      return this.pageInfo();
+    }
+    let modifiers = 0;
+    while (/^(Control|Meta|Alt|Shift)\+/.test(key)) {
+      const prefix = key.slice(0, key.indexOf("+"));
+      modifiers |= { Control: 2, Meta: 4, Alt: 1, Shift: 8 }[prefix] ?? 0;
+      key = key.slice(key.indexOf("+") + 1);
+    }
+    const codes: Record<string, number> = { Backspace: 8, Tab: 9, Enter: 13, Escape: 27, " ": 32, PageUp: 33, PageDown: 34, End: 35, Home: 36, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Delete: 46 };
+    const windowsVirtualKeyCode = codes[key] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
+    const text = key.length === 1 && !(modifiers & 7) ? key : undefined;
+    const params = { key, modifiers, windowsVirtualKeyCode };
+    await this.connection.send("Input.dispatchKeyEvent", { type: text ? "keyDown" : "rawKeyDown", ...params, ...(text ? { text } : {}) }, page.cdpSessionId);
+    await this.connection.send("Input.dispatchKeyEvent", { type: "keyUp", ...params }, page.cdpSessionId);
     return this.pageInfo();
   }
 
   async pointer(x: number, y: number, record = true): Promise<BrowserPageInfo> {
+    this.lastActivity = { pageId: this.activePageId, kind: "click", x, y, at: Date.now() };
     if (record) this.markInteraction();
+    if (this.playwright) {
+      await (await this.playwright.page(this.currentPage().targetId)).mouse.click(x, y);
+      return this.pageInfo();
+    }
     const page = this.currentPage();
     await this.connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, page.cdpSessionId);
     await this.connection.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 }, page.cdpSessionId);
@@ -1070,21 +1280,40 @@ class ChromeCdpDriver implements BrowserDriver {
 
   async type(text: string): Promise<BrowserPageInfo> {
     const page = this.currentPage();
+    if (this.playwright) {
+      try {
+        await (await this.playwright.page(page.targetId)).keyboard.insertText(text);
+      } catch {
+        throw new Error("Browser text input could not be confirmed. Check the page before retrying.");
+      }
+      return this.pageInfo();
+    }
     await this.connection.send("Input.insertText", { text }, page.cdpSessionId);
     return this.pageInfo();
   }
 
   async scroll(deltaX: number, deltaY: number): Promise<BrowserPageInfo> {
     const page = this.currentPage();
+    // Use the exact owned target rather than Playwright's independent page
+    // attachment. This also matches direct operator wheel input.
     await this.connection.send("Input.dispatchMouseEvent", {
-      type: "mouseWheel", x: VIEWPORT.width / 2, y: VIEWPORT.height / 2, deltaX, deltaY,
+      type: "mouseWheel", x: this.viewport().width / 2, y: this.viewport().height / 2, deltaX, deltaY,
     }, page.cdpSessionId);
     return this.pageInfo();
   }
 
-  async capture(): Promise<Buffer> {
-    const page = this.currentPage();
-    const result = await this.connection.send("Page.captureScreenshot", { format: "png", fromSurface: true }, page.cdpSessionId);
+  async capture(pageId?: string): Promise<Buffer> {
+    const page = pageId ? this.pagesById.get(pageId) : this.currentPage();
+    if (!page?.initialized) throw new BrowserDriverActionError("page_not_found");
+    // A live viewer needs the current pixels, not Playwright's screenshot
+    // stability/font wait (which can stall inactive or still-loading tabs).
+    // Give a never-painted background target a visible surface. This does NOT
+    // change activePageId: Agent actions remain explicitly target-addressed.
+    await this.connection.send("Page.bringToFront", {}, page.cdpSessionId);
+    const size = this.viewport(page.pageId);
+    const metrics = await this.connection.send("Page.getLayoutMetrics", {}, page.cdpSessionId);
+    const visible = metrics.cssVisualViewport as { pageX?: number; pageY?: number } | undefined;
+    const result = await this.connection.send("Page.captureScreenshot", { format: "png", fromSurface: true, clip: { x: visible?.pageX ?? 0, y: visible?.pageY ?? 0, ...size, scale: 1 }, captureBeyondViewport: false }, page.cdpSessionId);
     if (typeof result.data !== "string") throw new Error("browser did not return a screenshot");
     return Buffer.from(result.data, "base64");
   }
@@ -1263,6 +1492,7 @@ class ChromeCdpDriver implements BrowserDriver {
 
   async close(): Promise<void> {
     this.closing = true; this.lifecycleGeneration += 1; this.clearPendingChooser("session_closed");
+    this.playwright?.close();
     let closeTimer: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
@@ -1301,6 +1531,16 @@ export function chromeBrowserDriverFactory(dataDir: string, executable = findBro
       throw new Error("host browser is unavailable; set PONDEROSA_BROWSER_EXECUTABLE to a Chromium/Chrome binary");
     }
     const profileDir = launch.profileDir ?? path.join(dataDir, "browser-sessions", sessionId);
+    if (launch.nativeManual) {
+      const { createNativeHostedBrowser } = await import("./native-hosted-browser.js");
+      return createNativeHostedBrowser(executable, profileDir, onConsole, onSpawned, onPageEvent, launch);
+    }
     return ChromeCdpDriver.create(executable, profileDir, onConsole, onSpawned, onPageEvent, launch);
   };
+}
+
+export function playwrightBrowserDriverFactory(dataDir: string, executable = findBrowserExecutable()): BrowserDriverFactory {
+  const launchChrome = chromeBrowserDriverFactory(dataDir, executable);
+  return (sessionId, onConsole, onSpawned, onPageEvent, launch) =>
+    launchChrome(sessionId, onConsole, onSpawned, onPageEvent, { ...launch, playwright: true });
 }

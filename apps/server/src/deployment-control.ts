@@ -73,7 +73,7 @@ export function createDeploymentControl(
     const runtimeFailures = authorities.reduce((total, authority) => total +
       Number(Boolean(authority.opening?.lastError)) + Number(Boolean(authority.closing?.lastError)) +
       [...authority.oneShots.values()].filter((state) => Boolean(state.lastError)).length, 0);
-    const browser = [browserSessions.authorityStatus(), projectBrowserSessions.authorityStatus()];
+    const browser = [browserSessions.authorityStatus(), projectBrowserSessions.authorityStatus(deploymentDraining)];
     const browserAuthorities = browser.reduce((total, status) =>
       total + status.openings + status.active + status.pendingCleanup, 0);
     const browserCleanupOperations = browser.reduce((total, status) => total + status.pendingCleanup, 0);

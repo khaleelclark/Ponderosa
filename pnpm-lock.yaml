@@ -8,6 +8,19 @@ importers:
 
   .: {}
 
+  apps/browser-extension:
+    dependencies:
+      '@ponderosa/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+    devDependencies:
+      '@ponderosa/server':
+        specifier: workspace:*
+        version: link:../server
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
   apps/engine-desktop:
     devDependencies:
       '@electron/packager':
@@ -71,6 +84,9 @@ importers:
       picomatch:
         specifier: ^4.0.5
         version: 4.0.5
+      playwright-core:
+        specifier: 1.63.0
+        version: 1.63.0
       sharp:
         specifier: ^0.34.5
         version: 0.34.5
@@ -120,6 +136,9 @@ importers:
       '@mui/material':
         specifier: ^6.3.0
         version: 6.5.0(@emotion/react@11.14.0(@types/react@18.3.31)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.31)(react@18.3.1))(@types/react@18.3.31)(react@18.3.1))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@novnc/novnc':
+        specifier: 1.5.0
+        version: 1.5.0
       '@ponderosa/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -1366,6 +1385,9 @@ packages:
 
   '@napi-rs/wasm-runtime@1.0.7':
     resolution: {integrity: sha512-SeDnOO0Tk7Okiq6DbXmmBODgOAb9dp9gjlphokTUxmt8U3liIP1ZsozBahH69j/RJv+Rfs6IwUKHTgQYJ/HBAw==}
+
+  '@novnc/novnc@1.5.0':
+    resolution: {integrity: sha512-4yGHOtUCnEJUCsgEt/L78eeJu00kthurLBWXFiaXfonNx0pzbs6R/3gJb1byZe6iAE8V9MF0syQb0xIL8MSOtQ==}
 
   '@pinojs/redact@0.4.0':
     resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
@@ -2981,6 +3003,11 @@ packages:
 
   pino@10.3.1:
     resolution: {integrity: sha512-r34yH/GlQpKZbU1BvFFqOjhISRo1MNx1tWYsYvmj6KIRHSPMT2+yHOEb1SG6NMvRoHRF0a07kCOox/9yakl1vg==}
+    hasBin: true
+
+  playwright-core@1.63.0:
+    resolution: {integrity: sha512-rYCsBF/M5HjUch52bbtVONEFjv6Xu8sm8h72dNlR5bzIE1fvC/bxgspzkjSfU+MweEMmPM8KJebG6nnyxo5mCg==}
+    engines: {node: '>=20'}
     hasBin: true
 
   plist@3.1.1:
@@ -5022,6 +5049,8 @@ snapshots:
       '@tybys/wasm-util': 0.10.3
     optional: true
 
+  '@novnc/novnc@1.5.0': {}
+
   '@pinojs/redact@0.4.0': {}
 
   '@popperjs/core@2.11.8': {}
@@ -6751,6 +6780,8 @@ snapshots:
       safe-stable-stringify: 2.5.0
       sonic-boom: 4.2.1
       thread-stream: 4.2.0
+
+  playwright-core@1.63.0: {}
 
   plist@3.1.1:
     dependencies:

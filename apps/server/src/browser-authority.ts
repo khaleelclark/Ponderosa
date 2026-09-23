@@ -5,10 +5,11 @@ import {
   BrowserSessionManager,
   type BrowserScope,
 } from "./browser-session-manager.js";
-import { chromeBrowserDriverFactory, type BrowserDriverFactory } from "./chrome-cdp-driver.js";
+import { playwrightBrowserDriverFactory, type BrowserDriverFactory } from "./chrome-cdp-driver.js";
 import type { ActiveRun } from "./app-contracts.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import { BrowserProfileAuthority } from "./browser-profile-authority.js";
+import { BrowserServiceClient } from "./browser-service.js";
 
 interface BrowserAuthorityContext {
   dataDir: string;
@@ -50,7 +51,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
   } = context;
 
   const browserFactory = durableBrowserDriverFactory(
-    driverFactory ?? chromeBrowserDriverFactory(dataDir),
+    driverFactory ?? playwrightBrowserDriverFactory(dataDir),
     (handle, sessionId) => providerProcessAuthority.register(handle, {
       purpose: `browser session ${sessionId}`,
     }),
@@ -62,14 +63,17 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     owner: import("@ponderosa/core").BrowserControlOwner,
     artifactId: string,
   ) => {
-    const artifact = store.getProjectArtifact(scope.projectId, artifactId);
+    const savedGrant = scope.projectId === "saved-browser" ? projectBrowserGrants.get("saved-browser") : undefined;
+    const borrowingAgent = savedGrant && scope.actorAgentId === savedGrant.agentId && scope.actorRunId === savedGrant.runId ? store.getAgent(savedGrant.agentId) : undefined;
+    const artifactProjectId = borrowingAgent?.projectId ?? scope.projectId;
+    const artifact = store.getProjectArtifact(artifactProjectId, artifactId);
     if (!artifact) {
       throw new BrowserSessionError("Managed artifact was not found.", 404, "artifact_not_found");
     }
     const actorAgentId = scope.actorAgentId ?? scope.agentId;
     const canRead = owner === "operator"
-      ? store.operatorCanReadProjectArtifact(scope.projectId, artifactId)
-      : store.agentCanReadProjectArtifact(scope.projectId, artifactId, actorAgentId);
+      ? store.operatorCanReadProjectArtifact(artifactProjectId, artifactId)
+      : store.agentCanReadProjectArtifact(artifactProjectId, artifactId, actorAgentId);
     if (!canRead) {
       throw new BrowserSessionError("This actor cannot read the managed artifact.", 403, "artifact_unauthorized");
     }
@@ -78,7 +82,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     }
     const content = await openManagedArtifactContent(
       dataDir,
-      scope.projectId,
+      artifactProjectId,
       artifactId,
       artifact.size,
       artifact.sha256,
@@ -130,9 +134,13 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     browserAdmissionAllowed,
   );
   const projectBrowserGrants = new Map<string, { agentId: string; runId: string }>();
+  const service = !driverFactory && process.env.PONDEROSA_BROWSER_SERVICE_SOCKET ? new BrowserServiceClient(process.env.PONDEROSA_BROWSER_SERVICE_SOCKET) : undefined;
+  const sharedFactory: BrowserDriverFactory = service ? (id, console, spawned, event, launch) => launch?.nativeManual
+    ? service.driver(id, event, launch)
+    : browserFactory(id, console, spawned, event, launch) : browserFactory;
   const projectBrowserSessions = new BrowserSessionManager(
     dataDir,
-    browserFactory,
+    sharedFactory,
     (scope, event) => {
       const grant = projectBrowserGrants.get(scope.projectId);
       if (!grant || scope.actorAgentId !== grant.agentId || scope.actorRunId !== grant.runId) {
@@ -177,6 +185,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     resolveUploadArtifact,
     browserProfiles,
     browserAdmissionAllowed,
+    Boolean(service),
   );
 
   function browserScopeForRun(agentId: string, run: ActiveRun): BrowserScope | undefined {
@@ -196,8 +205,11 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     exactRunId?: string,
   ): Promise<void> {
     const agent = store.getAgent(agentId);
-    const projectId = agent?.projectId;
+    const savedGrant = projectBrowserGrants.get("saved-browser");
+    const projectId = savedGrant?.agentId === agentId && (exactRunId === undefined || savedGrant.runId === exactRunId) ? "saved-browser" : agent?.projectId;
     if (!projectId) return;
+    projectBrowserSessions.expireNextRun(projectBrowserScope("saved-browser"), agentId, exactRunId);
+    projectBrowserSessions.expireNextRun(projectBrowserScope(projectId), agentId, exactRunId);
     const grant = projectBrowserGrants.get(projectId);
     if (!grant || grant.agentId !== agentId || (exactRunId !== undefined && grant.runId !== exactRunId)) return;
     projectBrowserGrants.delete(projectId);
@@ -247,6 +259,12 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     const ready = session.status === "ready";
     return {
       id: session.id,
+      nextRunAgentId: session.nextRunAgentId,
+      profileMode: session.profileMode,
+      location: session.location,
+      localPaused: session.localPaused,
+      manualControl: session.manualControl,
+      privateSignIn: session.privateSignIn,
       projectId,
       status: session.status,
       // A process that is not ready has no usable controller. Normalize the
@@ -254,6 +272,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       // reinterpret stale control metadata after a reload.
       controlOwner: ready ? session.controlOwner : "operator",
       ...(ready && grant ? { controllerAgentId: grant.agentId, controllerRunId: grant.runId } : {}),
+      ...(ready && grant ? { controllerAgentTitle: store.getAgent(grant.agentId)?.title, controllerProjectId: store.getAgent(grant.agentId)?.projectId } : {}),
       controlEpoch: session.controlEpoch,
       capabilities: session.capabilities,
       ...(session.url ? { url: session.url } : {}),
@@ -270,6 +289,15 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
   };
 
   return {
+    restoreSharedBrowsers: async () => {
+      if (service) await projectBrowserSessions.restoreRetained(await service.claim(), (id, _console, _spawned, event) => service.driver(id, event, undefined, true), dto => {
+        // Profile promotion commits before its projection checkpoint. Recover
+        // ownership from that transaction if the app stopped between the two.
+        if (dto.profileId && browserProfiles.savedBrowser()?.profileId === dto.profileId) return projectBrowserScope("saved-browser");
+        if (!store.getProject(dto.projectId)) throw new Error("Retained browser belongs to an unavailable chat; explicit cleanup is required.");
+        return projectBrowserScope(dto.projectId);
+      });
+    },
     browserScopeForRun,
     browserProfiles,
     browserSessions,

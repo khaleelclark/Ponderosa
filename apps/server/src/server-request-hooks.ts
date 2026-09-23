@@ -12,6 +12,7 @@ import {
 } from "./operator-profile-images.js";
 import { secretEqual } from "./security.js";
 import { isAgentToolRoute } from "./agent-tool-route-classification.js";
+import { localBrowserTransportPath } from "./routes/local-browsers.js";
 
 export function registerBodyParsers(
   app: FastifyInstance,
@@ -72,6 +73,9 @@ export function registerRequestSecurityHooks(
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    // Only the narrow extension transport uses its own unguessable, tab-scoped
+    // pairing capability. It never grants access to operator or Agent APIs.
+    if (request.method === "POST" && localBrowserTransportPath(request.url)) return;
     const browserBootstrapPath =
       /^\/__ponderosa_bootstrap(?:\?|$)/u.test(request.url) ||
       request.url === "/__ponderosa_bootstrap.js";
@@ -122,6 +126,7 @@ export function registerRequestSecurityHooks(
   app.addHook("onRequest", async (request, reply) => {
     if (!request.url.startsWith("/api/") || !["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) return;
     const origin = request.headers.origin;
+    if (localBrowserTransportPath(request.url) && origin && /^chrome-extension:\/\/[a-p]{32}$/.test(origin)) return;
     if (!origin) return; // Non-browser clients and host-local runtime bridges.
     let originHost: string;
     try {

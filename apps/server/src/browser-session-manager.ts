@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { promises as fs, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import type {
   AgentEvent,
@@ -8,6 +8,9 @@ import type {
   BrowserOperatorInputRequest,
   BrowserUploadResponseDto,
   BrowserSessionDto,
+  BrowserFrameMetadata,
+  BrowserViewportSize,
+  BrowserActivityDto,
 } from "@ponderosa/core";
 import { publishManagedArtifactContentAsync, type ManagedArtifactContentHandle } from "@ponderosa/agents";
 import { assetExtensionsForMediaType } from "./assets.js";
@@ -165,6 +168,10 @@ type BrowserAuditEvent = Extract<AgentEvent, {
 }>;
 
 interface ManagedSession {
+  safeForRestart?: boolean;
+  detaching?: Promise<void>;
+  nextRun?: { agentId: string; epoch: number; runId?: string; conversationId?: string; claim?: Promise<boolean> };
+  localRevision?: number;
   dto: BrowserSessionDto;
   driver?: BrowserDriver;
   /** Retained until driver shutdown succeeds so a timed-out Project deletion
@@ -186,8 +193,10 @@ interface ManagedSession {
   spawnPublication?: SpawnPublication;
   /** A URL is replayable only when it contains no credential-bearing query. */
   replayUrl?: string;
-  lastFrame?: { body: Buffer; revision: number; capturedAt: number };
-  frameCapture?: Promise<{ body: Buffer; revision: number }>;
+  lastFrame?: { body: Buffer; revision: number; capturedAt: number; metadata: BrowserFrameMetadata };
+  frameCapture?: Promise<{ body: Buffer; revision: number; metadata: BrowserFrameMetadata }>;
+  framePageId?: string;
+  agentActivity?: BrowserActivityDto;
   launchAbort: AbortController;
   launchLease?: BrowserLaunchLease;
   /** True only while an acquired launch lease can still produce process
@@ -240,6 +249,7 @@ export class BrowserSessionManager {
     private readonly resolveUploadArtifact?: BrowserUploadArtifactResolver,
     private readonly launchAuthority?: Pick<BrowserProfileAuthority, "description" | "acquire">,
     private readonly admissionAllowed: (scope: BrowserScope) => boolean = () => true,
+    private readonly retainShared = false,
   ) {
     // Start residue discovery at authority creation so prior recovery
     // directories are visible and draining before the next browser opens.
@@ -302,7 +312,27 @@ export class BrowserSessionManager {
 
   get(agentId: string): BrowserSessionDto | undefined {
     const session = this.sessions.get(agentId);
+    if (session) this.syncLocalState(session);
     return session ? publicDto(session) : undefined;
+  }
+
+  async promote(scope: BrowserScope, destination: BrowserScope, sessionId: string, expectedControlEpoch: number, persist: (profileId: string) => void): Promise<BrowserSessionDto> {
+    const session = this.ready(scope);
+    return this.serialized(session, async () => {
+      this.assertAdmission(scope);
+      if (this.ready(scope) !== session || session.dto.id !== sessionId) throw new BrowserSessionError("The browser changed before promotion.", 409);
+      if (session.dto.controlOwner !== "operator" || session.dto.controlEpoch !== expectedControlEpoch) throw new BrowserSessionError("Take control of the current browser before saving it.", 409);
+      if (session.dto.manualControl === "connecting") throw new BrowserSessionError("Finish or cancel the browser connection before saving it.", 409);
+      if (session.dto.nextRunAgentId) throw new BrowserSessionError("Cancel pending agent access before saving this browser.", 409);
+      if (session.dto.profileMode !== "trusted" || !session.dto.profileId || !session.dto.manualControl) throw new BrowserSessionError("This first saved-browser experiment requires a hosted browser opened with Remember sign-ins enabled. This browser has not been changed.", 409);
+      if (this.sessions.has(destination.agentId)) throw new BrowserSessionError("A saved browser session already exists.", 409);
+      persist(session.dto.profileId);
+      this.sessions.delete(scope.agentId);
+      session.dto = { ...session.dto, ...destination, controlEpoch: session.dto.controlEpoch + 1 };
+      this.sessions.set(destination.agentId, session);
+      this.lifecycle(session, "promoted_to_saved_browser");
+      return publicDto(session);
+    });
   }
 
   listActive(projectId: string, conversationId?: string): BrowserSessionDto[] {
@@ -316,11 +346,11 @@ export class BrowserSessionManager {
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
-  authorityStatus(): { openings: number; active: number; pendingCleanup: number; retainedFailures: number } {
+  authorityStatus(allowRetained = false): { openings: number; active: number; pendingCleanup: number; retainedFailures: number } {
     const sessions = [...this.sessions.values()];
     return {
       openings: sessions.filter((session) => Boolean(session.opening)).length,
-      active: sessions.filter((session) => Boolean(session.driver)).length,
+      active: sessions.filter((session) => Boolean(session.driver) && !(allowRetained && session.driver?.suspend && session.safeForRestart)).length,
       pendingCleanup: sessions.filter((session) => Boolean(
         session.closingDriver || session.cleanup || session.lateCleanups.size || session.cleanupError ||
         ((session.dto.status === "closed" || session.dto.status === "failed") &&
@@ -338,8 +368,34 @@ export class BrowserSessionManager {
     return session;
   }
 
+  private syncLocalState(session: ManagedSession): void {
+    if (session.dto.status === "ready" && session.driver?.suspend && !session.driver.isAlive()) {
+      session.nextRun = undefined;
+      session.dto = { ...session.dto, status: "failed", controlOwner: "operator", controlEpoch: session.dto.controlEpoch + 1, nextRunAgentId: undefined,
+        failure: "The browser or its display is unavailable. This can happen if Chrome exits or the browser service cannot be reached. No replacement was opened. Reopening does not guarantee recovery of unsaved forms." };
+      this.lifecycle(session, "browser_service_unavailable");
+      return;
+    }
+    const revision = session.driver?.controlRevision?.();
+    if (revision === undefined || session.dto.status !== "ready") return;
+    const changed = session.localRevision !== undefined && session.localRevision !== revision;
+    session.localRevision = revision;
+    const manualControl = session.driver?.manualState?.();
+    session.dto = { ...session.dto, localPaused: session.driver?.paused?.(), manualControl,
+      controlOwner: manualControl && manualControl !== "automation" ? "operator" : session.dto.controlOwner,
+      controlEpoch: session.dto.controlEpoch + (changed ? 1 : 0) };
+    if (changed) {
+      session.nextRun = undefined;
+      session.dto = { ...session.dto, nextRunAgentId: undefined };
+      session.lastFrame = undefined;
+      session.agentActivity = undefined;
+      this.lifecycle(session, session.dto.manualControl ? `hosted_${session.dto.manualControl}` : session.dto.localPaused ? "local_manual_pause" : "local_explicit_resume");
+    }
+  }
+
   private ready(scope: BrowserScope): ManagedSession & { driver: BrowserDriver } {
     const session = this.owned(scope);
+    this.syncLocalState(session);
     if (session.dto.status !== "ready" || !session.driver) {
       throw new BrowserSessionError("browser session is not ready", 409);
     }
@@ -347,6 +403,16 @@ export class BrowserSessionManager {
   }
 
   private lifecycle(session: ManagedSession, reason?: string): void {
+    session.safeForRestart = false;
+    if ((session.driver?.suspend || this.retainShared) && session.dto.location === "hosted" && (session.dto.status === "opening" || session.dto.status === "ready")) {
+      const directory = path.join(this.dataDir, "retained-browser-sessions");
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const filename = path.join(directory, `${session.dto.id}.json`);
+      // Checkpoint identity, not page content, credentials, or outstanding grants.
+      const { id, projectId, agentId, runId, profileId, profileMode, controlEpoch, openedAt, privateSignIn } = session.dto;
+      writeFileSync(`${filename}.next`, JSON.stringify({ id, projectId, agentId, runId, profileId, profileMode, controlEpoch, openedAt, privateSignIn }), { mode: 0o600 });
+      renameSync(`${filename}.next`, filename);
+    }
     this.emit(session.dto, {
       type: "browser_session",
       sessionId: session.dto.id,
@@ -557,20 +623,28 @@ export class BrowserSessionManager {
     commit?: (result: T) => U,
   ): Promise<T | U> {
     const driver = session.driver;
+    this.syncLocalState(session);
+    const driverRevision = driver.controlRevision?.();
     const lifecycleEpoch = session.lifecycleEpoch;
     const controlEpoch = expectedControlEpoch ?? session.dto.controlEpoch;
     return this.serialized(session, async (): Promise<T | U> => {
+      this.syncLocalState(session);
+      if (driver.controlRevision?.() !== driverRevision || (owner && driver.paused?.())) throw new BrowserSessionError("Local browser control paused or changed. This action was discarded.", 409);
       this.assertLifecycle(scope, session, driver, lifecycleEpoch);
       if (owner) this.assertControl(session, owner, controlEpoch);
       const result = await work(driver);
+      this.syncLocalState(session);
+      if (driver.controlRevision?.() !== driverRevision) throw new BrowserSessionError("Local browser control changed. This result was discarded.", 409);
       this.assertLifecycle(scope, session, driver, lifecycleEpoch);
       if (owner) this.assertControl(session, owner, controlEpoch);
       return commit ? commit(result) : result;
     });
   }
 
-  open(scope: BrowserScope, url?: string, initialOwner: BrowserControlOwner = "agent"): Promise<BrowserSessionDto> {
+  open(scope: BrowserScope, url?: string, initialOwner: BrowserControlOwner = "agent", localFactory?: BrowserDriverFactory, nativeManual = false): Promise<BrowserSessionDto> {
     this.assertAdmission(scope);
+    if (nativeManual && (localFactory || initialOwner !== "operator")) throw new BrowserSessionError("Manual hosted sessions must be opened by the operator.", 409);
+    const initialUrl = nativeManual && url ? validateBrowserUrl(url) : undefined;
     const existing = this.sessions.get(scope.agentId);
     if (existing?.dto.status === "ready") {
       if (!sameScope(existing.dto, scope)) {
@@ -585,16 +659,17 @@ export class BrowserSessionManager {
       return existing.opening;
     }
     const now = new Date().toISOString();
-    const launchDescription = this.launchDescription(scope);
+    const launchDescription = localFactory ? { profileMode: "disposable" as const } : this.launchDescription(scope);
     const session: ManagedSession = {
       dto: {
         id: randomUUID(),
         ...scope,
         status: "opening",
+        location: localFactory ? "local" : "hosted",
         ...launchDescription,
         controlOwner: initialOwner,
         controlEpoch: 1,
-        capabilities: browserRuntimeCapabilities(),
+        capabilities: localFactory ? { multiPage: true, fileUpload: true, hostedHeaded: false, persistentProfiles: false } : browserRuntimeCapabilities(),
         pages: [],
         pageRevision: 0,
         frameRevision: 0,
@@ -632,7 +707,7 @@ export class BrowserSessionManager {
         this.sessions.set(scope.agentId, session);
         installed = true;
         this.lifecycle(session, "open_requested");
-        const launch = await this.acquireLaunch(scope, session, launchDescription);
+        const launch = localFactory ? undefined : await this.acquireLaunch(scope, session, launchDescription);
         this.assertAdmission(scope);
         if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
           launch?.release();
@@ -641,17 +716,17 @@ export class BrowserSessionManager {
         }
         session.launchFactoryPending = true;
         try {
-          createdDriver = await this.createDriver(session.dto.id, (level, text) => {
-            if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "ready") return;
-            this.emit(scope, {
+          createdDriver = await (localFactory ?? this.createDriver)(session.dto.id, (level, text) => {
+            if (this.sessions.get(session.dto.agentId) !== session || session.dto.status !== "ready") return;
+            this.emit(session.dto, {
               type: "browser_console",
               sessionId: session.dto.id,
               executionId: scope.runId,
               level,
               text: redactBrowserText(text).slice(0, MAX_CONSOLE_TEXT),
             });
-          }, (handle, options) => this.registerSpawnHandle(scope, session, 1, publication, handle, options),
-          (event) => this.commitPageEvent(scope, session, 1, event), launch?.driver);
+          }, (handle, options) => this.registerSpawnHandle(session.dto, session, 1, publication, handle, options),
+          (event) => this.commitPageEvent(session.dto, session, 1, event), nativeManual ? { ...launch?.driver, nativeManual: true, initialUrl } : launch?.driver);
         } finally {
           session.launchFactoryPending = false;
         }
@@ -661,7 +736,8 @@ export class BrowserSessionManager {
           throw new BrowserSessionError("browser session closed while it was opening", 409);
         }
         session.driver = createdDriver;
-        if (url) await createdDriver.navigate(validateBrowserUrl(url));
+        session.dto.capabilities = { ...session.dto.capabilities, retainedAcrossAppRestart: Boolean(createdDriver.suspend), nativeDisplay: Boolean(createdDriver.resizeDesktop) };
+        if (url && !nativeManual) await createdDriver.navigate(validateBrowserUrl(url));
         if (this.sessions.get(scope.agentId) !== session || session.driver !== createdDriver || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was opening", 409);
         }
@@ -670,7 +746,8 @@ export class BrowserSessionManager {
         if (this.sessions.get(scope.agentId) !== session || session.driver !== createdDriver || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was opening", 409);
         }
-        session.dto = { ...session.dto, status: "ready" };
+        session.dto = { ...session.dto, status: "ready", localPaused: createdDriver.paused?.(), manualControl: createdDriver.manualState?.() };
+        session.localRevision = createdDriver.controlRevision?.();
         this.updatePages(session, pages);
         this.lifecycle(session, "opened");
         return publicDto(session);
@@ -707,8 +784,10 @@ export class BrowserSessionManager {
   }
 
   async reconnect(scope: BrowserScope): Promise<BrowserSessionDto> {
+    if (this.owned(scope).dto.manualControl) throw new BrowserSessionError("Use Resume automation to keep this manual browser and its open tabs. Close it explicitly before starting a replacement.", 409);
     this.assertAdmission(scope);
     const session = this.owned(scope);
+    if (session.dto.location === "local") throw new BrowserSessionError("Disconnect and reconnect the tab from the local browser extension.", 409);
     if (session.dto.status === "opening" && session.opening) return session.opening;
     const previousUrl = session.replayUrl;
     const previousDriver = session.driver;
@@ -837,8 +916,104 @@ export class BrowserSessionManager {
     if (failures.length) throw new AggregateError(failures, "browser upload cleanup did not complete");
   }
 
+  authorizeNextRun(scope: BrowserScope, agentId: string | undefined, expectedEpoch: number): BrowserSessionDto {
+    const session = this.ready(scope);
+    this.assertControl(session, "operator", expectedEpoch);
+    session.dto = { ...session.dto, nextRunAgentId: agentId, controlEpoch: session.dto.controlEpoch + 1 };
+    session.nextRun = agentId ? { agentId, epoch: session.dto.controlEpoch } : undefined;
+    this.lifecycle(session, agentId ? "next_run_authorized" : "next_run_revoked");
+    return publicDto(session);
+  }
+
+  bindNextRun(scope: BrowserScope, agentId: string, runId: string, conversationId?: string): void {
+    const session = this.sessions.get(scope.agentId), grant = session?.nextRun;
+    if (!session || !sameScope(session.dto, scope) || !grant || grant.agentId !== agentId) return;
+    if (grant.runId && grant.runId !== runId) { this.expireNextRun(scope, agentId); return; }
+    grant.runId = runId; grant.conversationId = conversationId;
+  }
+
+  expireNextRun(scope: BrowserScope, agentId: string, runId?: string): void {
+    const session = this.sessions.get(scope.agentId), grant = session?.nextRun;
+    if (!session || !grant || grant.agentId !== agentId || (runId && grant.runId !== runId)) return;
+    session.nextRun = undefined; session.dto = { ...session.dto, nextRunAgentId: undefined };
+  }
+
+  async claimNextRun(scope: BrowserScope, agentId: string, runId: string, conversationId?: string): Promise<boolean> {
+    const session = this.sessions.get(scope.agentId), grant = session?.nextRun;
+    if (!session || !sameScope(session.dto, scope) || !grant || grant.agentId !== agentId || grant.runId !== runId || grant.conversationId !== conversationId) return false;
+    if (grant.claim) return grant.claim;
+    grant.claim = (async () => {
+      try { await this.setControl(scope, "agent", grant.epoch); return true; }
+      finally { if (session.nextRun === grant) { session.nextRun = undefined; session.dto = { ...session.dto, nextRunAgentId: undefined }; } }
+    })();
+    return grant.claim;
+  }
+
+  /** Internal transport capability: never serialize this path into a DTO. */
+  manualDesktopSocket(scope: BrowserScope, sessionId: string, expectedEpoch: number): string {
+    const session = this.ready(scope);
+    if (session.dto.id !== sessionId || session.dto.controlEpoch !== expectedEpoch || !session.driver.manualSocket) throw new BrowserSessionError("Manual browser access changed. Reconnect the view.", 409);
+    if (session.dto.capabilities.nativeDisplay) return session.driver.manualSocket(session.dto.controlOwner !== "operator");
+    if (session.dto.controlOwner !== "operator") throw new BrowserSessionError("Take control before using the manual browser.", 409);
+    const state = session.driver.manualState?.();
+    if (state !== "manual" && state !== "connecting") throw new BrowserSessionError("Manual browser access is not active.", 409);
+    return session.driver.manualSocket();
+  }
+
+  async resizeDesktop(scope: BrowserScope, sessionId: string, expectedEpoch: number, size: BrowserViewportSize): Promise<void> {
+    const session = this.ready(scope);
+    if (session.dto.id !== sessionId || session.dto.controlEpoch !== expectedEpoch || session.dto.controlOwner !== "operator" || !session.driver.resizeDesktop) throw new BrowserSessionError("Browser display control changed.", 409);
+    // Native display geometry is permitted while automation is disconnected.
+    // Keep queue/lifecycle fencing, but do not apply the automation-only guard.
+    await this.pageAction(scope, session, undefined, expectedEpoch, async driver => {
+      if (session.dto.controlEpoch !== expectedEpoch || session.dto.controlOwner !== "operator") throw new BrowserSessionError("Browser display control changed.", 409);
+      await driver.resizeDesktop!(size);
+      if (session.dto.controlEpoch !== expectedEpoch || session.dto.controlOwner !== "operator") throw new BrowserSessionError("Browser display control changed.", 409);
+    });
+  }
+
+  async pauseHostedAutomation(scope: BrowserScope, expectedEpoch: number): Promise<BrowserSessionDto> {
+    const session = this.ready(scope);
+    if (session.dto.controlEpoch !== expectedEpoch || !session.driver.pauseAutomation) throw new BrowserSessionError("Browser control changed or native manual control is unavailable.", 409);
+    const driver = session.driver, lifecycleEpoch = session.lifecycleEpoch;
+    // Disconnect immediately, ahead of the action queue: pending input must not
+    // complete after the user starts entering credentials in the native view.
+    session.dto.privateSignIn = true;
+    this.lifecycle(session, "hosted_private_sign_in");
+    await driver.pauseAutomation!();
+    this.assertLifecycle(scope, session, driver, lifecycleEpoch);
+    this.syncLocalState(session);
+    session.dto = { ...session.dto, controlOwner: "operator", pendingFileChooser: undefined };
+    session.lastFrame = undefined;
+    session.agentActivity = undefined;
+    this.lifecycle(session, "hosted_manual_takeover");
+    return publicDto(session);
+  }
+
+  async resumeHostedAutomation(scope: BrowserScope, expectedEpoch: number, automatic = false): Promise<BrowserSessionDto> {
+    const session = this.ready(scope);
+    if (automatic && session.dto.privateSignIn) throw new BrowserSessionError("Private sign-in is active. Choose Done signing in to return to browsing.", 409);
+    if (session.dto.controlEpoch !== expectedEpoch || session.dto.controlOwner !== "operator" || session.driver.manualState?.() !== "manual" || !session.driver.resumeAutomation) throw new BrowserSessionError("Browser control changed or this browser is not awaiting an explicit resume.", 409);
+    const driver = session.driver, lifecycleEpoch = session.lifecycleEpoch;
+    const resuming = driver.resumeAutomation!();
+    this.syncLocalState(session);
+    try {
+      await resuming;
+      this.assertLifecycle(scope, session, driver, lifecycleEpoch);
+      this.syncLocalState(session);
+      const pages = await driver.pages();
+      this.assertLifecycle(scope, session, driver, lifecycleEpoch);
+      if (driver.manualState?.() !== "automation") throw new BrowserSessionError("Browser resume was cancelled.", 409);
+      session.dto.privateSignIn = false;
+      this.updatePages(session, pages);
+      this.lifecycle(session, "hosted_explicit_resume");
+      return publicDto(session);
+    } finally { this.syncLocalState(session); }
+  }
+
   async setControl(scope: BrowserScope, owner: BrowserControlOwner, expectedEpoch?: number): Promise<BrowserSessionDto> {
     const session = this.ready(scope);
+    if (owner === "agent" && session.driver.manualState?.() && session.driver.manualState() !== "automation") throw new BrowserSessionError("Resume automation explicitly before giving an agent control.", 409);
     if (expectedEpoch !== undefined && expectedEpoch !== session.dto.controlEpoch) {
       throw new BrowserSessionError("browser control changed in another tab; refresh before interacting", 409);
     }
@@ -847,7 +1022,10 @@ export class BrowserSessionManager {
         throw new BrowserSessionError("browser control changed in another tab; refresh before interacting", 409);
       }
       if (session.dto.controlOwner !== owner) {
-        await this.clearRetainedUploads(session, session.driver);
+        session.agentActivity = undefined;
+        session.lastFrame = undefined;
+        // A control handoff is not navigation or teardown. Keep attached files
+        // and their staging alive so taking over cannot destroy an open draft.
         await session.driver!.cancelPendingFileChooser("control_changed");
         session.dto = {
           ...session.dto, controlOwner: owner, controlEpoch: session.dto.controlEpoch + 1,
@@ -865,6 +1043,7 @@ export class BrowserSessionManager {
   }
 
   private assertControl(session: ManagedSession, owner: BrowserControlOwner, expectedEpoch?: number): void {
+    if (session.driver?.manualState?.() && session.driver.manualState() !== "automation") throw new BrowserSessionError("This browser is under native manual control. Resume automation explicitly before interacting.", 409);
     if (session.dto.controlOwner !== owner) {
       throw new BrowserSessionError(`browser input is controlled by the ${session.dto.controlOwner}`, 409);
     }
@@ -878,6 +1057,7 @@ export class BrowserSessionManager {
       const safe = redactPageInfo(page);
       return {
         id: page.pageId,
+        loading: page.loading ?? false,
         ...(safe.title ? { title: safe.title } : {}),
         ...(safe.url ? { url: safe.url } : {}),
         ...(page.openerPageId ? { openerPageId: page.openerPageId } : {}),
@@ -959,9 +1139,26 @@ export class BrowserSessionManager {
     session.replayUrl = safe.replayUrl;
     session.dto = {
       ...session.dto, url: safe.url, title: safe.title, frameRevision: session.dto.frameRevision + 1,
+      pages: session.dto.pages.map(page => page.id === session.dto.activePageId ? { ...page, url: safe.url, title: safe.title } : page),
       updatedAt: new Date().toISOString(),
     };
     session.lastFrame = undefined;
+  }
+
+  async refreshLocalPages(scope: BrowserScope): Promise<BrowserSessionDto> {
+    const session = this.ready(scope);
+    if (!session.driver.isAlive()) return this.close(scope, "local_window_disconnected");
+    try {
+      return await this.pageAction(scope, session, undefined, undefined, driver => driver.pages(), pages => {
+        session.dto = { ...session.dto, localPaused: session.driver.paused?.() };
+        this.updatePages(session, pages);
+        return publicDto(session);
+      });
+    } catch (error) {
+      if (!session.driver?.isAlive()) return this.close(scope, "local_window_disconnected");
+      if (session.driver.paused?.()) { session.dto = { ...session.dto, localPaused: true }; return publicDto(session); }
+      throw error;
+    }
   }
 
   async activatePage(
@@ -1055,7 +1252,7 @@ export class BrowserSessionManager {
       throw error;
     }
     const uploadId = randomUUID();
-    const uploadRoot = path.join(this.dataDir, "browser-sessions", session.dto.id, "uploads");
+    const uploadRoot = path.join(this.dataDir, session.driver.suspend ? "retained-browser-uploads" : "browser-sessions", session.dto.id, "uploads");
     const uploadDir = path.join(uploadRoot, uploadId);
     const safeName = uploadDisplayName(artifact);
     const temporaryPath = path.join(uploadDir, "." + randomUUID() + ".part");
@@ -1209,6 +1406,7 @@ export class BrowserSessionManager {
     this.assertControl(session, owner);
     const target = validateBrowserUrl(url);
     return this.pageAction(scope, session, owner, undefined, async (driver) => {
+      session.agentActivity = undefined;
       await this.clearRetainedUploads(session, driver, session.dto.activePageId);
       return driver.navigate(target);
     }, (info) => {
@@ -1218,6 +1416,22 @@ export class BrowserSessionManager {
         actor: owner, action: "navigate", summary: `navigated to ${session.dto.url}`, url: session.dto.url,
       });
       this.lifecycle(session, "navigated");
+      return publicDto(session);
+    });
+  }
+
+  async openLink(scope: BrowserScope, url: string): Promise<BrowserSessionDto> {
+    const target = validateBrowserUrl(url);
+    const session = this.ready(scope), epoch = session.dto.controlEpoch;
+    return this.serialized(session, async () => {
+      if (this.ready(scope) !== session || session.dto.controlOwner !== "operator" || session.dto.controlEpoch !== epoch || session.dto.manualControl === "connecting") throw new BrowserSessionError("Take control before opening a link. Existing tabs were preserved.", 409);
+      if (session.driver.openLink) await session.driver.openLink(target);
+      else {
+        if (!session.driver.newPage) throw new BrowserSessionError("This browser cannot open a new tab. Existing tabs were preserved.", 409);
+        await session.driver.newPage(); await session.driver.navigate(target);
+      }
+      this.updatePages(session, await session.driver.pages());
+      this.lifecycle(session, "link_opened_in_new_tab");
       return publicDto(session);
     });
   }
@@ -1239,6 +1453,11 @@ export class BrowserSessionManager {
 
   async act(scope: BrowserScope, input: {
     action?: unknown;
+    page_id?: unknown;
+    x?: unknown;
+    y?: unknown;
+    delta_x?: unknown;
+    delta_y?: unknown;
     selector?: unknown;
     text?: unknown;
     key?: unknown;
@@ -1268,8 +1487,21 @@ export class BrowserSessionManager {
     } else if (action === "key" && typeof input.key === "string" && input.key.length > 0 && input.key.length <= 40) {
       work = (driver) => driver.key(input.key as string);
       summary = `pressed ${input.key}`;
+    } else if (action === "pointer" || action === "scroll") {
+      if (typeof input.page_id !== "string" || input.page_id !== session.dto.activePageId) throw new BrowserSessionError("Inspect the active page again before coordinate actions.", 409);
+      const pageId = input.page_id;
+      const x = action === "pointer" ? input.x : input.delta_x;
+      const y = action === "pointer" ? input.y : input.delta_y;
+      if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) throw new BrowserSessionError("Finite coordinates are required.");
+      const size = session.driver.viewport?.() ?? VIEWPORT;
+      if (action === "pointer" ? x < 0 || y < 0 || x > size.width || y > size.height : Math.abs(x) > 4000 || Math.abs(y) > 4000) throw new BrowserSessionError("Coordinates are outside the supported range.");
+      work = async driver => {
+        if ((await driver.pages()).activePageId !== pageId) throw new BrowserSessionError("The active tab changed; coordinate action discarded.", 409);
+        return action === "pointer" ? driver.pointer(x, y) : driver.scroll(x, y);
+      };
+      summary = action === "pointer" ? `clicked viewport at ${x},${y}` : `scrolled viewport by ${x},${y}`;
     } else {
-      throw new BrowserSessionError("browser action requires click(selector), fill(selector,text), or key(key)");
+      throw new BrowserSessionError("browser action requires click, fill, key, pointer, or scroll");
     }
     const contextualWork = async (driver: BrowserDriver): Promise<BrowserPageInfo> => {
       try {
@@ -1286,10 +1518,11 @@ export class BrowserSessionManager {
       }
     };
     return this.pageAction(scope, session, "agent", undefined, contextualWork, (info) => {
+      session.agentActivity = session.driver?.activity?.();
       this.updateInfo(session, info);
       this.emit(scope, {
         type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,
-        actor: "agent", action: action === "fill" ? "type" : action, summary, url: session.dto.url,
+        actor: "agent", action: action === "fill" ? "type" : action === "pointer" ? "click" : action, summary, url: session.dto.url,
         ...(consequence ? { consequence, attemptId } : {}),
       });
       return publicDto(session);
@@ -1302,7 +1535,8 @@ export class BrowserSessionManager {
     let work: (driver: BrowserDriver) => Promise<BrowserPageInfo>;
     let summary: string;
     if (input.kind === "click") {
-      if (!Number.isFinite(input.x) || !Number.isFinite(input.y) || input.x < 0 || input.y < 0 || input.x > VIEWPORT.width || input.y > VIEWPORT.height) {
+      const size = session.driver?.viewport?.() ?? VIEWPORT;
+      if (!Number.isFinite(input.x) || !Number.isFinite(input.y) || input.x < 0 || input.y < 0 || input.x > size.width || input.y > size.height) {
         throw new BrowserSessionError("browser click coordinates are outside the viewport");
       }
       work = (driver) => driver.pointer(input.x, input.y);
@@ -1322,7 +1556,17 @@ export class BrowserSessionManager {
       work = (driver) => driver.scroll(input.deltaX, input.deltaY);
       summary = `scrolled viewport by ${Math.round(input.deltaX)},${Math.round(input.deltaY)}`;
     }
-    return this.pageAction(scope, session, "operator", input.expectedControlEpoch, work, (info) => {
+    const guardedWork = async (driver: BrowserDriver) => {
+      const pages = await driver.pages();
+      const size = driver.viewport?.() ?? VIEWPORT;
+      if ((input.expectedPageId && input.expectedPageId !== pages.activePageId) ||
+          (input.expectedViewport && (input.expectedViewport.width !== size.width || input.expectedViewport.height !== size.height))) {
+        throw new BrowserSessionError("The browser tab or size changed. Check the page before continuing.", 409);
+      }
+      session.agentActivity = undefined;
+      return work(driver);
+    };
+    return this.pageAction(scope, session, "operator", input.expectedControlEpoch, guardedWork, (info) => {
       this.updateInfo(session, info);
       this.emit(scope, {
         type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,
@@ -1332,17 +1576,48 @@ export class BrowserSessionManager {
     });
   }
 
-  async captureFrame(scope: BrowserScope): Promise<{ body: Buffer; revision: number }> {
+  async newPage(scope: BrowserScope, expectedControlEpoch: number, owner: BrowserControlOwner = "operator"): Promise<BrowserSessionDto> {
     const session = this.ready(scope);
-    if (session.lastFrame && Date.now() - session.lastFrame.capturedAt < 250) {
-      return { body: session.lastFrame.body, revision: session.lastFrame.revision };
+    return this.pageAction(scope, session, owner, expectedControlEpoch, async driver => {
+      if (!driver.newPage) throw new BrowserSessionError("New tabs are unavailable.");
+      return driver.newPage();
+    }, pages => { this.updatePages(session, pages); return publicDto(session); });
+  }
+
+  async resizeViewport(scope: BrowserScope, pageId: string, size: BrowserViewportSize, expectedControlEpoch: number): Promise<void> {
+    if (![size?.width, size?.height].every(Number.isSafeInteger) || size.width < 320 || size.width > 2560 || size.height < 200 || size.height > 1600) throw new BrowserSessionError("Invalid browser viewport size.");
+    const session = this.ready(scope);
+    // Resizing can reflow targets: only the current operator may change geometry.
+    await this.pageAction(scope, session, "operator", expectedControlEpoch, async driver => {
+      if (!driver.resizeViewport) throw new BrowserSessionError("Browser resizing is unavailable.");
+      await driver.resizeViewport(pageId, size);
+      session.lastFrame = undefined;
+      session.agentActivity = undefined;
+    });
+  }
+
+  async captureFrame(scope: BrowserScope, requestedPageId?: string): Promise<{ body: Buffer; revision: number; metadata: BrowserFrameMetadata }> {
+    const session = this.ready(scope);
+    const pageId = requestedPageId ?? session.dto.activePageId ?? "";
+    if (session.lastFrame?.metadata.pageId === pageId && Date.now() - session.lastFrame.capturedAt < 250) {
+      return session.lastFrame;
     }
-    if (session.frameCapture) return session.frameCapture;
-    session.frameCapture = this.pageAction(scope, session, undefined, undefined, (driver) => driver.capture(), (body) => {
+    if (session.frameCapture) {
+      if (session.framePageId === pageId) return session.frameCapture;
+      await session.frameCapture;
+      return this.captureFrame(scope, requestedPageId);
+    }
+    session.framePageId = pageId;
+    session.frameCapture = this.pageAction(scope, session, undefined, undefined, async driver => {
+      const body = await driver.capture(pageId || undefined);
+      const activity = session.agentActivity;
+      return { body, metadata: { pageId, viewport: driver.viewport?.(pageId) ?? VIEWPORT,
+        ...(session.dto.controlOwner === "agent" && activity?.pageId === pageId && Date.now() - activity.at < 2_500 ? { activity } : {}) } };
+    }, ({ body, metadata }) => {
       if (!body.length || body.length > MAX_FRAME_BYTES) throw new BrowserSessionError("browser frame exceeds the 16 MiB limit", 503);
       session.dto = { ...session.dto, frameRevision: session.dto.frameRevision + 1, updatedAt: new Date().toISOString() };
-      session.lastFrame = { body, revision: session.dto.frameRevision, capturedAt: Date.now() };
-      return { body, revision: session.dto.frameRevision };
+      session.lastFrame = { body, revision: session.dto.frameRevision, capturedAt: Date.now(), metadata };
+      return { body, revision: session.dto.frameRevision, metadata };
     }).finally(() => { session.frameCapture = undefined; });
     return session.frameCapture;
   }
@@ -1356,10 +1631,13 @@ export class BrowserSessionManager {
   }> {
     const session = this.ready(scope);
     this.assertControl(session, "agent");
-    const body = await this.pageAction(scope, session, "agent", undefined, (driver) => driver.capture(), (captured) => {
+    const { body, size } = await this.pageAction(scope, session, "agent", undefined, async (driver) => ({ captured: await driver.capture(), size: driver.viewport?.() ?? VIEWPORT }), ({ captured, size }) => {
       if (!captured.length || captured.length > MAX_FRAME_BYTES) throw new BrowserSessionError("browser screenshot exceeds the 16 MiB limit", 503);
       session.dto = { ...session.dto, frameRevision: session.dto.frameRevision + 1, updatedAt: new Date().toISOString() };
-      return captured;
+      // Captures use device pixels while pointer coordinates stay CSS pixels.
+      const imageSize = captured.length >= 24 && captured.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+        ? { width: captured.readUInt32BE(16), height: captured.readUInt32BE(20) } : size;
+      return { body: captured, size: imageSize };
     });
     const artifactId = randomUUID();
     const relative = path.posix.join("browser", `${artifactId}.png`);
@@ -1371,14 +1649,14 @@ export class BrowserSessionManager {
     );
     await this.emit(scope, {
       type: "browser_screenshot", sessionId: session.dto.id, executionId: scope.actorRunId ?? scope.runId,
-      artifactId, path: relative, width: VIEWPORT.width, height: VIEWPORT.height,
+      artifactId, path: relative, width: size.width, height: size.height,
       size: published.size, sha256: published.sha256,
     });
     return {
       artifactId,
       artifactRef: `ponderosa://artifact/${artifactId}`,
       path: relative,
-      ...VIEWPORT,
+      ...size,
     };
   }
 
@@ -1419,6 +1697,8 @@ export class BrowserSessionManager {
         ]);
         await this.closeRetainedHandles(session);
       }
+      rmSync(path.join(this.dataDir, "retained-browser-sessions", `${session.dto.id}.json`), { force: true });
+      await fs.rm(path.join(this.dataDir, "retained-browser-uploads", session.dto.id), { recursive: true, force: true });
       return publicDto(session);
     } finally {
       if (session.dto.status === "closed" && session.opening === opening) session.opening = undefined;
@@ -1439,9 +1719,79 @@ export class BrowserSessionManager {
   }
 
   async closeAll(reason: string): Promise<void> {
-    const results = await Promise.allSettled([...this.sessions.values()].map((session) => this.close(session.dto, reason)));
+    const retaining = reason === "server_shutdown" || reason === "deployment_drain";
+    const results = await Promise.allSettled([...this.sessions.values()].map(async session => {
+      if (session.detaching) return session.detaching;
+      if (retaining && session.driver?.suspend && session.dto.status === "ready" && !session.cleanupError) {
+        const driver = session.driver;
+        const operation = (async () => {
+          if (reason === "server_shutdown") ++session.lifecycleEpoch;
+          session.nextRun = undefined;
+          session.dto = { ...session.dto, controlOwner: "operator", controlEpoch: session.dto.controlEpoch + 1, nextRunAgentId: undefined };
+          await session.queue.catch(() => undefined);
+          if (reason === "deployment_drain") {
+            await driver.cancelPendingFileChooser("deployment_drain");
+            this.lifecycle(session, "prepared_for_application_restart");
+            session.safeForRestart = true;
+          } else {
+            this.lifecycle(session, "application_detached");
+            await driver.suspend!();
+            session.driver = undefined;
+            session.spawnHandles.clear();
+            session.launchLease?.release(); session.launchLease = undefined;
+            session.dto = { ...session.dto, status: "closed" };
+          }
+        })();
+        session.detaching = operation;
+        try { await operation; } finally { session.detaching = undefined; }
+        return;
+      }
+      await this.close(session.dto, reason);
+      rmSync(path.join(this.dataDir, "retained-browser-sessions", `${session.dto.id}.json`), { force: true });
+    }));
     const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
     if (failures.length) throw new AggregateError(failures, "browser cleanup did not complete");
+  }
+
+  async restoreRetained(ids: string[], factory: BrowserDriverFactory, resolveOwner: (dto: BrowserSessionDto) => BrowserScope = dto => dto): Promise<void> {
+    for (const id of ids) {
+      if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid retained browser identity.");
+      const recorded = JSON.parse(await fs.readFile(path.join(this.dataDir, "retained-browser-sessions", `${id}.json`), "utf8")) as BrowserSessionDto;
+      const dto = { ...recorded, ...resolveOwner(recorded) };
+      if (dto.id !== id || dto.agentId !== `project-browser:${dto.projectId}` || dto.runId !== `project:${dto.projectId}` || this.sessions.has(dto.agentId)) throw new Error("Retained browser ownership could not be verified.");
+      this.assertAdmission(dto);
+      const session: ManagedSession = {
+        dto: { ...dto, status: "ready", location: "hosted", controlOwner: "operator", controlEpoch: dto.controlEpoch + 1, nextRunAgentId: undefined, pages: [], pageRevision: 0, frameRevision: 0, capabilities: { ...browserRuntimeCapabilities(), retainedAcrossAppRestart: true }, updatedAt: new Date().toISOString() },
+        spawnHandles: new Set(), lateCleanups: new Set(), stagedUploadDirs: new Map(), queue: Promise.resolve(), lifecycleEpoch: 1, launchAbort: new AbortController(), launchFactoryPending: false,
+      };
+      this.sessions.set(dto.agentId, session);
+      try {
+        await this.acquireLaunch(dto, session, { profileMode: dto.profileMode, profileId: dto.profileId });
+        session.driver = await factory(id, () => {}, undefined, event => this.commitPageEvent(session.dto, session, 1, event));
+        session.dto.manualControl = session.driver.manualState?.();
+        session.dto.capabilities.nativeDisplay = Boolean(session.driver.resizeDesktop);
+        session.localRevision = session.driver.controlRevision?.();
+        this.updatePages(session, await session.driver.pages());
+        this.lifecycle(session, "application_reattached");
+      } catch (error) {
+        session.launchLease?.release();
+        this.sessions.delete(dto.agentId);
+        throw error;
+      }
+    }
+    const directory = path.join(this.dataDir, "retained-browser-sessions");
+    const checkpoints = await fs.readdir(directory).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return []; throw error; });
+    for (const filename of checkpoints) {
+      if (!/^[a-f0-9-]{36}\.json$/.test(filename) || ids.includes(filename.slice(0, -5))) continue;
+      const recorded = JSON.parse(await fs.readFile(path.join(directory, filename), "utf8")) as BrowserSessionDto;
+      let owner: BrowserScope;
+      try { owner = resolveOwner(recorded); } catch { continue; }
+      if (this.sessions.has(owner.agentId)) continue;
+      this.sessions.set(owner.agentId, {
+        dto: { ...recorded, ...owner, status: "failed", location: "hosted", controlOwner: "operator", controlEpoch: recorded.controlEpoch + 1, pages: [], pageRevision: 0, frameRevision: 0, capabilities: browserRuntimeCapabilities(), updatedAt: new Date().toISOString(), failure: "The browser service stopped. Live tabs and unsaved forms could not be retained. Open a new browser explicitly to continue; remembered sign-ins remain in its profile." },
+        spawnHandles: new Set(), lateCleanups: new Set(), stagedUploadDirs: new Map(), queue: Promise.resolve(), lifecycleEpoch: 1, launchAbort: new AbortController(), launchFactoryPending: false,
+      });
+    }
   }
 
   async closeProject(projectId: string, reason: string): Promise<void> {

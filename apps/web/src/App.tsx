@@ -59,6 +59,7 @@ import {
   ProjectBrowserContext,
   type ProjectBrowserRequest,
 } from "./components/ProjectBrowserContext";
+import { BrowserWorkspaceHost } from "./components/browser/BrowserWorkspaceHost";
 import { recheckProvider } from "./providerAuthRefresh";
 import { changedWorkspaceDirectoryKinds } from "./resourcePreferences";
 import {
@@ -242,6 +243,9 @@ export default function App({
   const [projectBrowserRequest, setProjectBrowserRequest] =
     useState<ProjectBrowserRequest>();
   const projectBrowserRequestId = useRef(0);
+  const [browserPanelProjectId, setBrowserPanelProjectId] = useState<string>();
+  const [browserDockWidth, setBrowserDockWidth] = useState(0);
+  const [browserPanelAgent, setBrowserPanelAgent] = useState<{ id: string; runId: string }>();
   const rememberOverlayTrigger = () => {
     overlayReturnFocus.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
@@ -581,12 +585,13 @@ export default function App({
   };
   const openProjectBrowser = (url?: string) => {
     if (!selectedProjectId) return;
+    setBrowserPanelAgent(undefined);
     projectBrowserRequestId.current += 1;
     setProjectBrowserRequest({
       ...(url ? { url } : {}),
       requestId: projectBrowserRequestId.current,
     });
-    navigateWorkspace({ kind: "browser", projectId: selectedProjectId });
+    setBrowserPanelProjectId(selectedProjectId);
   };
   useEffect(() => {
     const openNotificationRoute = (event: MessageEvent) => {
@@ -627,7 +632,12 @@ export default function App({
   };
   return (
     <ProjectBrowserContext.Provider
-      value={{ projectId: selectedProjectId, open: openProjectBrowser }}
+      value={{ projectId: selectedProjectId, open: openProjectBrowser, openAgent: (id, runId) => {
+        if (!selectedProjectId) return;
+        setProjectBrowserRequest(undefined);
+        setBrowserPanelAgent({ id, runId });
+        setBrowserPanelProjectId(selectedProjectId);
+      } }}
     >
       <MobileNavigationProvider onOpen={() => setMobileNavigationOpen(true)}>
         <MobileWorkspaceActionsProvider>
@@ -682,6 +692,7 @@ export default function App({
               xs: "minmax(0, 1fr)",
               md: "auto minmax(0, 1fr)",
             },
+            mr: { xs: 0, md: `${browserDockWidth}px` },
           }}
         >
           <Box
@@ -941,6 +952,15 @@ export default function App({
           onClose={closeEngineStatus}
         />
         </Box>
+        {browserPanelProjectId ? <BrowserWorkspaceHost
+          projectId={browserPanelProjectId}
+          projects={projects}
+          agent={browserPanelAgent}
+          onDockWidth={setBrowserDockWidth}
+          request={projectBrowserRequest}
+          onRequestHandled={(requestId) => setProjectBrowserRequest(current => consumeProjectBrowserRequest(current, requestId))}
+          onClose={() => setBrowserPanelProjectId(undefined)}
+        /> : null}
         </MobileWorkspaceActionsProvider>
       </MobileNavigationProvider>
     </ProjectBrowserContext.Provider>
