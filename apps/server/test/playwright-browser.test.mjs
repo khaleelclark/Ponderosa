@@ -38,7 +38,8 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
       assert.match(error.message, /invalid_selector/);
       return true;
     });
-    const first = (await driver.pages()).activePageId;
+    const initialPages = await driver.pages();
+    const first = initialPages.activePageId;
     await driver.resizeViewport(first, { width: 640, height: 480 });
     const compactLayout = JSON.parse(await driver.inspect()).viewport;
     assert.equal(compactLayout.width, 640, "actual document reflows, not just screenshot clipping");
@@ -52,7 +53,7 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     assert.equal(expandedFrame.readUInt32BE(16), 2880);
     assert.equal(expandedFrame.readUInt32BE(20), 1800);
     const added = await driver.newPage();
-    assert.equal(added.pages.length, 2);
+    assert.equal(added.pages.length, initialPages.pages.length + 1);
     assert.notEqual(added.activePageId, first);
     await driver.navigate(`http://127.0.0.1:${server.address().port}/popup`);
     await driver.capture(first);
@@ -70,12 +71,13 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     let pages;
     for (let i = 0; i < 250; i++) {
       pages = await driver.pages();
-      const candidate = pages.pages.find(page => page.pageId !== first);
+      const candidate = pages.pages.find(page => page.pageId !== first && page.url.endsWith('/popup'));
       if (candidate?.url.endsWith("/popup") && candidate.title === "Popup") break;
       await new Promise(resolve => setTimeout(resolve, 20));
     }
-    assert.equal(pages.pages.length, 2);
-    const popup = pages.pages.find(page => page.pageId !== first);
+    assert.equal(pages.pages.length, initialPages.pages.length + 1);
+    const popup = pages.pages.find(page => page.pageId !== first && page.url.endsWith('/popup'));
+    assert.ok(popup, 'the opened popup is present independently of startup tabs');
     assert.equal(popup.title, "Popup", "new popup is loaded before it receives input");
     await driver.activatePage(popup.pageId);
     const popupSnapshot = JSON.parse(await driver.inspect());
@@ -107,7 +109,19 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     const region = JSON.parse(await driver.inspect(frame.selector));
     assert.equal(region.requestedRegion.error, null);
     assert.match(region.changedRegions[0].text, /Embedded frame region/);
-    await driver.fill(embedded.selector, 'embedded answer');
+    let filledEmbedded = false;
+    for (let i = 0; i < 10 && !filledEmbedded; i++) {
+      const current = JSON.parse(await driver.inspect()).frameControls.find(control => control.id === 'embedded-field');
+      if (!current) { await new Promise(resolve => setTimeout(resolve, 20)); continue; }
+      try {
+        await driver.fill(current.selector, 'embedded answer');
+        filledEmbedded = true;
+      } catch (error) {
+        if (error?.reason !== 'selector_not_interactable') throw error;
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+    }
+    assert.ok(filledEmbedded, 'a changed embedded frame is re-inspected before filling');
     await assert.rejects(driver.fill('#rejecting', 'rejected value'), { reason: 'fill_unconfirmed' });
     if (!hostedHeaded) {
       while ((await driver.pages()).pages.length < 30) await driver.newPage();
