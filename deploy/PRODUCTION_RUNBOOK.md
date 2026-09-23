@@ -36,6 +36,9 @@ session obtained by opening `/__ponderosa_bootstrap#TOKEN`). An identity header
 alone never grants authority, including on loopback. Restrict the Serve port to
 the same identities with tailnet grants; the application allowlist is defense
 in depth, not a substitute for tailnet policy. Production origins must be HTTPS.
+When Serve cannot inject a backend bearer, use the private Unix-socket
+identity bridge documented in `deploy/README.md`; do not rely on expiring
+browser cookies for a bookmarked hosted deployment.
 
 Production support is Linux x64 only. The unit must load a mandatory
 `%h/.config/ponderosa/release.env` containing the exact installed identity:
