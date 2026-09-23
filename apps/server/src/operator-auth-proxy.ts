@@ -99,6 +99,13 @@ export function createOperatorAuthProxy(options: OperatorAuthProxyOptions): Oper
         if (!hopByHop.has(name)) headers[name] = value;
       }
       response.writeHead(result.statusCode ?? 502, headers);
+      // A killed/restarted backend can abort an SSE response without sending
+      // its final chunk. pipe() only ends the downstream on a clean "end";
+      // close the browser side so EventSource can reconnect and replay.
+      result.on("error", () => response.destroy());
+      result.once("close", () => {
+        if (!result.complete && !response.destroyed) response.destroy();
+      });
       result.pipe(response);
     });
     upstream.on("error", () => {

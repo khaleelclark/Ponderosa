@@ -6,6 +6,7 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import Fastify from "fastify";
 import { createOperatorAuthProxy, listenOperatorAuthProxy } from "../dist/operator-auth-proxy.js";
 import { registerRequestSecurityHooks } from "../dist/server-request-hooks.js";
@@ -88,6 +89,45 @@ test("private proxy requires identity, replaces browser authorization, and prese
   assert.equal(seen[0].headers["tailscale-user-login"], identity);
   assert.equal(seen[0].url, "/api/projects?first=1");
   assert.equal(seen[0].body, "payload");
+});
+
+test("a backend restart closes an unfinished proxied event stream so the browser can reconnect", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ponderosa-proxy-stream-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let backendResponse;
+  const backend = createServer((_request, response) => {
+    backendResponse = response;
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.write(": connected\n\n");
+  });
+  await listen(backend, 0);
+  t.after(() => close(backend));
+  const socketPath = join(root, "operator.sock");
+  const proxy = await listenOperatorAuthProxy({
+    socketPath,
+    backendPort: backend.address().port,
+    backendToken: token,
+    publicOrigin: "https://example.test",
+    identityHeader: "Tailscale-User-Login",
+    allowedIdentities: [identity],
+  });
+  t.after(() => close(proxy));
+
+  const request = httpRequest({ socketPath, path: "/api/workspace/stream", headers: {
+    "tailscale-user-login": identity,
+  } });
+  t.after(() => request.destroy());
+  const received = new Promise((resolve, reject) => {
+    request.once("response", resolve);
+    request.once("error", reject);
+  });
+  request.end();
+  const response = await received;
+  assert.equal(response.statusCode, 200);
+  response.on("error", () => {});
+  const closed = new Promise(resolve => response.once("close", resolve));
+  backendResponse.destroy();
+  assert.equal(await Promise.race([closed.then(() => true), delay(500).then(() => false)]), true);
 });
 
 test("proxy rejects unsafe or incomplete startup configuration", () => {
