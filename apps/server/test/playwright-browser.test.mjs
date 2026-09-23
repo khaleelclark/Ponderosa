@@ -8,34 +8,39 @@ import sharp from "sharp";
 import { playwrightBrowserDriverFactory, findBrowserExecutable } from "../dist/chrome-cdp-driver.js";
 
 for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "headed" : "headless"}: delayed/shadow controls, popup targeting, upload and exact teardown`, { skip: !findBrowserExecutable() }, async () => {
+  const stage = (label) => { if (process.env.CI === "true") process.stderr.write(`browser check ${hostedHeaded ? "headed" : "headless"}: ${label}\n`); };
   process.env.PONDEROSA_BROWSER_MULTI_PAGE = "1";
   process.env.PONDEROSA_BROWSER_FILE_UPLOAD = "1";
   const root = mkdtempSync(join(tmpdir(), "playwright-browser-"));
+  const popupUrlSuffix = "/popup?q={a,b}";
   const server = createServer((req, res) => {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     if (req.url === "/scroll") { res.end('<style>body{margin:0}div{height:1000px;background:red}div+div{background:blue}</style><div></div><div></div>'); return; }
     if (req.url === "/embedded") { res.end('<p>Embedded frame region</p><input id="embedded-field" aria-label="Embedded answer">'); return; }
     if (req.url === "/frames") { res.end('<iframe src="/embedded"></iframe><input id="rejecting" oninput="this.value=\'\'">'); return; }
-    if (req.url === "/popup") {
+    if (req.url === "/popup" || req.url === popupUrlSuffix) {
       // The DOM and title appear before DOMContentLoaded, as they can in a
       // real popup. Inspection can see the field while Playwright catches up.
       res.write('<title>Popup</title><input id="popup">');
       setTimeout(() => res.end(), 200);
       return;
     }
-    res.end(`<title>Fixture</title><main><input id="password" type="password" value="FAKE_SECRET"><input id="file" type="file" accept="text/plain"><button id="popup" onclick="window.open('/popup')">Popup</button><div id="shadow"></div></main><script>document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<input id="shadow-field">';setTimeout(()=>document.querySelector('main').insertAdjacentHTML('beforeend','<input id="delayed">'),600);</script>`);
+    res.end(`<title>Fixture</title><main><input id="password" type="password" value="FAKE_SECRET"><input id="file" type="file" accept="text/plain"><button id="popup" onclick="window.open('${popupUrlSuffix}')">Popup</button><div id="shadow"></div></main><script>document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<input id="shadow-field">';setTimeout(()=>document.querySelector('main').insertAdjacentHTML('beforeend','<input id="delayed">'),600);</script>`);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   let driver;
   const handles = [];
   try {
+    stage("launching");
     driver = await playwrightBrowserDriverFactory(root)("fixture", () => {}, handle => handles.push(handle), undefined, {
       hostedHeaded,
       // GitHub's hosted Ubuntu runner disables the user namespaces Chromium's
       // sandbox requires. Production launches do not set this explicit escape.
       disableSandbox: process.env.CI === "true",
     });
+    stage("launched");
     await driver.navigate(`http://127.0.0.1:${server.address().port}`);
+    stage("filling delayed control");
     await driver.fill("#delayed", "waited correctly");
     assert.ok((await driver.inspect()).includes("waited correctly"));
     assert.ok(!(await driver.inspect()).includes("FAKE_SECRET"));
@@ -59,6 +64,7 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     const expandedFrame = await driver.capture(first);
     assert.equal(expandedFrame.readUInt32BE(16), 2880);
     assert.equal(expandedFrame.readUInt32BE(20), 1800);
+    stage("opening independent tab");
     const added = await driver.newPage();
     assert.equal(added.pages.length, initialPages.pages.length + 1);
     assert.notEqual(added.activePageId, first);
@@ -69,30 +75,40 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     assert.ok((await driver.inspect()).includes("target retained"), "actual input still reaches the working tab after viewing another");
     await driver.closePage(added.activePageId);
     await driver.activatePage(first);
+    stage("checking opener activity");
     await driver.fill("#delayed", "activity marker");
     assert.equal(driver.activity().kind, "fill");
     assert.equal(driver.activity().pageId, first);
     assert.ok(driver.activity().width > 0);
     assert.ok(!JSON.stringify(driver.activity()).includes("activity marker"), "activity contains geometry, not input values");
+    stage("opening popup");
     await driver.click("#popup");
     let pages;
     for (let i = 0; i < 250; i++) {
       pages = await driver.pages();
-      const candidate = pages.pages.find(page => page.pageId !== first && page.url.endsWith('/popup'));
-      if (candidate?.url.endsWith("/popup") && candidate.title === "Popup") break;
+      const candidate = pages.pages.find(page => page.pageId !== first && page.url.endsWith(popupUrlSuffix));
+      if (candidate?.url.endsWith(popupUrlSuffix) && candidate.title === "Popup") break;
       await new Promise(resolve => setTimeout(resolve, 20));
     }
     assert.equal(pages.pages.length, initialPages.pages.length + 1);
-    const popup = pages.pages.find(page => page.pageId !== first && page.url.endsWith('/popup'));
+    const popup = pages.pages.find(page => page.pageId !== first && page.url.endsWith(popupUrlSuffix));
     assert.ok(popup, 'the opened popup is present independently of startup tabs');
     assert.equal(popup.title, "Popup", "new popup is loaded before it receives input");
     await driver.activatePage(popup.pageId);
     const popupSnapshot = JSON.parse(await driver.inspect());
     assert.ok(popupSnapshot.controls.some(control => control.selector === '#popup' && control.tag === 'input'), 'the selected popup is ready for input');
-    await driver.fill("#popup", "popup works");
+    stage("filling popup");
+    try { await driver.fill("#popup", "popup works"); }
+    catch (error) {
+      const retained = await driver.inspect().then(snapshot => snapshot.includes("popup works"), () => false);
+      stage(`popup fill failed; value retained=${retained}`);
+      throw error;
+    }
+    stage("filled popup");
     assert.ok((await driver.inspect()).includes("popup works"));
     await driver.closePage(popup.pageId);
     await driver.activatePage(first);
+    stage("checking upload");
     await driver.click("#file");
     for (let i = 0; i < 50 && !(await driver.pages()).pendingFileChooser; i++) await new Promise(resolve => setTimeout(resolve, 20));
     assert.ok((await driver.pages()).pendingFileChooser, "page chooser remains available for authorized upload");
@@ -101,6 +117,7 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
     assert.equal(receipt.input.name, "fixture.txt");
     assert.ok((await driver.capture()).length > 100);
     await driver.clearUploadedFiles();
+    stage("checking scroll and frame controls");
     await driver.navigate(`http://127.0.0.1:${server.address().port}/scroll`);
     await driver.resizeViewport(first, { width: 640, height: 480 });
     await driver.scroll(0, 1100);
@@ -129,9 +146,12 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
       }
     }
     assert.ok(filledEmbedded, 'a changed embedded frame is re-inspected before filling');
+    stage("checking rejected value");
     await assert.rejects(driver.fill('#rejecting', 'rejected value'), { reason: 'fill_unconfirmed' });
     if (!hostedHeaded) {
+      stage("opening tabs to capacity");
       while ((await driver.pages()).pages.length < 30) await driver.newPage();
+      stage("opened tabs to capacity");
       await assert.rejects(driver.newPage(), /tab limit/);
       assert.equal((await driver.pages()).pages.length, 30, "all thirty existing tabs survive a rejected thirty-first tab");
     }
@@ -140,8 +160,10 @@ for (const hostedHeaded of [false, true]) test(`Playwright ${hostedHeaded ? "hea
       assert.equal(driver.isAlive(), false, "published process authority covers the Playwright-connected browser");
     }
   } finally {
+    stage("closing browser");
     if (driver) { await driver.close(); assert.equal(driver.isAlive(), false); }
     else for (const handle of handles.reverse()) if (handle.isAlive()) await handle.close();
+    stage("closed browser");
     await new Promise(resolve => server.close(resolve)); rmSync(root, { recursive: true, force: true });
   }
 });

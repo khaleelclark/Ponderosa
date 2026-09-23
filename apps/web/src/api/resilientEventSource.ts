@@ -1,7 +1,10 @@
-import type { StreamSubscription } from "./types";
+import type { StreamSubscription } from "./types.js";
 
 const INITIAL_RECONNECT_DELAY_MS = 500;
 const MAX_RECONNECT_DELAY_MS = 5_000;
+// The server sends a heartbeat every 15 seconds. A half-open proxy response
+// must not leave a mounted Chat silently stale forever.
+const MAX_SILENCE_MS = 45_000;
 
 interface ResilientEventSourceOptions {
   createSource(): EventSource;
@@ -10,6 +13,7 @@ interface ResilientEventSourceOptions {
   onError?(event: Event): void;
   initialReconnectDelayMs?: number;
   maxReconnectDelayMs?: number;
+  maxSilenceMs?: number;
 }
 
 /**
@@ -22,33 +26,53 @@ export function createResilientEventSource(
 ): StreamSubscription {
   const initialDelay = Math.max(1, options.initialReconnectDelayMs ?? INITIAL_RECONNECT_DELAY_MS);
   const maxDelay = Math.max(initialDelay, options.maxReconnectDelayMs ?? MAX_RECONNECT_DELAY_MS);
+  const maxSilence = Math.max(1, options.maxSilenceMs ?? MAX_SILENCE_MS);
   let stopped = false;
   let source: EventSource | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let silenceTimer: ReturnType<typeof setTimeout> | undefined;
   let reconnectDelay = initialDelay;
+
+  const clearSilenceTimer = () => {
+    if (silenceTimer) clearTimeout(silenceTimer);
+    silenceTimer = undefined;
+  };
+
+  const disconnect = (current: EventSource, event: Event): void => {
+    if (stopped || source !== current) return;
+    clearSilenceTimer();
+    options.onError?.(event);
+    source = undefined;
+    current.close();
+    if (reconnectTimer) return;
+    const delay = reconnectDelay;
+    reconnectDelay = Math.min(reconnectDelay * 2, maxDelay);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = undefined;
+      connect();
+    }, delay);
+  };
+
+  const noteActivity = (current: EventSource): void => {
+    if (stopped || source !== current) return;
+    clearSilenceTimer();
+    silenceTimer = setTimeout(() => disconnect(current, new Event("error")), maxSilence);
+  };
 
   const connect = (): void => {
     if (stopped) return;
     const nextSource = options.createSource();
     source = nextSource;
+    noteActivity(nextSource);
+    nextSource.addEventListener("heartbeat", () => noteActivity(nextSource));
+    nextSource.addEventListener("message", () => noteActivity(nextSource));
     nextSource.onopen = (event) => {
       if (stopped || source !== nextSource) return;
       reconnectDelay = initialDelay;
+      noteActivity(nextSource);
       options.onOpen?.(event);
     };
-    nextSource.onerror = (event) => {
-      if (stopped || source !== nextSource) return;
-      options.onError?.(event);
-      source = undefined;
-      nextSource.close();
-      if (reconnectTimer) return;
-      const delay = reconnectDelay;
-      reconnectDelay = Math.min(reconnectDelay * 2, maxDelay);
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = undefined;
-        connect();
-      }, delay);
-    };
+    nextSource.onerror = (event) => disconnect(nextSource, event);
     options.configure(nextSource);
   };
 
@@ -56,6 +80,7 @@ export function createResilientEventSource(
   return {
     close() {
       stopped = true;
+      clearSilenceTimer();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       reconnectTimer = undefined;
       source?.close();

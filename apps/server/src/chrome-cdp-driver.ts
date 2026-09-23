@@ -390,9 +390,15 @@ export class ChromeCdpDriver implements BrowserDriver {
     if (!reference) {
       const selected = await this.playwright.page(page.targetId);
       // CDP can publish a popup and its DOM before Playwright has settled the
-      // corresponding main-frame navigation. Wait for action-frame readiness,
-      // not just page discovery, before handing out a locator.
-      await selected.waitForLoadState("domcontentloaded", { timeout: 10_000 });
+      // corresponding main-frame navigation. A bare load-state wait can
+      // succeed on the popup's initial about:blank document, then leave fill
+      // waiting on a different frame. Bind readiness to the inspected URL.
+      if (page.openerPageId && page.url !== "about:blank") {
+        const expectedUrl = page.url;
+        await selected.waitForURL(url => url.href === expectedUrl, { waitUntil: "domcontentloaded", timeout: 10_000 });
+      } else {
+        await selected.waitForLoadState("domcontentloaded", { timeout: 10_000 });
+      }
       return selected.locator(selector);
     }
     const entry = this.frameReferences.get(reference[1]!);
@@ -1273,9 +1279,32 @@ export class ChromeCdpDriver implements BrowserDriver {
         const locator = await this.uniqueActionLocator(selector);
         try { await locator.fill(text, { timeout: 10_000 }); }
         catch { throw new BrowserDriverActionError("fill_unconfirmed"); }
-        const retained = await locator.evaluate((element: { value?: unknown; textContent: string | null }) => "value" in element ? String(element.value) : element.textContent ?? "");
+        // The lifecycle observer already owns this page's CDP session. For a
+        // main-document CSS selector, confirm the result through that session:
+        // Playwright can finish the input action on a newly opened popup while
+        // its locator remains tied to a transient frame and its subsequent
+        // read times out. This is observation only; never repeat an ambiguous
+        // mutation. Frame and shadow selectors retain the Playwright read.
+        const observed = selector.startsWith("frame:") ? null : await this.evaluateOn<{
+          retained: string; bounds: { x: number; y: number; width: number; height: number };
+        } | null>(page, `(() => {
+          let matches;
+          try { matches = document.querySelectorAll(${JSON.stringify(selector)}); } catch { return null; }
+          if (matches.length !== 1 || !matches[0].isConnected) return null;
+          const element = matches[0];
+          const rect = element.getBoundingClientRect();
+          return {
+            retained: 'value' in element ? String(element.value) : element.textContent ?? '',
+            bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          };
+        })()`).catch(() => null);
+        const retained = observed?.retained ?? await locator.evaluate(
+          (element: { value?: unknown; textContent: string | null }) => "value" in element ? String(element.value) : element.textContent ?? "",
+          undefined,
+          { timeout: 5_000 },
+        );
         if (retained !== text) throw new Error("Field did not retain the supplied value.");
-        const bounds = await locator.boundingBox();
+        const bounds = observed?.bounds ?? await locator.boundingBox({ timeout: 5_000 }).catch(() => null);
         this.lastActivity = bounds ? { pageId: page.pageId, kind: "fill", ...bounds, at: Date.now() } : undefined;
       } catch (error) {
         if (error instanceof BrowserDriverActionError) throw error;

@@ -229,7 +229,6 @@ test('full server shutdown and startup reconnect the shared browser without inhe
   const root = await mkdtemp(path.join(tmpdir(), 'browser-server-restart-'));
   const dataDir = path.join(root, 'state');
   const socket = path.join(root, 'service.sock');
-  const previous = process.env.PONDEROSA_BROWSER_SERVICE_SOCKET;
   let launched = 0, closed = 0, text = '';
   const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true };
   const service = await startBrowserService(socket, dataDir, async () => {
@@ -238,12 +237,11 @@ test('full server shutdown and startup reconnect the shared browser without inhe
       pages: async () => ({ activePageId: 'draft', pages: [page] }), pageInfo: async () => page,
       type: async value => { text += value; return page; }, cancelPendingFileChooser: async () => {}, close: async () => { closed++; } };
   });
-  process.env.PONDEROSA_BROWSER_SERVICE_SOCKET = socket;
   let app;
   try {
     const store = new AgentStore(dataDir);
     const project = store.createProject({ label: 'Browser restart', hostPath: root, defaultEngine: 'codex' });
-    app = createServer({ dataDir, store, engines: [], logger: false });
+    app = createServer({ dataDir, browserServiceSocket: socket, store, engines: [], logger: false });
     await app.ready();
     const url = `/api/projects/${project.id}/browser`;
     const response = await app.inject({ method: 'POST', url, payload: { rememberSignIns: true } });
@@ -253,7 +251,7 @@ test('full server shutdown and startup reconnect the shared browser without inhe
     assert.equal(input.statusCode, 200, input.body);
     app.prepareForShutdown(); await app.close();
     assert.equal(closed, 0);
-    app = createServer({ dataDir, engines: [], logger: false });
+    app = createServer({ dataDir, browserServiceSocket: socket, engines: [], logger: false });
     await app.ready();
     const restored = (await app.inject(url)).json();
     assert.equal(restored.id, opened.id);
@@ -267,8 +265,46 @@ test('full server shutdown and startup reconnect the shared browser without inhe
     assert.equal(ended.statusCode, 200, ended.body); assert.equal(closed, 1);
   } finally {
     if (app) { app.prepareForShutdown(); await app.close(); }
-    if (previous === undefined) delete process.env.PONDEROSA_BROWSER_SERVICE_SOCKET; else process.env.PONDEROSA_BROWSER_SERVICE_SOCKET = previous;
     await service.close(); await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('embedded test server cannot claim an ambient live browser broker', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-service-isolation-'));
+  const socket = path.join(root, 'service.sock');
+  const previousSocket = process.env.PONDEROSA_BROWSER_SERVICE_SOCKET;
+  const previousDataDir = process.env.PONDEROSA_DATA_DIR;
+  const service = await startBrowserService(socket, root, async () => ({
+    isAlive: () => true,
+    manualState: () => 'automation',
+    pages: async () => ({ pages: [] }),
+    cancelPendingFileChooser: async () => {},
+    close: async () => {},
+  }));
+  let app;
+  try {
+    const owner = new BrowserServiceClient(socket);
+    await owner.claim();
+    const browserId = randomUUID();
+    const driver = await owner.driver(browserId);
+    process.env.PONDEROSA_BROWSER_SERVICE_SOCKET = socket;
+    process.env.PONDEROSA_DATA_DIR = root;
+    app = createServer({ dataDir: path.join(root, 'isolated-test-state'), engines: [], logger: false });
+    await app.ready();
+    assert.deepEqual(await driver.pages(), { pages: [] }, 'the original application lease remains valid');
+    app.prepareForShutdown();
+    await app.close();
+    app = undefined;
+    assert.deepEqual(await driver.pages(), { pages: [] }, 'test shutdown does not touch the broker');
+    await driver.close();
+  } finally {
+    if (app) { app.prepareForShutdown(); await app.close(); }
+    if (previousSocket === undefined) delete process.env.PONDEROSA_BROWSER_SERVICE_SOCKET;
+    else process.env.PONDEROSA_BROWSER_SERVICE_SOCKET = previousSocket;
+    if (previousDataDir === undefined) delete process.env.PONDEROSA_DATA_DIR;
+    else process.env.PONDEROSA_DATA_DIR = previousDataDir;
+    await service.close();
+    await rm(root, { recursive: true, force: true });
   }
 });
 

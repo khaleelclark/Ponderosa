@@ -50,6 +50,8 @@ export interface EngineRegistration {
 
 export interface CreateServerOptions {
   dataDir: string;
+  /** Explicit bootstrap authority for the persistent local browser service. */
+  browserServiceSocket?: string;
   /** Starts only canonical crash cleanup, never listeners, triggers, or Run leasing. */
   startupMode?: "serve" | "shutdown_recovery";
   /** Qualification instances accept explicit inspection but lease no Runs until resumed. */

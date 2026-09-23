@@ -14,6 +14,7 @@ import { recoverBrowserResidue } from "./browser-session-residue.js";
 
 interface BrowserAuthorityContext {
   dataDir: string;
+  browserServiceSocket?: string;
   driverFactory?: BrowserDriverFactory;
   store: AgentStore;
   activeRuns: ReadonlyMap<string, ActiveRun>;
@@ -41,6 +42,7 @@ export function durableBrowserDriverFactory(
 export function createBrowserAuthority(context: BrowserAuthorityContext) {
   const {
     dataDir,
+    browserServiceSocket,
     driverFactory,
     store,
     activeRuns,
@@ -135,7 +137,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
     browserAdmissionAllowed,
   );
   const projectBrowserGrants = new Map<string, { agentId: string; runId: string }>();
-  const service = !driverFactory && process.env.PONDEROSA_BROWSER_SERVICE_SOCKET ? new BrowserServiceClient(process.env.PONDEROSA_BROWSER_SERVICE_SOCKET) : undefined;
+  const service = !driverFactory && browserServiceSocket ? new BrowserServiceClient(browserServiceSocket) : undefined;
   const sharedFactory: BrowserDriverFactory = service ? (id, console, spawned, event, launch) => launch?.nativeManual
     ? service.driver(id, event, launch)
     : browserFactory(id, console, spawned, event, launch) : browserFactory;
