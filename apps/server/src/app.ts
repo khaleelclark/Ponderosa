@@ -1,6 +1,7 @@
 import { AgentStore, CoordinationV3Store, ProjectDeletionInProgressError, WorkspaceStore, type LogEvent } from "@ponderosa/agents";
 import { windowsJobObjectsSupported } from "@ponderosa/native-host";
 import type {
+  DecisionDto,
   TokenUsageRangeDto,
   TokenUsageSummaryDto,
   WorkspaceEventEnvelope
@@ -441,6 +442,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       !deletingAgentIds.has(scope.agentId) &&
       !(scope.actorAgentId && deletingAgentIds.has(scope.actorAgentId)),
   });
+  const applyResolvedSavedBrowserApproval = (decision: DecisionDto): boolean => {
+    const scope = decision.approvalScope;
+    if (scope?.kind !== "saved_browser" || decision.status !== "resolved" ||
+        decision.response?.optionId !== "approve") return true;
+    const agent = store.getAgent(scope.agentId);
+    if (decision.projectId !== scope.projectId || decision.agentId !== scope.agentId ||
+        !agent || agent.projectId !== scope.projectId || agent.archived ||
+        deletingProjectIds.has(scope.projectId) || deletingAgentIds.has(scope.agentId) ||
+        browserProfiles.savedBrowser()?.profileId !== scope.profileId) return false;
+    return browserProfiles.applySavedBrowserApproval(decision.id, scope.profileId, scope.projectId, scope.agentId);
+  };
   const managedWorkspacesRoot = path.resolve(opts.dataDir, "workspaces");
   const projectFolderPathBoundary = createProjectFolderPathBoundary({
     managedWorkspacesRoot,
@@ -821,6 +833,8 @@ app.server.on("upgrade", linkPreviewUpgrade);
     deploymentControl.drainIdleAuthorities();
   }
   deploymentControl = createDeploymentControl(app, {
+    dataDir: opts.dataDir,
+    startDrained: opts.startDrained,
     store,
     coordinationV3,
     activeRuns,
@@ -980,6 +994,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     resolveOperationalNotification,
     drainProviderRuntimeAuthority,
     ensureDecisionResponseActivation,
+    applyResolvedSavedBrowserApproval,
     refreshCommunicationReconciliation,
     stopCommunicationReconciliation,
     closeRunBrowser,
@@ -1023,6 +1038,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     assets,
     browserSessions,
     projectBrowserSessions,
+    browserProfiles,
     projectBrowserGrants,
     projectBrowserScope,
     teamDirectory,
@@ -1180,6 +1196,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     conversationDetail,
     withMessagePresentation,
     ensureDecisionResponseActivation,
+    applyResolvedSavedBrowserApproval,
     publishCoordinationV3Changed,
     publishMessageDeliveryChanged,
     teamDirectory,

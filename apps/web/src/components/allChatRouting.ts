@@ -282,11 +282,13 @@ export function runtimeCanonicalKey(input: {
   engine?: string;
   model?: string | null;
   effort?: string | null;
+  speed?: string | null;
 }): string {
   return JSON.stringify([
     input.engine ?? "",
     input.model ?? "",
     input.effort ?? "",
+    input.speed ?? "",
   ]);
 }
 

@@ -8,7 +8,6 @@ import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, 
 import { messageTagTokens, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
 import { type ReactNode, type ComponentPropsWithoutRef, useEffect, useRef, useState } from "react";
-import useMediaQuery from "@mui/material/useMediaQuery";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../../clipboard";
@@ -21,15 +20,15 @@ import {
   parseChatProjectFileHref,
   renderableChatLinkHref,
 } from "./chatMarkdownLink";
+export { resolveMessageMentionText } from "./messageMentionPresentation";
+import { resolveMessageMentionText } from "./messageMentionPresentation";
 
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
 }
 
 function ScrollableMessageTable({node: _node, ...props}: ComponentPropsWithoutRef<"table"> & {node?: unknown}): JSX.Element {
-  const mobile = useMediaQuery("(max-width: 899.95px)");
   return <div style={{minWidth: 0, maxWidth: "100%"}}>
-    {mobile ? <Typography variant="caption" color="text.secondary">Swipe or scroll sideways to read the table.</Typography> : null}
     <div role="region" tabIndex={0} aria-label="Scrollable message table" style={{maxWidth: "100%", overflowX: "auto", overscrollBehaviorX: "contain"}}>
       <table {...props} />
     </div>
@@ -68,39 +67,6 @@ function stripLeadingRoutingHandle(text: string, handle: string): string {
   }
   const remainder = visible.slice(match[0].length);
   return remainder.trim() ? remainder.trimStart() : text;
-}
-
-const RESERVED_PRESENTATION_HANDLES = new Set([
-  "broadcast",
-  "everyone",
-  "new-agent",
-  "operator",
-  "pto",
-  "user",
-]);
-
-/** One authoritative name-resolution path shared by rendering, copy, and export. */
-export function resolveMessageMentionText(
-  text: string,
-  mentions: readonly AgentMentionBindingDto[] | undefined,
-): string {
-  const tokens = messageTagTokens(text);
-  if (!tokens.length) return text;
-  let cursor = 0;
-  let resolved = "";
-  for (const token of tokens) {
-    resolved += text.slice(cursor, token.start);
-    const binding = mentions?.find(mention =>
-      mention.handle.toLocaleLowerCase() === token.handle.toLocaleLowerCase());
-    if (binding) resolved += `#${binding.currentHandle}`;
-    else if (RESERVED_PRESENTATION_HANDLES.has(token.handle.toLocaleLowerCase())) {
-      resolved += text.slice(token.start, token.end);
-    } else {
-      resolved += `[Unavailable Agent: ${token.handle}]`;
-    }
-    cursor = token.end;
-  }
-  return resolved + text.slice(cursor);
 }
 
 function canonicalRecipientPrefix(

@@ -172,6 +172,7 @@ export function CompactWorkspaceHeader({
       sx={theme => ({
         ...workspaceHeaderSurfaceSx(theme),
         minWidth: 0,
+        containerType: "inline-size",
         borderBottom: 1,
         borderColor: "divider",
       })}
@@ -219,7 +220,7 @@ export function CompactWorkspaceHeader({
               variant="caption"
               color="text.secondary"
               noWrap
-              sx={{ flexShrink: 0 }}
+              sx={{ flexShrink: 0, "@container (max-width: 640px)": { display: "none" } }}
             >
               · {context}
             </Typography>

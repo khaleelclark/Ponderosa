@@ -21,6 +21,7 @@ import type { ActiveRun, EngineRegistration, PersistentRuntime } from "../app-co
 import {
   concreteRuntimeSelection,
   runtimeSelectionError,
+  runtimeSpeedSelectionError,
 } from "../runtime-selection.js";
 import {
   registerProjectFolderRoutes,
@@ -878,6 +879,7 @@ export function registerProjectRoutes(
         defaultEngine,
         defaultModel: request.body.defaultModel ?? null,
         defaultEffort: request.body.defaultEffort ?? null,
+        defaultSpeed: request.body.defaultSpeed ?? null,
       })).digest("hex"),
     };
     const managedIdentity: ManagedProjectCreationIdentity | undefined = request.body.hostPath
@@ -914,6 +916,17 @@ export function registerProjectRoutes(
       creationModelOptions,
     );
     if (selectionError) return reply.code(400).send({ error: selectionError });
+    const resolvedCreation = concreteRuntimeSelection(creationAdapter, [
+      { model: request.body.defaultModel, effort: request.body.defaultEffort },
+      workspace.getPreferences().engineDefaults?.[defaultEngine],
+    ], creationModelOptions);
+    const speedError = runtimeSpeedSelectionError(
+      creationAdapter,
+      resolvedCreation.model,
+      request.body.defaultSpeed,
+      creationModelOptions,
+    );
+    if (speedError) return reply.code(400).send({ error: speedError });
     await fs.mkdir(managedWorkspacesRoot, { recursive: true });
     if (request.body.hostPath) {
       try {
@@ -950,6 +963,7 @@ export function registerProjectRoutes(
         defaultEngine,
         ...(request.body.defaultModel ? { defaultModel: request.body.defaultModel } : {}),
         ...(request.body.defaultEffort ? { defaultEffort: request.body.defaultEffort } : {}),
+        ...(request.body.defaultSpeed ? { defaultSpeed: request.body.defaultSpeed } : {}),
       }, creationIdentity);
       if (project.lastConversationId) {
         const resolved = concreteRuntimeSelection(creationAdapter, [
@@ -960,6 +974,7 @@ export function registerProjectRoutes(
           defaultEngine,
           defaultModel: resolved.model ?? null,
           defaultEffort: resolved.effort ?? null,
+          defaultSpeed: request.body.defaultSpeed ?? null,
         });
       }
     } catch (error) {

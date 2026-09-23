@@ -8,6 +8,7 @@ import { processGroupAlive, runtimeProcessIdentity, terminateProcessGroup } from
 import { redactBrowserText } from "./browser-security.js";
 import { connectPlaywrightMechanics } from "./playwright-browser-mechanics.js";
 import type { BrowserProtocolConnection } from "./approved-chrome-connection.js";
+import { recordHostedDisplayProcess, reserveHostedDisplay } from "./browser-session-residue.js";
 
 const VIEWPORT = { width: 1280, height: 720 } as const;
 export const MAX_BROWSER_TABS = 30;
@@ -30,6 +31,8 @@ export function browserRuntimeCapabilities(env: NodeJS.ProcessEnv = process.env)
 }
 
 export interface BrowserDriverLaunchOptions {
+  /** Cancels an in-flight launch before it can retain browser authority. */
+  signal?: AbortSignal;
   /** Overrides the disposable per-session profile directory. */
   profileDir?: string;
   /** Trusted profile contents survive ordinary browser close and restart. */
@@ -177,12 +180,17 @@ function findVirtualDisplayExecutable(configured = process.env.PONDEROSA_BROWSER
   return candidates.find((candidate) => existsSync(candidate));
 }
 
-async function waitForDisplay(child: ChildProcess, displayNumber: number): Promise<void> {
+function throwIfLaunchAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error("browser launch cancelled");
+}
+
+async function waitForDisplay(child: ChildProcess, displayNumber: number, signal?: AbortSignal): Promise<void> {
   const socket = `/tmp/.X11-unix/X${displayNumber}`;
   const deadline = Date.now() + 5_000;
   let spawnError: Error | undefined;
   child.on("error", (error) => { spawnError = error; });
   while (Date.now() < deadline) {
+    throwIfLaunchAborted(signal);
     if (spawnError) throw spawnError;
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error("host browser display exited during startup");
@@ -197,24 +205,13 @@ export async function spawnHostedDisplay(
   executable: string,
   publish?: (display: HostedDisplay) => boolean,
   size: { width: number; height: number } = VIEWPORT,
+  signal?: AbortSignal,
 ): Promise<HostedDisplay> {
   for (let attempt = 0; attempt < 64; attempt += 1) {
+    throwIfLaunchAborted(signal);
     const displayNumber = 100 + Math.floor(Math.random() * 900);
-    const reservationPath = `/tmp/ponderosa-xvfb-${displayNumber}.lock`;
-    let reservation: import("node:fs/promises").FileHandle;
-    try {
-      reservation = await fs.open(reservationPath, "wx", 0o600);
-      await reservation.close();
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        const stale = await fs.stat(reservationPath).then((stat) => Date.now() - stat.mtimeMs > 30_000, () => false);
-        if (stale && !existsSync(`/tmp/.X${displayNumber}-lock`) && !existsSync(`/tmp/.X11-unix/X${displayNumber}`)) {
-          await fs.rm(reservationPath, { force: true }).catch(() => undefined);
-        }
-        continue;
-      }
-      throw error;
-    }
+    const reservationPath = await reserveHostedDisplay(displayNumber);
+    if (!reservationPath) continue;
     if (existsSync(`/tmp/.X${displayNumber}-lock`) || existsSync(`/tmp/.X11-unix/X${displayNumber}`)) {
       await fs.rm(reservationPath, { force: true });
       continue;
@@ -232,11 +229,12 @@ export async function spawnHostedDisplay(
     const hostedDisplay = { child, display: `:${displayNumber}`, reservationPath };
     let externallyOwned = false;
     try {
+      recordHostedDisplayProcess(reservationPath, child);
       // A detached Xvfb is durable process authority as soon as spawn returns.
       // Publish it before readiness polling so restart recovery can terminate
       // it even if this daemon exits during waitForDisplay().
       externallyOwned = publish?.(hostedDisplay) ?? false;
-      await waitForDisplay(child, displayNumber);
+      await waitForDisplay(child, displayNumber, signal);
       return hostedDisplay;
     } catch (error) {
       if (externallyOwned) throw error;
@@ -473,7 +471,9 @@ export class ChromeCdpDriver implements BrowserDriver {
     onPageEvent?: Parameters<BrowserDriverFactory>[3],
     launch: BrowserDriverLaunchOptions = {},
   ): Promise<ChromeCdpDriver> {
+    throwIfLaunchAborted(launch.signal);
     await fs.mkdir(profileDir, { recursive: true, mode: 0o700 });
+    throwIfLaunchAborted(launch.signal);
     const hostedHeaded = launch.hostedHeaded !== false && process.env.PONDEROSA_BROWSER_HOSTED_HEADED !== "0";
     const displayExecutable = hostedHeaded ? findVirtualDisplayExecutable() : undefined;
     // Hosts without the packaged display service keep the existing isolated
@@ -508,8 +508,9 @@ export class ChromeCdpDriver implements BrowserDriver {
         onSpawned(displayHandle);
         externallyOwned = true;
         return true;
-      });
+      }, VIEWPORT, launch.signal);
     }
+    throwIfLaunchAborted(launch.signal);
     try {
       child = spawn(executable, [
         ...(!display ? ["--headless=new"] : []), "--remote-debugging-pipe", `--user-data-dir=${profileDir}`,
@@ -547,6 +548,7 @@ export class ChromeCdpDriver implements BrowserDriver {
         onSpawned(browserHandle, { complete: true, coversReturnedDriver: true });
         externallyOwned = true;
       }
+      throwIfLaunchAborted(launch.signal);
       const input = child.stdio[3] as Writable | null;
       const output = child.stdio[4] as Readable | null;
       if (!input || !output) throw new Error("browser debugging pipe could not be created");
@@ -559,7 +561,21 @@ export class ChromeCdpDriver implements BrowserDriver {
         capabilities.fileUpload,
         terminationAuthority, processIdentity,
       );
-      await driver.initialize(launch.playwright === true);
+      let removeAbortListener: (() => void) | undefined;
+      const aborted = new Promise<never>((_resolve, reject) => {
+        const cancel = () => reject(new Error("browser launch cancelled"));
+        if (launch.signal?.aborted) cancel();
+        else if (launch.signal) {
+          launch.signal.addEventListener("abort", cancel, { once: true });
+          removeAbortListener = () => launch.signal?.removeEventListener("abort", cancel);
+        }
+      });
+      try {
+        await Promise.race([driver.initialize(launch.playwright === true), aborted]);
+      } finally {
+        removeAbortListener?.();
+      }
+      throwIfLaunchAborted(launch.signal);
       return driver;
     } catch (error) {
       if (!externallyOwned) await closeAll();

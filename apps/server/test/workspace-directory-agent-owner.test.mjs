@@ -34,7 +34,7 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
     conversationId: owner.id,
   });
   const workingAgents = new Map([[agent.id, "running"]]);
-  const assignedOutcomes = new Map();
+  const assignedOutcomes = new Map([[agent.id, "2027-01-01T00:00:00.000Z"]]);
   for (const [title, status] of [
     ["Waiting Agent", "waiting"],
     ["Provider Blocked Agent", "blocked"],
@@ -94,7 +94,7 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
         ...(assignedOutcomes.has(id) ? {
           assignedWorkOutcome: {
             runId: `outcome-${id}`,
-            status: "completed",
+            status: id === agent.id ? "running" : "completed",
             reason: { kind: "completed" },
             updatedAt: assignedOutcomes.get(id),
           },
@@ -195,6 +195,8 @@ test("Agent directory carries its owner Chat independently of Chat filtering and
     url: "/api/workspace/directory/agent?outcomes=true&limit=6",
   });
   assert.equal(recentOutcomes.statusCode, 200, recentOutcomes.body);
+  assert.equal(recentOutcomes.json().items.some(item => item.agent.id === agent.id), false,
+    "an assigned Run that is still running is not a finished outcome");
   assert.deepEqual(
     recentOutcomes.json().items.map(item => item.agent.title),
     ["Later Agent 29", "Later Agent 28", "Later Agent 27", "Later Agent 26", "Later Agent 25", "Later Agent 24"],

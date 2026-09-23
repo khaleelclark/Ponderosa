@@ -1131,6 +1131,7 @@ export function registerDraftRoutes(
             conflictId: request.params.conflictId,
             action: "discarded",
             replayed: discarded.replayed,
+            currentDraft: await service.hydrate(request.params.id, ownerId),
           };
           publishWorkspaceSince(cursor);
           void service.reconcileAttachmentCleanup().catch(() => undefined);

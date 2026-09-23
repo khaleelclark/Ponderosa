@@ -461,7 +461,8 @@ export class WorkspaceStore {
       }
       const conflicts = (this.draftConflicts.get(key) ?? [])
         .filter(candidate => !supersededIds.has(candidate.id));
-      if (!conflicts.some(candidate => candidate.id === conflict.id)) conflicts.push(conflict);
+      if (!this.draftConflictResolutions.has(conflict.id) &&
+          !conflicts.some(candidate => candidate.id === conflict.id)) conflicts.push(conflict);
       // Keep the canonical log complete, but bound the projection used by the UI.
       this.draftConflicts.set(key, conflicts.slice(-20));
     }

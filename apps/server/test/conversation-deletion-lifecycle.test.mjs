@@ -457,6 +457,57 @@ test("Chat DELETE reports committed cleanup pending and replays its receipt", as
   assert.equal(replay.json().deletionReceiptId, first.json().deletionReceiptId);
 });
 
+test("Chat DELETE rejects a changed Agent list before starting destructive cleanup", async (t) => {
+  const { chat, drafts, project, store, workspace } = fixture(t);
+  const agent = store.createAgent(project.id, {
+    title: "Assigned Agent",
+    engine: "codex",
+    conversationId: chat.id,
+  });
+  const app = Fastify();
+  t.after(() => app.close());
+  const authority = deletionAuthority({
+    drafts,
+    store,
+    workspace,
+    commitAgentDeletion: async rootAgentIds => {
+      for (const id of rootAgentIds) store.deleteAgent(id);
+    },
+  });
+  registerConversationRoutes(app, {
+    store,
+    workspace,
+    engines: new Map(),
+    cachedModelOptions: () => [],
+    appendWorkspace: () => {},
+    generateConversationTitle: async () => ({ title: chat.title, generated: false }),
+    conversationDetail: () => undefined,
+    agentHealth: () => ({}),
+    teamDirectory: () => ({}),
+    hasActiveRun: () => false,
+    deletingConversationIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    conversationDeliveryLeases: new Map(),
+    reconcileConversationRuntimeCommunicationProjections: async () => 0,
+    refreshTriggers: async () => {},
+    processConversationDeletionCleanup: authority.processConversationDeletionCleanup,
+  });
+
+  const url = `/api/conversations/${chat.id}`;
+  const changed = await app.inject({ method: "DELETE", url, payload: { expectedAgentIds: [] } });
+  assert.equal(changed.statusCode, 409, changed.body);
+  assert.match(changed.json().error, /Assigned Agents changed/u);
+  assert.equal(store.getConversationDeletionReceipt(chat.id), undefined);
+  assert.ok(store.getAgent(agent.id));
+  assert.ok(store.getConversation(chat.id));
+
+  const confirmed = await app.inject({ method: "DELETE", url, payload: { expectedAgentIds: [agent.id] } });
+  assert.equal(confirmed.statusCode, 200, confirmed.body);
+  assert.equal(confirmed.json().deleted, true);
+  assert.equal(store.getAgent(agent.id), undefined);
+  assert.equal(store.getConversation(chat.id), undefined);
+});
+
 test("Chat deletion resumes after failure immediately after archive", async (t) => {
   const { chat, drafts, project, store, workspace } = fixture(t);
   const agent = store.createAgent(project.id, {

@@ -96,6 +96,7 @@ export interface AgentJson {
   activeEngine: string;
   model?: string;
   effort?: string;
+  speed?: string;
   createdAt: string;
   updatedAt: string;
   archived: boolean;
@@ -135,6 +136,7 @@ export interface ConversationJson {
   defaultEngine?: string;
   defaultModel?: string;
   defaultEffort?: string;
+  defaultSpeed?: string;
   createdAt: string;
   updatedAt: string;
   archived: boolean;

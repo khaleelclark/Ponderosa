@@ -70,7 +70,7 @@ try {
   await page.waitForTimeout(150); // Native Chrome must finish moving focus to its address bar.
   await page.keyboard.type(origin + '/form', { delay: 20 }); await page.keyboard.press('Enter');
   for (let i = 0; i < 100 && !navigated; i++) await page.waitForTimeout(50);
-  await page.screenshot({ path: '/tmp/hosted-manual-navigation.png' });
+  await page.screenshot({ path: path.join(root, 'hosted-manual-navigation.png') });
   assert.equal(navigated, true, 'native Chrome receives direct navigation input');
   await page.waitForTimeout(500);
   await page.keyboard.type('manual-input-123');
@@ -86,7 +86,7 @@ try {
   assert.equal(typed, 'manual-input-123 résum');
   await page.getByRole('button', { name: 'Let agent work', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Assistant', exact: true }).click();
-  await page.getByText(/manual browser connection could not be completed/).waitFor();
+  await page.getByText(/Enable remote debugging in the owned Chrome window|Chrome could not connect for agent use/).waitFor();
   assert.equal(manager.get(scope.agentId).id, initial.id, 'failed approval does not restart Chrome');
   assert.equal(manager.get(scope.agentId).manualControl, 'manual');
   await canvas.waitFor();
@@ -116,7 +116,7 @@ try {
   await page.keyboard.insertText('-after-link');
   for (let i = 0; i < 100 && typed !== 'manual-input-123 résum-reconnected-after-link'; i++) await page.waitForTimeout(50);
   assert.equal(typed, 'manual-input-123 résum-reconnected-after-link', 'opening a link does not overwrite the existing draft tab');
-  await page.screenshot({ path: '/tmp/hosted-manual-desktop.png' });
+  await page.screenshot({ path: path.join(root, 'hosted-manual-desktop.png') });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() => {
     const parent = document.querySelector('[aria-label="Manual Chrome browser"]');
@@ -125,7 +125,7 @@ try {
   }, undefined, { timeout: 10000 });
   await page.waitForTimeout(300);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-  await page.screenshot({ path: '/tmp/hosted-manual-mobile.png' });
+  await page.screenshot({ path: path.join(root, 'hosted-manual-mobile.png') });
   forceViewOnly = true;
   await page.reload();
   await canvas.waitFor();

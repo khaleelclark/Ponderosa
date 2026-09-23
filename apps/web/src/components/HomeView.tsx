@@ -12,7 +12,6 @@ import {
   Paper,
   Stack,
   Typography,
-  useMediaQuery,
 } from "@mui/material";
 import type {
   EngineDto,
@@ -55,10 +54,10 @@ function Section({
 }): JSX.Element {
   return (
     <Box component="section">
-      <Stack direction="row" spacing={2} sx={{ alignItems: "end", mb: 1.25 }}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: { xs: 0.75, sm: 1.25 }, minWidth: 0 }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="h6" component="h2" fontWeight={800}>{title}</Typography>
-          <Typography variant="body2" color="text.secondary">{description}</Typography>
+          <Typography variant="h6" component="h2" fontWeight={800} noWrap>{title}</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ "@container (max-width: 680px)": { display: "none" } }}>{description}</Typography>
         </Box>
         {action}
       </Stack>
@@ -81,13 +80,13 @@ function SummaryCard({
   onClick?(): void;
 }): JSX.Element {
   const content = (
-    <Stack spacing={0.25} sx={{ p: 1.5, minWidth: 0, textAlign: "left" }}>
-      <Typography variant="h5" fontWeight={800} noWrap>
+    <Stack spacing={0} sx={{ p: { xs: 1, sm: 1.5 }, minWidth: 0, textAlign: "left" }}>
+      <Typography variant="h5" fontWeight={800} noWrap sx={{ fontSize: { xs: 19, sm: undefined } }}>
         {compactValue === undefined ? value : (
           <><Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>{compactValue}</Box><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{value}</Box></>
         )}
       </Typography>
-      <Typography variant="body2" color="text.secondary" noWrap>
+      <Typography variant="body2" color="text.secondary" noWrap sx={{ fontSize: { xs: 12, sm: undefined } }}>
         {compactLabel === undefined ? label : (
           <><Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>{compactLabel}</Box><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{label}</Box></>
         )}
@@ -252,14 +251,13 @@ export function HomeView({
   const working = activeItems;
   const automations = triggerItems;
   const recentOutcomes = outcomeItems.slice(0, 6);
-  const mobile = useMediaQuery("(max-width: 899.95px)");
   const provider = engineAvailabilityPresentation(engines);
   const activeCount = activeAgentQuery.requestState.hasResolved
     ? activeAgentQuery.data?.pages.at(-1)?.activeCount ?? 0
-    : "—";
+    : activeAgentQuery.requestState.isInitialError ? "Unavailable" : "Loading";
   const enabledAutomationCount = triggerQuery.requestState.hasResolved
     ? triggerQuery.data?.pages.at(-1)?.enabledCount ?? 0
-    : "—";
+    : triggerQuery.requestState.isInitialError ? "Unavailable" : "Loading";
   const attentionCount = notificationOpenActionCount(notifications, notificationCounts);
 
   return (
@@ -269,19 +267,19 @@ export function HomeView({
         title="Home"
         context="Across your chats"
       />
-      <Box sx={{ p: { xs: 2, sm: 3, lg: 4 }, containerType: "inline-size" }}>
-        <Stack spacing={3} sx={{ width: "100%", maxWidth: 1320, mx: "auto" }}>
+      <Box sx={{ p: { xs: 1.5, sm: 3, lg: 4 }, containerType: "inline-size" }}>
+        <Stack spacing={{ xs: 2, sm: 3 }} sx={{ width: "100%", maxWidth: 1320, mx: "auto" }}>
           <Box sx={{
             display: "grid",
             gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-            gap: 1.25,
+            gap: { xs: 1, sm: 1.25 },
             "@container (min-width: 760px)": {
               gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
             },
           }}>
-            <SummaryCard label="Active Agents" value={activeCount} onClick={() => onNavigate({ kind: "allAgents" })} />
+            <SummaryCard label="Active Agents" value={activeCount} />
             <SummaryCard label="Needs Attention" value={attentionCount} onClick={onOpenInbox} />
-            <SummaryCard label="Enabled Automations" compactLabel="Automations" value={enabledAutomationCount} onClick={() => onNavigate({ kind: "allTriggers" })} />
+            <SummaryCard label="Enabled Automations" compactLabel="Automations" value={enabledAutomationCount} />
             <SummaryCard label="Provider Health" value={provider.label} compactValue={provider.label === "Engine ready" ? "Ready" : provider.label} />
           </Box>
 
@@ -342,7 +340,6 @@ export function HomeView({
           <Section
             title="Working Now"
             description="Active and waiting Agent work across the organization."
-            action={<Button onClick={() => onNavigate({ kind: "allAgents" })}>View all Agents</Button>}
           >
             {working.length ? (
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
@@ -357,7 +354,7 @@ export function HomeView({
                       key={item.agent.id}
                       icon={<SmartToyOutlinedIcon />}
                       title={item.agent.title}
-                      detail=""
+                      detail={`Chat: ${item.ownerConversation?.title ?? "Unavailable"}`}
                       status={semanticAgentStatus(item.health.status)}
                       statusLabel={presentation.label}
                       statusAccessibleLabel={presentation.accessibleLabel}
@@ -381,7 +378,6 @@ export function HomeView({
           <Section
             title="Automations"
             description="Enabled schedules and events, ordered by what runs next."
-            action={<Button onClick={() => onNavigate({ kind: "allTriggers" })}>View all Automations</Button>}
           >
             {automations.length ? (
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
@@ -407,15 +403,15 @@ export function HomeView({
             )}
           </Section>
 
-          <Section title={mobile ? "Recent Assigned Work" : "Recent Outcomes"} description={mobile ? "Recent assigned work and its current status across chats." : "The latest finished assigned work across chats."}>
+          <Section title="Recent Outcomes" description="Recently finished assigned work across chats.">
             {recentOutcomes.length ? (
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
                 {recentOutcomes.map(item => (
                   <ItemCard
                     key={item.agent.id}
-                    icon={<CheckCircleOutlineIcon />}
+                    icon={<SmartToyOutlinedIcon />}
                     title={item.agent.title}
-                    detail=""
+                    detail={`Chat: ${item.ownerConversation?.title ?? "Unavailable"}`}
                     status={semanticAgentStatus(item.health.assignedWorkOutcome!.status)}
                     statusLabel={humanizeStatus(item.health.assignedWorkOutcome!.status)}
                     onClick={() => onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.agent.id })}

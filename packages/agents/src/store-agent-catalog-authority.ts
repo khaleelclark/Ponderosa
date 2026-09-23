@@ -254,6 +254,7 @@ export class AgentCatalogAuthority {
       : resolvedPresetSnapshot ?? undefined;
     const model = resolvedPresetSnapshot === undefined ? preset?.model ?? input.model : input.model;
     const effort = resolvedPresetSnapshot === undefined ? preset?.effort ?? input.effort : input.effort;
+    const speed = input.speed;
     const project = this.getProject(projectId);
     if (!project) throw new Error("unknown project");
     if (!input.conversationId) throw new Error("a Chat is required when creating an Agent");
@@ -270,6 +271,7 @@ export class AgentCatalogAuthority {
       activeEngine: input.engine,
       model,
       effort,
+      speed,
       createdAt: now,
       updatedAt: now,
       archived: false,
@@ -352,6 +354,7 @@ export class AgentCatalogAuthority {
         activeEngine: input.engine,
         model: model ?? null,
         effort: effort ?? null,
+        speed: speed ?? null,
         createdAt: now,
         updatedAt: now,
         archived: 0,
@@ -701,6 +704,7 @@ export class AgentCatalogAuthority {
       activeEngine: row.activeEngine,
       model: row.model ?? undefined,
       effort: row.effort ?? undefined,
+      speed: row.speed ?? undefined,
       state,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,

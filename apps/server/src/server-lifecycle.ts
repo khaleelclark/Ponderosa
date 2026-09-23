@@ -11,7 +11,7 @@ import {
   removeManagedArtifactContent,
   repairManagedArtifactContent,
 } from "@ponderosa/agents";
-import type { ReadinessCheckDto } from "@ponderosa/core";
+import type { DecisionDto, ReadinessCheckDto } from "@ponderosa/core";
 import type { AssetStore } from "./assets.js";
 import {
   type ActiveRun,
@@ -217,6 +217,7 @@ type ServerLifecycleContext =
     drafts: DraftService;
     coordinationV3: CoordinationV3Store;
     workspace: WorkspaceStore;
+    applyResolvedSavedBrowserApproval(decision: DecisionDto): boolean;
     reconcileCommittedProjectDeletions(): void;
     artifactFilesystem: ReadinessCheckDto;
     processContainment: ReadinessCheckDto;
@@ -279,6 +280,7 @@ export function registerServerLifecycle(
     drafts,
     coordinationV3,
     workspace,
+    applyResolvedSavedBrowserApproval,
     reconcileCommittedProjectDeletions,
     artifactFilesystem,
     processContainment,
@@ -601,7 +603,17 @@ export function registerServerLifecycle(
       });
     }
     for (const decision of workspace.listDecisions({ status: "resolved" })) {
-      if (decision.continuationRequestIds?.length) ensureDecisionResponseActivation(decision);
+      if (decision.approvalScope?.kind === "saved_browser" && decision.response?.optionId === "approve") {
+        try {
+          if (!applyResolvedSavedBrowserApproval(decision)) continue;
+        } catch (error) {
+          app.log.warn({ decisionId: decision.id, error }, "saved-browser approval reconciliation remains pending");
+          continue;
+        }
+      }
+      if (decision.continuationRequestIds?.length || decision.approvalScope?.kind === "saved_browser") {
+        ensureDecisionResponseActivation(decision);
+      }
     }
     coordinationV3.recoverOrphanedRuns(coordinationV3WorkerId);
     for (const rollover of coordinationV3.contextRolloverCanonicalAcceptanceCandidates()) {
@@ -775,7 +787,7 @@ export function registerServerLifecycle(
     completeLifecyclePhase("runtime_recovery");
     coordinationV3.reconcileUnavailableActivationRecipients();
     coordinationV3.expireDue();
-    if (!artifactFilesystem.ok || !processContainment.ok) await coordinationV3Scheduler.pauseLeasing();
+    if (!artifactFilesystem.ok || !processContainment.ok || opts.startDrained) await coordinationV3Scheduler.pauseLeasing();
     coordinationV3Scheduler.start();
     await triggerSources.start();
     completeLifecyclePhase("scheduler_and_triggers");

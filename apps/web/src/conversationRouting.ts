@@ -12,6 +12,15 @@ export function managerBroadcastText(text: string): string | undefined {
     .trim();
 }
 
+export function newChatSubmission(text: string):
+  | { kind: "broadcast"; text: string }
+  | { kind: "agent"; text: string } {
+  const broadcastText = managerBroadcastText(text);
+  return broadcastText === undefined
+    ? { kind: "agent", text }
+    : { kind: "broadcast", text: broadcastText };
+}
+
 const RECIPIENT_UPLOAD_CONCURRENCY = 3;
 const fileInstanceIds = new WeakMap<File, number>();
 let nextFileInstanceId = 0;

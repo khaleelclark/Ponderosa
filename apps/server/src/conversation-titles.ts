@@ -14,7 +14,7 @@ export function conciseConversationTitle(text: string): string | undefined {
 /** Deterministic title used when no provider title service is available.
  * The conversation belongs to the operator's request, not a keyword mash of
  * an agent's response. */
-export function semanticConversationTitle(operatorText: string, agentText: string): string | undefined {
+export function semanticConversationTitle(operatorText: string, agentText?: string): string | undefined {
   void agentText;
   return conciseConversationTitle(operatorText);
 }

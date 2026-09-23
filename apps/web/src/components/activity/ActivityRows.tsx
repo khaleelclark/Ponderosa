@@ -6,7 +6,11 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
 import { Box, Button, Chip, Stack, Typography } from "@mui/material";
-import type { ResponseFileActivityDto } from "@ponderosa/core";
+import {
+  toolFailureLabel,
+  toolOperationAccess,
+  type ResponseFileActivityDto,
+} from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../../api";
@@ -27,6 +31,28 @@ type GroupedActionEntry = Extract<
   ActivityStreamEntry,
   { kind: "command" | "tool" | "file" | "browser" | "notice" }
 >;
+
+function humanizeToolName(value: string): string {
+  return value.replace(/[_-]+/gu, " ").replace(/\b\p{L}/gu, letter => letter.toUpperCase());
+}
+
+function toolPresentation(name: string): { source: string; action: string } {
+  const mcpParts = name.split("__").filter(Boolean);
+  if (mcpParts.length >= 3 && mcpParts[0] === "mcp") {
+    return {
+      source: humanizeToolName(mcpParts.at(-2)!),
+      action: humanizeToolName(mcpParts.at(-1)!),
+    };
+  }
+  const parts = name.split(".").filter(Boolean);
+  if (parts.length >= 3 && parts[0] === "codex_apps") {
+    return { source: humanizeToolName(parts.at(-2)!), action: humanizeToolName(parts.at(-1)!) };
+  }
+  if (parts.length >= 2) {
+    return { source: humanizeToolName(parts.at(-2)!), action: humanizeToolName(parts.at(-1)!) };
+  }
+  return { source: "Tool", action: name };
+}
 
 function activityTimestamp(value: string): string {
   const timestamp = new Date(value);
@@ -215,10 +241,19 @@ function GroupedActivityRow({
     ? browserDescription(entry)
     : undefined;
   const result = "result" in entry ? entry.result : undefined;
+  const toolAccess = entry.kind === "tool" ? toolOperationAccess(entry.name) : "unknown";
+  const tool = entry.kind === "tool" ? toolPresentation(entry.name) : undefined;
+  const resultStatus = result?.failureCategory
+    ? `${toolFailureLabel(result.failureCategory)}${result.retryState === "retrying" ? " · retrying" : result.retryState === "retried" ? " · retried" : ""}`
+    : result?.retryState === "recovered"
+      ? "Connected · recovered"
+      : result && entry.kind === "tool"
+        ? toolAccess === "read" ? "Connected · read-only" : toolAccess === "write" ? "Connected · write" : "Connected"
+        : undefined;
   const label = entry.kind === "command"
     ? entry.internal ? "Ponderosa communication" : "Command"
     : entry.kind === "tool"
-      ? "Tool"
+      ? tool!.source
       : entry.kind === "file"
         ? fileVerb!
         : entry.kind === "browser"
@@ -227,7 +262,7 @@ function GroupedActivityRow({
   const preview = entry.kind === "command"
     ? entry.internal ? "" : entry.command
     : entry.kind === "tool"
-      ? entry.name
+      ? tool!.action
       : entry.kind === "file"
         ? fileDisplayPath!
         : entry.kind === "browser"
@@ -264,7 +299,16 @@ function GroupedActivityRow({
           {preview}
         </Box> : null}
       </Button>
-      {result?.isError ? <Chip size="small" color="error" label="Failed" sx={{ height: 18, fontSize: 10 }} /> : null}
+      {resultStatus ? <Chip
+        size="small"
+        color={result?.failureCategory === "temporary_connection_failure"
+          ? "warning"
+          : result?.isError
+            ? "error"
+            : "success"}
+        label={resultStatus}
+        sx={{ height: 18, maxWidth: { xs: 148, sm: 240 }, fontSize: 10, "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" } }}
+      /> : null}
       <ActivityTimestamp value={entry.createdAt} />
     </Stack>
     {expanded ? <Box sx={{ pb: 0.75, pl: 3.25, pr: 0.5 }}>
@@ -365,7 +409,7 @@ export function ActionGroupRow({
         aria-expanded={expanded}
         aria-label={`${expanded ? "Collapse" : "Expand"} ${summary.toLocaleLowerCase()}`}
         onClick={() => setExpanded((value) => !value)}
-        sx={{ color: failureCount ? "error.main" : ACTIVITY_TITLE_COLOR, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700, px: 0.25, minHeight: 28 }}
+        sx={{ color: ACTIVITY_TITLE_COLOR, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700, px: 0.25, minHeight: 28 }}
       >
         {summary}
       </Button>

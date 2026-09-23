@@ -746,6 +746,7 @@ export function useWorkspaceStream(
         }
       } else if (event.type === "project_changed") {
         directoryInvalidator.schedule("project", event.projectId);
+        if (event.action !== "used") directoryInvalidator.schedule("agent", event.projectId);
       } else if (event.type === "conversation_changed") {
         directoryInvalidator.schedule("conversation", event.projectId);
         directoryInvalidator.schedule("project", event.projectId);
@@ -760,6 +761,17 @@ export function useWorkspaceStream(
       if (event.type === "preferences_updated") return;
       if (event.type === "project_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
+        if (event.action !== "used") {
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.agents.project(event.projectId),
+            refetchType: browserPageIsVisible() ? "active" : "none",
+          });
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.agents.allChat,
+            exact: true,
+            refetchType: browserPageIsVisible() ? "active" : "none",
+          });
+        }
         // Mark collapsed sibling pages stale as ownership may have changed,
         // while refetching only pages that are currently visible.
         void queryClient.invalidateQueries({

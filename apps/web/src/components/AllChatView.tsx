@@ -56,6 +56,7 @@ import { Composer } from "./chat/Composer";
 import { copyText } from "../clipboard";
 import { AttentionSurface } from "./AttentionSurface";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
 import { uniqueBy } from "../collections";
@@ -363,7 +364,7 @@ export function AllChatView({
     composerConversationId,
   );
   const allProjectAgentsQuery = useQuery({
-    queryKey: [...queryKeys.agents.all, "all-chat"],
+    queryKey: queryKeys.agents.allChat,
     queryFn: async () => {
       const byId = new Map<string, WorkspaceAgentDirectoryItemDto>();
       let cursor: string | undefined;
@@ -559,6 +560,7 @@ export function AllChatView({
         engine: selectedAgent.data.agent.activeEngine,
         model: selectedAgent.data.agent.model,
         effort: selectedAgent.data.agent.effort,
+        speed: selectedAgent.data.agent.speed,
       }),
     };
   }
@@ -694,6 +696,7 @@ export function AllChatView({
       engine: agent.activeEngine,
       model: agent.model,
       effort: agent.effort,
+      speed: agent.speed,
     });
     recordRuntimeCanonicalKey(
       runtimeMutationGenerationByAgent.current,
@@ -716,7 +719,7 @@ export function AllChatView({
           workspacePreferences.data,
           project,
         ).effort,
-      speed: readChatState(
+      speed: agent.speed ?? readChatState(
         chatStateKey("runtime", `agent.${agent.id}.speed`),
       ),
     });
@@ -741,16 +744,19 @@ export function AllChatView({
       activeEngine,
       model: nextModel,
       effort: nextEffort,
+      speed: nextSpeed,
     }: {
       agentId: string;
       activeEngine: EngineDto["id"];
       model: string | null;
       effort: string | null;
+      speed: string | null;
     }) =>
       api.updateAgent(agentId, {
         activeEngine,
         model: nextModel,
         effort: nextEffort,
+        speed: nextSpeed,
       }),
     onSuccess: updated => {
       queryClient.setQueryData<AgentDetailDto>(
@@ -1376,6 +1382,7 @@ export function AllChatView({
             engine: selectedAgent.data.agent.activeEngine,
             model: selectedAgent.data.agent.model,
             effort: selectedAgent.data.agent.effort,
+            speed: selectedAgent.data.agent.speed,
           });
           const speedKey = chatStateKey(
             "runtime",
@@ -1407,6 +1414,7 @@ export function AllChatView({
               activeEngine: next as EngineDto["id"],
               model: resolved.model || null,
               effort: resolved.effort || null,
+              speed: resolved.speed || null,
             },
             {
               onError: () => {
@@ -1437,17 +1445,38 @@ export function AllChatView({
         onModelChange={next => {
           if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
           setSubmissionRuntimeIntent(value => value + 1);
-          selectedRuntime.selectModel(next);
+          const resolved = selectedRuntime.selectModel(next);
+          if (selectedAgentId && selectedEngineId) updateRuntimeEngine.mutate({
+            agentId: selectedAgentId,
+            activeEngine: selectedEngineId,
+            model: resolved.model || null,
+            effort: resolved.effort || null,
+            speed: resolved.speed || null,
+          });
         }}
         onEffortChange={next => {
           if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
           setSubmissionRuntimeIntent(value => value + 1);
-          selectedRuntime.selectEffort(next);
+          const resolved = selectedRuntime.selectEffort(next);
+          if (selectedAgentId && selectedEngineId) updateRuntimeEngine.mutate({
+            agentId: selectedAgentId,
+            activeEngine: selectedEngineId,
+            model: resolved.model || null,
+            effort: resolved.effort || null,
+            speed: resolved.speed || null,
+          });
         }}
         onSpeedChange={next => {
           if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
           setSubmissionRuntimeIntent(value => value + 1);
-          selectedRuntime.selectSpeed(next);
+          const resolved = selectedRuntime.selectSpeed(next);
+          if (selectedAgentId && selectedEngineId) updateRuntimeEngine.mutate({
+            agentId: selectedAgentId,
+            activeEngine: selectedEngineId,
+            model: resolved.model || null,
+            effort: resolved.effort || null,
+            speed: resolved.speed || null,
+          });
         }}
       />
     ) : null;
@@ -1682,6 +1711,20 @@ export function AllChatView({
                       </ButtonBase>
                     </Stack>
                   ),
+                  status:
+                    fromUser && item.deliveryReceipts?.length ? (
+                      <MessageDeliveryStatus
+                        projectId={item.project.id}
+                        receipts={item.deliveryReceipts}
+                        recipientName={agentId =>
+                          item.directMessageAgents?.find(agent => agent.id === agentId)?.title ??
+                          (item.directMessageAgent?.id === agentId
+                            ? item.directMessageAgent.title
+                            : allChatAgentTitle(agentId))
+                        }
+                        compact
+                      />
+                    ) : undefined,
                   actions: (
                     <>
                       <Tooltip title="Copy">

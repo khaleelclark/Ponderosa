@@ -1,5 +1,6 @@
 import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
+import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import {
@@ -40,6 +41,16 @@ export function SettingsSidebarPanel({
         <IconTitle icon={<SettingsOutlinedIcon />} title="Settings" />
       </Stack>
       <List sx={{ px: 1.25 }}>
+        <ListItemButton
+          selected={route.kind === "profile" || (route.kind === "settings" && route.section === "profile")}
+          onClick={() => onNavigate({ kind: "settings", section: "profile" })}
+          sx={{ borderRadius: 1.25 }}
+        >
+          <ListItemIcon>
+            <PersonOutlineIcon />
+          </ListItemIcon>
+          <ListItemText primary="Operator Profile" secondary="Name, handle, and picture" />
+        </ListItemButton>
         <ListItemButton
           selected={route.kind === "settings" && (route.section ?? "general") === "general"}
           onClick={() => onNavigate({ kind: "settings", section: "general" })}

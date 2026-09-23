@@ -34,7 +34,7 @@ try {
     await page.getByRole("button", { name: "Agents", exact: true }).click();
     await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
     assert.equal(new URL(page.url()).pathname, "/home", "Rail does not navigate the workspace");
-    await page.locator("span:visible").filter({ hasText: /^Browse · select an item to open it$/ }).waitFor();
+    assert.equal(await page.getByText("Browse · select an item to open it", { exact: true }).count(), 0);
     await page.screenshot({ path: `/tmp/home-sidebar-${width}.png` });
     const row = page.locator('[data-resource-id^="sidebar-agent:"]:visible').first();
     await row.waitFor();

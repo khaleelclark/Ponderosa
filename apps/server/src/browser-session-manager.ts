@@ -250,11 +250,7 @@ export class BrowserSessionManager {
     private readonly launchAuthority?: Pick<BrowserProfileAuthority, "description" | "acquire">,
     private readonly admissionAllowed: (scope: BrowserScope) => boolean = () => true,
     private readonly retainShared = false,
-  ) {
-    // Start residue discovery at authority creation so prior recovery
-    // directories are visible and draining before the next browser opens.
-    void recoverBrowserResidue(this.dataDir).catch(() => undefined);
-  }
+  ) {}
 
   private launchDescription(scope: BrowserScope): BrowserLaunchDescription {
     try {
@@ -358,6 +354,39 @@ export class BrowserSessionManager {
       )).length,
       retainedFailures: sessions.filter((session) => Boolean(session.cleanupError)).length,
     };
+  }
+
+  authorityBlockers(kind: "run_browser" | "project_browser", allowRetained = false): Array<{
+    kind: "run_browser" | "project_browser";
+    reason: string;
+    projectId: string;
+    agentId: string;
+    runId: string;
+    sessionId: string;
+    status: string;
+  }> {
+    return [...this.sessions.values()].flatMap((session) => {
+      const reasons = [
+        session.opening ? "launch opening" : undefined,
+        session.driver && !(allowRetained && session.driver.suspend && session.safeForRestart) ? "live browser authority" : undefined,
+        session.closingDriver || session.cleanup || session.lateCleanups.size ? "cleanup pending" : undefined,
+        session.cleanupError ? `cleanup failed: ${session.cleanupError}` : undefined,
+        (session.dto.status === "closed" || session.dto.status === "failed") &&
+          (session.spawnHandles.size || (session.launchLease && session.launchFactoryPending))
+          ? "published launch authority pending cleanup"
+          : undefined,
+      ].filter((reason): reason is string => Boolean(reason));
+      if (reasons.length === 0) return [];
+      return [{
+        kind,
+        reason: reasons.join("; "),
+        projectId: session.dto.projectId,
+        agentId: session.dto.agentId,
+        runId: session.dto.runId,
+        sessionId: session.dto.id,
+        status: session.dto.status,
+      }];
+    });
   }
 
   private owned(scope: BrowserScope): ManagedSession {
@@ -726,7 +755,10 @@ export class BrowserSessionManager {
               text: redactBrowserText(text).slice(0, MAX_CONSOLE_TEXT),
             });
           }, (handle, options) => this.registerSpawnHandle(session.dto, session, 1, publication, handle, options),
-          (event) => this.commitPageEvent(session.dto, session, 1, event), nativeManual ? { ...launch?.driver, nativeManual: true, initialUrl } : launch?.driver);
+          (event) => this.commitPageEvent(session.dto, session, 1, event), {
+            ...(nativeManual ? { ...launch?.driver, nativeManual: true, initialUrl } : launch?.driver),
+            signal: session.launchAbort.signal,
+          });
         } finally {
           session.launchFactoryPending = false;
         }
@@ -843,7 +875,10 @@ export class BrowserSessionManager {
               level, text: redactBrowserText(text).slice(0, MAX_CONSOLE_TEXT),
             });
           }, (handle, options) => this.registerSpawnHandle(scope, session, reconnectEpoch, publication, handle, options),
-          (event) => this.commitPageEvent(scope, session, reconnectEpoch, event), launch?.driver);
+          (event) => this.commitPageEvent(scope, session, reconnectEpoch, event), {
+            ...launch?.driver,
+            signal: session.launchAbort.signal,
+          });
         } finally {
           session.launchFactoryPending = false;
         }
@@ -1008,6 +1043,14 @@ export class BrowserSessionManager {
       this.updatePages(session, pages);
       this.lifecycle(session, "hosted_explicit_resume");
       return publicDto(session);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "";
+      if (detail.includes("Enable remote debugging")) throw new BrowserSessionError(detail, 409, "chrome_connection_setup_required");
+      if (detail.includes("timed out")) throw new BrowserSessionError(detail, 504, "chrome_connection_timeout");
+      if (detail.includes("declined")) throw new BrowserSessionError(detail, 409, "chrome_connection_declined");
+      if (detail.includes("automation endpoint is unavailable")) throw new BrowserSessionError(detail, 409, "chrome_endpoint_unavailable");
+      if (detail.includes("Browser service did not respond")) throw new BrowserSessionError("The browser service did not respond. The saved browser was not replaced; retry after checking its status.", 504, "browser_service_timeout");
+      throw new BrowserSessionError("Chrome could not connect for agent use. The browser and its tabs were not replaced; check Chrome and retry.", 409, "chrome_connection_failed");
     } finally { this.syncLocalState(session); }
   }
 
@@ -1040,6 +1083,30 @@ export class BrowserSessionManager {
       }
       return publicDto(session);
     });
+  }
+
+  /** Fence queued Agent input synchronously when permission is revoked.
+   * Disconnect native automation as well, so an already-started browser
+   * command cannot continue into the operator's private session. */
+  async revokeAgentControl(scope: BrowserScope): Promise<BrowserSessionDto> {
+    const session = this.ready(scope);
+    if (session.dto.controlOwner !== "agent") return publicDto(session);
+    session.dto = {
+      ...session.dto,
+      controlOwner: "operator",
+      controlEpoch: session.dto.controlEpoch + 1,
+      nextRunAgentId: undefined,
+      pendingFileChooser: undefined,
+      updatedAt: new Date().toISOString(),
+    };
+    session.nextRun = undefined;
+    session.lastFrame = undefined;
+    session.agentActivity = undefined;
+    this.lifecycle(session, "control_revoked");
+    if (session.driver?.pauseAutomation) await session.driver.pauseAutomation();
+    await session.driver?.cancelPendingFileChooser("control_changed");
+    this.syncLocalState(session);
+    return publicDto(session);
   }
 
   private assertControl(session: ManagedSession, owner: BrowserControlOwner, expectedEpoch?: number): void {
@@ -1438,7 +1505,8 @@ export class BrowserSessionManager {
 
   async inspect(scope: BrowserScope, selector?: string): Promise<string> {
     const session = this.ready(scope);
-    return this.pageAction(scope, session, undefined, undefined, async (driver) => ({
+    this.assertControl(session, "agent");
+    return this.pageAction(scope, session, "agent", undefined, async (driver) => ({
       snapshot: await driver.inspect(selector),
       info: await driver.pageInfo(),
     }), ({ snapshot, info }) => {
@@ -1722,7 +1790,7 @@ export class BrowserSessionManager {
     const retaining = reason === "server_shutdown" || reason === "deployment_drain";
     const results = await Promise.allSettled([...this.sessions.values()].map(async session => {
       if (session.detaching) return session.detaching;
-      if (retaining && session.driver?.suspend && session.dto.status === "ready" && !session.cleanupError) {
+      if (this.retainShared && retaining && session.driver?.suspend && session.dto.status === "ready" && !session.cleanupError) {
         const driver = session.driver;
         const operation = (async () => {
           if (reason === "server_shutdown") ++session.lifecycleEpoch;

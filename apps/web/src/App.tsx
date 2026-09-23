@@ -14,7 +14,6 @@ import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { WorkspaceConnectionNotice } from "./components/WorkspaceConnectionNotice";
 import { WorkspaceRefreshProvider } from "./components/WorkspaceRefreshContext";
 import { WorkspaceConnectionProvider } from "./components/WorkspaceConnectionContext";
-import { ProviderStatusFlow } from "./components/ProviderStatusFlow";
 import {
   GlobalChatSearch,
   isGlobalSearchShortcut,
@@ -156,7 +155,7 @@ export default function App({
     reconcileDeletedProjectClientState(queryClient, projectId, at);
     if (routeProjectId(routeRef.current) === projectId) {
       setCreationRequest(current => current?.projectId === projectId ? undefined : current);
-      navigate({ kind: "projects" }, { replace: true });
+      navigate({ kind: "home" }, { replace: true });
     }
   };
   const workspaceConnection = useWorkspaceStream({
@@ -234,7 +233,6 @@ export default function App({
   const [onboardingCompleteOpen, setOnboardingCompleteOpen] = useState(false);
   const onboardingPrompted = useRef(false);
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
-  const [engineStatusOpen, setEngineStatusOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const overlayReturnFocus = useRef<HTMLElement>();
@@ -294,24 +292,14 @@ export default function App({
     restoreOverlayTrigger();
   };
   const openEngineStatus = () => {
-    rememberOverlayTrigger();
-    setEngineStatusOpen(true);
-  };
-  const closeEngineStatus = () => {
-    setEngineStatusOpen(false);
-    restoreOverlayTrigger();
+    stopSpeech();
+    navigate({ kind: "settings", section: "activity" });
   };
   const setMobileNavigationOpen = (open: boolean) => {
     if (open) rememberOverlayTrigger();
     setMobileNavOpen(open);
     if (!open) restoreOverlayTrigger();
   };
-  const readinessQuery = useQuery({
-    queryKey: queryKeys.readiness.all,
-    queryFn: () => api.getReadiness(),
-    enabled: engineStatusOpen,
-    staleTime: 30_000,
-  });
   useEffect(() => {
     if (mobileWorkspace || !mobileNavOpen) return;
     const drawerTrigger = overlayReturnFocus.current;
@@ -620,9 +608,7 @@ export default function App({
       ? current.kind === "conversation" && current.projectId === removedRoute.projectId && current.conversationId === removedRoute.conversationId
       : current.kind === "agent" && current.projectId === removedRoute.projectId && current.agentId === removedRoute.agentId;
     if (!removedCurrent) return;
-    navigateWorkspace(removedRoute.kind === "conversation"
-      ? { kind: "project", projectId: removedRoute.projectId }
-      : { kind: "agents", projectId: removedRoute.projectId });
+    navigateWorkspace({ kind: "home" });
   };
   const handleProjectDeleted = (projectId: string) => {
     reconcileDeletedProject(projectId);
@@ -639,7 +625,19 @@ export default function App({
         setBrowserPanelProjectId(selectedProjectId);
       } }}
     >
-      <MobileNavigationProvider onOpen={() => setMobileNavigationOpen(true)}>
+      <MobileNavigationProvider
+        desktopVisible={!mobileWorkspace && sidebarPresentation.collapsed}
+        onOpen={() => {
+          if (mobileWorkspace) {
+            setMobileNavigationOpen(true);
+            return;
+          }
+          setSidebarPresentation(current => ({ ...current, collapsed: false }));
+          window.requestAnimationFrame(() => {
+            document.querySelector<HTMLElement>('[aria-label="Collapse workspace navigation"]')?.focus();
+          });
+        }}
+      >
         <MobileWorkspaceActionsProvider>
         <Box
         sx={{
@@ -722,7 +720,6 @@ export default function App({
               onProjectDeleted={handleProjectDeleted}
               onSearch={openGlobalSearch}
               onOpenNotifications={openNotifications}
-              onOpenEngineStatus={openEngineStatus}
               collapsed={sidebarPresentation.collapsed}
               width={sidebarPresentation.width}
               onCollapsedChange={collapsed =>
@@ -866,7 +863,6 @@ export default function App({
           onProjectDeleted={handleProjectDeleted}
           onSearch={openGlobalSearch}
           onOpenNotifications={openNotifications}
-          onOpenEngineStatus={openEngineStatus}
         />
 
         <SidebarConversationDialogs
@@ -936,20 +932,6 @@ export default function App({
           onClose={closeNotifications}
           onNavigate={navigateWorkspace}
           onOpenSettings={openSettings}
-        />
-        <ProviderStatusFlow
-          open={engineStatusOpen}
-          engines={engines}
-          networkSecurity={readinessQuery.data?.networkSecurity}
-          networkSecurityLoading={readinessQuery.isLoading}
-          networkSecurityError={
-            readinessQuery.isError ? String(readinessQuery.error) : undefined
-          }
-          onOpenSettings={() => {
-            closeEngineStatus();
-            openSettings();
-          }}
-          onClose={closeEngineStatus}
         />
         </Box>
         {browserPanelProjectId ? <BrowserWorkspaceHost

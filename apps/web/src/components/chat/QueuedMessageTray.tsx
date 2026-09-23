@@ -4,6 +4,7 @@ import SubdirectoryArrowRightIcon from "@mui/icons-material/SubdirectoryArrowRig
 import { Box, Button, IconButton, Paper, Stack, TextField, Tooltip, Typography } from "@mui/material";
 import type { QueuedConversationMessageDto } from "@ponderosa/core";
 import { useState } from "react";
+import { composerSurfaceWidth } from "./Composer.styles";
 
 export function QueuedMessageTray({ messages, agentNameForId, busy, onSteer, onEdit, onDelete }: {
   messages: QueuedConversationMessageDto[];
@@ -26,7 +27,9 @@ export function QueuedMessageTray({ messages, agentNameForId, busy, onSteer, onE
     variant="outlined"
     aria-label="Queued messages"
     sx={{
-      width: "min(1180px, calc(100% - 16px))",
+      width: composerSurfaceWidth,
+      minWidth: 0,
+      maxWidth: "100%",
       mx: "auto",
       mb: -1,
       pb: 1.25,

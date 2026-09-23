@@ -7,7 +7,6 @@ import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import TagIcon from "@mui/icons-material/Tag";
 import LanguageIcon from "@mui/icons-material/Language";
-import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import {
@@ -262,8 +261,7 @@ function ConversationHeader({
   setAgentWorkOpen,
   setRenameValue,
   setRenameOpen,
-  onNewAgent,
-  setImportOpen,
+  setAddAgentsOpen,
   setDeleteOpen,
   setActiveView,
 }: {
@@ -279,8 +277,7 @@ function ConversationHeader({
   setAgentWorkOpen: Dispatch<SetStateAction<boolean>>;
   setRenameValue: Dispatch<SetStateAction<string>>;
   setRenameOpen: Dispatch<SetStateAction<boolean>>;
-  onNewAgent(master: ConversationDto, managerAgentId?: string): void;
-  setImportOpen: Dispatch<SetStateAction<boolean>>;
+  setAddAgentsOpen: Dispatch<SetStateAction<boolean>>;
   setDeleteOpen: Dispatch<SetStateAction<boolean>>;
   setActiveView(view: ConversationDetailView): void;
 }): JSX.Element {
@@ -324,14 +321,9 @@ function ConversationHeader({
                 },
               },
               {
-                label: "Create Agent",
+                label: "Add Agents…",
                 icon: <AddIcon fontSize="small" />,
-                onSelect: () => onNewAgent(conversation),
-              },
-              {
-                label: "Import Agent or Organization",
-                icon: <FileUploadOutlinedIcon fontSize="small" />,
-                onSelect: () => setImportOpen(true),
+                onSelect: () => setAddAgentsOpen(true),
               },
               {
                 label: "Delete",

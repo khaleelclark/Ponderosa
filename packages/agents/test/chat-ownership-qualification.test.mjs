@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync, renameSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { AgentStore } from "../dist/index.js";
 import { assertQualification, captureSnapshot, qualifySnapshot } from "../tools/chat-ownership-qualification.mjs";
+import { restoreAgentDeletionIdentities } from "../tools/restore-agent-deletion-identities.mjs";
 
 async function fixture(run) {
   const root=mkdtempSync(join(tmpdir(),"chat-qualification-")), source=join(root,"source");
@@ -81,6 +82,59 @@ test("explicit recovery retains deleted creators and private audiences, archives
     assert.ok(page.items.some(item=>item.id==="recovered-public"));
     assert.ok(!page.items.some(item=>item.id==="recovered-private"),"private artifacts do not become public");
     assert.equal(store.agentCanReadProjectArtifact(project.id,"recovered-private",group.custodianAgentId),false);
+    store.deleteAgent(group.custodianAgentId);
+    store.commitConversationDeletion(group.chatId);
+    const legacyIdentity=store.sqlite.prepare(`SELECT agent_id agentId,project_id projectId,
+      conversation_id conversationId,tombstone_name tombstoneName,ownership_token ownershipToken,
+      created_at createdAt FROM agent_deletion_tombstones WHERE agent_id=?`).get(group.custodianAgentId);
+    store.sqlite.prepare("DELETE FROM agent_deletion_tombstones WHERE agent_id=?").run(group.custodianAgentId);
+    store.close();
+    assert.deepEqual(restoreAgentDeletionIdentities(join(output,"migrated"),{
+      version:1,entries:[legacyIdentity],
+    }),{status:"validated",count:1,alreadyPresent:0});
+    assert.deepEqual(restoreAgentDeletionIdentities(join(output,"migrated"),{
+      version:1,entries:[legacyIdentity],
+    },true),{status:"applied",count:1,alreadyPresent:0});
+    assert.deepEqual(restoreAgentDeletionIdentities(join(output,"migrated"),{
+      version:1,entries:[legacyIdentity],
+    },true),{status:"applied",count:1,alreadyPresent:1});
+    store=new AgentStore(join(output,"migrated"));
+    assert.deepEqual(store.startupProfile().recoveryIssues,[],
+      "deleting a recovered-files Chat must not quarantine its Project");
+    assert.equal(store.getProject(project.id)?.id,project.id);
+    assert.equal(store.getProjectArtifact(project.id,"recovered-public")?.originAgentId,agent.id);
+    assert.equal(store.agentCanReadProjectArtifact(project.id,"recovered-public",live.id),false,
+      "a deleted custodian never grants another Chat access");
+    store.close();
+    const markerPath=join(output,"migrated","projects",project.id,"agents",group.custodianAgentId,
+      ".ponderosa-agent-deletion.json");
+    const marker=JSON.parse(readFileSync(markerPath,"utf8"));marker.ownershipToken="";
+    writeFileSync(markerPath,JSON.stringify(marker));
+    store=new AgentStore(join(output,"migrated"));
+    assert.match(store.startupProfile().recoveryIssues[0]?.detail??"",/Invalid legacy artifact custody assignment/,
+      "historical custody still fails closed without its canonical deletion proof");
+    store.close();
+    marker.ownershipToken="different-nonempty-token";writeFileSync(markerPath,JSON.stringify(marker));
+    store=new AgentStore(join(output,"migrated"));
+    assert.match(store.startupProfile().recoveryIssues[0]?.detail??"",/Invalid legacy artifact custody assignment/,
+      "a different nonempty token is not canonical deletion proof");
+    store.close();
+    const durable=store=>store.sqlite.prepare(`SELECT ownership_token,conversation_id FROM agent_deletion_tombstones
+      WHERE agent_id=?`).get(group.custodianAgentId);
+    store=new AgentStore(join(output,"migrated"));const authority=durable(store);store.close();
+    marker.ownershipToken=authority.ownership_token;marker.conversationId=chat.id;
+    writeFileSync(markerPath,JSON.stringify(marker));
+    store=new AgentStore(join(output,"migrated"));
+    assert.match(store.startupProfile().recoveryIssues[0]?.detail??"",/Invalid legacy artifact custody assignment/,
+      "an unrelated Chat cannot replace the receipt-bound Chat");
+    store.close();
+    marker.conversationId=authority.conversation_id;writeFileSync(markerPath,JSON.stringify(marker));
+    const agentDirectory=join(output,"migrated","projects",project.id,"agents",group.custodianAgentId);
+    const replacement=join(output,"migrated","replacement-agent-audit");
+    renameSync(agentDirectory,replacement);symlinkSync(replacement,agentDirectory,"dir");
+    store=new AgentStore(join(output,"migrated"));
+    assert.match(store.startupProfile().recoveryIssues[0]?.detail??"",/Invalid legacy artifact custody assignment/,
+      "a symlinked audit directory cannot prove custody");
   }finally{store.close();}
 }));
 

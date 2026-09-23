@@ -95,6 +95,44 @@ curl -sS -X POST -H "Authorization: Bearer $PONDEROSA_TOKEN" \
 
 Do not leave a healthy old daemon in the drained state after an aborted deploy.
 
+Qualification sandboxes should start with `PONDEROSA_START_DRAINED=1`. Resume
+leasing explicitly only for a live Run qualification, drain again immediately
+afterward, and stop the sandbox when review is complete. This prevents an old
+PR sandbox from silently leasing durable work while it remains reachable.
+
+### Pine development service
+
+Pine's development channel uses the checked-in user unit so a disconnected SSH
+scope cannot orphan the daemon:
+
+```sh
+mkdir -p ~/.config/systemd/user ~/.config/ponderosa
+cp deploy/ponderosa-browser-dev.service ~/.config/systemd/user/ponderosa-browser-dev.service
+cp deploy/ponderosa-dev.service ~/.config/systemd/user/ponderosa-dev.service
+printf 'PONDEROSA_BUILD_VERSION=%s\nPONDEROSA_BUILD_SHA=%s\n' "$release" "$commit" \
+  >~/.config/ponderosa/dev.env.next
+mv ~/.config/ponderosa/dev.env.next ~/.config/ponderosa/dev.env
+systemctl --user daemon-reload
+systemctl --user enable --now ponderosa-browser-dev.service ponderosa-dev.service
+```
+
+The deploy operation must still drain the currently running revision and wait
+for `deploymentDrain.readyForRestart`. Update the `current` symlink and the
+environment file atomically, restart the user unit, then verify `/api/ready`
+reports the exact commit. Do not start an additional SSH-owned daemon beside
+the unit. If startup verification fails, restore both the previous symlink and
+environment file before restarting the unit.
+
+The browser supervisor is a separate user unit so a shared Project browser can
+survive an application restart. The application waits for its owner-only Unix
+socket before starting. Do not restart the browser supervisor during an ordinary
+application-only deployment. When a release changes the browser-service protocol
+or implementation, first explicitly close all shared Project browsers, verify
+the drain reports zero browser authorities, update `current`, restart
+`ponderosa-browser-dev.service`, and only then restart `ponderosa-dev.service`.
+This ordering prevents a new application from talking to a stale broker without
+silently discarding open tabs or unsaved forms.
+
 ### Initial upgrade from a daemon without deployment drain
 
 Older daemons cannot expose the drain endpoint retroactively. For that one

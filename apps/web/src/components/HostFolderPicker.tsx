@@ -78,11 +78,42 @@ export function HostFolderPicker({ open, initialPath, onClose, onChoose }: {
           <Button variant="outlined" disabled={!pathInput.trim()} onClick={() => navigateTo(pathInput.trim())}>Go</Button>
         </Stack>
         {query.isError ? <Alert severity="error">This folder is unavailable or Ponderosa does not have permission to open it.</Alert> : null}
-        <Stack direction="row" spacing={1} sx={{ alignItems: "center", minHeight: 36 }}>
-          {query.data?.parentPath ? <Button size="small" startIcon={<ArrowUpwardIcon />} onClick={() => navigateTo(query.data!.parentPath!)}>Up</Button> : null}
-          <Typography variant="caption" sx={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{query.data?.path ?? "Loading folders…"}</Typography>
-          <Button size="small" startIcon={<CreateNewFolderOutlinedIcon />} disabled={!query.data} onClick={() => setCreating((value) => !value)}>New Folder</Button>
-        </Stack>
+        <Box sx={{
+          display: "grid",
+          gridTemplateColumns: "auto minmax(0, 1fr) auto",
+          gridTemplateRows: { xs: "auto auto", sm: "auto" },
+          alignItems: "center",
+          gap: 1,
+          minHeight: 36,
+        }}>
+          {query.data?.parentPath ? <Button
+            size="small"
+            startIcon={<ArrowUpwardIcon />}
+            onClick={() => navigateTo(query.data!.parentPath!)}
+            sx={{ gridColumn: 1, gridRow: 1, justifySelf: "start" }}
+          >Up</Button> : <Box sx={{ gridColumn: 1, gridRow: 1 }} />}
+          <Typography
+            variant="caption"
+            noWrap
+            title={query.data?.path}
+            sx={{
+              minWidth: 0,
+              gridColumn: { xs: "1 / -1", sm: 2 },
+              gridRow: { xs: 2, sm: 1 },
+            }}
+          >
+            {query.data?.path ?? "Loading folders…"}
+          </Typography>
+          <Button
+            size="small"
+            startIcon={<CreateNewFolderOutlinedIcon />}
+            disabled={!query.data}
+            onClick={() => setCreating((value) => !value)}
+            sx={{ gridColumn: 3, gridRow: 1, justifySelf: "end" }}
+          >
+            New Folder
+          </Button>
+        </Box>
         {creating ? <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
           <TextField autoFocus label="New Folder Name" value={folderName} onChange={(event) => setFolderName(event.target.value)} fullWidth />
           <Button variant="contained" disabled={!folderName.trim() || createFolder.isPending} onClick={() => createFolder.mutate()}>

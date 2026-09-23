@@ -34,7 +34,7 @@ const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
 function App(){
   const [collapsed,setCollapsed]=useState(false);
   const [drawerOpen,setDrawerOpen]=useState(false);
-  const [route,setRoute]=useState<Route>({kind:"allChats"});
+  const [route,setRoute]=useState<Route>({kind:"home"});
   const [navigationCount,setNavigationCount]=useState(0);
   const [preferences,setPreferences]=useState<WorkspacePreferencesDto>(()=>JSON.parse(localStorage.getItem("fixture-preferences")??"null")??{revision:1,profile:{displayName:"Tester",handle:"tester",avatarId:"default-user"},starredProjectIds:[],projectOrder:[],chatOrder:[],agentOrder:[],triggerOrder:[],starredResourceIds:["conversation:Alpha"],chatFolders:[],projectFolders:[{id:"old",name:"Untouched",projectIds:["P1","P2"],expanded:true}]});
   const current=useRef(preferences);current.current=preferences;

@@ -26,16 +26,29 @@ api.hostedBrowserControl = async (_id, action) => {
   (window as any).connectionAction = action;
   (window as any).connectionCalls = ((window as any).connectionCalls ?? 0) + 1;
   if (parameters.has("reject")) throw new Error("Chrome approval required");
-  session.manualControl = action === "resume" || action === "connect" ? "automation" : "manual";
-  session.privateSignIn = action === "pause";
-  session.controlEpoch++;
-  return structuredClone(session);
+  const target = _id === "saved-browser" ? savedSession : session;
+  target.manualControl = action === "resume" || action === "connect" ? "automation" : "manual";
+  target.privateSignIn = action === "pause";
+  target.controlEpoch++;
+  return structuredClone(target);
 };
 api.getChatBrowserPreferences = async () => ({ rememberSignIns: false });
 api.getSavedBrowser = async () => ({ browser: { profileId: "saved-profile", promotedAt: "2026-09-17T00:00:00Z" } });
+const savedAccess = new Set<string>();
+api.getSavedBrowserAccess = async () => ({ agentIds: [...savedAccess] });
+api.setSavedBrowserAccess = async (_projectId, agentId, allowed) => { if (allowed) savedAccess.add(agentId); else savedAccess.delete(agentId); (window as any).lastSavedAccess = { agentId, allowed }; return { agentIds: [...savedAccess] }; };
+api.getAgentBrowserLocation = async () => ({ kind: parameters.has("agent") ? "run" : savedAccess.has("assistant") ? "saved" : "none", runId: "run" });
 api.openProjectBrowser = async id => { (window as any).lastBrowserOpen = id; if (id === "saved-browser") { savedSession.status = "ready"; savedSession.failure = undefined; } return structuredClone(id === "saved-browser" ? savedSession : session); };
 api.navigateProjectBrowser = async (_id, url) => { session.url = url; return { ...session }; };
 api.listAgents = async () => [{ id: "assistant", title: "Assistant" }] as any;
+api.getBrowserSession = async () => structuredClone(session);
+api.setBrowserControl = async (_projectId, _agentId, _runId, target) => {
+  (window as any).lastAgentControl = target;
+  session.controlOwner = target.owner;
+  session.controlEpoch++;
+  return structuredClone(session);
+};
+api.getBrowserFrame = async (_projectId, _agentId, _runId, pageId) => api.getProjectBrowserFrame("p", pageId);
 api.setProjectBrowserControl = async (_project, target) => {
   (window as any).lastBrowserGrant = target;
   session.nextRunAgentId = (target.nextRun || target.currentOrNext) && target.owner === "agent" ? target.agentId : undefined;
@@ -54,6 +67,6 @@ function App() {
   const [request, setRequest] = useState<{ requestId: number; url?: string }>();
   (window as any).openFixtureLink = () => setRequest({ requestId: Date.now(), url: 'https://example.test/another' });
   const [dockWidth, setDockWidth] = useState(0);
-  return <ThemeProvider theme={createTheme({ palette: { mode: "dark" } })}><CssBaseline /><main style={{ marginRight: dockWidth }}>Chat stays here</main><button onClick={() => setOpen(true)}>Open browser</button>{open ? parameters.has("workspaces") ? <BrowserWorkspaceHost projectId="p" request={request} projects={workspaceProjects} onRequestHandled={() => setRequest(undefined)} onDockWidth={setDockWidth} onClose={() => setOpen(false)} /> : <ProjectBrowserDialog projectId="p" open onDockWidth={setDockWidth} onClose={() => setOpen(false)} /> : null}</ThemeProvider>;
+  return <ThemeProvider theme={createTheme({ palette: { mode: "dark" } })}><CssBaseline /><main style={{ marginRight: dockWidth }}>Chat stays here</main><button onClick={() => setOpen(true)}>Open browser</button>{open ? parameters.has("workspaces") ? <BrowserWorkspaceHost projectId="p" request={request} projects={workspaceProjects} onRequestHandled={() => setRequest(undefined)} onDockWidth={setDockWidth} onClose={() => setOpen(false)} /> : <ProjectBrowserDialog projectId="p" agent={parameters.has("agent") ? { id: "assistant", runId: "run" } : undefined} open onDockWidth={setDockWidth} onClose={() => setOpen(false)} /> : null}</ThemeProvider>;
 }
 createRoot(document.getElementById("root")!).render(<StrictMode><QueryClientProvider client={new QueryClient()}><App /></QueryClientProvider></StrictMode>);

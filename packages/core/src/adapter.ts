@@ -45,7 +45,7 @@ export interface ModelOption {
   defaultEffort?: string;
   /** Provider-reported non-standard service tiers for this exact model. */
   serviceTiers?: ServiceTierOption[];
-  /** Provider-reported default service tier. Missing means Standard. */
+  /** Provider-reported default service tier. Missing means normal speed. */
   defaultServiceTier?: string;
   resolvedModel?: string;
   description?: string;

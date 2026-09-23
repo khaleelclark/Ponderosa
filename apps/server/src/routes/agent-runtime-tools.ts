@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import type { AgentStore, StoredLogEvent } from "@ponderosa/agents";
+import type { AgentStore, StoredLogEvent, WorkspaceStore } from "@ponderosa/agents";
 import {
   CompactionHistoryQueryError,
   MANAGED_ARTIFACT_MAX_BYTES,
@@ -16,6 +16,7 @@ import {
   type BrowserScope,
 } from "../browser-session-manager.js";
 import { BrowserDriverActionError } from "../chrome-cdp-driver.js";
+import type { BrowserProfileAuthority } from "../browser-profile-authority.js";
 import type {
   ActiveRun,
   AgentMessageCapability,
@@ -30,6 +31,9 @@ interface AgentRuntimeToolRoutesContext {
   activeRuns: ReadonlyMap<string, ActiveRun>;
   browserSessions: BrowserSessionManager;
   projectBrowserSessions: BrowserSessionManager;
+  browserProfiles: BrowserProfileAuthority;
+  workspace: WorkspaceStore;
+  publishWorkspaceSince(cursor: number): void;
   projectBrowserGrants: Map<string, { agentId: string; runId: string }>;
   deletingProjectIds: ReadonlySet<string>;
   deletingAgentIds: ReadonlySet<string>;
@@ -132,6 +136,9 @@ export function registerAgentRuntimeToolRoutes(
     activeRuns,
     browserSessions,
     projectBrowserSessions,
+    browserProfiles,
+    workspace,
+    publishWorkspaceSince,
     projectBrowserGrants,
     deletingProjectIds,
     deletingAgentIds,
@@ -142,6 +149,8 @@ export function registerAgentRuntimeToolRoutes(
     assets,
     publish,
   } = context;
+  // Keep the browser selected by a Run even after a shared control grant is revoked.
+  const savedBrowserUsedByRun = new WeakSet<ActiveRun>();
   const projectImportReceipt = (receipt: GeneratedArtifactImportReceipt) => {
     const artifact = receipt.artifact;
     const project = store.getProject(artifact.projectId);
@@ -496,6 +505,7 @@ export function registerAgentRuntimeToolRoutes(
       artifact_id?: unknown;
       consequence?: unknown;
       attempt_id?: unknown;
+      browser?: "saved" | "temporary";
     };
   }>("/api/agent-browser", async (request, reply) => {
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
@@ -508,22 +518,125 @@ export function registerAgentRuntimeToolRoutes(
     if (deletingProjectIds.has(agent.projectId) || deletingAgentIds.has(agent.id)) {
       return reply.code(409).send({ error: "browser owner deletion is in progress" });
     }
+    const requestedBrowser = request.body?.browser;
+    if (requestedBrowser !== undefined && (request.body?.operation !== "open" || (requestedBrowser !== "saved" && requestedBrowser !== "temporary"))) {
+      return reply.code(400).send({ error: "browser may be saved or temporary when opening a browser" });
+    }
+    if (requestedBrowser === "saved" && typeof request.body?.url === "string") {
+      return reply.code(400).send({ error: "Open the saved browser without a URL, then inspect its tabs before navigating." });
+    }
+    if (requestedBrowser === "temporary" && ["saved-browser", agent.projectId].some(id => {
+      const grant = projectBrowserGrants.get(id);
+      return grant?.agentId === agent.id && grant.runId === active.runId;
+    })) {
+      return reply.code(409).send({ code: "browser_selection_conflict", error: "This Run currently controls a shared browser. Release it before opening a temporary browser; no tabs were closed." });
+    }
     try {
-      const savedPending = projectBrowserSessions.get(projectBrowserScope("saved-browser").agentId)?.nextRunAgentId === agent.id;
+      const savedPending = requestedBrowser !== "temporary" && projectBrowserSessions.get(projectBrowserScope("saved-browser").agentId)?.nextRunAgentId === agent.id;
       const ownerProjectId = savedPending ? "saved-browser" : agent.projectId;
-      if (await projectBrowserSessions.claimNextRun(projectBrowserScope(ownerProjectId), agent.id, active.runId, active.conversationId)) {
+      if (requestedBrowser !== "saved" && requestedBrowser !== "temporary" && await projectBrowserSessions.claimNextRun(projectBrowserScope(ownerProjectId), agent.id, active.runId, active.conversationId)) {
         if (activeRuns.get(agent.id) !== active || !capabilityOwnsAuthoritativeRun(capability, active)) {
           const current = projectBrowserSessions.get(projectBrowserScope(ownerProjectId).agentId);
           if (current) await projectBrowserSessions.setControl(projectBrowserScope(ownerProjectId), "operator", current.controlEpoch);
           return reply.code(409).send({ error: "Run ended before browser access could be granted." });
         }
         projectBrowserGrants.set(ownerProjectId, { agentId: agent.id, runId: active.runId });
+        if (ownerProjectId === "saved-browser") savedBrowserUsedByRun.add(active);
       }
     } catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : "Browser authorization changed." }); }
+    if (requestedBrowser === "saved") {
+      const privateSession = browserSessions.get(agent.id);
+      if (privateSession?.status === "ready" || privateSession?.status === "opening") {
+        return reply.code(409).send({ code: "browser_selection_conflict", error: "This Agent already has a temporary browser. Close it explicitly before switching to the saved browser; no tabs were closed." });
+      }
+      const chatGrant = projectBrowserGrants.get(agent.projectId);
+      if (chatGrant?.agentId === agent.id && chatGrant.runId === active.runId) {
+        return reply.code(409).send({ code: "browser_selection_conflict", error: "This Run currently controls the chat browser. Release it before using the saved browser; no tabs were closed." });
+      }
+      if (!browserProfiles.hasSavedBrowserAccess(agent.projectId, agent.id)) {
+        const saved = browserProfiles.savedBrowser();
+        if (!saved) return reply.code(404).send({ code: "saved_browser_unavailable", error: "No saved browser exists. Temporary browsing remains available." });
+        const question = `Allow ${agent.title} to use the saved browser for this Project until you revoke access?`;
+        const cursor = workspace.cursor();
+        const decision = workspace.createDecision({
+          idempotencyKey: `saved-browser:${saved.profileId}:${active.runId}:${agent.id}`,
+          projectId: agent.projectId,
+          ...(active.conversationId ? { conversationId: active.conversationId } : {}),
+          agentId: agent.id,
+          runId: active.runId,
+          coordinationRunId: capability.runId,
+          mode: "approval",
+          question,
+          context: "This browser may contain signed-in accounts. Approval applies only to this Agent within this Project, across Runs and conversations, until you revoke it. Chrome may separately ask to approve its automation connection. Declining does not affect temporary browsing.",
+          options: [{ id: "approve", label: "Allow saved browser" }, { id: "do_not_approve", label: "Not now" }],
+          allowOther: false,
+          blocking: true,
+          approvalScope: { kind: "saved_browser", profileId: saved.profileId, projectId: agent.projectId, agentId: agent.id },
+        });
+        if (decision.approvalScope?.kind !== "saved_browser" || decision.approvalScope.profileId !== saved.profileId ||
+            decision.approvalScope.projectId !== agent.projectId || decision.approvalScope.agentId !== agent.id || decision.status !== "pending") {
+          return reply.code(409).send({ code: "saved_browser_permission_request_changed", error: "The saved-browser permission request is no longer pending. No access was granted." });
+        }
+        workspace.createNotification({
+          projectId: agent.projectId,
+          conversationId: decision.conversationId,
+          conversationIds: [agent.conversationId],
+          agentId: agent.id,
+          agentIds: [agent.id],
+          kind: "decision",
+          category: "decision",
+          severity: "urgent",
+          status: "open",
+          dedupeKey: `decision:${decision.id}`,
+          action: { kind: "open_decision", targetId: decision.id },
+          title: `${agent.title} needs saved-browser access`,
+          body: question,
+          decision: { id: decision.id, mode: decision.mode, options: decision.options, allowOther: decision.allowOther, status: decision.status },
+        }, true);
+        publishWorkspaceSince(cursor);
+        return reply.code(202).send({ code: "saved_browser_permission_pending", decisionId: decision.id, message: "A saved-browser approval is waiting for the operator in Ponderosa. End this Run without asking them to re-lend the browser. After approval resumes you, call ponderosa_browser_open with browser: saved again." });
+      }
+      const savedScope = projectBrowserScope("saved-browser");
+      const current = projectBrowserSessions.get(savedScope.agentId);
+      if (!current || current.status !== "ready") {
+        return reply.code(409).send({ code: "saved_browser_unavailable", error: "The saved browser is not open. Ask the operator to reopen it; no replacement was started." });
+      }
+      if (current.manualControl && current.manualControl !== "automation") {
+        return reply.code(409).send({ code: "saved_browser_connection_required", error: "The saved browser is under manual control. The operator must connect Chrome for agent access; its tabs were not replaced." });
+      }
+      const existing = projectBrowserGrants.get("saved-browser");
+      if (existing && (existing.agentId !== agent.id || existing.runId !== active.runId)) {
+        return reply.code(409).send({ code: "saved_browser_occupied", error: "Another agent currently controls the saved browser. Ask the operator for a handoff or wait until it is released." });
+      }
+      if (!existing) {
+        const grant = { agentId: agent.id, runId: active.runId };
+        projectBrowserGrants.set("saved-browser", grant);
+        try {
+          await projectBrowserSessions.setControl(savedScope, "agent", current.controlEpoch);
+          if (projectBrowserGrants.get("saved-browser") !== grant || !browserProfiles.hasSavedBrowserAccess(agent.projectId, agent.id) || activeRuns.get(agent.id) !== active || !capabilityOwnsAuthoritativeRun(capability, active)) {
+            const latest = projectBrowserSessions.get(savedScope.agentId);
+            if (latest?.status === "ready" && latest.controlOwner === "agent") await projectBrowserSessions.setControl(savedScope, "operator", latest.controlEpoch);
+            throw new BrowserSessionError("Saved browser access changed before it could be granted.", 409);
+          }
+        } catch (error) {
+          if (projectBrowserGrants.get("saved-browser") === grant) projectBrowserGrants.delete("saved-browser");
+          if (error instanceof BrowserSessionError) return reply.code(error.statusCode).send({ error: error.message, code: error.code });
+          return reply.code(409).send({ error: "The saved browser could not hand control to this agent. Its tabs were preserved." });
+        }
+      }
+    }
     const savedGrant = projectBrowserGrants.get("saved-browser");
-    const ownerProjectId = savedGrant?.agentId === agent.id && savedGrant.runId === active.runId ? "saved-browser" : agent.projectId;
+    if (savedGrant?.agentId === agent.id && savedGrant.runId === active.runId) savedBrowserUsedByRun.add(active);
+    if (request.body?.operation !== "open" && savedBrowserUsedByRun.has(active) &&
+        (savedGrant?.agentId !== agent.id || savedGrant.runId !== active.runId)) {
+      const authorized = browserProfiles.hasSavedBrowserAccess(agent.projectId, agent.id);
+      return reply.code(409).send(authorized
+        ? { code: "saved_browser_control_changed", error: "The saved browser is no longer assigned to this Run. This action was not applied. Wait for an operator handoff before opening it again." }
+        : { code: "saved_browser_access_revoked", error: "Saved browser access was revoked. This action was not applied. Ask the operator to approve access again if needed; temporary browsing remains available." });
+    }
+    const ownerProjectId = requestedBrowser !== "temporary" && savedGrant?.agentId === agent.id && savedGrant.runId === active.runId ? "saved-browser" : agent.projectId;
     const projectGrant = projectBrowserGrants.get(ownerProjectId);
-    const borrowingProjectBrowser = projectGrant?.agentId === agent.id && projectGrant.runId === active.runId;
+    const borrowingProjectBrowser = requestedBrowser !== "temporary" && projectGrant?.agentId === agent.id && projectGrant.runId === active.runId;
     const sessionManager = borrowingProjectBrowser ? projectBrowserSessions : browserSessions;
     const scope: BrowserScope = borrowingProjectBrowser
       ? projectBrowserScope(ownerProjectId, projectGrant)
@@ -537,7 +650,10 @@ export function registerAgentRuntimeToolRoutes(
       switch (request.body?.operation) {
         case "open": {
           const session = await sessionManager.open(scope, request.body.url);
-          return { session, snapshot: await sessionManager.inspect(scope) };
+          const snapshot = await sessionManager.inspect(scope);
+          if (borrowingProjectBrowser && ownerProjectId === "saved-browser") savedBrowserUsedByRun.add(active);
+          else savedBrowserUsedByRun.delete(active);
+          return { session, snapshot };
         }
         case "navigate": {
           if (typeof request.body.url !== "string") throw new BrowserSessionError("url is required");
@@ -608,7 +724,7 @@ export function registerAgentRuntimeToolRoutes(
           if (borrowingProjectBrowser) {
             const session = sessionManager.get(scope.agentId);
             if (!session) throw new BrowserSessionError("project browser session is unavailable", 404);
-            projectBrowserGrants.delete(agent.projectId);
+            projectBrowserGrants.delete(ownerProjectId);
             return { session: await sessionManager.setControl(scope, "operator", session.controlEpoch) };
           }
           return { session: await sessionManager.close(scope, "agent_closed") };
@@ -621,6 +737,15 @@ export function registerAgentRuntimeToolRoutes(
       if (error instanceof BrowserDriverActionError) {
         const mapped = browserDriverSessionError(error);
         return reply.code(mapped.statusCode).send({ error: mapped.message });
+      }
+      if (error instanceof Error && /native manual control|manual mode|awaiting Chrome connection approval/i.test(error.message)) {
+        return reply.code(409).send({ code: "browser_connection_required", error: "The browser is under manual control or awaiting Chrome approval. The operator must connect Chrome before Agent actions; no tabs were replaced." });
+      }
+      if (error instanceof Error && /Browser service did not respond/i.test(error.message)) {
+        return reply.code(504).send({ code: "browser_service_timeout", error: "The browser service did not respond. No replacement was opened; check the existing browser before retrying." });
+      }
+      if (error instanceof Error && /Target page, context or browser has been closed/i.test(error.message)) {
+        return reply.code(409).send({ code: "browser_page_changed", error: "The browser tab closed during the action. Inspect the current tabs before retrying; no action was repeated." });
       }
       throw error;
     }

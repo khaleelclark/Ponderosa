@@ -125,22 +125,29 @@ function CreateSurface({
   children: ReactNode;
 }): JSX.Element {
   const presentation = resourcePresentation[route.resource];
+  const header = <Stack direction="row" spacing={1} sx={{ minWidth: 0, mb: { xs: route.resource === "chat" ? 1 : 2.5, sm: 2.5 }, minHeight: { xs: 48, sm: 0 }, alignItems: "center" }}>
+    <MobileNavigationButton />
+    <Box sx={{ minWidth: 0, flex: 1 }}>
+      <IconTitle icon={presentation.icon} title={presentation.title} component="h1" />
+      <Typography color="text.secondary" sx={{ mt: 0.5, display: route.resource === "chat" ? { xs: "none", sm: "block" } : undefined }}>
+        {presentation.description}
+      </Typography>
+    </Box>
+    <PrimaryHeaderActionsOutlet />
+  </Stack>;
+  if (route.resource === "chat") return (
+    <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", px: { xs: 2, md: 4 }, pt: { xs: 1, sm: 3 } }}>
+      {header}
+      <Box sx={{ minHeight: 0, minWidth: 0 }}>{children}</Box>
+    </Box>
+  );
   return (
     <Box
       className="ponderosa-scroll"
       sx={{ minHeight: 0, overflowY: "auto", px: { xs: 2, md: 4 }, py: 3 }}
     >
       <Box sx={{ width: "100%", maxWidth: 780, mx: "auto" }}>
-        <Stack direction="row" spacing={1} sx={{ minWidth: 0, mb: 2.5, alignItems: "flex-start" }}>
-          <MobileNavigationButton />
-          <Box sx={{ minWidth: 0, flex: 1 }}>
-            <IconTitle icon={presentation.icon} title={presentation.title} component="h1" />
-            <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-              {presentation.description}
-            </Typography>
-          </Box>
-          <PrimaryHeaderActionsOutlet />
-        </Stack>
+        {header}
         <Paper variant="outlined" sx={{ p: { xs: 2, sm: 3 } }}>
           {children}
         </Paper>
@@ -608,7 +615,7 @@ function CreateFormContent({
     <Box
       onChange={onDirty}
       onInput={onDirty}
-      sx={{ minWidth: 0 }}
+      sx={{ minWidth: 0, minHeight: 0, height: route.resource === "chat" ? "100%" : undefined }}
     >
       {content}
     </Box>

@@ -17,6 +17,7 @@
 
 import {
   classifyProviderFailure,
+  classifyToolFailure,
   type AgentEvent,
   type FileChangeKind,
   type ProviderErrorCode,
@@ -174,6 +175,18 @@ function errorEvent(error: RawEvent["error"], detail: string): Extract<AgentEven
   return { type: "error", message: detail, ...(code ? { code } : {}) };
 }
 
+function mcpToolResult(id: string, output: string, isError: boolean): Extract<AgentEvent, { type: "tool_result" }> {
+  const failure = classifyToolFailure(output, isError);
+  const canonicalIsError = isError || failure !== undefined;
+  return {
+    type: "tool_result",
+    id,
+    output,
+    ...(canonicalIsError ? { isError: true } : {}),
+    ...(failure ? { failureCategory: failure.category, retryable: failure.retryable } : {}),
+  };
+}
+
 // ─── The mapper ──────────────────────────────────────────────────────────────
 
 /**
@@ -283,15 +296,9 @@ function mapItemCompleted(item: RawItem | undefined, _ctx: CodexMapContext): Age
     case "mcp_tool_call": {
       const it = item as RawMcpToolCall;
       const isError = it.error != null;
-      return [
-        {
-          type: "tool_result",
-          id: it.id ?? "",
-          output:
-            typeof it.result === "string" ? it.result : JSON.stringify(it.result ?? null),
-          isError,
-        },
-      ];
+      const value = it.result ?? it.error ?? null;
+      const output = typeof value === "string" ? value : JSON.stringify(value);
+      return [mcpToolResult(it.id ?? "", output, isError)];
     }
     case "web_search": {
       const it = item as RawWebSearch;

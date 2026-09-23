@@ -168,6 +168,7 @@ export function registerWorkspacePreferenceRoutes(
       if (!Array.isArray(folders) || folders.length > 1000 || folders.some(folder => {
         if (!folder || typeof folder !== "object" || typeof folder.id !== "string" || !folder.id || folder.id.length > 200 || ids.has(folder.id) ||
           typeof folder.name !== "string" || !folder.name.trim() || folder.name.length > 100 || typeof folder.expanded !== "boolean" ||
+          (key === "chatFolders" && "starred" in folder && folder.starred !== undefined && typeof folder.starred !== "boolean") ||
           !Array.isArray((folder as unknown as Record<string, unknown[]>)[memberKey]) || (folder as unknown as Record<string, unknown[]>)[memberKey]!.length > 10000) return true;
         ids.add(folder.id);
         return (folder as unknown as Record<string, unknown[]>)[memberKey]!.some(id => {

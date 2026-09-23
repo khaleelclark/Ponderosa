@@ -1,5 +1,4 @@
 import { Alert, Button, ButtonBase, Chip } from "@mui/material";
-import { PONDEROSA_MESSAGE_TOOL } from "@ponderosa/core";
 import type {
   AgentActivityDto,
   AgentRunDto,
@@ -15,6 +14,7 @@ import { MessageRequestAction } from "../MessageRequestAction";
 import { buildActivityStream } from "../activity/activityStream";
 import type { ActivityStreamEntry } from "../activity/activityStream";
 import { AgentWorkReceipt } from "./AgentWorkReceipt";
+import { hasVisibleReceiptActivity } from "./receiptActivityEntries";
 import { ChatMessageFrame } from "./ChatMessageFrame";
 import { ChatSurface } from "./ChatSurface";
 import {
@@ -245,15 +245,7 @@ function ChatPaneComponent({
       }
 
       const runEntries = activityByRun.get(run.id) ?? [];
-      const hasVisibleActivity = runEntries.some(
-        entry =>
-          entry.kind !== "run_header" &&
-          !(
-            entry.kind === "tool" &&
-            entry.name === PONDEROSA_MESSAGE_TOOL.name &&
-            entry.result?.isError !== true
-          ),
-      );
+      const hasVisibleActivity = hasVisibleReceiptActivity(runEntries, run.status);
       const representedByDeliveryStatus =
         request?.role === "user" &&
         Boolean(request.deliveryReceipts?.length) &&

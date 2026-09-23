@@ -185,7 +185,7 @@ test("legitimate Agent deletion consumes pending and committed storage phases", 
   const receipt = f.store.getAgentDeletionReceiptByPreviewHash(preview.previewHash);
   assert.equal(receipt?.storageCleanupCompleted, true);
   assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) AS count FROM agent_deletion_pending").get().count, 0);
-  assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) AS count FROM agent_deletion_tombstones").get().count, 0);
+  assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) AS count FROM agent_deletion_tombstones").get().count, 1);
   assert.equal(existsSync(f.canonical), true);
 });
 

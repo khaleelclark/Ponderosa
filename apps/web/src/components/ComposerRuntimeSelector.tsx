@@ -2,6 +2,7 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import CheckIcon from "@mui/icons-material/Check";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import SpeedOutlinedIcon from "@mui/icons-material/SpeedOutlined";
 import {
   Box,
   ButtonBase,
@@ -36,6 +37,7 @@ export function ComposerRuntimeSelector({
   efforts,
   speed,
   speeds = [],
+  scopeLabel,
   engineLocked = false,
   disabled = false,
   onEngineChange,
@@ -51,6 +53,8 @@ export function ComposerRuntimeSelector({
   efforts: ComposerRuntimeOption[];
   speed?: string;
   speeds?: ComposerRuntimeOption[];
+  /** Owner shown when the selector opens, such as a Chat or Agent. */
+  scopeLabel?: string;
   engineLocked?: boolean;
   disabled?: boolean;
   onEngineChange?(id: string): void;
@@ -86,7 +90,7 @@ export function ComposerRuntimeSelector({
       ? [{
           id: "speed" as const,
           label: "Speed",
-          value: selectedSpeed?.label ?? speeds[0]?.label ?? "Standard",
+          value: selectedSpeed?.label ?? speeds[0]?.label ?? "Normal",
           options: speeds,
         }]
       : []),
@@ -103,7 +107,7 @@ export function ComposerRuntimeSelector({
 
   return <>
     <ButtonBase
-      aria-label="Choose engine, model, reasoning, and speed"
+      aria-label={`${scopeLabel ? `${scopeLabel}. ` : ""}Choose engine, model, reasoning, and speed`}
       aria-haspopup="menu"
       aria-controls={anchor ? menuId : undefined}
       aria-expanded={Boolean(anchor)}
@@ -118,15 +122,17 @@ export function ComposerRuntimeSelector({
       }}
       sx={{
         minHeight: 40,
+        minWidth: { xs: 44, sm: 0 },
         maxWidth: "100%",
-        px: 1,
+        px: { xs: 0.5, sm: 1 },
         borderRadius: 1.25,
         color: "text.primary",
         "&:hover": { bgcolor: "action.hover" },
         "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: 2 },
       }}
     >
-      <Stack direction="row" spacing={0.6} sx={{ alignItems: "baseline", minWidth: 0 }}>
+      <SpeedOutlinedIcon sx={{ display: { xs: "block", sm: "none" } }} />
+      <Stack direction="row" spacing={0.6} sx={{ display: { xs: "none", sm: "flex" }, alignItems: "baseline", minWidth: 0 }}>
         <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>{selectedModelLabel}</Typography>
         <Typography
           variant="body2"
@@ -136,6 +142,9 @@ export function ComposerRuntimeSelector({
         >
           · {selectedEffort?.label ?? "Reasoning unavailable"}
         </Typography>
+        {selectedSpeed && selectedSpeed.id !== "standard" ? (
+          <Typography variant="body2" color="text.secondary" noWrap>· {selectedSpeed.label}</Typography>
+        ) : null}
         <KeyboardArrowDownIcon sx={{ alignSelf: "center", color: "text.secondary", fontSize: 20 }} />
       </Stack>
     </ButtonBase>
@@ -169,6 +178,10 @@ export function ComposerRuntimeSelector({
             bgcolor: "background.paper",
           }}
         >
+          {scopeLabel ? <ListSubheader
+            disableSticky
+            sx={{ bgcolor: "transparent", color: "text.secondary", lineHeight: "32px", fontWeight: 800, px: 1.5 }}
+          >{scopeLabel}</ListSubheader> : null}
           {active ? (
             <>
               <MenuItem

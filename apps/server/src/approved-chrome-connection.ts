@@ -71,7 +71,17 @@ export class ApprovedChromeConnection implements BrowserProtocolConnection {
     const connection = new ApprovedChromeConnection(socket);
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => { socket.off("open", ready); socket.off("error", failed); socket.off("close", failed); options.signal?.removeEventListener("abort", aborted); };
-      const failed = () => { cleanup(); connection.disconnect(); reject(new Error("Chrome connection was not approved or became unavailable.")); };
+      const failed = (error?: unknown) => {
+        cleanup(); connection.disconnect();
+        const reason = error instanceof Error ? error.message : "";
+        reject(new Error(/timed out/i.test(reason)
+          ? "Chrome automation connection timed out. Check for a Chrome approval prompt, then retry without reopening the browser."
+          : /ECONNREFUSED|ENOENT|EHOSTUNREACH|ENETUNREACH|ECONNRESET/i.test(reason)
+            ? "Chrome's automation endpoint is unavailable. Keep the browser open, enable its connection, then retry."
+            : /Unexpected server response: (401|403)/i.test(reason)
+              ? "Chrome declined its automation connection. Approve the Chrome prompt if shown, then retry without reopening the browser."
+              : "Chrome's automation connection failed. Check Chrome's connection status, then retry without reopening the browser."));
+      };
       const aborted = () => { cleanup(); connection.disconnect(); reject(new Error("Browser connection cancelled.")); };
       const ready = () => { cleanup(); if (options.signal?.aborted) aborted(); else resolve(); };
       socket.once("open", ready); socket.once("error", failed); socket.once("close", failed);

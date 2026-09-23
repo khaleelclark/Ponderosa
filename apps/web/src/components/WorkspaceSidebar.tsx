@@ -1,5 +1,6 @@
 import { SidebarResourceRow } from "./SidebarResourceRow";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
+import AddIcon from "@mui/icons-material/Add";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
@@ -14,8 +15,11 @@ import {
   Typography,
 } from "@mui/material";
 import type {
+  AgentDto,
   ConversationDto,
   ProjectDto,
+  ProjectSort,
+  TriggerDefinitionDto,
   WorkspaceAgentDirectoryItemDto,
   WorkspaceConversationDirectoryItemDto,
   WorkspaceNotificationDto,
@@ -38,6 +42,7 @@ import { routeClearsProjectSidebarContext } from "../routeRegistry";
 import { routeProjectId, type Route } from "../routing";
 import { useAgent, useConversation, useNotificationProjection } from "../hooks/queries";
 import {
+  customOrderSeed,
   projectOrderPreferenceKey,
   reorderStableIds,
   resourcePreferenceKey,
@@ -45,6 +50,8 @@ import {
   starredWorkspaceResources,
   synchronizeProjectRailOrder,
   toggleWorkspaceResourceStar,
+  workspaceResourceSort,
+  workspaceResourceSortPatch,
 } from "../resourcePreferences";
 import {
   projectDisambiguator,
@@ -53,8 +60,9 @@ import {
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
-import { ResourceContextMenu } from "./ResourceContextMenu";
-import { TextInputDialog } from "./ConfirmationDialogs";
+import { ResourceContextMenu, type ResourceContextMenuAction } from "./ResourceContextMenu";
+import { ResourceDeletionDialog, TextInputDialog } from "./ConfirmationDialogs";
+import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import {
   SIDEBAR_PANEL_WIDTH,
   SIDEBAR_RAIL_WIDTH,
@@ -92,7 +100,6 @@ export function WorkspaceSidebar({
   onProjectDeleted,
   onSearch,
   onOpenNotifications,
-  onOpenEngineStatus,
   creating,
   onDismiss,
   collapsed = false,
@@ -122,14 +129,13 @@ export function WorkspaceSidebar({
   onProjectDeleted(projectId: string): void;
   onSearch?(): void;
   onOpenNotifications?(): void;
-  onOpenEngineStatus?(): void;
   creating?: "project" | "chat" | "agent" | "trigger";
   onDismiss?(): void;
   collapsed?: boolean;
   width?: number;
   onCollapsedChange?(collapsed: boolean): void;
   onWidthChange?(width: number): void;
-}): JSX.Element {
+}): JSX.Element | null {
   const queryClient = useQueryClient();
   const workspaceConnection = useWorkspaceConnection();
   const {
@@ -154,7 +160,7 @@ export function WorkspaceSidebar({
     Boolean(routedProjectId),
   );
   useEffect(() => {
-    if (["conversation", "agent", "automation", "allChats", "allAgents", "allTriggers"].includes(route.kind)) setSidebarSection("home");
+    if (["conversation", "agent", "automation"].includes(route.kind)) setSidebarSection("home");
     if (routedProjectId) {
       setDrawerProjectId(routedProjectId);
       setDrawerProjectPanelOpen(true);
@@ -171,9 +177,9 @@ export function WorkspaceSidebar({
   const showingTriggers = !showingSettings && projectSection === "triggers";
   const directorySearch = filter;
   useEffect(() => {
-    if (route.kind === "allChats" || route.kind === "allChat" || route.kind === "home") setProjectSection("chats");
-    if (route.kind === "allAgents") setProjectSection("agents");
-    if (route.kind === "allTriggers") setProjectSection("triggers");
+    if (route.kind === "allChat" || route.kind === "home" || route.kind === "manageChats") setProjectSection("chats");
+    if (route.kind === "manageAgents") setProjectSection("agents");
+    if (route.kind === "manageAutomations") setProjectSection("triggers");
   }, [route]);
   const projectDirectoryQuery = useProjectRailDirectory();
   const chatDirectoryQuery =
@@ -232,9 +238,21 @@ export function WorkspaceSidebar({
   const projectItems = projectDirectoryQuery.requestState.hasResolved
     ? [...projectDirectory.starredItems, ...projectDirectory.items]
     : projectFallbackItems;
-  const chatItems = [...chatDirectory.starredItems, ...chatDirectory.items];
-  const agentItems = [...agentDirectory.starredItems, ...agentDirectory.items];
-  const triggerItems = [...triggerDirectory.starredItems, ...triggerDirectory.items];
+  const chatSort = workspaceResourceSort(preferences, "chat");
+  const agentSort = workspaceResourceSort(preferences, "agent");
+  const triggerSort = workspaceResourceSort(preferences, "trigger");
+  const chatItems = [
+    ...sortWorkspaceResources(chatDirectory.starredItems, chatSort, preferences.chatOrder, item => item.conversation.id, item => item.conversation.title, item => item.conversation.updatedAt),
+    ...chatDirectory.items,
+  ];
+  const agentItems = [
+    ...sortWorkspaceResources(agentDirectory.starredItems, agentSort, preferences.agentOrder, item => item.agent.id, item => item.agent.title, item => item.agent.updatedAt),
+    ...agentDirectory.items,
+  ];
+  const triggerItems = [
+    ...sortWorkspaceResources(triggerDirectory.starredItems, triggerSort, preferences.triggerOrder, item => item.trigger.id, item => item.trigger.name, item => item.trigger.updatedAt),
+    ...triggerDirectory.items,
+  ];
   const projectionConversationIds = [
     ...chatItems.map(item => item.conversation.id),
     ...(route.kind === "conversation" ? [route.conversationId] : []),
@@ -299,6 +317,12 @@ export function WorkspaceSidebar({
   });
   const [renamingProject, setRenamingProject] = useState<ProjectDto>();
   const [deletingProject, setDeletingProject] = useState<ProjectDto>();
+  const [renamingAgent, setRenamingAgent] = useState<AgentDto>();
+  const [deletingAgent, setDeletingAgent] = useState<AgentDto>();
+  const [triggerAction, setTriggerAction] = useState<{
+    kind: "rename" | "delete";
+    trigger: TriggerDefinitionDto;
+  }>();
   const projectBrowseState = useRef(
     new Map<string, { section: typeof projectSection; filter: string }>(),
   );
@@ -320,6 +344,38 @@ export function WorkspaceSidebar({
         queryKey: queryKeys.workspaceDirectory.kind("project"),
       });
       setRenamingProject(undefined);
+    },
+  });
+  const renameAgent = useMutation({
+    mutationFn: ({ agent, title }: { agent: AgentDto; title: string }) =>
+      api.updateAgent(agent.id, { title }),
+    onSuccess: updated => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(updated.projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(updated.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
+      setRenamingAgent(undefined);
+    },
+  });
+  const renameTrigger = useMutation({
+    mutationFn: ({ trigger, name }: { trigger: TriggerDefinitionDto; name: string }) =>
+      api.updateTrigger(trigger.id, { name }),
+    onSuccess: (_updated, { trigger }) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.project(trigger.projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("trigger") });
+      setTriggerAction(undefined);
+    },
+  });
+  const deleteTrigger = useMutation({
+    mutationFn: (trigger: TriggerDefinitionDto) => api.deleteTrigger(trigger.id),
+    onSuccess: (_deleted, trigger) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.project(trigger.projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("trigger") });
+      if (route.kind === "automation" && route.triggerId === trigger.id)
+        onNavigate({ kind: "home" });
+      setTriggerAction(undefined);
     },
   });
   const showNavigation = (next: Route) => {
@@ -393,11 +449,6 @@ export function WorkspaceSidebar({
   };
 
   const selectSidebar = (section: typeof projectSection | "settings") => {
-    const selected = section === "settings" ? showingSettings : !showingSettings && section === projectSection;
-    if (!drawer && !collapsed && selected && onCollapsedChange) {
-      onCollapsedChange(true);
-      return;
-    }
     setSidebarSection(section === "settings" ? "settings" : "home");
     if (section !== "settings") setProjectSection(section);
     setFilter("");
@@ -430,15 +481,25 @@ export function WorkspaceSidebar({
       onReorderProject={reorderRailProject}
       onOpenHome={() => showNavigation({ kind: "home" })}
       onOpenAllMessages={() => showNavigation({ kind: "allChat" })}
+      onManageSection={section => showNavigation(
+        section === "agents"
+          ? { kind: "manageAgents" }
+          : section === "triggers"
+            ? { kind: "manageAutomations" }
+            : { kind: "manageChats" },
+      )}
       onOpenProject={openProject}
       onOpenCreate={() => onCreate("project")}
       createProjectOpen={creating === "project"}
       onOpenSearch={() => onSearch?.()}
       onOpenNotifications={() => onOpenNotifications?.()}
-      onOpenUsage={() => showNavigation({ kind: "usage" })}
-      onOpenEngineStatus={() => onOpenEngineStatus?.()}
       onOpenSettings={() => selectSidebar("settings")}
-      onOpenProfile={() => showNavigation({ kind: "profile" })}
+      onCollapse={!drawer && onCollapsedChange ? () => {
+        onCollapsedChange(true);
+        window.requestAnimationFrame(() => {
+          document.querySelector<HTMLElement>('[aria-label="Open workspace navigation"]')?.focus();
+        });
+      } : undefined}
       onClose={onDismiss}
     />
   );
@@ -448,7 +509,29 @@ export function WorkspaceSidebar({
     kind: "project" | "conversation" | "agent" | "trigger",
     id: string,
   ) => onPreferences(toggleWorkspaceResourceStar(preferences, kind, id));
-  const panelHeader = <Box sx={{ px: 2, pt: drawer ? .75 : 1.5, pb: 1 }}><Typography component="h2" sx={{ fontSize: 15, fontWeight: 700 }}>{showingAgents ? "Agents" : showingTriggers ? "Automations" : "Chats"}</Typography><Typography variant="caption" color="text.secondary">Browse · select an item to open it</Typography></Box>;
+  const setResourceSort = (
+    kind: "chat" | "agent" | "trigger",
+    sort: ProjectSort,
+    visibleIds: string[],
+    currentOrder: string[] | undefined,
+  ) => {
+    const patch = workspaceResourceSortPatch(kind, sort);
+    if (sort === "custom" && !currentOrder?.length) {
+      const order = customOrderSeed(currentOrder, visibleIds);
+      onPreferences({ ...patch, [kind === "chat" ? "chatOrder" : kind === "agent" ? "agentOrder" : "triggerOrder"]: order });
+    } else onPreferences(patch);
+  };
+  const panelCreate = showingChats
+    ? { label: "Create Chat", run: () => onCreate("chat", { projectId: activeProjectId ?? projects[0]?.id }) }
+    : showingAgents
+      ? { label: "Create Agent", run: () => onCreate("agent", { projectId: activeProjectId ?? projects[0]?.id }) }
+      : showingTriggers
+        ? { label: "Create Automation", run: () => onCreate("trigger", { projectId: activeProjectId ?? projects[0]?.id }) }
+        : undefined;
+  const panelHeader = <Stack direction="row" sx={{ alignItems: "center", pl: 2, pr: .25, pt: drawer ? .75 : 1.5, pb: 1 }}>
+    <Typography component="h2" sx={{ minWidth: 0, flex: 1, fontSize: 15, fontWeight: 700 }}>{showingAgents ? "Agents" : showingTriggers ? "Automations" : "Chats"}</Typography>
+    {panelCreate ? <Tooltip title={panelCreate.label}><IconButton size="small" aria-label={panelCreate.label} onClick={panelCreate.run}><AddIcon fontSize="small" /></IconButton></Tooltip> : null}
+  </Stack>;
   const allChatRows = chatItems;
   const activeChatRow =
     route.kind === "conversation" &&
@@ -475,7 +558,7 @@ export function WorkspaceSidebar({
           sx={{ alignItems: "center", mb: 0.25 }}
         >
           <SidebarResourceRow id={`sidebar-conversation:${conversation.id}`} label={`Open Chat ${conversation.title}`} title={conversation.title} icon={<ChatBubbleOutlineIcon fontSize="small" />}
-            starred={starred} emphasis={Boolean(unread.totalCount)} selected={route.kind === "conversation" && route.conversationId === conversation.id}
+            starred={starred} emphasis={Boolean(unread.totalCount)} boldWhenStarred={false} selected={route.kind === "conversation" && route.conversationId === conversation.id}
             onOpen={() => openChat(chatProject, conversation)} onStar={() => toggleStar("conversation", conversation.id)}
             status={<>{runningAgentCount > 0 ? <AgentStatusIndicator status="running" /> : null}
               {unread.importantCount ? <Chip size="small" color="error" label={unread.importantCount} aria-label={`${unread.importantCount} important unread`} sx={{ height: 20 }} /> : null}
@@ -484,13 +567,19 @@ export function WorkspaceSidebar({
       );
     });
   const globalChatsPanel = (
-    <ChatFolders items={chatRows} folders={preferences.chatFolders ?? []}
+    <ChatFolders items={chatRows} folders={preferences.chatFolders ?? []} sort={chatSort}
       openItems={activeChatRow ? [activeChatRow] : []}
       starredIds={starredResourceIds} filtering={Boolean(filter.trim())}
       renderRow={item => globalChatResourceRows([item])}
-      onChange={chatFolders => onPreferences({ chatFolders })}
+      onChange={(chatFolders, customOrder) => onPreferences({ chatFolders, ...(customOrder ? {
+        chatSort: "custom",
+        ...(chatSort === "custom" ? {} : { chatOrder: customOrderSeed(preferences.chatOrder, allChatRows.map(row => row.conversation.id)) }),
+      } : {}) })}
       onRename={onRenameConversation} onDelete={onDeleteConversation}
-      onReorder={(source, target, position) => onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, allChatRows.map(row => row.conversation.id), source, target, position) })}>
+      onReorder={(source, target, position, chatFolders) => {
+        const visibleIds = allChatRows.map(row => row.conversation.id);
+        onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(chatSort === "custom" ? preferences.chatOrder : customOrderSeed(preferences.chatOrder, visibleIds), visibleIds, source, target, position), ...(chatFolders ? { chatFolders } : {}) });
+      }}>
     {({ starredRows, allRows, openRows }) => (
     <SharedSidebarPanel
       header={panelHeader}
@@ -510,14 +599,8 @@ export function WorkspaceSidebar({
       starredRows={starredRows}
       allRows={allRows}
       collectionFeedback={<CollectionStateFeedback request={chatDirectoryQuery.requestState} itemCount={chatRows.length} filtersActive={Boolean(filter.trim())} resourceLabel="Chats" emptyTitle="No Chats Yet" noMatchTitle={"No Chats match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact />}
-      viewAllLabel="View All Chats"
-      viewAllIcon={<ChatBubbleOutlineIcon />}
-      onViewAll={() => onNavigate({ kind: "allChats" })}
-      onViewAllContextMenu={anchor =>
-        openResourceMenu(anchor, { kind: "allChats" })
-      }
-      createLabel="Create Chat"
-      onCreate={() => onCreate("chat", { projectId: activeProjectId ?? projects[0]?.id })}
+      sort={chatSort}
+      onSort={value => setResourceSort("chat", value, allChatRows.map(row => row.conversation.id), preferences.chatOrder)}
       drawer={drawer}
     />)}
     </ChatFolders>
@@ -594,6 +677,7 @@ export function WorkspaceSidebar({
       const starred = starredResourceIds.has(
         resourcePreferenceKey("agent", agent.id),
       );
+      const ownerTitle = ownerConversation?.title ?? "Unavailable Chat";
       return (
         <Stack
           key={agent.id}
@@ -604,15 +688,19 @@ export function WorkspaceSidebar({
           }
           onDragEnd={() => setDraggedResource(undefined)}
           onDragOver={event => {
-            if (draggedResource?.kind === "agent") event.preventDefault();
+            const source = allAgentRows.find(row => row.agent.id === draggedResource?.id);
+            if (draggedResource?.kind === "agent" && source && source.agent.managerAgentId === agent.managerAgentId &&
+                starredResourceIds.has(resourcePreferenceKey("agent", source.agent.id)) === starred) event.preventDefault();
           }}
           onDrop={event => {
             event.preventDefault();
-            if (draggedResource?.kind === "agent")
+            const source = allAgentRows.find(row => row.agent.id === draggedResource?.id);
+            if (draggedResource?.kind === "agent" && source && source.agent.managerAgentId === agent.managerAgentId &&
+                starredResourceIds.has(resourcePreferenceKey("agent", source.agent.id)) === starred)
               onPreferences({
                 agentSort: "custom",
                 agentOrder: reorderStableIds(
-                  preferences.agentOrder,
+                  agentSort === "custom" ? preferences.agentOrder : customOrderSeed(preferences.agentOrder, allAgentRows.map(row => row.agent.id)),
                   allAgentRows.map(row => row.agent.id),
                   draggedResource.id,
                   agent.id,
@@ -660,11 +748,11 @@ export function WorkspaceSidebar({
               </Tooltip>
             ) : null}
           </Box>
-          <SidebarResourceRow id={`sidebar-agent:${agent.id}`} label={`Open agent ${agent.title} in ${projectDisambiguator(agentProject, projects)}`} title={agent.title}
-            detail={`${ownerConversation?.title ?? "Unavailable Chat"} · ${agent.activeEngine}`} icon={<SmartToyOutlinedIcon fontSize="small" />}
+          <SidebarResourceRow id={`sidebar-agent:${agent.id}`} label={`Open agent ${agent.title} in Chat ${ownerTitle}, ${projectDisambiguator(agentProject, projects)}`} title={agent.title}
+            detail={`${ownerTitle} · ${agent.activeEngine}`} subtitle={ownerTitle} icon={<SmartToyOutlinedIcon fontSize="small" />}
             starred={starred} nested={Boolean(agent.managerAgentId)} selected={route.kind === "agent" && route.agentId === agent.id}
             onOpen={() => onNavigate({ kind: "agent", projectId: agentProject.id, agentId: agent.id })} onStar={() => toggleStar("agent", agent.id)}
-            onMore={anchor => openResourceMenu(anchor, { kind: "agent", projectId: agentProject.id, agentId: agent.id })}
+            onContextAction={anchor => openResourceMenu(anchor, { kind: "agent", projectId: agentProject.id, agentId: agent.id })}
             status={status ? <AgentStatusIndicator status={status} health={health} connectionStatus={workspaceConnection.status} phaseEvidenceFresh={workspaceConnection.phaseEvidenceFresh} agentNameForId={id => agentNamesById.get(id)} /> : null} />
         </Stack>
       );
@@ -701,11 +789,8 @@ export function WorkspaceSidebar({
         )),
       )}
       collectionFeedback={<CollectionStateFeedback request={agentDirectoryQuery.requestState} itemCount={agentRows.length} filtersActive={Boolean(filter.trim())} resourceLabel="Agents" emptyTitle="No Active Agents" noMatchTitle={"No Agents match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact />}
-      createLabel="Create Agent"
-      viewAllLabel="View All Agents"
-      viewAllIcon={<SmartToyOutlinedIcon />}
-      onViewAll={() => onNavigate({ kind: "allAgents" })}
-      onCreate={() => onCreate("agent", { projectId: activeProjectId ?? projects[0]?.id })}
+      sort={agentSort}
+      onSort={value => setResourceSort("agent", value, allAgentRows.map(row => row.agent.id), preferences.agentOrder)}
       drawer={drawer}
     />
   );
@@ -734,7 +819,7 @@ export function WorkspaceSidebar({
               onPreferences({
                 triggerSort: "custom",
                 triggerOrder: reorderStableIds(
-                  preferences.triggerOrder,
+                  triggerSort === "custom" ? preferences.triggerOrder : customOrderSeed(preferences.triggerOrder, triggerItems.map(item => item.trigger.id)),
                   triggerItems.map(item => item.trigger.id),
                   draggedResource.id,
                   trigger.id,
@@ -756,7 +841,7 @@ export function WorkspaceSidebar({
             detail={`${project.label} · ${targetAgent?.title ?? "Reassignment required"}`} icon={<BoltOutlinedIcon fontSize="small" />} starred={starred}
             selected={route.kind === "automation" && route.triggerId === trigger.id}
             onOpen={() => openTriggerManager(project.id, targetAgent?.id, trigger.id)} onStar={() => toggleStar("trigger", trigger.id)}
-            onMore={anchor => openResourceMenu(anchor, { kind: "automation", projectId: project.id, triggerId: trigger.id })}
+            onContextAction={anchor => openResourceMenu(anchor, { kind: "automation", projectId: project.id, triggerId: trigger.id })}
             status={<Box role="img" aria-label={trigger.enabled ? "Enabled" : "Disabled"} title={trigger.enabled ? "Enabled" : "Disabled"} sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: trigger.enabled ? "success.main" : "text.disabled" }} />} />
         </Stack>
       );
@@ -785,11 +870,8 @@ export function WorkspaceSidebar({
         ),
       )}
       collectionFeedback={<CollectionStateFeedback request={triggerDirectoryQuery.requestState} itemCount={filteredTriggers.length} filtersActive={Boolean(filter.trim())} resourceLabel="Automations" emptyTitle="No Automations Configured Yet" noMatchTitle="No configured Automations match" onClearFilters={() => setFilter("")} compact />}
-      createLabel="Create Automation"
-      viewAllLabel="View All Automations"
-      viewAllIcon={<BoltOutlinedIcon />}
-      onViewAll={() => onNavigate({ kind: "allTriggers" })}
-      onCreate={() => onCreate("trigger", { projectId: activeProjectId ?? projects[0]?.id })}
+      sort={triggerSort}
+      onSort={value => setResourceSort("trigger", value, triggerItems.map(item => item.trigger.id), preferences.triggerOrder)}
       drawer={drawer}
     />
   );
@@ -801,6 +883,24 @@ export function WorkspaceSidebar({
       onNavigate={onNavigate}
     />
   );
+  const menuRoute = menu?.resource.route;
+  const menuAgent = menuRoute?.kind === "agent"
+    ? [activeAgentRow, ...agentRows].find(item => item?.agent.id === menuRoute.agentId)
+    : undefined;
+  const menuTrigger = menuRoute?.kind === "automation"
+    ? triggerItems.find(item => item.trigger.id === menuRoute.triggerId)
+    : undefined;
+  const menuActions: ResourceContextMenuAction<{ route: Route; conversation?: ConversationDto }>[] =
+    menu?.resource.conversation ? [
+      { id: "rename", label: "Rename", onSelect: resource => onRenameConversation(resource.conversation!) },
+      { id: "delete", label: "Delete", color: "error", onSelect: resource => onDeleteConversation(resource.conversation!) },
+    ] : menuRoute?.kind === "agent" && menuAgent ? [
+      { id: "rename", label: "Rename", onSelect: () => setRenamingAgent(menuAgent.agent) },
+      { id: "delete", label: "Delete", color: "error", onSelect: () => setDeletingAgent(menuAgent.agent) },
+    ] : menuRoute?.kind === "automation" && menuTrigger ? [
+      { id: "rename", label: "Rename", onSelect: () => setTriggerAction({ kind: "rename", trigger: menuTrigger.trigger }) },
+      { id: "delete", label: "Delete", color: "error", onSelect: () => setTriggerAction({ kind: "delete", trigger: menuTrigger.trigger }) },
+    ] : [];
   const panel = showingSettings
         ? settingsPanel
         : showingAgents
@@ -810,12 +910,13 @@ export function WorkspaceSidebar({
             : showingTriggers
               ? triggersPanel
               : null;
-  const showPanel = Boolean(panel) &&
-    (drawer || !collapsed);
+  const showPanel = Boolean(panel);
   const { resizing, resizeStart } = useWorkspaceSidebarResize(
     width,
     onWidthChange,
   );
+
+  if (!drawer && collapsed) return null;
 
   return (
     <Box
@@ -823,35 +924,28 @@ export function WorkspaceSidebar({
       aria-label="Workspace navigation"
       sx={{
         position: "relative",
-        width: drawer
-          ? "min(92vw, 390px)"
-          : showPanel
-            ? width
-            : SIDEBAR_RAIL_WIDTH,
+        width: drawer ? "min(92vw, 390px)" : width,
         maxWidth: "100vw",
         height: "100%",
         alignSelf: "stretch",
         minHeight: 0,
         minWidth: 0,
         borderRight: 1,
-        borderColor: showPanel || drawer ? "divider" : "transparent",
+        borderColor: "divider",
         display: "grid",
-        gridTemplateColumns:
-          drawer ? "minmax(0, 1fr)" : !showPanel
-            ? `${SIDEBAR_RAIL_WIDTH}px`
-            : `${drawer ? 64 : SIDEBAR_RAIL_WIDTH}px minmax(0, 1fr)`,
-        gridTemplateRows: drawer ? "auto auto minmax(0, 1fr) auto" : undefined,
+        gridTemplateColumns: "minmax(0, 1fr)",
+        gridTemplateRows: "auto auto minmax(0, 1fr) auto",
         bgcolor: sidebarSurface,
         overflow: "hidden",
         transition:
           !drawer && !resizing
-            ? "width 180ms cubic-bezier(0.2, 0, 0, 1), grid-template-columns 180ms cubic-bezier(0.2, 0, 0, 1)"
+            ? "width 180ms cubic-bezier(0.2, 0, 0, 1)"
             : "none",
         "@media (prefers-reduced-motion: reduce)": { transition: "none" },
       }}
     >
       {rail}
-      {showPanel ? drawer ? <Box sx={{ gridRow: 3, minHeight: 0, minWidth: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>{panel}</Box> : panel : null}
+      {showPanel ? <Box sx={{ gridRow: 3, minHeight: 0, minWidth: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>{panel}</Box> : null}
       {!drawer && showPanel && onWidthChange ? (
         <Box
           role="separator"
@@ -891,28 +985,79 @@ export function WorkspaceSidebar({
         />
       ) : null}
       <ResourceContextMenu
-        state={menu}
+        state={menuActions.length ? menu : undefined}
         onClose={() => setMenu(undefined)}
-        actions={
-          menu?.resource.conversation
-            ? [
-                {
-                  id: "rename",
-                  label: "Rename",
-                  onSelect: resource =>
-                    onRenameConversation(resource.conversation!),
-                },
-                {
-                  id: "delete",
-                  label: "Delete",
-                  color: "error",
-                  onSelect: resource =>
-                    onDeleteConversation(resource.conversation!),
-                },
-              ]
-            : []
-        }
+        actions={menuActions}
       />
+      <TextInputDialog
+        open={Boolean(renamingAgent)}
+        title="Rename Agent"
+        label="Agent name"
+        initialValue={renamingAgent?.title ?? ""}
+        confirmLabel="Save"
+        pendingLabel="Saving…"
+        pending={renameAgent.isPending}
+        error={renameAgent.isError ? String(renameAgent.error) : undefined}
+        validate={value => value.trim() ? undefined : "Enter an Agent name."}
+        onCancel={() => {
+          renameAgent.reset();
+          setRenamingAgent(undefined);
+        }}
+        onConfirm={title => {
+          if (renamingAgent) renameAgent.mutate({ agent: renamingAgent, title: title.trim() });
+        }}
+      />
+      {deletingAgent ? <AgentDeletionDialog
+        open
+        projectId={deletingAgent.projectId}
+        rootAgentIds={[deletingAgent.id]}
+        onClose={() => setDeletingAgent(undefined)}
+        onDeleted={deletedAgentIds => {
+          setDeletingAgent(undefined);
+          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("trigger") });
+          if (route.kind === "agent" && deletedAgentIds.includes(route.agentId))
+            onNavigate({ kind: "home" });
+        }}
+      /> : null}
+      <TextInputDialog
+        open={triggerAction?.kind === "rename"}
+        title="Rename Automation"
+        label="Automation name"
+        initialValue={triggerAction?.trigger.name ?? ""}
+        confirmLabel="Save"
+        pendingLabel="Saving…"
+        pending={renameTrigger.isPending}
+        error={renameTrigger.isError ? String(renameTrigger.error) : undefined}
+        validate={value => value.trim() ? undefined : "Enter an Automation name."}
+        onCancel={() => {
+          renameTrigger.reset();
+          setTriggerAction(undefined);
+        }}
+        onConfirm={name => {
+          if (triggerAction?.kind === "rename")
+            renameTrigger.mutate({ trigger: triggerAction.trigger, name: name.trim() });
+        }}
+      />
+      <ResourceDeletionDialog
+        open={triggerAction?.kind === "delete"}
+        resourceType="Automation"
+        resourceName={triggerAction?.trigger.name}
+        pendingLabel="Deleting…"
+        pending={deleteTrigger.isPending}
+        error={deleteTrigger.isError ? String(deleteTrigger.error) : undefined}
+        onCancel={() => {
+          deleteTrigger.reset();
+          setTriggerAction(undefined);
+        }}
+        onConfirm={() => {
+          if (triggerAction?.kind === "delete") deleteTrigger.mutate(triggerAction.trigger);
+        }}
+      >
+        <Typography sx={{ pt: 1 }}>
+          Pending occurrences will be cancelled. Immutable occurrence history remains available.
+        </Typography>
+      </ResourceDeletionDialog>
       <TextInputDialog
         open={Boolean(renamingProject)}
         title="Rename Project"

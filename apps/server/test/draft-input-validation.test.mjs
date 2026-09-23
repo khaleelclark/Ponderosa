@@ -552,12 +552,15 @@ test("draft conflict routes restore or discard exactly one durable asset snapsho
   });
   assert.equal(discarded.statusCode, 200, discarded.body);
   assert.equal(discarded.json().replayed, false);
+  assert.equal(discarded.json().currentDraft.revision, 1);
+  assert.equal(discarded.json().currentDraft.text, "continue");
   const discardReplay = await app.inject({
     method: "DELETE",
     url: `/api/conversations/chat-a/draft-conflicts/${discardConflict.id}?ownerId=browser-one`,
   });
   assert.equal(discardReplay.statusCode, 200, discardReplay.body);
   assert.equal(discardReplay.json().replayed, true);
+  assert.equal(discardReplay.json().currentDraft.revision, 1);
 
   const restored = await app.inject({
     method: "POST",

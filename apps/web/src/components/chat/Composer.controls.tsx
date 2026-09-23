@@ -30,6 +30,7 @@ import type {
 } from "@ponderosa/core";
 import { type RefObject, useEffect, useState } from "react";
 import { isIOSDevice } from "../../browserPlatform";
+import type { ComposerMenuAction } from "./composerContracts";
 import { compactPreviewText } from "./Composer.helpers";
 import { ComposerMentionStatus } from "./Composer.parts";
 import {
@@ -293,6 +294,8 @@ export function ComposerCapabilityPicker({
   fileCount,
   assetLimits,
   capabilities,
+  menuActions,
+  buttonRef,
   visibleCapabilities,
   onFiles,
   onOpen,
@@ -310,6 +313,8 @@ export function ComposerCapabilityPicker({
   fileCount: number;
   assetLimits?: AssetLimitsDto;
   capabilities?: EngineComposerCapability[];
+  menuActions?: ComposerMenuAction[];
+  buttonRef?: RefObject<HTMLButtonElement>;
   visibleCapabilities: EngineComposerCapability[];
   onFiles(files: File[]): void;
   onOpen(anchor: HTMLElement): void;
@@ -361,6 +366,7 @@ export function ComposerCapabilityPicker({
       <Tooltip title={mobile ? "" : "Add an image, file, skill, plugin, or connector"}>
         <span>
           <IconButton
+            ref={buttonRef}
             aria-label="Add attachment or capability"
             aria-haspopup="menu"
             aria-expanded={Boolean(menuAnchor)}
@@ -448,6 +454,25 @@ export function ComposerCapabilityPicker({
                   </Typography>}
                 </Box>
               </MenuItem>}
+              {!browseCapabilities && menuActions?.map(action => <MenuItem
+                key={action.id}
+                disabled={action.disabled}
+                onClick={() => {
+                  const trigger = menuAnchor;
+                  onClose();
+                  trigger?.focus({ preventScroll: true });
+                  action.onSelect();
+                }}
+                sx={{ minHeight: mobile ? 48 : 46, gap: 1, whiteSpace: "normal" }}
+              >
+                {action.icon ? <Box aria-hidden sx={{ display: "flex", color: "text.secondary" }}>{action.icon}</Box> : null}
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography variant="body2">{action.label}</Typography>
+                  {action.description ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", overflowWrap: "anywhere" }}>
+                    {action.description}
+                  </Typography> : null}
+                </Box>
+              </MenuItem>)}
               {mobile && !browseCapabilities && <MenuItem sx={{ minHeight: 48 }} onClick={() => setBrowseCapabilities(true)}>Skills &amp; connectors</MenuItem>}
               {!mobile && <Divider />}
               {showCapabilities && ((capabilities ?? []).length === 0 ? (

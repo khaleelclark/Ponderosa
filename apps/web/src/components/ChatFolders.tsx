@@ -1,28 +1,33 @@
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, List, ListItemButton, ListItemText, Menu, MenuItem, Paper, Popper, Stack, TextField, Typography, useMediaQuery } from "@mui/material";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
-import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
+import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
+import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
-import type { ChatFolderDto, ConversationDto, WorkspaceConversationDirectoryItemDto } from "@ponderosa/core";
+import type { ChatFolderDto, ConversationDto, ProjectSort, WorkspaceConversationDirectoryItemDto } from "@ponderosa/core";
 import { TextInputDialog } from "./ConfirmationDialogs";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
+import { starColor } from "./WorkspaceSidebar.helpers";
+import { sortChatFolderMembers, sortChatFolders } from "../resourcePreferences";
 
 type Item = WorkspaceConversationDirectoryItemDto;
 const dragType = "application/x-ponderosa-chat";
 
 /** Folders only store conversation IDs; all chat actions retain their original scope. */
-export function ChatFolders({ items, openItems = [], folders, starredIds, filtering, renderRow, onChange, onRename, onDelete, onReorder, children }: {
-  items: Item[]; folders: ChatFolderDto[]; starredIds: ReadonlySet<string>; filtering: boolean;
+export function ChatFolders({ items, openItems = [], folders, sort, starredIds, filtering, renderRow, onChange, onRename, onDelete, onReorder, children }: {
+  items: Item[]; folders: ChatFolderDto[]; sort: ProjectSort; starredIds: ReadonlySet<string>; filtering: boolean;
   openItems?: Item[];
   renderRow(item: Item): ReactNode;
-  onChange(folders: ChatFolderDto[]): void;
+  onChange(folders: ChatFolderDto[], customOrder?: boolean): void;
   onRename(conversation: ConversationDto): void; onDelete(conversation: ConversationDto): void;
-  onReorder(source: string, target: string, position: "before" | "after"): void;
+  onReorder(source: string, target: string, position: "before" | "after", folders?: ChatFolderDto[]): void;
   children(rows: { starredRows: ReactNode; allRows: ReactNode; openRows: ReactNode }): ReactNode;
 }) {
   const [dragged, setDragged] = useState<string>();
+  const [draggedFolder, setDraggedFolder] = useState<string>();
   const [target, setTarget] = useState<{ id: string; zone: "group" | "before" | "after" }>();
+  const [folderTarget, setFolderTarget] = useState<{ id: string; position: "before" | "after" }>();
   const [menu, setMenu] = useState<{ anchor: HTMLElement; item?: Item; folder?: ChatFolderDto }>();
   const [renaming, setRenaming] = useState<ChatFolderDto>();
   const [moving, setMoving] = useState<Item>();
@@ -58,12 +63,24 @@ export function ChatFolders({ items, openItems = [], folders, starredIds, filter
     if (existing) move(source, existing.id);
     else onChange([...remove(source), { id: crypto.randomUUID(), name: "New folder", expanded: true, conversationIds: [destination, source] }]);
   };
+  const toggleFolderStar = (id: string) =>
+    onChange(folders.map(folder => folder.id === id ? { ...folder, starred: !folder.starred } : folder));
   const zone = (event: DragEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     const ratio = (event.clientY - rect.top) / rect.height;
     return ratio < .25 ? "before" : ratio > .75 ? "after" : "group";
   };
-  const endDrag = () => { setDragged(undefined); setTarget(undefined); };
+  const endDrag = () => { setDragged(undefined); setTarget(undefined); setDraggedFolder(undefined); setFolderTarget(undefined); };
+  const reorderFolder = (source: string, targetId: string, position: "before" | "after") => {
+    if (source === targetId) return;
+    const displayed = sortChatFolders(folders, items, sort);
+    const next = displayed.filter(folder => folder.id !== source);
+    const sourceFolder = displayed.find(folder => folder.id === source);
+    const targetIndex = next.findIndex(folder => folder.id === targetId);
+    if (!sourceFolder || targetIndex < 0) return;
+    next.splice(targetIndex + (position === "after" ? 1 : 0), 0, sourceFolder);
+    onChange(next, true);
+  };
   const action = (run: () => void) => { closeMenu(); run(); };
   const row = (item: Item) => {
     const id = item.conversation.id;
@@ -80,11 +97,13 @@ export function ChatFolders({ items, openItems = [], folders, starredIds, filter
             const destination = folderFor(id);
             if (destination) onChange(remove(dragged).map(folder => {
               if (folder.id !== destination.id) return folder;
-              const members = [...folder.conversationIds];
+              const visible = sortChatFolderMembers(folder, items, sort).map(item => item.conversation.id);
+              const visibleIds = new Set(visible);
+              const members = sort === "custom" ? [...folder.conversationIds] : [...visible, ...folder.conversationIds.filter(member => !visibleIds.has(member))];
               members.splice(members.indexOf(id) + (position === "after" ? 1 : 0), 0, dragged);
               return { ...folder, conversationIds: members };
-            }));
-            else { if (folderFor(dragged)) onChange(remove(dragged)); onReorder(dragged, id, position); }
+            }), true);
+            else onReorder(dragged, id, position, folderFor(dragged) ? remove(dragged) : undefined);
           }
         }
         endDrag();
@@ -97,44 +116,63 @@ export function ChatFolders({ items, openItems = [], folders, starredIds, filter
           [target.zone === "before" ? "top" : "bottom"]: 0, height: 2, bgcolor: "primary.main", pointerEvents: "none" } : undefined,
         display: "flex", alignItems: "center", "& > .chat-row-content": { flex: 1, minWidth: 0 } }}>
       <Box className="chat-row-content">{renderRow(item)}</Box>
-      <IconButton size="small" aria-label={`Chat actions for ${item.conversation.title}`} onClick={event => setMenu({ anchor: event.currentTarget, item })}
-        sx={{ width: { xs: 44, sm: 28 }, minWidth: { xs: 44, sm: 28 }, height: { xs: 44, sm: 28 }, minHeight: { xs: 44, sm: 28 }, flexShrink: 0 }}><MoreHorizIcon fontSize="small" /></IconButton>
     </Box>;
   };
   const grouped = new Set(folders.flatMap(folder => folder.conversationIds));
   const ungrouped = items.filter(item => !grouped.has(item.conversation.id));
   const starred = (item: Item) => starredIds.has(`conversation:${item.conversation.id}`);
-  const folderRows = folders.map(folder => {
-    const byId = new Map(items.map(item => [item.conversation.id, item]));
-    const members = folder.conversationIds.flatMap(id => byId.has(id) ? [byId.get(id)!] : []);
-    if (!folder.conversationIds.length || (filtering && !members.length)) return null;
+  const byId = new Map(items.map(item => [item.conversation.id, item]));
+  const visibleFolders = sortChatFolders(folders.filter(folder => folder.conversationIds.length &&
+    (!filtering || folder.conversationIds.some(id => byId.has(id)))), items, sort);
+  const folderRow = (folder: ChatFolderDto) => {
+    const members = sortChatFolderMembers(folder, items, sort);
     const expanded = filtering || folder.expanded;
     const active = members.some(item => (item.runningAgentCount ?? 0) > 0);
-    return <Box key={folder.id} sx={{ minWidth: 0, mb: .5 }}>
-      <Stack direction="row" onDragOver={event => { if (dragged) { event.preventDefault(); setTarget({ id: folder.id, zone: "group" }); } }}
-        onDrop={event => { event.preventDefault(); event.stopPropagation(); if (dragged) move(dragged, folder.id); endDrag(); }}
+    return <Box key={folder.id} sx={{ minWidth: 0, mt: .5, mb: 1 }}>
+      <Stack direction="row" draggable
+        onDragStart={event => { setDraggedFolder(folder.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-ponderosa-chat-folder", folder.id); }}
+        onDragEnd={endDrag}
+        onDragOver={event => {
+          if (draggedFolder && draggedFolder !== folder.id) {
+            event.preventDefault();
+            setFolderTarget({ id: folder.id, position: event.clientY < event.currentTarget.getBoundingClientRect().top + event.currentTarget.clientHeight / 2 ? "before" : "after" });
+          } else if (dragged) { event.preventDefault(); setTarget({ id: folder.id, zone: "group" }); }
+        }}
+        onDrop={event => {
+          event.preventDefault(); event.stopPropagation();
+          if (draggedFolder && draggedFolder !== folder.id) reorderFolder(draggedFolder, folder.id, event.clientY < event.currentTarget.getBoundingClientRect().top + event.currentTarget.clientHeight / 2 ? "before" : "after");
+          else if (dragged) move(dragged, folder.id);
+          endDrag();
+        }}
         onContextMenu={event => { event.preventDefault(); setMenu({ anchor: event.currentTarget, folder }); }}
-        sx={{ borderRadius: 1, outline: target?.id === folder.id ? "2px solid" : "none", outlineColor: "info.main" }}>
+        sx={{ borderRadius: 1, outline: target?.id === folder.id ? "2px solid" : "none", outlineColor: "info.main",
+          ...(folderTarget?.id === folder.id ? { borderTop: folderTarget.position === "before" ? 2 : 0, borderBottom: folderTarget.position === "after" ? 2 : 0, borderColor: "primary.main" } : {}),
+          "@media (hover: hover) and (pointer: fine)": { "& .sidebar-secondary": { opacity: 0 }, "&:hover .sidebar-secondary, &:focus-within .sidebar-secondary": { opacity: 1 } } }}>
         <ListItemButton aria-label={`Folder ${folder.name}`} aria-expanded={expanded}
           onClick={() => onChange(folders.map(value => value.id === folder.id ? { ...value, expanded: !folder.expanded } : value))}
           onKeyDown={event => { if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) { event.preventDefault(); setMenu({ anchor: event.currentTarget, folder }); } }}
           sx={{ px: .5, py: 0, minWidth: 0, minHeight: { xs: 44, sm: 34 }, gap: .75 }}>
           {expanded ? <KeyboardArrowDownIcon fontSize="small" /> : <KeyboardArrowRightIcon fontSize="small" />}
           <FolderOutlinedIcon fontSize="small" sx={{ color: "info.main" }} />
-          <ListItemText primary={folder.name} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 650 }} sx={{ minWidth: 0 }} />
+          <ListItemText primary={folder.name} primaryTypographyProps={{ noWrap: true, fontSize: 12.5, fontWeight: 750, letterSpacing: ".015em" }} sx={{ minWidth: 0 }} />
           {active ? <AgentStatusIndicator status="running" /> : null}
           {!active && !filtering && members.length < folder.conversationIds.length ? <Typography component="span" role="img" aria-label="Activity not yet available" variant="caption">?</Typography> : null}
           <Typography variant="caption" color="text.secondary">{folder.conversationIds.length}</Typography>
         </ListItemButton>
-        <IconButton size="small" aria-label={`Folder actions for ${folder.name}`} onClick={event => setMenu({ anchor: event.currentTarget, folder })}
-          sx={{ width: { xs: 44, sm: 28 }, minWidth: { xs: 44, sm: 28 }, height: { xs: 44, sm: 34 }, minHeight: { xs: 44, sm: 34 }, flexShrink: 0 }}><MoreHorizIcon fontSize="small" /></IconButton>
+        <IconButton className={folder.starred ? undefined : "sidebar-secondary"} size="small"
+          aria-label={`${folder.starred ? "Unstar" : "Star"} folder ${folder.name}`}
+          onClick={() => toggleFolderStar(folder.id)}
+          sx={{ width: { xs: 44, sm: 32 }, minWidth: { xs: 44, sm: 32 }, height: { xs: 44, sm: 32 }, minHeight: { xs: 44, sm: 32 }, flexShrink: 0 }}>
+          {folder.starred ? <StarRoundedIcon fontSize="small" sx={{ color: starColor }} /> : <StarBorderRoundedIcon fontSize="small" />}
+        </IconButton>
       </Stack>
       {expanded ? <Box sx={{ pl: 1.5, borderLeft: 1, borderColor: "divider", ml: 1.5 }}>
         {members.map(row)}
         {!filtering && members.length < folder.conversationIds.length ? <Typography sx={{ p: 1 }} variant="caption" color="text.secondary">More chats in this folder may appear as you load the list.</Typography> : null}
       </Box> : null}
     </Box>;
-  });
+  };
+  const folderRows = visibleFolders.map(folderRow);
   const pickerContent = <>
     <TextField id="move-folder-search" autoFocus={!moveAnchor} fullWidth size="small" label="Search folders" value={folderSearch} onChange={event => setFolderSearch(event.target.value)} sx={{ mt: .5 }} />
     <List sx={{ mt: 1, maxHeight: "min(45dvh, 320px)", overflowY: "auto", overflowX: "hidden" }}>
@@ -145,7 +183,7 @@ export function ChatFolders({ items, openItems = [], folders, starredIds, filter
     </List>
   </>;
   return <>
-    {children({ openRows: openItems.map(row), starredRows: items.filter(starred).map(row), allRows: <>{folderRows}{ungrouped.filter(item => !starred(item)).map(row)}</> })}
+    {children({ openRows: openItems.map(row), starredRows: [...visibleFolders.filter(folder => folder.starred).map(folderRow), ...items.filter(starred).map(row)], allRows: <>{folderRows}{ungrouped.filter(item => !starred(item)).map(row)}</> })}
     <Menu open={Boolean(menu)} anchorEl={menu?.anchor} onClose={closeMenu} disableEnforceFocus={Boolean(moveAnchor)}>
       {menu?.item ? [
         <MenuItem key="rename" onClick={() => action(() => onRename(menu.item!.conversation))}>Rename</MenuItem>,

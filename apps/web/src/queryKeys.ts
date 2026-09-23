@@ -107,6 +107,7 @@ export const queryKeys = {
   },
   agents: {
     all: ["agents"] as const,
+    allChat: ["agents", "all-chat"] as const,
     project: (projectId: string | undefined) => ["agents", projectId] as const,
     detailAll: ["agent"] as const,
     detailPrefix: (agentId: string) => ["agent", agentId] as const,

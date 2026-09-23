@@ -6,6 +6,23 @@ import type {
 } from "./coordination-v3-types.js";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 
+function deliveryRuntime(payloadJson: string): MessageDeliveryReceiptDto["runtime"] {
+  try {
+    const payload = JSON.parse(payloadJson) as { dispatch?: Record<string, unknown> };
+    const dispatch = payload.dispatch;
+    if (!dispatch) return undefined;
+    const runtime = Object.fromEntries(
+      ["engine", "model", "effort", "speed"].flatMap(key => {
+        const value = dispatch[key];
+        return typeof value === "string" && value.trim() ? [[key, value.trim()]] : [];
+      }),
+    );
+    return Object.keys(runtime).length ? runtime : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export class CoordinationV3RuntimeCommunicationReadModel {
   constructor(
     private readonly sqlite: Database.Database,
@@ -494,9 +511,11 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         else if (activation.state === "attached") state = "preparing";
         else if (activation.state === "retry_pending") state = "retrying";
         else state = "queued";
+        const runtime = deliveryRuntime(activation.payload_json);
         return {
           activationId: activation.id,
           targetAgentId: activation.agent_id,
+          ...(runtime ? { runtime } : {}),
           ...(injection?.execution_id ? { executionId: injection.execution_id } : {}),
           ...(recoveryInjection?.execution_id
             ? { recoveryExecutionId: recoveryInjection.execution_id }

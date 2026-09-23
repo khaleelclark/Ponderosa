@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { startBrowserService, BrowserServiceClient } from '../dist/browser-service.js';
+import { BrowserDriverActionError } from '../dist/chrome-cdp-driver.js';
 import { BrowserSessionManager } from '../dist/browser-session-manager.js';
 import { AgentStore } from '@ponderosa/agents';
 import { createServer } from '../dist/app.js';
@@ -25,7 +26,7 @@ test('supervised browser survives application shutdown with draft intact and sta
   const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
   try {
     const firstClient = new BrowserServiceClient(socket); await firstClient.claim();
-    const first = new BrowserSessionManager(root, (id, _console, _spawned, event, launch) => firstClient.driver(id, event, launch), () => {});
+    const first = new BrowserSessionManager(root, (id, _console, _spawned, event, launch) => firstClient.driver(id, event, launch), () => {}, undefined, undefined, () => true, true);
     const opened = await first.open(scope, undefined, 'operator', undefined, true);
     await first.operatorInput(scope, { kind: 'type', text: 'unsaved draft', expectedControlEpoch: opened.controlEpoch });
     await first.closeAll('deployment_drain');
@@ -36,7 +37,7 @@ test('supervised browser survives application shutdown with draft intact and sta
     assert.equal(closed, 0);
     const nextClient = new BrowserServiceClient(socket);
     const ids = await nextClient.claim();
-    const next = new BrowserSessionManager(root, () => assert.fail('must not launch'), () => {});
+    const next = new BrowserSessionManager(root, () => assert.fail('must not launch'), () => {}, undefined, undefined, () => true, true);
     await next.restoreRetained(ids, (id, _console, _spawned, event) => nextClient.driver(id, event, undefined, true));
     const restored = next.get(scope.agentId);
     assert.equal(restored.id, opened.id);
@@ -64,7 +65,7 @@ test('a new application waits for an opening browser to be safely fenced', async
   try {
     const first = new BrowserServiceClient(socket); await first.claim();
     const opening = first.driver(randomUUID());
-    const rejected = assert.rejects(opening, /lease changed/);
+    const rejected = assert.rejects(opening, /lease changed|cancelled/);
     await started;
     const next = new BrowserServiceClient(socket);
     const claimed = next.claim();
@@ -73,6 +74,120 @@ test('a new application waits for an opening browser to be safely fenced', async
     assert.equal(closed, 1);
     await assert.rejects(startBrowserService(socket, root, async () => assert.fail()), /already running/);
   } finally { release(); await service.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('deployment drain cancels and joins a stalled shared-browser broker opening', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-service-drain-'));
+  const socket = path.join(root, 'service.sock');
+  let release, began, aborted, closed = 0;
+  const started = new Promise(resolve => { began = resolve; });
+  const cancelled = new Promise(resolve => { aborted = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const service = await startBrowserService(socket, root, async (_id, _console, _spawned, _event, launch) => {
+    assert.ok(launch?.signal, 'broker factory receives the application launch signal');
+    launch.signal.addEventListener('abort', aborted, { once: true });
+    began();
+    await gate;
+    return {
+      isAlive: () => true,
+      pages: async () => ({ pages: [] }),
+      close: async () => { closed++; },
+    };
+  });
+  const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
+  try {
+    const client = new BrowserServiceClient(socket); await client.claim();
+    const manager = new BrowserSessionManager(root,
+      (id, _console, _spawned, event, launch) => client.driver(id, event, launch),
+      () => {}, undefined, undefined, () => true, true);
+    const opening = manager.open(scope, undefined, 'operator', undefined, true);
+    const rejected = assert.rejects(opening, /cancelled|closed/i);
+    await started;
+    let drained = false;
+    const draining = manager.closeAll('deployment_drain').then(() => { drained = true; });
+    await cancelled;
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(drained, false, 'drain waits for broker-side factory settlement');
+    release();
+    await rejected;
+    await draining;
+    assert.equal(closed, 1, 'late broker publication is closed before drain completes');
+    assert.deepEqual(manager.authorityStatus(true), { openings: 0, active: 0, pendingCleanup: 0, retainedFailures: 0 });
+    assert.deepEqual(manager.authorityBlockers('project_browser', true), []);
+    const replacement = new BrowserServiceClient(socket);
+    assert.deepEqual(await replacement.claim(), [], 'replacement application does not inherit the cancelled opening');
+  } finally {
+    release?.();
+    await service.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('deployment drain remains blocked until repeated broker cleanup succeeds', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-service-cleanup-retry-'));
+  const socket = path.join(root, 'service.sock');
+  let releaseFactory, began, aborted, secondCloseBegan, releaseSecondClose, closeAttempts = 0;
+  const started = new Promise(resolve => { began = resolve; });
+  const cancelled = new Promise(resolve => { aborted = resolve; });
+  const factoryGate = new Promise(resolve => { releaseFactory = resolve; });
+  const atSecondClose = new Promise(resolve => { secondCloseBegan = resolve; });
+  const secondCloseGate = new Promise(resolve => { releaseSecondClose = resolve; });
+  const service = await startBrowserService(socket, root, async (_id, _console, _spawned, _event, launch) => {
+    assert.ok(launch?.signal);
+    launch.signal.addEventListener('abort', aborted, { once: true });
+    began();
+    await factoryGate;
+    return {
+      isAlive: () => true,
+      pages: async () => ({ pages: [] }),
+      close: async () => {
+        closeAttempts++;
+        if (closeAttempts === 1) throw new Error('injected broker cleanup failure one');
+        if (closeAttempts === 2) {
+          secondCloseBegan();
+          await secondCloseGate;
+          throw new Error('injected broker cleanup failure two');
+        }
+      },
+    };
+  });
+  const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
+  try {
+    const client = new BrowserServiceClient(socket); await client.claim();
+    const manager = new BrowserSessionManager(root,
+      (id, _console, _spawned, event, launch) => client.driver(id, event, launch),
+      () => {}, undefined, undefined, () => true, true);
+    const opening = manager.open(scope, undefined, 'operator', undefined, true);
+    const rejected = assert.rejects(opening, /cancelled|closed/i);
+    await started;
+    let drained = false;
+    const draining = manager.closeAll('deployment_drain').then(() => { drained = true; });
+    await cancelled;
+    releaseFactory();
+    await atSecondClose;
+    assert.equal(drained, false, 'application drain remains blocked after repeated broker cleanup failure');
+    assert.ok(manager.authorityBlockers('project_browser', true).some(blocker => blocker.reason.includes('launch opening')));
+    const sessionId = manager.get(scope.agentId).id;
+    await assert.rejects(client.driver(sessionId, undefined, undefined, true), /unavailable/i,
+      'the current lease cannot adopt a cancelled entry while cleanup is pending');
+    const replacement = new BrowserServiceClient(socket);
+    let claimed = false;
+    const claim = replacement.claim().then(ids => { claimed = true; return ids; });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(claimed, false, 'replacement claim joins the retained cleanup obligation');
+    releaseSecondClose();
+    await rejected;
+    await draining;
+    assert.deepEqual(await claim, []);
+    assert.equal(closeAttempts, 3);
+    assert.deepEqual(manager.authorityStatus(true), { openings: 0, active: 0, pendingCleanup: 0, retainedFailures: 0 });
+    assert.deepEqual(manager.authorityBlockers('project_browser', true), []);
+  } finally {
+    releaseFactory?.();
+    releaseSecondClose?.();
+    await service.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('broker refuses replacement, unsupported methods, and reuse of an in-use profile', async () => {
@@ -99,10 +214,10 @@ test('missing retained browser is shown as failed without silently starting a re
   const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
   try {
     const client = new BrowserServiceClient(socket); await client.claim();
-    const first = new BrowserSessionManager(root, (id, _console, _spawned, event, launch) => client.driver(id, event, launch), () => {});
+    const first = new BrowserSessionManager(root, (id, _console, _spawned, event, launch) => client.driver(id, event, launch), () => {}, undefined, undefined, () => true, true);
     const opened = await first.open(scope, undefined, 'operator', undefined, true);
     await first.closeAll('server_shutdown');
-    const next = new BrowserSessionManager(root, () => assert.fail('must not replace'), () => {});
+    const next = new BrowserSessionManager(root, () => assert.fail('must not replace'), () => {}, undefined, undefined, () => true, true);
     await next.restoreRetained([], () => assert.fail('must not adopt missing browser'));
     assert.equal(next.get(scope.agentId).id, opened.id);
     assert.equal(next.get(scope.agentId).status, 'failed');
@@ -155,4 +270,79 @@ test('full server shutdown and startup reconnect the shared browser without inhe
     if (previous === undefined) delete process.env.PONDEROSA_BROWSER_SERVICE_SOCKET; else process.env.PONDEROSA_BROWSER_SERVICE_SOCKET = previous;
     await service.close(); await rm(root, { recursive: true, force: true });
   }
+});
+
+test('browser-service action reasons remain typed through IPC so stale pages are not HTTP 500s', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-service-errors-'));
+  const socket = path.join(root, 'service.sock');
+  const service = await startBrowserService(socket, root, async () => ({
+    isAlive: () => true, manualState: () => 'automation',
+    pages: async () => ({ activePageId: 'current', pages: [{ pageId: 'current', url: 'about:blank', title: 'Blank', active: true }] }),
+    closePage: async () => { throw new BrowserDriverActionError('page_not_found'); },
+    close: async () => {}, cancelPendingFileChooser: async () => {},
+  }));
+  const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
+  try {
+    const client = new BrowserServiceClient(socket); await client.claim();
+    const manager = new BrowserSessionManager(root, (id, _console, _spawned, event, launch) => client.driver(id, event, launch), () => {});
+    const session = await manager.open(scope, undefined, 'operator', undefined, true);
+    await assert.rejects(manager.closePage(scope, 'stale', 'operator', session.controlEpoch), error => {
+      assert.equal(error.statusCode, 404);
+      assert.match(error.message, /page not found/i);
+      return true;
+    });
+    await manager.close(scope);
+  } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('snapshot requests fail promptly while Chrome approval occupies a browser queue', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-approval-queue-'));
+  const socket = path.join(root, 'service.sock');
+  let manual = 'manual', release, began, inspections = 0;
+  const started = new Promise(resolve => { began = resolve; });
+  const approval = new Promise(resolve => { release = resolve; });
+  const service = await startBrowserService(socket, root, async () => ({
+    isAlive: () => true, manualState: () => manual,
+    resumeAutomation: async () => { manual = 'connecting'; began(); await approval; manual = 'automation'; },
+    inspect: async () => { inspections++; return 'fixture'; },
+    close: async () => {},
+  }));
+  try {
+    const client = new BrowserServiceClient(socket); await client.claim();
+    const driver = await client.driver(randomUUID());
+    const connecting = driver.resumeAutomation();
+    await started;
+    const before = Date.now();
+    await assert.rejects(driver.inspect(), /manual control|approval/i);
+    assert.ok(Date.now() - before < 1000, 'inspect is not queued behind the approval handshake');
+    assert.equal(inspections, 0);
+    release(); await connecting;
+    assert.equal(await driver.inspect(), 'fixture');
+    await driver.close();
+  } finally { release?.(); await service.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('an admitted Agent action is discarded if manual takeover occurs before execution', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-manual-fence-'));
+  const socket = path.join(root, 'service.sock');
+  let manual = 'automation', release, began, inspections = 0;
+  const started = new Promise(resolve => { began = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const service = await startBrowserService(socket, root, async () => ({
+    isAlive: () => true, manualState: () => manual,
+    pages: async () => { began(); await gate; return { pages: [] }; },
+    inspect: async () => { inspections++; return 'fixture'; },
+    close: async () => {},
+  }));
+  try {
+    const client = new BrowserServiceClient(socket); await client.claim();
+    const driver = await client.driver(randomUUID());
+    const occupied = driver.pages(); await started;
+    const queued = assert.rejects(driver.inspect(), /manual control|approval/i);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    manual = 'manual'; release();
+    await occupied; await queued;
+    assert.equal(inspections, 0);
+    await driver.close();
+  } finally { release?.(); await service.close(); await rm(root, { recursive: true, force: true }); }
 });

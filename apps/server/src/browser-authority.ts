@@ -10,6 +10,7 @@ import type { ActiveRun } from "./app-contracts.js";
 import type { ProviderProcessAuthority } from "./provider-process-authority.js";
 import { BrowserProfileAuthority } from "./browser-profile-authority.js";
 import { BrowserServiceClient } from "./browser-service.js";
+import { recoverBrowserResidue } from "./browser-session-residue.js";
 
 interface BrowserAuthorityContext {
   dataDir: string;
@@ -290,6 +291,10 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
 
   return {
     restoreSharedBrowsers: async () => {
+      // Recovery is an awaited startup obligation. Starting it from each
+      // manager constructor allowed it to recreate residue directories after
+      // teardown had already removed the data root.
+      await recoverBrowserResidue(dataDir);
       if (service) await projectBrowserSessions.restoreRetained(await service.claim(), (id, _console, _spawned, event) => service.driver(id, event, undefined, true), dto => {
         // Profile promotion commits before its projection checkpoint. Recover
         // ownership from that transaction if the app stopped between the two.

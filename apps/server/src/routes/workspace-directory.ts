@@ -4,6 +4,7 @@ import type {
   AgentDto,
   AgentHealthDto,
   AgentHealthProjectionDto,
+  AgentRunStatus,
   ProjectDto,
   ProjectSort,
   WorkspaceAgentDirectoryItemDto,
@@ -521,6 +522,9 @@ const WORKING_AGENT_STATUSES = new Set<AgentHealthDto["status"]>([
   "running", "waiting", "preparing", "compacting", "blocked",
   "stalled", "interrupted", "needs_decision",
 ]);
+const FINISHED_ASSIGNED_WORK_STATUSES = new Set<AgentRunStatus>([
+  "completed", "failed", "cancelled",
+]);
 
 function workspaceAgentHealth(
   context: WorkspaceDirectoryRoutesContext,
@@ -571,7 +575,8 @@ function workspaceAgentHealth(
     .map(health => health.agentId);
   const outcomes = [...byId.values()]
     .filter((health): health is AgentHealthDto & { assignedWorkOutcome: NonNullable<AgentHealthDto["assignedWorkOutcome"]> } =>
-      Boolean(health.assignedWorkOutcome))
+      health.assignedWorkOutcome !== undefined &&
+      FINISHED_ASSIGNED_WORK_STATUSES.has(health.assignedWorkOutcome.status))
     .sort((left, right) =>
       right.assignedWorkOutcome.updatedAt.localeCompare(left.assignedWorkOutcome.updatedAt) ||
       left.agentId.localeCompare(right.agentId))

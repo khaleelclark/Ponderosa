@@ -17,10 +17,10 @@ test("chat folders validate, conflict safely, persist, and leave Project folders
     const send=(chatFolders,chatFoldersRevision=workspace.getPreferences().revision)=>app.inject({method:"PATCH",url:"/api/workspace/preferences",payload:{chatFolders,chatFoldersRevision}});
     assert.equal((await send([folder])).statusCode,200);
     const stale=workspace.getPreferences().revision;
-    const concurrent=[{...folder,conversationIds:["A","B"]}];
+    const concurrent=[{...folder,conversationIds:["A","B"],starred:true}];
     assert.equal((await send(concurrent)).statusCode,200);
     assert.equal((await send([],stale)).statusCode,409);
-    for(const invalid of [null,{},[null],[{...folder,name:""}],[{...folder,conversationIds:["A","A"]}],[folder,{...folder,id:"g"}],[{...folder,expanded:"yes"}]]) {
+    for(const invalid of [null,{},[null],[{...folder,name:""}],[{...folder,conversationIds:["A","A"]}],[folder,{...folder,id:"g"}],[{...folder,expanded:"yes"}],[{...folder,starred:"yes"}]]) {
       assert.equal((await send(invalid)).statusCode,400);
       assert.deepEqual(workspace.getPreferences().chatFolders,concurrent);
     }

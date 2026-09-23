@@ -14,7 +14,7 @@ test('native manual browser uses a private desktop socket, blocks automation and
   try {
     driver = await createNativeHostedBrowser('/usr/bin/google-chrome', join(root, 'profile'), () => {}, handle => handles.push(handle), () => {}, {});
     assert.equal(driver.manualState(), 'manual');
-    assert.equal(handles.length, 3);
+    assert.equal(handles.length, 4, 'Xvfb, Chrome, writable display and read-only display are all supervised');
     assert.ok(handles.every(handle => handle.terminationAuthority === driver.terminationAuthority));
     const socketPath = driver.manualSocket();
     assert.equal((await stat(socketPath)).mode & 0o777, 0o600);

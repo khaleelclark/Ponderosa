@@ -48,6 +48,7 @@ import {
   composerRecipientGateSatisfied,
   composerPreparedRetryAction,
   composerDurableRetryAction,
+  composerShouldSeedContinuationDestination,
   composerSubmissionMayClearDraft,
   draftContentRetryStillOwned,
   draftWriteContinuationStillOwned,
@@ -937,6 +938,24 @@ test("a settled send clears only its exact unchanged draft identity", () => {
     composerSubmissionMayClearDraft({ ...owned, stillOwnsDraft: false }),
     false,
   );
+});
+
+test("a retained reply destination blocks duplicate continuation seeding after send", () => {
+  const refreshedReply = {
+    previousSelectionKey: "carlsbad:agent-message",
+    nextSelectionKey: "carlsbad:sent-message",
+    localText: "",
+    editorText: "",
+  };
+  assert.equal(composerShouldSeedContinuationDestination({
+    ...refreshedReply,
+    retainedSelectionKey: "agent:carlsbad:Carlsbad",
+  }), false);
+  assert.equal(composerShouldSeedContinuationDestination(refreshedReply), true);
+  assert.equal(composerShouldSeedContinuationDestination({
+    ...refreshedReply,
+    localText: "draft in progress",
+  }), false);
 });
 
 test("failed draft retry loses ownership on remove, replace, or surface change", () => {

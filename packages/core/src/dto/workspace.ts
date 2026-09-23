@@ -18,6 +18,8 @@ export interface ChatFolderDto {
   name: string;
   conversationIds: string[];
   expanded: boolean;
+  /** A starred folder is also shown in the Chats sidebar's Starred section. */
+  starred?: boolean;
 }
 
 export interface ProjectFolderDto {
@@ -455,6 +457,11 @@ export interface DecisionDto {
     targetAgentIds: string[];
     previewHash?: string;
     scopeHash: string;
+  } | {
+    kind: "saved_browser";
+    profileId: string;
+    projectId: string;
+    agentId: string;
   };
   status: "pending" | "resolved" | "cancelled";
   response?: { optionId?: string; text?: string; respondedAt: string };
@@ -840,6 +847,17 @@ export interface ReadinessDto {
     browserAuthorities: number;
     pendingCleanupOperations: number;
     retainedTeardownFailures: number;
+    /** Bounded, credential-free identities for authorities preventing restart. */
+    blockers: Array<{
+      kind: "run" | "provider" | "run_browser" | "project_browser" | "browser_residue" | "project_cleanup" | "agent_cleanup";
+      reason: string;
+      id?: string;
+      projectId?: string;
+      agentId?: string;
+      runId?: string;
+      sessionId?: string;
+      status?: string;
+    }>;
   };
   checks: {
     daemon: ReadinessCheckDto;

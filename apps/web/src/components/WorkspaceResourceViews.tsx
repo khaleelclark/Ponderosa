@@ -4,7 +4,7 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
-import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
@@ -37,6 +37,7 @@ import { AgentsTab } from "./AgentsTab";
 import { mergeAgentStatuses } from "../agents";
 import {
   CollectionDirectoryControls,
+  CollectionSortButton,
   CollectionStateFeedback,
   CollectionTimestamp,
   CollectionToolbar,
@@ -85,7 +86,8 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
         : undefined
     }
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={() => onCreate(projectId || undefined)}>New Chat</Button>}
-    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Chats" reorderHint>
+    compactPrimaryAction={<Tooltip title="New Chat"><IconButton aria-label="New Chat" onClick={() => onCreate(projectId || undefined)}><AddIcon /></IconButton></Tooltip>}
+    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Chats" reorderHint compactControls={<CollectionSortButton sort={sort} onSort={value => onPreferences(workspaceResourceSortPatch("chat", value))} />}>
       <CollectionDirectoryControls
         projects={undefined}
         projectId={undefined}
@@ -172,12 +174,13 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
   </CollectionWorkspace>;
 }
 
-export function AllAgentsWorkspace({ projects, engines, filterProjectId, preferences, onPreferences, onNavigate, onCreate, onAgentsDeleted }: {
+export function AllAgentsWorkspace({ projects, engines, filterProjectId, preferences, onPreferences, onNavigate, onCreate, onAgentsDeleted, managementMode = false }: {
   projects: ProjectDto[]; engines: EngineDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onNavigate(route: Route): void;
   onCreate(projectId?: string, managerAgentId?: string, conversationId?: string): void;
   onAgentsDeleted(projectId: string, agentIds: string[]): void;
+  managementMode?: boolean;
 }): JSX.Element {
   const [projectId, setProjectId] = useState(filterProjectId ?? "");
   const [conversationId, setConversationId] = useState("all");
@@ -209,6 +212,20 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
     });
   const agentDirectory = workspaceDirectoryItems(agentDirectoryQuery.data?.pages, preferences);
   const rows = [...agentDirectory.starredItems, ...agentDirectory.items];
+  useEffect(() => {
+    if (
+      managementMode &&
+      agentDirectoryQuery.requestState.hasNextPage &&
+      !agentDirectoryQuery.requestState.isFetchingNextPage &&
+      !agentDirectoryQuery.requestState.isPaginationError
+    ) void agentDirectoryQuery.fetchNextPage();
+  }, [
+    agentDirectoryQuery.fetchNextPage,
+    agentDirectoryQuery.requestState.hasNextPage,
+    agentDirectoryQuery.requestState.isFetchingNextPage,
+    agentDirectoryQuery.requestState.isPaginationError,
+    managementMode,
+  ]);
   const agents = rows.map(row => row.agent);
   const conversations = conversationRows.map(row => row.conversation);
   const healthByAgentId = new Map(
@@ -221,6 +238,11 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   );
   const projectByAgentId = new Map(
     rows.map(row => [row.agent.id, { id: row.project.id, label: row.project.label }] as const),
+  );
+  const ownerConversationByAgentId = new Map<string, string>(
+    rows.flatMap(row => row.ownerConversation
+      ? [[row.agent.id, row.ownerConversation.title] as const]
+      : []),
   );
   const starredIds = starredWorkspaceResources(preferences);
   const scopedProject = projectId
@@ -248,7 +270,7 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   return <Box sx={{ height: "100%", minHeight: 0, overflow: "hidden" }}>
     <AgentsTab
       collection={{
-        title: "All Agents",
+        title: managementMode ? "Manage Agents" : "All Agents",
         detail: agentDirectoryQuery.requestState.hasResolved
           ? scopedProject
             ? String(agentDirectory.total) + " " + (agentDirectory.total === 1 ? "Agent" : "Agents") + " in " + scopedProject.label
@@ -293,8 +315,16 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
       statusByAgentId={statusByAgentId}
       healthByAgentId={healthByAgentId}
       projectByAgentId={projectByAgentId}
+      ownerConversationByAgentId={ownerConversationByAgentId}
       displayOrder={rows.map(row => row.agent.id)}
       selectionAllowed
+      persistentSelectionMode={managementMode}
+      selectionReady={!managementMode || (
+        agentDirectoryQuery.requestState.hasResolved &&
+        !agentDirectoryQuery.requestState.hasNextPage &&
+        !agentDirectoryQuery.requestState.isFetchingNextPage &&
+        !agentDirectoryQuery.requestState.isPaginationError
+      )}
       onReorder={(sourceId, targetId, position) => onPreferences({
         agentSort: "custom",
         agentOrder: reorderStableIds(
@@ -332,7 +362,7 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
         }
       }}
       onAgentsDeleted={onAgentsDeleted}
-      showImportAction={false}
+      projects={projects}
     />
   </Box>;
 }
@@ -420,7 +450,11 @@ export function AllTriggersWorkspace({
         : undefined
     }
     primaryAction={createButton}
-    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Automations" reorderHint>
+    compactPrimaryAction={<Tooltip title="New Automation"><IconButton aria-label="New Automation" onClick={onCreate}><AddIcon /></IconButton></Tooltip>}
+    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Automations" reorderHint compactControls={<>
+      <CollectionSortButton sort={sort} onSort={value => onPreferences(workspaceResourceSortPatch("trigger", value))} />
+      {embedded ? <IconButton aria-label="New Automation" onClick={onCreate}><AddIcon /></IconButton> : null}
+    </>}>
       <CollectionDirectoryControls
         projects={undefined}
         projectId={undefined}
@@ -504,8 +538,8 @@ export function AllTriggersWorkspace({
       actions={[
         {
           id: "settings",
-          label: "Automation Settings",
-          icon: <SettingsOutlinedIcon fontSize="small" />,
+          label: "Open Automation",
+          icon: <VisibilityOutlinedIcon fontSize="small" />,
           onSelect: ({ route }) => {
             onNavigate(route);
           },

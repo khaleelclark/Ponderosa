@@ -21,7 +21,6 @@ import { enginesWithModelCatalog } from "../conversationEngine";
 import { assertNeverRoute, nestedProjectRouteResources, routeToPath, type ProjectRoute } from "../routeRegistry";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
-import { AgentOrganizationTree } from "./AgentOrganizationTree";
 import { PresetManagerDialog } from "./dialogs";
 import { ConversationView } from "./ConversationView";
 import { ProjectArtifactsView } from "./ProjectArtifactsView";
@@ -252,7 +251,7 @@ export function ProjectShell({
     }}>Retry</Button>}>The requested resource could not be checked.</Alert></Box>;
   }
   if (routeResourceUnavailable) {
-    return <Box sx={{ p: 2 }}><Alert severity="warning" action={<Button onClick={() => navigate({ kind: "allChats" })}>Back to Chats</Button>}>This resource is unavailable in this Project.</Alert></Box>;
+    return <Box sx={{ p: 2 }}><Alert severity="warning" action={<Button onClick={() => navigate({ kind: "home" })}>Go Home</Button>}>This resource is unavailable in this Project.</Alert></Box>;
   }
 
   if (conversationsFailure === "initial" || agentsFailure === "initial") {
@@ -301,7 +300,7 @@ export function ProjectShell({
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
         projectAgents={agents}
-        onOpenProject={() => navigate({ kind: "allChats" })}
+        onOpenProject={() => navigate({ kind: "home" })}
         onOpenProjectBrowser={() => projectBrowser.open()}
         onOpenAgent={(agentId, view, technicalFocusId) => view
           ? navigate({ kind: "agent", projectId, agentId, view, ...(technicalFocusId ? { technicalFocusId } : {}) })
@@ -358,7 +357,7 @@ export function ProjectShell({
         healthByAgentId={healthByAgentId}
         agents={agents}
         conversations={conversations}
-        onOpenProject={() => navigate({ kind: "allChats" })}
+        onOpenProject={() => navigate({ kind: "home" })}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onOpenAgentSettings={(agentId) =>
           navigate({ kind: "agent", projectId, agentId, view: "settings" })}
@@ -412,7 +411,7 @@ export function ProjectShell({
       request={browserRequest}
       onRequestHandled={onBrowserRequestHandled}
       backLabel="Back to Chats"
-      onClose={() => navigate({ kind: "allChats" })}
+      onClose={() => navigate({ kind: "home" })}
     />
   );
   } else if (route.kind === "automation") {
@@ -420,34 +419,15 @@ export function ProjectShell({
       <TriggersPane
         projectId={projectId}
         agents={agents}
-        settingsTriggerId={route.triggerId}
-        onCloseTriggerSettings={() => navigate({ kind: "automation", projectId })}
+        selectedTriggerId={route.triggerId}
+        onCloseTriggerSettings={() => navigate({ kind: "home" })}
+        onTriggerDeleted={triggerId => {
+          if (triggerId === route.triggerId) navigate({ kind: "home" });
+        }}
         onOpenAgentWork={occurrenceId => navigate({ kind: "projectWork", projectId, focusId: `trigger:${occurrenceId}` })}
         onCreateTrigger={() => onCreate("trigger", { projectId })}
       />
     </Box>;
-  } else if (route.kind === "agents") {
-    main = (
-      <AgentOrganizationTree
-        key={projectId}
-        projectId={projectId}
-        engines={projectEngines}
-        conversations={conversations}
-        projectAgents={agents}
-        projectHealth={projectedHealth}
-        onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
-        onOpenAgentSettings={(agentId) =>
-          navigate({ kind: "agent", projectId, agentId, view: "settings" })}
-        onAgentsDeleted={(agentIds) =>
-          agentIds.forEach(agentId =>
-            onResourceDeleted?.({ kind: "agent", projectId, agentId }),
-          )}
-        onNewAgent={(managerAgentId) => managerAgentId
-          ? openNewSubagent(managerAgentId)
-          : onCreate("agent", { projectId })}
-        scopeLabel={project.label}
-      />
-    );
   } else if (route.kind === "review") {
     const detail = reviewAgentQuery.data;
     const running = Boolean(detail?.runs?.some((run) => run.status === "running" || run.status === "compacting"));
@@ -460,7 +440,7 @@ export function ProjectShell({
       onBack={() => navigate({ kind: "agent", projectId, agentId: route.agentId })}
     />;
   } else if (route.kind === "workspaceFile") {
-    main = <WorkspaceFileView projectId={projectId} path={route.path} onBack={() => navigate({ kind: "allChats" })} />;
+    main = <WorkspaceFileView projectId={projectId} path={route.path} onBack={() => navigate({ kind: "home" })} />;
   } else if (route.kind === "projectWork") {
     main = <AgentWorkInspector
       key={`${projectId}:${route.conversationId ?? ""}:${route.focusId ?? ""}`}
@@ -469,7 +449,7 @@ export function ProjectShell({
       conversationId={route.conversationId}
       focus={route.focusId ? { id: route.focusId } : undefined}
       backLabel={route.conversationId ? "Back to Chat" : "Back to Chats"}
-      onClose={() => navigate(route.conversationId ? { kind: "conversation", projectId, conversationId: route.conversationId } : { kind: "allChats" })}
+      onClose={() => navigate(route.conversationId ? { kind: "conversation", projectId, conversationId: route.conversationId } : { kind: "home" })}
     />;
   } else if (route.kind === "project") {
     main =

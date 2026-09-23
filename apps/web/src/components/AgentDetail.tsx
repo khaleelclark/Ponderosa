@@ -74,6 +74,7 @@ import type { AgentDetailProps } from "./AgentDetail.types";
 import { AgentDetailDialogs } from "./AgentDetail.dialogs";
 import { useAgentMessageController } from "./useAgentMessageController";
 import { useAgentPackageActions } from "./useAgentPackageActions";
+import { AgentDuplicateDialog, AgentPackageExportDialog } from "./AgentPackageDialogs";
 import { useAgentRunCancellation } from "./useAgentRunCancellation";
 import { useAgentProviderCommands } from "./useAgentProviderCommands";
 import { AgentDetailSettingsController } from "./AgentDetailSettingsController";
@@ -160,6 +161,8 @@ export function AgentDetail({
   const [settingsEffort, setSettingsEffort] = useState("");
   const [runtimeSettingsNotice, setRuntimeSettingsNotice] = useState<string>();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [duplicateOpen, setDuplicateOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [organizationOpen, setOrganizationOpen] = useState(false);
@@ -213,6 +216,7 @@ export function AgentDetail({
         engine: detail.agent.activeEngine,
         model: detail.agent.model,
         effort: detail.agent.effort,
+        speed: detail.agent.speed,
       }),
     };
   }
@@ -237,17 +241,10 @@ export function AgentDetail({
   const {
     copyAgentPackage,
     downloadAgentPackage,
-    elevatedCopyPackage,
-    importQuickCopy,
-    quickCopyIntoProjectChat,
-    setElevatedCopyPackage,
   } = useAgentPackageActions({
     agentId,
-    projectId: detail?.agent.projectId,
-    conversationId: detail?.agent.conversationId,
     title: detail?.agent.title,
     onNotice: setQueuedMessageNotice,
-    onOpenAgent,
   });
 
   useEffect(() => {
@@ -474,12 +471,12 @@ export function AgentDetail({
       runtimeControlState(engine, {
         model: persistedModel,
         effort: persistedEffort,
-        speed: readChatState(
+        speed: detail?.agent.speed ?? readChatState(
           chatStateKey("runtime", `agent.${agentId}.speed`),
         ),
       }).speed,
     );
-  }, [agentId, engine, persistedModel, persistedEffort]);
+  }, [agentId, detail?.agent.speed, engine, persistedModel, persistedEffort]);
 
   useEffect(() => {
     if (!detail) return;
@@ -487,6 +484,7 @@ export function AgentDetail({
       engine: detail.agent.activeEngine,
       model: detail.agent.model,
       effort: detail.agent.effort,
+      speed: detail.agent.speed,
     });
     recordRuntimeCanonicalKey(
       runtimeMutationGenerationByAgent.current,
@@ -504,6 +502,7 @@ export function AgentDetail({
     detail?.agent.activeEngine,
     detail?.agent.effort,
     detail?.agent.model,
+    detail?.agent.speed,
   ]);
 
   useEffect(() => {
@@ -794,6 +793,7 @@ export function AgentDetail({
         engine: detail.agent.activeEngine,
         model: detail.agent.model,
         effort: detail.agent.effort,
+        speed: detail.agent.speed,
       });
       const speedKey = chatStateKey("runtime", `agent.${capturedAgentId}.speed`);
       const previous = {
@@ -824,6 +824,7 @@ export function AgentDetail({
           activeEngine: next,
           model: resolved.model || null,
           effort: resolved.effort || null,
+          speed: resolved.speed || null,
         },
         {
           onError: () => {
@@ -870,6 +871,7 @@ export function AgentDetail({
         engine: detail.agent.activeEngine,
         model: detail.agent.model,
         effort: detail.agent.effort,
+        speed: detail.agent.speed,
       });
       const speedKey = chatStateKey("runtime", `agent.${capturedAgentId}.speed`);
       const previous = {
@@ -890,6 +892,7 @@ export function AgentDetail({
           activeEngine: engine.id,
           model: resolved.model || null,
           effort: resolved.effort || null,
+          speed: resolved.speed || null,
         },
         {
           onError: () => {
@@ -935,6 +938,7 @@ export function AgentDetail({
         engine: detail.agent.activeEngine,
         model: detail.agent.model,
         effort: detail.agent.effort,
+        speed: detail.agent.speed,
       });
       const speedKey = chatStateKey("runtime", `agent.${capturedAgentId}.speed`);
       const previous = {
@@ -955,6 +959,7 @@ export function AgentDetail({
           activeEngine: engine.id,
           model: resolved.model || null,
           effort: resolved.effort || null,
+          speed: resolved.speed || null,
         },
         {
           onError: () => {
@@ -985,8 +990,15 @@ export function AgentDetail({
       );
     }}
     onSpeedChange={next => {
+      if (!engine || !detail) return;
       setSubmissionRuntimeIntent(value => value + 1);
-      selectedRuntime.selectSpeed(next);
+      const resolved = selectedRuntime.selectSpeed(next);
+      updateRuntimeSettings.mutate({
+        activeEngine: engine.id,
+        model: resolved.model || null,
+        effort: resolved.effort || null,
+        speed: resolved.speed || null,
+      });
     }}
   />;
 
@@ -1085,23 +1097,15 @@ export function AgentDetail({
         onOpenChat={onOpenMaster}
         onOpenAgent={onOpenAgent}
         onStop={stopActiveRun}
-        onCopyPackage={(mode, organization) =>
-          void copyAgentPackage(mode, organization)
-        }
-        onDownloadPackage={(mode, organization) =>
-          void downloadAgentPackage(mode, organization)
-        }
+        onExportPackage={() => setExportOpen(true)}
+        onDuplicate={conversations.length ? () => setDuplicateOpen(true) : undefined}
+        onNotice={setQueuedMessageNotice}
         onOpenTechnical={() => openTechnicalDetails()}
         onRename={() => {
           setRenameValue(detail.agent.title);
           setRenameOpen(true);
         }}
         onCreateAgent={() => onNewSubagent(agentId)}
-        onQuickCopy={
-          detail.agent.conversationId
-            ? () => void quickCopyIntoProjectChat()
-            : undefined
-        }
         onChangeReportingLine={() => {
           setOrganizationParentId(detail.agent.managerAgentId ?? "");
           setOrganizationOpen(true);
@@ -1263,14 +1267,6 @@ export function AgentDetail({
       />
 
       <AgentDetailDialogs
-        elevatedCopy={{
-          open: Boolean(elevatedCopyPackage),
-          onCancel: () => setElevatedCopyPackage(false),
-          onConfirm: () => {
-            if (elevatedCopyPackage)
-              void importQuickCopy(true);
-          },
-        }}
         recheckEngine={{
           open: recheckEngineOpen,
           pending: recheckEngine.isPending,
@@ -1314,6 +1310,22 @@ export function AgentDetail({
           agents,
           updateOrganization,
         }}
+      />
+      <AgentPackageExportDialog
+        open={exportOpen}
+        source={detail.agent}
+        agents={agents}
+        onClose={() => setExportOpen(false)}
+        onCopy={copyAgentPackage}
+        onDownload={downloadAgentPackage}
+      />
+      <AgentDuplicateDialog
+        open={duplicateOpen}
+        source={detail.agent}
+        agents={agents}
+        conversations={conversations}
+        onClose={() => setDuplicateOpen(false)}
+        onCreated={onOpenAgent}
       />
     </Box>
   );

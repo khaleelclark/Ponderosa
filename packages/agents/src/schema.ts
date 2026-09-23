@@ -62,6 +62,7 @@ export const agents = sqliteTable("agents", {
   activeEngine: text("active_engine").notNull(),
   model: text("model"),
   effort: text("effort"),
+  speed: text("speed"),
   activeSessionId: text("active_session_id"),
   activeSessionContractHash: text("active_session_contract_hash"),
   activeSessionArtifactIdsJson: text("active_session_artifact_ids_json").notNull().default("[]"),
@@ -116,7 +117,7 @@ export const agentDeletionPending = sqliteTable("agent_deletion_pending", {
   createdAt: text("created_at").notNull(),
 });
 
-/** Receipt phase for an Agent directory whose canonical rename has committed. */
+/** Durable exact identity for an Agent directory whose deletion committed. */
 export const agentDeletionTombstones = sqliteTable("agent_deletion_tombstones", {
   agentId: text("agent_id").primaryKey(),
   projectId: text("project_id").notNull(),
@@ -165,6 +166,7 @@ export const conversations = sqliteTable("conversations", {
   defaultEngine: text("default_engine"),
   defaultModel: text("default_model"),
   defaultEffort: text("default_effort"),
+  defaultSpeed: text("default_speed"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   archived: integer("archived").notNull().default(0),

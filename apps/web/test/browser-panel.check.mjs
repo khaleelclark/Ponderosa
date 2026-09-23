@@ -17,6 +17,21 @@ try {
   await new Promise(resolve => server.once("listening", resolve));
   browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH });
   for (const width of [1440, 390]) {
+    const agentPage = await browser.newPage({ viewport: { width, height: 900 } });
+    await agentPage.goto(`http://127.0.0.1:${server.address().port}/?agent=1`);
+    const returnControl = agentPage.getByRole("button", { name: "Return to Agent", exact: true });
+    await returnControl.waitFor();
+    await returnControl.click();
+    await agentPage.waitForFunction(() => window.lastAgentControl?.owner === "agent");
+    await agentPage.getByRole("button", { name: "Use myself", exact: true }).click();
+    await agentPage.waitForFunction(() => window.lastAgentControl?.owner === "operator");
+    await returnControl.waitFor();
+    const button = await returnControl.boundingBox();
+    assert.ok(button && button.x >= 0 && button.x + button.width <= width, "return control stays visible on the narrow toolbar");
+    assert.equal(await agentPage.evaluate(() => window.lastBrowserGrant), undefined, "private return does not grant shared-browser control");
+    await agentPage.close();
+  }
+  for (const width of [1440, 390]) {
     const recovery = await browser.newPage({ viewport: { width, height: 900 } });
     await recovery.goto(`http://127.0.0.1:${server.address().port}/?failed=1`);
     await recovery.getByRole("combobox", { name: "Browser to view" }).click();
@@ -239,5 +254,24 @@ try {
   await native.getByText('Agent has control', { exact: true }).waitFor();
   assert.equal(await native.locator('[aria-label="Manual Chrome browser"]').count(), 1, 'same display while watching the agent');
   await native.close();
+  for (const width of [1440, 390]) {
+    const permission = await browser.newPage({ viewport: { width, height: 900 } });
+    await permission.goto(`http://127.0.0.1:${server.address().port}/?native=1&manual=1`);
+    await permission.getByRole('combobox', { name: 'Browser to view' }).click();
+    await permission.getByRole('option', { name: 'Saved browser', exact: true }).click();
+    await permission.getByRole('button', { name: 'Connect for agent', exact: true }).waitFor();
+    await permission.getByRole('button', { name: 'Let agent work', exact: true }).click();
+    await permission.getByRole('menuitem', { name: 'Allow Assistant until revoked', exact: true }).click();
+    await permission.waitForFunction(() => window.lastSavedAccess?.agentId === 'assistant' && window.lastSavedAccess.allowed === true);
+    await permission.getByText('Saved-browser access: Assistant. Access survives Runs until revoked.', { exact: true }).waitFor();
+    assert.equal(await permission.evaluate(() => window.lastBrowserGrant), undefined, 'durable saved permission does not create a misleading one-Run grant');
+    await permission.getByRole('button', { name: 'Browser options', exact: true }).click();
+    await permission.getByRole('menuitem', { name: "Revoke Assistant's saved-browser access", exact: true }).click();
+    await permission.waitForFunction(() => window.lastSavedAccess?.allowed === false);
+    await permission.getByText('Saved-browser access: Assistant. Access survives Runs until revoked.', { exact: true }).waitFor({ state: 'hidden' });
+    await permission.screenshot({ path: `/tmp/browser-saved-access-${width}.png` });
+    assert.equal(await permission.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    await permission.close();
+  }
   console.log('PASS: automatic page view, private sign-in preserved, bounded retries, no implicit agent access');
 } finally { await browser?.close(); server?.close(); await rm(output, { recursive: true, force: true }); }

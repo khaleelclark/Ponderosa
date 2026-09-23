@@ -52,6 +52,8 @@ export interface CreateServerOptions {
   dataDir: string;
   /** Starts only canonical crash cleanup, never listeners, triggers, or Run leasing. */
   startupMode?: "serve" | "shutdown_recovery";
+  /** Qualification instances accept explicit inspection but lease no Runs until resumed. */
+  startDrained?: boolean;
   /** Launcher-owned data root. Runtime state remains under dataDir. */
   launcherDataDir?: string;
   /** Exact installed launcher generation used to fence shutdown receipts. */

@@ -294,6 +294,9 @@ export function registerAgentCreationRoutes(
         ], projectModelOptions);
         request.body.model = resolvedRuntime.model;
         request.body.effort = resolvedRuntime.effort;
+        request.body.speed ??= conversationDefaults?.defaultEngine === request.body.engine
+          ? conversationDefaults.defaultSpeed
+          : undefined;
         const speedError = runtimeSpeedSelectionError(
           requestedAdapter,
           request.body.model,

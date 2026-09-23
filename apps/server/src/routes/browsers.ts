@@ -88,6 +88,55 @@ export function registerBrowserRoutes(
   const projectExists = (id: string) => id === SAVED_BROWSER_SCOPE_ID ? Boolean(browserProfiles.savedBrowser()) : chatExists(id);
 
   app.get("/api/saved-browser", async () => ({ browser: browserProfiles.savedBrowser() ?? null }));
+  app.get<{ Params: { projectId: string; agentId: string } }>("/api/projects/:projectId/agents/:agentId/browser-location", async (request, reply) => {
+    const { projectId, agentId } = request.params;
+    if (!chatExists(projectId) || !agentExists(projectId, agentId) || projectDeletionInProgress(projectId) || agentDeletionInProgress(agentId)) {
+      return reply.code(404).send({ error: "Agent is unavailable in this chat." });
+    }
+    const saved = projectBrowserSessions.get(projectBrowserScope(SAVED_BROWSER_SCOPE_ID).agentId);
+    const savedGrant = getProjectBrowserGrant(SAVED_BROWSER_SCOPE_ID);
+    if (saved && saved.status !== "closed" && savedGrant?.agentId === agentId) {
+      return { kind: "saved", status: saved.status };
+    }
+    const shared = projectBrowserSessions.get(projectBrowserScope(projectId).agentId);
+    const sharedGrant = getProjectBrowserGrant(projectId);
+    if (shared && shared.status !== "closed" && sharedGrant?.agentId === agentId) {
+      return { kind: "chat", status: shared.status };
+    }
+    const privateSession = browserSessions.get(agentId);
+    if (privateSession && privateSession.projectId === projectId && privateSession.status !== "closed" &&
+        activeProjectBrowserController(projectId, agentId)?.grant.runId === privateSession.runId) {
+      return { kind: "run", runId: privateSession.runId, status: privateSession.status };
+    }
+    return { kind: "none" };
+  });
+  const savedAccessRoute = "/api/projects/:projectId/saved-browser-access";
+  app.get<{ Params: { projectId: string } }>(savedAccessRoute, async (request, reply) => {
+    const projectId = request.params.projectId;
+    if (!chatExists(projectId) || projectDeletionInProgress(projectId)) return reply.code(404).send({ error: "Chat is unavailable." });
+    return { agentIds: browserProfiles.savedBrowserAccess(projectId) };
+  });
+  app.put<{ Params: { projectId: string; agentId: string }; Body: { allowed?: boolean } }>(`${savedAccessRoute}/:agentId`, async (request, reply) => {
+    const { projectId, agentId } = request.params;
+    if (!chatExists(projectId) || projectDeletionInProgress(projectId) || !agentExists(projectId, agentId) || agentDeletionInProgress(agentId)) {
+      return reply.code(404).send({ error: "Agent is not available in this chat." });
+    }
+    if (typeof request.body?.allowed !== "boolean") return reply.code(400).send({ error: "allowed must be a boolean" });
+    try {
+      browserProfiles.setSavedBrowserAccess(projectId, agentId, request.body.allowed);
+      if (!request.body.allowed) {
+        const grant = getProjectBrowserGrant(SAVED_BROWSER_SCOPE_ID);
+        if (grant?.agentId === agentId) {
+          deleteProjectBrowserGrant(SAVED_BROWSER_SCOPE_ID);
+          const scope = projectBrowserScope(SAVED_BROWSER_SCOPE_ID);
+          const session = projectBrowserSessions.get(scope.agentId);
+          if (session?.status === "ready") await projectBrowserSessions.revokeAgentControl(scope);
+        }
+        projectBrowserSessions.expireNextRun(projectBrowserScope(SAVED_BROWSER_SCOPE_ID), agentId);
+      }
+      return { agentIds: browserProfiles.savedBrowserAccess(projectId) };
+    } catch (error) { return browserRouteError(reply, error); }
+  });
   app.post<{ Params: { projectId: string }; Body: { sessionId?: string; expectedControlEpoch?: number; confirmInstanceSharing?: boolean } }>("/api/projects/:projectId/browser/promote", async (request, reply) => {
     const id = request.params.projectId;
     if (!chatExists(id) || projectDeletionInProgress(id)) return reply.code(409).send({ error: "The source chat is unavailable." });
@@ -170,7 +219,9 @@ export function registerBrowserRoutes(
     return { rememberSignIns: browserProfiles.preference(scope.projectId, scope.agentId).mode === "trusted" };
   });
   const desktop = createHostedDesktopAccess(app.server);
-  app.addHook("onClose", async () => { desktop.close(); });
+  // Upgraded desktop sockets keep Node's HTTP server open. Fastify waits for
+  // server.close() before onClose, so release them during preClose instead.
+  app.addHook("preClose", async () => { desktop.close(); });
   app.post<{ Params: { projectId: string }; Body: { action?: string; expectedControlEpoch?: number; sessionId?: string; width?: number; height?: number } }>(`${projectBrowserRoute}/manual`, async (request, reply) => {
     const projectId = request.params.projectId;
     const blocked = projectMutationGuard(projectId, reply);

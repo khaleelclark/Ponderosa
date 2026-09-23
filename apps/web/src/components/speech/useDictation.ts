@@ -200,6 +200,14 @@ export function useDictation(
       activeRecognition.interimResults = true;
       activeRecognition.lang = navigator.language || "en-US";
       activeRecognition.maxAlternatives = 1;
+      // Newer browsers can infer punctuation from speech without spoken commands.
+      // Only opt in for Dictate; Talk uses a separate turn-based workflow.
+      if (continuous && "unspokenPunctuation" in activeRecognition) {
+        activeRecognition.unspokenPunctuation = true;
+      }
+      // Results contain the session's final-result history, not only new words.
+      // Track consumed positions so a replayed result cannot duplicate the draft.
+      let nextFinalResultIndex = 0;
       if (generationRef.current !== generation) return;
       activeRecognition.onstart = () => {
         if (generationRef.current === generation && mountedRef.current) {
@@ -209,14 +217,12 @@ export function useDictation(
       activeRecognition.onresult = event => {
         if (generationRef.current !== generation) return;
         const finalTranscripts: string[] = [];
-        for (
-          let index = event.resultIndex;
-          index < event.results.length;
-          index += 1
-        ) {
+        for (let index = nextFinalResultIndex; index < event.results.length; index += 1) {
           const result = event.results[index];
+          if (!result?.isFinal) break;
+          nextFinalResultIndex = index + 1;
           const transcript = result?.[0]?.transcript;
-          if (result?.isFinal && transcript?.trim()) {
+          if (transcript?.trim()) {
             finalTranscripts.push(transcript.trim());
           }
         }

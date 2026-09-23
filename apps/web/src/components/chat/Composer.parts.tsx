@@ -1,5 +1,6 @@
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import PersonAddAltOutlinedIcon from "@mui/icons-material/PersonAddAltOutlined";
+import ScheduleSendOutlinedIcon from "@mui/icons-material/ScheduleSendOutlined";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import {
   Button,
@@ -58,13 +59,16 @@ export function ComposerProjectDestinationAction({
           onClick={toggleNewAgent}
           aria-label={`Reply to ${replyDestination}; switch to a new Agent`}
           sx={{
-            minWidth: { xs: 44, md: 64 },
+            minWidth: { xs: 58, md: 64 },
+            gap: { xs: 0.5, md: 0 },
             whiteSpace: "nowrap",
             minHeight: { xs: 44, sm: 34 },
             "@media (pointer: coarse)": { minHeight: 44 },
+            "@media (max-width: 340px)": { minWidth: 44, px: 0, gap: 0 },
           }}
         >
           <PersonAddAltOutlinedIcon sx={{ display: { xs: "block", md: "none" } }} />
+          <Box component="span" sx={{ display: { xs: "inline", md: "none" }, "@media (max-width: 340px)": { display: "none" } }}>New</Box>
           <Box component="span" sx={{ display: { xs: "none", md: "inline" } }}>Reply to {replyDestination}</Box>
         </Button>
       </Tooltip>
@@ -81,13 +85,16 @@ export function ComposerProjectDestinationAction({
       aria-label="New Agent"
       onClick={toggleNewAgent}
       sx={{
-        minWidth: { xs: 44, md: 64 },
-        "& .MuiButton-startIcon": { m: { xs: 0, md: undefined } },
+        minWidth: { xs: 58, md: 64 },
+        px: { xs: 0.75, md: 1 },
+        "& .MuiButton-startIcon": { mr: { xs: 0.5, md: 1 }, ml: 0 },
         whiteSpace: "nowrap",
         minHeight: { xs: 44, sm: 34 },
         "@media (pointer: coarse)": { minHeight: 44 },
+        "@media (max-width: 340px)": { minWidth: 44, px: 0, "& .MuiButton-startIcon": { mr: 0 } },
       }}
     >
+      <Box component="span" sx={{ display: { xs: "inline", md: "none" }, "@media (max-width: 340px)": { display: "none" } }}>New</Box>
       <Box component="span" sx={{ display: { xs: "none", md: "inline" } }}>New Agent</Box>
     </Button>
   );
@@ -194,6 +201,7 @@ interface ComposerSendActionsProps {
   canCancel: boolean;
   cancelPending: boolean;
   canSend: boolean;
+  compact: boolean;
   destinationError: string | undefined;
   destinationMode: ComposerProps["destinationMode"];
   mentionedBusyHandles: string[];
@@ -212,6 +220,7 @@ export function ComposerSendActions({
   canCancel,
   cancelPending,
   canSend,
+  compact,
   destinationError,
   destinationMode,
   mentionedBusyHandles,
@@ -226,38 +235,6 @@ export function ComposerSendActions({
 }: ComposerSendActionsProps): JSX.Element {
   return (
     <>
-      {showQueue ? (
-        <Tooltip title="Steer the active response">
-          <span>
-            <Button
-              size="small"
-              variant="contained"
-              disabled={!canSend}
-              onClick={steer}
-              aria-label="Steer active response"
-              sx={{ minHeight: 40, px: 1.5, boxShadow: "none" }}
-            >
-              Steer
-            </Button>
-          </span>
-        </Tooltip>
-      ) : null}
-      {showQueue ? (
-        <Tooltip title="Send after the active response finishes">
-          <span>
-            <Button
-              size="small"
-              variant="outlined"
-              disabled={!canSend}
-              onClick={queue}
-              aria-label="Queue message"
-              sx={{ minHeight: 40, px: 1.5 }}
-            >
-              Queue
-            </Button>
-          </span>
-        </Tooltip>
-      ) : null}
       {canCancel ? (
         <Tooltip title={cancelPending ? "Cancelling…" : "Cancel Run"}>
           <span>
@@ -272,7 +249,47 @@ export function ComposerSendActions({
           </span>
         </Tooltip>
       ) : null}
-      {!showQueue && (!canCancel || allowSendWhileRunning) ? (
+      {showQueue ? (
+        <Tooltip title="Queue after the active response">
+          <span>
+            <IconButton
+              disabled={!canSend}
+              onClick={queue}
+              aria-label="Queue message"
+            >
+              <ScheduleSendOutlinedIcon />
+            </IconButton>
+          </span>
+        </Tooltip>
+      ) : null}
+      {showQueue ? (
+        <Tooltip title="Steer the active response">
+          <span>
+            {compact ? (
+              <IconButton
+                color="primary"
+                disabled={!canSend}
+                onClick={steer}
+                aria-label="Steer active response"
+              >
+                <ArrowUpwardIcon />
+              </IconButton>
+            ) : (
+              <Button
+                size="small"
+                variant="contained"
+                disabled={!canSend}
+                onClick={steer}
+                aria-label="Steer active response"
+                endIcon={<ArrowUpwardIcon sx={{ fontSize: 18 }} />}
+                sx={{ minHeight: 40, px: 1.5, borderRadius: 999, boxShadow: "none" }}
+              >
+                Steer
+              </Button>
+            )}
+          </span>
+        </Tooltip>
+      ) : (!canCancel || allowSendWhileRunning) ? (
         <Tooltip
           title={
             !canSend &&
@@ -292,11 +309,9 @@ export function ComposerSendActions({
               color="primary"
               disabled={!canSend}
               onClick={send}
-              aria-label={
-                mentionedBusyHandles.length > 0
-                  ? "Queue message"
-                  : "Send message"
-              }
+              aria-label={mentionedBusyHandles.length > 0
+                ? "Queue message"
+                : "Send message"}
             >
               <ArrowUpwardIcon />
             </IconButton>

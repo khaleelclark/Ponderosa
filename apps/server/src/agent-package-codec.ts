@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import type {
   AgentPortablePackageDto,
@@ -54,27 +55,22 @@ function runCodecWorker<T>(
 export async function encodePortableArtifact(
   source: Buffer,
 ): Promise<string> {
-  const body = transferableBytes(source);
-  const result = await runCodecWorker<{ dataBase64: string }>({
-    operation: "encode",
-    body,
-  }, [body.buffer as ArrayBuffer]);
-  return result.dataBase64;
+  return source.toString("base64");
 }
 
 export async function decodePortableArtifact(
   dataBase64: string,
 ): Promise<{ data: Buffer; sha256: string }> {
-  const result = await runCodecWorker<{
-    body: Uint8Array;
-    sha256: string;
-  }>({
-    operation: "decode",
-    dataBase64,
-  });
+  const data = Buffer.from(dataBase64, "base64");
+  if (
+    data.toString("base64").replace(/=+$/u, "") !==
+    dataBase64.replace(/=+$/u, "")
+  ) {
+    throw new Error("portable artifact has invalid base64 data");
+  }
   return {
-    data: Buffer.from(result.body),
-    sha256: result.sha256,
+    data,
+    sha256: createHash("sha256").update(data).digest("hex"),
   };
 }
 

@@ -9,7 +9,7 @@ import { BrowserWindow } from "./browser/BrowserWindow";
 import { browserAddress } from "./browser/browserAddress";
 import { LocalBrowserSetup } from "./browser/LocalBrowserSetup";
 import { HostedManualBrowser } from "./browser/HostedManualBrowser";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
@@ -36,11 +36,25 @@ export function ProjectBrowserDialog({ projectId, agent, open, request, onReques
   windowOptions?: import("./browser/BrowserWindow").BrowserWindowOptions;
 }): JSX.Element {
   const [view, setView] = useState<"chat" | "saved">("chat");
-  const ownerId = !agent && view === "saved" ? SAVED_BROWSER_SCOPE_ID : projectId;
+  const queryClient = useQueryClient();
+  const locationKey = ["agent-browser-location", projectId, agent?.id, agent?.runId];
+  const agentLocation = useQuery({ queryKey: locationKey, queryFn: () => api.getAgentBrowserLocation(projectId!, agent!.id), enabled: Boolean(open && projectId && agent), refetchInterval: 2_000, refetchOnMount: "always" });
+  const agentBrowserKind = agentLocation.data?.kind;
+  const ownerId = agentBrowserKind === "saved" || (!agent && view === "saved") ? SAVED_BROWSER_SCOPE_ID : projectId;
   const [promoteOpen, setPromoteOpen] = useState(false);
   const saved = useQuery({ queryKey: ["saved-browser"], queryFn: () => api.getSavedBrowser(), enabled: Boolean(open && !agent) });
-  const adapter = useMemo<BrowserEndpointAdapter<BrowserSession>>(() => agent ? agentBrowserAdapter(projectId ?? "", agent.id, agent.runId) : projectBrowserAdapter(ownerId ?? ""), [ownerId, projectId, agent?.id, agent?.runId]);
-  const browser = useBrowserController<BrowserSession>({ adapter, enabled: Boolean(projectId && open) });
+  const savedAccess = useQuery({ queryKey: ["saved-browser-access", projectId], queryFn: () => api.getSavedBrowserAccess(projectId!), enabled: Boolean(open && !agent && projectId && view === "saved"), refetchInterval: 3_000 });
+  const adapter = useMemo<BrowserEndpointAdapter<BrowserSession>>(() => agent && agentBrowserKind === "run"
+    ? agentBrowserAdapter(projectId ?? "", agent.id, agentLocation.data?.runId ?? agent.runId)
+    : projectBrowserAdapter(ownerId ?? ""), [ownerId, projectId, agent?.id, agent?.runId, agentBrowserKind, agentLocation.data?.runId]);
+  const browser = useBrowserController<BrowserSession>({ adapter, enabled: Boolean(projectId && open && (!agent || (agentBrowserKind && agentBrowserKind !== "none"))) });
+  useEffect(() => {
+    if (agent && open) void agentLocation.refetch();
+  }, [open, agent?.id, agent?.runId, browser.session?.id, browser.session?.status, browser.session?.controlEpoch,
+    browser.session && "controllerAgentId" in browser.session ? browser.session.controllerAgentId : undefined]);
+  useEffect(() => {
+    if (!open && agent) queryClient.removeQueries({ queryKey: locationKey, exact: true });
+  }, [open, projectId, agent?.id, agent?.runId, queryClient]);
   const [address, setAddress] = useState("");
   const [addressError, setAddressError] = useState<string>();
   const [menu, setMenu] = useState<HTMLElement | null>(null);
@@ -52,7 +66,9 @@ export function ProjectBrowserDialog({ projectId, agent, open, request, onReques
   const preferences = useQuery({ queryKey: ["chat-browser-preferences", ownerId], queryFn: () => api.getChatBrowserPreferences(ownerId!), enabled: Boolean(ownerId && open && !agent) });
   useEffect(() => { setRememberSignIns(undefined); }, [projectId]);
   const handledRequest = useRef(0);
-  const session = browser.session;
+  const agentSharedBrowserChanged = Boolean(agent && (agentBrowserKind === "saved" || agentBrowserKind === "chat") &&
+    browser.session && (!("controllerAgentId" in browser.session) || browser.session.controllerAgentId !== agent.id));
+  const session = agent && (!agentBrowserKind || agentBrowserKind === "none" || agentSharedBrowserChanged) ? undefined : browser.session;
   const failed = session?.status === "failed";
   const [reopenConfirm, setReopenConfirm] = useState(false);
   const manual = session?.status === "ready" && Boolean(session.manualControl && session.manualControl !== "automation");
@@ -83,12 +99,21 @@ export function ProjectBrowserDialog({ projectId, agent, open, request, onReques
   const handoff = useMutation({
     mutationFn: async (agentId: string) => {
       if (!session) throw new Error("Open the browser first.");
+      if (view === "saved") {
+        await api.setSavedBrowserAccess(projectId!, agentId, true);
+        if (session.manualControl === "manual") await api.hostedBrowserControl(ownerId!, "resume", session.id, session.controlEpoch);
+        return;
+      }
       const connected = session.manualControl === "manual"
         ? await api.hostedBrowserControl(ownerId!, "resume", session.id, session.controlEpoch)
         : session;
       return api.setProjectBrowserControl(ownerId!, { owner: "agent", agentId, controllerProjectId: projectId, currentOrNext: true, expectedControlEpoch: connected.controlEpoch });
     },
-    onSettled: () => { void browser.query.refetch(); },
+    onSettled: () => { void browser.query.refetch(); void savedAccess.refetch(); void queryClient.invalidateQueries({ queryKey: ["agent-browser-location", projectId] }); },
+  });
+  const revokeSavedAccess = useMutation({
+    mutationFn: (agentId: string) => api.setSavedBrowserAccess(projectId!, agentId, false),
+    onSettled: () => { void savedAccess.refetch(); void browser.query.refetch(); void queryClient.invalidateQueries({ queryKey: ["agent-browser-location", projectId] }); },
   });
   const agents = useQuery({ queryKey: queryKeys.agents.project(projectId), queryFn: () => api.listAgents(projectId!), enabled: Boolean(projectId && open) });
   const promote = useMutation({
@@ -96,11 +121,11 @@ export function ProjectBrowserDialog({ projectId, agent, open, request, onReques
     onSuccess: async () => { setPromoteOpen(false); await saved.refetch(); setView("saved"); void browser.query.refetch(); },
   });
   useEffect(() => {
-    if (!open || !projectId || !request || request.requestId === handledRequest.current) return;
+    if (!open || !projectId || !request || agentSharedBrowserChanged || request.requestId === handledRequest.current) return;
     handledRequest.current = request.requestId;
     onRequestHandled?.(request.requestId);
     browser.open.mutate(request.url);
-  }, [open, projectId, request?.requestId, view]);
+  }, [open, projectId, request?.requestId, view, agentSharedBrowserChanged]);
   const viewedPage = session?.pages.find(page => page.id === browser.viewedPageId);
   const viewedUrl = viewedPage?.url ?? session?.url;
   useEffect(() => { setAddress(viewedUrl === "about:blank" ? "" : viewedUrl ?? ""); }, [viewedUrl]);
@@ -118,8 +143,8 @@ export function ProjectBrowserDialog({ projectId, agent, open, request, onReques
         {workspaceControls}
         {!agent ? <Select size="small" value={view} onChange={event => setView(event.target.value as "chat" | "saved")} inputProps={{ "aria-label": "Browser to view" }} sx={{ minWidth: 70, maxWidth: 130, mr: "auto", fontSize: 12, ".MuiSelect-select": { py: 0, pl: .5 }, ".MuiOutlinedInput-notchedOutline": { border: 0 } }}>
           <MenuItem value="chat">{workspaceLabel ?? "This chat"}</MenuItem><MenuItem value="saved" disabled={!saved.data?.browser}>Saved browser</MenuItem>
-        </Select> : <Typography id="project-browser-title" sx={{ fontWeight: 600, flex: 1 }}>Agent browser</Typography>}
-        {session?.status === "ready" ? (session.localPaused ? <Typography variant="caption">Paused</Typography> : !manual && !operator ? <Button size="small" aria-label="Use myself" disabled={browser.control.isPending} onClick={() => browser.control.mutate({ owner: "operator" })}>Take control</Button> : !agent ? <Button size="small" aria-label="Let agent work" disabled={session.manualControl === "connecting" || handoff.isPending} onClick={event => setAgentMenu(event.currentTarget)}>Agent</Button> : null) : null}
+        </Select> : <Typography id="project-browser-title" sx={{ fontWeight: 600, flex: 1 }}>{agentBrowserKind === "saved" ? "Saved browser" : agentBrowserKind === "chat" ? "Chat browser" : "Agent browser"}</Typography>}
+        {session?.status === "ready" ? (session.localPaused ? <Typography variant="caption">Paused</Typography> : !manual && !operator ? <Button size="small" aria-label="Use myself" disabled={browser.control.isPending} onClick={() => browser.control.mutate({ owner: "operator" })}>Take control</Button> : agent && agentBrowserKind === "run" ? <Button size="small" disabled={browser.control.isPending} onClick={() => browser.control.mutate({ owner: "agent" })}>Return to Agent</Button> : !agent ? <Button size="small" aria-label="Let agent work" disabled={session.manualControl === "connecting" || handoff.isPending} onClick={event => setAgentMenu(event.currentTarget)}>Agent</Button> : null) : null}
         <Tooltip title="Browser options"><IconButton size="small" aria-label="Browser options" onClick={event => setMenu(event.currentTarget)}><MoreHorizIcon /></IconButton></Tooltip>
         {windowControls}
         <Tooltip title="Close panel (keep browser running)"><IconButton size="small" aria-label="Close browser panel" onClick={onClose}><CloseIcon /></IconButton></Tooltip>
@@ -133,6 +158,7 @@ export function ProjectBrowserDialog({ projectId, agent, open, request, onReques
         {!agent && view === "chat" ? <MenuItem disabled={!session || session.status !== "ready" || session.controlOwner !== "operator" || Boolean(saved.data?.browser)} onClick={() => { setMenu(null); setPromoteOpen(true); }}>Save browser across chats…</MenuItem> : null}
         {!agent && session?.manualControl === "automation" ? <MenuItem disabled={manualControl.isPending} onClick={() => { setMenu(null); manualControl.mutate("pause"); }}>Sign in privately (disconnect agent access)</MenuItem> : null}
         {session?.nextRunAgentId ? <MenuItem onClick={() => { browser.control.mutate({ owner: "operator", nextRun: true }); setMenu(null); }}>Cancel next-run access</MenuItem> : null}
+        {view === "saved" ? (agents.data ?? []).filter(candidate => savedAccess.data?.agentIds.includes(candidate.id)).map(candidate => <MenuItem key={candidate.id} disabled={revokeSavedAccess.isPending} onClick={() => { setMenu(null); revokeSavedAccess.mutate(candidate.id); }}>Revoke {candidate.title}'s saved-browser access</MenuItem>) : null}
         <MenuItem disabled={!session || Boolean(session.manualControl) || session.location === "local" || browser.reconnect.isPending || browser.inputPending} onClick={() => { if (window.confirm("Restart this browser? Unsaved page input may be lost.")) browser.reconnect.mutate(); setMenu(null); }}>Restart browser…</MenuItem>
         <MenuItem disabled={!session || browser.close.isPending || browser.inputPending} onClick={() => { if (window.confirm(session?.location === "local" ? "Disconnect this local window? Its tabs will stay open in your browser." : "End this browser session? Unsaved page input will be lost.")) browser.close.mutate(); setMenu(null); }}>{session?.location === "local" ? "Disconnect local browser" : "End browser session"}</MenuItem>
       </Menu>
@@ -143,12 +169,14 @@ export function ProjectBrowserDialog({ projectId, agent, open, request, onReques
         <DialogActions><Button disabled={promote.isPending} onClick={() => setPromoteOpen(false)}>Cancel</Button><Button disabled={promote.isPending} onClick={() => promote.mutate()}>Save browser</Button></DialogActions>
       </Dialog>
       <Menu anchorEl={agentMenu} open={Boolean(agentMenu)} onClose={() => setAgentMenu(null)}>
-        {(agents.data ?? []).map(candidate => <MenuItem key={candidate.id} onClick={() => { setAgentMenu(null); handoff.mutate(candidate.id); }}>{candidate.title}</MenuItem>)}
+        {(agents.data ?? []).map(candidate => <MenuItem key={candidate.id} disabled={view === "saved" && savedAccess.data?.agentIds.includes(candidate.id)} onClick={() => { setAgentMenu(null); handoff.mutate(candidate.id); }}>{view === "saved" ? savedAccess.data?.agentIds.includes(candidate.id) ? `${candidate.title} · already allowed` : `Allow ${candidate.title} until revoked` : candidate.title}</MenuItem>)}
         {!agents.data?.length ? <MenuItem disabled>No agents in this chat</MenuItem> : null}
       </Menu>
       {localSetup && projectId ? <LocalBrowserSetup projectId={projectId} session={session} onClose={() => setLocalSetup(false)} onConnected={() => { setLocalSetup(false); void browser.query.refetch(); }} /> : null}
-      {!failed && manualControl.error ? <Alert severity="error" onClose={() => manualControl.reset()}>{manualControl.error.message}</Alert> : null}
+      {!failed && manualControl.error ? <Alert severity="error" action={<Button onClick={() => manualControl.mutate("resume")}>Retry connection</Button>} onClose={() => manualControl.reset()}>{manualControl.error.message}</Alert> : null}
       {!failed && handoff.error ? <Alert severity="error" onClose={() => handoff.reset()}>{handoff.error.message}</Alert> : null}
+      {revokeSavedAccess.error ? <Alert severity="error" onClose={() => revokeSavedAccess.reset()}>{revokeSavedAccess.error.message}</Alert> : null}
+      {view === "saved" && savedAccess.error ? <Alert severity="warning" action={<Button onClick={() => void savedAccess.refetch()}>Retry</Button>}>Saved-browser permissions could not be loaded.</Alert> : null}
       {!failed && openHosted.error ? <Alert severity="error">{openHosted.error.message}</Alert> : null}
       {addressError ? <Alert severity="warning" onClose={() => setAddressError(undefined)}>{addressError}</Alert> : null}
       {failed ? <Alert severity="warning" action={!agent && session.location !== "local" ? <Button onClick={() => { reopen.reset(); setReopenConfirm(true); }}>{view === "saved" ? "Reopen saved browser" : "Reopen browser"}</Button> : undefined}>The browser or its display is unavailable. No replacement was opened. Unsaved forms may not be recoverable.</Alert> : null}
@@ -157,13 +185,17 @@ export function ProjectBrowserDialog({ projectId, agent, open, request, onReques
         <DialogContent><Typography>This replaces the failed session. Any remaining browser window will close. Your existing sign-in profile will be reused when available, but websites may ask you to sign in again. Unsaved forms and open tabs are not guaranteed to return.</Typography>{reopen.error ? <Alert severity="error" sx={{ mt: 1 }}>{reopen.error.message}</Alert> : null}</DialogContent>
         <DialogActions><Button disabled={reopen.isPending} onClick={() => setReopenConfirm(false)}>Cancel</Button><Button disabled={reopen.isPending} onClick={() => reopen.mutate()}>{reopen.isPending ? "Reopening…" : "Reopen"}</Button></DialogActions>
       </Dialog>
+      {view === "saved" && !agent && savedAccess.data?.agentIds.length ? <Typography role="status" variant="caption" sx={{ px: 1.5, py: .5 }}>Saved-browser access: {savedAccess.data.agentIds.map(id => (agents.data ?? []).find(item => item.id === id)?.title ?? "an agent").join(", ")}. Access survives Runs until revoked.</Typography> : null}
       {session?.nextRunAgentId ? <Typography role="status" variant="caption" sx={{ px: 1.5, py: .5 }}>Ready for {(agents.data ?? []).find(item => item.id === session.nextRunAgentId)?.title ?? "the selected agent"}’s next run only.</Typography> : null}
       {(manual || nativeDisplay) && projectId && session && !localSetup ? <>
-        {(!nativeDisplay || session.privateSignIn || session.manualControl === "connecting" || manualControl.error) ? <Stack direction="row" alignItems="center" sx={{ px: 1, minHeight: 32 }}><Typography role="status" variant="caption" sx={{ flex: 1 }}>{session.manualControl === "connecting" ? "Approve the connection if Chrome asks." : session.privateSignIn ? "Private sign-in · agent access disconnected" : manualControl.isPending ? "Opening browser…" : "Chrome connection needs attention"}</Typography>{session.manualControl === "connecting" ? <Button size="small" onClick={() => manualControl.mutate("pause")}>Cancel</Button> : <Button size="small" disabled={manualControl.isPending} onClick={() => manualControl.mutate("resume")}>{session.privateSignIn ? "Done signing in" : "Retry connection"}</Button>}</Stack> : null}
+        {manual && !manualControl.error && !handoff.error ? <Stack direction="row" alignItems="center" sx={{ px: 1, minHeight: 32 }}><Typography role="status" variant="caption" sx={{ flex: 1 }}>{session.manualControl === "connecting" ? "Approve the connection if Chrome asks." : session.privateSignIn ? "Private sign-in · agent access disconnected" : "Chrome is not connected for agent use. Your tabs remain open."}</Typography>{session.manualControl === "connecting" ? <Button size="small" onClick={() => manualControl.mutate("pause")}>Cancel</Button> : <Button size="small" disabled={manualControl.isPending} onClick={() => manualControl.mutate("resume")}>{session.privateSignIn ? "Done signing in" : "Connect for agent"}</Button>}</Stack> : null}
         <HostedManualBrowser projectId={ownerId!} sessionId={session.id} epoch={session.controlEpoch} responsive={nativeDisplay} readOnly={session.controlOwner !== "operator"} connectionSetup={manual} />
       </> : null}
       {session?.localPaused && !localSetup ? <Alert severity="info" sx={{ m: 2 }}>Your window is still paired. Browser control and the live preview are paused. Sign in or browse directly in Chrome/Edge, then choose <strong>Resume browser access</strong> in the Ponderosa extension. No new pairing code is needed.</Alert> : null}
-      <Stack sx={{ flex: 1, minHeight: 0, display: failed || localSetup || session?.localPaused || manual || nativeDisplay ? "none" : "flex" }}>
+      {agent && !agentBrowserKind ? <Typography role="status" sx={{ m: 2 }}>Finding this agent's browser…</Typography> : null}
+      {agent && agentBrowserKind === "none" ? <Alert severity="info" sx={{ m: 2 }}>This agent has no browser open. It can open a temporary browser during its next Run, or you can allow it to use the saved browser.</Alert> : null}
+      {agentSharedBrowserChanged ? <Alert severity="info" sx={{ m: 2 }}>This Agent no longer controls that browser. Waiting for its current browser location…</Alert> : null}
+      <Stack sx={{ flex: 1, minHeight: 0, display: (agent && (!agentBrowserKind || agentBrowserKind === "none" || agentSharedBrowserChanged)) || failed || localSetup || session?.localPaused || manual || nativeDisplay ? "none" : "flex" }}>
       <Box sx={{ px: 1, pt: .75 }}><BrowserPageStrip pages={manual ? [] : session?.pages ?? []} activePageId={browser.viewedPageId} agentPageId={!operator ? session?.activePageId : undefined} loadingPageId={browser.navigate.isPending ? browser.viewedPageId : undefined} canManage={operator} busy={browser.inputPending || browser.navigate.isPending || browser.activatePage.isPending || browser.closePage.isPending || browser.newPage.isPending} onActivate={browser.viewPage} onClose={id => browser.closePage.mutate(id)} onNew={() => browser.newPage.mutate()} /></Box>
       {!operator && session?.status === "ready" ? <Button size="small" aria-pressed={browser.followAgent} onClick={() => browser.setFollowAgent(!browser.followAgent)} sx={{ alignSelf: "flex-start", mx: 1 }}>{browser.followAgent ? "Following agent" : "Follow agent"}</Button> : null}
       <Stack component="form" direction="row" spacing={.25} sx={{ px: .5, py: .25, alignItems: "center", "& .MuiIconButton-root": { p: .5 }, "& .MuiSvgIcon-root": { fontSize: 16 }, "& input": { py: .5, px: 1, fontSize: 12 } }} onSubmit={event => { event.preventDefault(); navigate(); }}>

@@ -14,8 +14,8 @@ import type {
   ModelOption,
 } from "@ponderosa/core";
 import {
-  openManagedArtifactContent,
   publishManagedArtifactContentsAsync,
+  readManagedArtifactContentsAsync,
   readManagedArtifactContent,
   removeManagedArtifactContent,
   stableJson,
@@ -352,9 +352,12 @@ export function registerAgentPackageRoutes(
       }
       return [agent.id, history] as const;
     }));
+    const projectArtifacts = mode === "template"
+      ? []
+      : store.getProjectArtifacts(root.projectId);
     const artifactOwner = new Map<string, string>();
     if (mode !== "template") {
-      for (const artifact of store.getProjectArtifacts(root.projectId)) {
+      for (const artifact of projectArtifacts) {
         if (artifact.originAgentId && included.has(artifact.originAgentId)) {
           artifactOwner.set(artifact.id, artifact.originAgentId);
           continue;
@@ -365,12 +368,13 @@ export function registerAgentPackageRoutes(
         if (referencingAgent) artifactOwner.set(artifact.id, referencingAgent.id);
       }
     }
-    const agents = await Promise.all(nodes.map(async (agent) => {
+    const agents: AgentPortablePackageDto["agents"] = [];
+    for (const agent of nodes) {
       const history = histories.get(agent.id) ?? [];
       const historyText = history.map((message) => message.text).join("\n");
-      const projectArtifacts = mode === "template"
+      const selectedArtifacts = mode === "template"
         ? []
-        : store.getProjectArtifacts(agent.projectId).filter((artifact) =>
+        : projectArtifacts.filter((artifact) =>
           artifactOwner.get(artifact.id) === agent.id
           && (
             mode === "full"
@@ -378,7 +382,44 @@ export function registerAgentPackageRoutes(
             || artifact.visibility === "published"
             || historyText.includes(artifact.id)
           ));
-      const artifacts = await Promise.all(projectArtifacts.map(async (artifact) => {
+      const artifacts: NonNullable<AgentPortablePackageDto["agents"][number]["artifacts"]> = [];
+      const pendingArtifacts: Array<{
+        artifact: typeof selectedArtifacts[number];
+        identity: { size: number; sha256: string };
+      }> = [];
+      let reservedArtifactBytes = portableArtifactBytes;
+      const flushArtifacts = async (): Promise<void> => {
+        if (pendingArtifacts.length === 0) return;
+        const batch = pendingArtifacts.splice(0);
+        const bodies = await readManagedArtifactContentsAsync(
+          context.dataDir,
+          agent.projectId,
+          batch.map(({ artifact, identity }) => ({
+            artifactId: artifact.id,
+            expectedSize: identity.size,
+            expectedSha256: identity.sha256,
+          })),
+        );
+        for (const [index, { artifact }] of batch.entries()) {
+          const data = bodies[index];
+          if (!data) {
+            throw new AssetError(409, `artifact ${artifact.id} content is unavailable or changed`);
+          }
+          artifacts.push({
+            ref: artifact.id,
+            kind: artifact.kind,
+            path: artifact.path,
+            ...(artifact.summary ? { summary: artifact.summary } : {}),
+            createdAt: artifact.createdAt,
+            ...(artifact.mediaType ? { mediaType: artifact.mediaType } : {}),
+            ...(artifact.visibility ? { visibility: artifact.visibility } : {}),
+            ...(artifact.pinned !== undefined ? { pinned: artifact.pinned } : {}),
+            ...(artifact.sourcePath ? { sourcePath: artifact.sourcePath } : {}),
+            dataBase64: await encodePortableArtifact(data),
+          });
+        }
+      };
+      for (const artifact of selectedArtifacts) {
         const runtimeArtifact = coordinationV3.runtimeArtifact(artifact.id);
         const runtimeIdentity = runtimeArtifact?.projectId === agent.projectId &&
           assets.authoritativeRuntimeArtifactMetadata(
@@ -407,48 +448,22 @@ export function registerAgentPackageRoutes(
             : undefined;
         const identity =
           runtimeIdentity ?? generatedIdentity ?? fallbackIdentity;
-        const opened = identity
-          ? await openManagedArtifactContent(
-              context.dataDir,
-              agent.projectId,
-              artifact.id,
-              identity.size,
-              identity.sha256,
-            )
-          : undefined;
-        if (!opened) {
-          throw new AssetError(
-            409,
-            `artifact ${artifact.id} content is unavailable or changed`,
-          );
-        }
-        let data: Buffer;
-        try {
-          data = await opened.readRange(identity!.size);
-        } finally {
-          await opened.close();
-        }
-        portableArtifactBytes += data.length;
-        if (portableArtifactBytes > 64 * 1024 * 1024) {
+        if (identity && reservedArtifactBytes + identity.size > 64 * 1024 * 1024) {
           throw new AssetError(
             413,
             "portable Agent package artifacts exceed the 64 MiB export limit",
           );
         }
-        return {
-          ref: artifact.id,
-          kind: artifact.kind,
-          path: artifact.path,
-          ...(artifact.summary ? { summary: artifact.summary } : {}),
-          createdAt: artifact.createdAt,
-          ...(artifact.mediaType ? { mediaType: artifact.mediaType } : {}),
-          ...(artifact.visibility ? { visibility: artifact.visibility } : {}),
-          ...(artifact.pinned !== undefined ? { pinned: artifact.pinned } : {}),
-          ...(artifact.sourcePath ? { sourcePath: artifact.sourcePath } : {}),
-          dataBase64: await encodePortableArtifact(data),
-        };
-      }));
-      return {
+        if (!identity) {
+          throw new AssetError(409, `artifact ${artifact.id} content is unavailable or changed`);
+        }
+        reservedArtifactBytes += identity.size;
+        pendingArtifacts.push({ artifact, identity });
+        if (pendingArtifacts.length >= 128) await flushArtifacts();
+      }
+      await flushArtifacts();
+      portableArtifactBytes = reservedArtifactBytes;
+      agents.push({
         ref: agent.id,
         title: agent.title,
         engine: agent.activeEngine,
@@ -466,8 +481,8 @@ export function registerAgentPackageRoutes(
           : {}),
         ...(mode !== "template" ? { history } : {}),
         ...(artifacts.length ? { artifacts } : {}),
-      };
-    }));
+      });
+    }
     return {
       schema: "ponderosa.agent-package.v1",
       mode,
@@ -1689,7 +1704,7 @@ export function registerAgentPackageRoutes(
       }
       if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
           Object.keys(request.body).some((key) => ![
-            "sourceAgentId", "conversationId", "mode", "organization",
+            "sourceAgentId", "conversationId", "rootTitle", "mode", "organization",
             "acknowledgeElevatedManagementPermissions",
           ].includes(key)) ||
           typeof request.body.sourceAgentId !== "string" ||
@@ -1698,9 +1713,20 @@ export function registerAgentPackageRoutes(
       }
       const sourceAgentId = request.body.sourceAgentId.trim();
       const conversationId = request.body.conversationId.trim();
+      const rootTitle = typeof request.body.rootTitle === "string"
+        ? request.body.rootTitle.trim()
+        : undefined;
       if (
         !sourceAgentId
         || !conversationId
+        || (
+          request.body.rootTitle !== undefined
+          && (
+            typeof request.body.rootTitle !== "string"
+            || !rootTitle
+            || rootTitle.length > 80
+          )
+        )
         || (
           request.body.mode !== undefined
           && request.body.mode !== "template"
@@ -1723,6 +1749,7 @@ export function registerAgentPackageRoutes(
       const payloadHash = createHash("sha256").update(stableJson({
         sourceAgentId,
         conversationId,
+        ...(rootTitle ? { rootTitle } : {}),
         mode: request.body.mode ?? "full",
         organization: request.body.organization ?? false,
         acknowledgeElevatedManagementPermissions:
@@ -1800,7 +1827,15 @@ export function registerAgentPackageRoutes(
             ),
           );
         }
-        portable = prepared.portable;
+        portable = rootTitle
+          ? {
+              ...prepared.portable,
+              agents: prepared.portable.agents.map((node) =>
+                node.ref === prepared.portable.rootRef
+                  ? { ...node, title: rootTitle }
+                  : node),
+            }
+          : prepared.portable;
         if (!savedSnapshot) {
           store.updateAgentCreationOperation(creationOperation.id, {
             result: {

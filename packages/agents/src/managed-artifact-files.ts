@@ -34,6 +34,12 @@ export interface ManagedArtifactBatchInput {
   input: Buffer | string;
 }
 
+export interface ManagedArtifactReadInput {
+  artifactId: string;
+  expectedSize: number;
+  expectedSha256: string;
+}
+
 const SAFE_LEAF = /^[A-Za-z0-9_-]{1,128}$/u;
 const activePublications = new Set<string>();
 
@@ -71,6 +77,82 @@ function publicationWorkerUrl(): URL {
   return import.meta.url.endsWith(".ts")
     ? new URL("../dist/managed-artifact-publication-worker.js", import.meta.url)
     : new URL("./managed-artifact-publication-worker.js", import.meta.url);
+}
+
+function readWorkerUrl(): URL {
+  return import.meta.url.endsWith(".ts")
+    ? new URL("../dist/managed-artifact-read-worker.js", import.meta.url)
+    : new URL("./managed-artifact-read-worker.js", import.meta.url);
+}
+
+/** Verify many small immutable blobs off the event loop without a new worker
+ * for every file. A missing or changed blob remains undefined (fail closed). */
+export async function readManagedArtifactContentsAsync(
+  dataDir: string,
+  projectId: string,
+  inputs: readonly ManagedArtifactReadInput[],
+): Promise<Array<Buffer | undefined>> {
+  if (!safeProjectId(projectId)) throw new Error("managed artifact Project id must be a single safe leaf");
+  const chunks: Array<{ start: number; entries: ManagedArtifactReadInput[] }> = [];
+  let entries: ManagedArtifactReadInput[] = [];
+  let bytes = 0;
+  let start = 0;
+  for (const input of inputs) {
+    if (!safeArtifactId(input.artifactId) ||
+        !Number.isSafeInteger(input.expectedSize) || input.expectedSize < 1 ||
+        input.expectedSize > MANAGED_ARTIFACT_MAX_BYTES ||
+        !/^[a-f0-9]{64}$/u.test(input.expectedSha256)) {
+      throw new Error("managed artifact read identity is invalid");
+    }
+    if (entries.length && (entries.length >= 128 || bytes + input.expectedSize > 8 * 1024 * 1024)) {
+      chunks.push({ start, entries });
+      start += entries.length;
+      entries = [];
+      bytes = 0;
+    }
+    entries.push(input);
+    bytes += input.expectedSize;
+  }
+  if (entries.length) chunks.push({ start, entries });
+  const result = new Array<Buffer | undefined>(inputs.length);
+  let next = 0;
+  const readChunk = (chunk: typeof chunks[number]): Promise<void> => new Promise((resolve, reject) => {
+    let worker: Worker;
+    try {
+      worker = new Worker(readWorkerUrl(), {
+        workerData: { dataDir, projectId, entries: chunk.entries },
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    let settled = false;
+    const finish = (outcome: { bodies?: Array<Uint8Array | undefined>; error?: string }): void => {
+      if (settled) return;
+      settled = true;
+      worker.removeAllListeners();
+      void worker.terminate().then(() => {
+        if (outcome.error) return reject(new Error(outcome.error));
+        if (outcome.bodies?.length !== chunk.entries.length) {
+          return reject(new Error("managed artifact read worker returned incomplete results"));
+        }
+        outcome.bodies.forEach((body, index) => {
+          result[chunk.start + index] = body ? Buffer.from(body) : undefined;
+        });
+        resolve();
+      }, reject);
+    };
+    worker.once("message", finish);
+    worker.once("error", (error) => finish({ error: error.message }));
+    worker.once("exit", (code) => {
+      if (!settled) finish({ error: `managed artifact read worker exited without a result (code ${code})` });
+    });
+  });
+  const readNext = async (): Promise<void> => {
+    while (next < chunks.length) await readChunk(chunks[next++]!);
+  };
+  await Promise.all(Array.from({ length: Math.min(4, chunks.length) }, () => readNext()));
+  return result;
 }
 
 function publishManagedArtifactContentNative(
@@ -267,6 +349,103 @@ export function publishManagedArtifactContentAsync(
   });
 }
 
+/** Keep one worker busy with a bounded group instead of starting a worker for
+ * every small artifact in a large import. */
+function publishManagedArtifactChunkAsync(
+  dataDir: string,
+  projectId: string,
+  inputs: readonly ManagedArtifactBatchInput[],
+  signal?: AbortSignal,
+): Promise<Array<Omit<ManagedArtifactFile, "body">>> {
+  if (!safeProjectId(projectId)) {
+    throw new Error("managed artifact Project id must be a single safe leaf");
+  }
+  signal?.throwIfAborted();
+  const entries: Array<{ artifactId: string; body: Uint8Array }> = [];
+  const keys: string[] = [];
+  for (const { artifactId, input } of inputs) {
+    if (!safeArtifactId(artifactId)) {
+      throw new Error("managed artifact id must be a single safe leaf");
+    }
+    const source = Buffer.isBuffer(input) ? input : Buffer.from(input, "utf8");
+    if (source.length < 1 || source.length > MANAGED_ARTIFACT_MAX_BYTES) {
+      throw new Error("managed artifact must contain 1 to 64 MiB");
+    }
+    const key = publicationKey(dataDir, projectId, artifactId);
+    if (activePublications.has(key)) {
+      throw new Error("managed artifact publication is already active");
+    }
+    const body = new Uint8Array(source.length);
+    body.set(source);
+    entries.push({ artifactId, body });
+    keys.push(key);
+  }
+  for (const key of keys) activePublications.add(key);
+  return new Promise((resolve, reject) => {
+    let worker: Worker;
+    try {
+      signal?.throwIfAborted();
+      worker = new Worker(publicationWorkerUrl(), {
+        workerData: { dataDir, projectId, entries },
+        transferList: entries.map(({ body }) => body.buffer as ArrayBuffer),
+      });
+    } catch (error) {
+      for (const key of keys) activePublications.delete(key);
+      reject(error);
+      return;
+    }
+    let settled = false;
+    const release = (): void => {
+      for (const key of keys) activePublications.delete(key);
+    };
+    const detachListeners = (): void => {
+      signal?.removeEventListener("abort", abort);
+      worker.removeAllListeners();
+    };
+    const finish = (
+      outcome: { results?: Array<Omit<ManagedArtifactFile, "body">>; error?: string },
+      workerExited = false,
+    ): void => {
+      if (settled) return;
+      settled = true;
+      detachListeners();
+      const settle = (): void => {
+        release();
+        if (outcome.error) reject(new Error(outcome.error));
+        else if (outcome.results?.length === inputs.length) resolve(outcome.results);
+        else reject(new Error("managed artifact publication worker returned incomplete results"));
+      };
+      if (workerExited) settle();
+      else void worker.terminate().then(settle, (error: unknown) => {
+        release();
+        reject(error instanceof Error ? error : new Error("managed artifact publication worker termination failed"));
+      });
+    };
+    const abort = (): void => {
+      if (settled) return;
+      settled = true;
+      detachListeners();
+      const reason = signal?.reason instanceof Error
+        ? signal.reason
+        : new Error("managed artifact publication aborted");
+      void worker.terminate().then(() => {
+        release();
+        reject(reason);
+      }, (error: unknown) => {
+        release();
+        reject(error instanceof Error ? error : reason);
+      });
+    };
+    worker.once("message", finish);
+    worker.once("error", error => finish({ error: error.message }));
+    worker.once("exit", code => {
+      if (!settled) finish({ error: `managed artifact publication worker exited without a result (code ${code})` }, true);
+    });
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+  });
+}
+
 /** Publish an immutable group in bounded worker concurrency. A failure aborts
  * and observes every outstanding worker before returning; installed leaves
  * remain uncatalogued for identity-bound orphan repair. */
@@ -288,6 +467,24 @@ export async function publishManagedArtifactContentsAsync(
     ids.add(artifactId);
   }
   if (inputs.length === 0) return [];
+  const chunks: Array<{ start: number; inputs: ManagedArtifactBatchInput[] }> = [];
+  let chunk: ManagedArtifactBatchInput[] = [];
+  let chunkBytes = 0;
+  let chunkStart = 0;
+  for (const item of inputs) {
+    const bytes = Buffer.isBuffer(item.input)
+      ? item.input.length
+      : Buffer.byteLength(item.input, "utf8");
+    if (chunk.length && (chunk.length >= 128 || chunkBytes + bytes > 8 * 1024 * 1024)) {
+      chunks.push({ start: chunkStart, inputs: chunk });
+      chunkStart += chunk.length;
+      chunk = [];
+      chunkBytes = 0;
+    }
+    chunk.push(item);
+    chunkBytes += bytes;
+  }
+  if (chunk.length) chunks.push({ start: chunkStart, inputs: chunk });
   const controller = new AbortController();
   const combinedSignal = signal
     ? AbortSignal.any([signal, controller.signal])
@@ -299,16 +496,16 @@ export async function publishManagedArtifactContentsAsync(
   const publishNext = async (): Promise<void> => {
     while (!firstError) {
       const index = nextIndex++;
-      if (index >= inputs.length) return;
-      const item = inputs[index]!;
+      if (index >= chunks.length) return;
+      const chunk = chunks[index]!;
       try {
-        results[index] = await publishManagedArtifactContentAsync(
+        const published = await publishManagedArtifactChunkAsync(
           dataDir,
           projectId,
-          item.artifactId,
-          item.input,
+          chunk.inputs,
           combinedSignal,
         );
+        published.forEach((result, offset) => { results[chunk.start + offset] = result; });
       } catch (error) {
         firstError ??= error;
         controller.abort(error);
@@ -317,7 +514,7 @@ export async function publishManagedArtifactContentsAsync(
   };
   await Promise.all(
     Array.from(
-      { length: Math.min(concurrency, inputs.length) },
+      { length: Math.min(concurrency, chunks.length) },
       () => publishNext(),
     ),
   );

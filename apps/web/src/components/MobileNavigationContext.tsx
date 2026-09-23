@@ -2,34 +2,37 @@ import MenuIcon from "@mui/icons-material/Menu";
 import { IconButton, Tooltip } from "@mui/material";
 import { createContext, useContext, type ReactNode } from "react";
 
-const MobileNavigationContext = createContext<(() => void) | undefined>(
-  undefined,
-);
+const MobileNavigationContext = createContext<{
+  onOpen(): void;
+  desktopVisible: boolean;
+} | undefined>(undefined);
 
 export function MobileNavigationProvider({
   onOpen,
+  desktopVisible = false,
   children,
 }: {
   onOpen(): void;
+  desktopVisible?: boolean;
   children: ReactNode;
 }): JSX.Element {
   return (
-    <MobileNavigationContext.Provider value={onOpen}>
+    <MobileNavigationContext.Provider value={{ onOpen, desktopVisible }}>
       {children}
     </MobileNavigationContext.Provider>
   );
 }
 
 export function MobileNavigationButton(): JSX.Element | null {
-  const onOpen = useContext(MobileNavigationContext);
-  if (!onOpen) return null;
+  const navigation = useContext(MobileNavigationContext);
+  if (!navigation) return null;
   return (
     <Tooltip title="Open navigation">
       <IconButton
         aria-label="Open workspace navigation"
-        onClick={onOpen}
+        onClick={navigation.onOpen}
         sx={{
-          display: { xs: "inline-flex", md: "none" },
+          display: { xs: "inline-flex", md: navigation.desktopVisible ? "inline-flex" : "none" },
           width: 40,
           height: 40,
           ml: -0.5,

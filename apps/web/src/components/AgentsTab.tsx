@@ -1,6 +1,6 @@
 import AddIcon from "@mui/icons-material/Add";
-import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import FilterListOutlinedIcon from "@mui/icons-material/FilterListOutlined";
@@ -18,6 +18,7 @@ import {
   Box,
   Button,
   Checkbox,
+  Drawer,
   FormControl,
   IconButton,
   InputLabel,
@@ -35,12 +36,16 @@ import type {
   AgentDto,
   AgentHealthDto,
   EngineDto,
+  ProjectDto,
 } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
-import { ImportAgentDialog } from "./ImportAgentDialog";
+import { AddAgentsFlow } from "./AddAgentsFlow";
+import { AgentPackageExportDialog } from "./AgentPackageDialogs";
+import { useAgentPackageActions } from "./useAgentPackageActions";
+import { useMutationNotification } from "./MutationNotifications";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { AgentOrganizationDialog } from "./AgentDetail.parts";
 import { TextInputDialog } from "./ConfirmationDialogs";
@@ -102,6 +107,7 @@ function AgentRosterShell({
   collectionRequest,
   scopeLabel,
   headerActions,
+  compactHeaderActions,
   toolbar,
   children,
 }: {
@@ -114,6 +120,7 @@ function AgentRosterShell({
   collectionRequest?: WorkspaceDirectoryRequestState;
   scopeLabel?: string;
   headerActions: ReactNode;
+  compactHeaderActions?: ReactNode;
   toolbar: ReactNode;
   children: ReactNode;
 }): JSX.Element {
@@ -126,6 +133,7 @@ function AgentRosterShell({
         primaryAction={
           collection.variant === "embedded" ? undefined : headerActions
         }
+        compactPrimaryAction={collection.variant === "embedded" ? undefined : compactHeaderActions}
         toolbar={toolbar}
         listLabel={collection.title}
         variant={collection.variant}
@@ -184,6 +192,7 @@ export function AgentsTab({
   agents,
   relationshipAgents = agents,
   projectId,
+  projects,
   engines,
   conversations,
   conversationFilterValue,
@@ -196,12 +205,14 @@ export function AgentsTab({
   onOpenAgentSettings,
   onAgentsDeleted,
   onNewAgent,
-  showImportAction = true,
   projectByAgentId,
+  ownerConversationByAgentId,
   starredAgentIds,
   onToggleStar,
   displayOrder,
   selectionAllowed = true,
+  persistentSelectionMode = false,
+  selectionReady = true,
   onReorder,
   toolbarControls,
   scopeLabel,
@@ -221,6 +232,7 @@ export function AgentsTab({
   /** Complete Project roster used only to resolve stable management links. */
   relationshipAgents?: readonly AgentDto[];
   projectId?: string;
+  projects?: ProjectDto[];
   engines: EngineDto[];
   conversations: ConversationDto[];
   /** Optional server-backed Chat filter for paginated directories. */
@@ -235,12 +247,15 @@ export function AgentsTab({
   onOpenAgentSettings?(agentId: string): void;
   onAgentsDeleted?(projectId: string, agentIds: string[]): void;
   onNewAgent(managerAgentId?: string): void;
-  showImportAction?: boolean;
   projectByAgentId?: Map<string, { id: string; label: string }>;
+  /** Owner labels from the Agent directory, independent of Chat pagination. */
+  ownerConversationByAgentId?: ReadonlyMap<string, string>;
   starredAgentIds?: ReadonlySet<string>;
   onToggleStar?(agentId: string): void;
   displayOrder?: readonly string[];
   selectionAllowed?: boolean;
+  persistentSelectionMode?: boolean;
+  selectionReady?: boolean;
   onReorder?(
     sourceAgentId: string,
     targetAgentId: string,
@@ -272,6 +287,7 @@ export function AgentsTab({
   organizationRootAgentId?: string;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const workspaceConnection = useWorkspaceConnection();
   const [statusFilters, setStatusFilters] = useState<StatusFilter[]>([]);
   const [masterFilter, setMasterFilter] = useState<string>("all");
@@ -289,17 +305,24 @@ export function AgentsTab({
   const [organizationParentId, setOrganizationParentId] = useState("");
   const [bulkError, setBulkError] = useState<string>();
   const [stoppingAll, setStoppingAll] = useState(false);
-  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(persistentSelectionMode);
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(
     () => new Set(),
   );
   const [deleteSelectedGroups, setDeleteSelectedGroups] = useState<
     Array<{ projectId: string; agentIds: string[] }>
   >([]);
-  const [importOpen, setImportOpen] = useState(false);
+  const [addAgentsOpen, setAddAgentsOpen] = useState(false);
+  const [exportAgent, setExportAgent] = useState<AgentDto>();
+  const { copyAgentPackage, downloadAgentPackage } = useAgentPackageActions({
+    agentId: exportAgent?.id ?? "",
+    title: exportAgent?.title,
+    onNotice: notify,
+  });
   const [agentMenu, setAgentMenu] =
     useState<ResourceContextMenuState<string>>();
   const [statusAnchor, setStatusAnchor] = useState<HTMLElement>();
+  const [compactFiltersOpen, setCompactFiltersOpen] = useState(false);
   const [draggedAgentId, setDraggedAgentId] = useState<string>();
   const [organizationView, setOrganizationView] = useState<
     "hierarchy" | "flat"
@@ -405,6 +428,8 @@ export function AgentsTab({
   });
 
   const conversationName = (agent: AgentDto): string => {
+    const directoryOwner = ownerConversationByAgentId?.get(agent.id);
+    if (directoryOwner) return directoryOwner;
     const conversation = resolveAgentConversation(
       agent,
       conversations,
@@ -545,7 +570,7 @@ export function AgentsTab({
       return next;
     });
   const leaveSelectionMode = () => {
-    setSelectionMode(false);
+    setSelectionMode(persistentSelectionMode);
     setSelectedAgentIds(new Set());
     setDeleteSelectedGroups([]);
   };
@@ -616,8 +641,8 @@ export function AgentsTab({
       flexWrap="wrap"
       sx={{ alignItems: "center" }}
     >
-      <Button color="inherit" size="small" onClick={toggleVisibleSelection}>
-        {allVisibleSelected ? "Clear Visible" : "Select All Visible"}
+      <Button color="inherit" size="small" disabled={!selectionReady} onClick={toggleVisibleSelection}>
+        {!selectionReady ? "Loading all Agents…" : allVisibleSelected ? "Clear all" : "Select all"}
       </Button>
       <Button
         color="error"
@@ -629,7 +654,7 @@ export function AgentsTab({
         Delete Selected ({selectedAgentIds.size})
       </Button>
       <Button color="inherit" size="small" onClick={leaveSelectionMode}>
-        Cancel Selection
+        {persistentSelectionMode ? "Clear" : "Cancel Selection"}
       </Button>
     </Stack>
   ) : null;
@@ -658,9 +683,9 @@ export function AgentsTab({
           size="small"
           variant="contained"
           startIcon={<AddIcon />}
-          onClick={() => onNewAgent(organizationRootAgentId)}
+          onClick={() => setAddAgentsOpen(true)}
         >
-          New Agent
+          Add Agents
         </Button>
       ) : null}
       {!selectionMode && organizationDataComplete && activeRunTargets.length > 0 ? (
@@ -674,19 +699,22 @@ export function AgentsTab({
           {stoppingAll ? "Stopping…" : "Stop All"}
         </Button>
       ) : null}
-      {!selectionMode && showImportAction ? (
+      {!selectionMode && !collection ? (
         <Button
           size="small"
-          color="inherit"
-          variant="outlined"
-          startIcon={<FileUploadOutlinedIcon />}
-          disabled={!projectId}
-          onClick={() => setImportOpen(true)}
+          variant="contained"
+          startIcon={<AddIcon />}
+          onClick={() => setAddAgentsOpen(true)}
         >
-          Import
+          Add Agents
         </Button>
       ) : null}
     </Stack>
+  );
+  const compactHeaderActions = selectionMode ? (
+    <Tooltip title="Selection actions"><IconButton aria-label="Selection actions" onClick={() => setCompactFiltersOpen(true)}><MoreVertIcon /></IconButton></Tooltip>
+  ) : (
+    <Tooltip title="Add Agents"><IconButton aria-label="Add Agents" onClick={() => setAddAgentsOpen(true)}><AddIcon /></IconButton></Tooltip>
   );
   return (
     <AgentRosterShell
@@ -694,7 +722,9 @@ export function AgentsTab({
       collectionRequest={collectionRequest}
       scopeLabel={scopeLabel}
       headerActions={headerActions}
+      compactHeaderActions={compactHeaderActions}
       toolbar={
+        <>
         <CollectionToolbar
           search={effectiveSearch}
           onSearch={setEffectiveSearch}
@@ -703,6 +733,7 @@ export function AgentsTab({
           reorderHint={
             organizationView === "flat" && Boolean(onReorder)
           }
+          compactControls={<Button color="inherit" size="small" startIcon={<FilterListOutlinedIcon />} onClick={() => setCompactFiltersOpen(true)} aria-label="Agent filters and view" sx={{ minHeight: 40, minWidth: 44, px: 1 }}>Filters{statusFilters.length || effectiveMasterFilter !== "all" ? ` (${statusFilters.length + (effectiveMasterFilter !== "all" ? 1 : 0)})` : ""}</Button>}
         >
           {toolbarControls}
               <Stack
@@ -845,6 +876,43 @@ export function AgentsTab({
               )}
               {embeddedCollection ? headerActions : null}
         </CollectionToolbar>
+        <Drawer anchor="bottom" open={compactFiltersOpen} onClose={() => setCompactFiltersOpen(false)} PaperProps={{ sx: { borderRadius: "16px 16px 0 0", maxHeight: "min(80dvh, 680px)", overflowY: "auto", p: 2, pb: "calc(16px + env(safe-area-inset-bottom, 0px))" } }}>
+          <Stack spacing={2} sx={{ maxWidth: 520, width: "100%", mx: "auto" }}>
+            <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between" }}>
+              <Typography variant="h6" fontWeight={750}>Filters and view</Typography>
+              <Button onClick={() => setCompactFiltersOpen(false)}>Done</Button>
+            </Stack>
+            <Stack direction="row" role="group" aria-label="Agent organization view" sx={{ border: 1, borderColor: "divider", borderRadius: 1, alignSelf: "flex-start" }}>
+              <IconButton aria-label="Show Agent hierarchy" aria-pressed={organizationView === "hierarchy"} disabled={loadingOrganizationData || (Boolean(onLoadOrganizationData) && organizationScopeFiltered)} onClick={() => void showCompleteHierarchy()}><AccountTreeOutlinedIcon /></IconButton>
+              <IconButton aria-label="Show flat Agent list" aria-pressed={organizationView === "flat"} onClick={() => setOrganizationView("flat")}><ViewListOutlinedIcon /></IconButton>
+            </Stack>
+            {toolbarControls}
+            <Box>
+              <Typography fontWeight={700} sx={{ mb: 0.5 }}>Status</Typography>
+              <MenuItem onClick={() => setStatusFilters([])}><Checkbox checked={statusFilters.length === 0} />All ({scopedAgents.length}{statusCollectionComplete ? "" : " loaded"})</MenuItem>
+              {statusOptions.filter(option => option.value !== "all").map(option => <MenuItem key={option.value} onClick={() => setStatusFilters(current => current.includes(option.value as StatusFilter) ? current.filter(value => value !== option.value) : [...current, option.value as StatusFilter])}>
+                <Checkbox checked={statusFilters.includes(option.value as StatusFilter)} />{option.label} ({option.count}{statusCollectionComplete ? "" : " loaded"})
+              </MenuItem>)}
+            </Box>
+            {!embeddedCollection ? <FormControl size="small" fullWidth>
+              <InputLabel id="agents-compact-chat-filter-label">Chat</InputLabel>
+              <Select labelId="agents-compact-chat-filter-label" label="Chat" value={effectiveMasterFilter} disabled={Boolean(conversationFilterRequest?.isInitialLoading || conversationFilterRequest?.isRefreshing)} onChange={(event: SelectChangeEvent) => {
+                if (event.target.value === "__load_more__") { void conversationFilterRequest?.fetchNextPage(); return; }
+                setEffectiveMasterFilter(event.target.value);
+              }}>
+                <MenuItem value="all">All Chats</MenuItem>
+                {conversations.map(master => <MenuItem key={master.id} value={master.id}>{master.title}</MenuItem>)}
+                {conversationFilterRequest?.hasNextPage || conversationFilterRequest?.isPaginationError ? <MenuItem value="__load_more__" disabled={conversationFilterRequest.isFetchingNextPage}>{conversationFilterRequest.isPaginationError ? "Retry loading Chats" : conversationFilterRequest.isFetchingNextPage ? "Loading more Chats..." : "Load more Chats..."}</MenuItem> : null}
+              </Select>
+            </FormControl> : null}
+            {selectionMode ? selectionControls : <>
+              {selectionAllowed && agents.length > 0 ? <Button onClick={() => { setSelectionMode(true); setCompactFiltersOpen(false); }}>Select Agents</Button> : null}
+              <Button startIcon={<AddIcon />} onClick={() => { setCompactFiltersOpen(false); setAddAgentsOpen(true); }}>Add Agents</Button>
+              {organizationDataComplete && activeRunTargets.length > 0 ? <Button color="error" disabled={stoppingAll} onClick={() => void stopAll()}>{stoppingAll ? "Stopping…" : "Stop All"}</Button> : null}
+            </>}
+          </Stack>
+        </Drawer>
+        </>
       }
     >
       {bulkError ? (
@@ -853,14 +921,27 @@ export function AgentsTab({
         </Alert>
       ) : null}
 
-      {projectId ? (
-        <ImportAgentDialog
-          open={importOpen}
-          projectId={projectId}
-          engines={engines}
-          conversations={conversations}
-          initialConversationId={conversations[0]?.id}
-          onClose={() => setImportOpen(false)}
+      <AddAgentsFlow
+        open={addAgentsOpen}
+        projects={projects}
+        fixedProjectId={projects?.length ? undefined : projectId}
+        initialProjectId={projects?.length ? projectId : undefined}
+        initialConversation={conversations.find(chat => chat.id === scopeConversationId)}
+        conversations={conversations}
+        engines={engines}
+        onCreate={() => onNewAgent(organizationRootAgentId)}
+        onClose={() => setAddAgentsOpen(false)}
+        onCreated={projects?.length ? undefined : (_projectId, agentId) => onOpenAgent(agentId)}
+      />
+      {exportAgent ? (
+        <AgentPackageExportDialog
+          open
+          source={exportAgent}
+          agents={agents}
+          initialOrganization
+          onClose={() => setExportAgent(undefined)}
+          onCopy={copyAgentPackage}
+          onDownload={downloadAgentPackage}
         />
       ) : null}
 
@@ -979,6 +1060,7 @@ export function AgentsTab({
                     label={agent.title}
                     description={
                       <>
+                        {ownerConversationByAgentId ? `Chat: ${conversationName(agent)} · ` : null}
                         {orphaned
                           ? organizationDataComplete
                             ? "Unlinked Agent"
@@ -1261,6 +1343,14 @@ export function AgentsTab({
                   icon: <PersonAddAlt1Icon fontSize="small" />,
                   onSelect: onNewAgent,
                 },
+                ...(organizationDataComplete && childrenByManager.has(agentMenu.resource)
+                  ? [{
+                      id: "export-organization",
+                      label: "Export organization…",
+                      icon: <DownloadOutlinedIcon fontSize="small" />,
+                      onSelect: (agentId: string) => setExportAgent(agentsById.get(agentId)),
+                    }]
+                  : []),
                 ...(organizationDataComplete
                   ? [
                       {

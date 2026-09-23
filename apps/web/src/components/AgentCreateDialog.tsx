@@ -658,9 +658,9 @@ function ScopedAgentCreateSurface({
           sx={{ alignItems: "center", justifyContent: "space-between" }}
         >
           <div>
-            <Typography variant="h6">Import Agent or Organization</Typography>
+            <Typography variant="h6">Import Agent package</Typography>
             <Typography variant="body2" color="text.secondary">
-              Restore an exported Agent package into a Chat.
+              Import one Agent or an organization into a chat.
             </Typography>
           </div>
           <Button
@@ -669,7 +669,7 @@ function ScopedAgentCreateSurface({
             disabled={pending}
             onClick={() => setMode("create")}
           >
-            Create New
+            Create new Agent
           </Button>
         </Stack>
         {!fixedProjectId ? (
@@ -695,13 +695,15 @@ function ScopedAgentCreateSurface({
             projectId={importProjectId}
             engines={engines}
             conversations={conversations}
+            fixedConversationId={fixedConversationId}
+            requireDestinationSelection={!fixedConversationId}
             initialConversationId={
               fixedConversationId &&
               conversations.some(
                 conversation => conversation.id === fixedConversationId,
               )
                 ? fixedConversationId
-                : conversations[0]?.id
+                : undefined
             }
             onCancel={onCancel}
             onPendingChange={updatePending}
@@ -727,7 +729,7 @@ function ScopedAgentCreateSurface({
         <div>
           <Typography variant="h6">Create Agent</Typography>
           <Typography variant="body2" color="text.secondary">
-            Add a managed worker or restore one from an export.
+            Create a managed Agent in a chat.
           </Typography>
         </div>
         <Button
@@ -736,7 +738,7 @@ function ScopedAgentCreateSurface({
           disabled={pending}
           onClick={() => setMode("import")}
         >
-          Import Agent
+          Import Agent package
         </Button>
       </Stack>
       <AgentCreateForm

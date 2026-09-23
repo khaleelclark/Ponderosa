@@ -118,6 +118,7 @@ export {
   publishManagedArtifactContentAsync,
   publishManagedArtifactContents,
   publishManagedArtifactContentsAsync,
+  readManagedArtifactContentsAsync,
   removeManagedArtifactContent,
   openManagedArtifactContent,
   readManagedArtifactContent,
@@ -125,6 +126,7 @@ export {
   type ManagedArtifactFile,
   type ManagedArtifactContentHandle,
   type ManagedArtifactBatchInput,
+  type ManagedArtifactReadInput,
 } from "./managed-artifact-files.js";
 export type { Db } from "./db.js";
 export {

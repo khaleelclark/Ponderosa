@@ -296,6 +296,26 @@ test("draft conflicts keep stable IDs and resolve one snapshot idempotently acro
     store.listDraftConflicts("chat-a", "browser-a").conflicts.map(({ id }) => id),
     [firstConflict.id],
   );
+  assert.throws(
+    () => store.putDraft("chat-a", {
+      ...stale,
+      text: "discard me",
+      clientId: "page:browser-a:draft:other-stale",
+    }),
+    error => error?.code === "DRAFT_CONFLICT" &&
+      error.conflict.id === secondConflict.id,
+  );
+  assert.deepEqual(
+    store.listDraftConflicts("chat-a", "browser-a").conflicts.map(({ id }) => id),
+    [firstConflict.id],
+    "a repeated stale write must not resurrect its discarded conflict",
+  );
+  store = new WorkspaceStore(directory);
+  assert.deepEqual(
+    store.listDraftConflicts("chat-a", "browser-a").conflicts.map(({ id }) => id),
+    [firstConflict.id],
+    "discarded conflicts stay resolved after replay",
+  );
 
   const restored = store.restoreDraftConflict({
     conversationId: "chat-a",

@@ -5,8 +5,20 @@ type PreferencePatch = Partial<WorkspacePreferencesDto> & Pick<UpdateWorkspacePr
 /** Reuse the same reviewed membership merge without touching Project ownership. */
 export function rebaseChatFolderChange(current: ChatFolderDto[], before: ChatFolderDto[], after: ChatFolderDto[]): ChatFolderDto[] {
   const toMembers = (folders: ChatFolderDto[]) => folders.map(({ conversationIds, ...folder }) => ({ ...folder, projectIds: conversationIds }));
+  const previous = new Map(before.map(folder => [folder.id, folder]));
+  const desired = new Map(after.map(folder => [folder.id, folder]));
   return rebaseFolderChange(toMembers(current), toMembers(before), toMembers(after))
-    .map(({ projectIds, ...folder }) => ({ ...folder, conversationIds: projectIds }));
+    .map(({ projectIds, ...folder }) => {
+      const old = previous.get(folder.id);
+      const wanted = desired.get(folder.id);
+      // A stale rename, move, or expand must not clear a concurrent star.
+      const changedStar = wanted && (!old || Boolean(wanted.starred) !== Boolean(old.starred));
+      return {
+        ...folder,
+        ...(changedStar ? { starred: Boolean(wanted.starred) } : {}),
+        conversationIds: projectIds,
+      };
+    });
 }
 
 /** Reapply changed fields/membership only; untouched concurrent intent survives. */

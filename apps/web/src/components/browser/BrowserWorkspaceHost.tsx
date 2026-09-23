@@ -5,7 +5,7 @@ import { ProjectBrowserDialog } from "../ProjectBrowserDialog";
 import type { ProjectBrowserRequest } from "../ProjectBrowserContext";
 
 type Panel = { key: string; projectId: string; agent?: { id: string; runId: string }; request?: ProjectBrowserRequest };
-const keyFor = (projectId: string, agent?: Panel["agent"]) => `${projectId}:${agent?.id ?? "shared"}:${agent?.runId ?? ""}`;
+const keyFor = (projectId: string, agent?: Panel["agent"]) => `${projectId}:${agent?.id ?? "shared"}`;
 
 /** Panels are views of existing chat/Run authorities, never new browser owners. */
 export function BrowserWorkspaceHost({ projectId, agent, request, projects, onRequestHandled, onClose, onDockWidth }: {

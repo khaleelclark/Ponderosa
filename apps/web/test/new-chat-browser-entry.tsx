@@ -14,6 +14,17 @@ api.createAgent = (async(project,chat,options)=>{
   if(calls.filter((v:any)=>v.kind==="agent").length===1) throw new Error("Simulated lost response; retry safely");
   return {};
 }) as typeof api.createAgent;
+api.browseProjectFolders = (async(path)=>{
+  const current = path ?? "/home/phoenix";
+  return {
+    path: current,
+    root: "/",
+    ...(current === "/" ? {} : { parentPath: "/" }),
+    folders: current === "/home/phoenix"
+      ? [{ name: "repo", hostPath: "/home/phoenix/repo" }]
+      : [],
+  };
+}) as typeof api.browseProjectFolders;
 const engine:any={id:"codex",displayName:"Codex",authentication:"authenticated",intakeReady:true,enabled:true,models:[],efforts:[]};
 createRoot(document.getElementById("root")!).render(<ThemeProvider theme={createTheme()}><CssBaseline/><QueryClientProvider client={new QueryClient()}>
   <NewChatComposer engines={[engine]} preferences={{} as any} onCreated={()=>{document.body.dataset.created="true";}}/>

@@ -336,10 +336,10 @@ export const PONDEROSA_MANAGE_TOOL: RuntimeDynamicToolSpec = {
 export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
   {
     name: "ponderosa_browser_open",
-    description: "Open or reuse the browser authorized for this exact run. This is normally a private run browser; an operator may instead lend the persistent Project browser. Only http(s) URLs are accepted. Returns a bounded semantic page snapshot.",
+    description: "Open a temporary browser by default unless the operator explicitly granted a chat browser for this Run. To use the operator's signed-in saved browser, explicitly choose browser: saved; this requires prior authorization for this Agent in this Project, does not replace the saved browser, and persists across Runs until revoked. Close an active temporary or chat browser explicitly before switching. Open the saved browser without a URL, inspect its tabs, then navigate or open a new tab deliberately. Only http(s) URLs are accepted. Returns a bounded semantic page snapshot.",
     inputSchema: {
       type: "object", additionalProperties: false,
-      properties: { url: { type: "string", minLength: 1, maxLength: 2048 } },
+      properties: { url: { type: "string", minLength: 1, maxLength: 2048 }, browser: { type: "string", enum: ["temporary", "saved"] } },
     },
   },
   {

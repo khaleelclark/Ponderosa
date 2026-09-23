@@ -383,6 +383,9 @@ export const realApi = {
   listConversationMembersPage(conversationId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<AgentDto>> {
     return requestCollectionPage<AgentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/members${toQuery({ limit: options.limit, cursor: options.cursor, search: options.search })}`);
   },
+  listConversationMembers(conversationId: string): Promise<AgentDto[]> {
+    return collectCollectionPages<AgentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/members`);
+  },
   createConversation(projectId: string, request: CreateConversationRequest, idempotencyKey: string): Promise<ConversationDto> {
     return requestJson<ConversationDto>("/api/projects/" + encodeURIComponent(projectId) + "/conversations", {
       method: "POST",
@@ -409,8 +412,11 @@ export const realApi = {
       body: JSON.stringify(patch satisfies UpdateConversationRequest),
     });
   },
-  async deleteConversation(conversationId: string): Promise<void> {
-    await requestJson("/api/conversations/" + encodeURIComponent(conversationId), { method: "DELETE" });
+  async deleteConversation(conversationId: string, expectedAgentIds?: string[]): Promise<void> {
+    await requestJson("/api/conversations/" + encodeURIComponent(conversationId), {
+      method: "DELETE",
+      ...(expectedAgentIds ? { body: JSON.stringify({ expectedAgentIds }) } : {}),
+    });
   },
   sendConversationMessage(
     conversationId: string,
@@ -1065,6 +1071,17 @@ export const realApi = {
   },
   getSavedBrowser(): Promise<{ browser: import("@ponderosa/core").SavedBrowserDto | null }> {
     return requestJson("/api/saved-browser");
+  },
+  getAgentBrowserLocation(projectId: string, agentId: string): Promise<{ kind: "saved" | "chat" | "run" | "none"; runId?: string; status?: string }> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/browser-location`);
+  },
+  getSavedBrowserAccess(projectId: string): Promise<{ agentIds: string[] }> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/saved-browser-access`);
+  },
+  setSavedBrowserAccess(projectId: string, agentId: string, allowed: boolean): Promise<{ agentIds: string[] }> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/saved-browser-access/${encodeURIComponent(agentId)}`, {
+      method: "PUT", body: JSON.stringify({ allowed }),
+    });
   },
   promoteBrowser(projectId: string, sessionId: string, expectedControlEpoch: number): Promise<ProjectBrowserSessionDto> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/browser/promote`, {

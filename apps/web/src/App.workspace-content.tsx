@@ -24,13 +24,12 @@ type RemovableWorkspaceResourceRoute = Extract<
 >;
 
 const loadAllChatView = () => import("./components/AllChatView").then(module => ({ default: module.AllChatView }));
+const loadManageChatsWorkspace = () => import("./components/ManageChatsWorkspace").then(module => ({ default: module.ManageChatsWorkspace }));
+const loadManageAgentsWorkspace = () => import("./components/WorkspaceResourceViews").then(module => ({ default: module.AllAgentsWorkspace }));
+const loadManageAutomationsWorkspace = () => import("./components/ManageAutomationsWorkspace").then(module => ({ default: module.ManageAutomationsWorkspace }));
 const loadHomeView = () => import("./components/HomeView").then(module => ({ default: module.HomeView }));
 const loadCreateWorkspace = () => import("./components/CreateWorkspace").then(module => ({ default: module.CreateWorkspace }));
 const loadProjectShell = () => import("./components/ProjectShell").then(module => ({ default: module.ProjectShell }));
-const workspaceResourceViews = () => import("./components/WorkspaceResourceViews");
-const loadAllAgentsWorkspace = () => workspaceResourceViews().then(module => ({ default: module.AllAgentsWorkspace }));
-const loadAllChatsWorkspace = () => workspaceResourceViews().then(module => ({ default: module.AllChatsWorkspace }));
-const loadAllTriggersWorkspace = () => workspaceResourceViews().then(module => ({ default: module.AllTriggersWorkspace }));
 const workspaceSettingsViews = () => import("./components/WorkspaceSettingsView");
 const loadWorkspaceSettingsView = () => workspaceSettingsViews().then(module => ({ default: module.WorkspaceSettingsView }));
 const loadOperatorProfileWorkspace = () => workspaceSettingsViews().then(module => ({ default: module.OperatorProfileWorkspace }));
@@ -169,54 +168,36 @@ export function WorkspaceRouteOutlet({
           load={loadAllChatView}
           componentProps={{ onNavigate, notifications }}
         />
-      ) : route.kind === "allAgents" ? (
+      ) : route.kind === "manageChats" ? (
         <RecoverableLazyRoute
-          key="all-agents"
-          load={loadAllAgentsWorkspace}
+          key="manage-chats"
+          load={loadManageChatsWorkspace}
+          componentProps={{ onNavigate }}
+        />
+      ) : route.kind === "manageAgents" ? (
+        <RecoverableLazyRoute
+          key="manage-agents"
+          load={loadManageAgentsWorkspace}
           componentProps={{
             projects,
             engines,
-            filterProjectId: route.filterProjectId,
             preferences,
             onPreferences,
             onNavigate,
-            onCreate: (projectId, managerAgentId, conversationId) =>
-              onCreate("agent", {
-                ...(projectId ? { projectId } : {}),
-                ...(conversationId ? { conversationId } : {}),
-                ...(managerAgentId ? { managerAgentId } : {}),
-              }),
-            onAgentsDeleted: (projectId, agentIds) =>
-              agentIds.forEach(agentId =>
-                onResourceDeleted({ kind: "agent", projectId, agentId }),
-              ),
+            managementMode: true,
+            onCreate: (
+              projectId?: string,
+              managerAgentId?: string,
+              conversationId?: string,
+            ) => onCreate("agent", { projectId, managerAgentId, conversationId }),
+            onAgentsDeleted: () => undefined,
           }}
         />
-      ) : (route.kind === "allChats" || route.kind === "project" || route.kind === "projects") ? (
+      ) : route.kind === "manageAutomations" ? (
         <RecoverableLazyRoute
-          key="all-chats"
-          load={loadAllChatsWorkspace}
-          componentProps={{
-            projects,
-            filterProjectId: route.kind === "allChats" ? route.filterProjectId : undefined,
-            preferences,
-            onPreferences,
-            onNavigate,
-            onCreate: projectId => onCreate("chat", { projectId }),
-            onConversationAction,
-          }}
-        />
-      ) : route.kind === "allTriggers" ? (
-        <RecoverableLazyRoute
-          key="all-triggers"
-          load={loadAllTriggersWorkspace}
-          componentProps={{
-            projects,
-            preferences,
-            onPreferences,
-            onNavigate,
-            onCreate: () => onCreate("trigger"),
-          }}
+          key="manage-automations"
+          load={loadManageAutomationsWorkspace}
+          componentProps={{ onNavigate }}
         />
       ) : route.kind === "settings" ? (
         <RecoverableLazyRoute
@@ -288,8 +269,8 @@ export function WorkspaceRouteOutlet({
             <Alert
               severity="warning"
               action={
-                <Button onClick={() => onNavigate({ kind: "projects" })}>
-                  View Projects
+                <Button onClick={() => onNavigate({ kind: "home" })}>
+                  Go Home
                 </Button>
               }
             >

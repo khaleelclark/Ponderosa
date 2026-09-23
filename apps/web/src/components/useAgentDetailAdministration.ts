@@ -1,12 +1,12 @@
 import type {
   AgentDetailDto,
   AgentDto,
-  ConversationDetailDto,
 } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRef } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
+import { replaceCachedConversationAgent } from "../conversationAgentCache";
 import { useMutationNotification } from "./MutationNotifications";
 
 interface AgentDetailAdministrationInput {
@@ -24,6 +24,7 @@ interface AgentRuntimeSettingsPatch {
   activeEngine: string;
   model: string | null;
   effort: string | null;
+  speed: string | null;
 }
 
 export function useAgentDetailAdministration({
@@ -52,17 +53,9 @@ export function useAgentDetailAdministration({
         current =>
           current?.map(agent => (agent.id === updated.id ? updated : agent)),
       );
-      queryClient.setQueriesData<ConversationDetailDto>(
+      queryClient.setQueriesData<unknown>(
         { queryKey: queryKeys.conversations.detailAll },
-        current =>
-          current
-            ? {
-                ...current,
-                agents: current.agents.map(agent =>
-                  agent.id === updated.id ? updated : agent,
-                ),
-              }
-            : current,
+        (current: unknown) => replaceCachedConversationAgent(current, updated),
       );
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.detailPrefix(agentId),
@@ -130,17 +123,9 @@ export function useAgentDetailAdministration({
         current =>
           current?.map(agent => (agent.id === updated.id ? updated : agent)),
       );
-      queryClient.setQueriesData<ConversationDetailDto>(
+      queryClient.setQueriesData<unknown>(
         { queryKey: queryKeys.conversations.detailAll },
-        current =>
-          current
-            ? {
-                ...current,
-                agents: current.agents.map(agent =>
-                  agent.id === updated.id ? updated : agent,
-                ),
-              }
-            : current,
+        (current: unknown) => replaceCachedConversationAgent(current, updated),
       );
       if (currentAgentId.current === context.agentId) {
         onRuntimeSettingsNotice(

@@ -8,6 +8,15 @@ import { ApprovedChromeConnection } from "./approved-chrome-connection.js";
 import { ChromeCdpDriver, spawnHostedDisplay, type BrowserDriver, type BrowserDriverFactory, type BrowserDriverLaunchOptions, type BrowserPagesInfo } from "./chrome-cdp-driver.js";
 
 export async function createNativeHostedBrowser(executable: string, profileDir: string, onConsole: Parameters<BrowserDriverFactory>[1], publish: Parameters<BrowserDriverFactory>[2], onPageEvent: Parameters<BrowserDriverFactory>[3], launch: BrowserDriverLaunchOptions): Promise<BrowserDriver> {
+  const wait = (milliseconds: number) => new Promise<void>((resolve, reject) => {
+    if (launch.signal?.aborted) { reject(new Error("browser launch cancelled")); return; }
+    const timer = setTimeout(finish, milliseconds);
+    const cancel = () => { clearTimeout(timer); cleanup(); reject(new Error("browser launch cancelled")); };
+    const cleanup = () => launch.signal?.removeEventListener("abort", cancel);
+    function finish() { cleanup(); resolve(); }
+    launch.signal?.addEventListener("abort", cancel, { once: true });
+  });
+  launch.signal?.throwIfAborted();
   if (!existsSync("/usr/bin/Xvfb") || !existsSync("/usr/bin/x11vnc")) throw new Error("Manual hosted browsing requires Xvfb and x11vnc on this host.");
   const root = await fs.mkdtemp(path.join(tmpdir(), "ponderosa-desktop-"));
   const socketPath = path.join(root, "desktop.sock");
@@ -43,7 +52,7 @@ export async function createNativeHostedBrowser(executable: string, profileDir: 
   };
   try {
     await fs.mkdir(profileDir, { recursive: true, mode: 0o700 });
-    display = await spawnHostedDisplay("/usr/bin/Xvfb", value => { display = value; track(value.child); return published; }, { width: 2560, height: 2560 });
+    display = await spawnHostedDisplay("/usr/bin/Xvfb", value => { display = value; track(value.child); return published; }, { width: 2560, height: 2560 }, launch.signal);
     const env = Object.fromEntries(["PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "LANG", "LC_ALL"].flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]]));
     const chrome = spawn(executable, [`--user-data-dir=${profileDir}`, "--no-first-run", "--no-default-browser-check", "--force-device-scale-factor=2", "--window-size=1280,720", "--window-position=0,0", launch.initialUrl ?? "about:blank"], { env: { ...env, DISPLAY: display.display }, stdio: "ignore", detached: true });
     track(chrome);
@@ -52,11 +61,12 @@ export async function createNativeHostedBrowser(executable: string, profileDir: 
     let windowId = "";
     const windowDeadline = Date.now() + 10_000;
     while (!windowId) {
+      launch.signal?.throwIfAborted();
       const result = await run("/usr/bin/xdotool", ["search", "--onlyvisible", "--class", "google-chrome"], { env: displayEnv, timeout: 1000 }).catch(() => undefined);
       windowId = result?.stdout.trim().split(/\s+/)[0] ?? "";
       if (!/^\d+$/.test(windowId)) windowId = "";
       if (Date.now() > windowDeadline) throw new Error("Native browser window did not appear.");
-      if (!windowId) await new Promise(resolve => setTimeout(resolve, 50));
+      if (!windowId) await wait(50);
     }
     // Capture the screen region occupied by Chrome, including native menus and
     // permission dialogs, rather than only its drawable or the whole desktop.
@@ -69,9 +79,11 @@ export async function createNativeHostedBrowser(executable: string, profileDir: 
     track(vnc, true);
     const deadline = Date.now() + 5000;
     while (!existsSync(socketPath) || !existsSync(readOnlySocketPath)) {
+      launch.signal?.throwIfAborted();
       if (spawnFailed || !processGroupAlive(vnc) || !processGroupAlive(chrome) || Date.now() > deadline) throw new Error("Manual browser display failed to start.");
-      await new Promise(resolve => setTimeout(resolve, 25));
+      await wait(25);
     }
+    launch.signal?.throwIfAborted();
     await fs.chmod(socketPath, 0o600);
     await fs.chmod(readOnlySocketPath, 0o600);
     const own: Partial<BrowserDriver> = {

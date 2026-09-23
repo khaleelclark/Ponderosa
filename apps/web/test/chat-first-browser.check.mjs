@@ -74,8 +74,6 @@ try {
       assert.ok(search.x-navigation.x<30,"Mobile list must not reserve a separate spine column");
       assert.ok(search.width>navigation.width-60,"Mobile search uses the full sidebar width");
       assert.ok(search.height<=36,"Mobile search is compact");
-      const footer=await button("View All Chats").locator("..").boundingBox();
-      assert.ok(footer.height<=45,"View All must be a compact footer, not a padded panel");
       assert.ok((await button("Agents").boundingBox()).height>=44,"Compact highlight retains a usable tap target");
     }
     await button("Agents").getByRole("img").waitFor();
@@ -155,13 +153,11 @@ try {
     const workspaceBefore=await page.locator("#route").innerText();
     const navigationsBefore=await page.locator("#navigation-count").innerText();
     await button("Agents").click();await page.getByRole("textbox",{name:"Search agents",exact:true}).waitFor();
-    if(width<600)assert.ok((await button("View All Agents").locator("..").boundingBox()).height<=45,"Agents shares compact footer");
     assert.equal(await page.locator("#route").innerText(),workspaceBefore,"Agents spine click must not navigate the workspace");
-    assert.equal(await button("View All Agents").count(),1);
+    assert.equal(await button("View All Agents").count(),0,"Retired collection screen has no sidebar entry point");
     await button("Automations").click();await page.getByRole("textbox",{name:"Search Automations or Agents",exact:true}).waitFor();
-    if(width<600)assert.ok((await button("View All Automations").locator("..").boundingBox()).height<=45,"Automations shares compact footer");
     assert.equal(await page.locator("#route").innerText(),workspaceBefore,"Automations spine click must not navigate the workspace");
-    assert.equal(await button("View All Automations").count(),1);
+    assert.equal(await button("View All Automations").count(),0,"Retired collection screen has no sidebar entry point");
     await button("Chats").click();await row("Gamma").waitFor();
     assert.equal(await page.locator("#route").innerText(),workspaceBefore,"Chats spine click must not navigate the workspace");
     await button("Settings").click();
@@ -176,12 +172,8 @@ try {
     assert.equal(await button("All Messages").count(),1,"All Messages stays on the spine independent of the sidebar section");
     await button("All Messages").click();
     assert.equal(JSON.parse(await page.locator("#route").innerText()).kind,"allChat","All Messages spine shortcut opens the combined feed");
-    await button("Agents").click();await button("View All Agents").click();
-    assert.equal(JSON.parse(await page.locator("#route").innerText()).kind,"allAgents");
-    await button("Automations").click();await button("View All Automations").click();
-    assert.equal(JSON.parse(await page.locator("#route").innerText()).kind,"allTriggers");
-    await button("Chats").click();await button("View All Chats").click();
-    assert.equal(JSON.parse(await page.locator("#route").innerText()).kind,"allChats");
+    for(const name of ["View All Agents","View All Automations","View All Chats"])
+      assert.equal(await button(name).count(),0,`${name} is removed with its collection screen`);
     await button("Finish all work").click();
     await button("Agents").getByRole("img").waitFor({state:"detached"});
     await button("Start work").click();
@@ -278,9 +270,9 @@ try {
   await swipe(300,125,20,125);
   assert.equal(await page.locator("#drawer-open").innerText(),"false","Left swipe closes navigation");
   await page.getByRole("button",{name:"Open navigation",exact:true}).click();
-  await page.getByRole("button",{name:"View All Chats",exact:true}).click();
-  assert.equal(await page.locator("#drawer-open").innerText(),"false","View All closes navigation and opens workspace");
-  assert.equal(await page.locator("#navigation-count").innerText(),"1");
+  assert.equal(await page.getByRole("button",{name:"View All Chats",exact:true}).count(),0,"Mobile does not expose the retired collection screen");
+  assert.equal(await page.locator("#drawer-open").innerText(),"true","Removing collection navigation leaves the drawer in place");
+  assert.equal(await page.locator("#navigation-count").innerText(),"0");
   assert.deepEqual(gestureErrors,[]);
   console.log("PASS mobile: iPhone-UA edge opening, swipe closing, vertical scroll, sidebar-only selection and explicit navigation");
   await page.close();

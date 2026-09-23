@@ -410,6 +410,7 @@ export class AgentWorkspaceCatalogAuthority {
       workingDirectory: input.hostPath, instructions: "", chatOwnershipVersion: 1,
       ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}),
       ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}),
+      ...(input.defaultSpeed ? { defaultSpeed: input.defaultSpeed } : {}),
       createdAt: now, updatedAt: now, archived: false,
     };
     const stagingId = `.${id}.creating`;
@@ -452,7 +453,7 @@ export class AgentWorkspaceCatalogAuthority {
       fsyncDirectory(projectsDir(this.dataDir));
       this.db.transaction((tx) => {
         tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, lastConversationId: conversationId }).run();
-        tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, createdAt: now, updatedAt: now, archived: 0 }).run();
+        tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, defaultSpeed: input.defaultSpeed ?? null, createdAt: now, updatedAt: now, archived: 0 }).run();
         for (const event of presets) {
           tx.insert(agentPresets).values({ ...event.preset, enabled: 1 }).run();
         }
@@ -791,6 +792,7 @@ export class AgentWorkspaceCatalogAuthority {
       defaultEngine: input.defaultEngine ?? project.defaultEngine,
       defaultModel: input.defaultModel,
       defaultEffort: input.defaultEffort,
+      defaultSpeed: input.defaultSpeed,
       createdAt: now,
       updatedAt: now,
       archived: false,
@@ -845,6 +847,7 @@ export class AgentWorkspaceCatalogAuthority {
           defaultEngine: record.defaultEngine ?? null,
           defaultModel: record.defaultModel ?? null,
           defaultEffort: record.defaultEffort ?? null,
+          defaultSpeed: record.defaultSpeed ?? null,
           createdAt: now,
           updatedAt: now,
           archived: 0,
@@ -924,10 +927,12 @@ export class AgentWorkspaceCatalogAuthority {
       defaultEngine: patch.defaultEngine === undefined ? canonical.defaultEngine : patch.defaultEngine,
       defaultModel: patch.defaultModel === undefined ? canonical.defaultModel : patch.defaultModel,
       defaultEffort: patch.defaultEffort === undefined ? canonical.defaultEffort : patch.defaultEffort,
+      defaultSpeed: patch.defaultSpeed === undefined ? canonical.defaultSpeed : patch.defaultSpeed,
       archived: patch.archived ?? canonical.archived,
     };
     const changed = next.title !== canonical.title || next.instructions !== (canonical.instructions ?? "") || next.defaultEngine !== canonical.defaultEngine ||
       next.defaultModel !== canonical.defaultModel || next.defaultEffort !== canonical.defaultEffort ||
+      next.defaultSpeed !== canonical.defaultSpeed ||
       next.archived !== canonical.archived;
     const updatedAt = changed ? new Date().toISOString() : canonical.updatedAt;
     const result: ConversationDto = {
@@ -939,6 +944,7 @@ export class AgentWorkspaceCatalogAuthority {
       defaultEngine: next.defaultEngine ?? undefined,
       defaultModel: next.defaultModel ?? undefined,
       defaultEffort: next.defaultEffort ?? undefined,
+      defaultSpeed: next.defaultSpeed ?? undefined,
       createdAt: canonical.createdAt,
       updatedAt,
       archived: next.archived,
@@ -954,6 +960,7 @@ export class AgentWorkspaceCatalogAuthority {
           defaultEngine: next.defaultEngine ?? undefined,
           defaultModel: next.defaultModel ?? undefined,
           defaultEffort: next.defaultEffort ?? undefined,
+          defaultSpeed: next.defaultSpeed ?? undefined,
           updatedAt,
         });
       }
@@ -965,6 +972,7 @@ export class AgentWorkspaceCatalogAuthority {
           defaultEngine: next.defaultEngine,
           defaultModel: next.defaultModel,
           defaultEffort: next.defaultEffort,
+          defaultSpeed: next.defaultSpeed,
           archived: next.archived ? 1 : 0,
           updatedAt,
         })
@@ -1245,6 +1253,7 @@ export class AgentWorkspaceCatalogAuthority {
       defaultEngine: row.defaultEngine ?? undefined,
       defaultModel: row.defaultModel ?? undefined,
       defaultEffort: row.defaultEffort ?? undefined,
+      defaultSpeed: row.defaultSpeed ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       archived: row.archived === 1,

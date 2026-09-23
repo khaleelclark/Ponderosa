@@ -7,8 +7,12 @@ import type {
   CommunicationEvent,
 } from "@ponderosa/core";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
+import {
+  type AgentDeletionDirectoryIdentity,
+  validateAgentDeletionDirectory,
+} from "./agent-deletion-identity.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
-import { communicationEventsPath, managedArtifactContentPath, managedArtifactsLogPath } from "./paths.js";
+import { agentDir, communicationEventsPath, managedArtifactContentPath, managedArtifactsLogPath } from "./paths.js";
 import type {
   ArtifactProjectionReadRow,
   ManagedArtifactAccess,
@@ -18,6 +22,47 @@ import type {
 type CursorBoundary = { orderKey: string; rowKey: string };
 type CursorInput = CursorBoundary & { stream: string; scope: string };
 type ArtifactAgent = { projectId: string; conversationId?: string; archived?: boolean };
+
+function hasHistoricalCustody(
+  dataDir: string,
+  client: Database.Database,
+  projectId: string,
+  agentId: string,
+  recoveredAt: string,
+  createdAt: string,
+  deletedAt: string,
+): boolean {
+  if (recoveredAt < createdAt || recoveredAt > deletedAt) return false;
+  try {
+    const marker = client.prepare(`SELECT agent_id, project_id, conversation_id,
+      tombstone_name, ownership_token, created_at FROM agent_deletion_tombstones
+      WHERE agent_id=? AND project_id=?`).get(agentId, projectId) as {
+        agent_id: string;
+        project_id: string;
+        conversation_id: string | null;
+        tombstone_name: string;
+        ownership_token: string | null;
+        created_at: string;
+      } | undefined;
+    if (!marker?.ownership_token || !marker.conversation_id) return false;
+    const identity: AgentDeletionDirectoryIdentity = {
+      agentId: marker.agent_id,
+      projectId: marker.project_id,
+      conversationId: marker.conversation_id,
+      tombstoneName: marker.tombstone_name,
+      ownershipToken: marker.ownership_token,
+      createdAt: marker.created_at,
+    };
+    validateAgentDeletionDirectory(agentDir(dataDir, projectId, agentId), identity);
+    return Boolean(client.prepare(`SELECT 1 FROM conversations
+      WHERE id=? AND project_id=?`).get(identity.conversationId, projectId))
+      || Boolean(client.prepare(`SELECT 1 FROM conversation_deletion_receipts
+        WHERE conversation_id=? AND project_id=? AND canonical_deletion_completed=1`)
+        .get(identity.conversationId, projectId));
+  } catch {
+    return false;
+  }
+}
 
 export class AgentArtifactCatalog {
   private readonly pendingLegacyCustody = new Map<string, Extract<ManagedArtifactEvent, { type: "legacy_custody" }>[]>();
@@ -704,11 +749,34 @@ export class AgentArtifactCatalog {
     if (event.type === "legacy_custody") {
       const origin = this.client.prepare("SELECT conversation_id, deleted_at FROM agents WHERE id=? AND project_id=?")
         .get(event.originAgentId, projectId) as { conversation_id: string | null; deleted_at: string | null } | undefined;
-      const custodian = this.client.prepare(`SELECT a.id FROM agents a JOIN conversations c ON c.id=a.conversation_id
-        WHERE a.id=? AND a.project_id=? AND c.project_id=a.project_id AND a.deleted_at IS NULL`)
-        .get(event.custodianAgentId, projectId);
+      const custodian = this.client.prepare(`SELECT id, conversation_id, created_at, deleted_at
+        FROM agents WHERE id=? AND project_id=?`)
+        .get(event.custodianAgentId, projectId) as {
+          id: string;
+          conversation_id: string | null;
+          created_at: string;
+          deleted_at: string | null;
+        } | undefined;
+      const liveCustodian = custodian?.deleted_at === null
+        && Boolean(custodian.conversation_id)
+        && Boolean(this.client.prepare(`SELECT 1 FROM conversations
+          WHERE id=? AND project_id=?`).get(custodian.conversation_id, projectId));
+      // Legacy custody is historical provenance, not permanent Agent authority.
+      // A Chat deletion may remove its archived custodian after recovery. Its
+      // exact canonical deletion marker proves the former Chat binding; reads by
+      // Agents still fail closed because the custodian no longer has a live Chat.
+      const deletedCustodian = Boolean(custodian?.deleted_at)
+        && hasHistoricalCustody(
+          this.dataDir,
+          this.client,
+          projectId,
+          event.custodianAgentId,
+          event.at,
+          custodian!.created_at,
+          custodian!.deleted_at!,
+        );
       const recovery = { custodianAgentId: event.custodianAgentId, recoveredAt: event.at };
-      if (!origin?.deleted_at || origin.conversation_id || !custodian
+      if (!origin?.deleted_at || origin.conversation_id || (!liveCustodian && !deletedCustodian)
         || artifact.originAgentId !== event.originAgentId || artifact.sha256 !== event.sha256
         || !Number.isFinite(Date.parse(event.at))
         || (artifact.legacyRecovery && JSON.stringify(artifact.legacyRecovery) !== JSON.stringify(recovery))) {
