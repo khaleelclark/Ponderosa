@@ -1166,7 +1166,9 @@ export class ChromeCdpDriver implements BrowserDriver {
     if (this.playwright) {
       for (const [key, value] of this.frameReferences) if (value.frame.isDetached() || value.frame.url() !== value.url) this.frameReferences.delete(key);
       const current = await this.playwright.page(page.targetId);
-      for (const frame of current.frames().slice(0, 10)) {
+      // The top document is already represented by the CDP snapshot. Asking
+      // Playwright to enumerate it again can stall while a new popup settles.
+      for (const frame of current.frames().filter(frame => frame !== current.mainFrame()).slice(0, 10)) {
         if (frameControls.length >= 80) break;
         let reference = [...this.frameReferences].find(([, value]) => value.frame === frame && value.targetId === page.targetId)?.[0];
         if (!reference) { reference = randomUUID(); this.frameReferences.set(reference, { frame, targetId: page.targetId, url: frame.url() }); }
