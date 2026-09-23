@@ -286,7 +286,13 @@ export class BrowserServiceClient {
       activity: () => state.activity,
       close: async () => { await this.rpc({ operation: "close", id }); suspended = true; clearInterval(refresh); },
       suspend: async (chooserAlreadyCancelled = false) => {
-        if (!chooserAlreadyCancelled) await call("cancelPendingFileChooser", ["application_disconnect"]);
+        if (chooserAlreadyCancelled) {
+          // The drain already settled chooser cleanup. A non-queued status RPC
+          // still proves this app owns the browser lease before it detaches.
+          await this.rpc({ operation: "status", id }, 15_000);
+        } else {
+          await call("cancelPendingFileChooser", ["application_disconnect"]);
+        }
         suspended = true;
         clearInterval(refresh);
       },

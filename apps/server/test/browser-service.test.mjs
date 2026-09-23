@@ -260,6 +260,33 @@ test('confirmed deployment drain does not repeat broker chooser cleanup during s
   } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('drained shutdown still rejects a stolen browser lease', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-stale-shutdown-'));
+  const socket = path.join(root, 'service.sock');
+  const page = { pageId: 'draft', url: 'https://example.test', title: 'Draft', active: true };
+  const service = await startBrowserService(socket, root, async () => ({
+    isAlive: () => true,
+    manualState: () => 'automation',
+    pages: async () => ({ activePageId: 'draft', pages: [page] }),
+    pageInfo: async () => page,
+    cancelPendingFileChooser: async () => {},
+    close: async () => {},
+  }));
+  const scope = { projectId: 'chat', agentId: 'project-browser:chat', runId: 'project:chat' };
+  try {
+    const firstClient = new BrowserServiceClient(socket);
+    await firstClient.claim();
+    const first = new BrowserSessionManager(root, (id, _console, _spawned, event, launch) => firstClient.driver(id, event, launch), () => {}, undefined, undefined, () => true, true);
+    const opened = await first.open(scope, undefined, 'operator', undefined, true);
+    await first.closeAll('deployment_drain');
+    const replacement = new BrowserServiceClient(socket);
+    assert.deepEqual(await replacement.claim(), [opened.id]);
+    await assert.rejects(first.closeAll('server_shutdown'), /browser cleanup did not complete/);
+    assert.equal(first.authorityStatus(true).active, 1, 'a stolen lease must remain a shutdown blocker');
+    assert.equal((await (await replacement.driver(opened.id, () => {}, undefined, true)).pages()).activePageId, 'draft');
+  } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('drained server closes without repeating retained browser cleanup', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'browser-drained-server-'));
   const dataDir = path.join(root, 'state');
