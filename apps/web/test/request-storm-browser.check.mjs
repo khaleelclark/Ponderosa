@@ -75,11 +75,20 @@ try {
       `phase health in visible tab ${index} must refresh despite continuous events`);
   }
   assert.deepEqual(counts[2], baseline[2], "hidden tab must not refetch under sustained Agent output");
+  await Promise.all(pages.map(page => page.evaluate(() => window.startSparseStorm())));
+  const sparseBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  await pages[0].waitForTimeout(5_600);
+  const sparseCounts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  for (let index = 0; index < 2; index += 1) {
+    assert.ok(sparseCounts[index].health - sparseBaseline[index].health <= 2,
+      `phase refresh in visible tab ${index} must remain bounded when events arrive every 900 ms`);
+  }
+  assert.deepEqual(sparseCounts[2], sparseBaseline[2], "hidden tab stays quiet during sparse output");
   await pages[2].evaluate(() => {
     window.stormVisible = true;
     document.dispatchEvent(new Event("visibilitychange"));
   });
-  await pages[2].waitForFunction(previous => window.stormCounters().roster > previous, counts[2].roster);
+  await pages[2].waitForFunction(previous => window.stormCounters().roster > previous, sparseCounts[2].roster);
   for (const page of pages) {
     await page.evaluate(() => { window.stopStorm(); window.terminalStorm(); });
     await page.locator("#roster").getByText("terminal").waitFor({ timeout: 2_000 });

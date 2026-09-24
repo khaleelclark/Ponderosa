@@ -18,7 +18,7 @@ async function probeApi(): Promise<void> {
 api.subscribeWorkspace = (_cursor, handlers) => {
   let seq = 0;
   const status = setTimeout(() => handlers.onStatus?.({ instanceId: "storm", cursor: 0, reset: false }), 20);
-  const command = setInterval(() => handlers.onEvent({
+  const emitCommand = () => handlers.onEvent({
     id: ++seq,
     ts: new Date().toISOString(),
     event: {
@@ -30,12 +30,17 @@ api.subscribeWorkspace = (_cursor, handlers) => {
       eventType: "command",
       category: "task",
     },
-  }), 20);
+  });
+  let command = setInterval(emitCommand, 20);
   Object.assign(window, {
     stormCounters: () => ({ ...counters }),
     stormApiLatencies: () => [...apiLatencies],
     stormFailNextPhaseFetch: () => { failNextPhaseFetch = true; },
     stopStorm: () => clearInterval(command),
+    startSparseStorm: () => {
+      clearInterval(command);
+      command = setInterval(emitCommand, 900);
+    },
     terminalStorm: () => {
       terminal = true;
       handlers.onEvent({

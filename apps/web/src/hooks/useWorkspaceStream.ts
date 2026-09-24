@@ -538,10 +538,11 @@ export function useWorkspaceStream(
       phaseReconcileGeneration += 1;
       if (phaseQuietTimer) clearTimeout(phaseQuietTimer);
       // Sustained output gets periodic data refreshes; the stricter proof of
-      // a fully caught-up boundary runs once the stream briefly quiets.
+      // a fully caught-up boundary uses the same bounded window after quiet.
       phaseQuietTimer = setTimeout(() => {
         phaseQuietTimer = undefined;
-        schedulePhaseReconciliation(true);
+        urgentPhasePending = true;
+        phaseRefresh.schedule();
       }, 750);
       const matches = (query: Query) => phaseQueryMatchesProject(query.queryKey, projectId);
       // Keep unrelated pending boundaries until they reconcile; later events
