@@ -685,6 +685,11 @@ export function useWorkspaceStream(
       pendingCapabilityProjects.clear();
       invalidate(queryKeys.projects.all);
       invalidate(queryKeys.conversations.all);
+      // Replayed conversation and delivery events skip their per-event paths.
+      // The list prefix above does not match the singular Chat/detail prefix.
+      invalidate(queryKeys.conversations.detailAll);
+      invalidate(["queued-messages"]);
+      invalidate(queryKeys.queuedMessages.agentsAll);
       invalidate(["targeted-next-run"]);
       invalidate(queryKeys.workspaceDirectory.all);
       invalidate(["engine-capabilities"]);
