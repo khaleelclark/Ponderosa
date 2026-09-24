@@ -60,3 +60,28 @@ test('native manual browser uses a private desktop socket, blocks automation and
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('owned Chrome opens in Ponderosa mode and returns there after private sign-in without replacing tabs', { skip: process.env.PONDEROSA_TEST_NATIVE_BROWSER !== '1', timeout: 45000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'native-connected-browser-test-'));
+  const handles = [];
+  let driver;
+  try {
+    driver = await createNativeHostedBrowser('/usr/bin/google-chrome', join(root, 'profile'), () => {}, handle => handles.push(handle), () => {}, { connectOnOpen: true });
+    assert.equal(driver.manualState(), 'automation');
+    assert.ok((await driver.pages()).pages.length >= 1);
+    const screenshot = await driver.capture();
+    assert.ok(screenshot.length > 100, 'the custom page viewport receives actual Chrome pixels');
+    const page = (await driver.pages()).pages[0];
+    await driver.pauseAutomation();
+    assert.equal(driver.manualState(), 'manual');
+    assert.throws(() => driver.capture(), /manual mode/);
+    await driver.resumeAutomation();
+    assert.equal(driver.manualState(), 'automation');
+    assert.equal((await driver.pages()).pages[0].url, page.url, 'private sign-in preserved the current tab');
+    assert.equal(driver.isAlive(), true);
+  } finally {
+    if (driver) await driver.close();
+    else for (const handle of handles) await handle.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

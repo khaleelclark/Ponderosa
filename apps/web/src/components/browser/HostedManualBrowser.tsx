@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { BrowserKeyboard } from "./BrowserKeyboard";
 
-export function HostedManualBrowser({ projectId, sessionId, epoch, responsive = false, readOnly = false, connectionSetup = true }: { projectId: string; sessionId: string; epoch: number; responsive?: boolean; readOnly?: boolean; connectionSetup?: boolean }) {
+export function HostedManualBrowser({ projectId, sessionId, epoch, responsive = false, readOnly = false, connectionSetup = true, keyboardTarget }: { projectId: string; sessionId: string; epoch: number; responsive?: boolean; readOnly?: boolean; connectionSetup?: boolean; keyboardTarget?: Element | null }) {
   const container = useRef<HTMLDivElement>(null);
   const remote = useRef<import("@novnc/novnc/lib/rfb.js").default>();
   const [fit, setFit] = useState(true);
@@ -70,7 +70,7 @@ export function HostedManualBrowser({ projectId, sessionId, epoch, responsive = 
           connection.sendKey(0xff0d, "Enter");
         }, 200);
       }}>Connection setup</Button> : <Typography variant="caption" sx={{ alignSelf: "center" }}>{readOnly ? "Agent has control" : "You have control"}</Typography>}
-      <BrowserKeyboard disabled={readOnly || status !== "connected"} onText={text => {
+      <BrowserKeyboard portalTarget={keyboardTarget} disabled={readOnly || status !== "connected"} onText={text => {
         for (const character of text) {
           const point = character.codePointAt(0)!;
           remote.current?.sendKey(point === 10 ? 0xff0d : point <= 255 ? point : 0x01000000 + point);

@@ -24,6 +24,7 @@ export function BrowserViewport<Session extends BrowserSession>({
   empty,
   accent = "warning.main",
   viewedPageId,
+  keyboardTarget,
 }: {
   adapter: BrowserEndpointAdapter<Session>;
   session?: Session;
@@ -34,6 +35,7 @@ export function BrowserViewport<Session extends BrowserSession>({
   empty?: React.ReactNode;
   accent?: string;
   viewedPageId?: string;
+  keyboardTarget?: Element | null;
 }): JSX.Element {
   const [frameUrl, setFrameUrl] = useState<string>();
   const [frameError, setFrameError] = useState<string>();
@@ -287,7 +289,7 @@ export function BrowserViewport<Session extends BrowserSession>({
         sx={{ position: "absolute", left: 0, top: 0, width: "1px", height: "1px", pointerEvents: "none", opacity: .01, p: 0, border: 0, fontSize: 16 }}
       /> : null}
     </Box>
-    {operatorControl && active ? <BrowserKeyboard onText={text => sendInput({ kind: "type", text })} onKey={key => sendInput({ kind: "key", key })} /> : null}
+    {operatorControl && active ? <BrowserKeyboard portalTarget={keyboardTarget} onText={text => sendInput({ kind: "type", text })} onKey={key => sendInput({ kind: "key", key })} /> : null}
     {frameError ? <Alert severity="warning" role="status">Live frame disconnected: {frameError}</Alert> : null}
   </Stack>;
 }

@@ -54,7 +54,7 @@ export async function createNativeHostedBrowser(executable: string, profileDir: 
     await fs.mkdir(profileDir, { recursive: true, mode: 0o700 });
     display = await spawnHostedDisplay("/usr/bin/Xvfb", value => { display = value; track(value.child); return published; }, { width: 2560, height: 2560 }, launch.signal);
     const env = Object.fromEntries(["PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "LANG", "LC_ALL"].flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]]));
-    const chrome = spawn(executable, [`--user-data-dir=${profileDir}`, "--no-first-run", "--no-default-browser-check", "--force-device-scale-factor=2", "--window-size=1280,720", "--window-position=0,0", launch.initialUrl ?? "about:blank"], { env: { ...env, DISPLAY: display.display }, stdio: "ignore", detached: true });
+    const chrome = spawn(executable, [`--user-data-dir=${profileDir}`, "--no-first-run", "--no-default-browser-check", ...(launch.connectOnOpen ? ["--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0"] : []), "--force-device-scale-factor=2", "--window-size=1280,720", "--window-position=0,0", launch.initialUrl ?? "about:blank"], { env: { ...env, DISPLAY: display.display }, stdio: "ignore", detached: true });
     track(chrome);
     const run = promisify(execFile);
     const displayEnv = { ...env, DISPLAY: display.display };
@@ -86,6 +86,24 @@ export async function createNativeHostedBrowser(executable: string, profileDir: 
     launch.signal?.throwIfAborted();
     await fs.chmod(socketPath, 0o600);
     await fs.chmod(readOnlySocketPath, 0o600);
+    if (launch.connectOnOpen) {
+      const endpointDeadline = Date.now() + 5_000;
+      while (!existsSync(path.join(profileDir, "DevToolsActivePort"))) {
+        launch.signal?.throwIfAborted();
+        if (!processGroupAlive(chrome) || Date.now() > endpointDeadline) throw new Error("Ponderosa could not connect to its new browser. No replacement was opened.");
+        await wait(50);
+      }
+      const connected = await ApprovedChromeConnection.connect(profileDir, { signal: launch.signal, approvalTimeoutMs: 5_000 });
+      let attached: ChromeCdpDriver | undefined;
+      try {
+        attached = await ChromeCdpDriver.attachOwned(chrome, display, connected, profileDir, onConsole, onPageEvent, authority);
+        launch.signal?.throwIfAborted();
+        pages = await attached.pages();
+        launch.signal?.throwIfAborted();
+        connection = connected; driver = attached; state = "automation"; revision++;
+        connected.onClose(() => { if (connection === connected && !closed) { connectionFailure = connected.failureReason(); void pause(); } });
+      } catch (error) { attached?.detachMechanics(); connected.disconnect(); throw error; }
+    }
     const own: Partial<BrowserDriver> = {
       terminationAuthority: authority, processIdentity: runtimeProcessIdentity(chrome),
       isAlive: () => processGroupAlive(chrome) && processGroupAlive(vnc) && processGroupAlive(viewer) && Boolean(display && processGroupAlive(display.child)), close,

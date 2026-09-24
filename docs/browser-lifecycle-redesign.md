@@ -2,10 +2,11 @@
 
 ## First rollout
 
-The chat browser has one opening path: an ordinary headed Chrome process with
-native manual interaction. It can later attach automation with Chrome's explicit
-approval, without creating a replacement browser. Existing legacy/local sessions
-are not silently converted or replaced.
+The chat browser opens its owned headed Chrome process with an immediate
+automation connection, so normal browsing starts in Ponderosa's custom page
+view. The same process can later disconnect automation for private sign-in or
+native Chrome prompts, then reconnect without replacing its tabs. Existing
+legacy/local sessions are not silently converted or replaced.
 
 An explicit Remember sign-ins choice selects a chat-owned trusted Chrome profile.
 The profile ID, not its display name, is its identity. Temporary browsing does not
@@ -20,7 +21,12 @@ resolves that choice, avoiding a client health-check race. Run completion revoke
 access. Connection failure does not launch a fallback browser. Closing the panel
 only hides it; ending the session remains a separately confirmed operation.
 
-Chrome approval remains a real user action. This change does not bypass website
+The immediate connection uses an ephemeral Chrome debugging endpoint bound to
+127.0.0.1 inside the host. Other local processes may be able to discover it;
+Ponderosa's Agent grants do not isolate the browser from software that already
+runs with host-user authority. Private sign-in disconnects Ponderosa automation
+until the operator explicitly resumes it. Existing manually opened sessions
+retain their Chrome approval flow. This change does not bypass website
 verification, guarantee Google acceptance, or establish OAuth compatibility.
 
 ## Saved browser and independent lifetime
@@ -102,22 +108,22 @@ and frame-scoped interaction. These fixtures do not qualify every employer site.
 
 ### Page-first workspace presentation
 
-New native hosted browsers use one continuous window display before, during,
-and after automation connects. Chrome supplies the real tabs, address bar, and
-native dialogs; Ponderosa supplies the workspace/window and control handoff.
-Displaying and resizing this window does not attach debugging. The hosted window
-is resized to the panel at 2x pixel density, bounded to 1280x1280 logical pixels;
-the capture follows its geometry instead of letterboxing the whole desktop.
-The screen-region capture includes overlapping native menus/dialogs inside the
-window bounds. This is not a new embedded browser engine or DOM renderer.
+New Chat browsers show Ponderosa's tab strip, address bar, and page viewport
+when the automation connection is ready. Private sign-in and native Chrome
+prompts temporarily show the same Chrome process through its native display;
+returning to Ponderosa's view does not replace the browser or its tabs. The
+hosted window is resized to the panel at 2x pixel density during native viewing,
+bounded to 1280x1280 logical pixels. The screen-region capture includes native
+menus and dialogs inside the window bounds. This is not a new embedded browser
+engine or DOM renderer.
 
 An independent server-side view-only VNC socket is selected while an Agent owns
 control; client-side viewOnly is additional UI protection, not the authority.
 Session/epoch fences revoke old input sockets on handoff. Only the operator can
 resize the native window, serialized against control changes. Private sign-in
-remains checkpointed, and no automatic debugging connection is attempted merely
-to display a native-capable browser. Chrome approval is still required for agent
-automation when Chrome requests it. Local/legacy browsers retain their existing
+remains checkpointed, and reopening its native view does not automatically
+reconnect automation. Older manually opened browsers may still require Chrome
+approval. Local/legacy browsers retain their existing
 page-view transport; capability negotiation avoids invoking the new methods on
 an older browser supervisor. Activating the new native capability requires a
 browser-service restart and explicit authorization to close live browsers.
