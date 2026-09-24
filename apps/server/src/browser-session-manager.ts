@@ -687,8 +687,9 @@ export class BrowserSessionManager {
     }, affectsRestartReadiness);
   }
 
-  open(scope: BrowserScope, url?: string, initialOwner: BrowserControlOwner = "agent", localFactory?: BrowserDriverFactory, nativeManual = false): Promise<BrowserSessionDto> {
+  open(scope: BrowserScope, url?: string, initialOwner: BrowserControlOwner = "agent", localFactory?: BrowserDriverFactory, nativeManual = false, connectOnOpen = false): Promise<BrowserSessionDto> {
     this.assertAdmission(scope);
+    if (connectOnOpen && !nativeManual) throw new BrowserSessionError("An initial Chrome connection requires an owned native browser.", 409);
     if (nativeManual && (localFactory || initialOwner !== "operator")) throw new BrowserSessionError("Manual hosted sessions must be opened by the operator.", 409);
     const initialUrl = nativeManual && url ? validateBrowserUrl(url) : undefined;
     const existing = this.sessions.get(scope.agentId);
@@ -773,7 +774,7 @@ export class BrowserSessionManager {
             });
           }, (handle, options) => this.registerSpawnHandle(session.dto, session, 1, publication, handle, options),
           (event) => this.commitPageEvent(session.dto, session, 1, event), {
-            ...(nativeManual ? { ...launch?.driver, nativeManual: true, initialUrl } : launch?.driver),
+            ...(nativeManual ? { ...launch?.driver, nativeManual: true, initialUrl, connectOnOpen } : launch?.driver),
             signal: session.launchAbort.signal,
           });
         } finally {

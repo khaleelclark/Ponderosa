@@ -51,6 +51,7 @@ api.setBrowserControl = async (_projectId, _agentId, _runId, target) => {
 api.getBrowserFrame = async (_projectId, _agentId, _runId, pageId) => api.getProjectBrowserFrame("p", pageId);
 api.setProjectBrowserControl = async (_project, target) => {
   (window as any).lastBrowserGrant = target;
+  if (target.owner === "operator") session.controlOwner = "operator";
   session.nextRunAgentId = (target.nextRun || target.currentOrNext) && target.owner === "agent" ? target.agentId : undefined;
   session.controlEpoch++;
   return structuredClone(session);

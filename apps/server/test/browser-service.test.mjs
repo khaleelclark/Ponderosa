@@ -55,6 +55,48 @@ test('supervised browser survives application shutdown with draft intact and sta
   } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('broker carries an immediate Ponderosa connection request to its owned Chrome launch', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-service-connected-open-'));
+  const socket = path.join(root, 'service.sock');
+  let launched;
+  const service = await startBrowserService(socket, root, async (_id, _console, _spawned, _event, options) => {
+    launched = options;
+    return { isAlive: () => true, manualState: () => 'automation', pages: async () => ({ activePageId: 'one', pages: [{ pageId: 'one', url: 'about:blank', title: 'New tab', active: true }] }), close: async () => {} };
+  });
+  try {
+    const client = new BrowserServiceClient(socket); await client.claim();
+    const id = randomUUID();
+    const driver = await client.driver(id, undefined, { nativeManual: true, connectOnOpen: true });
+    assert.equal(launched.nativeManual, true);
+    assert.equal(launched.connectOnOpen, true);
+    assert.equal(driver.manualState(), 'automation');
+    await driver.close();
+  } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('an older browser service cannot silently open the wrong browser mode', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'legacy-browser-service-'));
+  const socket = path.join(root, 'service.sock');
+  let calls = 0;
+  const legacy = createHttpServer(async (request, response) => {
+    calls++;
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString());
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ result: body.operation === 'claim' ? { lease: randomUUID(), sessions: [] } : {} }));
+  });
+  await new Promise(resolve => legacy.listen(socket, resolve));
+  try {
+    const client = new BrowserServiceClient(socket); await client.claim();
+    await assert.rejects(client.driver(randomUUID(), undefined, { connectOnOpen: true }), /must be updated/);
+    assert.equal(calls, 1, 'no incompatible open reached the old browser service');
+  } finally {
+    await new Promise(resolve => legacy.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('a new application waits for an opening browser to be safely fenced', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'browser-opening-fence-'));
   const socket = path.join(root, 'service.sock');

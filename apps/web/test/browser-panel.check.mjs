@@ -257,11 +257,20 @@ try {
   assert.equal(await native.evaluate(() => window.connectionCalls), undefined, 'native display works without initiating automation');
   assert.equal(await native.getByRole('textbox', { name: 'Website address' }).count(), 0, 'no duplicate address bar over Chrome');
   await native.evaluate(() => { window.browserSession.manualControl = 'automation'; window.browserSession.controlEpoch++; });
-  await native.getByText('You have control', { exact: true }).waitFor();
-  assert.equal(await native.locator('[aria-label="Manual Chrome browser"]').count(), 1, 'same display surface after automation connects');
+  await native.getByRole('tab', { name: /Application form/ }).waitFor();
+  assert.equal(await native.getByRole('textbox', { name: 'Website address' }).count(), 1, 'connected Chrome uses the Ponderosa browser controls');
+  assert.equal(await native.locator('[aria-label="Manual Chrome browser"]').count(), 0, 'native stream closes after automation connects');
   await native.evaluate(() => { window.browserSession.controlOwner = 'agent'; window.browserSession.controlEpoch++; });
-  await native.getByText('Agent has control', { exact: true }).waitFor();
-  assert.equal(await native.locator('[aria-label="Manual Chrome browser"]').count(), 1, 'same display while watching the agent');
+  await native.getByRole('tab', { name: /Application form/ }).waitFor();
+  assert.equal(await native.locator('[aria-label="Manual Chrome browser"]').count(), 0, 'Agent viewing uses the Ponderosa browser controls');
+  await native.getByRole('button', { name: 'Use myself', exact: true }).click();
+  await native.getByRole('button', { name: 'Browser options', exact: true }).click();
+  await native.getByRole('menuitem', { name: 'Sign in privately (disconnect agent access)', exact: true }).click();
+  await native.locator('[aria-label="Manual Chrome browser"]').waitFor();
+  assert.equal(await native.getByRole('textbox', { name: 'Website address' }).count(), 0, 'private sign-in never exposes automation controls');
+  await native.getByRole('button', { name: 'Done signing in', exact: true }).click();
+  await native.getByRole('textbox', { name: 'Website address' }).waitFor();
+  assert.equal(await native.locator('[aria-label="Manual Chrome browser"]').count(), 0, 'the same session returns to Ponderosa controls after sign-in');
   await native.close();
   for (const width of [1440, 390]) {
     const permission = await browser.newPage({ viewport: { width, height: 900 } });

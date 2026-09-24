@@ -42,6 +42,8 @@ export interface BrowserDriverLaunchOptions {
   /** Internal adapter selection; does not alter browser ownership. */
   playwright?: boolean;
   nativeManual?: boolean;
+  /** Attach the owned native Chrome immediately for the Ponderosa page view. */
+  connectOnOpen?: boolean;
   initialUrl?: string;
   /** Explicitly relaxes Chrome isolation for constrained test containers only. */
   disableSandbox?: boolean;

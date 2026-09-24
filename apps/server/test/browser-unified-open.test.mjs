@@ -30,6 +30,7 @@ test('chat browser opens manual-capable, remembers explicit profile choice and n
     const first = await open({ url: 'https://example.test', rememberSignIns: true });
     assert.equal(first.statusCode, 200, first.body);
     assert.equal(launches[0][4], true);
+    assert.equal(launches[0][5], true, 'ordinary chat browsing starts with the Ponderosa page view');
     assert.equal(launches[0][1], 'https://example.test');
     const identity = profiles.description(scope('chat')).profileId;
     assert.ok(identity);

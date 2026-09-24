@@ -301,7 +301,7 @@ export function registerBrowserRoutes(
         if (remember !== undefined) {
           browserProfiles.setChatRememberSignIns(scope.projectId, scope.agentId, remember);
         }
-        const session = await projectBrowserSessions.open(scope, request.body?.url, "operator", undefined, true);
+        const session = await projectBrowserSessions.open(scope, request.body?.url, "operator", undefined, true, true);
         return projectBrowserDto(request.params.projectId, session);
       } catch (error) {
         return browserRouteError(reply, error);

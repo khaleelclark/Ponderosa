@@ -94,7 +94,7 @@ export async function startBrowserService(socketPath: string, dataDir: string, f
           ? cleanupCancelledEntry(id, entry)
           : entry.queue.catch(() => undefined)));
         if (lease !== claimed) throw new Error("Another application claimed the browser service.");
-        result = { lease: claimed, supportsCheckLease: true, sessions: [...entries].flatMap(([id, entry]) =>
+        result = { lease: claimed, supportsCheckLease: true, supportsConnectOnOpen: true, sessions: [...entries].flatMap(([id, entry]) =>
           !entry.cancelled && entry.driver ? [id] : []) };
       } else {
         if (!lease || body.lease !== lease) throw new Error("Browser application lease expired.");
@@ -112,7 +112,7 @@ export async function startBrowserService(socketPath: string, dataDir: string, f
           // Paths are derived here, never supplied by browser UI or callers.
           const profileDir = profileId ? path.join(dataDir, "browser-profiles", profileId) : path.join(dataDir, "browser-service-temporary", body.id);
           const launchAbort = new AbortController();
-          const launch: BrowserDriverLaunchOptions = { profileDir, retainProfile: Boolean(profileId), nativeManual: true, initialUrl: body.url, signal: launchAbort.signal };
+          const launch: BrowserDriverLaunchOptions = { profileDir, retainProfile: Boolean(profileId), nativeManual: true, connectOnOpen: body.connectOnOpen === true, initialUrl: body.url, signal: launchAbort.signal };
           const events: BrowserPageEvent[] = [];
           const entry: Entry = { profileId, events, queue: Promise.resolve(), admittedLease, opening: true, cancelled: false, openingToken: body.openingToken, launchAbort };
           entries.set(body.id, entry);
@@ -211,6 +211,7 @@ export async function startBrowserService(socketPath: string, dataDir: string, f
 export class BrowserServiceClient {
   private lease = "";
   private supportsCheckLease = false;
+  private supportsConnectOnOpen = false;
   constructor(private readonly socketPath: string) {}
   private rpc(body: Record<string, unknown>, timeoutMs = 130_000): Promise<any> {
     return new Promise((resolve, reject) => {
@@ -235,14 +236,15 @@ export class BrowserServiceClient {
       req.on("error", reject); req.end(JSON.stringify({ ...body, lease: this.lease }));
     });
   }
-  async claim(): Promise<string[]> { const result = await this.rpc({ operation: "claim" }); this.lease = result.lease; this.supportsCheckLease = result.supportsCheckLease === true; return result.sessions; }
+  async claim(): Promise<string[]> { const result = await this.rpc({ operation: "claim" }); this.lease = result.lease; this.supportsCheckLease = result.supportsCheckLease === true; this.supportsConnectOnOpen = result.supportsConnectOnOpen === true; return result.sessions; }
   async driver(id: string, event: Parameters<BrowserDriverFactory>[3], launch?: BrowserDriverLaunchOptions, adopt = false): Promise<BrowserDriver> {
+    if (launch?.connectOnOpen && !this.supportsConnectOnOpen) throw new Error("The persistent browser service must be updated before opening a new Ponderosa browser. Existing browser tabs were not changed.");
     const profileId = launch?.retainProfile && launch.profileDir ? path.basename(launch.profileDir) : undefined;
     const openingToken = adopt ? undefined : randomUUID();
     let cancellation: Promise<unknown> | undefined;
     const cancelOpening = () => cancellation ??= this.rpc({ operation: "cancel_open", id, openingToken }, 0);
     const onAbort = () => { void cancelOpening().catch(() => undefined); };
-    const opening = this.rpc({ operation: adopt ? "adopt" : "open", id, profileId, url: launch?.initialUrl, openingToken });
+    const opening = this.rpc({ operation: adopt ? "adopt" : "open", id, profileId, url: launch?.initialUrl, connectOnOpen: launch?.connectOnOpen === true, openingToken });
     if (launch?.signal && !adopt) launch.signal.addEventListener("abort", onAbort, { once: true });
     if (launch?.signal?.aborted && !adopt) onAbort();
     let first: { snapshot: Snapshot };
