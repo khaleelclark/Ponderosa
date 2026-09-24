@@ -604,7 +604,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
             </Button>
             </Stack>
             <List dense disablePadding aria-label={`Notifications for ${project?.label ?? "Ponderosa"}`}>
-              {group.items.map((item) => <ListItem key={item.id} disablePadding sx={{ alignItems: "flex-start", "& > [data-notification-id]": { flex: 1, minWidth: 0 } }}>
+              {group.items.map((item) => <ListItem key={item.id} disablePadding sx={{ "& > [data-notification-id]": { flex: 1, minWidth: 0 } }}>
                 <NotificationAcknowledgementBoundary notificationId={item.id} acknowledged={Boolean(item.acknowledgedAt) || !isOpenAttention(item)} onAcknowledge={acknowledgePresentedNotifications}>
                 <ListItemButton selected={filter === "updates" ? !item.readAt : !item.acknowledgedAt} onClick={() => navigateToNotification(item)} alignItems="flex-start" sx={{ gap: 1, mx: .75, my: .45, py: 1, borderRadius: 1.5 }}>
                   <Box aria-hidden sx={{ width: 8, height: 8, mt: .75, borderRadius: "50%", bgcolor: filter === "updates" ? "primary.main" : item.acknowledgedAt ? "action.disabled" : item.severity === "urgent" ? "error.main" : "warning.main", flex: "0 0 auto" }} />
@@ -624,18 +624,15 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
                         onNavigate(route);
                       }
                     }}>Review Work Details</Button> : null}
+                    <Button size="small" color="inherit" sx={{ ml: "auto" }} onClick={(event) => {
+                      event.stopPropagation();
+                      void setStatus(item, "dismissed");
+                    }}>Dismiss</Button>
                     </Box></Stack>}
                     secondaryTypographyProps={{ component: "div" }}
                   />
                 </ListItemButton>
                 </NotificationAcknowledgementBoundary>
-                <IconButton
-                  aria-label={`Dismiss notification: ${item.title}`}
-                  size="small"
-                  title="Dismiss notification"
-                  onClick={() => void setStatus(item, "dismissed")}
-                  sx={{ mt: 1.25, mr: 1 }}
-                ><CloseIcon fontSize="small" /></IconButton>
               </ListItem>)}
             </List>
           </Box>;
