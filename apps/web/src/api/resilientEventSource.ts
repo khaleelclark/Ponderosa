@@ -11,6 +11,10 @@ interface ResilientEventSourceOptions {
   configure(source: EventSource): void;
   onOpen?(event: Event): void;
   onError?(event: Event): void;
+  /** EventSource hides HTTP error headers. A bounded read-only probe can observe
+   * a shared 429 Retry-After before reconnecting. */
+  probeRateLimit?(): Promise<void>;
+  reconnectCooldownMs?(): number;
   initialReconnectDelayMs?: number;
   maxReconnectDelayMs?: number;
   maxSilenceMs?: number;
@@ -44,8 +48,14 @@ export function createResilientEventSource(
     options.onError?.(event);
     source = undefined;
     current.close();
-    if (reconnectTimer) return;
-    const delay = reconnectDelay;
+    void (options.probeRateLimit?.() ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => scheduleReconnect());
+  };
+
+  const scheduleReconnect = (): void => {
+    if (stopped || reconnectTimer) return;
+    const delay = Math.max(reconnectDelay, options.reconnectCooldownMs?.() ?? 0);
     reconnectDelay = Math.min(reconnectDelay * 2, maxDelay);
     reconnectTimer = setTimeout(() => {
       reconnectTimer = undefined;
@@ -61,6 +71,10 @@ export function createResilientEventSource(
 
   const connect = (): void => {
     if (stopped) return;
+    if ((options.reconnectCooldownMs?.() ?? 0) > 0) {
+      scheduleReconnect();
+      return;
+    }
     const nextSource = options.createSource();
     source = nextSource;
     noteActivity(nextSource);

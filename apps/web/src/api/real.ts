@@ -159,40 +159,94 @@ import {
   type WorkspaceStreamHandlers,
 } from "./types";
 import { createResilientEventSource } from "./resilientEventSource";
+import {
+  backgroundCooldownRemaining,
+  noteBackgroundRateLimit,
+  parseRetryAfter,
+  waitForBackgroundCooldown,
+} from "./backgroundCooldown";
 
 const API_BASE = "";
+const pendingBackgroundReads = new Map<string, Promise<unknown>>();
 
-export async function requestJson<T>(path: string, init?: RequestInit, acceptedErrorStatuses: number[] = []): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (init?.body != null && !headers.has("content-type")) {
-    headers.set("content-type", "application/json");
-  }
+function backgroundRead(method: string, path: string): boolean {
+  if (method === "GET") return true;
+  if (method !== "POST") return false;
+  return path === "/api/notifications/projection"
+    || /^\/api\/conversations\/[^/]+\/message-delivery-receipts(?:\?|$)/u.test(path);
+}
 
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers,
+function coalesceBackgroundRead<T>(key: string, load: () => Promise<T>): Promise<T> {
+  const pending = pendingBackgroundReads.get(key);
+  if (pending) return pending as Promise<T>;
+  const result = load().finally(() => {
+    if (pendingBackgroundReads.get(key) === result) pendingBackgroundReads.delete(key);
   });
+  pendingBackgroundReads.set(key, result);
+  return result;
+}
 
-  if (!response.ok && !acceptedErrorStatuses.includes(response.status)) {
-    let message = `${response.status} ${response.statusText}`;
-    let errorBody: unknown;
-    if (response.headers.get("content-type")?.includes("application/json")) {
-      try {
-        const body = await response.json() as { error?: unknown };
-        errorBody = body;
-        if (typeof body.error === "string" && body.error.trim()) message = body.error.trim();
-      } catch {
-        // Preserve the stable HTTP fallback when an upstream JSON error is malformed.
-      }
+async function probeStreamRateLimit(): Promise<void> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2_000);
+  try {
+    const response = await fetch("/api/health", {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (response.status === 429) noteBackgroundRateLimit(response.headers.get("retry-after"));
+    await response.body?.cancel();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export function requestJson<T>(path: string, init?: RequestInit, acceptedErrorStatuses: number[] = []): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  const isBackground = backgroundRead(method, path);
+  const load = async (): Promise<T> => {
+    const headers = new Headers(init?.headers);
+    if (init?.body != null && !headers.has("content-type")) {
+      headers.set("content-type", "application/json");
     }
-    throw new ApiRequestError(response.status, message, errorBody);
-  }
 
-  if (response.status === 204 || response.headers.get("content-length") === "0") {
-    return undefined as T;
-  }
-  const body = await response.text();
-  return (body ? JSON.parse(body) : undefined) as T;
+    if (isBackground) await waitForBackgroundCooldown(init?.signal ?? undefined);
+
+    const response = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers,
+    });
+
+    if (!response.ok && !acceptedErrorStatuses.includes(response.status)) {
+      const retryAfterMs = response.status === 429
+        ? parseRetryAfter(response.headers.get("retry-after"))
+        : undefined;
+      if (response.status === 429 && isBackground) {
+        noteBackgroundRateLimit(response.headers.get("retry-after"));
+      }
+      let message = `${response.status} ${response.statusText}`;
+      let errorBody: unknown;
+      if (response.headers.get("content-type")?.includes("application/json")) {
+        try {
+          const body = await response.json() as { error?: unknown };
+          errorBody = body;
+          if (typeof body.error === "string" && body.error.trim()) message = body.error.trim();
+        } catch {
+          // Preserve the stable HTTP fallback when an upstream JSON error is malformed.
+        }
+      }
+      throw new ApiRequestError(response.status, message, errorBody, retryAfterMs);
+    }
+
+    if (response.status === 204 || response.headers.get("content-length") === "0") {
+      return undefined as T;
+    }
+    const body = await response.text();
+    return (body ? JSON.parse(body) : undefined) as T;
+  };
+  return isBackground && init === undefined && acceptedErrorStatuses.length === 0
+    ? coalesceBackgroundRead(`json:${path}`, load)
+    : load();
 }
 
 export interface CollectionPage<T> {
@@ -211,29 +265,34 @@ function withoutCursor(path: string): string {
   return `${parsed.pathname}${parsed.search}`;
 }
 
-async function requestCollectionPage<T>(path: string, resetOnStale = true): Promise<CollectionPage<T>> {
-  const response = await fetch(`${API_BASE}${path}`);
-  if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`;
-    let code: string | undefined;
-    try {
-      const body = await response.json() as { error?: unknown; code?: unknown };
-      if (typeof body.error === "string" && body.error.trim()) message = body.error.trim();
-      if (typeof body.code === "string") code = body.code;
-    } catch {
-      // Preserve the stable HTTP fallback for malformed errors.
+function requestCollectionPage<T>(path: string, resetOnStale = true): Promise<CollectionPage<T>> {
+  return coalesceBackgroundRead(`page:${path}:${resetOnStale}`, async () => {
+    await waitForBackgroundCooldown();
+    const response = await fetch(`${API_BASE}${path}`);
+    if (!response.ok) {
+      if (response.status === 429) noteBackgroundRateLimit(response.headers.get("retry-after"));
+      let message = `${response.status} ${response.statusText}`;
+      let code: string | undefined;
+      try {
+        const body = await response.json() as { error?: unknown; code?: unknown };
+        if (typeof body.error === "string" && body.error.trim()) message = body.error.trim();
+        if (typeof body.code === "string") code = body.code;
+      } catch {
+        // Preserve the stable HTTP fallback for malformed errors.
+      }
+      if (resetOnStale && response.status === 409 && code === "stale_collection_cursor") {
+        return { ...(await requestCollectionPage<T>(withoutCursor(path), false)), reset: true };
+      }
+      throw new ApiRequestError(response.status, message, undefined,
+        response.status === 429 ? parseRetryAfter(response.headers.get("retry-after")) : undefined);
     }
-    if (resetOnStale && response.status === 409 && code === "stale_collection_cursor") {
-      return { ...(await requestCollectionPage<T>(withoutCursor(path), false)), reset: true };
-    }
-    throw new ApiRequestError(response.status, message);
-  }
-  const items = await response.json() as T[];
-  const total = Number(response.headers.get("x-total-count") ?? items.length);
-  const limit = Number(response.headers.get("x-page-limit") ?? items.length);
-  const hasMore = response.headers.get("x-collection-has-more") === "true";
-  const cursor = response.headers.get("x-next-cursor") ?? undefined;
-  return { items, total, limit, hasMore, ...(cursor ? { cursor } : {}) };
+    const items = await response.json() as T[];
+    const total = Number(response.headers.get("x-total-count") ?? items.length);
+    const limit = Number(response.headers.get("x-page-limit") ?? items.length);
+    const hasMore = response.headers.get("x-collection-has-more") === "true";
+    const cursor = response.headers.get("x-next-cursor") ?? undefined;
+    return { items, total, limit, hasMore, ...(cursor ? { cursor } : {}) };
+  });
 }
 
 async function collectCollectionPages<T>(path: string): Promise<T[]> {
@@ -1175,6 +1234,8 @@ export const realApi = {
   subscribeAgent(agentId: string, lastSeenSeq: number | undefined, handlers: StreamHandlers): StreamSubscription {
     let cursor = lastSeenSeq;
     return createResilientEventSource({
+      probeRateLimit: probeStreamRateLimit,
+      reconnectCooldownMs: backgroundCooldownRemaining,
       createSource: () => new EventSource(`/api/agents/${encodeURIComponent(agentId)}/stream${toQuery({
         lastEventId: cursor,
       })}`),
@@ -1197,6 +1258,8 @@ export const realApi = {
   subscribeWorkspace(lastSeenId: number | undefined, handlers: WorkspaceStreamHandlers): StreamSubscription {
     let cursor = lastSeenId;
     return createResilientEventSource({
+      probeRateLimit: probeStreamRateLimit,
+      reconnectCooldownMs: backgroundCooldownRemaining,
       createSource: () => new EventSource(`/api/workspace/stream${toQuery({ lastEventId: cursor, bootstrap: true })}`),
       onOpen: () => handlers.onOpen?.(),
       onError: (event) => handlers.onError?.(event),

@@ -1781,7 +1781,9 @@ export function Composer({
           if (!stillOwnsWrite()) return;
           if (!(error instanceof ApiRequestError) || error.status !== 409) {
             setSendError(
-              error instanceof Error
+              error instanceof ApiRequestError && error.status === 429
+                ? `Draft not saved yet. Your text and attachments remain here; retry in about ${Math.ceil((error.retryAfterMs ?? 1_000) / 1_000)} seconds.`
+                : error instanceof Error
                 ? error.message
                 : "Draft could not be saved.",
             );
@@ -2611,7 +2613,9 @@ export function Composer({
           if (draftStorageKey) writeChatState(draftStorageKey, submittedText);
         }
         setSendError(
-          error instanceof Error ? error.message : "Upload failed; try again.",
+          error instanceof ApiRequestError && error.status === 429
+            ? `Message not sent. Your draft and attachments remain here; retry in about ${Math.ceil((error.retryAfterMs ?? 1_000) / 1_000)} seconds.`
+            : error instanceof Error ? error.message : "Upload failed; try again.",
         );
       })
       .finally(() => {

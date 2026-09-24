@@ -84,6 +84,8 @@ export interface CreateServerOptions {
   /** Global admission limits. Tests and embedded servers may omit them. */
   requestLimits?: {
     maxRequestsPerMinute: number;
+    /** Separate bounded capacity for operator-authored drafts and messages. */
+    maxCriticalRequestsPerMinute?: number;
     maxInflight: number;
     /** Response deadline; admission remains held until the handler settles. */
     handlerDeadlineMs?: number;

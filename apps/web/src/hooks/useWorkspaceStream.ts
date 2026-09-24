@@ -33,6 +33,7 @@ import {
 import { hasLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
 import { phaseQueryMatchesProject } from "../workspaceDirectoryScope";
+import { createBoundedRefresh } from "../boundedRefresh";
 
 const CURSOR_KEY = "ponderosa.workspace.cursor.v2";
 const INSTANCE_KEY = "ponderosa.workspace.instance.v1";
@@ -207,10 +208,8 @@ function initialInstanceId(): string | null {
 function invalidateWorkspaceCapabilities(
   queryClient: QueryClient,
   projectId: string,
-): Promise<void> {
-  return queryClient.invalidateQueries({
-    queryKey: queryKeys.engines.capabilities(projectId),
-  });
+): void {
+  invalidateForBrowserPage(queryClient, queryKeys.engines.capabilities(projectId));
 }
 
 /** Conversation caches whose canonical response file summaries changed. */
@@ -266,15 +265,13 @@ function workspaceEventChangesResourceRecency(event: WorkspaceEvent): boolean {
  * still guaranteeing periodic refreshes rather than waiting for a quiet gap. */
 function createWorkspaceRecencyInvalidator(
   queryClient: Pick<QueryClient, "invalidateQueries">,
-  delayMs = 350,
+  delayMs = 5_000,
 ): { schedule(): void; flush(): void; dispose(): void } {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const flush = () => {
     if (timer) clearTimeout(timer);
     timer = undefined;
-    void queryClient.invalidateQueries({
-      queryKey: queryKeys.workspaceResourceRecency.all,
-    });
+    invalidateForBrowserPage(queryClient, queryKeys.workspaceResourceRecency.all);
   };
   return {
     schedule() {
@@ -314,7 +311,7 @@ function invalidateActiveQueries(queryClient: QueryClient, queryKey: readonly un
  * Project. A global invalidation supersedes narrower pending work. */
 function createAgentWorkInvalidator(
   queryClient: Pick<QueryClient, "invalidateQueries">,
-  delayMs = 350,
+  delayMs = 5_000,
 ): { schedule(projectId?: string): void; flush(): void; dispose(): void } {
   const projectIds = new Set<string>();
   let invalidateAll = false;
@@ -322,8 +319,8 @@ function createAgentWorkInvalidator(
   const flush = () => {
     if (timer) clearTimeout(timer);
     timer = undefined;
-    if (invalidateAll) void queryClient.invalidateQueries({ queryKey: queryKeys.agentWork.all });
-    else for (const projectId of projectIds) void queryClient.invalidateQueries({ queryKey: queryKeys.agentWork.project(projectId) });
+    if (invalidateAll) invalidateForBrowserPage(queryClient, queryKeys.agentWork.all);
+    else for (const projectId of projectIds) invalidateForBrowserPage(queryClient, queryKeys.agentWork.project(projectId));
     invalidateAll = false;
     projectIds.clear();
   };
@@ -379,7 +376,7 @@ function createDirectoryInvalidator(queryClient: QueryClient, delayMs = 250) {
  * their own Agent stream, such as Project review. */
 function createAgentDetailInvalidator(
   queryClient: Pick<QueryClient, "invalidateQueries">,
-  delayMs = 350,
+  delayMs = 5_000,
 ): { schedule(agentId: string): void; flush(): void; dispose(): void } {
   const agentIds = new Set<string>();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -408,40 +405,6 @@ function createAgentDetailInvalidator(
   };
 }
 
-/** Coalesces repeated lifecycle notifications before refreshing Project rosters.
- * Agent detail remains event-driven; this only prevents the shared list from
- * refetching once for every event in a short lifecycle burst. */
-function createAgentStateInvalidator(
-  queryClient: QueryClient,
-  delayMs = 350,
-): { schedule(projectId: string): void; flush(): void; dispose(): void } {
-  const projectIds = new Set<string>();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const flush = () => {
-    if (timer) clearTimeout(timer);
-    timer = undefined;
-    for (const projectId of projectIds) {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
-      // Phase-bearing health, organization, and directory queries are refreshed
-      // once by the post-event boundary reconciler, not by a competing timer.
-    }
-    projectIds.clear();
-  };
-  return {
-    schedule(projectId) {
-      projectIds.add(projectId);
-      // A fixed window keeps lifecycle state visible even under sustained load.
-      timer ??= setTimeout(flush, delayMs);
-    },
-    flush,
-    dispose() {
-      if (timer) clearTimeout(timer);
-      timer = undefined;
-      projectIds.clear();
-    },
-  };
-}
-
 /** Coalesces live operational changes by conversation. Team Chat can be costly
  * to project, so unrelated Projects and short event bursts must not multiply
  * full-page reads across every mounted browser tab. */
@@ -455,9 +418,9 @@ function createCollaborationChatInvalidator(
   const flush = () => {
     if (timer) clearTimeout(timer);
     timer = undefined;
-    if (invalidateAll) void queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll });
+    if (invalidateAll) invalidateForBrowserPage(queryClient, queryKeys.collaborationAll);
     else for (const conversationId of conversationIds) {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.collaborationPrefix(conversationId) });
+      invalidateForBrowserPage(queryClient, queryKeys.collaborationPrefix(conversationId));
     }
     invalidateAll = false;
     conversationIds.clear();
@@ -492,11 +455,9 @@ function createDecisionConversationInvalidator(
   const flush = () => {
     if (timer) clearTimeout(timer);
     timer = undefined;
-    void queryClient.invalidateQueries({ queryKey: queryKeys.decisions.all });
+    invalidateForBrowserPage(queryClient, queryKeys.decisions.all);
     for (const conversationId of conversationIds) {
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations.detailPrefix(conversationId),
-      });
+      invalidateForBrowserPage(queryClient, queryKeys.conversations.detailPrefix(conversationId));
     }
     conversationIds.clear();
   };
@@ -531,18 +492,29 @@ export function useWorkspaceStream(
   });
 
   useEffect(() => {
+    const invalidate = (queryKey: readonly unknown[]) => invalidateForBrowserPage(queryClient, queryKey);
     const agentWorkInvalidator = createAgentWorkInvalidator(queryClient);
     const agentDetailInvalidator = createAgentDetailInvalidator(queryClient);
-    const agentStateInvalidator = createAgentStateInvalidator(queryClient);
     const directoryInvalidator = createDirectoryInvalidator(queryClient);
     const workspaceRecencyInvalidator =
       createWorkspaceRecencyInvalidator(queryClient);
     const collaborationChatInvalidator = createCollaborationChatInvalidator(queryClient);
     const decisionConversationInvalidator =
       createDecisionConversationInvalidator(queryClient);
+    const pendingTaskProjects = new Set<string>();
+    const taskProjectionRefresh = createBoundedRefresh(() => {
+      invalidateForBrowserPage(queryClient, queryKeys.workspaceStatus.all);
+      invalidateForBrowserPage(queryClient, queryKeys.workspaceFile.all);
+      for (const projectId of pendingTaskProjects) {
+        invalidateForBrowserPage(queryClient, queryKeys.projectArtifacts.project(projectId));
+      }
+      pendingTaskProjects.clear();
+    }, 5_000);
     let replayReconcileTimer: ReturnType<typeof setTimeout> | undefined;
-    let phaseReconcileTimer: ReturnType<typeof setTimeout> | undefined;
     let phaseReconcileGeneration = 0;
+    let phaseReconcileInFlight = false;
+    let urgentPhasePending = false;
+    const pendingRosterProjects = new Set<string>();
     let phaseCatchUpCursor: number | undefined;
     let phaseQueryBoundaries: ReadonlyMap<Query, PhaseQueryBoundary> = new Map();
     let stopped = false;
@@ -577,51 +549,75 @@ export function useWorkspaceStream(
         ? { ...current, phaseEvidenceFresh: false }
         : current);
     };
-    const schedulePhaseReconciliation = (delayMs = 250) => {
-      if (
-        stopped
-        || disconnected
-        || !connectedOnce
-        || (phaseCatchUpCursor !== undefined && cursor.current < phaseCatchUpCursor)
-      ) return;
-      if (phaseReconcileTimer) return;
-      phaseReconcileTimer = setTimeout(() => {
-        phaseReconcileTimer = undefined;
-        const generation = phaseReconcileGeneration;
-        const boundaries = phaseQueryBoundaries;
-        void reconcilePhaseQueriesAfterBoundary(
-          queryClient,
-          activePhaseQueries().filter(query => boundaries.has(query)),
-          boundaries,
-          () => !stopped
-            && !disconnected
-            && generation === phaseReconcileGeneration,
-        )
-          .then(reconciled => {
-            if (
-              stopped
-              || disconnected
-              || generation !== phaseReconcileGeneration
-            ) return;
-            if (!reconciled) {
-              schedulePhaseReconciliation(1_000);
-              return;
-            }
-            phaseQueryBoundaries = new Map();
-            setConnection(current => ({
-              ...current,
-              phaseEvidenceFresh: true,
-            }));
-          })
-          .catch(() => {
-            if (
-              !stopped
-              && !disconnected
-              && generation === phaseReconcileGeneration
-            ) schedulePhaseReconciliation(1_000);
+    const runPhaseRefresh = () => {
+      if (stopped || disconnected || !connectedOnce || !browserPageIsVisible()) return;
+      if (phaseCatchUpCursor !== undefined && cursor.current < phaseCatchUpCursor) return;
+      if (phaseReconcileInFlight) return;
+      const urgent = urgentPhasePending;
+      urgentPhasePending = false;
+      for (const projectId of pendingRosterProjects) {
+        invalidateForBrowserPage(queryClient, queryKeys.agents.project(projectId));
+      }
+      pendingRosterProjects.clear();
+      const generation = phaseReconcileGeneration;
+      const boundaries = phaseQueryBoundaries;
+      phaseReconcileInFlight = true;
+      if (!urgent) {
+        // Continuous command/tool output changes the generation while a fetch
+        // is in flight. Refresh boundedly anyway; only the strict boundary
+        // reconciler below may certify that all phase evidence is current.
+        void queryClient.refetchQueries({
+          predicate: query => query.isActive() && boundaries.has(query),
+          type: "active",
+        }, { cancelRefetch: false })
+          .catch(() => undefined)
+          .finally(() => {
+            phaseReconcileInFlight = false;
+            if (urgentPhasePending && !stopped && !disconnected) phaseRefresh.schedule(true);
           });
-      }, delayMs);
+        return;
+      }
+      void reconcilePhaseQueriesAfterBoundary(
+        queryClient,
+        activePhaseQueries().filter(query => boundaries.has(query)),
+        boundaries,
+        () => !stopped && !disconnected && generation === phaseReconcileGeneration,
+      )
+        .then(reconciled => {
+          if (stopped || disconnected) return;
+          if (!reconciled || generation !== phaseReconcileGeneration) {
+            phaseRefresh.schedule();
+            return;
+          }
+          phaseQueryBoundaries = new Map();
+          setConnection(current => ({ ...current, phaseEvidenceFresh: true }));
+        })
+        .catch(() => {
+          if (!stopped && !disconnected) phaseRefresh.schedule();
+        })
+        .finally(() => {
+          phaseReconcileInFlight = false;
+          if (urgentPhasePending && !stopped && !disconnected) phaseRefresh.schedule(true);
+        });
     };
+    const phaseRefresh = createBoundedRefresh(runPhaseRefresh, 5_000);
+    const schedulePhaseReconciliation = (urgent = false) => {
+      if (stopped || disconnected || !connectedOnce) return;
+      if (phaseCatchUpCursor !== undefined && cursor.current < phaseCatchUpCursor) return;
+      urgentPhasePending ||= urgent;
+      phaseRefresh.schedule(urgent);
+    };
+    const queueAgentRoster = (projectId: string) => {
+      if (pendingRosterProjects.has(projectId)) return;
+      pendingRosterProjects.add(projectId);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId), refetchType: "none" });
+    };
+    const onVisibilityChange = () => {
+      if (browserPageIsVisible() && (pendingRosterProjects.size || phaseQueryBoundaries.size)) {
+        schedulePhaseReconciliation(true);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     const unsubscribePhaseQueryCache = queryClient.getQueryCache().subscribe(event => {
       if (
         event.type !== "observerAdded"
@@ -642,37 +638,39 @@ export function useWorkspaceStream(
       ) return;
       observedActivePhaseQueries = nextActivePhaseQueries;
       markPhaseEvidenceStale();
-      schedulePhaseReconciliation();
+      schedulePhaseReconciliation(true);
     });
     const invalidateAll = () => {
       directoryInvalidator.dispose();
       agentWorkInvalidator.dispose();
       agentDetailInvalidator.dispose();
-      agentStateInvalidator.dispose();
+      pendingRosterProjects.clear();
       workspaceRecencyInvalidator.dispose();
       collaborationChatInvalidator.dispose();
       decisionConversationInvalidator.dispose();
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.all });
-      void queryClient.invalidateQueries({ queryKey: ["targeted-next-run"] });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
+      taskProjectionRefresh.dispose();
+      pendingTaskProjects.clear();
+      invalidate(queryKeys.projects.all);
+      invalidate(queryKeys.conversations.all);
+      invalidate(["targeted-next-run"]);
+      invalidate(queryKeys.workspaceDirectory.all);
+      invalidate(queryKeys.notifications.all);
       invalidateActiveQueries(queryClient, queryKeys.agents.all);
       invalidateActiveQueries(queryClient, queryKeys.agents.organizationAll);
       invalidateActiveQueries(queryClient, queryKeys.agents.healthAll);
       invalidateActiveQueries(queryClient, queryKeys.agents.detailAll);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceStatus.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFile.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projectArtifacts.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.providerUsage.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceResourceRecency.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.occurrencesAll });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agentWork.all });
+      invalidate(queryKeys.collaborationAll);
+      invalidate(queryKeys.workspaceStatus.all);
+      invalidate(queryKeys.workspaceFile.all);
+      invalidate(queryKeys.projectArtifacts.all);
+      invalidate(queryKeys.tokenUsage.all);
+      invalidate(queryKeys.providerUsage.all);
+      invalidate(queryKeys.globalSearch.all);
+      invalidate(queryKeys.allChatAll);
+      invalidate(queryKeys.workspaceResourceRecency.all);
+      invalidate(queryKeys.triggers.all);
+      invalidate(queryKeys.triggers.occurrencesAll);
+      invalidate(queryKeys.agentWork.all);
     };
     const apply = (envelope: WorkspaceEventEnvelope) => {
       const reconciliation = reconcileCursor(
@@ -700,7 +698,7 @@ export function useWorkspaceStream(
       > = [];
       let preferenceStarsChanged = false;
       if (event.type === "preferences_updated") {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
+        invalidate(queryKeys.notifications.all);
         const previousPreferences = queryClient.getQueryData<
           WorkspacePreferencesDto
         >(queryKeys.workspacePreferences.all);
@@ -719,7 +717,7 @@ export function useWorkspaceStream(
       }
       if (reconciliation.gap) {
         invalidateAll();
-        schedulePhaseReconciliation();
+        schedulePhaseReconciliation(true);
         return;
       }
       // Replayed workspace events are historical catch-up. The canonical
@@ -731,12 +729,12 @@ export function useWorkspaceStream(
         replayReconcileTimer = setTimeout(() => {
           replayReconcileTimer = undefined;
           invalidateAll();
-          schedulePhaseReconciliation();
+          schedulePhaseReconciliation(true);
         }, 250);
         return;
       }
-      if (workspaceEventInvalidatesGlobalSearch(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
-      if (workspaceEventInvalidatesAllChat(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
+      if (workspaceEventInvalidatesGlobalSearch(event)) invalidate(queryKeys.globalSearch.all);
+      if (workspaceEventInvalidatesAllChat(event)) invalidate(queryKeys.allChatAll);
       if (workspaceEventChangesResourceRecency(event) || preferenceStarsChanged) {
         workspaceRecencyInvalidator.schedule();
       }
@@ -760,79 +758,62 @@ export function useWorkspaceStream(
       }
       if (event.type === "preferences_updated") return;
       if (event.type === "project_changed") {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
+        invalidate(queryKeys.projects.all);
         if (event.action !== "used") {
-          void queryClient.invalidateQueries({
-            queryKey: queryKeys.agents.project(event.projectId),
-            refetchType: browserPageIsVisible() ? "active" : "none",
-          });
-          void queryClient.invalidateQueries({
-            queryKey: queryKeys.agents.allChat,
-            exact: true,
-            refetchType: browserPageIsVisible() ? "active" : "none",
-          });
+          invalidate(queryKeys.agents.project(event.projectId));
+          invalidate(queryKeys.agents.allChat);
         }
         // Mark collapsed sibling pages stale as ownership may have changed,
         // while refetching only pages that are currently visible.
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.agents.organizationProject(event.projectId),
-          refetchType: browserPageIsVisible() ? "active" : "none",
-        });
+        invalidate(queryKeys.agents.organizationProject(event.projectId));
         if (deletedProjectId) {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
-          void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
+          invalidate(queryKeys.notifications.all);
+          invalidate(queryKeys.globalSearch.all);
         }
       }
       else if (event.type === "conversation_changed") {
         for (const queryKey of conversationChangedQueryKeys(event)) {
-          void queryClient.invalidateQueries({ queryKey });
+          invalidate(queryKey);
         }
-      } else if (event.type === "draft_changed" || event.type === "draft_conflict") void queryClient.invalidateQueries({ queryKey: queryKeys.conversationDraft.prefix(event.conversationId) });
+      } else if (event.type === "draft_changed" || event.type === "draft_conflict") invalidate(queryKeys.conversationDraft.prefix(event.conversationId));
       else if (event.type === "queued_message_changed") {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.queuedMessages.conversation(event.conversationId) });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.queuedMessages.agentsAll });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailPrefix(event.conversationId) });
+        invalidate(queryKeys.queuedMessages.conversation(event.conversationId));
+        invalidate(queryKeys.queuedMessages.agentsAll);
+        invalidate(queryKeys.conversations.detailPrefix(event.conversationId));
       }
       else if (event.type === "message_delivery_changed") {
         invalidateForBrowserPage(
           queryClient,
           queryKeys.agents.detailPrefix(event.agentId),
         );
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.queuedMessages.agent(event.agentId),
-        });
+        invalidate(queryKeys.queuedMessages.agent(event.agentId));
         if (event.conversationIds) {
           for (const conversationId of event.conversationIds) {
-            void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailPrefix(conversationId) });
-            void queryClient.invalidateQueries({
-              queryKey: queryKeys.queuedMessages.conversation(conversationId),
-            });
-            void queryClient.invalidateQueries({
-              queryKey: queryKeys.conversations.targetedNextRun(conversationId),
-            });
+            invalidate(queryKeys.conversations.detailPrefix(conversationId));
+            invalidate(queryKeys.queuedMessages.conversation(conversationId));
+            invalidate(queryKeys.conversations.targetedNextRun(conversationId));
           }
           collaborationChatInvalidator.schedule(event.conversationIds);
         } else {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll });
+          invalidate(queryKeys.conversations.detailAll);
           collaborationChatInvalidator.schedule();
         }
         agentWorkInvalidator.schedule(event.projectId);
+        agentWorkInvalidator.flush();
       }
       else if (event.type === "coordination_changed") {
-        agentStateInvalidator.schedule(event.projectId);
+        queueAgentRoster(event.projectId);
         agentWorkInvalidator.schedule(event.projectId);
         collaborationChatInvalidator.schedule(event.conversationIds);
         for (const conversationId of event.conversationIds ?? []) {
-          void queryClient.invalidateQueries({
-            queryKey: queryKeys.conversations.targetedNextRun(conversationId),
-          });
+          invalidate(queryKeys.conversations.targetedNextRun(conversationId));
         }
       }
       else if (event.type === "trigger_changed") {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.project(event.projectId) });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.occurrence(event.triggerId) });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agentOccurrences(event.agentId) });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.projectOccurrences(event.projectId) });
+        invalidate(queryKeys.triggers.project(event.projectId));
+        invalidate(queryKeys.triggers.occurrence(event.triggerId));
+        invalidate(queryKeys.triggers.agentOccurrences(event.agentId));
+        invalidate(queryKeys.triggers.projectOccurrences(event.projectId));
         agentWorkInvalidator.schedule(event.projectId);
       }
       else if (event.type === "agent_event") {
@@ -840,37 +821,41 @@ export function useWorkspaceStream(
           agentDetailInvalidator.schedule(event.agentId);
         }
         for (const queryKey of fileActivityConversationQueryKeys(event)) {
-          void queryClient.invalidateQueries({ queryKey });
+          invalidate(queryKey);
         }
         if (workspaceAgentEventChangesPhase(event)) {
-          agentStateInvalidator.schedule(event.projectId);
+          queueAgentRoster(event.projectId);
         }
         if (event.category === "lifecycle") {
           collaborationChatInvalidator.schedule(event.conversationIds);
           agentWorkInvalidator.schedule(event.projectId);
+          agentWorkInvalidator.flush();
+          agentDetailInvalidator.flush();
         }
         if (event.category === "file" || event.category === "artifact" || event.category === "task") {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceStatus.all });
-          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFile.all });
-          void queryClient.invalidateQueries({ queryKey: queryKeys.projectArtifacts.project(event.projectId) });
+          pendingTaskProjects.add(event.projectId);
+          taskProjectionRefresh.schedule(event.category !== "task");
         }
-        if (event.category === "usage") void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
+        if (event.category === "usage") invalidate(queryKeys.tokenUsage.all);
       }
       else if (event.type === "usage_changed") {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.providerUsage.all });
+        invalidate(queryKeys.tokenUsage.all);
+        invalidate(queryKeys.providerUsage.all);
       }
       else if (event.type === "runtime_capabilities_changed") {
         void invalidateWorkspaceCapabilities(queryClient, event.projectId);
       }
       else if (event.type === "notification_changed") {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
+        invalidate(queryKeys.notifications.all);
         if (event.conversationId) {
           decisionConversationInvalidator.schedule(event.conversationId);
         }
         if (event.decisionId) agentWorkInvalidator.schedule(event.projectId);
       }
-      if (changesPhaseEvidence) schedulePhaseReconciliation();
+      if (changesPhaseEvidence) schedulePhaseReconciliation(
+        event.type === "coordination_changed"
+        || (event.type === "agent_event" && event.category === "lifecycle"),
+      );
     };
     let subscription: StreamSubscription | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -965,8 +950,8 @@ export function useWorkspaceStream(
               if (stopped) return;
               // Include bootstrap queries such as preferences, not just the
               // event-specific projections covered by invalidateAll.
-              void queryClient.invalidateQueries();
-              schedulePhaseReconciliation();
+              void queryClient.invalidateQueries({ refetchType: browserPageIsVisible() ? "active" : "none" });
+              schedulePhaseReconciliation(true);
             });
           } else if (status.reset || cursor.current > status.cursor) {
             cursor.current = 0;
@@ -974,7 +959,7 @@ export function useWorkspaceStream(
           }
           instanceId.current = status.instanceId;
           persistWorkspaceCursor(cursor.current, status.instanceId);
-          schedulePhaseReconciliation();
+          schedulePhaseReconciliation(true);
         },
         onError: noteDisconnect,
       });
@@ -987,15 +972,18 @@ export function useWorkspaceStream(
       if (reconnectTimer) clearTimeout(reconnectTimer);
       clearConnectionTimers();
       if (replayReconcileTimer) clearTimeout(replayReconcileTimer);
-      if (phaseReconcileTimer) clearTimeout(phaseReconcileTimer);
+      phaseRefresh.dispose();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       unsubscribePhaseQueryCache();
       directoryInvalidator.dispose();
       agentWorkInvalidator.dispose();
       agentDetailInvalidator.dispose();
-      agentStateInvalidator.dispose();
+      pendingRosterProjects.clear();
       workspaceRecencyInvalidator.dispose();
       collaborationChatInvalidator.dispose();
       decisionConversationInvalidator.dispose();
+      taskProjectionRefresh.dispose();
+      pendingTaskProjects.clear();
     };
   }, [queryClient, retryGeneration]);
   return { ...connection, retry: () => setRetryGeneration(value => value + 1) };
