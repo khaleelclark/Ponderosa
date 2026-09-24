@@ -1,9 +1,10 @@
 import KeyboardIcon from "@mui/icons-material/Keyboard";
-import { Box, Button } from "@mui/material";
+import { Box, IconButton, Tooltip } from "@mui/material";
 import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 
 /** A real editable element is required to summon mobile system keyboards. */
-export function BrowserKeyboard({ disabled, onText, onKey }: { disabled?: boolean; onText(text: string): void; onKey(key: string): void }) {
+export function BrowserKeyboard({ disabled, onText, onKey, portalTarget }: { disabled?: boolean; onText(text: string): void; onKey(key: string): void; portalTarget?: Element | null }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const composing = useRef(false);
   const clear = () => { if (input.current) input.current.value = "\u200b"; };
@@ -21,8 +22,8 @@ export function BrowserKeyboard({ disabled, onText, onKey }: { disabled?: boolea
     if (!disabled && value) onText(value);
     clear();
   };
-  return <>
-    <Button size="small" startIcon={<KeyboardIcon />} disabled={disabled} onClick={() => { clear(); input.current?.focus({ preventScroll: true }); input.current?.setSelectionRange(1, 1); }}>Keyboard</Button>
+  const control = <>
+    <Tooltip title="Keyboard"><span><IconButton size="small" aria-label="Keyboard" disabled={disabled} onClick={() => { clear(); input.current?.focus({ preventScroll: true }); input.current?.setSelectionRange(1, 1); }}><KeyboardIcon fontSize="small" /></IconButton></span></Tooltip>
     <Box component="textarea" ref={input} aria-label="Browser mobile keyboard" defaultValue={"\u200b"} disabled={disabled}
       autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
       onCompositionStart={() => { composing.current = true; }}
@@ -38,4 +39,5 @@ export function BrowserKeyboard({ disabled, onText, onKey }: { disabled?: boolea
       onBlur={clear}
       sx={{ position: "absolute", width: 1, height: 1, opacity: .01, pointerEvents: "none", fontSize: 16, p: 0, border: 0 }} />
   </>;
+  return portalTarget === null ? null : portalTarget ? createPortal(control, portalTarget) : control;
 }

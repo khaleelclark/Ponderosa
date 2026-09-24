@@ -62,6 +62,7 @@ try {
     await page.getByRole("textbox", { name: "Website address", exact: true }).fill("weekend trip ideas");
     await page.getByRole("textbox", { name: "Website address", exact: true }).press("Enter");
     await page.waitForFunction(() => window.browserSession.url === "https://www.google.com/search?q=weekend%20trip%20ideas");
+    await page.waitForFunction(() => document.querySelector('input[aria-label="Website address"]')?.value === "https://www.google.com/search?q=weekend%20trip%20ideas");
     await page.getByRole("textbox", { name: "Website address", exact: true }).fill("javascript:alert(1)");
     await page.getByRole("textbox", { name: "Website address", exact: true }).press("Enter");
     await page.getByText("Use an http(s) website address or a search term.", { exact: true }).waitFor();
@@ -69,7 +70,15 @@ try {
     await page.getByRole("menuitem", { name: "Use myself", exact: true }).click();
     await page.waitForFunction(() => window.lastBrowserGrant?.owner === "operator");
     assert.equal(await page.evaluate(() => window.browserSession.manualControl), "automation", "ordinary takeover preserves the Chrome connection");
-    assert.ok((await page.locator('[data-browser-drag]').boundingBox()).height <= 26, 'compact browser toolbar');
+    const toolbar = await page.locator('[data-browser-drag]').boundingBox();
+    const agentControl = await page.getByRole("button", { name: "Let agent work", exact: true }).boundingBox();
+    const keyboardControl = await page.getByRole("button", { name: "Keyboard", exact: true }).boundingBox();
+    const closeControl = await page.getByRole("button", { name: "Close browser panel", exact: true }).boundingBox();
+    assert.ok(toolbar && toolbar.height <= 26, 'compact browser toolbar');
+    assert.ok(agentControl && keyboardControl && keyboardControl.x >= agentControl.x + agentControl.width && keyboardControl.x - agentControl.x - agentControl.width <= 8, 'keyboard sits next to Agent');
+    assert.ok(keyboardControl.y >= toolbar.y && keyboardControl.y + keyboardControl.height <= toolbar.y + toolbar.height + 2, 'keyboard stays in the top toolbar');
+    assert.ok(closeControl && Math.abs(closeControl.x + closeControl.width - toolbar.x - toolbar.width) <= 8, 'close control reaches the right edge');
+    assert.equal(await page.getByRole("button", { name: "Keyboard", exact: true }).count(), 1, 'only one keyboard control appears');
     assert.equal(await page.getByText('Sign-ins remembered', { exact: true }).count(), 0, 'persistent profile details do not occupy a toolbar row');
     await page.getByRole("button", { name: "Let agent work", exact: true }).click();
     await page.getByRole("menuitem", { name: "Assistant", exact: true }).click();
@@ -125,6 +134,7 @@ try {
     await image.waitFor({ state: "visible" });
     await page.evaluate(() => { window.browserSession.controlOwner = "agent"; window.browserSession.controlEpoch++; });
     await page.getByRole("button", { name: "Following agent", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Keyboard", exact: true }).count(), 0, 'Agent control hides operator keyboard input');
     await page.getByRole("tab", { name: /Application form/ }).click();
     assert.equal(await page.evaluate(() => window.browserSession.activePageId), "two", "watching a different tab never changes the agent target");
     assert.equal(await page.getByRole("tab", { name: /Application form/ }).getAttribute("aria-selected"), "true");
@@ -253,6 +263,9 @@ try {
   const native = await browser.newPage();
   await native.goto(`http://127.0.0.1:${server.address().port}/?native=1&manual=1`);
   await native.locator('[aria-label="Manual Chrome browser"]').waitFor();
+  const manualToolbar = await native.locator('[data-browser-drag]').boundingBox();
+  const manualKeyboard = await native.getByRole('button', { name: 'Keyboard', exact: true }).boundingBox();
+  assert.ok(manualToolbar && manualKeyboard && manualKeyboard.y >= manualToolbar.y && manualKeyboard.y + manualKeyboard.height <= manualToolbar.y + manualToolbar.height + 2, 'native sign-in keeps Keyboard in the top toolbar');
   await native.waitForTimeout(1200);
   assert.equal(await native.evaluate(() => window.connectionCalls), undefined, 'native display works without initiating automation');
   assert.equal(await native.getByRole('textbox', { name: 'Website address' }).count(), 0, 'no duplicate address bar over Chrome');
