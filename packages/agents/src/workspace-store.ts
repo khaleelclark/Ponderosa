@@ -569,11 +569,19 @@ export class WorkspaceStore {
     }
     if (record.mutation?.kind === "notification_status") {
       const current = this.notifications.get(record.mutation.notificationId);
-      if (current) this.setNotification({
-        ...current,
-        status: record.mutation.status,
-        resolvedAt: record.mutation.at,
-      });
+      if (current) {
+        this.setNotification({
+          ...current,
+          status: record.mutation.status,
+          resolvedAt: record.mutation.at,
+          ...(record.mutation.status === "dismissed" ? { readAt: current.readAt ?? record.mutation.at } : {}),
+        });
+        if (record.mutation.status === "dismissed") {
+          for (const key of this.pushDeliveries.keys()) {
+            if (key.startsWith(`${current.id}\u0000`)) this.pushDeliveries.delete(key);
+          }
+        }
+      }
     }
     if (record.mutation?.kind === "decision") {
       const previous = this.decisions.get(record.mutation.decision.id);
@@ -1658,6 +1666,22 @@ export class WorkspaceStore {
       { kind: "notification_status", notificationId, status, at },
     );
     return this.notifications.get(notificationId);
+  }
+
+  dismissNotifications(kind: "attention" | "updates"): number {
+    const ids = this.activeNotifications
+      .filter((item) => notificationLiveKind(item) === (kind === "attention" ? "attention" : "update"))
+      .map((item) => item.id);
+    if (!ids.length) return 0;
+    const at = new Date().toISOString();
+    // Keep each durable event bounded even when an operator clears a long backlog.
+    for (let index = 0; index < ids.length; index += 100) {
+      this.append(
+        { type: "notification_changed", action: "cleared" },
+        { kind: "notifications_dismissed", notificationIds: ids.slice(index, index + 100), at },
+      );
+    }
+    return ids.length;
   }
 
   createDecision(input: Omit<DecisionDto, "id" | "status" | "createdAt" | "updatedAt"> & { idempotencyKey: string }): DecisionDto {

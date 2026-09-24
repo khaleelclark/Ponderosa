@@ -25,6 +25,7 @@ import type { ReactNode } from "react";
 import { agentStatusPresentation } from "../agents";
 import { isOpenAttention, notificationOpenActionCount } from "../attention";
 import { engineAvailabilityPresentation } from "../conversationEngine";
+import { notificationNavigationRoute } from "../notificationNavigation";
 import {
   useWorkspaceDirectory,
 } from "../hooks/useWorkspaceDirectory";
@@ -196,20 +197,6 @@ function ItemCard({
   );
 }
 
-function notificationRoute(notification: WorkspaceNotificationDto): Route | undefined {
-  if (!notification.projectId) return undefined;
-  if (notification.action?.kind === "open_agent" && notification.action.targetId) {
-    return { kind: "agent", projectId: notification.projectId, agentId: notification.action.targetId };
-  }
-  if (notification.conversationId) {
-    return { kind: "conversation", projectId: notification.projectId, conversationId: notification.conversationId };
-  }
-  if (notification.agentId) {
-    return { kind: "agent", projectId: notification.projectId, agentId: notification.agentId };
-  }
-  return { kind: "project", projectId: notification.projectId };
-}
-
 export function HomeView({
   projects,
   projectsLoaded,
@@ -315,7 +302,7 @@ export function HomeView({
             {attention.length ? (
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
                 {attention.slice(0, 6).map(item => {
-                  const route = notificationRoute(item);
+                  const route = notificationNavigationRoute(item);
                   return (
                     <ItemCard
                       key={item.id}

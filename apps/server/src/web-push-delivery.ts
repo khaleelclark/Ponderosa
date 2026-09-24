@@ -133,10 +133,10 @@ export function pushPayload(notification: WorkspaceNotificationDto): Record<stri
     projectId: notification.projectId,
     conversationId: notification.conversationId,
     agentId: notification.agentId,
-    url: notification.projectId && notification.agentId
-      ? `/projects/${encodeURIComponent(notification.projectId)}/agents/${encodeURIComponent(notification.agentId)}${message}`
-      : notification.projectId && notification.conversationId
+    url: notification.projectId && notification.conversationId
       ? `/projects/${encodeURIComponent(notification.projectId)}/chats/${encodeURIComponent(notification.conversationId)}${message}`
+      : notification.projectId && notification.agentId
+      ? `/projects/${encodeURIComponent(notification.projectId)}/agents/${encodeURIComponent(notification.agentId)}${message}`
       : notification.projectId ? `/projects/${encodeURIComponent(notification.projectId)}` : "/",
   };
 }

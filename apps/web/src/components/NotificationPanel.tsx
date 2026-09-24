@@ -6,6 +6,7 @@ import {
   Button,
   Chip,
   Dialog,
+  DialogActions,
   DialogContent,
   IconButton,
   List,
@@ -25,6 +26,7 @@ import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { Route } from "../routing";
+import { notificationNavigationRoute } from "../notificationNavigation";
 import {
   isOpenAttention,
   isUnreadNotificationUpdate,
@@ -109,32 +111,6 @@ function notificationWorkRoute(
   };
 }
 
-export function notificationNavigationRoute(
-  item: WorkspaceNotificationDto,
-  availableProjectIds: ReadonlySet<string>,
-): Route | undefined {
-  if (!item.projectId || !availableProjectIds.has(item.projectId)) return undefined;
-  if (item.action?.kind === "open_agent" && item.action.targetId) {
-    return {
-      kind: "agent",
-      projectId: item.projectId,
-      agentId: item.action.targetId,
-      ...(item.category === "coordination" ? { view: "technical" as const } : {}),
-    };
-  }
-  if (item.conversationId) {
-    return {
-      kind: "conversation",
-      projectId: item.projectId,
-      conversationId: item.conversationId,
-      ...(item.communicationEventId
-        ? { focusMessageId: item.communicationEventId }
-        : {}),
-    };
-  }
-  return { kind: "project", projectId: item.projectId };
-}
-
 function notificationTime(value: string): string {
   const date = new Date(value);
   const today = new Date();
@@ -208,6 +184,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
   const pendingAcknowledgements = useRef(new Map<string, string>());
   const pendingReads = useRef(new Map<string, string>());
   const [filter, setFilter] = useState<NotificationFilter>("updates");
+  const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string>();
   const acknowledgeNotifications = useNotificationAcknowledgement((reason) => {
     setError(reason instanceof Error ? reason.message : "Action review could not be saved.");
@@ -583,6 +560,18 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       setError(reason instanceof Error ? reason.message : "Notification could not be updated.");
     }
   };
+  const clearAll = async () => {
+    setError(undefined);
+    setClearing(true);
+    try {
+      await api.dismissNotifications(filter);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Notifications could not be cleared.");
+    } finally {
+      setClearing(false);
+    }
+  };
   return <><Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="md" aria-labelledby="notifications-title" PaperProps={{ sx: { overflow: "hidden", maxHeight: fullScreen ? "100%" : "85dvh" } }}>
     <Box component="header" sx={{ px: 3, pt: 2, pb: 1, flexShrink: 0 }}>
       <Typography
@@ -620,7 +609,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
             </Button>
             </Stack>
             <List dense disablePadding aria-label={`Notifications for ${project?.label ?? "Ponderosa"}`}>
-              {group.items.map((item) => <ListItem key={item.id} disablePadding sx={{ "& > [data-notification-id]": { width: "100%", minWidth: 0 } }}>
+              {group.items.map((item) => <ListItem key={item.id} disablePadding sx={{ alignItems: "flex-start", "& > [data-notification-id]": { flex: 1, minWidth: 0 } }}>
                 <NotificationAcknowledgementBoundary notificationId={item.id} acknowledged={Boolean(item.acknowledgedAt) || !isOpenAttention(item)} onAcknowledge={acknowledgePresentedNotifications}>
                 <ListItemButton selected={filter === "updates" ? !item.readAt : !item.acknowledgedAt} onClick={() => navigateToNotification(item)} alignItems="flex-start" sx={{ gap: 1, mx: .75, my: .45, py: 1, borderRadius: 1.5 }}>
                   <Box aria-hidden sx={{ width: 8, height: 8, mt: .75, borderRadius: "50%", bgcolor: filter === "updates" ? "primary.main" : item.acknowledgedAt ? "action.disabled" : item.severity === "urgent" ? "error.main" : "warning.main", flex: "0 0 auto" }} />
@@ -640,12 +629,18 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
                         onNavigate(route);
                       }
                     }}>Review Work Details</Button> : null}
-                    {item.kind === "operational" && (item.status ?? "open") === "open" ? <Button size="small" color="inherit" sx={{ ml: "auto" }} onClick={(event) => { event.stopPropagation(); void setStatus(item, "dismissed"); }}>Dismiss</Button> : null}
                     </Box></Stack>}
                     secondaryTypographyProps={{ component: "div" }}
                   />
                 </ListItemButton>
                 </NotificationAcknowledgementBoundary>
+                <IconButton
+                  aria-label={`Dismiss notification: ${item.title}`}
+                  size="small"
+                  title="Dismiss notification"
+                  onClick={() => void setStatus(item, "dismissed")}
+                  sx={{ mt: 1.25, mr: 1 }}
+                ><CloseIcon fontSize="small" /></IconButton>
               </ListItem>)}
             </List>
           </Box>;
@@ -666,6 +661,11 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
         </Button> : null}
       </Stack>
     </DialogContent>
+    <DialogActions sx={{ px: { xs: 2, sm: 3 }, py: 1, flexShrink: 0 }}>
+      <Button disabled={clearing || totalForFilter === 0} onClick={() => void clearAll()}>
+        {clearing ? "Clearing…" : "Clear all"}
+      </Button>
+    </DialogActions>
   </Dialog>
   </>;
 }
