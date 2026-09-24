@@ -85,13 +85,19 @@ try {
     await page.locator("#roster").getByText("terminal").waitFor({ timeout: 2_000 });
     await page.locator("#phase").getByText("true").waitFor({ timeout: 2_000 });
   }
+  await pages[0].evaluate(() => {
+    window.stormFailNextPhaseFetch();
+    window.terminalStorm();
+  });
+  await pages[0].locator("#phase").getByText("false").waitFor({ timeout: 2_000 });
+  await pages[0].locator("#phase").getByText("true").waitFor({ timeout: 12_000 });
   const samples = (await Promise.all(pages.map(page => page.evaluate(() => window.stormApiLatencies())))).flat();
   samples.sort((a, b) => a - b);
   const apiP95Ms = samples[Math.ceil(samples.length * 0.95) - 1];
   const eventLoopP95Ms = loopDelay.percentile(95) / 1_000_000;
   assert.ok(apiP95Ms < 250, `isolated API p95 must stay under 250 ms; got ${apiP95Ms}`);
   assert.ok(eventLoopP95Ms < 100, `isolated event-loop p95 must stay under 100 ms; got ${eventLoopP95Ms}`);
-  console.log(`PASS 12-Agent, three-tab stream: bounded refresh, hidden-tab pause/reconcile, prompt terminal state; isolated API p95 ${apiP95Ms.toFixed(1)} ms, event-loop p95 ${eventLoopP95Ms.toFixed(1)} ms`);
+  console.log(`PASS 12-Agent, three-tab stream: bounded refresh, hidden-tab pause/reconcile, terminal and failed-fetch recovery; isolated API p95 ${apiP95Ms.toFixed(1)} ms, event-loop p95 ${eventLoopP95Ms.toFixed(1)} ms`);
   await Promise.all(pages.map(page => page.context().close()));
 } finally {
   loopDelay.disable();

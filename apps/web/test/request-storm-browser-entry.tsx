@@ -7,6 +7,7 @@ import { queryKeys } from "../src/queryKeys";
 const counters = { roster: 0, health: 0, directory: 0, details: 0, task: 0 };
 const apiLatencies: number[] = [];
 let terminal = false;
+let failNextPhaseFetch = false;
 async function probeApi(): Promise<void> {
   const start = performance.now();
   const response = await fetch("/api/storm-probe");
@@ -33,6 +34,7 @@ api.subscribeWorkspace = (_cursor, handlers) => {
   Object.assign(window, {
     stormCounters: () => ({ ...counters }),
     stormApiLatencies: () => [...apiLatencies],
+    stormFailNextPhaseFetch: () => { failNextPhaseFetch = true; },
     stopStorm: () => clearInterval(command),
     terminalStorm: () => {
       terminal = true;
@@ -58,7 +60,15 @@ function Probe() {
   });
   useQuery({
     queryKey: queryKeys.agents.health("P1"),
-    queryFn: async () => { counters.health += 1; await probeApi(); return terminal ? "terminal" : "working"; },
+    queryFn: async () => {
+      counters.health += 1;
+      await probeApi();
+      if (failNextPhaseFetch) {
+        failNextPhaseFetch = false;
+        throw new Error("injected transient phase read failure");
+      }
+      return terminal ? "terminal" : "working";
+    },
   });
   useQuery({
     queryKey: queryKeys.workspaceDirectory.list("agent", "", undefined, undefined, undefined, undefined, true, undefined, undefined),

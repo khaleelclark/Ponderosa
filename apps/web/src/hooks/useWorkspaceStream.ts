@@ -511,6 +511,7 @@ export function useWorkspaceStream(
       pendingTaskProjects.clear();
     }, 5_000);
     let replayReconcileTimer: ReturnType<typeof setTimeout> | undefined;
+    let phaseQuietTimer: ReturnType<typeof setTimeout> | undefined;
     let phaseReconcileGeneration = 0;
     let phaseReconcileInFlight = false;
     let urgentPhasePending = false;
@@ -535,6 +536,13 @@ export function useWorkspaceStream(
     let observedActivePhaseQueries = new Set(activePhaseQueries());
     const markPhaseEvidenceStale = (projectId?: string) => {
       phaseReconcileGeneration += 1;
+      if (phaseQuietTimer) clearTimeout(phaseQuietTimer);
+      // Sustained output gets periodic data refreshes; the stricter proof of
+      // a fully caught-up boundary runs once the stream briefly quiets.
+      phaseQuietTimer = setTimeout(() => {
+        phaseQuietTimer = undefined;
+        schedulePhaseReconciliation(true);
+      }, 750);
       const matches = (query: Query) => phaseQueryMatchesProject(query.queryKey, projectId);
       // Keep unrelated pending boundaries until they reconcile; later events
       // replace only affected boundaries, never certify older in-flight data.
@@ -561,6 +569,13 @@ export function useWorkspaceStream(
       pendingRosterProjects.clear();
       const generation = phaseReconcileGeneration;
       const boundaries = phaseQueryBoundaries;
+      let deferredStrictRetry = false;
+      const scheduleStrictRetry = () => {
+        if (urgentPhasePending || stopped || disconnected) return;
+        urgentPhasePending = true;
+        deferredStrictRetry = true;
+        phaseRefresh.schedule();
+      };
       phaseReconcileInFlight = true;
       if (!urgent) {
         // Continuous command/tool output changes the generation while a fetch
@@ -570,10 +585,12 @@ export function useWorkspaceStream(
           predicate: query => query.isActive() && boundaries.has(query),
           type: "active",
         }, { cancelRefetch: false })
-          .catch(() => undefined)
+          .catch(() => {
+            scheduleStrictRetry();
+          })
           .finally(() => {
             phaseReconcileInFlight = false;
-            if (urgentPhasePending && !stopped && !disconnected) phaseRefresh.schedule(true);
+            if (urgentPhasePending && !deferredStrictRetry && !stopped && !disconnected) phaseRefresh.schedule(true);
           });
         return;
       }
@@ -585,19 +602,23 @@ export function useWorkspaceStream(
       )
         .then(reconciled => {
           if (stopped || disconnected) return;
-          if (!reconciled || generation !== phaseReconcileGeneration) {
+          if (generation !== phaseReconcileGeneration) {
             phaseRefresh.schedule();
+            return;
+          }
+          if (!reconciled) {
+            scheduleStrictRetry();
             return;
           }
           phaseQueryBoundaries = new Map();
           setConnection(current => ({ ...current, phaseEvidenceFresh: true }));
         })
         .catch(() => {
-          if (!stopped && !disconnected) phaseRefresh.schedule();
+          scheduleStrictRetry();
         })
         .finally(() => {
           phaseReconcileInFlight = false;
-          if (urgentPhasePending && !stopped && !disconnected) phaseRefresh.schedule(true);
+          if (urgentPhasePending && !deferredStrictRetry && !stopped && !disconnected) phaseRefresh.schedule(true);
         });
     };
     const phaseRefresh = createBoundedRefresh(runPhaseRefresh, 5_000);
@@ -737,6 +758,13 @@ export function useWorkspaceStream(
       if (workspaceEventInvalidatesAllChat(event)) invalidate(queryKeys.allChatAll);
       if (workspaceEventChangesResourceRecency(event) || preferenceStarsChanged) {
         workspaceRecencyInvalidator.schedule();
+        // User navigation, authored Chat changes, and terminal lifecycle
+        // changes stay responsive; only sustained operational output waits for
+        // the bounded refresh window.
+        if (event.type !== "agent_event" && event.type !== "coordination_changed"
+            || (event.type === "agent_event" && event.category === "lifecycle")) {
+          workspaceRecencyInvalidator.flush();
+        }
       }
       if (event.type === "preferences_updated") {
         for (const kind of preferenceDirectoryKinds) {
@@ -972,6 +1000,7 @@ export function useWorkspaceStream(
       if (reconnectTimer) clearTimeout(reconnectTimer);
       clearConnectionTimers();
       if (replayReconcileTimer) clearTimeout(replayReconcileTimer);
+      if (phaseQuietTimer) clearTimeout(phaseQuietTimer);
       phaseRefresh.dispose();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       unsubscribePhaseQueryCache();
