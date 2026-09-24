@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { pluginReact } from "@rsbuild/plugin-react";
@@ -10,7 +11,9 @@ import { createRsbuild } from "@rsbuild/core";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const output = await mkdtemp(path.join(tmpdir(), "request-storm-browser-"));
-const { chromium } = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? "playwright");
+const serverRequire = createRequire(new URL("../../server/package.json", import.meta.url));
+const playwrightModule = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? serverRequire.resolve("playwright-core"));
+const chromium = playwrightModule.chromium ?? playwrightModule.default.chromium;
 let browser;
 let server;
 const loopDelay = monitorEventLoopDelay({ resolution: 10 });
@@ -40,7 +43,11 @@ try {
     } catch { res.writeHead(404).end(); }
   }).listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
-  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH });
+  browser = await chromium.launch({
+    headless: true,
+    executablePath: process.env.PONDEROSA_CHROMIUM_PATH,
+    args: process.env.PONDEROSA_BROWSER_DISABLE_SANDBOX === "1" ? ["--no-sandbox"] : [],
+  });
   const pages = [];
   for (let index = 0; index < 3; index += 1) {
     const context = await browser.newContext();
