@@ -119,11 +119,6 @@ function notificationTime(value: string): string {
     : date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-function affectedAgentLabel(item: WorkspaceNotificationDto): string | undefined {
-  if (!item.agentId) return undefined;
-  return item.agentTitle ?? `Agent ${item.agentId.slice(0, 8)}`;
-}
-
 function notificationSummaryText(openActionCount: number, unacknowledgedActionCount: number, unreadUpdateCount: number): string {
   const actionSummary = openActionCount
     ? `${openActionCount} open action${openActionCount === 1 ? "" : "s"}${unacknowledgedActionCount ? ` · ${unacknowledgedActionCount} new` : ""}`
@@ -616,7 +611,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
                   <ListItemText
                     sx={{ minWidth: 0, overflowWrap: "anywhere" }}
                     primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={(filter === "attention" ? item.acknowledgedAt : item.readAt) ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{item.title}</Typography>{filter === "attention" && !item.acknowledgedAt ? <Chip size="small" color="primary" label="New" /> : item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Issue"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(item.createdAt)}</Typography></Stack>}
-                    secondary={<Stack spacing={0.5}>{affectedAgentLabel(item) ? <Typography variant="caption" color="text.secondary">Affected Agent · {affectedAgentLabel(item)}</Typography> : null}{item.conversationId && conversations.get(item.conversationId) ? <Typography variant="caption" color="text.secondary">{conversations.get(item.conversationId)!.title}</Typography> : null}<Typography variant="body2" color="text.secondary" sx={{ display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 2 }}>{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open"
+                    secondary={<Stack spacing={0.5}>{item.conversationId && conversations.get(item.conversationId) ? <Typography variant="caption" color="text.secondary">{conversations.get(item.conversationId)!.title}</Typography> : null}<Typography variant="body2" color="text.secondary" sx={{ display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 3 }}>{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open"
                       ? <DecisionActions decision={notificationDecision(item)!} compact />
                       : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
                     <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: .5 }}>
