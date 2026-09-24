@@ -32,7 +32,8 @@ try {
     } catch { response.writeHead(404).end(); }
   }).listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
-  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH });
+  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH,
+    args: process.env.PONDEROSA_BROWSER_DISABLE_SANDBOX === "1" ? ["--no-sandbox"] : [] });
   for (const [width, coarse] of [[1440, false], [390, true]]) {
     const context = await browser.newContext({ viewport: { width, height: 900 }, hasTouch: coarse });
     const page = await context.newPage();

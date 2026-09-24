@@ -58,6 +58,18 @@ jobs:
           export PONDEROSA_CHROMIUM_PATH="$(pnpm --filter @ponderosa/server exec node -p "require('playwright-core').chromium.executablePath()")"
           node apps/web/test/request-storm-browser.check.mjs
 
+      - name: Check browser focus, send feedback, and accessibility in Chromium
+        env:
+          PONDEROSA_BROWSER_DISABLE_SANDBOX: "1"
+          PONDEROSA_PLAYWRIGHT_PATH: ${{ github.workspace }}/apps/server/node_modules/playwright-core/index.mjs
+        run: |
+          export PONDEROSA_CHROMIUM_PATH="$(pnpm --filter @ponderosa/server exec node -p "require('playwright-core').chromium.executablePath()")"
+          node apps/web/test/browser-panel.check.mjs
+          node apps/web/test/draft-conflict-send.check.mjs
+          node apps/web/test/global-search-focus.check.mjs
+          node apps/web/test/delivery-status-a11y.check.mjs
+          node apps/web/test/composer-chip-accessibility.check.mjs
+
       - name: Qualify production-scale startup recovery
         run: pnpm --filter @ponderosa/agents qualify:startup
 

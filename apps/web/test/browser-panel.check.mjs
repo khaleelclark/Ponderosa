@@ -15,7 +15,8 @@ try {
   await build.build();
   server = createServer(async (req, res) => { try { const pathname = new URL(req.url, "http://localhost").pathname; const file = path.join(output, pathname === "/" ? "index.html" : pathname); res.setHeader("Content-Type", file.endsWith(".js") ? "text/javascript" : file.endsWith(".css") ? "text/css" : "text/html"); res.end(await readFile(file)); } catch { res.writeHead(404).end(); } }).listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
-  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH });
+  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH,
+    args: process.env.PONDEROSA_BROWSER_DISABLE_SANDBOX === "1" ? ["--no-sandbox"] : [] });
   for (const width of [1440, 390]) {
     const agentPage = await browser.newPage({ viewport: { width, height: 900 } });
     await agentPage.goto(`http://127.0.0.1:${server.address().port}/?agent=1`);
