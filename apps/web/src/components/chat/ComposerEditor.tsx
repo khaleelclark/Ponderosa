@@ -489,7 +489,6 @@ function ComposerProjectFileToken({
         component="button"
         type="button"
         disabled={mutationLocked}
-        tabIndex={-1}
         aria-label={`Remove @${filename}`}
         onMouseDown={event => event.preventDefault()}
         onClick={event => {
@@ -509,6 +508,9 @@ function ComposerProjectFileToken({
           color: "inherit",
           cursor: "pointer",
           lineHeight: 0,
+          minWidth: 24,
+          minHeight: 24,
+          "@media (pointer: coarse)": { minWidth: 44, minHeight: 44 },
         }}
       >
         <CloseIcon sx={{ fontSize: "1.05em" }} />
@@ -617,7 +619,6 @@ function ComposerMentionToken({
         component="button"
         type="button"
         disabled={mutationLocked}
-        tabIndex={-1}
         aria-label={`Remove #${handle}`}
         onMouseDown={event => event.preventDefault()}
         onClick={event => {
@@ -637,6 +638,9 @@ function ComposerMentionToken({
           color: "inherit",
           cursor: "pointer",
           lineHeight: 0,
+          minWidth: 24,
+          minHeight: 24,
+          "@media (pointer: coarse)": { minWidth: 44, minHeight: 44 },
         }}
       >
         <CloseIcon sx={{ fontSize: "1.05em" }} />

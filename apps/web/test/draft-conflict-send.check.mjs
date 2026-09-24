@@ -94,6 +94,8 @@ try {
     else await page.getByRole("button", { name: "Restore" }).click();
     await page.getByText("This draft changed elsewhere.").waitFor({ state: "detached" });
     await page.getByRole("button", { name: "Send message" }).click();
+    await page.getByRole("status").getByText("Sending message… Your draft remains here until confirmed.").waitFor();
+    assert.equal(await page.locator("#sent").innerText(), "[]", "pending send is visible without claiming delivery");
     await page.waitForFunction(expected => document.querySelector("#sent")?.textContent?.includes(expected), `send after ${mode}`);
     assert.ok(acceptedWrites >= 1, `${mode}: conflict resolution advances the saved draft revision`);
     assert.equal((await page.locator("body").innerText()).includes("Message not sent. 409"), false);

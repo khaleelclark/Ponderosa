@@ -161,6 +161,16 @@ export function useConversation(conversationId: string | undefined, limit = 100)
     queryKey: queryKeys.conversations.detail(conversationId, limit),
     queryFn: () => api.getConversation(conversationId ?? "", limit),
     enabled: Boolean(conversationId),
+    // SSE remains the prompt path. A mounted-Chat fallback keeps a missed
+    // delivery/reply event from leaving the visible timeline stale. Only a
+    // recently active Chat uses the five-second cadence; old receipts cannot
+    // hold every open tab on that cadence forever.
+    refetchInterval: query => {
+      const messages = query.state.data?.messages ?? [];
+      const newest = messages.at(-1);
+      const recent = newest && Date.now() - Date.parse(newest.createdAt) < 120_000;
+      return recent ? 5_000 : 15_000;
+    },
   });
 }
 

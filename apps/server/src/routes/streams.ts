@@ -61,6 +61,11 @@ export function registerStreamRoutes(
     serverMetrics,
   } = context;
 
+  // EventSource cannot expose a 429 Retry-After header. Its bounded probe
+  // uses the same admission class, without opening another subscriber.
+  app.get("/api/streams/probe", async (_request, reply) =>
+    serverClosed() ? reply.code(503).send({ error: "server is shutting down" }) : { ok: true });
+
   app.get<{ Querystring: { lastEventId?: string; bootstrap?: string } }>(
     "/api/workspace/stream",
     async (request, reply) => {

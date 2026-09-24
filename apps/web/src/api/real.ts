@@ -190,7 +190,7 @@ async function probeStreamRateLimit(): Promise<void> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2_000);
   try {
-    const response = await fetch("/api/health", {
+    const response = await fetch("/api/streams/probe", {
       cache: "no-store",
       signal: controller.signal,
     });
@@ -1124,8 +1124,10 @@ export const realApi = {
       method: "POST", body: JSON.stringify(request satisfies BrowserOperatorInputRequest),
     });
   },
-  async getBrowserFrame(projectId: string, agentId: string, runId: string, pageId?: string): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }> {
-    const response = await fetch(`${browserPath(projectId, agentId, runId)}/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, { cache: "no-store" });
+  async getBrowserFrame(projectId: string, agentId: string, runId: string, pageId?: string, signal?: AbortSignal): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }> {
+    await waitForBackgroundCooldown(signal);
+    const response = await fetch(`${browserPath(projectId, agentId, runId)}/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, { cache: "no-store", signal });
+    if (response.status === 429) noteBackgroundRateLimit(response.headers.get("retry-after"));
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0), metadata: JSON.parse(response.headers.get("x-ponderosa-browser-frame") ?? "null") ?? undefined };
   },
@@ -1233,8 +1235,10 @@ export const realApi = {
     const base = agentId && runId ? browserPath(projectId, agentId, runId) : `/api/projects/${encodeURIComponent(projectId)}/browser`;
     return requestJson(`${base}/pages/${encodeURIComponent(pageId)}/viewport`, { method: "PUT", body: JSON.stringify({ ...size, expectedControlEpoch }) });
   },
-  async getProjectBrowserFrame(projectId: string, pageId?: string): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }> {
-    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/browser/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, { cache: "no-store" });
+  async getProjectBrowserFrame(projectId: string, pageId?: string, signal?: AbortSignal): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }> {
+    await waitForBackgroundCooldown(signal);
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/browser/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, { cache: "no-store", signal });
+    if (response.status === 429) noteBackgroundRateLimit(response.headers.get("retry-after"));
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0), metadata: JSON.parse(response.headers.get("x-ponderosa-browser-frame") ?? "null") ?? undefined };
   },

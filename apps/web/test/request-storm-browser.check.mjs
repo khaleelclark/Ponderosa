@@ -159,6 +159,18 @@ try {
     assert.ok(replayCounts[index].delivery - replayBaseline[index].delivery <= 1,
       `delivery receipts in tab ${index} must reconcile once for a replay batch`);
   }
+  const sustainedReplayBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  await Promise.all(pages.map(page => page.evaluate(() => window.startReplayStorm())));
+  for (const page of pages) {
+    await page.locator("#chat").getByText("Steady replay reply").waitFor({ timeout: 2_000 });
+  }
+  await pages[0].waitForTimeout(1_200);
+  await Promise.all(pages.map(page => page.evaluate(() => window.stopReplayStorm())));
+  const sustainedReplayCounts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  for (let index = 0; index < pages.length; index += 1) {
+    assert.ok(sustainedReplayCounts[index].chat - sustainedReplayBaseline[index].chat <= 2,
+      `Chat detail in tab ${index} must reconcile promptly but stay bounded during sustained replay`);
+  }
   for (const page of pages) {
     await page.evaluate(() => window.emitLiveChat());
     await page.locator("#chat").getByText("Latest live reply").waitFor({ timeout: 2_000 });

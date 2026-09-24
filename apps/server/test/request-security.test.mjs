@@ -30,6 +30,9 @@ async function fixture(options = {}, contextOverrides = {}, handler = async () =
     ...contextOverrides,
   });
   app.get("/api/projects", handler);
+  app.get("/api/workspace/stream", handler);
+  app.get("/api/agents/:id/stream", handler);
+  app.get("/api/streams/probe", handler);
   app.post("/api/projects", async () => ({ ok: true }));
   app.put("/api/conversations/:id/draft", handler);
   app.post("/api/conversations/:id/messages", handler);
@@ -84,6 +87,10 @@ test("only operator-authored actions use reserved admission; read-like POSTs do 
   assert.equal(classifyOperatorRequest("POST", "/api/projects"), "critical");
   assert.equal(classifyOperatorRequest("POST", "/api/conversations/c/message-delivery-receipts"), "standard");
   assert.equal(classifyOperatorRequest("GET", "/api/projects/p/agents"), "standard");
+  assert.equal(classifyOperatorRequest("GET", "/api/workspace/stream?lastEventId=1"), "stream");
+  assert.equal(classifyOperatorRequest("GET", "/api/agents/a/stream"), "stream");
+  assert.equal(classifyOperatorRequest("GET", "/api/streams/probe"), "stream");
+  assert.equal(classifyOperatorRequest("POST", "/api/workspace/stream"), "standard");
 
   const app = await fixture({
     authToken: "backend-secret",
@@ -104,6 +111,26 @@ test("only operator-authored actions use reserved admission; read-like POSTs do 
   assert.equal((await app.inject({ method: "GET", url: "/api/projects", headers: bob })).statusCode, 200);
   assert.equal((await app.inject({ method: "PUT", url: "/api/conversations/c/draft", headers: bob })).statusCode, 200);
   assert.equal((await app.inject({ method: "GET", url: "/api/projects" })).statusCode, 401);
+});
+
+test("busy background reads cannot exhaust authenticated stream or user-action admission", async t => {
+  const app = await fixture({
+    authToken: "operator-secret",
+    requestLimits: { maxRequestsPerMinute: 1, maxStreamRequestsPerMinute: 3,
+      maxCriticalRequestsPerMinute: 2, maxInflight: 8 },
+  });
+  t.after(() => app.close());
+  const headers = { authorization: "Bearer operator-secret" };
+  assert.equal((await app.inject({ method: "GET", url: "/api/projects", headers })).statusCode, 200);
+  assert.equal((await app.inject({ method: "GET", url: "/api/projects", headers })).statusCode, 429);
+  for (const url of ["/api/workspace/stream", "/api/agents/a/stream", "/api/streams/probe"]) {
+    assert.equal((await app.inject({ method: "GET", url, headers })).statusCode, 200);
+  }
+  const streamLimited = await app.inject({ method: "GET", url: "/api/workspace/stream", headers });
+  assert.equal(streamLimited.statusCode, 429);
+  assert.ok(streamLimited.headers["retry-after"]);
+  assert.equal((await app.inject({ method: "PUT", url: "/api/conversations/c/draft", headers })).statusCode, 200);
+  assert.equal((await app.inject({ method: "POST", url: "/api/conversations/c/messages", headers })).statusCode, 200);
 });
 
 test("twelve busy Agents across three tabs cannot starve draft saves and sends", async t => {

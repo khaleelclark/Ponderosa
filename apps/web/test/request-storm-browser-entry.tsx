@@ -51,11 +51,12 @@ api.subscribeWorkspace = (_cursor, handlers) => {
     event: { type: "runtime_capabilities_changed", projectId: "P1", engineId: "codex" },
   });
   let command = setInterval(emitCommand, 20);
+  let replay: ReturnType<typeof setInterval> | undefined;
   Object.assign(window, {
     stormCounters: () => ({ ...counters }),
     stormApiLatencies: () => [...apiLatencies],
     stormFailNextPhaseFetch: () => { failNextPhaseFetch = true; },
-    stopStorm: () => clearInterval(command),
+    stopStorm: () => { clearInterval(command); if (replay) clearInterval(replay); replay = undefined; },
     startAgentStorm: () => { agentCommandEnabled = true; },
     stopAgentStorm: () => { agentCommandEnabled = false; },
     startCapabilitiesStorm: () => {
@@ -104,6 +105,16 @@ api.subscribeWorkspace = (_cursor, handlers) => {
         });
       }
     },
+    startReplayStorm: () => {
+      chatReply = "Steady replay reply";
+      replay = setInterval(() => handlers.onEvent({
+        id: ++seq,
+        ts: new Date().toISOString(),
+        replayed: true,
+        event: { type: "conversation_changed", projectId: "P1", conversationId: "Chat 1", action: "message" },
+      }), 20);
+    },
+    stopReplayStorm: () => { if (replay) clearInterval(replay); replay = undefined; },
     emitLiveChat: () => {
       chatReply = "Latest live reply";
       deliveryState = "processed again";
@@ -119,7 +130,7 @@ api.subscribeWorkspace = (_cursor, handlers) => {
       });
     },
   });
-  return { close: () => { clearTimeout(status); clearInterval(command); } };
+  return { close: () => { clearTimeout(status); clearInterval(command); if (replay) clearInterval(replay); } };
 };
 
 api.subscribeAgent = (agentId, _cursor, handlers) => {

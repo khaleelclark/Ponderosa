@@ -18,6 +18,7 @@ import { BrowserPageStrip } from "./browser/BrowserPageStrip";
 import { BrowserArtifactUpload } from "./browser/BrowserArtifactUpload";
 import { agentBrowserAdapter } from "./browser/browserAdapters";
 import { useBrowserController } from "./browser/useBrowserController";
+import { useBrowserSurfaceFocus } from "./browser/useBrowserSurfaceFocus";
 import { FeatureErrorBoundary } from "./FeatureErrorBoundary";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
@@ -36,11 +37,12 @@ export function AgentBrowserDialog({
   backLabel?: string;
   onClose(): void;
 }): JSX.Element {
+  const browserSurface = useBrowserSurfaceFocus(true, true);
   const adapter = useMemo(
     () => agentBrowserAdapter(projectId, agentId, runId),
     [agentId, projectId, runId],
   );
-  const browser = useBrowserController<BrowserSessionDto>({ adapter, enabled: true });
+  const browser = useBrowserController<BrowserSessionDto>({ adapter, enabled: true, pollingEnabled: browserSurface.focused });
   const session = browser.session;
   const operator = session?.status === "ready" && session.controlOwner === "operator";
   const controlOwnerLabel = operator ? "You have control" : `${agentTitle} has control`;
@@ -57,6 +59,8 @@ export function AgentBrowserDialog({
 
   return (
     <Box
+      ref={browserSurface.root}
+      tabIndex={-1}
       aria-labelledby="agent-browser-title"
       sx={{
         minHeight: 0,
@@ -171,6 +175,7 @@ export function AgentBrowserDialog({
             session={session}
             viewedPageId={browser.viewedPageId}
             active
+            pollingEnabled={browserSurface.focused}
             operatorControl={operator && !browser.inputError}
             sendInput={browser.sendInput}
             refreshFrame={browser.refreshFrame}

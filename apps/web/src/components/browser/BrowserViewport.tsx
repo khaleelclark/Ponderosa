@@ -18,6 +18,7 @@ export function BrowserViewport<Session extends BrowserSession>({
   adapter,
   session,
   active,
+  pollingEnabled = true,
   operatorControl,
   sendInput,
   refreshFrame,
@@ -29,6 +30,7 @@ export function BrowserViewport<Session extends BrowserSession>({
   adapter: BrowserEndpointAdapter<Session>;
   session?: Session;
   active: boolean;
+  pollingEnabled?: boolean;
   operatorControl: boolean;
   sendInput(input: UnfencedBrowserInput): void;
   refreshFrame: React.MutableRefObject<() => void>;
@@ -44,6 +46,14 @@ export function BrowserViewport<Session extends BrowserSession>({
   const image = useRef<HTMLImageElement>(null);
   const [imageBounds, setImageBounds] = useState({ width: 0, height: 0, left: 0 });
   const frameContext = useRef<BrowserFrameMetadata>();
+  const frameScheduler = useRef<ReturnType<typeof createBrowserFrameScheduler>>();
+  const frameAbort = useRef<AbortController>();
+  const pollingEnabledRef = useRef(pollingEnabled);
+  pollingEnabledRef.current = pollingEnabled;
+  useEffect(() => {
+    if (!pollingEnabled) frameAbort.current?.abort();
+    frameScheduler.current?.setVisible(document.visibilityState === "visible" && pollingEnabled);
+  }, [pollingEnabled]);
   useEffect(() => {
     if (!metadata?.activity) return;
     const timer = setTimeout(() => setMetadata(current => current ? { ...current, activity: undefined } : current), Math.max(0, metadata.activity.at + 2_500 - Date.now()));
@@ -109,13 +119,15 @@ export function BrowserViewport<Session extends BrowserSession>({
       return undefined;
     }
     let cancelled = false;
-    const scheduler = createBrowserFrameScheduler({
-      capture: async () => {
+    const capture = async () => {
+        if (!pollingEnabledRef.current || document.visibilityState !== "visible") return;
+        const controller = new AbortController();
+        frameAbort.current = controller;
         try {
-          const frame = await adapter.getFrame(pageId);
-          if (cancelled || document.visibilityState !== "visible") return;
+          const frame = await adapter.getFrame(pageId, controller.signal);
+          if (cancelled || !pollingEnabledRef.current || document.visibilityState !== "visible") return;
           const next = await decodeBrowserFrame(frame.blob);
-          if (cancelled || document.visibilityState !== "visible") {
+          if (cancelled || !pollingEnabledRef.current || document.visibilityState !== "visible") {
             URL.revokeObjectURL(next);
             return;
           }
@@ -127,18 +139,27 @@ export function BrowserViewport<Session extends BrowserSession>({
           setMetadata(frame.metadata);
           setFrameError(undefined);
         } catch (error) {
-          if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error));
+          if (!cancelled && !controller.signal.aborted) setFrameError(error instanceof Error ? error.message : String(error));
+        } finally {
+          if (frameAbort.current === controller) frameAbort.current = undefined;
         }
-      },
-    });
-    const updateVisibility = () => scheduler.setVisible(document.visibilityState === "visible");
+    };
+    const scheduler = createBrowserFrameScheduler({ capture });
+    frameScheduler.current = scheduler;
+    const updateVisibility = () => {
+      const visible = document.visibilityState === "visible";
+      if (!visible) frameAbort.current?.abort();
+      scheduler.setVisible(visible && pollingEnabledRef.current);
+    };
     refreshFrame.current = () => scheduler.requestInteractionRefresh();
     document.addEventListener("visibilitychange", updateVisibility);
     updateVisibility();
     return () => {
       cancelled = true;
+      frameAbort.current?.abort();
       document.removeEventListener("visibilitychange", updateVisibility);
       scheduler.dispose();
+      if (frameScheduler.current === scheduler) frameScheduler.current = undefined;
       refreshFrame.current = () => undefined;
       setFrameUrl((current) => {
         if (current) URL.revokeObjectURL(current);

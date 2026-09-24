@@ -125,7 +125,7 @@ export function AgentDetail({
     queryKey: queryKeys.agentBrowsers.agent(projectId, agentId),
     queryFn: () => api.listActiveBrowserSessions(projectId),
     retry: false,
-    refetchInterval: 2_500,
+    refetchInterval: 15_000,
   });
   const [olderMessages, setOlderMessages] = useState<MessagePageState>();
   const [olderTelemetry, setOlderTelemetry] = useState<TelemetryPageState>({});

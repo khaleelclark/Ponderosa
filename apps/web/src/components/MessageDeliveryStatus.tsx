@@ -234,6 +234,9 @@ export function MessageDeliveryStatus({
     }
   };
   return <Stack spacing={0.5} sx={{ alignItems: "flex-end", maxWidth: "100%" }} aria-label="Message delivery status">
+    <Box component="span" role="status" aria-live="polite" sx={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap" }}>
+      {receipts.map(receipt => deliveryLabel(receipt, recipientName(receipt.targetAgentId), now)).join(" ")}
+    </Box>
     {receipts.map((receipt) => {
       const tone = severity(receipt);
       const name = recipientName(receipt.targetAgentId);
@@ -249,7 +252,6 @@ export function MessageDeliveryStatus({
             : InfoOutlinedIcon;
       return <Stack key={receipt.activationId} direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ justifyContent: "flex-end", maxWidth: "100%" }}>
         <ButtonBase
-          role="status"
           aria-label={onOpenAgent ? `${detailedLabel} Open direct chat with ${name}.` : detailedLabel}
           title={runtime}
           disabled={!onOpenAgent}

@@ -52,6 +52,18 @@ try {
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     const image = page.getByRole("img", { name: /Interactive browser viewport/ });
     await image.waitFor();
+    await page.waitForFunction(() => window.frameRequests >= 2);
+    await page.evaluate(() => document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    await page.waitForTimeout(250);
+    const pausedFrames = await page.evaluate(() => window.frameRequests);
+    const pausedSessions = await page.evaluate(() => window.browserSessionRequests);
+    await page.waitForTimeout(1_600);
+    assert.equal(await page.evaluate(() => window.frameRequests), pausedFrames, "unfocused browser preview stops polling");
+    assert.equal(await page.evaluate(() => window.browserSessionRequests), pausedSessions, "unfocused browser session stops polling");
+    assert.equal(await image.isVisible(), true, "last preview remains visible while unfocused");
+    await page.getByRole("button", { name: "Browser options", exact: true }).click();
+    await page.waitForFunction(previous => window.frameRequests > previous, pausedFrames);
+    await page.keyboard.press("Escape");
     await page.getByRole("combobox", { name: "Browser to view" }).click();
     await page.getByRole("option", { name: "Saved browser", exact: true }).click();
     await page.getByRole("tab", { name: /Saved research/ }).waitFor();

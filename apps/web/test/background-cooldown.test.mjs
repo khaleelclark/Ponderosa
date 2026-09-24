@@ -5,6 +5,7 @@ import {
   backgroundCooldownRemaining,
   noteBackgroundRateLimit,
   parseRetryAfter,
+  waitForBackgroundCooldown,
 } from "../src/api/backgroundCooldown.js";
 import { shouldRetryQuery, queryRetryDelay } from "../src/api/queryRetry.js";
 import { ApiRequestError } from "../src/api/types.js";
@@ -31,6 +32,14 @@ test("Retry-After is parsed and shared with another tab through same-origin stor
   } finally {
     globalThis.localStorage = previous;
   }
+});
+
+test("a preview that loses focus cancels its pending cooldown instead of fetching late", async () => {
+  noteBackgroundRateLimit("10");
+  const controller = new AbortController();
+  const waiting = waitForBackgroundCooldown(controller.signal);
+  controller.abort();
+  await assert.rejects(waiting, error => error?.name === "AbortError");
 });
 
 test("a 429 gets one delayed retry, not a retry loop", () => {

@@ -8,10 +8,12 @@ import { createBrowserInputQueue } from "../../browserInputQueue";
 export function useBrowserController<Session extends BrowserSession>({
   adapter,
   enabled,
+  pollingEnabled = true,
   onSession,
 }: {
   adapter: BrowserEndpointAdapter<Session>;
   enabled: boolean;
+  pollingEnabled?: boolean;
   onSession?(session: Session): void;
 }) {
   const queryClient = useQueryClient();
@@ -28,7 +30,9 @@ export function useBrowserController<Session extends BrowserSession>({
     queryFn: adapter.get,
     enabled,
     retry: false,
-    refetchInterval: (current) => current.state.data?.status === "opening" ? 750 : 2_500,
+    refetchInterval: (current) => pollingEnabled
+      ? current.state.data?.status === "opening" ? 750 : 2_500
+      : false,
   });
   const missing = query.error instanceof ApiRequestError && query.error.status === 404;
   const queryError = missing ? undefined : query.error;

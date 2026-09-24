@@ -15,7 +15,10 @@ function Fixture() {
       destinationMode="fixed"
       disabled={false}
       running={false}
-      onSend={async text => setSent(current => [...current, text])}
+      onSend={async text => {
+        await new Promise(resolve => setTimeout(resolve, 700));
+        setSent(current => [...current, text]);
+      }}
     />
     <pre id="sent">{JSON.stringify(sent)}</pre>
   </>;

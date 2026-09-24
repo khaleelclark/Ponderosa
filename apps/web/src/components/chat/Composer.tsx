@@ -8,6 +8,7 @@ import {
   Paper,
   Stack,
   TextField,
+  Typography,
 } from "@mui/material";
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
@@ -380,6 +381,7 @@ export function Composer({
   const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
   const [sending, setSending] = useState(false);
+  const [sendingAction, setSendingAction] = useState<"send" | "queue">("send");
   const draftMutationLockedRef = useRef(false);
   const [draftMutationLocked, setDraftMutationLocked] = useState(false);
   const draftContentGeneration = useRef(0);
@@ -2203,6 +2205,7 @@ export function Composer({
       return;
     }
     sendingRef.current = true;
+    setSendingAction(action);
     setSending(true);
     setSendError(undefined);
     const submittedText = normalizedDraft;
@@ -2650,6 +2653,9 @@ export function Composer({
       sx={composerSurfaceSx}
     >
       <Box sx={{ display: "contents" }}>
+      {sending ? <Typography role="status" aria-live="polite" variant="caption" color="text.secondary" sx={{ px: 1.5, pt: 0.5 }}>
+        {sendingAction === "queue" ? "Queueing message…" : "Sending message…"} Your draft remains here until confirmed.
+      </Typography> : null}
       <ComposerDestinationBar
         destinationError={destinationError}
         destinationMode={destinationMode}

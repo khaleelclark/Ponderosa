@@ -519,6 +519,28 @@ export function useWorkspaceStream(
       pendingCapabilityProjects.clear();
     }, 5_000);
     let replayReconcileTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastReplayReconcileAt = 0;
+    let replayChatTimer: ReturnType<typeof setTimeout> | undefined;
+    let nextReplayChatAt = 0;
+    const replayChatIds = new Set<string>();
+    let replayAllChats = false;
+    const scheduleReplayChat = (conversationIds?: readonly string[]) => {
+      if (conversationIds) for (const id of conversationIds) replayChatIds.add(id);
+      else replayAllChats = true;
+      replayChatTimer ??= setTimeout(() => {
+        replayChatTimer = undefined;
+        nextReplayChatAt = Date.now() + 1_000;
+        if (replayAllChats) {
+          invalidate(queryKeys.conversations.detailAll);
+          invalidate(queryKeys.collaborationAll);
+        } else for (const id of replayChatIds) {
+          invalidate(queryKeys.conversations.detailPrefix(id));
+          invalidate(queryKeys.collaborationPrefix(id));
+        }
+        replayChatIds.clear();
+        replayAllChats = false;
+      }, Math.max(250, nextReplayChatAt - Date.now()));
+    };
     let phaseQuietTimer: ReturnType<typeof setTimeout> | undefined;
     let phaseReconcileGeneration = 0;
     let phaseReconcileInFlight = false;
@@ -536,7 +558,7 @@ export function useWorkspaceStream(
       }),
       ...queryClient.getQueryCache().findAll({
         queryKey: queryKeys.workspaceDirectory.kind("agent"),
-      }),
+      }).filter(query => query.queryKey[10] === "summary"),
       ...queryClient.getQueryCache().findAll({
         queryKey: queryKeys.agents.organizationAll,
       }).filter(query => query.queryKey[2] !== "deleted"),
@@ -759,17 +781,20 @@ export function useWorkspaceStream(
         schedulePhaseReconciliation(true);
         return;
       }
-      // Replayed workspace events are historical catch-up. The canonical
-      // queries already include them, so applying live invalidations here
-      // would multiply one reconnect into hundreds of network requests. Reset
-      // one quiet-period timer instead, then reconcile mounted views once.
+      // Replayed workspace events are historical catch-up. Reconcile on a
+      // fixed window: a quiet-period debounce can postpone an open Chat
+      // indefinitely while a busy Agent keeps producing replay events. After
+      // the first prompt refresh, cap global reconciliation to one per five
+      // seconds so a long replay cannot recreate the request storm.
       if (envelope.replayed) {
-        if (replayReconcileTimer) clearTimeout(replayReconcileTimer);
-        replayReconcileTimer = setTimeout(() => {
+        if (event.type === "conversation_changed") scheduleReplayChat([event.conversationId]);
+        else if (event.type === "message_delivery_changed") scheduleReplayChat(event.conversationIds);
+        replayReconcileTimer ??= setTimeout(() => {
           replayReconcileTimer = undefined;
+          lastReplayReconcileAt = Date.now();
           invalidateAll();
           schedulePhaseReconciliation(true);
-        }, 250);
+        }, Math.max(500, lastReplayReconcileAt + 5_000 - Date.now()));
         return;
       }
       if (workspaceEventInvalidatesGlobalSearch(event)) invalidate(queryKeys.globalSearch.all);
@@ -1027,6 +1052,7 @@ export function useWorkspaceStream(
       if (reconnectTimer) clearTimeout(reconnectTimer);
       clearConnectionTimers();
       if (replayReconcileTimer) clearTimeout(replayReconcileTimer);
+      if (replayChatTimer) clearTimeout(replayChatTimer);
       if (phaseQuietTimer) clearTimeout(phaseQuietTimer);
       phaseRefresh.dispose();
       document.removeEventListener("visibilitychange", onVisibilityChange);
