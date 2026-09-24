@@ -1,13 +1,15 @@
 import { useQuery, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot } from "react-dom/client";
 import { api } from "../src/api";
+import { useAgentStream } from "../src/hooks/useAgentStream";
 import { useWorkspaceStream } from "../src/hooks/useWorkspaceStream";
 import { queryKeys } from "../src/queryKeys";
 
-const counters = { roster: 0, health: 0, directory: 0, details: 0, task: 0 };
+const counters = { roster: 0, health: 0, directory: 0, details: 0, task: 0, capabilities: 0 };
 const apiLatencies: number[] = [];
 let terminal = false;
 let failNextPhaseFetch = false;
+let agentCommandEnabled = false;
 async function probeApi(): Promise<void> {
   const start = performance.now();
   const response = await fetch("/api/storm-probe");
@@ -41,12 +43,24 @@ api.subscribeWorkspace = (_cursor, handlers) => {
       conversationIds: [],
     },
   });
+  const emitCapabilities = () => handlers.onEvent({
+    id: ++seq,
+    ts: new Date().toISOString(),
+    event: { type: "runtime_capabilities_changed", projectId: "P1", engineId: "codex" },
+  });
   let command = setInterval(emitCommand, 20);
   Object.assign(window, {
     stormCounters: () => ({ ...counters }),
     stormApiLatencies: () => [...apiLatencies],
     stormFailNextPhaseFetch: () => { failNextPhaseFetch = true; },
     stopStorm: () => clearInterval(command),
+    startAgentStorm: () => { agentCommandEnabled = true; },
+    stopAgentStorm: () => { agentCommandEnabled = false; },
+    startCapabilitiesStorm: () => {
+      clearInterval(command);
+      emitCapabilities();
+      command = setInterval(emitCapabilities, 20);
+    },
     startCoordinationStorm: () => {
       clearInterval(command);
       emitCoordination();
@@ -71,9 +85,26 @@ api.subscribeWorkspace = (_cursor, handlers) => {
   return { close: () => { clearTimeout(status); clearInterval(command); } };
 };
 
+api.subscribeAgent = (agentId, _cursor, handlers) => {
+  let seq = 0;
+  const status = setTimeout(() => {
+    handlers.onOpen?.();
+    handlers.onStatus?.({ agentId, instanceId: "storm-agent", cursor: 0, reset: false });
+  }, 20);
+  const command = setInterval(() => {
+    if (!agentCommandEnabled) return;
+    handlers.onEvent({
+      agentId, seq: ++seq, ts: new Date().toISOString(),
+      event: { type: "command", command: "pwd", cwd: "/tmp" },
+    });
+  }, 20);
+  return { close: () => { clearTimeout(status); clearInterval(command); } };
+};
+
 const client = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
 function Probe() {
   const connection = useWorkspaceStream();
+  useAgentStream("Active Agent", "P1");
   const roster = useQuery({
     queryKey: queryKeys.agents.project("P1"),
     queryFn: async () => { counters.roster += 1; await probeApi(); return terminal ? "terminal" : "working"; },
@@ -101,6 +132,10 @@ function Probe() {
   useQuery({
     queryKey: queryKeys.workspaceStatus.agent("Agent 1"),
     queryFn: async () => { counters.task += 1; await probeApi(); return "task"; },
+  });
+  useQuery({
+    queryKey: queryKeys.engines.capabilities("P1"),
+    queryFn: async () => { counters.capabilities += 1; await probeApi(); return "capabilities"; },
   });
   return <><span id="roster">{roster.data}</span><span id="phase">{String(connection.phaseEvidenceFresh)}</span><AgentDetails /></>;
 }

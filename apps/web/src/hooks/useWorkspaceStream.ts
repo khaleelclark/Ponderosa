@@ -510,6 +510,14 @@ export function useWorkspaceStream(
       }
       pendingTaskProjects.clear();
     }, 5_000);
+    const pendingCapabilityProjects = new Set<string>();
+    let nextCapabilityUrgentAt = 0;
+    const capabilityRefresh = createBoundedRefresh(() => {
+      for (const projectId of pendingCapabilityProjects) {
+        invalidateWorkspaceCapabilities(queryClient, projectId);
+      }
+      pendingCapabilityProjects.clear();
+    }, 5_000);
     let replayReconcileTimer: ReturnType<typeof setTimeout> | undefined;
     let phaseQuietTimer: ReturnType<typeof setTimeout> | undefined;
     let phaseReconcileGeneration = 0;
@@ -673,10 +681,13 @@ export function useWorkspaceStream(
       decisionConversationInvalidator.dispose();
       taskProjectionRefresh.dispose();
       pendingTaskProjects.clear();
+      capabilityRefresh.dispose();
+      pendingCapabilityProjects.clear();
       invalidate(queryKeys.projects.all);
       invalidate(queryKeys.conversations.all);
       invalidate(["targeted-next-run"]);
       invalidate(queryKeys.workspaceDirectory.all);
+      invalidate(["engine-capabilities"]);
       invalidate(queryKeys.notifications.all);
       invalidateActiveQueries(queryClient, queryKeys.agents.all);
       invalidateActiveQueries(queryClient, queryKeys.agents.organizationAll);
@@ -873,7 +884,10 @@ export function useWorkspaceStream(
         invalidate(queryKeys.providerUsage.all);
       }
       else if (event.type === "runtime_capabilities_changed") {
-        void invalidateWorkspaceCapabilities(queryClient, event.projectId);
+        pendingCapabilityProjects.add(event.projectId);
+        const urgent = Date.now() >= nextCapabilityUrgentAt;
+        if (urgent) nextCapabilityUrgentAt = Date.now() + 5_000;
+        capabilityRefresh.schedule(urgent);
       }
       else if (event.type === "notification_changed") {
         invalidate(queryKeys.notifications.all);
@@ -1021,6 +1035,8 @@ export function useWorkspaceStream(
       decisionConversationInvalidator.dispose();
       taskProjectionRefresh.dispose();
       pendingTaskProjects.clear();
+      capabilityRefresh.dispose();
+      pendingCapabilityProjects.clear();
     };
   }, [queryClient, retryGeneration]);
   return { ...connection, retry: () => setRetryGeneration(value => value + 1) };

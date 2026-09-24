@@ -93,6 +93,30 @@ try {
   }
   assert.deepEqual(coordinationCounts[2], coordinationBaseline[2],
     "hidden tab must not refetch under sustained coordination");
+  await Promise.all(pages.map(page => page.evaluate(() => { window.stopStorm(); window.startAgentStorm(); })));
+  const agentBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  await pages[0].waitForTimeout(5_600);
+  const agentCounts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  for (let index = 0; index < 2; index += 1) {
+    assert.ok(agentCounts[index].health - agentBaseline[index].health <= 3,
+      `Agent stream health in visible tab ${index} must stay bounded during command output`);
+    assert.ok(agentCounts[index].health > agentBaseline[index].health,
+      `Agent stream health in visible tab ${index} must refresh during command output`);
+  }
+  assert.deepEqual(agentCounts[2], agentBaseline[2],
+    "hidden tab must not refetch from its Agent stream");
+  await Promise.all(pages.map(page => page.evaluate(() => { window.stopAgentStorm(); window.startCapabilitiesStorm(); })));
+  const capabilityBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  await pages[0].waitForTimeout(5_600);
+  const capabilityCounts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  for (let index = 0; index < 2; index += 1) {
+    assert.ok(capabilityCounts[index].capabilities - capabilityBaseline[index].capabilities <= 2,
+      `capability reads in visible tab ${index} must stay bounded during runtime changes`);
+    assert.ok(capabilityCounts[index].capabilities > capabilityBaseline[index].capabilities,
+      `capabilities in visible tab ${index} must refresh during runtime changes`);
+  }
+  assert.deepEqual(capabilityCounts[2], capabilityBaseline[2],
+    "hidden tab must not refetch capabilities during runtime changes");
   await Promise.all(pages.map(page => page.evaluate(() => window.startSparseStorm())));
   const sparseBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
   await pages[0].waitForTimeout(5_600);
