@@ -1,4 +1,5 @@
 import type { IncomingMessage } from "node:http";
+import { createHmac, randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import { ASSET_LIMITS } from "./assets.js";
@@ -14,6 +15,24 @@ import { secretEqual } from "./security.js";
 import { isAgentToolRoute } from "./agent-tool-route-classification.js";
 import { localBrowserTransportPath } from "./routes/local-browsers.js";
 import { browserSessionCookie } from "./launcher-security.js";
+
+/** Purpose, not method, determines whether a user-authored action gets its
+ * reserved admission budget. Read-like POSTs remain standard traffic. */
+export function classifyOperatorRequest(method: string, url: string): "critical" | "standard" {
+  const path = url.split("?", 1)[0] ?? "";
+  if (method === "PUT" && /^\/api\/conversations\/[^/]+\/draft$/u.test(path)) return "critical";
+  if (method === "POST" && (
+    /^\/api\/conversations\/[^/]+\/(?:messages|direct-messages|collaboration\/messages)$/u.test(path)
+    || /^\/api\/agents\/[^/]+\/messages$/u.test(path)
+    || /^\/api\/agents\/[^/]+\/queued-messages\/[^/]+\/steer$/u.test(path)
+    || /^\/api\/projects\/[^/]+\/(?:agents|conversations)$/u.test(path)
+    || /^\/api\/conversations\/[^/]+\/draft-attachments$/u.test(path)
+    || /^\/api\/agents\/[^/]+\/attachments$/u.test(path)
+    || path === "/api/chats"
+    || path === "/api/projects"
+  )) return "critical";
+  return "standard";
+}
 
 export function registerBodyParsers(
   app: FastifyInstance,
@@ -88,7 +107,8 @@ export function registerRequestSecurityHooks(
     allowedOrigins.add(origin.origin.toLowerCase());
     allowedHostnames.add(normalizedHostname(origin.hostname));
   }
-  const requestBuckets = new Map<string, { startedAt: number; count: number }>();
+  const requestBuckets = new Map<string, { startedAt: number; count: number; rejected: number }>();
+  const operatorLogKey = randomBytes(32);
   let inflight = 0;
   const admitted = new WeakSet<IncomingMessage>();
   const activeHandlers = new WeakSet<IncomingMessage>();
@@ -225,22 +245,49 @@ export function registerRequestSecurityHooks(
         : opts.authToken || opts.launcherSecurity
           ? "operator"
           : request.ip;
-    const current = requestBuckets.get(source);
+    const requestClass = !capability && (opts.authToken || opts.launcherSecurity)
+      ? classifyOperatorRequest(request.method, request.url)
+      : "standard";
+    const bucketKey = `${source}\0${requestClass}`;
+    const current = requestBuckets.get(bucketKey);
+    const operatorId = source.startsWith("operator")
+      ? createHmac("sha256", operatorLogKey).update(source).digest("hex").slice(0, 24)
+      : undefined;
+    if (current && now - current.startedAt >= 60_000 && operatorId) {
+      app.log.info({ event: "operator_request_window", operatorId, requestClass,
+        requestCount: current.count, rateLimitedCount: current.rejected },
+      "operator request admission window completed");
+    }
     const bucket = !current || now - current.startedAt >= 60_000
-      ? { startedAt: now, count: 0 }
+      ? { startedAt: now, count: 0, rejected: 0 }
       : current;
     bucket.count += 1;
-    requestBuckets.set(source, bucket);
+    requestBuckets.set(bucketKey, bucket);
     if (requestBuckets.size > 10_000) {
       for (const [key, value] of requestBuckets) {
         if (now - value.startedAt >= 60_000) requestBuckets.delete(key);
       }
     }
-    if (bucket.count > opts.requestLimits.maxRequestsPerMinute) {
+    const limit = requestClass === "critical"
+      ? opts.requestLimits.maxCriticalRequestsPerMinute ?? opts.requestLimits.maxRequestsPerMinute
+      : opts.requestLimits.maxRequestsPerMinute;
+    if (bucket.count > limit) {
+      bucket.rejected += 1;
+      if (operatorId && (bucket.rejected === 1 || bucket.rejected % 100 === 0)) {
+        app.log.warn({ event: "operator_request_rate_limited", operatorId, requestClass,
+          requestCount: bucket.count, rateLimitedCount: bucket.rejected },
+        "operator request admission limit reached");
+      }
       reply.header("Retry-After", Math.max(1, Math.ceil((bucket.startedAt + 60_000 - now) / 1_000)));
       return reply.code(429).send({ error: "request rate limit exceeded" });
     }
-    if (inflight >= opts.requestLimits.maxInflight) {
+    const reservedCriticalSlots = opts.requestLimits.maxCriticalRequestsPerMinute && opts.requestLimits.maxInflight > 1
+      ? Math.min(16, Math.max(1, Math.floor(opts.requestLimits.maxInflight / 8)))
+      : 0;
+    const classInflightLimit = requestClass === "critical"
+      ? opts.requestLimits.maxInflight
+      : opts.requestLimits.maxInflight - reservedCriticalSlots;
+    if (inflight >= classInflightLimit) {
       reply.header("Retry-After", "1");
       return reply.code(503).send({ error: "server request concurrency limit reached" });
     }

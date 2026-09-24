@@ -460,6 +460,8 @@ export function useAgentStream(
     let instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
     let unregisterLiveStream: (() => void) | undefined;
     let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
+    let reconcileDueAt = 0;
+    let nextCoordinationUrgentAt = 0;
     let reconcileDetail = false;
     let reconcileRoster = false;
     let reconcileHealth = false;
@@ -477,6 +479,7 @@ export function useAgentStream(
 
     const flushReconciliation = () => {
       reconcileTimer = undefined;
+      reconcileDueAt = 0;
       const projectId = projectIdFromCache();
       if (reconcileDetail) {
         invalidateForBrowserPage(
@@ -486,16 +489,16 @@ export function useAgentStream(
         reconcileDetail = false;
       }
       if (reconcileRoster && projectId) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
+        invalidateForBrowserPage(queryClient, queryKeys.agents.project(projectId));
         reconcileRoster = false;
       }
       if (reconcileHealth && projectId) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(projectId) });
+        invalidateForBrowserPage(queryClient, queryKeys.agents.health(projectId));
         reconcileHealth = false;
       }
       if (reconcileUsage) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.providerUsage.agent(agentId) });
+        invalidateForBrowserPage(queryClient, queryKeys.tokenUsage.all);
+        invalidateForBrowserPage(queryClient, queryKeys.providerUsage.agent(agentId));
         reconcileUsage = false;
       }
     };
@@ -505,7 +508,7 @@ export function useAgentStream(
       roster?: boolean;
       health?: boolean;
       usage?: boolean;
-    }, restartWindow = false) => {
+    }, restartWindow = false, delayMs = 250) => {
       reconcileDetail ||= options.detail ?? false;
       reconcileRoster ||= options.roster ?? false;
       reconcileHealth ||= options.health ?? false;
@@ -513,10 +516,15 @@ export function useAgentStream(
       if (restartWindow && reconcileTimer) {
         clearTimeout(reconcileTimer);
         reconcileTimer = undefined;
+        reconcileDueAt = 0;
       }
-      // Live lifecycle bursts use one fixed window. Replay restarts the window
-      // without fetching so reconciliation happens once after catch-up is quiet.
-      reconcileTimer ??= setTimeout(flushReconciliation, 250);
+      // High-volume command output gets a fixed five-second window. A terminal
+      // event can still bring a pending refresh forward; replay waits for quiet.
+      const dueAt = Date.now() + delayMs;
+      if (reconcileTimer && reconcileDueAt <= dueAt) return;
+      if (reconcileTimer) clearTimeout(reconcileTimer);
+      reconcileDueAt = dueAt;
+      reconcileTimer = setTimeout(flushReconciliation, delayMs);
     };
 
     retryProjectReconciliationRef.current = () => {
@@ -526,6 +534,7 @@ export function useAgentStream(
         || (!reconcileRoster && !reconcileHealth)
         || !projectIdFromCache()
       ) return;
+      reconcileDueAt = Date.now();
       reconcileTimer = setTimeout(flushReconciliation, 0);
     };
 
@@ -624,7 +633,9 @@ export function useAgentStream(
             // Request summaries are embedded in the canonical message
             // projection, not the compact coordination event. Reconcile after
             // the burst so Agent Chat cards reflect new and terminal Requests.
-            scheduleReconciliation({ detail: true });
+            const urgent = Date.now() >= nextCoordinationUrgentAt;
+            if (urgent) nextCoordinationUrgentAt = Date.now() + 5_000;
+            scheduleReconciliation({ detail: true }, false, urgent ? 250 : 5_000);
           } else if (envelope.event.type === "turn_done") {
             scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
           } else if (envelope.event.type === "context_rollover_completed" ||
@@ -637,7 +648,7 @@ export function useAgentStream(
             || envelope.event.type === "tool_call"
             || envelope.event.type === "tool_result"
           ) {
-            scheduleReconciliation({ health: true });
+            scheduleReconciliation({ health: true }, false, 5_000);
           }
         },
       });

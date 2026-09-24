@@ -53,7 +53,7 @@ const app = createServer({
   networkSecurity: config.networkSecurity,
   operatorOrigins: config.operatorOrigins,
   operatorIdentities: config.operatorIdentities,
-  requestLimits: { maxRequestsPerMinute: 600, maxInflight: 128 },
+  requestLimits: { maxRequestsPerMinute: 600, maxCriticalRequestsPerMinute: 120, maxInflight: 128 },
   buildRevision: process.env.PONDEROSA_BUILD_SHA,
   buildVersion: process.env.PONDEROSA_BUILD_VERSION,
   releaseChannel: process.env.PONDEROSA_RELEASE_CHANNEL,

@@ -37,3 +37,30 @@ test("a silent half-open event stream reconnects without waiting for a page refr
   }
   assert.equal(sources.at(-1).closed, true);
 });
+
+test("a rate-limited stream waits for the observed Retry-After before reconnect", async () => {
+  const sources = [];
+  let cooldownUntil = 0;
+  const subscription = createResilientEventSource({
+    createSource: () => {
+      const source = new FakeEventSource();
+      sources.push(source);
+      return source;
+    },
+    configure: () => {},
+    probeRateLimit: async () => { cooldownUntil = Date.now() + 50; },
+    reconnectCooldownMs: () => Math.max(0, cooldownUntil - Date.now()),
+    initialReconnectDelayMs: 1,
+    maxReconnectDelayMs: 5,
+    maxSilenceMs: 1_000,
+  });
+  try {
+    sources[0].onerror(new Event("error"));
+    await delay(20);
+    assert.equal(sources.length, 1);
+    await delay(65);
+    assert.equal(sources.length, 2);
+  } finally {
+    subscription.close();
+  }
+});

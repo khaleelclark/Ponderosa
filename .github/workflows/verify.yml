@@ -51,6 +51,13 @@ jobs:
       - name: Check read-aloud in Chromium
         run: pnpm test:speech-browser
 
+      - name: Check bounded Agent refresh in three browser tabs
+        env:
+          PONDEROSA_BROWSER_DISABLE_SANDBOX: "1"
+        run: |
+          export PONDEROSA_CHROMIUM_PATH="$(pnpm --filter @ponderosa/server exec node -p "require('playwright-core').chromium.executablePath()")"
+          node apps/web/test/request-storm-browser.check.mjs
+
       - name: Qualify production-scale startup recovery
         run: pnpm --filter @ponderosa/agents qualify:startup
 

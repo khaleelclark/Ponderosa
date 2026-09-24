@@ -9,6 +9,7 @@ import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { MutationNotificationProvider } from "./components/MutationNotifications";
 import "./global.css";
 import { installServiceWorkerReloadGuard } from "./serviceWorkerReload";
+import { queryRetryDelay, shouldRetryQuery } from "./api/queryRetry";
 import { COLOR_MODE_STORAGE_KEY, createPonderosaTheme, loadColorMode, type ColorMode } from "./theme";
 
 installServiceWorkerReloadGuard();
@@ -18,6 +19,8 @@ const queryClient = new QueryClient({
     queries: {
       refetchOnWindowFocus: true,
       staleTime: 15_000,
+      retry: shouldRetryQuery,
+      retryDelay: queryRetryDelay,
     },
   },
 });
