@@ -31,12 +31,27 @@ api.subscribeWorkspace = (_cursor, handlers) => {
       category: "task",
     },
   });
+  const emitCoordination = () => handlers.onEvent({
+    id: ++seq,
+    ts: new Date().toISOString(),
+    event: {
+      type: "coordination_changed",
+      projectId: "P1",
+      agentId: `Agent ${seq % 12}`,
+      conversationIds: [],
+    },
+  });
   let command = setInterval(emitCommand, 20);
   Object.assign(window, {
     stormCounters: () => ({ ...counters }),
     stormApiLatencies: () => [...apiLatencies],
     stormFailNextPhaseFetch: () => { failNextPhaseFetch = true; },
     stopStorm: () => clearInterval(command),
+    startCoordinationStorm: () => {
+      clearInterval(command);
+      emitCoordination();
+      command = setInterval(emitCoordination, 20);
+    },
     startSparseStorm: () => {
       clearInterval(command);
       command = setInterval(emitCommand, 900);

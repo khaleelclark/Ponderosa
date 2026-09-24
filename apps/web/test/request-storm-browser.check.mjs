@@ -75,6 +75,24 @@ try {
       `phase health in visible tab ${index} must refresh despite continuous events`);
   }
   assert.deepEqual(counts[2], baseline[2], "hidden tab must not refetch under sustained Agent output");
+  await Promise.all(pages.map(page => page.evaluate(() => window.startCoordinationStorm())));
+  const coordinationBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  for (let index = 0; index < 2; index += 1) {
+    await pages[index].waitForFunction(previous => window.stormCounters().health > previous,
+      coordinationBaseline[index].health, { timeout: 1_500 });
+  }
+  await pages[0].waitForTimeout(5_600);
+  const coordinationCounts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  for (let index = 0; index < 2; index += 1) {
+    for (const key of ["roster", "health", "directory"]) {
+      assert.ok(coordinationCounts[index][key] - coordinationBaseline[index][key] <= 2,
+        `${key} in visible tab ${index} must stay bounded during sustained coordination`);
+    }
+    assert.ok(coordinationCounts[index].health > coordinationBaseline[index].health,
+      `phase health in visible tab ${index} must refresh during sustained coordination`);
+  }
+  assert.deepEqual(coordinationCounts[2], coordinationBaseline[2],
+    "hidden tab must not refetch under sustained coordination");
   await Promise.all(pages.map(page => page.evaluate(() => window.startSparseStorm())));
   const sparseBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
   await pages[0].waitForTimeout(5_600);

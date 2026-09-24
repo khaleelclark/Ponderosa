@@ -515,6 +515,7 @@ export function useWorkspaceStream(
     let phaseReconcileGeneration = 0;
     let phaseReconcileInFlight = false;
     let urgentPhasePending = false;
+    let nextCoordinationUrgentAt = 0;
     const pendingRosterProjects = new Set<string>();
     let phaseCatchUpCursor: number | undefined;
     let phaseQueryBoundaries: ReadonlyMap<Query, PhaseQueryBoundary> = new Map();
@@ -881,10 +882,16 @@ export function useWorkspaceStream(
         }
         if (event.decisionId) agentWorkInvalidator.schedule(event.projectId);
       }
-      if (changesPhaseEvidence) schedulePhaseReconciliation(
-        event.type === "coordination_changed"
-        || (event.type === "agent_event" && event.category === "lifecycle"),
-      );
+      if (changesPhaseEvidence) {
+        // Coordination may arrive continuously across many Agents. Give the
+        // first change prompt feedback, then use the bounded trailing refresh
+        // until the next window; terminal lifecycle changes stay prompt.
+        const coordinationUrgent = event.type === "coordination_changed"
+          && Date.now() >= nextCoordinationUrgentAt;
+        if (coordinationUrgent) nextCoordinationUrgentAt = Date.now() + 5_000;
+        schedulePhaseReconciliation(coordinationUrgent
+          || (event.type === "agent_event" && event.category === "lifecycle"));
+      }
     };
     let subscription: StreamSubscription | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
