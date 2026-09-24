@@ -142,13 +142,35 @@ try {
   });
   await pages[0].locator("#phase").getByText("false").waitFor({ timeout: 2_000 });
   await pages[0].locator("#phase").getByText("true").waitFor({ timeout: 12_000 });
+  for (const page of pages) {
+    await page.evaluate(() => window.replayCompletedChat());
+    await page.locator("#chat").getByText("Agent replied").waitFor({ timeout: 2_000 });
+    await page.locator("#delivery").getByText("processed").waitFor({ timeout: 2_000 });
+  }
+  const replayBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  await Promise.all(pages.map(page => page.evaluate(() => window.replayChatBurst())));
+  for (const page of pages) {
+    await page.locator("#chat").getByText("Revised reply").waitFor({ timeout: 2_000 });
+  }
+  const replayCounts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  for (let index = 0; index < pages.length; index += 1) {
+    assert.ok(replayCounts[index].chat - replayBaseline[index].chat <= 1,
+      `Chat detail in tab ${index} must reconcile once for a replay batch`);
+    assert.ok(replayCounts[index].delivery - replayBaseline[index].delivery <= 1,
+      `delivery receipts in tab ${index} must reconcile once for a replay batch`);
+  }
+  for (const page of pages) {
+    await page.evaluate(() => window.emitLiveChat());
+    await page.locator("#chat").getByText("Latest live reply").waitFor({ timeout: 2_000 });
+    await page.locator("#delivery").getByText("processed again").waitFor({ timeout: 2_000 });
+  }
   const samples = (await Promise.all(pages.map(page => page.evaluate(() => window.stormApiLatencies())))).flat();
   samples.sort((a, b) => a - b);
   const apiP95Ms = samples[Math.ceil(samples.length * 0.95) - 1];
   const eventLoopP95Ms = loopDelay.percentile(95) / 1_000_000;
   assert.ok(apiP95Ms < 250, `isolated API p95 must stay under 250 ms; got ${apiP95Ms}`);
   assert.ok(eventLoopP95Ms < 100, `isolated event-loop p95 must stay under 100 ms; got ${eventLoopP95Ms}`);
-  console.log(`PASS 12-Agent, three-tab stream: bounded refresh, hidden-tab pause/reconcile, terminal and failed-fetch recovery; isolated API p95 ${apiP95Ms.toFixed(1)} ms, event-loop p95 ${eventLoopP95Ms.toFixed(1)} ms`);
+  console.log(`PASS 12-Agent, three-tab stream: bounded refresh and replay, live Chat and receipt delivery, hidden-tab pause/reconcile, terminal and failed-fetch recovery; isolated API p95 ${apiP95Ms.toFixed(1)} ms, event-loop p95 ${eventLoopP95Ms.toFixed(1)} ms`);
   await Promise.all(pages.map(page => page.context().close()));
 } finally {
   loopDelay.disable();

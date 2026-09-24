@@ -5,9 +5,11 @@ import { useAgentStream } from "../src/hooks/useAgentStream";
 import { useWorkspaceStream } from "../src/hooks/useWorkspaceStream";
 import { queryKeys } from "../src/queryKeys";
 
-const counters = { roster: 0, health: 0, directory: 0, details: 0, task: 0, capabilities: 0 };
+const counters = { roster: 0, health: 0, directory: 0, details: 0, task: 0, capabilities: 0, chat: 0, delivery: 0 };
 const apiLatencies: number[] = [];
 let terminal = false;
+let chatReply = "waiting";
+let deliveryState = "preparing";
 let failNextPhaseFetch = false;
 let agentCommandEnabled = false;
 async function probeApi(): Promise<void> {
@@ -81,6 +83,41 @@ api.subscribeWorkspace = (_cursor, handlers) => {
         },
       });
     },
+    replayCompletedChat: () => {
+      chatReply = "Agent replied";
+      deliveryState = "processed";
+      handlers.onError?.(new Event("error"));
+      handlers.onStatus?.({ instanceId: "storm", cursor: seq + 2, reset: false });
+      for (const event of [
+        { type: "conversation_changed", projectId: "P1", conversationId: "Chat 1", action: "message" },
+        { type: "message_delivery_changed", projectId: "P1", agentId: "Agent 1", conversationIds: ["Chat 1"] },
+      ]) handlers.onEvent({ id: ++seq, ts: new Date().toISOString(), replayed: true, event });
+    },
+    replayChatBurst: () => {
+      chatReply = "Revised reply";
+      for (let index = 0; index < 100; index += 1) {
+        handlers.onEvent({
+          id: ++seq,
+          ts: new Date().toISOString(),
+          replayed: true,
+          event: { type: "conversation_changed", projectId: "P1", conversationId: "Chat 1", action: "message" },
+        });
+      }
+    },
+    emitLiveChat: () => {
+      chatReply = "Latest live reply";
+      deliveryState = "processed again";
+      handlers.onEvent({
+        id: ++seq,
+        ts: new Date().toISOString(),
+        event: { type: "conversation_changed", projectId: "P1", conversationId: "Chat 1", action: "message" },
+      });
+      handlers.onEvent({
+        id: ++seq,
+        ts: new Date().toISOString(),
+        event: { type: "message_delivery_changed", projectId: "P1", agentId: "Agent 1", conversationIds: ["Chat 1"] },
+      });
+    },
   });
   return { close: () => { clearTimeout(status); clearInterval(command); } };
 };
@@ -137,7 +174,15 @@ function Probe() {
     queryKey: queryKeys.engines.capabilities("P1"),
     queryFn: async () => { counters.capabilities += 1; await probeApi(); return "capabilities"; },
   });
-  return <><span id="roster">{roster.data}</span><span id="phase">{String(connection.phaseEvidenceFresh)}</span><AgentDetails /></>;
+  const chat = useQuery({
+    queryKey: queryKeys.conversations.detail("Chat 1"),
+    queryFn: async () => { counters.chat += 1; await probeApi(); return chatReply; },
+  });
+  const delivery = useQuery({
+    queryKey: queryKeys.conversations.activeDeliveryReceipts("Chat 1", "Message 1", ""),
+    queryFn: async () => { counters.delivery += 1; await probeApi(); return deliveryState; },
+  });
+  return <><span id="roster">{roster.data}</span><span id="phase">{String(connection.phaseEvidenceFresh)}</span><span id="chat">{chat.data}</span><span id="delivery">{delivery.data}</span><AgentDetails /></>;
 }
 function AgentDetails() {
   return <>{Array.from({ length: 12 }, (_, index) => <AgentDetail key={index} index={index} />)}</>;

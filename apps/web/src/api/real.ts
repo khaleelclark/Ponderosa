@@ -623,6 +623,13 @@ export const realApi = {
   },
   async acknowledgeNotifications(notificationIds: string[]): Promise<void> { await requestJson("/api/notifications/acknowledge-batch", { method: "POST", body: JSON.stringify({ notificationIds }) }); },
   setNotificationStatus(notificationId: string, status: "resolved" | "dismissed"): Promise<WorkspaceNotificationDto> { return requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/status`, { method: "POST", body: JSON.stringify({ status }) }); },
+  async dismissNotifications(kind: "attention" | "updates"): Promise<number> {
+    const response = await requestJson<{ dismissed: number }>("/api/notifications/dismiss-all", {
+      method: "POST",
+      body: JSON.stringify({ kind }),
+    });
+    return response.dismissed;
+  },
   retryCoordinationRequest(requestId: string, request: { idempotencyKey?: string; createJoin?: boolean } = {}): Promise<RetryCoordinationRequestResponse> {
     return requestJson(`/api/requests/${encodeURIComponent(requestId)}/retry`, {
       method: "POST",

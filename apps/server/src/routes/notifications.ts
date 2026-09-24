@@ -12,6 +12,7 @@ export interface NotificationRoutesOptions {
     | "activeNotificationIds"
     | "acknowledgeNotifications"
     | "cursor"
+    | "dismissNotifications"
     | "getNotification"
     | "listNotificationPage"
     | "notificationProjection"
@@ -125,6 +126,19 @@ export function registerNotificationMutationRoutes(
   app: FastifyInstance,
   options: NotificationRoutesOptions,
 ): void {
+  app.post<{ Body: { kind?: "attention" | "updates" } }>(
+    "/api/notifications/dismiss-all",
+    async (request, reply) => {
+      if (request.body?.kind !== "attention" && request.body?.kind !== "updates") {
+        return reply.code(400).send({ error: "kind must be attention or updates" });
+      }
+      const cursor = options.workspace.cursor();
+      const dismissed = options.workspace.dismissNotifications(request.body.kind);
+      options.publishWorkspaceSince(cursor);
+      return { dismissed };
+    },
+  );
+
   app.post<{ Params: { id: string }; Body: { status?: "resolved" | "dismissed" } }>(
     "/api/notifications/:id/status",
     async (request, reply) => {
