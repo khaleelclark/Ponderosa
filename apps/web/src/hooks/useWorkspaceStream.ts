@@ -345,7 +345,7 @@ function createAgentWorkInvalidator(
 /** Batch collection mutations using the same fixed-window policy as Agent
  * state. Unscoped directory queries remain global; sibling Projects stay warm. */
 function createDirectoryInvalidator(queryClient: QueryClient, delayMs = 250) {
-  const pending = new Map<"project" | "conversation" | "agent" | "trigger", Set<string | undefined>>();
+  const pending = new Map<"project" | "conversation" | "agent" | "trigger", Map<string, boolean>>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const dispose = () => {
     if (timer) clearTimeout(timer);
@@ -353,15 +353,18 @@ function createDirectoryInvalidator(queryClient: QueryClient, delayMs = 250) {
     pending.clear();
   };
   return {
-    schedule(kind: "project" | "conversation" | "agent" | "trigger", projectId?: string) {
-      const scopes = pending.get(kind) ?? new Set<string | undefined>();
-      scopes.add(projectId);
+    schedule(kind: "project" | "conversation" | "agent" | "trigger", projectId?: string, nonSummaryOnly = false) {
+      const scopes = pending.get(kind) ?? new Map<string, boolean>();
+      const scope = projectId ?? "";
+      scopes.set(scope, (scopes.get(scope) ?? false) || !nonSummaryOnly);
       pending.set(kind, scopes);
       timer ??= setTimeout(() => {
         for (const [kind, scopes] of pending) {
           void queryClient.invalidateQueries({
             queryKey: queryKeys.workspaceDirectory.kind(kind),
-            predicate: query => [...scopes].some(projectId => phaseQueryMatchesProject(query.queryKey, projectId)),
+            predicate: query => [...scopes].some(([projectId, includeSummary]) =>
+              (includeSummary || query.queryKey[10] !== "summary")
+              && phaseQueryMatchesProject(query.queryKey, projectId || undefined)),
             refetchType: browserPageIsVisible() ? "active" : "none",
           });
         }
@@ -823,6 +826,7 @@ export function useWorkspaceStream(
         directoryInvalidator.schedule("trigger", event.projectId);
       } else if (workspaceAgentEventChangesPhase(event)) {
         if (event.category === "lifecycle") {
+          directoryInvalidator.schedule("agent", event.projectId, true);
           directoryInvalidator.schedule("project", event.projectId);
           directoryInvalidator.schedule("conversation", event.projectId);
         }

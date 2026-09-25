@@ -5,7 +5,7 @@ import { useAgentStream } from "../src/hooks/useAgentStream";
 import { useWorkspaceStream } from "../src/hooks/useWorkspaceStream";
 import { queryKeys } from "../src/queryKeys";
 
-const counters = { roster: 0, health: 0, directory: 0, details: 0, task: 0, capabilities: 0, chat: 0, delivery: 0 };
+const counters = { roster: 0, health: 0, directory: 0, allAgents: 0, homeActive: 0, homeOutcomes: 0, otherAgents: 0, details: 0, task: 0, capabilities: 0, chat: 0, delivery: 0 };
 const apiLatencies: number[] = [];
 let terminal = false;
 let chatReply = "waiting";
@@ -170,8 +170,24 @@ function Probe() {
     },
   });
   useQuery({
-    queryKey: queryKeys.workspaceDirectory.list("agent", "", undefined, undefined, undefined, undefined, true, undefined, undefined),
+    queryKey: queryKeys.workspaceDirectory.list("agent", "", undefined, undefined, undefined, undefined, undefined, undefined, undefined, true),
     queryFn: async () => { counters.directory += 1; await probeApi(); return terminal ? "terminal" : "working"; },
+  });
+  const allAgents = useQuery({
+    queryKey: queryKeys.workspaceDirectory.list("agent", "", undefined, undefined, undefined, undefined, undefined, undefined, undefined),
+    queryFn: async () => { counters.allAgents += 1; await probeApi(); return terminal ? "terminal" : "working"; },
+  });
+  const homeActive = useQuery({
+    queryKey: queryKeys.workspaceDirectory.list("agent", "", undefined, undefined, undefined, undefined, true, undefined, undefined),
+    queryFn: async () => { counters.homeActive += 1; await probeApi(); return terminal ? "none" : "working"; },
+  });
+  const homeOutcomes = useQuery({
+    queryKey: queryKeys.workspaceDirectory.list("agent", "", undefined, undefined, undefined, undefined, undefined, true, undefined),
+    queryFn: async () => { counters.homeOutcomes += 1; await probeApi(); return terminal ? "terminal" : "none"; },
+  });
+  useQuery({
+    queryKey: queryKeys.workspaceDirectory.list("agent", "", "P2", undefined, undefined, undefined, undefined, undefined, undefined),
+    queryFn: async () => { counters.otherAgents += 1; await probeApi(); return "unrelated"; },
   });
   useQuery({
     queryKey: queryKeys.agents.project("P2"),
@@ -193,7 +209,7 @@ function Probe() {
     queryKey: queryKeys.conversations.activeDeliveryReceipts("Chat 1", "Message 1", ""),
     queryFn: async () => { counters.delivery += 1; await probeApi(); return deliveryState; },
   });
-  return <><span id="roster">{roster.data}</span><span id="phase">{String(connection.phaseEvidenceFresh)}</span><span id="chat">{chat.data}</span><span id="delivery">{delivery.data}</span><AgentDetails /></>;
+  return <><span id="roster">{roster.data}</span><span id="all-agents">{allAgents.data}</span><span id="home-active">{homeActive.data}</span><span id="home-outcomes">{homeOutcomes.data}</span><span id="phase">{String(connection.phaseEvidenceFresh)}</span><span id="chat">{chat.data}</span><span id="delivery">{delivery.data}</span><AgentDetails /></>;
 }
 function AgentDetails() {
   return <>{Array.from({ length: 12 }, (_, index) => <AgentDetail key={index} index={index} />)}</>;

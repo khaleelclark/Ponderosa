@@ -60,12 +60,15 @@ try {
     pages.push(page);
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.locator("#roster").getByText("working").waitFor();
+    await page.locator("#all-agents").getByText("working").waitFor();
+    await page.locator("#home-active").getByText("working").waitFor();
+    await page.locator("#home-outcomes").getByText("none").waitFor();
   }
   const baseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
   await pages[0].waitForTimeout(5_600);
   const counts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
   for (let index = 0; index < 2; index += 1) {
-    for (const key of ["roster", "health", "directory", "task"]) {
+    for (const key of ["roster", "health", "directory", "allAgents", "homeActive", "homeOutcomes", "task"]) {
       assert.ok(counts[index][key] - baseline[index][key] <= 2,
         `${key} in visible tab ${index} must be bounded during 12-Agent output`);
     }
@@ -84,7 +87,7 @@ try {
   await pages[0].waitForTimeout(5_600);
   const coordinationCounts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
   for (let index = 0; index < 2; index += 1) {
-    for (const key of ["roster", "health", "directory"]) {
+    for (const key of ["roster", "health", "directory", "allAgents", "homeActive", "homeOutcomes"]) {
       assert.ok(coordinationCounts[index][key] - coordinationBaseline[index][key] <= 2,
         `${key} in visible tab ${index} must stay bounded during sustained coordination`);
     }
@@ -131,10 +134,16 @@ try {
     document.dispatchEvent(new Event("visibilitychange"));
   });
   await pages[2].waitForFunction(previous => window.stormCounters().roster > previous, sparseCounts[2].roster);
-  for (const page of pages) {
+  const beforeTerminal = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  for (const [index, page] of pages.entries()) {
     await page.evaluate(() => { window.stopStorm(); window.terminalStorm(); });
     await page.locator("#roster").getByText("terminal").waitFor({ timeout: 2_000 });
+    await page.locator("#all-agents").getByText("terminal").waitFor({ timeout: 2_000 });
+    await page.locator("#home-active").getByText("none").waitFor({ timeout: 2_000 });
+    await page.locator("#home-outcomes").getByText("terminal").waitFor({ timeout: 2_000 });
     await page.locator("#phase").getByText("true").waitFor({ timeout: 2_000 });
+    assert.equal((await page.evaluate(() => window.stormCounters())).otherAgents, beforeTerminal[index].otherAgents,
+      `a P1 lifecycle change must not refresh the P2 Agent directory in tab ${index}`);
   }
   await pages[0].evaluate(() => {
     window.stormFailNextPhaseFetch();
