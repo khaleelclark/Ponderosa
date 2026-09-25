@@ -67,6 +67,19 @@ test('temporary backpressure queues frames in order until drain without disconne
     assert.equal(stream.destroyed,false);
   }finally{stream.close();}
 });
+test('idle live streams heartbeat before a ten-second proxy timeout',async()=>{
+  const originalSetInterval=globalThis.setInterval;
+  const intervals=[];
+  globalThis.setInterval=(callback,delay,...args)=>{intervals.push(delay);return originalSetInterval(callback,delay,...args);};
+  let stream;
+  try{
+    stream=await open({lastEventId:'0',bootstrap:'true'});
+    assert(intervals.some(delay=>delay>0 && delay<=5_000));
+  }finally{
+    stream?.close();
+    globalThis.setInterval=originalSetInterval;
+  }
+});
 test('a persistently backpressured response is disconnected at the bounded queue limit',async()=>{
   const stream=await open({lastEventId:'9999'}, {}, {backpressure:true});
   for(let i=0;i<1100 && !stream.destroyed;i++)stream.emit({id:10001+i,event:{type:'notification_changed',action:'read'}});

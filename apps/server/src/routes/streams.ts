@@ -15,6 +15,9 @@ const MAX_SSE_REPLAY_BYTES = 8 * 1024 * 1024;
 const MAX_SSE_REPLAY_PREPARATION_MS = 2_000;
 const MAX_SSE_QUEUED_BYTES = 2 * 1024 * 1024;
 const MAX_SSE_EVENT_BYTES = 1024 * 1024;
+// Keep idle streams alive through reverse proxies with a 10-second idle limit.
+// Heartbeats are frames on the existing connection, not additional requests.
+const SSE_HEARTBEAT_MS = 5_000;
 
 function encodedBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value));
@@ -189,7 +192,7 @@ export function registerStreamRoutes(
           serverMetrics.sseBackpressure();
           closeStream();
         }
-      }, 15_000);
+      }, SSE_HEARTBEAT_MS);
       request.raw.on("close", cleanup);
     },
   );
@@ -315,7 +318,7 @@ export function registerStreamRoutes(
           serverMetrics.sseBackpressure();
           closeStream();
         }
-      }, 15_000);
+      }, SSE_HEARTBEAT_MS);
       request.raw.on("close", cleanup);
     },
   );
