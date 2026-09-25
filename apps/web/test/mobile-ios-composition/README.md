@@ -61,7 +61,7 @@ before changing the existing viewport algorithm. No deployment is authorized by 
 | F06 | Mobile Project chat enables the existing dictation control | Shared control/unsupported reason visible; actual microphone and final transcription still device checks |
 | F07 | Existing compact header is the mobile default, expandable without changing desktop preference | Expand/tab/collapse checks; reduced-height Composer/Send geometry |
 | F08 | Mobile section is accurately named Recent Assigned Work with current-status description | Running work no longer presented as necessarily finished; underlying query/state untouched |
-| F09 | Mobile reading scale restored to 16 px, larger Markdown text, 44 px message-action targets | Computed dimensions; physical long-press/selection still required |
+| F09 | Mobile reading scale restored to 16 px, larger Markdown text, compact message-action spacing with 44 px height | Computed dimensions; physical long-press/selection still required |
 | F10 | Remove obsolete drawer padding, wrap Project name, readable narrow navigation rows | Narrow labels fit; wider mobile layouts retain compact columns |
 | Addendum | iOS 16 px editor, Return-to-newline, manifest allows rotation | Focus zoom/displacement remains a physical iPhone browser/PWA acceptance gate |
 

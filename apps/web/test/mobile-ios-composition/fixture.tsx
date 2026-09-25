@@ -1,7 +1,7 @@
 import React,{useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
-import {ThemeProvider,Box,CssBaseline} from '@mui/material';
+import {ThemeProvider,Box,CssBaseline,IconButton} from '@mui/material';
 import '@fontsource-variable/inter';
 import {Composer} from '../../src/components/chat/Composer';
 import {ComposerRuntimeSelector} from '../../src/components/ComposerRuntimeSelector';
@@ -12,6 +12,7 @@ import {ChatMessageBody} from '../../src/components/chat/ChatMessages';
 import {TabbedWorkspaceFrame} from '../../src/components/WorkspaceFrame';
 import {ProjectRail,ProjectSidebarHeader} from '../../src/components/ProjectNavigation';
 import {HomeView} from '../../src/components/HomeView';
+import {MessageActionsAndTimestamp} from '../../src/components/MessageTimestamp';
 import {classifyWebPushState,webPushEnableBlockReason} from '../../src/pushNotifications';
 import type {ProjectDto} from '@ponderosa/core';
 
@@ -52,6 +53,17 @@ function AuditFixture(){
   <output id="push" style={{display:'none'}}>{JSON.stringify(push)}</output>
  </div>;
 }
+function MessageActionFixture(){
+ const [messageActions,setMessageActions]=useState<string[]>([]);
+ return <Box sx={{p:2}}>
+  <MessageActionsAndTimestamp value="2026-09-25T12:00:00Z" showTimestamp={false} actions={<>
+   <IconButton size="small" aria-label="Copy action" onClick={()=>setMessageActions(items=>[...items,'copy'])}>C</IconButton>
+   <IconButton size="small" aria-label="Read aloud action" onClick={()=>setMessageActions(items=>[...items,'read'])}>R</IconButton>
+   <IconButton size="small" aria-label="Mention action" onClick={()=>setMessageActions(items=>[...items,'mention'])}>M</IconButton>
+  </>} />
+  <output id="message-actions" style={{display:'none'}}>{JSON.stringify(messageActions)}</output>
+ </Box>;
+}
 const params=new URLSearchParams(location.search);
 function RailFixture(){
  const [projects,setProjects]=useState(Array.from({length:30},(_,i)=>({id:`p${i}`,label:`Project ${i}`} as ProjectDto)));
@@ -61,4 +73,4 @@ function RailFixture(){
   onReorderProject={(source,target,position)=>setProjects(previous=>{const next=previous.filter(p=>p.id!==source);next.splice(next.findIndex(p=>p.id===target)+(position==='after'?1:0),0,previous.find(p=>p.id===source)!);return next;})}
   onOpenHome={noop} onOpenAllMessages={noop} onOpenProject={noop} onOpenCreate={noop} onOpenSearch={noop} onOpenNotifications={noop} onOpenUsage={noop} onOpenEngineStatus={noop} onOpenSettings={noop} onOpenProfile={noop} onClose={noop}/></div>;
 }
-createRoot(document.getElementById('root')!).render(<ThemeProvider theme={createPonderosaTheme(params.has('light')?'light':'dark')}><CssBaseline/><QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}>{params.has('rail')?<RailFixture/>:params.has('audit')?<AuditFixture/>:<Fixture/>}</QueryClientProvider></ThemeProvider>);
+createRoot(document.getElementById('root')!).render(<ThemeProvider theme={createPonderosaTheme(params.has('light')?'light':'dark')}><CssBaseline/><QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}>{params.has('rail')?<RailFixture/>:params.has('audit')?<AuditFixture/>:params.has('actions')?<MessageActionFixture/>:<Fixture/>}</QueryClientProvider></ThemeProvider>);
