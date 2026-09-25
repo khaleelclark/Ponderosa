@@ -367,3 +367,120 @@ test("the same failed-tool recovery can explicitly Broadcast without leaking pri
   assert.equal(communications.filter((event) => event.intent === "broadcast").length, 1);
   assert.equal(communications.filter((event) => event.intent === "user_dm").length, 0);
 });
+
+test("a first Run has an unambiguous bare reply route for either user communication scope", async () => {
+  for (const intent of ["broadcast", "user_dm"]) {
+    const dataDir = await mkdtemp(path.join(tmpdir(), `ponderosa-first-reply-${intent}-`));
+    const store = new AgentStore(dataDir);
+    const project = store.createProject({ label: "First reply route", hostPath: dataDir, defaultEngine: "codex" });
+    const conversation = store.getConversation(project.lastConversationId);
+    assert.ok(conversation);
+    const agent = store.createAgent(project.id, { title: "First Run Agent", engine: "codex", conversationId: conversation.id });
+    const coordinationV3 = new CoordinationV3Store(store.sqlite);
+    const app = Fastify();
+    try {
+      const input = {
+        eventId: `first-input-${intent}`,
+        schemaVersion: 2,
+        projectId: project.id,
+        conversationId: conversation.id,
+        sender: { kind: "user", userId: "local-operator" },
+        intent,
+        audience: intent === "broadcast"
+          ? { kind: "organization", organizationId: project.id }
+          : { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+        text: "Please reply to this first message.",
+        createdAt: new Date().toISOString(),
+      };
+      coordinationV3.recordRuntimeCommunication({
+        id: input.eventId,
+        projectId: project.id,
+        sender: input.sender,
+        intent: input.intent,
+        audience: input.audience,
+        payload: {
+          communication: input,
+          dispatch: {
+            conversationId: conversation.id,
+            text: input.text,
+            activeRunDelivery: "run",
+            recipients: [{ agentId: agent.id, attachments: [] }],
+          },
+        },
+        activation: {
+          agentId: agent.id,
+          kind: "human_message",
+          priority: 100,
+          dispatchPolicy: "next_run",
+          promptClass: "human",
+        },
+        now: input.createdAt,
+      });
+      const run = coordinationV3.leaseNextRun({ workerId: `worker-${intent}` });
+      assert.ok(run);
+      coordinationV3.markRunStarted(run.runId, run.fencingToken);
+      const replyAuthority = coordinationV3.requiredReplyObligationForRun(run.runId)?.replyAuthority;
+      assert.deepEqual(replyAuthority, { intent: intent === "broadcast" ? "broadcast" : "direct_to_user" });
+      const token = `first-capability-${intent}`;
+      const capability = {
+        agentId: agent.id,
+        conversationId: conversation.id,
+        runId: run.runId,
+        v3SchedulerRunId: run.runId,
+        v3FencingToken: run.fencingToken,
+        defaultReply: replyAuthority,
+        mentionDepth: 0,
+        mentionTrail: [],
+        reachableArtifactIds: [],
+        availableToolNames: [PONDEROSA_MESSAGE_TOOL.name],
+        historyRetrievalExcludedCommunicationEventIds: [],
+      };
+      registerAgentCommunicationRoutes(app, {
+        store,
+        coordinationV3,
+        workspace: {},
+        agentMessageCapabilities: new Map([[token, capability]]),
+        activeRuns: new Map([[agent.id, { messageCapability: token }]]),
+        projectDeletionInProgress: () => false,
+        conversationDeletionInProgress: () => false,
+        agentDeletionInProgress: () => false,
+        conversationDeliveryLeases: new Map(),
+        agentDeliveryLeases: new Map(),
+        capabilityOwnsAuthoritativeRun: () => true,
+        runAuthorization: () => ({ runId: run.runId, agentId: agent.id, fencingToken: run.fencingToken }),
+        recordCommunication: (communication) => communication,
+        projectBroadcastToAgentAudits: () => {},
+        projectCommunicationToAgentAudit: () => {},
+        resolveExplicitCollaborationIntents: () => ({ text: "", intents: [], blocked: [] }),
+        appendBlockedMentionWarnings: () => {},
+        communicationArtifactAccess: () => ({}),
+        projectCommunicationArtifact: () => {},
+        runtimeArtifactMetadata: (artifact) => artifact,
+        stageCommunicationArtifact: async () => { throw new Error("small replies must not stage an artifact"); },
+        removeRuntimeArtifactReservation: () => {},
+        publishCoordinationV3Changed: () => {},
+        publishWorkspaceSince: () => {},
+        publish: () => {},
+        resolveOperationalNotification: () => {},
+        notifyScheduler: () => {},
+        reconcileRuntimeCommunicationProjections: async () => 0,
+      });
+      const dynamicToolHandler = createProviderDynamicToolHandler(app, [PONDEROSA_MESSAGE_TOOL], token);
+      const result = await dynamicToolHandler({
+        id: `first-reply-${intent}`,
+        name: PONDEROSA_MESSAGE_TOOL.name,
+        arguments: { text: "First Run reply without an explicit intent." },
+      });
+      assert.equal(result.success, true, result.text);
+      const communications = coordinationV3.runtimeCommunications(project.id)
+        .map((communication) => communication.payload?.communication)
+        .filter((communication) => communication?.sender?.kind === "agent");
+      assert.equal(communications.length, 1);
+      assert.equal(communications[0].intent, intent);
+    } finally {
+      await app.close();
+      store.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  }
+});
