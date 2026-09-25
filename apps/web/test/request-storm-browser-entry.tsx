@@ -5,7 +5,7 @@ import { useAgentStream } from "../src/hooks/useAgentStream";
 import { useWorkspaceStream } from "../src/hooks/useWorkspaceStream";
 import { queryKeys } from "../src/queryKeys";
 
-const counters = { roster: 0, health: 0, directory: 0, allAgents: 0, homeActive: 0, homeOutcomes: 0, otherAgents: 0, details: 0, task: 0, capabilities: 0, chat: 0, delivery: 0 };
+const counters = { roster: 0, health: 0, directory: 0, allAgents: 0, homeActive: 0, homeOutcomes: 0, otherAgents: 0, details: 0, task: 0, capabilities: 0, chat: 0, delivery: 0, notifications: 0, notificationProjection: 0, projectDirectory: 0, conversationDirectory: 0, providerUsage: 0 };
 const apiLatencies: number[] = [];
 let terminal = false;
 let chatReply = "waiting";
@@ -50,6 +50,17 @@ api.subscribeWorkspace = (_cursor, handlers) => {
     ts: new Date().toISOString(),
     event: { type: "runtime_capabilities_changed", projectId: "P1", engineId: "codex" },
   });
+  const emitBackground = () => {
+    handlers.onEvent({ id: ++seq, ts: new Date().toISOString(), event: {
+      type: "notification_changed", projectId: "P1", action: "updated",
+    } });
+    handlers.onEvent({ id: ++seq, ts: new Date().toISOString(), event: {
+      type: "usage_changed", projectId: "P1", agentId: "Agent 1", conversationIds: [], seq,
+    } });
+    handlers.onEvent({ id: ++seq, ts: new Date().toISOString(), event: {
+      type: "conversation_changed", projectId: "P1", conversationId: "Other Chat", action: "message",
+    } });
+  };
   let command = setInterval(emitCommand, 20);
   let replay: ReturnType<typeof setInterval> | undefined;
   Object.assign(window, {
@@ -68,6 +79,23 @@ api.subscribeWorkspace = (_cursor, handlers) => {
       clearInterval(command);
       emitCoordination();
       command = setInterval(emitCoordination, 20);
+    },
+    startBackgroundStorm: () => {
+      clearInterval(command);
+      emitBackground();
+      command = setInterval(emitBackground, 20);
+    },
+    emitDecisionAttention: () => handlers.onEvent({ id: ++seq, ts: new Date().toISOString(), event: {
+      type: "notification_changed", projectId: "P1", decisionId: "Decision 1", action: "created",
+    } }),
+    reconnectWithoutEvents: () => {
+      handlers.onError?.(new Event("error"));
+      handlers.onStatus?.({ instanceId: "storm", cursor: seq, reset: false });
+    },
+    emitChatWithoutDelivery: () => {
+      handlers.onEvent({ id: ++seq, ts: new Date().toISOString(), event: {
+        type: "conversation_changed", projectId: "P1", conversationId: "Chat 1", action: "message",
+      } });
     },
     startSparseStorm: () => {
       clearInterval(command);
@@ -201,6 +229,16 @@ function Probe() {
     queryKey: queryKeys.engines.capabilities("P1"),
     queryFn: async () => { counters.capabilities += 1; await probeApi(); return "capabilities"; },
   });
+  useQuery({ queryKey: queryKeys.notifications.all,
+    queryFn: async () => { counters.notifications += 1; await probeApi(); return "notifications"; } });
+  useQuery({ queryKey: queryKeys.notifications.projection([], []),
+    queryFn: async () => { counters.notificationProjection += 1; await probeApi(); return "projection"; } });
+  useQuery({ queryKey: queryKeys.workspaceDirectory.list("project", ""),
+    queryFn: async () => { counters.projectDirectory += 1; await probeApi(); return "projects"; } });
+  useQuery({ queryKey: queryKeys.workspaceDirectory.list("conversation", "", "P1"),
+    queryFn: async () => { counters.conversationDirectory += 1; await probeApi(); return "conversations"; } });
+  useQuery({ queryKey: queryKeys.providerUsage.all,
+    queryFn: async () => { counters.providerUsage += 1; await probeApi(); return "usage"; } });
   const chat = useQuery({
     queryKey: queryKeys.conversations.detail("Chat 1"),
     queryFn: async () => { counters.chat += 1; await probeApi(); return chatReply; },

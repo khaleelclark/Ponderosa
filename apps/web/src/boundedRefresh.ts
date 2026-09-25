@@ -26,3 +26,29 @@ export function createBoundedRefresh(
     },
   };
 }
+
+/** Leading refresh with a trailing guarantee and a true minimum interval.
+ * Unlike createBoundedRefresh, repeated urgent events cannot exceed the rate. */
+export function createRateLimitedRefresh(
+  run: () => void,
+  intervalMs: number,
+  initialDelayMs = 150,
+): { schedule(): void; dispose(): void } {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let nextAllowedAt = 0;
+  return {
+    schedule() {
+      if (timer) return;
+      const dueAt = Math.max(Date.now() + initialDelayMs, nextAllowedAt);
+      timer = setTimeout(() => {
+        timer = undefined;
+        nextAllowedAt = Date.now() + intervalMs;
+        run();
+      }, Math.max(0, dueAt - Date.now()));
+    },
+    dispose() {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+    },
+  };
+}

@@ -120,6 +120,24 @@ try {
   }
   assert.deepEqual(capabilityCounts[2], capabilityBaseline[2],
     "hidden tab must not refetch capabilities during runtime changes");
+  await Promise.all(pages.map(page => page.evaluate(() => window.startBackgroundStorm())));
+  const backgroundBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  await pages[0].waitForTimeout(5_600);
+  const backgroundCounts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  for (let index = 0; index < 2; index += 1) {
+    for (const key of ["notifications", "notificationProjection", "projectDirectory", "conversationDirectory", "providerUsage"]) {
+      const delta = backgroundCounts[index][key] - backgroundBaseline[index][key];
+      assert.ok(delta > 0 && delta <= 2,
+        `${key} in visible tab ${index} must refresh but remain rate-limited under sustained background events; got ${delta}`);
+    }
+  }
+  assert.deepEqual(backgroundCounts[2], backgroundBaseline[2],
+    "hidden tab must not refetch from background events");
+  await Promise.all(pages.map(page => page.evaluate(() => { window.stopStorm(); window.emitDecisionAttention(); })));
+  for (let index = 0; index < 2; index += 1) {
+    await pages[index].waitForFunction(previous => window.stormCounters().notifications > previous,
+      backgroundCounts[index].notifications, { timeout: 1_000 });
+  }
   await Promise.all(pages.map(page => page.evaluate(() => window.startSparseStorm())));
   const sparseBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
   await pages[0].waitForTimeout(5_600);
@@ -155,6 +173,27 @@ try {
     await page.evaluate(() => window.replayCompletedChat());
     await page.locator("#chat").getByText("Agent replied").waitFor({ timeout: 2_000 });
     await page.locator("#delivery").getByText("processed").waitFor({ timeout: 2_000 });
+  }
+  await pages[0].waitForTimeout(600);
+  const reconnectBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  await Promise.all(pages.map(page => page.evaluate(() => window.reconnectWithoutEvents())));
+  await pages[0].waitForTimeout(350);
+  const reconnectCounts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  for (let index = 0; index < pages.length; index += 1) {
+    for (const key of ["notifications", "notificationProjection", "projectDirectory", "conversationDirectory", "providerUsage", "delivery"]) {
+      assert.equal(reconnectCounts[index][key], reconnectBaseline[index][key],
+        `contiguous stream reconnect must not refetch unrelated ${key} in tab ${index}`);
+    }
+  }
+  const receiptBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  await Promise.all(pages.map(page => page.evaluate(() => {
+    for (let index = 0; index < 5; index += 1) window.emitChatWithoutDelivery();
+  })));
+  await pages[0].waitForTimeout(300);
+  const receiptCounts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  for (let index = 0; index < pages.length; index += 1) {
+    assert.equal(receiptCounts[index].delivery, receiptBaseline[index].delivery,
+      `Chat-only changes must not refetch delivery receipts in tab ${index}`);
   }
   const replayBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
   await Promise.all(pages.map(page => page.evaluate(() => window.replayChatBurst())));

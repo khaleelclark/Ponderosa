@@ -93,14 +93,16 @@ export const queryKeys = {
       ["conversation-members", conversationId, search] as const,
     targetedNextRun: (conversationId: string) =>
       ["targeted-next-run", conversationId] as const,
+    activeDeliveryReceiptsAll: ["active-delivery-receipts"] as const,
+    activeDeliveryReceiptsPrefix: (conversationId: string) =>
+      ["active-delivery-receipts", conversationId] as const,
     activeDeliveryReceipts: (
       conversationId: string,
       communicationEventIds: string,
       activationIds: string,
     ) => [
-      "conversation",
-      conversationId,
       "active-delivery-receipts",
+      conversationId,
       communicationEventIds,
       activationIds,
     ] as const,
