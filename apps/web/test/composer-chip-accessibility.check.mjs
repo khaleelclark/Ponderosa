@@ -63,14 +63,7 @@ try {
       "chip removal has an adequate visible pointer target");
     if (coarse) {
       const chip = await page.locator("[data-composer-mention='true']").first().boundingBox();
-      const editor = await input.boundingBox();
       assert.ok(chip && chip.height <= 32, "mobile recipient chip stays compact");
-      assert.ok(editor && editor.height >= 50, "mobile text field has its own typing row");
-      const hint = page.getByText("Send a message");
-      assert.ok(await hint.isVisible(), "an empty reply still shows where to type");
-      const hintBounds = await hint.boundingBox();
-      assert.ok(hintBounds && hintBounds.y >= chip.y + chip.height,
-        "the typing prompt sits below the chip, not on top of it");
       const hit = await page.evaluate(({ x, y }) =>
         document.elementFromPoint(x, y)?.closest("button")?.getAttribute("aria-label"),
       { x: bounds.x + bounds.width + 8, y: bounds.y + bounds.height / 2 });
@@ -80,11 +73,39 @@ try {
       { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height + 8 });
       assert.equal(verticalHit, `Remove #${recipient}`, "the touch target extends vertically too");
     }
-    if (coarse) await page.getByText("Send a message").click();
-    else await input.click();
+    assert.equal(await page.getByText("Send a message").count(), 0,
+      "an Agent chip suppresses the helper text");
+    if (coarse) {
+      const chip = await page.locator("[data-composer-mention='true']").first().boundingBox();
+      const editor = await input.boundingBox();
+      assert.ok(chip && editor, "recipient and editor are measurable");
+      await page.mouse.click(Math.min(chip.x + chip.width + 20, editor.x + editor.width - 8), chip.y + chip.height / 2);
+    } else {
+      await input.click();
+    }
     await page.keyboard.press("End");
     await page.keyboard.type("hello");
     assert.ok((await input.innerText()).includes("hello"), "typing after the recipient works");
+    if (coarse) {
+      const onChipLine = await input.evaluate(element => {
+        const chip = element.querySelector("[data-composer-mention='true']");
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+          const index = node.textContent?.indexOf("hello") ?? -1;
+          if (index < 0) continue;
+          const range = document.createRange();
+          range.setStart(node, index);
+          range.setEnd(node, index + 1);
+          const text = range.getBoundingClientRect();
+          const recipient = chip?.getBoundingClientRect();
+          return Boolean(recipient && text.left >= recipient.right - 1 &&
+            text.top < recipient.bottom && text.bottom > recipient.top);
+        }
+        return false;
+      });
+      assert.ok(onChipLine, "typing starts beside the Agent chip on mobile");
+    }
     for (const _ of "hello") {
       await page.keyboard.press("Backspace");
       await page.waitForTimeout(30);
@@ -93,6 +114,8 @@ try {
     await page.keyboard.press("Backspace");
     await remove.waitFor({ state: "detached" });
     assert.ok(!(await input.innerText()).includes(`#${recipient}`), "one Backspace removes the whole recipient");
+    assert.ok(await page.getByText("Send a message").isVisible(),
+      "ordinary helper text returns when the recipient is removed");
     await input.focus();
     await page.keyboard.type("plain");
     await page.keyboard.press("Backspace");

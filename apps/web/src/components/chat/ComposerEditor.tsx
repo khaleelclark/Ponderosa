@@ -1391,14 +1391,9 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
         structural: true,
       }
     : undefined;
-  const leadingChip = Boolean(inlineDestination || mentionDescriptors.some(
-    descriptor => descriptor.start === 0,
+  const leadingAgentChip = Boolean(inlineDestination || mentionDescriptors.some(
+    descriptor => descriptor.start === 0 && descriptor.kind === "agent",
   ));
-  const emptyAfterLeadingChip = Boolean(inlineDestination
-    ? !text.trim()
-    : mentionDescriptors.some(descriptor =>
-        descriptor.start === 0 && !text.slice(descriptor.end).trim(),
-      ));
   const initialStructuralDestinationRef = useRef(structuralDestination);
   const initialConfig = useRef({
     namespace: "PonderosaComposer",
@@ -1535,7 +1530,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
           position: "relative",
           minWidth: 0,
           "& .composer-editor-input": {
-            minHeight: leadingChip ? { xs: 54, sm: 22 } : 22,
+            minHeight: leadingAgentChip ? { xs: 44, sm: 22 } : 22,
             maxHeight: 110,
             overflowY: "auto",
             px: 0.25,
@@ -1554,11 +1549,6 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
           },
           "& .composer-editor-input p": {
             m: 0,
-          },
-          "@media (max-width: 599.95px)": {
-            "& .composer-editor-input p > [data-composer-mention-node='true']:first-child": {
-              display: "block !important",
-            },
           },
           "& .composer-editor-input[contenteditable='false']": {
             color: "text.disabled",
@@ -1584,7 +1574,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
               onClick={() => bridgeRef.current?.placeCaretAfterLoneMention()}
             />
           }
-          placeholder={
+          placeholder={leadingAgentChip ? null :
             <Typography
               component="span"
               sx={{
@@ -1602,25 +1592,6 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
           }
           ErrorBoundary={LexicalErrorBoundary}
         />
-        {emptyAfterLeadingChip && !locked ? (
-          <Typography
-            component="span"
-            aria-hidden="true"
-            onClick={() => bridgeRef.current?.focus()}
-            sx={{
-              display: { xs: "block", sm: "none" },
-              position: "absolute",
-              top: 34,
-              left: 2,
-              color: "text.secondary",
-              fontSize: isIOSComposer ? 16 : 15,
-              lineHeight: "22px",
-              cursor: "text",
-            }}
-          >
-            {placeholder ?? "Send a message"}
-          </Typography>
-        ) : null}
         <HistoryPlugin />
         <EditorBridge
           editorRef={assignBridgeRef}
