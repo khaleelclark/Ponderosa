@@ -16,6 +16,7 @@ import {
   $setSelection,
   COPY_COMMAND,
   COMMAND_PRIORITY_HIGH,
+  KEY_BACKSPACE_COMMAND,
   INSERT_PARAGRAPH_COMMAND,
   CUT_COMMAND,
   PASTE_COMMAND,
@@ -272,6 +273,7 @@ class ComposerMentionNode extends DecoratorNode<ReactNode> {
   override createDOM(_config: EditorConfig): HTMLElement {
     const element = document.createElement("span");
     element.style.display = "inline";
+    element.dataset.composerMentionNode = "true";
     return element;
   }
 
@@ -640,7 +642,16 @@ function ComposerMentionToken({
           lineHeight: 0,
           minWidth: 24,
           minHeight: 24,
-          "@media (pointer: coarse)": { minWidth: 44, minHeight: 44 },
+          position: "relative",
+          zIndex: 1,
+          "@media (pointer: coarse)": {
+            mr: 1.25,
+            "&::before": {
+              content: '""',
+              position: "absolute",
+              inset: -10,
+            },
+          },
         }}
       >
         <CloseIcon sx={{ fontSize: "1.05em" }} />
@@ -904,6 +915,49 @@ function EditorBridge({
       return true;
     }, COMMAND_PRIORITY_HIGH);
   }, [editor]);
+  // Lexical can delete text before React's bubbled keydown, especially in WebKit.
+  // Handle the atomic chip here so the final letter and recipient need separate presses.
+  useEffect(() => editor.registerCommand(KEY_BACKSPACE_COMMAND, event => {
+    if (
+      disabled || !event || event.altKey || event.ctrlKey || event.metaKey ||
+      shouldIgnoreComposerKey({ isComposing: event.isComposing, keyCode: event.keyCode })
+    ) return false;
+    const selection = $getSelection();
+    if (!$isRangeSelection(selection) || !selection.isCollapsed()) return false;
+    const { start } = $selectionOffsets();
+    const canonical = $canonicalText();
+    const paragraph = $getRoot().getFirstChild();
+    if (!$isElementNode(paragraph)) return false;
+    let offset = 0;
+    let precedingChip: { start: number } | undefined;
+    let structuralChip: ComposerMentionNode | undefined;
+    for (const child of paragraph.getChildren()) {
+      const length = nodeTextLength(child);
+      if ($isComposerMentionNode(child)) {
+        if (child.isStructural()) structuralChip = child;
+        else if (offset + length <= start && !canonical.slice(offset + length, start).trim()) {
+          precedingChip = { start: offset };
+        }
+      }
+      offset += length;
+    }
+    if (precedingChip) {
+      event.preventDefault();
+      $setSelectionOffsets(precedingChip.start, start);
+      $removeSelectedContent();
+      return true;
+    }
+    if (structuralChip && !canonical.slice(0, start).trim()) {
+      event.preventDefault();
+      if (start > 0) {
+        $setSelectionOffsets(0, start);
+        $removeSelectedContent();
+      }
+      structuralChip.remove();
+      return true;
+    }
+    return false;
+  }, COMMAND_PRIORITY_HIGH), [disabled, editor]);
   const descriptorsRef = useRef(mentionDescriptors);
   const structuralDestinationRef = useRef(structuralDestination);
   descriptorsRef.current = mentionDescriptors;
@@ -1335,6 +1389,14 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
         structural: true,
       }
     : undefined;
+  const leadingChip = Boolean(inlineDestination || mentionDescriptors.some(
+    descriptor => descriptor.start === 0,
+  ));
+  const emptyAfterLeadingChip = Boolean(inlineDestination
+    ? !text.trim()
+    : mentionDescriptors.some(descriptor =>
+        descriptor.start === 0 && !text.slice(descriptor.end).trim(),
+      ));
   const initialStructuralDestinationRef = useRef(structuralDestination);
   const initialConfig = useRef({
     namespace: "PonderosaComposer",
@@ -1471,7 +1533,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
           position: "relative",
           minWidth: 0,
           "& .composer-editor-input": {
-            minHeight: 22,
+            minHeight: leadingChip ? { xs: 54, sm: 22 } : 22,
             maxHeight: 110,
             overflowY: "auto",
             px: 0.25,
@@ -1490,6 +1552,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
           },
           "& .composer-editor-input p": {
             m: 0,
+          },
+          "@media (max-width: 599.95px)": {
+            "& .composer-editor-input p > [data-composer-mention-node='true']:first-child": {
+              display: "block !important",
+            },
           },
           "& .composer-editor-input[contenteditable='false']": {
             color: "text.disabled",
@@ -1533,6 +1600,25 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
           }
           ErrorBoundary={LexicalErrorBoundary}
         />
+        {emptyAfterLeadingChip && !locked ? (
+          <Typography
+            component="span"
+            aria-hidden="true"
+            onClick={() => bridgeRef.current?.focus()}
+            sx={{
+              display: { xs: "block", sm: "none" },
+              position: "absolute",
+              top: 34,
+              left: 2,
+              color: "text.secondary",
+              fontSize: isIOSComposer ? 16 : 15,
+              lineHeight: "22px",
+              cursor: "text",
+            }}
+          >
+            {placeholder ?? "Send a message"}
+          </Typography>
+        ) : null}
         <HistoryPlugin />
         <EditorBridge
           editorRef={assignBridgeRef}
