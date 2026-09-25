@@ -38,7 +38,7 @@ export interface BrowserEndpointAdapter<Session extends BrowserSession> {
   cancelFileChooser(expectedControlEpoch: number): Promise<Session>;
   setControl(target: BrowserControlTarget, expectedControlEpoch: number): Promise<Session>;
   sendInput(input: UnfencedBrowserInput, expectedControlEpoch: number): Promise<Session>;
-  getFrame(pageId?: string): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }>;
+  getFrame(pageId?: string, signal?: AbortSignal): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }>;
   newPage?(expectedControlEpoch: number): Promise<Session>;
   resizeViewport?(pageId: string, size: BrowserViewportSize, expectedControlEpoch: number): Promise<unknown>;
 }
@@ -65,7 +65,7 @@ export function projectBrowserAdapter(projectId: string): BrowserEndpointAdapter
       ...input,
       expectedControlEpoch,
     } as BrowserOperatorInputRequest),
-    getFrame: pageId => api.getProjectBrowserFrame(projectId, pageId),
+    getFrame: (pageId, signal) => api.getProjectBrowserFrame(projectId, pageId, signal),
     newPage: epoch => api.newBrowserPage(projectId, epoch) as Promise<ProjectBrowserSessionDto>,
     resizeViewport: (pageId, size, epoch) => api.resizeBrowserViewport(projectId, pageId, size, epoch),
   };
@@ -99,7 +99,7 @@ export function agentBrowserAdapter(
       runId,
       { ...input, expectedControlEpoch } as BrowserOperatorInputRequest,
     ),
-    getFrame: pageId => api.getBrowserFrame(projectId, agentId, runId, pageId),
+    getFrame: (pageId, signal) => api.getBrowserFrame(projectId, agentId, runId, pageId, signal),
     newPage: epoch => api.newBrowserPage(projectId, epoch, agentId, runId) as Promise<BrowserSessionDto>,
     resizeViewport: (pageId, size, epoch) => api.resizeBrowserViewport(projectId, pageId, size, epoch, agentId, runId),
   };

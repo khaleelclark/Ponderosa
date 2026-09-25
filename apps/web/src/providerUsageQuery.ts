@@ -7,8 +7,8 @@ import { queryKeys } from "./queryKeys.js";
 
 export function providerUsageRefreshInterval(
   center: ProviderUsageCenterDto | undefined,
-): 1_000 | false {
-  return center?.providers.some(provider => provider.refreshing) ? 1_000 : false;
+): 5_000 | false {
+  return center?.providers.some(provider => provider.refreshing) ? 5_000 : false;
 }
 
 export function mergeProviderUsage(

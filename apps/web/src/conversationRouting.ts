@@ -37,6 +37,10 @@ export const fileSelectionFingerprint = (files: readonly File[]) =>
 
 export type RecipientUploads<T> = Array<{ agentId: string; attachments: T[] }>;
 
+export function recipientUploadsNeedPersistence<T>(uploads: RecipientUploads<T>): boolean {
+  return uploads.some(recipient => recipient.attachments.length > 0);
+}
+
 export const recipientUploadCleanupSettled = (
   status: number,
   message = "",

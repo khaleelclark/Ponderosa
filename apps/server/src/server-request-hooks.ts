@@ -18,8 +18,13 @@ import { browserSessionCookie } from "./launcher-security.js";
 
 /** Purpose, not method, determines whether a user-authored action gets its
  * reserved admission budget. Read-like POSTs remain standard traffic. */
-export function classifyOperatorRequest(method: string, url: string): "critical" | "standard" {
+export function classifyOperatorRequest(method: string, url: string): "critical" | "stream" | "standard" {
   const path = url.split("?", 1)[0] ?? "";
+  if (method === "GET" && (
+    path === "/api/workspace/stream"
+    || /^\/api\/agents\/[^/]+\/stream$/u.test(path)
+    || path === "/api/streams/probe"
+  )) return "stream";
   if (method === "PUT" && /^\/api\/conversations\/[^/]+\/draft$/u.test(path)) return "critical";
   if (method === "POST" && (
     /^\/api\/conversations\/[^/]+\/(?:messages|direct-messages|collaboration\/messages)$/u.test(path)
@@ -270,7 +275,9 @@ export function registerRequestSecurityHooks(
     }
     const limit = requestClass === "critical"
       ? opts.requestLimits.maxCriticalRequestsPerMinute ?? opts.requestLimits.maxRequestsPerMinute
-      : opts.requestLimits.maxRequestsPerMinute;
+      : requestClass === "stream"
+        ? opts.requestLimits.maxStreamRequestsPerMinute ?? 120
+        : opts.requestLimits.maxRequestsPerMinute;
     if (bucket.count > limit) {
       bucket.rejected += 1;
       if (operatorId && (bucket.rejected === 1 || bucket.rejected % 100 === 0)) {
@@ -284,9 +291,14 @@ export function registerRequestSecurityHooks(
     const reservedCriticalSlots = opts.requestLimits.maxCriticalRequestsPerMinute && opts.requestLimits.maxInflight > 1
       ? Math.min(16, Math.max(1, Math.floor(opts.requestLimits.maxInflight / 8)))
       : 0;
+    const reservedStreamSlots = opts.requestLimits.maxStreamRequestsPerMinute && opts.requestLimits.maxInflight > 2
+      ? Math.min(8, Math.max(1, Math.floor(opts.requestLimits.maxInflight / 16)))
+      : 0;
     const classInflightLimit = requestClass === "critical"
       ? opts.requestLimits.maxInflight
-      : opts.requestLimits.maxInflight - reservedCriticalSlots;
+      : requestClass === "stream"
+        ? opts.requestLimits.maxInflight - reservedCriticalSlots
+        : opts.requestLimits.maxInflight - reservedCriticalSlots - reservedStreamSlots;
     if (inflight >= classInflightLimit) {
       reply.header("Retry-After", "1");
       return reply.code(503).send({ error: "server request concurrency limit reached" });

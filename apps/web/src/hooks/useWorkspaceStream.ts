@@ -33,7 +33,7 @@ import {
 import { hasLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
 import { phaseQueryMatchesProject } from "../workspaceDirectoryScope";
-import { createBoundedRefresh } from "../boundedRefresh";
+import { createBoundedRefresh, createRateLimitedRefresh } from "../boundedRefresh";
 
 const CURSOR_KEY = "ponderosa.workspace.cursor.v2";
 const INSTANCE_KEY = "ponderosa.workspace.instance.v1";
@@ -342,33 +342,38 @@ function createAgentWorkInvalidator(
   };
 }
 
-/** Batch collection mutations using the same fixed-window policy as Agent
- * state. Unscoped directory queries remain global; sibling Projects stay warm. */
-function createDirectoryInvalidator(queryClient: QueryClient, delayMs = 250) {
-  const pending = new Map<"project" | "conversation" | "agent" | "trigger", Set<string | undefined>>();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const dispose = () => {
-    if (timer) clearTimeout(timer);
-    timer = undefined;
-    pending.clear();
-  };
+/** Coalesce each directory kind independently. Terminal Agent rows refresh
+ * promptly; high-volume Project/Chat recency cannot refetch every 250 ms. */
+function createDirectoryInvalidator(queryClient: QueryClient) {
+  type Kind = "project" | "conversation" | "agent" | "trigger";
+  const pending = new Map<Kind, Map<string, boolean>>();
+  const refreshes = new Map<Kind, ReturnType<typeof createRateLimitedRefresh>>();
+  for (const kind of ["project", "conversation", "agent", "trigger"] as const) {
+    refreshes.set(kind, createRateLimitedRefresh(() => {
+      const scopes = pending.get(kind);
+      pending.delete(kind);
+      if (!scopes?.size) return;
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.workspaceDirectory.kind(kind),
+        predicate: query => [...scopes].some(([projectId, includeSummary]) =>
+          (includeSummary || query.queryKey[10] !== "summary")
+          && phaseQueryMatchesProject(query.queryKey, projectId || undefined)),
+        refetchType: browserPageIsVisible() ? "active" : "none",
+      });
+    }, kind === "agent" ? 1_000 : 5_000));
+  }
   return {
-    schedule(kind: "project" | "conversation" | "agent" | "trigger", projectId?: string) {
-      const scopes = pending.get(kind) ?? new Set<string | undefined>();
-      scopes.add(projectId);
+    schedule(kind: Kind, projectId?: string, nonSummaryOnly = false) {
+      const scopes = pending.get(kind) ?? new Map<string, boolean>();
+      const scope = projectId ?? "";
+      scopes.set(scope, (scopes.get(scope) ?? false) || !nonSummaryOnly);
       pending.set(kind, scopes);
-      timer ??= setTimeout(() => {
-        for (const [kind, scopes] of pending) {
-          void queryClient.invalidateQueries({
-            queryKey: queryKeys.workspaceDirectory.kind(kind),
-            predicate: query => [...scopes].some(projectId => phaseQueryMatchesProject(query.queryKey, projectId)),
-            refetchType: browserPageIsVisible() ? "active" : "none",
-          });
-        }
-        dispose();
-      }, delayMs);
+      refreshes.get(kind)!.schedule();
     },
-    dispose,
+    dispose() {
+      for (const refresh of refreshes.values()) refresh.dispose();
+      pending.clear();
+    },
   };
 }
 
@@ -501,6 +506,10 @@ export function useWorkspaceStream(
     const collaborationChatInvalidator = createCollaborationChatInvalidator(queryClient);
     const decisionConversationInvalidator =
       createDecisionConversationInvalidator(queryClient);
+    const notificationRefresh = createRateLimitedRefresh(() =>
+      invalidate(queryKeys.notifications.all), 5_000);
+    const providerUsageRefresh = createRateLimitedRefresh(() =>
+      invalidate(queryKeys.providerUsage.all), 5_000);
     const pendingTaskProjects = new Set<string>();
     const taskProjectionRefresh = createBoundedRefresh(() => {
       invalidateForBrowserPage(queryClient, queryKeys.workspaceStatus.all);
@@ -519,6 +528,40 @@ export function useWorkspaceStream(
       pendingCapabilityProjects.clear();
     }, 5_000);
     let replayReconcileTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastReplayReconcileAt = 0;
+    let replayChatTimer: ReturnType<typeof setTimeout> | undefined;
+    let nextReplayChatAt = 0;
+    const replayChatIds = new Set<string>();
+    const replayReceiptIds = new Set<string>();
+    let replayAllChats = false;
+    let replayAllReceipts = false;
+    const scheduleReplayChat = (conversationIds?: readonly string[], receipts = false) => {
+      if (conversationIds) for (const id of conversationIds) replayChatIds.add(id);
+      else replayAllChats = true;
+      if (receipts) {
+        if (conversationIds) for (const id of conversationIds) replayReceiptIds.add(id);
+        else replayAllReceipts = true;
+      }
+      replayChatTimer ??= setTimeout(() => {
+        replayChatTimer = undefined;
+        nextReplayChatAt = Date.now() + 1_000;
+        if (replayAllChats) {
+          invalidate(queryKeys.conversations.detailAll);
+          invalidate(queryKeys.collaborationAll);
+        } else for (const id of replayChatIds) {
+          invalidate(queryKeys.conversations.detailPrefix(id));
+          invalidate(queryKeys.collaborationPrefix(id));
+        }
+        if (replayAllReceipts) invalidate(queryKeys.conversations.activeDeliveryReceiptsAll);
+        else for (const id of replayReceiptIds) {
+          invalidate(queryKeys.conversations.activeDeliveryReceiptsPrefix(id));
+        }
+        replayChatIds.clear();
+        replayReceiptIds.clear();
+        replayAllChats = false;
+        replayAllReceipts = false;
+      }, Math.max(250, nextReplayChatAt - Date.now()));
+    };
     let phaseQuietTimer: ReturnType<typeof setTimeout> | undefined;
     let phaseReconcileGeneration = 0;
     let phaseReconcileInFlight = false;
@@ -536,7 +579,7 @@ export function useWorkspaceStream(
       }),
       ...queryClient.getQueryCache().findAll({
         queryKey: queryKeys.workspaceDirectory.kind("agent"),
-      }),
+      }).filter(query => query.queryKey[10] === "summary"),
       ...queryClient.getQueryCache().findAll({
         queryKey: queryKeys.agents.organizationAll,
       }).filter(query => query.queryKey[2] !== "deleted"),
@@ -679,6 +722,8 @@ export function useWorkspaceStream(
       workspaceRecencyInvalidator.dispose();
       collaborationChatInvalidator.dispose();
       decisionConversationInvalidator.dispose();
+      notificationRefresh.dispose();
+      providerUsageRefresh.dispose();
       taskProjectionRefresh.dispose();
       pendingTaskProjects.clear();
       capabilityRefresh.dispose();
@@ -688,6 +733,7 @@ export function useWorkspaceStream(
       // Replayed conversation and delivery events skip their per-event paths.
       // The list prefix above does not match the singular Chat/detail prefix.
       invalidate(queryKeys.conversations.detailAll);
+      invalidate(queryKeys.conversations.activeDeliveryReceiptsAll);
       invalidate(["queued-messages"]);
       invalidate(queryKeys.queuedMessages.agentsAll);
       invalidate(["targeted-next-run"]);
@@ -759,17 +805,20 @@ export function useWorkspaceStream(
         schedulePhaseReconciliation(true);
         return;
       }
-      // Replayed workspace events are historical catch-up. The canonical
-      // queries already include them, so applying live invalidations here
-      // would multiply one reconnect into hundreds of network requests. Reset
-      // one quiet-period timer instead, then reconcile mounted views once.
+      // Replayed workspace events are historical catch-up. Reconcile on a
+      // fixed window: a quiet-period debounce can postpone an open Chat
+      // indefinitely while a busy Agent keeps producing replay events. After
+      // the first prompt refresh, cap global reconciliation to one per five
+      // seconds so a long replay cannot recreate the request storm.
       if (envelope.replayed) {
-        if (replayReconcileTimer) clearTimeout(replayReconcileTimer);
-        replayReconcileTimer = setTimeout(() => {
+        if (event.type === "conversation_changed") scheduleReplayChat([event.conversationId]);
+        else if (event.type === "message_delivery_changed") scheduleReplayChat(event.conversationIds, true);
+        replayReconcileTimer ??= setTimeout(() => {
           replayReconcileTimer = undefined;
+          lastReplayReconcileAt = Date.now();
           invalidateAll();
           schedulePhaseReconciliation(true);
-        }, 250);
+        }, Math.max(500, lastReplayReconcileAt + 5_000 - Date.now()));
         return;
       }
       if (workspaceEventInvalidatesGlobalSearch(event)) invalidate(queryKeys.globalSearch.all);
@@ -798,6 +847,7 @@ export function useWorkspaceStream(
         directoryInvalidator.schedule("trigger", event.projectId);
       } else if (workspaceAgentEventChangesPhase(event)) {
         if (event.category === "lifecycle") {
+          directoryInvalidator.schedule("agent", event.projectId, true);
           directoryInvalidator.schedule("project", event.projectId);
           directoryInvalidator.schedule("conversation", event.projectId);
         }
@@ -836,12 +886,14 @@ export function useWorkspaceStream(
         if (event.conversationIds) {
           for (const conversationId of event.conversationIds) {
             invalidate(queryKeys.conversations.detailPrefix(conversationId));
+            invalidate(queryKeys.conversations.activeDeliveryReceiptsPrefix(conversationId));
             invalidate(queryKeys.queuedMessages.conversation(conversationId));
             invalidate(queryKeys.conversations.targetedNextRun(conversationId));
           }
           collaborationChatInvalidator.schedule(event.conversationIds);
         } else {
           invalidate(queryKeys.conversations.detailAll);
+          invalidate(queryKeys.conversations.activeDeliveryReceiptsAll);
           collaborationChatInvalidator.schedule();
         }
         agentWorkInvalidator.schedule(event.projectId);
@@ -886,7 +938,7 @@ export function useWorkspaceStream(
       }
       else if (event.type === "usage_changed") {
         invalidate(queryKeys.tokenUsage.all);
-        invalidate(queryKeys.providerUsage.all);
+        providerUsageRefresh.schedule();
       }
       else if (event.type === "runtime_capabilities_changed") {
         pendingCapabilityProjects.add(event.projectId);
@@ -895,7 +947,12 @@ export function useWorkspaceStream(
         capabilityRefresh.schedule(urgent);
       }
       else if (event.type === "notification_changed") {
-        invalidate(queryKeys.notifications.all);
+        if (event.decisionId) {
+          // Needs Action is interactive; its rare Decision transitions should
+          // not wait behind routine unread-update traffic.
+          notificationRefresh.dispose();
+          invalidate(queryKeys.notifications.all);
+        } else notificationRefresh.schedule();
         if (event.conversationId) {
           decisionConversationInvalidator.schedule(event.conversationId);
         }
@@ -949,7 +1006,6 @@ export function useWorkspaceStream(
       }, STALE_NOTICE_DELAY_MS);
     };
     const noteConnected = () => {
-      const wasDisconnected = disconnected;
       disconnected = false;
       clearConnectionTimers();
       setConnection(current => ({
@@ -961,7 +1017,8 @@ export function useWorkspaceStream(
           ? "Live workspace updates have resumed."
           : undefined,
       }));
-      if (connectedOnce && wasDisconnected) invalidateAll();
+      // A contiguous cursor replay applies targeted invalidations. Only a
+      // reset/gap below requires a full cache refresh after reconnect.
       connectedOnce = true;
     };
     const connect = (lastSeenId: number) => {
@@ -1027,6 +1084,7 @@ export function useWorkspaceStream(
       if (reconnectTimer) clearTimeout(reconnectTimer);
       clearConnectionTimers();
       if (replayReconcileTimer) clearTimeout(replayReconcileTimer);
+      if (replayChatTimer) clearTimeout(replayChatTimer);
       if (phaseQuietTimer) clearTimeout(phaseQuietTimer);
       phaseRefresh.dispose();
       document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -1038,6 +1096,8 @@ export function useWorkspaceStream(
       workspaceRecencyInvalidator.dispose();
       collaborationChatInvalidator.dispose();
       decisionConversationInvalidator.dispose();
+      notificationRefresh.dispose();
+      providerUsageRefresh.dispose();
       taskProjectionRefresh.dispose();
       pendingTaskProjects.clear();
       capabilityRefresh.dispose();

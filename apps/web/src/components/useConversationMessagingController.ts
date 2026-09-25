@@ -24,6 +24,7 @@ import {
   cleanupRecipientUploadsForDefinitiveFailure,
   fileSelectionFingerprint,
   recipientUploadsForAgentIds,
+  recipientUploadsNeedPersistence,
   recipientActionSnapshot,
   recipientUploadCleanupSettled,
   recipientUploadCleanupReporter,
@@ -502,7 +503,10 @@ export function useConversationMessagingController({
           cleanupPendingReporter(),
         );
       prepared.uploads.set(key, uploaded);
-      if (pendingSubmission && persistPendingSubmission) {
+      // An empty upload set has no cleanup authority to journal. The durable
+      // request already holds the recipient snapshot and idempotency key; a
+      // third draft write here only delays every ordinary text send.
+      if (pendingSubmission && persistPendingSubmission && recipientUploadsNeedPersistence(uploaded)) {
         pendingSubmission = withPendingRecipientUploads(
           pendingSubmission,
           scope,

@@ -15,7 +15,8 @@ try {
   await build.build();
   server = createServer(async (req, res) => { try { const pathname = new URL(req.url, "http://localhost").pathname; const file = path.join(output, pathname === "/" ? "index.html" : pathname); res.setHeader("Content-Type", file.endsWith(".js") ? "text/javascript" : file.endsWith(".css") ? "text/css" : "text/html"); res.end(await readFile(file)); } catch { res.writeHead(404).end(); } }).listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
-  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH });
+  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH,
+    args: process.env.PONDEROSA_BROWSER_DISABLE_SANDBOX === "1" ? ["--no-sandbox"] : [] });
   for (const width of [1440, 390]) {
     const agentPage = await browser.newPage({ viewport: { width, height: 900 } });
     await agentPage.goto(`http://127.0.0.1:${server.address().port}/?agent=1`);
@@ -52,6 +53,18 @@ try {
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     const image = page.getByRole("img", { name: /Interactive browser viewport/ });
     await image.waitFor();
+    await page.waitForFunction(() => window.frameRequests >= 2);
+    await page.evaluate(() => document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    await page.waitForTimeout(250);
+    const pausedFrames = await page.evaluate(() => window.frameRequests);
+    const pausedSessions = await page.evaluate(() => window.browserSessionRequests);
+    await page.waitForTimeout(1_600);
+    assert.equal(await page.evaluate(() => window.frameRequests), pausedFrames, "unfocused browser preview stops polling");
+    assert.equal(await page.evaluate(() => window.browserSessionRequests), pausedSessions, "unfocused browser session stops polling");
+    assert.equal(await image.isVisible(), true, "last preview remains visible while unfocused");
+    await page.getByRole("button", { name: "Browser options", exact: true }).click();
+    await page.waitForFunction(previous => window.frameRequests > previous, pausedFrames);
+    await page.keyboard.press("Escape");
     await page.getByRole("combobox", { name: "Browser to view" }).click();
     await page.getByRole("option", { name: "Saved browser", exact: true }).click();
     await page.getByRole("tab", { name: /Saved research/ }).waitFor();

@@ -43,7 +43,7 @@ test("an older provider query cannot overwrite an explicit refresh", async () =>
     queryClient.getQueryData(queryKeys.providerUsage.all),
     fresh,
   );
-  assert.equal(providerUsageRefreshInterval(fresh), 1_000);
+  assert.equal(providerUsageRefreshInterval(fresh), 5_000);
   assert.equal(providerUsageRefreshInterval(undefined), false);
 });
 

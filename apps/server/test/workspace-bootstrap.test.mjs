@@ -13,11 +13,16 @@ async function open(query,headers={},options={}) {
     agentSubscriberCount:()=>0,subscribe:()=>()=>{},liveSseClosures:closures,
     serverMetrics:{openSse:()=>()=>{},sseBackpressure:()=>{}},
   });
-  let output='',destroyed=false;const raw=new EventEmitter();
-  const reply={hijack(){},raw:{writeHead(){},write(text){output+=text;return options.backpressure!==true;},end(){},destroy(){destroyed=true;}}};
+  let output='',destroyed=false,writes=0;const raw=new EventEmitter();
+  const response=new EventEmitter();
+  response.writeHead=()=>{};
+  response.write=text=>{output+=text;writes++;return options.backpressure!==true && !(options.backpressureOnce && writes===1);};
+  response.end=()=>{};
+  response.destroy=()=>{destroyed=true;};
+  const reply={hijack(){},raw:response};
   await routes.get('/api/workspace/stream')({query,headers,raw},reply);
   const messages=()=>output.split('\n\n').map(block=>{const data=block.split('\n').find(line=>line.startsWith('data:'));return data?JSON.parse(data.slice(5)):null;}).filter(Boolean);
-  return {messages,get reads(){return reads;},get readInput(){return readInput;},get destroyed(){return destroyed;},emit:e=>{for(const fn of subscribers)fn(e);},close:()=>raw.emit('close'),subscribers};
+  return {messages,get reads(){return reads;},get readInput(){return readInput;},get destroyed(){return destroyed;},emit:e=>{for(const fn of subscribers)fn(e);},drain:()=>response.emit('drain'),close:()=>raw.emit('close'),subscribers};
 }
 test('fresh bootstrap skips history, advertises baseline, and delivers new events',async()=>{
   const stream=await open({lastEventId:'0',bootstrap:'true'});
@@ -51,8 +56,63 @@ test('stale reconnects advertise reset and replay only the bounded tail',async()
     assert.equal(stream.messages().filter(e=>e.id).length,5000);
   }finally{stream.close();}
 });
-test('a backpressured response is disconnected before it can accumulate events',async()=>{
+test('temporary backpressure queues frames in order until drain without disconnecting',async()=>{
+  const stream=await open({lastEventId:'0',bootstrap:'true'}, {}, {backpressureOnce:true});
+  try{
+    stream.emit({id:10001,event:{type:'notification_changed',action:'read'}});
+    assert.equal(stream.destroyed,false);
+    assert.equal(stream.messages().length,1);
+    stream.drain();
+    assert.equal(stream.messages().at(-1).id,10001);
+    assert.equal(stream.destroyed,false);
+  }finally{stream.close();}
+});
+test('idle live streams heartbeat before a ten-second proxy timeout',async()=>{
+  const originalSetInterval=globalThis.setInterval;
+  const intervals=[];
+  globalThis.setInterval=(callback,delay,...args)=>{intervals.push(delay);return originalSetInterval(callback,delay,...args);};
+  let stream;
+  try{
+    stream=await open({lastEventId:'0',bootstrap:'true'});
+    assert(intervals.some(delay=>delay>0 && delay<=5_000));
+  }finally{
+    stream?.close();
+    globalThis.setInterval=originalSetInterval;
+  }
+});
+test('a persistently backpressured response is disconnected at the bounded queue limit',async()=>{
   const stream=await open({lastEventId:'9999'}, {}, {backpressure:true});
+  for(let i=0;i<1100 && !stream.destroyed;i++)stream.emit({id:10001+i,event:{type:'notification_changed',action:'read'}});
   assert.equal(stream.destroyed,true);
   assert.equal(stream.subscribers.size,0);
+});
+
+test('Agent stream also waits for drain and preserves sequence order',async()=>{
+  const routes=new Map();
+  const listeners=new Set();
+  const closures=new Set();
+  registerStreamRoutes({get:(path,handler)=>routes.set(path,handler)},{
+    store:{getAgent:()=>({id:'agent'}),lastSeqOf:()=>0,readEventsSince:()=>[]},
+    workspace:{instanceId:()=> 'instance'},serverClosed:()=>false,maxSubscribersPerStream:10,
+    workspaceSubscribers:new Set(),agentSubscriberCount:()=>listeners.size,
+    subscribe:(_id,listener)=>{listeners.add(listener);return()=>listeners.delete(listener);},
+    liveSseClosures:closures,serverMetrics:{openSse:()=>()=>{},sseBackpressure:()=>{}},
+  });
+  let output='',writes=0,destroyed=false;
+  const response=new EventEmitter();
+  response.writeHead=()=>{};
+  response.write=frame=>{output+=frame;writes++;return writes!==1;};
+  response.end=()=>{};
+  response.destroy=()=>{destroyed=true;};
+  const raw=new EventEmitter();
+  await routes.get('/api/agents/:id/stream')({params:{id:'agent'},query:{lastEventId:'0'},headers:{},raw},{hijack(){},raw:response});
+  try{
+    for(let seq=1;seq<=2;seq++)for(const listener of listeners)listener({seq,ts:'2026-01-01',event:{type:'status'}});
+    assert.equal(output.includes('id: 1'),false);
+    assert.equal(destroyed,false);
+    response.emit('drain');
+    assert(output.indexOf('id: 1')<output.indexOf('id: 2'));
+    assert.equal(destroyed,false);
+  }finally{raw.emit('close');}
+  assert.equal(listeners.size,0);
 });

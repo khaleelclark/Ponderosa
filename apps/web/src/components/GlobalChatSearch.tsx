@@ -204,9 +204,10 @@ function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
   />;
 }
 
-export function GlobalChatSearch({ open, onClose, onSelect }: {
+export function GlobalChatSearch({ open, onClose, onExited, onSelect }: {
   open: boolean;
   onClose(): void;
+  onExited?(): void;
   onSelect(selection: GlobalSearchSelection): void;
 }): JSX.Element {
   const theme = useTheme();
@@ -332,7 +333,7 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
     }
   };
 
-  return <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" fullScreen={fullScreen} aria-labelledby="global-chat-search-title" PaperProps={{ sx: { border: 1, borderColor: "divider", borderRadius: { sm: 2 }, bgcolor: "background.paper", backgroundImage: "none" } }}>
+  return <Dialog open={open} onClose={onClose} onTransitionExited={onExited} disableRestoreFocus fullWidth maxWidth="sm" fullScreen={fullScreen} aria-labelledby="global-chat-search-title" PaperProps={{ sx: { border: 1, borderColor: "divider", borderRadius: { sm: 2 }, bgcolor: "background.paper", backgroundImage: "none" } }}>
     <Box component="header" sx={{ p: 0, position: "sticky", top: 0, zIndex: 2, bgcolor: "background.paper", borderBottom: 1, borderColor: "divider" }}>
       <Typography
         id="global-chat-search-title"

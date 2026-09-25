@@ -19,6 +19,7 @@ import { BrowserArtifactUpload } from "./browser/BrowserArtifactUpload";
 import { projectBrowserAdapter, agentBrowserAdapter, type BrowserSession, type BrowserEndpointAdapter } from "./browser/browserAdapters";
 import { useBrowserController } from "./browser/useBrowserController";
 import { FeatureErrorBoundary } from "./FeatureErrorBoundary";
+import { useBrowserSurfaceFocus } from "./browser/useBrowserSurfaceFocus";
 import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
 
 export function ProjectBrowserDialog({ projectId, agent, open, request, onRequestHandled, onClose, onDockWidth, embedded = false, workspaceControls, windowOptions, workspaceLabel }: {
@@ -35,19 +36,20 @@ export function ProjectBrowserDialog({ projectId, agent, open, request, onReques
   workspaceLabel?: string;
   windowOptions?: import("./browser/BrowserWindow").BrowserWindowOptions;
 }): JSX.Element {
+  const browserSurface = useBrowserSurfaceFocus(open, true);
   const [view, setView] = useState<"chat" | "saved">("chat");
   const queryClient = useQueryClient();
   const locationKey = ["agent-browser-location", projectId, agent?.id, agent?.runId];
-  const agentLocation = useQuery({ queryKey: locationKey, queryFn: () => api.getAgentBrowserLocation(projectId!, agent!.id), enabled: Boolean(open && projectId && agent), refetchInterval: 2_000, refetchOnMount: "always" });
+  const agentLocation = useQuery({ queryKey: locationKey, queryFn: () => api.getAgentBrowserLocation(projectId!, agent!.id), enabled: Boolean(open && projectId && agent), refetchInterval: browserSurface.focused ? 2_000 : false, refetchOnMount: "always" });
   const agentBrowserKind = agentLocation.data?.kind;
   const ownerId = agentBrowserKind === "saved" || (!agent && view === "saved") ? SAVED_BROWSER_SCOPE_ID : projectId;
   const [promoteOpen, setPromoteOpen] = useState(false);
   const saved = useQuery({ queryKey: ["saved-browser"], queryFn: () => api.getSavedBrowser(), enabled: Boolean(open && !agent) });
-  const savedAccess = useQuery({ queryKey: ["saved-browser-access", projectId], queryFn: () => api.getSavedBrowserAccess(projectId!), enabled: Boolean(open && !agent && projectId && view === "saved"), refetchInterval: 3_000 });
+  const savedAccess = useQuery({ queryKey: ["saved-browser-access", projectId], queryFn: () => api.getSavedBrowserAccess(projectId!), enabled: Boolean(open && !agent && projectId && view === "saved"), refetchInterval: browserSurface.focused ? 3_000 : false });
   const adapter = useMemo<BrowserEndpointAdapter<BrowserSession>>(() => agent && agentBrowserKind === "run"
     ? agentBrowserAdapter(projectId ?? "", agent.id, agentLocation.data?.runId ?? agent.runId)
     : projectBrowserAdapter(ownerId ?? ""), [ownerId, projectId, agent?.id, agent?.runId, agentBrowserKind, agentLocation.data?.runId]);
-  const browser = useBrowserController<BrowserSession>({ adapter, enabled: Boolean(projectId && open && (!agent || (agentBrowserKind && agentBrowserKind !== "none"))) });
+  const browser = useBrowserController<BrowserSession>({ adapter, enabled: Boolean(projectId && open && (!agent || (agentBrowserKind && agentBrowserKind !== "none"))), pollingEnabled: browserSurface.focused });
   useEffect(() => {
     if (agent && open) void agentLocation.refetch();
   }, [open, agent?.id, agent?.runId, browser.session?.id, browser.session?.status, browser.session?.controlEpoch,
@@ -139,7 +141,7 @@ export function ProjectBrowserDialog({ projectId, agent, open, request, onReques
     else browser.navigate.mutate(url);
   };
   const content = (windowControls?: React.ReactNode) => <FeatureErrorBoundary feature="Browser">
-    <Stack sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
+    <Stack ref={browserSurface.root} tabIndex={-1} sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
       <Stack data-browser-drag direction="row" alignItems="center" spacing={.25} sx={{ width: "100%", boxSizing: "border-box", px: .5, height: 26, flexShrink: 0, borderBottom: 1, borderColor: "divider", userSelect: "none", "& .MuiIconButton-root": { p: .25 }, "& .MuiSvgIcon-root": { fontSize: 16 }, "& .MuiButton-root": { minWidth: 0, py: 0, px: .75, fontSize: 12, lineHeight: "24px" } }}>
         {workspaceControls}
         {!agent ? <Select size="small" value={view} onChange={event => setView(event.target.value as "chat" | "saved")} inputProps={{ "aria-label": "Browser to view" }} sx={{ minWidth: 70, maxWidth: 130, fontSize: 12, ".MuiSelect-select": { py: 0, pl: .5 }, ".MuiOutlinedInput-notchedOutline": { border: 0 } }}>
@@ -210,7 +212,7 @@ export function ProjectBrowserDialog({ projectId, agent, open, request, onReques
         <TextField size="small" fullWidth placeholder="Search or enter a URL" inputProps={{ "aria-label": "Website address", autoCapitalize: "none", spellCheck: false }} value={manual ? "" : address} onChange={event => setAddress(event.target.value)} onFocus={event => event.target.select()} disabled={manual || session?.controlOwner === "agent"} />
       </Stack>
       <Box sx={{ flex: 1, minHeight: 0, overflow: "auto", display: "grid" }}>
-        <BrowserViewport adapter={adapter} session={manual || failed ? undefined : session} viewedPageId={browser.viewedPageId} active={open && !failed && !localSetup && !session?.localPaused && !manual} operatorControl={operator && !browser.inputError} sendInput={browser.sendInput} refreshFrame={browser.refreshFrame} accent="divider" keyboardTarget={keyboardTarget} empty={browser.queryError ? <Alert severity="error">Browser could not be loaded. <Button onClick={() => void browser.query.refetch()}>Retry</Button></Alert> : <Stack alignItems="center" spacing={1}><Typography color="text.secondary">{view === "saved" ? "Reopen your saved browser profile. Previous unsaved tabs are not restored." : "Open a website to get started."}</Typography>{!agent && view === "chat" ? <FormControlLabel control={<Checkbox checked={rememberSignIns ?? preferences.data?.rememberSignIns ?? false} onChange={(_, checked) => setRememberSignIns(checked)} />} label="Remember sign-ins in this chat" /> : null}<Button disabled={openHosted.isPending || (!agent && preferences.isPending)} onClick={() => agent ? browser.open.mutate(undefined) : openHosted.mutate()}>Open browser</Button></Stack>} />
+        <BrowserViewport adapter={adapter} session={manual || failed ? undefined : session} viewedPageId={browser.viewedPageId} active={open && !failed && !localSetup && !session?.localPaused && !manual} pollingEnabled={browserSurface.focused} operatorControl={operator && !browser.inputError} sendInput={browser.sendInput} refreshFrame={browser.refreshFrame} accent="divider" keyboardTarget={keyboardTarget} empty={browser.queryError ? <Alert severity="error">Browser could not be loaded. <Button onClick={() => void browser.query.refetch()}>Retry</Button></Alert> : <Stack alignItems="center" spacing={1}><Typography color="text.secondary">{view === "saved" ? "Reopen your saved browser profile. Previous unsaved tabs are not restored." : "Open a website to get started."}</Typography>{!agent && view === "chat" ? <FormControlLabel control={<Checkbox checked={rememberSignIns ?? preferences.data?.rememberSignIns ?? false} onChange={(_, checked) => setRememberSignIns(checked)} />} label="Remember sign-ins in this chat" /> : null}<Button disabled={openHosted.isPending || (!agent && preferences.isPending)} onClick={() => agent ? browser.open.mutate(undefined) : openHosted.mutate()}>Open browser</Button></Stack>} />
       </Box>
       {session?.pendingFileChooser && projectId ? <Box sx={{ p: 1 }}>{view === "saved" && !agent ? <Alert severity="info" action={operator ? <Button onClick={() => browser.cancelFileChooser.mutate()}>Cancel upload</Button> : undefined}>Saved-browser uploads currently require an explicitly authorized agent using files from its chat.</Alert> : <BrowserArtifactUpload projectId={projectId} disabled={browser.upload.isPending} pending={browser.upload.isPending} chooser={session.pendingFileChooser} controlOwner={session.controlOwner} pageUrl={session.url} onUpload={artifactId => browser.upload.mutate({ artifactId })} onCancel={() => browser.cancelFileChooser.mutate()} />}</Box> : null}
       {browser.inputError ? <Alert severity="warning" action={<Button onClick={browser.resumeInput}>Continue</Button>}>{browser.inputError.message}</Alert> : null}

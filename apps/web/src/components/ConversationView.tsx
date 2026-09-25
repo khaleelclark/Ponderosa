@@ -243,7 +243,7 @@ export function ConversationView({
     queryFn: () => api.listActiveBrowserSessions(conversation!.projectId, conversationId),
     enabled: Boolean(conversation?.projectId),
     retry: false,
-    refetchInterval: 2_500,
+    refetchInterval: 15_000,
   });
   const targetedNextRunReceipts = useQuery({
     queryKey: queryKeys.conversations.targetedNextRun(conversationId),

@@ -97,6 +97,7 @@ import {
   pendingDraftAttachmentIds,
   pendingPastedTextAttachmentId,
   pendingRecipientUploads,
+  recipientUploadsNeedPersistence,
   withPendingRecipientUploads,
   withPendingRequest,
   retryRecipientUploadCleanup,
@@ -1647,6 +1648,14 @@ test("generated Agent title is finalized once and restored with its send identit
 });
 
 test("prepared recipient assets remain exact across reload", () => {
+  assert.equal(recipientUploadsNeedPersistence([
+    { agentId: "agent-a", attachments: [] },
+    { agentId: "agent-b", attachments: [] },
+  ]), false, "text-only sends need no third draft write for empty upload authority");
+  assert.equal(recipientUploadsNeedPersistence([
+    { agentId: "agent-a", attachments: [{ id: "asset-a" }] },
+    { agentId: "agent-b", attachments: [] },
+  ]), true, "real uploads remain journaled before delivery");
   const pending = withPendingRecipientUploads(
     { fingerprint: "a".repeat(64), idempotencyKey: "operation-a" },
     "direct",

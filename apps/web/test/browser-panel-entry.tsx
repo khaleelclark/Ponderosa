@@ -11,6 +11,8 @@ const sizes = new Map<string, { width: number; height: number }>();
 (window as any).browserSession = session;
 (window as any).resizes = [];
 (window as any).inputs = inputs;
+(window as any).frameRequests = 0;
+(window as any).browserSessionRequests = 0;
 const parameters = new URLSearchParams(window.location.search);
 if (parameters.has("tabs")) session.pages = Array.from({ length: Number(parameters.get("tabs")) }, (_, index) => ({ id: index ? `tab-${index}` : "one", title: `Research tab ${index + 1}`, active: index === 0, closable: true }));
 const workspaceProjects = [{ id: "p", label: "Trip research" }, { id: "q", label: "Job search" }, { id: "r", label: "Hotels" }, { id: "s", label: "Flights" }, { id: "t", label: "Activities" }];
@@ -20,7 +22,7 @@ session.capabilities.nativeDisplay = parameters.has("native");
 const savedSession = { ...session, id: "saved-fixture", projectId: "saved-browser", activePageId: "saved-tab", pages: [{ id: "saved-tab", title: "Saved research", active: true, closable: false }] };
 if (parameters.has("failed")) { savedSession.status = "failed"; savedSession.failure = "The browser service connection was lost."; }
 const secondSession = { ...session, id: "second-fixture", projectId: "q", title: "Other chat page", activePageId: "q-one", pages: [{ id: "q-one", title: "Other chat page", active: true, closable: false }] };
-api.getProjectBrowser = async id => structuredClone(id === "saved-browser" ? savedSession : id === "q" ? secondSession : session);
+api.getProjectBrowser = async id => { (window as any).browserSessionRequests++; return structuredClone(id === "saved-browser" ? savedSession : id === "q" ? secondSession : session); };
 api.hostedBrowserControl = async (_id, action) => {
   if (!parameters.has("manual")) throw new Error("Ordinary takeover must not disconnect or reconnect Chrome");
   (window as any).connectionAction = action;
@@ -58,7 +60,7 @@ api.setProjectBrowserControl = async (_project, target) => {
 };
 api.getAgentHealth = (async () => ({ agents: [] })) as any;
 api.resizeBrowserViewport = async (project, pageId, next) => { sizes.set(`${project}:${pageId}`, next); (window as any).resizes.push({ pageId, ...next }); return { ok: true }; };
-api.getProjectBrowserFrame = async (project, pageId) => { const size = sizes.get(`${project}:${pageId}`) ?? { width: 1280, height: 720 }; return { revision: 1, metadata: { pageId: pageId ?? session.activePageId, viewport: size }, blob: new Blob([`<svg xmlns="http://www.w3.org/2000/svg" width="${size.width}" height="${size.height}"><rect width="100%" height="100%" fill="#fff"/><text x="20" y="60" font-size="20">Application form — ${pageId}</text><rect x="20" y="120" width="250" height="60" fill="#eee"/></svg>`], { type: "image/svg+xml" }) }; };
+api.getProjectBrowserFrame = async (project, pageId) => { (window as any).frameRequests++; const size = sizes.get(`${project}:${pageId}`) ?? { width: 1280, height: 720 }; return { revision: 1, metadata: { pageId: pageId ?? session.activePageId, viewport: size }, blob: new Blob([`<svg xmlns="http://www.w3.org/2000/svg" width="${size.width}" height="${size.height}"><rect width="100%" height="100%" fill="#fff"/><text x="20" y="60" font-size="20">Application form — ${pageId}</text><rect x="20" y="120" width="250" height="60" fill="#eee"/></svg>`], { type: "image/svg+xml" }) }; };
 api.newBrowserPage = async () => { session.pages.push({ id: "two", title: "Second tab", url: "about:blank", closable: true }); session.activePageId = "two"; return structuredClone(session); };
 api.activateProjectBrowserPage = async (_project, pageId) => { session.activePageId = pageId; return { ...session }; };
 api.closeProjectBrowserPage = async (_project, pageId) => { session.pages = session.pages.filter((page: any) => page.id !== pageId); session.activePageId = "one"; return { ...session }; };

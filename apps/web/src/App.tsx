@@ -326,7 +326,6 @@ export default function App({
   };
   const closeGlobalSearch = () => {
     setGlobalSearchOpen(false);
-    restoreOverlayTrigger();
   };
   const openNotifications = () => {
     rememberOverlayTrigger();
@@ -928,6 +927,7 @@ export default function App({
         <GlobalChatSearch
           open={globalSearchOpen}
           onClose={closeGlobalSearch}
+          onExited={restoreOverlayTrigger}
           onSelect={selection => {
             saveLastProjectId(selection.projectId);
             if ("chat" in selection && selection.chat.kind === "conversation") {

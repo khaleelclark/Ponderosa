@@ -86,6 +86,8 @@ export interface CreateServerOptions {
     maxRequestsPerMinute: number;
     /** Separate bounded capacity for operator-authored drafts and messages. */
     maxCriticalRequestsPerMinute?: number;
+    /** Separate bounded capacity for live EventSource connections and probes. */
+    maxStreamRequestsPerMinute?: number;
     maxInflight: number;
     /** Response deadline; admission remains held until the handler settles. */
     handlerDeadlineMs?: number;
