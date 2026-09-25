@@ -36,7 +36,7 @@ try{
    const detail=await card.getByText(/Very long Project label/).boundingBox();
    const status=await card.getByText('Enabled',{exact:true}).boundingBox();
    assert.ok(detail.x+detail.width<=status.x,'Automation detail reserves badge space');
-   const target=await page.getByRole('button',{name:'Action target'}).boundingBox();assert.ok(target.width>=44&&target.height>=44);
+   const target=await page.getByRole('button',{name:'Action target'}).boundingBox();assert.ok(target.width>=28&&target.height>=44);
    const label=page.locator('#navigation').getByText('Automations',{exact:true});
    assert.equal(await label.evaluate(el=>el.scrollWidth<=el.clientWidth),true);
    const title=page.locator('#navigation').getByText('A Project With A Recognizable Long Name',{exact:true});

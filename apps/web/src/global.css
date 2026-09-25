@@ -158,7 +158,6 @@ html {
 
 @media (max-width: 899.95px) and (pointer: coarse) {
   .chat-message-action-buttons .MuiIconButton-root {
-    min-width: 44px;
     min-height: 44px;
   }
 }
