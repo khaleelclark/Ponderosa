@@ -599,7 +599,8 @@ function ComposerMentionToken({
         alignItems: "baseline",
         maxWidth: "min(70vw, 320px)",
         mx: "1px",
-        px: 0.75,
+        pl: 0.75,
+        pr: 0,
         py: "1px",
         borderRadius: 1.25,
         bgcolor: valid ? "action.selected" : "error.dark",
@@ -645,11 +646,12 @@ function ComposerMentionToken({
           position: "relative",
           zIndex: 1,
           "@media (pointer: coarse)": {
-            mr: 1.25,
             "&::before": {
               content: '""',
               position: "absolute",
-              inset: -10,
+              // Keep the 44px touch target inside the chip's trailing edge,
+              // leaving the adjacent editor text unobstructed.
+              inset: "-10px 0 -10px -20px",
             },
           },
         }}

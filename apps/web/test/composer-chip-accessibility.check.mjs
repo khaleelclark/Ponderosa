@@ -64,10 +64,18 @@ try {
     if (coarse) {
       const chip = await page.locator("[data-composer-mention='true']").first().boundingBox();
       assert.ok(chip && chip.height <= 32, "mobile recipient chip stays compact");
+      const trailingSpace = chip.x + chip.width - (bounds.x + bounds.width);
+      assert.ok(trailingSpace <= 2,
+        `the mobile chip ends beside the visible X without trailing blank space (${trailingSpace}px)`);
       const hit = await page.evaluate(({ x, y }) =>
         document.elementFromPoint(x, y)?.closest("button")?.getAttribute("aria-label"),
-      { x: bounds.x + bounds.width + 8, y: bounds.y + bounds.height / 2 });
-      assert.equal(hit, `Remove #${recipient}`, "compact X retains a 44px effective touch target");
+      { x: bounds.x - 18, y: bounds.y + bounds.height / 2 });
+      assert.equal(hit, `Remove #${recipient}`, "compact X retains a 44px effective touch target to its left");
+      const nextToChip = await page.evaluate(({ x, y }) =>
+        document.elementFromPoint(x, y)?.closest("button")?.getAttribute("aria-label"),
+      { x: chip.x + chip.width + 8, y: bounds.y + bounds.height / 2 });
+      assert.notEqual(nextToChip, `Remove #${recipient}`,
+        "the touch target does not intercept typing beside the chip");
       const verticalHit = await page.evaluate(({ x, y }) =>
         document.elementFromPoint(x, y)?.closest("button")?.getAttribute("aria-label"),
       { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height + 8 });
@@ -79,7 +87,8 @@ try {
       const chip = await page.locator("[data-composer-mention='true']").first().boundingBox();
       const editor = await input.boundingBox();
       assert.ok(chip && editor, "recipient and editor are measurable");
-      await page.mouse.click(Math.min(chip.x + chip.width + 20, editor.x + editor.width - 8), chip.y + chip.height / 2);
+      await page.mouse.click(Math.min(chip.x + chip.width + 8, editor.x + editor.width - 8), chip.y + chip.height / 2);
+      assert.ok(await remove.isVisible(), "tapping beside the chip keeps its X separate from typing");
     } else {
       await input.click();
     }
