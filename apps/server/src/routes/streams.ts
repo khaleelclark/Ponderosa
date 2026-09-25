@@ -6,7 +6,7 @@ import type {
 import type { WorkspaceEventEnvelope } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import { performance } from "node:perf_hooks";
-import { envelope, writeSse } from "../sse.js";
+import { BoundedSseWriter, envelope } from "../sse.js";
 import type { ServerMetrics } from "../server-metrics.js";
 
 const MAX_SSE_REPLAY_EVENTS = 5_000;
@@ -103,18 +103,6 @@ export function registerStreamRoutes(
         connection: "keep-alive",
         "x-accel-buffering": "no",
       });
-      if (writeSse(reply.raw, "workspace_status", undefined, {
-        instanceId: workspace.instanceId(),
-        cursor: highWaterMark,
-        reset,
-        ...(snapshot ? { snapshot: true } : {}),
-      } satisfies import("@ponderosa/core").WorkspaceStreamStatusDto) === false ||
-          writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() }) === false) {
-        reply.raw.destroy();
-        serverMetrics.sseBackpressure();
-        closeMetrics();
-        return;
-      }
       let cursor = replayFrom;
       let replaying = true;
       const queued: WorkspaceEventEnvelope[] = [];
@@ -122,9 +110,14 @@ export function registerStreamRoutes(
       let streamClosed = false;
       let heartbeat: ReturnType<typeof setInterval> | undefined;
       let subscriber: ((event: WorkspaceEventEnvelope) => void) | undefined;
+      const writer = new BoundedSseWriter(reply.raw, () => {
+        serverMetrics.sseBackpressure();
+        closeStream();
+      });
       const cleanup = (): void => {
         if (streamClosed) return;
         streamClosed = true;
+        writer.dispose();
         if (heartbeat) clearInterval(heartbeat);
         if (subscriber) workspaceSubscribers.delete(subscriber);
         liveSseClosures.delete(closeStream);
@@ -135,6 +128,17 @@ export function registerStreamRoutes(
         if (!reply.raw.writableEnded) reply.raw.end();
         if (!reply.raw.destroyed) reply.raw.destroy();
       };
+      if (!writer.write("workspace_status", undefined, {
+        instanceId: workspace.instanceId(),
+        cursor: highWaterMark,
+        reset,
+        ...(snapshot ? { snapshot: true } : {}),
+      } satisfies import("@ponderosa/core").WorkspaceStreamStatusDto) ||
+          !writer.write("heartbeat", undefined, { ts: new Date().toISOString() })) {
+        serverMetrics.sseBackpressure();
+        closeStream();
+        return;
+      }
       const writeEvent = (event: WorkspaceEventEnvelope, replayed = false) => {
         if (event.id <= cursor) return;
         if (encodedBytes(event) > MAX_SSE_EVENT_BYTES) {
@@ -142,14 +146,13 @@ export function registerStreamRoutes(
           closeStream();
           return;
         }
-        const writable = writeSse(
-          reply.raw,
+        const accepted = writer.write(
           "message",
           event.id,
           replayed ? { ...event, replayed: true } : event,
         );
         cursor = event.id;
-        if (writable === false) {
+        if (!accepted) {
           serverMetrics.sseBackpressure();
           closeStream();
         }
@@ -180,8 +183,9 @@ export function registerStreamRoutes(
         if (streamClosed) break;
         writeEvent(event);
       }
+      if (streamClosed) return;
       heartbeat = setInterval(() => {
-        if (writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() }) === false) {
+        if (!writer.write("heartbeat", undefined, { ts: new Date().toISOString() })) {
           serverMetrics.sseBackpressure();
           closeStream();
         }
@@ -229,19 +233,6 @@ export function registerStreamRoutes(
         connection: "keep-alive",
         "x-accel-buffering": "no",
       });
-      if (writeSse(reply.raw, "agent_status", undefined, {
-        agentId: request.params.id,
-        instanceId: workspace.instanceId(),
-        cursor: highWaterMark,
-        reset,
-      } satisfies import("@ponderosa/core").AgentStreamStatusDto) === false ||
-          writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() }) === false) {
-        reply.raw.destroy();
-        serverMetrics.sseBackpressure();
-        closeMetrics();
-        return;
-      }
-
       let lastWrittenSeq = replayFrom;
       let replaying = true;
       const queued: StoredLogEvent[] = [];
@@ -249,9 +240,14 @@ export function registerStreamRoutes(
       let streamClosed = false;
       let heartbeat: ReturnType<typeof setInterval> | undefined;
       let unsubscribe = (): void => {};
+      const writer = new BoundedSseWriter(reply.raw, () => {
+        serverMetrics.sseBackpressure();
+        closeStream();
+      });
       const cleanup = (): void => {
         if (streamClosed) return;
         streamClosed = true;
+        writer.dispose();
         if (heartbeat) clearInterval(heartbeat);
         unsubscribe();
         liveSseClosures.delete(closeStream);
@@ -262,6 +258,17 @@ export function registerStreamRoutes(
         if (!reply.raw.writableEnded) reply.raw.end();
         if (!reply.raw.destroyed) reply.raw.destroy();
       };
+      if (!writer.write("agent_status", undefined, {
+        agentId: request.params.id,
+        instanceId: workspace.instanceId(),
+        cursor: highWaterMark,
+        reset,
+      } satisfies import("@ponderosa/core").AgentStreamStatusDto) ||
+          !writer.write("heartbeat", undefined, { ts: new Date().toISOString() })) {
+        serverMetrics.sseBackpressure();
+        closeStream();
+        return;
+      }
       const writeStored = (stored: StoredLogEvent, replayed = false): void => {
         if (stored.seq <= lastWrittenSeq) return;
         if (encodedBytes(stored) > MAX_SSE_EVENT_BYTES) {
@@ -271,7 +278,7 @@ export function registerStreamRoutes(
         }
         const event = envelope(request.params.id, stored, replayed);
         lastWrittenSeq = stored.seq;
-        if (event && writeSse(reply.raw, "message", stored.seq, event) === false) {
+        if (event && !writer.write("message", stored.seq, event)) {
           serverMetrics.sseBackpressure();
           closeStream();
         }
@@ -301,9 +308,10 @@ export function registerStreamRoutes(
         if (streamClosed) break;
         writeStored(stored);
       }
+      if (streamClosed) return;
 
       heartbeat = setInterval(() => {
-        if (writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() }) === false) {
+        if (!writer.write("heartbeat", undefined, { ts: new Date().toISOString() })) {
           serverMetrics.sseBackpressure();
           closeStream();
         }
