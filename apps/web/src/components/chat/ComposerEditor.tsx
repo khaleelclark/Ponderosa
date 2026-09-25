@@ -933,11 +933,13 @@ function EditorBridge({
     let structuralChip: ComposerMentionNode | undefined;
     for (const child of paragraph.getChildren()) {
       const length = nodeTextLength(child);
-      if ($isComposerMentionNode(child)) {
-        if (child.isStructural()) structuralChip = child;
-        else if (offset + length <= start && !canonical.slice(offset + length, start).trim()) {
-          precedingChip = { start: offset };
-        }
+      if ($isComposerMentionNode(child) && child.isStructural()) {
+        structuralChip = child;
+      } else if (
+        ($isComposerMentionNode(child) || $isComposerProjectFileNode(child)) &&
+        offset + length <= start && !canonical.slice(offset + length, start).trim()
+      ) {
+        precedingChip = { start: offset };
       }
       offset += length;
     }

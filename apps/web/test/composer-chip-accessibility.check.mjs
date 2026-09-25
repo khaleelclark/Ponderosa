@@ -108,7 +108,34 @@ try {
     }
     await context.close();
   }
-  console.log(`PASS ${useWebKit ? "WebKit" : "Chromium"} desktop/mobile composer chips: compact layout, Backspace removal, and touch/keyboard targets`);
+  for (const [width, coarse] of [[1440, false], [390, true]]) {
+    const context = await browser.newContext(coarse && useWebKit
+      ? { ...devices["iPhone 13"], viewport: { width, height: 900 } }
+      : { viewport: { width, height: 900 }, hasTouch: coarse });
+    const page = await context.newPage();
+    await page.route("**/api/**", route => route.fulfill({ json: {} }));
+    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    const input = page.locator(".composer-editor-input");
+    const recipientRemove = page.getByRole("button", { name: "Remove #Boston" }).first();
+    await recipientRemove.waitFor();
+    await page.getByRole("button", { name: "Mention project file" }).click();
+    const fileRemove = page.getByRole("button", { name: "Remove @report.md" });
+    await fileRemove.waitFor();
+    await input.focus();
+    await page.keyboard.press("End");
+    await page.keyboard.press("Backspace");
+    await fileRemove.waitFor({ state: "detached" });
+    assert.ok(await recipientRemove.isVisible(), "Backspace removes the file without erasing the recipient");
+    assert.ok(!(await input.innerText()).includes("@report.md"), "one Backspace removes the whole file reference");
+    await page.keyboard.press("Backspace");
+    await recipientRemove.waitFor({ state: "detached" });
+    await input.focus();
+    await page.keyboard.type("plain");
+    await page.keyboard.press("Backspace");
+    assert.ok((await input.innerText()).includes("plai"), "ordinary Backspace still deletes one character after file removal");
+    await context.close();
+  }
+  console.log(`PASS ${useWebKit ? "WebKit" : "Chromium"} desktop/mobile composer chips: compact layout, atomic recipient/file Backspace, and touch/keyboard targets`);
 } finally {
   await browser?.close();
   if (server) await new Promise(resolve => server.close(resolve));
