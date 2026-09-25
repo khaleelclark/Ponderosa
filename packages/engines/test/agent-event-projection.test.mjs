@@ -119,6 +119,30 @@ test("failed host-file import retains its audit output and projects a non-retrya
   });
 });
 
+test("structured provider UNAVAILABLE survives the Codex adapter and strict projection as retryable", () => {
+  const contentItems = [{ type: "inputText", text: JSON.stringify({ error_code: "UNAVAILABLE" }) }];
+  const [mapped] = mapCodexAppServerNotification({
+    method: "item/completed",
+    params: {
+      item: {
+        type: "dynamicToolCall",
+        id: "provider-unavailable",
+        tool: "provider_search",
+        success: false,
+        contentItems,
+      },
+    },
+  }, "/tmp");
+  assert.deepEqual(projectAgentEvent(mapped), {
+    type: "tool_result",
+    id: "provider-unavailable",
+    output: JSON.stringify(contentItems),
+    isError: true,
+    failureCategory: "temporary_connection_failure",
+    retryable: true,
+  });
+});
+
 test("failed Codex MCP notifications map and project with retry classification", () => {
   const error = { code: 503, message: "service temporarily unavailable" };
   const [mapped] = mapCodexAppServerNotification({

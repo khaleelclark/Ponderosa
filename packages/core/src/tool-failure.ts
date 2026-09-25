@@ -48,9 +48,11 @@ export function classifyToolFailure(
   if (/\b(?:invalid[_ ]argument|invalid input|schema validation|parameters? failed|bad request|malformed|required (?:field|parameter)|400)\b/u.test(detail)) {
     return { category: "invalid_input", retryable: false };
   }
+  // An exact provider outage signal is retryable; an unavailable host file is not.
   if (
     /\b(?:502|503|504|network[_ ]error|connection (?:failed|reset|refused|closed)|transport (?:send )?error|timed? out|timeout|socket hang up|econnreset|econnrefused)\b/u.test(detail) ||
-    /\b(?:(?:service|server|upstream|provider|endpoint|api) (?:is )?temporarily unavailable|temporarily unavailable (?:service|server|upstream|provider|endpoint|api))\b/u.test(detail)
+    /\b(?:service|server|upstream|provider|endpoint|api) (?:is )?(?:temporarily )?unavailable\b|\btemporarily unavailable (?:service|server|upstream|provider|endpoint|api)\b/u.test(detail) ||
+    /\berror_code(?:\\?["'])?\s*:\s*(?:\\?["'])?unavailable\b/u.test(detail)
   ) {
     return { category: "temporary_connection_failure", retryable: true };
   }

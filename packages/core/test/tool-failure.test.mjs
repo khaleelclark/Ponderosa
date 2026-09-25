@@ -20,7 +20,7 @@ test("unavailable host files are permanent tool failures, not connection failure
   assert.equal(toolFailureLabel("permanent_failure"), "Tool failed");
 });
 
-test("explicit transport and temporarily unavailable service failures remain retryable", () => {
+test("explicit transport, service outages, and structured UNAVAILABLE failures remain retryable", () => {
   for (const output of [
     "HTTP 503 Service Unavailable",
     "upstream returned 502",
@@ -30,8 +30,12 @@ test("explicit transport and temporarily unavailable service failures remain ret
     "network error",
     "request timed out",
     "service temporarily unavailable",
+    "service unavailable",
+    "provider UNAVAILABLE",
     "the provider is temporarily unavailable",
     "temporarily unavailable service",
+    '{"error_code":"UNAVAILABLE"}',
+    '[{"type":"inputText","text":"{\\"error_code\\":\\"UNAVAILABLE\\"}"}]',
   ]) {
     assert.deepEqual(classifyToolFailure(output, true), {
       category: "temporary_connection_failure",
@@ -39,6 +43,10 @@ test("explicit transport and temporarily unavailable service failures remain ret
     });
   }
   assert.deepEqual(classifyToolFailure("temporarily unavailable host file", true), {
+    category: "permanent_failure",
+    retryable: false,
+  });
+  assert.deepEqual(classifyToolFailure("provider file unavailable", true), {
     category: "permanent_failure",
     retryable: false,
   });
