@@ -32,3 +32,12 @@ test("binary browser frames reject invalid lengths and metadata", () => {
   assert.throws(() => createBrowserBinaryFrameParser().push(oversized), /invalid/);
   assert.throws(() => createBrowserBinaryFrameParser().push(packet(new Uint8Array([1]), { pageId: "page", viewport: { width: 0, height: 300 } })), /invalid/);
 });
+
+test("multiple large frames in one network chunk remain valid", () => {
+  const first = packet(new Uint8Array(1_200_000));
+  const second = packet(new Uint8Array(1_200_000));
+  const combined = new Uint8Array(first.length + second.length);
+  combined.set(first);
+  combined.set(second, first.length);
+  assert.equal(createBrowserBinaryFrameParser().push(combined).length, 2);
+});
