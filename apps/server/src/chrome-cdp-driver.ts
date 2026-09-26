@@ -443,8 +443,14 @@ export class ChromeCdpDriver implements BrowserDriver {
     if (!stream) {
       stream = { sessionId: page.cdpSessionId, sequence: 0, waiters: new Set() };
       this.previewStreams.set(page.pageId, stream);
-      const width = Math.min(5120, this.viewport(page.pageId).width * 2);
-      const height = Math.min(3200, this.viewport(page.pageId).height * 2);
+      // The browser still lays out and accepts input in CSS pixels. On a
+      // bandwidth-constrained remote view, encoding those pixels at 2x makes
+      // phone viewers decode four times as many pixels as they can display.
+      // Keep the existing 2x behavior by default; qualify 1x on a disposable
+      // sandbox before changing the shipped default.
+      const previewScale = process.env.PONDEROSA_BROWSER_PREVIEW_SCALE === "1" ? 1 : 2;
+      const width = Math.min(5120, this.viewport(page.pageId).width * previewScale);
+      const height = Math.min(3200, this.viewport(page.pageId).height * previewScale);
       stream.starting = (async () => {
         await this.connection.send("Page.bringToFront", {}, page.cdpSessionId);
         await this.connection.send("Page.startScreencast", {

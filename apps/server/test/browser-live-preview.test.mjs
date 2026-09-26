@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import sharp from "sharp";
 import { chromeBrowserDriverFactory, findBrowserExecutable } from "../dist/chrome-cdp-driver.js";
 
 test("live browser preview follows painted scroll frames while evidence remains PNG", { skip: !findBrowserExecutable() }, async () => {
@@ -19,6 +20,10 @@ test("live browser preview follows painted scroll frames while evidence remains 
     await driver.navigate(`http://127.0.0.1:${server.address().port}`);
     const first = await driver.preview();
     assert.ok(first.data.startsWith("/9j/"), "the live view receives a JPEG");
+    if (process.env.PONDEROSA_BROWSER_PREVIEW_SCALE === "1") {
+      const size = await sharp(Buffer.from(first.data, "base64")).metadata();
+      assert.ok(size.width <= 1280 && size.height <= 720, "1x preview limits decode size without changing the page viewport");
+    }
     const png = await driver.capture();
     assert.deepEqual([...png.subarray(0, 4)], [137, 80, 78, 71], "evidence remains a lossless PNG");
     await driver.scroll(0, 500);
