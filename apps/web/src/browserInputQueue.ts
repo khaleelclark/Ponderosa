@@ -1,11 +1,13 @@
 /** Ordered, bounded operator input. Never retry an action with an uncertain result. */
 export function createBrowserInputQueue<T>({
-  context, dispatch, onError, onBusy, limit = 128,
+  context, dispatch, onError, onBusy, coalesce, limit = 128,
 }: {
   context(): string | undefined;
   dispatch(value: T, context: string): Promise<void>;
   onError(error: Error): void;
   onBusy?(busy: boolean): void;
+  /** Combine only adjacent pending inputs; never repeat an in-flight action. */
+  coalesce?(pending: T, next: T): T | undefined;
   limit?: number;
 }) {
   const pending: { value: T; context: string }[] = [];
@@ -40,6 +42,11 @@ export function createBrowserInputQueue<T>({
     enqueue(value: T) {
       const current = context();
       if (disposed || stopped || !current) return;
+      const tail = pending.at(-1);
+      if (tail?.context === current) {
+        const combined = coalesce?.(tail.value, value);
+        if (combined !== undefined) { tail.value = combined; return; }
+      }
       if (pending.length >= limit) {
         fail("Browser input is falling behind. Pending input was stopped. Check the page before continuing.");
         return;

@@ -5,6 +5,7 @@ export interface BrowserScrollInput {
 }
 
 const MAX_BROWSER_SCROLL_DELTA = 4_000;
+const MAX_COALESCED_SCROLL_DELTA = 480;
 const BROWSER_FRAME_ACTIVE_INTERVAL_MS = 75;
 const BROWSER_FRAME_IDLE_INTERVAL_MS = 750;
 const BROWSER_FRAME_ACTIVE_WINDOW_MS = 3_000;
@@ -27,6 +28,17 @@ export function mergeBrowserScrollInputs(
     deltaX: clampScrollDelta((current?.deltaX ?? 0) + next.deltaX),
     deltaY: clampScrollDelta((current?.deltaY ?? 0) + next.deltaY),
   };
+}
+
+export function coalesceBrowserScrollInputs(
+  current: BrowserScrollInput,
+  next: BrowserScrollInput,
+): BrowserScrollInput | undefined {
+  // Keep each visual step moderate even when a trackpad emits many events
+  // during one screenshot, and never clamp away any of the gesture.
+  if (Math.abs(current.deltaX + next.deltaX) > MAX_COALESCED_SCROLL_DELTA ||
+      Math.abs(current.deltaY + next.deltaY) > MAX_COALESCED_SCROLL_DELTA) return undefined;
+  return mergeBrowserScrollInputs(current, next);
 }
 
 export function browserTouchScrollDelta(previous: number, current: number): number {
@@ -57,8 +69,8 @@ export function createBrowserFrameScheduler({
   let visible = false;
   let disposed = false;
   let running = false;
-  let immediateRequested = false;
   let activeUntil = 0;
+  let lastCompletedAt = -Infinity;
   let timer: number | undefined;
 
   const cancelTimer = () => {
@@ -75,9 +87,8 @@ export function createBrowserFrameScheduler({
   };
   const run = async (): Promise<void> => {
     if (!visible || disposed) return;
-    if (running) { immediateRequested = true; return; }
+    if (running) return;
     running = true;
-    immediateRequested = false;
     try {
       await capture();
     } catch {
@@ -85,8 +96,11 @@ export function createBrowserFrameScheduler({
     } finally {
       running = false;
       if (!visible || disposed) return;
-      const delay = immediateRequested ? 0 : browserFrameRefreshDelay(now(), activeUntil);
-      immediateRequested = false;
+      lastCompletedAt = now();
+      // A burst of wheel events should not cause a screenshot after every
+      // acknowledged input. Keep the active cadence bounded and leave the
+      // browser's action queue room to apply pending input.
+      const delay = browserFrameRefreshDelay(lastCompletedAt, activeUntil);
       schedule(delay);
     }
   };
@@ -97,19 +111,15 @@ export function createBrowserFrameScheduler({
       visible = nextVisible;
       cancelTimer();
       if (visible) void run();
-      else immediateRequested = false;
     },
     requestInteractionRefresh() {
       if (disposed) return;
       activeUntil = Math.max(activeUntil, now() + BROWSER_FRAME_ACTIVE_WINDOW_MS);
-      immediateRequested = true;
-      cancelTimer();
-      if (visible) void run();
+      if (visible && !running) schedule(Math.max(0, lastCompletedAt + BROWSER_FRAME_ACTIVE_INTERVAL_MS - now()));
     },
     dispose() {
       disposed = true;
       visible = false;
-      immediateRequested = false;
       cancelTimer();
     },
   };
