@@ -84,18 +84,41 @@ test("migration retains poisoned historical dead letters until exact audited rep
     let coordination = new CoordinationV3Store(store.sqlite);
     const project = store.createProject({ label: "Repair", hostPath: "/tmp/repair", defaultEngine: "codex" });
     const chat = store.createConversation(project.id, { title: "Chat" });
+    const otherChat = store.createConversation(project.id, { title: "Other Chat" });
     const agent = store.createAgent(project.id, { title: "Agent", engine: "codex", conversationId: chat.id });
+    const otherAgent = store.createAgent(project.id, { title: "Other Agent", engine: "codex", conversationId: otherChat.id });
     const at = "2026-09-25T12:00:00.000Z";
-    store.appendCommunicationEvent({
+    const source = {
       eventId: "repair-message", schemaVersion: 2, projectId: project.id,
       conversationId: chat.id, sender: { kind: "user", userId: "operator" },
       intent: "user_dm", audience: { kind: "user_agent", userId: "operator", agentId: agent.id },
       text: "original", createdAt: at,
+    };
+    store.appendCommunicationEvent(source);
+    store.appendCommunicationEvent({ ...source, eventId: "other-message" });
+    store.appendCommunicationEvent({
+      ...source, eventId: "other-chat-message", conversationId: otherChat.id,
+      audience: { ...source.audience, agentId: otherAgent.id },
     });
-    const activationId = coordination.enqueueMessageActivation({
-      projectId: project.id, agentId: agent.id, messageId: "repair-message",
-      kind: "human", dispatchPolicy: "next_run", payload: { text: "original" }, now: at,
+    const recorded = coordination.recordRuntimeCommunication({
+      id: source.eventId, projectId: project.id, sender: source.sender,
+      intent: source.intent, audience: source.audience,
+      payload: {
+        communication: source,
+        dispatch: {
+          conversationId: chat.id, text: source.text, activeRunDelivery: "queue",
+          recipients: [{ agentId: agent.id, attachments: [] }],
+        },
+      },
+      activations: [{
+        agentId: agent.id, kind: "human_message", priority: 100,
+        dispatchPolicy: "next_run", promptClass: "human",
+        dedupeKey: "repair-message:recipient",
+      }],
+      now: at,
     });
+    const activationId = recorded.activationId;
+    assert.ok(activationId);
     for (const ready of coordination.claimOutbox("worker", 20, at)) coordination.completeOutbox(ready.id, "worker", at);
     const oldError = "invalid queued-edit revision outbox payload";
     const inserted = store.sqlite.prepare(`
@@ -137,8 +160,26 @@ test("migration retains poisoned historical dead letters until exact audited rep
       },
     };
     assert.throws(() => coordination.requeueDeadLetteredRevision(
-      outboxId, activationId, oldError, {}, "operator correction", at,
+      outboxId, activationId, oldError, {}, source, "operator correction", at,
     ), /corrected revision payload/u);
+    assert.throws(() => coordination.requeueDeadLetteredRevision(
+      outboxId, activationId, oldError, {
+        ...corrected,
+        revision: { ...corrected.revision, targetEventId: "other-message" },
+      }, source, "operator correction", at,
+    ), /canonical Communication source/u);
+    const originalActivationPayload = store.sqlite.prepare(
+      "SELECT payload_json FROM agent_activations WHERE id = ?",
+    ).get(activationId).payload_json;
+    const alteredActivationPayload = JSON.parse(originalActivationPayload);
+    alteredActivationPayload.communication.audience.agentId = otherAgent.id;
+    store.sqlite.prepare("UPDATE agent_activations SET payload_json = ? WHERE id = ?")
+      .run(JSON.stringify(alteredActivationPayload), activationId);
+    assert.throws(() => coordination.requeueDeadLetteredRevision(
+      outboxId, activationId, oldError, corrected, source, "operator correction", at,
+    ), /source audience or conversation/u);
+    store.sqlite.prepare("UPDATE agent_activations SET payload_json = ? WHERE id = ?")
+      .run(originalActivationPayload, activationId);
     assert.equal(store.sqlite.prepare("SELECT count(*) count FROM activation_outbox_repair_audit").get().count, 0);
     const payloadFile = join(directory, "corrected-revision.json");
     writeFileSync(payloadFile, JSON.stringify(corrected));
@@ -148,19 +189,32 @@ test("migration retains poisoned historical dead letters until exact audited rep
       offlineCli, "outbox-list", "--data-dir", directory,
     ], { encoding: "utf8" }));
     assert.equal(listed.rows.find(row => row.id === outboxId)?.last_error, oldError);
-    const repairOutput = execFileSync(process.execPath, [
+    const requeue = (file) => execFileSync(process.execPath, [
       offlineCli,
       "outbox-requeue", "--data-dir", directory,
       "--outbox-id", String(outboxId), "--activation-id", activationId,
-      "--expected-error", oldError, "--payload-file", payloadFile,
+      "--expected-error", oldError, "--payload-file", file,
       "--reason", "operator correction",
-    ], { encoding: "utf8" });
+    ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    for (const [eventId, conversationId] of [["other-message", chat.id], ["other-chat-message", otherChat.id]]) {
+      const wrongFile = join(directory, `${eventId}.json`);
+      writeFileSync(wrongFile, JSON.stringify({
+        ...corrected, conversationId,
+        revision: { ...corrected.revision, targetEventId: eventId, conversationId },
+      }));
+      assert.throws(() => requeue(wrongFile), /canonical user-owned Communication/u);
+    }
+    const beforeRepair = new Database(join(directory, "ponderosa.db"), { readonly: true });
+    assert.equal(beforeRepair.prepare("SELECT count(*) count FROM activation_outbox_repair_audit").get().count, 0);
+    assert.ok(beforeRepair.prepare("SELECT dead_lettered_at FROM activation_outbox WHERE id = ?").get(outboxId).dead_lettered_at);
+    beforeRepair.close();
+    const repairOutput = requeue(payloadFile);
     assert.equal(JSON.parse(repairOutput).status, "requeued");
     store = new AgentStore(directory);
     coordination = new CoordinationV3Store(store.sqlite);
     assert.equal(coordination.schedulerMetrics().deadLetteredActivationOutbox, 0);
     assert.throws(() => coordination.requeueDeadLetteredRevision(
-      outboxId, activationId, oldError, corrected, "stale retry", at,
+      outboxId, activationId, oldError, corrected, source, "stale retry", at,
     ), /repair target changed/u);
     const audit = store.sqlite.prepare(`
       SELECT previous_payload_json, replacement_payload_json, previous_error, reason

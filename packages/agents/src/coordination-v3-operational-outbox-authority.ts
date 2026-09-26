@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import type { CommunicationEvent } from "@ponderosa/core";
+import { stableJson } from "./coordination-v3-canonical-json.js";
 import type { CoordinationV3StoreOptions, OutboxItem, ProviderOperation } from "./coordination-v3-types.js";
 
 const DEFAULT_MAX_OUTBOX_ATTEMPTS = 8;
@@ -174,6 +176,7 @@ export class CoordinationV3OperationalOutboxAuthority {
     activationId: string,
     expectedLastError: string,
     payload: unknown,
+    canonicalSource: CommunicationEvent,
     reason: string,
     now = new Date().toISOString(),
   ): void {
@@ -181,7 +184,7 @@ export class CoordinationV3OperationalOutboxAuthority {
       if (!reason.trim() || reason.length > 2_000) throw new Error("outbox repair reason is required and must be bounded");
       const row = this.sqlite.prepare(`
         SELECT outbox.id, outbox.last_error, outbox.payload_json,
-          activation.project_id, activation.agent_id
+          activation.project_id, activation.agent_id, activation.payload_json AS activation_payload_json
         FROM activation_outbox outbox
         JOIN agent_activations activation ON activation.id = outbox.activation_id
         WHERE outbox.id = ? AND outbox.activation_id = ?
@@ -190,7 +193,7 @@ export class CoordinationV3OperationalOutboxAuthority {
           AND outbox.claimed_by IS NULL
       `).get(id, activationId) as {
         id: number; last_error: string | null; payload_json: string;
-        project_id: string; agent_id: string;
+        project_id: string; agent_id: string; activation_payload_json: string;
       } | undefined;
       if (!row || row.last_error !== expectedLastError) throw new Error("dead-letter repair target changed");
       const candidate = payload && typeof payload === "object" && !Array.isArray(payload)
@@ -207,6 +210,48 @@ export class CoordinationV3OperationalOutboxAuthority {
           typeof revision.text !== "string" || typeof revision.createdAt !== "string" ||
           !revision.sender || typeof revision.sender !== "object") {
         throw new Error("corrected revision payload does not match its canonical Activation");
+      }
+      const sources = this.sqlite.prepare(`
+        SELECT source.source_id, runtime.project_id AS runtime_project_id,
+          runtime.sender_json, runtime.intent, runtime.audience_json,
+          runtime.payload_json AS runtime_payload_json
+        FROM activation_sources source
+        LEFT JOIN runtime_communications runtime ON runtime.id = source.source_id
+        WHERE source.activation_id = ? AND source.source_kind = 'communication'
+      `).all(activationId) as Array<{
+        source_id: string; runtime_project_id: string | null; sender_json: string | null;
+        intent: string | null; audience_json: string | null; runtime_payload_json: string | null;
+      }>;
+      const source = sources.length === 1 ? sources[0] : undefined;
+      if (!source?.runtime_payload_json ||
+          source.runtime_project_id !== row.project_id ||
+          canonicalSource.eventId !== source.source_id ||
+          canonicalSource.projectId !== row.project_id ||
+          typeof canonicalSource.conversationId !== "string" ||
+          candidate.conversationId !== canonicalSource.conversationId ||
+          revision.conversationId !== canonicalSource.conversationId ||
+          revision.targetEventId !== canonicalSource.eventId ||
+          canonicalSource.sender.kind !== "user" ||
+          stableJson(revision.sender) !== stableJson(canonicalSource.sender)) {
+        throw new Error("corrected revision does not match the Activation's canonical Communication source");
+      }
+      const activationPayload = JSON.parse(row.activation_payload_json) as { communication?: unknown };
+      const runtimePayload = JSON.parse(source.runtime_payload_json) as { communication?: unknown };
+      const sameSource = (value: unknown): boolean => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+        const event = value as Record<string, unknown>;
+        return event.eventId === canonicalSource.eventId &&
+          event.projectId === canonicalSource.projectId &&
+          event.conversationId === canonicalSource.conversationId &&
+          event.intent === canonicalSource.intent &&
+          stableJson(event.sender) === stableJson(canonicalSource.sender) &&
+          stableJson(event.audience) === stableJson(canonicalSource.audience);
+      };
+      if (source.intent !== canonicalSource.intent ||
+          stableJson(JSON.parse(source.sender_json ?? "null")) !== stableJson(canonicalSource.sender) ||
+          stableJson(JSON.parse(source.audience_json ?? "null")) !== stableJson(canonicalSource.audience) ||
+          !sameSource(activationPayload.communication) || !sameSource(runtimePayload.communication)) {
+        throw new Error("Activation source audience or conversation does not match canonical Communication");
       }
       const payloadJson = JSON.stringify(candidate);
       this.sqlite.prepare(`

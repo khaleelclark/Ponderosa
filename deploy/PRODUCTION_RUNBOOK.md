@@ -146,7 +146,9 @@ path with the retained installed offline CLI, reinstalling the prior exact
 
   For a `communication_revision` row, independently reconstruct the intended
   revision from its canonical user Communication and Activation into a private
-  mode-0600 JSON file. After checking the target and author, requeue only that
+  mode-0600 JSON file. The target, conversation, and audience must be the
+  Activation's own canonical source; another user message is not a valid repair.
+  After checking the target and author, requeue only that
   row with its observed Activation ID and exact previous error:
 
   ```sh

@@ -57,16 +57,25 @@ if (command === "backup") {
   const store = new AgentStore(dataDir);
   try {
     const revision = payload?.revision;
-    const target = revision && typeof revision.projectId === "string" && typeof revision.targetEventId === "string"
-      ? store.getCommunicationEvent(revision.projectId, revision.targetEventId)
+    const sources = store.sqlite.prepare(`
+      SELECT source.source_id, activation.project_id
+      FROM activation_sources source
+      JOIN agent_activations activation ON activation.id = source.activation_id
+      WHERE source.activation_id = ? AND source.source_kind = 'communication'
+    `).all(activationId);
+    const source = sources.length === 1
+      ? store.getCommunicationEvent(sources[0].project_id, sources[0].source_id)
       : undefined;
-    if (!target || target.conversationId !== revision.conversationId ||
-        target.sender.kind !== "user" || revision.sender?.kind !== "user" ||
-        target.sender.userId !== revision.sender.userId) {
-      throw new Error("corrected revision does not identify a canonical user-owned Communication");
+    if (!source || source.eventId !== revision?.targetEventId ||
+        source.projectId !== revision.projectId ||
+        source.conversationId !== revision.conversationId ||
+        source.conversationId !== payload?.conversationId ||
+        source.sender.kind !== "user" || revision.sender?.kind !== "user" ||
+        source.sender.userId !== revision.sender.userId) {
+      throw new Error("corrected revision does not identify the Activation's canonical user-owned Communication");
     }
     const coordination = new CoordinationV3Store(store.sqlite);
-    coordination.requeueDeadLetteredRevision(id, activationId, expectedError, payload, reason);
+    coordination.requeueDeadLetteredRevision(id, activationId, expectedError, payload, source, reason);
     console.log(JSON.stringify({ status: "requeued", outboxId: id, activationId }));
   } finally {
     store.close();
