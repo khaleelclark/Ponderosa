@@ -5,7 +5,7 @@
 #
 # Install:
 #   sudo cp deploy/ponderosa.service /etc/systemd/system/ponderosa.service
-#   # edit User=, WorkingDirectory=, and PONDEROSA_DATA_DIR below to match the host
+#   # install the exact qualified .deb first; edit User= and PONDEROSA_DATA_DIR
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now ponderosa
 #   systemctl status ponderosa
@@ -27,7 +27,7 @@ Type=simple
 # Run as your normal login user (NOT root) — engines inherit this user's access
 # and its `codex login` token under ~/.codex.
 User=khaleel
-WorkingDirectory=/home/khaleel/ponderosa
+WorkingDirectory=/opt/ponderosa-engine/resources/Ponderosa
 Environment=NODE_ENV=production
 # The one greppable, portable data dir (event logs + SQLite projections, SPEC §7).
 Environment=PONDEROSA_DATA_DIR=/home/khaleel/.ponderosa
@@ -71,7 +71,7 @@ Environment=PONDEROSA_CODEX_SANDBOX=danger-full-access
 # (A system Node install puts npm globals in /usr/local/bin, already covered; nvm/
 # fnm/custom-prefix installs do NOT — add that dir here.)
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/khaleel/.npm-global/bin
-ExecStart=/home/khaleel/ponderosa/current/dist/node-runtime/linux-x64/node apps/server/dist/main.js
+ExecStart=/opt/ponderosa-engine/resources/Ponderosa/runtime/node app/server/dist/main.js
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=180

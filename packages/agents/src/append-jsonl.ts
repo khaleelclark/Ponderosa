@@ -10,14 +10,30 @@ import {
   rmSync,
   writeSync,
 } from "node:fs";
+import fs from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fsyncDirectory } from "./store-filesystem.js";
+
+// Once a write or durability check fails, the last record may be complete,
+// partial, or absent. Only a fresh owner may repair and replay that file.
+const uncertainAppends = new Set<string>();
+
+/** Called only after a new store has acquired exclusive data-directory ownership. */
+export function reconcileUncertainAppends(dataDir: string): void {
+  const root = resolve(dataDir);
+  for (const file of uncertainAppends) {
+    const pathWithinRoot = relative(root, file);
+    if (pathWithinRoot === "" || pathWithinRoot === ".." || pathWithinRoot.startsWith(`..${sep}`) || isAbsolute(pathWithinRoot)) continue;
+    readRepairableJsonl(file, "uncertain JSONL append", true);
+    uncertainAppends.delete(file);
+  }
+}
 
 function writeAll(fd: number, bytes: Buffer, errorMessage: string): void {
   let written = 0;
   while (written < bytes.length) {
-    const count = writeSync(fd, bytes, written, bytes.length - written);
+    const count = fs.writeSync(fd, bytes, written, bytes.length - written);
     if (count <= 0) throw new Error(errorMessage);
     written += count;
   }
@@ -61,18 +77,30 @@ export function readRepairableJsonl<T>(file: string, label: string, repair = fal
 
 export function appendFsyncedJsonl(file: string, records: unknown[]): void {
   if (records.length === 0) return;
+  const identity = resolve(file);
+  if (uncertainAppends.has(identity)) {
+    throw new Error("JSONL append outcome is uncertain; restart and replay before writing again");
+  }
+  const bytes = Buffer.from(records.map((record) => JSON.stringify(record) + "\n").join(""));
   const directory = dirname(file);
   mkdirSync(directory, { recursive: true });
   const existed = existsSync(file);
-  const fd = openSync(file, "a");
+  let fd: number | undefined;
   try {
-    const bytes = Buffer.from(records.map((record) => JSON.stringify(record) + "\n").join(""));
+    fd = openSync(file, "a");
     writeAll(fd, bytes, "append-only log write made no progress");
-    fsyncSync(fd);
-  } finally {
+    fs.fsyncSync(fd);
     closeSync(fd);
+    fd = undefined;
+    if (!existed) fsyncDirectory(directory);
+  } catch (error) {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* retain original failure */ }
+    }
+    // Even close or directory-fsync errors leave durability uncertain.
+    uncertainAppends.add(identity);
+    throw error;
   }
-  if (!existed) fsyncDirectory(directory);
 }
 
 /** Atomically replace a JSONL snapshot and make both its bytes and directory

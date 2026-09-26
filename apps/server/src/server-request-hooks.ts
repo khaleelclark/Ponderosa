@@ -349,6 +349,9 @@ export function registerRequestSecurityHooks(
   });
 
   app.addHook("onSend", async (request, reply, payload) => {
+    if (request.url.startsWith("/api/") && !reply.hasHeader("Cache-Control")) {
+      reply.header("Cache-Control", "private, no-store");
+    }
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");
     if (opts.operatorOrigins?.some((origin) => origin.startsWith("https://"))) {

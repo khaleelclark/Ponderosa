@@ -1,8 +1,11 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import {
+  AgentStore,
+  CoordinationV3Store,
   createOfflineDataDirectoryBackup,
   restoreOfflineDataDirectoryBackup,
-} from "../dist/data-directory-backup.js";
+} from "@ponderosa/agents";
 
 const [command, ...args] = process.argv.slice(2);
 const value = name => {
@@ -29,6 +32,60 @@ if (command === "backup") {
     externalRootParent: value("--external-project-root"),
   });
   console.log(JSON.stringify({ status: "restored", dataDir, files: manifest.entries.filter(entry => entry.type === "file").length }));
+} else if (command === "outbox-list") {
+  const store = new AgentStore(dataDir);
+  try {
+    const rows = store.sqlite.prepare(`
+      SELECT id, activation_id, event_kind, attempts, last_error, dead_lettered_at
+      FROM activation_outbox WHERE processed_at IS NULL AND dead_lettered_at IS NOT NULL
+      ORDER BY id LIMIT 100
+    `).all();
+    console.log(JSON.stringify({ status: "dead_letters", rows }));
+  } finally {
+    store.close();
+  }
+} else if (command === "outbox-requeue") {
+  const id = Number(value("--outbox-id"));
+  const activationId = value("--activation-id");
+  const expectedError = value("--expected-error");
+  const payloadFile = value("--payload-file");
+  const reason = value("--reason");
+  if (!Number.isSafeInteger(id) || id < 1 || !activationId || !expectedError || !payloadFile || !reason) {
+    throw new Error("outbox-requeue requires --outbox-id, --activation-id, --expected-error, --payload-file, and --reason");
+  }
+  const payload = JSON.parse(readFileSync(payloadFile, "utf8"));
+  const store = new AgentStore(dataDir);
+  try {
+    const revision = payload?.revision;
+    const sources = store.sqlite.prepare(`
+      SELECT activation.project_id, runtime.payload_json AS runtime_payload_json
+      FROM activation_sources source
+      JOIN agent_activations activation ON activation.id = source.activation_id
+      JOIN runtime_communications runtime ON runtime.id = source.source_id
+        AND runtime.project_id = activation.project_id
+      WHERE source.activation_id = ? AND source.source_kind = 'communication'
+    `).all(activationId);
+    const runtimePayload = sources.length === 1
+      ? JSON.parse(sources[0].runtime_payload_json)
+      : undefined;
+    const canonicalEventId = runtimePayload?.communication?.eventId;
+    const source = typeof canonicalEventId === "string" && canonicalEventId
+      ? store.getCommunicationEvent(sources[0].project_id, canonicalEventId)
+      : undefined;
+    if (!source || source.eventId !== revision?.targetEventId ||
+        source.projectId !== revision.projectId ||
+        source.conversationId !== revision.conversationId ||
+        source.conversationId !== payload?.conversationId ||
+        source.sender.kind !== "user" || revision.sender?.kind !== "user" ||
+        source.sender.userId !== revision.sender.userId) {
+      throw new Error("corrected revision does not identify the Activation's canonical user-owned Communication");
+    }
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.requeueDeadLetteredRevision(id, activationId, expectedError, payload, source, reason);
+    console.log(JSON.stringify({ status: "requeued", outboxId: id, activationId }));
+  } finally {
+    store.close();
+  }
 } else {
-  throw new Error("usage: data-directory.mjs backup --data-dir PATH --output PATH --external-projects copy|exclude | restore --backup PATH --data-dir PATH [--restore-external-projects] [--external-project-root PATH]");
+  throw new Error("usage: data-directory.mjs backup|restore|outbox-list|outbox-requeue --data-dir PATH [command options]");
 }

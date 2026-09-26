@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import {
   type MessageDeliveryReceiptDto,
+  type CommunicationEvent,
   type RetryMessageDeliveryResponse,
   type DerivedAgentAvailability,
   type CoordinationReplyAuthority,
@@ -1238,8 +1239,16 @@ export class CoordinationV3Store {
     this.operationalOutboxAuthority.completeOutbox(id, workerId, now);
   }
 
-  failOutbox(id: number, workerId: string, error: string): void {
-    this.operationalOutboxAuthority.failOutbox(id, workerId, error);
+  failOutbox(id: number, workerId: string, error: string, now?: string): void {
+    this.operationalOutboxAuthority.failOutbox(id, workerId, error, now);
+  }
+
+  deadLetterOutbox(id: number, workerId: string, error: string, now?: string): void {
+    this.operationalOutboxAuthority.deadLetterOutbox(id, workerId, error, now);
+  }
+
+  requeueDeadLetteredRevision(id: number, activationId: string, expectedLastError: string, payload: unknown, canonicalSource: CommunicationEvent, reason: string, now?: string): void {
+    this.operationalOutboxAuthority.requeueDeadLetteredRevision(id, activationId, expectedLastError, payload, canonicalSource, reason, now);
   }
 
   pruneSettledOutboxes(retain = 10_000): { activationOutbox: number; providerOperations: number } {

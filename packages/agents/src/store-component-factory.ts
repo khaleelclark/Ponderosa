@@ -14,7 +14,7 @@ import type {
   ProjectedCommunicationMessage,
 } from "@ponderosa/core";
 import { openDb, type Db } from "./db.js";
-import { readRepairableJsonl } from "./append-jsonl.js";
+import { readRepairableJsonl, reconcileUncertainAppends } from "./append-jsonl.js";
 import {
   acquireDataDirectoryOwnership,
   ensureCurrentDataLayout,
@@ -161,6 +161,7 @@ export function openAgentStoreData(dataDir: string): OpenAgentStoreData {
   const rootedDataDir = ownership.dataDir;
   try {
     ensureCurrentDataLayout(rootedDataDir);
+    reconcileUncertainAppends(rootedDataDir);
     mkdirSync(projectsDir(rootedDataDir), { recursive: true });
     const deliverySequenceFile = `${rootedDataDir}/delivery-order.jsonl`;
     const deliverySequence = readRepairableJsonl<{ sequence: number }>(

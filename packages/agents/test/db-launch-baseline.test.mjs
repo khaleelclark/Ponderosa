@@ -46,6 +46,7 @@ test("creates the canonical launch baseline for a fresh database", () => {
         "0012_conversation_deletion_receipts.sql",
         "0013_runtime_speed_defaults.sql",
         "0013_working_copy_authority.ts",
+        "0014_activation_outbox_retry.sql",
         "0014_project_deletion_ownership.ts",
         "0015_deletion_recovery_phases.ts",
         "0016_conversation_deletion_precommit.ts",

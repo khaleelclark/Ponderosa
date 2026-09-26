@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import Fastify from "fastify";
-import { AgentStore } from "@ponderosa/agents";
+import { AgentStore, publishManagedArtifactContentAsync } from "@ponderosa/agents";
 import { AssetStore } from "../dist/assets.js";
 import { registerAgentPackageRoutes } from "../dist/routes/agent-packages.js";
 
@@ -117,4 +117,64 @@ test("full package import and export preserve artifacts across bounded batches",
     copiedExport.json().agents[0].artifacts.map((item) => item.dataBase64).sort(),
     source.map((item) => item.dataBase64).sort(),
   );
+});
+
+test("same-Chat Agent export excludes another Agent's long private document", async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-private-package-"));
+  const store = new AgentStore(dataDir);
+  const assets = new AssetStore(dataDir);
+  const app = Fastify();
+  t.after(async () => {
+    await app.close();
+    assets.close();
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  registerAgentPackageRoutes(app, {
+    dataDir, store,
+    coordination: { runtimeArtifact: () => undefined, handleAgentDeletion: () => {} },
+    assets,
+    engines: new Map([["codex", {
+      adapter: { id: "codex", listModels: () => [], listEfforts: () => [] },
+    }]]),
+    deletingProjectIds: new Set(),
+    deletingConversationIds: new Set(),
+    deletingAgentIds: new Set(),
+    agentCreationConversationLeases: new Map(),
+    cachedModelOptions: () => [],
+    appendWorkspace: () => {},
+    agentMessages: () => [],
+    createOperationalNotification: () => {},
+  });
+  const project = store.createProject({ label: "Private export", hostPath: "/tmp/private-export", defaultEngine: "codex" });
+  const chat = store.createConversation(project.id, { title: "Shared Chat" });
+  const alice = store.createAgent(project.id, { title: "Alice", engine: "codex", conversationId: chat.id });
+  const bob = store.createAgent(project.id, { title: "Bob", engine: "codex", conversationId: chat.id });
+  const artifactId = randomUUID();
+  const privateText = `PRIVATE-AUDIT-MARKER ${"x".repeat(12_000)} ${artifactId}`;
+  await publishManagedArtifactContentAsync(dataDir, project.id, artifactId, privateText);
+  store.appendCommunicationEvent({
+    schemaVersion: 2,
+    eventId: randomUUID(),
+    projectId: project.id,
+    conversationId: chat.id,
+    sender: { kind: "user", userId: "operator" },
+    intent: "user_dm",
+    audience: { kind: "user_agent", userId: "operator", agentId: alice.id },
+    text: privateText,
+    document: {
+      id: randomUUID(), title: "Private", mediaType: "text/markdown", artifactId,
+      byteLength: Buffer.byteLength(privateText), authorUserId: "operator",
+      createdAt: new Date().toISOString(),
+    },
+    createdAt: new Date().toISOString(),
+  });
+  const exportAgent = async (id) => {
+    const response = await app.inject({ method: "GET", url: `/api/agents/${id}/export?mode=full` });
+    assert.equal(response.statusCode, 200, response.body.slice(0, 200));
+    return response.json();
+  };
+  assert.match(JSON.stringify(await exportAgent(alice.id)), /PRIVATE-AUDIT-MARKER/);
+  assert.doesNotMatch(JSON.stringify(await exportAgent(bob.id)), /PRIVATE-AUDIT-MARKER/);
+  assert.doesNotMatch(JSON.stringify(await exportAgent(bob.id)), new RegExp(artifactId));
 });

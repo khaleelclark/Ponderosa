@@ -437,15 +437,16 @@ export function registerAgentPackageRoutes(
         })),
       ];
       for (const event of canonicalUserDocuments) {
-        const visible = event.conversationId
-          ? agent.conversationId === event.conversationId
-          : event.intent === "collaboration"
-            ? event.audience.agentIds.includes(agent.id)
+        // Chat location is presentation, never authority to export a private DM.
+        const visible = (!event.conversationId || agent.conversationId === event.conversationId)
+          && (event.intent === "broadcast"
+            ? event.audience.kind === "organization" && event.audience.organizationId === agent.projectId
             : event.intent === "user_dm"
               ? (event.audience.kind === "user_agent"
                   ? event.audience.agentId === agent.id
                   : event.audience.kind === "user_agents" && event.audience.agentIds.includes(agent.id))
-              : false;
+              : event.intent === "collaboration"
+                && event.audience.kind === "agents" && event.audience.agentIds.includes(agent.id));
         if (
           visible
           && !history.some((message) =>
