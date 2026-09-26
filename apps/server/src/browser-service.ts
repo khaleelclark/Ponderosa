@@ -20,6 +20,7 @@ type Snapshot = { alive: boolean; manual?: "manual" | "connecting" | "automation
 interface Entry {
   driver?: BrowserDriver;
   queue: Promise<unknown>;
+  navigatingDriver?: BrowserDriver;
   openingTask?: Promise<void>;
   cleanup?: Promise<void>;
   events: BrowserPageEvent[];
@@ -164,7 +165,7 @@ export async function startBrowserService(socketPath: string, dataDir: string, f
             if (body.operation === "call" && automationMethods.has(body.method) && driver.manualState && driver.manualState() !== "automation") {
               throw new Error("Browser is under native manual control or awaiting Chrome connection approval.");
             }
-            const operation = entry.queue.then(async () => {
+            const execute = async () => {
               if (lease !== admittedLease) throw new Error("Stale browser action discarded.");
               if (body.operation === "close") { await driver.close(); entries.delete(body.id); return {}; }
               if (body.operation !== "call" || !methods.has(body.method) || !Array.isArray(body.args)) throw new Error("Unsupported browser operation.");
@@ -175,11 +176,23 @@ export async function startBrowserService(socketPath: string, dataDir: string, f
               }
               const method = Reflect.get(driver, body.method);
               if (typeof method !== "function") throw new Error("Browser operation is unavailable.");
-              const value = await method.apply(driver, body.args);
+              const navigation = body.method === "navigate";
+              if (navigation) entry.navigatingDriver = driver;
+              let value: unknown;
+              try {
+                value = await method.apply(driver, body.args);
+              } finally {
+                if (navigation && entry.navigatingDriver === driver) entry.navigatingDriver = undefined;
+              }
               if (lease !== admittedLease) throw new Error("Browser authority changed; result discarded.");
               return { value: Buffer.isBuffer(value) ? { bytes: value.toString("base64") } : value, snapshot: snapshot(entry), events: entry.events.splice(0) };
-            });
-            entry.queue = operation.catch(() => undefined);
+            };
+            // The app permits one read-only frame to observe a page while its
+            // navigation awaits DOMContentLoaded. Do not let the broker queue
+            // add the same wait back; all mutations remain serialized.
+            const previewDuringNavigation = body.operation === "call" && body.method === "capture" && entry.navigatingDriver === driver;
+            const operation = previewDuringNavigation ? execute() : entry.queue.then(execute);
+            if (!previewDuringNavigation) entry.queue = operation.catch(() => undefined);
             result = await operation;
           }
         }

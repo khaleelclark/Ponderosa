@@ -202,6 +202,8 @@ interface ManagedSession {
   lastFrame?: { body: Buffer; revision: number; capturedAt: number; metadata: BrowserFrameMetadata };
   frameCapture?: Promise<{ body: Buffer; revision: number; metadata: BrowserFrameMetadata }>;
   framePageId?: string;
+  /** A navigation may await a slow document while its current pixels remain viewable. */
+  navigationInProgress?: { driver: BrowserDriver; pageId: string };
   agentActivity?: BrowserActivityDto;
   launchAbort: AbortController;
   launchLease?: BrowserLaunchLease;
@@ -1512,7 +1514,14 @@ export class BrowserSessionManager {
     return this.pageAction(scope, session, owner, undefined, async (driver) => {
       session.agentActivity = undefined;
       await this.clearRetainedUploads(session, driver, session.dto.activePageId);
-      return driver.navigate(target);
+      const navigation = { driver, pageId: session.dto.activePageId ?? "" };
+      session.navigationInProgress = navigation;
+      session.lastFrame = undefined;
+      try {
+        return await driver.navigate(target);
+      } finally {
+        if (session.navigationInProgress === navigation) session.navigationInProgress = undefined;
+      }
     }, (info) => {
       this.updateInfo(session, info);
       this.emit(scope, {
@@ -1718,17 +1727,40 @@ export class BrowserSessionManager {
       return this.captureFrame(scope, requestedPageId);
     }
     session.framePageId = pageId;
-    session.frameCapture = this.pageAction(scope, session, undefined, undefined, async driver => {
+    const capture = async (driver: BrowserDriver) => {
       const body = await driver.capture(pageId || undefined);
       const activity = session.agentActivity;
       return { body, metadata: { pageId, viewport: driver.viewport?.(pageId) ?? VIEWPORT,
         ...(session.dto.controlOwner === "agent" && activity?.pageId === pageId && Date.now() - activity.at < 2_500 ? { activity } : {}) } };
-    }, ({ body, metadata }) => {
+    };
+    const commit = ({ body, metadata }: Awaited<ReturnType<typeof capture>>) => {
       if (!body.length || body.length > MAX_FRAME_BYTES) throw new BrowserSessionError("browser frame exceeds the 16 MiB limit", 503);
       session.dto = { ...session.dto, frameRevision: session.dto.frameRevision + 1, updatedAt: new Date().toISOString() };
       session.lastFrame = { body, revision: session.dto.frameRevision, capturedAt: Date.now(), metadata };
       return { body, revision: session.dto.frameRevision, metadata };
-    }, false).finally(() => { session.frameCapture = undefined; });
+    };
+    const navigation = session.navigationInProgress;
+    // A slow DOMContentLoaded must not freeze the read-only live view. Keep
+    // every other frame on the normal action queue, and never publish pixels
+    // after a page/session revision changed during this concurrent capture.
+    const inFlight = navigation?.pageId === pageId && navigation.driver === session.driver
+      ? (async () => {
+        const driver = navigation.driver;
+        const lifecycleEpoch = session.lifecycleEpoch;
+        const revision = session.dto.frameRevision;
+        this.assertLifecycle(scope, session, driver, lifecycleEpoch);
+        const result = await capture(driver);
+        this.assertLifecycle(scope, session, driver, lifecycleEpoch);
+        // The navigation may have committed a new document during capture.
+        // Discard those pixels and observe the settled page once, rather than
+        // briefly showing an older frame or surfacing a false disconnect.
+        if (session.dto.frameRevision !== revision) {
+          return this.pageAction(scope, session, undefined, undefined, capture, commit, false);
+        }
+        return commit(result);
+      })()
+      : this.pageAction(scope, session, undefined, undefined, capture, commit, false);
+    session.frameCapture = inFlight.finally(() => { session.frameCapture = undefined; });
     return session.frameCapture;
   }
 
