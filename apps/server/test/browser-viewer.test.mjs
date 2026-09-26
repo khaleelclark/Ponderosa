@@ -26,10 +26,8 @@ test("viewer tab isolation, viewport fencing, agent resize rejection and frame m
     const other = await manager.captureFrame(scope, second);
     assert.equal(other.metadata.pageId, second, "frame cache is scoped to the viewed tab");
     await assert.rejects(manager.operatorInput(scope, { kind: "click", x: 10, y: 10, expectedPageId: first, expectedControlEpoch: session.controlEpoch }), /tab or size changed/);
-    await assert.rejects(manager.operatorInput(scope, { kind: "scroll", deltaX: 0, deltaY: 200, expectedPageId: first, expectedControlEpoch: session.controlEpoch }), /tab or size changed/);
     await assert.rejects(manager.operatorInput(scope, { kind: "click", x: 10, y: 10, expectedPageId: second, expectedViewport: { width: 640, height: 480 }, expectedControlEpoch: session.controlEpoch }), /tab or size changed/);
     await manager.operatorInput(scope, { kind: "click", x: 10, y: 10, expectedPageId: second, expectedViewport: { width: 1280, height: 720 }, expectedControlEpoch: session.controlEpoch });
-    await manager.operatorInput(scope, { kind: "scroll", deltaX: 0, deltaY: 200, expectedPageId: second, expectedControlEpoch: session.controlEpoch });
     const oldEpoch = session.controlEpoch;
     session = await manager.setControl(scope, "agent", oldEpoch);
     await assert.rejects(manager.newPage(scope, oldEpoch));

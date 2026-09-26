@@ -130,7 +130,7 @@ export interface BrowserDriver extends BrowserTerminationHandle {
   paused?(): boolean;
   controlRevision?(): number;
   pageInfo(): Promise<BrowserPageInfo>;
-  pages(refresh?: boolean): Promise<BrowserPagesInfo>;
+  pages(): Promise<BrowserPagesInfo>;
   activatePage(pageId: string): Promise<BrowserPagesInfo>;
   closePage(pageId: string): Promise<BrowserPagesInfo>;
   upload(input: BrowserUploadInput): Promise<BrowserUploadResult>;
@@ -1045,12 +1045,9 @@ export class ChromeCdpDriver implements BrowserDriver {
     return this.evaluateOn<T>(this.currentPage(), expression);
   }
 
-  async pages(refresh = true): Promise<BrowserPagesInfo> {
+  async pages(): Promise<BrowserPagesInfo> {
     await this.eventQueue;
-    // Input fencing only needs the owned active-page identity. Evaluating
-    // every tab before each wheel event adds CDP round trips to a gesture and
-    // can leave dozens of scroll requests queued behind one another.
-    if (refresh) await Promise.all([...this.pagesById.values()].map((page) => this.refreshPage(page)));
+    await Promise.all([...this.pagesById.values()].map((page) => this.refreshPage(page)));
     return this.snapshot();
   }
 
