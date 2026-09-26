@@ -28,19 +28,19 @@ jobs:
       PONDEROSA_REQUIRE_SIGNED_RELEASE: "true"
       PONDEROSA_RELEASE_TAG: ${{ inputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: 11.10.0
           run_install: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24.16.0
           cache: pnpm
@@ -66,7 +66,7 @@ jobs:
         run: |
           pnpm verify
           pnpm --filter @ponderosa/agents qualify:startup
-          pnpm audit --prod --audit-level=high
+          pnpm audit --audit-level=moderate
 
       - name: Prepare and build exact native bundle
         shell: bash
@@ -95,7 +95,7 @@ jobs:
             --platform linux
 
       - name: Upload qualified target for atomic promotion
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: production-linux-${{ github.sha }}
           retention-days: 7
@@ -114,7 +114,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: production-*-${{ github.sha }}
           path: release
@@ -126,7 +126,7 @@ jobs:
           test "$(find release -type f -name '*.deb' | wc -l | tr -d ' ')" = 1
           test "$(find release -type f -name '*-production.json' | wc -l | tr -d ' ')" = 1
 
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
           subject-path: release/*.deb
 

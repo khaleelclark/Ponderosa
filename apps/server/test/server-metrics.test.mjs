@@ -24,12 +24,20 @@ test("authenticated metrics remain bounded by route patterns and expose runtime 
     const output = metrics.render({
       activeRuns: 2,
       deploymentBlockers: 3,
+      deploymentDraining: false,
+      activationOutboxPending: 2,
+      activationOutboxDeadLettered: 1,
+      communicationProjectionPending: 4,
+      communicationProjectionDrifted: 1,
       browserCleanupPending: 4,
       browserCleanupFailed: 1,
     });
     assert.match(output, /ponderosa_startup_duration_seconds\{phase="total"\} 1\.25/u);
     assert.match(output, /ponderosa_startup_projects 7/u);
     assert.match(output, /ponderosa_active_runs 2/u);
+    assert.match(output, /ponderosa_deployment_drain_requested 0/u);
+    assert.match(output, /ponderosa_activation_outbox_dead_lettered 1/u);
+    assert.match(output, /ponderosa_communication_projection_drifted_projects 1/u);
     assert.match(output, /ponderosa_sse_opened_total 1/u);
     assert.match(output, /ponderosa_sse_backpressure_disconnects_total 1/u);
     assert.match(output, /route="\/api\/projects\/:id"/u);

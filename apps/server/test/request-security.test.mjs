@@ -32,6 +32,7 @@ async function fixture(options = {}, contextOverrides = {}, handler = async () =
   app.get("/api/projects", handler);
   app.get("/api/workspace/stream", handler);
   app.get("/api/agents/:id/stream", handler);
+  app.get("/api/agents/:id/export", handler);
   app.get("/api/streams/probe", handler);
   app.post("/api/projects", async () => ({ ok: true }));
   app.put("/api/conversations/:id/draft", handler);
@@ -51,6 +52,15 @@ test("loopback mode rejects a DNS-rebinding Host before reading operator data", 
     headers: { host: "rebinding.example:8787", origin: "http://rebinding.example:8787" },
   });
   assert.equal(response.statusCode, 421);
+});
+
+test("authenticated API and Agent exports are not retained by intermediary caches", async t => {
+  const app = await fixture();
+  t.after(() => app.close());
+  for (const url of ["/api/projects", "/api/workspace/stream", "/api/agents/example/export"]) {
+    const response = await app.inject({ method: "GET", url });
+    assert.equal(response.headers["cache-control"], "private, no-store");
+  }
 });
 
 test("configured origins admit same-origin mutations and reject cross-site fetches", async t => {

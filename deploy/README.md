@@ -1,24 +1,25 @@
 # Deploying Ponderosa
 
-Install the service as the normal login user that owns the engine subscriptions:
+For production Linux x64, first install the exact qualified `.deb`, then
+install the service as the normal login user that owns the engine subscriptions:
 
 ```sh
-pnpm install --frozen-lockfile
-pnpm build
+sudo dpkg --install Ponderosa-<qualified-version>-linux-x64.deb
 sudo cp deploy/ponderosa.service /etc/systemd/system/ponderosa.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now ponderosa
 ```
 
-Before installing the unit, update its `User`, `WorkingDirectory`, data directory,
-bundled Node path, and `PATH` for the host. Write the exact release identity before
-starting it; the unit intentionally does not fall back to the host's system Node:
+Before installing the unit, update its `User`, data directory, and provider
+`PATH` for the host. The unit executes the installed bundled Node and server
+from `/opt/ponderosa-engine/resources/Ponderosa`; it must not be pointed at a
+source checkout. Write the exact installed release identity before starting it:
 
 ```sh
 install -d -m 700 ~/.config/ponderosa
 printf 'PONDEROSA_BUILD_VERSION=%s\nPONDEROSA_BUILD_SHA=%s\n' "$release" "$commit" \
   >~/.config/ponderosa/release.env.next
 mv ~/.config/ponderosa/release.env.next ~/.config/ponderosa/release.env
+sudo systemctl enable --now ponderosa
 ```
 
 ## Choose the network boundary explicitly

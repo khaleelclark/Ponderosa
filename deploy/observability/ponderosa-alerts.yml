@@ -2,11 +2,11 @@ groups:
   - name: ponderosa-production
     rules:
       - alert: PonderosaUnavailable
-        expr: up{job="ponderosa"} == 0
+        expr: (up{job="ponderosa"} == 0) or absent(up{job="ponderosa"}) or (probe_success{job="ponderosa-readiness"} == 0) or absent(probe_success{job="ponderosa-readiness"})
         for: 2m
         labels: { severity: critical }
         annotations:
-          summary: Ponderosa metrics endpoint is unavailable
+          summary: Ponderosa metrics scrape or ready-for-work probe is unavailable
       - alert: PonderosaHttpErrorRate
         expr: >-
           sum(rate(ponderosa_http_requests_total{status_class=~"5xx"}[5m]))
@@ -60,11 +60,41 @@ groups:
         annotations:
           summary: Browser authority cleanup has failed
       - alert: PonderosaDeploymentBlocked
-        expr: ponderosa_deployment_blockers > 0
+        expr: ponderosa_deployment_drain_requested == 1 and ponderosa_deployment_blockers > 0
         for: 15m
         labels: { severity: warning }
         annotations:
-          summary: Ponderosa has retained deployment blockers for 15 minutes
+          summary: Ponderosa drain has retained deployment blockers for 15 minutes
+      - alert: PonderosaActivationOutboxDeadLettered
+        expr: ponderosa_activation_outbox_dead_lettered > 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: A canonical activation signal needs repair
+      - alert: PonderosaActivationOutboxStalled
+        expr: ponderosa_activation_outbox_pending > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: Activation signal retries remain pending
+      - alert: PonderosaCommunicationProjectionDrift
+        expr: ponderosa_communication_projection_drifted_projects > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: A Project has canonical communication projection drift
+      - alert: PonderosaCommunicationProjectionLag
+        expr: ponderosa_communication_projection_pending_projects > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: Canonical communication reconciliation has not completed
+      - alert: PonderosaBackupOverdue
+        expr: (time() - ponderosa_backup_last_verified_timestamp_seconds > 86400) or absent(ponderosa_backup_last_verified_timestamp_seconds)
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: No verified encrypted backup has completed in the last day
       - alert: PonderosaStartupRecoverySlow
         expr: ponderosa_startup_duration_seconds{phase="total"} > 30
         for: 1m

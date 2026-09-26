@@ -95,6 +95,11 @@ export class ServerMetrics {
   render(input: {
     activeRuns: number;
     deploymentBlockers: number;
+    deploymentDraining?: boolean;
+    activationOutboxPending?: number;
+    activationOutboxDeadLettered?: number;
+    communicationProjectionPending?: number;
+    communicationProjectionDrifted?: number;
     browserCleanupPending: number;
     browserCleanupFailed: number;
   }): string {
@@ -128,6 +133,11 @@ export class ServerMetrics {
       `ponderosa_storage_free_bytes ${Number(filesystem.bavail) * Number(filesystem.bsize)}`,
       `ponderosa_active_runs ${input.activeRuns}`,
       `ponderosa_deployment_blockers ${input.deploymentBlockers}`,
+      `ponderosa_deployment_drain_requested ${input.deploymentDraining ? 1 : 0}`,
+      `ponderosa_activation_outbox_pending ${input.activationOutboxPending ?? 0}`,
+      `ponderosa_activation_outbox_dead_lettered ${input.activationOutboxDeadLettered ?? 0}`,
+      `ponderosa_communication_projection_pending_projects ${input.communicationProjectionPending ?? 0}`,
+      `ponderosa_communication_projection_drifted_projects ${input.communicationProjectionDrifted ?? 0}`,
       `ponderosa_browser_cleanup_pending ${input.browserCleanupPending}`,
       `ponderosa_browser_cleanup_failed ${input.browserCleanupFailed}`,
       "# HELP ponderosa_sse_connections Active and cumulative SSE connections.",

@@ -264,6 +264,11 @@ function removeDeployedWorkspaceSelfLink(packageTarget, packageName) {
 
 removeDeployedWorkspaceSelfLink(serverTarget, "server");
 removeDeployedWorkspaceSelfLink(launcherTarget, "launcher");
+mkdirSync(path.join(serverTarget, "tools"), { recursive: true });
+cpSync(
+  path.join(repositoryRoot, "packages", "agents", "tools", "data-directory.mjs"),
+  path.join(serverTarget, "tools", "data-directory.mjs"),
+);
 
 function nativeHostAddon(packageTarget) {
   const require = createRequire(path.join(packageTarget, "package.json"));

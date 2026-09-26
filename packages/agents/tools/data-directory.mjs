@@ -2,7 +2,7 @@
 import {
   createOfflineDataDirectoryBackup,
   restoreOfflineDataDirectoryBackup,
-} from "../dist/data-directory-backup.js";
+} from "@ponderosa/agents";
 
 const [command, ...args] = process.argv.slice(2);
 const value = name => {

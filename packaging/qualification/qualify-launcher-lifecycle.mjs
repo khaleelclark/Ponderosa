@@ -331,6 +331,21 @@ try {
   assert(!existsSync(statePath), "Launcher stop left live instance state behind.");
   checks.push({ id: "shutdown-observed", status: "pass", detail: "launcher observed server cleanup before removing instance state" });
 
+  const offlineCli = path.join(installRoot, "app", "server", "tools", "data-directory.mjs");
+  const offlineBackup = path.join(dataDir, "offline-backup");
+  const offlineRestored = path.join(dataDir, "offline-restored");
+  for (const arguments_ of [
+    ["backup", "--data-dir", path.join(dataDir, "data"), "--output", offlineBackup, "--external-projects", "exclude"],
+    ["restore", "--backup", offlineBackup, "--data-dir", offlineRestored],
+  ]) {
+    const result = spawnSync(path.join(installRoot, "runtime", process.platform === "win32" ? "node.exe" : "node"),
+      [offlineCli, ...arguments_], { encoding: "utf8", timeout: 90_000, env: environment });
+    assert(result.status === 0, `Installed offline ${arguments_[0]} failed: ${result.stderr || result.stdout}`);
+  }
+  assert(readFileSync(path.join(offlineRestored, "qualification-preserve.txt"), "utf8") === "restart must preserve data\n",
+    "Installed offline restore did not preserve canonical data");
+  checks.push({ id: "installed-offline-restore", status: "pass", detail: "installed CLI restored a stopped disposable data directory" });
+
   let secureReadPassed = false;
   const adversarialChecks = [];
   const recordAdversarialCheck = async (id, detail, operation) => {

@@ -95,14 +95,16 @@ export class CoordinationV3OperationalOutboxAuthority {
         SELECT id, activation_id, event_kind, payload_json, attempts
         FROM activation_outbox
         WHERE processed_at IS NULL AND dead_lettered_at IS NULL
+          AND available_at <= ?
           AND (claimed_at IS NULL OR claimed_at <= ?)
         ORDER BY id LIMIT ?
-      `).all(stale, Math.max(1, Math.min(limit, 500))) as Array<{
+      `).all(now, stale, Math.max(1, Math.min(limit, 500))) as Array<{
         id: number; activation_id: string; event_kind: string; payload_json: string; attempts: number;
       }>;
       const claim = this.sqlite.prepare(`
         UPDATE activation_outbox SET claimed_by = ?, claimed_at = ?, attempts = attempts + 1
         WHERE id = ? AND processed_at IS NULL AND dead_lettered_at IS NULL
+          AND available_at <= ?
           AND (claimed_at IS NULL OR claimed_at <= ?)
       `);
       const claimed: OutboxItem[] = [];
@@ -118,7 +120,7 @@ export class CoordinationV3OperationalOutboxAuthority {
           `).run(now, "invalid activation-outbox payload", row.id);
           continue;
         }
-        if (claim.run(workerId, now, row.id, stale).changes !== 1) continue;
+        if (claim.run(workerId, now, row.id, now, stale).changes !== 1) continue;
         claimed.push({
           id: row.id,
           activationId: row.activation_id,
@@ -139,15 +141,20 @@ export class CoordinationV3OperationalOutboxAuthority {
     if (changed !== 1) throw new Error("outbox claim is stale");
   }
 
-  failOutbox(id: number, workerId: string, error: string): void {
-    const maximumAttempts = Math.max(1, this.options.maxOutboxAttempts ?? DEFAULT_MAX_OUTBOX_ATTEMPTS);
-    const now = new Date().toISOString();
+  failOutbox(id: number, workerId: string, error: string, now = new Date().toISOString()): void {
+    const claim = this.sqlite.prepare(`
+      SELECT attempts FROM activation_outbox
+      WHERE id = ? AND claimed_by = ? AND processed_at IS NULL AND dead_lettered_at IS NULL
+    `).get(id, workerId) as { attempts: number } | undefined;
+    if (!claim) throw new Error("outbox claim is stale");
+    const delayMs = Math.min(300_000, 1_000 * 2 ** Math.min(claim.attempts - 1, 9));
+    const availableAt = new Date(Date.parse(now) + delayMs).toISOString();
     const changed = this.sqlite.prepare(`
       UPDATE activation_outbox
       SET claimed_by = NULL, claimed_at = NULL, last_error = ?,
-        dead_lettered_at = CASE WHEN attempts >= ? THEN ? ELSE dead_lettered_at END
+        available_at = ?
       WHERE id = ? AND claimed_by = ? AND processed_at IS NULL AND dead_lettered_at IS NULL
-    `).run(error.slice(0, 2_000), maximumAttempts, now, id, workerId).changes;
+    `).run(error.slice(0, 2_000), availableAt, id, workerId).changes;
     if (changed !== 1) throw new Error("outbox claim is stale");
   }
 

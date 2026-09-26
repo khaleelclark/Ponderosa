@@ -57,6 +57,7 @@ type ManagedArtifact = ArtifactDto & {
 export class AgentEventProjectionStore {
   private readonly logs = new Map<string, EventLog>();
   private readonly states = new Map<string, ProjectionState>();
+  private readonly projectionFailures = new Set<string>();
 
   constructor(
     private readonly dataDir: string,
@@ -67,11 +68,23 @@ export class AgentEventProjectionStore {
   ) {}
 
   append(agentId: string, projectId: string, event: LogEvent, ts?: string): StoredLogEvent {
-    const stored = this.logFor(agentId, projectId).append(event, ts);
+    if (this.projectionFailures.has(agentId)) {
+      throw new Error("Agent event projection failed; restart and replay canonical events before appending");
+    }
+    // Seed the reducer from the prior log, not the log after this append.
     const state = this.stateFor(agentId, projectId);
-    const { state: nextState, ops } = projectEvent(agentId, state, stored);
-    this.states.set(agentId, nextState);
-    this.applyOps(agentId, projectId, ops);
+    const stored = this.logFor(agentId, projectId).append(event, ts);
+    try {
+      const { state: nextState, ops } = projectEvent(agentId, state, stored);
+      this.applyOps(agentId, projectId, ops);
+      this.states.set(agentId, nextState);
+    } catch (error) {
+      // The JSONL append is canonical. Do not accept another event against a
+      // stale SQLite view; startup replay is the recovery boundary.
+      this.states.delete(agentId);
+      this.projectionFailures.add(agentId);
+      throw error;
+    }
     return stored;
   }
 
@@ -139,11 +152,13 @@ export class AgentEventProjectionStore {
   forgetAgent(agentId: string): void {
     this.logs.delete(agentId);
     this.states.delete(agentId);
+    this.projectionFailures.delete(agentId);
   }
 
   clearCaches(): void {
     this.logs.clear();
     this.states.clear();
+    this.projectionFailures.clear();
   }
 
   private projectRunOutputEvent(

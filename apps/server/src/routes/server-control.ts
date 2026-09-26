@@ -427,12 +427,22 @@ app.get("/api/communication-v3/metrics", async (_request, reply) => {
 
 app.get("/api/metrics", { logLevel: "silent" }, async (_request, reply) => {
   const browserCleanup = browserResidueCleanupStatus(opts.dataDir);
+  const drain = deploymentDrainSnapshot();
+  const outbox = coordinationV3.schedulerMetrics();
+  const projectCount = store.listProjects().length;
+  const evidence = [...communicationReconciliation.values()];
   return reply
     .header("Cache-Control", "no-store")
     .type("text/plain; version=0.0.4; charset=utf-8")
     .send(serverMetrics.render({
       activeRuns: activeRuns.size,
-      deploymentBlockers: deploymentDrainSnapshot().blockers.length,
+      deploymentBlockers: drain.blockers.length,
+      deploymentDraining: drain.state === "draining",
+      activationOutboxPending: outbox.pendingActivationOutbox,
+      activationOutboxDeadLettered: outbox.deadLetteredActivationOutbox,
+      communicationProjectionPending: Math.max(0, projectCount - evidence.length)
+        + evidence.filter((item) => item.state === "pending").length,
+      communicationProjectionDrifted: evidence.filter((item) => item.state === "verified" && !item.report.ok).length,
       browserCleanupPending: browserCleanup.pending,
       browserCleanupFailed: browserCleanup.failed,
     }));

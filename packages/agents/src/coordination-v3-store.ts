@@ -1238,8 +1238,8 @@ export class CoordinationV3Store {
     this.operationalOutboxAuthority.completeOutbox(id, workerId, now);
   }
 
-  failOutbox(id: number, workerId: string, error: string): void {
-    this.operationalOutboxAuthority.failOutbox(id, workerId, error);
+  failOutbox(id: number, workerId: string, error: string, now?: string): void {
+    this.operationalOutboxAuthority.failOutbox(id, workerId, error, now);
   }
 
   pruneSettledOutboxes(retain = 10_000): { activationOutbox: number; providerOperations: number } {
