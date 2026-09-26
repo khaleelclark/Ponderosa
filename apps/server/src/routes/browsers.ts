@@ -142,7 +142,9 @@ export function registerBrowserRoutes(
       });
       const run = async (next: typeof frame): Promise<void> => {
         if (closed) return;
-        const key = `${next.mediaType}:${next.sequence}`;
+        // Agent clicks may not repaint the page. Publish their overlay even
+        // when Chrome's pixels and sequence are unchanged.
+        const key = `${next.mediaType}:${next.sequence}:${JSON.stringify(next.metadata.activity ?? null)}`;
         if (key !== lastKey) {
           const body = `event: frame\ndata: ${JSON.stringify({ data: next.body.toString("base64"), mediaType: next.mediaType, sequence: next.sequence, metadata: next.metadata })}\n\n`;
           if (Buffer.byteLength(body) > 2 * 1024 * 1024 || !await write(body)) return close();

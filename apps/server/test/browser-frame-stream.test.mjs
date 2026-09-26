@@ -6,18 +6,22 @@ import { registerBrowserRoutes } from "../dist/routes/browsers.js";
 test("browser frame stream emits changed frames and releases its shutdown registration on disconnect", async () => {
   const app = Fastify();
   const closures = new Set();
-  let sequence = 0;
+  let observations = 0;
   registerBrowserRoutes(app, {
     liveSseClosures: closures,
     projectExists: id => id === "chat",
     browserProfiles: { savedBrowser: () => undefined },
     projectBrowserScope: projectId => ({ projectId, agentId: "browser", runId: "shared" }),
     projectBrowserSessions: {
-      previewFrame: async () => ({
-        body: Buffer.from([255, 216, 255, ++sequence]),
-        mediaType: "image/jpeg", sequence,
-        metadata: { pageId: "one", viewport: { width: 1280, height: 720 } },
-      }),
+      previewFrame: async () => {
+        observations++;
+        return {
+          body: Buffer.from([255, 216, 255, 1]),
+          mediaType: "image/jpeg", sequence: 1,
+          metadata: { pageId: "one", viewport: { width: 1280, height: 720 },
+            ...(observations >= 3 ? { activity: { pageId: "one", kind: "click", x: 20, y: 30, at: 123 } } : {}) },
+        };
+      },
     },
   });
   await app.listen({ port: 0, host: "127.0.0.1" });
@@ -34,6 +38,7 @@ test("browser frame stream emits changed frames and releases its shutdown regist
       text += new TextDecoder().decode(next.value);
     }
     assert.match(text, /"mediaType":"image\/jpeg"/);
+    assert.match(text, /"kind":"click"/, "an Agent action without a repaint still reaches the viewer");
     assert.equal(closures.size, 1);
     abort.abort();
     for (let attempt = 0; attempt < 50 && closures.size; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
