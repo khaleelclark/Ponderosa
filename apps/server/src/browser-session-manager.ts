@@ -1676,7 +1676,7 @@ export class BrowserSessionManager {
       summary = `scrolled viewport by ${Math.round(input.deltaX)},${Math.round(input.deltaY)}`;
     }
     const guardedWork = async (driver: BrowserDriver) => {
-      const pages = await driver.pages();
+      const pages = await driver.pages(false);
       const size = driver.viewport?.() ?? VIEWPORT;
       if ((input.expectedPageId && input.expectedPageId !== pages.activePageId) ||
           (input.expectedViewport && (input.expectedViewport.width !== size.width || input.expectedViewport.height !== size.height))) {

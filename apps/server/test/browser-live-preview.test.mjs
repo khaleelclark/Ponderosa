@@ -18,6 +18,18 @@ test("live browser preview follows painted scroll frames while evidence remains 
   try {
     driver = await chromeBrowserDriverFactory(root)("preview", () => {}, undefined, undefined, { hostedHeaded: false });
     await driver.navigate(`http://127.0.0.1:${server.address().port}`);
+    const send = driver.connection.send.bind(driver.connection);
+    let evaluations = 0;
+    driver.connection.send = (...args) => {
+      if (args[0] === "Runtime.evaluate") evaluations += 1;
+      return send(...args);
+    };
+    const cachedPages = await driver.pages(false);
+    assert.ok(cachedPages.activePageId, "the cached page identity remains available for input fencing");
+    assert.equal(evaluations, 0, "the input fence does not evaluate page content");
+    await driver.pages();
+    assert.ok(evaluations > 0, "a normal page refresh still reads current URLs and titles");
+    driver.connection.send = send;
     const first = await driver.preview();
     assert.ok(first.data.startsWith("/9j/"), "the live view receives a JPEG");
     if (process.env.PONDEROSA_BROWSER_PREVIEW_SCALE === "1") {
