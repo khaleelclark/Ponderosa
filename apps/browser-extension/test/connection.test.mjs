@@ -91,6 +91,7 @@ test("local window connector manages tabs, isolates other windows, pauses on aut
     await agentCursor.waitFor();
     assert.equal(await agentCursor.getAttribute("aria-hidden"), "true");
     assert.equal(await agentCursor.evaluate(element => getComputedStyle(element).pointerEvents), "none", "Agent cursor never intercepts page input");
+    assert.equal(await agentCursor.locator("svg path").count(), 1, "Agent actions display a visible pointer shape");
     assert.equal(await agentCursor.locator("text=Agent").count(), 1);
     await driver.click("#save");
     assert.equal(await page.locator("#output").textContent(), "Kyle Test");
