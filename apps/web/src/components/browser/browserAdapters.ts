@@ -39,6 +39,7 @@ export interface BrowserEndpointAdapter<Session extends BrowserSession> {
   setControl(target: BrowserControlTarget, expectedControlEpoch: number): Promise<Session>;
   sendInput(input: UnfencedBrowserInput, expectedControlEpoch: number): Promise<Session>;
   getFrame(pageId?: string, signal?: AbortSignal): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }>;
+  frameStreamUrl(pageId?: string): string;
   newPage?(expectedControlEpoch: number): Promise<Session>;
   resizeViewport?(pageId: string, size: BrowserViewportSize, expectedControlEpoch: number): Promise<unknown>;
 }
@@ -66,6 +67,7 @@ export function projectBrowserAdapter(projectId: string): BrowserEndpointAdapter
       expectedControlEpoch,
     } as BrowserOperatorInputRequest),
     getFrame: (pageId, signal) => api.getProjectBrowserFrame(projectId, pageId, signal),
+    frameStreamUrl: pageId => `/api/projects/${encodeURIComponent(projectId)}/browser/frame-stream${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`,
     newPage: epoch => api.newBrowserPage(projectId, epoch) as Promise<ProjectBrowserSessionDto>,
     resizeViewport: (pageId, size, epoch) => api.resizeBrowserViewport(projectId, pageId, size, epoch),
   };
@@ -100,6 +102,7 @@ export function agentBrowserAdapter(
       { ...input, expectedControlEpoch } as BrowserOperatorInputRequest,
     ),
     getFrame: (pageId, signal) => api.getBrowserFrame(projectId, agentId, runId, pageId, signal),
+    frameStreamUrl: pageId => `/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/browser/frame-stream${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`,
     newPage: epoch => api.newBrowserPage(projectId, epoch, agentId, runId) as Promise<BrowserSessionDto>,
     resizeViewport: (pageId, size, epoch) => api.resizeBrowserViewport(projectId, pageId, size, epoch, agentId, runId),
   };

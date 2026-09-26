@@ -904,6 +904,7 @@ registerBrowserRoutes(app, {
   browserProfiles,
   browserSessions,
   projectBrowserSessions,
+  liveSseClosures,
   projectExists: (projectId) => Boolean(store.getProject(projectId)),
   agentExists: (projectId, agentId) => store.getAgent(agentId)?.projectId === projectId,
   projectDeletionInProgress: (projectId) => deletingProjectIds.has(projectId),

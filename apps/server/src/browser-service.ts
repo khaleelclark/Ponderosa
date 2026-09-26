@@ -7,8 +7,8 @@ import type { BrowserActivityDto } from "@ponderosa/core";
 import type { BrowserDriver, BrowserDriverFactory, BrowserDriverLaunchOptions, BrowserPageEvent } from "./chrome-cdp-driver.js";
 import { BrowserDriverActionError } from "./chrome-cdp-driver.js";
 
-const methods = new Set(["pages", "pageInfo", "activatePage", "closePage", "newPage", "openLink", "navigate", "inspect", "click", "fill", "key", "pointer", "type", "scroll", "capture", "resizeViewport", "resizeDesktop", "upload", "clearUploadedFiles", "cancelPendingFileChooser", "pauseAutomation", "resumeAutomation"]);
-const automationMethods = new Set(["pageInfo", "activatePage", "closePage", "newPage", "navigate", "inspect", "click", "fill", "key", "pointer", "type", "scroll", "capture", "resizeViewport", "upload"]);
+const methods = new Set(["pages", "pageInfo", "activatePage", "closePage", "newPage", "openLink", "navigate", "inspect", "click", "fill", "key", "pointer", "type", "scroll", "capture", "preview", "resizeViewport", "resizeDesktop", "upload", "clearUploadedFiles", "cancelPendingFileChooser", "pauseAutomation", "resumeAutomation"]);
+const automationMethods = new Set(["pageInfo", "activatePage", "closePage", "newPage", "navigate", "inspect", "click", "fill", "key", "pointer", "type", "scroll", "capture", "preview", "resizeViewport", "upload"]);
 const driverActionReasons = new Set([
   "invalid_selector", "selector_not_found", "selector_ambiguous", "selector_not_interactable",
   "click_unconfirmed", "fill_unconfirmed", "selector_not_editable", "page_not_found", "last_page",
@@ -95,7 +95,7 @@ export async function startBrowserService(socketPath: string, dataDir: string, f
           ? cleanupCancelledEntry(id, entry)
           : entry.queue.catch(() => undefined)));
         if (lease !== claimed) throw new Error("Another application claimed the browser service.");
-        result = { lease: claimed, supportsCheckLease: true, supportsConnectOnOpen: true, sessions: [...entries].flatMap(([id, entry]) =>
+        result = { lease: claimed, supportsCheckLease: true, supportsConnectOnOpen: true, supportsPreview: true, sessions: [...entries].flatMap(([id, entry]) =>
           !entry.cancelled && entry.driver ? [id] : []) };
       } else {
         if (!lease || body.lease !== lease) throw new Error("Browser application lease expired.");
@@ -190,7 +190,7 @@ export async function startBrowserService(socketPath: string, dataDir: string, f
             // The app permits one read-only frame to observe a page while its
             // navigation awaits DOMContentLoaded. Do not let the broker queue
             // add the same wait back; all mutations remain serialized.
-            const previewDuringNavigation = body.operation === "call" && body.method === "capture" && entry.navigatingDriver === driver;
+            const previewDuringNavigation = body.operation === "call" && (body.method === "capture" || body.method === "preview") && entry.navigatingDriver === driver;
             const operation = previewDuringNavigation ? execute() : entry.queue.then(execute);
             if (!previewDuringNavigation) entry.queue = operation.catch(() => undefined);
             result = await operation;
@@ -225,6 +225,7 @@ export class BrowserServiceClient {
   private lease = "";
   private supportsCheckLease = false;
   private supportsConnectOnOpen = false;
+  private supportsPreview = false;
   constructor(private readonly socketPath: string) {}
   private rpc(body: Record<string, unknown>, timeoutMs = 130_000): Promise<any> {
     return new Promise((resolve, reject) => {
@@ -249,7 +250,7 @@ export class BrowserServiceClient {
       req.on("error", reject); req.end(JSON.stringify({ ...body, lease: this.lease }));
     });
   }
-  async claim(): Promise<string[]> { const result = await this.rpc({ operation: "claim" }); this.lease = result.lease; this.supportsCheckLease = result.supportsCheckLease === true; this.supportsConnectOnOpen = result.supportsConnectOnOpen === true; return result.sessions; }
+  async claim(): Promise<string[]> { const result = await this.rpc({ operation: "claim" }); this.lease = result.lease; this.supportsCheckLease = result.supportsCheckLease === true; this.supportsConnectOnOpen = result.supportsConnectOnOpen === true; this.supportsPreview = result.supportsPreview === true; return result.sessions; }
   async driver(id: string, event: Parameters<BrowserDriverFactory>[3], launch?: BrowserDriverLaunchOptions, adopt = false): Promise<BrowserDriver> {
     if (launch?.connectOnOpen && !this.supportsConnectOnOpen) throw new Error("The persistent browser service must be updated before opening a new Ponderosa browser. Existing browser tabs were not changed.");
     const profileId = launch?.retainProfile && launch.profileDir ? path.basename(launch.profileDir) : undefined;
@@ -321,9 +322,11 @@ export class BrowserServiceClient {
         clearInterval(refresh);
       },
     };
+    const supportsPreview = this.supportsPreview;
     return new Proxy(own as unknown as BrowserDriver, { get(target, key) {
       if (key in target) return Reflect.get(target, key);
       if (key === "resizeDesktop" && !state.nativeDisplay) return undefined;
+      if (key === "preview" && !supportsPreview) return undefined;
       if (typeof key !== "string" || !methods.has(key)) return undefined;
       return (...args: unknown[]) => call(key, args);
     } });

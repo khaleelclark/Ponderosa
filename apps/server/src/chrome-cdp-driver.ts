@@ -145,6 +145,8 @@ export interface BrowserDriver extends BrowserTerminationHandle {
   type(text: string): Promise<BrowserPageInfo>;
   scroll(deltaX: number, deltaY: number): Promise<BrowserPageInfo>;
   capture(pageId?: string): Promise<Buffer>;
+  /** Bounded, JPEG page pixels for the live operator view; evidence stays PNG. */
+  preview?(pageId?: string): Promise<{ data: string; sequence: number }>;
   newPage?(): Promise<BrowserPagesInfo>;
   resizeViewport?(pageId: string, size: BrowserViewportSize): Promise<void>;
   viewport?(pageId?: string): BrowserViewportSize;
@@ -382,7 +384,96 @@ interface ManagedBrowserPage {
   isNew: boolean;
 }
 
+interface BrowserPreviewStream {
+  sessionId: string;
+  sequence: number;
+  data?: string;
+  starting?: Promise<void>;
+  idleTimer?: NodeJS.Timeout;
+  waiters: Set<() => void>;
+}
+
 export class ChromeCdpDriver implements BrowserDriver {
+  private readonly previewStreams = new Map<string, BrowserPreviewStream>();
+  private readonly previewStops = new Map<string, Promise<void>>();
+  private previewSequence = 0;
+
+  private acceptPreviewFrame(message: CdpReply): boolean {
+    if (message.method !== "Page.screencastFrame") return false;
+    const sessionId = message.sessionId;
+    const frameSessionId = message.params?.sessionId;
+    if (sessionId && Number.isSafeInteger(frameSessionId)) {
+      void this.connection.send("Page.screencastFrameAck", { sessionId: frameSessionId }, sessionId).catch(() => undefined);
+    }
+    const pageId = sessionId ? this.pageIdBySession.get(sessionId) : undefined;
+    const stream = pageId ? this.previewStreams.get(pageId) : undefined;
+    const data = message.params?.data;
+    if (!stream || stream.sessionId !== sessionId || typeof data !== "string" || data.length > 16 * 1024 * 1024) return true;
+    stream.data = data;
+    stream.sequence = ++this.previewSequence;
+    for (const wake of stream.waiters) wake();
+    stream.waiters.clear();
+    return true;
+  }
+
+  private stopPreview(pageId: string): Promise<void> {
+    const stopping = this.previewStops.get(pageId);
+    if (stopping) return stopping;
+    const stream = this.previewStreams.get(pageId);
+    if (!stream) return Promise.resolve();
+    this.previewStreams.delete(pageId);
+    if (stream.idleTimer) clearTimeout(stream.idleTimer);
+    for (const wake of stream.waiters) wake();
+    stream.waiters.clear();
+    const task = (async () => {
+      await stream.starting?.catch(() => undefined);
+      await this.connection.send("Page.stopScreencast", {}, stream.sessionId).catch(() => undefined);
+    })();
+    this.previewStops.set(pageId, task);
+    void task.finally(() => { if (this.previewStops.get(pageId) === task) this.previewStops.delete(pageId); });
+    return task;
+  }
+
+  async preview(pageId?: string): Promise<{ data: string; sequence: number }> {
+    const page = pageId ? this.pagesById.get(pageId) : this.currentPage();
+    if (!page?.initialized || this.closing) throw new BrowserDriverActionError("page_not_found");
+    await this.previewStops.get(page.pageId);
+    if (this.pagesById.get(page.pageId) !== page || this.closing) throw new BrowserDriverActionError("page_not_found");
+    let stream = this.previewStreams.get(page.pageId);
+    if (!stream) {
+      stream = { sessionId: page.cdpSessionId, sequence: 0, waiters: new Set() };
+      this.previewStreams.set(page.pageId, stream);
+      const width = Math.min(5120, this.viewport(page.pageId).width * 2);
+      const height = Math.min(3200, this.viewport(page.pageId).height * 2);
+      stream.starting = (async () => {
+        await this.connection.send("Page.bringToFront", {}, page.cdpSessionId);
+        await this.connection.send("Page.startScreencast", {
+          format: "jpeg", quality: 85, maxWidth: width, maxHeight: height, everyNthFrame: 1,
+        }, page.cdpSessionId);
+      })();
+    }
+    const current = stream;
+    if (current.idleTimer) clearTimeout(current.idleTimer);
+    current.idleTimer = setTimeout(() => { void this.stopPreview(page.pageId); }, 3_000);
+    current.idleTimer.unref();
+    try {
+      await current.starting;
+      if (!current.data) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => { current.waiters.delete(wake); reject(new Error("Browser preview did not paint.")); }, 2_000);
+          timer.unref();
+          const wake = () => { clearTimeout(timer); resolve(); };
+          current.waiters.add(wake);
+          if (current.data || this.previewStreams.get(page.pageId) !== current) wake();
+        });
+      }
+      if (this.previewStreams.get(page.pageId) !== current || !current.data) throw new Error("Browser preview changed.");
+      return { data: current.data, sequence: current.sequence };
+    } catch (error) {
+      if (this.previewStreams.get(page.pageId) === current) await this.stopPreview(page.pageId);
+      throw error;
+    }
+  }
   private readonly frameReferences = new Map<string, { frame: import("playwright-core").Frame; targetId: string; url: string }>();
 
   private async actionLocator(selector: string) {
@@ -433,6 +524,7 @@ export class ChromeCdpDriver implements BrowserDriver {
   async resizeViewport(pageId: string, size: BrowserViewportSize): Promise<void> {
     const page = this.pagesById.get(pageId);
     if (!page?.initialized) throw new BrowserDriverActionError("page_not_found");
+    await this.stopPreview(pageId);
     if (this.playwright) await (await this.playwright.page(page.targetId)).setViewportSize(size);
     // The lifecycle observer also owns an emulation session. Keep both sessions
     // aligned so capture, DOM layout and Playwright input share one geometry.
@@ -639,13 +731,16 @@ export class ChromeCdpDriver implements BrowserDriver {
   detachMechanics(): void {
     this.closing = true;
     this.lifecycleGeneration++;
+    for (const pageId of this.previewStreams.keys()) void this.stopPreview(pageId);
     this.clearPendingChooser("manual_control");
     this.playwright?.close();
   }
 
   private async initialize(usePlaywright: boolean): Promise<void> {
       const driver = this, connection = this.connection;
-      connection.onEvent((message) => driver.enqueueEvent(message));
+      connection.onEvent((message) => {
+        if (!driver.acceptPreviewFrame(message)) driver.enqueueEvent(message);
+      });
       await connection.send("Target.setDiscoverTargets", { discover: true });
       if (driver.multiPageEnabled && !usePlaywright) {
         await connection.send("Target.setAutoAttach", {
@@ -869,6 +964,7 @@ export class ChromeCdpDriver implements BrowserDriver {
   private removePage(pageId: string, reason: string): void {
     const page = this.pagesById.get(pageId);
     if (!page) return;
+    void this.stopPreview(pageId);
     this.pagesById.delete(pageId);
     this.viewportSizes.delete(pageId);
     if (this.lastActivity?.pageId === pageId) this.lastActivity = undefined;
@@ -1597,6 +1693,7 @@ export class ChromeCdpDriver implements BrowserDriver {
 
   async close(): Promise<void> {
     this.closing = true; this.lifecycleGeneration += 1; this.clearPendingChooser("session_closed");
+    await Promise.all([...this.previewStreams.keys()].map(pageId => this.stopPreview(pageId)));
     this.playwright?.close();
     let closeTimer: NodeJS.Timeout | undefined;
     try {

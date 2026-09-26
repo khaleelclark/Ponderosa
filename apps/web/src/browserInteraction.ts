@@ -140,3 +140,21 @@ export async function decodeBrowserFrame(blob: Blob): Promise<string> {
     throw error;
   }
 }
+
+export function parseBrowserFrameEvent(data: string): { blob: Blob; metadata: import("@ponderosa/core").BrowserFrameMetadata } {
+  if (data.length > 2 * 1024 * 1024) throw new Error("Browser preview frame is too large.");
+  const value: unknown = JSON.parse(data);
+  if (!value || typeof value !== "object") throw new Error("Browser preview frame is invalid.");
+  const frame = value as Record<string, unknown>;
+  const metadata = frame.metadata as import("@ponderosa/core").BrowserFrameMetadata | undefined;
+  if ((frame.mediaType !== "image/jpeg" && frame.mediaType !== "image/png") ||
+      typeof frame.data !== "string" || !metadata || typeof metadata.pageId !== "string" ||
+      !metadata.viewport || !Number.isFinite(metadata.viewport.width) || !Number.isFinite(metadata.viewport.height) ||
+      metadata.viewport.width <= 0 || metadata.viewport.height <= 0) {
+    throw new Error("Browser preview frame is invalid.");
+  }
+  const binary = atob(frame.data);
+  const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+  if (!bytes.length || bytes.length > 1_500_000) throw new Error("Browser preview frame is too large.");
+  return { blob: new Blob([bytes], { type: frame.mediaType }), metadata };
+}

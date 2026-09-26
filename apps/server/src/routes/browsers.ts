@@ -40,6 +40,7 @@ interface BrowserRoutesContext {
   operatorBrowserScope(params: BrowserRouteParams): BrowserScope;
   projectBrowserScope(projectId: string, grant?: ProjectBrowserGrant): BrowserScope;
   projectBrowserDto(projectId: string, session: import("@ponderosa/core").BrowserSessionDto): ProjectBrowserSessionDto;
+  liveSseClosures: Set<() => void>;
   getProjectBrowserGrant(projectId: string): ProjectBrowserGrant | undefined;
   setProjectBrowserGrant(projectId: string, grant: ProjectBrowserGrant): void;
   deleteProjectBrowserGrant(projectId: string): void;
@@ -73,6 +74,7 @@ export function registerBrowserRoutes(
     browserSessions,
     browserProfiles,
     projectBrowserSessions,
+    liveSseClosures,
     projectExists: chatExists,
     agentExists,
     projectDeletionInProgress,
@@ -85,6 +87,81 @@ export function registerBrowserRoutes(
     deleteProjectBrowserGrant,
     activeProjectBrowserController,
   } = context;
+  const previewStreams = new Set<() => void>();
+  const registerPreviewStream = (route: string, manager: BrowserSessionManager, scope: (params: BrowserRouteParams) => BrowserScope) => {
+    app.get<{ Params: BrowserRouteParams; Querystring: { pageId?: string } }>(route, async (request, reply) => {
+      if (previewStreams.size >= 8) return reply.code(429).send({ error: "too many browser previews" });
+      if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+      let frame: Awaited<ReturnType<BrowserSessionManager["previewFrame"]>>;
+      let browserScope: BrowserScope;
+      try {
+        browserScope = scope(request.params);
+        frame = await manager.previewFrame(browserScope, request.query.pageId);
+      }
+      catch (error) { return browserRouteError(reply, error); }
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "private, no-store, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+      });
+      let closed = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let lastKey = "";
+      let lastHeartbeat = Date.now();
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        if (timer) clearTimeout(timer);
+        previewStreams.delete(close);
+        liveSseClosures.delete(close);
+        reply.raw.off("close", close);
+        if (!reply.raw.writableEnded) reply.raw.end();
+        if (!reply.raw.destroyed) reply.raw.destroy();
+      };
+      const write = (body: string): Promise<boolean> => new Promise(resolve => {
+        if (closed || reply.raw.destroyed) return resolve(false);
+        try {
+          if (reply.raw.write(body)) return resolve(true);
+        } catch { return resolve(false); }
+        let settled = false;
+        const finish = (ok: boolean) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          reply.raw.off("drain", onDrain);
+          reply.raw.off("close", onClose);
+          resolve(ok);
+        };
+        const onDrain = () => finish(true);
+        const onClose = () => finish(false);
+        const timeout = setTimeout(() => finish(false), 2_000);
+        reply.raw.once("drain", onDrain);
+        reply.raw.once("close", onClose);
+      });
+      const run = async (next: typeof frame): Promise<void> => {
+        if (closed) return;
+        const key = `${next.mediaType}:${next.sequence}`;
+        if (key !== lastKey) {
+          const body = `event: frame\ndata: ${JSON.stringify({ data: next.body.toString("base64"), mediaType: next.mediaType, sequence: next.sequence, metadata: next.metadata })}\n\n`;
+          if (Buffer.byteLength(body) > 2 * 1024 * 1024 || !await write(body)) return close();
+          lastKey = key;
+        } else if (Date.now() - lastHeartbeat > 10_000) {
+          if (!await write(": heartbeat\n\n")) return close();
+          lastHeartbeat = Date.now();
+        }
+        if (closed) return;
+        timer = setTimeout(() => {
+          void manager.previewFrame(browserScope, request.query.pageId).then(run, close);
+        }, next.mediaType === "image/png" ? 250 : 40);
+      };
+      reply.raw.on("close", close);
+      previewStreams.add(close);
+      liveSseClosures.add(close);
+      void run(frame);
+    });
+  };
   const projectExists = (id: string) => id === SAVED_BROWSER_SCOPE_ID ? Boolean(browserProfiles.savedBrowser()) : chatExists(id);
 
   app.get("/api/saved-browser", async () => ({ browser: browserProfiles.savedBrowser() ?? null }));
@@ -566,6 +643,7 @@ export function registerBrowserRoutes(
       }
     },
   );
+  registerPreviewStream(`${projectBrowserRoute}/frame-stream`, projectBrowserSessions, params => projectBrowserScope(params.projectId));
 
   const browserRoute = "/api/projects/:projectId/agents/:id/runs/:runId/browser";
 
@@ -760,6 +838,7 @@ export function registerBrowserRoutes(
       return browserRouteError(reply, error);
     }
   });
+  registerPreviewStream(`${browserRoute}/frame-stream`, browserSessions, operatorBrowserScope);
 
   for (const projectScoped of [true, false]) {
     const route = projectScoped ? projectBrowserRoute : browserRoute;

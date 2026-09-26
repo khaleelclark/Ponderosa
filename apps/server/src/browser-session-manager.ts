@@ -1764,6 +1764,40 @@ export class BrowserSessionManager {
     return session.frameCapture;
   }
 
+  /** The operator preview uses Chrome's painted-frame stream when the broker
+   * supports it. Older persistent brokers retain the bounded PNG fallback. */
+  async previewFrame(scope: BrowserScope, requestedPageId?: string): Promise<{
+    body: Buffer; sequence: number; mediaType: "image/jpeg" | "image/png"; metadata: BrowserFrameMetadata;
+  }> {
+    const session = this.ready(scope);
+    const pageId = requestedPageId ?? session.dto.activePageId ?? "";
+    if (!session.driver.preview) {
+      const frame = await this.captureFrame(scope, requestedPageId);
+      return { body: frame.body, sequence: frame.revision, mediaType: "image/png", metadata: frame.metadata };
+    }
+    const preview = async (driver: BrowserDriver) => {
+      const result = await driver.preview!(pageId || undefined);
+      const body = Buffer.from(result.data, "base64");
+      if (!body.length || body.length > MAX_FRAME_BYTES || body[0] !== 0xff || body[1] !== 0xd8 || body[2] !== 0xff) {
+        throw new BrowserSessionError("browser preview is invalid or exceeds the 16 MiB limit", 503);
+      }
+      const activity = session.agentActivity;
+      const metadata: BrowserFrameMetadata = { pageId, viewport: driver.viewport?.(pageId) ?? VIEWPORT,
+        ...(session.dto.controlOwner === "agent" && activity?.pageId === pageId && Date.now() - activity.at < 2_500 ? { activity } : {}) };
+      return { body, sequence: result.sequence, mediaType: "image/jpeg" as const, metadata };
+    };
+    const navigation = session.navigationInProgress;
+    if (navigation?.pageId === pageId && navigation.driver === session.driver) {
+      const lifecycleEpoch = session.lifecycleEpoch;
+      const revision = session.dto.frameRevision;
+      this.assertLifecycle(scope, session, navigation.driver, lifecycleEpoch);
+      const frame = await preview(navigation.driver);
+      this.assertLifecycle(scope, session, navigation.driver, lifecycleEpoch);
+      if (session.dto.frameRevision === revision) return frame;
+    }
+    return this.pageAction(scope, session, undefined, undefined, preview, result => result, false);
+  }
+
   async captureArtifact(scope: BrowserScope): Promise<{
     artifactId: string;
     artifactRef: string;

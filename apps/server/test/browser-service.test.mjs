@@ -74,6 +74,25 @@ test('broker carries an immediate Ponderosa connection request to its owned Chro
   } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('broker advertises and forwards bounded preview frames independently of evidence capture', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-service-preview-'));
+  const socket = path.join(root, 'service.sock');
+  const service = await startBrowserService(socket, root, async () => ({
+    isAlive: () => true, manualState: () => 'automation',
+    pages: async () => ({ activePageId: 'one', pages: [{ pageId: 'one', url: 'about:blank', title: 'New tab', active: true }] }),
+    preview: async pageId => ({ data: '/9j/AA==', sequence: pageId === 'one' ? 7 : 0 }),
+    capture: async () => Buffer.from([137, 80, 78, 71]),
+    close: async () => {},
+  }));
+  try {
+    const client = new BrowserServiceClient(socket); await client.claim();
+    const driver = await client.driver(randomUUID(), undefined);
+    assert.deepEqual(await driver.preview('one'), { data: '/9j/AA==', sequence: 7 });
+    assert.deepEqual(await driver.capture(), Buffer.from([137, 80, 78, 71]));
+    await driver.close();
+  } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('an older browser service cannot silently open the wrong browser mode', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'legacy-browser-service-'));
   const socket = path.join(root, 'service.sock');

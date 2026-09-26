@@ -10,6 +10,7 @@ import {
   createBrowserFrameScheduler,
   decodeBrowserFrame,
   normalizeBrowserWheelDelta,
+  parseBrowserFrameEvent,
 } from "../../browserInteraction";
 
 const BROWSER_VIEWPORT = { width: 1280, height: 720 } as const;
@@ -48,11 +49,11 @@ export function BrowserViewport<Session extends BrowserSession>({
   const frameContext = useRef<BrowserFrameMetadata>();
   const frameScheduler = useRef<ReturnType<typeof createBrowserFrameScheduler>>();
   const frameAbort = useRef<AbortController>();
+  const frameVisibility = useRef<() => void>();
   const pollingEnabledRef = useRef(pollingEnabled);
   pollingEnabledRef.current = pollingEnabled;
   useEffect(() => {
-    if (!pollingEnabled) frameAbort.current?.abort();
-    frameScheduler.current?.setVisible(document.visibilityState === "visible" && pollingEnabled);
+    frameVisibility.current?.();
   }, [pollingEnabled]);
   useEffect(() => {
     if (!metadata?.activity) return;
@@ -92,7 +93,7 @@ export function BrowserViewport<Session extends BrowserSession>({
     const observer = new ResizeObserver(() => setImageBounds({ width: element.clientWidth, height: element.clientHeight, left: element.offsetLeft }));
     observer.observe(element);
     return () => observer.disconnect();
-  }, [frameUrl]);
+  }, [Boolean(frameUrl)]);
   const touchGesture = useRef<{ pointerId: number; lastX: number; lastY: number }>();
   const suppressClick = useRef(false);
   const keyboard = useRef<HTMLTextAreaElement>(null);
@@ -119,47 +120,89 @@ export function BrowserViewport<Session extends BrowserSession>({
       return undefined;
     }
     let cancelled = false;
+    let source: EventSource | undefined;
+    let fallback = false;
+    let scheduler: ReturnType<typeof createBrowserFrameScheduler> | undefined;
+    let arrived = 0;
+    let shown = 0;
+    const showFrame = async (blob: Blob, nextMetadata: BrowserFrameMetadata | undefined, arrival: number) => {
+      const next = await decodeBrowserFrame(blob);
+      if (cancelled || !pollingEnabledRef.current || document.visibilityState !== "visible" || arrival <= shown) {
+        URL.revokeObjectURL(next);
+        return;
+      }
+      shown = arrival;
+      setFrameUrl(current => {
+        // Keep the painted image alive until React has switched its src.
+        if (current) setTimeout(() => URL.revokeObjectURL(current), 250);
+        return next;
+      });
+      frameContext.current = nextMetadata;
+      setMetadata(nextMetadata);
+      setFrameError(undefined);
+    };
     const capture = async () => {
         if (!pollingEnabledRef.current || document.visibilityState !== "visible") return;
         const controller = new AbortController();
         frameAbort.current = controller;
         try {
           const frame = await adapter.getFrame(pageId, controller.signal);
-          if (cancelled || !pollingEnabledRef.current || document.visibilityState !== "visible") return;
-          const next = await decodeBrowserFrame(frame.blob);
-          if (cancelled || !pollingEnabledRef.current || document.visibilityState !== "visible") {
-            URL.revokeObjectURL(next);
-            return;
-          }
-          setFrameUrl((current) => {
-            if (current) URL.revokeObjectURL(current);
-            return next;
-          });
-          frameContext.current = frame.metadata;
-          setMetadata(frame.metadata);
-          setFrameError(undefined);
+          if (!cancelled) await showFrame(frame.blob, frame.metadata, ++arrived);
         } catch (error) {
           if (!cancelled && !controller.signal.aborted) setFrameError(error instanceof Error ? error.message : String(error));
         } finally {
           if (frameAbort.current === controller) frameAbort.current = undefined;
         }
     };
-    const scheduler = createBrowserFrameScheduler({ capture });
-    frameScheduler.current = scheduler;
-    const updateVisibility = () => {
-      const visible = document.visibilityState === "visible";
-      if (!visible) frameAbort.current?.abort();
-      scheduler.setVisible(visible && pollingEnabledRef.current);
+    const startPolling = () => {
+      if (scheduler) { scheduler.setVisible(document.visibilityState === "visible" && pollingEnabledRef.current); return; }
+      scheduler = createBrowserFrameScheduler({ capture });
+      frameScheduler.current = scheduler;
+      scheduler.setVisible(document.visibilityState === "visible" && pollingEnabledRef.current);
     };
-    refreshFrame.current = () => scheduler.requestInteractionRefresh();
+    const closeStream = () => { source?.close(); source = undefined; };
+    const startStream = () => {
+      if (typeof EventSource === "undefined") { fallback = true; startPolling(); return; }
+      const opened = new EventSource(adapter.frameStreamUrl(pageId));
+      source = opened;
+      opened.addEventListener("frame", event => {
+        try {
+          const frame = parseBrowserFrameEvent((event as MessageEvent).data);
+          void showFrame(frame.blob, frame.metadata, ++arrived).catch(error => {
+            if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error));
+          });
+        } catch (error) {
+          if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error));
+        }
+      });
+      opened.onerror = () => {
+        if (cancelled || source !== opened) return;
+        closeStream();
+        fallback = true;
+        startPolling();
+      };
+    };
+    const updateVisibility = () => {
+      const visible = document.visibilityState === "visible" && pollingEnabledRef.current;
+      if (!visible) {
+        frameAbort.current?.abort();
+        closeStream();
+        scheduler?.setVisible(false);
+      } else if (fallback) startPolling();
+      else if (!source) startStream();
+    };
+    refreshFrame.current = () => scheduler?.requestInteractionRefresh();
+    frameVisibility.current = updateVisibility;
     document.addEventListener("visibilitychange", updateVisibility);
     updateVisibility();
     return () => {
       cancelled = true;
       frameAbort.current?.abort();
+      closeStream();
       document.removeEventListener("visibilitychange", updateVisibility);
-      scheduler.dispose();
+      scheduler?.dispose();
       if (frameScheduler.current === scheduler) frameScheduler.current = undefined;
+      if (frameVisibility.current === updateVisibility) frameVisibility.current = undefined;
       refreshFrame.current = () => undefined;
       setFrameUrl((current) => {
         if (current) URL.revokeObjectURL(current);

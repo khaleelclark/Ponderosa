@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 
 const source = name => pathToFileURL(join(process.cwd(), "src", name)).href;
 const { createBrowserInputQueue } = await import(source("browserInputQueue.ts"));
-const { coalesceBrowserScrollInputs, createBrowserFrameScheduler } = await import(source("browserInteraction.ts"));
+const { coalesceBrowserScrollInputs, createBrowserFrameScheduler, parseBrowserFrameEvent } = await import(source("browserInteraction.ts"));
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 test("a burst of scroll inputs is coalesced without dropping distance or crossing a click", async () => {
@@ -76,4 +76,14 @@ test("interaction refresh has a leading frame and a bounded active cadence", asy
   await advance(1_000);
   assert.equal(captures.length, 3, "hidden viewers do not capture frames");
   scheduler.dispose();
+});
+
+test("stream frames retain their page geometry and reject malformed or oversized payloads", async () => {
+  const metadata = { pageId: "page", viewport: { width: 640, height: 480 } };
+  const frame = parseBrowserFrameEvent(JSON.stringify({ mediaType: "image/jpeg", data: "\/9j\/", sequence: 1, metadata }));
+  assert.equal(frame.blob.type, "image/jpeg");
+  assert.deepEqual(frame.metadata, metadata);
+  assert.throws(() => parseBrowserFrameEvent(JSON.stringify({ mediaType: "text/html", data: "AAAA", metadata })), /invalid/);
+  assert.throws(() => parseBrowserFrameEvent(JSON.stringify({ mediaType: "image/jpeg", data: "AAAA", metadata: { ...metadata, viewport: { width: 0, height: 480 } } })), /invalid/);
+  assert.throws(() => parseBrowserFrameEvent("x".repeat(2 * 1024 * 1024 + 1)), /too large/);
 });
