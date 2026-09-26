@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 
 const source = name => pathToFileURL(join(process.cwd(), "src", name)).href;
 const { createBrowserInputQueue } = await import(source("browserInputQueue.ts"));
-const { coalesceBrowserScrollInputs, createBrowserFrameScheduler, parseBrowserFrameEvent } = await import(source("browserInteraction.ts"));
+const { coalesceBrowserScrollInputs, createBrowserFrameScheduler, createLatestBrowserFrameQueue, parseBrowserFrameEvent } = await import(source("browserInteraction.ts"));
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 test("a burst of scroll inputs is coalesced without dropping distance or crossing a click", async () => {
@@ -86,4 +86,27 @@ test("stream frames retain their page geometry and reject malformed or oversized
   assert.throws(() => parseBrowserFrameEvent(JSON.stringify({ mediaType: "text/html", data: "AAAA", metadata })), /invalid/);
   assert.throws(() => parseBrowserFrameEvent(JSON.stringify({ mediaType: "image/jpeg", data: "AAAA", metadata: { ...metadata, viewport: { width: 0, height: 480 } } })), /invalid/);
   assert.throws(() => parseBrowserFrameEvent("x".repeat(2 * 1024 * 1024 + 1)), /too large/);
+});
+
+test("slow frame decoding keeps only the newest waiting preview", async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const shown = [];
+  const failures = [];
+  const queue = createLatestBrowserFrameQueue(async value => {
+    if (value === 1) await gate;
+    shown.push(value);
+  }, error => failures.push(error));
+  queue.push(1);
+  queue.push(2);
+  queue.push(3);
+  release();
+  await flush();
+  await flush();
+  assert.deepEqual(shown, [1, 3]);
+  assert.deepEqual(failures, []);
+  queue.dispose();
+  queue.push(4);
+  await flush();
+  assert.deepEqual(shown, [1, 3]);
 });

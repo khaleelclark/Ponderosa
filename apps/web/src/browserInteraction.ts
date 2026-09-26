@@ -141,6 +141,33 @@ export async function decodeBrowserFrame(blob: Blob): Promise<string> {
   }
 }
 
+/** Decode at most one frame at a time. During a burst, retain only the newest
+ * waiting frame so display latency does not grow behind obsolete pixels. */
+export function createLatestBrowserFrameQueue<T>(consume: (frame: T) => Promise<void>, onError: (error: unknown) => void) {
+  let latest: { value: T } | undefined;
+  let running = false;
+  let disposed = false;
+  const drain = async () => {
+    if (running) return;
+    running = true;
+    while (!disposed && latest) {
+      const current = latest;
+      latest = undefined;
+      try { await consume(current.value); }
+      catch (error) { onError(error); }
+    }
+    running = false;
+  };
+  return {
+    push(frame: T) {
+      if (disposed) return;
+      latest = { value: frame };
+      void drain();
+    },
+    dispose() { disposed = true; latest = undefined; },
+  };
+}
+
 export function parseBrowserFrameEvent(data: string): { blob: Blob; metadata: import("@ponderosa/core").BrowserFrameMetadata } {
   if (data.length > 2 * 1024 * 1024) throw new Error("Browser preview frame is too large.");
   const value: unknown = JSON.parse(data);

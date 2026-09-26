@@ -33,6 +33,32 @@ try {
     await agentPage.close();
   }
   for (const width of [1440, 390]) {
+    const following = await browser.newPage({ viewport: { width, height: 900 } });
+    await following.goto(`http://127.0.0.1:${server.address().port}/?follow=1`);
+    await following.getByRole("button", { name: "Following agent", exact: true }).waitFor();
+    await following.waitForFunction(() => window.frameRequests >= 2);
+    await following.evaluate(() => document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    const before = await following.evaluate(() => ({ frames: window.frameRequests, sessions: window.browserSessionRequests }));
+    await following.waitForFunction(previous => window.frameRequests > previous.frames && window.browserSessionRequests > previous.sessions, before, { timeout: 5_000 });
+    await following.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await following.waitForTimeout(150);
+    const hiddenFrames = await following.evaluate(() => window.frameRequests);
+    await following.waitForTimeout(600);
+    assert.equal(await following.evaluate(() => window.frameRequests), hiddenFrames, "Agent-follow preview stops when the browser tab is hidden");
+    await following.evaluate(() => {
+      delete document.visibilityState;
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await following.waitForFunction(previous => window.frameRequests > previous, hiddenFrames, { timeout: 5_000 });
+    await following.evaluate(() => window.agentNavigate());
+    await following.getByRole("tab", { name: "Agent research", exact: true }).waitFor({ timeout: 5_000 });
+    assert.equal(await following.getByRole("tab", { name: "Agent research", exact: true }).getAttribute("aria-selected"), "true", "following switches to the Agent's active page");
+    await following.close();
+  }
+  for (const width of [1440, 390]) {
     const recovery = await browser.newPage({ viewport: { width, height: 900 } });
     await recovery.goto(`http://127.0.0.1:${server.address().port}/?failed=1`);
     await recovery.getByRole("combobox", { name: "Browser to view" }).click();

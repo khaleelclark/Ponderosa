@@ -31,7 +31,7 @@ export function useBrowserController<Session extends BrowserSession>({
     queryFn: adapter.get,
     enabled,
     retry: false,
-    refetchInterval: (current) => pollingEnabled
+    refetchInterval: (current) => (pollingEnabled || (enabled && followAgent && current.state.data?.controlOwner === "agent" && document.visibilityState === "visible"))
       ? current.state.data?.status === "opening" ? 750 : 2_500
       : false,
   });

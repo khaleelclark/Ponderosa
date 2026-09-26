@@ -7,6 +7,7 @@ import NearMeIcon from "@mui/icons-material/NearMe";
 import { BrowserKeyboard } from "./BrowserKeyboard";
 import {
   browserTouchScrollDelta,
+  createLatestBrowserFrameQueue,
   createBrowserFrameScheduler,
   decodeBrowserFrame,
   normalizeBrowserWheelDelta,
@@ -121,13 +122,14 @@ export function BrowserViewport<Session extends BrowserSession>({
     }
     let cancelled = false;
     let source: EventSource | undefined;
+    let streamQueue: ReturnType<typeof createLatestBrowserFrameQueue<string>> | undefined;
     let fallback = false;
     let scheduler: ReturnType<typeof createBrowserFrameScheduler> | undefined;
     let arrived = 0;
     let shown = 0;
-    const showFrame = async (blob: Blob, nextMetadata: BrowserFrameMetadata | undefined, arrival: number) => {
+    const showFrame = async (blob: Blob, nextMetadata: BrowserFrameMetadata | undefined, arrival: number, valid = () => true) => {
       const next = await decodeBrowserFrame(blob);
-      if (cancelled || !pollingEnabledRef.current || document.visibilityState !== "visible" || arrival <= shown) {
+      if (cancelled || !valid() || !pollingEnabledRef.current || document.visibilityState !== "visible" || arrival <= shown) {
         URL.revokeObjectURL(next);
         return;
       }
@@ -160,20 +162,17 @@ export function BrowserViewport<Session extends BrowserSession>({
       frameScheduler.current = scheduler;
       scheduler.setVisible(document.visibilityState === "visible" && pollingEnabledRef.current);
     };
-    const closeStream = () => { source?.close(); source = undefined; };
+    const closeStream = () => { streamQueue?.dispose(); streamQueue = undefined; source?.close(); source = undefined; };
     const startStream = () => {
       if (typeof EventSource === "undefined") { fallback = true; startPolling(); return; }
       const opened = new EventSource(adapter.frameStreamUrl(pageId));
       source = opened;
+      streamQueue = createLatestBrowserFrameQueue<string>(async data => {
+        const frame = parseBrowserFrameEvent(data);
+        await showFrame(frame.blob, frame.metadata, ++arrived, () => source === opened);
+      }, error => { if (!cancelled && source === opened) setFrameError(error instanceof Error ? error.message : String(error)); });
       opened.addEventListener("frame", event => {
-        try {
-          const frame = parseBrowserFrameEvent((event as MessageEvent).data);
-          void showFrame(frame.blob, frame.metadata, ++arrived).catch(error => {
-            if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error));
-          });
-        } catch (error) {
-          if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error));
-        }
+        streamQueue?.push((event as MessageEvent).data);
       });
       opened.onerror = () => {
         if (cancelled || source !== opened) return;

@@ -448,7 +448,7 @@ export class ChromeCdpDriver implements BrowserDriver {
       stream.starting = (async () => {
         await this.connection.send("Page.bringToFront", {}, page.cdpSessionId);
         await this.connection.send("Page.startScreencast", {
-          format: "jpeg", quality: 85, maxWidth: width, maxHeight: height, everyNthFrame: 1,
+          format: "jpeg", quality: 75, maxWidth: width, maxHeight: height, everyNthFrame: 1,
         }, page.cdpSessionId);
       })();
     }
