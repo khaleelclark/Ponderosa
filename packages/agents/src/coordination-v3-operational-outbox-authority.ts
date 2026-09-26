@@ -225,7 +225,6 @@ export class CoordinationV3OperationalOutboxAuthority {
       const source = sources.length === 1 ? sources[0] : undefined;
       if (!source?.runtime_payload_json ||
           source.runtime_project_id !== row.project_id ||
-          canonicalSource.eventId !== source.source_id ||
           canonicalSource.projectId !== row.project_id ||
           typeof canonicalSource.conversationId !== "string" ||
           candidate.conversationId !== canonicalSource.conversationId ||
@@ -237,6 +236,9 @@ export class CoordinationV3OperationalOutboxAuthority {
       }
       const activationPayload = JSON.parse(row.activation_payload_json) as { communication?: unknown };
       const runtimePayload = JSON.parse(source.runtime_payload_json) as { communication?: unknown };
+      // The Activation source ID identifies the runtime delivery. For direct
+      // messages it is dispatch:<canonical event ID>:<Agent ID>, not the
+      // canonical Communication event ID itself.
       const sameSource = (value: unknown): boolean => {
         if (!value || typeof value !== "object" || Array.isArray(value)) return false;
         const event = value as Record<string, unknown>;

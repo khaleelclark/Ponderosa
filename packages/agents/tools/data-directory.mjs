@@ -58,13 +58,19 @@ if (command === "backup") {
   try {
     const revision = payload?.revision;
     const sources = store.sqlite.prepare(`
-      SELECT source.source_id, activation.project_id
+      SELECT activation.project_id, runtime.payload_json AS runtime_payload_json
       FROM activation_sources source
       JOIN agent_activations activation ON activation.id = source.activation_id
+      JOIN runtime_communications runtime ON runtime.id = source.source_id
+        AND runtime.project_id = activation.project_id
       WHERE source.activation_id = ? AND source.source_kind = 'communication'
     `).all(activationId);
-    const source = sources.length === 1
-      ? store.getCommunicationEvent(sources[0].project_id, sources[0].source_id)
+    const runtimePayload = sources.length === 1
+      ? JSON.parse(sources[0].runtime_payload_json)
+      : undefined;
+    const canonicalEventId = runtimePayload?.communication?.eventId;
+    const source = typeof canonicalEventId === "string" && canonicalEventId
+      ? store.getCommunicationEvent(sources[0].project_id, canonicalEventId)
       : undefined;
     if (!source || source.eventId !== revision?.targetEventId ||
         source.projectId !== revision.projectId ||

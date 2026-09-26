@@ -101,7 +101,8 @@ test("migration retains poisoned historical dead letters until exact audited rep
       audience: { ...source.audience, agentId: otherAgent.id },
     });
     const recorded = coordination.recordRuntimeCommunication({
-      id: source.eventId, projectId: project.id, sender: source.sender,
+      id: `dispatch:${source.eventId}:${agent.id}`,
+      projectId: project.id, sender: source.sender,
       intent: source.intent, audience: source.audience,
       payload: {
         communication: source,
@@ -119,6 +120,10 @@ test("migration retains poisoned historical dead letters until exact audited rep
     });
     const activationId = recorded.activationId;
     assert.ok(activationId);
+    assert.equal(store.sqlite.prepare(`
+      SELECT source_id FROM activation_sources
+      WHERE activation_id = ? AND source_kind = 'communication'
+    `).get(activationId).source_id, `dispatch:${source.eventId}:${agent.id}`);
     for (const ready of coordination.claimOutbox("worker", 20, at)) coordination.completeOutbox(ready.id, "worker", at);
     const oldError = "invalid queued-edit revision outbox payload";
     const inserted = store.sqlite.prepare(`
