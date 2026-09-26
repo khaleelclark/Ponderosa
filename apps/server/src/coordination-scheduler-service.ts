@@ -1,4 +1,5 @@
 import type { CommunicationEvent } from "@ponderosa/core";
+import { CommunicationRevisionValidationError } from "@ponderosa/agents";
 import type {
   AgentStore,
   CoordinationV3Store,
@@ -22,6 +23,7 @@ import {
   ActivationPromptCompilationError,
   compileActivationPrompt,
   CoordinationV3Scheduler,
+  PermanentOutboxError,
 } from "./coordination-v3-scheduler.js";
 import type { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
 import { appendReadableArtifactReferences } from "./communication-artifacts.js";
@@ -42,6 +44,43 @@ type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>
  * file instead of risking a provider request/context rejection. */
 const AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT = 256 * 1024;
 const PROVIDER_INTAKE_CHECK_BUDGET_MS = 500;
+
+export function requireQueuedEditRevisionOutboxPayload(item: {
+  activationId: string;
+  payload: unknown;
+}): QueuedEditRevisionOutboxPayload {
+  const payload = item.payload as Partial<QueuedEditRevisionOutboxPayload> | null;
+  if (!payload || payload.activationId !== item.activationId ||
+      typeof payload.agentId !== "string" || !payload.agentId ||
+      typeof payload.conversationId !== "string" || !payload.conversationId ||
+      !payload.revision || typeof payload.revision !== "object" ||
+      payload.revision.kind !== "edit" || payload.revision.schemaVersion !== 1 ||
+      typeof payload.revision.projectId !== "string" ||
+      payload.revision.conversationId !== payload.conversationId ||
+      typeof payload.revision.targetEventId !== "string" || !payload.revision.targetEventId ||
+      typeof payload.revision.eventId !== "string" || !payload.revision.eventId ||
+      typeof payload.revision.idempotencyKey !== "string" || !payload.revision.idempotencyKey ||
+      typeof payload.revision.createdAt !== "string" || !payload.revision.createdAt ||
+      typeof payload.revision.text !== "string" ||
+      !payload.revision.sender || typeof payload.revision.sender !== "object") {
+    throw new PermanentOutboxError("invalid queued-edit revision outbox payload");
+  }
+  return payload as QueuedEditRevisionOutboxPayload;
+}
+
+export function appendQueuedEditRevisionOrThrow(
+  store: Pick<AgentStore, "appendCommunicationRevision">,
+  payload: QueuedEditRevisionOutboxPayload,
+): void {
+  try {
+    store.appendCommunicationRevision(payload.revision);
+  } catch (error) {
+    if (error instanceof CommunicationRevisionValidationError) {
+      throw new PermanentOutboxError(error.message);
+    }
+    throw error;
+  }
+}
 
 export interface CorrelatedArtifactReference {
   artifactId: string;
@@ -507,6 +546,9 @@ return new CoordinationV3Scheduler(
     },
     processOutbox: async (item) => {
       if (item.eventKind === "queued_message_change") {
+        if (!coordinationV3.queuedMessageCancellationChange(item.activationId)) {
+          throw new PermanentOutboxError("queued-message cancellation authority is unavailable");
+        }
         applyQueuedMessageChangeOutbox(item, {
           coordinationV3,
           workspace,
@@ -515,17 +557,15 @@ return new CoordinationV3Scheduler(
         });
         return;
       }
-      if (item.eventKind !== "communication_revision") return;
-      const payload = item.payload as Partial<QueuedEditRevisionOutboxPayload> | null;
-      if (!payload || typeof payload.activationId !== "string" || typeof payload.agentId !== "string"
-        || typeof payload.conversationId !== "string" || !payload.revision
-        || typeof payload.revision !== "object" || payload.revision.kind !== "edit") {
-        throw new Error("invalid queued-edit revision outbox payload");
+      if (item.eventKind === "activation_ready") return;
+      if (item.eventKind !== "communication_revision") {
+        throw new PermanentOutboxError("unknown activation-outbox event kind");
       }
-      store.appendCommunicationRevision(payload.revision);
+      const payload = requireQueuedEditRevisionOutboxPayload(item);
+      appendQueuedEditRevisionOrThrow(store, payload);
       if (payload.artifact) {
         const target = store.getCommunicationEvent(payload.revision.projectId, payload.revision.targetEventId);
-        if (!target) throw new Error("queued-edit artifact target Communication is unavailable");
+        if (!target) throw new PermanentOutboxError("queued-edit artifact target Communication is unavailable");
         projectCommunicationArtifact(
           payload.revision.projectId,
           "local-operator",

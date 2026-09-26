@@ -1242,6 +1242,14 @@ export class CoordinationV3Store {
     this.operationalOutboxAuthority.failOutbox(id, workerId, error, now);
   }
 
+  deadLetterOutbox(id: number, workerId: string, error: string, now?: string): void {
+    this.operationalOutboxAuthority.deadLetterOutbox(id, workerId, error, now);
+  }
+
+  requeueDeadLetteredRevision(id: number, activationId: string, expectedLastError: string, payload: unknown, reason: string, now?: string): void {
+    this.operationalOutboxAuthority.requeueDeadLetteredRevision(id, activationId, expectedLastError, payload, reason, now);
+  }
+
   pruneSettledOutboxes(retain = 10_000): { activationOutbox: number; providerOperations: number } {
     return this.operationalOutboxAuthority.pruneSettledOutboxes(retain);
   }

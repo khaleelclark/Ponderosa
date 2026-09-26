@@ -133,6 +133,35 @@ path with the retained installed offline CLI, reinstalling the prior exact
 
 ## Failure response
 
+- **Activation outbox dead letter:** do not mark the row processed or delete its
+  Activation. Drain and stop the service, preserve an encrypted backup, then
+  inspect the exact row with the installed offline CLI:
+
+  ```sh
+  install_root=/opt/ponderosa-engine/resources/Ponderosa
+  node="$install_root/runtime/node"
+  data_tool="$install_root/app/server/tools/data-directory.mjs"
+  "$node" "$data_tool" outbox-list --data-dir "$PONDEROSA_DATA_DIR"
+  ```
+
+  For a `communication_revision` row, independently reconstruct the intended
+  revision from its canonical user Communication and Activation into a private
+  mode-0600 JSON file. After checking the target and author, requeue only that
+  row with its observed Activation ID and exact previous error:
+
+  ```sh
+  "$node" "$data_tool" outbox-requeue --data-dir "$PONDEROSA_DATA_DIR" \
+    --outbox-id "$OUTBOX_ID" --activation-id "$ACTIVATION_ID" \
+    --expected-error "$LAST_ERROR" --payload-file "$CORRECTED_PAYLOAD_FILE" \
+    --reason "$OPERATOR_REPAIR_REASON"
+  ```
+
+  The previous and replacement payloads are durably recorded in
+  `activation_outbox_repair_audit`. Remove the private correction file after
+  verification, restart the service, and require the outbox row to settle and
+  the blocked Activation to become leaseable. Never automatically revive old
+  dead letters merely because their JSON parses.
+
 - **Provider degraded:** drain new leasing, preserve active work, verify the
   provider account independently, inspect provider authority/process metrics,
   and resume only after a successful probe.

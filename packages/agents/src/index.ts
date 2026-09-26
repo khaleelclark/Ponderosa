@@ -3,6 +3,7 @@
 // from packages/engines except AgentEvent (re-exported through core).
 
 export { AgentStore, AgentDeletionConflictError } from "./store.js";
+export { CommunicationRevisionValidationError } from "./store-communication-journal-authority.js";
 export { ProjectDeletionInProgressError } from "./store-workspace-catalog-authority.js";
 export type {
   AgentCreationArtifactIdentity,

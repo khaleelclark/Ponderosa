@@ -1,15 +1,19 @@
 ALTER TABLE activation_outbox ADD COLUMN available_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z';
 
--- Older builds dead-lettered otherwise valid signals after eight rapid tries.
--- Restore them to bounded retry; malformed payloads remain repair obligations.
-UPDATE activation_outbox
-SET dead_lettered_at = NULL,
-    available_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-    claimed_by = NULL,
-    claimed_at = NULL
-WHERE processed_at IS NULL AND dead_lettered_at IS NOT NULL
-  AND last_error <> 'invalid activation-outbox payload'
-  AND json_valid(payload_json) = 1;
+-- Do not infer that historical dead letters are transient. JSON-valid payloads
+-- may still be structurally or semantically invalid. They require exact-row
+-- operator repair before requeueing, while new transient failures back off.
+
+CREATE TABLE IF NOT EXISTS activation_outbox_repair_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  outbox_id INTEGER NOT NULL,
+  activation_id TEXT NOT NULL,
+  previous_payload_json TEXT NOT NULL,
+  replacement_payload_json TEXT NOT NULL,
+  previous_error TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  repaired_at TEXT NOT NULL
+);
 
 CREATE INDEX IF NOT EXISTS activation_outbox_available
   ON activation_outbox (available_at, id)

@@ -32,6 +32,13 @@ import {
   messageDispatchesPath,
 } from "./paths.js";
 
+export class CommunicationRevisionValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CommunicationRevisionValidationError";
+  }
+}
+
 export class AgentCommunicationJournalAuthority {
   private deliverySequence: number;
   private readonly communicationEventCache = new Map<string, {
@@ -302,16 +309,16 @@ export class AgentCommunicationJournalAuthority {
    */
   appendCommunicationRevision(input: CommunicationRevisionEvent): { revision: CommunicationRevisionEvent; replayed: boolean } {
     const project = this.getProject(input.projectId);
-    if (!project) throw new Error("communication revision project not found");
+    if (!project) throw new CommunicationRevisionValidationError("communication revision project not found");
     const target = this.getCommunicationEvent(input.projectId, input.targetEventId);
-    if (!target || target.conversationId !== input.conversationId) throw new Error("communication revision target not found");
+    if (!target || target.conversationId !== input.conversationId) throw new CommunicationRevisionValidationError("communication revision target not found");
     if (input.schemaVersion !== 1 || input.kind !== "edit" || !input.eventId || !input.idempotencyKey || !input.createdAt) {
-      throw new Error("communication revision is incomplete");
+      throw new CommunicationRevisionValidationError("communication revision is incomplete");
     }
     if (target.sender.kind !== "user" || input.sender.kind !== "user" || target.sender.userId !== input.sender.userId) {
-      throw new Error("communication revision author does not own its target");
+      throw new CommunicationRevisionValidationError("communication revision author does not own its target");
     }
-    if (!input.text.trim() && !target.attachments?.length) throw new Error("communication revision text is required");
+    if (!input.text.trim() && !target.attachments?.length) throw new CommunicationRevisionValidationError("communication revision text is required");
     const index = this.communicationRevisionIndex(input.projectId);
     const idempotency = `${JSON.stringify(input.sender)}\u0000${input.idempotencyKey}`;
     const equivalent = (candidate: CommunicationRevisionEvent) =>
@@ -319,12 +326,12 @@ export class AgentCommunicationJournalAuthority {
       candidate.targetEventId === input.targetEventId && candidate.kind === input.kind && candidate.text === input.text;
     const replay = index.byIdempotency.get(idempotency);
     if (replay) {
-      if (!equivalent(replay)) throw new Error("communication revision idempotency collision");
+      if (!equivalent(replay)) throw new CommunicationRevisionValidationError("communication revision idempotency collision");
       return { revision: replay, replayed: true };
     }
     const existing = index.byId.get(input.eventId);
     if (existing) {
-      if (JSON.stringify(existing) !== JSON.stringify(input)) throw new Error("communication revision event ID collision");
+      if (JSON.stringify(existing) !== JSON.stringify(input)) throw new CommunicationRevisionValidationError("communication revision event ID collision");
       return { revision: existing, replayed: true };
     }
     appendFsyncedJsonl(communicationRevisionsPath(this.dataDir, input.projectId), [input]);

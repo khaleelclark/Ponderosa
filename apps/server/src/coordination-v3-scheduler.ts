@@ -65,6 +65,15 @@ export class ActivationPromptPreparationTimeoutError extends Error {
   }
 }
 
+/** A malformed or canonically impossible signal needs operator repair, not
+ * another automatic attempt against the same immutable payload. */
+export class PermanentOutboxError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PermanentOutboxError";
+  }
+}
+
 export interface AutomaticResultMaterial {
   artifactId: string;
   title: string;
@@ -231,7 +240,11 @@ export class CoordinationV3Scheduler {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           this.metrics.lastDispatchError = message;
-          this.store.failOutbox(item.id, this.options.workerId, message);
+          if (error instanceof PermanentOutboxError) {
+            this.store.deadLetterOutbox(item.id, this.options.workerId, message, now);
+          } else {
+            this.store.failOutbox(item.id, this.options.workerId, message, now);
+          }
         }
       }
       // Deployment draining pauses only new Run/steering admission. Exact-Run
