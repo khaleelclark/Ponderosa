@@ -1,4 +1,4 @@
-# Ponderosa Local Browser — experimental window connection (0.4.0)
+# Ponderosa Local Browser — experimental window connection (0.4.1)
 
 Connect one explicitly chosen Chrome/Edge desktop window to a Ponderosa Chat.
 Existing and subsequently added HTTPS application tabs in that window are included.
@@ -47,6 +47,11 @@ Other windows are outside the grant. This is an unpacked extension, not a store 
   Embedded cross-origin frame upload controls are not supported yet. Attachment
   verification confirms the file input, not a successful final site submission.
   Downloads remain manual. Resizing Ponderosa does not resize Chrome.
+- A short-lived, non-interactive Agent cursor marks click, fill, typing, and
+  scroll actions in the connected tab. It is hidden from Agent inspection and
+  screenshots and cleared when browser control pauses or disconnects. Agent
+  tools issue discrete actions, so the cursor marks action targets rather than
+  pretending to track continuous mouse motion.
 - Google/iCIMS compatibility is not guaranteed. This does not bypass CAPTCHA or
   authentication restrictions. Manual Chrome/Edge consent and real sign-in testing
   remain user qualification.

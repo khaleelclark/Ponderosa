@@ -141,6 +141,35 @@ export async function decodeBrowserFrame(blob: Blob): Promise<string> {
   }
 }
 
+/** Decode a frame for a persistent canvas. SVG test/legacy frames and browsers
+ * without createImageBitmap still use an Image, without replacing the DOM node. */
+export async function decodeBrowserFrameSurface(blob: Blob): Promise<{
+  source: CanvasImageSource;
+  width: number;
+  height: number;
+  close(): void;
+}> {
+  if (typeof createImageBitmap === "function" && blob.type !== "image/svg+xml") {
+    try {
+      const bitmap = await createImageBitmap(blob);
+      return { source: bitmap, width: bitmap.width, height: bitmap.height, close: () => bitmap.close() };
+    } catch {
+      // Some WebKit versions advertise createImageBitmap but reject JPEG
+      // blobs. Keep the ordinary image decoder as the compatibility path.
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  try {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    return { source: image, width: image.naturalWidth, height: image.naturalHeight, close: () => URL.revokeObjectURL(url) };
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
+  }
+}
+
 /** Decode at most one frame at a time. During a burst, retain only the newest
  * waiting frame so display latency does not grow behind obsolete pixels. */
 export function createLatestBrowserFrameQueue<T>(consume: (frame: T) => Promise<void>, onError: (error: unknown) => void) {
@@ -184,4 +213,42 @@ export function parseBrowserFrameEvent(data: string): { blob: Blob; metadata: im
   const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
   if (!bytes.length || bytes.length > 1_500_000) throw new Error("Browser preview frame is too large.");
   return { blob: new Blob([bytes], { type: frame.mediaType }), metadata };
+}
+
+/** Binary preview packets: 32-bit metadata length, 32-bit frame length,
+ * UTF-8 metadata JSON, then the JPEG/PNG bytes. Zero lengths are a heartbeat. */
+export function createBrowserBinaryFrameParser() {
+  let pending = new Uint8Array(0);
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  return {
+    push(chunk: Uint8Array): Array<{ blob: Blob; metadata: import("@ponderosa/core").BrowserFrameMetadata }> {
+      if (chunk.length > 2_000_000 || pending.length + chunk.length > 2_000_000) throw new Error("Browser preview frame is too large.");
+      const joined = new Uint8Array(pending.length + chunk.length);
+      joined.set(pending);
+      joined.set(chunk, pending.length);
+      pending = joined;
+      const frames: Array<{ blob: Blob; metadata: import("@ponderosa/core").BrowserFrameMetadata }> = [];
+      let offset = 0;
+      while (pending.length - offset >= 8) {
+        const header = new DataView(pending.buffer, pending.byteOffset + offset, 8);
+        const metadataLength = header.getUint32(0);
+        const imageLength = header.getUint32(4);
+        if (metadataLength === 0 && imageLength === 0) { offset += 8; continue; }
+        if (metadataLength === 0 || metadataLength > 4_096 || imageLength === 0 || imageLength > 1_500_000) throw new Error("Browser preview frame is invalid.");
+        const length = 8 + metadataLength + imageLength;
+        if (pending.length - offset < length) break;
+        const value: unknown = JSON.parse(decoder.decode(pending.subarray(offset + 8, offset + 8 + metadataLength)));
+        if (!value || typeof value !== "object") throw new Error("Browser preview frame is invalid.");
+        const frame = value as Record<string, unknown>;
+        const metadata = frame.metadata as import("@ponderosa/core").BrowserFrameMetadata | undefined;
+        if ((frame.mediaType !== "image/jpeg" && frame.mediaType !== "image/png") || !metadata || typeof metadata.pageId !== "string" ||
+            !metadata.viewport || !Number.isFinite(metadata.viewport.width) || !Number.isFinite(metadata.viewport.height) ||
+            metadata.viewport.width <= 0 || metadata.viewport.height <= 0) throw new Error("Browser preview frame is invalid.");
+        frames.push({ blob: new Blob([pending.slice(offset + 8 + metadataLength, offset + length)], { type: frame.mediaType }), metadata });
+        offset += length;
+      }
+      if (offset) pending = pending.slice(offset);
+      return frames;
+    },
+  };
 }

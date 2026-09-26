@@ -19,7 +19,7 @@ export function LocalBrowserSetup({ projectId, session, onConnected, onClose }: 
   const error = pair.error ?? connect.error ?? connections.error;
   return <Box sx={{ p: 2, overflow: "auto" }}><Stack spacing={1.5}>
     <Typography variant="h6">Connect your browser</Typography>
-    <Typography variant="body2">Use a dedicated Chrome/Edge window and extension version 0.4.0. Connect whenever you want—even before signing in. Existing and new application tabs are included; other windows stay outside access.</Typography>
+    <Typography variant="body2">Use a dedicated Chrome/Edge window and extension version 0.4.1. Connect whenever you want—even before signing in. Existing and new application tabs are included; other windows stay outside access. Agent actions show a temporary cursor in that window.</Typography>
     <TextField size="small" label="Ponderosa address" value={window.location.origin} inputProps={{ readOnly: true }} />
     {pair.data ? <><TextField size="small" label="Pairing code — valid for 5 minutes" value={pair.data.code} inputProps={{ readOnly: true }} onFocus={event => event.target.select()} /><Typography variant="caption">Paste this code into the extension and choose Connect this window. Treat the code as private.</Typography></> : null}
     <Button variant="outlined" disabled={pair.isPending} onClick={() => pair.mutate()}>{pair.data ? "Create a new code" : "Create pairing code"}</Button>

@@ -89,7 +89,9 @@ export function registerBrowserRoutes(
   } = context;
   const previewStreams = new Set<() => void>();
   const registerPreviewStream = (route: string, manager: BrowserSessionManager, scope: (params: BrowserRouteParams) => BrowserScope) => {
-    app.get<{ Params: BrowserRouteParams; Querystring: { pageId?: string } }>(route, async (request, reply) => {
+    app.get<{ Params: BrowserRouteParams; Querystring: { pageId?: string; format?: string } }>(route, async (request, reply) => {
+      const binary = request.query.format === "binary";
+      if (request.query.format && !binary) return reply.code(400).send({ error: "invalid preview format" });
       if (previewStreams.size >= 8) return reply.code(429).send({ error: "too many browser previews" });
       if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
       let frame: Awaited<ReturnType<BrowserSessionManager["previewFrame"]>>;
@@ -101,7 +103,7 @@ export function registerBrowserRoutes(
       catch (error) { return browserRouteError(reply, error); }
       reply.hijack();
       reply.raw.writeHead(200, {
-        "content-type": "text/event-stream; charset=utf-8",
+        "content-type": binary ? "application/vnd.ponderosa.browser-frames" : "text/event-stream; charset=utf-8",
         "cache-control": "private, no-store, no-transform",
         connection: "keep-alive",
         "x-accel-buffering": "no",
@@ -120,7 +122,7 @@ export function registerBrowserRoutes(
         if (!reply.raw.writableEnded) reply.raw.end();
         if (!reply.raw.destroyed) reply.raw.destroy();
       };
-      const write = (body: string): Promise<boolean> => new Promise(resolve => {
+      const write = (body: string | Buffer): Promise<boolean> => new Promise(resolve => {
         if (closed || reply.raw.destroyed) return resolve(false);
         try {
           if (reply.raw.write(body)) return resolve(true);
@@ -146,11 +148,20 @@ export function registerBrowserRoutes(
         // when Chrome's pixels and sequence are unchanged.
         const key = `${next.mediaType}:${next.sequence}:${JSON.stringify(next.metadata.activity ?? null)}`;
         if (key !== lastKey) {
-          const body = `event: frame\ndata: ${JSON.stringify({ data: next.body.toString("base64"), mediaType: next.mediaType, sequence: next.sequence, metadata: next.metadata })}\n\n`;
-          if (Buffer.byteLength(body) > 2 * 1024 * 1024 || !await write(body)) return close();
+          if (binary) {
+            const metadata = Buffer.from(JSON.stringify({ mediaType: next.mediaType, sequence: next.sequence, metadata: next.metadata }));
+            if (metadata.length > 4_096 || next.body.length > 1_500_000) return close();
+            const header = Buffer.allocUnsafe(8);
+            header.writeUInt32BE(metadata.length, 0);
+            header.writeUInt32BE(next.body.length, 4);
+            if (!await write(Buffer.concat([header, metadata, next.body]))) return close();
+          } else {
+            const body = `event: frame\ndata: ${JSON.stringify({ data: next.body.toString("base64"), mediaType: next.mediaType, sequence: next.sequence, metadata: next.metadata })}\n\n`;
+            if (Buffer.byteLength(body) > 2 * 1024 * 1024 || !await write(body)) return close();
+          }
           lastKey = key;
         } else if (Date.now() - lastHeartbeat > 10_000) {
-          if (!await write(": heartbeat\n\n")) return close();
+          if (!await write(binary ? Buffer.alloc(8) : ": heartbeat\n\n")) return close();
           lastHeartbeat = Date.now();
         }
         if (closed) return;

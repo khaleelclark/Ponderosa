@@ -106,6 +106,11 @@ try {
     await page.getByRole("textbox", { name: "Website address", exact: true }).press("Enter");
     await page.getByText("Use an http(s) website address or a search term.", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Browser options", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Use compatibility preview", exact: true }).click();
+    await page.getByRole("button", { name: "Browser options", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Use faster preview", exact: true }).click();
+    assert.equal(await page.evaluate(() => window.browserSession.status), "ready", "preview comparison does not restart the browser");
+    await page.getByRole("button", { name: "Browser options", exact: true }).click();
     await page.getByRole("menuitem", { name: "Use myself", exact: true }).click();
     await page.waitForFunction(() => window.lastBrowserGrant?.owner === "operator");
     assert.equal(await page.evaluate(() => window.browserSession.manualControl), "automation", "ordinary takeover preserves the Chrome connection");
