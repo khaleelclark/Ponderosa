@@ -20,6 +20,7 @@ interface NativeJobBinding {
   readSecureFile(root: string, relativePath: string, maxBytes: number, requireNonEmpty: boolean): Buffer | null;
   listSecureDirectory(root: string, relativePath: string): SecureDirectoryEntry[] | null;
   ensureSecureDirectory(root: string, relativePath: string): boolean;
+  secureDirectoryIdentity(root: string, relativePath: string): string | null;
   writeSecureFileAtomic(
     root: string,
     relativeDirectory: string,
@@ -326,6 +327,18 @@ export function ensureSecureDirectory(input: {
   if (!binding().ensureSecureDirectory(input.root, input.relativePath)) {
     throw new Error("secure directory could not be established");
   }
+}
+
+/** Stable volume/file identity for an existing secure directory chain. */
+export function secureDirectoryIdentity(input: {
+  root: string;
+  relativePath?: string;
+}): string | undefined {
+  if (!secureFileAuthoritySupported()) return undefined;
+  assertSafeRoot(input.root);
+  const relativePath = input.relativePath ?? "";
+  assertSafeRelativeDirectory(relativePath);
+  return binding().secureDirectoryIdentity(input.root, relativePath) ?? undefined;
 }
 
 /**

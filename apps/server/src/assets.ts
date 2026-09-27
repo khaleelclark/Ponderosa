@@ -3,7 +3,7 @@ import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, re
 import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
-import { ensureSecureDirectory, listSecureDirectory, readSecureFile, removeSecureFile, writeSecureFileAtomic } from "@ponderosa/native-host";
+import { ensureSecureDirectory, listSecureDirectory, readSecureFile, removeSecureFile, secureDirectoryIdentity, writeSecureFileAtomic } from "@ponderosa/native-host";
 import { decodeHeic, isHeicContainer } from "./heic.js";
 import type { ArtifactDto, AssetDto } from "@ponderosa/core";
 import {
@@ -1085,15 +1085,33 @@ export class AssetStore {
   ): AssetDto {
     const { projectId, agentId, body } = input;
     const { name, mediaType, width, height, preview } = prepared;
+    const rootIdentity = secureDirectoryIdentity({ root: this.dataDir });
+    if (!rootIdentity) throw new AssetError(409, "asset storage is unavailable");
     const relative = this.secureDirectory(projectId, agentId, true);
+    const directoryIdentity = secureDirectoryIdentity({ root: this.dataDir, relativePath: relative });
+    if (!directoryIdentity) throw new AssetError(409, "asset storage is unavailable");
+    const assertCurrent = () => {
+      if (secureDirectoryIdentity({ root: this.dataDir }) !== rootIdentity ||
+          secureDirectoryIdentity({ root: this.dataDir, relativePath: relative }) !== directoryIdentity) {
+        throw new AssetError(409, "asset storage changed during upload");
+      }
+    };
+    const fenced = <T>(operation: () => T): T => {
+      assertCurrent();
+      const value = operation();
+      assertCurrent();
+      return value;
+    };
+    assertCurrent();
     const entries = listSecureDirectory({ root: this.dataDir, relativePath: relative });
     if (!entries) throw new AssetError(409, "asset storage is unavailable");
+    assertCurrent();
     const existing = new Map<string, number>();
     for (const entry of entries) {
       const match = /^([a-f0-9-]{36})\.bin$/u.exec(entry.name);
       if (match && entry.kind === "file" && entry.size !== undefined) existing.set(match[1]!, entry.size);
     }
-    this.authority.syncAgent(projectId, agentId, existing);
+    fenced(() => this.authority.syncAgent(projectId, agentId, existing));
     const id = randomUUID();
     const reservationId = this.authority.reserve(projectId, agentId, id, body.length);
     const createdAt = new Date().toISOString();
@@ -1108,25 +1126,36 @@ export class AssetStore {
       previewUrl: previewFile ? `/api/agents/${encodeURIComponent(agentId)}/assets/${id}/preview` : undefined,
     };
     try {
-      this.authority.recordSecureAudit(this.dataDir, relative, projectId, agentId,
-        { action: "upload_reserved", agentId, projectId, at: createdAt });
+      fenced(() => this.authority.recordSecureAudit(this.dataDir, relative, projectId, agentId,
+        { action: "upload_reserved", agentId, projectId, at: createdAt }));
+      fenced(() => this.secureWrite(relative, originalFile, body));
+      if (previewFile && preview) fenced(() => this.secureWrite(relative, previewFile, preview));
+      fenced(() => this.secureWrite(relative, `${id}.json`, JSON.stringify(asset)));
+      fenced(() => this.authority.recordSecureAudit(this.dataDir, relative, projectId, agentId,
+        { action: "staged", id, agentId, projectId, size: body.length, mediaType, at: createdAt }));
+      const readable = fenced(() => this.secureRead(relative, originalFile, ASSET_LIMITS.maxFileBytes));
+      const metadata = fenced(() => this.secureRead(relative, `${id}.json`, 32 * 1024));
+      if (!readable?.equals(body) || !metadata ||
+          !validateStoredAsset(JSON.parse(metadata.toString("utf8")), projectId, agentId, id)) {
+        throw new AssetError(409, "asset upload could not be verified");
+      }
+      fenced(() => this.authority.settle(reservationId));
+      return publicDto(asset);
+    } catch (error) {
+      // Never delete through a replacement pathname. Orphans in a displaced
+      // root remain unacknowledged and carry a durable cleanup obligation.
+      try { this.authority.beginDelete(id, projectId, agentId); }
+      catch { /* retain the primary upload failure */ }
       try {
-        this.secureWrite(relative, originalFile, body);
-        if (previewFile && preview) this.secureWrite(relative, previewFile, preview);
-        this.secureWrite(relative, `${id}.json`, JSON.stringify(asset));
-        this.authority.settle(reservationId);
-      } catch (error) {
+        assertCurrent();
         for (const leaf of [originalFile, previewFile, `${id}.json`]) {
           if (leaf) {
             try { this.secureRemove(relative, leaf); }
-            catch { /* retain the primary publication failure for retry */ }
+            catch { /* retain the primary publication failure */ }
           }
         }
-        throw error;
-      }
-      this.authority.recordSecureAudit(this.dataDir, relative, projectId, agentId,
-        { action: "staged", id, agentId, projectId, size: body.length, mediaType, at: createdAt });
-      return publicDto(asset);
+      } catch { /* the root changed, so it cannot be safely cleaned by path */ }
+      throw error;
     } finally {
       this.authority.release(reservationId);
     }

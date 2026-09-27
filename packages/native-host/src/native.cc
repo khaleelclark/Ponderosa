@@ -1743,6 +1743,33 @@ napi_value EnsureSecureDirectory(napi_env env, napi_callback_info info) {
   return Boolean(env, stable);
 }
 
+napi_value SecureDirectoryIdentity(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  std::string root;
+  std::string relative;
+  if (argc != 2 || !ReadUtf8(env, args[0], &root) ||
+      !ReadUtf8(env, args[1], &relative)) return Null(env);
+#ifdef _WIN32
+  WindowsHandleSet handles;
+  std::vector<WindowsIdentity> identities;
+#else
+  DescriptorSet handles;
+  std::vector<struct stat> identities;
+#endif
+  std::vector<std::string> components;
+  if (!OpenSecureDirectory(root, relative, false, &handles, &identities,
+                           &components) ||
+      !SecureDirectoryStillCurrent(root, components, handles, identities)) {
+    return Null(env);
+  }
+  const std::string token = IdentityToken(identities.back());
+  napi_value value;
+  napi_create_string_utf8(env, token.c_str(), token.size(), &value);
+  return value;
+}
+
 napi_value Initialize(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
       {"windowsJobObjectsSupported", nullptr, WindowsJobObjectsSupported, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -1752,6 +1779,7 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"readSecureFile", nullptr, ReadSecureFile, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"listSecureDirectory", nullptr, ListSecureDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"ensureSecureDirectory", nullptr, EnsureSecureDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"secureDirectoryIdentity", nullptr, SecureDirectoryIdentity, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"writeSecureFileAtomic", nullptr, WriteSecureFileAtomic, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"removeSecureFile", nullptr, RemoveSecureFile, nullptr, nullptr, nullptr, napi_default, nullptr},
 #ifdef __linux__

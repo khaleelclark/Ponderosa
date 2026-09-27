@@ -94,13 +94,25 @@ export function registerBrowserRoutes(
       if (request.query.format && !binary) return reply.code(400).send({ error: "invalid preview format" });
       if (previewStreams.size >= 8) return reply.code(429).send({ error: "too many browser previews" });
       if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+      // Reserve before awaiting the first capture. Concurrent slow captures
+      // must count toward the same eight-stream budget as active streams.
+      let reserved = true;
+      const releaseReservation = () => {
+        if (!reserved) return;
+        reserved = false;
+        previewStreams.delete(releaseReservation);
+        reply.raw.off("close", releaseReservation);
+      };
+      previewStreams.add(releaseReservation);
+      reply.raw.once("close", releaseReservation);
       let frame: Awaited<ReturnType<BrowserSessionManager["previewFrame"]>>;
       let browserScope: BrowserScope;
       try {
         browserScope = scope(request.params);
         frame = await manager.previewFrame(browserScope, request.query.pageId);
       }
-      catch (error) { return browserRouteError(reply, error); }
+      catch (error) { releaseReservation(); return browserRouteError(reply, error); }
+      if (!reserved || reply.raw.destroyed) { releaseReservation(); return; }
       reply.hijack();
       reply.raw.writeHead(200, {
         "content-type": binary ? "application/vnd.ponderosa.browser-frames" : "text/event-stream; charset=utf-8",
@@ -116,7 +128,7 @@ export function registerBrowserRoutes(
         if (closed) return;
         closed = true;
         if (timer) clearTimeout(timer);
-        previewStreams.delete(close);
+        releaseReservation();
         liveSseClosures.delete(close);
         reply.raw.off("close", close);
         if (!reply.raw.writableEnded) reply.raw.end();
@@ -170,7 +182,6 @@ export function registerBrowserRoutes(
         }, next.mediaType === "image/png" ? 250 : 40);
       };
       reply.raw.on("close", close);
-      previewStreams.add(close);
       liveSseClosures.add(close);
       void run(frame);
     });

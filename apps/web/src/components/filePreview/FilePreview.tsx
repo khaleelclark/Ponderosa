@@ -7,7 +7,7 @@ import type { ArtifactKind } from "@ponderosa/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { previewCapability } from "./mimeCapabilities";
-import { workspaceMarkdownFileHref } from "./workspaceMarkdownLinks";
+import { renderableWorkspaceMarkdownHref } from "./workspaceMarkdownLinks";
 import { FeatureErrorBoundary } from "../FeatureErrorBoundary";
 
 function diffLineKind(line: string): "addition" | "deletion" | "neutral" {
@@ -38,7 +38,10 @@ export function UnifiedDiffViewer({ diff }: { diff: string }): JSX.Element {
 function MarkdownPreview({ content, projectId, path }: { content: string; projectId?: string; path?: string }): JSX.Element {
   return <Box sx={{ overflowWrap: "anywhere", "& pre": { overflowX: "auto" }, "& code": { fontSize: ".86rem" }, "& p": { lineHeight: 1.65 } }}>
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-      a: ({ href, children, ...rest }) => <a {...rest} href={projectId && path ? workspaceMarkdownFileHref(projectId, path, href) ?? href : href}>{children}</a>,
+      a: ({ href, children, ...rest }) => {
+        const safeHref = renderableWorkspaceMarkdownHref(projectId, path, href);
+        return safeHref ? <a {...rest} href={safeHref}>{children}</a> : <span>{children}</span>;
+      },
     }}>{content}</ReactMarkdown>
   </Box>;
 }

@@ -89,3 +89,78 @@ test("binary browser preview sends raw image bytes and releases its subscriber",
     await app.close();
   }
 });
+
+test("a delayed first frame still occupies one of the eight preview slots", async () => {
+  const app = Fastify();
+  const closures = new Set();
+  let captures = 0;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  registerBrowserRoutes(app, {
+    liveSseClosures: closures,
+    projectExists: id => id === "chat",
+    browserProfiles: { savedBrowser: () => undefined },
+    projectBrowserScope: projectId => ({ projectId, agentId: "browser", runId: "shared" }),
+    projectBrowserSessions: { previewFrame: async () => {
+      captures++;
+      await gate;
+      return { body: Buffer.from([255, 216, 255, 1]), mediaType: "image/jpeg", sequence: 1,
+        metadata: { pageId: "one", viewport: { width: 1280, height: 720 } } };
+    } },
+  });
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  const controllers = Array.from({ length: 12 }, () => new AbortController());
+  try {
+    const requests = controllers.map(controller => fetch(`${app.listeningOrigin}/api/projects/chat/browser/frame-stream`, { signal: controller.signal }));
+    const deadline = Date.now() + 5_000;
+    while (captures < 8 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(captures, 8, "no ninth capture may begin while eight first frames are pending");
+    release();
+    const responses = await Promise.all(requests);
+    assert.equal(responses.filter(response => response.status === 200).length, 8);
+    assert.equal(responses.filter(response => response.status === 429).length, 4);
+    assert.equal(closures.size, 8);
+  } finally {
+    release();
+    controllers.forEach(controller => controller.abort());
+    for (let attempt = 0; attempt < 50 && closures.size; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(closures.size, 0, "disconnect releases every reserved stream");
+    await app.close();
+  }
+});
+
+test("failed first captures release preview reservations", async () => {
+  const app = Fastify();
+  const closures = new Set();
+  let captures = 0;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  registerBrowserRoutes(app, {
+    liveSseClosures: closures,
+    projectExists: id => id === "chat",
+    browserProfiles: { savedBrowser: () => undefined },
+    projectBrowserScope: projectId => ({ projectId, agentId: "browser", runId: "shared" }),
+    projectBrowserSessions: { previewFrame: async () => {
+      captures++;
+      await gate;
+      throw new Error("capture failed");
+    } },
+  });
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  try {
+    const pending = Array.from({ length: 8 }, () => fetch(`${app.listeningOrigin}/api/projects/chat/browser/frame-stream`));
+    const deadline = Date.now() + 5_000;
+    while (captures < 8 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(captures, 8);
+    assert.equal((await fetch(`${app.listeningOrigin}/api/projects/chat/browser/frame-stream`)).status, 429);
+    release();
+    assert.deepEqual((await Promise.all(pending)).map(response => response.status), Array(8).fill(500));
+    assert.equal((await fetch(`${app.listeningOrigin}/api/projects/chat/browser/frame-stream`)).status, 500,
+      "a failed first frame must not permanently consume a slot");
+    assert.equal(closures.size, 0);
+  } finally {
+    release();
+    for (const close of closures) close();
+    await app.close();
+  }
+});
