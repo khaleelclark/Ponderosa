@@ -1,0 +1,10 @@
+[Unit]
+Description=Ponderosa Agent provider and tool workloads
+
+[Slice]
+# Aggregate across all Ponderosa user scopes, not one limit per Agent. Keep
+# headroom for the app, browser service, desktop, and unrelated host work.
+# Operators with unusually heavy builds can tune these in a slice drop-in.
+MemoryAccounting=yes
+MemoryHigh=50%
+MemoryMax=60%
