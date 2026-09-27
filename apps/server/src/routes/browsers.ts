@@ -326,7 +326,7 @@ export function registerBrowserRoutes(
       if (body?.action === "open") {
         const existing = projectBrowserSessions.get(scope.agentId);
         if (existing && existing.status !== "closed" && existing.status !== "failed") return reply.code(409).send({ error: "End the existing browser session before opening a manual browser." });
-        return projectBrowserDto(projectId, await projectBrowserSessions.open(scope, undefined, "operator", undefined, true));
+        return projectBrowserDto(projectId, await projectBrowserSessions.open(scope, undefined, "operator", undefined, process.platform === "linux"));
       }
       if (!Number.isSafeInteger(body?.expectedControlEpoch) || !body?.sessionId) return reply.code(400).send({ error: "A current browser session and control epoch are required." });
       const current = projectBrowserSessions.get(scope.agentId);
@@ -391,7 +391,10 @@ export function registerBrowserRoutes(
         if (remember !== undefined) {
           browserProfiles.setChatRememberSignIns(scope.projectId, scope.agentId, remember);
         }
-        const session = await projectBrowserSessions.open(scope, request.body?.url, "operator", undefined, true, true);
+        // The native desktop bridge uses Linux display tools. Other hosts use
+        // the same in-app tabs and controls over the ordinary Chrome driver.
+        const nativeManual = process.platform === "linux";
+        const session = await projectBrowserSessions.open(scope, request.body?.url, "operator", undefined, nativeManual, nativeManual);
         return projectBrowserDto(request.params.projectId, session);
       } catch (error) {
         return browserRouteError(reply, error);

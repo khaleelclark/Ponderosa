@@ -776,7 +776,7 @@ export class BrowserSessionManager {
             });
           }, (handle, options) => this.registerSpawnHandle(session.dto, session, 1, publication, handle, options),
           (event) => this.commitPageEvent(session.dto, session, 1, event), {
-            ...(nativeManual ? { ...launch?.driver, nativeManual: true, initialUrl, connectOnOpen } : launch?.driver),
+            ...(nativeManual ? { ...launch?.driver, nativeManual: true, initialUrl, connectOnOpen } : { ...launch?.driver, nativeManual: false }),
             signal: session.launchAbort.signal,
           });
         } finally {

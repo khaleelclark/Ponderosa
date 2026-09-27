@@ -382,7 +382,8 @@ export function BrowserViewport<Session extends BrowserSession>({
           if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") return;
           if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) return;
           event.preventDefault();
-          // The hosted browser runs on Linux: map the client's primary modifier to Control.
+          // Control is the browser API's primary-shortcut token; the host driver
+          // maps it to Command when Chrome runs on macOS.
           const modifiers = `${event.ctrlKey || event.metaKey ? "Control+" : ""}${event.altKey ? "Alt+" : ""}${event.shiftKey ? "Shift+" : ""}`;
           sendInput({ kind: "key", key: modifiers + event.key });
         }}

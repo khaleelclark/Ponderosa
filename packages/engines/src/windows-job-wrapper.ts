@@ -6,6 +6,7 @@ interface StartMessage {
   bin: string;
   args: string[];
   cwd: string;
+  browserPipe?: boolean;
 }
 
 function validMessage(value: unknown): value is StartMessage {
@@ -14,7 +15,8 @@ function validMessage(value: unknown): value is StartMessage {
   return raw.type === "start" &&
     typeof raw.bin === "string" && raw.bin.length > 0 &&
     Array.isArray(raw.args) && raw.args.every((value) => typeof value === "string") &&
-    typeof raw.cwd === "string" && raw.cwd.length > 0;
+    typeof raw.cwd === "string" && raw.cwd.length > 0 &&
+    (raw.browserPipe === undefined || typeof raw.browserPipe === "boolean");
 }
 
 let started = false;
@@ -31,10 +33,19 @@ process.once("message", (message: unknown) => {
   const child = spawn(invocation.bin, invocation.args, {
     cwd: message.cwd,
     env: invocation.env,
-    stdio: ["pipe", "inherit", "inherit"],
+    stdio: message.browserPipe
+      ? ["ignore", "ignore", "inherit", "pipe", "pipe"]
+      : ["pipe", "inherit", "inherit"],
     windowsHide: true,
   });
-  process.stdin.pipe(child.stdin!);
+  if (message.browserPipe) {
+    // The gate is assigned to the Job before Chrome can spawn. Bridge the
+    // CDP byte streams without ever exposing the Chrome process outside it.
+    process.stdin.pipe(child.stdio[3] as NodeJS.WritableStream);
+    (child.stdio[4] as NodeJS.ReadableStream).pipe(process.stdout);
+  } else {
+    process.stdin.pipe(child.stdin!);
+  }
   child.once("error", (error) => {
     process.stderr.write(`Ponderosa contained runtime spawn failed: ${error.message}\n`);
     process.exitCode = 126;

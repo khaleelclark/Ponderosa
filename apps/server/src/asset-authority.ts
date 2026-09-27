@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants as fsConstants, fstatSync, fsyncSync, ftruncateSync, openSync, readFileSync, writeSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { listSecureDirectory, readSecureFile, writeSecureFileAtomic } from "@ponderosa/native-host";
 import type { RuntimeAttachmentReservationReceiptV3 } from "@ponderosa/agents";
 import {
   ASSET_LIMITS,
@@ -643,6 +644,53 @@ export class AssetAuthority {
       this.db.exec("COMMIT");
     } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }
     finally { if (fd !== undefined) closeSync(fd); }
+  }
+  /** The portable attachment path keeps each audit event immutable under the
+   * native retained-directory authority; SQLite remains its query index. */
+  recordSecureAudit(root: string, relativeDirectory: string, projectId: string, agentId: string, record: Record<string, unknown>, eventId: string = randomUUID()): void {
+    if (!/^[a-f0-9-]{36}$/u.test(eventId)) throw new AssetError(409, "asset audit event ID is invalid");
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const entries = listSecureDirectory({ root, relativePath: relativeDirectory });
+      if (!entries) throw new AssetError(409, "asset audit directory is unavailable");
+      const present = new Map<string, string>();
+      for (const entry of entries) {
+        const match = /^audit-([a-f0-9-]{36})\.json$/u.exec(entry.name);
+        if (!match) continue;
+        const body = readSecureFile({ root, relativePath: `${relativeDirectory}/${entry.name}`, maxBytes: 32 * 1024 });
+        if (!body) throw new AssetError(409, "asset audit record is unavailable");
+        const line = body.toString("utf8");
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        if (parsed.event_id !== match[1] || parsed.projectId !== projectId || parsed.agentId !== agentId) {
+          throw new AssetError(409, "asset audit record has invalid ownership");
+        }
+        present.set(match[1]!, line);
+        const existing = this.db.prepare("SELECT record_json json FROM asset_audit WHERE event_id=?").get(match[1]) as { json: string } | undefined;
+        if (existing && existing.json !== line) throw new AssetError(409, "asset audit event ID conflicts");
+        if (!existing) this.db.prepare("INSERT INTO asset_audit(event_id,project_id,agent_id,record_json) VALUES (?,?,?,?)")
+          .run(match[1], projectId, agentId, line);
+      }
+      const withId = JSON.stringify({ ...record, event_id: eventId });
+      const existing = this.db.prepare("SELECT record_json json FROM asset_audit WHERE event_id=?").get(eventId) as { json: string } | undefined;
+      if (existing && existing.json !== withId) throw new AssetError(409, "asset audit event ID conflicts");
+      if (!existing) this.db.prepare("INSERT INTO asset_audit(event_id,project_id,agent_id,record_json) VALUES (?,?,?,?)")
+        .run(eventId, projectId, agentId, withId);
+      const rows = this.db.prepare("SELECT event_id eventId,record_json json FROM asset_audit WHERE project_id=? AND agent_id=? ORDER BY seq").all(projectId, agentId) as Array<{ eventId: string; json: string }>;
+      for (const row of rows) {
+        if (present.has(row.eventId)) continue;
+        try {
+          writeSecureFileAtomic({
+            root, relativeDirectory, leaf: `audit-${row.eventId}.json`,
+            temporaryLeaf: `.audit-${randomUUID()}.tmp`, body: Buffer.from(row.json),
+          });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          const current = readSecureFile({ root, relativePath: `${relativeDirectory}/audit-${row.eventId}.json`, maxBytes: 32 * 1024 });
+          if (current?.toString("utf8") !== row.json) throw new AssetError(409, "asset audit event ID conflicts");
+        }
+      }
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }
   }
   assertOwned(id: string): void {
     try { this.db.exec("BEGIN IMMEDIATE"); const now = this.now(); const result = this.db.prepare("DELETE FROM asset_reservations WHERE id=? AND created_at <= ?").run(id, now - UPLOAD_LEASE_MS); if (result.changes || !this.db.prepare("SELECT 1 FROM asset_reservations WHERE id=?").get(id)) throw new AssetError(409, "upload reservation expired"); this.db.exec("COMMIT"); } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }

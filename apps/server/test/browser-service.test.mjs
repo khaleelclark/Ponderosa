@@ -74,6 +74,27 @@ test('broker carries an immediate Ponderosa connection request to its owned Chro
   } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('broker retains an ordinary managed browser without invoking Linux-only native desktop controls', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-service-portable-open-'));
+  const socket = path.join(root, 'service.sock');
+  let launched;
+  const service = await startBrowserService(socket, root, async (_id, _console, _spawned, _event, options) => {
+    launched = options;
+    return { isAlive: () => true, manualState: () => 'automation',
+      pages: async () => ({ activePageId: 'one', pages: [{ pageId: 'one', url: 'about:blank', title: 'New tab', active: true }] }),
+      close: async () => {},
+    };
+  });
+  try {
+    const client = new BrowserServiceClient(socket); await client.claim();
+    const id = randomUUID();
+    const driver = await client.driver(id, undefined, { nativeManual: false });
+    assert.equal(launched.nativeManual, false);
+    assert.equal(driver.manualState(), 'automation');
+    assert.deepEqual(await new BrowserServiceClient(socket).claim(), [id]);
+  } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('broker advertises and forwards bounded preview frames independently of evidence capture', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'browser-service-preview-'));
   const socket = path.join(root, 'service.sock');
@@ -109,6 +130,7 @@ test('an older browser service cannot silently open the wrong browser mode', asy
   try {
     const client = new BrowserServiceClient(socket); await client.claim();
     await assert.rejects(client.driver(randomUUID(), undefined, { connectOnOpen: true }), /must be updated/);
+    await assert.rejects(client.driver(randomUUID(), undefined, { nativeManual: false }), /must be updated/);
     assert.equal(calls, 1, 'no incompatible open reached the old browser service');
   } finally {
     await new Promise(resolve => legacy.close(resolve));

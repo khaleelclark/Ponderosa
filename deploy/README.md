@@ -190,10 +190,16 @@ and create an offline, checksummed snapshot before starting a revision that may
 run schema migrations:
 
 ```sh
-systemctl --user stop ponderosa.service
-pnpm --filter @ponderosa/agents data -- backup \
-  --data-dir "$PONDEROSA_DATA_DIR" \
-  --output "$HOME/.local/state/ponderosa-backups/$PONDEROSA_BUILD_SHA" \
+sudo systemctl stop ponderosa.service
+install_root=/opt/ponderosa-engine/resources/Ponderosa
+runtime="$install_root/runtime/node"
+data_tool="$install_root/app/server/tools/data-directory.mjs"
+# Replace this sample with PONDEROSA_DATA_DIR from the installed system unit.
+data_dir=/home/khaleel/.ponderosa
+backup_id="$(date -u +%Y%m%dT%H%M%SZ)"
+"$runtime" "$data_tool" backup \
+  --data-dir "$data_dir" \
+  --output "$HOME/.local/state/ponderosa-backups/$backup_id" \
   --external-projects copy
 ```
 
@@ -209,8 +215,8 @@ Rehearse restore to a new, nonexistent path and verify the restored service
 before treating a backup as usable:
 
 ```sh
-pnpm --filter @ponderosa/agents data -- restore \
-  --backup "$HOME/.local/state/ponderosa-backups/$PONDEROSA_BUILD_SHA" \
+"$runtime" "$data_tool" restore \
+  --backup "$HOME/.local/state/ponderosa-backups/$backup_id" \
   --data-dir "$HOME/.ponderosa-restore-rehearsal"
 ```
 

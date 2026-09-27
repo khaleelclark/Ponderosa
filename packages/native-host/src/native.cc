@@ -1705,10 +1705,10 @@ napi_value SecureFileAuthoritySupported(napi_env env, napi_callback_info) {
 
 napi_value DataDirectoryAuthoritySupported(napi_env env, napi_callback_info) {
   napi_value value;
-#ifdef _WIN32
-  napi_get_boolean(env, false, &value);
-#else
+#ifdef __linux__
   napi_get_boolean(env, true, &value);
+#else
+  napi_get_boolean(env, false, &value);
 #endif
   return value;
 }
@@ -1716,6 +1716,31 @@ napi_value DataDirectoryAuthoritySupported(napi_env env, napi_callback_info) {
 napi_value DataDirectoryAuthorityUnavailable(napi_env env, napi_callback_info) {
   Throw(env, "descriptor-rooted data-directory authority is unavailable on this platform");
   return nullptr;
+}
+
+napi_value EnsureSecureDirectory(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  std::string root;
+  std::string relative;
+  if (argc != 2 || !ReadUtf8(env, args[0], &root) ||
+      !ReadUtf8(env, args[1], &relative)) {
+    Throw(env, "invalid secure directory creation");
+    return nullptr;
+  }
+#ifdef _WIN32
+  WindowsHandleSet handles;
+  std::vector<WindowsIdentity> identities;
+#else
+  DescriptorSet handles;
+  std::vector<struct stat> identities;
+#endif
+  std::vector<std::string> components;
+  const bool stable = OpenSecureDirectory(
+      root, relative, true, &handles, &identities, &components) &&
+      SecureDirectoryStillCurrent(root, components, handles, identities);
+  return Boolean(env, stable);
 }
 
 napi_value Initialize(napi_env env, napi_value exports) {
@@ -1726,16 +1751,17 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"dataDirectoryAuthoritySupported", nullptr, DataDirectoryAuthoritySupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"readSecureFile", nullptr, ReadSecureFile, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"listSecureDirectory", nullptr, ListSecureDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"ensureSecureDirectory", nullptr, EnsureSecureDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"writeSecureFileAtomic", nullptr, WriteSecureFileAtomic, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"removeSecureFile", nullptr, RemoveSecureFile, nullptr, nullptr, nullptr, napi_default, nullptr},
-#ifdef _WIN32
-      {"acquireDataDirectoryAuthority", nullptr, DataDirectoryAuthorityUnavailable, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"dataDirectoryAuthorityPath", nullptr, DataDirectoryAuthorityUnavailable, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"releaseDataDirectoryAuthority", nullptr, DataDirectoryAuthorityUnavailable, nullptr, nullptr, nullptr, napi_default, nullptr},
-#else
+#ifdef __linux__
       {"acquireDataDirectoryAuthority", nullptr, AcquireDataDirectoryAuthority, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"dataDirectoryAuthorityPath", nullptr, DataDirectoryAuthorityPath, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"releaseDataDirectoryAuthority", nullptr, ReleaseDataDirectoryAuthority, nullptr, nullptr, nullptr, napi_default, nullptr},
+#else
+      {"acquireDataDirectoryAuthority", nullptr, DataDirectoryAuthorityUnavailable, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"dataDirectoryAuthorityPath", nullptr, DataDirectoryAuthorityUnavailable, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"releaseDataDirectoryAuthority", nullptr, DataDirectoryAuthorityUnavailable, nullptr, nullptr, nullptr, napi_default, nullptr},
 #endif
 #ifdef _WIN32
       {"createWindowsJob", nullptr, CreateWindowsJob, nullptr, nullptr, nullptr, napi_default, nullptr},

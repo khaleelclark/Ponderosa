@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import {
-  listSecureDirectory, readSecureFile, readSecureFileAsync,
+  ensureSecureDirectory, listSecureDirectory, readSecureFile, readSecureFileAsync,
   removeSecureFile, secureFileAuthoritySupported, writeSecureFileAtomic,
 } from '../dist/index.js';
 
@@ -31,6 +31,7 @@ test('native entry points reject embedded terminators in roots before filesystem
   for (const root of [`${f.root}\0suffix`, `${f.root}\0`]) {
     assert.equal(native.readSecureFile(root, 'sentinel.txt', 1024, true), null);
     assert.equal(native.listSecureDirectory(root, ''), null);
+    assert.throws(() => native.ensureSecureDirectory(root, 'new/nested'), /invalid secure directory creation/);
     assert.throws(() => native.writeSecureFileAtomic(root, 'new/nested', 'new.txt', '.new.tmp', body), /invalid secure atomic file publication/);
     assert.throws(() => native.removeSecureFile(root, '', 'sentinel.txt', '.quarantine', ''), /invalid secure file removal/);
     f.unchanged();
@@ -63,6 +64,7 @@ test('public APIs validate malformed roots and relative paths before native call
     // Synchronous assertion proves rejection precedes creating the async worker.
     assert.throws(() => readSecureFileAsync({root, relativePath:'sentinel.txt', maxBytes:1024}), /root must not contain NUL/);
     assert.throws(() => listSecureDirectory({root}), /root must not contain NUL/);
+    assert.throws(() => ensureSecureDirectory({root, relativePath:'new/nested'}), /root must not contain NUL/);
     assert.throws(() => writeSecureFileAtomic({root, relativeDirectory:'new/nested', leaf:'new.txt', temporaryLeaf:'.new.tmp', body}), /root must not contain NUL/);
     assert.throws(() => removeSecureFile({root, leaf:'sentinel.txt'}), /root must not contain NUL/);
     f.unchanged();
@@ -71,6 +73,7 @@ test('public APIs validate malformed roots and relative paths before native call
     assert.throws(() => readSecureFile({root:f.root, relativePath:relative, maxBytes:1024}), /bounded relative path/);
     assert.throws(() => readSecureFileAsync({root:f.root, relativePath:relative, maxBytes:1024}), /bounded relative path/);
     assert.throws(() => listSecureDirectory({root:f.root, relativePath:relative}), /bounded relative path/);
+    assert.throws(() => ensureSecureDirectory({root:f.root, relativePath:relative}), /bounded relative path/);
     assert.throws(() => writeSecureFileAtomic({root:f.root, relativeDirectory:relative, leaf:'new.txt', temporaryLeaf:'.new.tmp', body}), /bounded relative path/);
     assert.throws(() => removeSecureFile({root:f.root, relativeDirectory:relative, leaf:'sentinel.txt'}), /bounded relative path/);
     f.unchanged();
@@ -94,6 +97,8 @@ test('ordinary valid paths and binary content still work through native and publ
   assert.deepEqual(await readSecureFileAsync({root:f.root, relativePath:'sentinel.txt', maxBytes:1024}), body);
   assert.equal(native.listSecureDirectory(f.root, '')[0].name, 'sentinel.txt');
   assert.equal(listSecureDirectory({root:f.root})[0].name, 'sentinel.txt');
+  ensureSecureDirectory({root:f.root, relativePath:'created/nested'});
+  assert.deepEqual(listSecureDirectory({root:f.root, relativePath:'created/nested'}), []);
   assert.equal(native.writeSecureFileAtomic(f.root, 'native/nested', 'valid.txt', '.valid.tmp', body), true);
   assert.deepEqual(native.readSecureFile(f.root, 'native/nested/valid.txt', 1024, true), body);
   assert.equal(native.removeSecureFile(f.root, 'native/nested', 'valid.txt', '.quarantine', ''), true);

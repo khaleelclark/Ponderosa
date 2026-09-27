@@ -8,6 +8,7 @@ import { ApprovedChromeConnection } from "./approved-chrome-connection.js";
 import { ChromeCdpDriver, spawnHostedDisplay, type BrowserDriver, type BrowserDriverFactory, type BrowserDriverLaunchOptions, type BrowserPagesInfo } from "./chrome-cdp-driver.js";
 
 export async function createNativeHostedBrowser(executable: string, profileDir: string, onConsole: Parameters<BrowserDriverFactory>[1], publish: Parameters<BrowserDriverFactory>[2], onPageEvent: Parameters<BrowserDriverFactory>[3], launch: BrowserDriverLaunchOptions): Promise<BrowserDriver> {
+  if (process.platform !== "linux") throw new Error("Native hosted desktop controls are available on Linux only; use the in-app browser on this host.");
   const wait = (milliseconds: number) => new Promise<void>((resolve, reject) => {
     if (launch.signal?.aborted) { reject(new Error("browser launch cancelled")); return; }
     const timer = setTimeout(finish, milliseconds);
