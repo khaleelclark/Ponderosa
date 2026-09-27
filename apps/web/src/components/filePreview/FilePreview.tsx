@@ -7,6 +7,7 @@ import type { ArtifactKind } from "@ponderosa/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { previewCapability } from "./mimeCapabilities";
+import { workspaceMarkdownFileHref } from "./workspaceMarkdownLinks";
 import { FeatureErrorBoundary } from "../FeatureErrorBoundary";
 
 function diffLineKind(line: string): "addition" | "deletion" | "neutral" {
@@ -34,14 +35,17 @@ export function UnifiedDiffViewer({ diff }: { diff: string }): JSX.Element {
   </Box>;
 }
 
-function MarkdownPreview({ content }: { content: string }): JSX.Element {
+function MarkdownPreview({ content, projectId, path }: { content: string; projectId?: string; path?: string }): JSX.Element {
   return <Box sx={{ overflowWrap: "anywhere", "& pre": { overflowX: "auto" }, "& code": { fontSize: ".86rem" }, "& p": { lineHeight: 1.65 } }}>
-    <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+      a: ({ href, children, ...rest }) => <a {...rest} href={projectId && path ? workspaceMarkdownFileHref(projectId, path, href) ?? href : href}>{children}</a>,
+    }}>{content}</ReactMarkdown>
   </Box>;
 }
 
 export interface FilePreviewProps {
   title: string;
+  projectId?: string;
   path?: string;
   mediaType?: string;
   artifactKind?: ArtifactKind;
@@ -83,7 +87,7 @@ export function FilePreview(props: FilePreviewProps): JSX.Element {
   } else if (capability.kind === "diff" && props.content !== undefined) {
     body = props.content ? <UnifiedDiffViewer diff={props.content} /> : <Alert severity="info">This diff is empty.</Alert>;
   } else if (capability.kind === "markdown" && props.content !== undefined) {
-    body = props.content ? <MarkdownPreview content={props.content} /> : <Alert severity="info">This document is empty.</Alert>;
+    body = props.content ? <MarkdownPreview content={props.content} projectId={props.projectId} path={props.path} /> : <Alert severity="info">This document is empty.</Alert>;
   } else if (capability.kind === "text" && props.content !== undefined) {
     body = props.content
       ? <Box component="pre" aria-label={`Text preview for ${props.title}`} sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace", fontSize: 13 }}>{props.content}</Box>
