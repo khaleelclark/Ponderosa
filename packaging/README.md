@@ -103,7 +103,11 @@ systems, but only Linux x64 is currently eligible for production:
   requires a pinned `appimagetool` on the release host.
 - macOS (not production-supported): the DMG recipe must be built on Apple Silicon and pass Gatekeeper,
   browser-bootstrap, process-group, provider, and restart checks before
-  distribution.
+  distribution. macOS cannot use Linux's traversable `/proc/self/fd` data root:
+  the private-beta daemon uses its atomic ownership lock while attachment,
+  Project-file, and managed-artifact operations use the native secure-file
+  authority. Full retained-root data-store protection remains a separate
+  production gate.
 - Windows (not production-supported): the data-store authority is not yet
   handle-relative/reparse-safe. The EXE must not be distributed until that
   native authority and the complete process trees pass Windows 11

@@ -17,6 +17,48 @@ interface ContainedSpawnInput {
   stdin: "ignore" | "pipe";
 }
 
+/**
+ * A systemd user scope moves the provider and its tool descendants out of the
+ * daemon's service cgroup. The scope is an operational memory boundary, not a
+ * security boundary: Agents intentionally retain the host user's shell access.
+ *
+ * This is explicit because a system service, container, or non-systemd Linux
+ * installation might not have a usable user manager. Other platforms keep
+ * their existing process containment unchanged.
+ */
+export function containedCliInvocation(
+  input: ContainedSpawnInput,
+  platform: NodeJS.Platform = process.platform,
+  hostEnvironment: NodeJS.ProcessEnv = process.env,
+): { bin: string; args: string[] } {
+  if (platform !== "linux" || environmentValue(hostEnvironment, "PONDEROSA_AGENT_SCOPE_MODE") !== "systemd") {
+    return { bin: input.bin, args: input.args };
+  }
+  const parentUnit = environmentValue(hostEnvironment, "PONDEROSA_AGENT_PARENT_UNIT");
+  if (!parentUnit || parentUnit.length > 255 || !/^[a-zA-Z0-9_.@-]+\.service$/u.test(parentUnit)) {
+    throw new Error("systemd Agent scope mode requires a valid PONDEROSA_AGENT_PARENT_UNIT service name");
+  }
+  return {
+    bin: "systemd-run",
+    args: [
+      "--user",
+      "--scope",
+      "--quiet",
+      // Provider arguments may contain ${...}; never let systemd reinterpret
+      // them as environment substitutions.
+      "--expand-environment=no",
+      "--slice=ponderosa-agent-workloads.slice",
+      // A normal app stop/restart must also stop scopes that outlive a crashed
+      // provider root. Restart recovery remains responsible for exact process
+      // group teardown if a daemon dies without an orderly unit transition.
+      `--property=PartOf=${parentUnit}`,
+      "--",
+      input.bin,
+      ...input.args,
+    ],
+  };
+}
+
 function environmentValue(environment: NodeJS.ProcessEnv, key: string): string | undefined {
   const exact = environment[key];
   if (exact !== undefined || process.platform !== "win32") return exact;
@@ -70,15 +112,22 @@ function missingExecutable(input: ContainedSpawnInput): NodeJS.ErrnoException {
  * Windows processes start behind the Job-assignment gate; POSIX processes
  * receive their own detached group.
  */
-export function spawnContainedCli(input: ContainedSpawnInput): ContainedSpawn {
+export function spawnContainedCli(
+  input: ContainedSpawnInput,
+  hostEnvironment: NodeJS.ProcessEnv = process.env,
+): ContainedSpawn {
   // Missing providers are an expected host configuration, not a process-level
   // failure. Resolve them before creating ChildProcess helpers whose rejected
   // discovery races could otherwise outlive the public unavailable response.
   if (!executableAvailable(input)) throw missingExecutable(input);
+  const invocation = containedCliInvocation(input, process.platform, hostEnvironment);
+  if (invocation.bin !== input.bin && !executableAvailable({ ...input, bin: invocation.bin })) {
+    throw new Error("Agent memory isolation requires systemd-run on PATH");
+  }
   const contained = process.platform === "win32"
     ? spawnWindowsContainedProcess(input)
     : {
-    child: nodeSpawn(input.bin, input.args, {
+    child: nodeSpawn(invocation.bin, invocation.args, {
       cwd: input.cwd,
       env: input.env,
       stdio: [input.stdin, "pipe", "pipe"],

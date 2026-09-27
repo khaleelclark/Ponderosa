@@ -79,7 +79,7 @@ test("preserves and rejects an unknown data layout", () => {
   }
 });
 
-test("replacing the diagnostic lock cannot steal a live kernel lease", () => {
+test("replacing the diagnostic lock cannot steal a live kernel lease", { skip: process.platform !== "linux" }, () => {
   const directory = temporaryDataDirectory();
   const lockPath = join(directory, ".ponderosa-daemon.lock");
   const ownership = acquireDataDirectoryOwnership(directory);
@@ -95,7 +95,7 @@ test("replacing the diagnostic lock cannot steal a live kernel lease", () => {
   }
 });
 
-test("ignores a stale diagnostic lock when the kernel lease is free", () => {
+test("ignores a stale diagnostic lock when the lease is free", () => {
   const directory = temporaryDataDirectory();
   writeFileSync(join(directory, ".ponderosa-daemon.lock"), JSON.stringify({
     pid: 999_999,
@@ -104,13 +104,13 @@ test("ignores a stale diagnostic lock when the kernel lease is free", () => {
 
   const ownership = acquireDataDirectoryOwnership(directory);
   try {
-    assert.equal(ownership.dataDir.includes("/fd/"), true);
+    assert.equal(ownership.dataDir.includes("/fd/"), process.platform === "linux");
   } finally {
     releaseDataDirectoryOwnership(ownership);
   }
 });
 
-test("ancestor replacement cannot redirect an open store", () => {
+test("ancestor replacement cannot redirect an open store", { skip: process.platform !== "linux" }, () => {
   const parent = temporaryDataDirectory();
   const directory = join(parent, "data");
   const retained = join(parent, "retained-data");
@@ -125,5 +125,15 @@ test("ancestor replacement cannot redirect an open store", () => {
   } finally {
     opened.client.close();
     releaseDataDirectoryOwnership(opened.ownership);
+  }
+});
+
+test("portable data directory lock refuses a second live owner", { skip: process.platform === "linux" }, () => {
+  const directory = temporaryDataDirectory();
+  const ownership = acquireDataDirectoryOwnership(directory);
+  try {
+    assert.throws(() => acquireDataDirectoryOwnership(directory), /already owned/u);
+  } finally {
+    releaseDataDirectoryOwnership(ownership);
   }
 });

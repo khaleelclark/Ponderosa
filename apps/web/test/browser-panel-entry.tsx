@@ -14,6 +14,14 @@ const sizes = new Map<string, { width: number; height: number }>();
 (window as any).frameRequests = 0;
 (window as any).browserSessionRequests = 0;
 const parameters = new URLSearchParams(window.location.search);
+if (parameters.has("follow")) {
+  session.controlOwner = "agent";
+  (window as any).agentNavigate = () => {
+    session.pages = [...session.pages, { id: "agent-page", title: "Agent research", url: "https://example.test/research", active: true, closable: true }];
+    session.activePageId = "agent-page";
+    session.url = "https://example.test/research";
+  };
+}
 if (parameters.has("tabs")) session.pages = Array.from({ length: Number(parameters.get("tabs")) }, (_, index) => ({ id: index ? `tab-${index}` : "one", title: `Research tab ${index + 1}`, active: index === 0, closable: true }));
 const workspaceProjects = [{ id: "p", label: "Trip research" }, { id: "q", label: "Job search" }, { id: "r", label: "Hotels" }, { id: "s", label: "Flights" }, { id: "t", label: "Activities" }];
 session.manualControl = parameters.has("manual") ? "manual" : "automation";

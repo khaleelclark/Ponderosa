@@ -40,6 +40,7 @@ interface BrowserRoutesContext {
   operatorBrowserScope(params: BrowserRouteParams): BrowserScope;
   projectBrowserScope(projectId: string, grant?: ProjectBrowserGrant): BrowserScope;
   projectBrowserDto(projectId: string, session: import("@ponderosa/core").BrowserSessionDto): ProjectBrowserSessionDto;
+  liveSseClosures: Set<() => void>;
   getProjectBrowserGrant(projectId: string): ProjectBrowserGrant | undefined;
   setProjectBrowserGrant(projectId: string, grant: ProjectBrowserGrant): void;
   deleteProjectBrowserGrant(projectId: string): void;
@@ -73,6 +74,7 @@ export function registerBrowserRoutes(
     browserSessions,
     browserProfiles,
     projectBrowserSessions,
+    liveSseClosures,
     projectExists: chatExists,
     agentExists,
     projectDeletionInProgress,
@@ -85,6 +87,105 @@ export function registerBrowserRoutes(
     deleteProjectBrowserGrant,
     activeProjectBrowserController,
   } = context;
+  const previewStreams = new Set<() => void>();
+  const registerPreviewStream = (route: string, manager: BrowserSessionManager, scope: (params: BrowserRouteParams) => BrowserScope) => {
+    app.get<{ Params: BrowserRouteParams; Querystring: { pageId?: string; format?: string } }>(route, async (request, reply) => {
+      const binary = request.query.format === "binary";
+      if (request.query.format && !binary) return reply.code(400).send({ error: "invalid preview format" });
+      if (previewStreams.size >= 8) return reply.code(429).send({ error: "too many browser previews" });
+      if (!projectExists(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+      // Reserve before awaiting the first capture. Concurrent slow captures
+      // must count toward the same eight-stream budget as active streams.
+      let reserved = true;
+      const releaseReservation = () => {
+        if (!reserved) return;
+        reserved = false;
+        previewStreams.delete(releaseReservation);
+        reply.raw.off("close", releaseReservation);
+      };
+      previewStreams.add(releaseReservation);
+      reply.raw.once("close", releaseReservation);
+      let frame: Awaited<ReturnType<BrowserSessionManager["previewFrame"]>>;
+      let browserScope: BrowserScope;
+      try {
+        browserScope = scope(request.params);
+        frame = await manager.previewFrame(browserScope, request.query.pageId);
+      }
+      catch (error) { releaseReservation(); return browserRouteError(reply, error); }
+      if (!reserved || reply.raw.destroyed) { releaseReservation(); return; }
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "content-type": binary ? "application/vnd.ponderosa.browser-frames" : "text/event-stream; charset=utf-8",
+        "cache-control": "private, no-store, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+      });
+      let closed = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let lastKey = "";
+      let lastHeartbeat = Date.now();
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        if (timer) clearTimeout(timer);
+        releaseReservation();
+        liveSseClosures.delete(close);
+        reply.raw.off("close", close);
+        if (!reply.raw.writableEnded) reply.raw.end();
+        if (!reply.raw.destroyed) reply.raw.destroy();
+      };
+      const write = (body: string | Buffer): Promise<boolean> => new Promise(resolve => {
+        if (closed || reply.raw.destroyed) return resolve(false);
+        try {
+          if (reply.raw.write(body)) return resolve(true);
+        } catch { return resolve(false); }
+        let settled = false;
+        const finish = (ok: boolean) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          reply.raw.off("drain", onDrain);
+          reply.raw.off("close", onClose);
+          resolve(ok);
+        };
+        const onDrain = () => finish(true);
+        const onClose = () => finish(false);
+        const timeout = setTimeout(() => finish(false), 2_000);
+        reply.raw.once("drain", onDrain);
+        reply.raw.once("close", onClose);
+      });
+      const run = async (next: typeof frame): Promise<void> => {
+        if (closed) return;
+        // Agent clicks may not repaint the page. Publish their overlay even
+        // when Chrome's pixels and sequence are unchanged.
+        const key = `${next.mediaType}:${next.sequence}:${JSON.stringify(next.metadata.activity ?? null)}`;
+        if (key !== lastKey) {
+          if (binary) {
+            const metadata = Buffer.from(JSON.stringify({ mediaType: next.mediaType, sequence: next.sequence, metadata: next.metadata }));
+            if (metadata.length > 4_096 || next.body.length > 1_500_000) return close();
+            const header = Buffer.allocUnsafe(8);
+            header.writeUInt32BE(metadata.length, 0);
+            header.writeUInt32BE(next.body.length, 4);
+            if (!await write(Buffer.concat([header, metadata, next.body]))) return close();
+          } else {
+            const body = `event: frame\ndata: ${JSON.stringify({ data: next.body.toString("base64"), mediaType: next.mediaType, sequence: next.sequence, metadata: next.metadata })}\n\n`;
+            if (Buffer.byteLength(body) > 2 * 1024 * 1024 || !await write(body)) return close();
+          }
+          lastKey = key;
+        } else if (Date.now() - lastHeartbeat > 10_000) {
+          if (!await write(binary ? Buffer.alloc(8) : ": heartbeat\n\n")) return close();
+          lastHeartbeat = Date.now();
+        }
+        if (closed) return;
+        timer = setTimeout(() => {
+          void manager.previewFrame(browserScope, request.query.pageId).then(run, close);
+        }, next.mediaType === "image/png" ? 250 : 40);
+      };
+      reply.raw.on("close", close);
+      liveSseClosures.add(close);
+      void run(frame);
+    });
+  };
   const projectExists = (id: string) => id === SAVED_BROWSER_SCOPE_ID ? Boolean(browserProfiles.savedBrowser()) : chatExists(id);
 
   app.get("/api/saved-browser", async () => ({ browser: browserProfiles.savedBrowser() ?? null }));
@@ -236,7 +337,7 @@ export function registerBrowserRoutes(
       if (body?.action === "open") {
         const existing = projectBrowserSessions.get(scope.agentId);
         if (existing && existing.status !== "closed" && existing.status !== "failed") return reply.code(409).send({ error: "End the existing browser session before opening a manual browser." });
-        return projectBrowserDto(projectId, await projectBrowserSessions.open(scope, undefined, "operator", undefined, true));
+        return projectBrowserDto(projectId, await projectBrowserSessions.open(scope, undefined, "operator", undefined, process.platform === "linux"));
       }
       if (!Number.isSafeInteger(body?.expectedControlEpoch) || !body?.sessionId) return reply.code(400).send({ error: "A current browser session and control epoch are required." });
       const current = projectBrowserSessions.get(scope.agentId);
@@ -301,7 +402,10 @@ export function registerBrowserRoutes(
         if (remember !== undefined) {
           browserProfiles.setChatRememberSignIns(scope.projectId, scope.agentId, remember);
         }
-        const session = await projectBrowserSessions.open(scope, request.body?.url, "operator", undefined, true, true);
+        // The native desktop bridge uses Linux display tools. Other hosts use
+        // the same in-app tabs and controls over the ordinary Chrome driver.
+        const nativeManual = process.platform === "linux";
+        const session = await projectBrowserSessions.open(scope, request.body?.url, "operator", undefined, nativeManual, nativeManual);
         return projectBrowserDto(request.params.projectId, session);
       } catch (error) {
         return browserRouteError(reply, error);
@@ -566,6 +670,7 @@ export function registerBrowserRoutes(
       }
     },
   );
+  registerPreviewStream(`${projectBrowserRoute}/frame-stream`, projectBrowserSessions, params => projectBrowserScope(params.projectId));
 
   const browserRoute = "/api/projects/:projectId/agents/:id/runs/:runId/browser";
 
@@ -760,6 +865,7 @@ export function registerBrowserRoutes(
       return browserRouteError(reply, error);
     }
   });
+  registerPreviewStream(`${browserRoute}/frame-stream`, browserSessions, operatorBrowserScope);
 
   for (const projectScoped of [true, false]) {
     const route = projectScoped ? projectBrowserRoute : browserRoute;

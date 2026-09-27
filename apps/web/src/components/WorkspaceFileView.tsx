@@ -34,6 +34,7 @@ export function WorkspaceFileView({ projectId, path, onBack }: { projectId: stri
         <Box sx={{ width: "100%", maxWidth: 1280, mx: "auto" }}>
           <FilePreview
             title={file.name}
+            projectId={projectId}
             path={file.path}
             mediaType={file.mediaType}
             content={file.text}

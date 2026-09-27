@@ -138,9 +138,11 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
   );
   const projectBrowserGrants = new Map<string, { agentId: string; runId: string }>();
   const service = !driverFactory && browserServiceSocket ? new BrowserServiceClient(browserServiceSocket) : undefined;
-  const sharedFactory: BrowserDriverFactory = service ? (id, console, spawned, event, launch) => launch?.nativeManual
-    ? service.driver(id, event, launch)
-    : browserFactory(id, console, spawned, event, launch) : browserFactory;
+  // Project browsers remain broker-owned on every platform. macOS and Windows
+  // use the ordinary CDP view, but must still survive an application restart.
+  const sharedFactory: BrowserDriverFactory = service
+    ? (id, _console, _spawned, event, launch) => service.driver(id, event, launch)
+    : browserFactory;
   const projectBrowserSessions = new BrowserSessionManager(
     dataDir,
     sharedFactory,

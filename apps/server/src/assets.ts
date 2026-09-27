@@ -3,6 +3,7 @@ import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, re
 import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
+import { ensureSecureDirectory, listSecureDirectory, readSecureFile, removeSecureFile, secureDirectoryIdentity, writeSecureFileAtomic } from "@ponderosa/native-host";
 import { decodeHeic, isHeicContainer } from "./heic.js";
 import type { ArtifactDto, AssetDto } from "@ponderosa/core";
 import {
@@ -358,8 +359,12 @@ function publicDto(asset: StoredAsset): AssetDto {
 export class AssetStore {
   private root?: string;
   private authority: AssetAuthority;
+  private readonly portableFiles: boolean;
 
-  constructor(private dataDir: string) { this.authority = new AssetAuthority(dataDir); }
+  constructor(private dataDir: string, options: { portableFiles?: boolean } = {}) {
+    this.portableFiles = process.platform !== "linux" || options.portableFiles === true;
+    this.authority = new AssetAuthority(dataDir);
+  }
   close(): void { this.authority.close(); }
 
   enqueueDraftAttachmentCleanup(
@@ -429,6 +434,43 @@ export class AssetStore {
     if (!OWNER_ID.test(projectId) || !OWNER_ID.test(agentId)) throw new AssetError(404, "asset storage is unavailable");
   }
   private dir(projectId: string, agentId: string): string { this.validateOwner(projectId, agentId); return attachmentsDir(this.dataDir, projectId, agentId); }
+  private secureDirectory(projectId: string, agentId: string, create = false): string {
+    this.validateOwner(projectId, agentId);
+    const relative = `projects/${projectId}/agents/${agentId}/attachments`;
+    if (create) ensureSecureDirectory({ root: this.dataDir, relativePath: relative });
+    return relative;
+  }
+
+  private secureRead(relativeDirectory: string, leaf: string, maxBytes: number): Buffer | undefined {
+    return readSecureFile({ root: this.dataDir, relativePath: `${relativeDirectory}/${leaf}`, maxBytes });
+  }
+
+  private secureWrite(relativeDirectory: string, leaf: string, body: Buffer | string): void {
+    writeSecureFileAtomic({
+      root: this.dataDir, relativeDirectory, leaf,
+      temporaryLeaf: `.${randomUUID()}.tmp`,
+      body: Buffer.isBuffer(body) ? body : Buffer.from(body),
+    });
+  }
+
+  private secureRemove(relativeDirectory: string, leaf: string): void {
+    removeSecureFile({ root: this.dataDir, relativeDirectory, leaf });
+  }
+
+  private readPortable(projectId: string, agentId: string, id: string): StoredAsset | undefined {
+    try {
+      const relative = this.secureDirectory(projectId, agentId);
+      const body = this.secureRead(relative, `${id}.json`, 32 * 1024);
+      if (!body) return undefined;
+      const asset = validateStoredAsset(JSON.parse(body.toString("utf8")), projectId, agentId, id);
+      if (!asset || asset.state === "associated") return asset;
+      const marker = this.secureRead(relative, `${id}.associated`, 256);
+      if (!marker) return asset;
+      const associatedAt = marker.toString("utf8");
+      if (!Number.isFinite(Date.parse(associatedAt))) return undefined;
+      return { ...asset, state: "associated", associatedAt };
+    } catch { return undefined; }
+  }
   private async safeDirectory(projectId: string, agentId: string, create = false): Promise<{ path: string; handle: FileHandle }> {
     const directory = this.dir(projectId, agentId);
     for (const ancestor of [
@@ -470,6 +512,7 @@ export class AssetStore {
 
   async read(projectId: string, agentId: string, id: string): Promise<StoredAsset | undefined> {
     if (!ID.test(id) || this.authority.deletionRequested(id)) return undefined;
+    if (this.portableFiles) return this.readPortable(projectId, agentId, id);
     try {
       const directory = await this.safeDirectory(projectId, agentId);
       try { return validateStoredAsset(JSON.parse((await readNoFollow(path.join(directory.path, `${id}.json`), 32 * 1024)).toString("utf8")), projectId, agentId, id); }
@@ -485,6 +528,25 @@ export class AssetStore {
     id: string,
   ): AuthoritativeRuntimeAttachment | undefined {
     if (!ID.test(id)) return undefined;
+    if (this.portableFiles) {
+      const asset = this.readPortable(projectId, agentId, id);
+      if (!asset) return undefined;
+      const relative = this.secureDirectory(projectId, agentId);
+      const body = this.secureRead(relative, asset.originalFile, ASSET_LIMITS.maxFileBytes);
+      if (!body || body.length !== asset.size || createHash("sha256").update(body).digest("hex") !== asset.sha256 ||
+          detectType(body) !== asset.mediaType || !extensionMatches(asset.name, asset.mediaType) ||
+          !hasStrictImageContainer(body, asset.mediaType)) return undefined;
+      if (asset.previewFile) {
+        const preview = this.secureRead(relative, asset.previewFile, ASSET_LIMITS.maxFileBytes);
+        if (!preview || detectType(preview) !== "image/png" || !hasStrictImageContainer(preview, "image/png")) return undefined;
+      }
+      return {
+        attachment: { ...publicDto(asset), sha256: asset.sha256, state: "associated" },
+        localPath: path.join(this.dir(projectId, agentId), asset.originalFile),
+        contentHash: asset.sha256,
+        byteLength: body.length,
+      };
+    }
     let metadataFd: number | undefined;
     let contentFd: number | undefined;
     let previewFd: number | undefined;
@@ -968,6 +1030,7 @@ export class AssetStore {
           name: input.name,
           declaredType: input.declaredType,
         });
+    if (this.portableFiles) return this.stagePortable(input, prepared);
     const { name, mediaType, width, height, preview } = prepared;
     const now = Date.now();
     const openedDirectory = await this.safeDirectory(projectId, agentId, true);
@@ -1016,6 +1079,88 @@ export class AssetStore {
     }
   }
 
+  private stagePortable(
+    input: { projectId: string; agentId: string; body: Buffer },
+    prepared: PreparedAssetUpload,
+  ): AssetDto {
+    const { projectId, agentId, body } = input;
+    const { name, mediaType, width, height, preview } = prepared;
+    const rootIdentity = secureDirectoryIdentity({ root: this.dataDir });
+    if (!rootIdentity) throw new AssetError(409, "asset storage is unavailable");
+    const relative = this.secureDirectory(projectId, agentId, true);
+    const directoryIdentity = secureDirectoryIdentity({ root: this.dataDir, relativePath: relative });
+    if (!directoryIdentity) throw new AssetError(409, "asset storage is unavailable");
+    const assertCurrent = () => {
+      if (secureDirectoryIdentity({ root: this.dataDir }) !== rootIdentity ||
+          secureDirectoryIdentity({ root: this.dataDir, relativePath: relative }) !== directoryIdentity) {
+        throw new AssetError(409, "asset storage changed during upload");
+      }
+    };
+    const fenced = <T>(operation: () => T): T => {
+      assertCurrent();
+      const value = operation();
+      assertCurrent();
+      return value;
+    };
+    assertCurrent();
+    const entries = listSecureDirectory({ root: this.dataDir, relativePath: relative });
+    if (!entries) throw new AssetError(409, "asset storage is unavailable");
+    assertCurrent();
+    const existing = new Map<string, number>();
+    for (const entry of entries) {
+      const match = /^([a-f0-9-]{36})\.bin$/u.exec(entry.name);
+      if (match && entry.kind === "file" && entry.size !== undefined) existing.set(match[1]!, entry.size);
+    }
+    fenced(() => this.authority.syncAgent(projectId, agentId, existing));
+    const id = randomUUID();
+    const reservationId = this.authority.reserve(projectId, agentId, id, body.length);
+    const createdAt = new Date().toISOString();
+    const { originalFile, previewFile: canonicalPreview } = canonicalFiles(id);
+    const previewFile = preview ? canonicalPreview : undefined;
+    const asset: StoredAsset = {
+      id, projectId, agentId, name, mediaType, size: body.length, width, height,
+      sha256: prepared.sha256, state: "staged", createdAt,
+      originalFile, previewFile,
+      url: previewFile ? `/api/agents/${encodeURIComponent(agentId)}/attachments/${id}` : `/api/agents/${encodeURIComponent(agentId)}/assets/${id}/download`,
+      downloadUrl: `/api/agents/${encodeURIComponent(agentId)}/assets/${id}/download`,
+      previewUrl: previewFile ? `/api/agents/${encodeURIComponent(agentId)}/assets/${id}/preview` : undefined,
+    };
+    try {
+      fenced(() => this.authority.recordSecureAudit(this.dataDir, relative, projectId, agentId,
+        { action: "upload_reserved", agentId, projectId, at: createdAt }));
+      fenced(() => this.secureWrite(relative, originalFile, body));
+      if (previewFile && preview) fenced(() => this.secureWrite(relative, previewFile, preview));
+      fenced(() => this.secureWrite(relative, `${id}.json`, JSON.stringify(asset)));
+      fenced(() => this.authority.recordSecureAudit(this.dataDir, relative, projectId, agentId,
+        { action: "staged", id, agentId, projectId, size: body.length, mediaType, at: createdAt }));
+      const readable = fenced(() => this.secureRead(relative, originalFile, ASSET_LIMITS.maxFileBytes));
+      const metadata = fenced(() => this.secureRead(relative, `${id}.json`, 32 * 1024));
+      if (!readable?.equals(body) || !metadata ||
+          !validateStoredAsset(JSON.parse(metadata.toString("utf8")), projectId, agentId, id)) {
+        throw new AssetError(409, "asset upload could not be verified");
+      }
+      fenced(() => this.authority.settle(reservationId));
+      return publicDto(asset);
+    } catch (error) {
+      // Never delete through a replacement pathname. Orphans in a displaced
+      // root remain unacknowledged and carry a durable cleanup obligation.
+      try { this.authority.beginDelete(id, projectId, agentId); }
+      catch { /* retain the primary upload failure */ }
+      try {
+        assertCurrent();
+        for (const leaf of [originalFile, previewFile, `${id}.json`]) {
+          if (leaf) {
+            try { this.secureRemove(relative, leaf); }
+            catch { /* retain the primary publication failure */ }
+          }
+        }
+      } catch { /* the root changed, so it cannot be safely cleaned by path */ }
+      throw error;
+    } finally {
+      this.authority.release(reservationId);
+    }
+  }
+
   async associate(projectId: string, agentId: string, ids: string[]): Promise<AssetDto[]> {
     const assets = await Promise.all(ids.map((id) => this.read(projectId, agentId, id)));
     if (assets.some((asset) => !asset)) throw new AssetError(404, "asset not found");
@@ -1023,6 +1168,22 @@ export class AssetStore {
     if (integrity.some((item) => !item)) throw new AssetError(404, "asset not found");
     const now = new Date().toISOString();
     const associated = assets as StoredAsset[];
+    if (this.portableFiles) {
+      const relative = this.secureDirectory(projectId, agentId);
+      for (const asset of associated) {
+        if (asset.state === "associated") continue;
+        const marker = `${asset.id}.associated`;
+        try { this.secureWrite(relative, marker, now); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          const existing = this.secureRead(relative, marker, 256);
+          if (!existing || !Number.isFinite(Date.parse(existing.toString("utf8")))) throw new AssetError(409, "asset association marker changed");
+        }
+        asset.state = "associated";
+        asset.associatedAt = now;
+      }
+      return associated.map(publicDto);
+    }
     await Promise.all(associated.map(async (asset) => {
       const directory = await this.safeDirectory(projectId, agentId);
       try {
@@ -1049,6 +1210,14 @@ export class AssetStore {
     const asset = await this.read(projectId, agentId, id);
     const file = preview ? asset?.previewFile : asset?.originalFile;
     if (!asset || !file) return undefined;
+    if (this.portableFiles) {
+      try {
+        const relative = this.secureDirectory(projectId, agentId);
+        const body = this.secureRead(relative, file, ASSET_LIMITS.maxFileBytes);
+        if (!body || (!preview && createHash("sha256").update(body).digest("hex") !== asset.sha256)) return undefined;
+        return { asset, body };
+      } catch { return undefined; }
+    }
     try {
       const directory = await this.safeDirectory(projectId, agentId);
       const body = await readNoFollow(path.join(directory.path, file), ASSET_LIMITS.maxFileBytes).finally(() => directory.handle.close());
@@ -1083,6 +1252,20 @@ export class AssetStore {
     if (this.authority.runtimeAssociatedAssetIds(receipt.projectId, receipt.agentId).has(receipt.assetId)) {
       return;
     }
+    if (this.portableFiles) {
+      const relative = this.secureDirectory(receipt.projectId, receipt.agentId);
+      const { originalFile, previewFile } = canonicalFiles(receipt.assetId);
+      this.secureRemove(relative, originalFile);
+      this.secureRemove(relative, previewFile);
+      this.secureRemove(relative, `${receipt.assetId}.json`);
+      this.secureRemove(relative, `${receipt.assetId}.associated`);
+      this.authority.recordSecureAudit(this.dataDir, relative, receipt.projectId, receipt.agentId, {
+        action: "deleted", id: receipt.assetId, agentId: receipt.agentId,
+        projectId: receipt.projectId, at: new Date(receipt.requestedAt).toISOString(),
+      }, receipt.auditEventId);
+      this.authority.finishDelete(receipt.assetId);
+      return;
+    }
     const openedDirectory = await this.safeDirectory(receipt.projectId, receipt.agentId);
     const directory = openedDirectory.path;
     try {
@@ -1115,6 +1298,7 @@ export class AssetStore {
     now = Date.now(),
     retainedStagedIds: ReadonlySet<string> = new Set(),
   ): Promise<number> {
+    if (this.portableFiles) return this.reconcilePortable(projectId, agentId, associatedIds, now, retainedStagedIds);
     const openedDirectory = await this.safeDirectory(projectId, agentId).catch(() => undefined);
     if (!openedDirectory) return 0;
     const directory = openedDirectory.path;
@@ -1162,6 +1346,59 @@ export class AssetStore {
           now - Date.parse(asset.createdAt) > STAGED_TTL_MS && await this.remove(projectId, agentId, id)) removed++;
     }
     await openedDirectory.handle.close();
+    return removed;
+  }
+
+  private async reconcilePortable(
+    projectId: string,
+    agentId: string,
+    associatedIds: Set<string>,
+    now: number,
+    retainedStagedIds: ReadonlySet<string>,
+  ): Promise<number> {
+    const relative = this.secureDirectory(projectId, agentId);
+    const entries = listSecureDirectory({ root: this.dataDir, relativePath: relative });
+    if (!entries) return 0;
+    let removed = 0;
+    const reachableIds = new Set([
+      ...associatedIds, ...retainedStagedIds,
+      ...this.authority.runtimeAssociatedAssetIds(projectId, agentId),
+    ]);
+    for (const receipt of this.authority.pendingDeletions(projectId, agentId)) {
+      if (reachableIds.has(receipt.assetId)) continue;
+      await this.completeDeletion(receipt);
+      removed++;
+    }
+    const metadataIds = new Set<string>();
+    for (const entry of entries) {
+      if (!entry.name.endsWith(".json") || !ID.test(entry.name.slice(0, -5))) continue;
+      const id = entry.name.slice(0, -5);
+      if (this.readPortable(projectId, agentId, id)) metadataIds.add(id);
+    }
+    for (const entry of entries) {
+      if (entry.kind !== "file") continue;
+      const raw = /^([a-f0-9-]{36})\.(bin|preview\.png|associated)$/u.exec(entry.name);
+      const temporary = entry.name.endsWith(".tmp");
+      const old = now - entry.modifiedMs > STAGED_TTL_MS;
+      if (old && raw && !metadataIds.has(raw[1]!) && !reachableIds.has(raw[1]!)) {
+        const receipt = this.authority.beginDelete(raw[1]!, projectId, agentId);
+        await this.completeDeletion(receipt);
+        removed++;
+      } else if (old && temporary && removeSecureFile({
+        root: this.dataDir, relativeDirectory: relative,
+        leaf: entry.name, expectedIdentity: entry.identity,
+      })) {
+        removed++;
+      }
+      if (!entry.name.endsWith(".json") || !ID.test(entry.name.slice(0, -5))) continue;
+      const id = entry.name.slice(0, -5);
+      const asset = this.readPortable(projectId, agentId, id);
+      if (!asset) continue;
+      if (associatedIds.has(id) && asset.state !== "associated") {
+        await this.associate(projectId, agentId, [id]).catch(() => undefined);
+      } else if (!reachableIds.has(id) && asset.state === "staged" &&
+          now - Date.parse(asset.createdAt) > STAGED_TTL_MS && await this.remove(projectId, agentId, id)) removed++;
+    }
     return removed;
   }
 

@@ -18,6 +18,8 @@ Environment=PONDEROSA_BROWSER_EXECUTABLE=/usr/bin/google-chrome-stable
 Environment=PONDEROSA_BROWSER_MULTI_PAGE=1
 Environment=PONDEROSA_BROWSER_FILE_UPLOAD=1
 Environment=PONDEROSA_BROWSER_SERVICE_SOCKET=%t/ponderosa-browser-dev/browser.sock
+Environment=PONDEROSA_AGENT_SCOPE_MODE=systemd
+Environment=PONDEROSA_AGENT_PARENT_UNIT=ponderosa-dev.service
 Environment=PATH=%h/ponderosa-dev/current/dist/node-runtime/linux-x64:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:%h/.npm-global/bin
 # Deployment writes the exact immutable release identity here before restart.
 EnvironmentFile=-%h/.config/ponderosa/dev.env
@@ -25,6 +27,8 @@ ExecStartPre=/usr/bin/timeout 15 /bin/sh -c 'until test -S "%t/ponderosa-browser
 ExecStart=%h/ponderosa-dev/current/dist/node-runtime/linux-x64/node apps/server/dist/main.js
 Restart=on-failure
 RestartSec=3
+# A provider tool may be OOM-killed without taking down the application.
+OOMPolicy=continue
 KillMode=mixed
 # Leave room for the broker RPC's 130-second failure bound on an unprepared stop.
 # Normal deployments drain first and detach without repeating chooser cleanup.

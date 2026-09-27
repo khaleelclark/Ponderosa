@@ -346,13 +346,37 @@ try {
     "Installed offline restore did not preserve canonical data");
   checks.push({ id: "installed-offline-restore", status: "pass", detail: "installed CLI restored a stopped disposable data directory" });
 
+  const serverRequire = createRequire(path.join(installRoot, "app", "server", "package.json"));
+  const { AssetStore } = await import(pathToFileURL(path.join(installRoot, "app", "server", "dist", "assets.js")).href);
+  const sharp = serverRequire("sharp");
+  const attachmentData = path.join(dataDir, "qualification-assets");
+  const attachments = new AssetStore(attachmentData);
+  try {
+    const projectId = randomUUID();
+    const agentId = randomUUID();
+    const staged = await attachments.stage({ projectId, agentId, body: Buffer.from("portable attachment"), name: "note.txt" });
+    assert((await attachments.content(projectId, agentId, staged.id, false))?.body.toString() === "portable attachment",
+      "Installed attachment download did not retain the uploaded bytes");
+    await attachments.associate(projectId, agentId, [staged.id]);
+    assert((await attachments.read(projectId, agentId, staged.id))?.state === "associated",
+      "Installed attachment send association was not durable");
+    const image = await sharp({ create: { width: 4, height: 4, channels: 3, background: "red" } }).png().toBuffer();
+    const preview = await attachments.stage({ projectId, agentId, body: image, name: "photo.png" });
+    assert((await attachments.content(projectId, agentId, preview.id, true))?.body.length > 0,
+      "Installed attachment preview was unavailable");
+    assert(await attachments.remove(projectId, agentId, preview.id),
+      "Installed staged attachment could not be deleted");
+    assert(!(await attachments.read(projectId, agentId, preview.id)),
+      "Installed deleted attachment remained readable");
+  } finally { attachments.close(); }
+  checks.push({ id: "installed-attachment-lifecycle", status: "pass", detail: "installed upload, association, preview, download and deletion passed" });
+
   let secureReadPassed = false;
   const adversarialChecks = [];
   const recordAdversarialCheck = async (id, detail, operation) => {
     await operation();
     adversarialChecks.push({ id, status: "pass", detail });
   };
-  const serverRequire = createRequire(path.join(installRoot, "app", "server", "package.json"));
   const nativeHost = serverRequire("@ponderosa/native-host");
   if (nativeHost.secureFileAuthoritySupported()) {
     const authorityRoot = path.join(dataDir, "secure-authority");
@@ -524,54 +548,56 @@ try {
     )?.body.toString() === "managed-safe",
     "Managed-artifact repair changed a referenced immutable leaf.");
 
-    await recordAdversarialCheck(
-      "root-replacement",
-      "a retained data-directory descriptor remained bound to the original inode after pathname replacement",
-      async () => {
-        const parent = path.join(dataDir, "adversarial-root-replacement");
-        const root = path.join(parent, "root");
-        const displaced = path.join(parent, "displaced");
-        mkdirSync(root, { recursive: true });
-        writeFileSync(path.join(root, "identity.txt"), "original");
-        const authority = new nativeHost.DataDirectoryAuthority(root);
-        try {
-          renameSync(root, displaced);
-          mkdirSync(root);
-          writeFileSync(path.join(root, "identity.txt"), "replacement");
-          assert(nativeHost.readSecureFile({
-            root: authority.rootPath,
-            relativePath: "identity.txt",
-            maxBytes: 32,
-          })?.toString() === "original", "Root replacement redirected retained authority.");
-        } finally {
-          authority.close();
-        }
-      },
-    );
-    await recordAdversarialCheck(
-      "ancestor-replacement",
-      "a retained data-directory descriptor remained bound after replacement of an ancestor directory",
-      async () => {
-        const parent = path.join(dataDir, "adversarial-ancestor-replacement");
-        const ancestor = path.join(parent, "ancestor");
-        const root = path.join(ancestor, "root");
-        mkdirSync(root, { recursive: true });
-        writeFileSync(path.join(root, "identity.txt"), "original-ancestor");
-        const authority = new nativeHost.DataDirectoryAuthority(root);
-        try {
-          renameSync(ancestor, path.join(parent, "displaced"));
+    if (nativeHost.dataDirectoryAuthoritySupported()) {
+      await recordAdversarialCheck(
+        "root-replacement",
+        "a retained data-directory descriptor remained bound to the original inode after pathname replacement",
+        async () => {
+          const parent = path.join(dataDir, "adversarial-root-replacement");
+          const root = path.join(parent, "root");
+          const displaced = path.join(parent, "displaced");
           mkdirSync(root, { recursive: true });
-          writeFileSync(path.join(root, "identity.txt"), "replacement-ancestor");
-          assert(nativeHost.readSecureFile({
-            root: authority.rootPath,
-            relativePath: "identity.txt",
-            maxBytes: 32,
-          })?.toString() === "original-ancestor", "Ancestor replacement redirected retained authority.");
-        } finally {
-          authority.close();
-        }
-      },
-    );
+          writeFileSync(path.join(root, "identity.txt"), "original");
+          const authority = new nativeHost.DataDirectoryAuthority(root);
+          try {
+            renameSync(root, displaced);
+            mkdirSync(root);
+            writeFileSync(path.join(root, "identity.txt"), "replacement");
+            assert(nativeHost.readSecureFile({
+              root: authority.rootPath,
+              relativePath: "identity.txt",
+              maxBytes: 32,
+            })?.toString() === "original", "Root replacement redirected retained authority.");
+          } finally {
+            authority.close();
+          }
+        },
+      );
+      await recordAdversarialCheck(
+        "ancestor-replacement",
+        "a retained data-directory descriptor remained bound after replacement of an ancestor directory",
+        async () => {
+          const parent = path.join(dataDir, "adversarial-ancestor-replacement");
+          const ancestor = path.join(parent, "ancestor");
+          const root = path.join(ancestor, "root");
+          mkdirSync(root, { recursive: true });
+          writeFileSync(path.join(root, "identity.txt"), "original-ancestor");
+          const authority = new nativeHost.DataDirectoryAuthority(root);
+          try {
+            renameSync(ancestor, path.join(parent, "displaced"));
+            mkdirSync(root, { recursive: true });
+            writeFileSync(path.join(root, "identity.txt"), "replacement-ancestor");
+            assert(nativeHost.readSecureFile({
+              root: authority.rootPath,
+              relativePath: "identity.txt",
+              maxBytes: 32,
+            })?.toString() === "original-ancestor", "Ancestor replacement redirected retained authority.");
+          } finally {
+            authority.close();
+          }
+        },
+      );
+    }
     await recordAdversarialCheck(
       "cross-device-or-volume",
       "secure reads rejected a link into an external device or volume boundary",

@@ -10,6 +10,8 @@ interface SpawnInput {
   cwd: string;
   env: NodeJS.ProcessEnv;
   stdin: "ignore" | "pipe";
+  /** Reserve stdin/stdout for Chrome's remote-debugging pipe. */
+  browserPipe?: boolean;
 }
 
 export interface WindowsContainedProcess {
@@ -83,7 +85,7 @@ export function spawnWindowsContainedProcess(input: SpawnInput): WindowsContaine
       if (!child.pid) throw new Error("Windows containment gate started without a process id");
       job.assign(child.pid);
       authority.assigned();
-      child.send?.({ type: "start", bin: input.bin, args: input.args, cwd: input.cwd });
+      child.send?.({ type: "start", bin: input.bin, args: input.args, cwd: input.cwd, browserPipe: input.browserPipe === true });
     } catch (error) {
       authority.assignmentFailed();
       queueMicrotask(() => child.emit("error", error));

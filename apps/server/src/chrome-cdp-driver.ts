@@ -1,10 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { RuntimeProcessIdentity, BrowserViewportSize, BrowserActivityDto } from "@ponderosa/core";
-import { processGroupAlive, runtimeProcessIdentity, terminateProcessGroup } from "@ponderosa/engines";
+import { processGroupAlive, runtimeProcessIdentity, spawnWindowsContainedProcess, terminateProcessGroup, type NativeProcessTreeAuthority } from "@ponderosa/engines";
 import { redactBrowserText } from "./browser-security.js";
 import { connectPlaywrightMechanics } from "./playwright-browser-mechanics.js";
 import type { BrowserProtocolConnection } from "./approved-chrome-connection.js";
@@ -145,6 +146,8 @@ export interface BrowserDriver extends BrowserTerminationHandle {
   type(text: string): Promise<BrowserPageInfo>;
   scroll(deltaX: number, deltaY: number): Promise<BrowserPageInfo>;
   capture(pageId?: string): Promise<Buffer>;
+  /** Bounded, JPEG page pixels for the live operator view; evidence stays PNG. */
+  preview?(pageId?: string): Promise<{ data: string; sequence: number }>;
   newPage?(): Promise<BrowserPagesInfo>;
   resizeViewport?(pageId: string, size: BrowserViewportSize): Promise<void>;
   viewport?(pageId?: string): BrowserViewportSize;
@@ -267,20 +270,20 @@ interface CdpReply {
   sessionId?: string;
 }
 
-async function terminateBrowserProcess(child: ChildProcess): Promise<void> {
+async function terminateBrowserProcess(child: ChildProcess, nativeAuthority?: NativeProcessTreeAuthority): Promise<void> {
   await terminateProcessGroup(child, {
     label: "browser",
     termGraceMs: 2_000,
     killConfirmationMs: 2_000,
-  });
+  }, nativeAuthority);
 }
 
-async function waitForBrowserProcessExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+async function waitForBrowserProcessExit(child: ChildProcess, timeoutMs: number, nativeAuthority?: NativeProcessTreeAuthority): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  while (processGroupAlive(child) && Date.now() < deadline) {
+  while ((nativeAuthority?.isAlive() ?? processGroupAlive(child)) && Date.now() < deadline) {
     await new Promise<void>((resolve) => setTimeout(resolve, 25));
   }
-  return !processGroupAlive(child);
+  return !(nativeAuthority?.isAlive() ?? processGroupAlive(child));
 }
 
 async function removeBrowserProfile(profileDir: string): Promise<void> {
@@ -382,7 +385,102 @@ interface ManagedBrowserPage {
   isNew: boolean;
 }
 
+interface BrowserPreviewStream {
+  sessionId: string;
+  sequence: number;
+  data?: string;
+  starting?: Promise<void>;
+  idleTimer?: NodeJS.Timeout;
+  waiters: Set<() => void>;
+}
+
 export class ChromeCdpDriver implements BrowserDriver {
+  private readonly previewStreams = new Map<string, BrowserPreviewStream>();
+  private readonly previewStops = new Map<string, Promise<void>>();
+  private previewSequence = 0;
+
+  private acceptPreviewFrame(message: CdpReply): boolean {
+    if (message.method !== "Page.screencastFrame") return false;
+    const sessionId = message.sessionId;
+    const frameSessionId = message.params?.sessionId;
+    if (sessionId && Number.isSafeInteger(frameSessionId)) {
+      void this.connection.send("Page.screencastFrameAck", { sessionId: frameSessionId }, sessionId).catch(() => undefined);
+    }
+    const pageId = sessionId ? this.pageIdBySession.get(sessionId) : undefined;
+    const stream = pageId ? this.previewStreams.get(pageId) : undefined;
+    const data = message.params?.data;
+    if (!stream || stream.sessionId !== sessionId || typeof data !== "string" || data.length > 16 * 1024 * 1024) return true;
+    stream.data = data;
+    stream.sequence = ++this.previewSequence;
+    for (const wake of stream.waiters) wake();
+    stream.waiters.clear();
+    return true;
+  }
+
+  private stopPreview(pageId: string): Promise<void> {
+    const stopping = this.previewStops.get(pageId);
+    if (stopping) return stopping;
+    const stream = this.previewStreams.get(pageId);
+    if (!stream) return Promise.resolve();
+    this.previewStreams.delete(pageId);
+    if (stream.idleTimer) clearTimeout(stream.idleTimer);
+    for (const wake of stream.waiters) wake();
+    stream.waiters.clear();
+    const task = (async () => {
+      await stream.starting?.catch(() => undefined);
+      await this.connection.send("Page.stopScreencast", {}, stream.sessionId).catch(() => undefined);
+    })();
+    this.previewStops.set(pageId, task);
+    void task.finally(() => { if (this.previewStops.get(pageId) === task) this.previewStops.delete(pageId); });
+    return task;
+  }
+
+  async preview(pageId?: string): Promise<{ data: string; sequence: number }> {
+    const page = pageId ? this.pagesById.get(pageId) : this.currentPage();
+    if (!page?.initialized || this.closing) throw new BrowserDriverActionError("page_not_found");
+    await this.previewStops.get(page.pageId);
+    if (this.pagesById.get(page.pageId) !== page || this.closing) throw new BrowserDriverActionError("page_not_found");
+    let stream = this.previewStreams.get(page.pageId);
+    if (!stream) {
+      stream = { sessionId: page.cdpSessionId, sequence: 0, waiters: new Set() };
+      this.previewStreams.set(page.pageId, stream);
+      // The browser still lays out and accepts input in CSS pixels. On a
+      // bandwidth-constrained remote view, encoding those pixels at 2x makes
+      // phone viewers decode four times as many pixels as they can display.
+      // Keep the existing 2x behavior by default; qualify 1x on a disposable
+      // sandbox before changing the shipped default.
+      const previewScale = process.env.PONDEROSA_BROWSER_PREVIEW_SCALE === "1" ? 1 : 2;
+      const width = Math.min(5120, this.viewport(page.pageId).width * previewScale);
+      const height = Math.min(3200, this.viewport(page.pageId).height * previewScale);
+      stream.starting = (async () => {
+        await this.connection.send("Page.bringToFront", {}, page.cdpSessionId);
+        await this.connection.send("Page.startScreencast", {
+          format: "jpeg", quality: 75, maxWidth: width, maxHeight: height, everyNthFrame: 1,
+        }, page.cdpSessionId);
+      })();
+    }
+    const current = stream;
+    if (current.idleTimer) clearTimeout(current.idleTimer);
+    current.idleTimer = setTimeout(() => { void this.stopPreview(page.pageId); }, 3_000);
+    current.idleTimer.unref();
+    try {
+      await current.starting;
+      if (!current.data) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => { current.waiters.delete(wake); reject(new Error("Browser preview did not paint.")); }, 2_000);
+          timer.unref();
+          const wake = () => { clearTimeout(timer); resolve(); };
+          current.waiters.add(wake);
+          if (current.data || this.previewStreams.get(page.pageId) !== current) wake();
+        });
+      }
+      if (this.previewStreams.get(page.pageId) !== current || !current.data) throw new Error("Browser preview changed.");
+      return { data: current.data, sequence: current.sequence };
+    } catch (error) {
+      if (this.previewStreams.get(page.pageId) === current) await this.stopPreview(page.pageId);
+      throw error;
+    }
+  }
   private readonly frameReferences = new Map<string, { frame: import("playwright-core").Frame; targetId: string; url: string }>();
 
   private async actionLocator(selector: string) {
@@ -433,6 +531,7 @@ export class ChromeCdpDriver implements BrowserDriver {
   async resizeViewport(pageId: string, size: BrowserViewportSize): Promise<void> {
     const page = this.pagesById.get(pageId);
     if (!page?.initialized) throw new BrowserDriverActionError("page_not_found");
+    await this.stopPreview(pageId);
     if (this.playwright) await (await this.playwright.page(page.targetId)).setViewportSize(size);
     // The lifecycle observer also owns an emulation session. Keep both sessions
     // aligned so capture, DOM layout and Playwright input share one geometry.
@@ -493,10 +592,11 @@ export class ChromeCdpDriver implements BrowserDriver {
     private readonly uploadEnabled: boolean,
     readonly terminationAuthority: object,
     readonly processIdentity: RuntimeProcessIdentity | undefined,
+    private readonly nativeProcessAuthority?: NativeProcessTreeAuthority,
   ) {}
 
   isAlive(): boolean {
-    return processGroupAlive(this.child) || Boolean(this.display && processGroupAlive(this.display.child));
+    return (this.nativeProcessAuthority?.isAlive() ?? processGroupAlive(this.child)) || Boolean(this.display && processGroupAlive(this.display.child));
   }
 
   static async create(
@@ -518,9 +618,10 @@ export class ChromeCdpDriver implements BrowserDriver {
     const terminationAuthority = {};
     let display: HostedDisplay | undefined;
     let child: ChildProcess | undefined;
+    let nativeProcessAuthority: NativeProcessTreeAuthority | undefined;
     const closeAll = async (): Promise<void> => {
       const failures: unknown[] = [];
-      if (child) await terminateBrowserProcess(child).catch((error) => failures.push(error));
+      if (child) await terminateBrowserProcess(child, nativeProcessAuthority).catch((error) => failures.push(error));
       if (display) {
         await terminateBrowserProcess(display.child).catch((error) => failures.push(error));
         if (!processGroupAlive(display.child)) {
@@ -550,7 +651,7 @@ export class ChromeCdpDriver implements BrowserDriver {
     try {
       const disableSandbox = launch.disableSandbox ||
         process.env.PONDEROSA_BROWSER_DISABLE_SANDBOX === "1";
-      child = spawn(executable, [
+      const browserArgs = [
         ...(!display ? ["--headless=new"] : []), "--remote-debugging-pipe", `--user-data-dir=${profileDir}`,
         ...(disableSandbox ? ["--no-sandbox"] : []),
         // Playwright's normal launch disables BFCache so history navigation
@@ -559,15 +660,29 @@ export class ChromeCdpDriver implements BrowserDriver {
         `--window-size=${VIEWPORT.width},${VIEWPORT.height}`, "--no-first-run",
         "--no-default-browser-check", "--disable-background-networking", "--disable-component-update",
         "--disable-dev-shm-usage", "--disable-features=Translate,OptimizationHints", "about:blank",
-      ], {
-        stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
-        env: {
-          ...Object.fromEntries(["PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "LANG", "LC_ALL"]
+      ];
+      const browserEnv = {
+          ...Object.fromEntries([
+            "PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "LANG", "LC_ALL",
+            ...(process.platform === "win32" ? ["SystemRoot", "WINDIR", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP"] : []),
+          ]
             .flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]!] as const])),
           ...(display ? { DISPLAY: display.display } : {}),
-        },
-        detached: process.platform !== "win32",
-      });
+      };
+      if (process.platform === "win32") {
+        const contained = spawnWindowsContainedProcess({
+          bin: executable, args: browserArgs, cwd: profileDir,
+          env: browserEnv, stdin: "pipe", browserPipe: true,
+        });
+        child = contained.child;
+        nativeProcessAuthority = contained.authority;
+      } else {
+        child = spawn(executable, browserArgs, {
+          stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
+          env: browserEnv,
+          detached: true,
+        });
+      }
     } catch (error) {
       if (!externallyOwned) await closeAll();
       throw error;
@@ -581,15 +696,15 @@ export class ChromeCdpDriver implements BrowserDriver {
         const browserHandle: BrowserTerminationHandle = {
           terminationAuthority,
           processIdentity: runtimeProcessIdentity(child),
-          isAlive: () => processGroupAlive(child!),
+          isAlive: () => nativeProcessAuthority?.isAlive() ?? processGroupAlive(child!),
           close: closeAll,
         };
         onSpawned(browserHandle, { complete: true, coversReturnedDriver: true });
         externallyOwned = true;
       }
       throwIfLaunchAborted(launch.signal);
-      const input = child.stdio[3] as Writable | null;
-      const output = child.stdio[4] as Readable | null;
+      const input = (nativeProcessAuthority ? child.stdin : child.stdio[3]) as Writable | null;
+      const output = (nativeProcessAuthority ? child.stdout : child.stdio[4]) as Readable | null;
       if (!input || !output) throw new Error("browser debugging pipe could not be created");
       const connection = new CdpConnection(input, output);
       const capabilities = browserRuntimeCapabilities();
@@ -598,7 +713,7 @@ export class ChromeCdpDriver implements BrowserDriver {
         child, display, connection, profileDir, Boolean(launch.retainProfile), onConsole, onPageEvent,
         capabilities.multiPage,
         capabilities.fileUpload,
-        terminationAuthority, processIdentity,
+        terminationAuthority, processIdentity, nativeProcessAuthority,
       );
       let removeAbortListener: (() => void) | undefined;
       const aborted = new Promise<never>((_resolve, reject) => {
@@ -639,13 +754,16 @@ export class ChromeCdpDriver implements BrowserDriver {
   detachMechanics(): void {
     this.closing = true;
     this.lifecycleGeneration++;
+    for (const pageId of this.previewStreams.keys()) void this.stopPreview(pageId);
     this.clearPendingChooser("manual_control");
     this.playwright?.close();
   }
 
   private async initialize(usePlaywright: boolean): Promise<void> {
       const driver = this, connection = this.connection;
-      connection.onEvent((message) => driver.enqueueEvent(message));
+      connection.onEvent((message) => {
+        if (!driver.acceptPreviewFrame(message)) driver.enqueueEvent(message);
+      });
       await connection.send("Target.setDiscoverTargets", { discover: true });
       if (driver.multiPageEnabled && !usePlaywright) {
         await connection.send("Target.setAutoAttach", {
@@ -869,6 +987,7 @@ export class ChromeCdpDriver implements BrowserDriver {
   private removePage(pageId: string, reason: string): void {
     const page = this.pagesById.get(pageId);
     if (!page) return;
+    void this.stopPreview(pageId);
     this.pagesById.delete(pageId);
     this.viewportSizes.delete(pageId);
     if (this.lastActivity?.pageId === pageId) this.lastActivity = undefined;
@@ -1333,6 +1452,12 @@ export class ChromeCdpDriver implements BrowserDriver {
 
   async key(key: string): Promise<BrowserPageInfo> {
     const page = this.currentPage();
+    // Browser clients send Control as the platform-neutral primary shortcut.
+    // Chrome on macOS uses Command/Meta for select-all, copy, and navigation.
+    if (process.platform === "darwin") {
+      const parts = key.split("+");
+      key = parts.map((part, index) => index < parts.length - 1 && part === "Control" ? "Meta" : part).join("+");
+    }
     if (this.playwright) {
       const current = await this.playwright.page(page.targetId);
       if (key === "BrowserBack") await current.goBack({ waitUntil: "domcontentloaded", timeout: 15_000 });
@@ -1364,7 +1489,9 @@ export class ChromeCdpDriver implements BrowserDriver {
     const windowsVirtualKeyCode = codes[key] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
     const text = key.length === 1 && !(modifiers & 7) ? key : undefined;
     const params = { key, modifiers, windowsVirtualKeyCode };
-    await this.connection.send("Input.dispatchKeyEvent", { type: text ? "keyDown" : "rawKeyDown", ...params, ...(text ? { text } : {}) }, page.cdpSessionId);
+    const primary = process.platform === "darwin" ? 4 : 2;
+    const selectAll = (modifiers & primary) !== 0 && (modifiers & (1 | 8)) === 0 && key.toLowerCase() === "a";
+    await this.connection.send("Input.dispatchKeyEvent", { type: text ? "keyDown" : "rawKeyDown", ...params, ...(text ? { text } : {}), ...(selectAll ? { code: "KeyA", commands: ["selectAll"] } : {}) }, page.cdpSessionId);
     await this.connection.send("Input.dispatchKeyEvent", { type: "keyUp", ...params }, page.cdpSessionId);
     return this.pageInfo();
   }
@@ -1597,6 +1724,7 @@ export class ChromeCdpDriver implements BrowserDriver {
 
   async close(): Promise<void> {
     this.closing = true; this.lifecycleGeneration += 1; this.clearPendingChooser("session_closed");
+    await Promise.all([...this.previewStreams.keys()].map(pageId => this.stopPreview(pageId)));
     this.playwright?.close();
     let closeTimer: NodeJS.Timeout | undefined;
     try {
@@ -1608,8 +1736,10 @@ export class ChromeCdpDriver implements BrowserDriver {
     // Trusted cookies and site storage are durable only after Chrome has
     // completed its own shutdown. Give Browser.close a bounded opportunity to
     // flush the profile, then retain the existing TERM/KILL containment path.
-    if (!await waitForBrowserProcessExit(this.child, 2_000)) {
-      await terminateBrowserProcess(this.child);
+    if (!await waitForBrowserProcessExit(this.child, 2_000, this.nativeProcessAuthority)) {
+      await terminateBrowserProcess(this.child, this.nativeProcessAuthority);
+    } else {
+      this.nativeProcessAuthority?.close();
     }
     if (this.display) {
       await terminateBrowserProcess(this.display.child);
@@ -1619,15 +1749,41 @@ export class ChromeCdpDriver implements BrowserDriver {
   }
 }
 
-export function findBrowserExecutable(configured = process.env.PONDEROSA_BROWSER_EXECUTABLE): string | undefined {
+export function findBrowserExecutable(
+  configured = process.env.PONDEROSA_BROWSER_EXECUTABLE,
+  options: {
+    platform?: NodeJS.Platform;
+    env?: NodeJS.ProcessEnv;
+    home?: string;
+    exists?: (candidate: string) => boolean;
+  } = {},
+): string | undefined {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const home = options.home ?? homedir();
+  const hostPath = platform === "win32" ? path.win32 : path.posix;
   const candidates = [
-    configured && path.isAbsolute(configured) ? configured : undefined,
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
+    configured && hostPath.isAbsolute(configured) ? configured : undefined,
+    ...(platform === "darwin" ? [
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Chromium.app/Contents/MacOS/Chromium",
+      hostPath.join(home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+      hostPath.join(home, "Applications/Chromium.app/Contents/MacOS/Chromium"),
+    ] : platform === "win32" ? [
+      ...[env.PROGRAMFILES, env["PROGRAMFILES(X86)"], env.LOCALAPPDATA]
+        .filter((value): value is string => Boolean(value))
+        .flatMap((root) => [
+          hostPath.join(root, "Google", "Chrome", "Application", "chrome.exe"),
+          hostPath.join(root, "Chromium", "Application", "chrome.exe"),
+        ]),
+    ] : [
+      "/usr/bin/chromium",
+      "/usr/bin/chromium-browser",
+      "/usr/bin/google-chrome",
+      "/usr/bin/google-chrome-stable",
+    ]),
   ].filter((value): value is string => Boolean(value));
-  return candidates.find((candidate) => existsSync(candidate));
+  return candidates.find((candidate) => (options.exists ?? existsSync)(candidate));
 }
 
 export function chromeBrowserDriverFactory(dataDir: string, executable = findBrowserExecutable()): BrowserDriverFactory {

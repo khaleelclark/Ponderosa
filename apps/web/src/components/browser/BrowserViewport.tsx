@@ -7,9 +7,12 @@ import NearMeIcon from "@mui/icons-material/NearMe";
 import { BrowserKeyboard } from "./BrowserKeyboard";
 import {
   browserTouchScrollDelta,
+  createBrowserBinaryFrameParser,
+  createLatestBrowserFrameQueue,
   createBrowserFrameScheduler,
-  decodeBrowserFrame,
+  decodeBrowserFrameSurface,
   normalizeBrowserWheelDelta,
+  parseBrowserFrameEvent,
 } from "../../browserInteraction";
 
 const BROWSER_VIEWPORT = { width: 1280, height: 720 } as const;
@@ -26,6 +29,7 @@ export function BrowserViewport<Session extends BrowserSession>({
   accent = "warning.main",
   viewedPageId,
   keyboardTarget,
+  preferBinary = true,
 }: {
   adapter: BrowserEndpointAdapter<Session>;
   session?: Session;
@@ -38,21 +42,22 @@ export function BrowserViewport<Session extends BrowserSession>({
   accent?: string;
   viewedPageId?: string;
   keyboardTarget?: Element | null;
+  preferBinary?: boolean;
 }): JSX.Element {
-  const [frameUrl, setFrameUrl] = useState<string>();
+  const [hasFrame, setHasFrame] = useState(false);
   const [frameError, setFrameError] = useState<string>();
   const [metadata, setMetadata] = useState<BrowserFrameMetadata>();
   const container = useRef<HTMLDivElement>(null);
-  const image = useRef<HTMLImageElement>(null);
+  const image = useRef<HTMLCanvasElement>(null);
   const [imageBounds, setImageBounds] = useState({ width: 0, height: 0, left: 0 });
   const frameContext = useRef<BrowserFrameMetadata>();
   const frameScheduler = useRef<ReturnType<typeof createBrowserFrameScheduler>>();
   const frameAbort = useRef<AbortController>();
+  const frameVisibility = useRef<() => void>();
   const pollingEnabledRef = useRef(pollingEnabled);
   pollingEnabledRef.current = pollingEnabled;
   useEffect(() => {
-    if (!pollingEnabled) frameAbort.current?.abort();
-    frameScheduler.current?.setVisible(document.visibilityState === "visible" && pollingEnabled);
+    frameVisibility.current?.();
   }, [pollingEnabled]);
   useEffect(() => {
     if (!metadata?.activity) return;
@@ -92,7 +97,7 @@ export function BrowserViewport<Session extends BrowserSession>({
     const observer = new ResizeObserver(() => setImageBounds({ width: element.clientWidth, height: element.clientHeight, left: element.offsetLeft }));
     observer.observe(element);
     return () => observer.disconnect();
-  }, [frameUrl]);
+  }, [session?.status]);
   const touchGesture = useRef<{ pointerId: number; lastX: number; lastY: number }>();
   const suppressClick = useRef(false);
   const keyboard = useRef<HTMLTextAreaElement>(null);
@@ -112,61 +117,136 @@ export function BrowserViewport<Session extends BrowserSession>({
 
   useEffect(() => {
     if (!active || session?.status !== "ready") {
-      setFrameUrl((current) => {
-        if (current) URL.revokeObjectURL(current);
-        return undefined;
-      });
+      setHasFrame(false);
       return undefined;
     }
     let cancelled = false;
+    let source: EventSource | undefined;
+    let streamQueue: ReturnType<typeof createLatestBrowserFrameQueue<{ blob: Blob; metadata: BrowserFrameMetadata }>> | undefined;
+    let binaryAbort: AbortController | undefined;
+    let fallback = false;
+    let scheduler: ReturnType<typeof createBrowserFrameScheduler> | undefined;
+    let arrived = 0;
+    let shown = 0;
+    const showFrame = async (blob: Blob, nextMetadata: BrowserFrameMetadata | undefined, arrival: number, valid = () => true) => {
+      // Paint directly into one persistent surface. Replacing an <img> URL on
+      // every screencast frame made React, image layout and URL cleanup part of
+      // the hot path, which is especially costly on mobile Safari.
+      const decoded = await decodeBrowserFrameSurface(blob);
+      if (cancelled || !valid() || !pollingEnabledRef.current || document.visibilityState !== "visible" || arrival <= shown) {
+        decoded.close();
+        return;
+      }
+      const surface = image.current;
+      const context = surface?.getContext("2d", { alpha: false });
+      if (!surface || !context) { decoded.close(); return; }
+      try {
+        if (surface.width !== decoded.width) surface.width = decoded.width;
+        if (surface.height !== decoded.height) surface.height = decoded.height;
+        context.drawImage(decoded.source, 0, 0);
+      } finally { decoded.close(); }
+      shown = arrival;
+      setHasFrame(true);
+      frameContext.current = nextMetadata;
+      setMetadata(current => JSON.stringify(current) === JSON.stringify(nextMetadata) ? current : nextMetadata);
+      setFrameError(current => current ? undefined : current);
+    };
     const capture = async () => {
         if (!pollingEnabledRef.current || document.visibilityState !== "visible") return;
         const controller = new AbortController();
         frameAbort.current = controller;
         try {
           const frame = await adapter.getFrame(pageId, controller.signal);
-          if (cancelled || !pollingEnabledRef.current || document.visibilityState !== "visible") return;
-          const next = await decodeBrowserFrame(frame.blob);
-          if (cancelled || !pollingEnabledRef.current || document.visibilityState !== "visible") {
-            URL.revokeObjectURL(next);
-            return;
-          }
-          setFrameUrl((current) => {
-            if (current) URL.revokeObjectURL(current);
-            return next;
-          });
-          frameContext.current = frame.metadata;
-          setMetadata(frame.metadata);
-          setFrameError(undefined);
+          if (!cancelled) await showFrame(frame.blob, frame.metadata, ++arrived);
         } catch (error) {
           if (!cancelled && !controller.signal.aborted) setFrameError(error instanceof Error ? error.message : String(error));
         } finally {
           if (frameAbort.current === controller) frameAbort.current = undefined;
         }
     };
-    const scheduler = createBrowserFrameScheduler({ capture });
-    frameScheduler.current = scheduler;
-    const updateVisibility = () => {
-      const visible = document.visibilityState === "visible";
-      if (!visible) frameAbort.current?.abort();
-      scheduler.setVisible(visible && pollingEnabledRef.current);
+    const startPolling = () => {
+      if (scheduler) { scheduler.setVisible(document.visibilityState === "visible" && pollingEnabledRef.current); return; }
+      scheduler = createBrowserFrameScheduler({ capture });
+      frameScheduler.current = scheduler;
+      scheduler.setVisible(document.visibilityState === "visible" && pollingEnabledRef.current);
     };
-    refreshFrame.current = () => scheduler.requestInteractionRefresh();
+    const closeStream = () => { streamQueue?.dispose(); streamQueue = undefined; source?.close(); source = undefined; binaryAbort?.abort(); binaryAbort = undefined; };
+    const startLegacyStream = () => {
+      if (typeof EventSource === "undefined") { fallback = true; startPolling(); return; }
+      const opened = new EventSource(adapter.frameStreamUrl(pageId));
+      source = opened;
+      streamQueue = createLatestBrowserFrameQueue(async frame => {
+        await showFrame(frame.blob, frame.metadata, ++arrived, () => source === opened);
+      }, error => { if (!cancelled && source === opened) setFrameError(error instanceof Error ? error.message : String(error)); });
+      opened.addEventListener("frame", event => {
+        try { streamQueue?.push(parseBrowserFrameEvent((event as MessageEvent).data)); }
+        catch (error) { if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error)); }
+      });
+      opened.onerror = () => {
+        if (cancelled || source !== opened) return;
+        closeStream();
+        fallback = true;
+        startPolling();
+      };
+    };
+    const startStream = () => {
+      if (!preferBinary || typeof fetch !== "function" || typeof ReadableStream === "undefined") { startLegacyStream(); return; }
+      const controller = new AbortController();
+      binaryAbort = controller;
+      streamQueue = createLatestBrowserFrameQueue(async frame => {
+        await showFrame(frame.blob, frame.metadata, ++arrived, () => binaryAbort === controller);
+      }, error => { if (!cancelled && binaryAbort === controller) setFrameError(error instanceof Error ? error.message : String(error)); });
+      void (async () => {
+        let watchdog: ReturnType<typeof setTimeout> | undefined;
+        const armWatchdog = () => {
+          if (watchdog) clearTimeout(watchdog);
+          watchdog = setTimeout(() => controller.abort(), 20_000);
+        };
+        try {
+          armWatchdog();
+          const url = adapter.frameStreamUrl(pageId);
+          const response = await fetch(`${url}${url.includes("?") ? "&" : "?"}format=binary`, { signal: controller.signal, credentials: "same-origin", cache: "no-store" });
+          if (!response.ok || response.headers.get("content-type")?.split(";")[0] !== "application/vnd.ponderosa.browser-frames" || !response.body) throw new Error("Binary browser preview unavailable.");
+          const reader = response.body.getReader();
+          const parser = createBrowserBinaryFrameParser();
+          while (!controller.signal.aborted) {
+            const next = await reader.read();
+            if (next.done) throw new Error("Browser preview stream ended.");
+            armWatchdog();
+            for (const frame of parser.push(next.value)) streamQueue?.push(frame);
+          }
+        } catch {
+          if (cancelled || binaryAbort !== controller) return;
+          closeStream();
+          startLegacyStream();
+        } finally { if (watchdog) clearTimeout(watchdog); }
+      })();
+    };
+    const updateVisibility = () => {
+      const visible = document.visibilityState === "visible" && pollingEnabledRef.current;
+      if (!visible) {
+        frameAbort.current?.abort();
+        closeStream();
+        scheduler?.setVisible(false);
+      } else if (fallback) startPolling();
+      else if (!source && !binaryAbort) startStream();
+    };
+    refreshFrame.current = () => scheduler?.requestInteractionRefresh();
+    frameVisibility.current = updateVisibility;
     document.addEventListener("visibilitychange", updateVisibility);
     updateVisibility();
     return () => {
       cancelled = true;
       frameAbort.current?.abort();
+      closeStream();
       document.removeEventListener("visibilitychange", updateVisibility);
-      scheduler.dispose();
+      scheduler?.dispose();
       if (frameScheduler.current === scheduler) frameScheduler.current = undefined;
+      if (frameVisibility.current === updateVisibility) frameVisibility.current = undefined;
       refreshFrame.current = () => undefined;
-      setFrameUrl((current) => {
-        if (current) URL.revokeObjectURL(current);
-        return undefined;
-      });
+      setHasFrame(false);
     };
-  }, [active, adapter, refreshFrame, session?.id, session?.status, pageId]);
+  }, [active, adapter, refreshFrame, session?.id, session?.status, pageId, preferBinary]);
 
   const viewport = session?.status === "opening"
     ? <Stack spacing={1} alignItems="center"><CircularProgress /><Typography color="grey.300">Starting browser…</Typography></Stack>
@@ -174,12 +254,10 @@ export function BrowserViewport<Session extends BrowserSession>({
       ? <Alert severity="error">{session.failure ?? "Browser failed to start."}</Alert>
       : session?.status !== "ready"
         ? empty
-        : frameUrl
-          ? <Box
-            component="img"
+        : <><Box
+            component="canvas"
             ref={image}
-            src={frameUrl}
-            alt={`Interactive browser viewport: ${session.title ?? session.url ?? "page"}`}
+            role="img"
             aria-label={operatorControl ? "Interactive browser viewport. You have keyboard and pointer control." : "Interactive browser viewport. Agent has control."}
             tabIndex={operatorControl ? 0 : -1}
             onClick={(event) => {
@@ -192,8 +270,8 @@ export function BrowserViewport<Session extends BrowserSession>({
               keyboard.current?.focus({ preventScroll: true });
               sendInput({
                 kind: "click",
-                x: (event.clientX - rect.left) * (metadata?.viewport.width ?? event.currentTarget.naturalWidth ?? BROWSER_VIEWPORT.width) / rect.width,
-                y: (event.clientY - rect.top) * (metadata?.viewport.height ?? event.currentTarget.naturalHeight ?? BROWSER_VIEWPORT.height) / rect.height,
+                x: (event.clientX - rect.left) * (metadata?.viewport.width ?? event.currentTarget.width ?? BROWSER_VIEWPORT.width) / rect.width,
+                y: (event.clientY - rect.top) * (metadata?.viewport.height ?? event.currentTarget.height ?? BROWSER_VIEWPORT.height) / rect.height,
               });
             }}
             onFocus={() => keyboard.current?.focus({ preventScroll: true })}
@@ -236,12 +314,13 @@ export function BrowserViewport<Session extends BrowserSession>({
               maxWidth: "100%",
               maxHeight: "100%",
               display: "block",
+              visibility: hasFrame ? "visible" : "hidden",
               touchAction: operatorControl ? "none" : "auto",
               cursor: "default",
               outlineOffset: -3,
             }}
           />
-          : <Stack sx={{ position: "absolute", inset: 0, alignItems: "center", justifyContent: "center" }}><CircularProgress size={24} /></Stack>;
+          {!hasFrame ? <Stack sx={{ position: "absolute", inset: 0, alignItems: "center", justifyContent: "center" }}><CircularProgress size={24} /></Stack> : null}</>;
 
   return <Stack spacing={1} sx={{ minHeight: 0, minWidth: 0, width: "100%", height: "100%" }}>
     <Box
@@ -303,7 +382,8 @@ export function BrowserViewport<Session extends BrowserSession>({
           if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") return;
           if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) return;
           event.preventDefault();
-          // The hosted browser runs on Linux: map the client's primary modifier to Control.
+          // Control is the browser API's primary-shortcut token; the host driver
+          // maps it to Command when Chrome runs on macOS.
           const modifiers = `${event.ctrlKey || event.metaKey ? "Control+" : ""}${event.altKey ? "Alt+" : ""}${event.shiftKey ? "Shift+" : ""}`;
           sendInput({ kind: "key", key: modifiers + event.key });
         }}

@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiRequestError } from "../../api/types";
 import { createBrowserInputQueue } from "../../browserInputQueue";
+import { coalesceBrowserScrollInputs } from "../../browserInteraction";
 
 export function useBrowserController<Session extends BrowserSession>({
   adapter,
@@ -30,7 +31,7 @@ export function useBrowserController<Session extends BrowserSession>({
     queryFn: adapter.get,
     enabled,
     retry: false,
-    refetchInterval: (current) => pollingEnabled
+    refetchInterval: (current) => (pollingEnabled || (enabled && followAgent && current.state.data?.controlOwner === "agent" && document.visibilityState === "visible"))
       ? current.state.data?.status === "opening" ? 750 : 2_500
       : false,
   });
@@ -131,6 +132,10 @@ export function useBrowserController<Session extends BrowserSession>({
     },
     onError: setInputError,
     onBusy: busy => { inputBusy.current = busy; setInputPending(busy); },
+    coalesce: (pending, next) => {
+      if (pending.kind !== "scroll" || next.kind !== "scroll") return undefined;
+      return coalesceBrowserScrollInputs(pending, next);
+    },
   }), [adapter]);
   const sendInput = useCallback((value: UnfencedBrowserInput) => inputQueue.enqueue(value), [inputQueue]);
 

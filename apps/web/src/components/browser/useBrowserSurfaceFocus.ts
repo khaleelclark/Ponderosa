@@ -5,15 +5,20 @@ export function useBrowserSurfaceFocus(active: boolean, focusOnMount = false) {
   const root = useRef<HTMLDivElement>(null);
   const engaged = useRef(false);
   const [focused, setFocused] = useState(false);
+  const [visible, setVisible] = useState(false);
   useEffect(() => {
     if (!active) {
       engaged.current = false;
       setFocused(false);
+      setVisible(false);
       return;
     }
     const surface = () => root.current?.closest('[role="dialog"]') ?? root.current;
-    const visible = () => document.visibilityState === "visible" && document.hasFocus();
-    const syncFocus = () => setFocused(visible() && engaged.current);
+    const pageVisible = () => document.visibilityState === "visible";
+    const syncFocus = () => {
+      setVisible(pageVisible());
+      setFocused(pageVisible() && document.hasFocus() && engaged.current);
+    };
     const onFocusIn = (event: FocusEvent) => {
       engaged.current = Boolean(surface()?.contains(event.target as Node));
       syncFocus();
@@ -42,5 +47,5 @@ export function useBrowserSurfaceFocus(active: boolean, focusOnMount = false) {
       window.removeEventListener("blur", syncFocus);
     };
   }, [active, focusOnMount]);
-  return { root, focused };
+  return { root, focused, visible };
 }

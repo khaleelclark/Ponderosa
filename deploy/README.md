@@ -190,10 +190,16 @@ and create an offline, checksummed snapshot before starting a revision that may
 run schema migrations:
 
 ```sh
-systemctl --user stop ponderosa.service
-pnpm --filter @ponderosa/agents data -- backup \
-  --data-dir "$PONDEROSA_DATA_DIR" \
-  --output "$HOME/.local/state/ponderosa-backups/$PONDEROSA_BUILD_SHA" \
+sudo systemctl stop ponderosa.service
+install_root=/opt/ponderosa-engine/resources/Ponderosa
+runtime="$install_root/runtime/node"
+data_tool="$install_root/app/server/tools/data-directory.mjs"
+# Replace this sample with PONDEROSA_DATA_DIR from the installed system unit.
+data_dir=/home/khaleel/.ponderosa
+backup_id="$(date -u +%Y%m%dT%H%M%SZ)"
+"$runtime" "$data_tool" backup \
+  --data-dir "$data_dir" \
+  --output "$HOME/.local/state/ponderosa-backups/$backup_id" \
   --external-projects copy
 ```
 
@@ -209,8 +215,8 @@ Rehearse restore to a new, nonexistent path and verify the restored service
 before treating a backup as usable:
 
 ```sh
-pnpm --filter @ponderosa/agents data -- restore \
-  --backup "$HOME/.local/state/ponderosa-backups/$PONDEROSA_BUILD_SHA" \
+"$runtime" "$data_tool" restore \
+  --backup "$HOME/.local/state/ponderosa-backups/$backup_id" \
   --data-dir "$HOME/.ponderosa-restore-rehearsal"
 ```
 
@@ -241,6 +247,7 @@ scope cannot orphan the daemon:
 
 ```sh
 mkdir -p ~/.config/systemd/user ~/.config/ponderosa
+cp deploy/ponderosa-agent-workloads.slice ~/.config/systemd/user/ponderosa-agent-workloads.slice
 cp deploy/ponderosa-browser-dev.service ~/.config/systemd/user/ponderosa-browser-dev.service
 cp deploy/ponderosa-dev.service ~/.config/systemd/user/ponderosa-dev.service
 printf 'PONDEROSA_BUILD_VERSION=%s\nPONDEROSA_BUILD_SHA=%s\n' "$release" "$commit" \
@@ -249,6 +256,29 @@ mv ~/.config/ponderosa/dev.env.next ~/.config/ponderosa/dev.env
 systemctl --user daemon-reload
 systemctl --user enable --now ponderosa-browser-dev.service ponderosa-dev.service
 ```
+
+Install and reload the Agent slice **before** starting a revision with
+`PONDEROSA_AGENT_SCOPE_MODE=systemd`. The dev unit enables this mode: each
+provider CLI and its shell/tool descendants enter a separate systemd user
+scope under the shared `ponderosa-agent-workloads.slice`. Those scopes have
+`PartOf=ponderosa-dev.service`, so a unit stop/restart also stops stranded
+work if an Agent's provider root has crashed. The slice's aggregate
+`MemoryHigh=50%` and `MemoryMax=60%` leave memory for the app, browser, and
+other host services. Adjust those values in a slice drop-in after measuring
+the host's normal workload; they are not a per-Agent or security boundary.
+`OOMPolicy=continue` also prevents a killed tool from automatically stopping
+the app service. An Agent Run can still fail if its workload exceeds the
+slice budget, and a host-wide OOM remains possible if unrelated workloads
+consume the reserved headroom.
+
+The systemd scope mode is Linux-only and explicit. It requires a working
+systemd user manager and `systemd-run` on `PATH`; a missing manager or slice
+must be corrected before enabling it. Other Linux installations, macOS, and
+Windows retain their existing provider process launch and cleanup behavior.
+The checked-in system-level `ponderosa.service` uses `OOMPolicy=continue` but
+does not enable user scopes automatically because a system service running as
+`User=` is not guaranteed to have a usable user manager. Operators who move
+to a user service may install the slice and opt in after qualification.
 
 The deploy operation must still drain the currently running revision and wait
 for `deploymentDrain.readyForRestart`. Update the `current` symlink and the

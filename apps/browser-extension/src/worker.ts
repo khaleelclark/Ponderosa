@@ -15,6 +15,7 @@ async function pause(current: Connection): Promise<void> {
   current.epoch++;
   pausing = (async () => {
     await Promise.allSettled(attaching.values());
+    await clearAgentCursors(current);
     for (const tabId of [...current.attached]) await detach(current, tabId);
     if (connection !== current || current.revoked) return;
     await api(current, `connections/${current.id}/state`, { paused: true, epoch: current.epoch });
@@ -55,6 +56,7 @@ function stop(): Promise<void> {
   stopping = (async () => { try {
     if (current) {
       await Promise.allSettled(attaching.values());
+      await clearAgentCursors(current);
       const failures: unknown[] = [];
       for (const tabId of [...current.attached]) {
         try { await detach(current, tabId); } catch (error) { failures.push(error); }
@@ -120,25 +122,58 @@ async function pages(current: Connection): Promise<unknown> {
 
 /** This fixed function, not code supplied by Ponderosa, is evaluated in the tab. */
 function pageOperation(action: string, args: Record<string, unknown>): unknown {
+  if (action === "clearAgentCursor") {
+    document.querySelectorAll("[data-ponderosa-agent-cursor]").forEach(element => element.remove());
+    return true;
+  }
   if (document.querySelector('input[type="password"],input[autocomplete="one-time-code"],input[autocomplete="current-password"],input[autocomplete="new-password"]')) return { blocked: true };
+  if (action === "showAgentCursor") {
+    const x = Number(args.x), y = Number(args.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > innerWidth || y > innerHeight) return false;
+    document.querySelectorAll("[data-ponderosa-agent-cursor]").forEach(element => element.remove());
+    const marker = document.createElement("div");
+    marker.dataset.ponderosaAgentCursor = "";
+    marker.setAttribute("aria-hidden", "true");
+    marker.style.cssText = `position:fixed;left:${x}px;top:${y}px;z-index:2147483647;pointer-events:none;width:1px;height:1px;overflow:visible`;
+    const tip = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    tip.setAttribute("viewBox", "0 0 22 28");
+    tip.style.cssText = "position:absolute;left:-2px;top:-2px;width:22px;height:28px;overflow:visible;filter:drop-shadow(0 2px 3px #000a);pointer-events:none";
+    const arrow = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    arrow.setAttribute("d", "M2 2v21l6-6 4 9 4-2-4-9h9z");
+    arrow.setAttribute("fill", "#61bf83");
+    arrow.setAttribute("stroke", "#fff");
+    arrow.setAttribute("stroke-width", "2");
+    tip.append(arrow);
+    const label = document.createElement("div");
+    label.style.cssText = "position:absolute;left:19px;top:14px;padding:2px 6px;border-radius:5px;background:#183a2b;color:#fff;font:600 12px system-ui;white-space:nowrap;box-shadow:0 2px 8px #0008;pointer-events:none";
+    label.textContent = "Agent";
+    marker.append(tip, label);
+    document.documentElement.append(marker);
+    setTimeout(() => marker.remove(), 2_500);
+    return true;
+  }
   if (action === "info") return { url: location.href, title: document.title, width: innerWidth, height: innerHeight };
   if (action === "guard") return { blocked: false };
   const selector = typeof args.selector === "string" && args.selector.length <= 2000 ? args.selector : undefined;
   if (action === "inspect") {
-    const root = selector ? document.querySelector(selector) : document.body;
-    if (!root) throw new Error("Element not found");
-    const controls = [...root.querySelectorAll("input,textarea,select,button,a[href]")].slice(0, 60).map(element => {
-      const input = element as HTMLInputElement;
-      const label = element.getAttribute("aria-label") ?? element.getAttribute("placeholder") ?? element.textContent ?? "";
-      const identity = element.id ? `#${CSS.escape(element.id)}` : input.name ? `${element.tagName.toLowerCase()}[name=${JSON.stringify(input.name)}]` : undefined;
-      return { selector: identity, tag: element.tagName.toLowerCase(), label: label.slice(0, 200), type: input.type, ...(input.type !== "file" && input.type !== "hidden" && "value" in input ? { value: String(input.value).slice(0, 500) } : {}) };
-    });
-    return JSON.stringify({ url: location.origin + location.pathname, title: document.title, viewport: { width: innerWidth, height: innerHeight, scrollX, scrollY }, text: (root instanceof HTMLElement ? root.innerText : root.textContent ?? "").slice(0, 10_000), controls }).slice(0, 30_000);
+    const markers = [...document.querySelectorAll<HTMLElement>("[data-ponderosa-agent-cursor]")];
+    markers.forEach(marker => marker.style.display = "none");
+    try {
+      const root = selector ? document.querySelector(selector) : document.body;
+      if (!root) throw new Error("Element not found");
+      const controls = [...root.querySelectorAll("input,textarea,select,button,a[href]")].slice(0, 60).map(element => {
+        const input = element as HTMLInputElement;
+        const label = element.getAttribute("aria-label") ?? element.getAttribute("placeholder") ?? element.textContent ?? "";
+        const identity = element.id ? `#${CSS.escape(element.id)}` : input.name ? `${element.tagName.toLowerCase()}[name=${JSON.stringify(input.name)}]` : undefined;
+        return { selector: identity, tag: element.tagName.toLowerCase(), label: label.slice(0, 200), type: input.type, ...(input.type !== "file" && input.type !== "hidden" && "value" in input ? { value: String(input.value).slice(0, 500) } : {}) };
+      });
+      return JSON.stringify({ url: location.origin + location.pathname, title: document.title, viewport: { width: innerWidth, height: innerHeight, scrollX, scrollY }, text: (root instanceof HTMLElement ? root.innerText : root.textContent ?? "").slice(0, 10_000), controls }).slice(0, 30_000);
+    } finally { markers.forEach(marker => marker.style.removeProperty("display")); }
   }
-  if (action === "point" || action === "focus") {
-    const element = selector ? document.querySelector(selector) : undefined;
+  if (action === "point" || action === "focus" || action === "activePoint") {
+    const element = action === "activePoint" ? document.activeElement : selector ? document.querySelector(selector) : undefined;
     if (!(element instanceof HTMLElement)) throw new Error("Element not found");
-    element.scrollIntoView({ block: "center", inline: "center" });
+    if (action !== "activePoint") element.scrollIntoView({ block: "center", inline: "center" });
     const rect = element.getBoundingClientRect();
     if (!rect.width || !rect.height) throw new Error("Element not visible");
     if (action === "focus") {
@@ -163,6 +198,16 @@ async function guard(current: Connection): Promise<void> {
   await scopedTab(current, current.commandTabId ?? current.tabId);
   const result = await evaluate(current, "guard") as { blocked?: boolean } | undefined;
   if (!result || result.blocked) throw new AuthenticationRequired("Sign-in requires manual control. Browser access is paused.");
+}
+async function showAgentCursor(current: Connection, x: number, y: number): Promise<void> {
+  // A cosmetic marker must not turn a valid Agent action into a failed tool.
+  // Authentication fencing still applies if a sign-in form appeared meanwhile.
+  try { await evaluate(current, "showAgentCursor", { x, y }); }
+  catch (error) { if (error instanceof AuthenticationRequired) throw error; }
+}
+async function clearAgentCursors(current: Connection): Promise<void> {
+  const expression = `(${pageOperation.toString()})("clearAgentCursor",{})`;
+  await Promise.allSettled(current.attached.map(tabId => chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression, returnByValue: true })));
 }
 async function execute(current: Connection, command: Command): Promise<unknown> {
   const args = command.args;
@@ -208,6 +253,7 @@ async function execute(current: Connection, command: Command): Promise<unknown> 
   }
   if (command.action === "info" || command.action === "inspect") return evaluate(current, command.action, args);
   if (command.action === "capture") {
+    await evaluate(current, "clearAgentCursor");
     const result = await cdp(current, "Page.captureScreenshot", { format: "png", fromSurface: true });
     await guard(current);
     return result.data;
@@ -220,18 +266,23 @@ async function execute(current: Connection, command: Command): Promise<unknown> 
     const point = command.action === "click" ? await evaluate(current, "point", args) as { x: number; y: number } : { x: Number(args.x), y: Number(args.y) };
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x < 0 || point.y < 0) throw new Error("Invalid click");
     await guard(current);
+    await showAgentCursor(current, point.x, point.y);
     await cdp(current, "Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
     await cdp(current, "Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
     return null;
   }
   if (command.action === "type" || command.action === "fill") {
     if (typeof args.text !== "string" || args.text.length > 32_000) throw new Error("Text exceeds the local input limit");
-    if (command.action === "fill") await evaluate(current, "focus", args);
+    const point = command.action === "fill"
+      ? await evaluate(current, "focus", args) as { x: number; y: number }
+      : await evaluate(current, "activePoint").catch(error => { if (error instanceof AuthenticationRequired) throw error; return undefined; }) as { x: number; y: number } | undefined;
     await guard(current);
+    if (point) await showAgentCursor(current, point.x, point.y);
     await cdp(current, "Input.insertText", { text: args.text }); return null;
   }
   if (command.action === "scroll") {
     if (![args.deltaX, args.deltaY].every(value => typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 4000)) throw new Error("Invalid scroll");
+    await showAgentCursor(current, 100, 100);
     await cdp(current, "Input.dispatchMouseEvent", { type: "mouseWheel", x: 100, y: 100, deltaX: args.deltaX, deltaY: args.deltaY }); return null;
   }
   if (command.action === "key") {

@@ -19,6 +19,8 @@ interface NativeJobBinding {
   releaseDataDirectoryAuthority(authority: unknown): void;
   readSecureFile(root: string, relativePath: string, maxBytes: number, requireNonEmpty: boolean): Buffer | null;
   listSecureDirectory(root: string, relativePath: string): SecureDirectoryEntry[] | null;
+  ensureSecureDirectory(root: string, relativePath: string): boolean;
+  secureDirectoryIdentity(root: string, relativePath: string): string | null;
   writeSecureFileAtomic(
     root: string,
     relativeDirectory: string,
@@ -117,7 +119,9 @@ export class WindowsProcessJob {
 export function dataDirectoryAuthoritySupported(
   platform: NodeJS.Platform = process.platform,
 ): boolean {
-  if (platform !== "linux" && platform !== "darwin") return false;
+  // macOS /dev/fd exposes the descriptor itself but not child paths below it.
+  // AgentStore's path-based layout cannot use it as a retained root.
+  if (platform !== "linux") return false;
   try {
     return binding().dataDirectoryAuthoritySupported();
   } catch {
@@ -308,6 +312,33 @@ export function listSecureDirectory(input: {
   const relativePath = input.relativePath ?? "";
   assertSafeRelativeDirectory(relativePath);
   return binding().listSecureDirectory(input.root, relativePath) ?? undefined;
+}
+
+/** Create and verify a directory chain without following a replacement path. */
+export function ensureSecureDirectory(input: {
+  root: string;
+  relativePath: string;
+}): void {
+  if (!secureFileAuthoritySupported()) {
+    throw new Error("secure directory authority is unavailable");
+  }
+  assertSafeRoot(input.root);
+  assertSafeRelativePath(input.relativePath);
+  if (!binding().ensureSecureDirectory(input.root, input.relativePath)) {
+    throw new Error("secure directory could not be established");
+  }
+}
+
+/** Stable volume/file identity for an existing secure directory chain. */
+export function secureDirectoryIdentity(input: {
+  root: string;
+  relativePath?: string;
+}): string | undefined {
+  if (!secureFileAuthoritySupported()) return undefined;
+  assertSafeRoot(input.root);
+  const relativePath = input.relativePath ?? "";
+  assertSafeRelativeDirectory(relativePath);
+  return binding().secureDirectoryIdentity(input.root, relativePath) ?? undefined;
 }
 
 /**
