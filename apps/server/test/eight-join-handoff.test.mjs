@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -7,11 +7,19 @@ import { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
 import { compileActivationPrompt } from "../dist/coordination-v3-scheduler.js";
 
 test("eight oversized terminal Joins reach one manager continuation and settle its parent Request", () => {
-  const directory = mkdtempSync(join(tmpdir(), "ponderosa-eight-joins-"));
+  const liveDataDir = process.env.PONDEROSA_EIGHT_JOIN_DATA_DIR;
+  const directory = liveDataDir ?? mkdtempSync(join(tmpdir(), "ponderosa-eight-joins-"));
+  const projectPath = liveDataDir
+    ? join(liveDataDir, "qualification-project")
+    : mkdtempSync(join(tmpdir(), "ponderosa-eight-join-project-"));
+  if (liveDataDir) {
+    mkdirSync(directory, { recursive: true });
+    mkdirSync(projectPath, { recursive: true });
+  }
   const store = new AgentStore(directory);
   try {
     const coordination = new CoordinationV3Store(store.sqlite);
-    const project = store.createProject({ label: "Join qualification", hostPath: "/tmp/join-qualification", defaultEngine: "codex" });
+    const project = store.createProject({ label: "Join qualification", hostPath: projectPath, defaultEngine: "codex" });
     const conversation = store.createConversation(project.id, { title: "Join handoff" });
     const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
     const worker = store.createAgent(project.id, { title: "Worker", engine: "codex", conversationId: conversation.id });
@@ -53,6 +61,18 @@ test("eight oversized terminal Joins reach one manager continuation and settle i
         payload: { text: `${index}:${"R".repeat(7_800)}` },
       });
     }
+    coordination.preparePromptInjection({ injectionId: child.injectionId, runId: child.runId,
+      fencingToken: child.fencingToken, prompt: "Return eight results" });
+    coordination.markPromptSubmitted({ injectionId: child.injectionId, runId: child.runId,
+      fencingToken: child.fencingToken });
+    coordination.acknowledgePromptInjection({ injectionId: child.injectionId, runId: child.runId,
+      fencingToken: child.fencingToken });
+    coordination.completeRun(child.runId, child.fencingToken);
+    if (liveDataDir) {
+      console.log(JSON.stringify({ projectId: project.id, conversationId: conversation.id,
+        managerAgentId: manager.id, parentRequestId: "parent-request", dataDir: directory }));
+      return;
+    }
     const continuation = coordination.leaseNextRun({ workerId: "manager-worker", coalesceLimit: 8,
       excludedAgentIds: [worker.id] });
     assert.ok(continuation && continuation.agentId === manager.id);
@@ -71,6 +91,9 @@ test("eight oversized terminal Joins reach one manager continuation and settle i
       recordId: "parent-request" }).request.state, "completed");
   } finally {
     store.close();
-    rmSync(directory, { recursive: true, force: true });
+    if (!liveDataDir) {
+      rmSync(directory, { recursive: true, force: true });
+      rmSync(projectPath, { recursive: true, force: true });
+    }
   }
 });
