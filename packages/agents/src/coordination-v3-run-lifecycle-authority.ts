@@ -1173,13 +1173,27 @@ export class CoordinationV3RunLifecycleAuthority {
       row.id,
       runId,
     ));
+    const runPhase = this.sqlite.prepare(`
+      SELECT prompt_injection_state, provider_failure_json FROM scheduler_runs WHERE id = ?
+    `).get(runId) as { prompt_injection_state: string; provider_failure_json: string | null } | undefined;
+    let providerFailureCategory: ProviderFailureCategory | undefined;
+    if (runPhase?.provider_failure_json) {
+      try {
+        const failure = JSON.parse(runPhase.provider_failure_json) as { category?: unknown };
+        const category = failure.category;
+        if (typeof category === "string" && ["authentication", "rate_limit", "capacity", "context_length", "invalid_request", "unavailable"].includes(category)) {
+          providerFailureCategory = category as ProviderFailureCategory;
+        }
+      } catch { /* Legacy diagnostics may not contain structured JSON. */ }
+    }
     for (const row of related) {
       this.updateRequest({
         requestId: row.id,
         updateId: `system:outcome-unknown:${runId}:${row.id}`,
         kind: "outcome_unknown",
         actor: { kind: "supervisor", id: "v3-runtime-supervisor" },
-        payload: { reason, runId },
+        payload: { reason, runId, ...(runPhase ? { promptSubmissionState: runPhase.prompt_injection_state } : {}),
+          ...(providerFailureCategory ? { providerFailureCategory } : {}) },
         now,
       });
     }

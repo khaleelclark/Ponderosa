@@ -169,7 +169,7 @@ function highConfidenceTextCategory(detail: string): ProviderFailureCategory {
   >).find(([, message]) => message.toLowerCase() === value)?.[0];
   if (ownedCategory) return ownedCategory;
 
-  if (/\b(?:subscription (?:expired|inactive)|unauthori[sz]ed|authentication (?:failed|rejected|required)|not authenticated|sign[- ]?in required|invalid credentials?)\b/u.test(value)) {
+  if (/\b(?:subscription (?:expired|inactive)|oauth session expired|failed to authenticate|unauthori[sz]ed|authentication (?:failed|rejected|required)|not authenticated|sign[- ]?in required|invalid credentials?)\b/u.test(value)) {
     return "authentication";
   }
   if (/\b(?:0 weighted tokens left|rate limit(?:ed)?|too many requests|usage limit reached|quota (?:exhausted|reached)|http 429)\b/u.test(value)) {

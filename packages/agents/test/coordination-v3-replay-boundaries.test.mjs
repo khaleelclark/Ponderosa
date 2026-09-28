@@ -70,6 +70,33 @@ test("coordinate replay ignores later server-derived continuation context and re
   }
 });
 
+test("historical uncertain Requests expose recorded cause and related Agent attempt without raw failure prose", () => {
+  const context = fixture();
+  try {
+    context.coordination.coordinate({
+      projectId: context.project.id, conversationId: context.conversation.id,
+      requesterAgentId: context.requester.id, actorScope: "user:local-operator",
+      idempotencyKey: "unknown-cause", requests: [{
+        requestId: "request-unknown", recipientAgentId: context.recipient.id,
+        lifetime: { kind: "indefinite" }, payload: { text: "Inspect changes" },
+      }],
+    });
+    context.coordination.updateRequest({
+      requestId: "request-unknown", updateId: "system:unknown:test", kind: "outcome_unknown",
+      actor: { kind: "supervisor", id: "v3-runtime-supervisor" },
+      payload: { reason: "run_completed_without_request_update", runId: "run-123", privateError: "credential leak" },
+    });
+    const lifecycle = context.coordination.requestLifecycleDetails({
+      projectId: context.project.id, conversationId: context.conversation.id, recordId: "request-unknown",
+    });
+    const outcome = lifecycle.updates.find(update => update.kind === "outcome_unknown");
+    assert.deepEqual(outcome.outcomeCause, { code: "run_completed_without_request_update", runId: "run-123" });
+    assert.match(outcome.text, /did not report this assignment/i);
+    assert.doesNotMatch(outcome.text, /credential leak/);
+    assert.ok(outcome.createdAt, "the canonical event time remains visible");
+  } finally { context.close(); }
+});
+
 test("request update replay and retry identity survive later mutable state", () => {
   const context = fixture();
   try {

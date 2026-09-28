@@ -34,6 +34,7 @@ export interface ChatOverflowAction {
 }
 
 const CHAT_EXPORT_ACTION_LABELS = ["Copy", "Download", "Chat Transcript"] as const;
+const menuRowSx = { minHeight: { xs: 44, sm: 36 }, py: 0.75 } as const;
 
 export function ChatOverflowMenu({
   label = "Chat Actions",
@@ -143,9 +144,9 @@ export function ChatOverflowMenu({
       open={Boolean(anchor)}
       onClose={close}
       MenuListProps={{ "aria-label": label, dense: true }}
-      slotProps={{ paper: { sx: { minWidth: 240, maxWidth: "min(360px, calc(100vw - 24px))" } } }}
+      slotProps={{ paper: { sx: { minWidth: 240, maxWidth: "min(360px, calc(100vw - 24px))", "& .MuiMenuItem-root": { minHeight: { xs: 44, sm: 36 }, py: 0.75 } } } }}
     >
-      {details ? <MenuItem onClick={() => {
+      {details ? <MenuItem sx={menuRowSx} onClick={() => {
         setDetailsAnchor(anchor);
         close();
       }}>
@@ -157,13 +158,13 @@ export function ChatOverflowMenu({
         key={action.label}
         disabled={action.disabled}
         onClick={() => run(action.onSelect)}
-        sx={action.destructive ? { color: "error.main" } : undefined}
+        sx={{ ...menuRowSx, ...(action.destructive ? { color: "error.main" } : {}) }}
       >
         {action.icon ? <ListItemIcon sx={action.destructive ? { color: "inherit" } : undefined}>{action.icon}</ListItemIcon> : null}
         <ListItemText>{action.label}</ListItemText>
       </MenuItem>)}
       {actions.length && showExports ? <Divider /> : null}
-      {showExports ? <MenuItem onClick={() => {
+      {showExports ? <MenuItem sx={menuRowSx} onClick={() => {
         if (anchor) setExportMenu({ kind: "copy", anchor });
         close();
       }}>
@@ -171,7 +172,7 @@ export function ChatOverflowMenu({
         <ListItemText>{CHAT_EXPORT_ACTION_LABELS[0]}</ListItemText>
         <ChevronRightIcon fontSize="small" />
       </MenuItem> : null}
-      {showExports ? <MenuItem onClick={() => {
+      {showExports ? <MenuItem sx={menuRowSx} onClick={() => {
         if (anchor) setExportMenu({ kind: "download", anchor });
         close();
       }}>
@@ -186,11 +187,12 @@ export function ChatOverflowMenu({
       onClose={() => setExportMenu(undefined)}
       anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
       transformOrigin={{ vertical: "top", horizontal: "right" }}
-      slotProps={{ paper: { sx: { minWidth: 260, maxWidth: "min(360px, calc(100vw - 24px))" } } }}
+      slotProps={{ paper: { sx: { minWidth: 260, maxWidth: "min(360px, calc(100vw - 24px))", "& .MuiMenuItem-root": { minHeight: { xs: 44, sm: 36 }, py: 0.75 } } } }}
     >
       <MenuList dense aria-label={`${exportMenu?.kind === "download" ? "Download" : "Copy"} options`}>
         {(exportMenu?.kind === "download" ? downloadActions : copyActions).map((action) => <MenuItem
           key={action.label}
+          sx={menuRowSx}
           disabled={action.disabled}
           onClick={() => {
             setExportMenu(undefined);
@@ -201,7 +203,7 @@ export function ChatOverflowMenu({
           <ListItemText>{action.label}</ListItemText>
         </MenuItem>)}
         {(exportMenu?.kind === "download" ? downloadActions : copyActions).length ? <Divider /> : null}
-        <MenuItem onClick={() => {
+        <MenuItem sx={menuRowSx} onClick={() => {
           const kind = exportMenu?.kind;
           setExportMenu(undefined);
           if (kind === "download") {

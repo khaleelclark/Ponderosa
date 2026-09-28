@@ -17,4 +17,5 @@ export * from "./provider-failure-summary.js";
 export * from "./agent-handles.js";
 export * from "./provider-connection-url.js";
 export * from "./tool-failure.js";
+export * from "./outcome-cause.js";
 export * from "./dto/local-browser.js";

@@ -44,6 +44,15 @@ test("encoded unicode route identities round trip", () => {
   });
 });
 
+test("opening a bare Agent URL explicitly starts in Chat instead of a remembered Settings tab", () => {
+  assert.deepEqual(parseRoute("/projects/project-a/agents/agent-a"), {
+    kind: "agent", projectId: "project-a", agentId: "agent-a", urlDriven: true,
+  });
+  assert.deepEqual(parseRoute("/projects/project-a/agents/agent-a", "?view=settings"), {
+    kind: "agent", projectId: "project-a", agentId: "agent-a", view: "settings", urlDriven: true,
+  });
+});
+
 test("initial and popstate-equivalent malformed locations request a stable URL", () => {
   for (const path of [
     "/projects/%",

@@ -173,7 +173,7 @@ export function registerBrowserRoutes(
           }
           lastKey = key;
         } else if (Date.now() - lastHeartbeat > 10_000) {
-          if (!await write(binary ? Buffer.alloc(8) : ": heartbeat\n\n")) return close();
+          if (!await write(binary ? Buffer.alloc(8) : "event: heartbeat\ndata: {}\n\n")) return close();
           lastHeartbeat = Date.now();
         }
         if (closed) return;

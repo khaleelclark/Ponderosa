@@ -40,6 +40,7 @@ export function ComposerRuntimeSelector({
   scopeLabel,
   engineLocked = false,
   disabled = false,
+  loading = false,
   onEngineChange,
   onModelChange,
   onEffortChange,
@@ -57,6 +58,7 @@ export function ComposerRuntimeSelector({
   scopeLabel?: string;
   engineLocked?: boolean;
   disabled?: boolean;
+  loading?: boolean;
   onEngineChange?(id: string): void;
   onModelChange(id: string): void;
   onEffortChange(id: string): void;
@@ -69,7 +71,8 @@ export function ComposerRuntimeSelector({
   const selectedModel = models.find((option) => option.id === model);
   const selectedEffort = efforts.find((option) => option.id === effort);
   const selectedSpeed = speeds.find(option => option.id === speed);
-  const selectedModelLabel = selectedModel?.label ?? "Model unavailable";
+  const selectedModelLabel = loading ? "Loading model…" : selectedModel?.label ?? (models.length ? "Choose model" : "Choose a provider");
+  const selectedEffortLabel = loading ? "Loading reasoning…" : selectedEffort?.label ?? (efforts.length ? "Choose reasoning" : "Reasoning follows model");
   const close = () => { setAnchor(null); setSection(null); };
   useEffect(() => {
     if (disabled) close();
@@ -85,7 +88,7 @@ export function ComposerRuntimeSelector({
       ? [{ id: "engine" as const, label: "Engine", value: selectedEngine?.label ?? "Engine", options: engines }]
       : []),
     { id: "model", label: "Model", value: selectedModelLabel, options: models },
-    { id: "effort", label: "Reasoning", value: selectedEffort?.label ?? "Unavailable", options: efforts },
+    { id: "effort", label: "Reasoning", value: selectedEffortLabel, options: efforts },
     ...(speeds.length > 0 && onSpeedChange
       ? [{
           id: "speed" as const,
@@ -140,7 +143,7 @@ export function ComposerRuntimeSelector({
           noWrap
           sx={{ display: { xs: "none", sm: "block" } }}
         >
-          · {selectedEffort?.label ?? "Reasoning unavailable"}
+          · {selectedEffortLabel}
         </Typography>
         {selectedSpeed && selectedSpeed.id !== "standard" ? (
           <Typography variant="body2" color="text.secondary" noWrap>· {selectedSpeed.label}</Typography>

@@ -501,6 +501,7 @@ export function CreateWorkspace({
   route,
   projects,
   engines,
+  enginesLoaded = true,
   preferences,
   onCancel,
   onNavigate,
@@ -508,6 +509,7 @@ export function CreateWorkspace({
   route: Extract<Route, { kind: "create" }>;
   projects: ProjectDto[];
   engines: EngineDto[];
+  enginesLoaded?: boolean;
   preferences: WorkspacePreferencesDto;
   onCancel(): void;
   onNavigate(route: Route): void;
@@ -517,6 +519,7 @@ export function CreateWorkspace({
       route={route}
       projects={projects}
       engines={engines}
+      enginesLoaded={enginesLoaded}
       preferences={preferences}
       onCancel={onCancel}
       onNavigate={onNavigate}
@@ -533,6 +536,7 @@ function CreateFormContent({
   route,
   projects,
   engines,
+  enginesLoaded = true,
   preferences,
   onCancel,
   onNavigate,
@@ -543,6 +547,7 @@ function CreateFormContent({
   route: Extract<Route, { kind: "create" }>;
   projects: ProjectDto[];
   engines: EngineDto[];
+  enginesLoaded?: boolean;
   preferences: WorkspacePreferencesDto;
   onCancel(): void;
   onNavigate(route: Route): void;
@@ -569,6 +574,7 @@ function CreateFormContent({
   ) : route.resource === "chat" ? (
     <NewChatComposer
       engines={engines}
+      enginesLoaded={enginesLoaded}
       preferences={preferences}
       onCreated={(projectId, conversationId) => {
         refresh("conversation");
@@ -627,6 +633,7 @@ export function ContextualCreateDialog({
   request,
   projects,
   engines,
+  enginesLoaded = true,
   preferences,
   onClose,
   onNavigate,
@@ -634,6 +641,7 @@ export function ContextualCreateDialog({
   request?: CreationRequest;
   projects: ProjectDto[];
   engines: EngineDto[];
+  enginesLoaded?: boolean;
   preferences: WorkspacePreferencesDto;
   onClose(): void;
   onNavigate(route: Route): void;
@@ -718,6 +726,7 @@ export function ContextualCreateDialog({
               route={route}
               projects={projects}
               engines={engines}
+              enginesLoaded={enginesLoaded}
               preferences={preferences}
               onCancel={close}
               onDirty={() => setDirty(true)}

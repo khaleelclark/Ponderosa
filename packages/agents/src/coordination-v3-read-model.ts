@@ -5,7 +5,7 @@ import type {
   CoordinationRequestState,
   CoordinationRequestUpdateKind,
 } from "@ponderosa/core";
-import { publicProviderFailureSummary } from "@ponderosa/core";
+import { outcomeCauseExplanation, outcomeCauseFromPayload, publicProviderFailureSummary } from "@ponderosa/core";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
 import {
   providerSafeActivationPayload,
@@ -1209,7 +1209,11 @@ export class CoordinationV3ReadModel {
         },
         updates: updateRows.map((row) => {
           const payload = parseStoredJson(row.payload_json);
-          const text = row.provider_failure_category
+          const outcomeCause = row.kind === "outcome_unknown" && row.actor_kind === "supervisor"
+            ? outcomeCauseFromPayload(payload) : undefined;
+          const text = outcomeCause
+            ? { text: outcomeCauseExplanation(outcomeCause) }
+            : row.provider_failure_category
             ? {
                 text: publicProviderFailureSummary(
                   undefined,
@@ -1227,6 +1231,7 @@ export class CoordinationV3ReadModel {
               ? { inReplyToUpdateId: row.in_reply_to_update_id }
               : {}),
             ...(text.text ? { text: text.text } : {}),
+            ...(outcomeCause ? { outcomeCause } : {}),
             ...(text.truncated ? { textTruncated: true as const } : {}),
             refs: [
               ...new Set([

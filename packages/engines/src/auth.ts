@@ -237,6 +237,17 @@ export async function claudeAvailabilityStatus(
   }
   const bin = env.PONDEROSA_CLAUDE_BIN?.trim() || "claude";
   const marker = "PONDEROSA_RUNTIME_READY";
+  const failureHint = (output: string | undefined): string | undefined => {
+    if (!output || output.length > 2 * 1024 * 1024) return undefined;
+    try {
+      const parsed = JSON.parse(output) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+      const result = parsed as { type?: unknown; is_error?: unknown; result?: unknown; error?: unknown };
+      if (result.type !== "result" || result.is_error !== true) return undefined;
+      const hint = typeof result.error === "string" ? result.error : result.result;
+      return typeof hint === "string" ? hint.slice(0, 1_000) : undefined;
+    } catch { return undefined; }
+  };
   try {
     const { stdout } = await run(bin, [
       "--print",
@@ -264,12 +275,14 @@ export async function claudeAvailabilityStatus(
       result?: unknown; error?: unknown;
     };
     if (result.type !== "result" || result.subtype !== "success" || result.is_error !== false) {
-      const hint = typeof result.error === "string" ? result.error
-        : typeof result.result === "string" ? result.result : "";
+      const hint = failureHint(stdout) ?? "";
+      const failureCategory = classifyProviderFailure(hint);
       return {
         available: false,
-        failureCategory: classifyProviderFailure(hint),
-        detail: "Claude did not complete the subscription-backed test request",
+        failureCategory,
+        detail: failureCategory === "authentication"
+          ? "Claude sign-in has expired or was rejected. Sign in to Claude again."
+          : "Claude did not complete the subscription-backed test request",
       };
     }
     if (typeof result.result !== "string" || result.result.trim() !== marker) {
@@ -278,7 +291,10 @@ export async function claudeAvailabilityStatus(
     return { available: true, detail: "Claude accepted a subscription-backed test request" };
   } catch (error) {
     const failure = error as Error & { stderr?: string; stdout?: string };
-    const detail = failure.stderr?.trim() || failure.stdout?.trim() || failure.message || String(error);
+    const detail = failureHint(failure.stdout)
+      || failure.stderr?.trim()
+      || failure.message
+      || String(error);
     return {
       available: false,
       failureCategory: classifyProviderFailure(detail),

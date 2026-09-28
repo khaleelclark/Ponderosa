@@ -42,6 +42,7 @@ import { ApiRequestError } from "../../api/types";
 import { readChatState, readChatStateEntries, writeChatState } from "../../chatState";
 import { acknowledgeDraftTextRecovery, recoverDraftText, writeDraftTextRecovery } from "./draftTextRecovery";
 import { createClientId, draftSurfaceClientId } from "../../clientId";
+import { readBrowserStorage, writeBrowserStorage } from "../../browserStorage";
 import {
   createRecipientUploadAuthorityOutbox,
   parseRecipientUploadAuthorityOutbox,
@@ -310,10 +311,10 @@ export function Composer({
   const [draftOwnerId] = useState(() => {
     if (typeof window === "undefined") return "server";
     const key = "ponderosa.draft.owner.v1";
-    const existing = window.localStorage.getItem(key);
+    const existing = readBrowserStorage("localStorage", key);
     if (existing && DRAFT_OWNER_ID.test(existing)) return existing;
     const created = createClientId();
-    window.localStorage.setItem(key, created);
+    writeBrowserStorage("localStorage", key, created);
     return created;
   });
   const [pastedText, setPastedTextState] = useState<string>();

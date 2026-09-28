@@ -11,6 +11,7 @@ import "./global.css";
 import { installServiceWorkerReloadGuard } from "./serviceWorkerReload";
 import { queryRetryDelay, shouldRetryQuery } from "./api/queryRetry";
 import { COLOR_MODE_STORAGE_KEY, createPonderosaTheme, loadColorMode, type ColorMode } from "./theme";
+import { writeBrowserStorage } from "./browserStorage";
 
 installServiceWorkerReloadGuard();
 
@@ -30,7 +31,7 @@ function Root(): JSX.Element {
   const theme = useMemo(() => createPonderosaTheme(colorMode), [colorMode]);
 
   useEffect(() => {
-    window.localStorage.setItem(COLOR_MODE_STORAGE_KEY, colorMode);
+    writeBrowserStorage("localStorage", COLOR_MODE_STORAGE_KEY, colorMode);
     document.documentElement.style.colorScheme = colorMode;
   }, [colorMode]);
 

@@ -533,8 +533,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
     });
   };
   const navigateToNotification = (item: WorkspaceNotificationDto) => {
-    if (isOpenAttention(item)) acknowledgePresentedNotifications([item.id]);
-    else if (!item.readAt) markRead(item);
+    if (!isOpenAttention(item) && !item.readAt) markRead(item);
     if (item.action?.kind === "open_settings") {
       onClose();
       onOpenSettings?.();
@@ -611,7 +610,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
                   <ListItemText
                     sx={{ minWidth: 0, overflowWrap: "anywhere" }}
                     primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={(filter === "attention" ? item.acknowledgedAt : item.readAt) ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{item.title}</Typography>{filter === "attention" && !item.acknowledgedAt ? <Chip size="small" color="primary" label="New" /> : item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Issue"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(item.createdAt)}</Typography></Stack>}
-                    secondary={<Stack spacing={0.5}>{item.conversationId && conversations.get(item.conversationId) ? <Typography variant="caption" color="text.secondary">{conversations.get(item.conversationId)!.title}</Typography> : null}<Typography variant="body2" color="text.secondary" sx={{ display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 3 }}>{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open"
+                    secondary={<Stack spacing={0.5}>{item.conversationId && conversations.get(item.conversationId) ? <Typography variant="caption" color="text.secondary">Chat: {conversations.get(item.conversationId)!.title}</Typography> : null}{item.contextPreview ? <Typography variant="body2" sx={{ fontWeight: 600, overflowWrap: "anywhere" }}>“{item.contextPreview}”</Typography> : null}{item.category === "communication" && item.communicationEventId ? <Typography variant="caption" color="text.secondary">Message reference: {item.communicationEventId.slice(-8)}</Typography> : null}<Typography variant="body2" color="text.secondary" sx={{ display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 3 }}>{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open"
                       ? <DecisionActions decision={notificationDecision(item)!} compact />
                       : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
                     <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: .5 }}>

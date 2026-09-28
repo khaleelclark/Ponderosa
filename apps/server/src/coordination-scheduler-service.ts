@@ -16,6 +16,7 @@ import {
   type EngineRegistration,
   type PersistentRuntime,
   type PonderosaServer,
+  MAX_INTERNAL_DISPATCH_UTF8_BYTES,
 } from "./app-contracts.js";
 import { collectReachableArtifactIds } from "./artifact-refs.js";
 import {
@@ -42,7 +43,6 @@ type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>
 /** One scheduler packet gets a bounded share of the provider context. Results
  * above this hard UTF-8 envelope use their already-durable, validated artifact
  * file instead of risking a provider request/context rejection. */
-const AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT = 256 * 1024;
 const PROVIDER_INTAKE_CHECK_BUDGET_MS = 500;
 
 export function requireQueuedEditRevisionOutboxPayload(item: {
@@ -489,7 +489,7 @@ return new CoordinationV3Scheduler(
       }
       signal.throwIfAborted();
       const compilation = compileActivationPrompt(lease, {
-        maxUtf8Bytes: AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT,
+        maxUtf8Bytes: MAX_INTERNAL_DISPATCH_UTF8_BYTES,
         signal,
         deadlineAt,
         resolveResultArtifacts: activation => materials.get(activation.id) ?? [],
@@ -501,7 +501,7 @@ return new CoordinationV3Scheduler(
         agentId: lease.agentId, store, assets,
       });
       signal.throwIfAborted();
-      if (Buffer.byteLength(prompt, "utf8") > AUTOMATIC_RESULT_PROVIDER_PACKET_UTF8_LIMIT) {
+      if (Buffer.byteLength(prompt, "utf8") > MAX_INTERNAL_DISPATCH_UTF8_BYTES) {
         throw new ActivationPromptCompilationError({
           code: "activation_payload_too_large", activation: lease.activations[0]!,
         });

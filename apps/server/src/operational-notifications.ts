@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs";
-import type { WorkspaceNotificationDto } from "@ponderosa/core";
+import { outcomeCauseExplanation, type WorkspaceNotificationDto } from "@ponderosa/core";
 import type {
   AgentStore,
   CommunicationAttentionActivationV3View,
@@ -37,6 +37,7 @@ export function createOperationalNotifications(context: OperationalNotifications
     severity: "info" | "attention" | "urgent";
     title: string;
     body: string;
+    contextPreview?: string;
     projectId?: string;
     conversationId?: string;
     conversationIds?: string[];
@@ -105,6 +106,9 @@ export function createOperationalNotifications(context: OperationalNotifications
         ? failure.scopeKey.slice("conversation:".length)
         : undefined;
       const conversation = conversationId ? store.getConversation(conversationId) : undefined;
+      const agent = store.getAgent(failure.agentId);
+      const communication = store.getCommunicationEvent(failure.projectId, failure.communicationEventId);
+      const excerpt = communication?.text.replace(/\s+/gu, " ").trim().slice(0, 120);
       const outcomeUnknown = failure.state === "outcome_unknown";
       const requiredReplyExhausted = failure.terminalOutcome === "retry_exhausted";
       const issue = failure.lastDeliveryError
@@ -113,16 +117,13 @@ export function createOperationalNotifications(context: OperationalNotifications
         dedupeKey: key,
         category: "communication",
         severity: "urgent",
-        title: requiredReplyExhausted
-          ? "Required reply recovery exhausted"
-          : outcomeUnknown
-          ? "Message outcome needs your review"
-          : "Message delivery needs your help",
+        title: `${agent?.title ?? "Agent"} · ${requiredReplyExhausted ? "reply needs review" : outcomeUnknown ? "message result needs review" : "message delivery needs help"}`,
         body: requiredReplyExhausted
-          ? `Ponderosa did not publish the required Chat reply after ${failure.deliveryFailures} provider Runs. Automatic recovery stopped. Review prior work before trying delivery again; retrying may duplicate work.`
+          ? `Ponderosa did not publish the required Chat reply after ${failure.deliveryFailures} Agent ${failure.deliveryFailures === 1 ? "attempt" : "attempts"}. Review the Agent's work before retrying; earlier work may exist.`
           : outcomeUnknown
-          ? "Ponderosa lost contact with the provider before it could confirm whether this message finished. Retrying may duplicate work if the provider completed it before the interruption."
+          ? "Ponderosa cannot confirm this message's result. Review the Agent's work before retrying; earlier changes may exist."
           : `Ponderosa could not deliver this message after ${failure.deliveryFailures} ${failure.deliveryFailures === 1 ? "attempt" : "attempts"}. ${issue}`,
+        ...(excerpt ? { contextPreview: excerpt } : {}),
         projectId: failure.projectId,
         ...(conversation ? { conversationId: conversation.id } : {}),
         ...(failure.communicationEventId ? { communicationEventId: failure.communicationEventId } : {}),
@@ -229,8 +230,13 @@ export function createOperationalNotifications(context: OperationalNotifications
           : "Coordinated assignment";
         const recipient = failedRequest?.recipientAgentId ? store.getAgent(failedRequest.recipientAgentId) : undefined;
         const outcome = failedRequest?.state ?? "unresolved";
+        const lifecycle = failedRequest ? coordinationV3.requestLifecycleDetails({
+          projectId: project.id,
+          recordId: failedRequest.recordId,
+        }) : undefined;
+        const cause = [...(lifecycle?.updates ?? [])].reverse().find(update => update.kind === "outcome_unknown")?.outcomeCause;
         const outcomeExplanation = outcome === "outcome_unknown"
-          ? "Ponderosa could not confirm whether the Agent finished or published a result."
+          ? outcomeCauseExplanation(cause ?? { code: "cause_unavailable" })
           : outcome === "recipient_unavailable"
             ? "The assigned Agent is no longer available to finish this work."
             : outcome === "blocked"
@@ -247,7 +253,10 @@ export function createOperationalNotifications(context: OperationalNotifications
           category: "coordination",
           severity: "attention",
           title: recipient ? `${recipient.title}'s assignment needs a decision` : "A coordinated assignment needs a decision",
-          body: `${outcomeExplanation} Review the current state before deciding whether to retry it.`,
+          body: outcome === "outcome_unknown"
+            ? outcomeExplanation
+            : `${outcomeExplanation} Review the current state before deciding whether to retry it.`,
+          ...(assignment !== "Coordinated assignment" ? { contextPreview: assignment.slice(0, 120) } : {}),
           projectId: project.id,
           ...(conversationIds[0] ? { conversationId: conversationIds[0], conversationIds } : {}),
           ...(affectedAgents.length ? { agentIds: affectedAgents.map((affected) => affected.id) } : {}),
