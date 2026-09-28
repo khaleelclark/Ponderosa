@@ -142,6 +142,30 @@ test("one observed startup recovery correlates multiple uncertain Runs without i
   } finally { context.close(); }
 });
 
+test("pre-submission startup retry does not invent an unconfirmed result or incident", () => {
+  const context = fixture();
+  try {
+    context.coordination.coordinate({
+      projectId: context.project.id, conversationId: context.conversation.id,
+      requesterAgentId: context.requester.id, actorScope: "user:local-operator",
+      idempotencyKey: "pre-submission", requests: [{
+        requestId: "pre-submission-request", recipientAgentId: context.recipient.id,
+        lifetime: { kind: "indefinite" }, payload: { text: "work" },
+      }],
+    });
+    const lease = context.coordination.leaseNextRun({ workerId: "old-worker" });
+    assert.ok(lease);
+    const recovered = new CoordinationV3Store(context.store.sqlite);
+    assert.deepEqual(recovered.recoverOrphanedRuns("new-worker"), { retried: 1, outcomeUnknown: 0 });
+    assert.equal(context.store.sqlite.prepare("SELECT COUNT(*) count FROM system_incidents").get().count, 0);
+    const lifecycle = recovered.requestLifecycleDetails({
+      projectId: context.project.id, conversationId: context.conversation.id,
+      recordId: "pre-submission-request",
+    });
+    assert.equal(lifecycle.updates.some(update => update.kind === "outcome_unknown"), false);
+  } finally { context.close(); }
+});
+
 test("request update replay and retry identity survive later mutable state", () => {
   const context = fixture();
   try {
