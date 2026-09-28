@@ -10,7 +10,7 @@ test("eight oversized terminal Joins reach one manager continuation and settle i
   const liveDataDir = process.env.PONDEROSA_EIGHT_JOIN_DATA_DIR;
   const directory = liveDataDir ?? mkdtempSync(join(tmpdir(), "ponderosa-eight-joins-"));
   const projectPath = liveDataDir
-    ? join(liveDataDir, "qualification-project")
+    ? `${liveDataDir}-project`
     : mkdtempSync(join(tmpdir(), "ponderosa-eight-join-project-"));
   if (liveDataDir) {
     mkdirSync(directory, { recursive: true });
