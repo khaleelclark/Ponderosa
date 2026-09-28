@@ -1,7 +1,8 @@
 import type { ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
 import type { RuntimeProcessHandle, RuntimeProcessIdentity } from "@ponderosa/core";
-import { darwinProcessBirthMarker } from "@ponderosa/native-host";
+import { hostProcessBirthMarker as processBirthMarker } from "@ponderosa/native-host";
+
+export { processBirthMarker };
 
 export interface ObservedProcessTerminationOptions {
   label: string;
@@ -133,27 +134,6 @@ export function recoveredRuntimeProcessHandle(
       return shared;
     },
   };
-}
-
-export function processBirthMarker(pid: number): string | undefined {
-  if (process.platform === "linux") {
-    try {
-      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-      const commandEnd = stat.lastIndexOf(")");
-      if (commandEnd < 0) return undefined;
-      // The suffix begins at field 3 (state); starttime is field 22.
-      const fields = stat.slice(commandEnd + 2).trim().split(/\s+/u);
-      const startTime = fields[19];
-      return startTime ? `linux:${startTime}` : undefined;
-    } catch {
-      return undefined;
-    }
-  }
-  if (process.platform === "darwin") {
-    const marker = darwinProcessBirthMarker(pid);
-    return marker ? `darwin:${marker}` : undefined;
-  }
-  return undefined;
 }
 
 function recoveredProcessGroupAlive(identity: RuntimeProcessIdentity): boolean {

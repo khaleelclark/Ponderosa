@@ -37,6 +37,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
       now: string,
       reason: string,
       eligibleStates: CoordinationRequestState[],
+      incidentId?: string,
     ) => void,
     private readonly registerRequiredReply: (input: {
       runId: string;
@@ -64,6 +65,14 @@ export class CoordinationV3SchedulerLeaseAuthority {
       }>;
       let retried = 0;
       let outcomeUnknown = 0;
+      const incidentId = runs.some(run => run.prompt_injection_state !== "not_injected")
+        ? randomUUID() : undefined;
+      if (incidentId) {
+        this.sqlite.prepare(`
+          INSERT INTO system_incidents (id, kind, observed_at)
+          VALUES (?, 'startup_orphaned_run_recovery', ?)
+        `).run(incidentId, now);
+      }
       for (const run of runs) {
         if (run.prompt_injection_state === "not_injected") {
           this.sqlite.prepare(`
@@ -87,6 +96,9 @@ export class CoordinationV3SchedulerLeaseAuthority {
           this.settleRetriedRequiredReply(run.id, now);
           retried += 1;
         } else {
+          this.sqlite.prepare(`
+            INSERT INTO system_incident_runs (incident_id, run_id) VALUES (?, ?)
+          `).run(incidentId, run.id);
           this.sqlite.prepare(`
             UPDATE scheduler_runs
             SET status = 'outcome_unknown', updated_at = ?, terminal_at = ?
@@ -115,6 +127,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
               "waiting_dependency",
               "awaiting_answer",
             ],
+            incidentId,
           );
           this.recoverRequiredReply(run.id, now);
           outcomeUnknown += 1;

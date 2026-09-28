@@ -15,8 +15,9 @@ import {
 } from "@mui/material";
 import type { WorkspaceTriggerDirectoryItemDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { api } from "../api";
+import { useManagedWorkspaceCollection } from "../hooks/useManagedWorkspaceCollection";
 import { useWorkspaceDirectory } from "../hooks/useWorkspaceDirectory";
 import { queryKeys } from "../queryKeys";
 import type { Route } from "../routing";
@@ -28,6 +29,7 @@ import {
 import { ResourceDeletionDialog } from "./ConfirmationDialogs";
 
 type AutomationRow = WorkspaceTriggerDirectoryItemDto;
+const automationRowId = (row: AutomationRow) => row.trigger.id;
 
 interface AutomationDeletionFailure {
   row: AutomationRow;
@@ -45,9 +47,6 @@ export function ManageAutomationsWorkspace({
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<Map<string, AutomationRow>>(
-    () => new Map(),
-  );
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTargets, setDeleteTargets] = useState<AutomationRow[]>([]);
   const [deleteFailures, setDeleteFailures] = useState<AutomationDeletionFailure[]>([]);
@@ -57,60 +56,10 @@ export function ManageAutomationsWorkspace({
     "trigger",
     { search },
   );
-  const rows = useMemo(() => {
-    const pages = directoryQuery.data?.pages;
-    if (!pages?.length) return [];
-    const seen = new Set<string>();
-    return [
-      ...pages[0]!.starredItems,
-      ...pages.flatMap(page => page.items),
-    ].filter(row => {
-      if (seen.has(row.trigger.id)) return false;
-      seen.add(row.trigger.id);
-      return true;
-    });
-  }, [directoryQuery.data?.pages]);
-  const total = directoryQuery.data?.pages.at(-1)?.total ?? 0;
-
-  useEffect(() => {
-    if (
-      directoryQuery.requestState.hasNextPage &&
-      !directoryQuery.requestState.isFetchingNextPage &&
-      !directoryQuery.requestState.isPaginationError
-    ) void directoryQuery.fetchNextPage();
-  }, [
-    directoryQuery.fetchNextPage,
-    directoryQuery.requestState.hasNextPage,
-    directoryQuery.requestState.isFetchingNextPage,
-    directoryQuery.requestState.isPaginationError,
-  ]);
-
-  const visibleSelectedCount = rows.reduce(
-    (count, row) => count + Number(selected.has(row.trigger.id)),
-    0,
-  );
-  const allVisibleSelected = rows.length > 0 && visibleSelectedCount === rows.length;
-  const collectionComplete =
-    directoryQuery.requestState.hasResolved &&
-    !directoryQuery.requestState.hasNextPage &&
-    !directoryQuery.requestState.isFetchingNextPage &&
-    !directoryQuery.requestState.isPaginationError;
-  const toggleSelected = (row: AutomationRow) => {
-    setSelected(current => {
-      const next = new Map(current);
-      if (next.has(row.trigger.id)) next.delete(row.trigger.id);
-      else next.set(row.trigger.id, row);
-      return next;
-    });
-  };
-  const toggleSelectAll = () => {
-    setSelected(current => {
-      const next = new Map(current);
-      if (allVisibleSelected) rows.forEach(row => next.delete(row.trigger.id));
-      else rows.forEach(row => next.set(row.trigger.id, row));
-      return next;
-    });
-  };
+  const {
+    rows, total, selected, setSelected, visibleSelectedCount,
+    allVisibleSelected, collectionComplete, toggleSelected, toggleSelectAll,
+  } = useManagedWorkspaceCollection(directoryQuery, automationRowId);
 
   const remove = useMutation({
     mutationFn: async (

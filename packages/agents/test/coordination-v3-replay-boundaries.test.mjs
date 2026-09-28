@@ -70,6 +70,105 @@ test("coordinate replay ignores later server-derived continuation context and re
   }
 });
 
+test("historical uncertain Requests expose recorded cause and related Agent attempt without raw failure prose", () => {
+  const context = fixture();
+  try {
+    context.coordination.coordinate({
+      projectId: context.project.id, conversationId: context.conversation.id,
+      requesterAgentId: context.requester.id, actorScope: "user:local-operator",
+      idempotencyKey: "unknown-cause", requests: [{
+        requestId: "request-unknown", recipientAgentId: context.recipient.id,
+        lifetime: { kind: "indefinite" }, payload: { text: "Inspect changes" },
+      }],
+    });
+    context.coordination.updateRequest({
+      requestId: "request-unknown", updateId: "system:unknown:test", kind: "outcome_unknown",
+      actor: { kind: "supervisor", id: "v3-runtime-supervisor" },
+      payload: { reason: "run_completed_without_request_update", runId: "run-123",
+        incidentId: "770b3b37-5641-43b6-a5dc-76e802eaf826", privateError: "credential leak" },
+    });
+    const lifecycle = context.coordination.requestLifecycleDetails({
+      projectId: context.project.id, conversationId: context.conversation.id, recordId: "request-unknown",
+    });
+    const outcome = lifecycle.updates.find(update => update.kind === "outcome_unknown");
+    assert.deepEqual(outcome.outcomeCause, { code: "run_completed_without_request_update", runId: "run-123" });
+    assert.match(outcome.text, /did not report whether this assignment was completed/i);
+    assert.doesNotMatch(outcome.text, /credential leak/);
+    assert.ok(outcome.createdAt, "the canonical event time remains visible");
+  } finally { context.close(); }
+});
+
+test("one observed startup recovery correlates multiple uncertain Runs without inventing an OOM", () => {
+  const context = fixture();
+  try {
+    for (const [index, recipientAgentId] of [context.recipient.id, context.requester.id].entries()) {
+      context.coordination.coordinate({
+        projectId: context.project.id, conversationId: context.conversation.id,
+        requesterAgentId: context.requester.id, actorScope: "user:local-operator",
+        idempotencyKey: `crash-${index}`, requests: [{
+          requestId: `crash-request-${index}`, recipientAgentId,
+          lifetime: { kind: "indefinite" }, payload: { text: "work" },
+        }],
+      });
+    }
+    const leases = [0, 1].map(() => context.coordination.leaseNextRun({ workerId: "crashed-worker" }));
+    assert.ok(leases.every(Boolean));
+    for (const lease of leases) {
+      context.store.sqlite.prepare("UPDATE scheduler_runs SET prompt_injection_state = 'injected' WHERE id = ?")
+        .run(lease.runId);
+    }
+    const recovered = new CoordinationV3Store(context.store.sqlite);
+    assert.deepEqual(recovered.recoverOrphanedRuns("replacement-worker"), { retried: 0, outcomeUnknown: 2 });
+    const incidents = context.store.sqlite.prepare("SELECT id, kind FROM system_incidents").all();
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].kind, "startup_orphaned_run_recovery");
+    const links = context.store.sqlite.prepare("SELECT incident_id, run_id FROM system_incident_runs").all();
+    assert.equal(links.length, 2);
+    assert.ok(links.every(link => link.incident_id === incidents[0].id));
+    for (let index = 0; index < 2; index++) {
+      const lifecycle = recovered.requestLifecycleDetails({
+        projectId: context.project.id, conversationId: context.conversation.id,
+        recordId: `crash-request-${index}`,
+      });
+      const outcome = lifecycle.updates.find(update => update.kind === "outcome_unknown");
+      assert.equal(outcome.outcomeCause.code, "server_restart_after_prompt_submission");
+      assert.equal(outcome.outcomeCause.incidentId, incidents[0].id);
+      assert.equal(outcome.outcomeCause.promptSubmissionState, "injected");
+      assert.match(outcome.text, /server started/i);
+      assert.doesNotMatch(outcome.text, /OOM|out.of.memory|private/i);
+    }
+    assert.deepEqual(recovered.recoverOrphanedRuns("replacement-worker"), { retried: 0, outcomeUnknown: 0 });
+    assert.equal(context.store.sqlite.prepare("SELECT COUNT(*) count FROM system_incidents").get().count, 1);
+    recovered.purgeProject(context.project.id);
+    assert.equal(context.store.sqlite.prepare("SELECT COUNT(*) count FROM system_incident_runs").get().count, 0);
+    assert.equal(context.store.sqlite.prepare("SELECT COUNT(*) count FROM system_incidents").get().count, 0);
+  } finally { context.close(); }
+});
+
+test("pre-submission startup retry does not invent an unconfirmed result or incident", () => {
+  const context = fixture();
+  try {
+    context.coordination.coordinate({
+      projectId: context.project.id, conversationId: context.conversation.id,
+      requesterAgentId: context.requester.id, actorScope: "user:local-operator",
+      idempotencyKey: "pre-submission", requests: [{
+        requestId: "pre-submission-request", recipientAgentId: context.recipient.id,
+        lifetime: { kind: "indefinite" }, payload: { text: "work" },
+      }],
+    });
+    const lease = context.coordination.leaseNextRun({ workerId: "old-worker" });
+    assert.ok(lease);
+    const recovered = new CoordinationV3Store(context.store.sqlite);
+    assert.deepEqual(recovered.recoverOrphanedRuns("new-worker"), { retried: 1, outcomeUnknown: 0 });
+    assert.equal(context.store.sqlite.prepare("SELECT COUNT(*) count FROM system_incidents").get().count, 0);
+    const lifecycle = recovered.requestLifecycleDetails({
+      projectId: context.project.id, conversationId: context.conversation.id,
+      recordId: "pre-submission-request",
+    });
+    assert.equal(lifecycle.updates.some(update => update.kind === "outcome_unknown"), false);
+  } finally { context.close(); }
+});
+
 test("request update replay and retry identity survive later mutable state", () => {
   const context = fixture();
   try {

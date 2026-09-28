@@ -40,6 +40,7 @@ function kindLabel(kind: AgentWorkItemDto["kind"]): string {
 }
 
 function agentWorkStateLabel(state: string): string {
+  if (state === "outcome_unknown") return "Result unconfirmed";
   return state.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toLocaleUpperCase());
 }
 

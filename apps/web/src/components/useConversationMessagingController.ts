@@ -20,14 +20,11 @@ import {
   selectedRunConfig,
 } from "../conversationEngine";
 import {
-  discardRecipientUploads,
   cleanupRecipientUploadsForDefinitiveFailure,
   fileSelectionFingerprint,
   recipientUploadsForAgentIds,
   recipientUploadsNeedPersistence,
   recipientActionSnapshot,
-  recipientUploadCleanupSettled,
-  recipientUploadCleanupReporter,
   pendingRecipientUploads,
   pendingDraftAttachmentIds,
   recipientUploadCacheKey,
@@ -52,13 +49,13 @@ import {
 } from "./activeOperationTracker";
 import {
   compoundCreationUnavailableUploads,
-  definitiveSubmissionStatus,
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
   withCommittedAgentCreation,
   withPendingAgentTitle,
   type IdempotentAttempt,
 } from "./idempotentAttempt";
+import { recipientUploadControls } from "./recipientUploadControls";
 import { useActiveOperationController } from "./useActiveOperationController";
 import { useQueuedConversationMessagesController } from "./useQueuedConversationMessagesController";
 
@@ -126,24 +123,13 @@ export function useConversationMessagingController({
     ? effort
     : "";
   const runConfig = selectedRunConfig(compatibleModel, compatibleEffort, speed);
-  const recipientUnavailable = (error: unknown) =>
-    error instanceof ApiRequestError && error.status === 404;
-  const cleanupSettled = (error: unknown) =>
-    error instanceof ApiRequestError &&
-    recipientUploadCleanupSettled(error.status, error.message);
-  const definitiveFailure = (error: unknown) =>
-    error instanceof ApiRequestError &&
-    definitiveSubmissionStatus(error.status, error.message);
-  const cleanupPendingReporter = () => recipientUploadCleanupReporter(delta =>
-    setPendingUploadCleanups(count => Math.max(0, count + delta)));
-  const cleanupRecipientUploads = (
-    recipients: RecipientUploads<Pick<AssetDto, "id">>,
-  ) => discardRecipientUploads(
-    recipients,
-    (agentId, item) => api.deleteAttachment(agentId, item.id),
-    cleanupSettled,
-    cleanupPendingReporter(),
-  );
+  const {
+    recipientUnavailable, cleanupSettled, definitiveFailure,
+    cleanupPendingReporter, cleanupRecipientUploads,
+  } = recipientUploadControls({
+    deleteAttachment: (agentId, attachmentId) => api.deleteAttachment(agentId, attachmentId),
+    onPendingDelta: delta => setPendingUploadCleanups(count => Math.max(0, count + delta)),
+  });
 
   const invalidate = () => {
     void queryClient.invalidateQueries({

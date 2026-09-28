@@ -4,6 +4,7 @@ import type {
   CoordinationRequestState,
   ProviderInputSourceManifest,
   ProviderFailureCategory,
+  OutcomeInternalFailureCode,
 } from "@ponderosa/core";
 import {
   activationRetryDisposition,
@@ -471,6 +472,7 @@ export class CoordinationV3RunLifecycleAuthority {
     maxDeliveryFailures?: number;
     confirmedNotExecuted?: boolean;
     failureKind?: ProviderFailureCategory;
+    internalFailureCode?: OutcomeInternalFailureCode;
     failureDetail?: {
       phase: string;
       promptInjectionState: "not_injected" | "injecting" | "injected";
@@ -803,6 +805,10 @@ export class CoordinationV3RunLifecycleAuthority {
             "waiting_dependency",
             "awaiting_answer",
           ],
+          undefined,
+          true,
+          undefined,
+          hasProviderFailure ? undefined : input.internalFailureCode ?? "internal_runtime_error",
         );
         this.recoverRequiredReply(input.runId, now);
       }
@@ -1097,6 +1103,8 @@ export class CoordinationV3RunLifecycleAuthority {
     eligibleStates: CoordinationRequestState[],
     continuationEligibleStates: CoordinationRequestState[] = eligibleStates,
     settleOutboundQuestions = true,
+    incidentId?: string,
+    internalFailureCode?: OutcomeInternalFailureCode,
   ): void {
     const placeholders = eligibleStates.map(() => "?").join(", ");
     const rows = this.sqlite.prepare(`
@@ -1173,13 +1181,37 @@ export class CoordinationV3RunLifecycleAuthority {
       row.id,
       runId,
     ));
+    const runPhase = this.sqlite.prepare(`
+      SELECT prompt_injection_state, provider_failure_json FROM scheduler_runs WHERE id = ?
+    `).get(runId) as { prompt_injection_state: string; provider_failure_json: string | null } | undefined;
+    let providerFailureCategory: ProviderFailureCategory | undefined;
+    let processingPhase: string | undefined;
+    if (runPhase?.provider_failure_json) {
+      try {
+        const failure = JSON.parse(runPhase.provider_failure_json) as { category?: unknown; phase?: unknown };
+        const category = failure.category;
+        if (typeof category === "string" && ["authentication", "rate_limit", "capacity", "context_length", "invalid_request", "unavailable"].includes(category)) {
+          providerFailureCategory = category as ProviderFailureCategory;
+        }
+        if (typeof failure.phase === "string" && [
+          "prompt_submission", "provider_execution",
+          "turn_submission_rejection_before_acceptance", "turn_submission_rejection_after_acceptance",
+          "iterator_rejection_before_acceptance", "iterator_rejection_after_acceptance",
+          "event_projection_before_acceptance", "event_projection_after_acceptance",
+        ].includes(failure.phase)) processingPhase = failure.phase;
+      } catch { /* Legacy diagnostics may not contain structured JSON. */ }
+    }
     for (const row of related) {
       this.updateRequest({
         requestId: row.id,
         updateId: `system:outcome-unknown:${runId}:${row.id}`,
         kind: "outcome_unknown",
         actor: { kind: "supervisor", id: "v3-runtime-supervisor" },
-        payload: { reason, runId },
+        payload: { reason, runId, ...(runPhase ? { promptSubmissionState: runPhase.prompt_injection_state } : {}),
+          ...(incidentId ? { incidentId } : {}),
+          ...(internalFailureCode ? { internalFailureCode } : {}),
+          ...(providerFailureCategory ? { providerFailureCategory } : {}),
+          ...(processingPhase ? { processingPhase } : {}) },
         now,
       });
     }

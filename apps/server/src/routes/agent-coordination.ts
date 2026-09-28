@@ -24,6 +24,7 @@ import type {
 } from "../app-contracts.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
 import { derivedRunActionKey } from "../security.js";
+import { reconcileCommittedAgentCreation } from "../agent-creation-recovery.js";
 import { leaseConversationDelivery } from "../delivery-leases.js";
 
 interface AgentCoordinationRoutesContext {
@@ -197,23 +198,24 @@ export function registerAgentCoordinationRoutes(
           operationId: creationOperation.id,
         });
       }
-      try {
-        await reconcileRuntimeCommunicationProjections({
-          projectId: manager.projectId,
-          communicationEventId: creationOperation.communicationEventId,
-          allowQuarantinedAgentIds: new Set(creationOperation.agentIds),
-        });
-        store.updateAgentCreationOperation(creationOperation.id, { status: "completed", lastError: null });
-        for (const agentId of creationOperation.agentIds) deletingAgentIds.delete(agentId);
+      const recovered = await reconcileCommittedAgentCreation({
+        store,
+        deletingAgentIds,
+        operationId: creationOperation.id,
+        projectId: manager.projectId,
+        communicationEventId: creationOperation.communicationEventId,
+        agentIds: creationOperation.agentIds,
+        reconcile: reconcileRuntimeCommunicationProjections,
+      });
+      if (recovered) {
         return { ...(creationOperation.result as Record<string, unknown>), replayed: true };
-      } catch (error) {
-        return reply.code(202).send({
-          committed: true,
-          recovering: true,
-          operationId: creationOperation.id,
-          ...(creationOperation.result as Record<string, unknown>),
-        });
       }
+      return reply.code(202).send({
+        committed: true,
+        recovering: true,
+        operationId: creationOperation.id,
+        ...(creationOperation.result as Record<string, unknown>),
+      });
     }
     if (creationOperation.agentIds.length) {
       return reply.code(409).send({

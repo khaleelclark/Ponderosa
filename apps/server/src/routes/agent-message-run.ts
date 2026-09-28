@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
-  unicodeCodePointLength,
   type AssetDto,
   type CommunicationEvent,
   type ConversationMessageDto,
@@ -21,7 +20,7 @@ import {
 } from "../assets.js";
 import {
   MAX_ATTACHMENTS_PER_MESSAGE,
-  MAX_TEXT_LENGTH,
+  MAX_INTERNAL_DISPATCH_UTF8_BYTES,
   agentMessageEndpoint,
   type ActiveRun,
   type AgentMessageCapability,
@@ -570,8 +569,8 @@ export function registerAgentMessageRunRoute(
           error: "agentMentionTrail must contain one relay fingerprint for each agentMentionDepth step",
         });
       }
-      if (internalV3Dispatch && unicodeCodePointLength(text) > MAX_TEXT_LENGTH) {
-        return reply.code(400).send({ error: "internal dispatch text must be 65536 characters or fewer" });
+      if (internalV3Dispatch && Buffer.byteLength(text, "utf8") > MAX_INTERNAL_DISPATCH_UTF8_BYTES) {
+        return reply.code(400).send({ error: "internal dispatch text exceeds the 256 KiB limit" });
       }
       if (!internalV3Dispatch && Buffer.byteLength(text, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) {
         return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });

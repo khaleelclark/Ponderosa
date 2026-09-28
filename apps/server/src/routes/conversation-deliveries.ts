@@ -22,7 +22,7 @@ import type {
 import { stableJson } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
 import { cleanupUncommittedCommunicationArtifact } from "../communication-artifacts.js";
-import { leaseConversationDelivery } from "../delivery-leases.js";
+import { leaseConversationDelivery, reconcileLeasedCommunicationReplay } from "../delivery-leases.js";
 import { renderScopedMessage, stripLeadingScopeTag } from "../agent-mentions.js";
 
 export { leaseConversationDelivery } from "../delivery-leases.js";
@@ -326,34 +326,28 @@ export function registerConversationDeliveryRoutes(
       if (existingPayload.requestFingerprint !== requestFingerprint) {
         return reply.code(409).send({ error: "runtime communication ID collision" });
       }
-      let replayedMessage;
       const replayAgentIds = [...new Set([
         ...(existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
           typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []),
         ...(existingPayload.communication?.attachments ?? []).map((attachment) => attachment.agentId),
       ])];
-      const releaseReplayLease = leaseConversationDelivery(
-        conversationDeliveryLeases,
-        agentDeliveryLeases,
-        request.params.id,
-        replayAgentIds,
-      );
-      try {
-        await reconcileRuntimeCommunicationProjections({
-          projectId: existingRuntime!.projectId,
-          communicationEventId: eventId,
-        });
-        replayedMessage = store.getProjectedConversationMessageById(request.params.id, "main", eventId);
-      } catch {
-        return reply.code(202).send({
-          communicationEventId: eventId,
-          committed: true,
-          recovering: true,
-          replayed: true,
-        });
-      } finally {
-        releaseReplayLease();
-      }
+      const replay = await reconcileLeasedCommunicationReplay({
+        conversationLeases: conversationDeliveryLeases,
+        agentLeases: agentDeliveryLeases,
+        conversationId: request.params.id,
+        agentIds: replayAgentIds,
+        projectId: existingRuntime!.projectId,
+        communicationEventId: eventId,
+        reconcile: reconcileRuntimeCommunicationProjections,
+        read: () => store.getProjectedConversationMessageById(request.params.id, "main", eventId),
+      });
+      if (!replay.recovered) return reply.code(202).send({
+        communicationEventId: eventId,
+        committed: true,
+        recovering: true,
+        replayed: true,
+      });
+      const replayedMessage = replay.value;
       return presentedMessage(existingRuntime!.projectId, replayedMessage) ?? reply.code(202).send({
         communicationEventId: eventId,
         committed: true,
@@ -721,7 +715,6 @@ export function registerConversationDeliveryRoutes(
         if (existingPayload.requestFingerprint !== requestFingerprint) {
           return reply.code(409).send({ error: "runtime communication ID collision" });
         }
-        let message;
         const activationByAgentId = new Map(
           (existingRuntime?.activations ?? []).map((activation) => [activation.agentId, activation.id]),
         );
@@ -751,27 +744,20 @@ export function registerConversationDeliveryRoutes(
           committed: true,
           recovering: true,
         });
-        {
-          const replayAgentIds = [...new Set((existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
-            typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []))];
-          const releaseReplayLease = leaseConversationDelivery(
-            conversationDeliveryLeases,
-            agentDeliveryLeases,
-            request.params.id,
-            replayAgentIds,
-          );
-          try {
-            await reconcileRuntimeCommunicationProjections({
-              projectId: existingRuntime!.projectId,
-              communicationEventId: eventId,
-            });
-            message = store.getConversationMessageByReceiptKey(request.params.id, receiptKey);
-          } catch {
-            return reply.code(202).send(recoveringResponse(message?.id));
-          } finally {
-            releaseReplayLease();
-          }
-        }
+        const replayAgentIds = [...new Set((existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
+          typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []))];
+        const replay = await reconcileLeasedCommunicationReplay({
+          conversationLeases: conversationDeliveryLeases,
+          agentLeases: agentDeliveryLeases,
+          conversationId: request.params.id,
+          agentIds: replayAgentIds,
+          projectId: existingRuntime!.projectId,
+          communicationEventId: eventId,
+          reconcile: reconcileRuntimeCommunicationProjections,
+          read: () => store.getConversationMessageByReceiptKey(request.params.id, receiptKey),
+        });
+        if (!replay.recovered) return reply.code(202).send(recoveringResponse());
+        const message = replay.value;
         if (!message) return reply.code(202).send(recoveringResponse());
         const presented = presentedMessage(existingRuntime!.projectId, message);
         if (!presented) return reply.code(202).send(recoveringResponse(message.id));

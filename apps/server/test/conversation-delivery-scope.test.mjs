@@ -860,6 +860,37 @@ test("scheduler dispatch validates reasoning against Chat defaults before prepar
   } finally {await app.close();}
 });
 
+test("internal Join dispatch accepts compiled packets above the ordinary message limit but rejects over 256 KiB", async () => {
+  let preparationReached = false;
+  const adapter = { id: "codex", trustedSystemPromptChannel: true,
+    listModels: () => [{ id: "chat-model", label: "Chat", efforts: [{ id: "high", label: "High" }] }],
+    listEfforts: () => [],
+  };
+  const { app } = agentMessageValidationApp({
+    chatOverrides: { defaultModel: "chat-model", defaultEffort: "high" },
+    runtimeOverrides: {
+      opts: { agentBaseUrl: "http://localhost" }, engines: new Map([["codex", { adapter }]]),
+      reconcileProjectWorkspace: async () => undefined,
+      workingCopies: { assertRunAdmission: () => {}, resolve: async () => { preparationReached = true; throw new Error("probe stops before provider execution"); } },
+    },
+  });
+  const payload = text => ({ text, effort: "high", v3SchedulerRunId: "scheduled",
+    v3FencingToken: 1, v3InjectionId: "injection", v3FreshProviderSession: true,
+    v3ActivationPrompt: text });
+  const headers = { "x-ponderosa-v3-dispatch": "dispatch-key" };
+  try {
+    const accepted = await app.inject({ method: "POST", url: "/api/agents/agent-a/messages",
+      headers, payload: payload("J".repeat(70_000)) });
+    assert.equal(accepted.statusCode, 500);
+    assert.equal(preparationReached, true, JSON.stringify(accepted.json()));
+    preparationReached = false;
+    const rejected = await app.inject({ method: "POST", url: "/api/agents/agent-a/messages",
+      headers, payload: payload("J".repeat(256 * 1024 + 1)) });
+    assert.equal(rejected.statusCode, 400);
+    assert.equal(preparationReached, false);
+  } finally { await app.close(); }
+});
+
 function agentCommunicationArtifactApp({
   stageCommunicationArtifact,
   recordRuntimeCommunication,

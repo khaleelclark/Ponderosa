@@ -15,6 +15,7 @@ import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgeme
 import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
 
 function outcomeLabel(outcome: NonNullable<WorkspaceNotificationDto["resolution"]>["outcome"]): string {
+  if (outcome === "outcome_unknown") return "Result unconfirmed";
   return outcome.replaceAll("_", " ").replace(/^./, (value) => value.toUpperCase());
 }
 
@@ -63,7 +64,7 @@ function issueCopy(item: WorkspaceNotificationDto): {
     },
     outcome_unknown: {
       title: `Ponderosa could not confirm whether ${name} finished`,
-      explanation: `The run ended without a confirmed final result, so Ponderosa will not assume the assignment succeeded.`,
+      explanation: item.body,
     },
     recipient_unavailable: {
       title: `${name} is no longer available`,

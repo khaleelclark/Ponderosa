@@ -82,7 +82,8 @@ export function ComposerProjectDestinationAction({
       color={newAgentSelected ? "primary" : "inherit"}
       startIcon={<PersonAddAltOutlinedIcon />}
       aria-pressed={newAgentSelected}
-      aria-label="New Agent"
+      aria-label="New Agent — send this message to create one"
+      title="Send your message to create a new Agent in this Chat"
       onClick={toggleNewAgent}
       sx={{
         minWidth: { xs: 58, md: 64 },

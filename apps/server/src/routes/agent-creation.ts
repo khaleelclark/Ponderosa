@@ -18,6 +18,7 @@ import {
 import type { FastifyInstance } from "fastify";
 import { MAX_ATTACHMENTS_PER_MESSAGE, type EngineRegistration } from "../app-contracts.js";
 import { AssetError, type AssetStore } from "../assets.js";
+import { reconcileCommittedAgentCreation } from "../agent-creation-recovery.js";
 import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
 import { leaseAgentDelivery } from "../delivery-leases.js";
 import {
@@ -197,23 +198,24 @@ export function registerAgentCreationRoutes(
             operationId: creationOperation.id,
           });
         }
-        try {
-          await reconcileRuntimeCommunicationProjections({
-            projectId: request.params.id,
-            communicationEventId: creationOperation.communicationEventId,
-            allowQuarantinedAgentIds: new Set(creationOperation.agentIds),
-          });
-          store.updateAgentCreationOperation(creationOperation.id, { status: "completed", lastError: null });
-          for (const agentId of creationOperation.agentIds) deletingAgentIds.delete(agentId);
+        const recovered = await reconcileCommittedAgentCreation({
+          store,
+          deletingAgentIds,
+          operationId: creationOperation.id,
+          projectId: request.params.id,
+          communicationEventId: creationOperation.communicationEventId,
+          agentIds: creationOperation.agentIds,
+          reconcile: reconcileRuntimeCommunicationProjections,
+        });
+        if (recovered) {
           return { ...(creationOperation.result as Record<string, unknown>), replayed: true };
-        } catch (error) {
-          return reply.code(202).send({
-            committed: true,
-            recovering: true,
-            operationId: creationOperation.id,
-            agentId: creationOperation.agentIds[0],
-          });
         }
+        return reply.code(202).send({
+          committed: true,
+          recovering: true,
+          operationId: creationOperation.id,
+          agentId: creationOperation.agentIds[0],
+        });
       }
       if (creationOperation.agentIds.length) {
         return reply.code(409).send({

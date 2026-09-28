@@ -88,6 +88,8 @@ export interface CreateServerOptions {
     maxCriticalRequestsPerMinute?: number;
     /** Separate bounded capacity for live EventSource connections and probes. */
     maxStreamRequestsPerMinute?: number;
+    /** A bounded bucket for health/readiness probes, independent of UI reads. */
+    maxMonitorRequestsPerMinute?: number;
     maxInflight: number;
     /** Response deadline; admission remains held until the handler settles. */
     handlerDeadlineMs?: number;
@@ -297,6 +299,8 @@ export interface AgentMessageCapability {
 export type Subscriber = (stored: StoredLogEvent) => void;
 
 export const MAX_TEXT_LENGTH = 64 * 1024;
+/** Scheduler packets are trusted, bounded separately from user-authored text. */
+export const MAX_INTERNAL_DISPATCH_UTF8_BYTES = 256 * 1024;
 export const MAX_SSE_SUBSCRIBERS_PER_STREAM = 20;
 export const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
 export const MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY = 1;

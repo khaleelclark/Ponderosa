@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { verifyReleaseActionPins } from "./verify-release-action-pins.mjs";
 
-test("release Action pins require exact commit objects, not annotated tags", async () => {
+test("all CI and release Action pins require exact commit objects, not annotated tags", async () => {
   const seen = [];
   const count = await verifyReleaseActionPins(async (repository, sha) => {
     seen.push(`${repository}@${sha}`);

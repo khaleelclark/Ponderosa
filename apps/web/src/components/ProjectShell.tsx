@@ -340,7 +340,7 @@ export function ProjectShell({
         focusMessageId={route.focusMessageId}
         focusTelemetry={route.focusTelemetry}
         technicalFocusId={route.technicalFocusId}
-        initialView={route.view}
+        initialView={route.view ?? (route.urlDriven ? "chat" : undefined)}
         triggerSettingsId={route.triggerId}
         onViewChange={(view) => navigate({ kind: "agent", projectId, agentId: route.agentId, view }, { replace: true })}
         onOpenTechnicalDetails={(technicalFocusId) => navigate({

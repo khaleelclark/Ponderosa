@@ -18,8 +18,9 @@ import { browserSessionCookie } from "./launcher-security.js";
 
 /** Purpose, not method, determines whether a user-authored action gets its
  * reserved admission budget. Read-like POSTs remain standard traffic. */
-export function classifyOperatorRequest(method: string, url: string): "critical" | "stream" | "standard" {
+export function classifyOperatorRequest(method: string, url: string): "critical" | "stream" | "monitor" | "standard" {
   const path = url.split("?", 1)[0] ?? "";
+  if (method === "GET" && (path === "/api/health" || path === "/api/ready")) return "monitor";
   if (method === "GET" && (
     path === "/api/workspace/stream"
     || /^\/api\/agents\/[^/]+\/stream$/u.test(path)
@@ -250,9 +251,11 @@ export function registerRequestSecurityHooks(
         : opts.authToken || opts.launcherSecurity
           ? "operator"
           : request.ip;
-    const requestClass = !capability && (opts.authToken || opts.launcherSecurity)
-      ? classifyOperatorRequest(request.method, request.url)
-      : "standard";
+    const requestClass = !capability && request.method === "GET" && /^\/api\/(?:health|ready)(?:\?|$)/u.test(request.url)
+      ? "monitor"
+      : !capability && (opts.authToken || opts.launcherSecurity)
+        ? classifyOperatorRequest(request.method, request.url)
+        : "standard";
     const bucketKey = `${source}\0${requestClass}`;
     const current = requestBuckets.get(bucketKey);
     const operatorId = source.startsWith("operator")
@@ -277,6 +280,8 @@ export function registerRequestSecurityHooks(
       ? opts.requestLimits.maxCriticalRequestsPerMinute ?? opts.requestLimits.maxRequestsPerMinute
       : requestClass === "stream"
         ? opts.requestLimits.maxStreamRequestsPerMinute ?? 120
+        : requestClass === "monitor"
+          ? opts.requestLimits.maxMonitorRequestsPerMinute ?? 120
         : opts.requestLimits.maxRequestsPerMinute;
     if (bucket.count > limit) {
       bucket.rejected += 1;

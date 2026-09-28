@@ -10,6 +10,7 @@ import { queryKeys } from "../queryKeys";
 import { invalidateForBrowserPage } from "../queryVisibility";
 import { registerLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
+import { removeBrowserStorage } from "../browserStorage";
 
 export interface StreamState {
   connected: boolean;
@@ -84,7 +85,7 @@ function loadStoredCursors(): Map<string, AgentStreamCursor> {
     const now = Date.now();
     return new Map(parsed.filter((entry) => validStoredCursor(entry, now)).slice(-MAX_CACHED_AGENT_CURSORS));
   } catch {
-    window.sessionStorage.removeItem(AGENT_CURSOR_STORAGE_KEY);
+    removeBrowserStorage("sessionStorage", AGENT_CURSOR_STORAGE_KEY);
     return new Map();
   }
 }

@@ -13,6 +13,7 @@ import type { ArtifactKind, AssetDto, CommunicationAttachmentDto } from "./artif
 import type { HistoryWindowDto, ProviderBlockedWorkDto } from "./common.js";
 import type { ProjectDto } from "./projects.js";
 import type { DecisionDto } from "./workspace.js";
+import type { OutcomeCause } from "../outcome-cause.js";
 
 // ─── Conversations ────────────────────────────────────────────────────────────
 
@@ -384,6 +385,8 @@ export interface CoordinationRequestUpdateDto {
   actorId?: string;
   inReplyToUpdateId?: string;
   text?: string;
+  /** Bounded, canonical explanation for an uncertain terminal result. */
+  outcomeCause?: OutcomeCause;
   /** The canonical payload is larger than the bounded operator projection. */
   textTruncated?: true;
   refs: string[];

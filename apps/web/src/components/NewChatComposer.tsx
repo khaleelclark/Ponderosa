@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { createClientId } from "../clientId";
+import { readBrowserStorage, removeBrowserStorage, writeBrowserStorage } from "../browserStorage";
 import { engineIsAvailable, resolveRuntimeSelection, runtimeControlState, soleAvailableEngineId } from "../conversationEngine";
 import { newChatSubmission } from "../conversationRouting";
 import { pickAgentName } from "../parkNames";
@@ -19,7 +20,7 @@ type CreationAttempt = { fingerprint: string; chatKey: string; agentKey: string;
 const attemptKey = "ponderosa.new-chat-attempt.v1";
 function readAttempt(): CreationAttempt | undefined {
   try {
-    const value = JSON.parse(sessionStorage.getItem(attemptKey) ?? "null");
+    const value = JSON.parse(readBrowserStorage("sessionStorage", attemptKey) ?? "null");
     if (value) {
       const input = JSON.parse(value.fingerprint);
       if (![input.text, input.engineId, input.model, input.effort, input.speed ?? ""].every(item => typeof item === "string")) return undefined;
@@ -31,8 +32,8 @@ function readAttempt(): CreationAttempt | undefined {
 
 /** Unsaved until Send. The same creation identities survive an ambiguous retry;
  * opening or leaving this surface never creates a persisted empty Chat. */
-export function NewChatComposer({engines, preferences, onCreated}: {
-  engines: EngineDto[]; preferences: WorkspacePreferencesDto;
+export function NewChatComposer({engines, enginesLoaded = true, preferences, onCreated}: {
+  engines: EngineDto[]; enginesLoaded?: boolean; preferences: WorkspacePreferencesDto;
   onCreated(projectId: string, conversationId: string): void;
 }) {
   const queryClient = useQueryClient();
@@ -73,14 +74,14 @@ export function NewChatComposer({engines, preferences, onCreated}: {
     if (submission.kind === "agent") current.agentTitle ??= pickAgentName([]);
     locked.current = true;setBusy(true);setError(undefined);
     try {
-      sessionStorage.setItem(attemptKey, JSON.stringify(current));
+      writeBrowserStorage("sessionStorage", attemptKey, JSON.stringify(current));
       current.chat ??= await api.createChat({
         label:"New Chat", defaultEngine:engineId as ProjectDto["defaultEngine"],
         ...(hostPath ? {hostPath} : {}),
         ...(model ? {defaultModel:model} : {}), ...(effort ? {defaultEffort:effort} : {}),
         ...(speed ? {defaultSpeed:speed} : {}),
       }, current.chatKey);
-      sessionStorage.setItem(attemptKey, JSON.stringify(current));
+      writeBrowserStorage("sessionStorage", attemptKey, JSON.stringify(current));
       if (submission.kind === "broadcast") {
         await api.sendConversationMessage(current.chat.id, {
           text: submission.text,
@@ -103,7 +104,7 @@ export function NewChatComposer({engines, preferences, onCreated}: {
         queryClient.invalidateQueries({queryKey:queryKeys.projects.all}),
         queryClient.invalidateQueries({queryKey:queryKeys.workspaceDirectory.all}),
       ]);
-      sessionStorage.removeItem(attemptKey);
+      removeBrowserStorage("sessionStorage", attemptKey);
       onCreated(current.chat.projectId,current.chat.id);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
@@ -111,6 +112,7 @@ export function NewChatComposer({engines, preferences, onCreated}: {
     } finally {locked.current=false;setBusy(false);}
   };
   const runtimeControls = <ComposerRuntimeSelector
+    loading={!enginesLoaded}
     engine={engineId}
     engines={engines.map(option => ({
       id: option.id,

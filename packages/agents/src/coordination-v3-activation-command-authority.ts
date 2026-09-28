@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import type { RetryMessageDeliveryResponse } from "@ponderosa/core";
 import { PRIORITY } from "./coordination-v3-activation.js";
 import { payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
-import { CoordinationIdempotencyConflictError } from "./coordination-v3-errors.js";
+import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import type { CoordinationV3RuntimeArtifactAuthority } from "./coordination-v3-runtime-artifact-authority.js";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import type {
@@ -44,6 +44,7 @@ type CreateActivation = (input: {
 export class CoordinationV3ActivationCommandAuthority {
   constructor(
     private readonly sqlite: Database.Database,
+    private readonly support: CoordinationV3StoreSupport,
     private readonly runtimeScopeAuthority: CoordinationV3RuntimeScopeAuthority,
     private readonly runtimeArtifactAuthority: CoordinationV3RuntimeArtifactAuthority,
     private readonly createActivation: CreateActivation,
@@ -760,16 +761,7 @@ export class CoordinationV3ActivationCommandAuthority {
     key: string,
     hash: string,
   ): T | undefined {
-    const row = this.sqlite.prepare(`
-      SELECT payload_hash, result_json FROM coordination_idempotency
-      WHERE project_id = ? AND actor_scope = ? AND operation = ? AND idempotency_key = ?
-    `).get(projectId, actorScope, operation, key) as {
-      payload_hash: string;
-      result_json: string;
-    } | undefined;
-    if (!row) return undefined;
-    if (row.payload_hash !== hash) throw new CoordinationIdempotencyConflictError();
-    return JSON.parse(row.result_json) as T;
+    return this.support.idempotentReplay<T>(projectId, actorScope, operation, key, hash);
   }
 
   private recordIdempotency(
@@ -781,19 +773,6 @@ export class CoordinationV3ActivationCommandAuthority {
     result: unknown,
     now: string,
   ): void {
-    this.sqlite.prepare(`
-      INSERT INTO coordination_idempotency (
-        project_id, actor_scope, operation, idempotency_key,
-        payload_hash, result_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      projectId,
-      actorScope,
-      operation,
-      key,
-      hash,
-      stableJson(result),
-      now,
-    );
+    this.support.recordIdempotency(projectId, actorScope, operation, key, hash, result, now);
   }
 }

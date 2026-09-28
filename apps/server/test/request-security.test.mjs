@@ -30,6 +30,8 @@ async function fixture(options = {}, contextOverrides = {}, handler = async () =
     ...contextOverrides,
   });
   app.get("/api/projects", handler);
+  app.get("/api/health", handler);
+  app.get("/api/ready", handler);
   app.get("/api/workspace/stream", handler);
   app.get("/api/agents/:id/stream", handler);
   app.get("/api/agents/:id/export", handler);
@@ -85,6 +87,18 @@ test("global request admission returns Retry-After instead of unbounded work", a
   t.after(() => app.close());
   assert.equal((await app.inject({ method: "GET", url: "/api/projects" })).statusCode, 200);
   const limited = await app.inject({ method: "GET", url: "/api/projects" });
+  assert.equal(limited.statusCode, 429);
+  assert.ok(limited.headers["retry-after"]);
+});
+
+test("health and readiness have a separate bounded budget from operator reads", async t => {
+  const app = await fixture({ requestLimits: { maxRequestsPerMinute: 1, maxMonitorRequestsPerMinute: 2, maxInflight: 4 } });
+  t.after(() => app.close());
+  assert.equal((await app.inject({ method: "GET", url: "/api/projects" })).statusCode, 200);
+  assert.equal((await app.inject({ method: "GET", url: "/api/projects" })).statusCode, 429);
+  assert.equal((await app.inject({ method: "GET", url: "/api/health" })).statusCode, 200);
+  assert.equal((await app.inject({ method: "GET", url: "/api/ready" })).statusCode, 200);
+  const limited = await app.inject({ method: "GET", url: "/api/ready" });
   assert.equal(limited.statusCode, 429);
   assert.ok(limited.headers["retry-after"]);
 });

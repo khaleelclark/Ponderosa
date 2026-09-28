@@ -50,6 +50,41 @@ test("browser frame stream emits changed frames and releases its shutdown regist
   }
 });
 
+test("idle compatibility preview emits observable heartbeat events", async () => {
+  const app = Fastify();
+  const closures = new Set();
+  registerBrowserRoutes(app, {
+    liveSseClosures: closures,
+    projectExists: id => id === "chat",
+    browserProfiles: { savedBrowser: () => undefined },
+    projectBrowserScope: projectId => ({ projectId, agentId: "browser", runId: "shared" }),
+    projectBrowserSessions: { previewFrame: async () => ({
+      body: Buffer.from([255, 216, 255, 1]), mediaType: "image/jpeg", sequence: 1,
+      metadata: { pageId: "one", viewport: { width: 1280, height: 720 } },
+    }) },
+  });
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(), 13_000);
+  try {
+    const response = await fetch(`${app.listeningOrigin}/api/projects/chat/browser/frame-stream`, { signal: abort.signal });
+    const reader = response.body.getReader();
+    let observed = "";
+    const deadline = Date.now() + 13_000;
+    while (!observed.includes("event: heartbeat") && Date.now() < deadline) {
+      const next = await reader.read();
+      assert.equal(next.done, false);
+      observed += new TextDecoder().decode(next.value);
+    }
+    assert.match(observed, /event: heartbeat\ndata: \{\}\n\n/);
+  } finally {
+    clearTimeout(timeout);
+    abort.abort();
+    for (const close of closures) close();
+    await app.close();
+  }
+});
+
 test("binary browser preview sends raw image bytes and releases its subscriber", async () => {
   const app = Fastify();
   const closures = new Set();

@@ -84,7 +84,7 @@ export type Route =
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string; conversationId?: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; view?: ConversationDetailView; urlDriven?: boolean }
-  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; triggerId?: string }
+  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; triggerId?: string; urlDriven?: boolean }
   | { kind: "automation"; projectId: string; triggerId: string }
   | { kind: "review"; projectId: string; agentId: string; path?: string };
 
@@ -222,7 +222,7 @@ function parseLegacyRoute(pathname: string, search = ""): Route {
     const agentId = decodeRouteSegment(parts[3]);
     if (!agentId) return { kind: "home" };
     return {
-      kind: "agent", projectId, agentId,
+      kind: "agent", projectId, agentId, urlDriven: true,
       ...(focusMessageId ? { focusMessageId } : {}),
       ...(!focusMessageId && focusTelemetry ? { focusTelemetry } : {}),
       ...(!focusMessageId && !focusTelemetry && agentView ? { view: agentView } : {}),

@@ -18,8 +18,9 @@ import type {
   WorkspaceConversationDirectoryItemDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { api } from "../api";
+import { useManagedWorkspaceCollection } from "../hooks/useManagedWorkspaceCollection";
 import {
   useWorkspaceDirectory,
 } from "../hooks/useWorkspaceDirectory";
@@ -33,6 +34,7 @@ import {
 import { ResourceDeletionDialog } from "./ConfirmationDialogs";
 
 type ChatRow = WorkspaceConversationDirectoryItemDto;
+const chatRowId = (row: ChatRow) => row.conversation.id;
 
 interface ChatDeletionPreview {
   row: ChatRow;
@@ -55,9 +57,6 @@ export function ManageChatsWorkspace({
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<Map<string, ChatRow>>(
-    () => new Map(),
-  );
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTargets, setDeleteTargets] = useState<ChatRow[]>([]);
   const [deleteFailures, setDeleteFailures] = useState<ChatDeletionFailure[]>(
@@ -70,69 +69,10 @@ export function ManageChatsWorkspace({
       "conversation",
       { search },
     );
-  const rows = useMemo(() => {
-    const pages = directoryQuery.data?.pages;
-    if (!pages?.length) return [];
-    const seen = new Set<string>();
-    return [
-      ...pages[0]!.starredItems,
-      ...pages.flatMap(page => page.items),
-    ].filter(row => {
-      if (seen.has(row.conversation.id)) return false;
-      seen.add(row.conversation.id);
-      return true;
-    });
-  }, [directoryQuery.data?.pages]);
-  const total = directoryQuery.data?.pages.at(-1)?.total ?? 0;
-
-  // This is the one place where "Select all" must mean the complete matching
-  // collection, not only the first paginated slice. Keep ordinary sidebars
-  // bounded; only the explicit management workspace follows every page.
-  useEffect(() => {
-    if (
-      directoryQuery.requestState.hasNextPage &&
-      !directoryQuery.requestState.isFetchingNextPage &&
-      !directoryQuery.requestState.isPaginationError
-    ) {
-      void directoryQuery.fetchNextPage();
-    }
-  }, [
-    directoryQuery.fetchNextPage,
-    directoryQuery.requestState.hasNextPage,
-    directoryQuery.requestState.isFetchingNextPage,
-    directoryQuery.requestState.isPaginationError,
-  ]);
-
-  const visibleSelectedCount = rows.reduce(
-    (count, row) => count + Number(selected.has(row.conversation.id)),
-    0,
-  );
-  const allVisibleSelected = rows.length > 0 && visibleSelectedCount === rows.length;
-  const collectionComplete =
-    directoryQuery.requestState.hasResolved &&
-    !directoryQuery.requestState.hasNextPage &&
-    !directoryQuery.requestState.isFetchingNextPage &&
-    !directoryQuery.requestState.isPaginationError;
-
-  const toggleSelected = (row: ChatRow) => {
-    setSelected(current => {
-      const next = new Map(current);
-      if (next.has(row.conversation.id)) next.delete(row.conversation.id);
-      else next.set(row.conversation.id, row);
-      return next;
-    });
-  };
-  const toggleSelectAll = () => {
-    setSelected(current => {
-      const next = new Map(current);
-      if (allVisibleSelected) {
-        rows.forEach(row => next.delete(row.conversation.id));
-      } else {
-        rows.forEach(row => next.set(row.conversation.id, row));
-      }
-      return next;
-    });
-  };
+  const {
+    rows, total, selected, setSelected, visibleSelectedCount,
+    allVisibleSelected, collectionComplete, toggleSelected, toggleSelectAll,
+  } = useManagedWorkspaceCollection(directoryQuery, chatRowId);
 
   const previewQuery = useQuery({
     queryKey: [

@@ -219,6 +219,7 @@ export class CoordinationV3Store {
     );
     this.activationCommandAuthority = new CoordinationV3ActivationCommandAuthority(
       sqlite,
+      this.support,
       this.runtimeScopeAuthority,
       this.runtimeArtifactAuthority,
       input => this.createActivation(input),
@@ -348,12 +349,15 @@ export class CoordinationV3Store {
       this.runtimeScopeAuthority,
       this.activationLifecycle,
       this.triggerRegistry,
-      (runId, now, reason, eligibleStates) =>
+      (runId, now, reason, eligibleStates, incidentId) =>
         this.runLifecycleAuthority.markRelatedRequestsOutcomeUnknown(
           runId,
           now,
           reason,
           eligibleStates,
+          eligibleStates,
+          true,
+          incidentId,
         ),
       input => { this.requiredReplyAuthority.registerForRun(input); },
       (runId, now) => { this.requiredReplyAuthority.recoverPending(runId, now); },
@@ -1183,6 +1187,7 @@ export class CoordinationV3Store {
     maxDeliveryFailures?: number;
     confirmedNotExecuted?: boolean;
     failureKind?: ProviderFailureCategory;
+    internalFailureCode?: import("@ponderosa/core").OutcomeInternalFailureCode;
     failureDetail?: {
       phase: string;
       promptInjectionState: "not_injected" | "injecting" | "injected";

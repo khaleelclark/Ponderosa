@@ -1191,15 +1191,16 @@ export function ConversationView({
                 loading: loadingOlder,
                 onLoadEarlier: () => void loadOlderHistory(),
               }}
-              beforeMessages={olderError ? (
-                <Alert
+              beforeMessages={<>
+                <Alert severity="info" icon={false} sx={{ mx: 1.5, mt: 1.5, mb: olderError ? 0 : 1.5 }}>
+                  Team Chat shows how Agents coordinate. It is read-only; to talk to an Agent, use Chat and mention them.
+                </Alert>
+                {olderError ? <Alert
                   severity="error"
                   action={<Button color="inherit" size="small" onClick={() => void loadOlderHistory()}>Retry</Button>}
                   sx={{ m: 1.5 }}
-                >
-                  {olderError}
-                </Alert>
-              ) : null}
+                >{olderError}</Alert> : null}
+              </>}
             >
               {collaborationQuery.isError && !collaborationQuery.data ? (
                 <Alert

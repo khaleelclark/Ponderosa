@@ -350,6 +350,8 @@ export interface WorkspaceNotificationDto {
   action?: { kind: "open_settings" | "open_project" | "open_conversation" | "open_agent" | "open_decision"; targetId?: string };
   title: string;
   body: string;
+  /** Bounded in-app context; never included in lock-screen push copy. */
+  contextPreview?: string;
   createdAt: string;
   /** Durable receipt that the operator reviewed this still-open action. */
   acknowledgedAt?: string;

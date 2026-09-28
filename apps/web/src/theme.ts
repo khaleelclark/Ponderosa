@@ -1,5 +1,6 @@
 import { alpha, createTheme } from "@mui/material/styles";
 import type { Theme } from "@mui/material/styles";
+import { readBrowserStorage } from "./browserStorage";
 
 export type ColorMode = "light" | "dark";
 
@@ -100,7 +101,7 @@ export function loadColorMode(): ColorMode {
     return "light";
   }
 
-  const savedMode = window.localStorage.getItem(COLOR_MODE_STORAGE_KEY);
+  const savedMode = readBrowserStorage("localStorage", COLOR_MODE_STORAGE_KEY);
   if (savedMode === "light" || savedMode === "dark") {
     return savedMode;
   }

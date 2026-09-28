@@ -51,7 +51,6 @@ export function BrowserViewport<Session extends BrowserSession>({
   const image = useRef<HTMLCanvasElement>(null);
   const [imageBounds, setImageBounds] = useState({ width: 0, height: 0, left: 0 });
   const frameContext = useRef<BrowserFrameMetadata>();
-  const frameScheduler = useRef<ReturnType<typeof createBrowserFrameScheduler>>();
   const frameAbort = useRef<AbortController>();
   const frameVisibility = useRef<() => void>();
   const pollingEnabledRef = useRef(pollingEnabled);
@@ -167,18 +166,36 @@ export function BrowserViewport<Session extends BrowserSession>({
     const startPolling = () => {
       if (scheduler) { scheduler.setVisible(document.visibilityState === "visible" && pollingEnabledRef.current); return; }
       scheduler = createBrowserFrameScheduler({ capture });
-      frameScheduler.current = scheduler;
       scheduler.setVisible(document.visibilityState === "visible" && pollingEnabledRef.current);
     };
-    const closeStream = () => { streamQueue?.dispose(); streamQueue = undefined; source?.close(); source = undefined; binaryAbort?.abort(); binaryAbort = undefined; };
+    let legacyWatchdog: ReturnType<typeof setTimeout> | undefined;
+    const closeStream = () => {
+      if (legacyWatchdog) clearTimeout(legacyWatchdog);
+      legacyWatchdog = undefined;
+      streamQueue?.dispose(); streamQueue = undefined;
+      source?.close(); source = undefined;
+      binaryAbort?.abort(); binaryAbort = undefined;
+    };
     const startLegacyStream = () => {
       if (typeof EventSource === "undefined") { fallback = true; startPolling(); return; }
       const opened = new EventSource(adapter.frameStreamUrl(pageId));
       source = opened;
+      const armWatchdog = () => {
+        if (legacyWatchdog) clearTimeout(legacyWatchdog);
+        legacyWatchdog = setTimeout(() => {
+          if (cancelled || source !== opened) return;
+          closeStream();
+          fallback = true;
+          startPolling();
+        }, 20_000);
+      };
+      armWatchdog();
+      opened.addEventListener("heartbeat", armWatchdog);
       streamQueue = createLatestBrowserFrameQueue(async frame => {
         await showFrame(frame.blob, frame.metadata, ++arrived, () => source === opened);
       }, error => { if (!cancelled && source === opened) setFrameError(error instanceof Error ? error.message : String(error)); });
       opened.addEventListener("frame", event => {
+        armWatchdog();
         try { streamQueue?.push(parseBrowserFrameEvent((event as MessageEvent).data)); }
         catch (error) { if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error)); }
       });
@@ -241,7 +258,6 @@ export function BrowserViewport<Session extends BrowserSession>({
       closeStream();
       document.removeEventListener("visibilitychange", updateVisibility);
       scheduler?.dispose();
-      if (frameScheduler.current === scheduler) frameScheduler.current = undefined;
       if (frameVisibility.current === updateVisibility) frameVisibility.current = undefined;
       refreshFrame.current = () => undefined;
       setHasFrame(false);

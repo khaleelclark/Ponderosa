@@ -204,6 +204,7 @@ export function HomeView({
   enginesLoaded,
   notifications,
   notificationCounts,
+  notificationsLoadFailed = false,
   onNavigate,
   onCreateProject,
   onOpenInbox,
@@ -214,6 +215,7 @@ export function HomeView({
   enginesLoaded: boolean;
   notifications: WorkspaceNotificationDto[];
   notificationCounts?: Pick<WorkspaceNotificationPageDto, "openActionCount">;
+  notificationsLoadFailed?: boolean;
   onNavigate(route: Route): void;
   onCreateProject(): void;
   onOpenInbox(): void;
@@ -249,6 +251,7 @@ export function HomeView({
     ? triggerQuery.data?.pages.at(-1)?.enabledCount ?? 0
     : triggerQuery.requestState.isInitialError ? "Unavailable" : "Loading";
   const attentionCount = notificationOpenActionCount(notifications, notificationCounts);
+  const attentionLoading = !notificationCounts;
   const homeLoading = !projectsLoaded || !enginesLoaded ||
     activeAgentQuery.requestState.isInitialLoading ||
     triggerQuery.requestState.isInitialLoading || outcomeQuery.requestState.isInitialLoading;
@@ -278,7 +281,7 @@ export function HomeView({
             },
           }}>
             <SummaryCard label="Active Agents" value={activeCount} />
-            <SummaryCard label="Needs Attention" value={attentionCount} onClick={onOpenInbox} />
+            <SummaryCard label="Needs Attention" value={attentionLoading ? notificationsLoadFailed ? "Unavailable" : "Loading" : attentionCount} onClick={onOpenInbox} />
             <SummaryCard label="Enabled Automations" compactLabel="Automations" value={enabledAutomationCount} />
             <SummaryCard label="Provider Health" value={provider.label} compactValue={provider.label === "Engine ready" ? "Ready" : provider.label} />
           </Box>
@@ -297,7 +300,7 @@ export function HomeView({
           <Section
             title="Needs Attention"
             description="Decisions, blockers, and failures that still need you."
-            action={attentionCount ? <Button onClick={onOpenInbox}>View all</Button> : undefined}
+            action={!attentionLoading && attentionCount ? <Button onClick={onOpenInbox}>View all</Button> : undefined}
           >
             {attention.length ? (
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
@@ -317,6 +320,8 @@ export function HomeView({
                   );
                 })}
               </Box>
+            ) : attentionLoading ? (
+              <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">{notificationsLoadFailed ? "Notifications could not be loaded. Open the panel to retry." : "Loading notifications…"}</Typography></Paper>
             ) : attentionCount ? (
               <Paper variant="outlined" sx={{ p: 2 }}>
                 <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>

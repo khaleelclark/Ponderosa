@@ -529,13 +529,6 @@ export class CoordinationV3Scheduler {
   }
 }
 
-export function formatActivationPrompt(
-  lease: SchedulerLease | SteeringLease,
-  options: ActivationPromptCompilationOptions = {},
-): string {
-  return compileActivationPrompt(lease, options).prompt;
-}
-
 export interface ActivationPromptCompilationOptions {
   /** Hard UTF-8 envelope for this scheduler packet. If complete automatic
    * result content cannot fit, validated local files are supplied instead. */

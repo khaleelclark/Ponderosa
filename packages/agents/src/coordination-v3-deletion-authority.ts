@@ -210,6 +210,17 @@ export class CoordinationV3DeletionAuthority {
         )
       `).run(projectId);
       this.sqlite.prepare(`
+        DELETE FROM system_incident_runs WHERE run_id IN (
+          SELECT id FROM scheduler_runs WHERE project_id = ?
+        )
+      `).run(projectId);
+      this.sqlite.prepare(`
+        DELETE FROM system_incidents WHERE NOT EXISTS (
+          SELECT 1 FROM system_incident_runs linked
+          WHERE linked.incident_id = system_incidents.id
+        )
+      `).run();
+      this.sqlite.prepare(`
         DELETE FROM scheduler_runs WHERE project_id = ?
       `).run(projectId);
       this.sqlite.prepare(`

@@ -5,7 +5,7 @@ import type {
   CoordinationRequestState,
   CoordinationRequestUpdateKind,
 } from "@ponderosa/core";
-import { publicProviderFailureSummary } from "@ponderosa/core";
+import { outcomeCauseExplanation, outcomeCauseFromPayload, publicProviderFailureSummary } from "@ponderosa/core";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
 import {
   providerSafeActivationPayload,
@@ -1209,7 +1209,20 @@ export class CoordinationV3ReadModel {
         },
         updates: updateRows.map((row) => {
           const payload = parseStoredJson(row.payload_json);
-          const text = row.provider_failure_category
+          const parsedCause = row.kind === "outcome_unknown" && row.actor_kind === "supervisor"
+            ? outcomeCauseFromPayload(payload) : undefined;
+          // An identifier alone is not incident evidence. Require the durable
+          // Run-to-incident binding before projecting it into operator UI.
+          const verifiedIncident = parsedCause?.incidentId && parsedCause.runId && Boolean(this.sqlite.prepare(`
+            SELECT 1 FROM system_incident_runs
+            WHERE incident_id = ? AND run_id = ?
+          `).get(parsedCause.incidentId, parsedCause.runId));
+          const outcomeCause = parsedCause && !verifiedIncident && parsedCause.incidentId
+            ? (({ incidentId: _unverified, ...cause }) => cause)(parsedCause)
+            : parsedCause;
+          const text = outcomeCause
+            ? { text: outcomeCauseExplanation(outcomeCause) }
+            : row.provider_failure_category
             ? {
                 text: publicProviderFailureSummary(
                   undefined,
@@ -1227,6 +1240,7 @@ export class CoordinationV3ReadModel {
               ? { inReplyToUpdateId: row.in_reply_to_update_id }
               : {}),
             ...(text.text ? { text: text.text } : {}),
+            ...(outcomeCause ? { outcomeCause } : {}),
             ...(text.truncated ? { textTruncated: true as const } : {}),
             refs: [
               ...new Set([

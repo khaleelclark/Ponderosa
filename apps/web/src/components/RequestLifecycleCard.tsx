@@ -23,6 +23,7 @@ import { queryKeys } from "../queryKeys";
 const UPDATE_PREVIEW_CHARACTERS = 900;
 
 function stateLabel(state: string): string {
+  if (state === "outcome_unknown") return "Result unconfirmed";
   return state
     .replaceAll("_", " ")
     .replace(/\b\w/gu, (letter) => letter.toLocaleUpperCase());
@@ -32,7 +33,7 @@ function updateKindLabel(kind: CoordinationRequestUpdateDto["kind"]): string {
   if (kind === "waiting_dependency") return "Waiting on dependency";
   if (kind === "dependency_resolved") return "Dependency resolved";
   if (kind === "recipient_unavailable") return "Recipient unavailable";
-  if (kind === "outcome_unknown") return "Outcome unknown";
+  if (kind === "outcome_unknown") return "Result unconfirmed";
   return stateLabel(kind);
 }
 
@@ -115,11 +116,13 @@ function RequestUpdate({
   questionNumber,
   answeredQuestionNumber,
   agentTitle,
+  onOpenWork,
 }: {
   update: CoordinationRequestUpdateDto;
   questionNumber?: number;
   answeredQuestionNumber?: number;
   agentTitle: (agentId: string | undefined) => string;
+  onOpenWork?: (focusId: string) => void;
 }): JSX.Element {
   const [showFullText, setShowFullText] = useState(false);
   const text = textWithoutArtifactPointer(update.text, update.artifacts);
@@ -174,6 +177,16 @@ function RequestUpdate({
           sx={{ mt: 0.75, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
         >
           {visibleText}
+        </Typography>
+      ) : null}
+      {update.outcomeCause?.runId && onOpenWork ? (
+        <Button size="small" onClick={() => onOpenWork(`run:${update.outcomeCause!.runId}`)}>
+          Review Agent activity
+        </Button>
+      ) : null}
+      {update.outcomeCause?.incidentId ? (
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+          Related server-start recovery: {update.outcomeCause.incidentId}
         </Typography>
       ) : null}
       {update.textTruncated ? (
@@ -312,7 +325,9 @@ export function RequestLifecycleCard({
           ) : null}
           <Stack direction="row" spacing={1} sx={{ mt: 0.5, alignItems: "center" }}>
             <Typography variant="caption" color="text.secondary">
-              {hasResult ? "Result available" : hasUpdates ? "Updates available" : "No updates yet"}
+              {state === "outcome_unknown"
+                ? "Result unconfirmed · open to see why"
+                : hasResult ? "Result available" : hasUpdates ? "Updates available" : "No updates yet"}
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ ml: "auto" }}>
               {new Date(updatedAt).toLocaleString()}
@@ -371,6 +386,7 @@ export function RequestLifecycleCard({
                       : undefined
                   }
                   agentTitle={agentTitle}
+                  onOpenWork={onOpenWork}
                 />
               ))}
             </Box>

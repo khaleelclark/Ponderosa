@@ -417,8 +417,7 @@ function MainConversationTimeline({
     <Stack spacing={0} sx={{ mb: 2 }}>
       {mainTimeline.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
-          No messages yet. Send a request to start your first agent —
-          its completed answer returns here.
+          No messages yet. Send a message or mention an Agent to start this Chat.
         </Typography>
       ) : null}
       {mainTimeline.map(entry => {
@@ -632,7 +631,7 @@ function CollaborationTimeline({
               <Stack spacing={0.75} sx={{ pb: 1, pl: { xs: 2, sm: 3 } }}>
                 {underlyingEvents.map((event, index) => (
                   <Stack key={`${event.id}:${index}`} direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
-                    <Typography variant="caption" sx={{ minWidth: 72 }}>{event.state.replaceAll("_", " ")}</Typography>
+                    <Typography variant="caption" sx={{ minWidth: 72 }}>{event.state === "outcome_unknown" ? "Result unconfirmed" : event.state.replaceAll("_", " ")}</Typography>
                     <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>{event.text}</Typography>
                     <Typography variant="caption" color="text.secondary">
                       {new Date(event.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}

@@ -9,6 +9,7 @@ import {
   ClickAwayListener,
   Divider,
   IconButton,
+  ListSubheader,
   MenuItem,
   MenuList,
   Paper,
@@ -44,6 +45,15 @@ import {
   composerCapabilityDisabledReason,
   engineCommandDisabledReason,
 } from "./composerUtils";
+
+function capabilityDisplayName(capability: EngineComposerCapability): string {
+  if (!/[:_-]/u.test(capability.label)) return capability.label;
+  const raw = capability.label.includes(":") ? capability.label.split(":").at(-1)! : capability.label;
+  const words = raw.replace(/[_-]+/gu, " ");
+  return words === words.toLocaleLowerCase()
+    ? words.replace(/\b\p{L}/gu, letter => letter.toLocaleUpperCase())
+    : words;
+}
 
 export function ComposerNotices({
   pastedText,
@@ -323,6 +333,12 @@ export function ComposerCapabilityPicker({
   onApplyCapability(capability: EngineComposerCapability): void;
 }): JSX.Element {
   const maximumFiles = assetLimits?.maxAssetsPerMessage ?? COMPOSER_MAX_FILES;
+  const capabilityGroups = [
+    { label: "Available skills", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "skill") },
+    { label: "Installed plugins", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "plugin") },
+    { label: "Connected apps", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "connector") },
+    { label: "Unavailable options", items: visibleCapabilities.filter(item => item.status !== "available") },
+  ].filter(group => group.items.length > 0);
   const mobile = useMediaQuery(useTheme().breakpoints.down("md"));
   const [browseCapabilities, setBrowseCapabilities] = useState(false);
   const showCapabilities = !mobile || browseCapabilities;
@@ -430,6 +446,7 @@ export function ComposerCapabilityPicker({
                 overscrollBehavior: "contain",
               }}
             >
+              {(!mobile || !browseCapabilities) && <ListSubheader sx={{ lineHeight: "32px", bgcolor: "background.paper", fontWeight: 800 }}>Files</ListSubheader>}
               {(!mobile || !browseCapabilities) && <MenuItem
                 disabled={!attachmentsEnabled || fileCount >= maximumFiles}
                 onClick={() => {
@@ -489,7 +506,9 @@ export function ComposerCapabilityPicker({
                   </Typography>
                 </MenuItem>
               ) : (
-                visibleCapabilities.map(capability => {
+                capabilityGroups.flatMap(group => [
+                  <ListSubheader key={`heading:${group.label}`} sx={{ lineHeight: "32px", bgcolor: "background.paper", fontWeight: 800 }}>{group.label}</ListSubheader>,
+                  ...group.items.map(capability => {
                   const reason = composerCapabilityDisabledReason(capability);
                   const automatic =
                     capability.status === "available" && !capability.insertText;
@@ -528,7 +547,7 @@ export function ComposerCapabilityPicker({
                               color: automatic ? "text.primary" : undefined,
                             }}
                           >
-                            {capability.label}
+                            {capabilityDisplayName(capability)}
                           </Typography>
                           <Chip
                             size="small"
@@ -566,7 +585,8 @@ export function ComposerCapabilityPicker({
                       </Box>
                     </MenuItem>
                   );
-                })
+                  }),
+                ])
               ))}
             </MenuList>
           </Paper>

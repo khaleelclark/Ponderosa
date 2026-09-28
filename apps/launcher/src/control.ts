@@ -14,7 +14,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LauncherShutdownReceiptDto } from "@ponderosa/core";
-import { darwinProcessBirthMarker } from "@ponderosa/native-host";
+import { hostProcessBirthMarker } from "@ponderosa/native-host";
 import { discoverProviders } from "./providers.js";
 import {
   ensureDataLayout,
@@ -50,20 +50,7 @@ function processAlive(pid: number): boolean {
 }
 
 export function launcherProcessBirthMarker(pid: number): string | undefined {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
-  if (process.platform === "linux") {
-    try {
-      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-      const commandEnd = stat.lastIndexOf(")");
-      const startTime = commandEnd < 0 ? undefined : stat.slice(commandEnd + 2).trim().split(/\s+/u)[19];
-      return startTime ? `linux:${startTime}` : undefined;
-    } catch { return undefined; }
-  }
-  if (process.platform === "darwin") {
-    const marker = darwinProcessBirthMarker(pid);
-    return marker ? `darwin:${marker}` : undefined;
-  }
-  return undefined;
+  return hostProcessBirthMarker(pid);
 }
 
 function supervisorStatusPath(paths: LauncherPaths, generation: string): string {

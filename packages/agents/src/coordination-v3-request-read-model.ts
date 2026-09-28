@@ -1,28 +1,12 @@
 import type Database from "better-sqlite3";
 import { TERMINAL_REQUEST_STATES } from "@ponderosa/core";
-import type { CoordinationRequestState, RequestLifetime } from "@ponderosa/core";
+import type { CoordinationRequestState } from "@ponderosa/core";
+import type { RequestRow } from "./coordination-v3-store-support.js";
 import type {
   CoordinationRequestDeliveryView,
   CoordinationRequestV3View,
 } from "./coordination-v3-types.js";
 
-interface RequestRow {
-  id: string;
-  project_id: string;
-  conversation_id: string | null;
-  requester_agent_id: string | null;
-  recipient_agent_id: string;
-  state: CoordinationRequestState;
-  version: number;
-  lifetime_kind: RequestLifetime["kind"];
-  deadline_at: string | null;
-  open_question_update_id: string | null;
-  payload_json: string;
-  reply_authority_json: string | null;
-  superseded_by_request_id: string | null;
-  created_at: string;
-  updated_at: string;
-}
 export class CoordinationV3RequestReadModel {
   constructor(private readonly sqlite: Database.Database) {}
 
@@ -36,7 +20,7 @@ export class CoordinationV3RequestReadModel {
   }
 
   getRequest(requestId: string): CoordinationRequestV3View | undefined {
-    const row = this.sqlite.prepare(`SELECT * FROM coordination_requests WHERE id = ?`).get(requestId) as (RequestRow & { payload_json: string }) | undefined;
+    const row = this.sqlite.prepare(`SELECT * FROM coordination_requests WHERE id = ?`).get(requestId) as RequestRow | undefined;
     if (!row) return undefined;
     return {
       id: row.id,

@@ -17,9 +17,9 @@ import type {
 } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
 import { cleanupUncommittedCommunicationArtifact } from "../communication-artifacts.js";
+import { leaseConversationDelivery, reconcileLeasedCommunicationReplay } from "../delivery-leases.js";
 import {
   conversationDeliveryRequestFingerprint,
-  leaseConversationDelivery,
   type PreparedCommunicationArtifact,
 } from "./conversation-deliveries.js";
 
@@ -182,34 +182,26 @@ export function registerCollaborationRoutes(
       if (existingPayload.requestFingerprint !== requestFingerprint) {
         return reply.code(409).send({ error: "runtime communication ID collision" });
       }
-      let message;
-      {
-        const replayAgentIds = [...new Set((existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
-          typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []))];
-        const releaseReplayLease = leaseConversationDelivery(
-          conversationDeliveryLeases,
-          agentDeliveryLeases,
-          request.params.id,
-          replayAgentIds,
-        );
-        try {
-          await reconcileRuntimeCommunicationProjections({
-            projectId: existingRuntime!.projectId,
-            communicationEventId: eventId,
-          });
-          message = store.getConversationMessages(request.params.id, "collaboration")
-            .find((candidate) => candidate.communicationEventId === eventId);
-        } catch {
-          return reply.code(202).send({
-            communicationEventId: eventId,
-            committed: true,
-            recovering: true,
-            replayed: true,
-          });
-        } finally {
-          releaseReplayLease();
-        }
-      }
+      const replayAgentIds = [...new Set((existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
+        typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []))];
+      const replay = await reconcileLeasedCommunicationReplay({
+        conversationLeases: conversationDeliveryLeases,
+        agentLeases: agentDeliveryLeases,
+        conversationId: request.params.id,
+        agentIds: replayAgentIds,
+        projectId: existingRuntime!.projectId,
+        communicationEventId: eventId,
+        reconcile: reconcileRuntimeCommunicationProjections,
+        read: () => store.getConversationMessages(request.params.id, "collaboration")
+          .find((candidate) => candidate.communicationEventId === eventId),
+      });
+      if (!replay.recovered) return reply.code(202).send({
+        communicationEventId: eventId,
+        committed: true,
+        recovering: true,
+        replayed: true,
+      });
+      const message = replay.value;
       if (!message) return reply.code(202).send({
         communicationEventId: eventId,
         committed: true,
