@@ -125,22 +125,6 @@ export function createBrowserFrameScheduler({
   };
 }
 
-export async function decodeBrowserFrame(blob: Blob): Promise<string> {
-  const url = URL.createObjectURL(blob);
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const image = new Image();
-      image.onload = () => resolve();
-      image.onerror = () => reject(new Error("Browser frame could not be decoded."));
-      image.src = url;
-    });
-    return url;
-  } catch (error) {
-    URL.revokeObjectURL(url);
-    throw error;
-  }
-}
-
 /** Decode a frame for a persistent canvas. SVG test/legacy frames and browsers
  * without createImageBitmap still use an Image, without replacing the DOM node. */
 export async function decodeBrowserFrameSurface(blob: Blob): Promise<{

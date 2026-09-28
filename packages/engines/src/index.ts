@@ -29,7 +29,7 @@ export {
   readClaudeProviderUsage,
   readCodexProviderUsage,
 } from "./provider-usage.js";
-export { composerCapabilities, discoverEnginePlugins, discoverMarkdownCommands, parseClaudeMcpList, parseCodexMcpList } from "./capabilities.js";
+export { composerCapabilities, parseClaudeMcpList, parseCodexMcpList } from "./capabilities.js";
 
 // Re-export the Adapter contract from core so consumers import engines in one place.
 export type { Adapter, AgentEvent, EngineAuthStatus, EngineAvailabilityStatus } from "@ponderosa/core";

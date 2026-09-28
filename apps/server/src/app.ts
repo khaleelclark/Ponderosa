@@ -106,8 +106,7 @@ export {
 } from "./project-files.js";
 export {
   boundedContinuationHistory,
-  boundedSeedHistory,
-  runtimeIdentityPrompt
+  boundedSeedHistory
 } from "./prompts.js";
 export {
   PROVIDER_TOOL_CONTRACT_HASH,

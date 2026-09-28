@@ -51,7 +51,6 @@ export function BrowserViewport<Session extends BrowserSession>({
   const image = useRef<HTMLCanvasElement>(null);
   const [imageBounds, setImageBounds] = useState({ width: 0, height: 0, left: 0 });
   const frameContext = useRef<BrowserFrameMetadata>();
-  const frameScheduler = useRef<ReturnType<typeof createBrowserFrameScheduler>>();
   const frameAbort = useRef<AbortController>();
   const frameVisibility = useRef<() => void>();
   const pollingEnabledRef = useRef(pollingEnabled);
@@ -167,7 +166,6 @@ export function BrowserViewport<Session extends BrowserSession>({
     const startPolling = () => {
       if (scheduler) { scheduler.setVisible(document.visibilityState === "visible" && pollingEnabledRef.current); return; }
       scheduler = createBrowserFrameScheduler({ capture });
-      frameScheduler.current = scheduler;
       scheduler.setVisible(document.visibilityState === "visible" && pollingEnabledRef.current);
     };
     let legacyWatchdog: ReturnType<typeof setTimeout> | undefined;
@@ -260,7 +258,6 @@ export function BrowserViewport<Session extends BrowserSession>({
       closeStream();
       document.removeEventListener("visibilitychange", updateVisibility);
       scheduler?.dispose();
-      if (frameScheduler.current === scheduler) frameScheduler.current = undefined;
       if (frameVisibility.current === updateVisibility) frameVisibility.current = undefined;
       refreshFrame.current = () => undefined;
       setHasFrame(false);
