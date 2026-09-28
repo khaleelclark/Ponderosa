@@ -251,6 +251,8 @@ export function startProviderRunExecution(
       | ProviderErrorCode
       | ProviderFailureCategory
       | undefined;
+    let internalFailureCode: "run_orchestration" | "context_rollover_conflict"
+      | "context_rollover_boundary" | undefined;
     let finalText = "";
     let firstTextSeq: number | undefined;
     let lastTextSeq: number | undefined;
@@ -1103,6 +1105,8 @@ export function startProviderRunExecution(
           err.message === "context rollover provider generation replay conflicts with its durable owner";
         const exactBoundary = err instanceof Error &&
           err.message.startsWith("context rollover requires an exact positive canonical boundary");
+        internalFailureCode = conflict ? "context_rollover_conflict"
+          : exactBoundary ? "context_rollover_boundary" : "run_orchestration";
         app.log.error({
           runId, agentId: agent.id,
           category: conflict ? "context_rollover_conflict" : exactBoundary ? "context_rollover_boundary" : "run_orchestration",
@@ -1485,6 +1489,7 @@ export function startProviderRunExecution(
             workerId: coordinationV3WorkerId,
             sameRunResumable: false,
             ...(failureKind ? { failureKind } : {}),
+            ...(!failureKind && internalFailureCode ? { internalFailureCode } : {}),
             ...(confirmedNotExecuted ? { confirmedNotExecuted: true } : {}),
             retryable: !projectWorkspaceUnavailable && failureKind !== "authentication",
             error: failureKind

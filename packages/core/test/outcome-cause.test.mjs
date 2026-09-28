@@ -18,8 +18,14 @@ test("recorded uncertain outcomes have distinct, safe explanations", () => {
   assert.match(outcomeCauseExplanation(auth), /rejected its sign-in/i);
   const rateLimit = outcomeCauseFromPayload({ reason: "provider_outcome_unknown", providerFailureCategory: "rate_limit" });
   assert.match(outcomeCauseExplanation(rateLimit), /usage limit/i);
-  assert.match(outcomeCauseExplanation(outcomeCauseFromPayload({ reason: "scheduler_outcome_unknown" })), /interrupted before Ponderosa recorded/i);
+  assert.match(outcomeCauseExplanation(outcomeCauseFromPayload({ reason: "scheduler_outcome_unknown" })), /internal error while running/i);
+  const conflict = outcomeCauseFromPayload({ reason: "scheduler_outcome_unknown", internalFailureCode: "context_rollover_conflict" });
+  assert.match(outcomeCauseExplanation(conflict), /conflicting saved context/i);
   assert.match(outcomeCauseExplanation(outcomeCauseFromPayload({ reason: "run_cancelled_by_operator" })), /An operator stopped/i);
+  assert.match(outcomeCauseExplanation(outcomeCauseFromPayload({ reason: "server_restart_after_prompt_submission" })), /server started/i);
+  assert.match(outcomeCauseExplanation(outcomeCauseFromPayload({ reason: "lease_expired_after_prompt_injection" })), /lost authority/i);
+  const phase = outcomeCauseFromPayload({ reason: "provider_outcome_unknown", processingPhase: "iterator_rejection_after_acceptance" });
+  assert.match(outcomeCauseExplanation(phase), /lost the provider's response stream/i);
   for (const explanation of [noUpdate, notInjected, injecting, injected, auth, rateLimit].map(outcomeCauseExplanation)) {
     assert.match(explanation, /before retrying; a retry could repeat work/i);
     assert.doesNotMatch(explanation, /outcome_unknown|prompt_injection_state|provider_failure_category/iu);
@@ -27,7 +33,7 @@ test("recorded uncertain outcomes have distinct, safe explanations", () => {
 });
 
 test("unknown historical reasons never become public failure prose", () => {
-  const cause = outcomeCauseFromPayload({ reason: "private stack trace", runId: "../../unsafe" });
+  const cause = outcomeCauseFromPayload({ reason: "private stack trace", runId: "../../unsafe", incidentId: "fake", processingPhase: "private stack trace", internalFailureCode: "private stack trace" });
   assert.deepEqual(cause, { code: "cause_unavailable" });
   assert.doesNotMatch(outcomeCauseExplanation(cause), /private stack trace/);
 });

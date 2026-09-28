@@ -184,6 +184,11 @@ function RequestUpdate({
           Review Agent activity
         </Button>
       ) : null}
+      {update.outcomeCause?.incidentId ? (
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+          Related server-start recovery: {update.outcomeCause.incidentId}
+        </Typography>
+      ) : null}
       {update.textTruncated ? (
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
           Update text is bounded in this view.
