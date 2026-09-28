@@ -123,6 +123,7 @@ const draftAuthorityTables = [
   "draft_asset_reservations", "draft_asset_committed", "draft_asset_settlements",
   "draft_asset_rate_events", "draft_attachment_cleanups",
 ];
+const quotaSlotBytes = DRAFT_ASSET_LIMITS.maxSurfaceBytes / 64;
 
 test("Agent authority purge is exact, idempotent, and preserves Project artifacts", async (t) => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-agent-authority-purge-"));
@@ -550,14 +551,14 @@ test("draft quota is stable across owner rotation, failed writes, and restart cl
         draftId,
         `rotated-owner-${index}`,
         assetId,
-        ASSET_LIMITS.maxFileBytes,
+        quotaSlotBytes,
       );
     } else {
       const reservation = authority.reserveDraftAttachment(
         draftId,
         `rotated-owner-${index}`,
         assetId,
-        ASSET_LIMITS.maxFileBytes,
+        quotaSlotBytes,
       );
       authority.settleDraftAttachment(reservation);
     }
@@ -613,7 +614,7 @@ test("draft surface cleanup atomically settles reservations, committed quota, cl
       draftId,
       `owner-${index}`,
       assetId,
-      ASSET_LIMITS.maxFileBytes,
+      quotaSlotBytes,
     );
     authority.settleDraftAttachment(committed);
   }
@@ -629,7 +630,7 @@ test("draft surface cleanup atomically settles reservations, committed quota, cl
     draftId,
     "owner-c",
     randomUUID(),
-    ASSET_LIMITS.maxFileBytes,
+    quotaSlotBytes,
   ));
 });
 
@@ -648,7 +649,7 @@ for (const deletedSurface of ["chat-delete", "collaboration:chat-delete", "agent
           draftId,
           `owner-${index}`,
           assetId,
-          ASSET_LIMITS.maxFileBytes,
+          quotaSlotBytes,
         );
         if (index === 63) continue;
         authority.settleDraftAttachment(reservation);
@@ -673,7 +674,7 @@ for (const deletedSurface of ["chat-delete", "collaboration:chat-delete", "agent
       "available-immediately",
       "owner",
       randomUUID(),
-      ASSET_LIMITS.maxFileBytes,
+      quotaSlotBytes,
     ));
     const sqlite = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true });
     for (const table of [
@@ -696,7 +697,7 @@ for (const deletedSurface of ["chat-delete", "collaboration:chat-delete", "agent
       "available-after-restart",
       "owner",
       randomUUID(),
-      ASSET_LIMITS.maxFileBytes,
+      quotaSlotBytes,
     ));
   });
 }
@@ -739,7 +740,7 @@ test("draft quota enforces the workspace aggregate across independent surfaces",
         `chat-${surface}`,
         `owner-${file}`,
         randomUUID(),
-        ASSET_LIMITS.maxFileBytes,
+        quotaSlotBytes,
       );
       authority.settleDraftAttachment(reservation);
     }

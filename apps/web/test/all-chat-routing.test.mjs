@@ -159,13 +159,13 @@ test("restores only a complete stable All Messages recipient", () => {
   assert.equal(parseAllChatReplyTarget("not json"), undefined);
 });
 
-test("All Messages reports Queue as queued rather than sent", () => {
+test("All Messages leaves queued delivery to the message status", () => {
   assert.equal(allChatDeliveryConfirmation({
     recipientTitles: ["Bryce Canyon"],
     queuedRecipientTitles: ["Bryce Canyon"],
     unavailableCount: 0,
     creationRecovering: false,
-  }), "Queued for Bryce Canyon; it will start when the current response finishes.");
+  }), undefined);
   assert.equal(allChatDeliveryConfirmation({
     recipientTitles: ["Bryce Canyon"],
     queuedRecipientTitles: [],

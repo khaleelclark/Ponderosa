@@ -83,7 +83,7 @@ type ApplicationRoutesContext =
   Omit<Parameters<typeof registerCollaborationRoutes>[1],
     "projectDeletionInProgress" | "agentDeletionInProgress" | "attachmentDeletionInProgress" |
     "assetReconciliationInProgress" | "assetMetadata"> &
-  Omit<Parameters<typeof registerAttachmentRoutes>[1], "agentDeletionInProgress"> &
+  Omit<Parameters<typeof registerAttachmentRoutes>[1], "agentDeletionInProgress" | "conversationDeletionInProgress"> &
   Omit<Parameters<typeof registerAgentCreationRoutes>[1], "dataDir"> &
   Omit<Parameters<typeof registerAgentPackageRoutes>[1], "dataDir" | "coordination"> &
   Omit<Parameters<typeof registerAgentMaintenanceRoutes>[1], "workingCopies"> &
@@ -669,15 +669,21 @@ registerSearchRoutes(app, {
 
 async function assetMetadata(agentId: string, id: string) {
   const agent = store.getAgent(agentId);
-  if (!agent) return undefined;
-  const metadata = await assets.read(agent.projectId, agent.id, id);
-  return metadata && await assets.content(agent.projectId, agent.id, id, false) ? metadata : undefined;
+  const conversation = agent ? undefined : store.getConversation(agentId);
+  const projectId = agent?.projectId ?? conversation?.projectId;
+  if (!projectId) return undefined;
+  const metadata = await assets.read(projectId, agentId, id);
+  if (conversation && metadata?.conversationId !== conversation.id) return undefined;
+  if (agent && metadata?.conversationId) return undefined;
+  return metadata && await assets.content(projectId, agentId, id, false) ? metadata : undefined;
 }
 
 registerLimitsRoutes(app, serverContext);
 
 registerAttachmentRoutes(app, {
   agentDeliveryLeases,
+  conversationDeliveryLeases,
+  conversationDeletionInProgress: conversationId => deletingConversationIds.has(conversationId),
   agentDeletionInProgress: agentId => deletingAgentIds.has(agentId),
   assets,
   deletingAttachmentKeys,

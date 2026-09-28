@@ -152,6 +152,8 @@ export interface WorkspaceDirectoryPageDto<
   total: number;
   /** Workspace-wide active count, present for health-filtered Agent views. */
   activeCount?: number;
+  /** Distinct non-archived Agents with a leased or running scheduler Run. */
+  runningCount?: number;
   /** Workspace-wide enabled count, present for the Automation directory. */
   enabledCount?: number;
   history: HistoryWindowDto;

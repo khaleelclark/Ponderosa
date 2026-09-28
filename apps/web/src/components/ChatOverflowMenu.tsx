@@ -208,7 +208,6 @@ export function ChatOverflowMenu({
           setExportMenu(undefined);
           if (kind === "download") {
             downloadMarkdownTranscript(transcriptMarkdown, transcriptFileName);
-            setNotice("Chat transcript downloaded");
             return;
           }
           void copyText(transcriptMarkdown)

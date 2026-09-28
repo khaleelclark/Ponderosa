@@ -47,7 +47,7 @@ export function allChatDeliveryConfirmation(input: {
   queuedRecipientTitles: string[];
   unavailableCount: number;
   creationRecovering: boolean;
-}): string {
+}): string | undefined {
   if (input.creationRecovering) {
     return "Agent creation is committed and recovery is finishing. It will appear when ready.";
   }
@@ -57,7 +57,7 @@ export function allChatDeliveryConfirmation(input: {
     } skipped.`
     : "";
   return input.queuedRecipientTitles.length
-    ? `Queued for ${input.queuedRecipientTitles.join(", ")}; it will start when the current response finishes.${unavailable}`
+    ? (unavailable.trim() || undefined)
     : `Message sent to ${input.recipientTitles.join(", ")}.${unavailable}`;
 }
 

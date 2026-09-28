@@ -551,7 +551,7 @@ napi_value WriteSecureFileAtomic(napi_env env, napi_callback_info info) {
       !ReadUtf8(env, args[3], &temporary) ||
       !SafeLeaf(leaf) || !SafeLeaf(temporary) ||
       napi_get_buffer_info(env, args[4], &raw_body, &body_size) != napi_ok ||
-      body_size == 0 || body_size > 64 * 1024 * 1024) {
+      body_size == 0 || body_size > 80 * 1024 * 1024) {
     Throw(env, "invalid secure atomic file publication");
     return nullptr;
   }
@@ -1290,7 +1290,7 @@ napi_value WriteSecureFileAtomic(napi_env env, napi_callback_info info) {
       !ReadUtf8(env, args[3], &temporary) ||
       !SafeLeaf(leaf) || !SafeLeaf(temporary) ||
       napi_get_buffer_info(env, args[4], &raw_body, &body_size) != napi_ok ||
-      body_size == 0 || body_size > 64 * 1024 * 1024) {
+      body_size == 0 || body_size > 80 * 1024 * 1024) {
     Throw(env, "invalid secure atomic file publication");
     return nullptr;
   }

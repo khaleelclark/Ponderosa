@@ -569,7 +569,12 @@ export function createCommunicationProjectionReconciler(
         }
         for (const [agentId, attachmentIds] of associationIdsByAgent) {
           const agent = store.getAgent(agentId);
-          if (!agent || agent.projectId !== canonical.projectId) {
+          const shared = canonical.intent === "broadcast" && canonical.sender.kind === "user" &&
+            canonical.conversationId === agentId &&
+            Boolean(store.getConversation(agentId)) &&
+            canonical.attachments?.some((item) => item.agentId === agentId && item.conversationId === agentId) &&
+            canonical.attachments?.filter((item) => item.agentId === agentId).every((item) => item.conversationId === agentId);
+          if ((!agent || agent.projectId !== canonical.projectId) && !shared) {
             throw new Error("runtime Communication attachment owner is unavailable");
           }
           await assets.associate(canonical.projectId, agentId, attachmentIds);

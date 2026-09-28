@@ -133,8 +133,15 @@ export class CoordinationV3RuntimeScopeAuthority {
     if (communication && Object.prototype.hasOwnProperty.call(communication, "attachments")) {
       if (!runtimeCanonicalAttachmentsAreValid(communication.attachments)) return false;
       for (const attachment of communication.attachments) {
-        identityAgentIds.add(attachment.agentId);
-        if (audience.kind !== "organization" && !audienceAgentIds.has(attachment.agentId)) return false;
+        if (attachment.conversationId) {
+          if (communication.intent !== "broadcast" || sender.kind !== "user" ||
+              communication.conversationId !== attachment.conversationId ||
+              attachment.agentId !== attachment.conversationId ||
+              audience.kind !== "organization") return false;
+        } else {
+          identityAgentIds.add(attachment.agentId);
+          if (audience.kind !== "organization" && !audienceAgentIds.has(attachment.agentId)) return false;
+        }
       }
     }
     const childAgentId = (payloadRecord as Record<string, unknown>).childAgentId;

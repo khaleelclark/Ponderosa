@@ -241,8 +241,8 @@ export function readSecureFile(input: {
   assertSafeRoot(input.root);
   assertSafeRelativePath(input.relativePath);
   if (!Number.isSafeInteger(input.maxBytes) || input.maxBytes < 0 ||
-      input.maxBytes > 64 * 1024 * 1024) {
-    throw new Error("secure file authority maxBytes must be between 0 and 64 MiB");
+      input.maxBytes > 80 * 1024 * 1024) {
+    throw new Error("secure file authority maxBytes must be between 0 and 80 MiB");
   }
   return binding().readSecureFile(
     input.root,
@@ -267,8 +267,8 @@ export function readSecureFileAsync(
   assertSafeRoot(input.root);
   assertSafeRelativePath(input.relativePath);
   if (!Number.isSafeInteger(input.maxBytes) || input.maxBytes < 0 ||
-      input.maxBytes > 64 * 1024 * 1024) {
-    throw new Error("secure file authority maxBytes must be between 0 and 64 MiB");
+      input.maxBytes > 80 * 1024 * 1024) {
+    throw new Error("secure file authority maxBytes must be between 0 and 80 MiB");
   }
   if (input.expectedSize !== undefined &&
       (!Number.isSafeInteger(input.expectedSize) ||
@@ -386,8 +386,8 @@ export function writeSecureFileAtomic(input: {
   assertSafeLeaf(input.leaf, "secure publication leaf");
   assertSafeLeaf(input.temporaryLeaf, "secure temporary leaf");
   if (!Buffer.isBuffer(input.body) || input.body.length < 1 ||
-      input.body.length > 64 * 1024 * 1024) {
-    throw new Error("secure publication body must contain 1 to 64 MiB");
+      input.body.length > 80 * 1024 * 1024) {
+    throw new Error("secure publication body must contain 1 to 80 MiB");
   }
   if (!binding().writeSecureFileAtomic(
     input.root,

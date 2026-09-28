@@ -24,7 +24,7 @@ function communicationV3Prompt(): string[] {
     "Never promise later work unless a capability response in this Run confirms a durable wake source; otherwise finish now or state what the user must do next.",
     "Common correlated result: ponderosa_update_request({text}). It completes the sole attached Request with a canonical handoff.",
     "Common correlated question: ponderosa_update_request({question}). It asks the original requester and preserves the update identity for its answer.",
-    "Common user question: ponderosa_decision({question}); add options for a choice or mode approval for permission.",
+    "Common user question: ponderosa_decision({question}); add options for a choice or mode approval for permission. This is the only user-question path in Ponderosa: never call a provider-native AskUserQuestion/request_user_input tool, which cannot reach the user's Ponderosa Chat.",
     "Use explicit message intent, request IDs, lifetimes, join modes, update kinds, and idempotency keys only for advanced or ambiguous cases.",
     "A terminal Request result is the final handoff. Do not send a duplicate message or acknowledgment afterward.",
     "Do not poll or sleep while waiting for another Agent, Request, Join, or background state. A short, bounded delay explicitly requested by the operator is allowed when the delay is itself part of the task. End the turn after creating a Join when no independent work remains.",

@@ -59,6 +59,7 @@ export function ComposerNotices({
   pastedText,
   pastedTextBytes,
   error,
+  attachmentError = false,
   draftConflict,
   failedDraftContents,
   onShowPastedText,
@@ -74,6 +75,7 @@ export function ComposerNotices({
   pastedText?: string;
   pastedTextBytes: number;
   error?: string;
+  attachmentError?: boolean;
   draftConflict?: ConversationDraftConflictDto;
   failedDraftContents: Array<{ id: string; name: string }>;
   onShowPastedText(): void;
@@ -130,7 +132,7 @@ export function ComposerNotices({
       ) : null}
       {error ? (
         <Alert severity="error" sx={{ mb: 1 }} onClose={onClearError}>
-          Message not sent. {error}
+          {attachmentError ? error : `Message not sent. ${error}`}
         </Alert>
       ) : null}
       {failedDraftContents.map(item => (

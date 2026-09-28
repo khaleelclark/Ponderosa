@@ -184,9 +184,19 @@ export class AgentCommunicationJournalAuthority {
             typeof attachment.url !== "string" || !attachment.url.trim()) {
           throw new Error("communication attachment is incomplete");
         }
-        const owner = this.getAgent(attachment.agentId);
-        if (!owner || owner.projectId !== event.projectId || owner.archived) {
-          throw new Error("communication attachment owner must be an active agent in its project");
+        if (attachment.conversationId) {
+          const conversation = this.getConversation(attachment.conversationId);
+          if (event.intent !== "broadcast" || event.sender.kind !== "user" ||
+              event.conversationId !== attachment.conversationId ||
+              attachment.agentId !== attachment.conversationId ||
+              !conversation || conversation.projectId !== event.projectId || conversation.archived) {
+            throw new Error("communication attachment must belong to this active Chat");
+          }
+        } else {
+          const owner = this.getAgent(attachment.agentId);
+          if (!owner || owner.projectId !== event.projectId || owner.archived) {
+            throw new Error("communication attachment owner must be an active agent in its project");
+          }
         }
       }
     }

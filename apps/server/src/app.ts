@@ -686,7 +686,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   const app = Fastify({
     bodyLimit: ASSET_LIMITS.maxRequestBytes,
-    requestTimeout: 30_000,
+    // A bounded two-upload lane permits an 80 MiB phone upload without
+    // weakening the ordinary JSON/text body limits.
+    requestTimeout: 120_000,
     connectionTimeout: 10_000,
     keepAliveTimeout: 72_000,
     maxRequestsPerSocket: 1_000,
@@ -921,6 +923,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
       projectCommunicationToAgentAudit(agentId, event, renderedText, attachments),
   });
   const { processConversationDeletionCleanup } = createConversationDeletionAuthority({
+    assets,
     store,
     workspace,
     drafts,

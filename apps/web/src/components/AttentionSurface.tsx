@@ -151,12 +151,23 @@ export function AttentionSurface({
   });
   if (!items.length) return null;
   const first = items[0]!;
+  const pendingQuestions = items.filter((item) => item.kind === "decision" && item.decision?.status === "pending");
   const firstCopy = issueCopy(first);
   const unacknowledgedItems = items.filter((item) => !item.acknowledgedAt);
   const urgent = unacknowledgedItems.some((item) => item.severity === "urgent");
   const pending = resolve.isPending || retry.isPending;
 
   return <>
+    {pendingQuestions.map((item) => {
+      const decision = notificationDecision(item);
+      return decision ? <Box key={item.id} sx={{ mx: { xs: 1.5, md: 2.5 }, mt: 1.5 }}>
+        <DecisionCard
+          decision={decision}
+          title={item.body}
+          context=""
+        />
+      </Box> : null;
+    })}
     <Alert
       severity={urgent ? "error" : unacknowledgedItems.length ? "warning" : "info"}
       icon={<ReportProblemOutlinedIcon />}

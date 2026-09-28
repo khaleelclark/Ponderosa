@@ -165,21 +165,11 @@ export function useQueuedConversationMessagesController(
     delivery: "steer" | "queue",
     agentTitle: (agentId: string) => string,
   ) => {
-    const queuedTitles = delivery === "queue"
-      ? response.recipients
-          .filter(recipient => recipient.queued)
-          .map(recipient => agentTitle(recipient.agentId))
-      : [];
     const unavailableTitles = (response.unavailableRecipients ?? [])
       .map(recipient => agentTitle(recipient.agentId));
-    setNotice([
-      ...(queuedTitles.length
-        ? [`Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`]
-        : []),
-      ...(unavailableTitles.length
-        ? [`Skipped unavailable recipient${unavailableTitles.length === 1 ? "" : "s"}: ${unavailableTitles.join(", ")}.`]
-        : []),
-    ].join(" ") || undefined);
+    setNotice(unavailableTitles.length
+      ? `Skipped unavailable recipient${unavailableTitles.length === 1 ? "" : "s"}: ${unavailableTitles.join(", ")}.`
+      : undefined);
     noticeDeliveryIds.current = new Set(
       delivery === "queue"
         ? response.recipients.flatMap(recipient =>

@@ -498,10 +498,16 @@ export class CodexAppServerSession implements RuntimeSession {
           if (!opts.handleElicitation) throw new Error("MCP elicitation is unavailable");
           return opts.handleElicitation(normalizeElicitationRequest(params));
         }
+        if (/request[_/]?user[_/]?input|ask[_/]?user[_/]?question/iu.test(method)) {
+          throw new Error("Ponderosa cannot display this provider-native question. Call ponderosa_decision so the user receives it in their Chat.");
+        }
         if (method !== "item/tool/call" || !opts.handleDynamicToolCall) {
           throw new Error(`unsupported server request: ${method}`);
         }
         const call = params as DynamicToolCallParams;
+        if (/^(?:request_user_input(?:_async)?|AskUserQuestion)$/iu.test(call.tool)) {
+          throw new Error("Ponderosa cannot display this provider-native question. Call ponderosa_decision so the user receives it in their Chat.");
+        }
         const result = await opts.handleDynamicToolCall({
           id: String(requestId),
           name: call.namespace ? `${call.namespace}.${call.tool}` : call.tool,

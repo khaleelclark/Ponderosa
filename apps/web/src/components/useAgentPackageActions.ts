@@ -44,6 +44,7 @@ export function useAgentPackageActions({
       organization,
       mode,
     );
+    anchor.dataset.ponderosaDownloadFeedback = "handled";
     anchor.style.display = "none";
     document.body.appendChild(anchor);
     anchor.click();

@@ -33,6 +33,7 @@ export function classifyOperatorRequest(method: string, url: string): "critical"
     || /^\/api\/agents\/[^/]+\/queued-messages\/[^/]+\/steer$/u.test(path)
     || /^\/api\/projects\/[^/]+\/(?:agents|conversations)$/u.test(path)
     || /^\/api\/conversations\/[^/]+\/draft-attachments$/u.test(path)
+    || /^\/api\/conversations\/[^/]+\/attachments$/u.test(path)
     || /^\/api\/agents\/[^/]+\/attachments$/u.test(path)
     || path === "/api/chats"
     || path === "/api/projects"
@@ -45,7 +46,32 @@ export function registerBodyParsers(
 ): WeakMap<IncomingMessage, Buffer> {
 
   const webhookRawBodies = new WeakMap<IncomingMessage, Buffer>();
+  const activeUploads = new WeakSet<IncomingMessage>();
+  let activeUploadCount = 0;
+  const releaseUpload = (raw: IncomingMessage) => {
+    if (!activeUploads.delete(raw)) return;
+    activeUploadCount -= 1;
+  };
   app.addHook("preParsing", async (request, reply, payload) => {
+    const path = request.url.split("?", 1)[0] ?? "";
+    const uploadRoute = request.method === "POST" && (
+      /^\/api\/agents\/[^/]+\/attachments$/u.test(path)
+      || /^\/api\/conversations\/[^/]+\/attachments$/u.test(path)
+      || /^\/api\/conversations\/[^/]+\/draft-attachments$/u.test(path)
+    );
+    const largeAttachmentType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase() === "application/x-ponderosa-attachment";
+    if (largeAttachmentType && !uploadRoute) {
+      void reply.code(415).send({ error: "This content type is only for attachment uploads" });
+      return Readable.from(Buffer.alloc(0));
+    }
+    if (uploadRoute && largeAttachmentType) {
+      if (activeUploadCount >= 2) {
+        void reply.code(503).header("retry-after", "1").send({ error: "Two attachments are uploading. Try again in a moment." });
+        return Readable.from(Buffer.alloc(0));
+      }
+      activeUploadCount += 1;
+      activeUploads.add(request.raw);
+    }
     if (!request.url.startsWith("/api/trigger-webhooks/")) return payload;
     const chunks: Buffer[] = [];
     let size = 0;
@@ -68,6 +94,15 @@ export function registerBodyParsers(
   for (const mediaType of ["application/pdf", "application/zip", "application/octet-stream"]) {
     app.addContentTypeParser(mediaType, { parseAs: "buffer", bodyLimit: ASSET_LIMITS.maxRequestBytes }, (_request, body, done) => done(null, body));
   }
+  // Only authenticated attachment routes opt into this media type and
+  // their own larger route body limit. JSON/text and legacy binary parsers keep
+  // the ordinary 8 MiB request ceiling.
+  app.addContentTypeParser("application/x-ponderosa-attachment", {
+    parseAs: "buffer",
+    bodyLimit: ASSET_LIMITS.maxFileBytes,
+  }, (_request, body, done) => done(null, body));
+  app.addHook("onResponse", async (request) => releaseUpload(request.raw));
+  app.addHook("onError", async (request) => releaseUpload(request.raw));
   return webhookRawBodies;
 }
 

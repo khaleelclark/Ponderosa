@@ -4,8 +4,10 @@ import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, 
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../../api";
+import { useMutationNotification } from "../MutationNotifications";
 
 export function ConversationWorkspaceFiles({ conversationId }: { conversationId: string }): JSX.Element {
+  const notify = useMutationNotification();
   const [path, setPath] = useState("");
   const [file, setFile] = useState<string>();
   const directory = useQuery({
@@ -28,6 +30,7 @@ export function ConversationWorkspaceFiles({ conversationId }: { conversationId:
     link.href = url;
     link.download = data.path.split("/").pop() ?? "file";
     link.click();
+    notify({ message: "Download started", key: "first-party-download" });
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   return <Box sx={{ mb: 2, border: 1, borderColor: "divider", borderRadius: 2, p: 1 }}>

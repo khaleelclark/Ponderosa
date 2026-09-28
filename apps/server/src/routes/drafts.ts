@@ -680,7 +680,7 @@ export class DraftService {
           !previewStat.isFile()
           || previewStat.isSymbolicLink()
           || previewStat.size < 1
-          || previewStat.size > ASSET_LIMITS.maxFileBytes
+          || previewStat.size > 8 * 1024 * 1024
         ) {
           return undefined;
         }
@@ -1154,6 +1154,7 @@ export function registerDraftRoutes(
 
   app.post<{ Params: { id: string }; Body: Buffer }>(
     "/api/conversations/:id/draft-attachments",
+    { bodyLimit: ASSET_LIMITS.maxFileBytes },
     async (request, reply) => {
       const releaseMutation = service.acquireMutationLease(request.params.id);
       if (!releaseMutation) {
@@ -1169,7 +1170,7 @@ export function registerDraftRoutes(
         if (request.body.length > ASSET_LIMITS.maxFileBytes) {
           return reply
             .code(413)
-            .send({ error: "draft attachment exceeds 8 MiB" });
+            .send({ error: "draft attachment exceeds 80 MiB" });
         }
         const declaredMediaType = String(
           request.headers["x-ponderosa-media-type"] ?? "",

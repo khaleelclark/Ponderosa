@@ -304,7 +304,6 @@ export function WorkspaceSidebar({
     attention: notificationCounts?.unacknowledgedActionCount ?? notifications.filter(isOpenAttention).length,
     updates: notificationCounts?.unreadUpdateCount ?? notifications.filter(isUnreadNotificationUpdate).length,
   };
-  const allMessagesUnread = notificationProjectionQuery.data?.allMessages ?? emptyUnread;
   const projectUnread = new Map(projects.map(project => [
     project.id,
     notificationProjectionQuery.data?.projects[project.id] ?? emptyUnread,
@@ -468,7 +467,6 @@ export function WorkspaceSidebar({
       currentProjectId={routedProjectId}
       route={route}
       profile={preferences.profile}
-      allMessagesUnread={allMessagesUnread}
       attentionNotifications={counts.attention}
       unreadNotificationUpdates={counts.updates}
       projectUnread={projectUnread}
@@ -529,7 +527,7 @@ export function WorkspaceSidebar({
         ? { label: "Create Automation", run: () => onCreate("trigger", { projectId: activeProjectId ?? projects[0]?.id }) }
         : undefined;
   const panelHeader = <Stack direction="row" sx={{ alignItems: "center", pl: 2, pr: .25, pt: drawer ? .75 : 1.5, pb: 1 }}>
-    <Typography component="div" sx={{ minWidth: 0, flex: 1, fontSize: 15, fontWeight: 700 }}>{showingAgents ? "Agents" : showingTriggers ? "Automations" : "Chats"}</Typography>
+    <Typography component="div" sx={{ minWidth: 0, flex: 1, fontSize: 15, fontWeight: 700 }}>{showingAgents ? `Agents · ${activeWorkspaceAgentQuery.data?.pages.at(-1)?.runningCount ?? 0} running` : showingTriggers ? "Automations" : "Chats"}</Typography>
     {panelCreate ? <Tooltip title={panelCreate.label}><IconButton size="small" aria-label={panelCreate.label} onClick={panelCreate.run}><AddIcon fontSize="small" /></IconButton></Tooltip> : null}
   </Stack>;
   const allChatRows = chatItems;

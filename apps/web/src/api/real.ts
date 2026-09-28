@@ -524,7 +524,7 @@ export const realApi = {
     return requestJson<DraftAttachmentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments`, {
       method: "POST",
       headers: {
-        "content-type": "application/octet-stream",
+        "content-type": "application/x-ponderosa-attachment",
         "x-ponderosa-media-type": file.type || "application/octet-stream",
         "x-ponderosa-filename": file.name,
         "x-ponderosa-draft-owner": ownerId,
@@ -1019,12 +1019,29 @@ export const realApi = {
     return requestJson<AssetDto>(`/api/agents/${encodeURIComponent(agentId)}/attachments`, {
       method: "POST",
       headers: {
-        "content-type": "application/octet-stream",
+        "content-type": "application/x-ponderosa-attachment",
         "x-ponderosa-media-type": file.type || "application/octet-stream",
         "x-ponderosa-filename": file.name,
       },
       body: file,
     });
+  },
+  uploadConversationAttachment(conversationId: string, file: File): Promise<AssetDto> {
+    return requestJson<AssetDto>(`/api/conversations/${encodeURIComponent(conversationId)}/attachments`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-ponderosa-attachment",
+        "x-ponderosa-media-type": file.type || "application/octet-stream",
+        "x-ponderosa-filename": file.name,
+      },
+      body: file,
+    });
+  },
+  async deleteConversationAttachment(conversationId: string, attachmentId: string): Promise<void> {
+    await requestJson<void>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { method: "DELETE" },
+    );
   },
   async deleteAttachment(agentId: string, attachmentId: string): Promise<void> {
     await requestJson<void>(

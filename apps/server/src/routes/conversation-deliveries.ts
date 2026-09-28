@@ -297,11 +297,13 @@ export function registerConversationDeliveryRoutes(
         requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE ||
         requestedAssets.some((asset) => !asset || typeof asset !== "object" || Array.isArray(asset) ||
           Object.keys(asset).some((key) => ![
-            "id", "agentId", "name", "mediaType", "size", "width", "height", "sha256",
+            "id", "agentId", "conversationId", "name", "mediaType", "size", "width", "height", "sha256",
             "state", "createdAt", "url", "downloadUrl", "previewUrl", "unavailable",
           ].includes(key)) ||
           typeof asset.id !== "string" || !asset.id ||
-          typeof asset.agentId !== "string" || !asset.agentId)) {
+          typeof asset.agentId !== "string" || !asset.agentId ||
+          (asset.conversationId !== undefined &&
+            (asset.conversationId !== request.params.id || asset.agentId !== request.params.id)))) {
       return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} valid assets are allowed` });
     }
     const eventId = `broadcast-${createHash("sha256").update(`${request.params.id}\0${idempotencyKey}`).digest("hex")}`;
@@ -311,7 +313,8 @@ export function registerConversationDeliveryRoutes(
       conversationId: request.params.id,
       text: requestedText,
       recipients: recipientAgentMentions.map(({ agentId, handle }) => ({ agentId, handle })),
-      attachments: requestedAssets.map((asset) => ({ agentId: asset.agentId, id: asset.id })),
+      attachments: requestedAssets.map((asset) => ({ agentId: asset.agentId, id: asset.id,
+        ...(asset.conversationId ? { conversationId: asset.conversationId } : {}) })),
       recipientAttachments: requestedRecipientAttachments,
       activeRunDelivery,
       runtimeSelection,
@@ -329,7 +332,8 @@ export function registerConversationDeliveryRoutes(
       const replayAgentIds = [...new Set([
         ...(existingPayload.dispatch?.recipients ?? []).flatMap((recipient) =>
           typeof recipient.agentId === "string" && recipient.agentId.trim() ? [recipient.agentId.trim()] : []),
-        ...(existingPayload.communication?.attachments ?? []).map((attachment) => attachment.agentId),
+        ...(existingPayload.communication?.attachments ?? []).flatMap((attachment) =>
+          attachment.conversationId ? [] : [attachment.agentId]),
       ])];
       const replay = await reconcileLeasedCommunicationReplay({
         conversationLeases: conversationDeliveryLeases,
@@ -386,7 +390,7 @@ export function registerConversationDeliveryRoutes(
     if (recipientAgents.some((agent) => !isActiveConversationAgent(agent, master))) {
       return reply.code(404).send({ error: "broadcast recipient not found" });
     }
-    const attachmentOwnerIds = requestedAssets.map((asset) => asset.agentId);
+    const attachmentOwnerIds = requestedAssets.flatMap((asset) => asset.conversationId ? [] : [asset.agentId]);
     const attachmentOwners = attachmentOwnerIds.map((agentId) => store.getAgent(agentId));
     if (attachmentOwners.some((agent) => !isActiveConversationAgent(agent, master))) {
       return reply.code(404).send({ error: "asset owner not found" });
@@ -418,9 +422,11 @@ export function registerConversationDeliveryRoutes(
     try {
     const validatedAssets: AssetDto[] = [];
     for (const requested of requestedAssets) {
-      const owner = store.getAgent(requested.agentId);
-      const stored = owner?.projectId === master.projectId && owner.conversationId === master.id
-        ? await assetMetadata(owner.id, requested.id) : undefined;
+      const owner = requested.conversationId ? undefined : store.getAgent(requested.agentId);
+      const stored = requested.conversationId === master.id && requested.agentId === master.id
+        ? await assetMetadata(master.id, requested.id)
+        : owner?.projectId === master.projectId && owner.conversationId === master.id
+          ? await assetMetadata(owner.id, requested.id) : undefined;
       if (!stored) return reply.code(404).send({ error: "asset not found" });
       const { projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile, associatedAt: _associatedAt, ...publicAsset } = stored;
       validatedAssets.push({ ...publicAsset, state: "associated" });
