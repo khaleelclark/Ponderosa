@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const workflows = ["native-beta.yml", "native-production.yml"];
+const workflows = ["native-beta.yml", "native-production.yml", "verify.yml", "speech-recovery.yml"];
 
 export async function verifyReleaseActionPins(readCommit = async (repository, sha) => {
   const token = process.env.GH_TOKEN;
