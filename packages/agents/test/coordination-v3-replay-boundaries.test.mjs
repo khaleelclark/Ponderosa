@@ -91,7 +91,7 @@ test("historical uncertain Requests expose recorded cause and related Agent atte
     });
     const outcome = lifecycle.updates.find(update => update.kind === "outcome_unknown");
     assert.deepEqual(outcome.outcomeCause, { code: "run_completed_without_request_update", runId: "run-123" });
-    assert.match(outcome.text, /did not report this assignment/i);
+    assert.match(outcome.text, /did not report whether this assignment was completed/i);
     assert.doesNotMatch(outcome.text, /credential leak/);
     assert.ok(outcome.createdAt, "the canonical event time remains visible");
   } finally { context.close(); }
