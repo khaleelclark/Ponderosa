@@ -18,7 +18,7 @@ test("recorded uncertain outcomes have distinct, safe explanations", () => {
   assert.match(outcomeCauseExplanation(auth), /rejected its sign-in/i);
   const rateLimit = outcomeCauseFromPayload({ reason: "provider_outcome_unknown", providerFailureCategory: "rate_limit" });
   assert.match(outcomeCauseExplanation(rateLimit), /usage limit/i);
-  assert.match(outcomeCauseExplanation(outcomeCauseFromPayload({ reason: "scheduler_outcome_unknown" })), /internal error while running/i);
+  assert.match(outcomeCauseExplanation(outcomeCauseFromPayload({ reason: "scheduler_outcome_unknown" })), /interrupted before Ponderosa recorded/i);
   const conflict = outcomeCauseFromPayload({ reason: "scheduler_outcome_unknown", internalFailureCode: "context_rollover_conflict" });
   assert.match(outcomeCauseExplanation(conflict), /conflicting saved context/i);
   assert.match(outcomeCauseExplanation(outcomeCauseFromPayload({ reason: "run_cancelled_by_operator" })), /An operator stopped/i);

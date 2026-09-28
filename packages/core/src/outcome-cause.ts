@@ -116,12 +116,15 @@ export function outcomeCauseExplanation(cause: OutcomeCause): string {
       return `${issue} ${delivery} ${processing ? `${processing} ` : ""}${review}`;
     }
     case "scheduler_outcome_unknown":
+      if (!cause.internalFailureCode) {
+        return `The Agent's run was interrupted before Ponderosa recorded a final result. It cannot confirm whether the assignment was completed. ${review}`;
+      }
       return `${{
         context_rollover_conflict: "Ponderosa found conflicting saved context while continuing the Agent's run.",
         context_rollover_boundary: "Ponderosa could not verify the saved context needed to continue the Agent's run.",
         run_orchestration: "Ponderosa encountered an internal error while running the Agent.",
         internal_runtime_error: "Ponderosa encountered an internal error while running the Agent.",
-      }[cause.internalFailureCode ?? "internal_runtime_error"]} It cannot confirm whether the assignment was completed. ${review}`;
+      }[cause.internalFailureCode]} It cannot confirm whether the assignment was completed. ${review}`;
     case "run_cancelled_by_operator":
       return `An operator stopped the Agent's run after it began. Work or file changes made before cancellation may still exist. ${review}`;
     case "server_restart_after_prompt_submission":
