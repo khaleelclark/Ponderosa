@@ -139,6 +139,9 @@ test("one observed startup recovery correlates multiple uncertain Runs without i
     }
     assert.deepEqual(recovered.recoverOrphanedRuns("replacement-worker"), { retried: 0, outcomeUnknown: 0 });
     assert.equal(context.store.sqlite.prepare("SELECT COUNT(*) count FROM system_incidents").get().count, 1);
+    recovered.purgeProject(context.project.id);
+    assert.equal(context.store.sqlite.prepare("SELECT COUNT(*) count FROM system_incident_runs").get().count, 0);
+    assert.equal(context.store.sqlite.prepare("SELECT COUNT(*) count FROM system_incidents").get().count, 0);
   } finally { context.close(); }
 });
 
