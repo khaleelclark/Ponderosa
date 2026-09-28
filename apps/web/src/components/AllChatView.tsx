@@ -64,13 +64,10 @@ import TagIcon from "@mui/icons-material/Tag";
 import { createClientId } from "../clientId";
 import {
   cleanupRecipientUploadsForDefinitiveFailure,
-  discardRecipientUploads,
   fileSelectionFingerprint,
   pendingDraftAttachmentIds,
   pendingRecipientUploads,
   persistRecipientUploadAuthority,
-  recipientUploadCleanupSettled,
-  recipientUploadCleanupReporter,
   recipientUploadsForAgentIds,
   retryRecipientUploadCleanup,
   stableMessageActionText,
@@ -110,13 +107,13 @@ import { useQueuedConversationMessagesController } from "./useQueuedConversation
 import {
   abandonIdempotentAttempt,
   compoundCreationUnavailableUploads,
-  definitiveSubmissionStatus,
   preparedIdempotentAttemptForRetry,
   retainIdempotentAttempt,
   withCommittedAgentCreation,
   withPendingAgentTitle,
   type IdempotentAttempt,
 } from "./idempotentAttempt";
+import { recipientUploadControls } from "./recipientUploadControls";
 
 interface AllChatSubmissionPrepared {
   projectId: string;
@@ -286,24 +283,13 @@ export function AllChatView({
   const [runtimeAgentId, setRuntimeAgentId] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [pendingUploadCleanups, setPendingUploadCleanups] = useState(0);
-  const recipientUnavailable = (error: unknown) =>
-    error instanceof ApiRequestError && error.status === 404;
-  const cleanupSettled = (error: unknown) =>
-    error instanceof ApiRequestError &&
-    recipientUploadCleanupSettled(error.status, error.message);
-  const definitiveFailure = (error: unknown) =>
-    error instanceof ApiRequestError &&
-    definitiveSubmissionStatus(error.status, error.message);
-  const cleanupPendingReporter = () => recipientUploadCleanupReporter(delta =>
-    setPendingUploadCleanups(count => Math.max(0, count + delta)));
-  const cleanupRecipientUploads = (
-    recipients: RecipientUploads<Pick<AssetDto, "id">>,
-  ) => discardRecipientUploads(
-    recipients,
-    (agentId, item) => api.deleteAttachment(agentId, item.id),
-    cleanupSettled,
-    cleanupPendingReporter(),
-  );
+  const {
+    recipientUnavailable, cleanupSettled, definitiveFailure,
+    cleanupPendingReporter, cleanupRecipientUploads,
+  } = recipientUploadControls({
+    deleteAttachment: (agentId, attachmentId) => api.deleteAttachment(agentId, attachmentId),
+    onPendingDelta: delta => setPendingUploadCleanups(count => Math.max(0, count + delta)),
+  });
   const [directSendConfirmation, setDirectSendConfirmation] = useState<{
     id: number;
     text: string;
