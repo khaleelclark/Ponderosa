@@ -219,6 +219,7 @@ export class CoordinationV3Store {
     );
     this.activationCommandAuthority = new CoordinationV3ActivationCommandAuthority(
       sqlite,
+      this.support,
       this.runtimeScopeAuthority,
       this.runtimeArtifactAuthority,
       input => this.createActivation(input),

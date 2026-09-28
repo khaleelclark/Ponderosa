@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
@@ -77,6 +78,30 @@ export function darwinProcessBirthMarker(
   } catch {
     return undefined;
   }
+}
+
+/** Process identity shared by launcher and runtime recovery. A missing or
+ * unsupported platform marker must never authorize signalling a reused PID. */
+export function hostProcessBirthMarker(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  if (platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      if (commandEnd < 0) return undefined;
+      // The suffix begins at field 3 (state); starttime is field 22.
+      const startTime = stat.slice(commandEnd + 2).trim().split(/\s+/u)[19];
+      return startTime ? `linux:${startTime}` : undefined;
+    } catch { return undefined; }
+  }
+  if (platform === "darwin") {
+    const marker = darwinProcessBirthMarker(pid, platform);
+    return marker ? `darwin:${marker}` : undefined;
+  }
+  return undefined;
 }
 
 /**
