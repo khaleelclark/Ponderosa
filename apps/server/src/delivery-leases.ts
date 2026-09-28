@@ -36,3 +36,35 @@ export function leaseConversationDelivery(
     releaseAgents();
   };
 }
+
+/** Replay a committed communication while keeping its delivery owners leased.
+ * A failed projection/read is still committed; callers must return their
+ * route-specific recovering response rather than attempting a second send. */
+export async function reconcileLeasedCommunicationReplay<T>(input: {
+  conversationLeases: Map<string, number>;
+  agentLeases: Map<string, number>;
+  conversationId: string;
+  agentIds: readonly string[];
+  projectId: string;
+  communicationEventId: string;
+  reconcile: (filter: { projectId: string; communicationEventId: string }) => Promise<unknown>;
+  read: () => T;
+}): Promise<{ recovered: true; value: T } | { recovered: false }> {
+  const release = leaseConversationDelivery(
+    input.conversationLeases,
+    input.agentLeases,
+    input.conversationId,
+    input.agentIds,
+  );
+  try {
+    await input.reconcile({
+      projectId: input.projectId,
+      communicationEventId: input.communicationEventId,
+    });
+    return { recovered: true, value: input.read() };
+  } catch {
+    return { recovered: false };
+  } finally {
+    release();
+  }
+}
