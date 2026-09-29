@@ -1333,30 +1333,24 @@ export class BrowserSessionManager {
     if (!resolved) {
       throw new BrowserSessionError("Managed artifact was not found or is not authorized.", 404, "artifact_not_found");
     }
+    try {
     const artifact = resolved.artifact;
     if (!artifact.size || !artifact.sha256 || !artifact.mediaType) {
-      await resolved.content.close();
       throw new BrowserSessionError("Managed artifact metadata is incomplete.", 409, "artifact_content_changed");
     }
     if (artifact.size > MAX_UPLOAD_BYTES) {
-      await resolved.content.close();
       throw new BrowserSessionError("This artifact exceeds the 10 MiB browser upload limit.", 413, "upload_too_large");
     }
-    try {
-      validateUploadArtifactName(artifact);
-    } catch (error) {
-      await resolved.content.close().catch(() => undefined);
-      throw error;
-    }
+    validateUploadArtifactName(artifact);
 
-    let body: Buffer;
-    try {
-      body = await resolved.content.readRange(MAX_UPLOAD_BYTES + 1);
-      validateUploadArtifact(artifact, body);
-    } catch (error) {
-      await resolved.content.close().catch(() => undefined);
-      throw error;
+    const body = await resolved.content.readRange(MAX_UPLOAD_BYTES + 1);
+    validateUploadArtifact(artifact, body);
+    // Resolution and reading can outlive a session close or control handoff.
+    // Revalidate before touching the driver or creating a staging directory.
+    if (this.ready(scope) !== session) {
+      throw new BrowserSessionError("The browser changed while the file was being prepared.", 409, "browser_session_changed");
     }
+    this.assertControl(session, owner, expectedControlEpoch);
     const uploadId = randomUUID();
     const uploadRoot = path.join(this.dataDir, session.driver.suspend ? "retained-browser-uploads" : "browser-sessions", session.dto.id, "uploads");
     const uploadDir = path.join(uploadRoot, uploadId);
@@ -1485,8 +1479,10 @@ export class BrowserSessionManager {
       }
       throw error;
     } finally {
-      await resolved.content.close().catch(() => undefined);
       if (!retained) await fs.rm(uploadDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+    } finally {
+      await resolved.content.close().catch(() => undefined);
     }
   }
 
