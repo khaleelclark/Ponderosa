@@ -3,7 +3,8 @@ import { existsSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type Database from "better-sqlite3";
 import { eq } from "drizzle-orm";
-import type { AgentDeletionPreviewDto, AgentDto } from "@ponderosa/core";
+import type { AgentDeletionPreviewDto, AgentDto, CommunicationEvent, CommunicationProjection } from "@ponderosa/core";
+import { retainAgentChatAttachments } from "./chat-attachment-retention.js";
 import type { Db } from "./db.js";
 import { AgentDeletionConflictError } from "./store-agent-management.js";
 import { pathEntryExists } from "./deletion-tombstone-ownership.js";
@@ -41,6 +42,7 @@ export class AgentDeletionAuthority {
     ) => void,
     private readonly refreshAllChatFeedProject: (projectId: string) => void,
     private readonly forgetAgentProjection: (agentId: string) => void,
+    private readonly attachmentSources: (projectId: string) => { events: CommunicationEvent[]; projections: CommunicationProjection[] },
   ) {}
 
   getAgentDeletionReceiptByPreviewHash(previewHash: string): AgentDeletionReceipt | undefined {
@@ -353,6 +355,12 @@ export class AgentDeletionAuthority {
       }
       const auditDirectory = hasTombstone ? tombstone : canonical;
       validateAgentDeletionDirectory(auditDirectory, owned);
+      retainAgentChatAttachments({
+        dataDir: this.dataDir, projectId: owned.projectId, agentId,
+        sourceDirectory: `projects/${owned.projectId}/agents/${hasTombstone ? owned.tombstoneName : agentId}/attachments`,
+        ...this.attachmentSources(owned.projectId),
+        chatExists: id => Boolean(this.client.prepare("SELECT 1 FROM conversations WHERE id=? AND project_id=?").get(id, owned.projectId)),
+      });
       // Upload staging and attachment capability state are live authority,
       // not deletion-surviving execution audit.
       rmSync(join(auditDirectory, "attachments"), { recursive: true, force: true });
@@ -434,7 +442,10 @@ export class AgentDeletionAuthority {
     // an ordinary retry. A missing per-Agent phase must fail closed rather than
     // being hidden by a blanket "all receipts complete" update.
     for (const receipt of this.listPendingAgentDeletionReceipts()) {
-      if (!receipt.storageCleanupCompleted) this.finishAgentDeletionStorageCleanup(receipt);
+      if (!receipt.storageCleanupCompleted) {
+        try { this.finishAgentDeletionStorageCleanup(receipt); }
+        catch (error) { this.recordAgentDeletionCleanupError(receipt.id, error instanceof Error ? error.message : "Attachment retention cleanup failed"); }
+      }
     }
   }
 

@@ -258,13 +258,20 @@ export class CoordinationV3Scheduler {
           } catch (error) {
             result = { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
           }
-          if (result.accepted) this.store.completeProviderOperation(operation.id, this.options.workerId);
+          if (result.accepted) {
+            this.store.completeProviderOperation(operation.id, this.options.workerId);
+          }
           else if (result.retryable === false) this.store.deadLetterProviderOperation(
             operation.id, this.options.workerId, result.error ?? "provider operation rejected",
           );
           else this.store.failProviderOperation(
             operation.id, this.options.workerId, result.error ?? "provider operation rejected", 500,
           );
+          // Teardown is bounded by the operation retry budget. Publish both
+          // confirmed exit and failed cleanup so an open receipt cannot keep
+          // displaying Stopping after the durable evidence becomes unconfirmed.
+          const agentId = (operation.payload as { agentId?: unknown } | null)?.agentId;
+          if (typeof agentId === "string") this.options.onMessageDeliveryChanged?.(agentId);
         }
       }
       if (!this.leasingPaused && this.options.dispatchSteering) {

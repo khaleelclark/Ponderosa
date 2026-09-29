@@ -7,7 +7,8 @@ import type { ArtifactKind } from "@ponderosa/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { previewCapability } from "./mimeCapabilities";
-import { renderableWorkspaceMarkdownHref } from "./workspaceMarkdownLinks";
+import { renderableWorkspaceMarkdownHref, workspaceMarkdownMediaHref } from "./workspaceMarkdownLinks";
+import { useState } from "react";
 import { FeatureErrorBoundary } from "../FeatureErrorBoundary";
 
 function diffLineKind(line: string): "addition" | "deletion" | "neutral" {
@@ -27,7 +28,7 @@ export function UnifiedDiffViewer({ diff }: { diff: string }): JSX.Element {
           display: "block",
           minWidth: "max-content",
           px: 1,
-          color: kind === "addition" ? "success.dark" : kind === "deletion" ? "error.dark" : "text.primary",
+          color: theme => kind === "addition" ? theme.palette.mode === "dark" ? "#9be9a8" : "#166534" : kind === "deletion" ? theme.palette.mode === "dark" ? "#ffb4ab" : "#991b1b" : theme.palette.text.primary,
           bgcolor: kind === "addition" ? "rgba(46, 160, 67, 0.16)" : kind === "deletion" ? "rgba(248, 81, 73, 0.16)" : "transparent",
         }}
       >{line || " "}</Box>;
@@ -35,13 +36,19 @@ export function UnifiedDiffViewer({ diff }: { diff: string }): JSX.Element {
   </Box>;
 }
 
-function MarkdownPreview({ content, projectId, path }: { content: string; projectId?: string; path?: string }): JSX.Element {
+function MarkdownImage({ src, alt }: { src?: string; alt?: string }): JSX.Element {
+  const [failed, setFailed] = useState(false);
+  return src && !failed ? <Box component="img" src={src} alt={alt ?? "Document image"} onError={() => setFailed(true)} sx={{ maxWidth: "100%", height: "auto" }} /> : <Typography component="span" color="text.secondary">Image unavailable{alt ? `: ${alt}` : ""}</Typography>;
+}
+
+function MarkdownPreview({ content, projectId, path, agentId, conversationId }: { content: string; projectId?: string; path?: string; agentId?: string; conversationId?: string }): JSX.Element {
   return <Box sx={{ overflowWrap: "anywhere", "& pre": { overflowX: "auto" }, "& code": { fontSize: ".86rem" }, "& p": { lineHeight: 1.65 } }}>
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
       a: ({ href, children, ...rest }) => {
-        const safeHref = renderableWorkspaceMarkdownHref(projectId, path, href);
+        const safeHref = renderableWorkspaceMarkdownHref(projectId, path, href, { agentId, conversationId, returnTo: window.location.pathname + window.location.search });
         return safeHref ? <a {...rest} href={safeHref}>{children}</a> : <span>{children}</span>;
       },
+      img: ({ src, alt }) => <MarkdownImage key={src} src={workspaceMarkdownMediaHref(projectId, path, src, { agentId, conversationId })} alt={alt} />,
     }}>{content}</ReactMarkdown>
   </Box>;
 }
@@ -49,6 +56,8 @@ function MarkdownPreview({ content, projectId, path }: { content: string; projec
 export interface FilePreviewProps {
   title: string;
   projectId?: string;
+  agentId?: string;
+  conversationId?: string;
   path?: string;
   mediaType?: string;
   artifactKind?: ArtifactKind;
@@ -90,7 +99,7 @@ export function FilePreview(props: FilePreviewProps): JSX.Element {
   } else if (capability.kind === "diff" && props.content !== undefined) {
     body = props.content ? <UnifiedDiffViewer diff={props.content} /> : <Alert severity="info">This diff is empty.</Alert>;
   } else if (capability.kind === "markdown" && props.content !== undefined) {
-    body = props.content ? <MarkdownPreview content={props.content} projectId={props.projectId} path={props.path} /> : <Alert severity="info">This document is empty.</Alert>;
+    body = props.content ? <MarkdownPreview content={props.content} projectId={props.projectId} path={props.path} agentId={props.agentId} conversationId={props.conversationId} /> : <Alert severity="info">This document is empty.</Alert>;
   } else if (capability.kind === "text" && props.content !== undefined) {
     body = props.content
       ? <Box component="pre" aria-label={`Text preview for ${props.title}`} sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace", fontSize: 13 }}>{props.content}</Box>

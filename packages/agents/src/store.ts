@@ -1538,6 +1538,9 @@ export class AgentStore extends AgentEventSessionFacade {
   getChangedFileDetail(agentId: string, path: string): ChangedFileDetailDto | undefined {
     return this.telemetry.getChangedFileDetail(agentId, path);
   }
+  getResponseFileReview(agentId: string, executionId: string) {
+    return this.telemetry.getResponseFileReview(agentId, executionId);
+  }
 
   /**
    * Compact file provenance for one exact Run. This deliberately groups the
@@ -1608,7 +1611,7 @@ export class AgentStore extends AgentEventSessionFacade {
   }
 
   getTokenUsage(
-    scope: { type: "overall" } | { type: "project" | "agent"; id: string },
+    scope: { type: "overall" } | { type: "project" | "agent" | "conversation"; id: string },
     range: TokenUsageRangeDto = {},
   ): TokenUsageSummaryDto {
     return this.runUsage.getTokenUsage(scope, range);
@@ -1646,7 +1649,7 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.artifactCatalog.projectHasArtifactSourcePath(projectId, sourcePath);
   }
 
-  getProjectArtifactPage(projectId: string, input: { limit: number; cursor?: string; conversationId?: string }): HistoryPageDto<ArtifactDto> {
+  getProjectArtifactPage(projectId: string, input: { limit: number; cursor?: string; conversationId?: string; search?: string }): HistoryPageDto<ArtifactDto> {
     return this.artifactCatalog.getProjectArtifactPage(projectId, input);
   }
 

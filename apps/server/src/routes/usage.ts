@@ -16,6 +16,12 @@ export function registerUsageRoutes(
     try { return tokenUsage({ type: "project", id: request.params.id }, parseTokenUsageRange(request.query)); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
   });
+  app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/conversations/:id/usage", async (request, reply) => {
+    const chat = store.getConversation(request.params.id);
+    if (!chat || chat.deletedAt || chat.archived) return reply.code(404).send({ error: "Chat not found" });
+    try { return tokenUsage({ type: "conversation", id: chat.id }, parseTokenUsageRange(request.query)); }
+    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
+  });
 }
 
 export function registerAgentUsageRoute(

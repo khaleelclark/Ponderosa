@@ -13,6 +13,7 @@ export interface GlobalChatSearchInput {
   query?: string;
   limit?: number;
   chatKind?: "conversation" | "agent";
+  distinctChats?: boolean;
   recentLimit?: number;
   maxScannedMessages?: number;
   notificationState?: (input: {
@@ -161,6 +162,7 @@ export class AgentChatSearchReadModel {
       query,
       limit,
       maxScannedMessages,
+      distinctChats: input.distinctChats,
     });
     const recentChats: GlobalChatSearchResponseDto["recentChats"] = [];
     const recentKeys = new Set<string>();

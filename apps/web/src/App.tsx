@@ -45,7 +45,7 @@ import {
   type Route,
 } from "./routing";
 import { rememberProjectRoute } from "./projectNavigation";
-import { isProjectRoute } from "./routeRegistry";
+import { isProjectRoute, routeToPath } from "./routeRegistry";
 import type { ColorMode } from "./theme";
 import {
   reconcileDisplayedPushNotifications,
@@ -280,6 +280,7 @@ export default function App({
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [globalSearchInitial, setGlobalSearchInitial] = useState<{ query: string; scope: "chats" }>();
   const overlayReturnFocus = useRef<HTMLElement>();
   const [sidebarConversationAction, setSidebarConversationAction] =
     useState<SidebarConversationAction>();
@@ -320,8 +321,9 @@ export default function App({
     overlayReturnFocus.current = undefined;
     restoreFocus(previous);
   };
-  const openGlobalSearch = () => {
+  const openGlobalSearch = (initial?: { query: string; scope: "chats" }) => {
     rememberOverlayTrigger();
+    setGlobalSearchInitial(initial);
     setGlobalSearchOpen(true);
   };
   const closeGlobalSearch = () => {
@@ -795,7 +797,7 @@ export default function App({
               }}
             >
               <WorkspaceRefreshProvider>
-              <WorkspaceConnectionNotice connection={workspaceConnection} />
+              <WorkspaceConnectionNotice connection={workspaceConnection} hasSavedData={projectsQuery.data !== undefined && enginesQuery.data !== undefined} />
               <Box
                 sx={{
                   gridRow: 2,
@@ -927,6 +929,7 @@ export default function App({
 
         <GlobalChatSearch
           open={globalSearchOpen}
+          initialSearch={globalSearchInitial}
           onClose={closeGlobalSearch}
           onExited={restoreOverlayTrigger}
           onSelect={selection => {
@@ -935,6 +938,7 @@ export default function App({
               void api.markProjectUsed(selection.projectId, selection.chat.id);
             }
             const destination = routeForGlobalSearchSelection(selection);
+            if (destination.kind === "workspaceFile") destination.returnTo = routeToPath(route);
             recordWorkspaceRouteUse(destination);
             navigate(destination);
           }}
@@ -975,6 +979,9 @@ export default function App({
           open={notificationPanelOpen}
           projects={projects}
           firstPage={notificationsQuery.data}
+          loading={notificationsQuery.isFetching}
+          loadFailed={notificationsQuery.isError}
+          onRetry={() => void notificationsQuery.refetch()}
           firstPageRevision={notificationsQuery.successfulFetchRevision}
           getFirstPageRevision={notificationsQuery.getSuccessfulFetchRevision}
           onClose={closeNotifications}
@@ -984,6 +991,7 @@ export default function App({
         </Box>
         {browserPanelProjectId ? <BrowserWorkspaceHost
           projectId={browserPanelProjectId}
+          conversationId={route.kind === "conversation" && route.projectId === browserPanelProjectId ? route.conversationId : undefined}
           projects={projects}
           agent={browserPanelAgent}
           onDockWidth={setBrowserDockWidth}

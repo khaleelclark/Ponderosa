@@ -641,6 +641,7 @@ const globalChatSearch = (query: {
   q?: string;
   limit?: string | number;
   kind?: string;
+  distinct?: string;
 }): GlobalChatSearchResponseDto => {
   const q = String(query.q ?? "").trim();
   if (q.length > 200) throw new Error("search query must be 200 characters or fewer");
@@ -654,6 +655,7 @@ const globalChatSearch = (query: {
     query: q,
     limit,
     chatKind,
+    distinctChats: query.distinct === "chats",
     notificationState: (input) => workspace.notificationSearchState(input),
   });
 };
@@ -681,6 +683,7 @@ async function assetMetadata(agentId: string, id: string) {
 registerLimitsRoutes(app, serverContext);
 
 registerAttachmentRoutes(app, {
+  dataDir: opts.dataDir,
   agentDeliveryLeases,
   conversationDeliveryLeases,
   conversationDeletionInProgress: conversationId => deletingConversationIds.has(conversationId),

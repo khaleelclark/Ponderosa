@@ -8,8 +8,8 @@ import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
-  Alert, Box, Button, Chip, FormControl, IconButton, InputLabel, LinearProgress,
-  MenuItem, Paper, Select, Stack, Tooltip, Typography,
+  Alert, Autocomplete, Box, Button, Chip, FormControl, IconButton, InputLabel, LinearProgress,
+  MenuItem, Paper, Select, Stack, TextField, Tooltip, Typography,
 } from "@mui/material";
 import type {
   ConversationDto, EngineDto, ProjectDto, TriggerDefinitionDto,
@@ -21,7 +21,7 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { useProjectAgents } from "../hooks/useProjectCollections";
+import { useProjectAgents, useProjectConversations } from "../hooks/useProjectCollections";
 import { queryKeys } from "../queryKeys";
 import {
   useWorkspaceDirectory,
@@ -603,11 +603,33 @@ export function AllTriggersWorkspace({
 
 export function ProviderActivitySettingsSection({ projects, projectId }: { projects: ProjectDto[]; projectId?: string }): JSX.Element {
   const agentQueries = useProjectAgents(projects);
+  const chatQueries = useProjectConversations(projects);
+  const chats = projects.flatMap((project, index) => (chatQueries[index]?.data ?? []).filter(chat => !chat.archived && !chat.deletedAt).map(chat => ({ project, chat })));
+  const chatTitles = new Map(chats.map(({ chat }) => [chat.id, chat.title]));
   const agents = projects.flatMap((project, index) => (agentQueries[index]?.data ?? []).map((agent) => ({ project, agent })));
   const [scopeKey, setScopeKey] = useState(projectId ? `project:${projectId}` : "overall");
   const [rangeKey, setRangeKey] = useState<"24h" | "7d" | "30d" | "all">("30d");
   const from = rangeKey === "all" ? undefined : new Date(Date.now() - ({ "24h": 1, "7d": 7, "30d": 30 }[rangeKey] * 86_400_000)).toISOString();
-  const [scope, scopeId] = scopeKey === "overall" ? ["overall", undefined] as const : scopeKey.split(":", 2) as ["project" | "agent", string];
+  const [scope, scopeId] = scopeKey === "overall" ? ["overall", undefined] as const : scopeKey.split(":", 2) as ["project" | "agent" | "conversation", string];
   const usage = useQuery({ queryKey: queryKeys.tokenUsage.detail(scope, scopeId, rangeKey), queryFn: () => api.getTokenUsage(scope, scopeId, from ? { from } : {}), refetchInterval: 30_000 });
-  return <Paper variant="outlined" sx={{ p: 2.5 }}><Typography variant="h6" fontWeight={800}>Provider Activity</Typography><Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>Provider-reported Run telemetry for experiments and diagnostics.</Typography><Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ pb: 2 }}><FormControl size="small" sx={{ minWidth: 260 }}><InputLabel id="usage-scope">Scope</InputLabel><Select labelId="usage-scope" label="Scope" value={scopeKey} onChange={(event) => setScopeKey(event.target.value)}><MenuItem value="overall">All Ponderosa</MenuItem>{projects.map((project) => <MenuItem key={`project:${project.id}`} value={`project:${project.id}`}>Project · {project.label}</MenuItem>)}{agents.map(({ project, agent }) => <MenuItem key={`agent:${agent.id}`} value={`agent:${agent.id}`}>Agent · {agent.title} · {project.label}</MenuItem>)}</Select></FormControl><FormControl size="small" sx={{ minWidth: 160 }}><InputLabel id="usage-range">Time Range</InputLabel><Select labelId="usage-range" label="Time Range" value={rangeKey} onChange={(event) => setRangeKey(event.target.value as typeof rangeKey)}><MenuItem value="24h">Last 24 Hours</MenuItem><MenuItem value="7d">Last 7 Days</MenuItem><MenuItem value="30d">Last 30 Days</MenuItem><MenuItem value="all">All Time</MenuItem></Select></FormControl></Stack><Alert severity="info" sx={{ mb: 2 }}>Input includes instructions, tools, conversation context, and cached reuse. These are provider-reported tokens, not subscription quota, remaining context, or a cost estimate.</Alert><Box>{usage.isError ? <Alert severity="error">Provider activity could not be loaded.</Alert> : !usage.data ? <LinearProgress /> : <TokenUsageDetails data={usage.data} />}</Box></Paper>;
+  const scopes = [
+    { key: "overall", label: "All Ponderosa", group: "Everything" },
+    ...projects.map(project => ({ key: `project:${project.id}`, label: project.label, group: "Working folders" })),
+    ...chats.map(({ project, chat }) => ({ key: `conversation:${chat.id}`, label: `${chat.title} · ${project.label}`, group: "Chats" })),
+    ...agents.map(({ project, agent }) => ({ key: `agent:${agent.id}`, label: `${agent.title} · #${agent.handle} · ${chatTitles.get(agent.conversationId ?? "") ?? project.label}`, group: "Agents" })),
+  ];
+  return <Paper variant="outlined" sx={{ p: 2.5 }}>
+    <Typography variant="h6" fontWeight={800}>Provider Activity</Typography>
+    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>Provider-reported Run telemetry for experiments and diagnostics.</Typography>
+    <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ pb: 2 }}>
+      <Autocomplete options={scopes} value={scopes.find(item => item.key === scopeKey) ?? scopes[0]} disableClearable
+        size="small" sx={{ minWidth: 0, width: { xs: "100%", sm: 360 } }} groupBy={item => item.group}
+        getOptionLabel={item => item.label} isOptionEqualToValue={(a, b) => a.key === b.key}
+        onChange={(_event, item) => setScopeKey(item.key)}
+        renderInput={params => <TextField {...params} label="Scope" placeholder="Search Chats, Agents, and folders" />} />
+      <FormControl size="small" sx={{ minWidth: 160 }}><InputLabel id="usage-range">Time Range</InputLabel><Select labelId="usage-range" label="Time Range" value={rangeKey} onChange={event => setRangeKey(event.target.value as typeof rangeKey)}><MenuItem value="24h">Last 24 Hours</MenuItem><MenuItem value="7d">Last 7 Days</MenuItem><MenuItem value="30d">Last 30 Days</MenuItem><MenuItem value="all">All Time</MenuItem></Select></FormControl>
+    </Stack>
+    <Alert severity="info" sx={{ mb: 2 }}>Input includes instructions, tools, conversation context, and cached reuse. These are provider-reported tokens, not subscription quota, remaining context, or a cost estimate.</Alert>
+    <Box>{usage.isError ? <Alert severity="error">Provider activity could not be loaded.</Alert> : !usage.data ? <LinearProgress /> : <TokenUsageDetails data={usage.data} />}</Box>
+  </Paper>;
 }

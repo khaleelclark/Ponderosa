@@ -156,7 +156,6 @@ function AgentRenameDialog({
             label="Agent name"
             value={renameValue}
             onChange={event => setRenameValue(event.target.value)}
-            helperText="Spaces are supported; tag multi-word names with hyphens (for example, #Grand-Teton)."
             sx={{ mt: 1 }}
           />
           {rename.isError ? (
@@ -212,11 +211,13 @@ function AgentOrganizationDialog({
       <DialogTitle>Agent organization</DialogTitle>
       <DialogContent>
         <FormControl fullWidth sx={{ mt: 1 }}>
-          <InputLabel id="agent-organizational-parent-label">
+          <InputLabel id="agent-organizational-parent-label" shrink>
             Delegated under
           </InputLabel>
           <Select
             labelId="agent-organizational-parent-label"
+            displayEmpty
+            renderValue={value => value ? eligibleOrganizationParents(agent, agents).find(candidate => candidate.id === value)?.title ?? "Unavailable Agent" : "Top Level"}
             value={organizationParentId}
             label="Delegated under"
             onChange={event => setOrganizationParentId(event.target.value)}

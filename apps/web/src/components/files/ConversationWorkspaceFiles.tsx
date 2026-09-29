@@ -4,10 +4,9 @@ import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, 
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../../api";
-import { useMutationNotification } from "../MutationNotifications";
+import { FilePreview } from "../filePreview/FilePreview";
 
-export function ConversationWorkspaceFiles({ conversationId }: { conversationId: string }): JSX.Element {
-  const notify = useMutationNotification();
+export function ConversationWorkspaceFiles({ conversationId, projectId }: { conversationId: string; projectId: string }): JSX.Element {
   const [path, setPath] = useState("");
   const [file, setFile] = useState<string>();
   const directory = useQuery({
@@ -17,22 +16,10 @@ export function ConversationWorkspaceFiles({ conversationId }: { conversationId:
   });
   const preview = useQuery({
     queryKey: ["conversationWorkspaceFile", conversationId, file],
-    queryFn: () => api.getConversationFiles(conversationId, file!),
+    queryFn: () => api.getWorkspaceFileView(projectId, file!, undefined, conversationId),
     enabled: file !== undefined,
     staleTime: 0,
   });
-  const download = () => {
-    const data = preview.data;
-    if (data?.kind !== "file") return;
-    const body = data.encoding === "base64" ? Uint8Array.from(atob(data.content), c => c.charCodeAt(0)) : data.content;
-    const url = URL.createObjectURL(new Blob([body], { type: "application/octet-stream" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = data.path.split("/").pop() ?? "file";
-    link.click();
-    notify({ message: "Download started", key: "first-party-download" });
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
   return <Box sx={{ mb: 2, border: 1, borderColor: "divider", borderRadius: 2, p: 1 }}>
     <Stack direction="row" alignItems="center" justifyContent="space-between">
       <Typography fontWeight={700}>Workspace Files</Typography>
@@ -54,11 +41,12 @@ export function ConversationWorkspaceFiles({ conversationId }: { conversationId:
     <Dialog open={file !== undefined} onClose={() => setFile(undefined)} fullWidth maxWidth="md">
       <DialogTitle sx={{ overflowWrap: "anywhere" }}>{file}</DialogTitle>
       <DialogContent>
-        {preview.isLoading && <Typography>Loading file…</Typography>}
-        {preview.isError && <Alert severity="warning">{preview.error instanceof Error ? preview.error.message : "File unavailable"}</Alert>}
-        {preview.data?.kind === "file" && (preview.data.encoding === "utf-8" ? <Box component="pre" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 13 }}>{preview.data.content}</Box> : <Typography>Binary file. Download to open it.</Typography>)}
+        <FilePreview title={file ?? "File"} projectId={projectId} conversationId={conversationId} path={file}
+          loading={preview.isLoading} error={preview.isError ? preview.error as Error : undefined}
+          mediaType={preview.data?.mediaType} content={preview.data?.text} previewUrl={preview.data?.previewUrl}
+          downloadUrl={preview.data?.downloadUrl} truncated={preview.data?.truncated} />
       </DialogContent>
-      <DialogActions><Button onClick={download} disabled={preview.data?.kind !== "file" || preview.isError}>Download</Button><Button onClick={() => setFile(undefined)}>Close</Button></DialogActions>
+      <DialogActions><Button onClick={() => setFile(undefined)}>Close</Button></DialogActions>
     </Dialog>
   </Box>;
 }

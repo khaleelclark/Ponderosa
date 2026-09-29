@@ -44,16 +44,8 @@ import {
   COMPOSER_MAX_FILES,
   composerCapabilityDisabledReason,
   engineCommandDisabledReason,
+  capabilityDisplayName,
 } from "./composerUtils";
-
-function capabilityDisplayName(capability: EngineComposerCapability): string {
-  if (!/[:_-]/u.test(capability.label)) return capability.label;
-  const raw = capability.label.includes(":") ? capability.label.split(":").at(-1)! : capability.label;
-  const words = raw.replace(/[_-]+/gu, " ");
-  return words === words.toLocaleLowerCase()
-    ? words.replace(/\b\p{L}/gu, letter => letter.toLocaleUpperCase())
-    : words;
-}
 
 export function ComposerNotices({
   pastedText,

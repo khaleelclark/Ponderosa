@@ -13,17 +13,29 @@ export function registerSearchRoutes(
   { globalChatSearch, store, workspace, coordinationV3 }: SearchRoutesContext,
 ): void {
   let filesInFlight = 0;
-  app.get<{ Querystring: { q?: string; limit?: string } }>("/api/search/files", async (request, reply) => {
+  app.get<{ Querystring: { q?: string; limit?: string; projectId?: string; conversationId?: string } }>("/api/search/files", async (request, reply) => {
     const q = request.query.q ?? "";
     const limit = Number(request.query.limit ?? 25);
     if (typeof q !== "string" || q.length > 200 || !Number.isInteger(limit) || limit < 1 || limit > 50) return reply.code(400).send({ error: "invalid file search query" });
-    if (filesInFlight >= 2) return reply.code(429).send({ error: "file search is busy; try again" });
+    let roots = store.listProjects();
+    if (request.query.conversationId) {
+      const conversation = store.getConversation(request.query.conversationId);
+      const project = conversation && store.getProject(conversation.projectId);
+      if (!conversation || !project || conversation.projectId !== request.query.projectId || conversation.archived || conversation.deletedAt || !conversation.workingDirectory) return reply.code(404).send({ error: "Chat folder is unavailable" });
+      roots = [{ ...project, hostPath: conversation.workingDirectory, label: conversation.title }];
+    } else if (request.query.projectId) {
+      const project = store.getProject(request.query.projectId);
+      if (!project) return reply.code(404).send({ error: "Project not found" });
+      roots = [project];
+    }
+    if (filesInFlight >= 2) return reply.header("Retry-After", "2").code(429).send({ error: "File search is busy. Wait a moment, then try again." });
     filesInFlight++;
-    try { return await searchWorkspaceFiles(store.listProjects(), q, limit); }
+    try { return await searchWorkspaceFiles(roots, q, limit); }
     finally { filesInFlight--; }
   });
-  app.get<{ Querystring: { q?: string; limit?: string; kind?: string } }>("/api/search", async (request, reply) => {
+  app.get<{ Querystring: { q?: string; limit?: string; kind?: string; distinct?: string } }>("/api/search", async (request, reply) => {
     try {
+      if (request.query.distinct !== undefined && request.query.distinct !== "chats") throw new Error("invalid search grouping");
       return globalChatSearch(request.query);
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid search query" });

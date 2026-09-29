@@ -108,7 +108,7 @@ function highlightedSnippetSegments(snippet: string, ranges: SearchHighlightRang
   return segments.length ? segments : [{ text: snippet, highlighted: false }];
 }
 
-function SearchSnippet({ snippet, ranges, query }: { snippet: string; ranges: SearchHighlightRangeDto[]; query: string }): JSX.Element {
+export function SearchSnippet({ snippet, ranges, query }: { snippet: string; ranges: SearchHighlightRangeDto[]; query: string }): JSX.Element {
   const visibleSnippet = plainGlobalSearchSnippet(snippet);
   const visibleRanges = visibleSnippet === snippet ? ranges : queryHighlightRanges(visibleSnippet, query);
   return <Typography component="span" variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
@@ -204,11 +204,12 @@ function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
   />;
 }
 
-export function GlobalChatSearch({ open, onClose, onExited, onSelect }: {
+export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSearch }: {
   open: boolean;
   onClose(): void;
   onExited?(): void;
   onSelect(selection: GlobalSearchSelection): void;
+  initialSearch?: { query: string; scope: "chats" };
 }): JSX.Element {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
@@ -218,6 +219,12 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect }: {
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
   const [resultLimit, setResultLimit] = useState(25);
+  useEffect(() => {
+    if (!open || !initialSearch) return;
+    setQuery(initialSearch.query);
+    setScope(initialSearch.scope);
+    setDebouncedQuery(initialSearch.query.trim());
+  }, [open, initialSearch]);
   const resultKind = scope === "chats"
     ? "conversation" as const
     : scope === "agents"
@@ -279,6 +286,7 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect }: {
   const agentTitleSearchEnabled = open && Boolean(debouncedQuery) && (scope === "all" || scope === "agents");
   const isSearching = (scope !== "files" && search.isFetching) || (filesEnabled && files.isFetching) ||
     (agentTitleSearchEnabled && matchingAgents.isFetching);
+  const searchFailed = (scope !== "files" && search.isError) || (filesEnabled && files.isError) || (agentTitleSearchEnabled && matchingAgents.isError);
   const unread = useMemo(() => scope === "files" ? [] : search.data?.results.filter((result) => result.unread) ?? [], [search.data, scope]);
   const openAttentionCount = notifications.data?.openActionCount ?? 0;
   const visibleResults = useMemo(() => [...(search.data?.results ?? []), ...titleMatches].filter((result) => {
@@ -367,7 +375,7 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect }: {
         {(["all", "chats", "agents", "files"] as const).map((value) => <Chip key={value} clickable aria-pressed={scope === value} label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
       </Stack>
       {isSearching ? <LinearProgress aria-label="Searching Ponderosa" sx={{ mb: 1 }} /> : null}
-      {(scope !== "files" && search.isError) || (agentTitleSearchEnabled && matchingAgents.isError) || (filesEnabled && files.isError) ? <Alert severity="error" sx={{ mb: 1 }}>Search is unavailable. Check the server connection and try again.</Alert> : null}
+      {searchFailed ? <Alert severity="error" sx={{ mb: 1 }}>Some search results could not load. Any available results remain below. Check the connection and try again.</Alert> : null}
       <Box id="global-search-results" role="listbox" aria-label="Global search suggestions">
       {debouncedQuery ? visibleResults.length > 0 ?
         <Box role="group" aria-label={scope === "all" ? "Results" : scope}>
@@ -426,16 +434,16 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect }: {
               ariaLabel={`Open file ${file.name}`}
               onSelect={() => chooseSelection({ projectId: file.project.id, file: { path: file.path } })}
               primary={<Typography fontWeight={700} sx={{ overflowWrap: "anywhere" }}>{file.name}</Typography>}
-              secondary={<Typography component="span" variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{file.path}</Typography>} />;
+              secondary={<Typography component="span" variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{file.project.label} · {file.path}</Typography>} />;
           })}
         </List>
       </Box> : null}
       </Box>
       {filesEnabled && (files.data?.truncated || files.data?.unavailableRoots) ? <Typography variant="caption" color="text.secondary" component="p">File search covered a limited set of accessible folders. Some files may not be listed.</Typography> : null}
       {filesEnabled && files.data?.truncated && resultLimit < 50 && !(scope !== "files" && search.data?.truncated) ? <Button color="inherit" onClick={() => setResultLimit(50)}>Show more results</Button> : null}
-      {scope === "files" && !debouncedQuery && !isSearching && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 1 }}>No recent files are available. Search files by name or path.</Typography> : null}
-      {debouncedQuery && !isSearching && visibleResults.length === 0 && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{`No ${scope === "all" ? "messages, Agents or files" : scope} match “${debouncedQuery}”.`}</Typography> : null}
-      {scope !== "files" && !debouncedQuery && !isSearching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>{openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention.` : "You’re all caught up."}</Typography> : null}
+      {scope === "files" && !searchFailed && !debouncedQuery && !isSearching && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 1 }}>No recent files are available. Search files by name or path.</Typography> : null}
+      {debouncedQuery && !searchFailed && !isSearching && visibleResults.length === 0 && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{`No ${scope === "all" ? "messages, Agents or files" : scope} match “${debouncedQuery}”.`}</Typography> : null}
+      {scope !== "files" && !searchFailed && !debouncedQuery && !isSearching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>{openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention.` : "You’re all caught up."}</Typography> : null}
       {scope !== "files" && search.data?.truncated ? <Stack spacing={1} sx={{ mt: 1 }}>
         <Alert severity="info">Showing the newest matches from a bounded search. Add more terms to narrow the result.</Alert>
         {resultLimit < 50 ? <Button

@@ -49,6 +49,7 @@ import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { MessageRequestAction } from "./MessageRequestAction";
 import { DecisionCard } from "./decisions/DecisionCard";
+import { decisionResponseSummary } from "./decisions/decisionResponse";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
 import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
@@ -446,9 +447,9 @@ function MainConversationTimeline({
               ? { kind: "notice" }
               : { kind: "operator", profile: operatorProfile },
             createdAt: entry.at,
-            ariaLabel: automatic ? entry.choice : `You chose ${entry.choice}`,
+            ariaLabel: automatic ? entry.choice : decisionResponseSummary(entry.event.decision, entry.choice),
             body: <Typography variant="body2">
-              {automatic ? entry.choice : `You chose ${entry.choice}.`}
+              {automatic ? entry.choice : decisionResponseSummary(entry.event.decision, entry.choice)}
             </Typography>,
           }}
           />;

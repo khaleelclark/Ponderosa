@@ -179,10 +179,11 @@ export class ProviderUsageCache {
     if (data) {
       return { ...base, status: "fresh", data, retrievedAt: data.fetchedAt };
     }
+    if (!entry?.failure) return { ...base, status: "loading" };
     return {
       ...base,
       status: "unavailable",
-      failure: entry?.failure ?? failureDto("unknown_failure"),
+      failure: entry.failure,
     };
   }
 

@@ -6,17 +6,17 @@ import { queryKeys } from "../queryKeys";
 import { FilePreview } from "./filePreview/FilePreview";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
-export function WorkspaceFileView({ projectId, path, onBack }: { projectId: string; path: string; onBack(): void }): JSX.Element {
+export function WorkspaceFileView({ projectId, path, agentId, conversationId, backLabel = "Back to Files & Results", onBack }: { projectId: string; path: string; agentId?: string; conversationId?: string; backLabel?: string; onBack(): void }): JSX.Element {
   const query = useQuery({
-    queryKey: queryKeys.workspaceFileView.detail(projectId, path),
-    queryFn: () => api.getWorkspaceFileView(projectId, path),
+    queryKey: [...queryKeys.workspaceFileView.detail(projectId, path), agentId, conversationId],
+    queryFn: () => api.getWorkspaceFileView(projectId, path, agentId, conversationId),
     retry: false,
   });
   const file = query.data;
   const name = file?.name ?? path.split("/").at(-1) ?? path;
   return <Box sx={{ height: "100%", minHeight: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
     <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0, px: { xs: 1, md: 2.5 }, py: 1, borderBottom: 1, borderColor: "divider" }}>
-      <Tooltip title="Back to Chats"><IconButton aria-label="Back to Chats" onClick={onBack}><ArrowBackIcon /></IconButton></Tooltip>
+      <Tooltip title={backLabel}><IconButton aria-label={backLabel} onClick={onBack}><ArrowBackIcon /></IconButton></Tooltip>
       <Box sx={{ minWidth: 0, flex: 1 }}>
         <Typography variant="h6" component="h1" fontWeight={850} noWrap>{name}</Typography>
         <Typography variant="body2" color="text.secondary" noWrap>
@@ -35,6 +35,8 @@ export function WorkspaceFileView({ projectId, path, onBack }: { projectId: stri
           <FilePreview
             title={file.name}
             projectId={projectId}
+            agentId={agentId}
+            conversationId={conversationId}
             path={file.path}
             mediaType={file.mediaType}
             content={file.text}

@@ -578,7 +578,7 @@ export function ProjectRail({
               </Typography>
               {profile.handle ? (
                 <Typography noWrap variant="caption" color="text.secondary">
-                  @{profile.handle.replace(/^@/, "")}
+                  #{profile.handle.replace(/^[@#]/, "")}
                 </Typography>
               ) : null}
             </Box>

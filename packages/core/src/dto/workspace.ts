@@ -343,7 +343,7 @@ export interface WorkspaceNotificationDto {
   /** All Agents directly affected by this current issue. */
   agentIds?: string[];
   communicationEventId?: string;
-  kind: "direct_responses" | "everyone" | "broadcasts" | "collaboration" | "operational" | "decision";
+  kind: "direct_responses" | "everyone" | "broadcasts" | "collaboration" | "operational" | "decision" | "information";
   category?: "communication" | "provider" | "trigger" | "budget" | "coordination" | "decision" | "system";
   severity?: "info" | "attention" | "urgent";
   status?: "open" | "resolved" | "dismissed";

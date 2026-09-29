@@ -2,6 +2,7 @@ import type { AgentDto, ConversationDto, EngineDto } from "@ponderosa/core";
 import { effortSelectionIsCompatible } from "../conversationEngine";
 import { api } from "../api";
 import type { ComponentProps } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { AgentSettingsPane } from "./AgentDetail.settings";
 
 interface AgentDetailSettingsControllerProps {
@@ -32,7 +33,6 @@ interface AgentDetailSettingsControllerProps {
   onSettingsModel(value: string): void;
   onSettingsEffort(value: string): void;
   onNotice(value?: string): void;
-  onFreshSessionNotice(value: string): void;
   onSaveRuntimeSettings(): void;
   onRecheckEngine(): void;
   onOpenMaster(conversationId: string): void;
@@ -71,7 +71,6 @@ export function AgentDetailSettingsController({
   onSettingsModel,
   onSettingsEffort,
   onNotice,
-  onFreshSessionNotice,
   onSaveRuntimeSettings,
   onRecheckEngine,
   onOpenMaster,
@@ -79,6 +78,7 @@ export function AgentDetailSettingsController({
   onUpdateManagementPermissions,
   onChangeReportingLine,
 }: AgentDetailSettingsControllerProps): JSX.Element {
+  const freshSession = useMutation({ mutationKey: ["fresh-provider-session", agent.id], mutationFn: () => api.compactSession(agent.id) });
   return (
     <AgentSettingsPane
       agent={agent}
@@ -104,6 +104,9 @@ export function AgentDetailSettingsController({
       usableMcpCount={usableMcpCount}
       mcpToolCountLabel={mcpToolCountLabel}
       steering={steering}
+      freshSessionPending={freshSession.isPending}
+      freshSessionNotice={freshSession.isPending ? "Starting a fresh provider session for the next Run…" : freshSession.isSuccess ? "Fresh provider session scheduled for the next Run. Canonical history is unchanged." : undefined}
+      freshSessionError={freshSession.isError ? freshSession.error instanceof Error ? freshSession.error.message : "Could not schedule a fresh provider session. Try again." : undefined}
       onSettingsEngineChange={value => {
         onSettingsEngine(value);
         onSettingsModel("");
@@ -130,23 +133,7 @@ export function AgentDetailSettingsController({
       onSaveRuntimeSettings={onSaveRuntimeSettings}
       onRecheckEngine={onRecheckEngine}
       onStartFreshSession={() => {
-        onFreshSessionNotice(
-          "Starting this Agent with a fresh provider session next time…",
-        );
-        void api
-          .compactSession(agent.id)
-          .then(() =>
-            onFreshSessionNotice(
-              "Fresh provider session scheduled. Canonical history remains available.",
-            ),
-          )
-          .catch((error: unknown) =>
-            onFreshSessionNotice(
-              error instanceof Error
-                ? error.message
-                : "Fresh provider session could not be scheduled.",
-            ),
-          );
+        if (!freshSession.isPending) freshSession.mutate();
       }}
       onOpenMaster={onOpenMaster}
       onOpenAgent={onOpenAgent}

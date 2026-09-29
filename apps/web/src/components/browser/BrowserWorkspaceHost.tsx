@@ -4,16 +4,19 @@ import ViewQuiltIcon from "@mui/icons-material/ViewQuilt";
 import { ProjectBrowserDialog } from "../ProjectBrowserDialog";
 import type { ProjectBrowserRequest } from "../ProjectBrowserContext";
 import { browserDockIsAvailable } from "./browserWindowSizing";
+import type { ProjectDto } from "@ponderosa/core";
+import { useProjectConversations } from "../../hooks/useProjectCollections";
 
-type Panel = { key: string; projectId: string; agent?: { id: string; runId: string }; request?: ProjectBrowserRequest };
+type Panel = { key: string; projectId: string; conversationId?: string; agent?: { id: string; runId: string }; request?: ProjectBrowserRequest };
 const keyFor = (projectId: string, agent?: Panel["agent"]) => `${projectId}:${agent?.id ?? "shared"}`;
 
 /** Panels are views of existing chat/Run authorities, never new browser owners. */
-export function BrowserWorkspaceHost({ projectId, agent, request, projects, onRequestHandled, onClose, onDockWidth }: {
+export function BrowserWorkspaceHost({ projectId, conversationId, agent, request, projects, onRequestHandled, onClose, onDockWidth }: {
   projectId: string;
+  conversationId?: string;
   agent?: Panel["agent"];
   request?: ProjectBrowserRequest;
-  projects: Array<{ id: string; label: string }>;
+  projects: Array<Pick<ProjectDto, "id" | "label"> & Partial<ProjectDto>>;
   onRequestHandled(requestId: number): void;
   onClose(): void;
   onDockWidth(width: number): void;
@@ -26,7 +29,20 @@ export function BrowserWorkspaceHost({ projectId, agent, request, projects, onRe
   const lastExternal = useRef<{ key: string; requestId?: number; agent?: Panel["agent"] }>();
   const mobile = useMediaQuery("(max-width: 899px)");
   const canDock = useMediaQuery("(min-width: 1400px)");
-  const label = (panel: Panel) => `${projects.find(item => item.id === panel.projectId)?.label ?? "Chat"}${panel.agent ? " · Agent" : ""}`;
+  // Name only live panel workspaces, not every Project in the directory.
+  const namingIds = new Set([...panels.map(panel => panel.projectId), projectId]);
+  const namingProjects = projects.filter(project => namingIds.has(project.id));
+  const chatQueries = useProjectConversations(namingProjects as ProjectDto[]);
+  const workspaceName = (id: string, chatId?: string) => {
+    const index = projects.findIndex(item => item.id === id);
+    const queryIndex = namingProjects.findIndex(project => project.id === id);
+    const chats = (chatQueries[queryIndex]?.data ?? []).filter(chat => !chat.archived && !chat.deletedAt);
+    const chat = chats.find(item => item.id === chatId) ?? (chats.length === 1 ? chats[0] : undefined);
+    const title = chat?.title ?? projects[index]?.label ?? "Chat";
+    const duplicate = chat && chatQueries.some((query, other) => query.data?.some(item => item.title === chat.title && (other !== queryIndex || item.id !== chat.id)));
+    return duplicate ? `${title} · ${projects[index]?.label}` : title;
+  };
+  const label = (panel: Panel) => `${workspaceName(panel.projectId, panel.conversationId)}${panel.agent ? " · Agent" : ""}`;
   const activate = (key: string) => setPanels(current => current.at(-1)?.key === key ? current : [...current.filter(item => item.key !== key), ...current.filter(item => item.key === key)]);
   const openPanel = (next: Panel) => {
     setPanels(current => {
@@ -43,7 +59,7 @@ export function BrowserWorkspaceHost({ projectId, agent, request, projects, onRe
     setPanels(current => {
       const found = current.find(item => item.key === key);
       const others = current.filter(item => item.key !== key);
-      return [...others, { ...found, key, projectId, agent, request }];
+      return [...others, { ...found, key, projectId, conversationId: conversationId ?? found?.conversationId, agent, request }];
     });
     setDocked(browserDockIsAvailable(window.innerWidth) ? key : undefined);
   }, [projectId, agent, request?.requestId]);
@@ -74,7 +90,7 @@ export function BrowserWorkspaceHost({ projectId, agent, request, projects, onRe
       {panels.map(panel => <MenuItem key={panel.key} selected={panels.at(-1)?.key === panel.key} onClick={() => { setMenu(null); activate(panel.key); }}>{label(panel)}</MenuItem>)}
       <Divider />
       <ListSubheader>{panels.length >= 4 ? "Close a panel to open another" : "Open another chat browser"}</ListSubheader>
-      {projects.filter(project => !panels.some(panel => panel.key === keyFor(project.id))).map(project => <MenuItem key={project.id} disabled={panels.length >= 4} onClick={() => { setMenu(null); openPanel({ key: keyFor(project.id), projectId: project.id }); }}>{project.label}</MenuItem>)}
+      {projects.filter(project => !panels.some(panel => panel.key === keyFor(project.id))).map(project => <MenuItem key={project.id} disabled={panels.length >= 4} onClick={() => { setMenu(null); openPanel({ key: keyFor(project.id), projectId: project.id }); }}>{workspaceName(project.id)}</MenuItem>)}
     </Menu>
     <Snackbar open={limitNotice} onClose={() => setLimitNotice(false)}><Alert severity="info" onClose={() => setLimitNotice(false)}>Four browser panels are already open. Close a panel before opening another; its browser and tabs will keep running.</Alert></Snackbar>
   </>;

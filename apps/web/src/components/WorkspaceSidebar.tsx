@@ -7,9 +7,11 @@ import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import {
   Box,
+  Button,
   Chip,
   IconButton,
   List,
+  ListItemButton,
   Stack,
   Tooltip,
   Typography,
@@ -38,7 +40,7 @@ import {
   workspaceDirectoryItems,
 } from "../hooks/useWorkspaceDirectory";
 import { queryKeys } from "../queryKeys";
-import { routeClearsProjectSidebarContext } from "../routeRegistry";
+import { routeClearsProjectSidebarContext, routeToPath } from "../routeRegistry";
 import { routeProjectId, type Route } from "../routing";
 import { useAgent, useConversation, useNotificationProjection } from "../hooks/queries";
 import {
@@ -84,6 +86,7 @@ import {
   useWorkspaceSidebarResize,
 } from "./useWorkspaceSidebarState";
 import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
+import { SearchSnippet, routeForGlobalSearchSelection } from "./GlobalChatSearch";
 
 export function WorkspaceSidebar({
   projects,
@@ -127,7 +130,7 @@ export function WorkspaceSidebar({
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
   onProjectDeleted(projectId: string): void;
-  onSearch?(): void;
+  onSearch?(initial?: { query: string; scope: "chats" }): void;
   onOpenNotifications?(): void;
   creating?: "project" | "chat" | "agent" | "trigger";
   onDismiss?(): void;
@@ -175,6 +178,33 @@ export function WorkspaceSidebar({
   const showingAgents = !showingSettings && projectSection === "agents";
   const showingChats = !showingSettings && projectSection === "chats";
   const showingTriggers = !showingSettings && projectSection === "triggers";
+  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
+  const [messageSearchTerm, setMessageSearchTerm] = useState("");
+  useEffect(() => {
+    const update = () => setDocumentVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+  useEffect(() => {
+    const timer = setTimeout(() => setMessageSearchTerm(filter.trim()), 250);
+    return () => clearTimeout(timer);
+  }, [filter]);
+  const sidebarVisible = documentVisible && (drawer || !collapsed);
+  const messageSearch = useQuery({
+    queryKey: ["sidebar-chat-message-search", messageSearchTerm],
+    queryFn: ({ signal }) => api.searchGlobalChats(messageSearchTerm, 5, "conversation", "chats", signal),
+    enabled: sidebarVisible && showingChats && Boolean(messageSearchTerm),
+    staleTime: 5_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: false,
+  });
+  useEffect(() => {
+    if (!sidebarVisible || !showingChats || !filter.trim()) void queryClient.cancelQueries({ queryKey: ["sidebar-chat-message-search"] });
+  }, [sidebarVisible, showingChats, filter, queryClient]);
+  const currentMessageResults = messageSearchTerm === filter.trim() ? messageSearch.data : undefined;
+  const messageSearchPending = Boolean(filter.trim()) &&
+    (messageSearchTerm !== filter.trim() || messageSearch.isPending);
   const directorySearch = filter;
   useEffect(() => {
     if (route.kind === "allChat" || route.kind === "home" || route.kind === "manageChats") setProjectSection("chats");
@@ -186,7 +216,7 @@ export function WorkspaceSidebar({
     useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
       search: directorySearch,
       projectId: undefined,
-      enabled: projectContext && showingChats,
+      enabled: projectContext && showingChats && sidebarVisible,
     });
   const agentDirectoryQuery =
     useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
@@ -432,7 +462,7 @@ export function WorkspaceSidebar({
     triggerId: string,
   ) => {
     markWorkspaceResourceUsed(queryClient, "trigger", triggerId);
-    onNavigate({ kind: "automation", projectId, triggerId });
+    onNavigate({ kind: "automation", projectId, triggerId, returnTo: routeToPath(route) });
   };
 
   const openChat = (
@@ -600,7 +630,25 @@ export function WorkspaceSidebar({
       ) : undefined}
       starredRows={starredRows}
       allRows={allRows}
-      collectionFeedback={<CollectionStateFeedback request={chatDirectoryQuery.requestState} itemCount={chatRows.length} filtersActive={Boolean(filter.trim())} resourceLabel="Chats" emptyTitle="No Chats Yet" noMatchTitle={"No Chats match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact />}
+      collectionFeedback={<>
+        {filter.trim() ? <Box component="section" aria-label="Found in messages" sx={{ mt: 1 }}>
+          <SidebarSectionHeading>Found in messages</SidebarSectionHeading>
+          {messageSearchPending ? <Typography variant="caption" role="status">Searching messages…</Typography> :
+            messageSearch.isError ? <Typography variant="caption" role="status">Message results are unavailable. Chat-name results are still shown.</Typography> :
+            currentMessageResults?.results.map(result => <ListItemButton key={result.chat.id}
+              aria-label={`Open ${result.chat.title} at matching message`}
+              onClick={() => showNavigation(routeForGlobalSearchSelection({ projectId: result.project.id, chat: result.chat, messageId: result.messageId }))}
+              sx={{ display: "block", borderRadius: 1 }}>
+              <Typography variant="body2" fontWeight={600}>{result.chat.title}</Typography>
+              <Typography variant="caption" color="text.secondary">{result.project.label}</Typography>
+              <Box><SearchSnippet snippet={result.snippet} ranges={result.highlights} query={filter.trim()} /></Box>
+            </ListItemButton>)}
+          {currentMessageResults?.truncated ? <Typography variant="caption">Older matches may not be shown.</Typography> : null}
+          <Button size="small" onClick={() => onSearch?.({ query: filter.trim(), scope: "chats" })}>View more in full search</Button>
+        </Box> : null}
+        {!filter.trim() || (!messageSearchPending && !messageSearch.isError && !(currentMessageResults?.results.length)) ?
+          <CollectionStateFeedback request={chatDirectoryQuery.requestState} itemCount={chatRows.length} filtersActive={Boolean(filter.trim())} resourceLabel="Chats" emptyTitle="No Chats Yet" noMatchTitle={"No Chats match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact /> : null}
+      </>}
       sort={chatSort}
       onSort={value => setResourceSort("chat", value, allChatRows.map(row => row.conversation.id), preferences.chatOrder)}
       drawer={drawer}
@@ -643,6 +691,9 @@ export function WorkspaceSidebar({
         }
       : undefined;
   const agentRows = allAgentRows;
+  const agentNameCounts = new Map<string, number>();
+  for (const row of allAgentRows) agentNameCounts.set(row.agent.title, (agentNameCounts.get(row.agent.title) ?? 0) + 1);
+  const duplicateAgentNames = new Set([...agentNameCounts].filter(([, count]) => count > 1).map(([name]) => name));
   const agentHierarchyRows = (items: AgentSidebarRow[]): AgentSidebarTreeRow[] => {
     const byId = new Map(items.map(item => [item.agent.id, item]));
     const childrenByManagerId = new Map<string, AgentSidebarRow[]>();
@@ -751,7 +802,7 @@ export function WorkspaceSidebar({
             ) : null}
           </Box>
           <SidebarResourceRow id={`sidebar-agent:${agent.id}`} label={`Open agent ${agent.title} in Chat ${ownerTitle}, ${projectDisambiguator(agentProject, projects)}`} title={agent.title}
-            detail={`${ownerTitle} · ${agent.activeEngine}`} subtitle={ownerTitle} icon={<SmartToyOutlinedIcon fontSize="small" />}
+            detail={`${ownerTitle} · #${agent.handle} · ${agent.activeEngine}`} subtitle={duplicateAgentNames.has(agent.title) ? `#${agent.handle} · ${ownerTitle}` : ownerTitle} icon={<SmartToyOutlinedIcon fontSize="small" />}
             starred={starred} nested={Boolean(agent.managerAgentId)} selected={route.kind === "agent" && route.agentId === agent.id}
             onOpen={() => onNavigate({ kind: "agent", projectId: agentProject.id, agentId: agent.id })} onStar={() => toggleStar("agent", agent.id)}
             onContextAction={anchor => openResourceMenu(anchor, { kind: "agent", projectId: agentProject.id, agentId: agent.id })}

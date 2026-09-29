@@ -80,13 +80,13 @@ export type Route =
   | { kind: "profile" }
   | { kind: "usage"; projectId?: string }
   | { kind: "project"; projectId: string; view?: ProjectDetailView; focusArtifactId?: string }
-  | { kind: "workspaceFile"; projectId: string; path: string }
+  | { kind: "workspaceFile"; projectId: string; path: string; agentId?: string; conversationId?: string; returnTo?: string }
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string; conversationId?: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; view?: ConversationDetailView; urlDriven?: boolean }
   | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; triggerId?: string; urlDriven?: boolean }
-  | { kind: "automation"; projectId: string; triggerId: string }
-  | { kind: "review"; projectId: string; agentId: string; path?: string };
+  | { kind: "automation"; projectId: string; triggerId: string; returnTo?: string }
+  | { kind: "review"; projectId: string; agentId: string; path?: string; executionId?: string; returnTo?: string };
 
 const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
 
@@ -247,7 +247,35 @@ function parseLegacyRoute(pathname: string, search = ""): Route {
 
 export function parseRoute(pathname: string, search = ""): Route {
   const route = parseLegacyRoute(pathname, search);
+  if (route.kind === "review" || route.kind === "workspaceFile" || route.kind === "automation") {
+    const inlineSearch = pathname.split("?", 2)[1];
+    const query = new URLSearchParams(search || inlineSearch);
+    const returnTo = safeReturnPath(query.get("returnTo") ?? undefined);
+    return { ...route, ...(returnTo ? { returnTo } : {}),
+      ...(route.kind === "review" && query.get("execution") ? { executionId: query.get("execution")! } : {}),
+      ...(route.kind === "workspaceFile" ? { ...(query.get("agentId") ? { agentId: query.get("agentId")! } : {}), ...(query.get("conversationId") ? { conversationId: query.get("conversationId")! } : {}) } : {}),
+    };
+  }
   return route.kind === "project" ? { kind: "home" } : route;
+}
+
+export function safeReturnPath(path: string | undefined): string | undefined {
+  if (!path || path.length > 2048 || !path.startsWith("/") || path.startsWith("//") || path.includes("\\")) return undefined;
+  const url = new URL(path, "http://ponderosa.invalid");
+  const target = parseLegacyRoute(url.pathname, url.search);
+  if (["review", "automation", "workspaceFile", "create"].includes(target.kind)) return undefined;
+  return routeToPath(target);
+}
+
+export function routeReturnTarget(returnTo: string | undefined, fallback: Route): Route {
+  const safe = safeReturnPath(returnTo);
+  if (!safe) return fallback;
+  const url = new URL(safe, "http://ponderosa.invalid");
+  return parseLegacyRoute(url.pathname, url.search);
+}
+
+export function routeReturnLabel(target: Route): string {
+  return target.kind === "conversation" ? "Back to Chat" : target.kind === "agent" ? "Back to Agent" : target.kind === "manageAutomations" ? "Back to Automations" : target.kind === "project" ? "Back to Files & Results" : target.kind === "allChat" ? "Back to Messages" : "Back to Home";
 }
 
 export function parseRouteLocation(

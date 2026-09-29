@@ -37,6 +37,7 @@ export function renderableWorkspaceMarkdownHref(
   projectId: string | undefined,
   currentPath: string | undefined,
   href: string | undefined,
+  scope?: { agentId?: string; conversationId?: string; returnTo?: string },
 ): string | undefined {
   if (!href) return undefined;
   if (href.startsWith("#") || /^(?:https?:\/\/|mailto:|tel:)/iu.test(href)) return href;
@@ -48,5 +49,25 @@ export function renderableWorkspaceMarkdownHref(
       return href;
     } catch { return undefined; }
   }
-  return projectId && currentPath ? workspaceMarkdownFileHref(projectId, currentPath, href) : undefined;
+  const resolved = projectId && currentPath ? workspaceMarkdownFileHref(projectId, currentPath, href) : undefined;
+  if (!resolved || !scope) return resolved;
+  const url = new URL(resolved, "http://ponderosa.invalid");
+  if (scope.agentId) url.searchParams.set("agentId", scope.agentId);
+  if (scope.conversationId) url.searchParams.set("conversationId", scope.conversationId);
+  if (scope.returnTo) url.searchParams.set("returnTo", scope.returnTo);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+export function workspaceMarkdownMediaHref(projectId: string | undefined, currentPath: string | undefined, src: string | undefined, scope?: { agentId?: string; conversationId?: string }): string | undefined {
+  if (!src) return undefined;
+  if (/^https?:\/\//iu.test(src)) return src;
+  if (!projectId || !currentPath) return undefined;
+  const href = workspaceMarkdownFileHref(projectId, currentPath, src);
+  if (!href) return undefined;
+  const filePath = new URL(href, "http://ponderosa.invalid").searchParams.get("path");
+  if (!filePath || !/\.(?:png|jpe?g|webp)$/iu.test(filePath)) return undefined;
+  const query = new URLSearchParams({ path: filePath });
+  if (scope?.agentId) query.set("agentId", scope.agentId);
+  if (scope?.conversationId) query.set("conversationId", scope.conversationId);
+  return `/api/projects/${encodeURIComponent(projectId)}/workspace-files/preview?${query}`;
 }

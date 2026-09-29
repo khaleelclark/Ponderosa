@@ -1,5 +1,5 @@
 import type { ArtifactDto } from "@ponderosa/core";
-import { presentProjectPath } from "../../projectPathPresentation";
+import { presentedFileIdentity } from "../../projectPathPresentation";
 
 type PresentedArtifact = Pick<ArtifactDto, "kind" | "path" | "sourcePath" | "summary" | "legacyRecovery">;
 
@@ -19,10 +19,10 @@ export function artifactDisplayPath(
   artifact: Pick<ArtifactDto, "path" | "sourcePath" | "summary">,
   projectRoot?: string,
 ): string {
-  return presentProjectPath(
+  return presentedFileIdentity(
     projectRoot ?? "",
     artifactSourcePath(artifact),
-  ).displayPath;
+  );
 }
 
 /**

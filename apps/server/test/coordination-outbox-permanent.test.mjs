@@ -10,6 +10,31 @@ import {
 } from "../dist/coordination-scheduler-service.js";
 import { CoordinationV3Scheduler, PermanentOutboxError } from "../dist/coordination-v3-scheduler.js";
 
+test("provider teardown completion and failure both publish updated receipt evidence", async () => {
+  for (const accepted of [true, false]) {
+    const directory = mkdtempSync(join(tmpdir(), "ponderosa-stop-receipt-"));
+    const store = new AgentStore(directory);
+    try {
+      const coordination = new CoordinationV3Store(store.sqlite);
+      const project = store.createProject({ label: "Stop", hostPath: "/tmp/stop", defaultEngine: "codex" });
+      const chat = store.createConversation(project.id, { title: "Chat" });
+      const agent = store.createAgent(project.id, { title: "Agent", engine: "codex", conversationId: chat.id });
+      coordination.enqueueMessageActivation({ projectId: project.id, agentId: agent.id, messageId: "message-1", kind: "human", dispatchPolicy: "next_run", payload: { text: "hello" } });
+      const lease = coordination.leaseNextRun({ workerId: "setup" });
+      assert.ok(lease);
+      coordination.cancelAgentRun({ agentId: agent.id, expectedRunId: lease.runId, idempotencyKey: "stop-1" });
+      const updates = [];
+      const scheduler = new CoordinationV3Scheduler(coordination, async () => ({ accepted: true }), {
+        workerId: "worker", dispatchProviderOperation: async () => ({ accepted, retryable: false }),
+        onMessageDeliveryChanged: id => updates.push(id),
+      });
+      await scheduler.drainOnce();
+      assert.deepEqual(updates, [agent.id]);
+      assert.equal(store.sqlite.prepare("SELECT state FROM provider_operation_outbox WHERE run_id=?").get(lease.runId).state, accepted ? "completed" : "failed");
+    } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+  }
+});
+
 test("malformed revision signal dead-letters once and keeps its Activation blocked for repair", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ponderosa-poison-outbox-"));
   const store = new AgentStore(directory);

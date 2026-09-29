@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readSecureFile } from "@ponderosa/native-host";
 import {
   AgentStore,
   CoordinationV3Store,
   createOfflineDataDirectoryBackup,
   restoreOfflineDataDirectoryBackup,
+  retainChatAttachment,
+  readRetainedChatAttachment,
 } from "@ponderosa/agents";
 
 const [command, ...args] = process.argv.slice(2);
@@ -32,6 +36,39 @@ if (command === "backup") {
     externalRootParent: value("--external-project-root"),
   });
   console.log(JSON.stringify({ status: "restored", dataDir, files: manifest.entries.filter(entry => entry.type === "file").length }));
+} else if (command === "attachment-repair") {
+  const projectId = value("--project-id");
+  const conversationId = value("--chat-id");
+  const eventId = value("--event-id");
+  const attachmentId = value("--attachment-id");
+  const backup = value("--backup");
+  const reason = value("--reason");
+  if (!projectId || !conversationId || !eventId || !attachmentId || !backup || !reason) {
+    throw new Error("attachment-repair requires --project-id, --chat-id, --event-id, --attachment-id, --backup, and --reason; --apply explicitly authorizes the repair");
+  }
+  const store = new AgentStore(dataDir);
+  try {
+    const chat = store.getConversation(conversationId);
+    const event = store.getCommunicationEvent(projectId, eventId);
+    const projection = store.getCommunicationProjection(projectId, eventId, "conversation", conversationId) ??
+      store.getCommunicationProjection(projectId, eventId, "collaboration_view", conversationId);
+    if (!chat || chat.projectId !== projectId || !event || event.conversationId !== conversationId || !projection?.message) {
+      throw new Error("Repair target is not a canonical message in a retained Chat");
+    }
+    const attachment = (projection.message.attachments ?? event.attachments ?? []).find(item => item.id === attachmentId);
+    if (!attachment?.agentId || !attachment.sha256 || !attachment.size) throw new Error("Attachment has no verifiable canonical identity");
+    const sourceDirectory = `projects/${projectId}/agents/${attachment.agentId}/attachments`;
+    const source = readSecureFile({ root: backup, relativePath: `${sourceDirectory}/${attachmentId}.bin`, maxBytes: 80 * 1024 * 1024 });
+    if (!source || source.length !== attachment.size || createHash("sha256").update(source).digest("hex") !== attachment.sha256) {
+      throw new Error("Backup attachment bytes do not match the canonical message");
+    }
+    const alreadyRetained = Boolean(readRetainedChatAttachment(dataDir, projectId, conversationId, attachment.agentId, attachmentId));
+    if (args.includes("--apply")) retainChatAttachment({
+      dataDir, sourceRoot: backup, sourceDirectory, projectId, conversationId, eventId, attachment,
+      repairSource: JSON.stringify({ backup, reason }),
+    });
+    console.log(JSON.stringify({ status: args.includes("--apply") ? "retained" : "preview", projectId, conversationId, eventId, attachmentId, size: attachment.size, sha256: attachment.sha256, alreadyRetained }));
+  } finally { store.close(); }
 } else if (command === "outbox-list") {
   const store = new AgentStore(dataDir);
   try {
@@ -87,5 +124,5 @@ if (command === "backup") {
     store.close();
   }
 } else {
-  throw new Error("usage: data-directory.mjs backup|restore|outbox-list|outbox-requeue --data-dir PATH [command options]");
+  throw new Error("usage: data-directory.mjs backup|restore|attachment-repair|outbox-list|outbox-requeue --data-dir PATH [command options]");
 }

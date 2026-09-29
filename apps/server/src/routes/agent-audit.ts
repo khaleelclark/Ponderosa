@@ -54,6 +54,12 @@ export function registerAgentAuditRoutes(
     }
   });
 
+  app.get<{ Params: { id: string; executionId: string } }>("/api/agents/:id/response-file-review/:executionId", async (request, reply) => {
+    if (!store.getAgent(request.params.id) || store.agentCreationPending(request.params.id)) return reply.code(404).send({ error: "Agent not found" });
+    if (!request.params.executionId || request.params.executionId.length > 200) return reply.code(400).send({ error: "Invalid response identity" });
+    return store.getResponseFileReview(request.params.id, request.params.executionId);
+  });
+
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>(
     "/api/agents/:id/changed-file",
     async (request, reply) => {

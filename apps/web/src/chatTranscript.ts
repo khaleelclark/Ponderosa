@@ -1,4 +1,5 @@
 import type { CommunicationAttachmentDto, CommunicationDocumentReference } from "@ponderosa/core";
+import { downloadBlob } from "./downloads";
 
 export interface TranscriptMessage {
   author: string;
@@ -58,13 +59,5 @@ export function transcriptFileName(title: string): string {
 
 export function downloadMarkdownTranscript(markdown: string, fileName: string): void {
   const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.style.display = "none";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
+  downloadBlob(blob, fileName);
 }

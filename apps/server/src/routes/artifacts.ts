@@ -135,7 +135,7 @@ export function registerArtifactRoutes(
 
   app.get<{
     Params: { projectId: string };
-    Querystring: { limit?: string; cursor?: string; conversationId?: string };
+    Querystring: { limit?: string; cursor?: string; conversationId?: string; q?: string };
   }>("/api/projects/:projectId/artifacts", async (request, reply) => {
     if (!store.getProject(request.params.projectId)) {
       return reply.code(404).send({ error: "project not found" });
@@ -153,6 +153,7 @@ export function registerArtifactRoutes(
         limit,
         cursor: request.query.cursor,
         conversationId,
+        search: request.query.q,
       });
     } catch (error) {
       return reply.code(400).send({

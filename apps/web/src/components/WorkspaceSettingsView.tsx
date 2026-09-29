@@ -120,6 +120,9 @@ function GeneralSettingsSection({
   onRolloverTokens,
   onRolloverFraction,
   onSaveRollover,
+  rolloverSaving,
+  rolloverSaved,
+  rolloverSaveError,
 }: {
   preferences: WorkspacePreferencesDto;
   colorMode: ColorMode;
@@ -138,6 +141,9 @@ function GeneralSettingsSection({
   onRolloverTokens(value: string): void;
   onRolloverFraction(value: string): void;
   onSaveRollover(tokens: number, fraction: number): void;
+  rolloverSaving: boolean;
+  rolloverSaved: boolean;
+  rolloverSaveError?: string;
 }): JSX.Element {
   const parsedRolloverTokens = Number(rolloverTokens);
   const parsedRolloverFraction = Number(rolloverFraction);
@@ -278,14 +284,15 @@ function GeneralSettingsSection({
           <Button
             variant="contained"
             sx={{ alignSelf: "flex-start" }}
-            disabled={!rolloverValuesValid}
+            disabled={!rolloverValuesValid || rolloverSaving}
             onClick={() => onSaveRollover(
               parsedRolloverTokens,
               parsedRolloverFraction,
             )}
           >
-            Save Rollover Limits
+            {rolloverSaving ? "Saving…" : "Save Rollover Limits"}
           </Button>
+          {rolloverSaveError ? <Alert severity="error">{rolloverSaveError}</Alert> : rolloverSaved ? <Alert severity="success" role="status">Rollover limits saved</Alert> : null}
         </Stack>
       </Paper>
     </Stack>
@@ -497,7 +504,7 @@ function ClaudeModelOptionsSettings({
                 {model.id}
               </Typography>
               {model.validatedAt ? (
-                <Typography variant="caption" color={model.availability === "unavailable" ? "warning.main" : "success.main"}>
+                <Typography variant="caption" display="block" color={model.availability === "unavailable" ? "warning.main" : "success.main"}>
                   {model.availability === "unavailable"
                     ? `Unavailable · ${model.unavailableReason ?? "Claude rejected this model"}`
                     : `Validated ${new Date(model.validatedAt).toLocaleString()}`}
@@ -705,11 +712,11 @@ function ProviderSettingsSection({
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
               <FormControl fullWidth>
                 <InputLabel id={`settings-model-${engine.id}`}>
-                  Default Model
+                  Saved Model for New Agents
                 </InputLabel>
                 <Select
                   labelId={`settings-model-${engine.id}`}
-                  label="Default Model"
+                  label="Saved Model for New Agents"
                   value={resolved.model}
                   renderValue={() => selectedModel?.label ?? resolved.model}
                   onChange={event => {
@@ -740,11 +747,11 @@ function ProviderSettingsSection({
               </FormControl>
               <FormControl fullWidth>
                 <InputLabel id={`settings-effort-${engine.id}`}>
-                  Default Reasoning
+                  Saved Reasoning for New Agents
                 </InputLabel>
                 <Select
                   labelId={`settings-effort-${engine.id}`}
-                  label="Default Reasoning"
+                  label="Saved Reasoning for New Agents"
                   value={resolved.effort}
                   onChange={event =>
                     onPreferences({
@@ -874,8 +881,12 @@ export function WorkspaceSettingsView({
   );
   const instructionsRef = useRef(instructions);
   const limitRef = useRef(limit);
+  const rolloverTokensRef = useRef(rolloverTokens);
+  const rolloverFractionRef = useRef(rolloverFraction);
   instructionsRef.current = instructions;
   limitRef.current = limit;
+  rolloverTokensRef.current = rolloverTokens;
+  rolloverFractionRef.current = rolloverFraction;
   const [pushState, setPushState] = useState<WebPushState>({
     kind: "permission_default",
     message: "Checking browser push status…",
@@ -960,6 +971,13 @@ export function WorkspaceSettingsView({
       ));
     },
   });
+  const saveRollover = useMutation({
+    mutationFn: (patch: { contextRolloverTokens: number; contextRolloverWindowFraction: number }) => onSavePreferences(patch),
+    onSuccess: (_saved, submitted) => {
+      setRolloverTokensDirty(rolloverTokensRef.current !== String(submitted.contextRolloverTokens));
+      setRolloverFractionDirty(rolloverFractionRef.current !== String(submitted.contextRolloverWindowFraction));
+    },
+  });
   useEffect(() => {
     if (!saveAgentDefaults.isSuccess) return;
 
@@ -982,7 +1000,7 @@ export function WorkspaceSettingsView({
         {section === "profile" ? (
           <OperatorProfileSettingsSection
             preferences={preferences}
-            onPreferences={onPreferences}
+            onSavePreferences={onSavePreferences}
           />
         ) : null}
         {section === "general" ? (
@@ -1030,13 +1048,14 @@ export function WorkspaceSettingsView({
               setRolloverFraction(value);
             }}
             onSaveRollover={(tokens, fraction) => {
-              onPreferences({
+              saveRollover.mutate({
                 contextRolloverTokens: tokens,
                 contextRolloverWindowFraction: fraction,
               });
-              setRolloverTokensDirty(false);
-              setRolloverFractionDirty(false);
             }}
+            rolloverSaving={saveRollover.isPending}
+            rolloverSaved={saveRollover.isSuccess && !rolloverTokensDirty && !rolloverFractionDirty}
+            rolloverSaveError={saveRollover.isError ? saveRollover.error instanceof Error ? saveRollover.error.message : "Rollover limits could not be saved. Try again." : undefined}
           />
         ) : null}
         {section === "notifications" ? (
@@ -1134,41 +1153,43 @@ export function WorkspaceSettingsView({
 
 function OperatorProfileSettingsSection({
   preferences,
-  onPreferences,
+  onSavePreferences,
 }: {
   preferences: WorkspacePreferencesDto;
-  onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+  onSavePreferences(patch: Partial<WorkspacePreferencesDto>): Promise<WorkspacePreferencesDto>;
 }): JSX.Element {
   const form = useOperatorProfileForm(preferences.profile);
+  const save = useMutation({ mutationFn: (profile: WorkspacePreferencesDto["profile"]) => onSavePreferences({ profile }) });
   return (
     <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 } }}>
       <OperatorProfileEditor
         form={form}
         avatarSize={72}
         nameLabel="What Agents Call You"
-        handleHelperText="Used as your stable #handle. Historical structured mentions continue to follow this identity."
+        handleHelperText="# identifies people and Agents; @ references files. Historical mentions continue to follow your stable identity."
         pictureLabelId="profile-picture"
         avatarFirst
         showDescription
       />
       <Button
         variant="contained"
-        disabled={form.busy || !form.valid}
-        onClick={() => onPreferences({ profile: form.profile })}
+        disabled={form.busy || !form.valid || save.isPending}
+        onClick={() => save.mutate(form.profile)}
         sx={{ alignSelf: "flex-start", mt: 2.25 }}
       >
-        Save Profile
+        {save.isPending ? "Saving…" : "Save Profile"}
       </Button>
+      {save.isError ? <Alert severity="error" sx={{ mt: 1 }}>{save.error instanceof Error ? save.error.message : "Profile could not be saved. Try again."}</Alert> : save.isSuccess && JSON.stringify(save.variables) === JSON.stringify(form.profile) ? <Alert severity="success" role="status" sx={{ mt: 1 }}>Profile saved</Alert> : null}
     </Paper>
   );
 }
 
 export function OperatorProfileWorkspace({
   preferences,
-  onPreferences,
+  onSavePreferences,
 }: {
   preferences: WorkspacePreferencesDto;
-  onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+  onSavePreferences(patch: Partial<WorkspacePreferencesDto>): Promise<WorkspacePreferencesDto>;
 }): JSX.Element {
   return (
     <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflow: "auto" }}>
@@ -1176,7 +1197,7 @@ export function OperatorProfileWorkspace({
       <Box sx={{ maxWidth: 720, mx: "auto", p: { xs: 2, md: 4 } }}>
         <OperatorProfileSettingsSection
           preferences={preferences}
-          onPreferences={onPreferences}
+          onSavePreferences={onSavePreferences}
         />
       </Box>
     </Box>

@@ -162,7 +162,7 @@ export function NewChatComposer({engines, enginesLoaded = true, preferences, onC
       </Paper> : null}
       <Composer disabled={busy} running={false} onSend={send}
         placeholder="Write a message…" destinationMode="project-chat" allowUnmentionedSend={engineIsAvailable(engine)}
-        sendUnavailableReason="Choose an available provider"
+        sendUnavailableReason={!engine || !engineIsAvailable(engine) ? "Choose an available provider" : "Write a message to send"}
         controls={runtimeControls}
         capabilityButtonRef={capabilityButtonRef}
         menuActions={[{

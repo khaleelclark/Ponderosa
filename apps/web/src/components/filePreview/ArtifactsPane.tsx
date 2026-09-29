@@ -3,7 +3,8 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import DifferenceIcon from "@mui/icons-material/Difference";
 import SearchIcon from "@mui/icons-material/Search";
 import TerminalIcon from "@mui/icons-material/Terminal";
-import { Alert, Box, InputAdornment, List, ListItemButton, ListItemIcon, ListItemText, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Box, Button, InputAdornment, List, ListItemButton, ListItemIcon, ListItemText, Stack, TextField, Typography } from "@mui/material";
+import { routeToPath } from "../../routeRegistry";
 import type { ArtifactDto } from "@ponderosa/core";
 import { useEffect, useState } from "react";
 import { telemetryElementId } from "../../telemetryFocus";
@@ -69,7 +70,8 @@ export function ArtifactsPane({
   if (orderedArtifacts.length === 0) {
     return (
       <Box sx={{ p: 2 }}>
-        <Alert severity="info">No files or results yet. Generated files, diffs, and test reports appear here; command output is available in Activity.</Alert>
+        <Alert severity="info">No files or results yet. Generated files, diffs, and test reports appear here; command output is available in the Chat's Work log and Technical details.</Alert>
+        <Button component="a" href={routeToPath({ kind: "agent", projectId, agentId, view: "technical" })}>Open {agentTitle}’s Technical details</Button>
       </Box>
     );
   }

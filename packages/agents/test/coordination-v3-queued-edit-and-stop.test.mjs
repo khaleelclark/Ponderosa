@@ -322,6 +322,31 @@ test("Stop replay is bound to its successful target Run", () => {
   }
 });
 
+test("acknowledged cancellation is stopping until its provider teardown operation completes", () => {
+  const context = fixture();
+  try {
+    enqueue(context, "stop-state-message", "Run then stop", [context.recipients[0]]);
+    const lease = context.coordination.leaseNextRun({ workerId: "worker-a" });
+    const input = { injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken };
+    context.coordination.preparePromptInjection({ ...input, prompt: "Run then stop" });
+    context.coordination.markPromptSubmitted(input);
+    context.coordination.acknowledgePromptInjection(input);
+    context.coordination.cancelAgentRun({ agentId: context.recipients[0].id, expectedRunId: lease.runId, idempotencyKey: "stop-state" });
+    const receipt = () => context.coordination.deliveryReceiptsForCommunication(context.project.id, "stop-state-message")[0];
+    assert.equal(receipt().providerAcknowledged, true);
+    assert.equal(receipt().runStopState, "stopping");
+    const operation = context.coordination.claimProviderOperations("cleanup-worker")[0];
+    assert.equal(receipt().runStopState, "stopping");
+    context.coordination.deadLetterProviderOperation(operation.id, "cleanup-worker", "exit was not confirmed");
+    assert.equal(receipt().runStopState, "unconfirmed");
+    context.store.sqlite.prepare("UPDATE provider_operation_outbox SET state = 'claimed', claimed_by = 'cleanup-worker' WHERE id = ?").run(operation.id);
+    context.coordination.completeProviderOperation(operation.id, "cleanup-worker");
+    assert.equal(receipt().runStopState, "stopped");
+    context.store.sqlite.prepare("DELETE FROM provider_operation_outbox WHERE id = ?").run(operation.id);
+    assert.equal(receipt().runStopState, "unconfirmed", "missing historical termination evidence is not fabricated");
+  } finally { context.close(); }
+});
+
 test("Stop replay is bound to its inactive target Run", () => {
   const context = fixture();
   try {

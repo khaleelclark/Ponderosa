@@ -1,5 +1,6 @@
 import type {
   LocalBrowserConnectionDto,
+  ResponseFileReviewDto,
   LocalBrowserPairingDto,
   BrowserFrameMetadata,
   BrowserViewportSize,
@@ -423,13 +424,16 @@ export const realApi = {
     query: string,
     limit?: number,
     kind?: "conversation" | "agent",
+    distinct?: "chats",
+    signal?: AbortSignal,
   ): Promise<GlobalChatSearchResponseDto> {
     return requestJson<GlobalChatSearchResponseDto>(
-      `/api/search${toQuery({ q: query, limit, kind })}`,
+      `/api/search${toQuery({ q: query, limit, kind, distinct })}`,
+      signal ? { signal } : undefined,
     );
   },
-  searchGlobalFiles(query: string, limit = 25): Promise<import("@ponderosa/core").GlobalFileSearchResponseDto> {
-    return requestJson(`/api/search/files${toQuery({ q: query, limit })}`);
+  searchGlobalFiles(query: string, limit = 25, scope?: { projectId: string; conversationId?: string }): Promise<import("@ponderosa/core").GlobalFileSearchResponseDto> {
+    return requestJson(`/api/search/files${toQuery({ q: query, limit, ...scope })}`);
   },
   getAllChat(limit: number = 50, cursor?: string): Promise<AllChatPageDto> {
     return requestJson<AllChatPageDto>(`/api/all-chat${toQuery({ limit: String(limit), cursor })}`);
@@ -816,6 +820,9 @@ export const realApi = {
   getChangedFileDetail(agentId: string, path: string): Promise<ChangedFileDetailDto> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/changed-file${toQuery({ path })}`);
   },
+  getResponseFileReview(agentId: string, executionId: string): Promise<ResponseFileReviewDto> {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/response-file-review/${encodeURIComponent(executionId)}`);
+  },
   getActivityOutput(retrievalUrl: string, cursor?: string): Promise<AgentActivityOutputDto> {
     return requestJson(`${retrievalUrl}${toQuery({ cursor })}`);
   },
@@ -828,8 +835,8 @@ export const realApi = {
   getProjectArtifact(projectId: string, artifactId: string): Promise<ArtifactDto> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}`);
   },
-  listConversationArtifacts(projectId: string, conversationId: string, limit: number = 100, cursor?: string): Promise<HistoryPageDto<ArtifactDto>> {
-    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ conversationId, limit: String(limit), cursor })}`);
+  listConversationArtifacts(projectId: string, conversationId: string, limit: number = 100, cursor?: string, q?: string): Promise<HistoryPageDto<ArtifactDto>> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ conversationId, limit: String(limit), cursor, q })}`);
   },
   updateProjectArtifact(projectId: string, artifactId: string, input: { pinned?: boolean; visibility?: "project" | "published" }): Promise<ArtifactDto> {
     return requestJson<ArtifactDto>(`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}`, {
@@ -997,9 +1004,9 @@ export const realApi = {
       `/api/agents/${encodeURIComponent(agentId)}/workspace/file${toQuery({ path })}`,
     );
   },
-  getWorkspaceFileView(projectId: string, path: string, agentId?: string): Promise<WorkspaceFileViewDto> {
+  getWorkspaceFileView(projectId: string, path: string, agentId?: string, conversationId?: string): Promise<WorkspaceFileViewDto> {
     return requestJson<WorkspaceFileViewDto>(
-      `/api/projects/${encodeURIComponent(projectId)}/workspace-files/view-info${toQuery({ path, agentId })}`,
+      `/api/projects/${encodeURIComponent(projectId)}/workspace-files/view-info${toQuery({ path, agentId, conversationId })}`,
     );
   },
   getArtifact(agentId: string, artifactId: string): Promise<ArtifactContentDto> {

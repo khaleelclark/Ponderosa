@@ -5,6 +5,8 @@ import { CssBaseline, ThemeProvider, createTheme } from "@mui/material";
 import { ProjectBrowserDialog } from "../src/components/ProjectBrowserDialog";
 import { BrowserWorkspaceHost } from "../src/components/browser/BrowserWorkspaceHost";
 import { api } from "../src/api";
+import { queryKeys } from "../src/queryKeys";
+const queryClient = new QueryClient();
 const session: any = { id: "fixture", projectId: "p", status: "ready", controlOwner: "operator", controlEpoch: 1, capabilities: { fileUpload: true, hostedHeaded: true }, url: "https://example.test/form", title: "Application form", activePageId: "one", pages: [{ id: "one", title: "Application form", active: true, closable: false }], pageRevision: 1, frameRevision: 1 };
 const inputs: unknown[] = [];
 const sizes = new Map<string, { width: number; height: number }>();
@@ -24,6 +26,13 @@ if (parameters.has("follow")) {
 }
 if (parameters.has("tabs")) session.pages = Array.from({ length: Number(parameters.get("tabs")) }, (_, index) => ({ id: index ? `tab-${index}` : "one", title: `Research tab ${index + 1}`, active: index === 0, closable: true }));
 const workspaceProjects = [{ id: "p", label: "Trip research" }, { id: "q", label: "Job search" }, { id: "r", label: "Hotels" }, { id: "s", label: "Flights" }, { id: "t", label: "Activities" }];
+let chatTitle = "Current trip Chat";
+(window as any).namingRequests = [];
+api.listConversations = async id => {
+  (window as any).namingRequests.push(id);
+  return parameters.has("names") ? [{ id: `chat-${id}`, projectId: id, title: chatTitle, archived: false }] as any : [];
+};
+(window as any).renameChat = () => { chatTitle = "Renamed trip Chat"; return queryClient.invalidateQueries({ queryKey: queryKeys.conversations.project("p") }); };
 session.manualControl = parameters.has("manual") ? "manual" : "automation";
 session.privateSignIn = parameters.has("private");
 session.capabilities.nativeDisplay = parameters.has("native");
@@ -80,4 +89,4 @@ function App() {
   const [dockWidth, setDockWidth] = useState(0);
   return <ThemeProvider theme={createTheme({ palette: { mode: "dark" } })}><CssBaseline /><main style={{ marginRight: dockWidth }}>Chat stays here</main><button onClick={() => setOpen(true)}>Open browser</button>{open ? parameters.has("workspaces") ? <BrowserWorkspaceHost projectId="p" request={request} projects={workspaceProjects} onRequestHandled={() => setRequest(undefined)} onDockWidth={setDockWidth} onClose={() => setOpen(false)} /> : <ProjectBrowserDialog projectId="p" agent={parameters.has("agent") ? { id: "assistant", runId: "run" } : undefined} open onDockWidth={setDockWidth} onClose={() => setOpen(false)} /> : null}</ThemeProvider>;
 }
-createRoot(document.getElementById("root")!).render(<StrictMode><QueryClientProvider client={new QueryClient()}><App /></QueryClientProvider></StrictMode>);
+createRoot(document.getElementById("root")!).render(<StrictMode><QueryClientProvider client={queryClient}><App /></QueryClientProvider></StrictMode>);

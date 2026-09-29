@@ -1,4 +1,5 @@
 import { Alert, Snackbar } from "@mui/material";
+import { prepareDownload } from "../downloads";
 import {
   createContext,
   useCallback,
@@ -58,6 +59,7 @@ export function MutationNotificationProvider({
   }, []);
   const value = useMemo(() => notify, [notify]);
   useEffect(() => {
+    const pending = new Set<string>();
     const announceDownload = (event: MouseEvent) => {
       if (event.defaultPrevented) return;
       const target = event.target;
@@ -66,6 +68,17 @@ export function MutationNotificationProvider({
       if (!(anchor instanceof HTMLAnchorElement) || anchor.dataset.ponderosaDownloadFeedback === "handled") return;
       const url = new URL(anchor.href, window.location.href);
       if (url.protocol !== "blob:" && url.origin !== window.location.origin) return;
+      if (url.protocol !== "blob:" && url.pathname.startsWith("/api/")) {
+        event.preventDefault();
+        if (pending.has(url.href)) return;
+        if (pending.size >= 1) { notify({ message: "A download is being prepared. Wait for it before starting another.", severity: "info", key: "download-pending" }); return; }
+        pending.add(url.href);
+        void prepareDownload(url.href, anchor.download, AbortSignal.timeout(60_000))
+          .then(() => notify({ message: "Download started", key: "first-party-download" }))
+          .catch((error: unknown) => notify({ message: error instanceof Error ? error.message : "Download could not start. Try again.", severity: "error", key: "first-party-download" }))
+          .finally(() => pending.delete(url.href));
+        return;
+      }
       notify({ message: "Download started", key: "first-party-download" });
     };
     document.addEventListener("click", announceDownload, true);

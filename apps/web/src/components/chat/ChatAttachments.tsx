@@ -87,11 +87,12 @@ export function ChatAttachments({
                   sx={{ p: 1, minWidth: 190, border: 1, borderColor: "divider", borderRadius: 1 }}
                 >
                   <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
-                    {attachment.name || "Artifact unavailable"}
+                    {attachment.name || "Attachment unavailable"}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Artifact unavailable
+                    {failed.has(attachment.id) && !attachment.unavailable ? "Preview could not load." : "Attachment unavailable"}
                   </Typography>
+                  {failed.has(attachment.id) && !attachment.unavailable ? <Button size="small" onClick={() => setFailed(current => { const next = new Set(current); next.delete(attachment.id); return next; })}>Retry preview</Button> : null}
                 </Stack>
               ) : image && previewUrl ? (
                 <ButtonBase
@@ -227,7 +228,9 @@ export function ChatAttachments({
           }}
         >
           {previewUnavailable ? (
-            <Typography role="status" sx={{ p: 2 }}>Artifact unavailable</Typography>
+            <Stack sx={{ p: 2 }}><Typography role="status">{preview?.unavailable ? "Attachment unavailable" : "Preview could not load."}</Typography>
+              {preview && failed.has(preview.id) && !preview.unavailable ? <Button onClick={() => setFailed(current => { const next = new Set(current); next.delete(preview.id); return next; })}>Retry preview</Button> : null}
+            </Stack>
           ) : preview && textPreviewSupported(preview) ? (
             <Box sx={{ width: "100%", height: "100%", p: 2, minWidth: 0 }}>
               <FilePreview

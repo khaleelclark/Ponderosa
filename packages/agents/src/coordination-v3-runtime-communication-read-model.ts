@@ -431,6 +431,10 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       }) => {
         const injection = this.sqlite.prepare(`
           SELECT injection.id, injection.kind, injection.state, injection.updated_at,
+            (SELECT operation.state FROM provider_operation_outbox operation
+              WHERE operation.run_id = injection.run_id AND operation.operation = 'interrupt'
+                AND operation.idempotency_key LIKE 'cancel:%'
+              ORDER BY operation.id DESC LIMIT 1) AS run_stop_operation_state,
             (
               SELECT provider.execution_id
               FROM provider_inputs provider
@@ -447,6 +451,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           state: string;
           updated_at: string;
           execution_id: string | null;
+          run_stop_operation_state: string | null;
         } | undefined;
         const recovery = injection
           ? this.sqlite.prepare(`
@@ -530,6 +535,13 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           ].filter((value): value is string => Boolean(value)).sort().at(-1)!,
           attemptCount,
           ...(injection?.state === "acknowledged" ? { providerAcknowledged: true as const } : {}),
+          ...(state === "cancelled" && injection?.state === "acknowledged" ? {
+            // A scheduler cancellation is a fence, not an observed process
+            // exit. Only the completed teardown operation confirms stopping.
+            runStopState: injection.run_stop_operation_state === "completed" ? "stopped" as const
+              : injection.run_stop_operation_state === "pending" || injection.run_stop_operation_state === "claimed" ? "stopping" as const
+              : "unconfirmed" as const,
+          } : {}),
           ...(
             (state === "undelivered" || state === "run_unconfirmed" || state === "retry_exhausted" || state === "failed")
             && recipientCurrentlyAuthorized

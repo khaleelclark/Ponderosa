@@ -289,6 +289,9 @@ export function AgentSettingsPane({
   mcpToolCountLabel,
   steering,
   onStartFreshSession,
+  freshSessionPending,
+  freshSessionNotice,
+  freshSessionError,
   onOpenMaster,
   onOpenAgent,
   onUpdateManagementPermissions,
@@ -323,6 +326,9 @@ export function AgentSettingsPane({
   onSaveRuntimeSettings(): void;
   onRecheckEngine(): void;
   onStartFreshSession(): void;
+  freshSessionPending?: boolean;
+  freshSessionNotice?: string;
+  freshSessionError?: string;
   onOpenMaster(conversationId: string): void;
   onOpenAgent(agentId: string): void;
   onUpdateManagementPermissions(value: AgentManagementPermissionsDto): void;
@@ -351,11 +357,13 @@ export function AgentSettingsPane({
           variant="outlined"
           startIcon={<RestartAltIcon />}
           onClick={onStartFreshSession}
+          disabled={freshSessionPending}
           sx={{ alignSelf: { xs: "stretch", sm: "center" } }}
         >
-          Start Fresh Provider Session For Next Run
+          {freshSessionPending ? "Scheduling fresh session…" : "Start Fresh Provider Session For Next Run"}
         </Button>
       </Stack>
+      {freshSessionError ? <Alert severity="error">{freshSessionError}</Alert> : freshSessionNotice ? <Alert severity={freshSessionPending ? "info" : "success"} role="status">{freshSessionNotice}</Alert> : null}
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Typography variant="subtitle1" fontWeight={800}>
           Works In Chat

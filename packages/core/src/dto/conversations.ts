@@ -64,6 +64,8 @@ export interface ResponseFileActivityDto {
   status: "in_progress" | "completed";
   /** Sequence of the latest canonical file_change event for this path and Run. */
   sourceSeq: number;
+  /** Run that owns this recorded file change, not the current working tree. */
+  executionId?: string;
   /** Canonical persisted Artifact projection for the source event, when available. */
   artifactId?: string;
   /** Distinguishes a downloadable generated result from an execution diff. */
@@ -162,6 +164,8 @@ export interface MessageDeliveryReceiptDto {
   attemptCount: number;
   /** Provider acknowledged the message even if the Run outcome is uncertain. */
   providerAcknowledged?: true;
+  /** Observed scheduler evidence; cancelling a delivery alone does not prove a Run stopped. */
+  runStopState?: "stopping" | "stopped" | "unconfirmed";
   /** Only the latest terminal attempt may be retried. */
   canRetry?: true;
   /** The previous attempt may already have completed; a retry can duplicate work. */

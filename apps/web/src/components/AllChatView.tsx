@@ -80,6 +80,7 @@ import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
 import { loadRetainedData } from "../retainedData";
 import { DecisionCard } from "./decisions/DecisionCard";
+import { decisionResponseSummary } from "./decisions/decisionResponse";
 import { AgentRuntimeControls } from "./AgentDetail.parts";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import {
@@ -1586,12 +1587,12 @@ export function AllChatView({
                 createdAt: entry.at,
                 ariaLabel: automatic
                   ? entry.choice
-                  : `You chose ${entry.choice}`,
+                  : decisionResponseSummary(entry.item.decision, entry.choice),
                 body: (
                   <Typography variant="body2">
                     {automatic
                       ? entry.choice
-                      : `You chose ${entry.choice}.`}
+                      : decisionResponseSummary(entry.item.decision, entry.choice)}
                   </Typography>
                 ),
               }}

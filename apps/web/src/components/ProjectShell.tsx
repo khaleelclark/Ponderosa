@@ -19,7 +19,7 @@ import { queryKeys } from "../queryKeys";
 import { retainedDataFailure } from "../retainedData";
 import { enginesWithModelCatalog } from "../conversationEngine";
 import { assertNeverRoute, nestedProjectRouteResources, routeToPath, type ProjectRoute } from "../routeRegistry";
-import type { Route } from "../routing";
+import { routeReturnTarget, routeReturnLabel, type Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
 import { PresetManagerDialog } from "./dialogs";
 import { ConversationView } from "./ConversationView";
@@ -178,14 +178,16 @@ export function ProjectShell({
   };
 
   const openAgentReview = (agentId: string) => {
-    navigate({ kind: "review", projectId, agentId });
+    navigate({ kind: "review", projectId, agentId, returnTo: routeToPath(route) });
   };
 
   const openAgentFileActivity = (agentId: string, file: ResponseFileActivityDto) => {
-    if (file.artifactId) {
+    if (file.executionId) {
+      navigate({ kind: "review", projectId, agentId, path: file.path, executionId: file.executionId, returnTo: routeToPath(route) });
+    } else if (file.artifactId) {
       navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: file.artifactId } });
     } else {
-      navigate({ kind: "review", projectId, agentId, path: file.path });
+      navigate({ kind: "review", projectId, agentId, path: file.path, executionId: file.executionId, returnTo: routeToPath(route) });
     }
   };
 
@@ -372,7 +374,7 @@ export function ProjectShell({
           navigate({ kind: "conversation", projectId, conversationId });
         }}
         onOpenArtifact={(artifactId) => openProjectArtifact(route.agentId, artifactId)}
-        onOpenReview={(path) => navigate({ kind: "review", projectId, agentId: route.agentId, ...(path ? { path } : {}) })}
+        onOpenReview={(path, executionId) => navigate({ kind: "review", projectId, agentId: route.agentId, ...(path ? { path } : {}), ...(executionId ? { executionId } : {}), returnTo: routeToPath(route) })}
         onOpenBrowser={(runId) => projectBrowser.openAgent?.(route.agentId, runId)}
         onNewSubagent={openNewSubagent}
         onCreateTrigger={() => onCreate("trigger", {
@@ -420,9 +422,9 @@ export function ProjectShell({
         projectId={projectId}
         agents={agents}
         selectedTriggerId={route.triggerId}
-        onCloseTriggerSettings={() => navigate({ kind: "home" })}
+        onCloseTriggerSettings={() => navigate(routeReturnTarget(route.returnTo, { kind: "manageAutomations" }))}
         onTriggerDeleted={triggerId => {
-          if (triggerId === route.triggerId) navigate({ kind: "home" });
+          if (triggerId === route.triggerId) navigate(routeReturnTarget(route.returnTo, { kind: "manageAutomations" }));
         }}
         onOpenAgentWork={occurrenceId => navigate({ kind: "projectWork", projectId, focusId: `trigger:${occurrenceId}` })}
         onCreateTrigger={() => onCreate("trigger", { projectId })}
@@ -437,10 +439,13 @@ export function ProjectShell({
       files={detail?.changedFiles ?? []}
       running={running}
       initialPath={route.path}
-      onBack={() => navigate({ kind: "agent", projectId, agentId: route.agentId })}
+      executionId={route.executionId}
+      backLabel={routeReturnLabel(routeReturnTarget(route.returnTo, { kind: "agent", projectId, agentId: route.agentId }))}
+      onBack={() => navigate(routeReturnTarget(route.returnTo, { kind: "agent", projectId, agentId: route.agentId }))}
     />;
   } else if (route.kind === "workspaceFile") {
-    main = <WorkspaceFileView projectId={projectId} path={route.path} onBack={() => navigate({ kind: "home" })} />;
+    const returnTarget = routeReturnTarget(route.returnTo, { kind: "project", projectId, view: "files" });
+    main = <WorkspaceFileView projectId={projectId} path={route.path} agentId={route.agentId} conversationId={route.conversationId} backLabel={routeReturnLabel(returnTarget)} onBack={() => navigate(returnTarget)} />;
   } else if (route.kind === "projectWork") {
     main = <AgentWorkInspector
       key={`${projectId}:${route.conversationId ?? ""}:${route.focusId ?? ""}`}

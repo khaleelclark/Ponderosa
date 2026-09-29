@@ -146,7 +146,7 @@ export function effortOptionsForModel(engine: EngineDto | undefined, model: stri
   return efforts.map((option) => ({
     ...option,
     label: option.id === "xhigh"
-      ? "XHigh"
+      ? "Extra high"
       : `${option.id.charAt(0).toUpperCase()}${option.id.slice(1)}`,
   }));
 }

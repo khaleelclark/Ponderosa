@@ -1,5 +1,6 @@
 import { Alert, Box, Button } from "@mui/material";
 import { LoadingState } from "./components/LoadingState";
+import { MobileNavigationButton } from "./components/MobileNavigationContext";
 import type {
   ConversationDto,
   EngineDto,
@@ -137,6 +138,7 @@ export function WorkspaceRouteOutlet({
       <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
       {loadError ? (
         <Box sx={{ p: 2 }}>
+          <MobileNavigationButton />
           <Alert
             severity="error"
             action={
@@ -222,7 +224,7 @@ export function WorkspaceRouteOutlet({
         <RecoverableLazyRoute
           key="profile"
           load={loadOperatorProfileWorkspace}
-          componentProps={{ preferences, onPreferences }}
+          componentProps={{ preferences, onSavePreferences }}
         />
       ) : route.kind === "usage" ? (
         <RecoverableLazyRoute
