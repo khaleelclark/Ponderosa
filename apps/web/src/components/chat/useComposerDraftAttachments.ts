@@ -82,7 +82,7 @@ export function useComposerDraftAttachments({
 
   pumpUploads.current = () => {
     if (!mounted.current || !conversationDraftId) return;
-    while (activeUploads.current < 4 && pendingUploads.current.length > 0) {
+    while (activeUploads.current < 2 && pendingUploads.current.length > 0) {
       const file = pendingUploads.current.shift()!;
       const state = uploadStates.get(file);
       if (state?.status === "complete" || attachmentIds.current.has(file)) {
@@ -94,7 +94,9 @@ export function useComposerDraftAttachments({
         new Map(current).set(file, { status: "uploading" }),
       );
       void api
-        .uploadDraftAttachment(conversationDraftId, draftOwnerId, file)
+        .uploadDraftAttachment(conversationDraftId, draftOwnerId, file, () =>
+          mounted.current && uploadGeneration === generation.current &&
+          !locallyRemovedFiles.current.has(file))
         .then(attachment => {
           if (
             !mounted.current ||
@@ -117,7 +119,7 @@ export function useComposerDraftAttachments({
           setAttachmentVersion(value => value + 1);
         })
         .catch((error: unknown) => {
-          if (!mounted.current || uploadGeneration !== generation.current)
+          if (!mounted.current || uploadGeneration !== generation.current || locallyRemovedFiles.current.has(file))
             return;
           setUploadStates(current =>
             new Map(current).set(file, {

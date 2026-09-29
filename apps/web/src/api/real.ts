@@ -159,6 +159,7 @@ import {
   type WorkspaceStreamHandlers,
 } from "./types";
 import { createResilientEventSource } from "./resilientEventSource";
+import { retryContendedAttachmentUpload } from "./uploadRetry";
 import {
   backgroundCooldownRemaining,
   noteBackgroundRateLimit,
@@ -218,7 +219,7 @@ export function requestJson<T>(path: string, init?: RequestInit, acceptedErrorSt
     });
 
     if (!response.ok && !acceptedErrorStatuses.includes(response.status)) {
-      const retryAfterMs = response.status === 429
+      const retryAfterMs = response.status === 429 || response.status === 503
         ? parseRetryAfter(response.headers.get("retry-after"))
         : undefined;
       if (response.status === 429 && isBackground) {
@@ -520,8 +521,8 @@ export const realApi = {
       { method: "DELETE" },
     );
   },
-  uploadDraftAttachment(conversationId: string, ownerId: string, file: File): Promise<DraftAttachmentDto> {
-    return requestJson<DraftAttachmentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments`, {
+  uploadDraftAttachment(conversationId: string, ownerId: string, file: File, shouldRetry?: () => boolean): Promise<DraftAttachmentDto> {
+    return retryContendedAttachmentUpload(() => requestJson<DraftAttachmentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments`, {
       method: "POST",
       headers: {
         "content-type": "application/x-ponderosa-attachment",
@@ -530,7 +531,7 @@ export const realApi = {
         "x-ponderosa-draft-owner": ownerId,
       },
       body: file,
-    });
+    }), shouldRetry);
   },
   async downloadDraftAttachment(attachment: DraftAttachmentDto): Promise<File> {
     const response = await fetch(attachment.downloadUrl, { cache: "no-store" });
@@ -1016,7 +1017,7 @@ export const realApi = {
     });
   },
   uploadAttachment(agentId: string, file: File): Promise<AssetDto> {
-    return requestJson<AssetDto>(`/api/agents/${encodeURIComponent(agentId)}/attachments`, {
+    return retryContendedAttachmentUpload(() => requestJson<AssetDto>(`/api/agents/${encodeURIComponent(agentId)}/attachments`, {
       method: "POST",
       headers: {
         "content-type": "application/x-ponderosa-attachment",
@@ -1024,10 +1025,10 @@ export const realApi = {
         "x-ponderosa-filename": file.name,
       },
       body: file,
-    });
+    }));
   },
   uploadConversationAttachment(conversationId: string, file: File): Promise<AssetDto> {
-    return requestJson<AssetDto>(`/api/conversations/${encodeURIComponent(conversationId)}/attachments`, {
+    return retryContendedAttachmentUpload(() => requestJson<AssetDto>(`/api/conversations/${encodeURIComponent(conversationId)}/attachments`, {
       method: "POST",
       headers: {
         "content-type": "application/x-ponderosa-attachment",
@@ -1035,7 +1036,7 @@ export const realApi = {
         "x-ponderosa-filename": file.name,
       },
       body: file,
-    });
+    }));
   },
   async deleteConversationAttachment(conversationId: string, attachmentId: string): Promise<void> {
     await requestJson<void>(

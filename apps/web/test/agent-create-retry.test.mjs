@@ -171,6 +171,39 @@ test("recipient-gone uploads keep live recipient copies and report an empty unav
   assert.deepEqual(deleted, ["gone:gone:file.txt"]);
 });
 
+test("a four-file send starts no more than two uploads before a slot releases", async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let firstTwoStarted;
+  const firstTwo = new Promise(resolve => { firstTwoStarted = resolve; });
+  let started = 0;
+  let active = 0;
+  let peak = 0;
+  const sent = uploadFilesForRecipients(
+    ["agent"],
+    [0, 1, 2, 3].map(index => new File([String(index)], `file-${index}.txt`)),
+    async (_agentId, file) => {
+      started += 1;
+      active += 1;
+      peak = Math.max(peak, active);
+      if (started === 2) firstTwoStarted();
+      if (started <= 2) await gate;
+      active -= 1;
+      return { id: file.name };
+    },
+    async () => {},
+  );
+  await firstTwo;
+  try {
+    assert.equal(started, 2);
+    assert.equal(peak, 2);
+  } finally {
+    release();
+  }
+  assert.equal((await sent)[0].attachments.length, 4);
+  assert.equal(peak, 2);
+});
+
 test("non-recipient upload failures still clean every successful copy", async () => {
   const files = [new File(["file"], "file.txt")];
   const deleted = [];

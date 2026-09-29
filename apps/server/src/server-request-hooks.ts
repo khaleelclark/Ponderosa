@@ -66,7 +66,10 @@ export function registerBodyParsers(
     }
     if (uploadRoute && largeAttachmentType) {
       if (activeUploadCount >= 2) {
-        void reply.code(503).header("retry-after", "1").send({ error: "Two attachments are uploading. Try again in a moment." });
+        void reply.code(503).header("retry-after", "1").send({
+          code: "attachment_upload_busy",
+          error: "Two attachments are uploading. Try again in a moment.",
+        });
         return Readable.from(Buffer.alloc(0));
       }
       activeUploadCount += 1;

@@ -191,6 +191,7 @@ test("large attachment parsing is route-scoped and admits only two concurrent up
   await bothStarted;
   const third = await send(Buffer.from("third"));
   assert.equal(third.statusCode, 503, third.body);
+  assert.equal(third.json().code, "attachment_upload_busy");
   assert.equal(third.headers["retry-after"], "1");
   assert.equal(started, 2);
   releaseUploads();

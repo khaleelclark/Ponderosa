@@ -21,7 +21,7 @@ export function newChatSubmission(text: string):
     : { kind: "broadcast", text: broadcastText };
 }
 
-const RECIPIENT_UPLOAD_CONCURRENCY = 3;
+const RECIPIENT_UPLOAD_CONCURRENCY = 2;
 const fileInstanceIds = new WeakMap<File, number>();
 let nextFileInstanceId = 0;
 

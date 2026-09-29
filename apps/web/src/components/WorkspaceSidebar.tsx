@@ -526,8 +526,12 @@ export function WorkspaceSidebar({
       : showingTriggers
         ? { label: "Create Automation", run: () => onCreate("trigger", { projectId: activeProjectId ?? projects[0]?.id }) }
         : undefined;
+  const runningAgentCount = activeWorkspaceAgentQuery.data?.pages.at(-1)?.runningCount;
+  const agentsHeading = runningAgentCount === undefined
+    ? activeWorkspaceAgentQuery.isError ? "Agents · count unavailable" : "Agents · loading count…"
+    : `Agents · ${runningAgentCount} running`;
   const panelHeader = <Stack direction="row" sx={{ alignItems: "center", pl: 2, pr: .25, pt: drawer ? .75 : 1.5, pb: 1 }}>
-    <Typography component="div" sx={{ minWidth: 0, flex: 1, fontSize: 15, fontWeight: 700 }}>{showingAgents ? `Agents · ${activeWorkspaceAgentQuery.data?.pages.at(-1)?.runningCount ?? 0} running` : showingTriggers ? "Automations" : "Chats"}</Typography>
+    <Typography component="div" sx={{ minWidth: 0, flex: 1, fontSize: 15, fontWeight: 700 }}>{showingAgents ? agentsHeading : showingTriggers ? "Automations" : "Chats"}</Typography>
     {panelCreate ? <Tooltip title={panelCreate.label}><IconButton size="small" aria-label={panelCreate.label} onClick={panelCreate.run}><AddIcon fontSize="small" /></IconButton></Tooltip> : null}
   </Stack>;
   const allChatRows = chatItems;
