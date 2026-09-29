@@ -21,8 +21,16 @@ const files = Array.from({ length: 75 }, (_, index) => ({ path: `src/file-${inde
   diffAvailable: true, provenanceTruncated: false, diff: `--- a/src/file-${index}.ts\n+++ b/src/file-${index}.ts\n@@ -1 +1${index === 74 ? ",2" : ""} @@\n-old-${index}\n+new-${index}\n${index === 74 ? `+${"long_line".repeat(100)}\n` : ""}` }));
 api.getResponseFileReview = async () => ({ executionId: "selected-run", files, truncated: false });
 api.getWorkspaceStatus = async () => ({ isGitRepository: false, workingCopy: { mode: "shared", rootPath: "/test" }, changes: [] }) as never;
-api.listAgents = async () => Array.from({ length: 695 }, (_, index) => ({ id: `agent-${index}`, title: `Reviewer ${index}`, handle: `reviewer-${index}`, projectId: "project", conversationId: "chat", activeEngine: "codex" })) as never;
-api.listConversations = async () => [{ id: "chat", projectId: "project", title: "Marketing", archived: false }] as never;
+api.getWorkspaceDirectory = (async (kind, options) => {
+  const items = kind === "agent"
+    ? Array.from({ length: 695 }, (_, index) => ({ kind, project, ownerConversation: { id: "chat", title: "Marketing" },
+      agent: { id: `agent-${index}`, title: `Reviewer ${index}`, handle: `reviewer-${index}`, projectId: "project", conversationId: "chat", activeEngine: "codex" } }))
+    : [{ kind, project, conversation: { id: "chat", projectId: "project", title: "Marketing", archived: false } }];
+  const matching = items.filter(item => !options.search || JSON.stringify(item).toLowerCase().includes(options.search.toLowerCase()));
+  const offset = Number(options.cursor ?? 0);
+  return { kind, items: matching.slice(offset, offset + options.limit!), starredItems: [], total: matching.length,
+    history: { hasMore: offset + options.limit! < matching.length, cursor: offset + options.limit! < matching.length ? String(offset + options.limit!) : undefined } };
+}) as typeof api.getWorkspaceDirectory;
 api.getTokenUsage = async scope => ({ scope, finalizedRuns: 0, reportedRuns: 0, providerRequests: 0, durationMs: 0, metricAvailability: {}, breakdown: [], wakeCauses: [] }) as never;
 const project = { id: "project", label: "Working folder", hostPath: "/test", defaultEngine: "codex" } as const;
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

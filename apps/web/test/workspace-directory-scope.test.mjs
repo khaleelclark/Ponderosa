@@ -76,6 +76,15 @@ test("Recent Outcomes pages never retain ordinary Agent placeholders", () => {
   assert.equal(sameWorkspaceDirectoryScope(ordinary, outcomes), false);
 });
 
+test("bounded picker windows never retain complete management collections", () => {
+  const directory = key("conversation", "", undefined);
+  const picker = [...directory, 1];
+  assert.equal(sameWorkspaceDirectoryScope(directory, picker), false);
+  assert.equal(sameWorkspaceDirectoryScope(picker, directory), false);
+  assert.equal(sameWorkspaceDirectoryScope(picker, [...picker]), true);
+  assert.equal(sameWorkspaceDirectoryScope(picker, [...directory, 2]), false);
+});
+
 test("Project panels fail closed on foreign directory rows", () => {
   for (const kind of ["conversation", "agent", "trigger"]) {
     const rows = [

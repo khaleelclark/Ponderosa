@@ -12,11 +12,18 @@ import type { Route } from "../src/routing";
 
 const fixture = await (await fetch("/api/fixture")).json();
 const projects = fixture.projects as ProjectDto[];
+const directoryRegression = new URLSearchParams(location.search).has("directory");
+const failedDirectoryRequests = new Set<string>();
 const preferences = { revision: 1, profile: { displayName: "Tester", handle: "tester", avatarId: "default-user" },
   starredProjectIds: [], projectOrder: [], chatOrder: [], agentOrder: [], triggerOrder: [], starredResourceIds: [], chatFolders: [], projectFolders: [] } as unknown as WorkspacePreferencesDto;
 api.getWorkspaceDirectory = (async (kind, options) => {
   const items = kind === "project" ? projects.map(project => ({ kind, project })) : kind === "conversation" ? fixture.chats.filter((chat: { title: string }) => !options.search || chat.title.toLowerCase().includes(options.search.toLowerCase())).map((conversation: { projectId: string }) => ({ kind, project: projects.find(project => project.id === conversation.projectId), conversation })) : [];
-  return { kind, items: options.summary ? [] : items, starredItems: [], total: items.length, runningCount: 0, history: { hasMore: false } };
+  const failure = directoryRegression && kind === "conversation" && ((options.search === "marketing" && options.cursor) || options.search === "dirfailure")
+    ? `${options.search}:${options.cursor ?? "initial"}` : undefined;
+  if (failure && !failedDirectoryRequests.has(failure)) { failedDirectoryRequests.add(failure); throw new Error("Directory unavailable"); }
+  const offset = Number(options.cursor ?? 0), limit = options.limit ?? 25;
+  return { kind, items: options.summary ? [] : items.slice(offset, offset + limit), starredItems: [], total: items.length, runningCount: 0,
+    history: { hasMore: offset + limit < items.length, cursor: offset + limit < items.length ? String(offset + limit) : undefined } };
 }) as typeof api.getWorkspaceDirectory;
 api.getNotificationProjection = (async () => ({ workspace: {}, allMessages: { importantCount: 0, ordinaryCount: 0, totalCount: 0 }, projects: {}, conversations: {} })) as typeof api.getNotificationProjection;
 api.markProjectUsed = (async () => ({})) as typeof api.markProjectUsed;

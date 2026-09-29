@@ -23,7 +23,7 @@ Scope: the approved [one-PR specification](ui-audit-remediation-spec.md), based 
 | F15 Rejected access | Access-check rejection takes precedence over a misleading signed-in success state. | Shared provider-state presentation/source checks and package tests. |
 | F16 Save feedback | Pending/saved/error near Profile and rollover controls; submitted-snapshot fencing keeps a newer draft unsaved. | Typecheck/package tests and source review; no new live account-setting mutation. |
 | F17 Handles | Sidebar uses dynamic `#handle`; mention explanation confined to Profile. | Source/UI checks; composer and message-action spacing unchanged. |
-| F18 Activity scope | Searchable contextual grouping rather than a flat roster; Chat usage based on canonical message scope. | UI audit browser with 695 options; canonical usage unit test across changed Agent membership. |
+| F18 Activity scope | Searchable contextual grouping backed by two workspace-wide paginated directories, explicit pagination, loading/error/Retry feedback and shared rate-limit cooldown; no per-Project collectors. Chat usage is based on canonical message scope. | UI audit browser with 695 searchable Agents; `activity-scope-browser.check.mjs` with 250 Projects and delayed/failing/429 directory responses; canonical usage unit test across changed Agent membership. |
 | F19 Pending provider reads | Pending is loading, not fabricated `unknown_failure`; actual failures retain diagnostics. | `provider-usage-pending-state.test.mjs` pending-to-actual-failure lifecycle. |
 | F20 Automation overview | Human-readable cron and localized timezone/date, one destination and Runs-as location, raw JSON under details. | Package tests/typecheck and source review. |
 | F21 Cron validation | Field-local five-field/minimum-frequency and timezone errors without discarding draft. | Existing cron/scheduler tests, typecheck and source review. |
@@ -41,7 +41,7 @@ Scope: the approved [one-PR specification](ui-audit-remediation-spec.md), based 
 | F33 Capability names | Visible label, identifier and description searchable; exact command insertion retained. | UI wording/capability unit tests. |
 | F34 Fresh session | Pending/success/error beside Settings action, duplicate-pending guard and Agent-scoped mutation key. | UI audit browser tests the production controller with deferred success/failure, disabled pending action, and cleared feedback after Agent switch; no live provider replacement. |
 | A01 Attachment retention | Verified Chat-owned copy before Agent storage cleanup, retryable cleanup receipt, complete-message reconciliation, honest absence and offline repair. | `chat-attachment-retention.test.mjs`: deletion/restart/fault injection, private/draft exclusions, scoped routes and disposable repair. |
-| S01 Sidebar messages | Five distinct Chats, safe highlighted excerpts/exact older-message focus, seeded global search, visibility/debounce/cancel/429 gating; no polling. | Real-store-backed sidebar browser check at 390/1440px, delayed/failing requests, cooldown and three tabs; bounded search unit tests. |
+| S01 Sidebar messages | Five distinct Chats, safe highlighted excerpts/exact older-message focus, seeded global search, visibility/debounce/cancel/429 gating; no polling. Title-directory pagination and Retry remain visible when message results match; only the misleading empty state is suppressed. | Real-store-backed sidebar browser check at 390/1440px, mixed title/message hits across title pages, initial/pagination errors, cooldown and three tabs; bounded search unit tests. |
 | Outage observation | Saved-data notice only with usable cache; navigation remains available; readable Details/Retry. | Existing connection/recovery tests and source review; no original host outage induced. |
 | Browser observation | Serial history/reload/resize/close investigation plus existing panel regression. | Disposable real-owned-Chrome test and browser-panel UI check. This does not establish the cause of the original tool-transport incident. |
 
@@ -65,6 +65,7 @@ Browser scripts use the installed Playwright and Chrome paths supplied through `
 node apps/web/test/ui-audit-browser.check.mjs
 node apps/web/test/ui-audit-preview-browser.check.mjs
 node apps/web/test/sidebar-message-search-browser.check.mjs
+node apps/web/test/activity-scope-browser.check.mjs
 node apps/web/test/file-preview-links-browser.check.mjs
 node apps/web/test/browser-panel.check.mjs
 node apps/web/test/request-storm-browser.check.mjs
@@ -72,7 +73,7 @@ node apps/web/test/request-storm-browser.check.mjs
 
 The browser fixtures exercise shared production components and actual scoped preview/store routes where stated; they are not full live managed-provider workloads. The final three-tab sidebar measurement was 4.8 ms server query p95 over eight queries, with two visible-tab requests and no hidden-tab polling (an earlier run measured 17.2 ms). Synthetic request-storm evidence is not a live twelve-managed-Agent test.
 
-## Verification results — September 29, 2026
+## Initial verification results — September 29, 2026, head `d4068d65`
 
 - Full `pnpm verify`: macOS arm64 Node 24.19.0, 863 passed / 7 platform-dependent skips / 0 failed; isolated Pine Linux x64 Node 24.16.0, 864 passed / 6 skips / 0 failed. Typechecks, production builds and bundle budgets passed on both.
 - Focused attachment/Git/provider-pending/real-Chrome checks: 13/13 passed on macOS. The provider-operation receipt publication and permanent-outbox tests passed 2/2 and are included in full verification.
@@ -83,6 +84,15 @@ The browser fixtures exercise shared production components and actual scoped pre
 - No paid GitHub Actions were run. Verify and Release recovery workflows remain disabled; native packaging workflows were not invoked or changed.
 
 An initial Linux snapshot test was invalidated by AppleDouble `._*` metadata left by an earlier macOS archive transfer. Those transfer artifacts were removed only from the disposable verification directory; the clean Linux rerun passed. This was not a product-code defect.
+
+## Independent-review follow-up
+
+Both reported code-review gaps at `d4068d65` were valid and are addressed in the follow-up commit:
+
+- Shared collection feedback can suppress only its empty state. Initial failures, refresh failures and pagination failures retain their Retry actions, and title pagination remains reachable alongside message matches. The expanded sidebar browser fixture covers 30 matching Chat titles plus message hits, an initial directory failure, and a failed continuation followed by successful Retry.
+- Provider Activity no longer calls per-Project Agent or Chat collectors. It uses one 25-item workspace directory page for each kind, with debounced server search and explicit continuation rather than automatic collection. Its isolated one-page cache cannot inherit or automatically refetch a complete management collection; moving to the next page replaces the previous page. The selected scope retains its exact identity across searches/pages. Loading and failed reads are visible instead of silently omitting scopes.
+- A new browser regression uses the real HTTP API client and directory hook with 250 fixture Projects and pre-populated twenty-page management caches: opening Activity makes exactly two initial scope-directory requests, with no per-Project collector requests, inherited management-cache refetches or automatic continuation. At 390/1440px, explicit continuation, initial/refresh/pagination Retry, later-page Agent/Chat search and a real HTTP 429 with shared `Retry-After` cooldown all passed. The directory responses are fixtures, not a live managed-provider workload.
+- Follow-up verification: full macOS arm64 Node 24 `pnpm verify` passed (864 passed, 7 platform-dependent skips, zero failures; typechecks, builds and bundle budgets passed). Expanded sidebar search and existing UI audit browser checks passed. The synthetic twelve-Agent/three-tab regression passed (API p95 11.0 ms; event-loop p95 12.1 ms). `git diff --check` passed. The Linux full-suite evidence above belongs to the initial head, not a new Linux rerun of this follow-up.
 
 ## Boundaries
 

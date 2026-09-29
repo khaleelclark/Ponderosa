@@ -17,6 +17,8 @@ const store = new AgentStore(data);
 const project = store.createProject({ label: "Marketing working folder", hostPath: data, defaultEngine: "codex" });
 const chat = store.createConversation(project.id, { title: "Planning" });
 const chats = [chat, ...Array.from({ length: 5 }, (_, index) => store.createConversation(project.id, { title: `Other ${index}` }))];
+const titleChats = Array.from({ length: 30 }, (_, index) => store.createConversation(project.id, { title: `Marketing title ${index}` }));
+const failedTitleChat = store.createConversation(project.id, { title: "dirfailure title" });
 const archived = store.createConversation(project.id, { title: "Archived" });
 const add = (conversation, text, index) => {
   const event = store.appendCommunicationEvent({ eventId: randomUUID(), projectId: project.id, conversationId: conversation.id, schemaVersion: 2,
@@ -30,6 +32,7 @@ const target = add(chat, "Our marketing plan from older history", 0);
 for (let index = 1; index < 80; index++) add(chat, "Newer unrelated message", index);
 for (let index = 1; index < chats.length; index++) add(chats[index], "Our marketing campaign", -index);
 add(archived, "Private archived marketing", 100);
+add(failedTitleChat, "dirfailure message hit", 200);
 store.updateConversation(archived.id, { archived: true });
 const latencies = [], requests = [];
 const { chromium } = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? "playwright");
@@ -40,7 +43,7 @@ try {
   server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
     const json = value => { response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify(value)); };
-    if (url.pathname === "/api/fixture") return json({ projects: [project], chats });
+    if (url.pathname === "/api/fixture") return json({ projects: [project], chats: [...chats, ...titleChats, failedTitleChat] });
     if (url.pathname === "/api/search") {
       const term = url.searchParams.get("q") ?? "";
       requests.push({ term, at: Date.now() });
@@ -63,6 +66,22 @@ try {
   await new Promise(resolve => server.once("listening", resolve));
   browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH, args: process.env.PONDEROSA_BROWSER_DISABLE_SANDBOX === "1" ? ["--no-sandbox"] : [] });
   const origin = `http://127.0.0.1:${server.address().port}`;
+  const directory = await browser.newPage({ viewport: { width: 390, height: 1000 } });
+  await directory.addInitScript(() => { window.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} } });
+  await directory.goto(`${origin}/?directory`);
+  const directoryInput = directory.getByRole("textbox", { name: "Search chats" });
+  await directoryInput.fill("marketing");
+  await directory.getByRole("region", { name: "Found in messages" }).getByRole("button", { name: "Open Planning at matching message", exact: true }).waitFor();
+  await directory.getByRole("button", { name: "Load more Chats", exact: true }).click();
+  await directory.getByText("Could not load more Chats. Existing results are still available.", { exact: true }).waitFor();
+  await directory.getByRole("button", { name: "Retry", exact: true }).click();
+  await directory.getByRole("button", { name: "Open Chat Marketing title 29", exact: true }).waitFor();
+  await directoryInput.fill("dirfailure");
+  await directory.getByRole("region", { name: "Found in messages" }).getByRole("button", { name: "Open dirfailure title at matching message", exact: true }).waitFor();
+  await directory.getByText("Could not load Chats.", { exact: true }).waitFor();
+  await directory.getByRole("button", { name: "Retry", exact: true }).click();
+  await directory.getByRole("button", { name: "Open Chat dirfailure title", exact: true }).waitFor();
+  await directory.close();
   for (const width of [390, 1440]) {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     lastPage = page;
@@ -115,7 +134,7 @@ try {
   await pages[0].waitForTimeout(1500);
   assert.equal(requests.length - before, 2, "no search polling");
   latencies.sort((a, b) => a - b);
-  console.log(`Passed: sidebar desktop/mobile exact older-message focus, five distinct Chats, highlighting, name-result preservation, seeded global search, 429/hidden-panel cancellation, and three-tab request bounds; store query p95 ${latencies[Math.floor(latencies.length * .95)].toFixed(1)} ms over ${latencies.length} measured queries.`);
+  console.log(`Passed: sidebar title pagination and initial/pagination Retry alongside message hits; desktop/mobile exact older-message focus, five distinct Chats, highlighting, name-result preservation, seeded global search, 429/hidden-panel cancellation, and three-tab request bounds; store query p95 ${latencies[Math.floor(latencies.length * .95)].toFixed(1)} ms over ${latencies.length} measured queries.`);
 } catch (error) {
   console.error("Search fixture requests:", requests);
   if (lastPage) console.error((await lastPage.locator("body").innerText()).slice(0, 2000));

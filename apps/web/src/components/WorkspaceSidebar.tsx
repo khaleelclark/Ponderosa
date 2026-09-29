@@ -646,8 +646,8 @@ export function WorkspaceSidebar({
           {currentMessageResults?.truncated ? <Typography variant="caption">Older matches may not be shown.</Typography> : null}
           <Button size="small" onClick={() => onSearch?.({ query: filter.trim(), scope: "chats" })}>View more in full search</Button>
         </Box> : null}
-        {!filter.trim() || (!messageSearchPending && !messageSearch.isError && !(currentMessageResults?.results.length)) ?
-          <CollectionStateFeedback request={chatDirectoryQuery.requestState} itemCount={chatRows.length} filtersActive={Boolean(filter.trim())} resourceLabel="Chats" emptyTitle="No Chats Yet" noMatchTitle={"No Chats match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact /> : null}
+        <CollectionStateFeedback request={chatDirectoryQuery.requestState} itemCount={chatRows.length} filtersActive={Boolean(filter.trim())} resourceLabel="Chats" emptyTitle="No Chats Yet" noMatchTitle={"No Chats match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact
+          suppressEmpty={Boolean(filter.trim()) && (messageSearchPending || messageSearch.isError || Boolean(currentMessageResults?.results.length))} />
       </>}
       sort={chatSort}
       onSort={value => setResourceSort("chat", value, allChatRows.map(row => row.conversation.id), preferences.chatOrder)}

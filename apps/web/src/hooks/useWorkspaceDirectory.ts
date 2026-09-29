@@ -25,6 +25,7 @@ export interface WorkspaceDirectoryRequestState {
   isRefreshing: boolean;
   isInitialError: boolean;
   isPaginationError: boolean;
+  isRefreshError?: boolean;
   isFetchingNextPage: boolean;
   hasNextPage: boolean;
 
@@ -41,6 +42,7 @@ export function combineWorkspaceDirectoryRequestStates(
     isRefreshing: states.some(state => state.isRefreshing),
     isInitialError: states.some(state => state.isInitialError),
     isPaginationError: states.some(state => state.isPaginationError),
+    isRefreshError: states.some(state => state.isRefreshError),
     isFetchingNextPage: states.some(state => state.isFetchingNextPage),
     hasNextPage: states.some(state => state.hasNextPage),
     retry: () => Promise.all(states.map(state => state.retry())),
@@ -62,6 +64,8 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     enabled?: boolean;
     retainPreviousData?: boolean;
     summary?: boolean;
+    /** Isolate a bounded picker window from complete management collections. */
+    maxPages?: number;
   },
 ) {
   const requestedSearch = options.search?.trim() ?? "";
@@ -74,7 +78,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     const timer = globalThis.setTimeout(() => setSearch(requestedSearch), 250);
     return () => globalThis.clearTimeout(timer);
   }, [requestedSearch]);
-  const queryKey = queryKeys.workspaceDirectory.list(
+  const queryKey = [...queryKeys.workspaceDirectory.list(
     kind,
     search,
     options.projectId,
@@ -85,7 +89,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     options.recentOutcomes,
     options.onlyEnabled,
     options.summary,
-  );
+  ), ...(options.maxPages === undefined ? [] : [options.maxPages])] as const;
   const query = useInfiniteQuery({
     queryKey,
     queryFn: ({ pageParam }) =>
@@ -107,6 +111,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
       lastPage: WorkspaceDirectoryPageDto<T>,
     ) => lastPage.history.cursor,
     enabled: options.enabled ?? true,
+    maxPages: options.maxPages,
     ...(options.retainPreviousData === false
       ? {}
       : {
@@ -133,6 +138,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
         hasResolved && query.isFetching && !query.isFetchingNextPage,
       isInitialError: !hasResolved && query.isError,
       isPaginationError: hasResolved && query.isFetchNextPageError,
+      isRefreshError: hasResolved && query.isRefetchError && !query.isFetchNextPageError,
       isFetchingNextPage: query.isFetchingNextPage,
       hasNextPage: Boolean(
         !query.isPlaceholderData && query.hasNextPage,
