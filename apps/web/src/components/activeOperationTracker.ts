@@ -25,6 +25,12 @@ export interface ActiveOperationTracker {
 
 export type ActiveOperationAgentPhase = "queued" | "preparing" | "running" | "stalled";
 
+export function activeOperationHeaderLabel(
+  phase: ActiveOperationAgentPhase | "sending" | undefined,
+): string | undefined {
+  return phase === "queued" ? "Queued" : phase === "sending" ? "Sending" : undefined;
+}
+
 export function createDeliveryOperationTracker(
   delivery: "steer" | "queue",
   agentIds: readonly string[],
@@ -163,6 +169,27 @@ export function acceptAgentMessageOperation(
     ...(response.communicationEventId ? { communicationEventId: response.communicationEventId } : {}),
     targets: [{ ...target, matchedExecutionId: response.runId, receiptConfirmed: true }],
   };
+}
+
+/** Direct Agent Chat follows the accepted delivery, including explicit Queue.
+ * The selected mode must not let an older Run's health stand in for its state. */
+export function trackAcceptedAgentMessage(
+  agentId: string,
+  response: SendMessageResponse,
+  healthByAgentId: ReadonlyMap<string, AgentHealthDto>,
+  initiatedAt = Date.now(),
+  scopeId?: string,
+): ActiveOperationTracker | undefined {
+  return acceptAgentMessageOperation(
+    createActiveOperationTracker(
+      "delivery",
+      [agentId],
+      healthByAgentId,
+      initiatedAt,
+      scopeId,
+    ),
+    response,
+  );
 }
 
 export function acceptBroadcastOperation(

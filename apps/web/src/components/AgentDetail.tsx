@@ -79,7 +79,7 @@ import { useAgentRunCancellation } from "./useAgentRunCancellation";
 import { useAgentProviderCommands } from "./useAgentProviderCommands";
 import { AgentDetailSettingsController } from "./AgentDetailSettingsController";
 import { useActiveOperationController } from "./useActiveOperationController";
-import { acceptAgentMessageOperation, createDeliveryOperationTracker } from "./activeOperationTracker";
+import { activeOperationHeaderLabel, trackAcceptedAgentMessage } from "./activeOperationTracker";
 import {
   allChatRuntimeMutationOwnsSelection,
   recordRuntimeCanonicalKey,
@@ -469,12 +469,9 @@ export function AgentDetail({
     speed,
     onNotice: setQueuedMessageNotice,
     onChatSelected: () => setTab("chat"),
-    onAccepted: (response, delivery) => {
-      const tracker = createDeliveryOperationTracker(
-        delivery, [agentId], healthByAgentId, Date.now(), detail?.agent.conversationId,
-      );
-      setActiveOperation(acceptAgentMessageOperation(tracker, response));
-    },
+    onAccepted: response => setActiveOperation(trackAcceptedAgentMessage(
+      agentId, response, healthByAgentId, Date.now(), detail?.agent.conversationId,
+    )),
   });
   const visibleChatMessages = useMemo(() => {
     const queuedCommunicationIds = new Set(
@@ -569,11 +566,7 @@ export function AgentDetail({
           transientPhase === "sending"
         ? "preparing"
         : projectedStatus ?? (runtimeActivity ? "running" : deriveAgentStatus(detail));
-  const statusLabelOverride = transientPhase === "queued"
-    ? "Queued"
-    : transientPhase === "sending"
-      ? "Sending"
-      : undefined;
+  const statusLabelOverride = activeOperationHeaderLabel(transientPhase);
   const mcp = mcpPresentation(engineCapability?.mcpServers);
 
   const { cancelRun, stopActiveRun } = useAgentRunCancellation(

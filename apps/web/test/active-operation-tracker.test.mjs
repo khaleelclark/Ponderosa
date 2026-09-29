@@ -7,6 +7,7 @@ import {
   acceptDirectOperation,
   activeOperationExecutionTargets,
   activeOperationAgentPhase,
+  activeOperationHeaderLabel,
   activeOperationForScope,
   activeOperationsForScope,
   activeOperationIsRunning,
@@ -18,6 +19,7 @@ import {
   mergeActiveOperationReceipts,
   retainActiveOperation,
   reconcileActiveOperationTracker,
+  trackAcceptedAgentMessage,
 } from "../src/components/activeOperationTracker.js";
 
 const initiatedAt = Date.parse("2026-09-09T12:00:00.000Z");
@@ -95,6 +97,50 @@ test("new single-Agent delivery does not inherit a previous Run's stalled status
   assert.equal(activeOperationAgentPhase([accepted], "agent-a", oldStall, [
     receipt("activation-a", "agent-a", "processed", "2026-09-09T12:00:03.000Z", "execution-new"),
   ]), undefined);
+});
+
+test("explicit Queue in direct Agent Chat displays Queued over an older Stalled Run", () => {
+  const oldStall = {
+    agentId: "agent-a",
+    childAgentIds: [],
+    status: "stalled",
+    statusTimestamp: "2026-09-09T11:58:00.000Z",
+    reason: "runtime_event_consumer_stalled",
+    runtimeActivity: {
+      state: "responding",
+      executionId: "execution-old",
+      startedAt: "2026-09-09T11:58:00.000Z",
+    },
+  };
+  const accepted = trackAcceptedAgentMessage(
+    "agent-a",
+    {
+      queued: true,
+      position: 1,
+      deliveryId: "activation-queued",
+      communicationEventId: "communication-queued",
+    },
+    new Map([["agent-a", oldStall]]),
+    initiatedAt,
+    "chat-a",
+  );
+  assert.ok(accepted, "an explicit Queue send must create a tracker");
+  assert.equal(accepted.targets[0].activationId, "activation-queued");
+  assert.equal(accepted.communicationEventId, "communication-queued");
+  assert.equal(accepted.scopeId, "chat-a");
+  const headerPhase = activeOperationAgentPhase([accepted], "agent-a", oldStall, []);
+  assert.equal(headerPhase, "queued");
+  assert.equal(activeOperationHeaderLabel(headerPhase), "Queued");
+  assert.equal(activeOperationAgentPhase([accepted], "agent-a", oldStall, [{
+    communicationEventId: "communication-queued",
+    receipt: {
+      activationId: "activation-queued",
+      targetAgentId: "agent-a",
+      state: "queued",
+      updatedAt: "2026-09-09T12:00:01.000Z",
+      attemptCount: 1,
+    },
+  }]), "queued");
 });
 
 test("single-Agent direct start follows its exact Run and ignores settled replays", () => {
