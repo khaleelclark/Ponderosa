@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
@@ -51,9 +51,11 @@ export type {
 
 sharp.cache({ memory: 32, files: 0, items: 20 });
 
-// Preserve ordinary high-resolution screenshots and phone photos. The encoded
-// body remains capped at 8 MiB, and draft promotion reuses this one decode.
+// Preserve high-resolution screenshots and phone photos without lifting the
+// bounded preview or unrelated text-artifact limits to the upload ceiling.
 const MAX_PIXELS = 64_000_000;
+const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;
+const MAX_RUNTIME_TEXT_ARTIFACT_BYTES = 8 * 1024 * 1024;
 const STAGED_TTL_MS = 5 * 60 * 1000;
 
 function normalizeName(value: unknown): string {
@@ -146,7 +148,7 @@ export async function prepareAssetUpload(input: {
 }): Promise<PreparedAssetUpload> {
   if (!input.body.length) throw new AssetError(400, "asset body is required");
   if (input.body.length > ASSET_LIMITS.maxFileBytes) {
-    throw new AssetError(413, "asset exceeds 8 MiB limit");
+    throw new AssetError(413, "asset exceeds 80 MiB limit");
   }
   const name = normalizeName(input.name);
   const mediaType = detectType(input.body);
@@ -208,7 +210,7 @@ export async function prepareAssetUpload(input: {
       .toBuffer();
     // Default lossless compression avoids spending seconds optimizing a preview.
     // Retain the old maximum-compression path only for quota-borderline images.
-    if (preview.length > ASSET_LIMITS.maxFileBytes) {
+    if (preview.length > MAX_PREVIEW_BYTES) {
       preview = await image.png({ compressionLevel: 9, adaptiveFiltering: true }).toBuffer();
     }
   } catch (error) {
@@ -218,7 +220,7 @@ export async function prepareAssetUpload(input: {
       `image could not be safely decoded as one bounded frame of at most ${MAX_PIXELS.toLocaleString("en-US")} pixels`,
     );
   }
-  if (preview.length > ASSET_LIMITS.maxFileBytes) {
+  if (preview.length > MAX_PREVIEW_BYTES) {
     throw new AssetError(413, "generated image preview exceeds 8 MiB limit");
   }
   return {
@@ -247,7 +249,7 @@ function validatePreparedAssetUpload(
     && (prepared.width ?? 0) * (prepared.height ?? 0) <= MAX_PIXELS
     && Buffer.isBuffer(prepared.preview)
     && prepared.preview.length > 0
-    && prepared.preview.length <= ASSET_LIMITS.maxFileBytes
+    && prepared.preview.length <= MAX_PREVIEW_BYTES
     && detectType(prepared.preview) === "image/png"
     && hasStrictImageContainer(prepared.preview, "image/png")
     && createHash("sha256").update(prepared.preview).digest("hex")
@@ -287,17 +289,32 @@ function canonicalFiles(id: string): { originalFile: string; previewFile: string
   return { originalFile: `${id}.bin`, previewFile: `${id}.preview.png` };
 }
 
+function assetUrls(ownerId: string, id: string, preview: boolean, conversationId?: string) {
+  const base = conversationId
+    ? `/api/conversations/${encodeURIComponent(conversationId)}/assets/${id}`
+    : `/api/agents/${encodeURIComponent(ownerId)}/assets/${id}`;
+  const previewUrl = preview ? `${base}/preview` : undefined;
+  const downloadUrl = `${base}/download`;
+  return {
+    url: preview ? previewUrl! : downloadUrl,
+    downloadUrl,
+    ...(preview ? { previewUrl } : {}),
+  };
+}
+
 function validateStoredAsset(value: unknown, projectId: string, agentId: string, id: string): StoredAsset | undefined {
   if (!value || typeof value !== "object") return undefined;
   const asset = value as Partial<StoredAsset>;
   const fields = new Set([
-    "id", "projectId", "agentId", "name", "mediaType", "size", "width", "height",
+    "id", "projectId", "agentId", "conversationId", "name", "mediaType", "size", "width", "height",
     "sha256", "state", "createdAt", "associatedAt", "originalFile", "previewFile",
     "url", "downloadUrl", "previewUrl",
   ]);
   if (Object.keys(value as Record<string, unknown>).some((field) => !fields.has(field))) return undefined;
   const names = canonicalFiles(id);
   if (asset.id !== id || asset.projectId !== projectId || asset.agentId !== agentId) return undefined;
+  if (asset.conversationId !== undefined &&
+      (asset.conversationId !== agentId || !RUNTIME_UUID.test(asset.conversationId))) return undefined;
   if (!OWNER_ID.test(projectId) || !OWNER_ID.test(agentId) || !ID.test(id)) return undefined;
   if (asset.originalFile !== names.originalFile || (asset.previewFile !== undefined && asset.previewFile !== names.previewFile)) return undefined;
   if (typeof asset.name !== "string" || normalizeName(asset.name) !== asset.name ||
@@ -310,12 +327,11 @@ function validateStoredAsset(value: unknown, projectId: string, agentId: string,
   if (!ASSET_LIMITS.acceptedMediaTypes.includes(asset.mediaType as AssetDto["mediaType"])) return undefined;
   if (!extensionMatches(asset.name, asset.mediaType as AssetDto["mediaType"])) return undefined;
   const preview = asset.previewFile !== undefined;
-  const expectedDownload = `/api/agents/${encodeURIComponent(agentId)}/assets/${id}/download`;
-  const expectedPreview = preview ? `/api/agents/${encodeURIComponent(agentId)}/assets/${id}/preview` : undefined;
-  const expectedUrl = preview
+  const expected = assetUrls(agentId, id, preview, asset.conversationId);
+  const expectedUrl = preview && !asset.conversationId
     ? `/api/agents/${encodeURIComponent(agentId)}/attachments/${id}`
-    : expectedDownload;
-  if (asset.url !== expectedUrl || asset.downloadUrl !== expectedDownload || asset.previewUrl !== expectedPreview) return undefined;
+    : expected.url;
+  if (asset.url !== expectedUrl || asset.downloadUrl !== expected.downloadUrl || asset.previewUrl !== expected.previewUrl) return undefined;
   if (String(asset.mediaType).startsWith("image/")) {
     if (!preview || !Number.isSafeInteger(asset.width) || (asset.width ?? 0) < 1 ||
         !Number.isSafeInteger(asset.height) || (asset.height ?? 0) < 1) return undefined;
@@ -352,8 +368,8 @@ export async function removeStagedAssetFiles(
 }
 
 function publicDto(asset: StoredAsset): AssetDto {
-  const { id, agentId, name, mediaType, size, width, height, url, downloadUrl, previewUrl, sha256, state, createdAt } = asset;
-  return { id, agentId, name, mediaType, size, width, height, url, downloadUrl, previewUrl, sha256, state, createdAt };
+  const { id, agentId, conversationId, name, mediaType, size, width, height, url, downloadUrl, previewUrl, sha256, state, createdAt } = asset;
+  return { id, agentId, ...(conversationId ? { conversationId } : {}), name, mediaType, size, width, height, url, downloadUrl, previewUrl, sha256, state, createdAt };
 }
 
 export class AssetStore {
@@ -424,6 +440,42 @@ export class AssetStore {
 
   purgeAgents(agentIds: readonly string[]): void {
     this.authority.purgeAgents(agentIds);
+  }
+
+  /** Chat-owned Broadcast media has the Chat UUID as its storage owner, but
+   * no Agent record. Remove its bytes before releasing its durable quota. */
+  async purgeConversationAssets(projectId: string, conversationId: string): Promise<void> {
+    if (!RUNTIME_UUID.test(conversationId)) throw new AssetError(400, "Chat attachment owner is invalid");
+    const directory = this.dir(projectId, conversationId);
+    const ownedLeaf = (leaf: string) =>
+      /^(?:[a-f0-9-]{36}\.(?:bin|json|preview\.png|associated)|audit-[a-f0-9-]{36}\.json|audit\.jsonl)$/u.test(leaf);
+    if (existsSync(directory)) {
+      if (this.portableFiles) {
+        const relative = this.secureDirectory(projectId, conversationId);
+        const entries = listSecureDirectory({ root: this.dataDir, relativePath: relative });
+        if (!entries) throw new AssetError(409, "Chat attachment storage is unavailable");
+        for (const entry of entries) {
+          if (!ownedLeaf(entry.name) || entry.kind !== "file") {
+            throw new AssetError(409, "Chat attachment storage has an unexpected entry");
+          }
+          this.secureRemove(relative, entry.name);
+        }
+      } else {
+        const opened = await this.safeDirectory(projectId, conversationId);
+        try {
+          for (const entry of await readdir(opened.path)) {
+            if (!ownedLeaf(entry)) {
+              throw new AssetError(409, "Chat attachment storage has an unexpected entry");
+            }
+            const info = await lstat(path.join(opened.path, entry));
+            if (!info.isFile() || info.isSymbolicLink()) throw new AssetError(409, "Chat attachment storage has an unsafe entry");
+            await unlink(path.join(opened.path, entry));
+          }
+          await this.syncDirectory(opened.handle);
+        } finally { await opened.handle.close(); }
+      }
+    }
+    this.authority.purgeAgents([conversationId]);
   }
 
   purgeProject(projectId: string, draftSurfaceIds: readonly string[]): void {
@@ -537,7 +589,7 @@ export class AssetStore {
           detectType(body) !== asset.mediaType || !extensionMatches(asset.name, asset.mediaType) ||
           !hasStrictImageContainer(body, asset.mediaType)) return undefined;
       if (asset.previewFile) {
-        const preview = this.secureRead(relative, asset.previewFile, ASSET_LIMITS.maxFileBytes);
+        const preview = this.secureRead(relative, asset.previewFile, MAX_PREVIEW_BYTES);
         if (!preview || detectType(preview) !== "image/png" || !hasStrictImageContainer(preview, "image/png")) return undefined;
       }
       return {
@@ -581,7 +633,7 @@ export class AssetStore {
         previewFd = openSync(path.join(actual, asset.previewFile), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         const previewInfo = fstatSync(previewFd);
         if (!previewInfo.isFile() || previewInfo.nlink !== 1 || previewInfo.size < 1 ||
-            previewInfo.size > ASSET_LIMITS.maxFileBytes) return undefined;
+            previewInfo.size > MAX_PREVIEW_BYTES) return undefined;
         const preview = readFileSync(previewFd);
         if (detectType(preview) !== "image/png" || !hasStrictImageContainer(preview, "image/png")) return undefined;
       }
@@ -705,7 +757,7 @@ export class AssetStore {
         !artifact.title.trim() || artifact.mediaType !== "text/markdown" ||
         artifact.blobPath !== artifact.id || !/^[a-f0-9]{64}$/.test(artifact.blobHash) ||
         !Number.isSafeInteger(artifact.byteLength) || artifact.byteLength < 1 ||
-        artifact.byteLength > ASSET_LIMITS.maxFileBytes ||
+        artifact.byteLength > MAX_RUNTIME_TEXT_ARTIFACT_BYTES ||
         ((artifact.originAgentId === undefined) !== (artifact.executionId === undefined)) ||
         (artifact.originAgentId !== undefined &&
           (!RUNTIME_UUID.test(artifact.originAgentId) || !RUNTIME_UUID.test(artifact.executionId!)))) return undefined;
@@ -1017,12 +1069,17 @@ export class AssetStore {
   async stage(input: {
     projectId: string;
     agentId: string;
+    conversationId?: string;
     body: Buffer;
     name?: unknown;
     declaredType?: string;
     prepared?: PreparedAssetUpload;
   }): Promise<AssetDto> {
     const { projectId, agentId, body } = input;
+    if (input.conversationId !== undefined &&
+        (input.conversationId !== agentId || !RUNTIME_UUID.test(input.conversationId))) {
+      throw new AssetError(400, "Chat attachment owner is invalid");
+    }
     const prepared = input.prepared
       ? validatePreparedAssetUpload(body, input.prepared)
       : await prepareAssetUpload({
@@ -1052,12 +1109,11 @@ export class AssetStore {
       const previewFile = preview ? canonicalPreview : undefined;
       const createdAt = new Date().toISOString();
       const asset: StoredAsset = {
-        id, projectId, agentId, name, mediaType, size: body.length, width, height,
+        id, projectId, agentId, ...(input.conversationId ? { conversationId: input.conversationId } : {}), name, mediaType, size: body.length, width, height,
         sha256: createHash("sha256").update(body).digest("hex"), state: "staged", createdAt,
         originalFile, previewFile,
-        url: previewFile ? `/api/agents/${encodeURIComponent(agentId)}/attachments/${id}` : `/api/agents/${encodeURIComponent(agentId)}/assets/${id}/download`,
-        downloadUrl: `/api/agents/${encodeURIComponent(agentId)}/assets/${id}/download`,
-        previewUrl: previewFile ? `/api/agents/${encodeURIComponent(agentId)}/assets/${id}/preview` : undefined,
+        ...assetUrls(agentId, id, Boolean(previewFile), input.conversationId),
+        ...(!input.conversationId && previewFile ? { url: `/api/agents/${encodeURIComponent(agentId)}/attachments/${id}` } : {}),
       };
       await writeAtomic(path.join(directory, originalFile), body);
       try {
@@ -1080,7 +1136,7 @@ export class AssetStore {
   }
 
   private stagePortable(
-    input: { projectId: string; agentId: string; body: Buffer },
+    input: { projectId: string; agentId: string; conversationId?: string; body: Buffer },
     prepared: PreparedAssetUpload,
   ): AssetDto {
     const { projectId, agentId, body } = input;
@@ -1118,12 +1174,11 @@ export class AssetStore {
     const { originalFile, previewFile: canonicalPreview } = canonicalFiles(id);
     const previewFile = preview ? canonicalPreview : undefined;
     const asset: StoredAsset = {
-      id, projectId, agentId, name, mediaType, size: body.length, width, height,
+      id, projectId, agentId, ...(input.conversationId ? { conversationId: input.conversationId } : {}), name, mediaType, size: body.length, width, height,
       sha256: prepared.sha256, state: "staged", createdAt,
       originalFile, previewFile,
-      url: previewFile ? `/api/agents/${encodeURIComponent(agentId)}/attachments/${id}` : `/api/agents/${encodeURIComponent(agentId)}/assets/${id}/download`,
-      downloadUrl: `/api/agents/${encodeURIComponent(agentId)}/assets/${id}/download`,
-      previewUrl: previewFile ? `/api/agents/${encodeURIComponent(agentId)}/assets/${id}/preview` : undefined,
+      ...assetUrls(agentId, id, Boolean(previewFile), input.conversationId),
+      ...(!input.conversationId && previewFile ? { url: `/api/agents/${encodeURIComponent(agentId)}/attachments/${id}` } : {}),
     };
     try {
       fenced(() => this.authority.recordSecureAudit(this.dataDir, relative, projectId, agentId,
@@ -1213,14 +1268,14 @@ export class AssetStore {
     if (this.portableFiles) {
       try {
         const relative = this.secureDirectory(projectId, agentId);
-        const body = this.secureRead(relative, file, ASSET_LIMITS.maxFileBytes);
+        const body = this.secureRead(relative, file, preview ? MAX_PREVIEW_BYTES : ASSET_LIMITS.maxFileBytes);
         if (!body || (!preview && createHash("sha256").update(body).digest("hex") !== asset.sha256)) return undefined;
         return { asset, body };
       } catch { return undefined; }
     }
     try {
       const directory = await this.safeDirectory(projectId, agentId);
-      const body = await readNoFollow(path.join(directory.path, file), ASSET_LIMITS.maxFileBytes).finally(() => directory.handle.close());
+      const body = await readNoFollow(path.join(directory.path, file), preview ? MAX_PREVIEW_BYTES : ASSET_LIMITS.maxFileBytes).finally(() => directory.handle.close());
       if (!preview && createHash("sha256").update(body).digest("hex") !== asset.sha256) return undefined;
       return { asset, body };
     } catch { return undefined; }

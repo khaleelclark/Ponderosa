@@ -22,7 +22,7 @@ let working=true;
 api.getWorkspaceDirectory=(async(kind:string,options:{projectId?:string;cursor?:string;search?:string;summary?:boolean;active?:boolean})=>{
   requests.push({kind,...options});
   if(location.search.includes("loading"))await new Promise(resolve=>setTimeout(resolve,1000));
-  if(kind==="agent" && options.active)return {kind,starredItems:[],items:[],total:working && (!options.projectId || options.projectId==="P2")?31:0,history:{hasMore:false}};
+  if(kind==="agent" && options.active)return {kind,starredItems:[],items:[],total:working && (!options.projectId || options.projectId==="P2")?31:0,runningCount:working?1:0,history:{hasMore:false}};
   const all=kind==="project"?projects.map(project=>({kind,project,runningAgentCount:0})):kind==="conversation"?chats.filter(item=>!options.search||item.conversation.title.toLowerCase().includes(options.search.toLowerCase())):kind==="agent"?agents:kind==="trigger"?triggers:[];
   const offset=Number(options.cursor??0),more=!options.summary && offset+25<all.length;
   return {kind,starredItems:[],items:options.summary?[]:all.slice(offset,offset+25),total:all.length,history:{hasMore:more,...(more?{cursor:String(offset+25)}:{})}};

@@ -1201,11 +1201,16 @@ export function AllChatView({
       })) {
         setReplyTarget(undefined);
       }
-      directSendConfirmationSequence.current += 1;
-      setDirectSendConfirmation({
-        id: directSendConfirmationSequence.current,
-        text: allChatDeliveryConfirmation(result),
-      });
+      const confirmation = allChatDeliveryConfirmation(result);
+      if (confirmation) {
+        directSendConfirmationSequence.current += 1;
+        setDirectSendConfirmation({
+          id: directSendConfirmationSequence.current,
+          text: confirmation,
+        });
+      } else {
+        setDirectSendConfirmation(undefined);
+      }
       void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
       for (const agentId of result.recipientIds) {
         void queryClient.invalidateQueries({

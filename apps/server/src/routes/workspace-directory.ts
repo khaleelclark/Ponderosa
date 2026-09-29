@@ -181,6 +181,20 @@ function runningAgentCountSql(scope: "active_agent.project_id = p.id" | "active_
       )))`;
 }
 
+function workspaceRunningAgentCount(sqlite: Database.Database): number {
+  return (sqlite.prepare(`SELECT COUNT(DISTINCT runs.agent_id) AS count
+    FROM scheduler_runs runs
+    JOIN agents agent ON agent.id = runs.agent_id
+    WHERE runs.status IN ('leased', 'running')
+      AND agent.archived = 0 AND agent.deleted_at IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM agent_creation_operation_members members
+        JOIN agent_creation_operations operation ON operation.id = members.operation_id
+        WHERE members.agent_id = agent.id
+          AND operation.status IN ('preparing', 'canonical_committed', 'rolling_back')
+      )`).get() as { count: number }).count;
+}
+
 function resourceSettings(
   preferences: WorkspacePreferencesDto,
   kind: WorkspaceDirectoryKind,
@@ -775,6 +789,9 @@ export function registerWorkspaceDirectoryRoutes(
       return {
         kind, total, starredItems: [], items: [],
         ...(health && !request.query.projectId ? { activeCount: health.workingIds.length } : {}),
+        ...(kind === "agent" && !request.query.projectId
+          ? { runningCount: workspaceRunningAgentCount(sqlite) }
+          : {}),
         history: { limit, hasMore: false },
       } satisfies WorkspaceDirectoryPageDto;
     }

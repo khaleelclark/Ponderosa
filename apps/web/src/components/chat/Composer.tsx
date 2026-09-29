@@ -2672,6 +2672,7 @@ export function Composer({
         pastedText={pastedText}
         pastedTextBytes={pastedText ? utf8ByteLength(pastedText) : 0}
         error={attachments.error ?? sendError}
+        attachmentError={Boolean(attachments.error)}
         draftConflict={draftConflict?.conflict}
         failedDraftContents={failedDraftContents}
         restoringDraft={restoringDraftConflict}

@@ -106,7 +106,7 @@ export function ComposerAttachment({
             title={error}
           >
             {status === "complete"
-              ? "Ready"
+              ? "Uploaded"
               : status[0]!.toUpperCase() + status.slice(1)}
           </Typography>
           {status === "failed" && onRetry ? (

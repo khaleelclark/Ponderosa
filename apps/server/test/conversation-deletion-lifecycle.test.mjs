@@ -22,6 +22,7 @@ import {
 import { drainProjectAgentDeletions } from "../dist/project-deletion-coordinator.js";
 import { DraftService } from "../dist/routes/drafts.js";
 import { registerConversationRoutes } from "../dist/routes/conversations.js";
+import { AssetStore } from "../dist/assets.js";
 
 const noCleanup = {
   enqueueDraftAttachmentCleanup: () => {},
@@ -65,6 +66,7 @@ function fixture(t) {
 }
 
 function deletionAuthority({
+  assets = { purgeConversationAssets: async () => {} },
   commitAgentDeletion = async () => {},
   deletingConversationIds = new Set(),
   drafts,
@@ -77,6 +79,7 @@ function deletionAuthority({
     store,
     workspace,
     drafts,
+    assets,
     deletingConversationIds,
     agentCreationConversationLeases: new Map(),
     conversationDeliveryLeases: new Map(),
@@ -87,6 +90,26 @@ function deletionAuthority({
     publishWorkspace: () => {},
   });
 }
+
+test("Chat deletion releases its Chat-owned Broadcast media and quota", async (t) => {
+  const { chat, dataDir, drafts, project, store, workspace } = fixture(t);
+  const assets = new AssetStore(dataDir, { portableFiles: true });
+  t.after(() => assets.close());
+  const attachment = await assets.stage({
+    projectId: project.id,
+    agentId: chat.id,
+    conversationId: chat.id,
+    body: Buffer.from("Shared photo notes"),
+    name: "notes.txt",
+  });
+  await assets.associate(project.id, chat.id, [attachment.id]);
+  assert.ok(await assets.content(project.id, chat.id, attachment.id, false));
+  const authority = deletionAuthority({ assets, drafts, store, workspace });
+  const receipt = store.markConversationDeletionPending(chat.id);
+  assert.equal(await authority.processConversationDeletionCleanup(receipt), true);
+  assert.equal(await assets.content(project.id, chat.id, attachment.id, false), undefined);
+  assert.equal(await assets.read(project.id, chat.id, attachment.id), undefined);
+});
 
 test("canonical Chat deletion dominates leftover storage across restart", async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), "ponderosa-chat-deletion-restart-"));
@@ -369,6 +392,7 @@ test("committed Chat cleanup retains refresh and draft rm failures for exact ret
         await drafts.deleteSurface(draftId);
       },
     },
+    assets: { purgeConversationAssets: async () => {} },
     deletingConversationIds: new Set(),
     agentCreationConversationLeases: new Map(),
     conversationDeliveryLeases: new Map(),

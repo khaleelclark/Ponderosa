@@ -20,6 +20,7 @@ import {
   selectedRunConfig,
 } from "../conversationEngine";
 import {
+  broadcastAttachmentsForOwner,
   cleanupRecipientUploadsForDefinitiveFailure,
   fileSelectionFingerprint,
   recipientUploadsForAgentIds,
@@ -123,11 +124,15 @@ export function useConversationMessagingController({
     ? effort
     : "";
   const runConfig = selectedRunConfig(compatibleModel, compatibleEffort, speed);
+  const deleteUploadedAttachment = (ownerId: string, attachmentId: string) =>
+    ownerId === conversationId
+      ? api.deleteConversationAttachment(conversationId, attachmentId)
+      : api.deleteAttachment(ownerId, attachmentId);
   const {
     recipientUnavailable, cleanupSettled, definitiveFailure,
     cleanupPendingReporter, cleanupRecipientUploads,
   } = recipientUploadControls({
-    deleteAttachment: (agentId, attachmentId) => api.deleteAttachment(agentId, attachmentId),
+    deleteAttachment: deleteUploadedAttachment,
     onPendingDelta: delta => setPendingUploadCleanups(count => Math.max(0, count + delta)),
   });
 
@@ -300,12 +305,9 @@ export function useConversationMessagingController({
           recipient.attachments,
         ]),
       );
-      const attachments = attachmentOwnerAgentId
-        ? (attachmentsByAgent.get(attachmentOwnerAgentId) ?? []).map(item => ({
-            id: item.id,
-            agentId: attachmentOwnerAgentId,
-          }))
-        : [];
+      const attachments = broadcastAttachmentsForOwner(
+        conversationId, attachmentOwnerAgentId, uploadedRecipients,
+      );
       return api.sendConversationMessage(conversationId, {
         text,
         attachments: attachments as AssetDto[],
@@ -367,12 +369,12 @@ export function useConversationMessagingController({
       const targets = everyoneMentioned
         ? agents.filter(agent => !agent.archived)
         : explicitlyMentionedAgents;
-      const broadcastAttachmentOwner = broadcastText !== undefined
-        ? agents.find(agent => !agent.archived)
+      const broadcastAttachmentOwnerId = broadcastText !== undefined
+        ? agents.find(agent => !agent.archived)?.id ?? (files.length ? conversationId : undefined)
         : undefined;
       const liveRecipientSnapshot = recipientActionSnapshot(
         targets.map(target => target.id),
-        broadcastAttachmentOwner?.id,
+        broadcastAttachmentOwnerId,
       );
       const durableRequest = pendingSubmission?.request;
       const exactDelivery = durableRequest?.runtime.activeRunDelivery ?? activeRunDelivery;
@@ -483,8 +485,10 @@ export function useConversationMessagingController({
       uploaded ??= await uploadFilesForRecipients(
           agentIds,
           prepared.files,
-          (agentId, file) => api.uploadAttachment(agentId, file),
-          (agentId, item) => api.deleteAttachment(agentId, item.id),
+          (agentId, file) => agentId === conversationId
+            ? api.uploadConversationAttachment(conversationId, file)
+            : api.uploadAttachment(agentId, file),
+          (agentId, item) => deleteUploadedAttachment(agentId, item.id),
           recipientUnavailable,
           cleanupPendingReporter(),
         );
@@ -503,7 +507,7 @@ export function useConversationMessagingController({
             pending: pendingSubmission,
             recipients: uploaded,
             persist: persistPendingSubmission,
-            cleanup: (agentId, item) => api.deleteAttachment(agentId, item.id),
+            cleanup: (agentId, item) => deleteUploadedAttachment(agentId, item.id),
             definitiveFailure,
             cleanupUnavailable: cleanupSettled,
             onPendingChange: cleanupPendingReporter(),
@@ -565,11 +569,7 @@ export function useConversationMessagingController({
           "Add informational context or an attachment after #broadcast.",
         );
       }
-      if (prepared.files.length && !broadcastAttachmentOwnerAgentId) {
-        throw new Error(
-          "Create an agent before attaching files to shared project context.",
-        );
-      }
+      if (prepared.files.length && !broadcastAttachmentOwnerAgentId) throw new Error("This Chat could not store the Broadcast attachment. Try again.");
       const broadcastUploadKey = recipientUploadCacheKey(
         "broadcast",
         prepared.broadcastUploadAgentIds,
@@ -611,7 +611,7 @@ export function useConversationMessagingController({
               error,
               recipients: uploadedRecipients,
               definitiveFailure,
-              cleanup: (agentId, item) => api.deleteAttachment(agentId, item.id),
+              cleanup: (agentId, item) => deleteUploadedAttachment(agentId, item.id),
               cleanupUnavailable: cleanupSettled,
               onPendingChange: cleanupPendingReporter(),
             })) {
@@ -658,7 +658,7 @@ export function useConversationMessagingController({
               error,
               recipients: uploadedRecipients,
               definitiveFailure,
-              cleanup: (agentId, item) => api.deleteAttachment(agentId, item.id),
+              cleanup: (agentId, item) => deleteUploadedAttachment(agentId, item.id),
               cleanupUnavailable: cleanupSettled,
               onPendingChange: cleanupPendingReporter(),
             })) {
@@ -681,7 +681,7 @@ export function useConversationMessagingController({
           cleanupUploads,
           async (agentId, attachment) => {
             try {
-              await api.deleteAttachment(agentId, attachment.id);
+              await deleteUploadedAttachment(agentId, attachment.id);
             } catch (cleanupError) {
               if (!cleanupSettled(cleanupError)) throw cleanupError;
             }
@@ -711,7 +711,7 @@ export function useConversationMessagingController({
         recipientUploadsForAgentIds(uploadedRecipients, unavailableRecipientIds),
         async (agentId, attachment) => {
           try {
-            await api.deleteAttachment(agentId, attachment.id);
+            await deleteUploadedAttachment(agentId, attachment.id);
           } catch (error) {
             if (!cleanupSettled(error)) throw error;
           }

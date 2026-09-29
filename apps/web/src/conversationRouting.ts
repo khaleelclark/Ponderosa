@@ -21,7 +21,7 @@ export function newChatSubmission(text: string):
     : { kind: "broadcast", text: broadcastText };
 }
 
-const RECIPIENT_UPLOAD_CONCURRENCY = 3;
+const RECIPIENT_UPLOAD_CONCURRENCY = 2;
 const fileInstanceIds = new WeakMap<File, number>();
 let nextFileInstanceId = 0;
 
@@ -36,6 +36,22 @@ export const fileSelectionFingerprint = (files: readonly File[]) =>
   });
 
 export type RecipientUploads<T> = Array<{ agentId: string; attachments: T[] }>;
+
+/** Preserve Chat ownership on the Broadcast wire payload; an ID alone is
+ * ambiguous because older Broadcast assets are owned by an Agent. */
+export function broadcastAttachmentsForOwner(
+  conversationId: string,
+  ownerId: string | undefined,
+  uploads: RecipientUploads<{ id: string }>,
+): Array<{ id: string; agentId: string; conversationId?: string }> {
+  if (!ownerId) return [];
+  const owner = uploads.find((recipient) => recipient.agentId === ownerId);
+  return (owner?.attachments ?? []).map((attachment) => ({
+    id: attachment.id,
+    agentId: ownerId,
+    ...(ownerId === conversationId ? { conversationId } : {}),
+  }));
+}
 
 export function recipientUploadsNeedPersistence<T>(uploads: RecipientUploads<T>): boolean {
   return uploads.some(recipient => recipient.attachments.length > 0);

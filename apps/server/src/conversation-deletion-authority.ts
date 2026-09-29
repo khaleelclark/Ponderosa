@@ -5,11 +5,13 @@ import type {
 } from "@ponderosa/agents";
 import type { WorkspaceEventEnvelope } from "@ponderosa/core";
 import type { DraftService } from "./routes/drafts.js";
+import type { AssetStore } from "./assets.js";
 
 export function createConversationDeletionAuthority(context: {
   store: AgentStore;
   workspace: WorkspaceStore;
   drafts: Pick<DraftService, "deleteSurface" | "fenceMutations">;
+  assets: Pick<AssetStore, "purgeConversationAssets">;
   deletingConversationIds: Set<string>;
   agentCreationConversationLeases: ReadonlyMap<string, number>;
   conversationDeliveryLeases: ReadonlyMap<string, number>;
@@ -112,6 +114,11 @@ export function createConversationDeletionAuthority(context: {
         errors.push(error instanceof Error ? error.message : "Chat storage cleanup failed");
       }
       receipt = context.store.getConversationDeletionReceipt(receipt.conversationId) ?? receipt;
+    }
+    try {
+      await context.assets.purgeConversationAssets(receipt.projectId, receipt.conversationId);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : "Chat attachment cleanup failed");
     }
     for (const draftId of [
       receipt.conversationId,

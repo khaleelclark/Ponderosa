@@ -5,10 +5,13 @@ export const ASSET_MEDIA_TYPES = [
 
 export type AssetMediaType = typeof ASSET_MEDIA_TYPES[number];
 
-/** A content-validated, agent-owned asset staged for or associated with a message. */
+/** A content-validated asset staged for or associated with a message. A
+ * Chat-owned Broadcast uses conversationId as its storage owner and has no
+ * Agent record; older Agent-owned assets omit conversationId. */
 export interface AssetDto {
   id: string;
   agentId: string;
+  conversationId?: string;
   name: string;
   mediaType: AssetMediaType;
   size: number;
@@ -43,7 +46,7 @@ export interface AssetLimitsDto {
 /** One shared admission budget for uploads, canonical Communications, and
  * per-recipient runtime dispatch snapshots. */
 export const DEFAULT_ASSET_LIMITS: AssetLimitsDto = {
-  maxFileBytes: 8 * 1024 * 1024,
+  maxFileBytes: 80 * 1024 * 1024,
   maxRequestBytes: 8 * 1024 * 1024 + 16 * 1024,
   maxAssetsPerMessage: 20,
   maxMessageBytes: 80 * 1024 * 1024,

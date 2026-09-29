@@ -3,6 +3,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -56,6 +57,20 @@ export function MutationNotificationProvider({
     });
   }, []);
   const value = useMemo(() => notify, [notify]);
+  useEffect(() => {
+    const announceDownload = (event: MouseEvent) => {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const anchor = target.closest("a[download]");
+      if (!(anchor instanceof HTMLAnchorElement) || anchor.dataset.ponderosaDownloadFeedback === "handled") return;
+      const url = new URL(anchor.href, window.location.href);
+      if (url.protocol !== "blob:" && url.origin !== window.location.origin) return;
+      notify({ message: "Download started", key: "first-party-download" });
+    };
+    document.addEventListener("click", announceDownload, true);
+    return () => document.removeEventListener("click", announceDownload, true);
+  }, [notify]);
   const dismiss = () => setNotices((current) => current.slice(1));
 
   return (

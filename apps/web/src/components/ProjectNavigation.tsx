@@ -223,7 +223,6 @@ export function ProjectRail({
   currentProjectId,
   route,
   profile,
-  allMessagesUnread,
   attentionNotifications,
   unreadNotificationUpdates,
   projectUnread,
@@ -253,7 +252,6 @@ export function ProjectRail({
   currentProjectId?: string;
   route: Route;
   profile: OperatorProfileDto;
-  allMessagesUnread: UnreadNotificationProjection;
   attentionNotifications: number;
   unreadNotificationUpdates: number;
   projectUnread: ReadonlyMap<string, UnreadNotificationProjection>;
@@ -379,22 +377,12 @@ export function ProjectRail({
           {drawer ? (
             <Tooltip title="Messages across Ponderosa">
               <IconButton
-                aria-label={`Messages across Ponderosa${allMessagesUnread.importantCount ? `, ${allMessagesUnread.importantCount} important unread` : ""}${allMessagesUnread.ordinaryCount ? `, ${allMessagesUnread.ordinaryCount} ordinary unread` : ""}`}
+                aria-label="Messages across Ponderosa"
                 aria-current={route.kind === "allChat" ? "page" : undefined}
                 onClick={onOpenAllMessages}
                 sx={{ width: 36, height: 36, flex: "0 0 36px" }}
               >
-                <Badge
-                  color={allMessagesUnread.importantCount ? "error" : "default"}
-                  badgeContent={allMessagesUnread.importantCount || undefined}
-                  max={99}
-                  variant={!allMessagesUnread.importantCount && allMessagesUnread.ordinaryCount ? "dot" : "standard"}
-                  invisible={!allMessagesUnread.totalCount}
-                  slotProps={{ badge: { "aria-hidden": true } }}
-                  sx={{ "& .MuiBadge-badge": { color: "#fff", fontWeight: 800 } }}
-                >
-                  <ForumOutlinedIcon fontSize="small" />
-                </Badge>
+                <ForumOutlinedIcon fontSize="small" />
               </IconButton>
             </Tooltip>
           ) : null}
@@ -452,7 +440,7 @@ export function ProjectRail({
           }}
         >
           {!drawer ? <ButtonBase
-            aria-label={`Messages across Ponderosa${allMessagesUnread.importantCount ? `, ${allMessagesUnread.importantCount} important unread` : ""}${allMessagesUnread.ordinaryCount ? `, ${allMessagesUnread.ordinaryCount} ordinary unread` : ""}`}
+            aria-label="Messages across Ponderosa"
             aria-current={route.kind === "allChat" ? "page" : undefined}
             onClick={onOpenAllMessages}
             sx={{
@@ -468,20 +456,7 @@ export function ProjectRail({
               "&:hover": { bgcolor: "action.hover" },
             }}
           >
-            <Badge
-              color={allMessagesUnread.importantCount ? "error" : "default"}
-              badgeContent={allMessagesUnread.importantCount || undefined}
-              max={99}
-              variant={!allMessagesUnread.importantCount && allMessagesUnread.ordinaryCount ? "dot" : "standard"}
-              invisible={!allMessagesUnread.totalCount}
-              slotProps={{ badge: { "aria-hidden": true } }}
-              sx={{
-                flex: "0 0 auto",
-                "& .MuiBadge-badge": { top: 1, right: 1, color: "#fff", fontWeight: 800 },
-              }}
-            >
-              <ForumOutlinedIcon sx={{ fontSize: 18 }} />
-            </Badge>
+            <ForumOutlinedIcon sx={{ fontSize: 18, flex: "0 0 auto" }} />
             <Typography component="span" noWrap sx={{ minWidth: 0, fontSize: 12, fontWeight: 700 }}>
               Messages across Ponderosa
             </Typography>
@@ -673,11 +648,6 @@ export function ProjectRail({
         <RailButton
           label="All Messages"
           selected={route.kind === "allChat"}
-          badge={allMessagesUnread.importantCount || undefined}
-          dot={Boolean(allMessagesUnread.ordinaryCount)}
-          badgeColor={allMessagesUnread.importantCount ? "error" : "default"}
-          badgeStatus={`${allMessagesUnread.importantCount} important unread${allMessagesUnread.ordinaryCount ? `, ${allMessagesUnread.ordinaryCount} ordinary unread` : ""}`}
-          dotStatus={`${allMessagesUnread.ordinaryCount} ordinary unread`}
           onClick={onOpenAllMessages}
         >
           <ForumOutlinedIcon />

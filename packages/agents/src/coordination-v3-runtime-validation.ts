@@ -10,7 +10,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const RUNTIME_ATTACHMENT_MEDIA_TYPES = new Set<string>(ASSET_MEDIA_TYPES);
 const RUNTIME_ATTACHMENT_FIELDS = new Set(["id", "name", "mediaType", "size", "sha256", "localPath"]);
 const RUNTIME_CANONICAL_ATTACHMENT_FIELDS = new Set([
-  "id", "agentId", "name", "mediaType", "size", "width", "height", "sha256",
+  "id", "agentId", "conversationId", "name", "mediaType", "size", "width", "height", "sha256",
   "state", "createdAt", "url", "downloadUrl", "previewUrl",
 ]);
 const RUNTIME_ARTIFACT_FIELDS = new Set([
@@ -83,6 +83,10 @@ function runtimeCanonicalAttachmentsAreValid(value: unknown): value is AssetDto[
     if (Object.keys(attachment).some((field) => !RUNTIME_CANONICAL_ATTACHMENT_FIELDS.has(field)) ||
         typeof attachment.id !== "string" || !UUID_PATTERN.test(attachment.id) || ids.has(attachment.id) ||
         typeof attachment.agentId !== "string" || !UUID_PATTERN.test(attachment.agentId) ||
+        (attachment.conversationId !== undefined &&
+          (typeof attachment.conversationId !== "string" ||
+            !UUID_PATTERN.test(attachment.conversationId) ||
+            attachment.conversationId !== attachment.agentId)) ||
         typeof attachment.name !== "string" || !attachment.name.trim() ||
         typeof attachment.mediaType !== "string" || !RUNTIME_ATTACHMENT_MEDIA_TYPES.has(attachment.mediaType) ||
         !Number.isSafeInteger(attachment.size) || (attachment.size as number) < 1 ||

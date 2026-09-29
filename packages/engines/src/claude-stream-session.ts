@@ -72,6 +72,9 @@ export class ClaudeStreamSession implements RuntimeSession {
       ...(opts.model ? ["--model", opts.model] : []),
       ...(opts.effort ? ["--effort", opts.effort] : []),
       ...(opts.resumeSessionId ? ["--resume", opts.resumeSessionId] : ["--session-id", this.engineAgentId]),
+      // Native questions have no Ponderosa response bridge. Keep the managed
+      // ponderosa_decision tool as the only user-question path in this host.
+      "--disallowedTools", "AskUserQuestion",
     ];
     const environment = runtimeEnvironment(opts.environment);
     const contained = spawnContainedCli({
