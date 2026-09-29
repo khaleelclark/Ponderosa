@@ -57,6 +57,7 @@ const receiptTerminal = (state: MessageDeliveryReceiptDto["state"]): boolean =>
     "processed",
     "recovered",
     "undelivered",
+    "run_unconfirmed",
     "retry_exhausted",
     "failed",
     "cancelled",

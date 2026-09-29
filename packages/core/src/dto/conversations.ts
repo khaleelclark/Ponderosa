@@ -136,6 +136,7 @@ export type MessageDeliveryReceiptState =
   | "steering"
   | "started"
   | "delivered"
+  | "run_unconfirmed"
   | "processed"
   | "unconfirmed"
   | "waiting_for_run"
@@ -159,9 +160,11 @@ export interface MessageDeliveryReceiptDto {
   updatedAt: string;
   /** Number of durable attempts for this message/recipient pair. */
   attemptCount: number;
+  /** Provider acknowledged the message even if the Run outcome is uncertain. */
+  providerAcknowledged?: true;
   /** Only the latest terminal attempt may be retried. */
   canRetry?: true;
-  /** The provider may have received this attempt despite missing acknowledgement. */
+  /** The previous attempt may already have completed; a retry can duplicate work. */
   retryMayDuplicate?: true;
   injectionId?: string;
   recoveryAt?: string;

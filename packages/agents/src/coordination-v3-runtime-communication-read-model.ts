@@ -488,7 +488,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         let state: MessageDeliveryReceiptDto["state"];
         if (requiredReplyExhausted) state = "retry_exhausted";
         else if (activation.state === "outcome_unknown") {
-          if (!recovery) state = "undelivered";
+          if (!recovery) state = injection?.state === "acknowledged" ? "run_unconfirmed" : "undelivered";
           else if (recovery.state === "grace_period") state = "unconfirmed";
           else if (recovery.recovery_activation_state === "consumed") state = "recovered";
           else if (
@@ -529,8 +529,9 @@ export class CoordinationV3RuntimeCommunicationReadModel {
             activation.updated_at,
           ].filter((value): value is string => Boolean(value)).sort().at(-1)!,
           attemptCount,
+          ...(injection?.state === "acknowledged" ? { providerAcknowledged: true as const } : {}),
           ...(
-            (state === "undelivered" || state === "retry_exhausted" || state === "failed")
+            (state === "undelivered" || state === "run_unconfirmed" || state === "retry_exhausted" || state === "failed")
             && recipientCurrentlyAuthorized
             && this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
               activation.project_id,

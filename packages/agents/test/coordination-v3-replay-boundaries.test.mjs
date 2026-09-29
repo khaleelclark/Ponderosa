@@ -488,6 +488,65 @@ test("delivery receipts project the exact execution reached by their activation"
   }
 });
 
+for (const acknowledged of [true, false]) test(`restart recovery ${acknowledged ? "preserves acknowledged delivery" : "keeps unacknowledged delivery unconfirmed"}`, () => {
+  const context = fixture();
+  try {
+    const now = "2026-09-29T12:00:00.000Z";
+    const communication = {
+      eventId: "acknowledged-before-restart", schemaVersion: 2,
+      projectId: context.project.id, conversationId: context.conversation.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: context.recipient.id },
+      text: "work", createdAt: now,
+    };
+    context.coordination.recordRuntimeCommunication({
+      id: communication.eventId, projectId: context.project.id,
+      sender: communication.sender, intent: communication.intent, audience: communication.audience,
+      payload: { communication, dispatch: {
+        conversationId: context.conversation.id, text: communication.text,
+        activeRunDelivery: "queue", recipients: [{ agentId: context.recipient.id, attachments: [] }],
+      } },
+      activation: { agentId: context.recipient.id, kind: "human_message", priority: 100,
+        dispatchPolicy: "next_run", promptClass: "human" }, now,
+    });
+    const lease = context.coordination.leaseNextRun({ workerId: "old-worker", now });
+    assert.ok(lease);
+    context.coordination.markRunStarted(lease.runId, lease.fencingToken, now);
+    context.coordination.preparePromptInjection({
+      injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
+      prompt: "work", now,
+    });
+    context.coordination.markPromptSubmitted({
+      injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken, now,
+    });
+    if (acknowledged) {
+      context.coordination.acknowledgePromptInjection({
+        injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken, now,
+      });
+      assert.equal(context.coordination.deliveryReceiptsForCommunication(context.project.id, communication.eventId)[0]?.state, "delivered");
+    }
+    assert.deepEqual(context.coordination.recoverOrphanedRuns("replacement-worker"), { retried: 0, outcomeUnknown: 1 });
+    const receipt = context.coordination.deliveryReceiptsForCommunication(context.project.id, communication.eventId)[0];
+    assert.equal(receipt?.state, acknowledged ? "run_unconfirmed" : "undelivered");
+    assert.equal(receipt?.providerAcknowledged, acknowledged ? true : undefined);
+    assert.equal(receipt?.retryMayDuplicate, true);
+    assert.equal(receipt?.canRetry, true);
+    const retry = context.coordination.retryMessageDelivery({
+      projectId: context.project.id, activationId: receipt.activationId,
+      idempotencyKey: `retry-${acknowledged}`, now,
+    });
+    assert.equal(retry.accepted, true);
+    const payload = JSON.parse(context.store.sqlite.prepare(
+      "SELECT payload_json FROM agent_activations WHERE id = ?",
+    ).get(retry.activationId).payload_json);
+    assert.match(payload.steeringRecovery.instruction, acknowledged
+      ? /provider acknowledged the previous message/
+      : /delivery acknowledgement was not confirmed/);
+  } finally {
+    context.close();
+  }
+});
+
 test("steering recovery receipts preserve original and exact recovery executions", () => {
   const context = fixture();
   try {

@@ -315,17 +315,22 @@ export class AgentArtifactCatalog {
       FROM artifacts artifact
       JOIN agents agent ON agent.id = artifact.agent_id
       WHERE agent.project_id = ?
-        ${conversationId ? `AND EXISTS (
+        ${conversationId ? `AND (agent.conversation_id = ? OR EXISTS (
           SELECT 1 FROM agent_conversation_memberships membership
           WHERE membership.agent_id = artifact.agent_id
             AND membership.conversation_id = ?
-        )` : ""}
+        ) OR EXISTS (
+          SELECT 1 FROM agent_deletion_tombstones tombstone
+          WHERE tombstone.agent_id = artifact.agent_id
+            AND tombstone.project_id = agent.project_id
+            AND tombstone.conversation_id = ?
+        ))` : ""}
         ${boundary ? "AND (artifact.created_at < ? OR (artifact.created_at = ? AND artifact.id < ?))" : ""}
       ORDER BY artifact.created_at DESC, artifact.id DESC LIMIT ?
     `).all(...(
       boundary
-        ? [projectId, ...(conversationId ? [conversationId] : []), boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
-        : [projectId, ...(conversationId ? [conversationId] : []), limit + 1]
+        ? [projectId, ...(conversationId ? [conversationId, conversationId, conversationId] : []), boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
+        : [projectId, ...(conversationId ? [conversationId, conversationId, conversationId] : []), limit + 1]
     )) as ArtifactProjectionReadRow[];
     const executionArtifacts = rows.flatMap((row) => {
       const artifact = this.artifactDtoFromProjectionRow(row.agent_id, row);
@@ -334,17 +339,27 @@ export class AgentArtifactCatalog {
     const managedRows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
       WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
-        ${conversationId ? `AND EXISTS (
+        ${conversationId ? `AND (EXISTS (
           SELECT 1 FROM agent_conversation_memberships membership
           WHERE membership.agent_id = COALESCE(json_extract(artifact_json, '$.legacyRecovery.custodianAgentId'), json_extract(artifact_json, '$.originAgentId'))
             AND membership.conversation_id = ?
-        )` : ""}
+        ) OR EXISTS (
+          SELECT 1 FROM agents origin
+          WHERE origin.id = COALESCE(json_extract(artifact_json, '$.legacyRecovery.custodianAgentId'), json_extract(artifact_json, '$.originAgentId'))
+            AND origin.project_id = managed_artifact_projection.project_id
+            AND origin.conversation_id = ?
+        ) OR EXISTS (
+          SELECT 1 FROM agent_deletion_tombstones tombstone
+          WHERE tombstone.agent_id = COALESCE(json_extract(artifact_json, '$.legacyRecovery.custodianAgentId'), json_extract(artifact_json, '$.originAgentId'))
+            AND tombstone.project_id = managed_artifact_projection.project_id
+            AND tombstone.conversation_id = ?
+        ))` : ""}
         ${boundary ? "AND (created_at < ? OR (created_at = ? AND artifact_id < ?))" : ""}
       ORDER BY created_at DESC, artifact_id DESC LIMIT ?
     `).all(...(
       boundary
-        ? [projectId, ...(conversationId ? [conversationId] : []), boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
-        : [projectId, ...(conversationId ? [conversationId] : []), limit + 1]
+        ? [projectId, ...(conversationId ? [conversationId, conversationId, conversationId] : []), boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
+        : [projectId, ...(conversationId ? [conversationId, conversationId, conversationId] : []), limit + 1]
     )) as Array<{ artifact_json: string }>;
     const managed = managedRows.map((row) =>
       this.withProjectUrls(

@@ -37,25 +37,30 @@ function deliveryLabel(
     case "steering": return `Steering ${recipientName}; awaiting provider acknowledgement.`;
     case "started": return `Started a Run for ${recipientName}.`;
     case "delivered": return `Delivered to ${recipientName}.`;
+    case "run_unconfirmed": return `Message delivered to ${recipientName}, but Ponderosa lost contact before confirming whether the work finished. Check ${recipientName}'s activity before asking it to try again.`;
     case "processed": return `Processed by ${recipientName}.`;
     case "unconfirmed": {
       const remaining = receipt.recoveryAt
         ? Math.max(0, Math.ceil((Date.parse(receipt.recoveryAt) - now) / 1_000))
         : 0;
-      return `Delivery to ${recipientName} is unconfirmed. Interrupting the current Run and recovering ${remaining > 0 ? `in ${remaining}s` : "now"}.`;
+      return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} is unconfirmed`}. Interrupting the current Run and recovering ${remaining > 0 ? `in ${remaining}s` : "now"}.`;
     }
-    case "waiting_for_run": return `Delivery to ${recipientName} was unconfirmed. Recovery will audit current state after the current Run finishes.`;
-    case "recovery_queued": return `Delivery to ${recipientName} was unconfirmed. Recovery is queued and will audit current state first.`;
-    case "recovering": return `Delivery to ${recipientName} was unconfirmed. Recovery is running and auditing current state first.`;
+    case "waiting_for_run": return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} was unconfirmed`}. Recovery will audit current state after the current Run finishes.`;
+    case "recovery_queued": return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} was unconfirmed`}. Recovery is queued and will audit current state first.`;
+    case "recovering": return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} was unconfirmed`}. Recovery is running and auditing current state first.`;
     case "recovered": return `Recovered and processed by ${recipientName}.`;
     case "undelivered": return `Undelivered to ${recipientName}: provider acknowledgement was not confirmed.`;
     case "retry_exhausted": return `Required reply from ${recipientName} was not published after ${receipt.attemptCount} attempts; automatic recovery stopped.`;
-    case "failed": return `Delivery to ${recipientName} failed.`;
-    case "cancelled": return `Delivery to ${recipientName} was cancelled.`;
+    case "failed": return receipt.providerAcknowledged
+      ? `Message delivered to ${recipientName}, but the follow-up failed or could not confirm whether the work finished. Check ${recipientName}'s activity before trying again.`
+      : `Delivery to ${recipientName} failed.`;
+    case "cancelled": return receipt.providerAcknowledged
+      ? `Message delivered to ${recipientName}. Further follow-up was dismissed; check ${recipientName}'s activity to see whether the work finished.`
+      : `Delivery to ${recipientName} was cancelled.`;
   }
 }
 
-function compactDeliveryLabel(receipt: Pick<MessageDeliveryReceiptDto, "state">): string {
+function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto): string {
   switch (receipt.state) {
     case "queued": return "Queued";
     case "preparing": return "Preparing";
@@ -63,22 +68,23 @@ function compactDeliveryLabel(receipt: Pick<MessageDeliveryReceiptDto, "state">)
     case "steering": return "Steering";
     case "started": return "Started";
     case "delivered": return "Delivered";
+    case "run_unconfirmed": return "Work unconfirmed";
     case "processed": return "Processed";
-    case "unconfirmed": return "Unconfirmed";
+    case "unconfirmed": return receipt.providerAcknowledged ? "Work unconfirmed" : "Delivery unconfirmed";
     case "waiting_for_run": return "Waiting";
     case "recovery_queued": return "Recovery queued";
     case "recovering": return "Recovering";
     case "recovered": return "Recovered";
     case "undelivered": return "Undelivered";
     case "retry_exhausted": return "Reply exhausted";
-    case "failed": return "Failed";
-    case "cancelled": return "Cancelled";
+    case "failed": return receipt.providerAcknowledged ? "Follow-up failed" : "Failed";
+    case "cancelled": return receipt.providerAcknowledged ? "Follow-up dismissed" : "Cancelled";
   }
 }
 
 function severity(receipt: MessageDeliveryReceiptDto): "success" | "info" | "warning" | "error" {
   if (receipt.state === "delivered" || receipt.state === "processed" || receipt.state === "recovered") return "success";
-  if (receipt.state === "retrying" || receipt.state === "unconfirmed" || receipt.state === "waiting_for_run" || receipt.state === "recovery_queued" || receipt.state === "recovering") return "warning";
+  if (receipt.state === "retrying" || receipt.state === "run_unconfirmed" || receipt.state === "unconfirmed" || receipt.state === "waiting_for_run" || receipt.state === "recovery_queued" || receipt.state === "recovering" || (receipt.state === "cancelled" && receipt.providerAcknowledged)) return "warning";
   if (receipt.state === "undelivered" || receipt.state === "retry_exhausted" || receipt.state === "failed") return "error";
   return "info";
 }
@@ -119,7 +125,7 @@ export function MessageDeliveryStatus({
     const tones = receipts.map(receipt =>
       receipt.state === "queued"
         ? "warning"
-        : receipt.state === "cancelled"
+        : receipt.state === "cancelled" && !receipt.providerAcknowledged
           ? "error"
           : severity(receipt),
     );
@@ -293,7 +299,7 @@ export function MessageDeliveryStatus({
           disabled={pendingRetryId === receipt.activationId}
           onClick={() => receipt.retryMayDuplicate ? setConfirmRetry(receipt) : void retryDelivery(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
-        >{pendingRetryId === receipt.activationId ? "Trying Delivery Again…" : "Try Delivery Again"}</Button> : null}
+        >{pendingRetryId === receipt.activationId ? "Trying Again…" : receipt.providerAcknowledged ? "Try Work Again" : "Try Delivery Again"}</Button> : null}
         {receipt.canRetry && projectId ? <Button
           color="inherit"
           variant="text"
@@ -301,7 +307,7 @@ export function MessageDeliveryStatus({
           disabled={pendingCancelId === receipt.activationId}
           onClick={() => void cancelDelivery(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
-        >{pendingCancelId === receipt.activationId ? "Cancelling…" : "Cancel Delivery"}</Button> : null}
+        >{pendingCancelId === receipt.activationId ? "Dismissing…" : receipt.providerAcknowledged ? "Dismiss Follow-Up" : "Cancel Delivery"}</Button> : null}
       </Stack>;
     })}
     {error ? <Alert severity="error">{error}</Alert> : null}
@@ -311,10 +317,12 @@ export function MessageDeliveryStatus({
       maxWidth="xs"
       fullWidth
     >
-      <DialogTitle>Try delivering this message again?</DialogTitle>
+      <DialogTitle>{confirmRetry?.providerAcknowledged ? "Ask the Agent to try the work again?" : "Try delivering this message again?"}</DialogTitle>
       <DialogContent>
         <Typography variant="body2">
-          Ponderosa could not confirm whether the provider received the previous attempt. Trying again asks the Agent to check its current state before repeating any work, but duplicate work is still possible.
+          {confirmRetry?.providerAcknowledged
+            ? "The message reached the Agent, but Ponderosa could not confirm whether the work finished. Check the Agent’s activity first. Trying again asks the Agent to check its current state, but it may repeat work already completed."
+            : "Ponderosa could not confirm whether the provider received the previous attempt. Trying again asks the Agent to check its current state before repeating any work, but duplicate work is still possible."}
         </Typography>
       </DialogContent>
       <DialogActions>

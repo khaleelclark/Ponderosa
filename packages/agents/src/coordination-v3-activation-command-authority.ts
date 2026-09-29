@@ -151,11 +151,13 @@ export class CoordinationV3ActivationCommandAuthority {
       };
 
       let retryMayDuplicate = false;
+      let providerAcknowledged = false;
       let retryable = original.state === "failed";
       if (original.state === "outcome_unknown") {
         retryMayDuplicate = true;
         const recovery = this.sqlite.prepare(`
-          SELECT recovery.state, recovery_activation.state AS activation_state
+          SELECT recovery.state, recovery_activation.state AS activation_state,
+            injection.state AS injection_state
           FROM scheduler_prompt_injections injection
           JOIN json_each(injection.activation_ids_json) member ON member.value = ?
           LEFT JOIN scheduler_steering_recoveries recovery ON recovery.injection_id = injection.id
@@ -166,7 +168,9 @@ export class CoordinationV3ActivationCommandAuthority {
         `).get(original.id, original.id) as {
           state: "grace_period" | "wait_for_run" | "recovery_queued" | null;
           activation_state: string | null;
+          injection_state: string;
         } | undefined;
+        providerAcknowledged = recovery?.injection_state === "acknowledged";
         retryable = !recovery || recovery.state === null ||
           ["failed", "outcome_unknown", "cancelled"].includes(recovery.activation_state ?? "");
       }
@@ -187,7 +191,9 @@ export class CoordinationV3ActivationCommandAuthority {
         },
         ...(retryMayDuplicate ? {
           steeringRecovery: {
-            instruction: "This is an operator-requested retry after the previous delivery acknowledgement was not confirmed. Audit current state before acting. If the request was already completed, report that result instead of repeating side effects.",
+            instruction: providerAcknowledged
+              ? "This is an operator-requested retry after the provider acknowledged the previous message, but the work outcome could not be confirmed. Audit current state before acting. If the request was already completed, report that result instead of repeating side effects."
+              : "This is an operator-requested retry after the previous delivery acknowledgement was not confirmed. Audit current state before acting. If the request was already completed, report that result instead of repeating side effects.",
           },
         } : {}),
       };

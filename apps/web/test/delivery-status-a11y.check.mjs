@@ -39,8 +39,17 @@ try {
   const action = page.getByRole("button", { name: /Preparing a Run for Saratoga.*Open direct chat/ });
   await action.waitFor();
   assert.equal(await page.getByRole("status").count(), 1, "live status is separate from the actionable button");
+  const uncertain = page.getByRole("button", { name: /Message delivered to Saratoga, but Ponderosa lost contact before confirming whether the work finished/ });
+  await uncertain.waitFor();
+  assert.equal(await page.getByRole("button", { name: /Undelivered to Saratoga/ }).count(), 0);
+  await page.getByRole("button", { name: "Try Work Again" }).click();
+  await page.getByRole("dialog", { name: "Ask the Agent to try the work again?" }).waitFor();
+  assert.match(await page.getByRole("dialog").innerText(), /message reached the Agent/);
+  await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
   await action.click();
   assert.equal(await page.evaluate(() => window.openedAgent), true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.getByText("Work unconfirmed", { exact: true }).isVisible(), true);
   await page.close();
   console.log("PASS delivery receipt is a keyboard-visible button with separate live status");
 } finally {

@@ -8,7 +8,13 @@ createRoot(document.getElementById("root")!).render(
     <ThemeProvider theme={createTheme()}>
       <CssBaseline />
       <MessageDeliveryStatus
-        receipts={[{ activationId: "activation-a", targetAgentId: "agent-a", state: "preparing" } as any]}
+        projectId="project-a"
+        receipts={[
+          { activationId: "activation-a", targetAgentId: "agent-a", state: "preparing" },
+          { activationId: "activation-b", targetAgentId: "agent-a", state: "run_unconfirmed",
+            providerAcknowledged: true, retryMayDuplicate: true, canRetry: true,
+            attemptCount: 1, updatedAt: "2026-09-29T12:00:00.000Z" },
+        ] as any}
         recipientName={() => "Saratoga"}
         onOpenAgent={() => { (window as any).openedAgent = true; }}
       />
