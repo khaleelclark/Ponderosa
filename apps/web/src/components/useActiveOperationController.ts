@@ -1,12 +1,14 @@
 import type { AgentHealthDto, MessageDeliveryReceiptDto } from "@ponderosa/core";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
+import { backgroundCooldownRemaining } from "../api/backgroundCooldown";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
 import {
   activeOperationExecutionTargets,
+  activeOperationAgentPhase,
   activeOperationReceiptIdentity,
   activeOperationsForScope,
   activeOperationIsRunning,
@@ -25,17 +27,20 @@ interface ReceiptSource {
 
 export function useActiveOperationController({
   activeScopeId,
+  healthProjectId,
   healthByAgentId,
   receiptSources,
   agentTitle,
   invalidate,
 }: {
   activeScopeId?: string;
+  healthProjectId?: string;
   healthByAgentId: ReadonlyMap<string, AgentHealthDto>;
   receiptSources: readonly ReceiptSource[];
   agentTitle(agentId: string | undefined): string;
   invalidate(): void;
 }) {
+  const queryClient = useQueryClient();
   const [activeOperations, setActiveOperations] =
     useState<ActiveOperationTracker[]>([]);
   const [stopConfirmation, setStopConfirmation] = useState<{
@@ -63,6 +68,10 @@ export function useActiveOperationController({
     queryFn: () => api.activeMessageDeliveryReceipts(activeScopeId!, activeReceiptIdentity),
     enabled: Boolean(activeScopeId) &&
       (activeReceiptIdentity.communicationEventIds.length > 0 || activeReceiptIdentity.activationIds.length > 0),
+    // The workspace stream is primary. A visible, scoped five-second fallback
+    // recovers a missed event without reintroducing fast per-Agent polling.
+    refetchInterval: scopedOperations.length > 0 ? 5_000 : false,
+    refetchIntervalInBackground: false,
   });
   const paginatedReceipts = useMemo<ActiveOperationReceipt[]>(
     () => receiptSources.flatMap(source =>
@@ -84,6 +93,37 @@ export function useActiveOperationController({
     ),
     paginatedReceipts,
   ), [exactReceiptsQuery.data?.items, paginatedReceipts]);
+  const operationPhaseByAgentId = useMemo(() => {
+    const phases = new Map<string, ReturnType<typeof activeOperationAgentPhase>>();
+    const agentIds = new Set(scopedOperations.flatMap(operation =>
+      operation.targets.map(target => target.agentId)
+    ));
+    for (const agentId of agentIds) {
+      phases.set(agentId, activeOperationAgentPhase(
+        scopedOperations, agentId, healthByAgentId.get(agentId), receipts,
+      ));
+    }
+    return phases;
+  }, [healthByAgentId, receipts, scopedOperations]);
+  const awaitingCanonicalHealth = [...operationPhaseByAgentId.values()]
+    .some(phase => phase === "preparing");
+
+  useEffect(() => {
+    if (!awaitingCanonicalHealth || !healthProjectId) return;
+    const refresh = () => {
+      if (document.visibilityState !== "visible" || backgroundCooldownRemaining() > 0) return;
+      const queryKey = queryKeys.agents.health(healthProjectId);
+      if (queryClient.isFetching({ queryKey, exact: true }) > 0 ||
+          Date.now() - (queryClient.getQueryState(queryKey)?.dataUpdatedAt ?? 0) < 5_000) return;
+      void queryClient.refetchQueries({
+        queryKey,
+        exact: true,
+        type: "active",
+      }, { cancelRefetch: false });
+    };
+    const timer = window.setInterval(refresh, 5_000);
+    return () => window.clearInterval(timer);
+  }, [awaitingCanonicalHealth, healthProjectId, queryClient]);
 
   useEffect(() => {
     if (!activeOperations.length) return;
@@ -208,6 +248,7 @@ export function useActiveOperationController({
   return {
     activeOperations,
     setActiveOperation: trackActiveOperation,
+    operationPhaseByAgentId,
     operationRunning: scopedOperations.some(activeOperationIsRunning),
     cancelOperationError,
     cancelOperationPending,

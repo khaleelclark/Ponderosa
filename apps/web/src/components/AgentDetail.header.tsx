@@ -49,6 +49,7 @@ export const AGENT_DETAIL_TABS: Array<{
 
 function AgentRunState({
   status,
+  statusLabelOverride,
   health,
   connectionStatus,
   phaseEvidenceFresh,
@@ -56,6 +57,7 @@ function AgentRunState({
   agentNameForId,
 }: {
   status: AgentStatus;
+  statusLabelOverride?: string;
   health?: AgentHealthDto;
   connectionStatus: WorkspaceConnectionStatus;
   phaseEvidenceFresh: boolean;
@@ -63,7 +65,11 @@ function AgentRunState({
   agentNameForId(agentId: string): string | undefined;
 }): JSX.Element {
   const now = useAgentRunClock(startedAt);
-  const presentation = agentStatusPresentation(health, {
+  const presentation = statusLabelOverride ? {
+    label: statusLabelOverride,
+    accessibleLabel: `Agent status: ${statusLabelOverride}`,
+    detail: `Agent status: ${statusLabelOverride}`,
+  } : agentStatusPresentation(health, {
     status,
     connectionStatus,
     phaseEvidenceFresh,
@@ -82,7 +88,7 @@ function AgentRunState({
         : connectionStatus === "connecting"
           ? "Connecting"
           : "Reconnecting";
-  const details = [
+  const details = statusLabelOverride ? "" : [
     "Current: " + presentation.detail,
     health?.latestRun ? "Latest Run: " + agentStatusLabel(health.latestRun.status) : undefined,
     health?.assignedWorkOutcome ? "Assigned work: " + agentStatusLabel(health.assignedWorkOutcome.status) : undefined,
@@ -105,6 +111,7 @@ interface AgentDetailHeaderProps {
   lineageAgentId?: string;
   lineageLabel: string;
   status: AgentStatus;
+  statusLabelOverride?: string;
   health?: AgentHealthDto;
   connectionStatus: WorkspaceConnectionStatus;
   phaseEvidenceFresh: boolean;
@@ -141,6 +148,7 @@ export function AgentDetailHeader({
   lineageLabel,
   health,
   status,
+  statusLabelOverride,
   connectionStatus,
   phaseEvidenceFresh,
   startedAt,
@@ -213,6 +221,7 @@ export function AgentDetailHeader({
       status={
         <AgentRunState
           status={status}
+          statusLabelOverride={statusLabelOverride}
           health={health}
           connectionStatus={connectionStatus}
           phaseEvidenceFresh={phaseEvidenceFresh}

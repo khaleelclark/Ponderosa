@@ -163,12 +163,19 @@ try {
     assert.equal((await page.evaluate(() => window.stormCounters())).otherAgents, beforeTerminal[index].otherAgents,
       `a P1 lifecycle change must not refresh the P2 Agent directory in tab ${index}`);
   }
+  const beforeFailedPhase = await pages[0].evaluate(() => window.stormCounters().health);
+  assert.equal(await pages[0].locator("#phase").textContent(), "true",
+    "terminal lifecycle evidence must be settled before the injected failure");
   await pages[0].evaluate(() => {
     window.stormFailNextPhaseFetch();
     window.terminalStorm();
   });
-  await pages[0].locator("#phase").getByText("false").waitFor({ timeout: 2_000 });
-  await pages[0].locator("#phase").getByText("true").waitFor({ timeout: 12_000 });
+  await pages[0].waitForFunction(previous => window.stormCounters().health > previous,
+    beforeFailedPhase, { timeout: 2_000 });
+  assert.equal(await pages[0].locator("#phase").textContent(), "true",
+    "a failed live refresh retains the last verified phase while its bounded retry runs");
+  await pages[0].waitForFunction(previous => window.stormCounters().health > previous + 1,
+    beforeFailedPhase, { timeout: 12_000 });
   for (const page of pages) {
     await page.evaluate(() => window.replayCompletedChat());
     await page.locator("#chat").getByText("Agent replied").waitFor({ timeout: 2_000 });

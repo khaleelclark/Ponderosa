@@ -586,7 +586,7 @@ export function useWorkspaceStream(
     ];
     const activePhaseQueries = () => phaseQueries().filter(query => query.isActive());
     let observedActivePhaseQueries = new Set(activePhaseQueries());
-    const markPhaseEvidenceStale = (projectId?: string) => {
+    const markPhaseEvidenceStale = (projectId?: string, hidePresentedPhase = true) => {
       phaseReconcileGeneration += 1;
       if (phaseQuietTimer) clearTimeout(phaseQuietTimer);
       // Sustained output gets periodic data refreshes; the stricter proof of
@@ -606,7 +606,10 @@ export function useWorkspaceStream(
       for (const query of phaseQueries().filter(matches)) {
         void queryClient.invalidateQueries({ queryKey: query.queryKey, exact: true, refetchType: "none" });
       }
-      setConnection(current => current.phaseEvidenceFresh
+      // A continuous live stream has not lost its last verified phase. Keep
+      // that label visible while the bounded refresh obtains newer evidence;
+      // only a gap, replay, or disconnect must hide it immediately.
+      if (hidePresentedPhase) setConnection(current => current.phaseEvidenceFresh
         ? { ...current, phaseEvidenceFresh: false }
         : current);
     };
@@ -771,8 +774,10 @@ export function useWorkspaceStream(
         || event.type === "coordination_changed"
         || (event.type === "notification_changed" && Boolean(event.decisionId));
       if (reconciliation.gap || envelope.replayed || changesPhaseEvidence) {
-        markPhaseEvidenceStale(reconciliation.gap || envelope.replayed
-          ? undefined : "projectId" in event ? event.projectId : undefined);
+        const interruptedContinuity = Boolean(reconciliation.gap || envelope.replayed);
+        markPhaseEvidenceStale(interruptedContinuity
+          ? undefined : "projectId" in event ? event.projectId : undefined,
+          interruptedContinuity);
       }
       const deletedProjectId = reconcileDeletedProjectEvent(
         envelope,

@@ -307,8 +307,9 @@ async function runReplyRecoveryScenario(t, intent) {
     event.type === "tool_result" && event.id === "ambiguous-message");
   assert.ok(failedToolResult);
   assert.equal(failedToolResult.isError, true);
-  assert.equal(typeof failedToolResult.failureCategory, "string");
-  assert.equal(typeof failedToolResult.retryable, "boolean");
+  assert.equal(failedToolResult.failureCategory, "invalid_input");
+  assert.equal(failedToolResult.retryable, false);
+  assert.match(failedToolResult.output, /no unambiguous reply route/u);
   assert.equal(projected.some((event) => event.type === "error"), false);
   assert.equal(projected.at(-1)?.type, "turn_done");
 

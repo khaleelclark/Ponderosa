@@ -1,4 +1,4 @@
-import type { AssetDto, DraftPendingSubmissionDto, EngineDto, SendMessageRequest } from "@ponderosa/core";
+import type { AssetDto, DraftPendingSubmissionDto, EngineDto, SendMessageRequest, SendMessageResponse } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -40,6 +40,7 @@ interface AgentMessageControllerInput {
   speed: string;
   onNotice(value?: string): void;
   onChatSelected(): void;
+  onAccepted?(response: SendMessageResponse, delivery: "steer" | "queue"): void;
 }
 
 interface AgentMessageSubmissionPrepared {
@@ -62,6 +63,7 @@ export function useAgentMessageController({
   speed,
   onNotice,
   onChatSelected,
+  onAccepted,
 }: AgentMessageControllerInput) {
   const queryClient = useQueryClient();
   const sendMessage = useSendMessage();
@@ -319,6 +321,7 @@ export function useAgentMessageController({
           },
           {
             onSuccess: response => {
+              onAccepted?.(response, prepared.request.activeRunDelivery ?? "steer");
               const notice = directAgentDeliveryNotice(
                 response,
                 prepared.request.activeRunDelivery ?? "steer",

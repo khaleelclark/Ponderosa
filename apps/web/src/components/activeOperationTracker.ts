@@ -2,6 +2,7 @@ import type {
   AgentHealthDto,
   MessageDeliveryReceiptDto,
   MultiAgentDirectMessageResponse,
+  SendMessageResponse,
 } from "@ponderosa/core";
 
 export const ACTIVE_OPERATION_START_TIMEOUT_MS = 60_000;
@@ -20,6 +21,14 @@ export interface ActiveOperationTracker {
   expiresAt: number;
   communicationEventId?: string;
   scopeId?: string;
+}
+
+export type ActiveOperationAgentPhase = "queued" | "preparing" | "running" | "stalled";
+
+export function activeOperationHeaderLabel(
+  phase: ActiveOperationAgentPhase | "sending" | undefined,
+): string | undefined {
+  return phase === "queued" ? "Queued" : phase === "sending" ? "Sending" : undefined;
 }
 
 export function createDeliveryOperationTracker(
@@ -134,6 +143,55 @@ export function acceptDirectOperation(
   return targets.length ? { ...tracker, targets } : undefined;
 }
 
+/** A composer response identifies the new delivery; cached health is only a
+ * baseline and cannot prove that an unrelated execution belongs to it. */
+export function acceptAgentMessageOperation(
+  tracker: ActiveOperationTracker | undefined,
+  response: SendMessageResponse,
+): ActiveOperationTracker | undefined {
+  if (!tracker || ("settled" in response && response.settled)) return undefined;
+  const target = tracker.targets[0];
+  if (!target) return undefined;
+  if (response.queued) {
+    if (!response.deliveryId && !response.communicationEventId) return undefined;
+    return {
+      ...tracker,
+      ...(response.communicationEventId ? { communicationEventId: response.communicationEventId } : {}),
+      targets: [{
+        ...target,
+        ...(response.deliveryId ? { activationId: response.deliveryId } : {}),
+      }],
+    };
+  }
+  if (!("runId" in response)) return undefined;
+  return {
+    ...tracker,
+    ...(response.communicationEventId ? { communicationEventId: response.communicationEventId } : {}),
+    targets: [{ ...target, matchedExecutionId: response.runId, receiptConfirmed: true }],
+  };
+}
+
+/** Direct Agent Chat follows the accepted delivery, including explicit Queue.
+ * The selected mode must not let an older Run's health stand in for its state. */
+export function trackAcceptedAgentMessage(
+  agentId: string,
+  response: SendMessageResponse,
+  healthByAgentId: ReadonlyMap<string, AgentHealthDto>,
+  initiatedAt = Date.now(),
+  scopeId?: string,
+): ActiveOperationTracker | undefined {
+  return acceptAgentMessageOperation(
+    createActiveOperationTracker(
+      "delivery",
+      [agentId],
+      healthByAgentId,
+      initiatedAt,
+      scopeId,
+    ),
+    response,
+  );
+}
+
 export function acceptBroadcastOperation(
   tracker: ActiveOperationTracker,
   communicationEventId: string | undefined,
@@ -177,6 +235,51 @@ function activeReceiptExecutionId(
   return receiptSucceeded(receipt.state) ? receipt.executionId : undefined;
 }
 
+function matchingReceipt(
+  tracker: ActiveOperationTracker,
+  target: ActiveOperationTarget,
+  receipts: readonly ActiveOperationReceipt[],
+): MessageDeliveryReceiptDto | undefined {
+  return receipts.find(entry =>
+    entry.receipt.targetAgentId === target.agentId &&
+    (target.activationId
+      ? entry.receipt.activationId === target.activationId
+      : tracker.communicationEventId === entry.communicationEventId)
+  )?.receipt;
+}
+
+/** A newly accepted message must not inherit a previous Run's stale phase. */
+export function activeOperationAgentPhase(
+  trackers: readonly ActiveOperationTracker[],
+  agentId: string,
+  health: AgentHealthDto | undefined,
+  receipts: readonly ActiveOperationReceipt[],
+): ActiveOperationAgentPhase | undefined {
+  const candidates = [...trackers].sort((left, right) => right.initiatedAt - left.initiatedAt);
+  for (const tracker of candidates) {
+    const target = tracker.targets.find(candidate => candidate.agentId === agentId);
+    if (!target) continue;
+    const receipt = matchingReceipt(tracker, target, receipts);
+    if (receipt && receiptTerminal(receipt.state)) continue;
+    const currentExecutionId = health?.executionId ?? health?.runtimeActivity?.executionId;
+    const attributedExecutionId = receipt
+      ? activeReceiptExecutionId(receipt)
+      : target.receiptConfirmed ? target.matchedExecutionId : undefined;
+    if (attributedExecutionId && currentExecutionId === attributedExecutionId) {
+      if (health?.status === "stalled") return "stalled";
+      if (health?.runtimeActivity?.executionId === attributedExecutionId ||
+          health?.status === "running") return "running";
+      return "preparing";
+    }
+    // A pre-send execution is not evidence that this delivery reached it.
+    if (!receipt) return target.receiptConfirmed ? "preparing" : "queued";
+    if (["queued", "retrying", "waiting_for_run", "recovery_queued"].includes(receipt.state)) return "queued";
+    if (["preparing", "recovering", "steering", "started", "delivered", "unconfirmed"]
+      .includes(receipt.state)) return "preparing";
+  }
+  return undefined;
+}
+
 /** Bind an accepted delivery only to the execution it causally reached. A
  * recovery may replace that execution only when its exact lineage is projected. */
 export function reconcileActiveOperationTracker(
@@ -189,12 +292,7 @@ export function reconcileActiveOperationTracker(
   const targets = tracker.targets.flatMap(target => {
     const health = healthByAgentId.get(target.agentId);
     const activity = health?.runtimeActivity;
-    const receiptEntry = receipts.find(entry =>
-      entry.receipt.targetAgentId === target.agentId &&
-      (target.activationId
-        ? entry.receipt.activationId === target.activationId
-        : tracker.communicationEventId === entry.communicationEventId));
-    const receipt = receiptEntry?.receipt;
+    const receipt = matchingReceipt(tracker, target, receipts);
     if (receipt && receiptTerminal(receipt.state)) {
       changed = true;
       return [];
