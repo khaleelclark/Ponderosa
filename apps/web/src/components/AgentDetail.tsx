@@ -78,6 +78,8 @@ import { AgentDuplicateDialog, AgentPackageExportDialog } from "./AgentPackageDi
 import { useAgentRunCancellation } from "./useAgentRunCancellation";
 import { useAgentProviderCommands } from "./useAgentProviderCommands";
 import { AgentDetailSettingsController } from "./AgentDetailSettingsController";
+import { useActiveOperationController } from "./useActiveOperationController";
+import { acceptAgentMessageOperation, createDeliveryOperationTracker } from "./activeOperationTracker";
 import {
   allChatRuntimeMutationOwnsSelection,
   recordRuntimeCanonicalKey,
@@ -434,6 +436,21 @@ export function AgentDetail({
     engine,
     onNotice: setQueuedMessageNotice,
   });
+  const { operationPhaseByAgentId, setActiveOperation } = useActiveOperationController({
+    activeScopeId: detail?.agent.conversationId,
+    healthProjectId: detail?.agent.projectId,
+    healthByAgentId,
+    receiptSources: detail?.messages ?? [],
+    agentTitle: candidateAgentId =>
+      agents.find(candidate => candidate.id === candidateAgentId)?.title ??
+      detail?.agent.title ?? "Agent",
+    invalidate: () => {
+      if (!detail?.agent.projectId) return;
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.health(detail.agent.projectId),
+      });
+    },
+  });
   const {
     cancelQueuedMessage,
     editQueuedMessage,
@@ -452,6 +469,12 @@ export function AgentDetail({
     speed,
     onNotice: setQueuedMessageNotice,
     onChatSelected: () => setTab("chat"),
+    onAccepted: (response, delivery) => {
+      const tracker = createDeliveryOperationTracker(
+        delivery, [agentId], healthByAgentId, Date.now(), detail?.agent.conversationId,
+      );
+      setActiveOperation(acceptAgentMessageOperation(tracker, response));
+    },
   });
   const visibleChatMessages = useMemo(() => {
     const queuedCommunicationIds = new Set(
@@ -536,7 +559,21 @@ export function AgentDetail({
   const runtimeActivity = projectedHealth?.runtimeActivity;
   const running = Boolean(runtimeActivity) || sendMessage.isPending;
 
-  const status = projectedStatus ?? (runtimeActivity ? "running" : deriveAgentStatus(detail));
+  const deliveryPhase = operationPhaseByAgentId.get(agentId);
+  const transientPhase = deliveryPhase ?? (sendMessage.isPending ? "sending" : undefined);
+  const status = transientPhase === "running"
+    ? "running"
+    : transientPhase === "stalled"
+      ? "stalled"
+      : transientPhase === "queued" || transientPhase === "preparing" ||
+          transientPhase === "sending"
+        ? "preparing"
+        : projectedStatus ?? (runtimeActivity ? "running" : deriveAgentStatus(detail));
+  const statusLabelOverride = transientPhase === "queued"
+    ? "Queued"
+    : transientPhase === "sending"
+      ? "Sending"
+      : undefined;
   const mcp = mcpPresentation(engineCapability?.mcpServers);
 
   const { cancelRun, stopActiveRun } = useAgentRunCancellation(
@@ -1087,10 +1124,12 @@ export function AgentDetail({
         lineageAgentId={lineageAgentId}
         lineageLabel={lineageLabel}
         status={status}
+        statusLabelOverride={statusLabelOverride}
         health={projectedHealth}
         connectionStatus={agentConnectionStatus}
         phaseEvidenceFresh={workspaceConnection.phaseEvidenceFresh}
-        startedAt={runtimeActivity?.startedAt}
+        startedAt={transientPhase === "queued" || transientPhase === "preparing" ||
+          transientPhase === "sending" ? undefined : runtimeActivity?.startedAt}
         agentNameForId={agentNameForId}
         running={running}
         stopping={cancelRun.isPending}

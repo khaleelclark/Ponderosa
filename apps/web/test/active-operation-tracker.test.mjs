@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ACTIVE_OPERATION_START_TIMEOUT_MS,
+  acceptAgentMessageOperation,
   acceptBroadcastOperation,
   acceptDirectOperation,
   activeOperationExecutionTargets,
+  activeOperationAgentPhase,
   activeOperationForScope,
   activeOperationsForScope,
   activeOperationIsRunning,
@@ -55,6 +57,68 @@ test("exact active-operation receipts override stale paginated copies", () => {
   );
   exact.receipt.recoveryExecutionId = "run-recovery";
   assert.deepEqual(mergeActiveOperationReceipts([exact], [stale]), [exact]);
+});
+
+test("new single-Agent delivery does not inherit a previous Run's stalled status", () => {
+  const pending = createDeliveryOperationTracker("steer", ["agent-a"], new Map(), initiatedAt, "chat-a");
+  const accepted = acceptAgentMessageOperation(pending, {
+    queued: true,
+    position: 1,
+    deliveryId: "activation-a",
+    communicationEventId: "communication-a",
+  });
+  assert.ok(accepted);
+  const oldStall = {
+    agentId: "agent-a",
+    childAgentIds: [],
+    status: "stalled",
+    statusTimestamp: "2026-09-09T11:58:00.000Z",
+    reason: "runtime_event_consumer_stalled",
+    executionId: "execution-old",
+  };
+  assert.equal(activeOperationAgentPhase([accepted], "agent-a", oldStall, [
+    receipt("activation-a", "agent-a", "queued", "2026-09-09T12:00:01.000Z"),
+  ]), "queued");
+  assert.equal(activeOperationAgentPhase([accepted], "agent-a", {
+    ...oldStall,
+    runtimeActivity: { state: "responding", executionId: "execution-old", startedAt: "2026-09-09T11:58:00.000Z" },
+  }, []), "queued", "the prior active execution is not proof that this delivery started");
+  const started = receipt("activation-a", "agent-a", "started", "2026-09-09T12:00:02.000Z", "execution-new");
+  assert.equal(activeOperationAgentPhase([accepted], "agent-a", oldStall, [started]), "preparing");
+  assert.equal(activeOperationAgentPhase([accepted], "agent-a", health(
+    "agent-a", "execution-new", "2026-09-09T12:00:02.000Z",
+  ), [started]), "running");
+  assert.equal(activeOperationAgentPhase([accepted], "agent-a", {
+    ...oldStall,
+    executionId: "execution-new",
+  }, [started]), "stalled");
+  assert.equal(activeOperationAgentPhase([accepted], "agent-a", oldStall, [
+    receipt("activation-a", "agent-a", "processed", "2026-09-09T12:00:03.000Z", "execution-new"),
+  ]), undefined);
+});
+
+test("single-Agent direct start follows its exact Run and ignores settled replays", () => {
+  const pending = createDeliveryOperationTracker("steer", ["agent-a"], new Map(), initiatedAt, "chat-a");
+  const accepted = acceptAgentMessageOperation(pending, {
+    queued: false,
+    runId: "execution-new",
+    mode: "seed",
+    communicationEventId: "communication-a",
+  });
+  assert.ok(accepted);
+  assert.equal(activeOperationAgentPhase([accepted], "agent-a", health(
+    "agent-a", "execution-old", "2026-09-09T11:58:00.000Z",
+  ), []), "preparing");
+  assert.equal(activeOperationAgentPhase([accepted], "agent-a", health(
+    "agent-a", "execution-new", "2026-09-09T12:00:00.000Z",
+  ), []), "running");
+  assert.equal(acceptAgentMessageOperation(pending, {
+    queued: false,
+    settled: true,
+    replayed: true,
+    deliveryId: "activation-a",
+    deliveryState: "delivered",
+  }), undefined);
 });
 
 test("exact receipt refresh includes every operation in only the active Chat", () => {

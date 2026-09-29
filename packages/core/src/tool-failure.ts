@@ -45,7 +45,7 @@ export function classifyToolFailure(
   if (/\b(?:403|forbidden|permission denied|access denied|insufficient (?:permission|scope)|not permitted)\b/u.test(detail)) {
     return { category: "permission_denied", retryable: false };
   }
-  if (/\b(?:invalid[_ ]argument|invalid input|schema validation|parameters? failed|bad request|malformed|required (?:field|parameter)|400)\b/u.test(detail)) {
+  if (/\b(?:invalid[_ ]argument|invalid input|schema validation|parameters? failed|bad request|malformed|required (?:field|parameter)|400)\b|\bno unambiguous reply route\b/u.test(detail)) {
     return { category: "invalid_input", retryable: false };
   }
   // An exact provider outage signal is retryable; an unavailable host file is not.

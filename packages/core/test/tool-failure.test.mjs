@@ -57,6 +57,7 @@ test("authentication, permission, and invalid-input failures keep their classifi
     ["HTTP 401 Unauthorized", "authentication_required"],
     ["403 permission denied", "permission_denied"],
     ["400 invalid input", "invalid_input"],
+    ['this Run has no unambiguous reply route; use intent "broadcast", "direct_to_user", or "collaboration" explicitly', "invalid_input"],
   ]) {
     assert.deepEqual(classifyToolFailure(output, true), { category, retryable: false });
   }
