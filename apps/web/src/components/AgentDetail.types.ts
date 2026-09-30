@@ -43,7 +43,7 @@ export interface AgentDetailProps {
   ): void;
   onOpenMaster(conversationId: string): void;
   onOpenArtifact(artifactId: string): void;
-  onOpenReview(path?: string): void;
+  onOpenReview(path?: string, executionId?: string): void;
   onOpenBrowser(runId: string): void;
   onNewSubagent(managerAgentId: string): void;
   onCreateTrigger(): void;

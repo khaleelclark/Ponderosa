@@ -443,8 +443,10 @@ export function AgentsTab({
 
   const organizationRows = orderedAgentOrganization(agents);
   const agentsById = new Map(agents.map(agent => [agent.id, agent]));
+  const agentTitleCounts = new Map<string, number>();
+  for (const agent of relationshipAgents ?? agents) agentTitleCounts.set(agent.title, (agentTitleCounts.get(agent.title) ?? 0) + 1);
   const agentNamesById = new Map(
-    (relationshipAgents ?? agents).map(agent => [agent.id, agent.title]),
+    (relationshipAgents ?? agents).map(agent => [agent.id, agentTitleCounts.get(agent.title)! > 1 ? `${agent.title} · #${agent.handle}` : agent.title]),
   );
   const childrenByManager = new Map<string, AgentDto[]>();
   for (const agent of agents) {
@@ -1057,7 +1059,7 @@ export function AgentsTab({
                 >
                   <ResourceRow
                     resourceIdentity={"agent:" + agent.id}
-                    label={agent.title}
+                    label={agentNamesById.get(agent.id) ?? agent.title}
                     description={
                       <>
                         {ownerConversationByAgentId ? `Chat: ${conversationName(agent)} · ` : null}

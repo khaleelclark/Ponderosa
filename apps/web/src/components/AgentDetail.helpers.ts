@@ -11,6 +11,7 @@ import type {
   SendMessageResponse,
 } from "@ponderosa/core";
 import { buildMarkdownTranscript } from "../chatTranscript";
+import { downloadBlob } from "../downloads";
 import { uniqueBy } from "../collections";
 import type { AgentDetailView } from "../routing";
 import { projectAgentChat } from "./chat/agentChatProjection";
@@ -171,15 +172,7 @@ function downloadJson(value: unknown, fileName: string): void {
   const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], {
     type: "application/json;charset=utf-8",
   });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.style.display = "none";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
+  downloadBlob(blob, fileName);
 }
 
 function eligibleOrganizationParents(

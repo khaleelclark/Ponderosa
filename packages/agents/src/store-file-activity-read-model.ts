@@ -114,6 +114,7 @@ export class AgentFileActivityReadModel {
         kind: item.event.kind,
         status,
         sourceSeq: item.seq,
+        executionId: item.executionId,
         ...(artifact
           ? { artifactId: artifact.id, artifactKind: artifact.kind }
           : {}),

@@ -376,7 +376,7 @@ function baseDirectoryQuery(
     }
     if (normalizedSearch) {
       where.push(
-        "lower(a.title || ' ' || a.active_engine || ' ' || p.label || ' ' || p.host_path) LIKE ? ESCAPE '\\'",
+        "lower(a.title || ' #' || COALESCE(a.handle, '') || ' ' || COALESCE(owner_chat.title, '') || ' ' || a.active_engine || ' ' || p.label || ' ' || p.host_path) LIKE ? ESCAPE '\\'",
       );
       params.push(pattern);
     }
@@ -391,6 +391,7 @@ function baseDirectoryQuery(
           NULL AS next_fire_at
         FROM agents a
         JOIN projects p ON p.id = a.project_id
+        LEFT JOIN conversations owner_chat ON owner_chat.id = a.conversation_id AND owner_chat.project_id = a.project_id
         WHERE ${where.join(" AND ")}
       `,
       params,
@@ -771,6 +772,7 @@ export function registerWorkspaceDirectoryRoutes(
         : kind === "agent"
           ? [
               scoped("agents"),
+              ...(normalizedSearch ? [scoped("conversations")] : []),
               projectKey,
               "scheduler_runs",
               "context_rollovers",

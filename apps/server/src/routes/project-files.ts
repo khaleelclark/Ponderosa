@@ -61,11 +61,16 @@ export class ProjectFileAuthority {
   constructor(private readonly store: Pick<
     AgentStore,
     "getProject" | "getAgent" | "projectHasArtifactSourcePath"
-  >, private readonly workingCopies: AgentWorkingCopyService) {}
+  > & Partial<Pick<AgentStore, "getConversation">>, private readonly workingCopies: AgentWorkingCopyService) {}
 
-  async rootPath(projectId: string, agentId?: string): Promise<string | undefined> {
+  async rootPath(projectId: string, agentId?: string, conversationId?: string): Promise<string | undefined> {
     const project = this.store.getProject(projectId);
     if (!project) return undefined;
+    if (conversationId) {
+      if (agentId) return undefined;
+      const chat = this.store.getConversation?.(conversationId);
+      return chat?.projectId === projectId && !chat.archived && !chat.deletedAt ? chat.workingDirectory : undefined;
+    }
     if (!agentId) return project.hostPath;
     const agent = this.store.getAgent(agentId);
     if (!agent || agent.projectId !== projectId) return undefined;
@@ -223,6 +228,7 @@ export class ProjectFileAuthority {
     projectId: string,
     projectRootPath: string,
     input: string,
+    allowExternal = true,
   ): Promise<{
     root: string;
     relative: string;
@@ -248,7 +254,7 @@ export class ProjectFileAuthority {
     }
 
     if (
-      !path.isAbsolute(requested) ||
+      !allowExternal || !path.isAbsolute(requested) ||
       !this.store.projectHasArtifactSourcePath(projectId, requested)
     ) return undefined;
 
@@ -268,16 +274,18 @@ export class ProjectFileAuthority {
     input: string | undefined,
     options: { maxBytes: number; previewMediaType?: string },
     agentId?: string,
+    conversationId?: string,
   ): Promise<
     { body: Readable; name: string; mediaType: string; size: number } | undefined
   > {
-    const rootPath = await this.rootPath(projectId, agentId);
+    const rootPath = await this.rootPath(projectId, agentId, conversationId);
     if (!rootPath || !input?.trim()) return undefined;
     try {
       const target = await this.authorizedFileTarget(
         projectId,
         rootPath,
         input,
+        !conversationId,
       );
       if (!target) return undefined;
       const body = await readSecureFileAsync({
@@ -307,14 +315,16 @@ export class ProjectFileAuthority {
     projectId: string,
     input: string | undefined,
     agentId?: string,
+    conversationId?: string,
   ): Promise<WorkspaceFileViewDto | undefined> {
-    const rootPath = await this.rootPath(projectId, agentId);
+    const rootPath = await this.rootPath(projectId, agentId, conversationId);
     if (!rootPath || !input?.trim()) return undefined;
     try {
       const target = await this.authorizedFileTarget(
         projectId,
         rootPath,
         input,
+        !conversationId,
       );
       if (!target) return undefined;
       const segments = target.relative.split("/");
@@ -351,7 +361,7 @@ export class ProjectFileAuthority {
       let text: string | undefined;
       if (textMedia && body && isUtf8(body)) text = body.toString("utf8");
       const encodedPath = encodeURIComponent(target.requestPath);
-      const agentQuery = agentId ? `&agentId=${encodeURIComponent(agentId)}` : "";
+      const agentQuery = agentId ? `&agentId=${encodeURIComponent(agentId)}` : conversationId ? `&conversationId=${encodeURIComponent(conversationId)}` : "";
       return {
         projectId,
         path: target.requestPath,
@@ -383,7 +393,7 @@ export function registerProjectFileRoutes(
 ): void {
   app.get<{
     Params: { projectId: string };
-    Querystring: { path?: string; agentId?: string };
+    Querystring: { path?: string; agentId?: string; conversationId?: string };
   }>(
     "/api/projects/:projectId/workspace-files/view-info",
     async (request, reply) => {
@@ -394,6 +404,7 @@ export function registerProjectFileRoutes(
         request.params.projectId,
         request.query.path,
         request.query.agentId,
+        request.query.conversationId,
       );
       if (!file) {
         return reply
@@ -406,7 +417,7 @@ export function registerProjectFileRoutes(
 
   app.get<{
     Params: { projectId: string };
-    Querystring: { path?: string; agentId?: string };
+    Querystring: { path?: string; agentId?: string; conversationId?: string };
   }>(
     "/api/projects/:projectId/workspace-files/preview",
     async (request, reply) => {
@@ -439,6 +450,7 @@ export function registerProjectFileRoutes(
           previewMediaType: mediaType,
         },
         request.query.agentId,
+        request.query.conversationId,
       );
       if (!file) {
         release();
@@ -454,14 +466,17 @@ export function registerProjectFileRoutes(
         )
         .header("Cache-Control", "private, no-store")
         .header("X-Content-Type-Options", "nosniff")
-        .header("Content-Security-Policy", "default-src 'none'; sandbox")
+        .header("X-Frame-Options", "SAMEORIGIN")
+        .header("Content-Security-Policy", file.mediaType === "application/pdf"
+          ? "default-src 'none'; frame-ancestors 'self'; sandbox allow-same-origin"
+          : "default-src 'none'; frame-ancestors 'self'; sandbox")
         .send(file.body);
     },
   );
 
   app.get<{
     Params: { projectId: string };
-    Querystring: { path?: string; agentId?: string };
+    Querystring: { path?: string; agentId?: string; conversationId?: string };
   }>(
     "/api/projects/:projectId/workspace-files/download",
     async (request, reply) => {
@@ -483,6 +498,7 @@ export function registerProjectFileRoutes(
         request.query.path,
         { maxBytes: PROJECT_DOWNLOAD_MAX_BYTES },
         request.query.agentId,
+        request.query.conversationId,
       );
       if (!file) {
         release();

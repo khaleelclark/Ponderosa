@@ -282,7 +282,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   };
   applyOperatorModelOptions();
   const tokenUsage = (
-    scope: { type: "overall" } | { type: "project" | "agent"; id: string },
+    scope: { type: "overall" } | { type: "project" | "agent" | "conversation"; id: string },
     range: TokenUsageRangeDto = {},
   ): TokenUsageSummaryDto => store.getTokenUsage(scope, range);
   const activeRuns = new Map<string, ActiveRun>();

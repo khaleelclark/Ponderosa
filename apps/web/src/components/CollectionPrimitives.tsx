@@ -465,6 +465,8 @@ export function CollectionStateFeedback({
   noMatchDetail,
   onClearFilters,
   compact = false,
+  suppressEmpty = false,
+  autoLoadMore = true,
 }: {
   request: WorkspaceDirectoryRequestState;
   itemCount: number;
@@ -476,6 +478,8 @@ export function CollectionStateFeedback({
   noMatchDetail?: string;
   onClearFilters?(): void;
   compact?: boolean;
+  suppressEmpty?: boolean;
+  autoLoadMore?: boolean;
 }): JSX.Element | null {
   if (request.isInitialLoading) {
     return <LoadingState resource={resourceLabel} variant={compact ? "inline" : "route"} />;
@@ -490,26 +494,31 @@ export function CollectionStateFeedback({
     </Alert>;
   }
   const empty =
-    request.hasResolved && itemCount === 0 && !request.hasNextPage;
+    request.hasResolved && itemCount === 0 && !request.hasNextPage && !request.isPaginationError && !request.isRefreshError;
   return <>
-    {empty ? <CollectionEmptyState
+    {request.isRefreshError ? <Alert severity="warning" action={<Button size="small" onClick={() => void request.retry()}>Retry</Button>} sx={{ my: 1 }}>
+      {"Could not refresh " + resourceLabel + ". Existing results are still available."}
+    </Alert> : null}
+    {empty && !suppressEmpty ? <CollectionEmptyState
       title={filtersActive ? (noMatchTitle ?? "No matching " + resourceLabel) : emptyTitle}
       detail={filtersActive ? noMatchDetail : emptyDetail}
       action={filtersActive && onClearFilters ? { label: "Clear filters", onClick: onClearFilters } : undefined}
     /> : null}
-    {!empty ? <CollectionPagination request={request} resourceLabel={resourceLabel} /> : null}
+    {!empty ? <CollectionPagination request={request} resourceLabel={resourceLabel} autoLoadMore={autoLoadMore} /> : null}
   </>;
 }
 
 export function CollectionPagination({
   request,
   resourceLabel,
+  autoLoadMore = true,
 }: {
   request: WorkspaceDirectoryRequestState;
   resourceLabel: string;
+  autoLoadMore?: boolean;
 }): JSX.Element | null {
   const sentinelRef = useInfiniteScrollSentinel({
-    enabled: request.hasNextPage && !request.isPaginationError,
+    enabled: autoLoadMore && request.hasNextPage && !request.isPaginationError,
     loading: request.isFetchingNextPage,
     onLoadMore: request.fetchNextPage,
   });

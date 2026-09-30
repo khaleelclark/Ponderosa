@@ -237,6 +237,10 @@ export function HomeView({
     [...outcomeItems, ...activeItems].map(item => [item.agent.id, item.agent.title]),
   );
   const triggerItems = triggerQuery.data?.pages.flatMap(page => page.items) ?? [];
+  const allTriggerQuery = useWorkspaceDirectory<WorkspaceTriggerDirectoryItemDto>("trigger", {
+    enabled: triggerQuery.requestState.hasResolved && triggerItems.length === 0,
+    summary: true,
+  });
   const attention = notifications
     .filter(isOpenAttention)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
@@ -283,8 +287,11 @@ export function HomeView({
             <SummaryCard label="Active Agents" value={activeCount} />
             <SummaryCard label="Needs Attention" value={attentionLoading ? notificationsLoadFailed ? "Unavailable" : "Loading" : attentionCount} onClick={onOpenInbox} />
             <SummaryCard label="Enabled Automations" compactLabel="Automations" value={enabledAutomationCount} />
-            <SummaryCard label="Provider Health" value={provider.label} compactValue={provider.label === "Engine ready" ? "Ready" : provider.label} />
+            <SummaryCard label="Provider Health" value={provider.label} compactValue={provider.label === "Engine ready" ? "Ready" : provider.label} onClick={() => onNavigate({ kind: "settings", section: "providers" })} />
           </Box>
+          {enginesLoaded && provider.severity === "warning" ? <Alert severity="warning" action={<Button color="inherit" onClick={() => onNavigate({ kind: "settings", section: "providers" })}>Provider Settings</Button>}>
+            Provider access needs attention. {provider.detail} This is separate from work waiting for your response.
+          </Alert> : null}
 
           {projectsLoaded && projects.length === 0 ? (
             <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
@@ -393,7 +400,7 @@ export function HomeView({
                     title={item.trigger.name}
                     detail={`${item.targetAgent?.title ?? "Reassignment required"}`}
                     status={item.trigger.enabled ? "enabled" : "disabled"}
-                    onClick={() => onNavigate({ kind: "automation", projectId: item.project.id, triggerId: item.trigger.id })}
+                    onClick={() => onNavigate({ kind: "automation", projectId: item.project.id, triggerId: item.trigger.id, returnTo: "/home" })}
                   />
                 ))}
               </Box>
@@ -404,7 +411,7 @@ export function HomeView({
             ) : triggerQuery.requestState.isInitialLoading ? (
               <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">Loading Automations…</Typography></Paper>
             ) : (
-              <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">No Automations have been configured yet.</Typography></Paper>
+              <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">{allTriggerQuery.requestState.isInitialError ? "No enabled Automations were found; the complete Automation count is unavailable." : !allTriggerQuery.requestState.hasResolved ? "Checking Automations…" : allTriggerQuery.data?.pages[0]?.total ? "No Automations are enabled." : "No Automations have been created."}</Typography></Paper>
             )}
           </Section>
 

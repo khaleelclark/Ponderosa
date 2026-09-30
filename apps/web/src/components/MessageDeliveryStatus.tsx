@@ -55,7 +55,7 @@ function deliveryLabel(
       ? `Message delivered to ${recipientName}, but the follow-up failed or could not confirm whether the work finished. Check ${recipientName}'s activity before trying again.`
       : `Delivery to ${recipientName} failed.`;
     case "cancelled": return receipt.providerAcknowledged
-      ? `Message delivered to ${recipientName}. Further follow-up was dismissed; check ${recipientName}'s activity to see whether the work finished.`
+      ? `Message delivered to ${recipientName}. ${receipt.runStopState === "stopped" ? "This work was stopped." : receipt.runStopState === "stopping" ? "Stopping this work; termination has not been confirmed yet." : "The follow-up was cancelled, but whether its work stopped is unconfirmed."} Changes made before stopping may remain; review the Agent's work before trying again.`
       : `Delivery to ${recipientName} was cancelled.`;
   }
 }
@@ -78,7 +78,7 @@ function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto): string {
     case "undelivered": return "Undelivered";
     case "retry_exhausted": return "Reply exhausted";
     case "failed": return receipt.providerAcknowledged ? "Follow-up failed" : "Failed";
-    case "cancelled": return receipt.providerAcknowledged ? "Follow-up dismissed" : "Cancelled";
+    case "cancelled": return receipt.providerAcknowledged ? receipt.runStopState === "stopped" ? "Stopped" : receipt.runStopState === "stopping" ? "Stopping" : "Stop unconfirmed" : "Cancelled";
   }
 }
 

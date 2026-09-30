@@ -1,4 +1,4 @@
-import type { AgentStore } from "@ponderosa/agents";
+import { retainedChatAttachmentContent, type AgentStore } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import { AssetError, type AssetStore, contentDisposition } from "../assets.js";
 
@@ -11,6 +11,7 @@ export interface AttachmentRoutesContext {
   readonly agentDeletionInProgress: (agentId: string) => boolean;
   readonly deletingAttachmentKeys: Set<string>;
   readonly reconcilingAssetAgentIds: ReadonlySet<string>;
+  readonly dataDir?: string;
 }
 
 export function attachmentDeletionKey(agentId: string, attachmentId: string): string {
@@ -19,8 +20,23 @@ export function attachmentDeletionKey(agentId: string, attachmentId: string): st
 
 export function registerAttachmentRoutes(
   app: FastifyInstance,
-  { agentDeliveryLeases, conversationDeliveryLeases, conversationDeletionInProgress, agentDeletionInProgress, assets, deletingAttachmentKeys, reconcilingAssetAgentIds, store }: AttachmentRoutesContext,
+  { agentDeliveryLeases, conversationDeliveryLeases, conversationDeletionInProgress, agentDeletionInProgress, assets, deletingAttachmentKeys, reconcilingAssetAgentIds, store, dataDir }: AttachmentRoutesContext,
 ): void {
+  app.get<{ Params: { id: string; ownerId: string; assetId: string; action: string } }>(
+    "/api/conversations/:id/retained-attachments/:ownerId/:assetId/:action", async (request, reply) => {
+      const conversation = store.getConversation(request.params.id);
+      const preview = request.params.action === "preview";
+      if (!dataDir || !conversation || conversationDeletionInProgress(conversation.id) ||
+          (!preview && request.params.action !== "download")) return reply.code(404).send({ error: "Attachment unavailable" });
+      if (request.headers.range) return reply.code(416).header("accept-ranges", "none").send({ error: "Range requests are not supported" });
+      const content = retainedChatAttachmentContent(dataDir, conversation.projectId, conversation.id,
+        request.params.ownerId, request.params.assetId, preview);
+      if (!content) return reply.code(404).send({ error: "Attachment unavailable" });
+      return reply.header("content-type", preview ? "image/png" : "application/octet-stream")
+        .header("content-disposition", preview ? "inline" : contentDisposition(content.record.attachment.name))
+        .header("cache-control", "private, no-store").header("x-content-type-options", "nosniff")
+        .header("content-security-policy", "default-src 'none'; sandbox").send(content.body);
+    });
   app.post<{ Params: { id: string }; Body: Buffer }>("/api/conversations/:id/attachments", { bodyLimit: 80 * 1024 * 1024 }, async (request, reply) => {
     const conversation = store.getConversation(request.params.id);
     if (!conversation || conversation.archived || conversationDeletionInProgress(conversation.id)) {

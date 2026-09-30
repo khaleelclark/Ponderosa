@@ -126,8 +126,13 @@ const ROUTE_REGISTRY = {
     initialSidebarSection: "home",
   },
   workspaceFile: {
-    toPath: route =>
-      `/projects/${encodeURIComponent(route.projectId)}/files/view?path=${encodeURIComponent(route.path)}`,
+    toPath: route => {
+      const query = new URLSearchParams({ path: route.path });
+      if (route.agentId) query.set("agentId", route.agentId);
+      if (route.conversationId) query.set("conversationId", route.conversationId);
+      if (route.returnTo) query.set("returnTo", route.returnTo);
+      return `/projects/${encodeURIComponent(route.projectId)}/files/view?${query.toString().replaceAll("+", "%20")}`;
+    },
     scope: "project",
     initialSidebarSection: "home",
   },
@@ -194,13 +199,18 @@ const ROUTE_REGISTRY = {
   },
   automation: {
     toPath: route =>
-      `/projects/${encodeURIComponent(route.projectId)}/automations/${encodeURIComponent(route.triggerId)}`,
+      `/projects/${encodeURIComponent(route.projectId)}/automations/${encodeURIComponent(route.triggerId)}${route.returnTo ? `?returnTo=${encodeURIComponent(route.returnTo)}` : ""}`,
     scope: "project",
     initialSidebarSection: "triggers",
   },
   review: {
-    toPath: route =>
-      `/projects/${encodeURIComponent(route.projectId)}/reviews/${encodeURIComponent(route.agentId)}${route.path ? `?path=${encodeURIComponent(route.path)}` : ""}`,
+    toPath: route => {
+      const query = new URLSearchParams();
+      if (route.path) query.set("path", route.path);
+      if (route.executionId) query.set("execution", route.executionId);
+      if (route.returnTo) query.set("returnTo", route.returnTo);
+      return `/projects/${encodeURIComponent(route.projectId)}/reviews/${encodeURIComponent(route.agentId)}${query.size ? `?${query}` : ""}`;
+    },
     scope: "project",
     initialSidebarSection: "home",
   },

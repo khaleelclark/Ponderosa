@@ -7,6 +7,60 @@ import { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agen
 import Fastify from "fastify";
 import { registerWorkspaceDirectoryRoutes } from "../dist/routes/workspace-directory.js";
 
+test("Agent directory searches displayed handles and owning Chats beyond the first page", async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), "ponderosa-agent-identity-search-"));
+  const store = new AgentStore(dataDir);
+  const workspace = new WorkspaceStore(dataDir);
+  const coordination = new CoordinationV3Store(store.sqlite);
+  const app = Fastify();
+  t.after(async () => { await app.close(); store.close(); rmSync(dataDir, { recursive: true, force: true }); });
+  const project = store.createProject({ label: "Identity Project", hostPath: "/tmp/identity-project", defaultEngine: "codex" });
+  const otherProject = store.createProject({ label: "Other Project", hostPath: "/tmp/other-project", defaultEngine: "codex" });
+  const earlierChat = store.createConversation(project.id, { title: "Alpha Frontend" });
+  const owner = store.createConversation(project.id, { title: "Zulu Backend" });
+  for (let index = 0; index < 30; index++) store.createAgent(project.id, { title: `A Helper ${index}`, engine: "codex", conversationId: earlierChat.id });
+  const duplicate = store.createAgent(project.id, { title: "Database Expert", engine: "codex", conversationId: earlierChat.id });
+  const target = store.createAgent(project.id, { title: "Database Expert", engine: "codex", conversationId: owner.id });
+  assert.notEqual(target.handle, duplicate.handle);
+  const healthCalls = [];
+  registerWorkspaceDirectoryRoutes(app, { store, coordination, workspace, projectDisplayPath: value => value,
+    agentHealth: (scope, agents) => {
+      healthCalls.push(agents.length);
+      return { scope, generatedAt: new Date(0).toISOString(), agents: agents.map(agent => ({ agentId: agent.id, childAgentIds: [], status: "idle", statusTimestamp: new Date(0).toISOString(), reason: { kind: "idle" } })) };
+    },
+  });
+  const search = async (term, projectId = project.id) => {
+    healthCalls.length = 0;
+    const response = await app.inject({ method: "GET", url: `/api/workspace/directory/agent?projectId=${projectId}&limit=25&sort=alphabetical&search=${encodeURIComponent(term)}` });
+    assert.equal(response.statusCode, 200, response.body);
+    const page = response.json();
+    assert.ok(page.items.length <= 25);
+    assert.ok(healthCalls.reduce((sum, count) => sum + count, 0) <= 25, "health work stays bounded to the returned page");
+    return page;
+  };
+  assert.equal((await search("")).items.some(item => item.agent.id === target.id), false);
+  assert.equal((await search("Database Expert")).total, 2);
+  for (const term of [target.handle, target.handle.toUpperCase(), `#${target.handle}`, `  #${target.handle.toUpperCase()}  `, owner.title]) {
+    const page = await search(term);
+    assert.equal(page.total, 1, `displayed identity ${term} must resolve the later-page Agent`);
+    assert.equal(page.items[0].agent.id, target.id);
+    assert.deepEqual(page.items[0].ownerConversation, { id: owner.id, title: owner.title });
+  }
+  assert.equal((await search(owner.title, otherProject.id)).total, 0, "identity search preserves Project scope");
+  store.updateConversation(owner.id, { title: "Zulu Backend %_\\report" });
+  assert.equal((await search("%_\\report")).items[0].agent.id, target.id, "SQL wildcard characters remain literal");
+  assert.equal((await search("%_")).total, 1);
+  store.updateConversation(earlierChat.id, { title: "Zulu Frontend" });
+  const matchingPage = await search("Zulu");
+  assert.equal(matchingPage.history.hasMore, true);
+  store.updateConversation(owner.id, { title: "Retired Backend" });
+  const staleOwnerSearch = await app.inject({ method: "GET", url: `/api/workspace/directory/agent?projectId=${project.id}&limit=25&sort=alphabetical&search=Zulu&cursor=${encodeURIComponent(matchingPage.history.cursor)}` });
+  assert.equal(staleOwnerSearch.statusCode, 409, "Chat rename must invalidate an Agent identity-search continuation");
+  assert.equal(staleOwnerSearch.json().code, "stale_collection_cursor");
+  store.sqlite.prepare("UPDATE agents SET archived = 1 WHERE id = ?").run(target.id);
+  assert.equal((await search(`#${target.handle}`)).total, 0, "archived Agents remain excluded");
+});
+
 test("Agent directory carries its owner Chat independently of Chat filtering and pagination", async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), "ponderosa-agent-directory-owner-"));
   const store = new AgentStore(dataDir);

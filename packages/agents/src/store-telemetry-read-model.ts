@@ -5,6 +5,7 @@ import type {
   ChangedFileDetailDto,
   HistoryPageDto,
   ResponseFileActivityDto,
+  ResponseFileReviewDto,
   RunOutputDto,
 } from "@ponderosa/core";
 import { activityDtoFromProjectionRow, utf8Prefix } from "./store-activity.js";
@@ -462,6 +463,20 @@ export class AgentTelemetryReadModel {
         }) } : {}),
       },
     };
+  }
+
+  getResponseFileReview(agentId: string, executionId: string): ResponseFileReviewDto {
+    const rows = this.client.prepare(`SELECT seq, created_at, event_json FROM activity_projection
+      WHERE agent_id = ? AND execution_id = ? AND event_type = 'file_change'
+      ORDER BY seq DESC LIMIT 501`).all(agentId, executionId) as Array<{ seq: number; created_at: string; event_json: string }>;
+    const files = new Map<string, ChangedFileDetailDto>();
+    for (const row of rows.slice(0, 500)) {
+      const event = JSON.parse(row.event_json) as { type: string; path: string; kind: ChangedFileDto["kind"]; diff?: string };
+      if (event.type !== "file_change" || files.has(event.path)) continue;
+      files.set(event.path, { path: event.path, kind: event.kind, lastSeq: row.seq, lastChangedAt: row.created_at,
+        executionCount: 1, executionIds: [executionId], provenanceTruncated: false, diffAvailable: Boolean(event.diff), ...(event.diff ? { diff: event.diff } : {}) });
+    }
+    return { executionId, files: [...files.values()], truncated: rows.length > 500 };
   }
 
   getChangedFileDetail(agentId: string, path: string): ChangedFileDetailDto | undefined {

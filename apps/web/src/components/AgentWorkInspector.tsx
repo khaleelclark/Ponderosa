@@ -44,11 +44,13 @@ function agentWorkStateLabel(state: string): string {
   return state.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toLocaleUpperCase());
 }
 
-function agentWorkItemMatchesFocus(item: AgentWorkItemDto, focusId: string | undefined): boolean {
+function agentWorkItemMatchesFocus(item: AgentWorkItemDto, focusId: string | undefined, exact = false): boolean {
   if (!focusId) return false;
   const bareId = focusId.includes(":") ? focusId.slice(focusId.indexOf(":") + 1) : focusId;
-  return item.id === focusId || item.recordId === focusId || item.referenceIds.includes(focusId)
-    || item.recordId === bareId || item.referenceIds.includes(bareId);
+  const kind = focusId.includes(":") ? focusId.slice(0, focusId.indexOf(":")) : undefined;
+  const matchesRecord = item.id === focusId || item.recordId === focusId ||
+    ((!kind || kind === item.kind) && item.recordId === bareId);
+  return matchesRecord || (!exact && (item.referenceIds.includes(focusId) || item.referenceIds.includes(bareId)));
 }
 
 function diagnosticLogBundle(data: AgentWorkInspectorDto): string {
@@ -177,12 +179,12 @@ export function AgentWorkInspector({
       a.updatedAt.localeCompare(b.updatedAt) || a.id.localeCompare(b.id)),
     [query.data?.traces],
   );
-  const focusedTraceId = useMemo(() => query.data?.traces.find((trace) =>
-    trace.itemIds.some((itemId) => {
-      const item = items.get(itemId);
-      return item ? agentWorkItemMatchesFocus(item, focus?.id) : false;
-    }))?.id, [focus?.id, items, query.data?.traces]);
-  const focusedItemId = useMemo(() => query.data?.items.find((item) => agentWorkItemMatchesFocus(item, focus?.id))?.id, [focus?.id, query.data?.items]);
+  const focusedItemId = useMemo(() => (
+    query.data?.items.find(item => agentWorkItemMatchesFocus(item, focus?.id, true)) ??
+    query.data?.items.find(item => agentWorkItemMatchesFocus(item, focus?.id))
+  )?.id, [focus?.id, query.data?.items]);
+  const focusedTraceId = useMemo(() => query.data?.traces.find(trace =>
+    focusedItemId && trace.itemIds.includes(focusedItemId))?.id, [focusedItemId, query.data?.traces]);
   const focusedItem = focusedItemId ? items.get(focusedItemId) : undefined;
   const agentTitles = useMemo(
     () => new Map((query.data?.agents ?? []).map((agent) => [agent.id, agent.title])),
@@ -272,7 +274,7 @@ export function AgentWorkInspector({
               <Box sx={{ flex: 1, minWidth: 0 }}>
                 <Typography variant="body2" fontWeight={800}>
                   {stateCounts.attention
-                    ? `${stateCounts.attention} workflow${stateCounts.attention === 1 ? "" : "s"} need attention`
+                    ? `${stateCounts.attention} workflow${stateCounts.attention === 1 ? " needs" : "s need"} attention`
                     : synthesisPendingCount
                       ? `${synthesisPendingCount} workflow${synthesisPendingCount === 1 ? " has" : "s have"} child results ready and synthesis pending`
                     : stateCounts.active
@@ -348,7 +350,7 @@ export function AgentWorkInspector({
               <AccordionDetails sx={{ pt: 0, px: 1 }}>
                 <Stack spacing={0} sx={{ borderLeft: 2, borderColor: "divider", ml: 1, mb: 1 }}>
                   {traceItems.map((item) => {
-                    const focused = agentWorkItemMatchesFocus(item, focus?.id);
+                    const focused = item.id === focusedItemId;
                     if (item.kind === "request" && item.recipientAgentId) {
                       return <Box
                         key={item.id}

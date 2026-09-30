@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import type {
   AgentRunDto,
   CommunicationProjection,
+  CommunicationAttachmentDto,
   ConversationChannel,
   ConversationDto,
   ConversationMessageDto,
@@ -59,6 +60,7 @@ export class AgentConversationProjectionReadModel {
       status: ResponseFileActivityDto["status"],
       executionIds: ReadonlySet<string>,
     ) => Map<string, ResponseFileActivityDto[]>,
+    private readonly presentAttachment: (projectId: string, conversationId: string, attachment: CommunicationAttachmentDto) => CommunicationAttachmentDto,
   ) {}
 
   getDeliveryIntents(
@@ -431,7 +433,8 @@ export class AgentConversationProjectionReadModel {
           ? { authorAgentId: message.authorAgentId }
           : {}),
         ...(message.attachments?.length
-          ? { attachments: message.attachments }
+          ? { attachments: message.attachments.map(attachment => this.presentAttachment(
+              this.getConversation(conversationId)!.projectId, conversationId, attachment)) }
           : {}),
         ...(message.artifactIds?.length ? { artifactIds: message.artifactIds } : {}),
         ...(message.document ? { document: message.document } : {}),

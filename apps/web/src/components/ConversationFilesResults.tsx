@@ -27,13 +27,14 @@ import {
 } from "@mui/material";
 import type { AgentDto, ArtifactDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { uniqueBy } from "../collections";
 import { queryKeys } from "../queryKeys";
 import { loadRetainedData } from "../retainedData";
 import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
-import { artifactDisplayLabel, artifactSearchText } from "./filePreview/artifactPresentation";
+import { artifactDisplayLabel } from "./filePreview/artifactPresentation";
+import { FilePreview } from "./filePreview/FilePreview";
 import {
   projectArtifactDisplayPath,
   projectArtifactGroup,
@@ -54,6 +55,25 @@ export function ConversationFilesResults({
   const theme = useTheme();
   const fullScreenPreview = useMediaQuery(theme.breakpoints.down("sm"));
   const [filter, setFilter] = useState("");
+  const [search, setSearch] = useState("");
+  const searchIdentity = `${projectId}:${conversationId}:${search}`;
+  const currentSearchIdentity = useRef(searchIdentity);
+  currentSearchIdentity.current = searchIdentity;
+  useEffect(() => { const timer = window.setTimeout(() => setSearch(filter.trim()), 250); return () => window.clearTimeout(timer); }, [filter]);
+  const [workspaceFile, setWorkspaceFile] = useState<string>();
+  const workspaceMatches = useQuery({
+    queryKey: ["chatFolderSearch", projectId, conversationId, search],
+    queryFn: () => api.searchGlobalFiles(search, 25, { projectId, conversationId }),
+    enabled: Boolean(search),
+    staleTime: 5000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+  const workspacePreview = useQuery({
+    queryKey: ["chatSearchFilePreview", projectId, conversationId, workspaceFile],
+    queryFn: () => api.getWorkspaceFileView(projectId, workspaceFile!, undefined, conversationId),
+    enabled: workspaceFile !== undefined,
+  });
   const [previewArtifact, setPreviewArtifact] = useState<ArtifactDto>();
   const [older, setOlder] = useState<{
     items: ArtifactDto[];
@@ -65,13 +85,13 @@ export function ConversationFilesResults({
   useEffect(() => {
     setOlder(undefined);
     setOlderError(undefined);
-  }, [conversationId, projectId]);
+  }, [conversationId, projectId, search]);
   const artifacts = useQuery({
-    queryKey: queryKeys.projectArtifacts.conversation(
+    queryKey: [...queryKeys.projectArtifacts.conversation(
       projectId,
       conversationId,
-    ),
-    queryFn: () => api.listConversationArtifacts(projectId, conversationId),
+    ), { search }],
+    queryFn: () => api.listConversationArtifacts(projectId, conversationId, 100, undefined, search || undefined),
   });
   const agentById = useMemo(
     () => new Map(agents.map(agent => [agent.id, agent] as const)),
@@ -91,31 +111,10 @@ export function ConversationFilesResults({
         ),
     [artifacts.data?.items, older?.items],
   );
-  const normalizedFilter = filter.trim().toLocaleLowerCase();
-  const filtered = useMemo(
-    () =>
-      records.filter(artifact => {
-        const owner = agentById.get(
-          artifact.originAgentId ?? artifact.agentId,
-        );
-        return (
-          !normalizedFilter ||
-          [
-            owner?.title,
-            artifactSearchText(artifact, projectRoot),
-          ]
-            .filter(Boolean)
-            .join(" ")
-            .toLocaleLowerCase()
-            .includes(normalizedFilter)
-        );
-      }),
-    [agentById, normalizedFilter, projectRoot, records],
-  );
   const grouped = (["Modified & Created Files", "Results"] as const)
     .map(label => ({
       label,
-      artifacts: filtered.filter(
+      artifacts: records.filter(
         artifact => projectArtifactGroup(artifact.kind) === label,
       ),
     }))
@@ -127,14 +126,16 @@ export function ConversationFilesResults({
   const loadOlderFiles = async () => {
     const cursor = older?.cursor ?? artifacts.data?.history.cursor;
     if (!cursor || loadingOlder) return;
+    const requestedSearch = search;
+    const requestedIdentity = searchIdentity;
     setLoadingOlder(true);
     try {
       const page = await loadRetainedData(
-        () => api.listConversationArtifacts(projectId, conversationId, 100, cursor),
+        () => api.listConversationArtifacts(projectId, conversationId, 100, cursor, requestedSearch || undefined),
         setOlderError,
         "Older Chat files could not be loaded.",
       );
-      if (!page) return;
+      if (!page || currentSearchIdentity.current !== requestedIdentity) return;
       setOlder(current => ({
         items: uniqueBy(
           [...page.items, ...(current?.items ?? [])],
@@ -178,8 +179,7 @@ export function ConversationFilesResults({
             Files &amp; Results
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            {records.length} item{records.length === 1 ? "" : "s"} created by
-            Agents in this Chat
+            {records.length} {search ? "matching" : "loaded"} item{records.length === 1 ? "" : "s"} created by Agents in this Chat
           </Typography>
         </Box>
         <TextField
@@ -200,7 +200,14 @@ export function ConversationFilesResults({
       </Stack>
 
       <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", p: { xs: 1, sm: 1.5 } }}>
-        <ConversationWorkspaceFiles key={conversationId} conversationId={conversationId} />
+        {!search ? <ConversationWorkspaceFiles key={conversationId} conversationId={conversationId} projectId={projectId} /> : <Box component="section" aria-label="Working-folder matches" sx={{ mb: 2 }}>
+          <Typography variant="overline">Working-folder files</Typography>
+          {workspaceMatches.isLoading ? <Typography>Searching this Chat’s folder…</Typography> : null}
+          {workspaceMatches.isError ? <Alert severity="error">Working-folder search is unavailable. Managed results remain below.</Alert> : null}
+          <List dense>{workspaceMatches.data?.results.map(file => <ListItemButton key={file.path} onClick={() => setWorkspaceFile(file.path)}><ListItemText primary={file.path} secondary={`Working folder · ${file.project.label}`} /></ListItemButton>)}</List>
+          {workspaceMatches.data?.truncated ? <Alert severity="info">Folder search reached its limit. Narrow the search to find more files.</Alert> : null}
+          {workspaceMatches.data?.unavailableRoots ? <Alert severity="warning">This Chat’s folder could not be fully searched.</Alert> : null}
+        </Box>}
         {artifacts.isLoading && records.length === 0 ? (
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", p: 2 }}>
             <CircularProgress size={18} />
@@ -219,12 +226,8 @@ export function ConversationFilesResults({
         ) : null}
         {!artifacts.isLoading && !artifacts.isError && records.length === 0 ? (
           <Alert severity="info">
-            No files or results yet. Anything created by an Agent in this Chat
-            will appear here.
+            {search ? `No managed files or results match “${search}”.` : "No files or results yet. Anything created by an Agent in this Chat will appear here."}
           </Alert>
-        ) : null}
-        {records.length > 0 && filtered.length === 0 ? (
-          <Alert severity="info">No files or results match “{filter.trim()}”.</Alert>
         ) : null}
         <Stack spacing={1.25}>
           {grouped.map(group => (
@@ -363,6 +366,11 @@ export function ConversationFilesResults({
           ) : null}
           <Button onClick={() => setPreviewArtifact(undefined)}>Close</Button>
         </DialogActions>
+      </Dialog>
+      <Dialog open={workspaceFile !== undefined} onClose={() => setWorkspaceFile(undefined)} fullScreen={fullScreenPreview} fullWidth maxWidth="lg">
+        <DialogTitle>{workspaceFile}</DialogTitle>
+        <DialogContent><FilePreview title={workspaceFile ?? "File"} path={workspaceFile} projectId={projectId} conversationId={conversationId} loading={workspacePreview.isLoading} error={workspacePreview.isError ? workspacePreview.error as Error : undefined} content={workspacePreview.data?.text} mediaType={workspacePreview.data?.mediaType} previewUrl={workspacePreview.data?.previewUrl} downloadUrl={workspacePreview.data?.downloadUrl} truncated={workspacePreview.data?.truncated} /></DialogContent>
+        <DialogActions><Button onClick={() => setWorkspaceFile(undefined)}>Close</Button></DialogActions>
       </Dialog>
     </Box>
   );

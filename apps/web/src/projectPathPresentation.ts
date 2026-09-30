@@ -156,3 +156,12 @@ export function presentProjectPath(
     projectRelative: true,
   };
 }
+
+/** Distinguish external sources without revealing their private parent folders. */
+export function presentedFileIdentity(projectRoot: string, candidate: string): string {
+  const presented = presentProjectPath(projectRoot, candidate);
+  if (presented.projectRelative) return presented.displayPath;
+  let hash = 0xcbf29ce484222325n;
+  for (const character of candidate) hash = BigInt.asUintN(64, (hash ^ BigInt(character.codePointAt(0)!)) * 0x100000001b3n);
+  return `${presented.displayPath} · external ${hash.toString(36)}`;
+}

@@ -30,6 +30,7 @@ export interface ServerContext {
     | "getAgentDetail"
     | "getAllChatPage"
     | "getArtifactPage"
+    | "getResponseFileReview"
     | "getChangedFileDetail"
     | "getChangedFilePage"
     | "getConversation"
@@ -41,7 +42,7 @@ export interface ServerContext {
     | "getWorkItemPage"
   >;
   readonly tokenUsage: (
-    scope: { type: "overall" } | { type: "project" | "agent"; id: string },
+    scope: { type: "overall" } | { type: "project" | "agent" | "conversation"; id: string },
     range?: TokenUsageRangeDto,
   ) => TokenUsageSummaryDto;
 }
@@ -52,6 +53,7 @@ export interface SearchRoutesContext extends ServerContext {
     q?: string;
     limit?: string | number;
     kind?: string;
+    distinct?: string;
   }) => GlobalChatSearchResponseDto;
   readonly workspace: Pick<WorkspaceStore, "listDecisionEventPage">;
   readonly coordinationV3: Pick<

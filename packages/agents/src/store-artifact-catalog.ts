@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 import type {
   ArtifactDto,
@@ -298,13 +299,17 @@ export class AgentArtifactCatalog {
    * the same stable key before the response page is formed. */
   getProjectArtifactPage(
     projectId: string,
-    input: { limit: number; cursor?: string; conversationId?: string },
+    input: { limit: number; cursor?: string; conversationId?: string; search?: string },
   ): HistoryPageDto<ArtifactDto> {
     const limit = Math.max(1, Math.min(input.limit, 500));
     const conversationId = input.conversationId?.trim() || undefined;
-    const cursorScope = conversationId
+    const search = input.search?.trim().toLocaleLowerCase() ?? "";
+    if (search.length > 200) throw new Error("File search must be at most 200 characters");
+    const terms = search.split(/\s+/u).filter(Boolean).map(term => `%${term.replace(/[\\%_]/gu, "\\$&")}%`);
+    const baseScope = conversationId
       ? `${projectId}:conversation:${conversationId}`
       : projectId;
+    const cursorScope = search ? `${baseScope}:search:${createHash("sha256").update(search).digest("hex")}` : baseScope;
     const boundary = input.cursor
       ? this.decodeHistoryCursor(input.cursor, "project:artifacts", cursorScope)
       : undefined;
@@ -326,11 +331,12 @@ export class AgentArtifactCatalog {
             AND tombstone.conversation_id = ?
         ))` : ""}
         ${boundary ? "AND (artifact.created_at < ? OR (artifact.created_at = ? AND artifact.id < ?))" : ""}
+        ${terms.map(() => "AND lower(coalesce(artifact.source_path, artifact.path, '') || ' ' || coalesce(artifact.summary, '') || ' ' || agent.title) LIKE ? ESCAPE '\\'").join("\n")}
       ORDER BY artifact.created_at DESC, artifact.id DESC LIMIT ?
     `).all(...(
       boundary
-        ? [projectId, ...(conversationId ? [conversationId, conversationId, conversationId] : []), boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
-        : [projectId, ...(conversationId ? [conversationId, conversationId, conversationId] : []), limit + 1]
+        ? [projectId, ...(conversationId ? [conversationId, conversationId, conversationId] : []), boundary.orderKey, boundary.orderKey, boundary.rowKey, ...terms, limit + 1]
+        : [projectId, ...(conversationId ? [conversationId, conversationId, conversationId] : []), ...terms, limit + 1]
     )) as ArtifactProjectionReadRow[];
     const executionArtifacts = rows.flatMap((row) => {
       const artifact = this.artifactDtoFromProjectionRow(row.agent_id, row);
@@ -355,11 +361,12 @@ export class AgentArtifactCatalog {
             AND tombstone.conversation_id = ?
         ))` : ""}
         ${boundary ? "AND (created_at < ? OR (created_at = ? AND artifact_id < ?))" : ""}
+        ${terms.map(() => "AND lower(coalesce(json_extract(artifact_json, '$.sourcePath'), json_extract(artifact_json, '$.path'), '') || ' ' || coalesce(json_extract(artifact_json, '$.summary'), '')) LIKE ? ESCAPE '\\'").join("\n")}
       ORDER BY created_at DESC, artifact_id DESC LIMIT ?
     `).all(...(
       boundary
-        ? [projectId, ...(conversationId ? [conversationId, conversationId, conversationId] : []), boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
-        : [projectId, ...(conversationId ? [conversationId, conversationId, conversationId] : []), limit + 1]
+        ? [projectId, ...(conversationId ? [conversationId, conversationId, conversationId] : []), boundary.orderKey, boundary.orderKey, boundary.rowKey, ...terms, limit + 1]
+        : [projectId, ...(conversationId ? [conversationId, conversationId, conversationId] : []), ...terms, limit + 1]
     )) as Array<{ artifact_json: string }>;
     const managed = managedRows.map((row) =>
       this.withProjectUrls(

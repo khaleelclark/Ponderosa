@@ -74,6 +74,12 @@ export interface ChangedFileDetailDto extends ChangedFileDto {
   diff?: string;
 }
 
+export interface ResponseFileReviewDto {
+  executionId: string;
+  files: ChangedFileDetailDto[];
+  truncated: boolean;
+}
+
 /** An Artifacts-pane entry (SPEC §7 `artifacts`). Metadata only; content via :aid. */
 export interface ArtifactDto {
   id: string;

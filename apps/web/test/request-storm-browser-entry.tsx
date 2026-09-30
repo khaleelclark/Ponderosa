@@ -5,13 +5,14 @@ import { useAgentStream } from "../src/hooks/useAgentStream";
 import { useWorkspaceStream } from "../src/hooks/useWorkspaceStream";
 import { queryKeys } from "../src/queryKeys";
 
-const counters = { roster: 0, health: 0, directory: 0, allAgents: 0, homeActive: 0, homeOutcomes: 0, otherAgents: 0, details: 0, task: 0, capabilities: 0, chat: 0, delivery: 0, notifications: 0, notificationProjection: 0, projectDirectory: 0, conversationDirectory: 0, providerUsage: 0 };
+const counters = { roster: 0, health: 0, directory: 0, allAgents: 0, homeActive: 0, homeOutcomes: 0, otherAgents: 0, activityScope: 0, details: 0, task: 0, capabilities: 0, chat: 0, delivery: 0, notifications: 0, notificationProjection: 0, projectDirectory: 0, conversationDirectory: 0, providerUsage: 0 };
 const apiLatencies: number[] = [];
 let terminal = false;
 let chatReply = "waiting";
 let deliveryState = "preparing";
 let failNextPhaseFetch = false;
 let agentCommandEnabled = false;
+let ownerChatTitle = "Original owner";
 async function probeApi(): Promise<void> {
   const start = performance.now();
   const response = await fetch("/api/storm-probe");
@@ -66,6 +67,12 @@ api.subscribeWorkspace = (_cursor, handlers) => {
   Object.assign(window, {
     stormCounters: () => ({ ...counters }),
     stormApiLatencies: () => [...apiLatencies],
+    renameOwnerChat: () => {
+      ownerChatTitle = "Renamed owner";
+      for (let index = 0; index < 50; index++) handlers.onEvent({ id: ++seq, ts: new Date().toISOString(), event: {
+        type: "conversation_changed", projectId: "P1", conversationId: "Chat 1", action: "updated",
+      } });
+    },
     stormFailNextPhaseFetch: () => { failNextPhaseFetch = true; },
     stopStorm: () => { clearInterval(command); if (replay) clearInterval(replay); replay = undefined; },
     startAgentStorm: () => { agentCommandEnabled = true; },
@@ -205,6 +212,10 @@ function Probe() {
     queryKey: queryKeys.workspaceDirectory.list("agent", "", undefined, undefined, undefined, undefined, undefined, undefined, undefined),
     queryFn: async () => { counters.allAgents += 1; await probeApi(); return terminal ? "terminal" : "working"; },
   });
+  const activityScope = useQuery({
+    queryKey: [...queryKeys.workspaceDirectory.list("agent", "Zulu", undefined, undefined, undefined, undefined, undefined, undefined, undefined), 1],
+    queryFn: async () => { counters.activityScope += 1; await probeApi(); return ownerChatTitle; },
+  });
   const homeActive = useQuery({
     queryKey: queryKeys.workspaceDirectory.list("agent", "", undefined, undefined, undefined, undefined, true, undefined, undefined),
     queryFn: async () => { counters.homeActive += 1; await probeApi(); return terminal ? "none" : "working"; },
@@ -247,7 +258,7 @@ function Probe() {
     queryKey: queryKeys.conversations.activeDeliveryReceipts("Chat 1", "Message 1", ""),
     queryFn: async () => { counters.delivery += 1; await probeApi(); return deliveryState; },
   });
-  return <><span id="roster">{roster.data}</span><span id="all-agents">{allAgents.data}</span><span id="home-active">{homeActive.data}</span><span id="home-outcomes">{homeOutcomes.data}</span><span id="phase">{String(connection.phaseEvidenceFresh)}</span><span id="chat">{chat.data}</span><span id="delivery">{delivery.data}</span><AgentDetails /></>;
+  return <><span id="roster">{roster.data}</span><span id="all-agents">{allAgents.data}</span><span id="activity-owner">{activityScope.data}</span><span id="home-active">{homeActive.data}</span><span id="home-outcomes">{homeOutcomes.data}</span><span id="phase">{String(connection.phaseEvidenceFresh)}</span><span id="chat">{chat.data}</span><span id="delivery">{delivery.data}</span><AgentDetails /></>;
 }
 function AgentDetails() {
   return <>{Array.from({ length: 12 }, (_, index) => <AgentDetail key={index} index={index} />)}</>;

@@ -1,5 +1,5 @@
 import type { ArtifactDto } from "@ponderosa/core";
-import { presentProjectPath } from "../projectPathPresentation";
+import { presentedFileIdentity } from "../projectPathPresentation";
 
 export type ProjectFileCategory =
   | "all"
@@ -88,8 +88,7 @@ export function projectArtifactDisplayPath(
   artifact: Pick<ArtifactDto, "path" | "sourcePath">,
   projectRoot: string,
 ): string {
-  return presentProjectPath(projectRoot, artifact.sourcePath ?? artifact.path)
-    .displayPath;
+  return presentedFileIdentity(projectRoot, artifact.sourcePath ?? artifact.path);
 }
 
 export function projectArtifactGroup(

@@ -82,7 +82,7 @@ export interface ProviderInputDto {
   updatedAt: string;
 }
 
-export type TokenUsageScope = "overall" | "project" | "agent";
+export type TokenUsageScope = "overall" | "project" | "agent" | "conversation";
 
 export type TokenUsageMetric = "inputTokens" | "cachedInputTokens" | "cacheWriteInputTokens" | "outputTokens" | "reasoningOutputTokens" | "totalTokens";
 
@@ -165,6 +165,7 @@ interface ProviderUsageStateBaseDto {
 /** One provider's current quota-cache projection. Failed refreshes preserve a
  * last-known-good reading without conflating quota health with engine health. */
 export type ProviderUsageStateDto = ProviderUsageStateBaseDto & (
+  | { status: "loading" }
   | {
       status: "fresh";
       data: import("../adapter.js").ProviderUsage;

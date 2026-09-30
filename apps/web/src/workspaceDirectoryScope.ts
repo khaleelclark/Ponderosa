@@ -11,7 +11,8 @@ export function sameWorkspaceDirectoryScope(
     previous[7] === current[7] &&
     previous[8] === current[8] &&
     previous[9] === current[9] &&
-    (previous[10] ?? "") === (current[10] ?? "");
+    (previous[10] ?? "") === (current[10] ?? "") &&
+    previous[11] === current[11];
 }
 
 /** A workspace-wide query is affected by every Project; siblings are not. */

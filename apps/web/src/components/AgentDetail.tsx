@@ -1045,8 +1045,9 @@ export function AgentDetail({
   };
 
   const openActivityFile = (file: ResponseFileActivityDto) => {
-    if (file.artifactId) onOpenArtifact(file.artifactId);
-    else onOpenReview(file.path);
+    if (file.executionId) onOpenReview(file.path, file.executionId);
+    else if (file.artifactId) onOpenArtifact(file.artifactId);
+    else onOpenReview(file.path, file.executionId);
   };
   const activeBrowser = activeBrowsersQuery.data?.find(session => session.agentId === agentId);
   const settingsPane = (
@@ -1078,7 +1079,6 @@ export function AgentDetail({
       onSettingsModel={setSettingsModel}
       onSettingsEffort={setSettingsEffort}
       onNotice={setRuntimeSettingsNotice}
-      onFreshSessionNotice={setQueuedMessageNotice}
       onSaveRuntimeSettings={() => updateRuntimeSettings.mutate(undefined)}
       onRecheckEngine={() => setRecheckEngineOpen(true)}
       onOpenMaster={onOpenMaster}

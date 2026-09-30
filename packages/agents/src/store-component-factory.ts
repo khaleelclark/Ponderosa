@@ -45,6 +45,7 @@ import { AgentRunUsageReadModel } from "./store-run-usage-read-model.js";
 import { AgentPhaseReadModel } from "./store-agent-phase-read-model.js";
 import { AgentTelemetryReadModel } from "./store-telemetry-read-model.js";
 import { AgentWorkspaceCatalogAuthority } from "./store-workspace-catalog-authority.js";
+import { presentRetainedChatAttachment } from "./chat-attachment-retention.js";
 import { setCompactionHistoryConversationVisibility } from "./compaction-history-retrieval.js";
 
 type HistoryCursorInput = {
@@ -294,6 +295,7 @@ export function createAgentStoreComponents(
     ports.authorizeAgentManagementPlan,
     projectId => chatFeed.refreshAllChatFeedProject(projectId),
     agentId => eventProjection.forgetAgent(agentId),
+    projectId => ({ events: communicationJournal.readCommunicationEvents(projectId), projections: ports.projectionIndex(projectId).projections }),
   );
   communicationProjectionLedger = new AgentCommunicationProjectionLedger(
     dataDir,
@@ -356,6 +358,9 @@ export function createAgentStoreComponents(
     ports.getRuns,
     (agentId, status, executionIds) =>
       fileActivity.byExecution(agentId, status, executionIds),
+    (projectId, conversationId, attachment) => presentRetainedChatAttachment(
+      dataDir, projectId, conversationId, attachment,
+      attachment.agentId === conversationId || Boolean(attachment.agentId && ports.getAgent(attachment.agentId))),
   );
   const projectionRebuilder = new AgentProjectionRebuilder(
     dataDir,

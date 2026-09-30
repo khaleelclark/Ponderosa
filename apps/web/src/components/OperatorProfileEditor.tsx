@@ -122,8 +122,12 @@ export function OperatorProfileEditor({
     </Button>
   </Stack>;
   const fields = <>
-    <TextField autoFocus={nameAutoFocus} label={nameLabel} value={form.name} onChange={(event) => form.setName(event.target.value)} inputProps={{ maxLength: 80 }} />
-    <TextField label="Handle" value={form.handle} onChange={(event) => form.setHandle(event.target.value)} helperText={handleHelperText} inputProps={{ maxLength: 32 }} />
+    <TextField autoFocus={nameAutoFocus} label={nameLabel} value={form.name} onChange={(event) => form.setName(event.target.value)} error={!form.name.trim()} helperText={!form.name.trim() ? "Enter a display name." : undefined} inputProps={{ maxLength: 80 }} />
+    <TextField label="Handle" value={form.handle} onChange={(event) => form.setHandle(event.target.value)}
+      error={!/^[a-z][a-z0-9_-]{1,31}$/u.test(form.handle) || ["broadcast", "everyone", "user"].includes(form.handle)}
+      helperText={["broadcast", "everyone", "user"].includes(form.handle) ? "This handle is reserved. Choose another."
+        : !/^[a-z][a-z0-9_-]{1,31}$/u.test(form.handle) ? "Use 2–32 characters, starting with a letter: lowercase letters, numbers, underscores, or hyphens."
+        : handleHelperText} inputProps={{ maxLength: 32 }} />
   </>;
   return <Stack spacing={avatarSize > 60 ? 2.25 : 2}>
     {showDescription ? <Typography variant="body2" color="text.secondary">This synced identity controls how Agents address you and how your profile appears throughout Ponderosa.</Typography> : null}

@@ -136,9 +136,16 @@ function triggerSourceSummary(trigger: Pick<TriggerDefinitionDto, "sourceKind" |
   if (trigger.sourceKind === "webhook") return "Signed webhook";
   if (trigger.sourceKind === "filesystem") return "Project folder changes";
   const schedule = trigger.sourceConfig as Extract<TriggerSourceConfig, { scheduleKind: string }>;
-  if (schedule.scheduleKind === "once") return "One-time schedule";
-  if (schedule.scheduleKind === "cron") return `Cron schedule · ${schedule.timezone}`;
-  return `Interval schedule · ${intervalSummary(schedule.everyMs)}`;
+  if (schedule.scheduleKind === "once") return `Once · ${new Date(schedule.at).toLocaleString()}`;
+  if (schedule.scheduleKind === "cron") {
+    const [minute, hour, day, month, weekday] = schedule.expression.trim().split(/\s+/u);
+    const time = hour && minute && /^\d+$/u.test(hour) && /^\d+$/u.test(minute) ? `${hour.padStart(2, "0")}:${minute.padStart(2, "0")}` : undefined;
+    if (day === "*" && month === "*" && weekday === "*" && time) return `Daily at ${time} · ${schedule.timezone}`;
+    if (day === "*" && month === "*" && weekday === "1-5" && time) return `Weekdays at ${time} · ${schedule.timezone}`;
+    if (hour === "*" && day === "*" && month === "*" && weekday === "*" && /^\*\/\d+$/u.test(minute ?? "")) return `Every ${minute!.slice(2)} minutes · ${schedule.timezone}`;
+    return `Custom repeating schedule · ${schedule.timezone}`;
+  }
+  return `Repeats ${intervalSummary(schedule.everyMs)} · starts ${new Date(schedule.startsAt).toLocaleString()}`;
 }
 
 function lines(value: string): string[] {
@@ -300,7 +307,13 @@ export function TriggersPane({
   const intervalInvalid = sourceKind === "schedule" && scheduleKind === "interval" && (
     !intervalValue.trim() || !Number.isFinite(intervalMs) || intervalMs < MIN_INTERVAL_MS || intervalMs > MAX_INTERVAL_MS
   );
-  const sourceConfigurationInvalid = (sourceKind === "filesystem" && Boolean(filesystemErrors.quiet || filesystemErrors.max)) || intervalInvalid;
+  const cronFormatError = sourceKind === "schedule" && scheduleKind === "cron" && cronExpression.trim().split(/\s+/u).length !== 5 ? "Use five fields: minute, hour, day, month, weekday. The minimum interval is one minute." : undefined;
+  let timezoneError: string | undefined;
+  if (sourceKind === "schedule" && scheduleKind === "cron") {
+    try { if (!timezone.trim()) throw new Error(); new Intl.DateTimeFormat(undefined, { timeZone: timezone.trim() }); }
+    catch { timezoneError = "Enter a valid IANA timezone, such as America/New_York or UTC."; }
+  }
+  const sourceConfigurationInvalid = (sourceKind === "filesystem" && Boolean(filesystemErrors.quiet || filesystemErrors.max)) || intervalInvalid || Boolean(cronFormatError || timezoneError);
 
   const eligibleAgents = availableAgents.filter(agent => agent.conversationId === conversationId);
   useEffect(() => {
@@ -500,6 +513,8 @@ export function TriggersPane({
     setSecret(undefined);
     onCreateFlowComplete?.();
   };
+  const scheduleSaveError = (create.error ?? saveEdit.error)?.message;
+  const cronSaveError = scheduleSaveError && /cron|schedule|minute|frequency/iu.test(scheduleSaveError) ? scheduleSaveError : undefined;
   const editorFields = (
     <Stack spacing={2}>
       <Alert severity="warning">This automation will run unattended with full Agent access. Event payloads are untrusted data.</Alert>
@@ -532,7 +547,7 @@ export function TriggersPane({
             onChange={event => setTargetAgentId(event.target.value)}
           >
             {eligibleAgents.map(agent => (
-              <MenuItem key={agent.id} value={agent.id}>{agent.title}</MenuItem>
+              <MenuItem key={agent.id} value={agent.id}>{agent.title}{eligibleAgents.some(other => other.id !== agent.id && other.title === agent.title) ? ` · #${agent.handle}` : ""}</MenuItem>
             ))}
           </Select>
         </FormControl>
@@ -544,7 +559,7 @@ export function TriggersPane({
         />
       )}
       <Typography variant="caption" color="text.secondary">
-        This Project Automation sends each occurrence to the selected Chat and Agent.
+        Each occurrence is sent to the selected Chat and runs as the selected Agent.
       </Typography>
       <FormControl fullWidth><InputLabel id="trigger-source-label">Source</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-source-label" label="Source" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TriggerSourceKind)}><MenuItem value="schedule">Schedule</MenuItem><MenuItem value="webhook">Signed Webhook</MenuItem><MenuItem value="filesystem">Project Folder Changes</MenuItem></Select></FormControl>
       {sourceKind === "schedule" ? <>
@@ -554,7 +569,7 @@ export function TriggersPane({
           <FormControl fullWidth><InputLabel id="trigger-interval-unit-label">Unit</InputLabel><Select labelId="trigger-interval-unit-label" label="Unit" value={intervalUnit} onChange={(event) => setIntervalUnit(event.target.value as IntervalUnit)}><MenuItem value="minutes">Minutes</MenuItem><MenuItem value="hours">Hours</MenuItem><MenuItem value="days">Days</MenuItem><MenuItem value="weeks">Weeks</MenuItem></Select></FormControl>
         </Stack> : null}
         {scheduleKind === "once" ? <TextField label="Run at" type="datetime-local" value={onceAt} onChange={(event) => setOnceAt(event.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ step: 0.001 }} /> : null}
-        {scheduleKind === "cron" ? <><TextField label="Cron expression" value={cronExpression} onChange={(event) => setCronExpression(event.target.value)} helperText="Five fields; minimum frequency is once per minute." /><TextField label="IANA timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} /></> : null}
+        {scheduleKind === "cron" ? <><TextField label="Cron expression" value={cronExpression} onChange={(event) => { setCronExpression(event.target.value); create.reset(); saveEdit.reset(); }} error={Boolean(cronFormatError || cronSaveError)} helperText={cronFormatError ?? cronSaveError ?? "Five fields; minimum frequency is once per minute."} /><TextField label="IANA timezone" value={timezone} onChange={(event) => { setTimezone(event.target.value); create.reset(); saveEdit.reset(); }} error={Boolean(timezoneError)} helperText={timezoneError} /></> : null}
       </> : null}
       {sourceKind === "filesystem" ? <><TextField label="Include globs" value={include} onChange={(event) => setInclude(event.target.value)} multiline minRows={2} /><TextField label="Exclude globs" value={exclude} onChange={(event) => setExclude(event.target.value)} multiline minRows={3} /><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Quiet window (seconds)" type="number" value={quietSeconds} onChange={(event) => setQuietSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.quiet)} helperText={filesystemErrors.quiet ?? "0.1 seconds–1 hour"} /><TextField fullWidth label="Maximum window (seconds)" type="number" value={maxWindowSeconds} onChange={(event) => setMaxWindowSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.max)} helperText={filesystemErrors.max ?? "At least quiet window; no more than 1 hour"} /></Stack><Typography variant="caption" color="text.secondary">Only paths and event types are captured; file contents are not injected.</Typography></> : null}
       {sourceKind === "webhook" ? <Typography variant="body2" color="text.secondary">Ponderosa will show a signing secret once. Send a stable event ID, Unix timestamp, and v1 HMAC-SHA256 signature with each JSON request.</Typography> : null}
@@ -679,7 +694,7 @@ export function TriggersPane({
           <Typography variant="body2" sx={{ mt: 1, whiteSpace: "pre-wrap" }}>{trigger.instructions}</Typography>
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Chat: {currentChatLabel(trigger.conversationId)}</Typography>
           <Typography variant="caption" color="text.secondary" display="block">Runs as: {agents.find(agent => agent.id === trigger.targetAgentId)?.title ?? "Unavailable Agent"}</Typography>
-          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Source configuration: <code>{JSON.stringify(trigger.sourceConfig)}</code></Typography>
+          <Box component="details" sx={{ mt: 1 }}><Typography component="summary" variant="caption">Technical details</Typography><Box component="pre" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{JSON.stringify(trigger.sourceConfig, null, 2)}</Box></Box>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={{ xs: 0.25, sm: 2 }} sx={{ mt: 1 }}>
             <Typography variant="caption" color="text.secondary">Last occurrence: {lastOccurredAt ? new Date(lastOccurredAt).toLocaleString() : "None yet"}</Typography>
             {scheduleStatus ? <Typography variant="caption" color="text.secondary">{scheduleStatus}</Typography> : null}

@@ -18,6 +18,18 @@ try {
   browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH,
     args: process.env.PONDEROSA_BROWSER_DISABLE_SANDBOX === "1" ? ["--no-sandbox"] : [] });
   for (const width of [1440, 390]) {
+    const naming = await browser.newPage({ viewport: { width, height: 900 } });
+    await naming.goto(`http://127.0.0.1:${server.address().port}/?workspaces=1&names=1`);
+    await naming.getByRole("dialog", { name: "Browser · Current trip Chat", exact: true }).waitFor();
+    assert.deepEqual([...new Set(await naming.evaluate(() => window.namingRequests))], ["p"], "naming does not fan out across unopened Projects");
+    await naming.evaluate(() => window.renameChat());
+    const renamed = naming.getByRole("dialog", { name: "Browser · Renamed trip Chat", exact: true });
+    await renamed.waitFor();
+    await renamed.getByRole("tab", { name: /Application form/ }).waitFor();
+    assert.equal(await naming.evaluate(() => window.browserSession.id), "fixture", "rename preserves browser identity");
+    await naming.close();
+  }
+  for (const width of [1440, 390]) {
     const agentPage = await browser.newPage({ viewport: { width, height: 900 } });
     await agentPage.goto(`http://127.0.0.1:${server.address().port}/?agent=1`);
     const returnControl = agentPage.getByRole("button", { name: "Return to Agent", exact: true });

@@ -164,6 +164,40 @@ export function createCommunicationProjectionReconciler(
       if (filter?.communicationEventId && communicationEventId !== filter.communicationEventId) continue;
       if (filter?.conversationId && event.conversationId !== filter.conversationId) continue;
       if (exactScope) exactCommunicationEventIds.add(communicationEventId);
+      // Completed authored messages no longer depend on their original runtime
+      // upload reservation. Deleted targets are not resurrected during replay.
+      const existingCanonical = store.getCommunicationEvent(row.projectId, communicationEventId);
+      const existingRecipients = row.recipientAgentIds ??
+        coordinationV3.communicationRecipientAgentIds(row.projectId, row.id);
+      if (existingCanonical) {
+        const requiredTargets = runtimeProjectionTargets(existingCanonical, existingRecipients)
+          .filter(target => store.canProjectCommunication(existingCanonical.projectId, {
+            eventId: existingCanonical.eventId, surface: target.surface, projectionKey: target.projectionKey,
+          }));
+        const projections = requiredTargets.map(target => store.getCommunicationProjection(
+          existingCanonical.projectId, existingCanonical.eventId, target.surface, target.projectionKey));
+        const complete = projections.every(projection => Boolean(projection?.message));
+        const artifactsComplete = (existingCanonical.artifactIds ?? []).every(id => Boolean(store.getProjectArtifact(row.projectId, id)));
+        let liveAssociationsComplete = true;
+        for (const attachment of mergeAttachments(existingCanonical.attachments as AssetDto[] | undefined,
+          ...projections.map(projection => projection?.message?.attachments as AssetDto[] | undefined))) {
+          if (!attachment.agentId || (!store.getAgent(attachment.agentId) &&
+              !(attachment.conversationId === attachment.agentId && store.getConversation(attachment.agentId)))) continue;
+          // A canonical message can precede the association durability barrier.
+          // Keep that recovery path for live staged uploads, but do not require
+          // the obsolete reservation once their actual metadata is associated.
+          const stored = typeof assets.read === "function" ? await assets.read(row.projectId, attachment.agentId, attachment.id) : undefined;
+          if (!stored || stored.state !== "associated" || stored.size !== attachment.size ||
+              (attachment.sha256 && stored.sha256 !== attachment.sha256)) { liveAssociationsComplete = false; break; }
+        }
+        if (complete && artifactsComplete && liveAssociationsComplete) {
+          if (exactScope) {
+            exactCanonicalEvents.set(existingCanonical.eventId, existingCanonical);
+            exactRecipientAgentIds.set(existingCanonical.eventId, existingRecipients);
+          }
+          continue;
+        }
+      }
       const runtimeArtifacts = row.sourceKind === "request"
         ? []
         : coordinationV3.runtimeArtifacts("communication", row.id);

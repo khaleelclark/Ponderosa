@@ -21,6 +21,7 @@ export interface ProjectedChatSearchOptions {
   query: string;
   limit: number;
   maxScannedMessages: number;
+  distinctChats?: boolean;
 }
 
 const SNIPPET_LENGTH = 180;
@@ -68,10 +69,14 @@ export function searchProjectedChatMessages(
   const resultLimit = Math.max(1, options.limit);
   const newestFirst = [...candidates].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   const scanned = newestFirst.slice(0, scanLimit);
+  const seenChats = new Set<string>();
   const matches = scanned.flatMap((candidate) => {
     if (!query && !candidate.unread) return [];
     const { snippet, highlights } = highlightedSearchSnippet(candidate.text, query);
     if (query && !snippet) return [];
+    const chatKey = `${candidate.project.id}\0${candidate.chat.kind}\0${candidate.chat.id}`;
+    if (options.distinctChats && seenChats.has(chatKey)) return [];
+    seenChats.add(chatKey);
     const { text: _text, ...result } = candidate;
     return [{ ...result, snippet, highlights }];
   }).slice(0, resultLimit);

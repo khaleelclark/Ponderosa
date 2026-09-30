@@ -32,7 +32,7 @@ type DecodeHistoryCursor = (
 ) => HistoryCursor;
 type UsageScope =
   | { type: "overall" }
-  | { type: "project" | "agent"; id: string };
+  | { type: "project" | "agent" | "conversation"; id: string };
 
 export class AgentRunUsageReadModel {
   constructor(
@@ -574,6 +574,10 @@ export class AgentRunUsageReadModel {
       predicates.push("runs.agent_id = ?");
       params.push(scope.id);
     }
+    if (scope.type === "conversation") {
+      predicates.push("agents.project_id = (SELECT project_id FROM conversations WHERE id = ?)");
+      params.push(scope.id);
+    }
     if (range.from) {
       predicates.push(
         "COALESCE(runs.completed_at, runs.started_at) >= ?",
@@ -654,7 +658,7 @@ export class AgentRunUsageReadModel {
           : {}),
       },
       providerRequestUsageJson: row.provider_request_usage_json,
-    }));
+    })).filter(row => scope.type !== "conversation" || row.conversationId === scope.id);
   }
 
   private exactWakeCauses(

@@ -2,7 +2,8 @@ import { isUtf8 } from "node:buffer";
 import { execFile } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import type { BigIntStats } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
+import { lstat, open, realpath, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import type {
   AgentWorkingCopyDto,
@@ -13,6 +14,7 @@ import type {
 import {
   listSecureDirectory,
   readSecureFileAsync,
+  secureDirectoryIdentity,
 } from "@ponderosa/native-host";
 import {
   FILE_REFERENCE_IGNORED_SEGMENTS,
@@ -295,6 +297,10 @@ function gitEnvironment(identity: GitRepositoryIdentity): NodeJS.ProcessEnv {
 }
 
 function runGit(identity: GitRepositoryIdentity, args: string[]): Promise<GitResult> {
+  return runGitBytes(identity, args).then(result => ({ ...result, stdout: result.stdout.toString("utf8"), stderr: result.stderr.toString("utf8") }));
+}
+
+function runGitBytes(identity: GitRepositoryIdentity, args: string[]): Promise<{ stdout: Buffer; stderr: Buffer; exitCode: number }> {
   return new Promise((resolve, reject) => {
     execFile(
       "git",
@@ -303,11 +309,12 @@ function runGit(identity: GitRepositoryIdentity, args: string[]): Promise<GitRes
         "-c", "color.ui=false",
         "-c", "core.fsmonitor=false",
         "-c", "core.untrackedCache=false",
+        "-c", "core.hooksPath=",
         ...args,
       ],
       {
         cwd: identity.root.path,
-        encoding: "utf8",
+        encoding: "buffer",
         env: gitEnvironment(identity),
         timeout: 8_000,
         maxBuffer: WORKSPACE_REVIEW_MAX_BYTES,
@@ -383,8 +390,6 @@ async function workspaceStatus(
     ]);
     if (
       status.exitCode !== 0 ||
-      branch.exitCode !== 0 ||
-      head.exitCode !== 0 ||
       !await repositoryIdentityStillCurrent(identity)
     ) return { projectId, agentId, workingCopy, isGitRepository: false, generatedAt, changes: [] };
     return {
@@ -392,8 +397,8 @@ async function workspaceStatus(
       agentId,
       workingCopy,
       isGitRepository: true,
-      branch: singleLine(branch.stdout),
-      head: singleLine(head.stdout),
+      ...(branch.exitCode === 0 ? { branch: singleLine(branch.stdout) } : {}),
+      ...(head.exitCode === 0 ? { head: singleLine(head.stdout) } : {}),
       generatedAt,
       changes: parseGitStatus(status.stdout),
     };
@@ -411,8 +416,14 @@ async function workspaceFile(
 ): Promise<WorkspaceFileReviewDto> {
   const relativePath = safeRelativePath(input);
   if (!relativePath || !isWorkspaceReviewPathAllowed(relativePath)) throw new Error("path is excluded from workspace review");
+  const rootIdentity = secureDirectoryIdentity({ root });
+  if (!rootIdentity) throw new Error("workspace storage is unavailable");
+  let repository: GitRepositoryIdentity | undefined;
+  try { repository = await inspectGitRepository(root); }
+  catch { /* non-Git folders can still show safely read current content */ }
   let exists = false;
   let content: string | undefined;
+  let capturedBytes: Buffer | undefined;
   let truncated = false;
   const segments = relativePath.split("/");
   const leaf = segments.pop()!;
@@ -431,22 +442,62 @@ async function workspaceFile(
         expectedSize: entry.size,
       });
       if (!body) throw new Error("workspace file changed during secure read");
-      if (isUtf8(body)) content = body.toString("utf8");
+      capturedBytes = body;
+      if (isUtf8(body) && !body.includes(0)) content = body.toString("utf8");
     } else {
       truncated = true;
     }
   }
-  const stagedDiff = "";
-  const unstagedDiff = "";
-  let diff = "";
-  if (exists && content !== undefined) {
-    const lines = content.split("\n");
-    diff = [`--- /dev/null`, `+++ b/${relativePath}`, `@@ -0,0 +1,${lines.length} @@`, ...lines.map((line) => `+${line}`)].join("\n");
-    if (diff.length > WORKSPACE_REVIEW_MAX_BYTES) {
-      diff = diff.slice(0, WORKSPACE_REVIEW_MAX_BYTES);
-      truncated = true;
+  let stagedDiff = "";
+  let unstagedDiff = "";
+  if (repository) {
+    const before = await runGit(repository, ["status", "--porcelain=v1", "-z"]);
+    const indexBefore = await runGit(repository, ["ls-files", "--stage", "--", relativePath]);
+    const headBefore = await runGit(repository, ["rev-parse", "--verify", "HEAD"]);
+    try {
+      const previousPath = parseGitStatus(before.stdout).find(change => change.path === relativePath)?.previousPath;
+      const staged = await runGit(repository, ["diff", "--cached", "--find-renames", "--no-ext-diff", "--no-textconv", "--no-color", "--", ...(previousPath ? [previousPath] : []), relativePath]);
+      if (staged.exitCode !== 0) throw new Error("staged patch is unavailable");
+      stagedDiff = staged.stdout;
+      // Never let Git reopen an untrusted working-file pathname. Capture the
+      // index through Git, then compare it with the verified secure-file read
+      // in private temporary files. No external diff/text conversion runs.
+      const indexed = await runGitBytes(repository, ["show", `:${relativePath}`]);
+      if (capturedBytes !== undefined || (!exists && indexed.exitCode === 0)) {
+        const temporary = await mkdtemp(path.join(tmpdir(), "ponderosa-review-"));
+        try {
+          const oldFile = indexed.exitCode === 0 ? path.join(temporary, "before") : process.platform === "win32" ? "NUL" : "/dev/null";
+          const newFile = exists ? path.join(temporary, "after") : process.platform === "win32" ? "NUL" : "/dev/null";
+          if (indexed.exitCode === 0) await writeFile(oldFile, indexed.stdout, { mode: 0o600, flag: "wx" });
+          if (exists) await writeFile(newFile, capturedBytes!, { mode: 0o600, flag: "wx" });
+          const patch = await new Promise<string>((resolve, reject) => execFile("git",
+            ["-c", "color.ui=false", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--", oldFile, newFile],
+            { cwd: temporary, encoding: "utf8", timeout: 8_000, maxBuffer: WORKSPACE_REVIEW_MAX_BYTES },
+            (error, stdout) => error && (typeof error.code !== "number" || error.code > 1) ? reject(error) : resolve(stdout)));
+          unstagedDiff = patch.split("\n").map(line => {
+            if (line.startsWith("diff --git ")) return `diff --git a/${relativePath} b/${relativePath}`;
+            if (line.startsWith("--- ") && indexed.exitCode === 0) return `--- a/${relativePath}`;
+            if (line.startsWith("+++ ") && exists) return `+++ b/${relativePath}`;
+            if (line.startsWith("Binary files ")) return `Binary files ${indexed.exitCode === 0 ? `a/${relativePath}` : "/dev/null"} and ${exists ? `b/${relativePath}` : "/dev/null"} differ`;
+            return line;
+          }).join("\n");
+        } finally { await rm(temporary, { recursive: true, force: true }); }
+      }
+      const after = await runGit(repository, ["status", "--porcelain=v1", "-z"]);
+      const indexAfter = await runGit(repository, ["ls-files", "--stage", "--", relativePath]);
+      const headAfter = await runGit(repository, ["rev-parse", "--verify", "HEAD"]);
+      const currentBytes = capturedBytes ? await readSecureFileAsync({ root, relativePath, maxBytes: MAX_FILE_BYTES, expectedSize: capturedBytes.length }) : undefined;
+      if (before.exitCode !== 0 || after.exitCode !== 0 || before.stdout !== after.stdout ||
+          indexBefore.stdout !== indexAfter.stdout || headBefore.exitCode !== headAfter.exitCode || headBefore.stdout !== headAfter.stdout || (capturedBytes && !currentBytes?.equals(capturedBytes)) ||
+          !await repositoryIdentityStillCurrent(repository) ||
+          secureDirectoryIdentity({ root }) !== rootIdentity) throw new Error("workspace changed during review; refresh to capture current changes");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+        truncated = true;
+      } else throw error;
     }
   }
+  const diff = [stagedDiff, unstagedDiff].filter(Boolean).join("\n");
   return { projectId, agentId, workingCopyId, path: relativePath, exists, ...(content !== undefined ? { content } : {}), diff, stagedDiff, unstagedDiff, truncated };
 }
 

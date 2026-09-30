@@ -488,6 +488,15 @@ export function composerCapabilityDisabledReason(
   return "This capability cannot be inserted in a message.";
 }
 
+export function capabilityDisplayName(capability: EngineComposerCapability): string {
+  if (!/[:_-]/u.test(capability.label)) return capability.label;
+  const raw = capability.label.includes(":") ? capability.label.split(":").at(-1)! : capability.label;
+  const words = raw.replace(/[_-]+/gu, " ");
+  return words === words.toLocaleLowerCase()
+    ? words.replace(/\b\p{L}/gu, letter => letter.toLocaleUpperCase())
+    : words;
+}
+
 export function matchingComposerCapabilities(
   capabilities: readonly EngineComposerCapability[],
   query: string,
@@ -495,7 +504,7 @@ export function matchingComposerCapabilities(
   const normalized = query.trim().toLocaleLowerCase();
   if (!normalized) return [...capabilities];
   return capabilities.filter((capability) =>
-    [capability.label, capability.kind, capability.description].some((value) =>
+    [capabilityDisplayName(capability), capability.label, capability.kind, capability.description].some((value) =>
       value.toLocaleLowerCase().includes(normalized)
     )
   );

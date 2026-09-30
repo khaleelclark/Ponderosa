@@ -179,7 +179,7 @@ export function ProviderUsageCard({
         </Stack>
       </Stack>
 
-      {!reading && state.refreshing ? (
+      {!reading && (state.refreshing || state.status === "loading") ? (
         <Stack direction="row" spacing={1.25} sx={{ alignItems: "center", py: 2 }}>
           <CircularProgress size={20} />
           <Typography variant="body2">Loading subscription usage…</Typography>

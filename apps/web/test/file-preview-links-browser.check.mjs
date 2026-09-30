@@ -35,8 +35,10 @@ try {
     const element = page.getByText(text, { exact: true });
     assert.equal(await element.evaluate(node => node.closest("a")), null, `${text} must render as inert text`);
   }
-  assert.equal(await page.getByRole("link", { name: "safe local" }).getAttribute("href"),
-    "/projects/project-a/files/view?path=overview%2Fnotes.md");
+  const local = new URL(await page.getByRole("link", { name: "safe local" }).getAttribute("href"), page.url());
+  assert.equal(local.pathname, "/projects/project-a/files/view");
+  assert.equal(local.searchParams.get("path"), "overview/notes.md");
+  assert.equal(local.searchParams.get("returnTo"), "/");
   assert.equal(await page.getByRole("link", { name: "external" }).getAttribute("href"), "https://example.com");
   assert.equal(await page.getByRole("link", { name: "section" }).getAttribute("href"), "#section");
   await page.close();

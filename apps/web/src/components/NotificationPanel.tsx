@@ -1,4 +1,5 @@
 import CloseIcon from "@mui/icons-material/Close";
+import { markdownPreviewText } from "../markdownPreviewText";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import {
   Alert,
@@ -131,11 +132,14 @@ function notificationSummaryText(openActionCount: number, unacknowledgedActionCo
   return "You’re all caught up";
 }
 
-export function NotificationPanel({ open, projects, firstPage, firstPageRevision, getFirstPageRevision, onClose, onNavigate, onOpenSettings }: {
+export function NotificationPanel({ open, projects, firstPage, firstPageRevision, getFirstPageRevision, loading = false, loadFailed = false, onRetry, onClose, onNavigate, onOpenSettings }: {
   open: boolean;
   projects: ProjectDto[];
   firstPage?: WorkspaceNotificationPageDto;
   firstPageRevision: number;
+  loading?: boolean;
+  loadFailed?: boolean;
+  onRetry?(): void;
   getFirstPageRevision(): number;
   onClose(): void;
   onNavigate(route: Route): void;
@@ -394,7 +398,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       }
     };
   }, [firstPage?.nextCursor, firstPageRevision, getFirstPageRevision, historyReconcileNonce, open, replaceOlderPages]);
-  const visibleNotifications = filterNotifications(notifications, filter);
+  const visibleNotifications = filterNotifications(notifications, filter).map(item => ({ ...item, body: markdownPreviewText(item.body), ...(item.contextPreview ? { contextPreview: markdownPreviewText(item.contextPreview) } : {}) }));
   const totalForFilter = filter === "attention" ? openActionCount : unreadUpdateCount;
   const remainingForFilter = Math.max(0, totalForFilter - visibleNotifications.length);
   const projectIds = useMemo(() => [...new Set(visibleNotifications.map((item) => item.projectId).filter((id): id is string => Boolean(id)))], [visibleNotifications]);
@@ -578,7 +582,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <Typography variant="h6" component="span" aria-hidden="true">Notifications</Typography>
-          <Typography variant="body2" color="text.secondary">{notificationSummaryText(openActionCount, unacknowledgedActionCount, unreadUpdateCount)}</Typography>
+          <Typography variant="body2" color="text.secondary">{!firstPage ? loadFailed ? "Notifications unavailable" : "Loading notifications…" : notificationSummaryText(openActionCount, unacknowledgedActionCount, unreadUpdateCount)}</Typography>
         </Box>
         <IconButton aria-label="Close notifications" onClick={onClose}><CloseIcon /></IconButton>
       </Stack>
@@ -589,6 +593,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
     </Tabs>
     <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5, overflowX: "hidden", minWidth: 0 }}>
       {error ? <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert> : null}
+      {loadFailed ? <Alert severity="warning" sx={{ mb: 1 }} action={onRetry ? <Button color="inherit" onClick={onRetry}>Retry</Button> : undefined}>{firstPage ? "Notifications could not refresh. Showing the last loaded notifications." : "Notifications could not be loaded. Try again."}</Alert> : !firstPage && loading ? <Typography role="status">Loading notifications…</Typography> : null}
       <Stack spacing={1}>
         {groups.map((group) => {
           const project = projects.find((candidate) => candidate.id === group.projectId);
@@ -636,7 +641,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
             </List>
           </Box>;
         })}
-        {visibleNotifications.length === 0 && totalForFilter === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "attention" ? "Nothing needs attention" : "No unread updates"}</Typography><Typography variant="body2" color="text.secondary">{filter === "attention" ? "Open decisions, blockers, and failures stay here until they are resolved or dismissed." : "New Agent responses and broadcasts will appear here."}</Typography></Box> : null}
+        {firstPage && !loadFailed && !loading && visibleNotifications.length === 0 && totalForFilter === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "attention" ? "Nothing needs attention" : "No unread updates"}</Typography><Typography variant="body2" color="text.secondary">{filter === "attention" ? "Open decisions, blockers, and failures stay here until they are resolved or dismissed." : "New Agent responses and broadcasts will appear here."}</Typography></Box> : null}
         {reconcilingOlder ? <Typography variant="caption" color="text.secondary" role="status">
           Refreshing loaded notification history…
         </Typography> : null}
