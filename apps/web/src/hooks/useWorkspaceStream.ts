@@ -848,6 +848,7 @@ export function useWorkspaceStream(
       } else if (event.type === "conversation_changed") {
         directoryInvalidator.schedule("conversation", event.projectId);
         directoryInvalidator.schedule("project", event.projectId);
+        if (event.action === "updated" || event.action === "deleted") directoryInvalidator.schedule("agent", event.projectId, true);
       } else if (event.type === "trigger_changed") {
         directoryInvalidator.schedule("trigger", event.projectId);
       } else if (workspaceAgentEventChangesPhase(event)) {

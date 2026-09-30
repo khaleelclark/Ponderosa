@@ -130,6 +130,8 @@ try {
       assert.ok(delta > 0 && delta <= 2,
         `${key} in visible tab ${index} must refresh but remain rate-limited under sustained background events; got ${delta}`);
     }
+    assert.equal(backgroundCounts[index].activityScope, backgroundBaseline[index].activityScope,
+      "ordinary Chat messages must not add Agent scope-directory refreshes");
   }
   assert.deepEqual(backgroundCounts[2], backgroundBaseline[2],
     "hidden tab must not refetch from background events");
@@ -230,6 +232,20 @@ try {
     await page.evaluate(() => window.emitLiveChat());
     await page.locator("#chat").getByText("Latest live reply").waitFor({ timeout: 2_000 });
     await page.locator("#delivery").getByText("processed again").waitFor({ timeout: 2_000 });
+  }
+  // Let the preceding replay's bounded global/phase catch-up settle before
+  // measuring the independently scoped metadata invalidation.
+  await pages[0].waitForTimeout(5600);
+  const beforeRename = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  await Promise.all(pages.map(page => page.evaluate(() => window.renameOwnerChat())));
+  for (const page of pages) await page.locator("#activity-owner").getByText("Renamed owner").waitFor({ timeout: 2_000 });
+  await pages[0].waitForTimeout(1200);
+  const afterRename = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  for (let index = 0; index < pages.length; index++) {
+    const delta = afterRename[index].activityScope - beforeRename[index].activityScope;
+    assert.ok(delta > 0 && delta <= 2, "a Chat rename burst refreshes Activity scope through the bounded invalidator");
+    assert.equal(afterRename[index].directory, beforeRename[index].directory, "renames do not refetch Agent health summaries");
+    assert.equal(afterRename[index].otherAgents, beforeRename[index].otherAgents, "renames do not refetch unrelated Project directories");
   }
   const samples = (await Promise.all(pages.map(page => page.evaluate(() => window.stormApiLatencies())))).flat();
   samples.sort((a, b) => a - b);

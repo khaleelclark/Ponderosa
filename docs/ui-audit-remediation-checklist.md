@@ -23,7 +23,7 @@ Scope: the approved [one-PR specification](ui-audit-remediation-spec.md), based 
 | F15 Rejected access | Access-check rejection takes precedence over a misleading signed-in success state. | Shared provider-state presentation/source checks and package tests. |
 | F16 Save feedback | Pending/saved/error near Profile and rollover controls; submitted-snapshot fencing keeps a newer draft unsaved. | Typecheck/package tests and source review; no new live account-setting mutation. |
 | F17 Handles | Sidebar uses dynamic `#handle`; mention explanation confined to Profile. | Source/UI checks; composer and message-action spacing unchanged. |
-| F18 Activity scope | Searchable contextual grouping backed by two workspace-wide paginated directories, explicit pagination, loading/error/Retry feedback and shared rate-limit cooldown; no per-Project collectors. Chat usage is based on canonical message scope. | UI audit browser with 695 searchable Agents; `activity-scope-browser.check.mjs` with 250 Projects and delayed/failing/429 directory responses; canonical usage unit test across changed Agent membership. |
+| F18 Activity scope | Searchable contextual grouping backed by two workspace-wide paginated directories, explicit pagination, loading/error/Retry feedback and shared rate-limit cooldown; no per-Project collectors. Agent searches include displayed title, handle with/without `#`, and canonical owning Chat. Chat usage is based on canonical message scope. | Real-route identity/pagination/scope tests; Activity browser with 250 fixture Projects plus real-store/Fastify identity searches at 390/1440px; canonical usage unit test across changed Agent membership. |
 | F19 Pending provider reads | Pending is loading, not fabricated `unknown_failure`; actual failures retain diagnostics. | `provider-usage-pending-state.test.mjs` pending-to-actual-failure lifecycle. |
 | F20 Automation overview | Human-readable cron and localized timezone/date, one destination and Runs-as location, raw JSON under details. | Package tests/typecheck and source review. |
 | F21 Cron validation | Field-local five-field/minimum-frequency and timezone errors without discarding draft. | Existing cron/scheduler tests, typecheck and source review. |
@@ -56,7 +56,9 @@ node --test apps/server/test/chat-attachment-retention.test.mjs \
   apps/server/test/workspace-review-patches.test.mjs \
   apps/server/test/provider-usage-pending-state.test.mjs \
   apps/server/test/browser-history-reload-teardown.test.mjs \
-  apps/server/test/coordination-outbox-permanent.test.mjs
+  apps/server/test/coordination-outbox-permanent.test.mjs \
+  apps/server/test/workspace-directory-agent-owner.test.mjs \
+  apps/server/test/workspace-directory-performance.test.mjs
 ```
 
 Browser scripts use the installed Playwright and Chrome paths supplied through `PONDEROSA_PLAYWRIGHT_PATH` and `PONDEROSA_CHROMIUM_PATH` (no new test dependency):
@@ -93,6 +95,22 @@ Both reported code-review gaps at `d4068d65` were valid and are addressed in the
 - Provider Activity no longer calls per-Project Agent or Chat collectors. It uses one 25-item workspace directory page for each kind, with debounced server search and explicit continuation rather than automatic collection. Its isolated one-page cache cannot inherit or automatically refetch a complete management collection; moving to the next page replaces the previous page. The selected scope retains its exact identity across searches/pages. Loading and failed reads are visible instead of silently omitting scopes.
 - A new browser regression uses the real HTTP API client and directory hook with 250 fixture Projects and pre-populated twenty-page management caches: opening Activity makes exactly two initial scope-directory requests, with no per-Project collector requests, inherited management-cache refetches or automatic continuation. At 390/1440px, explicit continuation, initial/refresh/pagination Retry, later-page Agent/Chat search and a real HTTP 429 with shared `Retry-After` cooldown all passed. The directory responses are fixtures, not a live managed-provider workload.
 - Follow-up verification: full macOS arm64 Node 24 `pnpm verify` passed (864 passed, 7 platform-dependent skips, zero failures; typechecks, builds and bundle budgets passed). Expanded sidebar search and existing UI audit browser checks passed. The synthetic twelve-Agent/three-tab regression passed (API p95 11.0 ms; event-loop p95 12.1 ms). `git diff --check` passed. The Linux full-suite evidence above belongs to the initial head, not a new Linux rerun of this follow-up.
+
+## Activity identity-search rereview
+
+The new finding at `7e37f63b` was reproduced through the real Fastify route: a later-page Agent's unique handle returned zero results although its display title matched. The shared Agent directory now searches the displayed title, handle (bare or `#`-prefixed), and canonical owning Chat title, while preserving engine/Project/path search and escaped SQL wildcard handling. The owning Chat is joined within the same Project; Agent archival/deletion and Project filters remain unchanged.
+
+The filtered directory's cursor generation now includes Chat changes, so a renamed owning Chat makes old search continuations stale rather than continuing a changed result set. Visible non-summary Agent directories reconcile metadata updates through the existing Project-scoped, rate-limited invalidator; ordinary message and command-output events do not gain Agent-directory refetches.
+
+Evidence for this correction:
+
+- Focused real-route directory tests: 5/5 passed on macOS, including duplicate Agent titles, an Agent beyond the first 25 rows, mixed-case bare/`#` handles, owning Chat search, literal `%`, `_` and backslash characters, Project fencing, archived-Agent exclusion, bounded health work and stale cursors after Chat rename.
+- The Activity browser check now has a real AgentStore/Fastify-route phase, not serialized-row mock search: title, unique handle, `#handle` and owning Chat each find the later-page Agent at 390/1440px and select its exact ID. The separate 250-Project fixture still confirms two initial requests, explicit paging, cache isolation and cooldown/error feedback.
+- Expanded synthetic twelve-Agent/three-tab check passed: a burst of 50 Chat metadata updates reconciles Activity scopes through at most two bounded refreshes without touching unrelated Project directories or health summaries; ordinary Chat-message traffic adds no scope refetches. API p95 was 24.3 ms and event-loop p95 12.1 ms. This is not a live twelve-managed-provider workload.
+- Sidebar search and existing UI audit browser checks passed on macOS. Full isolated Pine/Linux Node 24.16.0 `pnpm verify` passed: 866 passed, 6 platform-dependent skips, zero failures, with typechecks, builds and bundle budgets successful. `git diff --check` passed.
+- The attempted full macOS run stalled in the unchanged Playwright Chrome integration test after its headless case passed. Only that disposable test's Chrome process group and stalled test child were terminated; that full Mac attempt is **not** counted as passing. The focused real-route and browser checks above completed independently.
+
+No live repair, merge, deployment, paid Actions run, or dev/production service/data change accompanied this correction.
 
 ## Boundaries
 

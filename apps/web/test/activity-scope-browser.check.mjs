@@ -6,23 +6,44 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRsbuild } from "@rsbuild/core";
 import { pluginReact } from "@rsbuild/plugin-react";
+import Fastify from "../../server/node_modules/fastify/fastify.js";
+import { AgentStore, CoordinationV3Store, WorkspaceStore } from "../../../packages/agents/dist/index.js";
+import { registerWorkspaceDirectoryRoutes } from "../../server/dist/routes/workspace-directory.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const output = await mkdtemp(path.join(tmpdir(), "activity-scope-browser-"));
+const data = await mkdtemp(path.join(tmpdir(), "activity-scope-real-route-"));
+const store = new AgentStore(data), workspace = new WorkspaceStore(data), coordination = new CoordinationV3Store(store.sqlite), routes = Fastify();
 const { chromium } = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? "playwright");
 const requests = [], attempts = new Map();
-let browser, server, failNextRefresh = false;
+let browser, server, failNextRefresh = false, realRoute = false;
 try {
+  const project = store.createProject({ label: "Identity Project", hostPath: data, defaultEngine: "codex" });
+  const earlierChat = store.createConversation(project.id, { title: "Alpha Frontend" });
+  const owner = store.createConversation(project.id, { title: "Zulu Backend" });
+  for (let index = 0; index < 30; index++) store.createAgent(project.id, { title: `A Helper ${index}`, engine: "codex", conversationId: earlierChat.id });
+  store.createAgent(project.id, { title: "Database Expert", engine: "codex", conversationId: earlierChat.id });
+  const target = store.createAgent(project.id, { title: "Database Expert", engine: "codex", conversationId: owner.id });
+  workspace.updatePreferences({ agentSort: "alphabetical" });
+  registerWorkspaceDirectoryRoutes(routes, { store, workspace, coordination, projectDisplayPath: value => value,
+    agentHealth: (scope, agents) => ({ scope, generatedAt: new Date().toISOString(), agents: agents.map(agent => ({ agentId: agent.id, childAgentIds: [], status: "idle", statusTimestamp: new Date().toISOString(), reason: { kind: "idle" } })) }),
+  });
   const build = await createRsbuild({ cwd: root, rsbuildConfig: { plugins: [pluginReact()], source: { transformImport: [], entry: { index: path.join(root, "test/activity-scope-browser-entry.tsx") } }, output: { distPath: { root: output } }, logLevel: "error" } });
   await build.build();
   server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
+    if (url.pathname === "/") realRoute = url.searchParams.has("real");
     const json = value => { response.setHeader("Content-Type", "application/json"); response.end(JSON.stringify(value)); };
     if (url.pathname.startsWith("/api/")) requests.push({ path: url.pathname, search: url.searchParams.get("search") ?? "", cursor: url.searchParams.get("cursor"), at: Date.now() });
     if (url.pathname === "/api/fixture/fail-refresh") { failNextRefresh = true; return json({}); }
     if (url.pathname.endsWith("/usage")) return json({ scope: "overall", finalizedRuns: 0, reportedRuns: 0, providerRequests: 0, durationMs: 0, metricAvailability: {}, breakdown: [], wakeCauses: [] });
     const match = /^\/api\/workspace\/directory\/(conversation|agent)$/u.exec(url.pathname);
     if (match) {
+      if (realRoute) {
+        const result = await routes.inject({ method: "GET", url: `${url.pathname}${url.search}` });
+        response.writeHead(result.statusCode, { "Content-Type": "application/json" }).end(result.body);
+        return;
+      }
       const kind = match[1], search = url.searchParams.get("search") ?? "", cursor = url.searchParams.get("cursor");
       assert.equal(url.searchParams.get("limit"), "25");
       assert.equal(url.searchParams.get("projectId"), null);
@@ -37,7 +58,9 @@ try {
         const project = { id: `project-${index % 250}`, label: `Folder ${index % 250}`, hostPath: `/fixture/${index % 250}` };
         return kind === "conversation" ? { kind, project, conversation: { id: `chat-${index}`, projectId: project.id, title: `Chat ${index}`, archived: false } }
           : { kind, project, ownerConversation: { id: `chat-${index}`, title: `Chat ${index}` }, agent: { id: `agent-${index}`, projectId: project.id, title: `Reviewer ${index}`, handle: `reviewer-${index}`, conversationId: `chat-${index}`, activeEngine: "codex" }, health: { status: "idle" } };
-      }).filter(item => !search || JSON.stringify(item).toLowerCase().includes(search.toLowerCase()));
+      }).filter(item => !search || (item.kind === "agent"
+        ? `${item.agent.title} #${item.agent.handle} ${item.ownerConversation.title} ${item.agent.activeEngine} ${item.project.label} ${item.project.hostPath}`
+        : `${item.conversation.title} ${item.project.label} ${item.project.hostPath}`).toLowerCase().includes(search.toLowerCase()));
       const offset = Number(cursor ?? 0), more = offset + 25 < items.length;
       return json({ kind, items: items.slice(offset, offset + 25), starredItems: [], total: items.length, history: { hasMore: more, cursor: more ? String(offset + 25) : undefined } });
     }
@@ -93,6 +116,23 @@ try {
     assert.equal(retries.length, 2, "one explicit retry, not a request loop");
     assert.ok(retries[1].at - limitedAt >= 950, "Retry honors the shared 429 cooldown");
     await page.close();
+
+    const liveRoutePage = await browser.newPage({ viewport: { width, height: 1000 } });
+    await liveRoutePage.goto(`${origin}/?real`);
+    await liveRoutePage.getByRole("button", { name: "Load more Agent scopes", exact: true }).waitFor();
+    const liveSelector = liveRoutePage.getByRole("combobox", { name: "Scope", exact: true });
+    await liveSelector.click();
+    assert.equal(await liveRoutePage.getByRole("option", { name: /Database Expert/ }).count(), 0, "target is beyond the real first directory page");
+    const targetLabel = `Database Expert · #${target.handle} · ${owner.title}`;
+    for (const term of ["Database Expert", target.handle, `#${target.handle}`, `#${target.handle.toUpperCase()}`, owner.title]) {
+      await liveSelector.fill(term);
+      await liveRoutePage.getByRole("option", { name: targetLabel, exact: true }).waitFor();
+    }
+    await liveRoutePage.getByRole("option", { name: targetLabel, exact: true }).click();
+    assert.equal(await liveSelector.inputValue(), targetLabel);
+    await liveRoutePage.waitForFunction(() => !document.querySelector('.MuiLinearProgress-root'));
+    assert.ok(requests.some(item => item.path === `/api/agents/${target.id}/usage`));
+    await liveRoutePage.close();
   }
-  console.log("Passed: Activity with 250 Projects uses two bounded first-page queries; explicit pagination and initial/refresh/pagination Retry, server-side search for later Agent/Chat scopes, stable selected identity, visible loading/503/429 errors and shared Retry-After cooldown at 390/1440px.");
-} finally { await browser?.close(); server?.close(); await rm(output, { recursive: true, force: true }); }
+  console.log("Passed: Activity with 250 Projects uses two bounded first-page queries; explicit pagination and initial/refresh/pagination Retry, stable selected identity, visible loading/503/429 errors and shared Retry-After cooldown; real-store/Fastify-route title, unique handle, #handle and owning-Chat search for a later-page Agent with a duplicate name at 390/1440px.");
+} finally { await browser?.close(); server?.close(); await routes.close(); store.close(); await rm(output, { recursive: true, force: true }); await rm(data, { recursive: true, force: true }); }
