@@ -64,7 +64,7 @@ function boundedUtf8Preview(content: Buffer, maximumBytes: number): Buffer | und
 
 function contentTypeForStatic(file: string): string {
   if (file.endsWith(".html")) return "text/html; charset=utf-8";
-  if (file.endsWith(".js")) return "text/javascript; charset=utf-8";
+  if (file.endsWith(".js") || file.endsWith(".mjs")) return "text/javascript; charset=utf-8";
   if (file.endsWith(".css")) return "text/css; charset=utf-8";
   if (file.endsWith(".json") || file.endsWith(".webmanifest")) return "application/json; charset=utf-8";
   if (file.endsWith(".svg")) return "image/svg+xml";

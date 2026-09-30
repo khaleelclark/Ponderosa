@@ -4,6 +4,7 @@ import { mkdtemp, rm, access, open, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { promises as fs } from 'node:fs';
 import { BrowserSessionManager } from '../dist/browser-session-manager.js';
 
 test('user/agent handoff preserves attached draft files and staging until session teardown', async () => {
@@ -88,5 +89,46 @@ for (const pauseAt of ['artifact resolution', 'artifact read']) {
       await handle.close().catch(() => {});
       await rm(root, { recursive: true, force: true });
     }
+  });
+}
+
+for (const pauseAt of ['mkdir', 'chmod']) for (const transition of ['close', 'handoff', 'reopen']) {
+  test(`${transition} during upload ${pauseAt} rejects cleanly and releases staged files`, async t => {
+    const root = await mkdtemp(join(tmpdir(), 'browser-upload-staging-'));
+    const body = Buffer.from('upload fixture');
+    const source = join(root, 'source.txt');
+    await writeFile(source, body);
+    const handle = await open(source, 'r');
+    const artifact = { id: 'file', path: 'file.txt', size: body.length, mediaType: 'text/plain', sha256: createHash('sha256').update(body).digest('hex') };
+    const scope = { projectId: 'project', agentId: 'agent', runId: 'run' };
+    const entered = Promise.withResolvers(), release = Promise.withResolvers();
+    const original = fs[pauseAt];
+    let paused = false, uploads = 0, closes = 0;
+    t.mock.method(fs, pauseAt, async (...args) => {
+      if (!paused && String(args[0]).includes('/uploads')) {
+        paused = true; entered.resolve(); await release.promise;
+      }
+      return original(...args);
+    });
+    const makeDriver = () => ({ isAlive: () => true, close: async () => {},
+      pages: async () => ({ activePageId: 'one', pages: [{ pageId: 'one', active: true, url: 'https://example.test/', title: 'Fixture', width: 1280, height: 720 }] }),
+      upload: async () => { uploads++; throw Error('stale upload reached the driver'); },
+      cancelPendingFileChooser: async () => {},
+    });
+    const manager = new BrowserSessionManager(root, async () => makeDriver(), () => {}, async () => ({ artifact,
+      content: { readRange: () => handle.readFile(), close: async () => { closes++; await handle.close(); } } }));
+    try {
+      const session = await manager.open(scope, undefined, 'operator');
+      const pending = manager.upload(scope, artifact.id, '#file', 'operator', session.controlEpoch);
+      const rejection = assert.rejects(pending, error => error.statusCode === 409 && !(error instanceof TypeError));
+      await entered.promise;
+      if (transition === 'handoff') await manager.setControl(scope, 'agent', session.controlEpoch);
+      else { await manager.close(scope); if (transition === 'reopen') await manager.open(scope, undefined, 'operator'); }
+      release.resolve(); await rejection;
+      assert.equal(uploads, 0); assert.equal(closes, 1);
+      await assert.rejects(handle.stat(), /closed|EBADF/i);
+      const uploadRoot = join(root, 'browser-sessions', session.id, 'uploads');
+      assert.deepEqual(await fs.readdir(uploadRoot).catch(error => error.code === 'ENOENT' ? [] : Promise.reject(error)), []);
+    } finally { release.resolve(); await manager.closeAll('test cleanup'); await handle.close().catch(() => {}); await rm(root, { recursive: true, force: true }); }
   });
 }

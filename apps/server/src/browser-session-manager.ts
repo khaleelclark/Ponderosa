@@ -670,6 +670,9 @@ export class BrowserSessionManager {
     commit?: (result: T) => U,
     affectsRestartReadiness = true,
   ): Promise<T | U> {
+    if (this.ready(scope) !== session) {
+      throw new BrowserSessionError("browser session changed before the action could start", 409);
+    }
     const driver = session.driver;
     this.syncLocalState(session);
     const driverRevision = driver.controlRevision?.();
@@ -1477,6 +1480,12 @@ export class BrowserSessionManager {
           error.reason,
         );
       }
+      // Teardown can remove staging while mkdir/write/chmod is awaiting. Do
+      // not turn that expected lifecycle race into a filesystem HTTP 500.
+      if (this.ready(scope) !== session) {
+        throw new BrowserSessionError("The browser changed while the file was being prepared.", 409, "browser_session_changed");
+      }
+      this.assertControl(session, owner, expectedControlEpoch);
       throw error;
     } finally {
       if (!retained) await fs.rm(uploadDir, { recursive: true, force: true }).catch(() => undefined);

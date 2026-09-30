@@ -143,7 +143,7 @@ export function WorkspaceReviewPane({ projectRoot, agentId, files: historyFiles,
                 variant="outlined"
                 color="inherit"
                 onClick={() => selectFile(file.path)}
-                sx={{ justifyContent: "flex-start", textAlign: "left", textTransform: "none", bgcolor: file.path === activePath ? "action.selected" : undefined, color: "text.primary" }}
+                sx={{ flexShrink: 0, height: "auto", minHeight: 44, justifyContent: "flex-start", textAlign: "left", textTransform: "none", bgcolor: file.path === activePath ? "action.selected" : undefined, color: "text.primary" }}
               >
                 <Box sx={{ minWidth: 0, width: "100%" }}>
                   <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{presentedFilePath}</Typography>
@@ -189,7 +189,7 @@ export function WorkspaceReviewPane({ projectRoot, agentId, files: historyFiles,
                     onClick={() => selectFile(change.path)}
                     variant="text"
                     color="inherit"
-                    sx={{ bgcolor: change.path === activePath ? "action.selected" : undefined, color: "text.primary", borderRadius: 0, justifyContent: "flex-start", textAlign: "left", px: 1.5, py: 1, minHeight: 48 }}
+                    sx={{ flexShrink: 0, bgcolor: change.path === activePath ? "action.selected" : undefined, color: "text.primary", borderRadius: 0, justifyContent: "flex-start", textAlign: "left", px: 1.5, py: 1, minHeight: 48 }}
                   >
                     <Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%", minWidth: 0 }}>
                       <Chip size="small" label={change.kind} color={change.kind === "delete" ? "error" : change.kind === "create" ? "success" : "default"} />

@@ -60,6 +60,7 @@ export interface AgentCreateFormProps {
 
 export interface AgentCreateSurfaceProps extends AgentCreateFormProps {
   onImported(projectId: string, agentId: string): void;
+  onImportSubmitted?(): void;
 }
 
 export function AgentCreateForm({
@@ -615,6 +616,7 @@ function ScopedAgentCreateSurface({
   fixedConversationId,
   onCancel,
   onImported,
+  onImportSubmitted,
   onPendingChange,
   stickyActions = false,
   ...createProps
@@ -707,6 +709,7 @@ function ScopedAgentCreateSurface({
             }
             onCancel={onCancel}
             onPendingChange={updatePending}
+            onSubmitted={onImportSubmitted ?? onCancel}
             stickyActions={stickyActions}
           />
         ) : (

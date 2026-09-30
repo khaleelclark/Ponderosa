@@ -7,12 +7,14 @@ export function ResponseFileActivity({
   files,
   onOpenFile,
   onViewAll,
+  viewAllUnavailableReason,
   projectId,
   projectRoot,
 }: {
   files: ResponseFileActivityDto[];
   onOpenFile?(file: ResponseFileActivityDto): void;
   onViewAll?(): void;
+  viewAllUnavailableReason?: string;
   projectId?: string;
   projectRoot?: string;
 }): JSX.Element | null {
@@ -70,5 +72,6 @@ export function ResponseFileActivity({
       </Paper>
       {onViewAll ? <Button size="small" color="inherit" onClick={onViewAll} sx={{ flexShrink: 0, minWidth: 0, px: 0.75 }}>Review All</Button> : null}
     </Stack>
+    {viewAllUnavailableReason ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>{viewAllUnavailableReason}</Typography> : null}
   </Box>;
 }

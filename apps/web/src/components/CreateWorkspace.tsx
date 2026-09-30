@@ -484,6 +484,7 @@ function TriggerCreateForm({
           initialCreateOpen
           createOnly
           stickyCreateActions={anchoredActions}
+          ownershipSelectedExternally
           onTriggerCreated={trigger =>
             onCreated(selectedOption.project.id, selectedOption.agent.id, trigger.id)}
           onCancelCreate={onCancel}
@@ -542,6 +543,7 @@ function CreateFormContent({
   onNavigate,
   onDirty,
   onPendingChange,
+  onSubmitted,
   anchoredActions = false,
 }: {
   route: Extract<Route, { kind: "create" }>;
@@ -553,6 +555,7 @@ function CreateFormContent({
   onNavigate(route: Route): void;
   onDirty?(): void;
   onPendingChange?(pending: boolean): void;
+  onSubmitted?(): void;
   anchoredActions?: boolean;
 }): JSX.Element {
   const queryClient = useQueryClient();
@@ -591,6 +594,7 @@ function CreateFormContent({
       initialManagerAgentId={route.managerAgentId}
       stickyActions={anchoredActions}
       onPendingChange={onPendingChange}
+      onImportSubmitted={onSubmitted ?? onCancel}
       onCancel={onCancel}
       onCreated={(projectId, agent) => {
         refresh("agent");
@@ -731,6 +735,12 @@ export function ContextualCreateDialog({
               onCancel={close}
               onDirty={() => setDirty(true)}
               onPendingChange={setPending}
+              onSubmitted={() => {
+                setDirty(false);
+                setPending(false);
+                setConfirmDiscard(false);
+                onClose();
+              }}
               anchoredActions
               onNavigate={next => {
                 setDirty(false);

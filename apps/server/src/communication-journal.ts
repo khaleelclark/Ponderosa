@@ -1,4 +1,5 @@
 import type { CommunicationEvent, CommunicationReconciliationReport } from "@ponderosa/core";
+import { notificationPreviewText } from "@ponderosa/core";
 import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
 import { semanticConversationTitle } from "./conversation-titles.js";
 import {
@@ -124,7 +125,7 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
           communicationEventId: stored.event.eventId,
           kind,
           title: store.getAgent(stored.event.sender.agentId)?.title ?? "Agent response",
-          body: stored.event.text.slice(0, 240),
+          body: notificationPreviewText(stored.event.text),
         }, webPushConfigured);
         publishWorkspaceSince(cursor);
         webPushDelivery?.notify();

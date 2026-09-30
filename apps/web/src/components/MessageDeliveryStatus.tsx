@@ -240,7 +240,7 @@ export function MessageDeliveryStatus({
     }
   };
   return <Stack spacing={0.5} sx={{ alignItems: "flex-end", maxWidth: "100%" }} aria-label="Message delivery status">
-    <Box component="span" role="status" aria-live="polite" sx={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap" }}>
+    <Box component="span" role="status" aria-live="polite" sx={{ position: "absolute", width: "1px", height: "1px", overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap" }}>
       {receipts.map(receipt => deliveryLabel(receipt, recipientName(receipt.targetAgentId), now)).join(" ")}
     </Box>
     {receipts.map((receipt) => {

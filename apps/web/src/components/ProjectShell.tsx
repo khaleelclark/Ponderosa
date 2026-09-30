@@ -177,8 +177,8 @@ export function ProjectShell({
     });
   };
 
-  const openAgentReview = (agentId: string) => {
-    navigate({ kind: "review", projectId, agentId, returnTo: routeToPath(route) });
+  const openAgentReview = (agentId: string, executionId?: string) => {
+    navigate({ kind: "review", projectId, agentId, ...(executionId ? { executionId } : {}), returnTo: routeToPath(route) });
   };
 
   const openAgentFileActivity = (agentId: string, file: ResponseFileActivityDto) => {

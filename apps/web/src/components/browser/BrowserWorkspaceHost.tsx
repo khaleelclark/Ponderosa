@@ -6,6 +6,7 @@ import type { ProjectBrowserRequest } from "../ProjectBrowserContext";
 import { browserDockIsAvailable } from "./browserWindowSizing";
 import type { ProjectDto } from "@ponderosa/core";
 import { useProjectConversations } from "../../hooks/useProjectCollections";
+import { projectDisambiguator } from "../../workspaceNavigation";
 
 type Panel = { key: string; projectId: string; conversationId?: string; agent?: { id: string; runId: string }; request?: ProjectBrowserRequest };
 const keyFor = (projectId: string, agent?: Panel["agent"]) => `${projectId}:${agent?.id ?? "shared"}`;
@@ -40,7 +41,15 @@ export function BrowserWorkspaceHost({ projectId, conversationId, agent, request
     const chat = chats.find(item => item.id === chatId) ?? (chats.length === 1 ? chats[0] : undefined);
     const title = chat?.title ?? projects[index]?.label ?? "Chat";
     const duplicate = chat && chatQueries.some((query, other) => query.data?.some(item => item.title === chat.title && (other !== queryIndex || item.id !== chat.id)));
-    return duplicate ? `${title} · ${projects[index]?.label}` : title;
+    const project = projects[index];
+    if (!project) return title;
+    const context = projectDisambiguator({ ...project, hostPath: project.hostPath ?? "Folder unavailable" }, projects as ProjectDto[]);
+    const ambiguous = duplicate || projects.some(other => other.id !== id && other.label === title);
+    if (!ambiguous) return title;
+    const full = title === project.label ? context : `${title} · ${context}`;
+    // Same-named Projects may intentionally share a folder. Only then use an ID.
+    const sameIdentity = projects.some(other => other.id !== id && other.label === project.label && other.hostPath === project.hostPath);
+    return sameIdentity ? `${full} · ${id.slice(0, 8)}` : full;
   };
   const label = (panel: Panel) => `${workspaceName(panel.projectId, panel.conversationId)}${panel.agent ? " · Agent" : ""}`;
   const activate = (key: string) => setPanels(current => current.at(-1)?.key === key ? current : [...current.filter(item => item.key !== key), ...current.filter(item => item.key === key)]);

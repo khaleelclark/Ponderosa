@@ -462,7 +462,7 @@ export function WorkspaceSidebar({
     triggerId: string,
   ) => {
     markWorkspaceResourceUsed(queryClient, "trigger", triggerId);
-    onNavigate({ kind: "automation", projectId, triggerId, returnTo: routeToPath(route) });
+    onNavigate({ kind: "automation", projectId, triggerId, returnTo: routeToPath({ kind: "manageAutomations" }) });
   };
 
   const openChat = (
@@ -801,7 +801,7 @@ export function WorkspaceSidebar({
               </Tooltip>
             ) : null}
           </Box>
-          <SidebarResourceRow id={`sidebar-agent:${agent.id}`} label={`Open agent ${agent.title} in Chat ${ownerTitle}, ${projectDisambiguator(agentProject, projects)}`} title={agent.title}
+          <SidebarResourceRow id={`sidebar-agent:${agent.id}`} label={`Open agent ${agent.title}, #${agent.handle}, in Chat ${ownerTitle}, ${projectDisambiguator(agentProject, projects)}`} title={agent.title}
             detail={`${ownerTitle} · #${agent.handle} · ${agent.activeEngine}`} subtitle={duplicateAgentNames.has(agent.title) ? `#${agent.handle} · ${ownerTitle}` : ownerTitle} icon={<SmartToyOutlinedIcon fontSize="small" />}
             starred={starred} nested={Boolean(agent.managerAgentId)} selected={route.kind === "agent" && route.agentId === agent.id}
             onOpen={() => onNavigate({ kind: "agent", projectId: agentProject.id, agentId: agent.id })} onStar={() => toggleStar("agent", agent.id)}

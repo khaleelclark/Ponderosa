@@ -60,6 +60,7 @@ export function ImportAgentForm({
   requireDestinationSelection = false,
   onCancel,
   onPendingChange,
+  onSubmitted,
   stickyActions = false,
 }: {
   projectId: string;
@@ -70,6 +71,7 @@ export function ImportAgentForm({
   requireDestinationSelection?: boolean;
   onCancel(): void;
   onPendingChange?(pending: boolean): void;
+  onSubmitted?(): void;
   stickyActions?: boolean;
 }): JSX.Element {
   const notify = useMutationNotification();
@@ -182,7 +184,7 @@ export function ImportAgentForm({
       });
       pendingRef.current = false;
       onPendingChange?.(false);
-      onCancel();
+      (onSubmitted ?? onCancel)();
     },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "Import failed"),
     onSettled: () => {
