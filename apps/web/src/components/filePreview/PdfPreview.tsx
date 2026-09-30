@@ -1,7 +1,7 @@
 import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import { useEffect, useRef, useState } from "react";
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTask } from "pdfjs-dist/legacy/build/pdf.mjs";
-import { readPdfPreview } from "./readPdfPreview";
+import { readPdfPreview, readPdfText } from "./readPdfPreview";
 
 GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/legacy/build/pdf.worker.min.mjs", import.meta.url).href;
 
@@ -50,11 +50,12 @@ export default function PdfPreview({ url, title }: { url: string; title: string 
   useEffect(() => {
     if (!document || !canvas.current) return;
     let cancelled = false;
+    const extraction = new AbortController();
     let task: RenderTask | undefined;
     const element = canvas.current;
     const timeout = setTimeout(() => {
-      cancelled = true; task?.cancel();
-      setRendering(false); setError("This PDF page took too long to display. Use Open or Download to inspect it.");
+      cancelled = true; task?.cancel(); extraction.abort();
+      setRendering(false); setError("This PDF page took too long to process. Use Open or Download to inspect it.");
     }, 30_000);
     setRendering(true); setText("");
     void document.getPage(pageNumber).then(async page => {
@@ -71,12 +72,11 @@ export default function PdfPreview({ url, title }: { url: string; title: string 
       await task.promise;
       if (cancelled) return;
       setRendering(false);
-      clearTimeout(timeout);
-      const content = await page.getTextContent().catch(() => undefined);
-      if (!content) return;
-      if (!cancelled) setText(content.items.slice(0, 2048).flatMap(item => "str" in item ? [item.str] : []).join(" ").slice(0, 64_000));
-    }).catch(error => { clearTimeout(timeout); if (!cancelled && error?.name !== "RenderingCancelledException") { setRendering(false); setError("This PDF page could not be displayed. Use Open or Download to inspect it."); } });
-    return () => { cancelled = true; clearTimeout(timeout); task?.cancel(); element.width = 0; element.height = 0; };
+      const content = await readPdfText(page.streamTextContent(), extraction.signal).catch(() => undefined);
+      if (!cancelled && content !== undefined) setText(content);
+    }).catch(error => { if (!cancelled && error?.name !== "RenderingCancelledException") { setRendering(false); setError("This PDF page could not be displayed. Use Open or Download to inspect it."); } })
+      .finally(() => clearTimeout(timeout));
+    return () => { cancelled = true; clearTimeout(timeout); task?.cancel(); extraction.abort(); element.width = 0; element.height = 0; };
   }, [document, pageNumber, width]);
   return <Box ref={container} sx={{ minWidth: 0, p: 1 }} aria-label={`PDF preview: ${title}`}>
     {error ? <Alert severity="error" action={<Button color="inherit" onClick={() => setAttempt(value => value + 1)}>Try again</Button>}>{error}</Alert> : null}
