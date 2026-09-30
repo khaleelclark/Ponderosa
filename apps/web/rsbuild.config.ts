@@ -1,9 +1,13 @@
 import { defineConfig } from "@rsbuild/core";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
 import { pluginReact } from "@rsbuild/plugin-react";
 import { pluginPWA } from "rsbuild-plugin-pwa";
 import { PWA_NAVIGATION_DENYLIST } from "./src/pwa-policy";
+
+const pdfjsRoot = path.dirname(createRequire(import.meta.url).resolve("pdfjs-dist/package.json"));
 
 export default defineConfig({
   plugins: [
@@ -71,7 +75,7 @@ export default defineConfig({
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           // Keep the install transaction small. Lazy route chunks are immutable
           // and can be populated on demand instead of delaying first use.
-          globIgnores: ["static/js/**"],
+          globIgnores: ["static/js/**", "static/pdfjs/**"],
           runtimeCaching: [{
             urlPattern: /\/static\/js\//u,
             handler: "CacheFirst",
@@ -88,6 +92,19 @@ export default defineConfig({
     entry: {
       index: "./src/index.tsx",
     },
+  },
+  output: {
+    // Requested lazily by the renderer, not at app startup. Versioned paths
+    // prevent retained PWAs from mixing PDF library and font/decoder versions.
+    copy: [
+      { from: path.join(pdfjsRoot, "cmaps"), to: "static/pdfjs/6.3.289/cmaps" },
+      { from: path.join(pdfjsRoot, "standard_fonts"), to: "static/pdfjs/6.3.289/standard_fonts" },
+      { from: path.join(pdfjsRoot, "wasm", "openjpeg_nowasm_fallback.js"), to: "static/pdfjs/6.3.289/decoders/openjpeg_nowasm_fallback.js" },
+      { from: path.join(pdfjsRoot, "wasm", "jbig2_nowasm_fallback.js"), to: "static/pdfjs/6.3.289/decoders/jbig2_nowasm_fallback.js" },
+      ...["LICENSE_JBIG2", "LICENSE_PDFJS_JBIG2", "LICENSE_OPENJPEG", "LICENSE_PDFJS_OPENJPEG"].map(name => ({
+        from: path.join(pdfjsRoot, "wasm", name), to: `static/pdfjs/6.3.289/decoders/${name}`,
+      })),
+    ],
   },
   html: {
     template: "./index.html",

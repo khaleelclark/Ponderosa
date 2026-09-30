@@ -7,7 +7,7 @@ import { workspaceMarkdownMediaHref, renderableWorkspaceMarkdownHref } from "../
 import { routeToPath } from "../src/routeRegistry.js";
 import { parseRoute, routeReturnTarget } from "../src/routing.js";
 import { capabilityDisplayName, matchingComposerCapabilities, insertComposerCapability } from "../src/components/chat/composerUtils.js";
-import { resolveRuntimeSelection } from "../src/conversationEngine.js";
+import { resolveRuntimeSelection, engineAvailabilityPresentation } from "../src/conversationEngine.js";
 import { prepareDownload } from "../src/downloads.js";
 
 test("download feedback preserves the larger encoded Agent-package envelope without raising the file limit", async t => {
@@ -28,6 +28,13 @@ test("download feedback preserves the larger encoded Agent-package envelope with
 test("notification Markdown becomes readable preview text without changing meaningful underscores", () => {
   assert.equal(markdownPreviewText("## **Import complete**\n\nReview [the files](https://example.com) and *saved history*. `file_name`"), "Import complete Review the files and saved history. file_name");
   assert.equal(markdownPreviewText("> __Important__\n- One\n- Two\n```text\ncode\n```"), "Important One Two code");
+});
+test("provider availability joins preserve existing sentence punctuation", () => {
+  for (const detail of ['Sign in again.', 'Try again!', 'Unavailable?', 'Still checking…', 'Sign in again']) {
+    const result = engineAvailabilityPresentation([{ id: 'codex', displayName: 'Codex', authentication: 'error', intakeReady: false, availabilityDetail: detail }]);
+    assert.doesNotMatch(result.detail, /[.!?…]\./u);
+    assert.match(result.detail, /Codex is status unavailable/);
+  }
 });
 test("decision wording follows its recorded response kind and preserves punctuation", () => {
   assert.equal(decisionResponseSummary({ mode: "choice", response: { text: "Yes!" } }, "Yes!"), "You answered Yes!");

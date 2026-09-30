@@ -88,7 +88,8 @@ export function engineAvailabilityPresentation(engines: EngineDto[]): {
       : engine.authentication === "error" ? "status unavailable"
       : "not signed in";
     const detail = conciseAvailabilityDetail(engine.availabilityDetail ?? engine.authDetail);
-    return `${engine.displayName} is ${state}${detail ? `: ${detail}` : ""}.`;
+    const sentence = `${engine.displayName} is ${state}${detail ? `: ${detail}` : ""}`;
+    return /[.!?…]$/u.test(sentence) ? sentence : `${sentence}.`;
   }).join(" ");
   const disabledSummary = disabled.length
     ? `${disabled.map((engine) => engine.displayName).join(", ")} ${disabled.length === 1 ? "is" : "are"} disabled.`

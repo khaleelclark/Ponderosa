@@ -1333,7 +1333,8 @@ export class CoordinationV3ReadModel {
       }
       if (input.kind === "run") {
         const row = this.sqlite.prepare(`
-          SELECT scheduler.id, scheduler.status, scheduler.fencing_token, scheduler.prompt_injection_state,
+          SELECT scheduler.id, scheduler.agent_id, scheduler.started_at, scheduler.heartbeat_at,
+            scheduler.provider_session_id, scheduler.status, scheduler.fencing_token, scheduler.prompt_injection_state,
             scheduler.context_disposition, scheduler.lease_expires_at, scheduler.terminal_at,
             CASE WHEN scheduler.provider_failure_json IS NULL THEN 0 ELSE 1 END AS has_provider_failure,
             json_extract(
@@ -1349,7 +1350,8 @@ export class CoordinationV3ReadModel {
           WHERE scheduler.project_id = ? AND (scheduler.id = ? OR provider.execution_id = ?)
             AND (? IS NULL OR scheduler.scope_key = ?)
         `).get(input.projectId, input.recordId, input.recordId, scopeKey ?? null, scopeKey ?? null) as {
-          id: string; status: string; fencing_token: number; prompt_injection_state: string; context_disposition: string;
+          id: string; agent_id: string; started_at: string | null; heartbeat_at: string | null; provider_session_id: string | null;
+          status: string; fencing_token: number; prompt_injection_state: string; context_disposition: string;
           lease_expires_at: string; terminal_at: string | null; execution_id: string | null; prompt_hash: string | null;
           execution_status: string | null; wake_cause: string | null; completed_at: string | null;
           has_provider_failure: 0 | 1;
@@ -1358,10 +1360,54 @@ export class CoordinationV3ReadModel {
         const providerFailureSummary = row?.has_provider_failure
           ? publicProviderFailureSummary(undefined, row.provider_failure_category ?? "unknown")
           : undefined;
+        // Bounded, metadata-only snapshots. Never read/replay entire Agent logs
+        // or expose tool outputs, credentials, or another Run's communications.
+        const evidence = row?.execution_id ? this.sqlite.prepare(`
+          SELECT event.type, event.created_at,
+            CASE WHEN event.type = 'agent_lifecycle' THEN json_extract(event.payload_json, '$.status') END AS status,
+            CASE WHEN event.type = 'agent_lifecycle' THEN json_extract(event.payload_json, '$.reason') END AS reason
+          FROM (SELECT agent_id, seq, type, created_at, payload_json FROM events
+            WHERE agent_id = ? ORDER BY seq DESC LIMIT 128)
+            event LEFT JOIN activity_projection activity
+              ON activity.agent_id = event.agent_id AND activity.seq = event.seq
+          -- Ordinary tool events do not carry executionId in their strict event
+          -- contract. Use the existing projector's Run association, not prose.
+          WHERE COALESCE(activity.execution_id, json_extract(event.payload_json, '$.executionId')) = ?
+          ORDER BY event.seq DESC
+        `).all(row.agent_id, row.execution_id) as Array<{ type: string; created_at: string; status: string | null; reason: string | null }> : [];
+        const progressTypes = new Set(["session", "text", "reasoning", "command", "file_change", "test_result", "tool_call", "tool_result", "context_usage", "error", "browser_action", "browser_console", "browser_screenshot"]);
+        const lastProgress = evidence.find(event => progressTypes.has(event.type));
+        const terminal = evidence.find(event => event.type === "agent_lifecycle" &&
+          ["completed", "failed", "cancelled", "interrupted"].includes(event.status ?? ""));
+        const publication = row?.started_at ? this.sqlite.prepare(`
+          SELECT created_at FROM (
+            SELECT id, sender_json, intent, created_at FROM runtime_communications
+            WHERE project_id = ? AND created_at >= ? AND created_at <= ?
+            ORDER BY created_at DESC, id DESC LIMIT 128
+          ) communication
+          WHERE intent IN ('broadcast', 'user_dm')
+            AND json_extract(sender_json, '$.agentId') = ?
+            AND json_extract(sender_json, '$.executionId') IN (?, ?)
+            AND EXISTS (SELECT 1 FROM messages WHERE agent_id = ?
+              AND communication_event_id = communication.id AND role = 'assistant')
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        `).get(input.projectId, row.started_at, row.terminal_at ?? new Date().toISOString(), row.agent_id,
+          row.execution_id, row.id, row.agent_id) as { created_at: string } | undefined : undefined;
         return row ? inspectorDetails(["Execution Run ID", row.execution_id], ["Scheduler Run ID", row.id],
           ["Scheduler status", row.status], ["Execution projection status", row.execution_status], ["Wake cause", row.wake_cause],
           ["Fence", row.fencing_token], ["Prompt injection", row.prompt_injection_state],
           ["Provider context", row.context_disposition], ["Prompt hash", row.prompt_hash],
+          ["Provider session ID", row.provider_session_id],
+          ["Reply publication", publication?.created_at ?? "Not found in this bounded evidence window"],
+          ["Reply and Run state", publication && ["running", "leased"].includes(row.status)
+            ? "A reply was sent, but the Agent's Run is still active. Sending a reply does not confirm that all work has finished."
+            : undefined],
+          ["Last recorded provider progress", lastProgress ? `${lastProgress.created_at} (${lastProgress.type})` : "Not found in this bounded evidence window"],
+          ["Recorded terminal event", terminal ? `${terminal.created_at}: ${terminal.status} (${terminal.reason ?? "reason unavailable"})` : "No terminal event found in this bounded evidence window"],
+          ["Scheduler heartbeat (not provider progress)", row.heartbeat_at],
+          ["Evidence window", "Latest 128 Agent events and 128 Project communication records. Older evidence may be omitted; absence is not proof that an event never occurred."],
+          ["Recent Run event metadata", JSON.stringify(evidence.slice(0, 16).reverse())],
           ["Provider failure summary", providerFailureSummary],
           ["Operator action", providerFailureSummary
             ? "Review provider access and retry the affected work when the provider is available."

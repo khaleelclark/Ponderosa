@@ -28,6 +28,18 @@ const visit = (directory) => readdirSync(directory, { withFileTypes: true }).fla
   return entry.isDirectory() ? visit(target) : entry.name.endsWith(".js") ? [target] : [];
 });
 const allJavascript = visit(javascriptDirectory);
+// PDF rendering is opt-in and lazy. Its module worker is emitted as an asset,
+// so count and cap it explicitly rather than silently excluding its download.
+const pdfWorkers = readdirSync(path.join(root, "static", "assets"))
+  .filter(name => /^pdf\.worker\.min\..*\.mjs$/u.test(name))
+  .map(name => path.join(root, "static", "assets", name));
+const pdfWorkerRaw = pdfWorkers.reduce((sum, file) => sum + statSync(file).size, 0);
+const allFiles = directory => readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+  const file = path.join(directory, entry.name);
+  return entry.isDirectory() ? allFiles(file) : [file];
+});
+const pdfResources = allFiles(path.join(root, "static", "pdfjs"));
+const pdfResourcesRaw = pdfResources.reduce((sum, file) => sum + statSync(file).size, 0);
 const totalRaw = allJavascript.reduce((sum, file) => sum + statSync(file).size, 0);
 const synchronousRaw = synchronous.reduce((sum, item) => sum + item.raw, 0);
 const synchronousBrotli = synchronous.reduce((sum, item) => sum + item.brotli, 0);
@@ -38,15 +50,17 @@ const budgets = {
   synchronousRaw: 2 * 1024 * 1024,
   synchronousBrotli: 600 * 1024,
   totalJavascriptRaw: 4 * 1024 * 1024,
+  lazyPdfWorkerRaw: 1536 * 1024,
+  lazyPdfResourcesRaw: 4 * 1024 * 1024,
 };
-const observed = { largestSynchronousRaw: largest, synchronousRaw, synchronousBrotli, totalJavascriptRaw: totalRaw };
+const observed = { largestSynchronousRaw: largest, synchronousRaw, synchronousBrotli, totalJavascriptRaw: totalRaw, lazyPdfWorkerRaw: pdfWorkerRaw, lazyPdfResourcesRaw: pdfResourcesRaw };
 for (const [name, limit] of Object.entries(budgets)) {
   if (observed[name] > limit) {
     throw new Error(`${name} exceeded its production budget: ${observed[name]} > ${limit}`);
   }
 }
 const worker = readFileSync(path.join(root, "sw.js"), "utf8");
-if (allJavascript.some((file) => {
+if ([...allJavascript, ...pdfWorkers, ...pdfResources].some((file) => {
   const relative = path.relative(root, file).split(path.sep).join("/");
   return worker.includes(`url:\"${relative}\"`) || worker.includes(`\"url\":\"${relative}\"`);
 })) {

@@ -190,6 +190,7 @@ export function TriggersPane({
   initialCreateOpen = false,
   createOnly = false,
   stickyCreateActions = false,
+  ownershipSelectedExternally = false,
   onCreateTrigger,
   onTriggerCreated,
   onCreateFlowComplete,
@@ -209,6 +210,7 @@ export function TriggersPane({
   initialCreateOpen?: boolean;
   createOnly?: boolean;
   stickyCreateActions?: boolean;
+  ownershipSelectedExternally?: boolean;
   onCreateTrigger?(): void;
   onTriggerCreated?(trigger: TriggerDefinitionDto): void;
   onCreateFlowComplete?(): void;
@@ -520,7 +522,7 @@ export function TriggersPane({
       <Alert severity="warning">This automation will run unattended with full Agent access. Event payloads are untrusted data.</Alert>
       <TextField label="Name" value={name} onChange={(event) => setName(event.target.value)} inputProps={{ maxLength: 120 }} autoFocus required />
       <TextField label="Trusted instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} multiline minRows={3} required helperText="Describe the action. Do not rely on event payload text as instructions." />
-      {!fixedConversationId ? (
+      {!ownershipSelectedExternally && (!fixedConversationId ? (
         <FormControl fullWidth>
           <InputLabel id="trigger-chat-label">Destination Chat</InputLabel>
           <Select
@@ -536,8 +538,8 @@ export function TriggersPane({
         </FormControl>
       ) : (
         <TextField label="Destination Chat" value={currentChatLabel(conversationId)} disabled />
-      )}
-      {!fixedTargetAgentId ? (
+      ))}
+      {!ownershipSelectedExternally && (!fixedTargetAgentId ? (
         <FormControl fullWidth>
           <InputLabel id="trigger-target-agent-label">Runs As</InputLabel>
           <Select
@@ -557,7 +559,7 @@ export function TriggersPane({
           value={availableAgents.find(agent => agent.id === targetAgentId)?.title ?? "Unavailable Agent"}
           disabled
         />
-      )}
+      ))}
       <Typography variant="caption" color="text.secondary">
         Each occurrence is sent to the selected Chat and runs as the selected Agent.
       </Typography>

@@ -1,4 +1,5 @@
 import type { WorkspaceNotificationDto } from "@ponderosa/core";
+import { notificationPreviewText } from "@ponderosa/core";
 import type { PushDeliveryRecord, WorkspaceStore } from "@ponderosa/agents";
 
 export interface PushSendError extends Error {
@@ -129,7 +130,7 @@ export function pushPayload(notification: WorkspaceNotificationDto): Record<stri
   return {
     notificationId: notification.id,
     title: notification.title,
-    body: notification.body,
+    body: notificationPreviewText(notification.body),
     projectId: notification.projectId,
     conversationId: notification.conversationId,
     agentId: notification.agentId,

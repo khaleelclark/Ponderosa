@@ -144,7 +144,7 @@ export function ConversationView({
     technicalFocusId?: string,
   ): void;
   onAgentsDeleted(agentIds: string[]): void;
-  onOpenReview?(agentId: string): void;
+  onOpenReview?(agentId: string, executionId?: string): void;
   onOpenAgentWork(focusId?: string): void;
   onOpenBrowser(agentId: string, runId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;

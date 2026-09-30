@@ -89,7 +89,7 @@ function ConversationMessageComponent({
     view?: "technical",
     technicalFocusId?: string,
   ): void;
-  onOpenReview?(agentId: string): void;
+  onOpenReview?(agentId: string, executionId?: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onMentionAgent?(agentId: string): void;
   onVisible?(visible: boolean): void;
@@ -188,10 +188,13 @@ function ConversationMessageComponent({
                     : undefined
                 }
                 onViewAll={
-                  message.authorAgentId && onOpenReview
-                    ? () => onOpenReview(message.authorAgentId!)
+                  message.authorAgentId && message.executionId && onOpenReview
+                    ? () => onOpenReview(message.authorAgentId!, message.executionId)
                     : undefined
                 }
+                viewAllUnavailableReason={!message.executionId
+                  ? "Response review is unavailable because this message has no recorded Run ID."
+                  : undefined}
               />
             ) : null}
           </>
@@ -404,7 +407,7 @@ function MainConversationTimeline({
     view?: "technical",
     technicalFocusId?: string,
   ): void;
-  onOpenReview?(agentId: string): void;
+  onOpenReview?(agentId: string, executionId?: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   mentionAgent(agentId: string): void;
   markCommunicationVisible(
@@ -508,7 +511,7 @@ function CollaborationTimeline({
     view?: "technical",
     technicalFocusId?: string,
   ): void;
-  onOpenReview?(agentId: string): void;
+  onOpenReview?(agentId: string, executionId?: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
 }): JSX.Element {
   const loadedCommunicationIds = new Set(

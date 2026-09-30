@@ -8,8 +8,9 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { previewCapability } from "./mimeCapabilities";
 import { renderableWorkspaceMarkdownHref, workspaceMarkdownMediaHref } from "./workspaceMarkdownLinks";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { FeatureErrorBoundary } from "../FeatureErrorBoundary";
+const PdfPreview = lazy(() => import("./PdfPreview"));
 
 function diffLineKind(line: string): "addition" | "deletion" | "neutral" {
   if (line.startsWith("+") && !line.startsWith("+++")) return "addition";
@@ -95,7 +96,7 @@ export function FilePreview(props: FilePreviewProps): JSX.Element {
   } else if (capability.kind === "image" && props.previewUrl) {
     body = <Box component="img" src={props.previewUrl} alt={props.title} sx={{ display: "block", maxWidth: "100%", maxHeight: props.maxHeight ?? { xs: "55vh", md: "66vh" }, objectFit: "contain", mx: "auto" }} />;
   } else if (capability.kind === "pdf" && props.previewUrl) {
-    body = <Box component="iframe" title={`Preview ${props.title}`} src={props.previewUrl} sx={{ width: "100%", minHeight: props.maxHeight ?? { xs: "55vh", md: "66vh" }, border: 0, bgcolor: "background.paper" }} />;
+    body = <Suspense fallback={<Typography role="status" sx={{ p: 2 }}>Loading PDF viewer…</Typography>}><PdfPreview key={props.previewUrl} url={props.previewUrl} title={props.title}/></Suspense>;
   } else if (capability.kind === "diff" && props.content !== undefined) {
     body = props.content ? <UnifiedDiffViewer diff={props.content} /> : <Alert severity="info">This diff is empty.</Alert>;
   } else if (capability.kind === "markdown" && props.content !== undefined) {
