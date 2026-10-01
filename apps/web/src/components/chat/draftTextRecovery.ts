@@ -42,6 +42,23 @@ export function acknowledgeDraftTextRecovery(
   else writeDraftTextRecovery(key, { ...pending, expectedRevision: revision });
 }
 
+/** A confirmed send can retire its exact browser snapshot after navigation,
+ * but not another visit's recovery edit, even if its visible text is identical. */
+export function retireSubmittedDraftText(
+  key: string | undefined,
+  clientId: string,
+  saved: Pick<DraftTextRecovery, "text" | "mentionBindings">,
+  revision: number,
+): void {
+  if (!key) return;
+  const pending = readDraftTextRecovery(key);
+  const sameSubmission = !pending || (pending.clientId === clientId &&
+    pending.text === saved.text &&
+    JSON.stringify(pending.mentionBindings) === JSON.stringify(saved.mentionBindings));
+  if (sameSubmission && readChatState(key) === saved.text) writeChatState(key, "");
+  acknowledgeDraftTextRecovery(key, clientId, saved, revision);
+}
+
 /**
  * Only matching content proves this edit was saved. A newer empty draft may be
  * an earlier clear whose response was delayed while the user typed new work.

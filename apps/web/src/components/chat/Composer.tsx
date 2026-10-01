@@ -40,7 +40,7 @@ import {
 import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
 import { readChatState, readChatStateEntries, writeChatState } from "../../chatState";
-import { acknowledgeDraftTextRecovery, recoverDraftText, writeDraftTextRecovery } from "./draftTextRecovery";
+import { acknowledgeDraftTextRecovery, recoverDraftText, retireSubmittedDraftText, writeDraftTextRecovery } from "./draftTextRecovery";
 import { createClientId, draftSurfaceClientId } from "../../clientId";
 import { readBrowserStorage, writeBrowserStorage } from "../../browserStorage";
 import {
@@ -2499,17 +2499,22 @@ export function Composer({
               renderedDestinationIdentityRef.current === submittedDestinationIdentity
             )),
         });
-        // Clear only the exact draft incarnation that produced this submission.
-        // This also preserves edits made while a runtime command is pending.
-        if (submissionMayClearDraft && scopeStillActive) {
-          // Runtime commands bypass pending-message persistence, but their
-          // confirmed success retires the same exact recovery text as a send.
-          acknowledgeDraftTextRecovery(
+        // Message edits are locked while sending. Navigation releases this
+        // editor, not the captured submission's CAS authority to retire itself.
+        // Runtime commands remain governed by the editable-content guard.
+        const submissionMayRetireSavedDraft = submissionMayClearDraft ||
+          (!runtimeCommandSubmission && Boolean(submittedDraftScope) && !scopeStillActive);
+        if (submissionMayRetireSavedDraft) {
+          retireSubmittedDraftText(
             draftStorageKey,
             submittedDraftWriteChain.clientId,
             { text: submittedText, mentionBindings: submittedMentionBindings },
             submittedDraftWriteChain.ownedRevision,
           );
+        }
+        // Clear only the exact draft incarnation that produced this submission.
+        // This also preserves edits made while a runtime command is pending.
+        if (submissionMayClearDraft && scopeStillActive) {
           draftGeneration.current += 1;
           draftEditVersion.current += 1;
           draftLocallyEdited.current = false;
@@ -2525,7 +2530,7 @@ export function Composer({
           clearDraftAttachments();
         }
         if (
-          submissionMayClearDraft &&
+          submissionMayRetireSavedDraft &&
           submittedDraftScope
         ) {
           const clientId = submittedDraftWriteChain.clientId;
@@ -2560,16 +2565,17 @@ export function Composer({
                     submittedOwnedDraftRevision,
                 );
                 submittedDraftWriteChain.ownedRevision = clearedDraft.revision;
-                pendingSubmissionRef.current = clearedDraft.pendingSubmission;
                 if (clearOwnsActiveScope()) {
+                  pendingSubmissionRef.current = clearedDraft.pendingSubmission;
                   draftRevision.current = clearedDraft.revision;
                 }
-                queryClient.setQueryData(
+                queryClient.setQueryData<ConversationDraftDto>(
                   queryKeys.conversationDraft.detail(
                     submittedDraftScope,
                     draftOwnerId,
                   ),
-                  clearedDraft,
+                  current => current && current.revision > clearedDraft.revision
+                    ? current : clearedDraft,
                 );
                 const cleanupIds = new Set([
                   ...stagedIds,

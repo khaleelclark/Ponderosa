@@ -1,6 +1,7 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeDraftTextRecovery, readDraftTextRecovery, recoverDraftText, acknowledgeDraftTextRecovery } from '../src/components/chat/draftTextRecovery.js';
+import { writeDraftTextRecovery, readDraftTextRecovery, recoverDraftText, acknowledgeDraftTextRecovery, retireSubmittedDraftText } from '../src/components/chat/draftTextRecovery.js';
+import { readChatState, writeChatState } from '../src/chatState.js';
 
 beforeEach(() => {
   const entries = new Map();
@@ -72,4 +73,23 @@ test('new typing after an accepted empty PUT survives reload before its acknowle
   // it must still preserve the text entered after the clear.
   acknowledgeDraftTextRecovery('chat-a','visit-a',edit(''),5);
   assert.deepEqual(recoverDraftText('chat-a', canonical), {...edit('New work typed after clearing'),expectedRevision:5});
+});
+
+test('confirmed submission retires matching text after leaving without erasing later or other-visit edits', () => {
+  writeChatState('chat-a', edit().text);
+  writeDraftTextRecovery('chat-a', edit());
+  retireSubmittedDraftText('chat-a', 'visit-a', edit(), 5);
+  assert.equal(readChatState('chat-a'), undefined);
+  assert.equal(readDraftTextRecovery('chat-a'), undefined);
+  for (const next of [edit('New unsent work'), edit(edit().text, 'visit-b')]) {
+    writeChatState('chat-a', next.text);
+    writeDraftTextRecovery('chat-a', next);
+    retireSubmittedDraftText('chat-a', 'visit-a', edit(), 6);
+    assert.equal(readChatState('chat-a'), next.text);
+    assert.equal(readDraftTextRecovery('chat-a').text, next.text);
+    assert.equal(readDraftTextRecovery('chat-a').clientId, next.clientId);
+  }
+  writeChatState('chat-b', 'Other Chat work');
+  retireSubmittedDraftText('chat-a', 'visit-a', edit(), 7);
+  assert.equal(readChatState('chat-b'), 'Other Chat work');
 });
