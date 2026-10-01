@@ -1258,7 +1258,7 @@ export function ConversationView({
             onClose={() => setAgentWorkOpen(false)}
           />
         ) : activeView === "files" ? (
-          <Box id="chat-workspace-files-panel" role="tabpanel" aria-labelledby="chat-workspace-files-tab" sx={{ minHeight: 0, minWidth: 0 }}><ConversationFilesResults
+          <Box id="chat-workspace-files-panel" role="tabpanel" aria-labelledby="chat-workspace-files-tab" sx={{ height: "100%", minHeight: 0, minWidth: 0 }}><ConversationFilesResults
             projectId={conversation.projectId}
             projectRoot={
               projectsQuery.data?.find(

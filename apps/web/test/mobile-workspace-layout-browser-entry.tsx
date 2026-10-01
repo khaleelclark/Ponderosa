@@ -1,0 +1,82 @@
+import { Box, CssBaseline, ThemeProvider } from "@mui/material";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createRoot } from "react-dom/client";
+import type { AgentDto, ArtifactDto } from "@ponderosa/core";
+import { useState } from "react";
+import { api } from "../src/api";
+import { AgentDetailHeader } from "../src/components/AgentDetail.header";
+import type { AgentTab } from "../src/components/AgentDetail.helpers";
+import { ComposerRuntimeSelector } from "../src/components/ComposerRuntimeSelector";
+import { ConversationView } from "../src/components/ConversationView";
+import { MobileNavigationProvider } from "../src/components/MobileNavigationContext";
+import { MutationNotificationProvider } from "../src/components/MutationNotifications";
+import { PrimaryHeaderActionsProvider } from "../src/components/PrimaryHeaderActions";
+import { useAppViewport } from "../src/hooks/useAppViewport";
+import type { WorkspaceConnectionStatus } from "../src/hooks/useWorkspaceStream";
+import { createPonderosaTheme } from "../src/theme";
+import "../src/global.css";
+
+const params = new URLSearchParams(location.search);
+const noop = () => {};
+const client = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
+const project = { id: "project", label: "Mobile layout", hostPath: "/fixture", defaultEngine: "codex" } as const;
+const conversation = { id: "chat", projectId: project.id, title: "Populated Chat", archived: false,
+  createdAt: "2026-10-01T10:00:00Z", updatedAt: "2026-10-01T10:00:00Z" };
+const artifacts: ArtifactDto[] = Array.from({ length: 20 }, (_, i) => ({ id: String(i),
+  projectId: project.id, agentId: "deleted-agent", path: `report-${i}.txt`, kind: "document",
+  mediaType: "text/plain", previewUrl: `/api/fixture/report-${i}.txt`, downloadUrl: `/api/fixture/report-${i}.txt`,
+  createdAt: new Date(Date.UTC(2026, 9, 1, 10, i)).toISOString() }));
+api.getProviderUsage = async () => ({ providers: [] }) as never;
+api.listProjects = async () => [project] as never;
+api.listAgents = async () => [];
+api.getConversation = async () => ({ conversation, agents: [], messages: [], history: { limit: 100, hasMore: false } });
+api.listNotifications = async () => ({ items: [], history: { hasMore: false } }) as never;
+api.getWorkspacePreferences = async () => ({}) as never;
+api.listActiveBrowserSessions = async () => [];
+api.getTargetedNextRunReceipts = async () => ({ receipts: [] }) as never;
+api.listConversationMembersPage = async () => ({ items: [], total: 0, limit: 100, hasMore: false });
+api.listConversationArtifacts = async (_project, _chat, _limit, _cursor, search) => ({
+  items: artifacts.filter(a => !search || a.path.includes(search)), history: { limit: 100, hasMore: false } });
+api.getConversationFiles = async () => {
+  document.body.dataset.folderReads = String(Number(document.body.dataset.folderReads ?? 0) + 1);
+  return { kind: "dir", entries: Array.from({ length: 8 }, (_, i) => ({ kind: "file", name: `workspace-${i}.txt`, path: `workspace-${i}.txt` })) } as never;
+};
+api.searchGlobalFiles = async () => ({ results: [] }) as never;
+api.getWorkspaceFileView = async (_project, path) => ({ path, mediaType: "text/plain", text: `Workspace preview: ${path}` }) as never;
+
+function Probe(): JSX.Element {
+  useAppViewport();
+  const [tab, setTab] = useState<AgentTab>("chat");
+  if (params.get("case") === "files") return <ConversationView conversationId="chat" initialView="files"
+    engines={[]} engineCapabilities={[]} onRefreshCapabilities={noop} statusByAgentId={new Map()}
+    healthByAgentId={new Map()} projectAgents={[]} onOpenProject={noop} onOpenProjectBrowser={noop}
+    onOpenAgent={noop} onAgentsDeleted={noop} onOpenAgentWork={noop} onOpenBrowser={noop} onNewAgent={noop}
+    preferences={{} as never} onPreferences={noop} onNavigateTrigger={noop} onCreateTrigger={noop} onDeleted={noop} />;
+  if (params.get("case") === "picker") return <Box sx={{ height: "100%", position: "relative" }}>
+    <Box sx={{ position: "absolute", bottom: 24, right: 24 }}><ComposerRuntimeSelector
+      engine="codex" engines={[{ id: "codex", label: "Codex" }, { id: "claude", label: "Claude" }]}
+      model="model" models={[{ id: "model", label: "GPT-6.1-Sol" }, { id: "other", label: "Other model" }]}
+      effort="high" efforts={[{ id: "high", label: "High" }, { id: "medium", label: "Medium" }]}
+      speed="standard" speeds={[{ id: "standard", label: "Standard" }, { id: "fast", label: "Fast" }]}
+      scopeLabel="Mesa Verde" onEngineChange={noop} onModelChange={id => { document.body.dataset.selectedModel = id; }}
+      onEffortChange={noop} onSpeedChange={noop} /></Box>
+  </Box>;
+  return <AgentDetailHeader agent={{ id: "agent", projectId: project.id,
+    title: params.has("long") ? "Mesa Verde with a very long Agent identity that must remain identifiable" : "Mesa Verde",
+    handle: "Mesa-Verde" } as AgentDto} chats={[]} lineageLabel="" status="running"
+    statusLabelOverride={params.has("long") ? "Running command" : undefined}
+    connectionStatus={(params.get("connection") ?? "live") as WorkspaceConnectionStatus} phaseEvidenceFresh={false}
+    startedAt={new Date(Date.now() - Number(params.get("minutes") ?? 11) * 60_000).toISOString()}
+    agentNameForId={() => undefined} running stopping={false} tab={tab}
+    showSubagents={!params.has("no-descendants")} showAutomations transcriptMarkdown="" transcriptTitle="fixture"
+    onOpenProject={noop} onOpenChat={noop} onOpenAgent={noop} onStop={() => { document.body.dataset.stopped = "yes"; }}
+    onExportPackage={noop} onNotice={noop} onOpenTechnical={noop} onRename={noop} onCreateAgent={noop}
+    onChangeReportingLine={noop} onDelete={noop} onTabChange={setTab} />;
+}
+createRoot(document.getElementById("root")!).render(<ThemeProvider theme={createPonderosaTheme(params.get("theme") === "light" ? "light" : "dark")}>
+  <CssBaseline /><QueryClientProvider client={client}><MutationNotificationProvider><MobileNavigationProvider onOpen={noop}>
+    <Box sx={{ height: "var(--ponderosa-app-viewport-block-size, 100dvh)", overflow: "hidden" }}>
+      <PrimaryHeaderActionsProvider onOpenProviderSettings={noop}><Probe /></PrimaryHeaderActionsProvider>
+    </Box>
+  </MobileNavigationProvider></MutationNotificationProvider></QueryClientProvider>
+</ThemeProvider>);

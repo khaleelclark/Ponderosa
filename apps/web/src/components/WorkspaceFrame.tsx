@@ -5,6 +5,8 @@ import {
   IconButton,
   Stack,
   Tab,
+  TabScrollButton,
+  type TabScrollButtonProps,
   Tabs,
   Tooltip,
   Typography,
@@ -107,6 +109,12 @@ export interface TabbedWorkspaceFrameProps<T extends string> {
   };
 }
 
+function WorkspaceTabScrollButton(props: TabScrollButtonProps): JSX.Element {
+  return <TabScrollButton {...props} role="button" tabIndex={props.disabled ? -1 : 0}
+    aria-disabled={props.disabled || undefined}
+    aria-label={props.direction === "left" ? "Scroll tabs left" : "Scroll tabs right"} />;
+}
+
 function WorkspaceTabBar<T extends string>({ value, items, onChange, label, idPrefix }: {
   value: T | false;
   items: readonly WorkspaceTabItem<T>[];
@@ -131,6 +139,7 @@ function WorkspaceTabBar<T extends string>({ value, items, onChange, label, idPr
       variant="scrollable"
       scrollButtons="auto"
       allowScrollButtonsMobile
+      slots={{ scrollButtons: WorkspaceTabScrollButton }}
       sx={{
         width: "100%",
         maxWidth: "100%",
@@ -303,21 +312,23 @@ export function TabbedWorkspaceFrame<T extends string>({
         minWidth: 0,
       })}
     >
-      <Box sx={{ px: { xs: 1.5, sm: 2, md: 2.5 }, py: { xs: 1, sm: 1.25 } }}>
-        <Stack
-          direction="row"
-          spacing={1}
-          useFlexGap
-          flexWrap="nowrap"
-          sx={{ alignItems: { xs: "flex-start", sm: "center" }, minWidth: 0 }}
+      <Box sx={{ px: { xs: 1.5, sm: 2, md: 2.5 }, py: { xs: 0.5, md: 1 } }}>
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: { xs: "auto minmax(0, 1fr) auto", md: "auto minmax(0, 1fr) minmax(0, auto) auto" },
+            alignItems: "center",
+            columnGap: 1,
+            rowGap: 0.25,
+            minWidth: 0,
+          }}
         >
           <MobileNavigationButton />
           <Box
             sx={{
               minWidth: 0,
-              flexGrow: 1,
-              flexShrink: 1,
-              flexBasis: 0,
+              gridColumn: 2,
+              gridRow: 1,
               overflow: "hidden",
             }}
           >
@@ -327,13 +338,14 @@ export function TabbedWorkspaceFrame<T extends string>({
           </Box>
           <Stack
             direction="row"
-            spacing={{ xs: 0, sm: 1 }}
+            spacing={{ xs: 0.5, md: 1 }}
             useFlexGap
             sx={{
               alignItems: "center",
               justifyContent: "flex-end",
-              flexWrap: { xs: "nowrap", sm: "wrap" },
-              flex: { xs: "0 0 auto", sm: "0 1 auto" },
+              flexWrap: "wrap",
+              gridColumn: { xs: "1 / -1", md: 3 },
+              gridRow: { xs: 2, md: 1 },
               minWidth: 0,
               maxWidth: "100%",
             }}
@@ -341,24 +353,26 @@ export function TabbedWorkspaceFrame<T extends string>({
             <PrimaryHeaderActionsOutlet />
             {status}
             {actions}
-            <Tooltip title="Collapse workspace header">
-              <IconButton
-                ref={toggleButtonRef}
-                size="small"
-                aria-label="Collapse workspace header"
-                aria-expanded
-                onClick={handleToggleCollapsed}
-                sx={{
-                  flexShrink: 0,
-                  width: { xs: 44, sm: 36 },
-                  height: { xs: 44, sm: 36 },
-                }}
-              >
-                <KeyboardArrowUpIcon />
-              </IconButton>
-            </Tooltip>
           </Stack>
-        </Stack>
+          <Tooltip title="Collapse workspace header">
+            <IconButton
+              ref={toggleButtonRef}
+              size="small"
+              aria-label="Collapse workspace header"
+              aria-expanded
+              onClick={handleToggleCollapsed}
+              sx={{
+                flexShrink: 0,
+                gridColumn: { xs: 3, md: 4 },
+                gridRow: 1,
+                width: { xs: 44, sm: 36 },
+                height: { xs: 44, sm: 36 },
+              }}
+            >
+              <KeyboardArrowUpIcon />
+            </IconButton>
+          </Tooltip>
+        </Box>
       </Box>
       <WorkspaceTabBar {...tabs} />
     </Box>

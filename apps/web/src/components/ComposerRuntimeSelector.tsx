@@ -13,6 +13,7 @@ import {
   MenuList,
   Paper,
   Popper,
+  type PopperProps,
   Stack,
   Typography,
 } from "@mui/material";
@@ -27,6 +28,14 @@ export interface ComposerRuntimeOption {
 }
 
 type RuntimeSection = "engine" | "model" | "effort" | "speed";
+
+// Keep these stable when the instance ref is registered; recreating them on
+// each render would destroy and recreate the Popper instance repeatedly.
+const runtimePopperModifiers: PopperProps["modifiers"] = [
+  { name: "offset", options: { offset: [0, 8] } },
+  { name: "preventOverflow", options: { padding: 12 } },
+  { name: "flip", options: { fallbackPlacements: ["top-start", "bottom-end"] } },
+];
 
 export function ComposerRuntimeSelector({
   engine,
@@ -66,6 +75,35 @@ export function ComposerRuntimeSelector({
 }): JSX.Element {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [section, setSection] = useState<RuntimeSection | null>(null);
+  const [popper, setPopper] = useState<{ update(): Promise<unknown> } | null>(null);
+  useEffect(() => {
+    if (!anchor || !popper) return;
+    let frame = 0;
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => { void popper.update(); });
+    };
+    // The app height settles after the resize event. Reposition after that
+    // layout, rather than retaining Popper's first, pre-resize measurement.
+    const observer = new ResizeObserver(update);
+    observer.observe(anchor);
+    const root = document.getElementById("root");
+    if (root) observer.observe(root);
+    const viewport = window.visualViewport;
+    viewport?.addEventListener("resize", update);
+    viewport?.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+    update();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      viewport?.removeEventListener("resize", update);
+      viewport?.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
+    };
+  }, [anchor, popper]);
   const menuId = useId();
   const selectedEngine = engines.find((option) => option.id === engine);
   const selectedModel = models.find((option) => option.id === model);
@@ -152,14 +190,11 @@ export function ComposerRuntimeSelector({
       </Stack>
     </ButtonBase>
     <Popper
+      popperRef={setPopper}
       open={Boolean(anchor)}
       anchorEl={anchor}
       placement="top-end"
-      modifiers={[
-        { name: "offset", options: { offset: [0, 8] } },
-        { name: "preventOverflow", options: { padding: 12 } },
-        { name: "flip", options: { fallbackPlacements: ["top-start", "bottom-end"] } },
-      ]}
+      modifiers={runtimePopperModifiers}
       sx={{ zIndex: 1500 }}
     >
       <ClickAwayListener onClickAway={close}>
