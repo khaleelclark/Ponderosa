@@ -47,6 +47,31 @@ try {
       assert.ok(bounds && bounds.height >= (width === 390 ? 44 : 36), `menu row ${index} has ${bounds?.height}px target at ${width}px; ${JSON.stringify(style)}`);
     }
     await page.keyboard.press("Escape");
+    for (const [label, name, mimeType] of [
+      ["Photos", "photo.jpg", "image/jpeg"],
+      ["Photos", "photo.jpg", "image/jpeg"],
+      ["Files", "report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    ]) {
+      await page.getByRole("button", { name: "Open capability picker" }).click();
+      const choosing = page.waitForEvent("filechooser");
+      await page.getByRole("menuitem", { name: new RegExp(`^${label}\\b`) }).click();
+      const chooser = await choosing;
+      assert.equal(chooser.isMultiple(), true);
+      assert.equal(await chooser.element().getAttribute("capture"), null, "photo selection must not force camera capture");
+      const accepted = await chooser.element().getAttribute("accept");
+      if (label === "Photos") assert.equal(accepted, "image/*", "Photos uses an image-only native picker hint");
+      else assert.ok(accepted.includes(".docx") && accepted.includes("application/pdf"), "Files retains supported documents");
+      await chooser.setFiles({ name, mimeType, buffer: Buffer.from("disposable picker fixture") });
+      assert.equal(await chooser.element().inputValue(), "", "selection resets so the same file can be chosen again");
+      assert.equal(await page.getByRole("menu").count(), 0, "choosing closes the action menu");
+    }
+    assert.equal(await page.locator("[data-selected-files]").innerText(), "photo.jpg,photo.jpg,report.docx",
+      "both picker paths deliver to the same attachment callback, including reselection");
+    await page.getByRole("button", { name: "Open capability picker" }).click();
+    const cancelling = page.waitForEvent("filechooser");
+    await page.getByRole("menuitem", { name: /^Photos\b/ }).click();
+    await (await cancelling).setFiles([]);
+    assert.equal(await page.locator("[data-selected-files]").innerText(), "photo.jpg,photo.jpg,report.docx", "cancelling preserves selected attachments");
     await page.getByRole("button", { name: "Open capability picker" }).click();
     if (width === 390) await page.getByRole("menuitem", { name: "Skills & connectors" }).click();
     await page.getByText("Available skills", { exact: true }).waitFor();
@@ -55,8 +80,17 @@ try {
     await page.getByText("Unavailable options", { exact: true }).waitFor();
     assert.equal(await page.getByText("google-drive:google-docs", { exact: true }).count(), 0,
       "technical skill identifier is not the visible option label");
+    for (const mode of ["disabled", "full"]) {
+      await page.goto(`http://127.0.0.1:${server.address().port}/?attachments=${mode}`);
+      await page.getByRole("button", { name: "Open capability picker" }).click();
+      for (const label of ["Photos", "Files"]) {
+        assert.equal(await page.getByRole("menuitem", { name: new RegExp(`^${label}\\b`) }).getAttribute("aria-disabled"), "true",
+          `${label} respects ${mode} attachment admission`);
+      }
+    }
     await page.close();
   }
+  console.log("Separate Photos/Files picker paths, reselection, cancellation and admission checks passed at 390px and 1280px");
 } finally {
   await browser?.close();
   if (server) await new Promise(resolve => server.close(resolve));

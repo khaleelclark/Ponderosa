@@ -29,7 +29,7 @@ import type {
   EngineComposerCapability,
   ArtifactDto,
 } from "@ponderosa/core";
-import { type RefObject, useEffect, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import { isIOSDevice } from "../../browserPlatform";
 import type { ComposerMenuAction } from "./composerContracts";
 import { compactPreviewText } from "./Composer.helpers";
@@ -327,6 +327,7 @@ export function ComposerCapabilityPicker({
   onApplyCapability(capability: EngineComposerCapability): void;
 }): JSX.Element {
   const maximumFiles = assetLimits?.maxAssetsPerMessage ?? COMPOSER_MAX_FILES;
+  const photoInput = useRef<HTMLInputElement>(null);
   const capabilityGroups = [
     { label: "Available skills", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "skill") },
     { label: "Installed plugins", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "plugin") },
@@ -364,9 +365,22 @@ export function ComposerCapabilityPicker({
     <>
       <input
         ref={fileInput}
+        aria-label="Choose files"
         hidden
         type="file"
         accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif,application/pdf,text/plain,application/json,application/zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.txt,.md,.csv,.log,.json,.zip,.pdf,.docx"
+        multiple
+        onChange={event => {
+          onFiles(Array.from(event.target.files ?? []));
+          event.target.value = "";
+        }}
+      />
+      <input
+        ref={photoInput}
+        aria-label="Choose photos"
+        hidden
+        type="file"
+        accept="image/*"
         multiple
         onChange={event => {
           onFiles(Array.from(event.target.files ?? []));
@@ -440,12 +454,13 @@ export function ComposerCapabilityPicker({
                 overscrollBehavior: "contain",
               }}
             >
-              {(!mobile || !browseCapabilities) && <ListSubheader sx={{ lineHeight: "32px", bgcolor: "background.paper", fontWeight: 800 }}>Files</ListSubheader>}
-              {(!mobile || !browseCapabilities) && <MenuItem
+              {(!mobile || !browseCapabilities) && <ListSubheader sx={{ lineHeight: "32px", bgcolor: "background.paper", fontWeight: 800 }}>Attachments</ListSubheader>}
+              {(!mobile || !browseCapabilities) && ["Photos", "Files"].map(label => <MenuItem
+                key={label}
                 disabled={!attachmentsEnabled || fileCount >= maximumFiles}
                 onClick={() => {
                   onClose();
-                  fileInput.current?.click();
+                  (label === "Photos" ? photoInput : fileInput).current?.click();
                 }}
                 sx={{
                   whiteSpace: "normal",
@@ -454,17 +469,19 @@ export function ComposerCapabilityPicker({
                 }}
               >
                 <Box>
-                  <Typography variant="body2">{mobile ? "Add photo or file" : "Upload image or file"}</Typography>
+                  <Typography variant="body2">{label}</Typography>
                   {(!mobile || !attachmentsEnabled || fileCount >= maximumFiles) && <Typography variant="caption" color="text.secondary">
                     {!attachmentsEnabled
                       ? (attachmentsUnavailableReason ??
                         "Attachments are not supported in this chat.")
                       : fileCount >= maximumFiles
                         ? "Remove an attachment before adding another."
-                        : `Up to ${maximumFiles} PNG, JPEG, WebP, HEIC, PDF, text, JSON, or ZIP files · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`}
+                        : label === "Photos"
+                          ? `PNG, JPEG, WebP, or HEIC · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`
+                          : `Up to ${maximumFiles} images, PDF, DOCX, text, JSON, or ZIP files · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`}
                   </Typography>}
                 </Box>
-              </MenuItem>}
+              </MenuItem>)}
               {!browseCapabilities && menuActions?.map(action => <MenuItem
                 key={action.id}
                 disabled={action.disabled}
