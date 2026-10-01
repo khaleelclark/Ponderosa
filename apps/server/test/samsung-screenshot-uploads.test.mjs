@@ -39,6 +39,14 @@ function screenshot(jpeg, fields = [
 
 const jpeg = await sharp({ create: { width: 24, height: 32, channels: 3, background: "#123456" } }).jpeg().toBuffer();
 const body = screenshot(jpeg);
+function screenshotWithAppInfo(image, value) {
+  return screenshot(image, [
+    [0x0c51, "Samsung_Capture_Info", Buffer.from("Screenshot")],
+    [0x0da1, "Captured_App_Info", value],
+  ]);
+}
+const plainPackageBody = screenshotWithAppInfo(jpeg, Buffer.from("example.browser"));
+const screenshotBodies = [body, plainPackageBody];
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const directory = body.length - 8 - body.readUInt32LE(body.length - 8);
 
@@ -99,6 +107,40 @@ test("malformed Samsung trailers, unknown payloads, and arbitrary appended data 
   }
 });
 
+test("plain Samsung app package names are admitted only as bounded ASCII package identifiers", async () => {
+  for (const image of [jpeg, await sharp(jpeg).jpeg({ progressive: true }).toBuffer()]) {
+    for (const name of ["example.browser", "org.Example_Test.browser2", "com." + "a".repeat(1020)]) {
+      for (const declaredType of ["image/jpeg", "application/octet-stream", undefined]) {
+        const bytes = screenshotWithAppInfo(image, Buffer.from(name));
+        assert.equal(hasSamsungScreenshotTrailer(bytes), true);
+        const prepared = await prepareAssetUpload({ body: bytes, name: "Screenshot.jpg", declaredType });
+        const plain = await prepareAssetUpload({ body: image, name: "Screenshot.jpg", declaredType });
+        assert.equal(prepared.sha256, hash(bytes));
+        assert.deepEqual(prepared.preview, plain.preview);
+      }
+    }
+  }
+  const invalid = ["", "browser", "com..browser", ".com.browser", "com.browser.",
+    "com.1browser", "com.browser\n", "com.browser\r\n", "com.browser\0", "com.browsér",
+    "com.browser/Activity", "com.browser;payload", "https://example.browser", "com.browser extra",
+    "com." + "a".repeat(1021)];
+  // Keep the original encoded-JSON path strict too: malformed data must not
+  // become a package name just because this additional representation exists.
+  const malformedEncoded = [
+    Buffer.from([0xff, 0xfe]).toString("base64"),
+    Buffer.from('{"comp":').toString("base64"),
+    Buffer.from('{"comp":"example.browser","extra":true}').toString("base64"),
+    Buffer.from('{"comp":42}').toString("base64"),
+    Buffer.from('{"comp":""}').toString("base64"),
+  ];
+  for (const value of [...invalid, ...malformedEncoded]) {
+    const bytes = screenshotWithAppInfo(jpeg, Buffer.from(value));
+    assert.equal(hasSamsungScreenshotTrailer(bytes), false, JSON.stringify(value));
+    await assert.rejects(prepareAssetUpload({ body: bytes, name: "Screenshot.jpg", declaredType: "image/jpeg" }),
+      error => error.statusCode === 415);
+  }
+});
+
 test("Samsung originals survive Agent and Chat upload, association, restart, preview and scoped download", async t => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-samsung-assets-"));
   const assets = new AssetStore(dataDir, { portableFiles: true }), app = Fastify();
@@ -110,7 +152,7 @@ test("Samsung originals survive Agent and Chat upload, association, restart, pre
   registerAttachmentRoutes(app, { store, assets, agentDeliveryLeases: new Map(), conversationDeliveryLeases: new Map(),
     conversationDeletionInProgress: () => false, agentDeletionInProgress: () => false,
     deletingAttachmentKeys: new Set(), reconcilingAssetAgentIds: new Set() });
-  for (const [ownerId, surface] of [[agentId, "agents"], [chatId, "conversations"]]) {
+  for (const body of screenshotBodies) for (const [ownerId, surface] of [[agentId, "agents"], [chatId, "conversations"]]) {
     const upload = await app.inject({ method: "POST", url: `/api/${surface}/${ownerId}/attachments`,
       headers: { "content-type": "application/x-ponderosa-attachment", "x-ponderosa-filename": "Screenshot.jpg", "x-ponderosa-media-type": "image/jpeg" }, payload: body });
     assert.equal(upload.statusCode, 201, upload.body);
@@ -138,18 +180,20 @@ test("durable draft uploads preserve the Samsung original and promote the valida
   const app = Fastify();
   t.after(async () => { await app.close(); assets.close(); await rm(dataDir, { recursive: true, force: true }); });
   registerBodyParsers(app); registerDraftRoutes(app, drafts, workspace, 8, () => undefined);
-  const upload = await app.inject({ method: "POST", url: "/api/conversations/chat-a/draft-attachments",
-    headers: { "content-type": "application/x-ponderosa-attachment", "x-ponderosa-draft-owner": "browser-one", "x-ponderosa-filename": "Screenshot.jpg", "x-ponderosa-media-type": "image/jpeg" }, payload: body });
-  assert.equal(upload.statusCode, 201, upload.body);
-  const attachment = upload.json();
-  const download = await app.inject({ method: "GET", url: attachment.downloadUrl });
-  assert.equal(download.statusCode, 200); assert.deepEqual(download.rawPayload, body);
-  assert.equal((await app.inject({ method: "GET", url: attachment.downloadUrl.replace("browser-one", "browser-two") })).statusCode, 404);
-  const restored = await drafts.prepared("chat-a", "browser-one", attachment.id);
-  assert.ok(restored);
-  const staged = await assets.stage({ projectId: "project-a", agentId: "agent-a", body: restored.body, prepared: restored.prepared });
-  assert.deepEqual((await assets.content("project-a", "agent-a", staged.id, false)).body, body);
-  assert.equal((await sharp((await assets.content("project-a", "agent-a", staged.id, true)).body).metadata()).format, "png");
+  for (const body of screenshotBodies) {
+    const upload = await app.inject({ method: "POST", url: "/api/conversations/chat-a/draft-attachments",
+      headers: { "content-type": "application/x-ponderosa-attachment", "x-ponderosa-draft-owner": "browser-one", "x-ponderosa-filename": "Screenshot.jpg", "x-ponderosa-media-type": "image/jpeg" }, payload: body });
+    assert.equal(upload.statusCode, 201, upload.body);
+    const attachment = upload.json();
+    const download = await app.inject({ method: "GET", url: attachment.downloadUrl });
+    assert.equal(download.statusCode, 200); assert.deepEqual(download.rawPayload, body);
+    assert.equal((await app.inject({ method: "GET", url: attachment.downloadUrl.replace("browser-one", "browser-two") })).statusCode, 404);
+    const restored = await drafts.prepared("chat-a", "browser-one", attachment.id);
+    assert.ok(restored);
+    const staged = await assets.stage({ projectId: "project-a", agentId: "agent-a", body: restored.body, prepared: restored.prepared });
+    assert.deepEqual((await assets.content("project-a", "agent-a", staged.id, false)).body, body);
+    assert.equal((await sharp((await assets.content("project-a", "agent-a", staged.id, true)).body).metadata()).format, "png");
+  }
   const bad = await app.inject({ method: "POST", url: "/api/conversations/chat-a/draft-attachments",
     headers: { "content-type": "application/x-ponderosa-attachment", "x-ponderosa-draft-owner": "browser-one", "x-ponderosa-filename": "Bad.jpg", "x-ponderosa-media-type": "image/jpeg" }, payload: Buffer.concat([jpeg, Buffer.from("hidden payload")]) });
   assert.equal(bad.statusCode, 415);

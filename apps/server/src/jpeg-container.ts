@@ -35,6 +35,10 @@ function jpegEnd(body: Buffer): number | undefined {
 function capturedAppInfo(value: Buffer): boolean {
   if (value.length === 0 || value.length > 4096) return false;
   const encoded = value.toString("latin1");
+  // Samsung uses either a plain app package or base64-encoded component JSON.
+  // Match the complete ASCII package: `$` alone also accepts a final newline.
+  const packageName = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/u.exec(encoded)?.[0];
+  if (value.length <= 1024 && packageName?.length === value.length) return true;
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(encoded)) return false;
   const decoded = Buffer.from(encoded, "base64");
   if (decoded.toString("base64") !== encoded) return false;
