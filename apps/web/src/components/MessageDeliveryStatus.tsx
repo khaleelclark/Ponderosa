@@ -270,24 +270,28 @@ export function MessageDeliveryStatus({
               sx={{
                 maxWidth: "100%",
                 minHeight: 28,
-                px: 0.75,
-                py: 0.25,
+                p: 0,
                 borderRadius: 999,
                 color: `${tone}.main`,
-                bgcolor: (theme) => alpha(theme.palette[tone].main, theme.palette.mode === "dark" ? 0.08 : 0.06),
                 cursor: onOpenAgent ? "pointer" : "default",
                 "&.Mui-disabled": { color: `${tone}.main`, opacity: 1 },
-                "&:hover": onOpenAgent ? { bgcolor: (theme) => alpha(theme.palette[tone].main, theme.palette.mode === "dark" ? 0.14 : 0.1) } : undefined,
+                "&:hover [data-delivery-status-badge]": onOpenAgent ? { bgcolor: (theme) => alpha(theme.palette[tone].main, theme.palette.mode === "dark" ? 0.14 : 0.1) } : undefined,
                 "@media (pointer: coarse)": { minHeight: 44 },
               }}
             >
-              <StatusIcon sx={{ mr: 0.5, fontSize: 16, flex: "0 0 auto" }} />
-              {receipts.length > 1 ? <Typography variant="caption" component="span" sx={{ display: { xs: "none", sm: "inline" }, color: "text.secondary", fontWeight: 650, minWidth: 0, maxWidth: "20ch", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", mr: 0.5 }}>
-                {name} ·
-              </Typography> : null}
-              <Typography variant="caption" component="span" sx={{ color: "text.secondary", fontWeight: 650, overflowWrap: "anywhere" }}>
-                {shortLabel}
-              </Typography>
+              <Box component="span" data-delivery-status-badge sx={{
+                display: "inline-flex", alignItems: "center", minWidth: 0, maxWidth: "100%",
+                minHeight: 28, px: 0.75, py: 0.25, borderRadius: 999,
+                bgcolor: (theme) => alpha(theme.palette[tone].main, theme.palette.mode === "dark" ? 0.08 : 0.06),
+              }}>
+                <StatusIcon sx={{ mr: 0.5, fontSize: 16, flex: "0 0 auto" }} />
+                {receipts.length > 1 ? <Typography variant="caption" component="span" sx={{ display: { xs: "none", sm: "inline" }, color: "text.secondary", fontWeight: 650, minWidth: 0, maxWidth: "20ch", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", mr: 0.5 }}>
+                  {name} ·
+                </Typography> : null}
+                <Typography variant="caption" component="span" sx={{ color: "text.secondary", fontWeight: 650, overflowWrap: "anywhere" }}>
+                  {shortLabel}
+                </Typography>
+              </Box>
             </ButtonBase>
           </Box>
         </Tooltip>

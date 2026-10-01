@@ -94,6 +94,24 @@ try {
       await page.close();
     }
     const touch = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    for (const width of [320, 390]) for (const mode of ["unknown", "delivered"]) {
+      const mobile = await browser.newPage({ viewport: { width, height: 844 }, isMobile: true, hasTouch: true });
+      await mobile.goto(`http://127.0.0.1:${server.address().port}/?case=${mode}`);
+      const receipt = mobile.locator('[aria-label="Message delivery status"] button').first();
+      await receipt.waitFor();
+      const dimensions = await receipt.evaluate(button => {
+        const visual = button.querySelector("[data-delivery-status-badge]") ?? button;
+        return { badge: visual.getBoundingClientRect().height, target: button.getBoundingClientRect().height,
+          copy: document.querySelector('[aria-label="Copy whole message"]').getBoundingClientRect().height };
+      });
+      if (process.env.PONDEROSA_RECEIPT_SCREENSHOTS === "1") await mobile.screenshot({ path: path.join(tmpdir(), `receipt-mobile-padding-${width}-${mode}.png`) });
+      assert.equal(dimensions.badge, 28, "mobile status background is compact instead of filling the 44px touch target");
+      assert.ok(dimensions.target >= 44, "receipt retains its existing touch target");
+      assert.equal(dimensions.copy, 44, "Copy's existing touch target is unchanged");
+      await receipt.tap();
+      assert.equal(await mobile.evaluate(() => document.body.dataset.openedAgent), "agent");
+      await mobile.close();
+    }
     await touch.goto(`http://127.0.0.1:${server.address().port}/?no-open&long-name`);
     const copy = touch.getByRole("button", { name: "Copy whole message", exact: true });
     await copy.waitFor();
