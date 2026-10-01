@@ -56,9 +56,9 @@ export function allChatDeliveryConfirmation(input: {
       input.unavailableCount === 1 ? " was" : "s were"
     } skipped.`
     : "";
-  return input.queuedRecipientTitles.length
-    ? (unavailable.trim() || undefined)
-    : `Message sent to ${input.recipientTitles.join(", ")}.${unavailable}`;
+  // HTTP intake is not provider delivery. The canonical per-recipient receipt
+  // supplies the eventual delivered/queued label; do not pre-announce success.
+  return unavailable.trim() || undefined;
 }
 
 export function allChatSourceIntentKey(

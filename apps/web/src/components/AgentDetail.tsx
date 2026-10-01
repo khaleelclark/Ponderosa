@@ -69,6 +69,7 @@ import {
 } from "./AgentDetail.header";
 import { AgentDetailComposer } from "./AgentDetail.composer";
 import { AgentDetailPanels } from "./AgentDetail.panels";
+import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
 import { useAgentDetailAdministration } from "./useAgentDetailAdministration";
 import type { AgentDetailProps } from "./AgentDetail.types";
 import { AgentDetailDialogs } from "./AgentDetail.dialogs";
@@ -1094,7 +1095,7 @@ export function AgentDetail({
   );
 
   return (
-    <Box
+    <OutgoingMessageProvider scope={agentId} profile={preferencesQuery.data?.profile}><Box
       sx={{
         width: "100%",
         maxWidth: "100%",
@@ -1367,6 +1368,6 @@ export function AgentDetail({
         onClose={() => setDuplicateOpen(false)}
         onCreated={onOpenAgent}
       />
-    </Box>
+    </Box></OutgoingMessageProvider>
   );
 }

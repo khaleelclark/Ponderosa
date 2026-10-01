@@ -1,4 +1,5 @@
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import { publishCreatedAgent } from "../conversationAgentCache";
 import UploadFileOutlinedIcon from "@mui/icons-material/UploadFileOutlined";
 import {
   Alert,
@@ -283,13 +284,7 @@ export function AgentCreateForm({
         });
         return;
       }
-      queryClient.setQueryData<AgentDto[]>(
-        queryKeys.agents.project(projectId),
-        (current = []) =>
-          current.some(item => item.id === agent.id)
-            ? current
-            : [...current, agent],
-      );
+      publishCreatedAgent(queryClient, agent);
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.project(projectId),
       });

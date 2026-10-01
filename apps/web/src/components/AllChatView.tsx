@@ -59,6 +59,8 @@ import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
+import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
+import { publishCreatedAgent } from "../conversationAgentCache";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
 import { createClientId } from "../clientId";
@@ -1009,6 +1011,7 @@ export function AllChatView({
           } : {}),
           idempotencyKey: `${requestId}:new-agent:0`,
         });
+        if (!("recovering" in created)) publishCreatedAgent(queryClient, created);
         const createdAgentId = "recovering" in created ? created.agentId : created.id;
         setActiveOperation(createCreationOperationTracker(
           createdAgentId,
@@ -1190,7 +1193,7 @@ export function AllChatView({
         submissionTargetId,
       };
     },
-    onSuccess: result => {
+    onSuccess: async result => {
       setNotice(undefined);
       if (allChatSubmissionSettlementStillCurrent({
         capturedEpoch: result.submissionEpoch,
@@ -1212,7 +1215,7 @@ export function AllChatView({
       } else {
         setDirectSendConfirmation(undefined);
       }
-      void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
       for (const agentId of result.recipientIds) {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.agents.detailPrefix(agentId),
@@ -1473,7 +1476,7 @@ export function AllChatView({
       />
     ) : null;
   return (
-    <Box
+    <OutgoingMessageProvider scope={composerConversationId ?? "all"} profile={workspacePreferences.data?.profile}><Box
       sx={{
         height: "100%",
         minHeight: 0,
@@ -1498,6 +1501,7 @@ export function AllChatView({
       </Box>
 
       <ChatSurface
+        showOutgoingMessage
         layout="workspace"
         layoutKey={layoutKey}
         label="All messages"
@@ -2008,6 +2012,6 @@ export function AllChatView({
         }}
         onConfirm={targets => void cancelOperationTargets(targets)}
       />
-    </Box>
+    </Box></OutgoingMessageProvider>
   );
 }

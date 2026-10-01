@@ -161,6 +161,9 @@ test("restores only a complete stable All Messages recipient", () => {
 
 test("All Messages leaves queued delivery to the message status", () => {
   assert.equal(allChatDeliveryConfirmation({
+    recipientTitles: ["Bryce Canyon"], queuedRecipientTitles: [], unavailableCount: 0, creationRecovering: false,
+  }), undefined, "HTTP acceptance must not announce successful provider delivery");
+  assert.equal(allChatDeliveryConfirmation({
     recipientTitles: ["Bryce Canyon"],
     queuedRecipientTitles: ["Bryce Canyon"],
     unavailableCount: 0,
@@ -171,7 +174,7 @@ test("All Messages leaves queued delivery to the message status", () => {
     queuedRecipientTitles: [],
     unavailableCount: 2,
     creationRecovering: false,
-  }), "Message sent to Bryce Canyon. 2 unavailable recipients were skipped.");
+  }), "2 unavailable recipients were skipped.");
 });
 
 test("restores only a complete All Messages source Chat identity", () => {

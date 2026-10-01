@@ -309,6 +309,7 @@ function ChatPaneComponent({
 
   return (
     <ChatSurface
+      showOutgoingMessage
       layout="agent"
       layoutKey={messageLayoutKey}
       follow={{

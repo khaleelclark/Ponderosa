@@ -4,6 +4,7 @@ import { ScrollToLatestButton } from "./scroll";
 import { ChatPagination } from "./ChatPagination";
 import type { ChatFollowLatest, ChatHistoryPage } from "./contracts";
 import { useChatScroll } from "./useChatScroll";
+import { OutgoingMessageRow, useOutgoingMessage } from "./OutgoingMessage";
 
 export type ChatSurfaceLayout = "agent" | "project" | "workspace";
 
@@ -16,6 +17,7 @@ export function ChatSurface({
   empty,
   children,
   beforeMessages,
+  showOutgoingMessage = false,
 }: {
   layoutKey: string;
   follow?: ChatFollowLatest;
@@ -25,9 +27,12 @@ export function ChatSurface({
   empty?: ReactNode;
   children: ReactNode;
   beforeMessages?: ReactNode;
+  showOutgoingMessage?: boolean;
 }): JSX.Element {
-  const scroll = useChatScroll(layoutKey, follow);
-  const isEmpty = Children.count(children) === 0;
+  const outgoing = useOutgoingMessage();
+  const pendingId = showOutgoingMessage ? outgoing?.message?.id : undefined;
+  const scroll = useChatScroll(`${layoutKey}:${pendingId ?? ""}`, follow);
+  const isEmpty = !pendingId && Children.count(children) === 0;
   const contentWidth = layout === "workspace" ? 1280 : layout === "project" ? 1180 : 1120;
   const padding = layout === "agent"
     ? { xs: 1, sm: 2, md: 3, lg: 4 }
@@ -78,6 +83,7 @@ export function ChatSurface({
             },
           } : undefined} />
           {children}
+          {showOutgoingMessage ? <OutgoingMessageRow /> : null}
           {isEmpty && empty ? typeof empty === "string" ? <Alert severity="info">{empty}</Alert> : empty : null}
         </Stack>
       </Stack>

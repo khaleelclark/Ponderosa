@@ -149,6 +149,7 @@ import {
 import { composerSurfaceSx } from "./Composer.styles";
 import { DictationControls } from "../speech/DictationControls";
 import { insertSpeechText } from "../speech/speechText";
+import { useOutgoingMessage } from "./OutgoingMessage";
 
 const DRAFT_OWNER_ID = /^[A-Za-z0-9_-]{1,128}$/u;
 const SPECIAL_MENTION_TITLES = new Map([
@@ -327,6 +328,7 @@ export function Composer({
   );
   const files = attachments.files;
   const queryClient = useQueryClient();
+  const outgoing = useOutgoingMessage();
   const assetLimitsQuery = useQuery({
     queryKey: queryKeys.assetLimits.all,
     queryFn: () => api.getAssetLimits(),
@@ -2300,6 +2302,10 @@ export function Composer({
     );
     const runtimeCommandSubmission =
       slash?.command.invocation === "runtime";
+    // Render before fingerprinting, durable draft persistence or upload prep.
+    // Runtime commands are not authored messages and must not get an echo.
+    const outgoingId = runtimeCommandSubmission ? undefined
+      : outgoing?.begin(exactSubmissionText, files.map(file => file.name));
     if (!runtimeCommandSubmission) {
       draftMutationLockedRef.current = true;
       setDraftMutationLocked(true);
@@ -2631,6 +2637,7 @@ export function Composer({
         );
       })
       .finally(() => {
+        if (outgoingId) outgoing?.finish(outgoingId);
         draftMutationLockedRef.current = false;
         setDraftMutationLocked(false);
         sendingRef.current = false;
