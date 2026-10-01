@@ -58,7 +58,7 @@ try {
     }
     await surface.getByRole("button", { name: /Review/ }).click();
     await page.getByRole("dialog", { name: "Needs Your Attention" }).waitFor();
-    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await page.getByRole("button", { name: "Close review", exact: true }).click();
     await chat.evaluate(el => { el.scrollTop = 0; });
     const textBounds = await chat.getByText("I've kept this release focused on your notification.").boundingBox();
     assert.ok(textBounds && textBounds.y >= geometry.chat.top - 1, "scrolling to the first message cannot place it under attention cards");

@@ -39,6 +39,7 @@ export function createOperationalNotifications(context: OperationalNotifications
     title: string;
     body: string;
     contextPreview?: string;
+    workContext?: WorkspaceNotificationDto["workContext"];
     projectId?: string;
     conversationId?: string;
     conversationIds?: string[];
@@ -126,6 +127,9 @@ export function createOperationalNotifications(context: OperationalNotifications
           ? "Ponderosa cannot confirm this message's result. Review the Agent's work before retrying; earlier changes may exist."
           : `Ponderosa could not deliver this message after ${failure.deliveryFailures} ${failure.deliveryFailures === 1 ? "attempt" : "attempts"}. ${issue}`,
         ...(excerpt ? { contextPreview: excerpt } : {}),
+        workContext: { kind: "activation", recordId: failure.id,
+          state: failure.terminalOutcome ?? failure.state, occurredAt: failure.updatedAt,
+          ...(excerpt ? { assignment: excerpt } : {}) },
         projectId: failure.projectId,
         ...(conversation ? { conversationId: conversation.id } : {}),
         ...(failure.communicationEventId ? { communicationEventId: failure.communicationEventId } : {}),
@@ -214,31 +218,49 @@ export function createOperationalNotifications(context: OperationalNotifications
         // recovery surfaces. They are not coordinated assignments merely
         // because their execution trace ended uncertain.
         if (!failedRequest && !failedJoin && !failedTrigger) continue;
-        const responsibleAgentId = failedRequest?.recipientAgentId ?? failedRequest?.requesterAgentId ?? trace.agentIds[0];
+        const failedWork = failedRequest ?? failedJoin ?? failedTrigger!;
+        const responsibleAgentId = failedRequest?.recipientAgentId ?? failedRequest?.requesterAgentId
+          ?? failedWork.agentIds[0] ?? trace.agentIds[0];
         const agent = responsibleAgentId ? store.getAgent(responsibleAgentId) : undefined;
         const affectedAgents = trace.agentIds.flatMap((agentId) => {
           const affected = store.getAgent(agentId);
           return affected && !affected.archived ? [affected] : [];
         });
-        const conversationIds = [...new Set(affectedAgents.map((affected) => affected.conversationId))].sort();
         const requestRecord = failedRequest ? coordinationV3.getRequest(failedRequest.recordId) : undefined;
+        const triggerRecord = failedTrigger ? coordinationV3.getTriggerOccurrence(failedTrigger.recordId) : undefined;
+        const conversationIds = [...new Set([
+          requestRecord?.conversationId, triggerRecord?.triggerSnapshot?.conversationId,
+          ...affectedAgents.map((affected) => affected.conversationId),
+        ].filter((id): id is string => Boolean(id)))].sort();
+        const primaryConversationId = requestRecord?.conversationId
+          ?? (failedWork.kind === "trigger" ? triggerRecord?.triggerSnapshot?.conversationId : undefined)
+          ?? agent?.conversationId ?? conversationIds[0];
         const requestPayload = requestRecord?.payload && typeof requestRecord.payload === "object" && !Array.isArray(requestRecord.payload)
           ? requestRecord.payload as Record<string, unknown>
           : undefined;
-        const rawAssignmentValue = [requestPayload?.text, requestPayload?.assignment, requestPayload?.task, requestPayload?.request, requestPayload?.prompt].find((value): value is string => typeof value === "string");
+        const rawAssignmentValue = [requestPayload?.text, requestPayload?.assignment, requestPayload?.task, requestPayload?.request, requestPayload?.prompt,
+          typeof requestRecord?.payload === "string" ? requestRecord.payload : undefined].find((value): value is string => typeof value === "string");
         const rawAssignment = rawAssignmentValue?.replace(/\s+/gu, " ").trim() ?? "";
         const assignment = rawAssignment
           ? `${rawAssignment.slice(0, 220)}${rawAssignment.length > 220 ? "…" : ""}`
-          : "Coordinated assignment";
+          : "Assignment description unavailable";
         const recipient = failedRequest?.recipientAgentId ? store.getAgent(failedRequest.recipientAgentId) : undefined;
-        const outcome = failedRequest?.state ?? "unresolved";
+        const outcome = failedWork.state;
         const lifecycle = failedRequest ? coordinationV3.requestLifecycleDetails({
           projectId: project.id,
           recordId: failedRequest.recordId,
         }) : undefined;
         const cause = [...(lifecycle?.updates ?? [])].reverse().find(update => update.kind === "outcome_unknown")?.outcomeCause;
+        const terminalUpdate = [...(lifecycle?.updates ?? [])].reverse().find(update => update.resultingState === outcome);
+        const detail = terminalUpdate?.text?.replace(/\s+/gu, " ").trim().slice(0, 800);
         const outcomeExplanation = outcome === "outcome_unknown"
           ? outcomeCauseExplanation(cause ?? { code: "cause_unavailable" })
+          : failedWork.kind === "join"
+            ? outcome === "expired"
+              ? "The wait for required assignment results reached its deadline. Related work may already be complete."
+              : "The required combination of assignment results could no longer be collected. Related work may already be complete."
+          : failedWork.kind === "trigger"
+            ? "This Automation stopped after its allowed attempts. Review its activity before starting it again."
           : outcome === "recipient_unavailable"
             ? "The assigned Agent is no longer available to finish this work."
             : outcome === "blocked"
@@ -254,13 +276,20 @@ export function createOperationalNotifications(context: OperationalNotifications
           dedupeKey: key,
           category: "coordination",
           severity: "attention",
-          title: recipient ? `${recipient.title}'s assignment needs a decision` : "A coordinated assignment needs a decision",
-          body: outcome === "outcome_unknown"
-            ? outcomeExplanation
-            : `${outcomeExplanation} Review the current state before deciding whether to retry it.`,
-          ...(assignment !== "Coordinated assignment" ? { contextPreview: assignment.slice(0, 120) } : {}),
+          title: failedRequest ? `${recipient?.title ?? "Unavailable Agent"}'s assignment needs review`
+            : failedJoin ? `${agent?.title ?? "Agent"} could not collect the required results`
+            : `${triggerRecord?.triggerSnapshot?.name ?? "Automation"} needs review`,
+          body: outcomeExplanation,
+          ...(rawAssignment ? { contextPreview: assignment.slice(0, 120) } : {}),
+          workContext: {
+            kind: failedWork.kind as "request" | "join" | "trigger", recordId: failedWork.recordId,
+            traceId: trace.id, state: outcome, occurredAt: terminalUpdate?.createdAt ?? failedWork.updatedAt,
+            ...(detail && outcome !== "outcome_unknown" ? { detail } : {}),
+            ...(rawAssignment ? { assignment } : failedWork.kind === "trigger" && triggerRecord?.triggerSnapshot
+              ? { assignment: `Automation: ${triggerRecord.triggerSnapshot.name}` } : {}),
+          },
           projectId: project.id,
-          ...(conversationIds[0] ? { conversationId: conversationIds[0], conversationIds } : {}),
+          ...(primaryConversationId ? { conversationId: primaryConversationId, conversationIds } : {}),
           ...(affectedAgents.length ? { agentIds: affectedAgents.map((affected) => affected.id) } : {}),
           ...(agent ? { agentId: agent.id, action: { kind: "open_agent" as const, targetId: agent.id } } : {
             action: { kind: "open_project" as const, targetId: project.id },
@@ -274,7 +303,11 @@ export function createOperationalNotifications(context: OperationalNotifications
               recipientTitle: recipient.title,
               assignment,
               outcome,
-              retryAvailable: ["blocked", "expired", "outcome_unknown", "failed", "recipient_unavailable"].includes(outcome),
+              retryAvailable: Boolean(requestRecord?.requesterAgentId
+                && store.getAgent(requestRecord.requesterAgentId)
+                && !store.getAgent(requestRecord.requesterAgentId)?.archived
+                && !recipient.archived
+                && ["blocked", "expired", "outcome_unknown", "failed", "recipient_unavailable"].includes(outcome)),
             },
           } : {}),
         });

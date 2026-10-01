@@ -20,7 +20,7 @@ export interface NotificationRoutesOptions {
     | "readNotificationsForCommunicationEvents"
     | "setNotificationStatus"
   >;
-  readonly store: Pick<AgentStore, "getAgentTitleProjection">;
+  readonly store: Pick<AgentStore, "getAgentTitleProjection" | "getProject" | "getConversation">;
   readonly publishWorkspaceSince: (cursor: number) => void;
 }
 
@@ -71,12 +71,22 @@ export function registerNotificationListRoute(
     const agentTitles = options.store.getAgentTitleProjection(
       page.items.flatMap((notification) => notification.agentId ? [notification.agentId] : []),
     );
+    // Resolve only this bounded page's distinct scopes; no per-card browser
+    // requests, all-Project collectors or notification-history scan.
+    const projectIds = new Set(page.items.flatMap(item => item.projectId ? [item.projectId] : []));
+    const projectLabels = new Map([...projectIds].map(id => [id, options.store.getProject(id)?.label]));
+    const chats = new Map([...new Set(page.items.flatMap(item => item.conversationId ? [item.conversationId] : []))]
+      .map(id => [id, options.store.getConversation(id)]));
     const items = page.items.map((notification) => {
-      if (!notification.agentId) return notification;
-      const agentTitle = agentTitles.get(notification.agentId);
+      const agentTitle = notification.agentId ? agentTitles.get(notification.agentId) : undefined;
+      const projectLabel = notification.projectId ? projectLabels.get(notification.projectId) : undefined;
+      const chat = notification.conversationId ? chats.get(notification.conversationId) : undefined;
+      const conversationTitle = chat?.projectId === notification.projectId ? chat?.title : undefined;
       return {
         ...notification,
         ...(agentTitle ? { agentTitle } : {}),
+        ...(projectLabel ? { projectLabel } : {}),
+        ...(conversationTitle ? { conversationTitle } : {}),
       };
     });
     return {

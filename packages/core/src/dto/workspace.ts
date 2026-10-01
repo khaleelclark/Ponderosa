@@ -335,6 +335,9 @@ export interface WorkspaceNotificationDto {
   sourceAgentId?: string;
   projectId?: string;
   conversationId?: string;
+  /** Current names projected on bounded notification reads, not identity. */
+  projectLabel?: string;
+  conversationTitle?: string;
   /** Every Project chat where the affected Agent currently participates. */
   conversationIds?: string[];
   agentId?: string;
@@ -354,6 +357,17 @@ export interface WorkspaceNotificationDto {
   body: string;
   /** Bounded in-app context; never included in lock-screen push copy. */
   contextPreview?: string;
+  /** Bounded evidence from the exact canonical work record, when retained. */
+  workContext?: {
+    kind: "request" | "join" | "trigger" | "activation";
+    recordId: string;
+    traceId?: string;
+    state: string;
+    occurredAt: string;
+    assignment?: string;
+    /** Bounded canonical work detail for in-app review, not push copy. */
+    detail?: string;
+  };
   createdAt: string;
   /** Durable receipt that the operator reviewed this still-open action. */
   acknowledgedAt?: string;
