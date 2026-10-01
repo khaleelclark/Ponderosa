@@ -52,12 +52,11 @@ try {
     assert(overflow.width <= width && overflow.scroll <= overflow.client + 1, "review stays inside viewport without horizontal overflow");
     await card.getByRole("button", { name: "Details", exact: true }).click();
     await card.getByText("Work record: request:watch-123456789012", { exact: true }).waitFor();
-    await card.getByRole("button", { name: "Mark reviewed", exact: true }).click();
-    await page.waitForFunction(() => JSON.parse(document.body.dataset.calls ?? "[]").some(c => c.kind === "review" && c.id === "unknown"));
-    await card.getByText("Reviewed · still open", { exact: true }).waitFor();
+    assert.equal(await dialog.getByRole("button", { name: "Mark reviewed", exact: true }).count(), 0);
+    assert.equal(await dialog.getByRole("button", { name: "Hide notice", exact: true }).count(), 0);
     await dialog.getByRole("button", { name: "Close review", exact: true }).click();
     await dialog.waitFor({ state: "detached" });
-    assert.equal(await page.evaluate(() => JSON.parse(document.body.dataset.calls).filter(c => c.kind === "retry" || c.kind === "status").length), 0);
+    assert.equal(await page.evaluate(() => JSON.parse(document.body.dataset.calls ?? "[]").filter(c => c.kind === "retry" || c.kind === "status" || c.kind === "review").length), 0);
     await page.getByRole("button", { name: "Review All", exact: true }).click();
     await card.getByRole("button", { name: "Retry assignment…", exact: true }).click();
     const confirmation = page.getByRole("dialog", { name: "Retry this assignment?" });
@@ -69,7 +68,7 @@ try {
     await confirmation.waitFor({ state: "detached" });
     assert.deepEqual(await page.evaluate(() => JSON.parse(document.body.dataset.calls).find(c => c.kind === "retry")),
       { kind: "retry", id: "watch-123456789012", options: { idempotencyKey: "operator-retry:unknown" } });
-    await legacy.getByRole("button", { name: "Hide notice", exact: true }).click();
+    await legacy.getByRole("button", { name: "Dismiss", exact: true }).click();
     await legacy.waitFor({ state: "detached" });
     assert.deepEqual(await page.evaluate(() => JSON.parse(document.body.dataset.calls).find(c => c.kind === "status")),
       { kind: "status", id: "historical-one", options: "dismissed" });
@@ -86,14 +85,17 @@ try {
   await panelPage.getByRole("tab", { name: /^Needs Action/ }).click();
   await panelPage.getByText(/Wait 987654321012/).waitFor();
   assert.equal(await panelPage.getByRole("button", { name: "Mark Resolved", exact: true }).count(), 0);
-  assert.equal(await panelPage.getByRole("button", { name: "Hide notice", exact: true }).count(), 4);
+  assert.equal(await panelPage.getByRole("button", { name: "Dismiss", exact: true }).count(), 4);
+  assert.equal(await panelPage.getByRole("button", { name: "Mark reviewed", exact: true }).count(), 0);
+  assert.equal(await panelPage.getByRole("button", { name: "Hide notice", exact: true }).count(), 0);
   assert.equal(await panelPage.evaluate(() => JSON.parse(document.body.dataset.calls ?? "[]").filter(c => c.kind === "unexpected-chat-directory").length), 0);
   await panelPage.getByRole("button", { name: "Open activity", exact: true }).nth(1).click();
   await panelPage.waitForFunction(() => JSON.parse(document.body.dataset.calls ?? "[]").some(c => c.kind === "navigate"));
   assert.equal(await panelPage.evaluate(() => JSON.parse(document.body.dataset.calls).find(c => c.kind === "navigate").options.focusId), "join:wait-987654321012");
+  assert.equal(await panelPage.evaluate(() => JSON.parse(document.body.dataset.calls ?? "[]").filter(c => c.kind === "review").length), 0);
   await panelPage.close();
   assert.deepEqual(errors, []);
-  console.log(`PASS ${engine}: identifiable current/legacy notices, mobile containment, acknowledgement, hide-only semantics, exact activity targets and confirmed idempotent retry`);
+  console.log(`PASS ${engine}: identifiable current/legacy notices, mobile containment, Dismiss-only controls, exact activity targets and confirmed idempotent retry`);
 } finally {
   await browser?.close(); await new Promise(resolve => server ? server.close(resolve) : resolve());
   await rm(output, { recursive: true, force: true });

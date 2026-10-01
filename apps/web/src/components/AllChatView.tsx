@@ -93,8 +93,6 @@ import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import { AUTO_ALLOWED_DECISION_OPTION_ID } from "./ConversationView.helpers";
 import { CompactWorkspaceHeader } from "./WorkspaceFrame";
 import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
-import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
-import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ReadAloudControls } from "./speech/ReadAloudControls";
@@ -238,7 +236,6 @@ export function AllChatView({
     { data: notifications },
     queryClient,
   );
-  const acknowledgeNotifications = useNotificationAcknowledgement();
   const [older, setOlder] = useState<{
     items: AllChatItemDto[];
     decisions: AllChatDecisionEventDto[];
@@ -1567,12 +1564,7 @@ export function AllChatView({
               />
               <Typography variant="caption" color="text.secondary">{entry.item.source.title}</Typography>
               </Box>;
-              return notification ? <NotificationAcknowledgementBoundary
-                key={entry.id}
-                notificationId={notification.id}
-                acknowledged={Boolean(notification.acknowledgedAt)}
-                onAcknowledge={acknowledgeNotifications}
-              >{card}</NotificationAcknowledgementBoundary> : card;
+              return notification ? <Box key={entry.id} data-notification-id={notification.id}>{card}</Box> : card;
             }
             if (entry.kind === "decision-response") {
               const automatic =

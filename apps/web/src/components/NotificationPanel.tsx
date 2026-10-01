@@ -37,11 +37,6 @@ import {
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { notificationDecision } from "../decisions";
 import { DecisionActions } from "./decisions/DecisionActions";
-import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
-import {
-  useNotificationAcknowledgement,
-  type NotificationAcknowledgementOptimisticTarget,
-} from "../hooks/useNotificationAcknowledgement";
 
 interface NotificationGroup {
   key: string;
@@ -181,71 +176,10 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
     olderPagesRef.current = next;
     setOlderPages(next);
   }, []);
-  const pendingAcknowledgements = useRef(new Map<string, string>());
   const pendingReads = useRef(new Map<string, string>());
   const [filter, setFilter] = useState<NotificationFilter>("updates");
   const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string>();
-  const acknowledgeNotifications = useNotificationAcknowledgement((reason) => {
-    setError(reason instanceof Error ? reason.message : "Action review could not be saved.");
-  });
-  const olderPagesOptimisticTarget = useMemo<NotificationAcknowledgementOptimisticTarget>(
-    () => ({
-      apply(notificationIds, acknowledgedAt) {
-        const ids = new Set(notificationIds);
-        notificationIds.forEach((id) => pendingAcknowledgements.current.set(id, acknowledgedAt));
-        replaceOlderPages((current) => current.map((page) => ({
-          ...page,
-          items: page.items.map((item) => ids.has(item.id) && isOpenAttention(item) && !item.acknowledgedAt
-            ? { ...item, acknowledgedAt }
-            : item),
-        })));
-      },
-      commit(notificationIds, acknowledgedAt) {
-        notificationIds.forEach((id) => {
-          if (pendingAcknowledgements.current.get(id) === acknowledgedAt) {
-            pendingAcknowledgements.current.delete(id);
-          }
-        });
-      },
-      rollback(notificationIds, acknowledgedAt) {
-        const ids = new Set(notificationIds);
-        const revertedIds = new Set<string>();
-        const deferCountIds = new Set<string>();
-        if (!retainedPagesCanonical.current) {
-          notificationIds.forEach((id) => deferCountIds.add(id));
-        }
-        replaceOlderPages((current) => current.map((page) => ({
-          ...page,
-          items: page.items.map((item) => {
-            if (!ids.has(item.id)) return item;
-            if (item.acknowledgedAt && item.acknowledgedAt !== acknowledgedAt) {
-              deferCountIds.add(item.id);
-              return item;
-            }
-            if (item.acknowledgedAt !== acknowledgedAt) return item;
-            revertedIds.add(item.id);
-            const { acknowledgedAt: _acknowledgedAt, ...unacknowledged } = item;
-            return unacknowledged;
-          }),
-        })));
-        notificationIds.forEach((id) => {
-          if (pendingAcknowledgements.current.get(id) === acknowledgedAt) {
-            pendingAcknowledgements.current.delete(id);
-          }
-        });
-        return {
-          revertedIds: [...revertedIds],
-          deferCountIds: [...deferCountIds],
-        };
-      },
-    }),
-    [replaceOlderPages],
-  );
-  const acknowledgePresentedNotifications = (notificationIds: readonly string[]) => {
-    setError(undefined);
-    acknowledgeNotifications(notificationIds, olderPagesOptimisticTarget);
-  };
   const wasOpen = useRef(false);
   const availableProjectIds = useMemo(
     () => new Set(projects.map(project => project.id)),
@@ -278,7 +212,6 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       replaceOlderPages(() => []);
       retainedPagesCanonical.current = true;
       reconciledRevision.current = firstPageRevision;
-      pendingAcknowledgements.current.clear();
       pendingReads.current.clear();
       setHistoryReconcileFailed(false);
       setFilter(openActionCount ? "attention" : "updates");
@@ -365,13 +298,10 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
         replaceOlderPages(() => pages.map((page) => ({
           ...page,
           items: page.items.map((item) => {
-            const acknowledgedAt = pendingAcknowledgements.current.get(item.id);
             const readAt = pendingReads.current.get(item.id);
-            if (item.acknowledgedAt) pendingAcknowledgements.current.delete(item.id);
             if (item.readAt) pendingReads.current.delete(item.id);
             return {
               ...item,
-              ...(!item.acknowledgedAt && acknowledgedAt ? { acknowledgedAt } : {}),
               ...(!item.readAt && readAt ? { readAt } : {}),
             };
           }),
@@ -447,11 +377,9 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
         ...page,
         requestedCursor: operation.startCursor,
         items: page.items.map((item) => {
-          const acknowledgedAt = pendingAcknowledgements.current.get(item.id);
           const readAt = pendingReads.current.get(item.id);
           return {
             ...item,
-            ...(!item.acknowledgedAt && acknowledgedAt ? { acknowledgedAt } : {}),
             ...(!item.readAt && readAt ? { readAt } : {}),
           };
         }),
@@ -584,7 +512,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       <Tab value="updates" label={`Updates (${unreadUpdateCount})`} sx={{ minHeight: 42 }} />
     </Tabs>
     <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5, overflowX: "hidden", minWidth: 0 }}>
-      {filter === "attention" ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>Mark reviewed records that you have read a notice. Hide notice removes only the warning; it does not retry, cancel, or delete work.</Typography> : null}
+      {filter === "attention" ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>Dismiss removes only the notice. It does not retry, cancel, or delete work.</Typography> : null}
       {error ? <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert> : null}
       {loadFailed ? <Alert severity="warning" sx={{ mb: 1 }} action={onRetry ? <Button color="inherit" onClick={onRetry}>Retry</Button> : undefined}>{firstPage ? "Notifications could not refresh. Showing the last loaded notifications." : "Notifications could not be loaded. Try again."}</Alert> : !firstPage && loading ? <Typography role="status">Loading notifications…</Typography> : null}
       <Stack spacing={1}>
@@ -604,7 +532,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
               {group.items.map((item) => {
                 const attention = isOpenAttention(item) ? attentionPresentation(item) : undefined;
                 return <ListItem key={item.id} disablePadding sx={{ "& > [data-notification-id]": { flex: 1, minWidth: 0 } }}>
-                <NotificationAcknowledgementBoundary notificationId={item.id} acknowledged={Boolean(item.acknowledgedAt) || !isOpenAttention(item)} onAcknowledge={acknowledgePresentedNotifications}>
+                <Box data-notification-id={item.id}>
                 <ListItemButton selected={filter === "updates" ? !item.readAt : !item.acknowledgedAt} onClick={() => navigateToNotification(item)} alignItems="flex-start" sx={{ gap: 1, mx: .75, my: .45, py: 1, borderRadius: 1.5 }}>
                   <Box aria-hidden sx={{ width: 8, height: 8, mt: .75, borderRadius: "50%", bgcolor: filter === "updates" ? "primary.main" : item.acknowledgedAt ? "action.disabled" : item.severity === "urgent" ? "error.main" : "warning.main", flex: "0 0 auto" }} />
                   <ListItemText
@@ -627,12 +555,12 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
                     <Button size="small" color="inherit" sx={{ ml: "auto" }} onClick={(event) => {
                       event.stopPropagation();
                       void setStatus(item, "dismissed");
-                    }}>{attention ? "Hide notice" : "Dismiss"}</Button>
+                    }}>Dismiss</Button>
                     </Box></Stack>}
                     secondaryTypographyProps={{ component: "div" }}
                   />
                 </ListItemButton>
-                </NotificationAcknowledgementBoundary>
+                </Box>
               </ListItem>; })}
             </List>
           </Box>;

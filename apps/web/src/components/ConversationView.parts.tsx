@@ -51,8 +51,6 @@ import { MessageRequestAction } from "./MessageRequestAction";
 import { DecisionCard } from "./decisions/DecisionCard";
 import { decisionResponseSummary } from "./decisions/decisionResponse";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
-import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
-import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import {
   AUTO_ALLOWED_DECISION_OPTION_ID,
@@ -416,7 +414,6 @@ function MainConversationTimeline({
   ): void;
   notifications: WorkspaceNotificationDto[];
 }): JSX.Element {
-  const acknowledgeNotifications = useNotificationAcknowledgement();
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
       {mainTimeline.length === 0 ? (
@@ -431,12 +428,7 @@ function MainConversationTimeline({
           const card = <Box key={entry.id} sx={{ py: 1 }}>
           <DecisionCard decision={entry.event.decision} title={entry.event.decision.question} context={entry.event.decision.context} />
           </Box>;
-          return notification ? <NotificationAcknowledgementBoundary
-            key={entry.id}
-            notificationId={notification.id}
-            acknowledged={Boolean(notification.acknowledgedAt)}
-            onAcknowledge={acknowledgeNotifications}
-          >{card}</NotificationAcknowledgementBoundary> : card;
+          return notification ? <Box key={entry.id} data-notification-id={notification.id}>{card}</Box> : card;
         }
         if (entry.kind === "decision-response") {
           const automatic =

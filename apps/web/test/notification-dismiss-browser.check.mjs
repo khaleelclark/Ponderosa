@@ -44,11 +44,13 @@ try {
     for (const [tab, id] of [["Updates (1)", "update"], ["Needs Action (1)", "action"]]) {
       await page.getByRole("tab", { name: tab }).click();
       const card = page.locator(`[data-notification-id="${id}"]`);
-      const label = id === "action" ? "Hide notice" : "Dismiss";
+      const label = "Dismiss";
       const dismiss = card.getByRole("button", { name: label, exact: true });
       await dismiss.waitFor();
       assert.equal(await page.getByRole("button", { name: `Dismiss notification: ${id}` }).count(), 0);
       assert.equal(await card.getByRole("button", { name: label, exact: true }).count(), 1);
+      assert.equal(await page.getByRole("button", { name: "Mark reviewed", exact: true }).count(), 0);
+      assert.equal(await page.getByRole("button", { name: "Hide notice", exact: true }).count(), 0);
       await dismiss.click();
       await page.waitForFunction((value) => document.querySelector("#actions")?.textContent?.includes(`${value}:dismissed`), id);
     }

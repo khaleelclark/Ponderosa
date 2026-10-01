@@ -11,8 +11,6 @@ import { copyText } from "../clipboard";
 import { notificationDecision } from "../decisions";
 import { queryKeys } from "../queryKeys";
 import { DecisionCard } from "./decisions/DecisionCard";
-import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
-import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
 
 export function AttentionSurface({
   notifications,
@@ -33,8 +31,6 @@ export function AttentionSurface({
   const [expandedIssueId, setExpandedIssueId] = useState<string>();
   const [copiedIssueId, setCopiedIssueId] = useState<string>();
   const [retryItem, setRetryItem] = useState<WorkspaceNotificationDto>();
-  const [acknowledgementError, setAcknowledgementError] = useState<unknown>();
-  const acknowledgeNotifications = useNotificationAcknowledgement(setAcknowledgementError);
   const items = scopedAttention(notifications, {
     ...(projectId ? { projectId } : {}),
     ...(conversationId ? { conversationId } : {}),
@@ -101,18 +97,14 @@ export function AttentionSurface({
       </DialogTitle>
       <DialogContent dividers sx={{ px: { xs: 1.5, sm: 3 }, minHeight: 0, overflowX: "hidden" }}>
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-          Mark reviewed records that you have read a notice. Hide notice removes only the warning. Neither retries, cancels, or deletes work.
+          Dismiss removes only the notice. It does not retry, cancel, or delete work.
         </Typography>
         <Stack spacing={2}>
           {items.map((item) => {
             const copy = attentionPresentation(item);
             const coordination = item.resolution?.kind === "coordination_request" ? item.resolution : undefined;
             const expanded = expandedIssueId === item.id;
-            return <Box key={item.id} component="article" aria-label={copy.reference} sx={{ border: 1, borderColor: "divider", borderRadius: 2, p: 1.5, minWidth: 0 }}><NotificationAcknowledgementBoundary
-              notificationId={item.id}
-              acknowledged={Boolean(item.acknowledgedAt)}
-              onAcknowledge={acknowledgeNotifications}
-            >
+            return <Box key={item.id} component="article" data-notification-id={item.id} aria-label={copy.reference} sx={{ border: 1, borderColor: "divider", borderRadius: 2, p: 1.5, minWidth: 0 }}>
             <Stack spacing={1} sx={{ overflowWrap: "anywhere" }}>
               <Stack direction="row" useFlexGap flexWrap="wrap" spacing={1} sx={{ alignItems: "center" }}>
                 <Chip size="small" color={item.acknowledgedAt ? "default" : "warning"} label={item.acknowledgedAt ? "Reviewed · still open" : "Needs review"} />
@@ -138,7 +130,7 @@ export function AttentionSurface({
                 {onOpen && (item.projectId || item.action?.kind === "open_settings") ? <Button size="small" variant="outlined" onClick={() => { setOpen(false); onOpen(item); }}>{item.action?.kind === "open_settings" ? "Open details" : "Open activity"}</Button> : null}
                 {coordination?.retryAvailable ? <Button size="small" disabled={pending} onClick={() => { retry.reset(); setRetryItem(item); }}>Retry assignment…</Button> : null}
                 {item.kind !== "decision" ? <Button size="small" color="inherit" disabled={pending} onClick={() => resolve.mutate(item.id)}>
-                  Hide notice
+                  Dismiss
                 </Button> : null}
                 <Button
                   size="small"
@@ -173,9 +165,9 @@ export function AttentionSurface({
                 </Box>
               </Collapse>
             </Stack>
-          </NotificationAcknowledgementBoundary></Box>;
+          </Box>;
           })}
-          {resolve.isError || retry.isError || acknowledgementError ? <Alert severity="error">{(resolve.error ?? retry.error ?? acknowledgementError) instanceof Error ? (resolve.error ?? retry.error ?? acknowledgementError as Error).message : "The issue could not be updated. Review the current state and try again."}</Alert> : null}
+          {resolve.isError || retry.isError ? <Alert severity="error">{(resolve.error ?? retry.error) instanceof Error ? (resolve.error ?? retry.error as Error).message : "The issue could not be updated. Review the current state and try again."}</Alert> : null}
         </Stack>
       </DialogContent>
       <DialogActions><Button onClick={() => setOpen(false)}>Close review</Button></DialogActions>

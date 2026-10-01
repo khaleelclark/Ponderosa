@@ -32,11 +32,6 @@ try {
   for (const width of [390, 1280]) {
     const page = await browser.newPage({ viewport: { width, height: 800 } });
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
-    await page.getByRole("button", { name: "Open the notice" }).focus();
-    await page.getByRole("button", { name: "Open the notice" }).click();
-    assert.equal(await page.evaluate(() => window.reviewed), false, "viewing/focusing a notice must not silently mark it reviewed");
-    await page.getByRole("button", { name: "Mark reviewed" }).click();
-    assert.equal(await page.evaluate(() => window.reviewed), true);
     await page.getByRole("button", { name: "Chat settings and actions" }).click();
     const rows = page.getByRole("menuitem");
     await rows.first().waitFor();
