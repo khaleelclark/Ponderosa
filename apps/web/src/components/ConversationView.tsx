@@ -1266,7 +1266,14 @@ export function ConversationView({
             onClose={() => setAgentWorkOpen(false)}
           />
         ) : activeView === "files" ? (
-          <Box id="chat-workspace-files-panel" role="tabpanel" aria-labelledby="chat-workspace-files-tab" sx={{ height: "100%", minHeight: 0, minWidth: 0 }}><ConversationFilesResults
+          <Box
+            id="chat-workspace-files-panel"
+            role="tabpanel"
+            aria-labelledby="chat-workspace-files-tab"
+            // Bound the nested list to the workspace; an auto-height wrapper
+            // lets it grow behind this view's overflow-hidden ancestor.
+            sx={{ height: "100%", minHeight: 0, minWidth: 0 }}
+          ><ConversationFilesResults
             projectId={conversation.projectId}
             projectRoot={
               projectsQuery.data?.find(
