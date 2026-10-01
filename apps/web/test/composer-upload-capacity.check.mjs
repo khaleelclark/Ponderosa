@@ -50,7 +50,7 @@ try {
     if (extension === "docx") {
       assert.equal(await page.getByText(/Word document ·/).count(), 4);
       assert.equal(await page.getByRole("link", { name: /Download file-\d\.docx/ }).count(), 4);
-      assert.equal(await page.getByRole("button", { name: /Preview file-\d\.docx/ }).count(), 0);
+      assert.equal(await page.getByRole("button", { name: /Preview file-\d\.docx/ }).count(), 4);
     }
     await page.close();
   }

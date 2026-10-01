@@ -26,6 +26,9 @@ const textPreviewSupported = (attachment: CommunicationAttachmentDto) =>
   ["text", "markdown", "diff"].includes(previewCapability({
     mediaType: attachment.mediaType, path: attachment.name,
   }).kind);
+const wordPreviewSupported = (attachment: CommunicationAttachmentDto) => previewCapability({
+  mediaType: attachment.mediaType, path: attachment.name,
+}).kind === "docx";
 
 export function ChatAttachments({
   attachments,
@@ -134,7 +137,7 @@ export function ChatAttachments({
                   <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name}</Typography>
                   <Typography variant="caption" color="text.secondary">{attachment.mediaType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ? "Word document" : attachment.mediaType} · {attachment.size} bytes</Typography>
                   <Stack direction="row" spacing={0.5}>
-                    {textPreviewSupported(attachment) && (downloadUrl || previewUrl) ? <Button
+                    {(textPreviewSupported(attachment) || wordPreviewSupported(attachment)) && (downloadUrl || previewUrl) ? <Button
                       size="small"
                       onClick={() => setPreview(attachment)}
                       aria-label={`Preview ${attachment.name}`}
@@ -223,7 +226,7 @@ export function ChatAttachments({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            bgcolor: preview && textPreviewSupported(preview) ? "background.paper" : "#0b0e0d",
+            bgcolor: preview && (textPreviewSupported(preview) || wordPreviewSupported(preview)) ? "background.paper" : "#0b0e0d",
             overflow: "auto",
           }}
         >
@@ -231,6 +234,11 @@ export function ChatAttachments({
             <Stack sx={{ p: 2 }}><Typography role="status">{preview?.unavailable ? "Attachment unavailable" : "Preview could not load."}</Typography>
               {preview && failed.has(preview.id) && !preview.unavailable ? <Button onClick={() => setFailed(current => { const next = new Set(current); next.delete(preview.id); return next; })}>Retry preview</Button> : null}
             </Stack>
+          ) : preview && wordPreviewSupported(preview) ? (
+            <Box sx={{ width: "100%", height: "100%", p: 2, minWidth: 0 }}>
+              <FilePreview title={preview.name} path={preview.name} mediaType={preview.mediaType}
+                downloadUrl={preview.downloadUrl ?? preview.url} hideHeader maxHeight="100%" />
+            </Box>
           ) : preview && textPreviewSupported(preview) ? (
             <Box sx={{ width: "100%", height: "100%", p: 2, minWidth: 0 }}>
               <FilePreview
