@@ -157,7 +157,7 @@ export function AttentionSurface({
   const urgent = unacknowledgedItems.some((item) => item.severity === "urgent");
   const pending = resolve.isPending || retry.isPending;
 
-  return <>
+  return <Box component="section" aria-label="Needs your attention" sx={{ minWidth: 0, maxHeight: "min(40dvh, 360px)", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", pb: 1.5 }}>
     {pendingQuestions.map((item) => {
       const decision = notificationDecision(item);
       return decision ? <Box key={item.id} sx={{ mx: { xs: 1.5, md: 2.5 }, mt: 1.5 }}>
@@ -268,5 +268,5 @@ export function AttentionSurface({
       </DialogContent>
       <DialogActions><Button onClick={() => setOpen(false)}>Close</Button></DialogActions>
     </Dialog>
-  </>;
+  </Box>;
 }
