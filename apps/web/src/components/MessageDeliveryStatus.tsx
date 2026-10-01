@@ -256,34 +256,41 @@ export function MessageDeliveryStatus({
           : tone === "error"
             ? ErrorOutlineIcon
             : InfoOutlinedIcon;
+      const shortLabel = receipt.state === "cancelled" && receipt.providerAcknowledged
+        ? `Delivered · ${compactDeliveryLabel(receipt)}`
+        : compactDeliveryLabel(receipt);
       return <Stack key={receipt.activationId} direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ justifyContent: "flex-end", maxWidth: "100%" }}>
-        <ButtonBase
-          aria-label={onOpenAgent ? `${detailedLabel} Open direct chat with ${name}.` : detailedLabel}
-          title={runtime}
-          disabled={!onOpenAgent}
-          onClick={() => onOpenAgent?.(receipt.targetAgentId)}
-          sx={{
-            maxWidth: "100%",
-            minHeight: 28,
-            px: 0.75,
-            py: 0.25,
-            borderRadius: 999,
-            color: `${tone}.main`,
-            bgcolor: (theme) => alpha(theme.palette[tone].main, theme.palette.mode === "dark" ? 0.08 : 0.06),
-            cursor: onOpenAgent ? "pointer" : "default",
-            "&.Mui-disabled": { color: `${tone}.main`, opacity: 1 },
-            "&:hover": onOpenAgent ? { bgcolor: (theme) => alpha(theme.palette[tone].main, theme.palette.mode === "dark" ? 0.14 : 0.1) } : undefined,
-            "@media (pointer: coarse)": { minHeight: 44 },
-          }}
-        >
-          <StatusIcon sx={{ mr: 0.5, fontSize: 16, flex: "0 0 auto" }} />
-          <Typography variant="caption" component="span" sx={{ display: { xs: "none", sm: "inline" }, color: "text.secondary", fontWeight: 650, overflowWrap: "anywhere", textAlign: "right" }}>
-            {label}
-          </Typography>
-          <Typography variant="caption" component="span" sx={{ display: { xs: "inline", sm: "none" }, color: "text.secondary", fontWeight: 650 }}>
-            {compactDeliveryLabel(receipt)}
-          </Typography>
-        </ButtonBase>
+        <Tooltip title={detailedLabel}>
+          <Box component="span" sx={{ display: "inline-flex", minWidth: 0, maxWidth: "100%" }}>
+            <ButtonBase
+              aria-label={onOpenAgent ? `${detailedLabel} Open direct chat with ${name}.` : detailedLabel}
+              title={runtime}
+              disabled={!onOpenAgent}
+              onClick={() => onOpenAgent?.(receipt.targetAgentId)}
+              sx={{
+                maxWidth: "100%",
+                minHeight: 28,
+                px: 0.75,
+                py: 0.25,
+                borderRadius: 999,
+                color: `${tone}.main`,
+                bgcolor: (theme) => alpha(theme.palette[tone].main, theme.palette.mode === "dark" ? 0.08 : 0.06),
+                cursor: onOpenAgent ? "pointer" : "default",
+                "&.Mui-disabled": { color: `${tone}.main`, opacity: 1 },
+                "&:hover": onOpenAgent ? { bgcolor: (theme) => alpha(theme.palette[tone].main, theme.palette.mode === "dark" ? 0.14 : 0.1) } : undefined,
+                "@media (pointer: coarse)": { minHeight: 44 },
+              }}
+            >
+              <StatusIcon sx={{ mr: 0.5, fontSize: 16, flex: "0 0 auto" }} />
+              {receipts.length > 1 ? <Typography variant="caption" component="span" sx={{ display: { xs: "none", sm: "inline" }, color: "text.secondary", fontWeight: 650, minWidth: 0, maxWidth: "20ch", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", mr: 0.5 }}>
+                {name} ·
+              </Typography> : null}
+              <Typography variant="caption" component="span" sx={{ color: "text.secondary", fontWeight: 650, overflowWrap: "anywhere" }}>
+                {shortLabel}
+              </Typography>
+            </ButtonBase>
+          </Box>
+        </Tooltip>
         {receipt.canLetCurrentRunFinish && receipt.injectionId ? <Button
           color="warning"
           variant="text"
