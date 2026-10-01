@@ -73,11 +73,16 @@ export function validAvif(body: Buffer, maxBoxes = Infinity): boolean {
     }
     if (size < header || size === 0 || offset + size > body.length) return false;
     if (offset === 0) {
-      if (type !== "ftyp" || size < header + 8) return false;
+      // ponytail: at most 64 compatible brands; larger brand tables require
+      // resource qualification before widening this shared admission limit.
+      const brandBytes = size - header - 8;
+      if (type !== "ftyp" || brandBytes < 0 || brandBytes > 64 * 4 || brandBytes % 4 !== 0) return false;
       sawFtyp = true;
-      const brands = [body.subarray(offset + header, offset + header + 4).toString("latin1")];
-      for (let brand = offset + header + 8; brand + 4 <= offset + size; brand += 4) brands.push(body.subarray(brand, brand + 4).toString("latin1"));
-      avifBrand = brands.some((brand) => brand === "avif" || brand === "avis");
+      for (let index = offset + header; index < offset + size; index += 4) {
+        if (index === offset + header + 4) continue; // minor version, not a brand
+        const brand = body.readUInt32BE(index);
+        if (brand === 0x61766966 || brand === 0x61766973) avifBrand = true; // avif / avis
+      }
     }
     if (type === "meta") {
       if (size < header + 4) return false;
