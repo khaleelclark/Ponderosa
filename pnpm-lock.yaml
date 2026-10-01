@@ -74,6 +74,9 @@ importers:
       '@ponderosa/native-host':
         specifier: workspace:*
         version: link:../../packages/native-host
+      '@xmldom/xmldom':
+        specifier: 0.9.12
+        version: 0.9.12
       better-sqlite3:
         specifier: ^11.10.0
         version: 11.10.0

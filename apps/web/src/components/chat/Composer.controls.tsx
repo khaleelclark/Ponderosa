@@ -368,7 +368,7 @@ export function ComposerCapabilityPicker({
         aria-label="Choose files"
         hidden
         type="file"
-        accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif,application/pdf,text/plain,application/json,application/zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.txt,.md,.csv,.log,.json,.zip,.pdf,.docx"
+        accept="image/png,image/jpeg,image/webp,image/heic,image/heif,image/gif,image/avif,.jpg,.jpeg,.png,.webp,.heic,.heif,.gif,.avif,application/pdf,text/plain,application/json,application/zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.txt,.md,.csv,.log,.json,.zip,.pdf,.docx"
         multiple
         onChange={event => {
           onFiles(Array.from(event.target.files ?? []));
@@ -477,7 +477,7 @@ export function ComposerCapabilityPicker({
                       : fileCount >= maximumFiles
                         ? "Remove an attachment before adding another."
                         : label === "Photos"
-                          ? `PNG, JPEG, WebP, or HEIC · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`
+                          ? `PNG, JPEG, WebP, HEIC, GIF, or AVIF · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`
                           : `Up to ${maximumFiles} images, PDF, DOCX, text, JSON, or ZIP files · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`}
                   </Typography>}
                 </Box>

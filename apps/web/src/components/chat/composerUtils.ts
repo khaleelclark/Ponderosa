@@ -571,6 +571,8 @@ const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set([
   "image/png",
   "image/jpeg",
   "image/webp",
+  "image/gif",
+  "image/avif",
   "application/pdf",
   "text/plain",
   "application/json",
@@ -578,6 +580,12 @@ const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ]);
 const COMPOSER_EXTENSION_MEDIA_TYPES: Record<string, string> = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".avif": "image/avif",
   ".heic": "image/heic",
   ".heif": "image/heic",
   ".csv": "text/plain",

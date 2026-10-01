@@ -40,7 +40,7 @@ try {
   const dropFiles = async (page, selector, eventType, names) => page.locator(selector).evaluate((element, { eventType, names }) => {
     const transfer = new DataTransfer();
     for (const name of names) transfer.items.add(new File(["fixture bytes"], name, {
-      type: name.endsWith(".png") ? "image/png" : name.endsWith(".docx")
+      type: /\.(jpg|gif|avif)$/u.test(name) ? "" : name.endsWith(".png") ? "image/png" : name.endsWith(".docx")
         ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : name.endsWith(".exe") ? "application/octet-stream" : "text/plain",
     }));
     const event = new DragEvent(eventType, { bubbles: true, cancelable: true, dataTransfer: transfer });
@@ -51,11 +51,15 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     await page.route("**/api/**", route => route.fulfill({ json: {
       maxFileBytes: 80 * 1024 * 1024, maxMessageBytes: 80 * 1024 * 1024,
-      maxAssetsPerMessage: 20, acceptedMediaTypes: ["image/png", "text/plain", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+      maxAssetsPerMessage: 20, acceptedMediaTypes: ["image/png", "image/jpeg", "image/gif", "image/avif", "text/plain", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
     } }));
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     const input = page.locator(".composer-editor-input");
     await input.waitFor();
+    assert.equal(await page.getByLabel("Choose photos", { exact: true }).getAttribute("accept"), "image/*");
+    assert.equal(await page.getByLabel("Choose photos", { exact: true }).getAttribute("capture"), null);
+    const pickerTypes = await page.getByLabel("Choose files", { exact: true }).getAttribute("accept");
+    for (const type of ["image/gif", "image/avif", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"]) assert.ok(pickerTypes.split(",").includes(type), `Files picker includes ${type}`);
     await input.focus(); await page.keyboard.press("End"); await page.keyboard.type("keep this draft");
     const originalText = await input.innerText();
     assert.ok(await dropFiles(page, ".ponderosa-composer", "dragenter", ["photo.png"]), "file drag is claimed by the composer");
@@ -74,6 +78,13 @@ try {
     await page.waitForFunction(() => document.body.dataset.sentFiles !== undefined);
     assert.deepEqual(JSON.parse(await page.evaluate(() => document.body.dataset.sentFiles)), ["photo.png", "report.docx"]);
     await page.getByRole("button", { name: "Remove report.docx", exact: true }).waitFor({ state: "detached" });
+    await page.evaluate(() => delete document.body.dataset.sentFiles);
+    await dropFiles(page, ".composer-editor-input", "drop", ["phone.jpg", "animation.gif", "photo.avif"]);
+    for (const name of ["phone.jpg", "animation.gif", "photo.avif"]) await page.getByRole("button", { name: `Remove ${name}`, exact: true }).waitFor();
+    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    await page.waitForFunction(() => document.body.dataset.sentFiles !== undefined);
+    assert.deepEqual(JSON.parse(await page.evaluate(() => document.body.dataset.sentFiles)), ["phone.jpg", "animation.gif", "photo.avif"], "empty-MIME phone images use extension fallback through the actual composer");
+    await page.getByRole("button", { name: "Remove photo.avif", exact: true }).waitFor({ state: "detached" });
     await dropFiles(page, ".ponderosa-composer", "drop", ["unsupported.exe"]);
     await page.getByText(/unsupported.exe wasn’t attached because its file type is not supported/).waitFor();
     assert.equal(await page.getByRole("button", { name: "Remove unsupported.exe", exact: true }).count(), 0);
