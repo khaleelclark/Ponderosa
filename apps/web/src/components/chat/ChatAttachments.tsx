@@ -132,7 +132,7 @@ export function ChatAttachments({
               ) : (
                 <Stack spacing={0.5} sx={{ p: 0.75, border: 1, borderColor: "divider", borderRadius: 1 }}>
                   <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name}</Typography>
-                  <Typography variant="caption" color="text.secondary">{attachment.mediaType} · {attachment.size} bytes</Typography>
+                  <Typography variant="caption" color="text.secondary">{attachment.mediaType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ? "Word document" : attachment.mediaType} · {attachment.size} bytes</Typography>
                   <Stack direction="row" spacing={0.5}>
                     {textPreviewSupported(attachment) && (downloadUrl || previewUrl) ? <Button
                       size="small"

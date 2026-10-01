@@ -65,13 +65,19 @@ function normalizeName(value: unknown): string {
   return (bytes.length <= 160 ? leaf : bytes.subarray(0, 160).toString("utf8").replace(/\uFFFD+$/g, "")) || "asset";
 }
 
-function detectType(body: Buffer): AssetDto["mediaType"] | undefined {
+function detectType(body: Buffer, name?: string): AssetDto["mediaType"] | undefined {
   if (isHeicContainer(body)) return "image/heic";
   if (body.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return "image/png";
   if (body[0] === 0xff && body[1] === 0xd8) return "image/jpeg";
   if (body.subarray(0, 4).toString("ascii") === "RIFF" && body.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
   if (body.subarray(0, 5).toString("ascii") === "%PDF-") return "application/pdf";
-  if (body.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) return "application/zip";
+  if (body.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {
+    // DOCX is an opaque ZIP-based document, not executable preview content.
+    // Preserve its bytes without decompressing it or following embedded links.
+    return name && path.extname(name).toLocaleLowerCase() === ".docx"
+      ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      : "application/zip";
+  }
   if (!body.includes(0)) {
     const text = body.toString("utf8");
     if (!text.includes("\uFFFD")) {
@@ -105,6 +111,7 @@ const ASSET_EXTENSIONS: Readonly<Record<AssetDto["mediaType"], readonly string[]
   "image/png": [".png"], "image/jpeg": [".jpg", ".jpeg"], "image/webp": [".webp"],
   "application/pdf": [".pdf"], "text/plain": [".txt", ".md", ".csv", ".log"],
   "application/json": [".json"], "application/zip": [".zip"],
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
 };
 
 export function assetExtensionsForMediaType(mediaType: AssetDto["mediaType"]): readonly string[] {
@@ -120,6 +127,8 @@ function contentTypeMatches(declared: string | undefined, detected: AssetDto["me
   if (!declared || declared === "application/octet-stream") return true;
   const normalized = declared.split(";", 1)[0]?.trim().toLocaleLowerCase();
   if (detected === "image/heic" && normalized === "image/heif") return true;
+  if (detected === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      && normalized === "application/zip") return true;
   if (
     detected === "text/plain"
     && ["text/markdown", "text/x-markdown", "text/csv"].includes(normalized ?? "")
@@ -151,7 +160,7 @@ export async function prepareAssetUpload(input: {
     throw new AssetError(413, "asset exceeds 80 MiB limit");
   }
   const name = normalizeName(input.name);
-  const mediaType = detectType(input.body);
+  const mediaType = detectType(input.body, name);
   if (
     !mediaType
     || !extensionMatches(name, mediaType)
@@ -265,7 +274,7 @@ function validatePreparedAssetUpload(
     || body.length > ASSET_LIMITS.maxFileBytes
     || prepared.name !== normalizeName(prepared.name)
     || bodyHash !== prepared.sha256
-    || detectType(body) !== prepared.mediaType
+    || detectType(body, prepared.name) !== prepared.mediaType
     || !extensionMatches(prepared.name, prepared.mediaType)
     || !hasStrictImageContainer(body, prepared.mediaType)
     || (!validImage && !validNonImage)
@@ -586,7 +595,7 @@ export class AssetStore {
       const relative = this.secureDirectory(projectId, agentId);
       const body = this.secureRead(relative, asset.originalFile, ASSET_LIMITS.maxFileBytes);
       if (!body || body.length !== asset.size || createHash("sha256").update(body).digest("hex") !== asset.sha256 ||
-          detectType(body) !== asset.mediaType || !extensionMatches(asset.name, asset.mediaType) ||
+          detectType(body, asset.name) !== asset.mediaType || !extensionMatches(asset.name, asset.mediaType) ||
           !hasStrictImageContainer(body, asset.mediaType)) return undefined;
       if (asset.previewFile) {
         const preview = this.secureRead(relative, asset.previewFile, MAX_PREVIEW_BYTES);
@@ -627,7 +636,7 @@ export class AssetStore {
       if (!contentInfo.isFile() || contentInfo.nlink !== 1 || contentInfo.size !== asset.size || contentInfo.size > ASSET_LIMITS.maxFileBytes) return undefined;
       const body = readFileSync(contentFd);
       const contentHash = createHash("sha256").update(body).digest("hex");
-      if (contentHash !== asset.sha256 || detectType(body) !== asset.mediaType ||
+      if (contentHash !== asset.sha256 || detectType(body, asset.name) !== asset.mediaType ||
           !extensionMatches(asset.name, asset.mediaType) || !hasStrictImageContainer(body, asset.mediaType)) return undefined;
       if (asset.previewFile) {
         previewFd = openSync(path.join(actual, asset.previewFile), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);

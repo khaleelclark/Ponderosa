@@ -35,21 +35,26 @@ try {
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH });
-  for (const width of [390, 1280]) {
+  for (const width of [390, 1280]) for (const extension of ["txt", "docx"]) {
     const page = await browser.newPage({ viewport: { width, height: 800 } });
-    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    await page.goto(`http://127.0.0.1:${server.address().port}/?case=${extension}`);
     await page.getByRole("button", { name: "Select four files" }).click();
     await page.waitForFunction(() => window.uploadStats?.().started === 2);
     assert.deepEqual(await page.evaluate(() => window.uploadStats()), { started: 2, active: 2, peak: 2 });
-    assert.equal(await page.locator('[data-file-status="file-2.txt"]').innerText(), "queued");
+    assert.equal(await page.locator(`[data-file-status="file-2.${extension}"]`).innerText(), "queued");
     await page.getByRole("button", { name: "Release slots" }).click();
     await page.waitForFunction(() => [...document.querySelectorAll("[data-file-status]")]
       .length === 4 && [...document.querySelectorAll("[data-file-status]")]
       .every(element => element.textContent === "complete"));
     assert.deepEqual(await page.evaluate(() => window.uploadStats()), { started: 4, active: 0, peak: 2 });
+    if (extension === "docx") {
+      assert.equal(await page.getByText(/Word document ·/).count(), 4);
+      assert.equal(await page.getByRole("link", { name: /Download file-\d\.docx/ }).count(), 4);
+      assert.equal(await page.getByRole("button", { name: /Preview file-\d\.docx/ }).count(), 0);
+    }
     await page.close();
   }
-  console.log("Four-file composer upload capacity passed at mobile and desktop widths");
+  console.log("Four-file text/DOCX composer upload capacity and Word download cards passed at mobile and desktop widths");
 } finally {
   await browser?.close();
   await new Promise(resolve => server?.close(resolve) ?? resolve());

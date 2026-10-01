@@ -575,6 +575,7 @@ const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set([
   "text/plain",
   "application/json",
   "application/zip",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ]);
 const COMPOSER_EXTENSION_MEDIA_TYPES: Record<string, string> = {
   ".heic": "image/heic",
@@ -586,6 +587,7 @@ const COMPOSER_EXTENSION_MEDIA_TYPES: Record<string, string> = {
   ".pdf": "application/pdf",
   ".txt": "text/plain",
   ".zip": "application/zip",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 };
 const COMPOSER_MEDIA_TYPE_ALIASES: Record<string, string> = {
   "image/heif": "image/heic",

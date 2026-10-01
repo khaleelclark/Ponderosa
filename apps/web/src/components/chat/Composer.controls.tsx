@@ -366,7 +366,7 @@ export function ComposerCapabilityPicker({
         ref={fileInput}
         hidden
         type="file"
-        accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif,application/pdf,text/plain,application/json,application/zip,.txt,.md,.csv,.log,.json,.zip,.pdf"
+        accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif,application/pdf,text/plain,application/json,application/zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.txt,.md,.csv,.log,.json,.zip,.pdf,.docx"
         multiple
         onChange={event => {
           onFiles(Array.from(event.target.files ?? []));
