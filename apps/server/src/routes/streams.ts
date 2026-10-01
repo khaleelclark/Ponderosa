@@ -30,7 +30,9 @@ export function sseReplayWithinBudget(
   if (elapsedMs > MAX_SSE_REPLAY_PREPARATION_MS) return false;
   let bytes = 0;
   for (const value of values) {
-    bytes += encodedBytes(value);
+    const eventBytes = encodedBytes(value);
+    if (eventBytes > MAX_SSE_EVENT_BYTES) return false;
+    bytes += eventBytes;
     if (bytes > MAX_SSE_REPLAY_BYTES) return false;
   }
   return true;
@@ -83,7 +85,7 @@ export function registerStreamRoutes(
       const freshBootstrap = request.query.bootstrap === "true" && requestedCursor === 0;
       let reset = requestedCursor > highWaterMark ||
         (!freshBootstrap && highWaterMark - requestedCursor > MAX_SSE_REPLAY_EVENTS);
-      const snapshot = request.query.bootstrap === "true" && (requestedCursor === 0 || reset);
+      let snapshot = request.query.bootstrap === "true" && (requestedCursor === 0 || reset);
       const closeMetrics = serverMetrics.openSse(reset);
       let replayFrom = snapshot
         ? highWaterMark
@@ -96,6 +98,7 @@ export function registerStreamRoutes(
         : workspace.readSince(replayFrom, MAX_SSE_REPLAY_EVENTS);
       if (!sseReplayWithinBudget(replayEvents, performance.now() - replayStartedAt)) {
         reset = true;
+        snapshot = true;
         replayFrom = highWaterMark;
         replayEvents = [];
       }
@@ -145,8 +148,15 @@ export function registerStreamRoutes(
       const writeEvent = (event: WorkspaceEventEnvelope, replayed = false) => {
         if (event.id <= cursor) return;
         if (encodedBytes(event) > MAX_SSE_EVENT_BYTES) {
-          serverMetrics.sseBackpressure();
-          closeStream();
+          // Advance explicitly through canonical reconciliation, never loop
+          // over an event that cannot fit on this bounded transport.
+          cursor = event.id;
+          if (!writer.write("workspace_status", event.id, {
+            instanceId: workspace.instanceId(), cursor, reset: true, snapshot: true,
+          } satisfies import("@ponderosa/core").WorkspaceStreamStatusDto)) {
+            serverMetrics.sseBackpressure();
+            closeStream();
+          }
           return;
         }
         const accepted = writer.write(
@@ -222,8 +232,10 @@ export function registerStreamRoutes(
         replayFrom,
         MAX_SSE_REPLAY_EVENTS,
       );
+      let snapshot = false;
       if (!sseReplayWithinBudget(replayEvents, performance.now() - replayStartedAt)) {
         reset = true;
+        snapshot = true;
         replayFrom = highWaterMark;
         replayEvents = [];
       }
@@ -266,6 +278,7 @@ export function registerStreamRoutes(
         instanceId: workspace.instanceId(),
         cursor: highWaterMark,
         reset,
+        ...(snapshot ? { snapshot: true } : {}),
       } satisfies import("@ponderosa/core").AgentStreamStatusDto) ||
           !writer.write("heartbeat", undefined, { ts: new Date().toISOString() })) {
         serverMetrics.sseBackpressure();
@@ -275,8 +288,16 @@ export function registerStreamRoutes(
       const writeStored = (stored: StoredLogEvent, replayed = false): void => {
         if (stored.seq <= lastWrittenSeq) return;
         if (encodedBytes(stored) > MAX_SSE_EVENT_BYTES) {
-          serverMetrics.sseBackpressure();
-          closeStream();
+          // Full bytes remain canonical. The client refreshes bounded views
+          // and checkpoints beyond this event without breaking the stream.
+          lastWrittenSeq = stored.seq;
+          if (!writer.write("agent_status", stored.seq, {
+            agentId: request.params.id, instanceId: workspace.instanceId(),
+            cursor: stored.seq, reset: true, snapshot: true,
+          } satisfies import("@ponderosa/core").AgentStreamStatusDto)) {
+            serverMetrics.sseBackpressure();
+            closeStream();
+          }
           return;
         }
         const event = envelope(request.params.id, stored, replayed);

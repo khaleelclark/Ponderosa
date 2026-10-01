@@ -2,9 +2,10 @@ import type { StreamSubscription } from "./types.js";
 
 const INITIAL_RECONNECT_DELAY_MS = 500;
 const MAX_RECONNECT_DELAY_MS = 5_000;
-// The server sends a heartbeat every 15 seconds. A half-open proxy response
+// The server sends a heartbeat every five seconds. A half-open proxy response
 // must not leave a mounted Chat silently stale forever.
 const MAX_SILENCE_MS = 45_000;
+const STABLE_CONNECTION_MS = 10_000;
 
 interface ResilientEventSourceOptions {
   createSource(): EventSource;
@@ -36,6 +37,7 @@ export function createResilientEventSource(
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let silenceTimer: ReturnType<typeof setTimeout> | undefined;
   let reconnectDelay = initialDelay;
+  let openedAt: number | undefined;
 
   const clearSilenceTimer = () => {
     if (silenceTimer) clearTimeout(silenceTimer);
@@ -65,6 +67,11 @@ export function createResilientEventSource(
 
   const noteActivity = (current: EventSource): void => {
     if (stopped || source !== current) return;
+    // Opening headers (or the initial heartbeat) is not proof of recovery.
+    // A repeatedly opened-and-closed stream must retain its bounded backoff.
+    if (openedAt !== undefined && Date.now() - openedAt >= STABLE_CONNECTION_MS) {
+      reconnectDelay = initialDelay;
+    }
     clearSilenceTimer();
     silenceTimer = setTimeout(() => disconnect(current, new Event("error")), maxSilence);
   };
@@ -76,13 +83,14 @@ export function createResilientEventSource(
       return;
     }
     const nextSource = options.createSource();
+    openedAt = undefined;
     source = nextSource;
     noteActivity(nextSource);
     nextSource.addEventListener("heartbeat", () => noteActivity(nextSource));
     nextSource.addEventListener("message", () => noteActivity(nextSource));
     nextSource.onopen = (event) => {
       if (stopped || source !== nextSource) return;
-      reconnectDelay = initialDelay;
+      openedAt = Date.now();
       noteActivity(nextSource);
       options.onOpen?.(event);
     };

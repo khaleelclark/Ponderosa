@@ -11,15 +11,18 @@ import { invalidateForBrowserPage } from "../queryVisibility";
 import { registerLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
 import { removeBrowserStorage } from "../browserStorage";
+import type { WorkspaceConnectionStatus } from "./useWorkspaceStream";
 
 export interface StreamState {
   connected: boolean;
   running: boolean;
+  connectionStatus: WorkspaceConnectionStatus;
 }
 
 const initialStreamState: StreamState = {
   connected: false,
   running: false,
+  connectionStatus: "connecting",
 };
 
 const executionTypes: ReadonlySet<string> = new Set([
@@ -460,9 +463,20 @@ export function useAgentStream(
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
     let unregisterLiveStream: (() => void) | undefined;
+    let disconnected = false;
+    let connectedOnce = false;
+    let reconnectNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+    let staleNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearConnectionTimers = () => {
+      if (reconnectNoticeTimer) clearTimeout(reconnectNoticeTimer);
+      if (staleNoticeTimer) clearTimeout(staleNoticeTimer);
+      reconnectNoticeTimer = undefined;
+      staleNoticeTimer = undefined;
+    };
     let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
     let reconcileDueAt = 0;
     let nextCoordinationUrgentAt = 0;
+    let nextSnapshotUrgentAt = 0;
     let reconcileDetail = false;
     let reconcileRoster = false;
     let reconcileHealth = false;
@@ -548,22 +562,36 @@ export function useAgentStream(
       if (stopped) return;
       const nextSubscription = api.subscribeAgent(agentId, lastSeenSeq, {
         onOpen() {
+          disconnected = false;
+          connectedOnce = true;
+          clearConnectionTimers();
           markStreamDisconnected();
           unregisterLiveStream = registerLiveAgentStream(agentId);
-          setState((current) => ({ ...current, connected: true }));
+          setState((current) => ({ ...current, connected: true, connectionStatus: "live" }));
         },
         onError() {
           markStreamDisconnected();
           setState((current) => ({ ...current, connected: false }));
+          if (disconnected) return;
+          disconnected = true;
+          reconnectNoticeTimer = setTimeout(() => {
+            if (!stopped && disconnected) setState(current => ({ ...current,
+              connectionStatus: connectedOnce ? "reconnecting" : "connecting" }));
+          }, 1_000);
+          staleNoticeTimer = setTimeout(() => {
+            if (!stopped && disconnected) setState(current => ({ ...current,
+              connectionStatus: connectedOnce ? "stale" : "unavailable" }));
+          }, 8_000);
         },
         onStatus(status) {
           const changedInstance = Boolean(cursor.instanceId && cursor.instanceId !== status.instanceId);
           if (changedInstance) {
-            lastSeqRef.current = 0;
-            cursor.lastSeq = 0;
+            const baseline = status.snapshot ? status.cursor : 0;
+            lastSeqRef.current = baseline;
+            cursor.lastSeq = baseline;
             cursor.instanceId = status.instanceId;
             rememberCursor(agentId, cursor);
-            setState({ ...initialStreamState, connected: true });
+            setState({ ...initialStreamState, connected: true, connectionStatus: "live" });
             scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
             markStreamDisconnected();
             nextSubscription.close();
@@ -575,17 +603,20 @@ export function useAgentStream(
               );
               reconnectTimer = setTimeout(() => {
                 reconnectTimer = undefined;
-                connect(0);
+                connect(baseline);
               }, delay);
             }
             return;
           }
           instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
-          if (status.reset || (lastSeqRef.current ?? 0) > status.cursor) {
-            lastSeqRef.current = 0;
-            cursor.lastSeq = 0;
-            setState({ ...initialStreamState, connected: true });
-            scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
+          if (status.snapshot || status.reset || (lastSeqRef.current ?? 0) > status.cursor) {
+            lastSeqRef.current = status.snapshot ? status.cursor : 0;
+            cursor.lastSeq = lastSeqRef.current;
+            setState({ ...initialStreamState, connected: true, connectionStatus: "live" });
+            const urgent = Date.now() >= nextSnapshotUrgentAt;
+            if (urgent) nextSnapshotUrgentAt = Date.now() + 5_000;
+            scheduleReconciliation({ detail: true, roster: true, health: true, usage: true },
+              false, urgent ? 250 : 5_000);
           }
           cursor.instanceId = status.instanceId;
           rememberCursor(agentId, cursor);
@@ -621,7 +652,7 @@ export function useAgentStream(
             const running = runningAfterAgentEvent(current.running, envelope.event);
             return current.connected && current.running === running
               ? current
-              : { connected: true, running };
+              : { ...current, connected: true, running, connectionStatus: "live" };
           });
 
           queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (detail) =>
@@ -662,6 +693,7 @@ export function useAgentStream(
       stopped = true;
       subscription?.close();
       markStreamDisconnected();
+      clearConnectionTimers();
       retryProjectReconciliationRef.current = () => undefined;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (reconcileTimer) clearTimeout(reconcileTimer);

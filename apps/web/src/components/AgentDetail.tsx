@@ -137,8 +137,8 @@ export function AgentDetail({
   const focusedTelemetryRef = useRef<string>();
   const stream = useAgentStream(agentId, projectId);
   const workspaceConnection = useWorkspaceConnection();
-  const agentConnectionStatus = workspaceConnection.status === "live" && !stream.connected
-    ? "reconnecting"
+  const agentConnectionStatus = workspaceConnection.status === "live"
+    ? stream.connectionStatus
     : workspaceConnection.status;
   const [tab, setTab] = useState<AgentTab>(() => {
     if (initialView) return initialView === "activity" ? "chat" : initialView;

@@ -13,6 +13,35 @@ class FakeEventSource extends EventTarget {
   }
 }
 
+test("opening and immediately failing retains backoff instead of a fast reconnect loop", async () => {
+  const sources=[], delays=[];
+  const original=globalThis.setTimeout;
+  const originalNow=Date.now;
+  globalThis.setTimeout=(fn,ms,...args)=>{if(ms<1_000)delays.push(ms);return original(fn,ms,...args);};
+  const subscription=createResilientEventSource({
+    createSource:()=>{const source=new FakeEventSource();sources.push(source);return source;},
+    configure:()=>{},initialReconnectDelayMs:5,maxReconnectDelayMs:20,maxSilenceMs:1_000,
+  });
+  try {
+    for(let i=0;i<4;i++) {
+      const source=sources.at(-1);
+      source.onopen(new Event('open'));
+      source.dispatchEvent(new Event('heartbeat'));
+      source.onerror(new Event('error'));
+      for(let j=0;sources.length<i+2&&j<100;j++)await delay(2);
+      assert.equal(sources.length,i+2);
+    }
+    assert.deepEqual(delays,[5,10,20,20]);
+    const recovered=sources.at(-1);
+    recovered.onopen(new Event('open'));
+    Date.now=()=>originalNow()+11_000;
+    recovered.dispatchEvent(new Event('heartbeat'));
+    recovered.onerror(new Event('error'));
+    for(let i=0;sources.length<6&&i<100;i++)await delay(2);
+    assert.deepEqual(delays,[5,10,20,20,5],'sustained heartbeat recovery resets backoff');
+  } finally {subscription.close();globalThis.setTimeout=original;Date.now=originalNow;}
+});
+
 test("a silent half-open event stream reconnects without waiting for a page refresh", async () => {
   const sources = [];
   let failures = 0;

@@ -1285,7 +1285,8 @@ export const realApi = {
         });
         source.addEventListener("agent_status", (event) => {
           const status = JSON.parse(event.data as string) as AgentStreamStatusDto;
-          if (status.reset) cursor = 0;
+          if (status.snapshot) cursor = status.cursor;
+          else if (status.reset) cursor = 0;
           handlers.onStatus?.(status);
         });
       },

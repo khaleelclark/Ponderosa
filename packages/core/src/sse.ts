@@ -37,4 +37,7 @@ export interface AgentStreamStatusDto {
   instanceId: string;
   cursor: number;
   reset: boolean;
+  /** Refresh canonical projections and resume at cursor; oversized telemetry
+   * remains in the audit log rather than being replayed on the live wire. */
+  snapshot?: boolean;
 }
