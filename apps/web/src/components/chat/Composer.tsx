@@ -351,6 +351,8 @@ export function Composer({
   const draftConflictGeneration = useRef(0);
   const [restoringDraftConflict, setRestoringDraftConflict] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const fileDragDepth = useRef(0);
+  const [fileDragActive, setFileDragActive] = useState(false);
   const previousDraftStorageKey = useRef(draftStorageKey);
   const previousConversationDraftId = useRef(conversationDraftId);
   const uploadAuthorityStoragePrefix = draftStorageKey
@@ -1113,6 +1115,11 @@ export function Composer({
   const canCancel = running && Boolean(onCancel);
   const composerAttachmentsEnabled = attachmentsEnabled;
   const composerAttachmentsUnavailableReason = attachmentsUnavailableReason;
+  const fileDropEnabled = attachmentsEnabled && !disabled && !composerLocked && !draftMutationLocked;
+  useEffect(() => {
+    fileDragDepth.current = 0;
+    setFileDragActive(false);
+  }, [fileDropEnabled, conversationDraftId, draftStorageKey]);
 
   const draftQuery = useQuery({
     queryKey: queryKeys.conversationDraft.detail(
@@ -2651,8 +2658,39 @@ export function Composer({
       ref={composerRoot}
       className="ponderosa-composer"
       data-compact="false"
+      data-file-drag-active={fileDragActive && fileDropEnabled}
       elevation={0}
       sx={composerSurfaceSx}
+      onDragEnterCapture={event => {
+        if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        fileDragDepth.current += 1;
+        if (fileDropEnabled) setFileDragActive(true);
+      }}
+      onDragOverCapture={event => {
+        if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = fileDropEnabled ? "copy" : "none";
+      }}
+      onDragLeaveCapture={() => {
+        fileDragDepth.current = Math.max(0, fileDragDepth.current - 1);
+        if (fileDragDepth.current === 0) setFileDragActive(false);
+      }}
+      onDropCapture={event => {
+        if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        fileDragDepth.current = 0;
+        setFileDragActive(false);
+        if (!fileDropEnabled || draftMutationLockedRef.current) return;
+        if (Array.from(event.dataTransfer.items).some(item => item.webkitGetAsEntry?.()?.isDirectory)) {
+          dispatchAttachments({ type: "set_error", error: "Folders can’t be attached. Drop individual files instead." });
+          return;
+        }
+        addFiles(Array.from(event.dataTransfer.files));
+      }}
     >
       <Box sx={{ display: "contents" }}>
       {sending ? <Typography role="status" aria-live="polite" variant="caption" color="text.secondary" sx={{ px: 1.5, pt: 0.5 }}>

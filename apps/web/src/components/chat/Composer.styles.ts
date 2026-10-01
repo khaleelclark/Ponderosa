@@ -12,6 +12,11 @@ export const composerSurfaceSx: SxProps<Theme> = {
   zIndex: 3,
   border: 1,
   borderColor: "divider",
+  '&[data-file-drag-active="true"]': {
+    outline: "2px solid",
+    outlineColor: "primary.main",
+    outlineOffset: -2,
+  },
   borderRadius: { xs: 2, sm: 2.25 },
   width: composerSurfaceWidth,
   mx: "auto",
