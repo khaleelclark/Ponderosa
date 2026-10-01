@@ -5,13 +5,13 @@ import {registerStreamRoutes} from '../dist/routes/streams.js';
 
 const large = 'x'.repeat(1_058_543);
 const stored = (seq, output) => ({seq, ts:'2026-10-01', event:{type:'tool_result', output}});
-async function fixture() {
+async function fixture(workspaceHistory=[]) {
   const app=Fastify(), closures=new Set(), subscribers=new Set(), workspaceSubscribers=new Set();
   const history=[stored(146,large),stored(147,'later')];
   registerStreamRoutes(app,{
     store:{getAgent:()=>({id:'agent'}),lastSeqOf:()=>history.at(-1).seq,
       readEventsSince:(_,cursor,limit)=>history.filter(e=>e.seq>cursor).slice(0,limit)},
-    workspace:{cursor:()=>147,instanceId:()=> 'instance',readSince:()=>[]},
+    workspace:{cursor:()=>147,instanceId:()=> 'instance',readSince:cursor=>workspaceHistory.filter(event=>event.id>cursor)},
     serverClosed:()=>false,maxSubscribersPerStream:20,workspaceSubscribers,
     agentSubscriberCount:()=>subscribers.size,
     subscribe:(_,listener)=>{subscribers.add(listener);return()=>subscribers.delete(listener);},
@@ -73,4 +73,21 @@ test('workspace oversized live events reconcile without disconnecting or changin
     assert(connection.frames.some(x=>x.name==='workspace_status'&&x.data.snapshot&&x.data.cursor===148));
     assert.equal(event.event.body,large);
   } finally {connection?.close();await f.close();}
+});
+test('repeated workspace retries escape an oversized replay with an explicit snapshot',async()=>{
+  const history=[{id:146,event:{type:'notification_changed',body:large}},{id:147,event:{type:'notification_changed',action:'read'}}];
+  const original=JSON.stringify(history),f=await fixture(history);
+  try {
+    for(let attempt=0;attempt<3;attempt++) {
+      const connection=await stream(`${f.url}/api/workspace/stream?lastEventId=145&bootstrap=true`);
+      try {
+        await connection.until(frames=>frames.some(frame=>frame.name==='workspace_status'));
+        assert.deepEqual(connection.frames[0].data,{instanceId:'instance',cursor:147,reset:true,snapshot:true});
+        assert(f.workspaceSubscribers.size>0,'retry remains subscribed instead of closing on the same replay');
+        for(const callback of f.workspaceSubscribers)callback({id:148,event:{type:'notification_changed',action:'read'}});
+        await connection.until(frames=>frames.some(frame=>frame.data.id===148));
+      } finally {connection.close();}
+    }
+    assert.equal(JSON.stringify(history),original,'snapshot recovery never rewrites canonical history');
+  } finally {await f.close();}
 });

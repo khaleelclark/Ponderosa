@@ -12,7 +12,9 @@ export function downloadBlob(blob: Blob, filename: string, feedbackHandled = fal
   finally { anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 30_000); }
 }
 
-export async function prepareDownload(url: string, filename: string, signal?: AbortSignal): Promise<void> {
+export interface DownloadProgress { receivedBytes: number; totalBytes?: number }
+
+export async function prepareDownload(url: string, filename: string, signal?: AbortSignal, onProgress?: (progress: DownloadProgress) => void): Promise<void> {
   const response = await fetch(url, { credentials: "same-origin", signal });
   if (response.status === 429) noteBackgroundRateLimit(response.headers.get("Retry-After"));
   if (!response.ok) throw new Error(response.status === 429 ? "Downloads are temporarily busy. Wait a moment and try again." : `Download could not start (${response.status}). Try again.`);
@@ -22,7 +24,10 @@ export async function prepareDownload(url: string, filename: string, signal?: Ab
   const limitMiB = /\/api\/agents\/[^/?#]+\/export(?:[?#]|$)/u.test(url) ? 96 : 80;
   const maximum = limitMiB * 1024 * 1024;
   const limitError = () => new Error(`This download exceeds Ponderosa's ${limitMiB} MiB limit.`);
-  if (Number(response.headers.get("Content-Length")) > maximum) { await response.body?.cancel(); throw limitError(); }
+  const length = Number(response.headers.get("Content-Length"));
+  if (length > maximum) { await response.body?.cancel(); throw limitError(); }
+  const totalBytes = Number.isSafeInteger(length) && length > 0 ? length : undefined;
+  onProgress?.({ receivedBytes: 0, totalBytes });
   const reader = response.body?.getReader();
   if (!reader) throw new Error("The download response was empty. Try again.");
   const chunks: Array<Uint8Array<ArrayBuffer>> = [];
@@ -34,6 +39,7 @@ export async function prepareDownload(url: string, filename: string, signal?: Ab
       size += chunk.value.byteLength;
       if (size > maximum) throw limitError();
       chunks.push(chunk.value as Uint8Array<ArrayBuffer>);
+      onProgress?.({ receivedBytes: size, totalBytes });
     }
   } catch (error) { await reader.cancel().catch(() => {}); throw error; }
   const disposition = response.headers.get("Content-Disposition") ?? "";
@@ -41,5 +47,6 @@ export async function prepareDownload(url: string, filename: string, signal?: Ab
   const encoded = /filename\*=UTF-8''([^;]+)/iu.exec(disposition)?.[1];
   const quoted = /filename="([^"]+)"/iu.exec(disposition)?.[1];
   try { name = encoded ? decodeURIComponent(encoded) : quoted ?? filename; } catch { /* safe caller fallback */ }
+  signal?.throwIfAborted();
   downloadBlob(new Blob(chunks, { type: response.headers.get("Content-Type") ?? "application/octet-stream" }), name || "download", true);
 }
