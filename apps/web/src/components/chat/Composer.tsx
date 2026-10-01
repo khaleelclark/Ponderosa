@@ -1873,6 +1873,7 @@ export function Composer({
   const mentionMatch = activeComposerMention(text.slice(0, caret));
   const autocompleteHandles = [...new Set([
     ...(mentionSuggestionHandles ?? mentionHandles ?? []),
+    ...(destinationMode === "project-chat" ? ["broadcast"] : []),
     ...((destinationMode === "project-chat" || destinationMode === "target-required")
       ? [NEW_AGENT_DESTINATION_HANDLE]
       : []),

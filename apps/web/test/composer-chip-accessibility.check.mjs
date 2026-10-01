@@ -37,6 +37,39 @@ try {
     headless: true,
     executablePath: useWebKit ? undefined : process.env.PONDEROSA_CHROMIUM_PATH,
     args: process.env.PONDEROSA_BROWSER_DISABLE_SANDBOX === "1" ? ["--no-sandbox"] : [] });
+  for (const [width, empty] of [[1440, false], [390, true]]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, hasTouch: width === 390 });
+    await page.route("**/api/**", route => route.fulfill({ json: {} }));
+    await page.goto(`http://127.0.0.1:${server.address().port}/?${empty ? "empty=1" : ""}`);
+    const input = page.locator(".composer-editor-input");
+    await input.waitFor();
+    await input.focus();
+    await page.keyboard.press("ControlOrMeta+A"); await page.keyboard.press("Backspace");
+    const option = page.getByRole("option", { name: "#broadcast", exact: true });
+    await page.keyboard.type("#"); await page.waitForTimeout(100);
+    assert.equal(await option.count(), 1, "Broadcast appears in the initial # menu");
+    await page.keyboard.type(width === 390 ? "BR" : "br");
+    await page.waitForTimeout(100);
+    assert.equal(await option.count(), 1, "Broadcast is suggested once even with no Agents");
+    if (width === 390) await page.keyboard.press("Enter"); else await option.click();
+    await page.getByRole("button", { name: "Remove #broadcast", exact: true }).waitFor();
+    await input.focus(); await page.keyboard.press("End"); await page.keyboard.type("update");
+    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    await page.waitForFunction(() => document.body.dataset.sent !== undefined);
+    assert.equal((await page.evaluate(() => document.body.dataset.sent)).trim(), "#broadcast update", "selection submits the existing canonical Broadcast tag");
+    await page.close();
+  }
+  for (const mode of ["structural", "fixed"]) {
+    const page = await browser.newPage();
+    await page.route("**/api/**", route => route.fulfill({ json: {} }));
+    await page.goto(`http://127.0.0.1:${server.address().port}/?${mode}=1`);
+    const input = page.locator(".composer-editor-input");
+    await input.waitFor(); await input.focus();
+    await page.keyboard.press("ControlOrMeta+A"); await page.keyboard.press("Backspace");
+    await page.keyboard.type("#br"); await page.waitForTimeout(100);
+    assert.equal(await page.getByRole("option", { name: "#broadcast", exact: true }).count(), 0, "Broadcast is not offered outside Project Chat");
+    await page.close();
+  }
   for (const [width, coarse, longName, structural] of [
     [1440, false, false, false],
     [390, true, false, false],
@@ -167,7 +200,7 @@ try {
     assert.ok((await input.innerText()).includes("plai"), "ordinary Backspace still deletes one character after file removal");
     await context.close();
   }
-  console.log(`PASS ${useWebKit ? "WebKit" : "Chromium"} desktop/mobile composer chips: compact layout, atomic recipient/file Backspace, and touch/keyboard targets`);
+  console.log(`PASS ${useWebKit ? "WebKit" : "Chromium"} desktop/mobile composer chips: Broadcast autocomplete/selection/submission and scope, compact layout, atomic recipient/file Backspace, and touch/keyboard targets`);
 } finally {
   await browser?.close();
   if (server) await new Promise(resolve => server.close(resolve));
