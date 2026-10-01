@@ -44,6 +44,21 @@ try {
   browser = await chromium.launch({ executablePath: process.env.PONDEROSA_CHROMIUM_PATH, headless: true });
   const origin = `http://127.0.0.1:${server.address().port}`;
   const errors = [];
+  const checkSidebarDividers = async page => {
+    const sections = page.locator('[data-workspace-sidebar-sections]');
+    await sections.waitFor();
+    const borders = await sections.evaluate(el => {
+      const style = getComputedStyle(el);
+      return { top: style.borderTopWidth, bottom: style.borderBottomWidth, color: style.borderBottomColor };
+    });
+    assert.equal(borders.top, '1px', 'sidebar header and navigation have a thin divider');
+    assert.equal(borders.bottom, '1px', 'navigation and Chat/Agent/Automation list have a thin divider');
+    assert.notEqual(borders.color, 'rgba(0, 0, 0, 0)');
+    const header = await page.locator('[data-workspace-sidebar-header]').boundingBox();
+    const menu = await sections.boundingBox();
+    const search = await page.getByRole('textbox', { name: 'Search chats', exact: true }).boundingBox();
+    assert.ok(header.y + header.height <= menu.y + 1 && menu.y + menu.height <= search.y, 'divided regions remain separate');
+  };
   for (const width of [320, 390, 430, 1440]) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     page.on('pageerror', error => errors.push(error.message));
@@ -119,13 +134,18 @@ try {
     assert.equal(new Set(names).size, 11, 'eleven New Chats have unique folder-qualified names');
     assert.equal(await page.evaluate(() => Number(document.body.dataset.chatQueries)), 1, 'naming does not collect unopened Project Chats');
     await page.goto(`${origin}/?case=sidebar`);
+    await checkSidebarDividers(page);
     await page.getByRole('button', { name: 'Agents', exact: true }).click();
     await page.getByRole('button', { name: /Open agent Agent, #unique-agent, in Chat/ }).waitFor();
     await page.getByRole('button', { name: 'Automations', exact: true }).click();
     await page.getByRole('button', { name: 'Open Daily Automation', exact: true }).click();
     assert.equal(JSON.parse(await page.evaluate(() => document.body.dataset.route)).returnTo, '/manage/automations', 'Automation opened from Home returns to its directory');
+    await page.goto(`${origin}/?case=sidebar&drawer=1`);
+    await checkSidebarDividers(page);
+    await page.getByRole('button', { name: 'Agents', exact: true }).click();
+    await page.getByRole('button', { name: /Open agent Agent, #unique-agent, in Chat/ }).waitFor();
     await page.close();
   }
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ status: 'pass', widths: [320, 390, 430, 1440], cases: ['delivery containment', 'PDF painting and paging', 'PDF error', 'response review identity', '75 long review rows', 'full-dialog import success and failure', 'single Automation ownership selectors', 'eleven distinguishable browser workspaces without fanout', 'Agent accessible handle and Automation return route'] }));
+  console.log(JSON.stringify({ status: 'pass', widths: [320, 390, 430, 1440], cases: ['delivery containment', 'PDF painting and paging', 'PDF error', 'response review identity', '75 long review rows', 'full-dialog import success and failure', 'single Automation ownership selectors', 'eleven distinguishable browser workspaces without fanout', 'desktop/drawer sidebar dividers', 'Agent accessible handle and Automation return route'] }));
 } finally { await browser?.close(); if (server) await new Promise(resolve => server.close(resolve)); await rm(output, { recursive: true, force: true }); }

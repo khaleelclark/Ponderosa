@@ -71,7 +71,7 @@ api.markWorkspaceResourceUsed = (async () => ({})) as typeof api.markWorkspaceRe
 function SidebarFixture() {
   const [route, setRoute] = useState<Route>({ kind: "home" });
   const preferences = { revision: 1, profile: { displayName: "Tester", handle: "tester", avatarId: "default-user" }, starredProjectIds: [], projectOrder: [], chatOrder: [], agentOrder: [], triggerOrder: [], starredResourceIds: [], chatFolders: [], projectFolders: [] } as never;
-  return <Box sx={{ width: "min(350px,100vw)", height: "100dvh" }}><WorkspaceSidebar projects={[project]} preferences={preferences} route={route} notifications={[]}
+  return <Box sx={{ width: "min(350px,100vw)", height: "100dvh" }}><WorkspaceSidebar drawer={new URLSearchParams(location.search).has("drawer")} projects={[project]} preferences={preferences} route={route} notifications={[]}
     onNavigate={next => { document.body.dataset.route = JSON.stringify(next); setRoute(next); }} onCreate={() => {}} onPreferences={() => {}}
     onRenameConversation={() => {}} onDeleteConversation={() => {}} onProjectDeleted={() => {}} width={350} /></Box>;
 }

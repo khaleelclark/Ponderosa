@@ -435,7 +435,11 @@ export function ProjectRail({
             display: "grid",
             gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
             gap: 0.5,
+            borderTop: 1,
+            borderBottom: 1,
+            borderColor: "divider",
             px: 1.25,
+            pt: 0.75,
             pb: 0.75,
           }}
         >
