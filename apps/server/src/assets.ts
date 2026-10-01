@@ -5,6 +5,7 @@ import path from "node:path";
 import sharp from "sharp";
 import { ensureSecureDirectory, listSecureDirectory, readSecureFile, removeSecureFile, secureDirectoryIdentity, writeSecureFileAtomic } from "@ponderosa/native-host";
 import { decodeHeic, isHeicContainer } from "./heic.js";
+import { hasSamsungScreenshotTrailer } from "./jpeg-container.js";
 import type { ArtifactDto, AssetDto } from "@ponderosa/core";
 import {
   attachmentsDir,
@@ -101,7 +102,9 @@ function hasStrictImageContainer(body: Buffer, mediaType: AssetDto["mediaType"])
     }
     return false;
   }
-  if (mediaType === "image/jpeg") return body.length >= 4 && body[body.length - 2] === 0xff && body[body.length - 1] === 0xd9;
+  if (mediaType === "image/jpeg") return body.length >= 4
+    && ((body[body.length - 2] === 0xff && body[body.length - 1] === 0xd9)
+      || hasSamsungScreenshotTrailer(body));
   if (mediaType === "image/webp") return body.length >= 12 && body.readUInt32LE(4) + 8 === body.length;
   return true;
 }
