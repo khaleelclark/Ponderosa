@@ -15,6 +15,7 @@ import { queryKeys } from "../queryKeys";
 import {
   workspaceEventInvalidatesAllChat,
   workspaceEventInvalidatesGlobalSearch,
+  workspaceEventUpdatesLiveProgress,
 } from "../workspaceEventInvalidation";
 import { isOpenAttention, isUnreadNotificationUpdate, isUnacknowledgedAction } from "../attention";
 import {
@@ -934,7 +935,7 @@ export function useWorkspaceStream(
         agentWorkInvalidator.schedule(event.projectId);
       }
       else if (event.type === "agent_event") {
-        if (event.category === "progress") {
+        if (workspaceEventUpdatesLiveProgress(event)) {
           for (const id of event.conversationIds) pendingProgressChats.add(id);
           publicProgressRefresh.schedule();
         }

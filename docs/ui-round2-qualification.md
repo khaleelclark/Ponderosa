@@ -52,6 +52,18 @@ deployment, shared sandbox refresh, provider Run, or live-data repair is include
   it. If device storage is denied, the current browser session uses the existing
   safe in-memory fallback. Folder membership, stars and notification counts
   remain shared, and no server schema or routing authority changes.
+- Live public progress has a right-side disclosure chevron. Its header combines
+  the existing clickable Agent handle with **is working**, **is running a
+  command**, **is using a tool** or **is using the browser**. Labels reuse the
+  exact open-call projection, including matching completion IDs; only registered
+  Ponderosa browser-tool names identify browser activity. Missing call evidence
+  and legacy records fall back to working, never commentary or private reasoning.
+  The panel starts expanded for a new Run. A browser-session collapse preference
+  follows the exact Agent/execution across updates, new steering injections,
+  message movement and remounts. New updates do not reopen it. Public text stays
+  bounded/latest-only with overflow-based full-text expansion; long handles
+  truncate accessibly without pushing the chevron off-screen. Completion/reply
+  still removes the projection, while original updates remain in Agent Activity.
 - Dictation requests final results only. Unused Android interim callbacks can be
   promoted to final results in continuous mode, producing growing repeated
   phrases. Final-result indices and recognition generations remain fenced;
@@ -115,6 +127,9 @@ node apps/web/test/file-preview-links-browser.check.mjs
 node apps/web/test/sent-draft-navigation.check.mjs
 node apps/web/test/composer-chip-accessibility.check.mjs
 node apps/web/test/chat-folder-notifications-browser.check.mjs
+node apps/web/test/live-agent-progress-browser.check.mjs
+node apps/web/test/request-storm-browser.check.mjs
+node --test packages/agents/test/public-progress.test.mjs
 node --test apps/server/test/opaque-attachments.test.mjs
 ```
 
@@ -237,6 +252,40 @@ Screenshots: host temporary directory, `chat-folder-independent-<engine>-<width>
 These are disposable implementer checks, not independent approval or
 physical-device qualification. No shared sandbox or live preferences changed.
 
+## Activity-aware progress verification
+
+Fresh full `pnpm verify` on macOS / Node 24.21.0 passed 1,004 tests, with 7
+platform/opt-in skips and zero failures; all typechecks and production builds
+passed. `git diff --check` passed. Full log:
+`/tmp/ponderosa-live-activity-verify.log`. Skipped checks are not passing
+qualification.
+
+Focused public-progress store tests passed 6/6: acknowledged exact-Run/injection
+scope, latest/bounded text, terminal/expired/replied suppression, coalesced
+steering and reopening. The new activity regression uses existing projected
+open spans, matching completion IDs and another still-open call; it rejects
+private inputs/output, misleading prose, missing call IDs and a foreign Run as
+label evidence. No new Communication or delivery authority is created.
+
+Chromium and macOS WebKit passed Project Chat, Agent Chat and All Messages at
+320/390/1440px: all labels, legacy fallback, default expansion, collapse through
+new updates/injections/remounts, independent Agents, new-Run reset, clickable
+identity, keyboard controls, accessible disclosure/target association,
+orientation-sized changes, full-text overflow/resize and completion removal.
+Representative 320px long-handle and 390px full-text screenshots were inspected.
+A narrow long-name overflow found during implementation was fixed before the
+passing checks; the regression remains in the checker.
+
+The existing three-tab/12-Agent Chromium request-storm check passed with added
+call-transition refresh coverage. Public activity refreshes are batched through
+one-second windows; phase-health refresh cadence remains unchanged. Hidden tabs
+do not refetch. This is a synthetic workload, not live-provider throughput or
+proof that steering delivery latency has changed. Focused web typecheck passed.
+
+Logs: `/tmp/ponderosa-live-activity-{server,typecheck,chromium,webkit,workload}.log`.
+Original tool inputs/outputs remain in Activity, not Chat. No provider was run,
+live service changed, or shared sandbox refreshed by this follow-up.
+
 ## Manual checklist
 
 - [ ] Send, navigate away/back, and fail a send: no duplicate draft; failure recoverable.
@@ -249,6 +298,7 @@ physical-device qualification. No shared sandbox or live preferences changed.
 - [ ] Attention dialog: status/time/Chat remain identifiable; one result warning, full retained message/cause/IDs in Details; opening/closing does not settle work.
 - [ ] Files: newest first after refresh and loading older files.
 - [ ] Starred folder: collapse/expand independently from All Chats; reload and search preserve both choices; unread counts remain visible in both.
+- [ ] Live progress: activity header changes on observed calls, chevron hides/shows updates, new updates stay collapsed for that Run, next Run opens by default, and completion removes the panel.
 - [ ] Ponderosa microphone: no growing duplicates; typed text, repeated words, pause/resume preserved.
 - [ ] Attach TTF/OTF/WOFF/WOFF2 and other files; exact downloads work and fonts are not installed/previewed.
 - [ ] Drop/select a nested folder: one ZIP, preserved paths, visible exclusions; navigate during preparation without leaking it to another Chat.

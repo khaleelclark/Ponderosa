@@ -1,10 +1,13 @@
-import type { MessageDeliveryReceiptDto } from "@ponderosa/core";
+import { PONDEROSA_BROWSER_TOOLS, type MessageDeliveryReceiptDto } from "@ponderosa/core";
 import type Database from "better-sqlite3";
 import type {
   RuntimeArtifactV3,
   RuntimeCommunicationV3View,
 } from "./coordination-v3-types.js";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
+import { AgentPhaseReadModel } from "./store-agent-phase-read-model.js";
+
+const browserTools = new Set(PONDEROSA_BROWSER_TOOLS.map(tool => tool.name));
 
 function deliveryRuntime(payloadJson: string): MessageDeliveryReceiptDto["runtime"] {
   try {
@@ -24,10 +27,28 @@ function deliveryRuntime(payloadJson: string): MessageDeliveryReceiptDto["runtim
 }
 
 export class CoordinationV3RuntimeCommunicationReadModel {
+  private readonly phaseReadModel: AgentPhaseReadModel;
   constructor(
     private readonly sqlite: Database.Database,
     private readonly runtimeScopeAuthority: CoordinationV3RuntimeScopeAuthority,
-  ) {}
+  ) { this.phaseReadModel = new AgentPhaseReadModel(sqlite); }
+
+  private liveProgressActivity(agentId: string, executionId: string): NonNullable<MessageDeliveryReceiptDto["liveProgress"]>["activity"] {
+    // Reuse the exact open-call projection: missing call IDs, completed calls,
+    // unrelated Runs and prose do not establish an ongoing activity.
+    const phase = this.phaseReadModel.activeExecutionPhase(agentId, executionId);
+    if (phase?.kind === "running_command") return "command";
+    if (phase?.kind !== "using_tool") return "working";
+    const tool = this.sqlite.prepare(`
+      SELECT substr(json_extract(event_json, '$.name'), 1, 256) AS name
+      FROM activity_projection
+      WHERE agent_id = ? AND execution_id = ? AND event_type = 'tool_call'
+        AND json_extract(event_json, '$.id') = ?
+      ORDER BY seq DESC LIMIT 1
+    `).get(agentId, executionId, phase.callId) as { name: string | null } | undefined;
+    const name = typeof tool?.name === "string" ? tool.name.split(/\.|__/u).at(-1) : undefined;
+    return name && browserTools.has(name) ? "browser" : "tool";
+  }
 
   /** Scope comes from a canonical human delivery, never from an Agent roster,
    * message prose, or the merged Work log. Unknown historical evidence fails closed. */
@@ -76,7 +97,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
     if (!progress || typeof progress.text !== "string" || !progress.text.trim()) return undefined;
     const characters = Array.from(progress.text);
     return { text: characters.slice(0, 1200).join("").trimEnd(), createdAt: progress.created_at,
-      seq: progress.seq, recipientHandle: eligible.handle, ...(characters.length > 1200 ? { truncated: true as const } : {}) };
+      seq: progress.seq, recipientHandle: eligible.handle, activity: this.liveProgressActivity(agentId, injection.execution_id),
+      ...(characters.length > 1200 ? { truncated: true as const } : {}) };
   }
 
   runtimeCommunications(projectId?: string): RuntimeCommunicationV3View[] {

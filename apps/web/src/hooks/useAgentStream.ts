@@ -12,6 +12,7 @@ import { registerLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
 import { removeBrowserStorage } from "../browserStorage";
 import type { WorkspaceConnectionStatus } from "./useWorkspaceStream";
+import { createBoundedRefresh } from "../boundedRefresh";
 
 export interface StreamState {
   connected: boolean;
@@ -481,6 +482,8 @@ export function useAgentStream(
     let reconcileRoster = false;
     let reconcileHealth = false;
     let reconcileUsage = false;
+    const publicProgressRefresh = createBoundedRefresh(() =>
+      invalidateForBrowserPage(queryClient, queryKeys.agents.detailPrefix(agentId)), 1_000);
 
     const projectIdFromCache = (): string | undefined => {
       if (projectIdRef.current) return projectIdRef.current;
@@ -662,7 +665,7 @@ export function useAgentStream(
           );
 
           if (envelope.event.type === "text" && envelope.event.presentation === "progress") {
-            scheduleReconciliation({ detail: true }, false, 1_000);
+            publicProgressRefresh.schedule();
           } else if (envelope.event.type === "coordination_v3_changed") {
             // Request summaries are embedded in the canonical message
             // projection, not the compact coordination event. Reconcile after
@@ -682,6 +685,7 @@ export function useAgentStream(
             || envelope.event.type === "tool_call"
             || envelope.event.type === "tool_result"
           ) {
+            publicProgressRefresh.schedule();
             scheduleReconciliation({ health: true }, false, 5_000);
           }
         },
@@ -699,6 +703,7 @@ export function useAgentStream(
       retryProjectReconciliationRef.current = () => undefined;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (reconcileTimer) clearTimeout(reconcileTimer);
+      publicProgressRefresh.dispose();
     };
   }, [queryClient, agentId]);
 

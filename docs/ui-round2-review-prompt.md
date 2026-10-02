@@ -45,6 +45,20 @@ Independently verify, rather than treating implementer results as qualification:
   or routing. All Chats retains the existing expansion preference. Run
   `chat-folder-notifications-browser.check.mjs` in Chromium and WebKit, including
   its existing 401-folder bounded projection, loading/failure and count checks.
+- Live progress uses one shared disclosure renderer in Project Chat, Agent Chat
+  and All Messages. Verify working/command/tool/browser labels come from exact
+  open-call evidence and registered browser-tool identity, never public prose,
+  reasoning, inputs or outputs. Closed/missing/foreign spans must not mislabel
+  activity. Preserve acknowledged Run/injection eligibility, bounded latest-only
+  text, reply/terminal suppression, and Work log retention after reopening.
+  Collapse must persist for the exact Agent/execution across updates, steering,
+  movement and remounts; a new Run defaults expanded, and other Agents remain
+  independent. Check keyboard/touch disclosure, accessible controls/expanded
+  state, long names, mobile/desktop, and the previous actual-overflow regression.
+  Run `live-agent-progress-browser.check.mjs`, focused `public-progress.test.mjs`
+  and `request-storm-browser.check.mjs`; verify activity refresh is bounded,
+  hidden tabs stay quiet, phase-health cadence is unchanged, and no new provider,
+  Communication, routing, permission or receipt authority is introduced.
 - Ponderosa microphone requests final results only. Test the modeled Android
   growing-partial failure, rapid final callbacks, replayed indices, pause/resume,
   stale callbacks, typed text and intentional repeated words. Do not deduplicate

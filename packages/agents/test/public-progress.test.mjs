@@ -152,3 +152,40 @@ test("a reply before a new steer does not hide its progress, and reopening prese
     } finally { reopened.close(); }
   } finally { f.close(); }
 });
+
+test("public activity identifies exact open spans, never prose, inputs, completed calls or another Run", () => {
+  const f = fixture();
+  try {
+    f.acknowledge(f.lease);
+    f.store.appendEvent(f.agent.id, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "execution" });
+    f.append("I am browsing and running commands");
+    const activity = () => f.receipt("original").liveProgress.activity;
+    assert.equal(activity(), "working", "public prose does not establish activity");
+    f.store.appendEvent(f.agent.id, { type: "command", command: "PRIVATE COMMAND", cwd: "/private", callId: "command" });
+    assert.equal(activity(), "command", "uses the existing projector's Run association");
+    f.store.appendEvent(f.agent.id, { type: "tool_result", id: "command", output: "PRIVATE OUTPUT" });
+    assert.equal(activity(), "working");
+    f.store.appendEvent(f.agent.id, { type: "tool_call", id: "tool", name: "unknown_tool", input: { text: "using the browser", private: "SECRET" } });
+    assert.equal(activity(), "tool", "inputs and guessed names do not select browser activity");
+    f.store.appendEvent(f.agent.id, { type: "tool_call", id: "browser", name: "ponderosa.ponderosa_browser_navigate", input: { url: "https://private.invalid" } });
+    assert.equal(activity(), "browser");
+    f.store.appendEvent(f.agent.id, { type: "tool_result", id: "browser", output: "SECRET PAGE" });
+    assert.equal(activity(), "tool", "closing the newest call reveals the other still-open span");
+    f.store.appendEvent(f.agent.id, { type: "tool_result", id: "tool", output: "done" });
+    f.store.appendEvent(f.agent.id, { type: "command", command: "no matching ID", cwd: "/private" });
+    assert.equal(activity(), "working", "missing evidence falls back safely");
+    f.store.appendEvent(f.agent.id, { type: "tool_call", id: "foreign", name: "ponderosa_browser_act", input: {}, executionId: "foreign-run" });
+    assert.equal(activity(), "working", "another Run cannot select the label");
+    const progress = f.receipt("original").liveProgress;
+    assert.equal(progress.text, "I am browsing and running commands");
+    assert.doesNotMatch(JSON.stringify(progress), /SECRET|PRIVATE|private\.invalid|foreign/);
+    assert.equal(f.store.getProjectedConversationMessages(f.chat.id, "main").length, 0);
+    f.store.close();
+    const reopened = new AgentStore(f.root);
+    try {
+      const receipt = new CoordinationV3Store(reopened.sqlite).deliveryReceiptsForCommunications(f.project.id, ["original"]).get("original")[0];
+      assert.equal(receipt.liveProgress.activity, "working");
+      assert.match(reopened.getRunOutputs(f.agent.id).map(item => item.text).join(""), /I am browsing/);
+    } finally { reopened.close(); }
+  } finally { f.close(); }
+});

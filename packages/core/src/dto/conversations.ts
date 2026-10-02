@@ -175,7 +175,9 @@ export interface MessageDeliveryReceiptDto {
   injectionKind?: "turn" | "steer";
   /** Temporary, bounded public commentary for this exact acknowledged delivery.
    * Not authored Communication, completion, or proof of semantic understanding. */
-  liveProgress?: { text: string; createdAt: string; seq: number; truncated?: true; recipientHandle: string };
+  liveProgress?: { text: string; createdAt: string; seq: number; truncated?: true; recipientHandle: string;
+    /** Observed open execution span only; never inferred from commentary. */
+    activity?: "command" | "browser" | "tool" | "working" };
   recoveryAt?: string;
   canLetCurrentRunFinish?: boolean;
   recoveryActivationId?: string;

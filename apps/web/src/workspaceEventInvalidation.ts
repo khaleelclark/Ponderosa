@@ -18,3 +18,10 @@ export function workspaceEventInvalidatesAllChat(
     (event.type === "notification_changed" && Boolean(event.decisionId)) ||
     (event.type === "agent_event" && (event.category === "message" || event.category === "lifecycle"));
 }
+
+/** Metadata for open-call transitions refreshes the bounded public projection;
+ * never inspect task input/output or reasoning to invent an activity. */
+export function workspaceEventUpdatesLiveProgress(event: WorkspaceEvent): boolean {
+  return event.type === "agent_event" && (event.category === "progress" ||
+    (event.category === "task" && event.conversationIds.length > 0 && ["command", "tool_call", "tool_result"].includes(event.eventType)));
+}

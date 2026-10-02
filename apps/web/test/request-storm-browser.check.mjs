@@ -123,6 +123,18 @@ try {
     }
   }
   assert.deepEqual(progressCounts[2], progressBaseline[2], "hidden tab must not fetch under public progress");
+  await Promise.all(pages.map(page => page.evaluate(() => window.startActivityStorm())));
+  const activityBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  await pages[0].waitForTimeout(5_600);
+  const activityCounts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  for (let index = 0; index < 2; index += 1) {
+    for (const key of ["chat", "delivery", "allChat"]) {
+      const added = activityCounts[index][key] - activityBaseline[index][key];
+      assert.ok(added > 0 && added <= 6, `${key} activity refresh stays bounded during sustained call transitions`);
+    }
+    assert.ok(activityCounts[index].health - activityBaseline[index].health <= 2, "activity does not accelerate phase health polling");
+  }
+  assert.deepEqual(activityCounts[2], activityBaseline[2], "hidden tab must not fetch under call transitions");
   await Promise.all(pages.map(page => page.evaluate(() => { window.startCapabilitiesStorm(); })));
   const capabilityBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
   await pages[0].waitForTimeout(5_600);
