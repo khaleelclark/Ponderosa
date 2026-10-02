@@ -29,6 +29,56 @@ export class CoordinationV3RuntimeCommunicationReadModel {
     private readonly runtimeScopeAuthority: CoordinationV3RuntimeScopeAuthority,
   ) {}
 
+  /** Scope comes from a canonical human delivery, never from an Agent roster,
+   * message prose, or the merged Work log. Unknown historical evidence fails closed. */
+  private liveProgress(projectId: string, agentId: string, activationId: string, injection: {
+    id: string; run_id: string; state: string; execution_id: string | null; acknowledged_at: string | null;
+  }): MessageDeliveryReceiptDto["liveProgress"] {
+    if (injection.state !== "acknowledged" || !injection.execution_id || !injection.acknowledged_at) return undefined;
+    const eligible = this.sqlite.prepare(`
+      SELECT agent.handle
+      FROM scheduler_runs run
+      JOIN agents agent ON agent.id = run.agent_id
+      JOIN agent_activations cause ON cause.id = ? AND cause.scope_key = run.scope_key
+      WHERE run.id = ? AND run.project_id = ? AND run.agent_id = ?
+        AND run.status = 'running' AND run.lease_expires_at > ?
+        AND agent.deleted_at IS NULL AND agent.archived = 0
+        AND json_extract(cause.payload_json, '$.communication.sender.kind') = 'user'
+        AND json_extract(cause.payload_json, '$.communication.intent') IN ('broadcast', 'user_dm')
+        AND NOT EXISTS (
+          SELECT 1 FROM runtime_communications reply
+          WHERE reply.project_id = run.project_id
+            AND json_extract(reply.sender_json, '$.agentId') = run.agent_id
+            AND json_extract(reply.sender_json, '$.executionId') = ?
+            AND reply.created_at >= ?
+            AND reply.intent = json_extract(cause.payload_json, '$.communication.intent')
+            AND json_extract(reply.payload_json, '$.communication.conversationId')
+              IS json_extract(cause.payload_json, '$.communication.conversationId')
+        )
+        AND (SELECT latest.id FROM scheduler_prompt_injections latest
+             WHERE latest.run_id = run.id ORDER BY latest.sequence DESC LIMIT 1) = ?
+        AND (SELECT candidate.id FROM scheduler_prompt_injections current, json_each(current.activation_ids_json) member
+             JOIN agent_activations candidate ON candidate.id = member.value
+             WHERE current.id = ? ORDER BY candidate.created_at DESC, candidate.id DESC LIMIT 1) = ?
+    `).get(activationId, injection.run_id, projectId, agentId, new Date().toISOString(),
+      injection.execution_id, injection.acknowledged_at, injection.id,
+      injection.id, activationId) as { handle: string } | undefined;
+    if (!eligible) return undefined;
+    // substr runs in SQLite, before a possibly large delta crosses into JS.
+    const progress = this.sqlite.prepare(`
+      SELECT substr(json_extract(payload_json, '$.delta'), 1, 1201) AS text, seq, created_at
+      FROM events
+      WHERE agent_id = ? AND json_extract(payload_json, '$.executionId') = ?
+        AND json_extract(payload_json, '$.progressInjectionId') = ?
+        AND type = 'text' AND json_extract(payload_json, '$.presentation') = 'progress'
+      ORDER BY seq DESC LIMIT 1
+    `).get(agentId, injection.execution_id, injection.id) as { text: string; seq: number; created_at: string } | undefined;
+    if (!progress || typeof progress.text !== "string" || !progress.text.trim()) return undefined;
+    const characters = Array.from(progress.text);
+    return { text: characters.slice(0, 1200).join("").trimEnd(), createdAt: progress.created_at,
+      seq: progress.seq, recipientHandle: eligible.handle, ...(characters.length > 1200 ? { truncated: true as const } : {}) };
+  }
+
   runtimeCommunications(projectId?: string): RuntimeCommunicationV3View[] {
     const rows = this.sqlite.prepare(`
       SELECT id, project_id, audience_json, payload_json, created_at
@@ -430,7 +480,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         recipientCurrentlyAuthorized,
       }) => {
         const injection = this.sqlite.prepare(`
-          SELECT injection.id, injection.kind, injection.state, injection.updated_at,
+          SELECT injection.id, injection.run_id, injection.kind, injection.state, injection.updated_at, injection.acknowledged_at,
             (SELECT operation.state FROM provider_operation_outbox operation
               WHERE operation.run_id = injection.run_id AND operation.operation = 'interrupt'
                 AND operation.idempotency_key LIKE 'cancel:%'
@@ -447,6 +497,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           ORDER BY injection.created_at DESC, injection.sequence DESC LIMIT 1
         `).get(activation.id) as {
           id: string;
+          run_id: string;
+          acknowledged_at: string | null;
           kind: "turn" | "steer";
           state: string;
           updated_at: string;
@@ -517,6 +569,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         else if (activation.state === "retry_pending") state = "retrying";
         else state = "queued";
         const runtime = deliveryRuntime(activation.payload_json);
+        const liveProgress = injection && recipientCurrentlyAuthorized && state === "delivered"
+          ? this.liveProgress(projectId, activation.agent_id, activation.id, injection) : undefined;
         return {
           activationId: activation.id,
           targetAgentId: activation.agent_id,
@@ -558,7 +612,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
               }
               : {}
           ),
-          ...(injection ? { injectionId: injection.id } : {}),
+          ...(injection ? { injectionId: injection.id, injectionKind: injection.kind } : {}),
+          ...(liveProgress ? { liveProgress } : {}),
           ...(recovery ? { recoveryAt: recovery.recover_at } : {}),
           ...(recovery?.state === "grace_period" ? { canLetCurrentRunFinish: true } : {}),
           ...(recovery?.recovery_activation_id

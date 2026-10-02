@@ -73,6 +73,8 @@ export type WorkspaceConnectionStatus =
 
 export interface WorkspaceConnectionState {
   retry?(): void;
+  retrying?: boolean;
+  retryStartedAt?: string;
   status: WorkspaceConnectionStatus;
   /** Canonical phase-bearing queries have reconciled after stream catch-up. */
   phaseEvidenceFresh: boolean;
@@ -510,6 +512,15 @@ export function useWorkspaceStream(
       invalidate(queryKeys.notifications.all), 5_000);
     const providerUsageRefresh = createRateLimitedRefresh(() =>
       invalidate(queryKeys.providerUsage.all), 5_000);
+    const pendingProgressChats = new Set<string>();
+    const publicProgressRefresh = createBoundedRefresh(() => {
+      for (const id of pendingProgressChats) {
+        invalidate(queryKeys.conversations.detailPrefix(id));
+        invalidate(queryKeys.conversations.activeDeliveryReceiptsPrefix(id));
+      }
+      pendingProgressChats.clear();
+      invalidate(queryKeys.allChatAll);
+    }, 1_000);
     const pendingTaskProjects = new Set<string>();
     const taskProjectionRefresh = createBoundedRefresh(() => {
       invalidateForBrowserPage(queryClient, queryKeys.workspaceStatus.all);
@@ -726,6 +737,8 @@ export function useWorkspaceStream(
       collaborationChatInvalidator.dispose();
       decisionConversationInvalidator.dispose();
       notificationRefresh.dispose();
+      publicProgressRefresh.dispose();
+      pendingProgressChats.clear();
       providerUsageRefresh.dispose();
       taskProjectionRefresh.dispose();
       pendingTaskProjects.clear();
@@ -921,6 +934,10 @@ export function useWorkspaceStream(
         agentWorkInvalidator.schedule(event.projectId);
       }
       else if (event.type === "agent_event") {
+        if (event.category === "progress") {
+          for (const id of event.conversationIds) pendingProgressChats.add(id);
+          publicProgressRefresh.schedule();
+        }
         if (!hasLiveAgentStream(event.agentId)) {
           agentDetailInvalidator.schedule(event.agentId);
         }
@@ -979,16 +996,22 @@ export function useWorkspaceStream(
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let reconnectingNoticeTimer: ReturnType<typeof setTimeout> | undefined;
     let staleNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+    let manualRetryTimer: ReturnType<typeof setTimeout> | undefined;
     let instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
     const clearConnectionTimers = () => {
       if (reconnectingNoticeTimer) clearTimeout(reconnectingNoticeTimer);
       if (staleNoticeTimer) clearTimeout(staleNoticeTimer);
+      if (manualRetryTimer) clearTimeout(manualRetryTimer);
       reconnectingNoticeTimer = undefined;
       staleNoticeTimer = undefined;
+      manualRetryTimer = undefined;
     };
     const noteDisconnect = () => {
       if (stopped || disconnected) return;
       disconnected = true;
+      setConnection(current => current.retrying ? { ...current, retrying: false,
+        status: current.lastSuccessfulSyncAt ? "stale" : "unavailable",
+        announcement: "Still unable to connect. Automatic retries will continue." } : current);
       markPhaseEvidenceStale();
       reconnectingNoticeTimer = setTimeout(() => {
         reconnectingNoticeTimer = undefined;
@@ -1006,6 +1029,7 @@ export function useWorkspaceStream(
             ...current,
             status: connectedOnce ? "stale" : "unavailable",
             prolongedDisconnect: true,
+            retrying: false,
             announcement: "Live workspace updates are unavailable.",
           }));
         }
@@ -1022,6 +1046,7 @@ export function useWorkspaceStream(
         announcement: current.prolongedDisconnect
           ? "Live workspace updates have resumed."
           : undefined,
+        retryStartedAt: current.retryStartedAt,
       }));
       // A contiguous cursor replay applies targeted invalidations. Only a
       // reset/gap below requires a full cache refresh after reconnect.
@@ -1083,6 +1108,11 @@ export function useWorkspaceStream(
       });
       subscription = nextSubscription;
     };
+    if (retryGeneration > 0) manualRetryTimer = setTimeout(() => {
+      setConnection(current => current.retrying ? { ...current, retrying: false,
+        status: current.lastSuccessfulSyncAt ? "stale" : "unavailable",
+        announcement: "The connection has not recovered yet. Automatic retries will continue." } : current);
+    }, STALE_NOTICE_DELAY_MS);
     connect(cursor.current);
     return () => {
       stopped = true;
@@ -1102,6 +1132,7 @@ export function useWorkspaceStream(
       workspaceRecencyInvalidator.dispose();
       collaborationChatInvalidator.dispose();
       decisionConversationInvalidator.dispose();
+      publicProgressRefresh.dispose();
       notificationRefresh.dispose();
       providerUsageRefresh.dispose();
       taskProjectionRefresh.dispose();
@@ -1110,7 +1141,13 @@ export function useWorkspaceStream(
       pendingCapabilityProjects.clear();
     };
   }, [queryClient, retryGeneration]);
-  return { ...connection, retry: () => setRetryGeneration(value => value + 1) };
+  return { ...connection, retry: () => {
+    if (connection.retrying) return;
+    setConnection(current => ({ ...current, status: "reconnecting", phaseEvidenceFresh: false,
+      retrying: true, retryStartedAt: new Date().toISOString(), prolongedDisconnect: true,
+      announcement: "Checking the live workspace connection." }));
+    setRetryGeneration(value => value + 1);
+  } };
 }
 
 export { createWorkspaceRecencyInvalidator, workspaceEventChangesResourceRecency };

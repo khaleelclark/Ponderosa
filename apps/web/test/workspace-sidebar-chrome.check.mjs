@@ -74,6 +74,7 @@ try {
     assert.equal(metrics.profileBottom, 720, `${width}: profile remains pinned to the bottom`);
     assert.equal(await page.getByRole("button", { name: "Search", exact: true }).count(), 1, `${width}: Search moved to the header`);
     assert.equal(await page.getByRole("button", { name: /Notifications/ }).count(), 1, `${width}: Notifications moved to the header`);
+    assert.equal(await page.getByRole("button", { name: /Notifications/ }).locator(".MuiBadge-badge").evaluate(node => getComputedStyle(node).backgroundColor), "rgb(214, 106, 92)", `${width}: action count uses the red badge`);
     assert.equal(await page.getByRole("button", { name: "Settings", exact: true }).count(), 0, `${width}: Settings is no longer a standalone sidebar button`);
     assert.equal(await page.getByText("Ponderosa", { exact: true }).count(), width < 768 ? 0 : 1, `${width}: brand text appears only when the header has room`);
     await page.getByRole("button", { name: "Home", exact: true }).click();
@@ -98,6 +99,21 @@ try {
     assert.deepEqual(errors, []);
     console.log(`PASS ${width}×720: unified chrome, one-row sections, top actions, bottom profile menu${width >= 768 ? ", full collapse and reopen" : ""}`);
     await page.close();
+    for (const scenario of ["updates", "updates&light", "empty"]) {
+      const colorPage = await browser.newPage({ viewport: { width, height: 720 } });
+      await colorPage.goto(`http://127.0.0.1:${server.address().port}/?${width < 768 ? "drawer&" : ""}${scenario}`);
+      const bell = colorPage.getByRole("button", { name: scenario === "empty" ? "Notifications" : "Notifications, 3 unread", exact: true });
+      await bell.waitFor();
+      const badge = bell.locator(".MuiBadge-badge");
+      if (scenario === "empty") {
+        assert.equal(await badge.evaluate(node => node.classList.contains("MuiBadge-invisible")), true, `${width}: zero counts remain hidden`);
+      } else {
+        assert.equal(await badge.innerText(), "3", `${width}: unread-update count unchanged`);
+        assert.equal(await badge.evaluate(node => getComputedStyle(node).backgroundColor), scenario.includes("light") ? "rgb(183, 77, 67)" : "rgb(214, 106, 92)", `${width}: unread-update badge is red in ${scenario.includes("light") ? "light" : "dark"} mode`);
+      }
+      await colorPage.close();
+    }
+    console.log(`PASS ${width}: notification bell is red for actions and updates in light/dark themes; zero stays hidden`);
   }
 } finally {
   await browser?.close();

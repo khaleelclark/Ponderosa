@@ -163,13 +163,17 @@ export function compileNextRunDeliveryBatch(
 const extensionForMediaType = (mediaType: string): string =>
   RUNTIME_ATTACHMENT_EXTENSIONS[mediaType] ?? "";
 
+const usesRuntimeImagePreview = (item: Pick<AssetDto, "mediaType" | "width" | "height">): boolean =>
+  ["image/heic", "image/gif", "image/avif"].includes(item.mediaType)
+  || (item.width ?? 0) * (item.height ?? 0) > 64_000_000;
+
 export const runtimeAttachmentName = (item: AssetDto): string => {
   const base = path.basename(item.name)
     .replaceAll(/[\\/\u0000-\u001f\u007f]/gu, "_")
     .trim()
     .slice(0, 180) || "attachment";
-  const name = item.mediaType === "image/heic"
-    ? `${base.replace(/\.(heic|heif)$/iu, "")}.png`
+  const name = usesRuntimeImagePreview(item)
+    ? `${base.replace(/\.(heic|heif|gif|avif|jpg|jpeg)$/iu, "")}.png`
     : path.extname(base) ? base : `${base}${extensionForMediaType(item.mediaType)}`;
   return `${item.id}-${name}`;
 };
@@ -432,7 +436,7 @@ export async function prepareAgentRun(
     runtimeAttachmentBytes += item.size;
     const operation = (async () => {
       const source = path.join(attachmentsDir(opts.dataDir, agent.projectId, item.agentId),
-        `${item.id}${item.mediaType === "image/heic" ? ".preview.png" : ".bin"}`);
+        `${item.id}${usesRuntimeImagePreview(item) ? ".preview.png" : ".bin"}`);
       if (!existsSync(source)) return { localPath: source, available: false };
       runtimeAttachmentDirectory ??= runtimeAttachmentsFollowSession
         ? runtimeAttachmentDirectoryForSession(opts.dataDir, agent.id)
@@ -440,7 +444,7 @@ export async function prepareAgentRun(
       await mkdir(runtimeAttachmentDirectory, { recursive: true, mode: 0o700 });
       const localPath = path.join(runtimeAttachmentDirectory, runtimeAttachmentName(item));
       if (item.conversationId) {
-        const verified = await assets.content(agent.projectId, item.agentId, item.id, item.mediaType === "image/heic");
+        const verified = await assets.content(agent.projectId, item.agentId, item.id, usesRuntimeImagePreview(item));
         if (!verified || verified.asset.conversationId !== item.conversationId || verified.asset.sha256 !== item.sha256) {
           return { localPath: "", available: false };
         }

@@ -45,6 +45,7 @@ import {
 import { Composer } from "./chat/Composer";
 import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ChatSurface } from "./chat/ChatSurface";
+import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
 import { buildMarkdownTranscript } from "../chatTranscript";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { AgentWorkInspector } from "./AgentWorkInspector";
@@ -238,6 +239,12 @@ export function ConversationView({
   }, [conversation?.title]);
   const projectAgentsQuery = useAgents(conversation?.projectId);
   const routingAgents = projectAgentsQuery.data ?? agents;
+  // Identity fallback is presentation only: keep routing eligibility governed
+  // by the existing authoritative roster, including deletion/archive changes.
+  const identityAgents = useMemo(() => [...new Map([
+    ...agents,
+    ...(projectAgentsQuery.data ?? []),
+  ].map(agent => [agent.id, agent])).values()], [agents, projectAgentsQuery.data]);
   const activeBrowsers = useQuery({
     queryKey: queryKeys.agentBrowsers.conversation(conversation?.projectId, conversationId),
     queryFn: () => api.listActiveBrowserSessions(conversation!.projectId, conversationId),
@@ -625,13 +632,13 @@ export function ConversationView({
   });
   const agentTitle = useCallback(
     (agentId: string | undefined): string =>
-      routingAgents.find(agent => agent.id === agentId)?.title ?? "Deleted Agent",
-    [routingAgents],
+      identityAgents.find(agent => agent.id === agentId)?.title ?? "Agent",
+    [identityAgents],
   );
   const agentHandle = useCallback(
     (agentId: string | undefined): string =>
-      routingAgents.find(agent => agent.id === agentId)?.handle ?? "Deleted-Agent",
-    [routingAgents],
+      identityAgents.find(agent => agent.id === agentId)?.handle ?? "Agent",
+    [identityAgents],
   );
   const {
     busy,
@@ -999,7 +1006,7 @@ export function ConversationView({
       />
     ) : null;
   return (
-    <Box
+    <OutgoingMessageProvider scope={conversationId} profile={preferencesQuery.data?.profile}><Box
       sx={{
         height: "100%",
         minHeight: 0,
@@ -1065,6 +1072,7 @@ export function ConversationView({
           }}
         >
           <ChatSurface
+            showOutgoingMessage
             layout="project"
             layoutKey={`main:${visibleMessageLayoutKey}`}
             label="Chat messages"
@@ -1258,7 +1266,14 @@ export function ConversationView({
             onClose={() => setAgentWorkOpen(false)}
           />
         ) : activeView === "files" ? (
-          <Box id="chat-workspace-files-panel" role="tabpanel" aria-labelledby="chat-workspace-files-tab" sx={{ minHeight: 0, minWidth: 0 }}><ConversationFilesResults
+          <Box
+            id="chat-workspace-files-panel"
+            role="tabpanel"
+            aria-labelledby="chat-workspace-files-tab"
+            // Bound the nested list to the workspace; an auto-height wrapper
+            // lets it grow behind this view's overflow-hidden ancestor.
+            sx={{ height: "100%", minHeight: 0, minWidth: 0 }}
+          ><ConversationFilesResults
             projectId={conversation.projectId}
             projectRoot={
               projectsQuery.data?.find(
@@ -1560,6 +1575,6 @@ export function ConversationView({
         onDelete={(expectedAgentIds) => deleteConversation.mutate(expectedAgentIds)}
       />
 
-    </Box>
+    </Box></OutgoingMessageProvider>
   );
 }

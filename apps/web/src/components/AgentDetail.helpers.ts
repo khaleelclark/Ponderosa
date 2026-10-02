@@ -4,6 +4,7 @@ import type {
   AgentTelemetryPageDto,
   AgentTelemetryStream,
   ConversationDto,
+  ConversationDecisionEventDto,
   HistoryWindowDto,
   MessageDto,
   ProjectEngineCapabilitiesDto,
@@ -46,12 +47,13 @@ type TelemetryPageState = {
 
 type MessagePageState = {
   messages: MessageDto[];
+  decisionEvents?: ConversationDecisionEventDto[];
   history?: HistoryWindowDto;
 };
 
 function mergeMessagePage(
   current: MessagePageState | undefined,
-  page: Pick<AgentDetailDto, "messages" | "history">,
+  page: Pick<AgentDetailDto, "messages" | "history" | "decisionEvents">,
   recentMessages: MessageDto[],
   preserveHistory = false,
   ordinaryHistory?: HistoryWindowDto,
@@ -60,6 +62,7 @@ function mergeMessagePage(
     ? (current?.history ?? ordinaryHistory)
     : page.history;
   return {
+    decisionEvents: uniqueBy([...(page.decisionEvents ?? []), ...(current?.decisionEvents ?? [])], event => event.id),
     messages: uniqueBy(
       [...page.messages, ...(current?.messages ?? []), ...recentMessages],
       message => message.id,
@@ -215,6 +218,7 @@ function mergeAgentDetailProjection(
   ): T[] => uniqueBy([...(older ?? []), ...recent], id, compare);
   return {
     ...current,
+    decisionEvents: uniqueBy([...(olderMessages?.decisionEvents ?? []), ...(current.decisionEvents ?? [])], event => event.id),
     messages: uniqueBy(
       [...(olderMessages?.messages ?? []), ...current.messages],
       message => message.id,

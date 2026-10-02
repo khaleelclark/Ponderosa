@@ -40,7 +40,7 @@ import {
 import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
 import { readChatState, readChatStateEntries, writeChatState } from "../../chatState";
-import { acknowledgeDraftTextRecovery, recoverDraftText, writeDraftTextRecovery } from "./draftTextRecovery";
+import { acknowledgeDraftTextRecovery, recoverDraftText, retireSubmittedDraftText, writeDraftTextRecovery } from "./draftTextRecovery";
 import { createClientId, draftSurfaceClientId } from "../../clientId";
 import { readBrowserStorage, writeBrowserStorage } from "../../browserStorage";
 import {
@@ -149,6 +149,7 @@ import {
 import { composerSurfaceSx } from "./Composer.styles";
 import { DictationControls } from "../speech/DictationControls";
 import { insertSpeechText } from "../speech/speechText";
+import { useOutgoingMessage } from "./OutgoingMessage";
 
 const DRAFT_OWNER_ID = /^[A-Za-z0-9_-]{1,128}$/u;
 const SPECIAL_MENTION_TITLES = new Map([
@@ -327,6 +328,7 @@ export function Composer({
   );
   const files = attachments.files;
   const queryClient = useQueryClient();
+  const outgoing = useOutgoingMessage();
   const assetLimitsQuery = useQuery({
     queryKey: queryKeys.assetLimits.all,
     queryFn: () => api.getAssetLimits(),
@@ -351,6 +353,8 @@ export function Composer({
   const draftConflictGeneration = useRef(0);
   const [restoringDraftConflict, setRestoringDraftConflict] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const fileDragDepth = useRef(0);
+  const [fileDragActive, setFileDragActive] = useState(false);
   const previousDraftStorageKey = useRef(draftStorageKey);
   const previousConversationDraftId = useRef(conversationDraftId);
   const uploadAuthorityStoragePrefix = draftStorageKey
@@ -1113,6 +1117,11 @@ export function Composer({
   const canCancel = running && Boolean(onCancel);
   const composerAttachmentsEnabled = attachmentsEnabled;
   const composerAttachmentsUnavailableReason = attachmentsUnavailableReason;
+  const fileDropEnabled = attachmentsEnabled && !disabled && !composerLocked && !draftMutationLocked;
+  useEffect(() => {
+    fileDragDepth.current = 0;
+    setFileDragActive(false);
+  }, [fileDropEnabled, conversationDraftId, draftStorageKey]);
 
   const draftQuery = useQuery({
     queryKey: queryKeys.conversationDraft.detail(
@@ -1873,6 +1882,7 @@ export function Composer({
   const mentionMatch = activeComposerMention(text.slice(0, caret));
   const autocompleteHandles = [...new Set([
     ...(mentionSuggestionHandles ?? mentionHandles ?? []),
+    ...(destinationMode === "project-chat" ? ["broadcast"] : []),
     ...((destinationMode === "project-chat" || destinationMode === "target-required")
       ? [NEW_AGENT_DESTINATION_HANDLE]
       : []),
@@ -2292,6 +2302,10 @@ export function Composer({
     );
     const runtimeCommandSubmission =
       slash?.command.invocation === "runtime";
+    // Render before fingerprinting, durable draft persistence or upload prep.
+    // Runtime commands are not authored messages and must not get an echo.
+    const outgoingId = runtimeCommandSubmission ? undefined
+      : outgoing?.begin(exactSubmissionText, files.map(file => file.name));
     if (!runtimeCommandSubmission) {
       draftMutationLockedRef.current = true;
       setDraftMutationLocked(true);
@@ -2485,17 +2499,22 @@ export function Composer({
               renderedDestinationIdentityRef.current === submittedDestinationIdentity
             )),
         });
-        // Clear only the exact draft incarnation that produced this submission.
-        // This also preserves edits made while a runtime command is pending.
-        if (submissionMayClearDraft && scopeStillActive) {
-          // Runtime commands bypass pending-message persistence, but their
-          // confirmed success retires the same exact recovery text as a send.
-          acknowledgeDraftTextRecovery(
+        // Message edits are locked while sending. Navigation releases this
+        // editor, not the captured submission's CAS authority to retire itself.
+        // Runtime commands remain governed by the editable-content guard.
+        const submissionMayRetireSavedDraft = submissionMayClearDraft ||
+          (!runtimeCommandSubmission && Boolean(submittedDraftScope) && !scopeStillActive);
+        if (submissionMayRetireSavedDraft) {
+          retireSubmittedDraftText(
             draftStorageKey,
             submittedDraftWriteChain.clientId,
             { text: submittedText, mentionBindings: submittedMentionBindings },
             submittedDraftWriteChain.ownedRevision,
           );
+        }
+        // Clear only the exact draft incarnation that produced this submission.
+        // This also preserves edits made while a runtime command is pending.
+        if (submissionMayClearDraft && scopeStillActive) {
           draftGeneration.current += 1;
           draftEditVersion.current += 1;
           draftLocallyEdited.current = false;
@@ -2511,7 +2530,7 @@ export function Composer({
           clearDraftAttachments();
         }
         if (
-          submissionMayClearDraft &&
+          submissionMayRetireSavedDraft &&
           submittedDraftScope
         ) {
           const clientId = submittedDraftWriteChain.clientId;
@@ -2546,16 +2565,17 @@ export function Composer({
                     submittedOwnedDraftRevision,
                 );
                 submittedDraftWriteChain.ownedRevision = clearedDraft.revision;
-                pendingSubmissionRef.current = clearedDraft.pendingSubmission;
                 if (clearOwnsActiveScope()) {
+                  pendingSubmissionRef.current = clearedDraft.pendingSubmission;
                   draftRevision.current = clearedDraft.revision;
                 }
-                queryClient.setQueryData(
+                queryClient.setQueryData<ConversationDraftDto>(
                   queryKeys.conversationDraft.detail(
                     submittedDraftScope,
                     draftOwnerId,
                   ),
-                  clearedDraft,
+                  current => current && current.revision > clearedDraft.revision
+                    ? current : clearedDraft,
                 );
                 const cleanupIds = new Set([
                   ...stagedIds,
@@ -2623,6 +2643,7 @@ export function Composer({
         );
       })
       .finally(() => {
+        if (outgoingId) outgoing?.finish(outgoingId);
         draftMutationLockedRef.current = false;
         setDraftMutationLocked(false);
         sendingRef.current = false;
@@ -2650,8 +2671,39 @@ export function Composer({
       ref={composerRoot}
       className="ponderosa-composer"
       data-compact="false"
+      data-file-drag-active={fileDragActive && fileDropEnabled}
       elevation={0}
       sx={composerSurfaceSx}
+      onDragEnterCapture={event => {
+        if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        fileDragDepth.current += 1;
+        if (fileDropEnabled) setFileDragActive(true);
+      }}
+      onDragOverCapture={event => {
+        if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = fileDropEnabled ? "copy" : "none";
+      }}
+      onDragLeaveCapture={() => {
+        fileDragDepth.current = Math.max(0, fileDragDepth.current - 1);
+        if (fileDragDepth.current === 0) setFileDragActive(false);
+      }}
+      onDropCapture={event => {
+        if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        fileDragDepth.current = 0;
+        setFileDragActive(false);
+        if (!fileDropEnabled || draftMutationLockedRef.current) return;
+        if (Array.from(event.dataTransfer.items).some(item => item.webkitGetAsEntry?.()?.isDirectory)) {
+          dispatchAttachments({ type: "set_error", error: "Folders can’t be attached. Drop individual files instead." });
+          return;
+        }
+        addFiles(Array.from(event.dataTransfer.files));
+      }}
     >
       <Box sx={{ display: "contents" }}>
       {sending ? <Typography role="status" aria-live="polite" variant="caption" color="text.secondary" sx={{ px: 1.5, pt: 0.5 }}>

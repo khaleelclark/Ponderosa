@@ -40,6 +40,28 @@ human or external action
    is Work log; only an explicit Ponderosa messaging or Request capability
    creates authored Communication or a correlated handoff.
 
+### Temporary public progress in Chat
+
+Normalized `text` events may carry `presentation: "progress"` only when the
+provider explicitly identifies public commentary. Codex app-server completed
+`agentMessage` items with `phase: "commentary"` qualify; absent/unknown phases,
+reasoning, tool output, plans, and ordinary final output do not. Other adapters
+without this distinction fail closed rather than guessing from prose.
+
+The executor records the exact acknowledged injection with this Work-log event.
+Chat projects only the latest bounded update for an acknowledged human delivery
+with a live, leased Run and no scoped canonical reply since acknowledgement. A newer injection hides
+older progress, even before its acknowledgement. Coalesced causes show the
+update once, under the newest cause. Canonical reply publication or a terminal
+Run removes the temporary update; original output remains in the Work log.
+Failure/stop/unconfirmed receipts remain visible independently.
+
+This is a read projection, not authored Communication, shared context, another
+delivery, or evidence of semantic understanding/completion. Confirmed steering
+delivery has its own visible receipt. Workspace progress envelopes contain IDs
+only and refresh visible queries through a bounded, coalesced path; no polling
+or roster-wide collectors are added.
+
 Not every durable cause wakes an Agent. A passive Broadcast and `next_run`
 delivery are deliberate examples. Likewise, completing a Run does not by itself
 promise future work; a later turn needs a still-durable Activation, Request,

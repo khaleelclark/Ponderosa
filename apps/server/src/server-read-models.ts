@@ -17,6 +17,7 @@ import type {
 } from "@ponderosa/agents";
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
 import { sqliteCollectionPage } from "./collection-page.js";
+import { withDecisionRecipient } from "./decision-presentation.js";
 import { decodeTimelineCursor, encodeTimelineCursor } from "./cursors.js";
 import {
   agentMentionHandle,
@@ -284,7 +285,7 @@ export function createServerReadModels(context: ReadModelContext) {
         ...(memberPage.cursor ? { cursor: memberPage.cursor } : {}),
       },
       messages: withMessagePresentation(conversation.projectId, page.messages),
-      decisionEvents: decisionPage.events,
+      decisionEvents: decisionPage.events.map(event => withDecisionRecipient(store, event)),
       history: {
         limit,
         hasMore,
@@ -502,7 +503,26 @@ export function createServerReadModels(context: ReadModelContext) {
     // hydrate the superseded Agent message table only to replace it.
     const detail = store.getAgentDetail(agentId, limit, false);
     if (!detail) return detail;
-    const messagePage = store.getProjectedAgentMessagePage(agentId, { limit, cursor: input.cursor, focusId: input.focusId });
+    type CombinedCursor = { v: 3; agentId: string; messages?: string; messagesDone?: boolean;
+      decisions?: { createdAt: string; id: string }; decisionsDone?: boolean };
+    let combined: CombinedCursor | undefined;
+    if (input.cursor) {
+      const parsed = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as Partial<CombinedCursor>;
+      if (parsed.v === 3) {
+        if (parsed.agentId !== agentId) throw new Error("invalid Agent Chat cursor scope");
+        combined = parsed as CombinedCursor;
+      }
+      // v2 canonical message cursors remain valid for an already open older client.
+    }
+    const messagePage = combined?.messagesDone ? { messages: [], hasMore: false as const }
+      : store.getProjectedAgentMessagePage(agentId, { limit, cursor: combined ? combined.messages : input.cursor, focusId: input.focusId });
+    const decisionPage = combined?.decisionsDone ? { events: [], hasMore: false as const }
+      : workspace.listDecisionEventPage({ projectId: detail.agent.projectId, agentId, limit, before: combined?.decisions });
+    const oldestDecision = decisionPage.events.at(-1);
+    const hasMore = messagePage.hasMore || decisionPage.hasMore;
+    const nextCursor: CombinedCursor = { v: 3, agentId,
+      ...(messagePage.hasMore && messagePage.cursor ? { messages: messagePage.cursor } : { messagesDone: true }),
+      ...(decisionPage.hasMore && oldestDecision ? { decisions: { createdAt: oldestDecision.createdAt, id: oldestDecision.id } } : { decisionsDone: true }) };
     return {
       ...detail,
       hasSubagentHistory:
@@ -512,7 +532,8 @@ export function createServerReadModels(context: ReadModelContext) {
           event.managerAgentId === agentId
         ),
       messages: withMessagePresentation(detail.agent.projectId, messagePage.messages),
-      history: { limit, hasMore: messagePage.hasMore, ...(messagePage.cursor ? { cursor: messagePage.cursor } : {}) },
+      decisionEvents: decisionPage.events.map(event => withDecisionRecipient(store, event)),
+      history: { limit, hasMore, ...(hasMore ? { cursor: Buffer.from(JSON.stringify(nextCursor)).toString("base64url") } : {}) },
       coordinationV3: coordinationV3.agentSnapshot(agentId),
     };
   }

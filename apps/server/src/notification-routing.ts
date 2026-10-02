@@ -13,6 +13,9 @@ import type { LogEvent } from "@ponderosa/agents";
  */
 export function workspaceAgentEventCategory(event: LogEvent): Extract<WorkspaceEvent, { type: "agent_event" }>["category"] | undefined {
   switch (event.type) {
+    // Only completed, explicitly public commentary emits a metadata envelope.
+    // Ordinary text/reasoning and token deltas remain off the workspace stream.
+    case "text": return event.presentation === "progress" ? "progress" : undefined;
     case "agent_lifecycle": return "lifecycle";
     case "file_change": return "file";
     case "command":

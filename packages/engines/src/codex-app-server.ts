@@ -1047,7 +1047,8 @@ export function mapCodexAppServerNotification(
     return typeof item.text === "string" && item.text.trim()
       // Each completed agentMessage is a semantic response block, not a token
       // delta. Keep adjacent blocks separated in the durable Work log.
-      ? [{ type: "text", delta: `${item.text.trimEnd()}\n\n` }]
+      ? [{ type: "text", delta: `${item.text.trimEnd()}\n\n`,
+          ...(item.phase === "commentary" ? { presentation: "progress" as const } : {}) }]
       : [];
   }
   if (notification.method === "item/completed" && item.type === "fileChange" && Array.isArray(item.changes)) {

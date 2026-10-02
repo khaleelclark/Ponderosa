@@ -10,14 +10,18 @@ import { TextInputDialog } from "./ConfirmationDialogs";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { starColor } from "./WorkspaceSidebar.helpers";
 import { sortChatFolderMembers, sortChatFolders } from "../resourcePreferences";
+import { SidebarNotificationBadge } from "./SidebarNotificationBadge";
+import type { UnreadNotificationProjection } from "../workspaceNavigation";
 
 type Item = WorkspaceConversationDirectoryItemDto;
 const dragType = "application/x-ponderosa-chat";
 
 /** Folders only store conversation IDs; all chat actions retain their original scope. */
-export function ChatFolders({ items, openItems = [], folders, sort, starredIds, filtering, renderRow, onChange, onRename, onDelete, onReorder, children }: {
+export function ChatFolders({ items, openItems = [], folders, sort, starredIds, filtering, folderUnread, notificationState, renderRow, onChange, onRename, onDelete, onReorder, children }: {
   items: Item[]; folders: ChatFolderDto[]; sort: ProjectSort; starredIds: ReadonlySet<string>; filtering: boolean;
   openItems?: Item[];
+  folderUnread?: Record<string, UnreadNotificationProjection>;
+  notificationState?: "loading" | "unavailable";
   renderRow(item: Item): ReactNode;
   onChange(folders: ChatFolderDto[], customOrder?: boolean): void;
   onRename(conversation: ConversationDto): void; onDelete(conversation: ConversationDto): void;
@@ -128,6 +132,7 @@ export function ChatFolders({ items, openItems = [], folders, sort, starredIds, 
     const members = sortChatFolderMembers(folder, items, sort);
     const expanded = filtering || folder.expanded;
     const active = members.some(item => (item.runningAgentCount ?? 0) > 0);
+    const unread = folderUnread?.[folder.id];
     return <Box key={folder.id} sx={{ minWidth: 0, mt: .5, mb: 1 }}>
       <Stack direction="row" draggable
         onDragStart={event => { setDraggedFolder(folder.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-ponderosa-chat-folder", folder.id); }}
@@ -149,6 +154,8 @@ export function ChatFolders({ items, openItems = [], folders, sort, starredIds, 
           ...(folderTarget?.id === folder.id ? { borderTop: folderTarget.position === "before" ? 2 : 0, borderBottom: folderTarget.position === "after" ? 2 : 0, borderColor: "primary.main" } : {}),
           "@media (hover: hover) and (pointer: fine)": { "& .sidebar-secondary": { opacity: 0 }, "&:hover .sidebar-secondary, &:focus-within .sidebar-secondary": { opacity: 1 } } }}>
         <ListItemButton aria-label={`Folder ${folder.name}`} aria-expanded={expanded}
+          aria-description={unread ? `${unread.importantCount} important unread; ${unread.ordinaryCount} ordinary unread` :
+            notificationState ? `Folder notifications ${notificationState}` : undefined}
           onClick={() => onChange(folders.map(value => value.id === folder.id ? { ...value, expanded: !folder.expanded } : value))}
           onKeyDown={event => { if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) { event.preventDefault(); setMenu({ anchor: event.currentTarget, folder }); } }}
           sx={{ px: .5, py: 0, minWidth: 0, minHeight: { xs: 44, sm: 34 }, gap: .75 }}>
@@ -157,6 +164,8 @@ export function ChatFolders({ items, openItems = [], folders, sort, starredIds, 
           <ListItemText primary={folder.name} primaryTypographyProps={{ noWrap: true, fontSize: 12.5, fontWeight: 750, letterSpacing: ".015em" }} sx={{ minWidth: 0 }} />
           {active ? <AgentStatusIndicator status="running" /> : null}
           {!active && !filtering && members.length < folder.conversationIds.length ? <Typography component="span" role="img" aria-label="Activity not yet available" variant="caption">?</Typography> : null}
+          {unread ? <SidebarNotificationBadge unread={unread} /> : notificationState ?
+            <Typography component="span" role="img" aria-label={notificationState === "loading" ? "Folder notifications loading" : "Folder notifications unavailable"} variant="caption">…</Typography> : null}
           <Typography variant="caption" color="text.secondary">{folder.conversationIds.length}</Typography>
         </ListItemButton>
         <IconButton className={folder.starred ? undefined : "sidebar-secondary"} size="small"

@@ -11,6 +11,7 @@ import { renderableWorkspaceMarkdownHref, workspaceMarkdownMediaHref } from "./w
 import { lazy, Suspense, useState } from "react";
 import { FeatureErrorBoundary } from "../FeatureErrorBoundary";
 const PdfPreview = lazy(() => import("./PdfPreview"));
+const DocxPreview = lazy(() => import("./DocxPreview"));
 
 function diffLineKind(line: string): "addition" | "deletion" | "neutral" {
   if (line.startsWith("+") && !line.startsWith("+++")) return "addition";
@@ -97,6 +98,8 @@ export function FilePreview(props: FilePreviewProps): JSX.Element {
     body = <Box component="img" src={props.previewUrl} alt={props.title} sx={{ display: "block", maxWidth: "100%", maxHeight: props.maxHeight ?? { xs: "55vh", md: "66vh" }, objectFit: "contain", mx: "auto" }} />;
   } else if (capability.kind === "pdf" && props.previewUrl) {
     body = <Suspense fallback={<Typography role="status" sx={{ p: 2 }}>Loading PDF viewer…</Typography>}><PdfPreview key={props.previewUrl} url={props.previewUrl} title={props.title}/></Suspense>;
+  } else if (capability.kind === "docx" && (props.downloadUrl ?? props.previewUrl)) {
+    body = <Suspense fallback={<Typography role="status" sx={{ p: 2 }}>Loading Word document viewer…</Typography>}><DocxPreview key={props.downloadUrl ?? props.previewUrl} url={(props.downloadUrl ?? props.previewUrl)!} title={props.title}/></Suspense>;
   } else if (capability.kind === "diff" && props.content !== undefined) {
     body = props.content ? <UnifiedDiffViewer diff={props.content} /> : <Alert severity="info">This diff is empty.</Alert>;
   } else if (capability.kind === "markdown" && props.content !== undefined) {

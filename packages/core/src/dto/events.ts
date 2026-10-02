@@ -3,7 +3,7 @@ import type { AgentEvent } from "../events.js";
 import type { AgentDto, AgentState } from "./agents.js";
 import type { ArtifactDto, ChangedFileDto } from "./artifacts.js";
 import type { HistoryPageDto, HistoryWindowDto } from "./common.js";
-import type { ConversationDto, MessageDto, ResponseFileActivityDto } from "./conversations.js";
+import type { ConversationDecisionEventDto, ConversationDto, MessageDto, ResponseFileActivityDto } from "./conversations.js";
 import type { AgentCoordinationV3Dto, AgentRunDto, WorkItemDto } from "./runs.js";
 import type {
   WorkspacePreferencesDto,
@@ -29,7 +29,7 @@ export type WorkspaceEvent =
     }
   | { type: "trigger_changed"; projectId: string; agentId: string; triggerId: string; action: "created" | "updated" | "deleted" | "occurrence" }
   | { type: "usage_changed"; projectId: string; agentId: string; conversationIds: string[]; seq: number; executionId?: string }
-  | { type: "agent_event"; projectId: string; agentId: string; conversationIds: string[]; seq: number; eventType: string; category: "lifecycle" | "message" | "task" | "artifact" | "file" | "state" | "usage"; executionId?: string }
+  | { type: "agent_event"; projectId: string; agentId: string; conversationIds: string[]; seq: number; eventType: string; category: "lifecycle" | "message" | "task" | "artifact" | "file" | "state" | "usage" | "progress"; executionId?: string }
   | { type: "runtime_capabilities_changed"; projectId: string; engineId: EngineId }
   | { type: "push_subscription_changed"; deviceId: string; action: "upserted" | "deleted" }
   | { type: "push_delivery_changed"; notificationId: string; deviceId: string; action: "delivered" | "retry_scheduled" | "abandoned" };
@@ -115,7 +115,7 @@ export interface AgentOutputEvent {
 }
 
 export type AgentExecutionDeltaEvent =
-  | (Extract<AgentEvent, { type: "text" }> & { executionId?: string })
+  | (Extract<AgentEvent, { type: "text" }> & { executionId?: string; progressInjectionId?: string })
   | (Extract<AgentEvent, { type: "reasoning" }> & { executionId?: string });
 
 export interface RunOutputDto {
@@ -153,6 +153,8 @@ export interface RunOutputTextDto {
  * communications; Work log contains execution-scoped ordinary output.
  */
 export interface AgentDetailDto {
+  /** Read-only canonical Decision events, paginated with the Chat history. Not Communications. */
+  decisionEvents?: ConversationDecisionEventDto[];
   agent: AgentDto;
   /** Canonical owning Chat, absent only after that Chat no longer exists. */
   ownerConversation?: Pick<ConversationDto, "id" | "title">;

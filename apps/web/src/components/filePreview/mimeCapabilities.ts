@@ -1,6 +1,6 @@
 import type { ArtifactKind } from "@ponderosa/core";
 
-type PreviewCapability = "image" | "markdown" | "text" | "pdf" | "diff" | "unsupported";
+type PreviewCapability = "image" | "markdown" | "text" | "pdf" | "docx" | "diff" | "unsupported";
 
 export interface MimeCapability {
   kind: PreviewCapability;
@@ -25,6 +25,7 @@ const EXTENSION_MEDIA_TYPES: Record<string, string> = {
   json: "application/json",
   jsonl: "application/x-ndjson",
   txt: "text/plain",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 };
 
 function normalizedMediaType(mediaType?: string, path?: string): string {
@@ -47,6 +48,9 @@ export function previewCapability({
   contentType?: "markdown" | "diff" | "text";
 }): MimeCapability {
   const normalized = normalizedMediaType(mediaType, path);
+  if (normalized === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+    return { kind: "docx", label: "Word document", inline: true };
+  }
   if (contentType === "diff" || artifactKind === "diff" || normalized === "text/x-diff" || normalized === "text/x-patch") {
     return { kind: "diff", label: "Unified diff", inline: true };
   }

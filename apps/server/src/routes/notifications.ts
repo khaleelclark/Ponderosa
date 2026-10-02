@@ -20,7 +20,7 @@ export interface NotificationRoutesOptions {
     | "readNotificationsForCommunicationEvents"
     | "setNotificationStatus"
   >;
-  readonly store: Pick<AgentStore, "getAgentTitleProjection">;
+  readonly store: Pick<AgentStore, "getAgentTitleProjection" | "getProject" | "getConversation">;
   readonly publishWorkspaceSince: (cursor: number) => void;
 }
 
@@ -71,12 +71,22 @@ export function registerNotificationListRoute(
     const agentTitles = options.store.getAgentTitleProjection(
       page.items.flatMap((notification) => notification.agentId ? [notification.agentId] : []),
     );
+    // Resolve only this bounded page's distinct scopes; no per-card browser
+    // requests, all-Project collectors or notification-history scan.
+    const projectIds = new Set(page.items.flatMap(item => item.projectId ? [item.projectId] : []));
+    const projectLabels = new Map([...projectIds].map(id => [id, options.store.getProject(id)?.label]));
+    const chats = new Map([...new Set(page.items.flatMap(item => item.conversationId ? [item.conversationId] : []))]
+      .map(id => [id, options.store.getConversation(id)]));
     const items = page.items.map((notification) => {
-      if (!notification.agentId) return notification;
-      const agentTitle = agentTitles.get(notification.agentId);
+      const agentTitle = notification.agentId ? agentTitles.get(notification.agentId) : undefined;
+      const projectLabel = notification.projectId ? projectLabels.get(notification.projectId) : undefined;
+      const chat = notification.conversationId ? chats.get(notification.conversationId) : undefined;
+      const conversationTitle = chat?.projectId === notification.projectId ? chat?.title : undefined;
       return {
         ...notification,
         ...(agentTitle ? { agentTitle } : {}),
+        ...(projectLabel ? { projectLabel } : {}),
+        ...(conversationTitle ? { conversationTitle } : {}),
       };
     });
     return {
@@ -106,6 +116,7 @@ export function registerNotificationListRoute(
     async (request, reply) => {
       const projectIds = request.body?.projectIds;
       const conversationIds = request.body?.conversationIds;
+      const chatFolders = request.body?.chatFolders;
       const validIds = (value: unknown): value is string[] => Array.isArray(value) &&
         value.length <= 200 &&
         value.every((id) => typeof id === "string" && id.length > 0 && id.length <= 200);
@@ -114,9 +125,21 @@ export function registerNotificationListRoute(
           error: "projectIds and conversationIds must each contain at most 200 IDs",
         });
       }
+      if (chatFolders !== undefined) {
+        let memberCount = 0;
+        const folderIds = new Set<string>();
+        if (!Array.isArray(chatFolders) || chatFolders.length > 200 || chatFolders.some(folder => {
+          if (!folder || typeof folder.id !== "string" || !folder.id || folder.id.length > 200 || folderIds.has(folder.id) ||
+            !Array.isArray(folder.conversationIds) || folder.conversationIds.length > 10_000) return true;
+          folderIds.add(folder.id);
+          memberCount += folder.conversationIds.length;
+          return memberCount > 10_000 || folder.conversationIds.some(id => typeof id !== "string" || !id || id.length > 200);
+        })) return reply.code(400).send({ error: "chatFolders must contain at most 200 unique groups and 10000 total member IDs" });
+      }
       return options.workspace.notificationProjection({
         projectIds: [...new Set(projectIds)],
         conversationIds: [...new Set(conversationIds)],
+        ...(chatFolders ? { chatFolders } : {}),
       });
     },
   );

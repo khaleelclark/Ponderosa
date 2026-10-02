@@ -94,12 +94,19 @@ function AgentRunState({
     health?.assignedWorkOutcome ? "Assigned work: " + agentStatusLabel(health.assignedWorkOutcome.status) : undefined,
     health?.attention ? "Needs attention: " + agentStatusLabel(health.attention.status) : undefined,
   ].filter(Boolean).join(" · ");
+  const delayed = connectionStatus === "stale" || connectionStatus === "unavailable";
   return (
-    <SemanticStatus
-      status={connectionStatus === "live" ? semanticAgentStatus(status) : "needs_attention"}
-      label={`${runState} · ${connectionState}`}
-      detail={`${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}. ${details}`}
-    />
+    <Stack direction="row" gap={0.5} flexWrap="wrap" alignItems="center" sx={{ minWidth: 0, flexShrink: 1 }}>
+      <SemanticStatus
+        status={semanticAgentStatus(status)}
+        label={connectionStatus === "live" ? `${runState} · Live` : `${delayed ? "Last known: " : ""}${runState}`}
+        detail={`${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}. ${details}`}
+      />
+      {connectionStatus !== "live" && <SemanticStatus status={delayed ? "blocked" : "idle"}
+        label={connectionStatus === "stale" ? "Updates delayed" : connectionStatus === "unavailable"
+          ? "Updates unavailable" : `${connectionState} updates`}
+        detail="Connection to live updates on this device. This does not stop the Agent's work." />}
+    </Stack>
   );
 }
 

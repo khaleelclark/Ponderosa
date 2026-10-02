@@ -171,6 +171,11 @@ export interface MessageDeliveryReceiptDto {
   /** The previous attempt may already have completed; a retry can duplicate work. */
   retryMayDuplicate?: true;
   injectionId?: string;
+  /** Provider submission kind, not inferred from receipt wording. */
+  injectionKind?: "turn" | "steer";
+  /** Temporary, bounded public commentary for this exact acknowledged delivery.
+   * Not authored Communication, completion, or proof of semantic understanding. */
+  liveProgress?: { text: string; createdAt: string; seq: number; truncated?: true; recipientHandle: string };
   recoveryAt?: string;
   canLetCurrentRunFinish?: boolean;
   recoveryActivationId?: string;
@@ -431,6 +436,8 @@ export interface ConversationDecisionEventDto {
   createdAt: string;
   /** Canonical Decision state that owns this timeline event. */
   decision: DecisionDto;
+  /** Current identity resolved by decision.agentId; null means unavailable. Read-only presentation. */
+  recipientAgent?: Pick<AgentDto, "id" | "title" | "handle"> | null;
 }
 
 export interface ConversationDetailDto {
@@ -863,6 +870,7 @@ export interface AllChatDecisionEventDto {
   id: string;
   createdAt: string;
   decision: DecisionDto;
+  recipientAgent?: ConversationDecisionEventDto["recipientAgent"];
   project: Pick<ProjectDto, "id" | "label">;
   source: { kind: "project"; conversationId: string; title: string };
 }

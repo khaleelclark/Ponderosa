@@ -104,7 +104,7 @@ try{
    const capabilityFilter=page.getByRole('textbox',{name:'Filter runtime capabilities'});
    if(name!=='desktop') {
     assert.equal(await capabilityFilter.count(),0,'Mobile opens a compact action menu, not search');
-    assert.equal(await page.getByRole('menuitem').count(),2,'Only two initial actions');
+    assert.equal(await page.getByRole('menuitem').count(),3,'Photos, Files and skills are separate initial actions');
     if(name==='iPhone'&&!mention) await page.screenshot({path:'/tmp/mobile-plus-actions.png'});
     await page.getByRole('menuitem',{name:'Skills & connectors',exact:true}).click();
     assert.equal(await capabilityFilter.evaluate(el=>el===document.activeElement),false,'Browsing does not open keyboard');
@@ -122,7 +122,7 @@ try{
     }
     await page.getByRole('button',{name:'← Back',exact:true}).click();
     const picker=page.waitForEvent('filechooser');
-    await page.getByRole('menuitem',{name:'Add photo or file',exact:true}).click();
+    await page.getByRole('menuitem',{name:'Files',exact:true}).click();
     assert.equal((await picker).isMultiple(),true,'Existing multiple attachment picker preserved');
     await page.getByRole('button',{name:'Add attachment or capability',exact:true}).click();
     await page.getByRole('menuitem',{name:'Skills & connectors',exact:true}).click();

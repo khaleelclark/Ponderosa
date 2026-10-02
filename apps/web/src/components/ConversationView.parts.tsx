@@ -49,13 +49,11 @@ import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { MessageRequestAction } from "./MessageRequestAction";
 import { DecisionCard } from "./decisions/DecisionCard";
-import { decisionResponseSummary } from "./decisions/decisionResponse";
+import { DecisionResponseMessage } from "./decisions/DecisionResponseMessage";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
-import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
-import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
+import { LiveAgentProgress } from "./chat/LiveAgentProgress";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import {
-  AUTO_ALLOWED_DECISION_OPTION_ID,
   type MainTimelineEntry,
 } from "./ConversationView.helpers";
 import {
@@ -200,6 +198,7 @@ function ConversationMessageComponent({
           </>
         ),
         attachments: message.attachments,
+        belowBody: message.role === "user" ? <LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} /> : undefined,
         status:
           message.role === "user" && message.deliveryReceipts?.length ? (
             <MessageDeliveryStatus
@@ -416,7 +415,6 @@ function MainConversationTimeline({
   ): void;
   notifications: WorkspaceNotificationDto[];
 }): JSX.Element {
-  const acknowledgeNotifications = useNotificationAcknowledgement();
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
       {mainTimeline.length === 0 ? (
@@ -431,31 +429,11 @@ function MainConversationTimeline({
           const card = <Box key={entry.id} sx={{ py: 1 }}>
           <DecisionCard decision={entry.event.decision} title={entry.event.decision.question} context={entry.event.decision.context} />
           </Box>;
-          return notification ? <NotificationAcknowledgementBoundary
-            key={entry.id}
-            notificationId={notification.id}
-            acknowledged={Boolean(notification.acknowledgedAt)}
-            onAcknowledge={acknowledgeNotifications}
-          >{card}</NotificationAcknowledgementBoundary> : card;
+          return notification ? <Box key={entry.id} data-notification-id={notification.id}>{card}</Box> : card;
         }
         if (entry.kind === "decision-response") {
-          const automatic =
-            entry.event.decision.response?.optionId ===
-            AUTO_ALLOWED_DECISION_OPTION_ID;
-          return <ChatMessageFrame
-          key={entry.id}
-          message={{
-            id: entry.id,
-            author: automatic
-              ? { kind: "notice" }
-              : { kind: "operator", profile: operatorProfile },
-            createdAt: entry.at,
-            ariaLabel: automatic ? entry.choice : decisionResponseSummary(entry.event.decision, entry.choice),
-            body: <Typography variant="body2">
-              {automatic ? entry.choice : decisionResponseSummary(entry.event.decision, entry.choice)}
-            </Typography>,
-          }}
-          />;
+          return <DecisionResponseMessage key={entry.id} event={entry.event}
+            operatorProfile={operatorProfile} onOpenAgent={onOpenAgent} />;
         }
         const message = entry.message;
         return <ConversationMessage

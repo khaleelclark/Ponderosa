@@ -15,6 +15,9 @@ import { Composer } from "./chat/Composer";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { HostFolderPicker } from "./HostFolderPicker";
+import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
+import { ChatSurface } from "./chat/ChatSurface";
+import { publishCreatedAgent } from "../conversationAgentCache";
 
 type CreationAttempt = { fingerprint: string; chatKey: string; agentKey: string; agentTitle?: string; chat?: ConversationDto };
 const attemptKey = "ponderosa.new-chat-attempt.v1";
@@ -93,12 +96,13 @@ export function NewChatComposer({engines, enginesLoaded = true, preferences, onC
           idempotencyKey: current.agentKey,
         });
       } else {
-        await api.createAgent(current.chat.projectId, current.chat.id, {
+        const created = await api.createAgent(current.chat.projectId, current.chat.id, {
           title:current.agentTitle!, engine:engineId, initialMessage:submission.text,
           model:current.chat.defaultModel, effort:current.chat.defaultEffort,
           speed:current.chat.defaultSpeed,
           idempotencyKey:current.agentKey,
         });
+        if (!("recovering" in created)) publishCreatedAgent(queryClient, created);
       }
       await Promise.all([
         queryClient.invalidateQueries({queryKey:queryKeys.projects.all}),
@@ -132,8 +136,8 @@ export function NewChatComposer({engines, enginesLoaded = true, preferences, onC
     onEffortChange={setEffort}
     onSpeedChange={setSpeed}
   />;
-  return <Box sx={{height:"100%",minHeight:0,minWidth:0,display:"grid",gridTemplateRows:"minmax(0, 1fr) auto"}}>
-    <Box role="region" aria-label="Chat messages" sx={{minHeight:0}} />
+  return <OutgoingMessageProvider profile={preferences.profile}><Box sx={{height:"100%",minHeight:0,minWidth:0,display:"grid",gridTemplateRows:"minmax(0, 1fr) auto"}}>
+    <ChatSurface layout="project" layoutKey="new-chat" label="Chat messages" showOutgoingMessage follow={{ kind: "latest" }}>{null}</ChatSurface>
     <ChatComposerDock>
       {error ? <Alert severity="error" sx={{mb:1}}>{error}</Alert> : null}
       {hostPath ? <Paper
@@ -181,5 +185,5 @@ export function NewChatComposer({engines, enginesLoaded = true, preferences, onC
       onClose={() => setFolderPickerOpen(false)}
       onChoose={path => { setHostPath(path); setFolderPickerOpen(false); }}
     />
-  </Box>;
+  </Box></OutgoingMessageProvider>;
 }

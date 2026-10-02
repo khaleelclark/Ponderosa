@@ -17,7 +17,7 @@ function Fixture(): JSX.Element {
   const [action, setAction] = useState("none");
   const label = section === "chats" ? "Chat" : section === "agents" ? "Agent" : "Automation";
   return (
-    <ThemeProvider theme={createPonderosaTheme("dark")}>
+    <ThemeProvider theme={createPonderosaTheme(params.has("light") ? "light" : "dark")}>
       <CssBaseline />
       <MobileNavigationProvider desktopVisible={!drawer && collapsed} onOpen={() => setCollapsed(false)}>
       <Box sx={{ width: "100vw", height: "100dvh", display: "flex", overflow: "hidden" }}>
@@ -29,8 +29,8 @@ function Fixture(): JSX.Element {
           route={{ kind: "home" }}
           profile={{ displayName: "K&P", handle: "operator", avatarId: "default-user" }}
           allMessagesUnread={{ importantCount: 0, ordinaryCount: 0, totalCount: 0 }}
-          attentionNotifications={2}
-          unreadNotificationUpdates={0}
+          attentionNotifications={params.has("updates") || params.has("empty") ? 0 : 2}
+          unreadNotificationUpdates={params.has("updates") && !params.has("empty") ? 3 : 0}
           projectUnread={new Map()}
           onFoldersChange={noop}
           onRenameProject={noop}

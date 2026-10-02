@@ -56,9 +56,12 @@ import { Composer } from "./chat/Composer";
 import { copyText } from "../clipboard";
 import { AttentionSurface } from "./AttentionSurface";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { LiveAgentProgress } from "./chat/LiveAgentProgress";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
+import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
+import { publishCreatedAgent } from "../conversationAgentCache";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
 import { createClientId } from "../clientId";
@@ -80,7 +83,7 @@ import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
 import { loadRetainedData } from "../retainedData";
 import { DecisionCard } from "./decisions/DecisionCard";
-import { decisionResponseSummary } from "./decisions/decisionResponse";
+import { DecisionResponseMessage } from "./decisions/DecisionResponseMessage";
 import { AgentRuntimeControls } from "./AgentDetail.parts";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import {
@@ -91,8 +94,6 @@ import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import { AUTO_ALLOWED_DECISION_OPTION_ID } from "./ConversationView.helpers";
 import { CompactWorkspaceHeader } from "./WorkspaceFrame";
 import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
-import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
-import { useNotificationAcknowledgement } from "../hooks/useNotificationAcknowledgement";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ReadAloudControls } from "./speech/ReadAloudControls";
@@ -236,7 +237,6 @@ export function AllChatView({
     { data: notifications },
     queryClient,
   );
-  const acknowledgeNotifications = useNotificationAcknowledgement();
   const [older, setOlder] = useState<{
     items: AllChatItemDto[];
     decisions: AllChatDecisionEventDto[];
@@ -1009,6 +1009,7 @@ export function AllChatView({
           } : {}),
           idempotencyKey: `${requestId}:new-agent:0`,
         });
+        if (!("recovering" in created)) publishCreatedAgent(queryClient, created);
         const createdAgentId = "recovering" in created ? created.agentId : created.id;
         setActiveOperation(createCreationOperationTracker(
           createdAgentId,
@@ -1190,7 +1191,7 @@ export function AllChatView({
         submissionTargetId,
       };
     },
-    onSuccess: result => {
+    onSuccess: async result => {
       setNotice(undefined);
       if (allChatSubmissionSettlementStillCurrent({
         capturedEpoch: result.submissionEpoch,
@@ -1212,7 +1213,7 @@ export function AllChatView({
       } else {
         setDirectSendConfirmation(undefined);
       }
-      void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
       for (const agentId of result.recipientIds) {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.agents.detailPrefix(agentId),
@@ -1473,7 +1474,7 @@ export function AllChatView({
       />
     ) : null;
   return (
-    <Box
+    <OutgoingMessageProvider scope={composerConversationId ?? "all"} profile={workspacePreferences.data?.profile}><Box
       sx={{
         height: "100%",
         minHeight: 0,
@@ -1498,6 +1499,7 @@ export function AllChatView({
       </Box>
 
       <ChatSurface
+        showOutgoingMessage
         layout="workspace"
         layoutKey={layoutKey}
         label="All messages"
@@ -1563,40 +1565,12 @@ export function AllChatView({
               />
               <Typography variant="caption" color="text.secondary">{entry.item.source.title}</Typography>
               </Box>;
-              return notification ? <NotificationAcknowledgementBoundary
-                key={entry.id}
-                notificationId={notification.id}
-                acknowledged={Boolean(notification.acknowledgedAt)}
-                onAcknowledge={acknowledgeNotifications}
-              >{card}</NotificationAcknowledgementBoundary> : card;
+              return notification ? <Box key={entry.id} data-notification-id={notification.id}>{card}</Box> : card;
             }
             if (entry.kind === "decision-response") {
-              const automatic =
-                entry.item.decision.response?.optionId ===
-                AUTO_ALLOWED_DECISION_OPTION_ID;
-              return <ChatMessageFrame
-              key={entry.id}
-              message={{
-                id: entry.id,
-                author: automatic
-                  ? { kind: "notice" }
-                  : {
-                      kind: "operator",
-                      profile: workspacePreferences.data?.profile,
-                    },
-                createdAt: entry.at,
-                ariaLabel: automatic
-                  ? entry.choice
-                  : decisionResponseSummary(entry.item.decision, entry.choice),
-                body: (
-                  <Typography variant="body2">
-                    {automatic
-                      ? entry.choice
-                      : decisionResponseSummary(entry.item.decision, entry.choice)}
-                  </Typography>
-                ),
-              }}
-              />;
+              return <DecisionResponseMessage key={entry.id} event={entry.item}
+                operatorProfile={workspacePreferences.data?.profile}
+                onOpenAgent={agentId => onNavigate({ kind: "agent", projectId: entry.item.decision.projectId, agentId })} />;
             }
             const item = entry.item;
             const fromUser = item.author.kind === "user";
@@ -1703,6 +1677,8 @@ export function AllChatView({
                       </ButtonBase>
                     </Stack>
                   ),
+                  belowBody: fromUser ? <LiveAgentProgress receipts={item.deliveryReceipts} onOpenAgent={agentId =>
+                    onNavigate({ kind: "agent", projectId: item.project.id, agentId })} /> : undefined,
                   status:
                     fromUser && item.deliveryReceipts?.length ? (
                       <MessageDeliveryStatus
@@ -2008,6 +1984,6 @@ export function AllChatView({
         }}
         onConfirm={targets => void cancelOperationTargets(targets)}
       />
-    </Box>
+    </Box></OutgoingMessageProvider>
   );
 }

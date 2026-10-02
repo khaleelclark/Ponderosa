@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
+import { validGif, validAvif } from "./image-containers.js";
 import type { UploadedOperatorAvatarDto } from "@ponderosa/core";
 
 export const MAX_OPERATOR_AVATAR_BYTES = 10 * 1024 * 1024;
@@ -137,91 +138,6 @@ function validWebp(body: Buffer): boolean {
   );
 }
 
-function skipGifSubBlocks(body: Buffer, initialOffset: number): number | undefined {
-  let offset = initialOffset;
-  while (offset < body.length) {
-    const length = body[offset++]!;
-    if (length === 0) return offset;
-    if (offset + length > body.length) return undefined;
-    offset += length;
-  }
-  return undefined;
-}
-
-function validGif(body: Buffer): boolean {
-  if (body.length < 14 || !["GIF87a", "GIF89a"].includes(body.subarray(0, 6).toString("ascii"))) return false;
-  const width = body.readUInt16LE(6);
-  const height = body.readUInt16LE(8);
-  if (width === 0 || height === 0 || width > 4_096 || height > 4_096) return false;
-  const packed = body[10]!;
-  let offset = 13 + ((packed & 0x80) ? 3 * 2 ** ((packed & 0x07) + 1) : 0);
-  let sawImage = false;
-  while (offset < body.length) {
-    const introducer = body[offset++]!;
-    if (introducer === 0x3b) return sawImage && offset === body.length;
-    if (introducer === 0x21) {
-      if (offset >= body.length) return false;
-      offset += 1;
-      const end = skipGifSubBlocks(body, offset);
-      if (end === undefined) return false;
-      offset = end;
-      continue;
-    }
-    if (introducer !== 0x2c || offset + 9 > body.length) return false;
-    const imageWidth = body.readUInt16LE(offset + 4);
-    const imageHeight = body.readUInt16LE(offset + 6);
-    if (imageWidth === 0 || imageHeight === 0 || imageWidth > 4_096 || imageHeight > 4_096) return false;
-    const descriptorPacked = body[offset + 8]!;
-    offset += 9 + ((descriptorPacked & 0x80) ? 3 * 2 ** ((descriptorPacked & 0x07) + 1) : 0);
-    if (offset >= body.length || body[offset]! < 2 || body[offset]! > 8) return false;
-    const end = skipGifSubBlocks(body, offset + 1);
-    if (end === undefined) return false;
-    offset = end;
-    sawImage = true;
-  }
-  return false;
-}
-
-function validAvif(body: Buffer): boolean {
-  if (body.length < 32) return false;
-  let offset = 0;
-  let sawFtyp = false;
-  let avifBrand = false;
-  let sawMeta = false;
-  let sawMediaData = false;
-  while (offset + 8 <= body.length) {
-    const size32 = body.readUInt32BE(offset);
-    const type = body.subarray(offset + 4, offset + 8).toString("ascii");
-    if (!/^[\x20-\x7e]{4}$/u.test(type)) return false;
-    let header = 8;
-    let size = size32;
-    if (size32 === 1) {
-      if (offset + 16 > body.length) return false;
-      const wide = body.readBigUInt64BE(offset + 8);
-      if (wide > BigInt(Number.MAX_SAFE_INTEGER)) return false;
-      size = Number(wide);
-      header = 16;
-    }
-    if (size < header || size === 0 || offset + size > body.length) return false;
-    if (offset === 0) {
-      if (type !== "ftyp" || size < header + 8) return false;
-      sawFtyp = true;
-      const brands = [body.subarray(offset + header, offset + header + 4).toString("ascii")];
-      for (let brand = offset + header + 8; brand + 4 <= offset + size; brand += 4) brands.push(body.subarray(brand, brand + 4).toString("ascii"));
-      avifBrand = brands.some((brand) => brand === "avif" || brand === "avis");
-    }
-    if (type === "meta") {
-      if (size < header + 4) return false;
-      sawMeta = true;
-    }
-    if (type === "mdat") {
-      if (size === header) return false;
-      sawMediaData = true;
-    }
-    offset += size;
-  }
-  return offset === body.length && sawFtyp && avifBrand && sawMeta && sawMediaData;
-}
 
 function root(dataDir: string): string {
   return path.join(dataDir, "workspace", "profile-images");

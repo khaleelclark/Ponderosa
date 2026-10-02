@@ -21,14 +21,15 @@ import {
   useMediaQuery,
   useTheme,
 } from "@mui/material";
-import type { ConversationDto, ProjectDto, WorkspaceNotificationDto, WorkspaceNotificationPageDto } from "@ponderosa/core";
+import type { ProjectDto, WorkspaceNotificationDto, WorkspaceNotificationPageDto } from "@ponderosa/core";
 import { queryKeys } from "../queryKeys";
-import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { Route } from "../routing";
 import { notificationNavigationRoute } from "../notificationNavigation";
 import {
+  attentionPresentation,
   isOpenAttention,
   isUnreadNotificationUpdate,
   notificationsForAvailableProjects,
@@ -36,11 +37,6 @@ import {
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { notificationDecision } from "../decisions";
 import { DecisionActions } from "./decisions/DecisionActions";
-import { NotificationAcknowledgementBoundary } from "./NotificationAcknowledgementBoundary";
-import {
-  useNotificationAcknowledgement,
-  type NotificationAcknowledgementOptimisticTarget,
-} from "../hooks/useNotificationAcknowledgement";
 
 interface NotificationGroup {
   key: string;
@@ -180,71 +176,10 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
     olderPagesRef.current = next;
     setOlderPages(next);
   }, []);
-  const pendingAcknowledgements = useRef(new Map<string, string>());
   const pendingReads = useRef(new Map<string, string>());
   const [filter, setFilter] = useState<NotificationFilter>("updates");
   const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string>();
-  const acknowledgeNotifications = useNotificationAcknowledgement((reason) => {
-    setError(reason instanceof Error ? reason.message : "Action review could not be saved.");
-  });
-  const olderPagesOptimisticTarget = useMemo<NotificationAcknowledgementOptimisticTarget>(
-    () => ({
-      apply(notificationIds, acknowledgedAt) {
-        const ids = new Set(notificationIds);
-        notificationIds.forEach((id) => pendingAcknowledgements.current.set(id, acknowledgedAt));
-        replaceOlderPages((current) => current.map((page) => ({
-          ...page,
-          items: page.items.map((item) => ids.has(item.id) && isOpenAttention(item) && !item.acknowledgedAt
-            ? { ...item, acknowledgedAt }
-            : item),
-        })));
-      },
-      commit(notificationIds, acknowledgedAt) {
-        notificationIds.forEach((id) => {
-          if (pendingAcknowledgements.current.get(id) === acknowledgedAt) {
-            pendingAcknowledgements.current.delete(id);
-          }
-        });
-      },
-      rollback(notificationIds, acknowledgedAt) {
-        const ids = new Set(notificationIds);
-        const revertedIds = new Set<string>();
-        const deferCountIds = new Set<string>();
-        if (!retainedPagesCanonical.current) {
-          notificationIds.forEach((id) => deferCountIds.add(id));
-        }
-        replaceOlderPages((current) => current.map((page) => ({
-          ...page,
-          items: page.items.map((item) => {
-            if (!ids.has(item.id)) return item;
-            if (item.acknowledgedAt && item.acknowledgedAt !== acknowledgedAt) {
-              deferCountIds.add(item.id);
-              return item;
-            }
-            if (item.acknowledgedAt !== acknowledgedAt) return item;
-            revertedIds.add(item.id);
-            const { acknowledgedAt: _acknowledgedAt, ...unacknowledged } = item;
-            return unacknowledged;
-          }),
-        })));
-        notificationIds.forEach((id) => {
-          if (pendingAcknowledgements.current.get(id) === acknowledgedAt) {
-            pendingAcknowledgements.current.delete(id);
-          }
-        });
-        return {
-          revertedIds: [...revertedIds],
-          deferCountIds: [...deferCountIds],
-        };
-      },
-    }),
-    [replaceOlderPages],
-  );
-  const acknowledgePresentedNotifications = (notificationIds: readonly string[]) => {
-    setError(undefined);
-    acknowledgeNotifications(notificationIds, olderPagesOptimisticTarget);
-  };
   const wasOpen = useRef(false);
   const availableProjectIds = useMemo(
     () => new Set(projects.map(project => project.id)),
@@ -277,7 +212,6 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       replaceOlderPages(() => []);
       retainedPagesCanonical.current = true;
       reconciledRevision.current = firstPageRevision;
-      pendingAcknowledgements.current.clear();
       pendingReads.current.clear();
       setHistoryReconcileFailed(false);
       setFilter(openActionCount ? "attention" : "updates");
@@ -364,13 +298,10 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
         replaceOlderPages(() => pages.map((page) => ({
           ...page,
           items: page.items.map((item) => {
-            const acknowledgedAt = pendingAcknowledgements.current.get(item.id);
             const readAt = pendingReads.current.get(item.id);
-            if (item.acknowledgedAt) pendingAcknowledgements.current.delete(item.id);
             if (item.readAt) pendingReads.current.delete(item.id);
             return {
               ...item,
-              ...(!item.acknowledgedAt && acknowledgedAt ? { acknowledgedAt } : {}),
               ...(!item.readAt && readAt ? { readAt } : {}),
             };
           }),
@@ -401,17 +332,8 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
   const visibleNotifications = filterNotifications(notifications, filter).map(item => ({ ...item, body: markdownPreviewText(item.body), ...(item.contextPreview ? { contextPreview: markdownPreviewText(item.contextPreview) } : {}) }));
   const totalForFilter = filter === "attention" ? openActionCount : unreadUpdateCount;
   const remainingForFilter = Math.max(0, totalForFilter - visibleNotifications.length);
-  const projectIds = useMemo(() => [...new Set(visibleNotifications.map((item) => item.projectId).filter((id): id is string => Boolean(id)))], [visibleNotifications]);
-  const conversationQueries = useQueries({
-    queries: projectIds.map((projectId) => ({
-      queryKey: queryKeys.conversations.project(projectId),
-      queryFn: () => api.listConversations(projectId),
-      staleTime: 10_000,
-      enabled: open,
-    })),
-  });
-  const conversations = new Map<string, ConversationDto>();
-  conversationQueries.forEach((query) => query.data?.forEach((conversation) => conversations.set(conversation.id, conversation)));
+  // Names are projected with the bounded notification page; do not collect every
+  // Chat in each affected Project just to label a notice.
   const groups = groupNotificationsByProject(visibleNotifications);
 
   const loadOlder = async () => {
@@ -455,11 +377,9 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
         ...page,
         requestedCursor: operation.startCursor,
         items: page.items.map((item) => {
-          const acknowledgedAt = pendingAcknowledgements.current.get(item.id);
           const readAt = pendingReads.current.get(item.id);
           return {
             ...item,
-            ...(!item.acknowledgedAt && acknowledgedAt ? { acknowledgedAt } : {}),
             ...(!item.readAt && readAt ? { readAt } : {}),
           };
         }),
@@ -592,6 +512,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       <Tab value="updates" label={`Updates (${unreadUpdateCount})`} sx={{ minHeight: 42 }} />
     </Tabs>
     <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5, overflowX: "hidden", minWidth: 0 }}>
+      {filter === "attention" ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>Dismiss removes only the notice. It does not retry, cancel, or delete work.</Typography> : null}
       {error ? <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert> : null}
       {loadFailed ? <Alert severity="warning" sx={{ mb: 1 }} action={onRetry ? <Button color="inherit" onClick={onRetry}>Retry</Button> : undefined}>{firstPage ? "Notifications could not refresh. Showing the last loaded notifications." : "Notifications could not be loaded. Try again."}</Alert> : !firstPage && loading ? <Typography role="status">Loading notifications…</Typography> : null}
       <Stack spacing={1}>
@@ -608,18 +529,21 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
             </Button>
             </Stack>
             <List dense disablePadding aria-label={`Notifications for ${project?.label ?? "Ponderosa"}`}>
-              {group.items.map((item) => <ListItem key={item.id} disablePadding sx={{ "& > [data-notification-id]": { flex: 1, minWidth: 0 } }}>
-                <NotificationAcknowledgementBoundary notificationId={item.id} acknowledged={Boolean(item.acknowledgedAt) || !isOpenAttention(item)} onAcknowledge={acknowledgePresentedNotifications}>
+              {group.items.map((item) => {
+                const attention = isOpenAttention(item) ? attentionPresentation(item) : undefined;
+                return <ListItem key={item.id} disablePadding sx={{ "& > [data-notification-id]": { flex: 1, minWidth: 0 } }}>
+                <Box data-notification-id={item.id}>
                 <ListItemButton selected={filter === "updates" ? !item.readAt : !item.acknowledgedAt} onClick={() => navigateToNotification(item)} alignItems="flex-start" sx={{ gap: 1, mx: .75, my: .45, py: 1, borderRadius: 1.5 }}>
                   <Box aria-hidden sx={{ width: 8, height: 8, mt: .75, borderRadius: "50%", bgcolor: filter === "updates" ? "primary.main" : item.acknowledgedAt ? "action.disabled" : item.severity === "urgent" ? "error.main" : "warning.main", flex: "0 0 auto" }} />
                   <ListItemText
                     sx={{ minWidth: 0, overflowWrap: "anywhere" }}
-                    primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={(filter === "attention" ? item.acknowledgedAt : item.readAt) ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{item.title}</Typography>{filter === "attention" && !item.acknowledgedAt ? <Chip size="small" color="primary" label="New" /> : item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Issue"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(item.createdAt)}</Typography></Stack>}
-                    secondary={<Stack spacing={0.5}>{item.conversationId && conversations.get(item.conversationId) ? <Typography variant="caption" color="text.secondary">Chat: {conversations.get(item.conversationId)!.title}</Typography> : null}{item.contextPreview ? <Typography variant="body2" sx={{ fontWeight: 600, overflowWrap: "anywhere" }}>“{item.contextPreview}”</Typography> : null}{item.category === "communication" && item.communicationEventId ? <Typography variant="caption" color="text.secondary">Message reference: {item.communicationEventId.slice(-8)}</Typography> : null}<Typography variant="body2" color="text.secondary" sx={{ display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 3 }}>{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open"
+                    primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={(filter === "attention" ? item.acknowledgedAt : item.readAt) ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{attention?.title ?? item.title}</Typography>{filter === "attention" && !item.acknowledgedAt ? <Chip size="small" color="primary" label="New" /> : item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Issue"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(attention?.occurredAt ?? item.createdAt)}</Typography></Stack>}
+                    secondary={<Stack spacing={0.5}>{!attention && item.conversationTitle ? <Typography variant="caption" color="text.secondary">Chat: {item.conversationTitle}</Typography> : null}{(attention?.task ?? item.contextPreview) ? <Typography variant="body2" sx={{ fontWeight: 600, overflowWrap: "anywhere" }}>“{attention?.task ?? item.contextPreview}”</Typography> : null}{item.category === "communication" && item.communicationEventId ? <Typography variant="caption" color="text.secondary">Message reference: {item.communicationEventId.slice(-8)}</Typography> : null}<Typography variant="body2" color="text.secondary" sx={{ display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 3 }}>{attention?.explanation ?? item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open"
                       ? <DecisionActions decision={notificationDecision(item)!} compact />
                       : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
                     <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: .5 }}>
-                    {item.kind === "operational" && (item.status ?? "open") === "open" ? <Button size="small" onClick={(event) => { event.stopPropagation(); void setStatus(item, "resolved"); }}>Mark Resolved</Button> : null}
+                    {attention ? <Typography variant="caption" color="text.secondary" sx={{ width: "100%" }}>{attention.scopes.join(" · ")} · {attention.reference}</Typography> : null}
+                    {attention?.evidenceUnavailable ? <Typography variant="caption" color="text.secondary" sx={{ width: "100%" }}>No additional cause details were retained for this older notice.</Typography> : null}
                     {item.projectId && (item.kind === "operational" || ["coordination", "trigger", "decision"].includes(item.category ?? "")) ? <Button size="small" onClick={(event) => {
                       event.stopPropagation();
                       const route = notificationWorkRoute(item, availableProjectIds);
@@ -627,7 +551,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
                         onClose();
                         onNavigate(route);
                       }
-                    }}>Review Work Details</Button> : null}
+                    }}>Open activity</Button> : null}
                     <Button size="small" color="inherit" sx={{ ml: "auto" }} onClick={(event) => {
                       event.stopPropagation();
                       void setStatus(item, "dismissed");
@@ -636,8 +560,8 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
                     secondaryTypographyProps={{ component: "div" }}
                   />
                 </ListItemButton>
-                </NotificationAcknowledgementBoundary>
-              </ListItem>)}
+                </Box>
+              </ListItem>; })}
             </List>
           </Box>;
         })}

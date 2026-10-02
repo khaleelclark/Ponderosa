@@ -41,6 +41,7 @@ import {
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
 import { publishConversationMessageReceipt } from "../conversationMessageReceipt";
+import { publishCreatedAgent } from "../conversationAgentCache";
 import {
   acceptBroadcastOperation,
   acceptDirectOperation,
@@ -220,12 +221,14 @@ export function useConversationMessagingController({
       setActiveOperation(createCreationOperationTracker(agentId, conversationId));
       return agent;
     },
-    onSuccess: agent => {
+    onSuccess: async agent => {
+      if (!("recovering" in agent)) publishCreatedAgent(queryClient, agent);
       invalidate();
       setQueuedMessageNotice(undefined);
       setSpawnNotice("recovering" in agent
         ? "Agent creation is committed and recovery is finishing. It will appear when ready."
         : undefined);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailPrefix(conversationId) });
     },
   });
 

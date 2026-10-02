@@ -603,10 +603,12 @@ export const realApi = {
   },
   getNotificationProjection(
     request: WorkspaceNotificationProjectionRequestDto,
+    signal?: AbortSignal,
   ): Promise<WorkspaceNotificationProjectionDto> {
     return requestJson<WorkspaceNotificationProjectionDto>("/api/notifications/projection", {
       method: "POST",
       body: JSON.stringify(request satisfies WorkspaceNotificationProjectionRequestDto),
+      signal,
     });
   },
   async activeNotificationIds(notificationIds: string[]): Promise<string[]> {
@@ -1285,7 +1287,8 @@ export const realApi = {
         });
         source.addEventListener("agent_status", (event) => {
           const status = JSON.parse(event.data as string) as AgentStreamStatusDto;
-          if (status.reset) cursor = 0;
+          if (status.snapshot) cursor = status.cursor;
+          else if (status.reset) cursor = 0;
           handlers.onStatus?.(status);
         });
       },

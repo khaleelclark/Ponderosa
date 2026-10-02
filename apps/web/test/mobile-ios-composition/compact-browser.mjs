@@ -50,7 +50,7 @@ try {
   assert.equal(await composer.getAttribute('data-compact'),'false','Closing menu does not collapse the composer');
   if(name==='iPhone') await page.screenshot({path:'/tmp/compact-composer.png'});
   if(name!=='desktop') {
-   await page.locator('input[type="file"]').setInputFiles({name:'note.txt',mimeType:'text/plain',buffer:Buffer.from('disposable attachment')});
+   await page.locator('input[type="file"][aria-label="Choose files"]').setInputFiles({name:'note.txt',mimeType:'text/plain',buffer:Buffer.from('disposable attachment')});
    await page.waitForTimeout(100);
    await page.locator('#dismiss').focus();await page.waitForTimeout(75);
    await page.getByRole('button',{name:'Remove note.txt',exact:true}).waitFor();

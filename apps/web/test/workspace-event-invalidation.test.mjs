@@ -16,3 +16,9 @@ test("remote Decision events refresh All Messages without broad notification chu
     action: "read",
   }), false);
 });
+
+test("Agent identity lifecycle refreshes recipient presentation, routine output does not", () => {
+  const event = { type: "agent_event", projectId: "p", agentId: "a", conversationIds: ["c"], seq: 1, eventType: "agent_updated" };
+  assert.equal(workspaceEventInvalidatesAllChat({ ...event, category: "lifecycle" }), true);
+  assert.equal(workspaceEventInvalidatesAllChat({ ...event, category: "state" }), false);
+});

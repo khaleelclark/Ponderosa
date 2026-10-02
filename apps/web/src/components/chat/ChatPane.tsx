@@ -1,6 +1,7 @@
 import { Alert, Button, ButtonBase, Chip } from "@mui/material";
 import type {
   AgentActivityDto,
+  ConversationDecisionEventDto,
   AgentRunDto,
   MessageDto,
   OperatorProfileDto,
@@ -16,6 +17,7 @@ import type { ActivityStreamEntry } from "../activity/activityStream";
 import { AgentWorkReceipt } from "./AgentWorkReceipt";
 import { hasVisibleReceiptActivity } from "./receiptActivityEntries";
 import { ChatMessageFrame } from "./ChatMessageFrame";
+import { LiveAgentProgress } from "./LiveAgentProgress";
 import { ChatSurface } from "./ChatSurface";
 import {
   ChatMessageBody,
@@ -32,6 +34,7 @@ import {
 import type { LinkPreviewScope } from "./ChatMessages";
 import { projectAgentChat } from "./agentChatProjection";
 import { ReadAloudControls } from "../speech/ReadAloudControls";
+import { DecisionResponseMessage } from "../decisions/DecisionResponseMessage";
 
 function CommunicationSourceLink({
   message,
@@ -99,6 +102,7 @@ function visibleAgentMessageText(message: MessageDto): string {
 
 function ChatPaneComponent({
   messages,
+  decisionEvents = [],
   agentName = "Agent",
   agentNameForId,
   agentIdForHandle,
@@ -123,6 +127,7 @@ function ChatPaneComponent({
   historyError,
 }: {
   messages: MessageDto[];
+  decisionEvents?: ConversationDecisionEventDto[];
   agentName?: string;
   agentNameForId?(agentId: string): string | undefined;
   agentIdForHandle?(handle: string): string | undefined;
@@ -262,6 +267,9 @@ function ChatPaneComponent({
   const timeline = useMemo(
     () =>
       [
+        ...decisionEvents.filter(event => event.kind === "decision_response").map(event => ({
+          kind: "decision-response" as const, id: event.id, createdAt: event.createdAt, event,
+        })),
         ...chatMessages.map(message => ({
           kind: "message" as const,
           id: `message:${message.id}`,
@@ -290,7 +298,7 @@ function ChatPaneComponent({
               ? -1
               : 1),
       ),
-    [chatMessages, runPlacement.standalone, unscopedActivity],
+    [chatMessages, decisionEvents, runPlacement.standalone, unscopedActivity],
   );
   const latestTimelineItem = timeline.at(-1);
   const latestActivity = activityEntries.at(-1);
@@ -309,6 +317,7 @@ function ChatPaneComponent({
 
   return (
     <ChatSurface
+      showOutgoingMessage
       layout="agent"
       layoutKey={messageLayoutKey}
       follow={{
@@ -334,6 +343,8 @@ function ChatPaneComponent({
       empty="Send a message to this agent to start the conversation."
     >
       {timeline.map(item => {
+        if (item.kind === "decision-response") return <DecisionResponseMessage key={item.id}
+          event={item.event} operatorProfile={operatorProfile} onOpenAgent={onOpenAgent} />;
         if (item.kind === "run") {
           return (
             <AgentWorkReceipt
@@ -486,6 +497,7 @@ function ChatPaneComponent({
                 </>
               ),
               attachments: message.attachments,
+              belowBody: message.role === "user" ? <LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} /> : undefined,
               attachmentDensity: "compact",
               status:
                 message.role === "user" && message.deliveryReceipts?.length ? (

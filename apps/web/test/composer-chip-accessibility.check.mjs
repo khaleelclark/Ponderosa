@@ -37,6 +37,117 @@ try {
     headless: true,
     executablePath: useWebKit ? undefined : process.env.PONDEROSA_CHROMIUM_PATH,
     args: process.env.PONDEROSA_BROWSER_DISABLE_SANDBOX === "1" ? ["--no-sandbox"] : [] });
+  const dropFiles = async (page, selector, eventType, names) => page.locator(selector).evaluate((element, { eventType, names }) => {
+    const transfer = new DataTransfer();
+    for (const name of names) transfer.items.add(new File(["fixture bytes"], name, {
+      type: /\.(jpg|gif|avif)$/u.test(name) ? "" : name.endsWith(".png") ? "image/png" : name.endsWith(".docx")
+        ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : name.endsWith(".exe") ? "application/octet-stream" : "text/plain",
+    }));
+    const event = new DragEvent(eventType, { bubbles: true, cancelable: true, dataTransfer: transfer });
+    element.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, { eventType, names });
+  for (const width of [1440, 390]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    await page.route("**/api/**", route => route.fulfill({ json: {
+      maxFileBytes: 80 * 1024 * 1024, maxMessageBytes: 80 * 1024 * 1024,
+      maxAssetsPerMessage: 20, acceptedMediaTypes: ["image/png", "image/jpeg", "image/gif", "image/avif", "text/plain", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    } }));
+    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    const input = page.locator(".composer-editor-input");
+    await input.waitFor();
+    assert.equal(await page.getByLabel("Choose photos", { exact: true }).getAttribute("accept"), "image/*");
+    assert.equal(await page.getByLabel("Choose photos", { exact: true }).getAttribute("capture"), null);
+    const pickerTypes = await page.getByLabel("Choose files", { exact: true }).getAttribute("accept");
+    for (const type of ["image/gif", "image/avif", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"]) assert.ok(pickerTypes.split(",").includes(type), `Files picker includes ${type}`);
+    await input.focus(); await page.keyboard.press("End"); await page.keyboard.type("keep this draft");
+    const originalText = await input.innerText();
+    assert.ok(await dropFiles(page, ".ponderosa-composer", "dragenter", ["photo.png"]), "file drag is claimed by the composer");
+    await page.waitForFunction(() => document.querySelector(".ponderosa-composer")?.dataset.fileDragActive === "true");
+    assert.equal(await page.locator(".ponderosa-composer").getAttribute("data-file-drag-active"), "true");
+    // Nested child transitions must not clear the drop highlight.
+    await dropFiles(page, ".composer-editor-input", "dragenter", ["photo.png"]);
+    await dropFiles(page, ".composer-editor-input", "dragleave", ["photo.png"]);
+    assert.equal(await page.locator(".ponderosa-composer").getAttribute("data-file-drag-active"), "true");
+    assert.ok(await dropFiles(page, ".composer-editor-input", "drop", ["photo.png", "notes.txt", "report.docx"]), "file drops never navigate the browser");
+    for (const name of ["photo.png", "notes.txt", "report.docx"]) await page.getByRole("button", { name: `Remove ${name}`, exact: true }).waitFor();
+    assert.equal(await input.innerText(), originalText, "dropping files preserves the authored text and recipient");
+    assert.equal(await page.locator(".ponderosa-composer").getAttribute("data-file-drag-active"), "false");
+    await page.getByRole("button", { name: "Remove notes.txt", exact: true }).click();
+    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    await page.waitForFunction(() => document.body.dataset.sentFiles !== undefined);
+    assert.deepEqual(JSON.parse(await page.evaluate(() => document.body.dataset.sentFiles)), ["photo.png", "report.docx"]);
+    await page.getByRole("button", { name: "Remove report.docx", exact: true }).waitFor({ state: "detached" });
+    await page.evaluate(() => delete document.body.dataset.sentFiles);
+    await dropFiles(page, ".composer-editor-input", "drop", ["phone.jpg", "animation.gif", "photo.avif"]);
+    for (const name of ["phone.jpg", "animation.gif", "photo.avif"]) await page.getByRole("button", { name: `Remove ${name}`, exact: true }).waitFor();
+    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    await page.waitForFunction(() => document.body.dataset.sentFiles !== undefined);
+    assert.deepEqual(JSON.parse(await page.evaluate(() => document.body.dataset.sentFiles)), ["phone.jpg", "animation.gif", "photo.avif"], "empty-MIME phone images use extension fallback through the actual composer");
+    await page.getByRole("button", { name: "Remove photo.avif", exact: true }).waitFor({ state: "detached" });
+    await dropFiles(page, ".ponderosa-composer", "drop", ["unsupported.exe"]);
+    await page.getByText(/unsupported.exe wasn’t attached because its file type is not supported/).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Remove unsupported.exe", exact: true }).count(), 0);
+    await page.locator(".ponderosa-composer").evaluate(element => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([], "folder"));
+      Object.defineProperty(transfer, "items", { value: [{ kind: "file", webkitGetAsEntry: () => ({ isDirectory: true }) }] });
+      element.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    });
+    await page.getByText("Folders can’t be attached. Drop individual files instead.", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Remove folder", exact: true }).count(), 0);
+    await dropFiles(page, ".ponderosa-composer", "dragenter", ["photo.png"]);
+    await page.waitForFunction(() => document.querySelector(".ponderosa-composer")?.dataset.fileDragActive === "true");
+    await dropFiles(page, ".ponderosa-composer", "dragleave", ["photo.png"]);
+    await page.waitForFunction(() => document.querySelector(".ponderosa-composer")?.dataset.fileDragActive === "false");
+    await dropFiles(page, ".ponderosa-composer", "drop", Array.from({ length: 21 }, (_, i) => `bulk-${i}.txt`));
+    await page.getByText(/bulk-20.txt wasn’t attached because the 20-file limit was reached/).waitFor();
+    assert.equal(await page.getByRole("button", { name: /^Remove bulk-/ }).count(), 20, "drop keeps the shared attachment cap");
+    await page.close();
+  }
+  for (const restriction of ["disabled", "running", "no-attachments"]) {
+    const page = await browser.newPage();
+    await page.route("**/api/**", route => route.fulfill({ json: {} }));
+    await page.goto(`http://127.0.0.1:${server.address().port}/?${restriction}=1`);
+    await page.locator(".ponderosa-composer").waitFor();
+    assert.ok(await dropFiles(page, ".ponderosa-composer", "drop", ["blocked.png"]), "blocked file drops also prevent browser navigation");
+    assert.equal(await page.getByRole("button", { name: "Remove blocked.png", exact: true }).count(), 0, "drop respects composer restrictions");
+    await page.close();
+  }
+  for (const [width, empty] of [[1440, false], [390, true]]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, hasTouch: width === 390 });
+    await page.route("**/api/**", route => route.fulfill({ json: {} }));
+    await page.goto(`http://127.0.0.1:${server.address().port}/?${empty ? "empty=1" : ""}`);
+    const input = page.locator(".composer-editor-input");
+    await input.waitFor();
+    await input.focus();
+    await page.keyboard.press("ControlOrMeta+A"); await page.keyboard.press("Backspace");
+    const option = page.getByRole("option", { name: "#broadcast", exact: true });
+    await page.keyboard.type("#"); await page.waitForTimeout(100);
+    assert.equal(await option.count(), 1, "Broadcast appears in the initial # menu");
+    await page.keyboard.type(width === 390 ? "BR" : "br");
+    await page.waitForTimeout(100);
+    assert.equal(await option.count(), 1, "Broadcast is suggested once even with no Agents");
+    if (width === 390) await page.keyboard.press("Enter"); else await option.click();
+    await page.getByRole("button", { name: "Remove #broadcast", exact: true }).waitFor();
+    await page.waitForTimeout(100);
+    await input.focus(); await page.keyboard.press("End"); await page.keyboard.type("update", { delay: 20 });
+    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    await page.waitForFunction(() => document.body.dataset.sent !== undefined);
+    assert.equal((await page.evaluate(() => document.body.dataset.sent)).trim(), "#broadcast update", "selection submits the existing canonical Broadcast tag");
+    await page.close();
+  }
+  for (const mode of ["structural", "fixed"]) {
+    const page = await browser.newPage();
+    await page.route("**/api/**", route => route.fulfill({ json: {} }));
+    await page.goto(`http://127.0.0.1:${server.address().port}/?${mode}=1`);
+    const input = page.locator(".composer-editor-input");
+    await input.waitFor(); await input.focus();
+    await page.keyboard.press("ControlOrMeta+A"); await page.keyboard.press("Backspace");
+    await page.keyboard.type("#br"); await page.waitForTimeout(100);
+    assert.equal(await page.getByRole("option", { name: "#broadcast", exact: true }).count(), 0, "Broadcast is not offered outside Project Chat");
+    await page.close();
+  }
   for (const [width, coarse, longName, structural] of [
     [1440, false, false, false],
     [390, true, false, false],
@@ -167,7 +278,7 @@ try {
     assert.ok((await input.innerText()).includes("plai"), "ordinary Backspace still deletes one character after file removal");
     await context.close();
   }
-  console.log(`PASS ${useWebKit ? "WebKit" : "Chromium"} desktop/mobile composer chips: compact layout, atomic recipient/file Backspace, and touch/keyboard targets`);
+  console.log(`PASS ${useWebKit ? "WebKit" : "Chromium"} desktop/mobile composer: file/image/DOCX drop, shared caps/type rejection, folder and disabled/locked rejection, nested drag highlight; Broadcast autocomplete/selection/submission and scope, compact chips, atomic recipient/file Backspace, and touch/keyboard targets`);
 } finally {
   await browser?.close();
   if (server) await new Promise(resolve => server.close(resolve));

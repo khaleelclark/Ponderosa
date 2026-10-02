@@ -376,6 +376,16 @@ const messageHandleSx = {
   border: 0,
 } as const;
 
+/** An identity-bound mention; display text never selects its navigation target. */
+export function AgentMention({ agentId, label, title, onOpenAgent }: {
+  agentId: string; label: string; title?: string; onOpenAgent?(agentId: string): void;
+}): JSX.Element {
+  if (!onOpenAgent) return <Box component="span" title={title} sx={messageHandleSx}>#{label}</Box>;
+  return <Box className="chat-text-navigation" component="button" type="button" title={title}
+    aria-label={`Open agent ${label}${title ? `. ${title}` : ""}`} onClick={() => onOpenAgent(agentId)}
+    sx={{ ...messageHandleSx, cursor: "pointer", maxWidth: "100%", overflowWrap: "anywhere" }}>#{label}</Box>;
+}
+
 /** Mark #tags in Markdown text nodes without touching code or existing links. */
 function remarkMessageTags() {
   return (tree: MarkdownAstNode): void => {
@@ -559,8 +569,7 @@ function ChatMarkdown({
               }
               return <>{label}</>;
             }
-            if (!onOpenAgent) return <Box component="span" title={mentionTitle} sx={messageHandleSx}>{visibleLabel}</Box>;
-            return <Box className="chat-text-navigation" component="button" type="button" title={mentionTitle} aria-label={`Open agent ${boundMention?.label ?? handle}${mentionTitle ? `. ${mentionTitle}` : ""}`} onClick={() => onOpenAgent(agentId)} sx={{ ...messageHandleSx, cursor: "pointer" }}>{visibleLabel}</Box>;
+            return <AgentMention agentId={agentId} label={boundMention?.label ?? handle} title={mentionTitle} onOpenAgent={onOpenAgent} />;
           },
         }}
       >

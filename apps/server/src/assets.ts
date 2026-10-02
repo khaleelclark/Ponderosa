@@ -5,7 +5,8 @@ import path from "node:path";
 import sharp from "sharp";
 import { ensureSecureDirectory, listSecureDirectory, readSecureFile, removeSecureFile, secureDirectoryIdentity, writeSecureFileAtomic } from "@ponderosa/native-host";
 import { decodeHeic, isHeicContainer } from "./heic.js";
-import { hasSamsungScreenshotTrailer } from "./jpeg-container.js";
+import { hasSamsungImageTrailer, hasXmpMotionPhoto, pngEnd } from "./jpeg-container.js";
+import { validAvif, validGif } from "./image-containers.js";
 import type { ArtifactDto, AssetDto } from "@ponderosa/core";
 import {
   attachmentsDir,
@@ -52,12 +53,27 @@ export type {
 
 sharp.cache({ memory: 32, files: 0, items: 20 });
 
-// Preserve high-resolution screenshots and phone photos without lifting the
-// bounded preview or unrelated text-artifact limits to the upload ceiling.
+// Separate bounded full decoding from baseline JPEG shrink-on-load admission.
 const MAX_PIXELS = 64_000_000;
+const MAX_JPEG_PIXELS = 210_000_000;
 const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_RUNTIME_TEXT_ARTIFACT_BYTES = 8 * 1024 * 1024;
 const STAGED_TTL_MS = 5 * 60 * 1000;
+
+const maxImagePixels = (mediaType: AssetDto["mediaType"]): number => mediaType === "image/jpeg" ? MAX_JPEG_PIXELS : MAX_PIXELS;
+let highResolutionPreviewActive = false;
+const highResolutionPreviewWaiters: Array<() => void> = [];
+async function highResolutionPreview<T>(operation: () => Promise<T>): Promise<T> {
+  if (highResolutionPreviewActive) {
+    if (highResolutionPreviewWaiters.length >= 2) throw new AssetError(503, "Other high-resolution photos are being prepared. Try this upload again shortly.");
+    await new Promise<void>(resolve => highResolutionPreviewWaiters.push(resolve));
+  } else highResolutionPreviewActive = true;
+  try { return await operation(); }
+  finally {
+    const next = highResolutionPreviewWaiters.shift();
+    if (next) next(); else highResolutionPreviewActive = false;
+  }
+}
 
 function normalizeName(value: unknown): string {
   const raw = String(value ?? "asset").normalize("NFKC").replace(BIDI_AND_CONTROLS, "");
@@ -66,13 +82,21 @@ function normalizeName(value: unknown): string {
   return (bytes.length <= 160 ? leaf : bytes.subarray(0, 160).toString("utf8").replace(/\uFFFD+$/g, "")) || "asset";
 }
 
-function detectType(body: Buffer): AssetDto["mediaType"] | undefined {
+function detectType(body: Buffer, name?: string): AssetDto["mediaType"] | undefined {
   if (isHeicContainer(body)) return "image/heic";
+  if (validAvif(body, 4096)) return "image/avif";
+  if (["GIF87a", "GIF89a"].includes(body.subarray(0, 6).toString("latin1"))) return "image/gif";
   if (body.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return "image/png";
   if (body[0] === 0xff && body[1] === 0xd8) return "image/jpeg";
   if (body.subarray(0, 4).toString("ascii") === "RIFF" && body.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
   if (body.subarray(0, 5).toString("ascii") === "%PDF-") return "application/pdf";
-  if (body.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) return "application/zip";
+  if (body.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {
+    // DOCX is an opaque ZIP-based document, not executable preview content.
+    // Preserve its bytes without decompressing it or following embedded links.
+    return name && path.extname(name).toLocaleLowerCase() === ".docx"
+      ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      : "application/zip";
+  }
   if (!body.includes(0)) {
     const text = body.toString("utf8");
     if (!text.includes("\uFFFD")) {
@@ -84,21 +108,14 @@ function detectType(body: Buffer): AssetDto["mediaType"] | undefined {
 
 function hasStrictImageContainer(body: Buffer, mediaType: AssetDto["mediaType"]): boolean {
   if (mediaType === "image/heic") return isHeicContainer(body);
+  if (mediaType === "image/avif") return validAvif(body, 4096);
+  if (mediaType === "image/gif") return validGif(body, 65_535, 512);
   if (mediaType === "image/png") {
-    let offset = 8;
-    while (offset + 12 <= body.length) {
-      const length = body.readUInt32BE(offset);
-      const end = offset + 12 + length;
-      if (end > body.length) return false;
-      const type = body.subarray(offset + 4, offset + 8).toString("ascii");
-      offset = end;
-      if (type === "IEND") return length === 0 && offset === body.length;
-    }
-    return false;
+    return pngEnd(body) === body.length || hasSamsungImageTrailer(body, false);
   }
   if (mediaType === "image/jpeg") return body.length >= 4
     && ((body[body.length - 2] === 0xff && body[body.length - 1] === 0xd9)
-      || hasSamsungScreenshotTrailer(body));
+      || hasSamsungImageTrailer(body) || hasXmpMotionPhoto(body));
   if (mediaType === "image/webp") return body.length >= 12 && body.readUInt32LE(4) + 8 === body.length;
   return true;
 }
@@ -106,8 +123,10 @@ function hasStrictImageContainer(body: Buffer, mediaType: AssetDto["mediaType"])
 const ASSET_EXTENSIONS: Readonly<Record<AssetDto["mediaType"], readonly string[]>> = {
   "image/heic": [".heic", ".heif"],
   "image/png": [".png"], "image/jpeg": [".jpg", ".jpeg"], "image/webp": [".webp"],
+  "image/gif": [".gif"], "image/avif": [".avif"],
   "application/pdf": [".pdf"], "text/plain": [".txt", ".md", ".csv", ".log"],
   "application/json": [".json"], "application/zip": [".zip"],
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
 };
 
 export function assetExtensionsForMediaType(mediaType: AssetDto["mediaType"]): readonly string[] {
@@ -123,6 +142,8 @@ function contentTypeMatches(declared: string | undefined, detected: AssetDto["me
   if (!declared || declared === "application/octet-stream") return true;
   const normalized = declared.split(";", 1)[0]?.trim().toLocaleLowerCase();
   if (detected === "image/heic" && normalized === "image/heif") return true;
+  if (detected === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      && normalized === "application/zip") return true;
   if (
     detected === "text/plain"
     && ["text/markdown", "text/x-markdown", "text/csv"].includes(normalized ?? "")
@@ -154,7 +175,7 @@ export async function prepareAssetUpload(input: {
     throw new AssetError(413, "asset exceeds 80 MiB limit");
   }
   const name = normalizeName(input.name);
-  const mediaType = detectType(input.body);
+  const mediaType = detectType(input.body, name);
   if (
     !mediaType
     || !extensionMatches(name, mediaType)
@@ -186,41 +207,55 @@ export async function prepareAssetUpload(input: {
       ...(decoded ? { raw: { width: decoded.width, height: decoded.height, channels: 4 as const } } : {}),
       animated: false,
       failOn: "error",
-      limitInputPixels: MAX_PIXELS,
+      limitInputPixels: maxImagePixels(mediaType),
       sequentialRead: true,
     });
     const metadata = await image.metadata();
     if (
       !metadata.width
       || !metadata.height
-      || (metadata.pages ?? 1) !== 1
-      || metadata.width * metadata.height > MAX_PIXELS
+      || (!["image/gif", "image/avif"].includes(mediaType) && (metadata.pages ?? 1) !== 1)
+      || (metadata.pages ?? 1) > 512
+      || metadata.width * metadata.height > maxImagePixels(mediaType)
     ) {
       throw new Error("unsafe image dimensions");
     }
     width = metadata.width;
     height = metadata.height;
-    preview = await image
-      .rotate()
-      .resize({
-        width: 2048,
-        height: 2048,
-        fit: "inside",
-        withoutEnlargement: true,
-      })
-      .timeout({ seconds: 10 })
-      .png({ compressionLevel: 6, adaptiveFiltering: true })
-      .toBuffer();
-    // Default lossless compression avoids spending seconds optimizing a preview.
-    // Retain the old maximum-compression path only for quota-borderline images.
-    if (preview.length > MAX_PREVIEW_BYTES) {
-      preview = await image.png({ compressionLevel: 9, adaptiveFiltering: true }).toBuffer();
+    const highResolution = width * height > MAX_PIXELS;
+    // Baseline JPEG shrink-on-load decodes at 1/4 or 1/8 in each dimension for
+    // >64MP images. Progressive JPEG stores full-resolution coefficients first.
+    // ponytail: 210MP baseline JPEG only; other high-resolution codecs need an
+    // isolated, resource-qualified decoder, not a blanket input-limit increase.
+    if (highResolution && (mediaType !== "image/jpeg" || metadata.isProgressive)) {
+      throw new AssetError(415, "This high-resolution progressive JPEG cannot be safely previewed yet. Export a standard JPEG or a smaller image and try again.");
     }
+    const render = async () => {
+      let result = await image
+        .rotate()
+        .resize({
+          width: 2048,
+          height: 2048,
+          fit: "inside",
+          withoutEnlargement: true,
+          fastShrinkOnLoad: true,
+        })
+        .timeout({ seconds: 10 })
+        .png({ compressionLevel: 6, adaptiveFiltering: true })
+        .toBuffer();
+      // Default lossless compression avoids spending seconds optimizing a preview.
+      // Retain maximum compression only for quota-borderline images.
+      if (result.length > MAX_PREVIEW_BYTES) {
+        result = await image.png({ compressionLevel: 9, adaptiveFiltering: true }).toBuffer();
+      }
+      return result;
+    };
+    preview = highResolution ? await highResolutionPreview(render) : await render();
   } catch (error) {
     if (error instanceof AssetError) throw error;
     throw new AssetError(
       415,
-      `image could not be safely decoded as one bounded frame of at most ${MAX_PIXELS.toLocaleString("en-US")} pixels`,
+      "Image could not be safely previewed. The limit is 210 megapixels for standard JPEGs and 64 megapixels for other image formats.",
     );
   }
   if (preview.length > MAX_PREVIEW_BYTES) {
@@ -249,7 +284,7 @@ function validatePreparedAssetUpload(
     && (prepared.width ?? 0) > 0
     && Number.isSafeInteger(prepared.height)
     && (prepared.height ?? 0) > 0
-    && (prepared.width ?? 0) * (prepared.height ?? 0) <= MAX_PIXELS
+    && (prepared.width ?? 0) * (prepared.height ?? 0) <= maxImagePixels(prepared.mediaType)
     && Buffer.isBuffer(prepared.preview)
     && prepared.preview.length > 0
     && prepared.preview.length <= MAX_PREVIEW_BYTES
@@ -268,7 +303,7 @@ function validatePreparedAssetUpload(
     || body.length > ASSET_LIMITS.maxFileBytes
     || prepared.name !== normalizeName(prepared.name)
     || bodyHash !== prepared.sha256
-    || detectType(body) !== prepared.mediaType
+    || detectType(body, prepared.name) !== prepared.mediaType
     || !extensionMatches(prepared.name, prepared.mediaType)
     || !hasStrictImageContainer(body, prepared.mediaType)
     || (!validImage && !validNonImage)
@@ -589,7 +624,7 @@ export class AssetStore {
       const relative = this.secureDirectory(projectId, agentId);
       const body = this.secureRead(relative, asset.originalFile, ASSET_LIMITS.maxFileBytes);
       if (!body || body.length !== asset.size || createHash("sha256").update(body).digest("hex") !== asset.sha256 ||
-          detectType(body) !== asset.mediaType || !extensionMatches(asset.name, asset.mediaType) ||
+          detectType(body, asset.name) !== asset.mediaType || !extensionMatches(asset.name, asset.mediaType) ||
           !hasStrictImageContainer(body, asset.mediaType)) return undefined;
       if (asset.previewFile) {
         const preview = this.secureRead(relative, asset.previewFile, MAX_PREVIEW_BYTES);
@@ -630,7 +665,7 @@ export class AssetStore {
       if (!contentInfo.isFile() || contentInfo.nlink !== 1 || contentInfo.size !== asset.size || contentInfo.size > ASSET_LIMITS.maxFileBytes) return undefined;
       const body = readFileSync(contentFd);
       const contentHash = createHash("sha256").update(body).digest("hex");
-      if (contentHash !== asset.sha256 || detectType(body) !== asset.mediaType ||
+      if (contentHash !== asset.sha256 || detectType(body, asset.name) !== asset.mediaType ||
           !extensionMatches(asset.name, asset.mediaType) || !hasStrictImageContainer(body, asset.mediaType)) return undefined;
       if (asset.previewFile) {
         previewFd = openSync(path.join(actual, asset.previewFile), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
