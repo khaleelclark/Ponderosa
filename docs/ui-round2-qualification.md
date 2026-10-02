@@ -44,6 +44,41 @@ The compact header/follow-up requests come from the six-page Round 2 PDF.
 Touch targets and explicit status details are retained instead of using color
 as the sole status explanation.
 
+## Folder and general-file follow-up
+
+- General file selection no longer filters out fonts, source/configuration,
+  spreadsheets/slides, media, archives or unknown binary formats. Original bytes
+  are admitted as `application/octet-stream` when they are not an existing
+  validated format. This is attachment support, not a promise of decoding,
+  semantic validation, malware scanning, execution or inline preview.
+- TTF/OTF/TTC/WOFF/WOFF2 cards say **Font file** and offer download, not automatic
+  browser loading or font installation. Runtime copies preserve the original
+  name/extension and hash; Agent tools can inspect the explicitly supplied file.
+- Folder drop and the **Folder** picker prepare one stored ZIP per root,
+  preserving relative file paths and original file bytes. No server-side folder
+  traversal or automatic extraction is introduced. Browser enumeration is
+  captured during drop and consumes all directory-reader batches, following
+  [the directory-entry API](https://developer.mozilla.org/en-US/docs/Web/API/DataTransferItem/webkitGetAsEntry).
+  Picker paths come from [webkitdirectory](https://developer.mozilla.org/en-US/docs/Web/API/HTMLInputElement/webkitdirectory).
+- Preparation is bounded to 2,048 enumerated entries, 16 path components, 1,024
+  UTF-8 bytes per path, 30 seconds total and the existing 80 MiB message/file
+  budgets (including ZIP overhead). Duplicate/unsafe paths and unreadable or
+  oversized folders fail without attaching a partial folder. Empty directories
+  are not separately archived. No compression or new dependency is introduced;
+  the archive uses the stored method/CRC32/UTF-8 records in
+  [the ZIP specification](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT).
+- Hidden entries, `node_modules`, common credential/secret filenames and key
+  extensions are excluded, with a visible skipped-item count. This is not a
+  secret-content scanner; review selected contents before sending. An explicit
+  individual file or prebuilt archive is not silently filtered by this policy.
+- Preparation shows progress, blocks Send until complete, and is cancelled if
+  the composer/destination becomes unavailable. It does not follow the user to
+  a different Chat. Finished ZIPs use the existing durable upload path.
+- Existing protected image/PDF/DOCX/text/JSON/ZIP suffix validation, image
+  resource limits, quotas, scoped access, exact-byte hashes and download
+  `attachment`/`nosniff` headers remain intact. Opaque admission cannot downgrade
+  a malformed protected-format file or spoof an image/document preview MIME.
+
 ## Reproduction and checks
 
 The dictation callback fixture models the Android Chromium bridge documented in
@@ -62,6 +97,7 @@ node apps/web/test/message-receipt-layout.check.mjs
 node apps/web/test/file-preview-links-browser.check.mjs
 node apps/web/test/sent-draft-navigation.check.mjs
 node apps/web/test/composer-chip-accessibility.check.mjs
+node --test apps/server/test/opaque-attachments.test.mjs
 ```
 
 Browser scripts use the existing `PONDEROSA_PLAYWRIGHT_PATH` and
@@ -71,7 +107,7 @@ checker instead uses `PONDEROSA_BROWSER_ENGINE=webkit`. No new dependency is
 added. Fixtures use disposable data and real components/HTTP-store paths where
 the existing check provides them; they do not establish live multi-Agent behavior.
 
-## Implementer verification
+## Initial UI verification (before the folder follow-up)
 
 On macOS with Node 24.21.0:
 
@@ -96,6 +132,27 @@ Logs are retained locally at `/tmp/ponderosa-ui-round2-*.log`, including
 `ponderosa-ui-round2-verify-quiet-final.log`. These are implementer results,
 not independent approval. The skipped checks are not passing qualification.
 
+## Folder follow-up verification
+
+On the final source with macOS / Node 24.21.0:
+
+| Check | Result |
+| --- | --- |
+| Full `pnpm verify` | 1,002 passed, 7 platform/opt-in skips, zero failures; all typechecks and production builds passed |
+| Folder collection and ZIP regressions | Four tests passed: paginated enumeration, original bytes/CRC/UTF-8 records, picker paths, limits, cancellation and guarded formats |
+| Opaque upload HTTP/store regressions | Three tests passed: fonts/general formats, draft promotion/reopening/runtime bytes, protected-format and size rejection |
+| Composer folder/font selection | Chromium and WebKit passed, including a real disposable directory input, synthetic drop entries, exclusions and cancellation on Chat switch |
+| Font card and download links | Chromium and WebKit passed; fonts remain download-only and are not fetched for active preview |
+| Independent ZIP interoperability | macOS `unzip -t` passed CRC/data checks; libarchive `tar` listed the exact Japanese path and extracted the original bytes |
+| `git diff --check` | Passed |
+
+The old macOS Info-ZIP build lacks Unicode support; its listing was not treated
+as Unicode qualification. Browser checks do not qualify physical-device native
+picker dialogs. The final full-suite log is
+`/tmp/ponderosa-folder-verify-complete.log`; focused browser logs are
+`/tmp/ponderosa-folder-{chromium,webkit,font-card-chromium,font-card-webkit}.log`.
+These are implementer results, not independent approval.
+
 ## Manual checklist
 
 - [ ] Send, navigate away/back, and fail a send: no duplicate draft; failure recoverable.
@@ -107,6 +164,8 @@ not independent approval. The skipped checks are not passing qualification.
 - [ ] Follow-up controls: compact **Dismiss** and guarded retry behave as before.
 - [ ] Files: newest first after refresh and loading older files.
 - [ ] Ponderosa microphone: no growing duplicates; typed text, repeated words, pause/resume preserved.
+- [ ] Attach TTF/OTF/WOFF/WOFF2 and other files; exact downloads work and fonts are not installed/previewed.
+- [ ] Drop/select a nested folder: one ZIP, preserved paths, visible exclusions; navigate during preparation without leaking it to another Chat.
 
 Physical Samsung/iPhone keyboards, native microphone services, installed Safari,
 screen readers and a live managed-provider workload remain separate qualification.

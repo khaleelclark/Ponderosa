@@ -93,17 +93,19 @@ function detectType(body: Buffer, name?: string): AssetDto["mediaType"] | undefi
   if (body.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {
     // DOCX is an opaque ZIP-based document, not executable preview content.
     // Preserve its bytes without decompressing it or following embedded links.
-    return name && path.extname(name).toLocaleLowerCase() === ".docx"
-      ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-      : "application/zip";
+    const extension = name ? path.extname(name).toLowerCase() : "";
+    if (extension === ".docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    if (extension && !STRICT_ASSET_EXTENSIONS.has(extension)) return "application/octet-stream";
+    return "application/zip";
   }
+  if (name && path.extname(name) && !STRICT_ASSET_EXTENSIONS.has(path.extname(name).toLowerCase())) return "application/octet-stream";
   if (!body.includes(0)) {
     const text = body.toString("utf8");
     if (!text.includes("\uFFFD")) {
       try { JSON.parse(text); return "application/json"; } catch { return "text/plain"; }
     }
   }
-  return undefined;
+  return "application/octet-stream";
 }
 
 function hasStrictImageContainer(body: Buffer, mediaType: AssetDto["mediaType"]): boolean {
@@ -127,7 +129,9 @@ const ASSET_EXTENSIONS: Readonly<Record<AssetDto["mediaType"], readonly string[]
   "application/pdf": [".pdf"], "text/plain": [".txt", ".md", ".csv", ".log"],
   "application/json": [".json"], "application/zip": [".zip"],
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+  "application/octet-stream": [],
 };
+const STRICT_ASSET_EXTENSIONS = new Set(Object.values(ASSET_EXTENSIONS).flat());
 
 export function assetExtensionsForMediaType(mediaType: AssetDto["mediaType"]): readonly string[] {
   return ASSET_EXTENSIONS[mediaType];
@@ -135,12 +139,15 @@ export function assetExtensionsForMediaType(mediaType: AssetDto["mediaType"]): r
 
 function extensionMatches(name: string, mediaType: AssetDto["mediaType"]): boolean {
   const extension = path.extname(name).toLocaleLowerCase();
+  if (mediaType === "application/octet-stream") return !STRICT_ASSET_EXTENSIONS.has(extension);
   return !extension || assetExtensionsForMediaType(mediaType).includes(extension);
 }
 
 function contentTypeMatches(declared: string | undefined, detected: AssetDto["mediaType"]): boolean {
-  if (!declared || declared === "application/octet-stream") return true;
-  const normalized = declared.split(";", 1)[0]?.trim().toLocaleLowerCase();
+  const normalized = declared?.split(";", 1)[0]?.trim().toLocaleLowerCase();
+  if (!normalized || normalized === "application/octet-stream") return true;
+  if (detected === "application/octet-stream") return ["text/plain", "application/json", "application/zip", "text/markdown", "text/x-markdown", "text/csv"].includes(normalized ?? "")
+    || (!ASSET_LIMITS.acceptedMediaTypes.includes(normalized as AssetDto["mediaType"]) && normalized !== "image/heif");
   if (detected === "image/heic" && normalized === "image/heif") return true;
   if (detected === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
       && normalized === "application/zip") return true;

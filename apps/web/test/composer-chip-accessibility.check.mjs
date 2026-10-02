@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +24,10 @@ try {
     },
   });
   await build.build();
+  const pickedFolder = path.join(output, "PickedFonts");
+  await mkdir(path.join(pickedFolder, "nested"), { recursive: true });
+  await writeFile(path.join(pickedFolder, "nested", "Type.woff2"), "font fixture");
+  await writeFile(path.join(pickedFolder, ".env"), "must not be attached");
   server = createServer(async (request, response) => {
     try {
       const pathname = new URL(request.url, "http://localhost").pathname;
@@ -41,7 +45,7 @@ try {
     const transfer = new DataTransfer();
     for (const name of names) transfer.items.add(new File(["fixture bytes"], name, {
       type: /\.(jpg|gif|avif)$/u.test(name) ? "" : name.endsWith(".png") ? "image/png" : name.endsWith(".docx")
-        ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : name.endsWith(".exe") ? "application/octet-stream" : "text/plain",
+        ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : name.endsWith(".ttf") ? "font/ttf" : "text/plain",
     }));
     const event = new DragEvent(eventType, { bubbles: true, cancelable: true, dataTransfer: transfer });
     element.dispatchEvent(event);
@@ -51,15 +55,15 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     await page.route("**/api/**", route => route.fulfill({ json: {
       maxFileBytes: 80 * 1024 * 1024, maxMessageBytes: 80 * 1024 * 1024,
-      maxAssetsPerMessage: 20, acceptedMediaTypes: ["image/png", "image/jpeg", "image/gif", "image/avif", "text/plain", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+      maxAssetsPerMessage: 20, acceptedMediaTypes: ["image/png", "image/jpeg", "image/gif", "image/avif", "text/plain", "application/zip", "application/octet-stream", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
     } }));
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     const input = page.locator(".composer-editor-input");
     await input.waitFor();
     assert.equal(await page.getByLabel("Choose photos", { exact: true }).getAttribute("accept"), "image/*");
     assert.equal(await page.getByLabel("Choose photos", { exact: true }).getAttribute("capture"), null);
-    const pickerTypes = await page.getByLabel("Choose files", { exact: true }).getAttribute("accept");
-    for (const type of ["image/gif", "image/avif", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"]) assert.ok(pickerTypes.split(",").includes(type), `Files picker includes ${type}`);
+    assert.equal(await page.getByLabel("Choose files", { exact: true }).getAttribute("accept"), null, "general picker permits fonts and arbitrary formats");
+    assert(await page.getByLabel("Choose folder", { exact: true }).evaluate(element => element.webkitdirectory), "folder picker is enabled");
     await input.focus(); await page.keyboard.press("End"); await page.keyboard.type("keep this draft");
     const originalText = await input.innerText();
     assert.ok(await dropFiles(page, ".ponderosa-composer", "dragenter", ["photo.png"]), "file drag is claimed by the composer");
@@ -85,17 +89,27 @@ try {
     await page.waitForFunction(() => document.body.dataset.sentFiles !== undefined);
     assert.deepEqual(JSON.parse(await page.evaluate(() => document.body.dataset.sentFiles)), ["phone.jpg", "animation.gif", "photo.avif"], "empty-MIME phone images use extension fallback through the actual composer");
     await page.getByRole("button", { name: "Remove photo.avif", exact: true }).waitFor({ state: "detached" });
-    await dropFiles(page, ".ponderosa-composer", "drop", ["unsupported.exe"]);
-    await page.getByText(/unsupported.exe wasn’t attached because its file type is not supported/).waitFor();
-    assert.equal(await page.getByRole("button", { name: "Remove unsupported.exe", exact: true }).count(), 0);
+    await dropFiles(page, ".ponderosa-composer", "drop", ["Regular.ttf"]);
+    await page.getByRole("button", { name: "Remove Regular.ttf", exact: true }).click();
+    const beforeFolderText = await input.innerText();
     await page.locator(".ponderosa-composer").evaluate(element => {
       const transfer = new DataTransfer();
       transfer.items.add(new File([], "folder"));
-      Object.defineProperty(transfer, "items", { value: [{ kind: "file", webkitGetAsEntry: () => ({ isDirectory: true }) }] });
+      const file = (name, body) => ({ name, isFile: true, isDirectory: false, file: resolve => resolve(new File([body], name)) });
+      const root = { name: "Fonts", isDirectory: true, isFile: false, createReader: () => {
+        const batches = [[file("Regular.ttf", "font"), file(".env", "secret")], [file("Bold.otf", "other font")], []];
+        return { readEntries: resolve => resolve(batches.shift() ?? []) };
+      } };
+      Object.defineProperty(transfer, "items", { value: [{ kind: "file", webkitGetAsEntry: () => root }] });
       element.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
     });
-    await page.getByText("Folders can’t be attached. Drop individual files instead.", { exact: true }).waitFor();
-    assert.equal(await page.getByRole("button", { name: "Remove folder", exact: true }).count(), 0);
+    await page.getByRole("button", { name: "Remove Fonts.zip", exact: true }).waitFor();
+    await page.getByText(/Skipped 1 hidden, sensitive, or dependency items/).waitFor();
+    assert.equal(await input.innerText(), beforeFolderText, "folder preparation preserves the reply destination");
+    await page.getByRole("button", { name: "Remove Fonts.zip", exact: true }).click();
+    await page.getByLabel("Choose folder", { exact: true }).setInputFiles(pickedFolder);
+    await page.getByRole("button", { name: "Remove PickedFonts.zip", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Remove PickedFonts.zip", exact: true }).click();
     await dropFiles(page, ".ponderosa-composer", "dragenter", ["photo.png"]);
     await page.waitForFunction(() => document.querySelector(".ponderosa-composer")?.dataset.fileDragActive === "true");
     await dropFiles(page, ".ponderosa-composer", "dragleave", ["photo.png"]);
@@ -103,6 +117,24 @@ try {
     await dropFiles(page, ".ponderosa-composer", "drop", Array.from({ length: 21 }, (_, i) => `bulk-${i}.txt`));
     await page.getByText(/bulk-20.txt wasn’t attached because the 20-file limit was reached/).waitFor();
     assert.equal(await page.getByRole("button", { name: /^Remove bulk-/ }).count(), 20, "drop keeps the shared attachment cap");
+    while (await page.getByRole("button", { name: /^Remove bulk-/ }).count()) await page.getByRole("button", { name: /^Remove bulk-/ }).first().click();
+    await page.locator(".ponderosa-composer").evaluate(element => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([], "Delayed"));
+      let read = false;
+      const root = { name: "Delayed", isDirectory: true, isFile: false, createReader: () => ({ readEntries: resolve => {
+        if (read) return resolve([]); read = true;
+        window.releaseFolder = () => { resolve([{ name: "font.ttf", isFile: true, isDirectory: false,
+          file: yes => yes(new File(["font"], "font.ttf")) }]); window.folderReleased = true; };
+      } }) };
+      Object.defineProperty(transfer, "items", { value: [{ kind: "file", webkitGetAsEntry: () => root }] });
+      element.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    });
+    await page.getByText("Preparing folder ZIP…", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Switch fixture Chat", exact: true }).click();
+    await page.evaluate(() => window.releaseFolder());
+    await page.waitForFunction(() => window.folderReleased && !document.body.innerText.includes("Preparing folder ZIP"));
+    assert.equal(await page.getByRole("button", { name: "Remove Delayed.zip", exact: true }).count(), 0, "late folder reads cannot attach into another Chat");
     await page.close();
   }
   for (const restriction of ["disabled", "running", "no-attachments"]) {
@@ -278,7 +310,7 @@ try {
     assert.ok((await input.innerText()).includes("plai"), "ordinary Backspace still deletes one character after file removal");
     await context.close();
   }
-  console.log(`PASS ${useWebKit ? "WebKit" : "Chromium"} desktop/mobile composer: file/image/DOCX drop, shared caps/type rejection, folder and disabled/locked rejection, nested drag highlight; Broadcast autocomplete/selection/submission and scope, compact chips, atomic recipient/file Backspace, and touch/keyboard targets`);
+  console.log(`PASS ${useWebKit ? "WebKit" : "Chromium"} desktop/mobile composer: files/fonts/folder ZIP drop, shared caps, hidden-file exclusion and disabled/locked rejection, nested drag highlight; Broadcast autocomplete/selection/submission and scope, compact chips, atomic recipient/file Backspace, and touch/keyboard targets`);
 } finally {
   await browser?.close();
   if (server) await new Promise(resolve => server.close(resolve));

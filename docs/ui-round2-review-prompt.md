@@ -35,6 +35,16 @@ Independently verify, rather than treating implementer results as qualification:
   growing-partial failure, rapid final callbacks, replayed indices, pause/resume,
   stale callbacks, typed text and intentional repeated words. Do not deduplicate
   prose or claim that mocked callbacks prove physical-phone behavior.
+- Review the folder/general-file follow-up as an admission expansion. Check
+  opaque font/office/source/media/archive originals through HTTP, drafts,
+  prepared promotion, runtime reads and reopening. Protected image/document
+  validation cannot fall through to opaque admission. Opaque files must not
+  silently gain active preview/installation/execution, authority or access.
+- Check folder ZIP interoperability, CRCs, UTF-8 paths, full paginated traversal,
+  exclusions and truthful feedback. Prove byte/count/depth/time bounds, unsafe
+  and duplicate paths, read failure, empty folders and cancellation/navigation.
+  Verify folder picker/drop at mobile/desktop widths. No partial folder or
+  late archive may attach into another Chat; archive members remain untrusted.
 
 Run focused browser checks in Chromium and macOS WebKit where available, focused
 Agent projection tests, typechecks, production builds, `pnpm verify`, and

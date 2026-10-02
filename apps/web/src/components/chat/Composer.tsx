@@ -8,6 +8,7 @@ import {
   Paper,
   Stack,
   TextField,
+  Typography,
 } from "@mui/material";
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
@@ -38,6 +39,7 @@ import {
 } from "react";
 import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
+import { collectAttachments, droppedAttachmentEntries } from "./folderAttachments";
 import { readChatState, readChatStateEntries, writeChatState } from "../../chatState";
 import { acknowledgeDraftTextRecovery, recoverDraftText, retireSubmittedDraftText, writeDraftTextRecovery } from "./draftTextRecovery";
 import { createClientId, draftSurfaceClientId } from "../../clientId";
@@ -97,6 +99,7 @@ import {
 } from "./ComposerEditor";
 import {
   canSubmitComposerText,
+  COMPOSER_MAX_FILE_BYTES,
   canonicalDraftConflictFiles,
   composerAttachmentReducer,
   composerPreparedRetryAction,
@@ -385,6 +388,18 @@ export function Composer({
   const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
   const [sending, setSending] = useState(false);
+  const [preparingFolder, setPreparingFolder] = useState(false);
+  const attachmentImportGeneration = useRef(0);
+  const attachmentImportBusy = useRef(false);
+  const attachmentImportScope = JSON.stringify([conversationDraftId, draftStorageKey]);
+  const attachmentImportScopeRef = useRef(attachmentImportScope);
+  attachmentImportScopeRef.current = attachmentImportScope;
+  const attachmentImportAllowedRef = useRef(false);
+  useEffect(() => {
+    setPreparingFolder(false);
+    attachmentImportBusy.current = false;
+    return () => { attachmentImportGeneration.current++; attachmentImportBusy.current = false; };
+  }, [attachmentImportScope]);
   const draftMutationLockedRef = useRef(false);
   const [draftMutationLocked, setDraftMutationLocked] = useState(false);
   const draftContentGeneration = useRef(0);
@@ -677,6 +692,33 @@ export function Composer({
   const addFiles = useCallback((candidates: File[]) => {
     if (!draftMutationLockedRef.current) addDraftFiles(candidates);
   }, [addDraftFiles]);
+  const importAttachments = async (entries: Array<FileSystemEntry | File>) => {
+    if (!attachmentImportAllowedRef.current || draftMutationLockedRef.current || attachmentImportBusy.current) return;
+    attachmentImportBusy.current = true;
+    const generation = ++attachmentImportGeneration.current;
+    const scope = attachmentImportScope;
+    const checkActive = () => {
+      if (generation !== attachmentImportGeneration.current || scope !== attachmentImportScopeRef.current ||
+          !attachmentImportAllowedRef.current || draftMutationLockedRef.current) throw new Error("Folder preparation was cancelled because the destination is no longer available.");
+    };
+    setPreparingFolder(true);
+    try {
+      const maxBytes = Math.min(assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES,
+        (assetLimits?.maxMessageBytes ?? COMPOSER_MAX_FILE_BYTES) - files.reduce((sum, file) => sum + file.size, 0));
+      const result = await collectAttachments(entries, maxBytes, checkActive);
+      checkActive();
+      addFiles(result.files);
+      if (result.skipped) dispatchAttachments({ type: "set_error", error: `Skipped ${result.skipped} hidden, sensitive, or dependency items while preparing the folder ZIP.` });
+    } catch (error) {
+      if (generation === attachmentImportGeneration.current && scope === attachmentImportScopeRef.current) {
+        dispatchAttachments({ type: "set_error", error: error instanceof Error ? error.message : "The folder could not be prepared. Nothing was attached." });
+      }
+    } finally {
+      if (generation === attachmentImportGeneration.current && scope === attachmentImportScopeRef.current) {
+        attachmentImportBusy.current = false; setPreparingFolder(false);
+      }
+    }
+  };
   const removeFile = useCallback((index: number) => {
     if (!draftMutationLockedRef.current) removeDraftFile(index);
   }, [removeDraftFile]);
@@ -1100,6 +1142,7 @@ export function Composer({
   const canSend =
     mentionBindingsReady &&
     !sending &&
+    !preparingFolder &&
     !dictationSettling &&
     (!destinationError || Boolean(durableRetryAction) || Boolean(pendingSubmissionRef.current?.request)) &&
     targetRequiredRecipientTagged &&
@@ -1113,7 +1156,8 @@ export function Composer({
   const canCancel = running && Boolean(onCancel);
   const composerAttachmentsEnabled = attachmentsEnabled;
   const composerAttachmentsUnavailableReason = attachmentsUnavailableReason;
-  const fileDropEnabled = attachmentsEnabled && !disabled && !composerLocked && !draftMutationLocked;
+  attachmentImportAllowedRef.current = attachmentsEnabled && !disabled && !composerLocked && !draftMutationLocked;
+  const fileDropEnabled = attachmentImportAllowedRef.current && !preparingFolder;
   useEffect(() => {
     fileDragDepth.current = 0;
     setFileDragActive(false);
@@ -2691,14 +2735,13 @@ export function Composer({
         fileDragDepth.current = 0;
         setFileDragActive(false);
         if (!fileDropEnabled || draftMutationLockedRef.current) return;
-        if (Array.from(event.dataTransfer.items).some(item => item.webkitGetAsEntry?.()?.isDirectory)) {
-          dispatchAttachments({ type: "set_error", error: "Folders can’t be attached. Drop individual files instead." });
-          return;
-        }
-        addFiles(Array.from(event.dataTransfer.files));
+        const entries = droppedAttachmentEntries(event.dataTransfer);
+        if (entries.some(entry => !(entry instanceof File) && entry.isDirectory)) void importAttachments(entries);
+        else addFiles(Array.from(event.dataTransfer.files));
       }}
     >
       <Box sx={{ display: "contents" }}>
+      {preparingFolder ? <Typography role="status" variant="caption" sx={{ px: 1.5, pt: 0.5 }}>Preparing folder ZIP…</Typography> : null}
       <ComposerDestinationBar
         destinationError={destinationError}
         destinationMode={destinationMode}
@@ -3263,7 +3306,7 @@ export function Composer({
         }}>
         <ComposerCapabilityPicker
           fileInput={fileInput}
-          disabled={disabled || composerLocked || draftMutationLocked}
+          disabled={disabled || composerLocked || draftMutationLocked || preparingFolder}
           menuAnchor={capabilityMenuAnchor}
           listId={capabilityListId}
           filter={capabilityFilter}
@@ -3276,6 +3319,7 @@ export function Composer({
           buttonRef={capabilityButtonRef}
           visibleCapabilities={visibleCapabilities}
           onFiles={addFiles}
+          onFolderFiles={files => { void importAttachments(files); }}
           onOpen={anchor => {
             setCapabilityFilter("");
             setCapabilityMenuAnchor(anchor);

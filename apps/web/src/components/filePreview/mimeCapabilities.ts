@@ -48,6 +48,9 @@ export function previewCapability({
   contentType?: "markdown" | "diff" | "text";
 }): MimeCapability {
   const normalized = normalizedMediaType(mediaType, path);
+  if (mediaType?.split(";", 1)[0]?.trim().toLowerCase() === "application/octet-stream" && /\.(ttf|otf|ttc|woff2?)$/iu.test(path ?? "")) {
+    return { kind: "unsupported", label: "Font file", inline: false };
+  }
   if (normalized === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
     return { kind: "docx", label: "Word document", inline: true };
   }

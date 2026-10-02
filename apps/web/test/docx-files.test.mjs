@@ -19,7 +19,8 @@ test("DOCX selection accepts browser MIME variants and preserves the upload limi
   assert.equal(selectComposerFiles([], [{ ...full, type: "application/x-executable" }], DEFAULT_ASSET_LIMITS).accepted.length, 0);
 });
 
-test("the composer file picker permits Word documents", () => {
+test("the general file picker does not filter out fonts or documents", () => {
   const controls = readFileSync("src/components/chat/Composer.controls.tsx", "utf8");
-  assert.match(controls, /accept="[^"\n]*application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document[^"\n]*\.docx/u);
+  const generalInput = controls.slice(controls.indexOf('aria-label="Choose files"'), controls.indexOf('aria-label="Choose folder"'));
+  assert(!generalInput.includes('accept='));
 });

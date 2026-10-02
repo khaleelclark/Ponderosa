@@ -302,6 +302,7 @@ export function ComposerCapabilityPicker({
   buttonRef,
   visibleCapabilities,
   onFiles,
+  onFolderFiles,
   onOpen,
   onClose,
   onFilterChange,
@@ -321,6 +322,7 @@ export function ComposerCapabilityPicker({
   buttonRef?: RefObject<HTMLButtonElement>;
   visibleCapabilities: EngineComposerCapability[];
   onFiles(files: File[]): void;
+  onFolderFiles(files: File[]): void;
   onOpen(anchor: HTMLElement): void;
   onClose(): void;
   onFilterChange(value: string): void;
@@ -328,6 +330,8 @@ export function ComposerCapabilityPicker({
 }): JSX.Element {
   const maximumFiles = assetLimits?.maxAssetsPerMessage ?? COMPOSER_MAX_FILES;
   const photoInput = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement | null>(null);
+  const folderPickerSupported = "webkitdirectory" in HTMLInputElement.prototype;
   const capabilityGroups = [
     { label: "Available skills", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "skill") },
     { label: "Installed plugins", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "plugin") },
@@ -368,13 +372,16 @@ export function ComposerCapabilityPicker({
         aria-label="Choose files"
         hidden
         type="file"
-        accept="image/png,image/jpeg,image/webp,image/heic,image/heif,image/gif,image/avif,.jpg,.jpeg,.png,.webp,.heic,.heif,.gif,.avif,application/pdf,text/plain,application/json,application/zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.txt,.md,.csv,.log,.json,.zip,.pdf,.docx"
         multiple
         onChange={event => {
           onFiles(Array.from(event.target.files ?? []));
           event.target.value = "";
         }}
       />
+      <input ref={element => { folderInput.current = element; if (element) element.webkitdirectory = true; }}
+        aria-label="Choose folder" hidden type="file" multiple onChange={event => {
+          onFolderFiles(Array.from(event.target.files ?? [])); event.target.value = "";
+        }} />
       <input
         ref={photoInput}
         aria-label="Choose photos"
@@ -455,12 +462,12 @@ export function ComposerCapabilityPicker({
               }}
             >
               {(!mobile || !browseCapabilities) && <ListSubheader sx={{ lineHeight: "32px", bgcolor: "background.paper", fontWeight: 800 }}>Attachments</ListSubheader>}
-              {(!mobile || !browseCapabilities) && ["Photos", "Files"].map(label => <MenuItem
+              {(!mobile || !browseCapabilities) && ["Photos", "Files", "Folder"].map(label => <MenuItem
                 key={label}
-                disabled={!attachmentsEnabled || fileCount >= maximumFiles}
+                disabled={!attachmentsEnabled || fileCount >= maximumFiles || (label === "Folder" && !folderPickerSupported)}
                 onClick={() => {
                   onClose();
-                  (label === "Photos" ? photoInput : fileInput).current?.click();
+                  (label === "Photos" ? photoInput : label === "Folder" ? folderInput : fileInput).current?.click();
                 }}
                 sx={{
                   whiteSpace: "normal",
@@ -470,7 +477,7 @@ export function ComposerCapabilityPicker({
               >
                 <Box>
                   <Typography variant="body2">{label}</Typography>
-                  {(!mobile || !attachmentsEnabled || fileCount >= maximumFiles) && <Typography variant="caption" color="text.secondary">
+                  {(!mobile || !attachmentsEnabled || fileCount >= maximumFiles || (label === "Folder" && !folderPickerSupported)) && <Typography variant="caption" color="text.secondary">
                     {!attachmentsEnabled
                       ? (attachmentsUnavailableReason ??
                         "Attachments are not supported in this chat.")
@@ -478,7 +485,8 @@ export function ComposerCapabilityPicker({
                         ? "Remove an attachment before adding another."
                         : label === "Photos"
                           ? `PNG, JPEG, WebP, HEIC, GIF, or AVIF · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`
-                          : `Up to ${maximumFiles} images, PDF, DOCX, text, JSON, or ZIP files · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`}
+                          : label === "Folder" ? folderPickerSupported ? "ZIP preserving folder paths; hidden/sensitive files excluded · up to 2,048 entries" : "Folder selection is unavailable in this browser. Attach a ZIP instead."
+                          : `Up to ${maximumFiles} files, including fonts, documents, code, media and archives · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`}
                   </Typography>}
                 </Box>
               </MenuItem>)}
