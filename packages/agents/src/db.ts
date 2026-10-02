@@ -60,6 +60,7 @@ const providerActivationExecutionPayloadsMigration = "0010_provider_activation_e
 const nestedProviderActivationExecutionPayloadsMigration = "0011_nested_provider_activation_execution_payloads.ts";
 const contextRolloverFailureProvenanceMigration = "0012_context_rollover_failure_provenance.ts";
 const contextRolloverCyclesMigration = "0020_context_rollover_cycles.ts";
+const contextRolloverObservationMigration = "0021_context_rollover_observations.ts";
 const workingCopyAuthorityMigration = "0013_working_copy_authority.ts";
 const projectDeletionOwnershipMigration = "0014_project_deletion_ownership.ts";
 const deletionRecoveryPhasesMigration = "0015_deletion_recovery_phases.ts";
@@ -955,6 +956,41 @@ function establishContextRolloverCycles(sqlite: Database.Database): void {
   })();
 }
 
+/** Unavailable measurements must be NULL, not a threshold presented as usage.
+ * Keep historical bytes/values (including old native_compaction reasons) and
+ * all existing indexes/triggers. SQLite requires a table rebuild to relax the
+ * occupancy NOT NULL and extend the completion-reason CHECK. */
+function establishContextRolloverObservations(sqlite: Database.Database): void {
+  if (sqlite.prepare(`SELECT 1 FROM ${schemaVersionTable} WHERE name = ?`)
+    .get(contextRolloverObservationMigration)) return;
+  sqlite.transaction(() => {
+    const original = (sqlite.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'context_rollovers'")
+      .get() as { sql: string }).sql;
+    const occupancyConstraint = "detected_occupancy INTEGER NOT NULL CHECK (detected_occupancy >= 0)";
+    const completionConstraint = "'replacement_verified', 'native_compaction', 'no_continuation_required'";
+    if (!original.includes(occupancyConstraint) || !original.includes(completionConstraint)) {
+      throw new Error("context rollover observation migration found an unexpected schema");
+    }
+    const replacement = original
+      .replace(/^CREATE TABLE "?context_rollovers"?/u, "CREATE TABLE context_rollovers_observations")
+      .replace(occupancyConstraint, "detected_occupancy INTEGER CHECK (detected_occupancy >= 0)")
+      .replace(completionConstraint, `${completionConstraint}, 'headroom_restored'`);
+    const dependentSchema = sqlite.prepare(`
+      SELECT sql FROM sqlite_master WHERE tbl_name = 'context_rollovers'
+        AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type, name
+    `).all() as Array<{ sql: string }>;
+    const columns = (sqlite.pragma("table_info(context_rollovers)") as Array<{ name: string }>)
+      .map(column => `"${column.name.replaceAll('"', '""')}"`).join(", ");
+    sqlite.exec(replacement);
+    sqlite.exec(`INSERT INTO context_rollovers_observations (rowid, ${columns})
+      SELECT rowid, ${columns} FROM context_rollovers`);
+    sqlite.exec("DROP TABLE context_rollovers; ALTER TABLE context_rollovers_observations RENAME TO context_rollovers");
+    for (const entry of dependentSchema) sqlite.exec(entry.sql);
+    sqlite.prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+      .run(contextRolloverObservationMigration, new Date().toISOString());
+  })();
+}
+
 /** Additive read indexes are safe to establish for both adopted and already
  * baselined databases without rewriting canonical rows. */
 function establishReadIndexes(sqlite: Database.Database): void {
@@ -1080,6 +1116,7 @@ export function openDb(file: string): OpenedDb {
   establishContextRolloverFailureProvenance(sqlite);
   establishContextRolloverCycles(sqlite);
   establishSchemaExtensions(sqlite);
+  establishContextRolloverObservations(sqlite);
   establishWorkingCopyAuthoritySchema(sqlite);
   establishProjectDeletionOwnershipSchema(sqlite);
   establishDeletionRecoveryPhasesSchema(sqlite);

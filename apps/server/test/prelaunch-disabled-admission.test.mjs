@@ -63,7 +63,8 @@ test("disabling intake does not cancel an accepted Run; canonical result and exa
     const input = store.getProviderInput(run.id, true); assert.equal(input.sourceManifest.environmentFacts.cwd, options.cwd);
     assert.equal(input.sourceManifest.environmentFacts.platform, process.platform); assert.equal(input.sourceManifest.environmentFacts.executables.length, 5);
     assert.match(input.sourceManifest.sources.find(source => source.kind === "environment").hash, /^[a-f0-9]{64}$/);
-    assert.match(input.exactSystemPrompt, /no authorized default reply route/);
+    assert.match(input.exactSystemPrompt, /Use only the current Run's host-provided reply route/);
+    assert.match(input.exactPrompt, /no authorized default reply route/);
     assert.equal(`${input.exactPrompt}${input.exactSystemPrompt}`.includes(options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN), false);
     await app.inject({ method: "PATCH", url: "/api/workspace/preferences", payload: { providerAvailability: { codex: false } } });
     assert.equal(options.signal.aborted, false); assert.equal(store.sqlite.prepare("SELECT status FROM scheduler_runs WHERE id=?").get(run.id).status, "running");

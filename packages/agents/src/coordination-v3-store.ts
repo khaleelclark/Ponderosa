@@ -1381,8 +1381,8 @@ export class CoordinationV3Store {
     return this.contextRolloverAuthority.completeVerifiedReplacement(id, replacementSessionId, now);
   }
 
-  cancelContextRolloverAfterNativeCompaction(input: Parameters<CoordinationV3ContextRolloverAuthority["cancelAfterNativeCompaction"]>[0]): ContextRolloverV3 | undefined {
-    return this.contextRolloverAuthority.cancelAfterNativeCompaction(input);
+  retireContextRolloverAfterHeadroomRecovery(input: Parameters<CoordinationV3ContextRolloverAuthority["retireAfterHeadroomRecovery"]>[0]): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.retireAfterHeadroomRecovery(input);
   }
 
   failContextRollover(

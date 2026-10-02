@@ -160,7 +160,7 @@ export interface ContextRolloverV3 {
   oldProviderSessionId: string;
   providerSessionGeneration: string;
   cycleNumber: number;
-  detectedOccupancy: number;
+  detectedOccupancy?: number;
   aggregateTokens?: number;
   threshold: number;
   contextWindow?: number;
@@ -191,7 +191,7 @@ export interface ContextRolloverV3 {
   replacementInputCommittedAt?: string;
   replacementVerifiedAt?: string;
   visibleResponseCommittedAt?: string;
-  completionReason?: "replacement_verified" | "native_compaction" | "no_continuation_required";
+  completionReason?: "replacement_verified" | "native_compaction" | "headroom_restored" | "no_continuation_required";
   failureSignal?: "seed_overflow" | "replacement_cancelled";
   failureProvenance: "provider" | "internal";
   lastError?: string;

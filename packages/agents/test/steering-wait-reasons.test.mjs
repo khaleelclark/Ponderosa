@@ -62,7 +62,7 @@ test("wait reasons follow authoritative barriers, not text, Queue, terminal stat
       compactionCutoffOrdinal: 1, compactionCutoffEventId: "original", recentTail: [{ communicationEventId: "original", contentSha256: "a".repeat(64) }] });
     assert.equal(f.receipt("later").steeringWaitReason, "context_refresh");
     assert.equal(f.c.leaseNextSteering({ workerId: "fixture" }), undefined, "same barrier gates leasing");
-    f.c.cancelContextRolloverAfterNativeCompaction({ agentId: f.agent.id, providerSessionGeneration: "session", providerSessionId: "session", usedTokens: 50000 });
+    f.c.retireContextRolloverAfterHeadroomRecovery({ agentId: f.agent.id, providerSessionGeneration: "session", providerSessionId: "session", usedTokens: 50000 });
     assert.equal(f.receipt("later").steeringWaitReason, "scheduler_pending");
     f.c.cancelAgentRun({ agentId: f.agent.id, expectedRunId: f.run.runId, idempotencyKey: "cancel" });
     assert.equal(f.receipt("steer").steeringWaitReason, undefined);

@@ -22,7 +22,6 @@ import { attachmentsDir } from "@ponderosa/agents";
 import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
 import { renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
-import { canonicalDefaultReplyRoute } from "../required-reply-route.js";
 import { environmentFactsPrompt, runtimeEnvironmentFacts } from "../runtime-environment-facts.js";
 import { collectReachableArtifactIds } from "../artifact-refs.js";
 import { appendReadableArtifactReferences } from "../communication-artifacts.js";
@@ -46,7 +45,7 @@ import {
   type ScopedContextMessage,
 } from "../prompts.js";
 import {
-  communicationV3Prompt,
+  communicationV3SessionPrompt,
   providerDynamicTools,
   providerSessionContractHash,
   providerToolContractHash,
@@ -371,8 +370,7 @@ export async function prepareAgentRun(
     ...providerDynamicTools(),
     ...(historyRetrievalBoundary ? [PONDEROSA_HISTORY_TOOL] : []),
   ];
-  const defaultReply = canonicalDefaultReplyRoute(coordinationV3, runId, agent.id);
-  const communicationPrompt = communicationV3Prompt(defaultReply);
+  const communicationPrompt = communicationV3SessionPrompt();
   const environmentFacts = await runtimeEnvironmentFacts({ cwd: workingCopy.rootPath, agentId: agent.id, allowedImportRoots: runContext.opts.allowedImportRoots });
   const environmentPrompt = environmentFactsPrompt(environmentFacts);
   const providerToolHash = providerToolContractHash(availableRuntimeTools, communicationPrompt);

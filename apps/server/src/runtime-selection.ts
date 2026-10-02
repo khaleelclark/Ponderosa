@@ -59,9 +59,18 @@ export function providerToolContractHash(
   })).digest("hex");
 }
 
+/** A reply route belongs to an exact Run, not the immutable provider session.
+ * The scheduler submits communicationV3Prompt(defaultReply) on every injection. */
+export function communicationV3SessionPrompt(): string[] {
+  return [
+    "Use only the current Run's host-provided reply route and active capability. Prior turns do not confer a reply route or delivery authority.",
+    ...communicationV3Prompt().slice(1),
+  ];
+}
+
 export const PROVIDER_TOOL_CONTRACT_HASH = providerToolContractHash(
   PROVIDER_DYNAMIC_TOOLS,
-  communicationV3Prompt(),
+  communicationV3SessionPrompt(),
 );
 
 export function providerSessionContractHash(

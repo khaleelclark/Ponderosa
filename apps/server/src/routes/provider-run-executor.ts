@@ -890,19 +890,19 @@ export function startProviderRunExecution(
             lastTextSeq = stored.seq;
           }
           if (event.type === "context_usage" && ownsActiveRun(agent.id, activeRun)) {
-            const nativeCompaction = coordinationV3.cancelContextRolloverAfterNativeCompaction({
+            const recoveredHeadroom = coordinationV3.retireContextRolloverAfterHeadroomRecovery({
               agentId: agent.id,
               providerSessionGeneration: event.providerSessionGeneration,
               providerSessionId: event.providerSessionId,
               usedTokens: event.usedTokens,
             });
-            if (nativeCompaction) {
+            if (recoveredHeadroom) {
               app.log.info({
                 agentId: agent.id,
-                rolloverId: nativeCompaction.id,
+                rolloverId: recoveredHeadroom.id,
                 providerSessionId: event.providerSessionId,
                 usedTokens: event.usedTokens,
-              }, "provider native compaction made proactive rollover redundant");
+              }, "new provider request restored headroom; automatic rollover is redundant");
               notifyScheduler();
             }
             const replacementRollover = coordinationV3.contextRolloverForReplacementSession(
