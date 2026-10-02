@@ -1040,6 +1040,10 @@ export class CoordinationV3Store {
     this.runLifecycleAuthority.markRunStarted(runId, fence, now);
   }
 
+  deferUninjectedRun(runId: string, fence: number, now = new Date().toISOString()): void {
+    this.runLifecycleAuthority.deferUninjectedRun(runId, fence, now);
+  }
+
   setRunContextDisposition(
     runId: string,
     fence: number,

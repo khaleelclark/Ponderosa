@@ -19,6 +19,38 @@ export class BrowserSessionError extends Error {
   }
 }
 
+const BROWSER_NAMED_KEYS = new Set([
+  "Backspace", "Tab", "Enter", "Escape", "Delete", "Insert", "Home", "End",
+  "PageUp", "PageDown", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+  "Control", "Meta", "Alt", "Shift", "CapsLock", "NumLock", "ScrollLock",
+  "Pause", "PrintScreen", "ContextMenu", "BrowserBack", "BrowserForward", "BrowserRefresh",
+  ...Array.from({ length: 24 }, (_, index) => `F${index + 1}`),
+]);
+
+/** Case-sensitive driver notation, not arbitrary DOM key names. Never replay. */
+export function validateBrowserKey(value: unknown): string {
+  if (typeof value !== "string" || !value || value.length > 40) {
+    throw new BrowserSessionError("Invalid keyboard notation. Use End, Enter, or Control+A.", 400, "invalid_input");
+  }
+  let key = value;
+  const modifiers = new Set<string>();
+  while (/^(Control|Meta|Alt|Shift)\+/u.test(key)) {
+    const modifier = key.slice(0, key.indexOf("+"));
+    if (modifiers.has(modifier)) break;
+    modifiers.add(modifier);
+    key = key.slice(key.indexOf("+") + 1);
+  }
+  const character = Array.from(key);
+  if (modifiers.size > 0 && key.length > 1 && character.length === 1) {
+    throw new BrowserSessionError("This character does not support keyboard modifier notation; use browser fill/type for Unicode text.", 400, "invalid_input");
+  }
+  if (!BROWSER_NAMED_KEYS.has(key) &&
+      !(character.length === 1 && !/[\p{Cc}\p{Cs}]/u.test(key))) {
+    throw new BrowserSessionError("Invalid keyboard notation. Use End, Enter, or Control+A; names are case-sensitive.", 400, "invalid_input");
+  }
+  return value;
+}
+
 export function validateBrowserUrl(value: string): string {
   if (!value || value.length > MAX_NAVIGATION_URL) {
     throw new BrowserSessionError("browser URL must contain 1 to 2048 characters");

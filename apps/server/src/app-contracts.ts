@@ -152,6 +152,9 @@ export interface ActiveRun {
    * Root-exit callbacks bind to this identity rather than the Run that first
    * opened a reusable session. */
   persistentRuntimeIdentity?: object;
+  /** Bounded observations, not runtime authority or a substitute for terminal evidence. */
+  observedProviderSessionGeneration?: string;
+  observedProviderTerminalStatus?: "completed" | "failed" | "cancelled" | "interrupted" | "unknown";
   v3SchedulerRunId?: string;
   v3FencingToken?: number;
   conversationId?: string;

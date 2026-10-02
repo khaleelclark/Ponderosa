@@ -42,4 +42,14 @@ export type AgentOperationalReason =
   | AgentLifecycleReason
   | "pending_user_decision"
   | "run_preparing"
-  | "provider_capacity_unavailable";
+  | "provider_capacity_unavailable"
+  | "provider_admission_blocked";
+
+/** Payload-free, current admission observation. Not an execution result. */
+export interface QueuedAdmissionBlockerDto {
+  kind: "provider_disabled" | "authentication_unknown" | "authentication_required" | "provider_unavailable";
+  providerId: string;
+  observedAt?: string;
+  /** At most five minutes old; explicitly not current authentication authority. */
+  lastKnownAuthentication?: { authenticated: boolean; observedAt: string };
+}

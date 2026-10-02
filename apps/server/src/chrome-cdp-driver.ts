@@ -1463,6 +1463,7 @@ export class ChromeCdpDriver implements BrowserDriver {
       if (key === "BrowserBack") await current.goBack({ waitUntil: "domcontentloaded", timeout: 15_000 });
       else if (key === "BrowserForward") await current.goForward({ waitUntil: "domcontentloaded", timeout: 15_000 });
       else if (key === "BrowserRefresh") await current.reload({ waitUntil: "domcontentloaded", timeout: 15_000 });
+      else if (Array.from(key).length === 1 && key.codePointAt(0)! > 127) await current.keyboard.insertText(key);
       else await current.keyboard.press(key);
       return this.pageInfo();
     }
@@ -1487,7 +1488,7 @@ export class ChromeCdpDriver implements BrowserDriver {
     }
     const codes: Record<string, number> = { Backspace: 8, Tab: 9, Enter: 13, Escape: 27, " ": 32, PageUp: 33, PageDown: 34, End: 35, Home: 36, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Delete: 46 };
     const windowsVirtualKeyCode = codes[key] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
-    const text = key.length === 1 && !(modifiers & 7) ? key : undefined;
+    const text = Array.from(key).length === 1 && !(modifiers & 7) ? key : undefined;
     const params = { key, modifiers, windowsVirtualKeyCode };
     const primary = process.platform === "darwin" ? 4 : 2;
     const selectAll = (modifiers & primary) !== 0 && (modifiers & (1 | 8)) === 0 && key.toLowerCase() === "a";

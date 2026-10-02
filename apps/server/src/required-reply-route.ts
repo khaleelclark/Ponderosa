@@ -1,4 +1,25 @@
-import type { CoordinationReplyAuthority } from "@ponderosa/core";
+import type { CommunicationEvent, CoordinationReplyAuthority } from "@ponderosa/core";
+import type { CoordinationV3Store } from "@ponderosa/agents";
+
+export function canonicalDefaultReplyRoute(coordination: CoordinationV3Store, runId: string, agentId: string): CoordinationReplyAuthority | undefined {
+  const routes = coordination.requiredReplyObligationsForRun(runId)
+    .filter((obligation) => !["cancelled", "failed", "superseded"].includes(obligation.state))
+    .map((obligation) => obligation.replyAuthority);
+  const hasCorrelatedRequest = coordination.requestIdsAttachedToRun(runId, agentId).length > 0;
+    for (const { payload } of coordination.activationPayloads(agentId, coordination.activationIdsAttachedToRun(runId, agentId), runId)) {
+      const communication = payload && typeof payload === "object" && !Array.isArray(payload)
+        ? (payload as { communication?: Partial<CommunicationEvent> }).communication : undefined;
+      if (communication?.sender?.kind === "user" && communication.intent === "broadcast") {
+        routes.push({ intent: "broadcast" });
+      } else if (communication?.sender?.kind === "user" && communication.intent === "user_dm") {
+        routes.push({ intent: "direct_to_user" });
+      } else if (!hasCorrelatedRequest && communication?.intent === "collaboration" && communication.sender?.kind === "agent") {
+        routes.push({ intent: "collaboration", recipientAgentIds: [communication.sender.agentId] });
+      }
+    }
+  const distinct = [...new Map(routes.map((route) => [requiredReplyAuthorityKey(route), route])).values()];
+  return distinct.length === 1 ? distinct[0] : undefined;
+}
 
 export function requiredReplyAuthorityKey(
   authority: CoordinationReplyAuthority,

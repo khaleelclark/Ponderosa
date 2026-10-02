@@ -1,6 +1,7 @@
 export type ToolFailureCategory =
   | "operation_not_provided"
   | "temporary_connection_failure"
+  | "connector_rate_limit"
   | "authentication_required"
   | "permission_denied"
   | "invalid_input"
@@ -9,6 +10,7 @@ export type ToolFailureCategory =
 export interface ToolFailureClassification {
   category: ToolFailureCategory;
   retryable: boolean;
+  retryAfterMs?: number;
 }
 
 /**
@@ -20,6 +22,32 @@ export function classifyToolFailure(
   output: string,
   isError: boolean,
 ): ToolFailureClassification | undefined {
+  // Only this explicit connector envelope is authority for rate-limit metadata.
+  // Bound parsing work; prose and generic INVALID_ARGUMENT cannot create delay.
+  if (output.length <= 64 * 1024) {
+    try {
+      let envelope: unknown = JSON.parse(output);
+      // Provider bridges may JSON-quote the connector result or wrap one text
+      // content block. Decode only these finite, supported shapes, never prose.
+      for (let depth = 0; depth < 2; depth++) {
+        if (Array.isArray(envelope) && envelope.length === 1 && envelope[0] && typeof envelope[0] === "object" &&
+            ["text", "inputText"].includes(envelope[0].type) && typeof envelope[0].text === "string") envelope = envelope[0].text;
+        if (typeof envelope !== "string" || envelope.length > 64 * 1024) break;
+        envelope = JSON.parse(envelope);
+      }
+      const data = envelope && typeof envelope === "object" && !Array.isArray(envelope)
+        ? (envelope as Record<string, unknown>).error_data : undefined;
+      if (data && typeof data === "object" && !Array.isArray(data) &&
+          (data as Record<string, unknown>).error_type === "RATE_LIMIT_EXCEEDED") {
+        const seconds = (data as Record<string, unknown>).retry_after_seconds;
+        return {
+          category: "connector_rate_limit", retryable: true,
+          ...(typeof seconds === "number" && Number.isFinite(seconds) && seconds >= 0
+            ? { retryAfterMs: Math.min(300_000, Math.ceil(seconds * 1000)) } : {}),
+        };
+      }
+    } catch { /* Not a supported structured envelope. Preserve ordinary classification. */ }
+  }
   // Some connector bridges return a successful transport envelope whose
   // structured payload is still an MCP failure. Treat only explicit error
   // shapes as failures so ordinary successful content that mentions an error
@@ -63,6 +91,7 @@ export function toolFailureLabel(category: ToolFailureCategory): string {
   switch (category) {
     case "operation_not_provided": return "Operation not provided";
     case "temporary_connection_failure": return "Temporary connection failure";
+    case "connector_rate_limit": return "Connector rate limit";
     case "authentication_required": return "Authentication required";
     case "permission_denied": return "Permission denied";
     case "invalid_input": return "Invalid input";

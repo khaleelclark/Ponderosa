@@ -25,7 +25,7 @@ const FAILURE_CATEGORIES = [
 ] as const satisfies readonly ProviderFailureCategory[];
 const TOOL_FAILURE_CATEGORIES = [
   "operation_not_provided", "temporary_connection_failure", "authentication_required",
-  "permission_denied", "invalid_input", "permanent_failure",
+  "permission_denied", "invalid_input", "permanent_failure", "connector_rate_limit",
 ] as const satisfies readonly ToolFailureCategory[];
 
 export class AgentEventProjectionError extends Error {
@@ -277,7 +277,7 @@ export function projectAgentEvent(value: unknown): AgentEvent {
     "output", "isError", "failureCategory", "retryable", "command", "cwd", "callId", "path", "kind", "diff", "passed", "summary", "status",
     "controlOwner", "controlEpoch", "url", "title", "reason", "actor", "action", "level", "text", "artifactId",
     "width", "height", "size", "sha256", "workItemId", "usage", "providerRequestUsage", "message", "code",
-    "category", "remediation", "presentation",
+    "category", "remediation", "presentation", "exitCode", "signal", "retryAfterMs", "terminalStatus",
   ])], budget, 0);
   const type = enumeration(envelope, "type", [
     "session", "context_usage", "context_rollover_seed_overflow", "context_rollover_completed", "text", "reasoning",
@@ -345,7 +345,7 @@ export function projectAgentEvent(value: unknown): AgentEvent {
       return { type, id: identifier(row, "id", budget, 2), name: identifier(row, "name", budget, 2), input: jsonValue(row.get("input"), budget, 2) };
     }
     case "tool_result": {
-      const row = exact(value, ["id", "output", "isError", "failureCategory", "retryable"], budget);
+      const row = exact(value, ["id", "output", "isError", "failureCategory", "retryable", "exitCode", "signal", "retryAfterMs"], budget);
       const isError = optionalBoolean(row, "isError", budget, 2);
       const hasFailureCategory = row.has("failureCategory");
       const hasRetryable = row.has("retryable");
@@ -355,12 +355,21 @@ export function projectAgentEvent(value: unknown): AgentEvent {
         : undefined;
       const retryable = hasRetryable ? boolean(row, "retryable", budget, 2) : undefined;
       if (failureCategory !== undefined && isError !== true) reject();
+      const exitCode = optionalInteger(row, "exitCode", budget, 2, -2147483648);
+      if (exitCode !== undefined && exitCode > 2147483647) reject();
+      const signal = optionalString(row, "signal", budget, 2);
+      if (signal !== undefined && !/^SIG[A-Z0-9]{1,20}$/u.test(signal)) reject();
+      const retryAfterMs = optionalInteger(row, "retryAfterMs", budget, 2);
+      if (retryAfterMs !== undefined && (retryAfterMs > 300_000 || failureCategory !== "connector_rate_limit")) reject();
       return {
         type,
         id: identifier(row, "id", budget, 2),
         output: string(row, "output", budget, 2),
         ...(isError === undefined ? {} : { isError }),
         ...(failureCategory === undefined ? {} : { failureCategory, retryable: retryable! }),
+        ...(exitCode === undefined ? {} : { exitCode }),
+        ...(signal === undefined ? {} : { signal }),
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
       };
     }
     case "command": {
@@ -415,11 +424,12 @@ export function projectAgentEvent(value: unknown): AgentEvent {
       return { type, ...(projectedUsage === undefined ? {} : { usage: projectedUsage }), ...(requests === undefined ? {} : { providerRequestUsage: requests }) };
     }
     case "error": {
-      const row = exact(value, ["message", "code", "category", "remediation"], budget);
+      const row = exact(value, ["message", "code", "category", "remediation", "terminalStatus"], budget);
+      const terminalStatus = optionalEnumeration(row, "terminalStatus", ["failed", "interrupted", "unknown"] as const, budget, 2);
       const code = optionalEnumeration(row, "code", ERROR_CODES, budget, 2);
       const category = optionalEnumeration(row, "category", FAILURE_CATEGORIES, budget, 2);
       const remediation = optionalString(row, "remediation", budget, 2);
-      return { type, message: string(row, "message", budget, 2), ...(code === undefined ? {} : { code }), ...(category === undefined ? {} : { category }), ...(remediation === undefined ? {} : { remediation }) };
+      return { type, message: string(row, "message", budget, 2), ...(code === undefined ? {} : { code }), ...(category === undefined ? {} : { category }), ...(remediation === undefined ? {} : { remediation }), ...(terminalStatus === undefined ? {} : { terminalStatus }) };
     }
   }
 }

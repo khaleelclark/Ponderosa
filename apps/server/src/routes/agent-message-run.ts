@@ -66,6 +66,8 @@ import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
 import { leaseAgentDelivery, leaseConversationDelivery } from "../delivery-leases.js";
 import { prepareAgentRun } from "./agent-run-preparation.js";
 import { startProviderRunExecution } from "./provider-run-executor.js";
+import { canonicalDefaultReplyRoute } from "../required-reply-route.js";
+import { ProviderDisabledError } from "../provider-admission.js";
 
 type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
 type EngineControlPlane = ReturnType<typeof createEngineControlPlane>;
@@ -1001,32 +1003,48 @@ export function registerAgentMessageRunRoute(
         runtimeAttachmentCleanupAfterRun,
       } = preparedRun;
 
-      // No await may be introduced between this recheck and the claim. Deletion
-      // marks the agent unavailable before its own first await.
+      // Check deletion before attachment promotion as well as at the final
+      // synchronous claim boundary below.
       if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
         if (runtimeAttachmentCleanupAfterRun) {
           await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
         }
         return reply.code(404).send({ error: "agent not found" });
       }
+      let durableClaim: { generation: number };
+      // Finish asynchronous preparation before the final admission/claim
+      // boundary. A disabled provider must hold the exact work, not consume a
+      // failure retry or launch a session after the operator switch changed.
+      try {
+        await assets.associate(agent.projectId, agent.id, attachmentIds);
+        promotedDraftAssetsCommitted = true;
+      } catch (error) {
+        coordinationV3.failRun({ runId, fencingToken: v3FencingToken!, workerId: coordinationV3WorkerId, sameRunResumable: false, retryDelayMs: 0 });
+        if (runtimeAttachmentCleanupAfterRun) await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        throw error;
+      }
+      // No await between these final checks and the durable claim. Preparation
+      // may have yielded while deletion or a working-folder change began.
+      if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
+        if (runtimeAttachmentCleanupAfterRun) await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        return reply.code(404).send({ error: "agent not found" });
+      }
       try {
         workingCopies.assertRunAdmission(agent.id, workingCopy);
       } catch (error) {
         try {
-          coordinationV3.failRun({
-            runId, fencingToken: v3FencingToken!, workerId: coordinationV3WorkerId,
-            sameRunResumable: false, retryDelayMs: 0,
-          });
+          coordinationV3.failRun({ runId, fencingToken: v3FencingToken!, workerId: coordinationV3WorkerId, sameRunResumable: false, retryDelayMs: 0 });
         } catch { /* ownership may already have changed */ }
-        if (runtimeAttachmentCleanupAfterRun) {
-          await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
-        }
-        return reply.code(409).send({
-          error: error instanceof Error ? error.message : "working folder changed; retry safely",
-          retryable: true,
-        });
+        if (runtimeAttachmentCleanupAfterRun) await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        return reply.code(409).send({ error: error instanceof Error ? error.message : "working folder changed; retry safely", retryable: true });
       }
-      let durableClaim: { generation: number };
+      if (!runContext.providerEnabled(runtimeEngineId)) {
+        coordinationV3.deferUninjectedRun(runId, v3FencingToken!);
+        if (runtimeAttachmentCleanupAfterRun) await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        publishCoordinationV3Changed(agent.id);
+        const error = new ProviderDisabledError(runtimeEngineId);
+        return reply.code(409).send({ error: error.message, code: error.code, engineId: error.engineId, queued: true });
+      }
       try {
         coordinationV3.markRunStarted(runId, v3FencingToken!);
         coordinationV3.setRunContextDisposition(
@@ -1078,23 +1096,6 @@ export function registerAgentMessageRunRoute(
         return reply.code(404).send({ error: "agent not found" });
       }
 
-      try {
-        await assets.associate(agent.projectId, agent.id, attachmentIds);
-        promotedDraftAssetsCommitted = true;
-      } catch (error) {
-        failUnstartedClaim();
-        if (runtimeAttachmentCleanupAfterRun) {
-          await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
-        }
-        throw error;
-      }
-      if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
-        failUnstartedClaim(true);
-        if (runtimeAttachmentCleanupAfterRun) {
-          await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
-        }
-        return reply.code(404).send({ error: "agent not found" });
-      }
       const startedAt = new Date().toISOString();
       const trackedV3FencingToken = internalV3Dispatch ? v3FencingToken : undefined;
       const runningLifecycle = store.appendEvent(agent.id, {
@@ -1124,35 +1125,15 @@ export function registerAgentMessageRunRoute(
       // state when they receive this event, so publishing first can leave the
       // Project Overview falsely idle until another event or manual refresh.
       publish(agent.id, runningLifecycle);
-      const durableReply = coordinationV3.requiredReplyObligationForRun(runId)?.replyAuthority;
       const recoveredRequiredReply = recoverRequiredReplyPublications(
         coordinationV3,
         runId,
         agent.id,
       );
-      const peerReplyRoutes = coordinationV3.requestIdsAttachedToRun(runId, agent.id).length === 0
-        ? coordinationV3.activationPayloads(
-            agent.id,
-            coordinationV3.activationIdsAttachedToRun(runId, agent.id),
-            runId,
-          ).flatMap(({ payload }) => {
-            if (!payload || typeof payload !== "object") return [];
-            const source = (payload as { communication?: unknown }).communication;
-            if (!source || typeof source !== "object") return [];
-            const candidate = source as Partial<CommunicationEvent>;
-            return candidate.intent === "collaboration" && candidate.sender?.kind === "agent"
-              ? [{ intent: "collaboration" as const, recipientAgentIds: [candidate.sender.agentId] }]
-              : [];
-          })
-        : [];
-      const distinctReplyRoutes = [...new Map(
-        [...(durableReply ? [durableReply] : []), ...peerReplyRoutes]
-          .map((authority) => [JSON.stringify(authority), authority]),
-      ).values()];
       // A convenient reply route and a durable reply obligation are separate
       // authorities. Ordinary/urgent peer input may make a bare message
       // unambiguous without manufacturing acknowledgement or recovery work.
-      const defaultReply = distinctReplyRoutes.length === 1 ? distinctReplyRoutes[0] : undefined;
+      const defaultReply = canonicalDefaultReplyRoute(coordinationV3, runId, agent.id);
       agentMessageCapabilities.set(messageCapability, {
         agentId: agent.id,
         conversationId: routingConversationId,

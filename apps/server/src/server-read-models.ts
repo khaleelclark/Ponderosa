@@ -33,6 +33,7 @@ import {
 } from "./request-update-communication.js";
 
 interface ReadModelContext {
+  admissionBlocker?(agent: AgentDto): import("@ponderosa/core").QueuedAdmissionBlockerDto | undefined;
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   workspace: WorkspaceStore;
@@ -648,6 +649,7 @@ export function createServerReadModels(context: ReadModelContext) {
         .filter((rollover) => agents.some((agent) => agent.id === rollover.agentId))
         .map((rollover) => [rollover.agentId, rollover.updatedAt]),
     );
+    const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
     const projection = projectAgentHealth({
       scope,
       agents,
@@ -657,6 +659,10 @@ export function createServerReadModels(context: ReadModelContext) {
       availability: (agentId) => coordinationV3.getAgentAvailability(agentId),
       pendingDecisionAt: (agentId) => pendingDecisionAt.get(agentId),
       providerBlocked: (agentId) => coordinationV3.providerBlockedState(agentId),
+      admissionBlocker: (agentId) => {
+        const agent = agentsById.get(agentId);
+        return agent ? context.admissionBlocker?.(agent) : undefined;
+      },
       executionPhase: (agentId, executionId) =>
         store.activeExecutionPhase(agentId, executionId),
       waitingPhase: (agentId) =>
@@ -709,6 +715,7 @@ export function createServerReadModels(context: ReadModelContext) {
           role: profile.role,
           description: profile.description,
           status: healthById.get(agent.id)?.status ?? "idle",
+          ...(healthById.get(agent.id)?.admissionBlocker ? { admissionBlocker: healthById.get(agent.id)!.admissionBlocker } : {}),
           ...(agent.managerAgentId ? { managerAgentId: agent.managerAgentId } : {}),
           childAgentIds: (childIdsByParent.get(agent.id) ?? []).sort(),
           engine: agent.activeEngine,

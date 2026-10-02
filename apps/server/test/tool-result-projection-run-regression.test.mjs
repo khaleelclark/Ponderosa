@@ -271,6 +271,15 @@ async function runReplyRecoveryScenario(t, intent) {
       method: "item/completed",
       params: { item: { type: "agentMessage", text: "I received the revised instruction.", phase: "commentary" } },
     }, "/tmp");
+    // Ordinary empty command failure stays in this exact Run; it is neither a
+    // provider error nor a canonical assignment result. A later correction and
+    // Communication must still reach successful terminal completion.
+    yield* mapCodexAppServerNotification({ method: "item/completed", params: {
+      item: { type: "commandExecution", id: "search-no-match", exitCode: 1, aggregatedOutput: "" },
+    } }, "/tmp");
+    yield* mapCodexAppServerNotification({ method: "item/completed", params: {
+      item: { type: "commandExecution", id: "corrected-command", exitCode: 0, aggregatedOutput: "corrected" },
+    } }, "/tmp");
     const ambiguous = await dynamicToolHandler({
       id: "ambiguous-message",
       name: PONDEROSA_MESSAGE_TOOL.name,
@@ -317,6 +326,9 @@ async function runReplyRecoveryScenario(t, intent) {
   assert.equal(projected.some((event) => event.type === "error"), false);
   assert.deepEqual(projected[0], { type: "text", delta: "I received the revised instruction.\n\n", presentation: "progress" });
   assert.equal(projected.at(-1)?.type, "turn_done");
+  assert.equal(projected.find(event => event.id === "search-no-match")?.exitCode, 1);
+  assert.equal(projected.find(event => event.id === "corrected-command")?.exitCode, 0);
+  assert.equal(store.getActivity(agent.id).find(item => item.event.id === "search-no-match")?.event.exitCode, 1);
 
   const activityFailure = store.getActivity(agent.id).find((activity) =>
     activity.event.type === "tool_result" && activity.event.id === "ambiguous-message");

@@ -247,7 +247,7 @@ function mapUser(message: RawMessage | undefined): AgentEvent[] {
         id: b.tool_use_id ?? "",
         output,
         ...(canonicalIsError ? { isError: true } : {}),
-        ...(failure ? { failureCategory: failure.category, retryable: failure.retryable } : {}),
+        ...(failure ? { failureCategory: failure.category, retryable: failure.retryable, ...(failure.retryAfterMs === undefined ? {} : { retryAfterMs: failure.retryAfterMs }) } : {}),
       });
     }
   }

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   PONDEROSA_RUNTIME_TOOLS,
+  REQUEST_UPDATE_TOOL_KINDS,
   type RuntimeDynamicToolSpec,
   type Adapter,
   type ModelOption,
@@ -15,14 +16,18 @@ export function providerDynamicTools(): RuntimeDynamicToolSpec[] {
   return [...PONDEROSA_RUNTIME_TOOLS];
 }
 
-function communicationV3Prompt(): string[] {
+function communicationV3Prompt(defaultReply?: import("@ponderosa/core").CoordinationReplyAuthority): string[] {
   return [
-    "Common reply: ponderosa_message({text}). Ponderosa inherits an unambiguous incoming audience and stable idempotency.",
+    defaultReply
+      ? `This Run has one authorized default reply route (data): ${JSON.stringify(defaultReply)}. ponderosa_message({text}) uses it with stable idempotency. This convenience route does not create a reply obligation.`
+      : 'This Run has no authorized default reply route. Do not call ponderosa_message({text}) alone. Explicit private user example: ponderosa_message({intent:"direct_to_user",text:"..."}). For an authorized peer use ponderosa_message({intent:"collaboration",recipientAgentIds:["<stable Agent ID>"],text:"..."}).',
+    "Immediate recipientAgentIds always requires explicit intent collaboration. Correlated results belong on ponderosa_update_request, not a convenience message.",
     "If Ponderosa capabilities require discovery, load the Ponderosa message capability specifically. Never substitute a generic or provider-native SendMessage tool: only ponderosa_message creates the canonical reply.",
     "Common delegation: ponderosa_coordinate({recipientAgentId,text}), or use delegations for fan-out. Ponderosa creates one aggregate Join and wakes you as each new result arrives while preserving the open parent workflow.",
     "Passive one-way information: ponderosa_message({delivery:\"next_run\",text,recipientAgentIds}). It creates no chat message, Activation, Run, Request, Join, reply obligation, or acknowledgement. Omit delivery for immediate communication; use coordinate whenever you need a result or lifecycle.",
     "Never promise later work unless a capability response in this Run confirms a durable wake source; otherwise finish now or state what the user must do next.",
     "Common correlated result: ponderosa_update_request({text}). It completes the sole attached Request with a canonical handoff.",
+    `Request kind values: ${REQUEST_UPDATE_TOOL_KINDS.join(", ")}. Use waiting_dependency, not waiting.`,
     "Common correlated question: ponderosa_update_request({question}). It asks the original requester and preserves the update identity for its answer.",
     "Common user question: ponderosa_decision({question}); add options for a choice or mode approval for permission. This is the only user-question path in Ponderosa: never call a provider-native AskUserQuestion/request_user_input tool, which cannot reach the user's Ponderosa Chat.",
     "Use explicit message intent, request IDs, lifetimes, join modes, update kinds, and idempotency keys only for advanced or ambiguous cases.",

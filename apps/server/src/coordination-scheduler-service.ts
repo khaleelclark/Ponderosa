@@ -28,6 +28,8 @@ import {
 } from "./coordination-v3-scheduler.js";
 import type { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
 import { appendReadableArtifactReferences } from "./communication-artifacts.js";
+import { canonicalDefaultReplyRoute } from "./required-reply-route.js";
+import { communicationV3Prompt } from "./runtime-selection.js";
 import {
   applyQueuedMessageChangeOutbox,
   type QueuedEditRevisionOutboxPayload,
@@ -496,8 +498,9 @@ return new CoordinationV3Scheduler(
       });
       // Steering bypasses ordinary Run preparation. Resolve its references
       // before the scheduler records the exact injection, too.
+      const defaultReply = canonicalDefaultReplyRoute(coordinationV3, lease.runId, lease.agentId);
       const prompt = appendReadableArtifactReferences({
-        prompt: compilation.prompt, projectId: lease.projectId,
+        prompt: `${compilation.prompt}\n\n${communicationV3Prompt(defaultReply).join("\n")}`, projectId: lease.projectId,
         agentId: lease.agentId, store, assets,
       });
       signal.throwIfAborted();
@@ -505,6 +508,13 @@ return new CoordinationV3Scheduler(
         throw new ActivationPromptCompilationError({
           code: "activation_payload_too_large", activation: lease.activations[0]!,
         });
+      }
+      const run = activeRuns.get(lease.agentId);
+      const capability = run?.v3SchedulerRunId === lease.runId && run.v3FencingToken === lease.fencingToken
+        ? agentMessageCapabilities.get(run.messageCapability) : undefined;
+      if (capability) {
+        if (defaultReply) capability.defaultReply = defaultReply;
+        else delete capability.defaultReply;
       }
       return { ...compilation, prompt };
     },

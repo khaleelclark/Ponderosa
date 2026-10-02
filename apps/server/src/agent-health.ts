@@ -29,6 +29,7 @@ export interface AgentHealthProjectionInput {
   availability?: (agentId: string) => "running" | "runnable" | "waiting" | "idle";
   pendingDecisionAt?: (agentId: string) => string | undefined;
   providerBlocked?: (agentId: string) => ProviderBlockedWorkDto | undefined;
+  admissionBlocker?: (agentId: string) => import("@ponderosa/core").QueuedAdmissionBlockerDto | undefined;
   executionPhase?: (
     agentId: string,
     executionId: string,
@@ -67,6 +68,8 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     const availability = input.availability?.(agent.id);
     const pendingDecisionAt = input.pendingDecisionAt?.(agent.id);
     const providerBlocked = input.providerBlocked?.(agent.id);
+    const admissionBlocker = availability === "runnable" && !active && !preparing && !pendingDecisionAt && !compactingAt && !providerBlocked
+      ? input.admissionBlocker?.(agent.id) : undefined;
     const latestEvent = input.latestEvent(agent.id);
     const runs = [...(input.runs?.(agent.id) ?? [])].sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
     const summarizeRun = (run: AgentRunDto | undefined) => run ? ({
@@ -101,6 +104,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
       reason: "provider_capacity_unavailable",
     };
     else if (availability === "waiting") observation = { status: "waiting", statusTimestamp: agent.updatedAt, reason: "awaiting_reports" };
+    else if (admissionBlocker) observation = { status: "blocked", statusTimestamp: admissionBlocker.observedAt ?? agent.updatedAt, reason: "provider_admission_blocked" };
     else observation = {
       status: "idle",
       statusTimestamp: agent.updatedAt,
@@ -134,6 +138,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
       ...(managerAgentId ? { managerAgentId } : {}),
       childAgentIds: [...(childIdsByParent.get(agent.id) ?? [])].sort(),
       ...observation,
+      ...(admissionBlocker ? { admissionBlocker } : {}),
       ...(phase ? { phase } : {}),
       ...(active?.executionId ? { executionId: active.executionId } : {}),
       ...(preparing ? {

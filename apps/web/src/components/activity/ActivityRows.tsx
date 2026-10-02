@@ -243,7 +243,9 @@ function GroupedActivityRow({
   const result = "result" in entry ? entry.result : undefined;
   const toolAccess = entry.kind === "tool" ? toolOperationAccess(entry.name) : "unknown";
   const tool = entry.kind === "tool" ? toolPresentation(entry.name) : undefined;
-  const resultStatus = result?.failureCategory
+  const resultStatus = entry.kind === "command" && result && (result.exitCode !== undefined || result.signal)
+    ? [result.exitCode === undefined ? undefined : `Command exited ${result.exitCode}`, result.signal].filter(Boolean).join(" · ")
+    : result?.failureCategory
     ? `${toolFailureLabel(result.failureCategory)}${result.retryState === "retrying" ? " · retrying" : result.retryState === "retried" ? " · retried" : ""}`
     : result?.retryState === "recovered"
       ? "Connected · recovered"

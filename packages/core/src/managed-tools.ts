@@ -1,6 +1,8 @@
 import type { RuntimeDynamicToolSpec } from "./adapter.js";
 import { LONG_TEXT_MAX_UTF8_BYTES } from "./text-policy.js";
 
+export const REQUEST_UPDATE_TOOL_KINDS = ["progress", "waiting_dependency", "dependency_resolved", "question", "answer", "completed", "blocked", "failed", "cancelled", "superseded"] as const;
+
 const REQUEST_LIFETIME_SCHEMA = {
   oneOf: [
     {
@@ -154,7 +156,7 @@ export const PONDEROSA_HISTORY_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_update_request",
-  description: "Report the canonical result of the current correlated Request with {text}, or ask its requester a blocking follow-up with {question}. Ponderosa resolves the sole attached Request, generates stable idempotency, and defaults text to completed. Add kind only for progress, waiting, blocked/failed, answer, cancellation, or supersession. To stop work you requested, cancel the exact original outbound Request with {requestId,kind:\"cancelled\"}; cancellation is urgent active-work control and is not an ordinary queued Request. Supply requestId only when the Run has multiple attached Requests or when mutating an exact authorized historical outbound Request.",
+  description: "Report the canonical result of the current correlated Request with {text}, or ask its requester a blocking follow-up with {question}. Ponderosa resolves the sole attached Request, generates stable idempotency, and defaults text to completed. Accepted kind values: progress, waiting_dependency, dependency_resolved, question, answer, completed, blocked, failed, cancelled, superseded. waiting is not a value. To stop work you requested, cancel the exact original outbound Request with {requestId,kind:\"cancelled\"}; cancellation is urgent active-work control and is not an ordinary queued Request. Supply requestId only when the Run has multiple attached Requests or when mutating an exact authorized historical outbound Request.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -167,7 +169,7 @@ export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
       updateId: { type: "string", minLength: 1, maxLength: 200, description: "Advanced override. The server derives a stable update ID for the common report form." },
       kind: {
         type: "string",
-        enum: ["progress", "waiting_dependency", "dependency_resolved", "question", "answer", "completed", "blocked", "failed", "cancelled", "superseded"],
+        enum: REQUEST_UPDATE_TOOL_KINDS,
         description: "Use completed for the recipient's result/reply. Use question only for a recipient's blocking follow-up; use answer only for the original requester's correlated response.",
       },
       text: { type: "string", description: `Canonical report text. UTF-8 content above 10,000 Unicode code points is stored as a durable artifact; maximum ${LONG_TEXT_MAX_UTF8_BYTES} bytes.` },
@@ -179,13 +181,15 @@ export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_message",
-  description: "Send immediate communication, or set delivery to next_run for one-way information to explicit recipientAgentIds. Immediate delivery is the default and inherits an unambiguous incoming audience; use explicit intent only for a different audience. Recipients receive the submitted payload, not your hidden prompt or provider-session context; include the facts and context needed to act. next_run creates no chat message, Run, Request, Join, reply obligation, or acknowledgement. Use coordinate for tracked work and update_request for a correlated result.",
+  description: "Send immediate communication, or set delivery to next_run for one-way information to explicit recipientAgentIds. {text} alone works only when the current capability explicitly has one authorized default reply route; otherwise supply intent. Immediate recipientAgentIds requires intent collaboration, even when replying to a peer. Recipients receive the submitted payload, not your hidden prompt or provider-session context; include the facts and context needed to act. next_run omits intent and creates no chat message, Run, Request, Join, reply obligation, or acknowledgement. Use coordinate for tracked work and update_request for a correlated result.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
     oneOf: [
       {
         not: { anyOf: [{ required: ["delivery"] }, { required: ["expiresAt"] }] },
+        if: { required: ["recipientAgentIds"] },
+        then: { required: ["intent"], properties: { intent: { const: "collaboration" } } },
         anyOf: [{ required: ["text"] }, { required: ["artifactIds"] }],
       },
       {
@@ -226,7 +230,7 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
       recipientAgentIds: {
         type: "array", minItems: 1, maxItems: 100, uniqueItems: true,
         items: { type: "string", minLength: 1, maxLength: 200 },
-        description: "Stable Agent IDs. Required for collaboration and next_run, including one recipient.",
+        description: "Stable Agent IDs. Immediate recipients require explicit intent collaboration. Required for collaboration and next_run, including one recipient; next_run omits intent.",
       },
       urgency: { type: "string", enum: ["ordinary", "urgent"] },
       expiresAt: {
@@ -404,7 +408,7 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
         delta_y: { type: "number", minimum: -4000, maximum: 4000 },
         selector: { type: "string", minLength: 1, maxLength: 500 },
         text: { type: "string" },
-        key: { type: "string", minLength: 1, maxLength: 40 },
+        key: { type: "string", minLength: 1, maxLength: 40, description: "Case-sensitive keyboard notation, e.g. End, Enter, Control+A, or a supported character. END and Unidentified are invalid." },
         consequence: { type: "string", enum: ["submission", "purchase", "message", "account_change", "other"] },
         attempt_id: { type: "string", minLength: 1, maxLength: 120 },
       },

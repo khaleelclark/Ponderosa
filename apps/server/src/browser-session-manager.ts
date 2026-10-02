@@ -37,6 +37,7 @@ import {
   redactBrowserText,
   redactPageInfo,
   validateBrowserUrl,
+  validateBrowserKey,
 } from "./browser-security.js";
 import { recoverBrowserResidue } from "./browser-session-residue.js";
 
@@ -1603,8 +1604,9 @@ export class BrowserSessionManager {
     } else if (action === "fill" && typeof input.selector === "string" && input.selector.length > 0 && input.selector.length <= MAX_SELECTOR_TEXT && typeof input.text === "string") {
       work = (driver) => driver.fill(input.selector as string, input.text as string);
       summary = `filled ${input.selector}`;
-    } else if (action === "key" && typeof input.key === "string" && input.key.length > 0 && input.key.length <= 40) {
-      work = (driver) => driver.key(input.key as string);
+    } else if (action === "key") {
+      const key = validateBrowserKey(input.key);
+      work = (driver) => driver.key(key);
       summary = `pressed ${input.key}`;
     } else if (action === "pointer" || action === "scroll") {
       if (typeof input.page_id !== "string" || input.page_id !== session.dto.activePageId) throw new BrowserSessionError("Inspect the active page again before coordinate actions.", 409);
@@ -1670,8 +1672,8 @@ export class BrowserSessionManager {
       work = (driver) => driver.type(input.text);
       summary = "typed into the focused page control";
     } else if (input.kind === "key") {
-      if (!input.key || input.key.length > 40) throw new BrowserSessionError("browser key is invalid");
-      work = (driver) => driver.key(input.key);
+      const key = validateBrowserKey(input.key);
+      work = (driver) => driver.key(key);
       summary = `pressed ${input.key}`;
     } else {
       if (![input.deltaX, input.deltaY].every(Number.isFinite) || Math.abs(input.deltaX) > 4_000 || Math.abs(input.deltaY) > 4_000) {

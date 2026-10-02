@@ -52,6 +52,7 @@ interface RawCommandExecution extends RawItemBase {
   command?: string;
   aggregated_output?: string;
   exit_code?: number | null;
+  signal?: string | null;
 }
 interface RawFileChange extends RawItemBase {
   type: "file_change";
@@ -175,6 +176,16 @@ function errorEvent(error: RawEvent["error"], detail: string): Extract<AgentEven
   return { type: "error", message: detail, ...(code ? { code } : {}) };
 }
 
+export function commandOutcome(exitCode: unknown, signal: unknown): Pick<Extract<AgentEvent, { type: "tool_result" }>, "exitCode" | "signal" | "isError"> {
+  const code = typeof exitCode === "number" && Number.isSafeInteger(exitCode) && exitCode >= -2147483648 && exitCode <= 2147483647 ? exitCode : undefined;
+  const termination = typeof signal === "string" && /^SIG[A-Z0-9]{1,20}$/u.test(signal) ? signal : undefined;
+  return {
+    ...(code === undefined ? {} : { exitCode: code }),
+    ...(termination === undefined ? {} : { signal: termination }),
+    ...(code !== undefined && code !== 0 || termination ? { isError: true } : {}),
+  };
+}
+
 function mcpToolResult(id: string, output: string, isError: boolean): Extract<AgentEvent, { type: "tool_result" }> {
   const failure = classifyToolFailure(output, isError);
   const canonicalIsError = isError || failure !== undefined;
@@ -183,7 +194,7 @@ function mcpToolResult(id: string, output: string, isError: boolean): Extract<Ag
     id,
     output,
     ...(canonicalIsError ? { isError: true } : {}),
-    ...(failure ? { failureCategory: failure.category, retryable: failure.retryable } : {}),
+    ...(failure ? { failureCategory: failure.category, retryable: failure.retryable, ...(failure.retryAfterMs === undefined ? {} : { retryAfterMs: failure.retryAfterMs }) } : {}),
   };
 }
 
@@ -279,7 +290,7 @@ function mapItemCompleted(item: RawItem | undefined, _ctx: CodexMapContext): Age
           type: "tool_result",
           id: it.id ?? "",
           output: it.aggregated_output ?? "",
-          isError: typeof it.exit_code === "number" ? it.exit_code !== 0 : false,
+          ...commandOutcome(it.exit_code, it.signal),
         },
       ];
     }

@@ -137,6 +137,16 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       ? publicProviderAvailabilityDetail(denial.detail, denial.failureCategory)
       : undefined;
   };
+  const runtimeAdmissionBlocker = (id: string, registration: EngineRegistration): import("@ponderosa/core").QueuedAdmissionBlockerDto | undefined => {
+    const providerId = id.slice(0, 128);
+    if (!providerEnabled(id)) return { kind: "provider_disabled", providerId };
+    const auth = registration.authStatus ? engineAuthStatuses.snapshot(id) : { state: "known" as const, authenticated: true };
+    if (auth.state === "unknown") return { kind: "authentication_unknown", providerId,
+      ...(auth.lastKnown ? { lastKnownAuthentication: auth.lastKnown } : {}) };
+    if (!auth.authenticated) return { kind: "authentication_required", providerId, ...(auth.observedAt ? { observedAt: auth.observedAt } : {}) };
+    const denial = engineAvailability.denial(id);
+    return denial ? { kind: "provider_unavailable", providerId, observedAt: denial.observedAt } : undefined;
+  };
   const runtimeStatus = async (
     id: string,
     registration: EngineRegistration,
@@ -152,8 +162,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     availabilitySource?: "provider_run" | "operator_probe";
     availabilityBuildRevision?: string;
     availabilityInstanceId?: string;
+    authLastKnown?: { authenticated: boolean; observedAt: string };
   }> => {
-    let auth: { authenticated: boolean; detail?: string };
+    let auth: import("@ponderosa/core").EngineAuthStatus;
     try {
       auth = registration.authStatus
         ? await engineAuthStatuses.get(id, registration.authStatus)
@@ -170,11 +181,14 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         intakeReady: false,
         reachability: "degraded",
         authDetail,
+        ...(engineAuthStatuses.snapshot(id).lastKnown ? { authLastKnown: engineAuthStatuses.snapshot(id).lastKnown } : {}),
         availabilityDetail: "runtime authentication could not be checked",
         availabilityCategory: "unavailable",
       };
     }
-    const authDetail = auth.authenticated
+    const unknown = auth.status === "unknown";
+    const authDetail = unknown ? "Provider authentication could not be checked."
+      : auth.authenticated
       ? "Provider authentication is available."
       : "Provider authentication is required.";
     const denial = runtimeFailureDetail(id);
@@ -182,8 +196,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     const enabled = providerEnabled(id);
     return {
       configured: true,
-      authentication: auth.authenticated ? "authenticated" : "unauthenticated",
-      intakeReady: enabled && auth.authenticated && !denial,
+      authentication: unknown ? "error" : auth.authenticated ? "authenticated" : "unauthenticated",
+      intakeReady: enabled && !unknown && auth.authenticated && !denial,
+      ...(unknown && engineAuthStatuses.snapshot(id).lastKnown ? { authLastKnown: engineAuthStatuses.snapshot(id).lastKnown } : {}),
       reachability: evidence ? (evidence.available ? "reachable" : "degraded") : "unverified",
       ...(evidence ? {
         availabilityObservedAt: evidence.observedAt,
@@ -270,7 +285,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         displayName: registration.adapter.displayName,
         enabled,
         authenticated: auth.authenticated,
-        accountKey: enabled ? "unauthenticated" : "disabled",
+        accountKey: !enabled ? "disabled" : auth.status === "unknown" ? "authentication_unknown" : "unauthenticated",
       };
     }
     const detail = auth.detail?.trim();
@@ -963,6 +978,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     refreshProviderUsageAfterRun,
     reportRuntimeCapabilitiesChanged,
     runtimeStatus,
+    runtimeAdmissionBlocker,
     validateEngineModel,
   };
 }

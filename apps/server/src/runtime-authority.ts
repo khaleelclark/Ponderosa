@@ -12,6 +12,7 @@ import type {
 } from "./app-contracts.js";
 import type { createOperationalNotifications } from "./operational-notifications.js";
 import { readProviderSessionIdentifier } from "./provider-session-success.js";
+import { runtimeObservation } from "./runtime-observation.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 
@@ -474,6 +475,14 @@ export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
       && run.persistentRuntimeIdentity === identity
       && ownsActiveRunForAuditDrain(agentId, run),
     );
+    // Capture the exact identity and already-recorded host teardown reason
+    // before root-exit cleanup mutates runtime authority. An exit alone does
+    // not establish who initiated it (including the historical Richmond case).
+    const closing = authority?.closing;
+    const observedHostOperation = closing?.runtime.identity === identity ? closing.reason : undefined;
+    const observedProcess = matchedReusable ? runtime?.session.processIdentity
+      : matchedOpening ? opening?.handle?.processIdentity
+      : matchedRun ? run?.runtimeSession?.processIdentity : undefined;
 
     // The provider process is the authority behind its opaque resumable
     // session. Once that process exits, the persisted session id must not be
@@ -510,6 +519,7 @@ export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
       status: "failed",
       reason: "runtime_error",
       executionId: run.executionId,
+      runtimeObservation: runtimeObservation(run, observedProcess, detail, observedHostOperation),
     });
     publish(agentId, lifecycle);
     try {
