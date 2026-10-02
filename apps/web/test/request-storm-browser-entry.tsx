@@ -91,6 +91,14 @@ api.subscribeWorkspace = (_cursor, handlers) => {
       emit();
       command = setInterval(emit, 20);
     },
+    startActivityStorm: () => {
+      clearInterval(command);
+      const emit = () => handlers.onEvent({ id: ++seq, ts: new Date().toISOString(), event: {
+        type: "agent_event", projectId: "P1", agentId: `Agent ${seq % 12}`, conversationIds: ["Chat 1"],
+        seq, eventType: ["command", "tool_call", "tool_result"][seq % 3], category: "task",
+      } });
+      emit(); command = setInterval(emit, 20);
+    },
     startCoordinationStorm: () => {
       clearInterval(command);
       emitCoordination();

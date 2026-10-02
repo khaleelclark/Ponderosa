@@ -137,7 +137,7 @@ export class CoordinationV3SteeringAuthority {
         ) VALUES (?, ?, ?)
       `);
       const setAttached = this.sqlite.prepare(`
-        UPDATE agent_activations SET state = 'attached', updated_at = ?
+        UPDATE agent_activations SET state = 'attached', updated_at = ?, steering_wait_reason = NULL
         WHERE id = ? AND state IN ('pending', 'retry_pending')
       `);
       for (const activation of activations) {
@@ -260,6 +260,7 @@ export class CoordinationV3SteeringAuthority {
     fencingToken: number;
     retryDelayMs?: number;
     preserveSteering?: boolean;
+    waitReason?: "provider_not_ready" | "provider_unsupported" | "preparation_retry";
     now?: string;
   }): void {
     const now = input.now ?? new Date().toISOString();
@@ -288,9 +289,10 @@ export class CoordinationV3SteeringAuthority {
               WHEN ? = 1 THEN dispatch_policy
               ELSE 'next_run'
             END,
-            available_at = ?, updated_at = ?
+            available_at = ?, updated_at = ?, steering_wait_reason = ?
           WHERE id IN (${placeholders}) AND state = 'attached'
-        `).run(input.preserveSteering ? 1 : 0, availableAt, now, ...activationIds);
+        `).run(input.preserveSteering ? 1 : 0, availableAt, now,
+          input.preserveSteering ? input.waitReason ?? null : null, ...activationIds);
       }
       this.sqlite.prepare(`
         UPDATE scheduler_prompt_injections

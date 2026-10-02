@@ -23,7 +23,7 @@ import "../src/global.css";
 const noop = () => {};
 const params = new URLSearchParams(location.search);
 const client = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
-let releaseDraft: (() => void) | undefined, releaseSend: (() => void) | undefined;
+let releaseDraft: (() => void) | undefined, releaseSend: (() => void) | undefined, releaseCommit: (() => void) | undefined;
 let holdDraft = true;
 let fail = false;
 const keys: string[] = [];
@@ -41,6 +41,9 @@ api.getAssetLimits = async () => DEFAULT_ASSET_LIMITS;
 api.getConversationDraft = async (id, ownerId) => ({ conversationId: id, ownerId,
   text: "", attachmentIds: [], attachments: [], revision: 0 }) as never;
 api.putConversationDraft = async (id, request) => {
+  if (request.pendingSubmission?.agentCreationCommitted) {
+    await new Promise<void>(resolve => { releaseCommit = resolve; });
+  }
   if (request.pendingSubmission && holdDraft) {
     document.body.dataset.journal = "waiting";
     await new Promise<void>(resolve => { releaseDraft = resolve; });
@@ -77,13 +80,15 @@ api.listActiveBrowserSessions = async () => [];
 api.getTargetedNextRunReceipts = async () => ({ receipts: [] }) as never;
 api.listConversationMembersPage = async () => ({ items: [], total: 0, limit: 100, hasMore: false });
 api.createAgent = async (_project, _chat, options) => {
+  document.body.dataset.openingText = options.initialMessage;
   document.body.dataset.sendCalls = String(Number(document.body.dataset.sendCalls ?? 0) + 1);
   await new Promise<void>(resolve => { releaseSend = resolve; });
+  if (fail) throw new ApiRequestError(400, "Test rejection.");
   createdAgent = { id: "new-agent", projectId: "project", conversationId: "chat", title: options.title,
     handle: options.title.replaceAll(" ", "-"), engine: "codex", archived: false, status: "idle" };
   createdMessages = [{ id: "canonical-created-message", conversationId: "chat", role: "user",
-    text: `#${createdAgent.handle} ${options.initialMessage}`, createdAt: new Date().toISOString(),
-    agentMentions: [{ projectId: "project", agentId: createdAgent.id, handle: createdAgent.handle,
+    text: options.initialMessage!, createdAt: new Date().toISOString(), communicationEventId: "agent-opening:new-agent",
+    agentMentions: [{ projectId: "project", agentId: createdAgent.id, handle: "new-agent",
       currentHandle: createdAgent.handle, currentTitle: createdAgent.title }],
     deliveryReceipts: [{ activationId: "activation", targetAgentId: createdAgent.id, state: "queued",
       updatedAt: new Date().toISOString(), attemptCount: 1 }] }];
@@ -96,6 +101,7 @@ function Probe() {
   const controls = <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
     <Button onClick={() => { holdDraft = false; releaseDraft?.(); }}>Release journal</Button>
     <Button onClick={() => releaseSend?.()}>Release send</Button>
+    <Button onClick={() => releaseCommit?.()}>Release creation commit</Button>
     <Button onClick={() => { fail = true; releaseSend?.(); }}>Reject send</Button>
     <Button onClick={() => setScope("other-chat")}>Switch Chat</Button>
     <Button onClick={() => {
@@ -107,10 +113,10 @@ function Probe() {
       deliveryReceipts: message.deliveryReceipts?.map(receipt => ({ ...receipt, state: "delivered", providerAcknowledged: true })) })))}>Confirm delivery</Button>
   </Box>;
   if (params.get("case")?.startsWith("direct")) return <DirectAgentProbe controls={controls} />;
-  if (params.get("case") === "creation") return <Box sx={{ height: "100dvh", display: "grid", gridTemplateRows: "auto minmax(0,1fr)" }}>
+  if (params.get("case")?.startsWith("creation")) return <Box sx={{ height: "100dvh", display: "grid", gridTemplateRows: "auto minmax(0,1fr)" }}>
     {controls}<ConversationView conversationId="chat" engines={[engine]}
       engineCapabilities={[]} onRefreshCapabilities={noop} statusByAgentId={new Map()} healthByAgentId={new Map()} projectAgents={[]}
-      onOpenProject={noop} onOpenProjectBrowser={noop} onOpenAgent={noop} onAgentsDeleted={noop} onOpenAgentWork={noop}
+      onOpenProject={noop} onOpenProjectBrowser={noop} onOpenAgent={id => { document.body.dataset.openedAgent = id; }} onAgentsDeleted={noop} onOpenAgentWork={noop}
       onOpenBrowser={noop} onNewAgent={noop} preferences={{} as never} onPreferences={noop} onNavigateTrigger={noop} onCreateTrigger={noop} onDeleted={noop} />
   </Box>;
   return <OutgoingMessageProvider scope={scope}><Box sx={{ height: "100dvh", display: "grid", gridTemplateRows: "auto minmax(0,1fr) auto" }}>

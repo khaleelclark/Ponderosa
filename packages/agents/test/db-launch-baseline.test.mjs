@@ -55,6 +55,7 @@ test("creates the canonical launch baseline for a fresh database", () => {
         "0017_exact_prompt_injections.sql",
         "0017_project_deletion_draft_cleanup.ts",
         "0018_project_deletion_asset_authority_cleanup.ts",
+        "0018_steering_wait_reason.sql",
         "0019_conversation_deletion_ownership.ts",
         "0020_context_rollover_cycles.ts",
       ],

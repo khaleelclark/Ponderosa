@@ -10,7 +10,9 @@ import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
-import { Button, Link, Stack, Typography } from "@mui/material";
+import StopCircleOutlinedIcon from "@mui/icons-material/StopCircleOutlined";
+import { Box, Button, IconButton, Link, Popover, Stack, Tooltip, Typography, useMediaQuery } from "@mui/material";
+import { useState } from "react";
 import type { AgentDto, AgentHealthDto } from "@ponderosa/core";
 import { copyText } from "../clipboard";
 import {
@@ -29,7 +31,7 @@ import {
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import { useAgentRunClock } from "./useAgentRunClock";
 import type { WorkspaceConnectionStatus } from "../hooks/useWorkspaceStream";
-import { SemanticStatus, semanticAgentStatus } from "./SemanticStatus";
+import { SemanticStatus, semanticAgentStatus, semanticStatusColorToken } from "./SemanticStatus";
 
 export const AGENT_DETAIL_TABS: Array<{
   value: AgentTab;
@@ -64,6 +66,8 @@ function AgentRunState({
   startedAt?: string;
   agentNameForId(agentId: string): string | undefined;
 }): JSX.Element {
+  const mobile = useMediaQuery("(max-width: 899.95px)");
+  const [detailAnchor, setDetailAnchor] = useState<HTMLElement | null>(null);
   const now = useAgentRunClock(startedAt);
   const presentation = statusLabelOverride ? {
     label: statusLabelOverride,
@@ -95,6 +99,17 @@ function AgentRunState({
     health?.attention ? "Needs attention: " + agentStatusLabel(health.attention.status) : undefined,
   ].filter(Boolean).join(" · ");
   const delayed = connectionStatus === "stale" || connectionStatus === "unavailable";
+  const accessibleDetail = `${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}. ${details}`;
+  if (mobile) return <>
+    <Tooltip title={accessibleDetail}><IconButton size="small" aria-label={accessibleDetail}
+      onClick={event => setDetailAnchor(event.currentTarget)} sx={{ width: 44, height: 44 }}>
+      <Box component="span" sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: semanticStatusColorToken(delayed ? "blocked" : semanticAgentStatus(status)) }} />
+    </IconButton></Tooltip>
+    <Popover open={Boolean(detailAnchor)} anchorEl={detailAnchor} onClose={() => setDetailAnchor(null)}
+      anchorOrigin={{ vertical: "bottom", horizontal: "right" }} transformOrigin={{ vertical: "top", horizontal: "right" }}>
+      <Typography role="status" variant="body2" sx={{ p: 1.5, maxWidth: "min(320px, calc(100vw - 32px))" }}>{accessibleDetail}</Typography>
+    </Popover>
+  </>;
   return (
     <Stack direction="row" gap={0.5} flexWrap="wrap" alignItems="center" sx={{ minWidth: 0, flexShrink: 1 }}>
       <SemanticStatus
@@ -183,6 +198,8 @@ export function AgentDetailHeader({
 }: AgentDetailHeaderProps): JSX.Element {
   return (
     <TabbedWorkspaceFrame
+      compactMobile
+      actionsInMobileTabs
       icon={<SmartToyOutlinedIcon />}
       title={agent.title}
       context={
@@ -225,7 +242,7 @@ export function AgentDetailHeader({
           ) : null}
         </Stack>
       }
-      status={
+      status={<Stack direction="row" sx={{ alignItems: "center" }}>
         <AgentRunState
           status={status}
           statusLabelOverride={statusLabelOverride}
@@ -235,7 +252,9 @@ export function AgentDetailHeader({
           startedAt={startedAt}
           agentNameForId={agentNameForId}
         />
-      }
+        {running ? <Tooltip title={stopping ? "Cancelling…" : "Stop"}><IconButton color="error" disabled={stopping} onClick={onStop}
+          aria-label={stopping ? "Cancelling…" : "Stop"} sx={{ display: { xs: "inline-flex", md: "none" }, width: 44, height: 44 }}><StopCircleOutlinedIcon /></IconButton></Tooltip> : null}
+      </Stack>}
       actions={
         <Stack
           direction="row"
@@ -251,7 +270,7 @@ export function AgentDetailHeader({
               variant="outlined"
               disabled={stopping}
               onClick={onStop}
-              sx={{ minHeight: 36 }}
+              sx={{ minHeight: 36, display: { xs: "none", md: "inline-flex" } }}
             >
               {stopping ? "Cancelling…" : "Stop"}
             </Button>

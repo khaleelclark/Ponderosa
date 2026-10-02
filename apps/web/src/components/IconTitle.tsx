@@ -22,7 +22,7 @@ export function IconTitle({
     >
       {icon}
     </Box>
-    <Typography variant="h6" component={component} fontWeight={800} noWrap sx={{ minWidth: 0 }}>
+    <Typography variant="h6" component={component} title={title} fontWeight={800} noWrap sx={{ minWidth: 0 }}>
       {title}
     </Typography>
   </Stack>;

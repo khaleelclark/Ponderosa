@@ -1,4 +1,5 @@
 import {
+  ASSET_MEDIA_TYPES,
   INLINE_TEXT_MAX_CODE_POINTS,
   unicodeCodePointLength,
 } from "@ponderosa/core";
@@ -566,19 +567,7 @@ export function shouldShowQueueControl(input: {
   );
 }
 
-const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set([
-  "image/heic",
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "image/gif",
-  "image/avif",
-  "application/pdf",
-  "text/plain",
-  "application/json",
-  "application/zip",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-]);
+const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set<string>(ASSET_MEDIA_TYPES);
 const COMPOSER_EXTENSION_MEDIA_TYPES: Record<string, string> = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -615,12 +604,15 @@ function composerFileMediaType(file: Pick<File, "name" | "type">): string {
   const aliased = declared
     ? (COMPOSER_MEDIA_TYPE_ALIASES[declared] ?? declared)
     : undefined;
-  if (aliased && aliased !== "application/octet-stream") return aliased;
   const dot = file.name.lastIndexOf(".");
   const extension = dot >= 0
     ? file.name.slice(dot).toLocaleLowerCase()
     : "";
-  return COMPOSER_EXTENSION_MEDIA_TYPES[extension] ?? aliased ?? "";
+  if (aliased && aliased !== "application/octet-stream") {
+    return COMPOSER_ACCEPTED_MEDIA_TYPES.has(aliased) || COMPOSER_EXTENSION_MEDIA_TYPES[extension]
+      ? aliased : "application/octet-stream";
+  }
+  return COMPOSER_EXTENSION_MEDIA_TYPES[extension] ?? "application/octet-stream";
 }
 
 export function filesFromClipboard(

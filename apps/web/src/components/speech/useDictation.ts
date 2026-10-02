@@ -197,7 +197,11 @@ export function useDictation(
       const activeRecognition = recognition;
       recognitionRef.current = activeRecognition;
       activeRecognition.continuous = true;
-      activeRecognition.interimResults = true;
+      // We insert final text only. Android Chromium's continuous recognizer
+      // promotes partial callbacks to final results; requesting unused interim
+      // results can therefore append every growing hypothesis as new speech.
+      // Do not deduplicate phrases: intentional repetition must survive.
+      activeRecognition.interimResults = false;
       activeRecognition.lang = navigator.language || "en-US";
       activeRecognition.maxAlternatives = 1;
       // Newer browsers can infer punctuation from speech without spoken commands.

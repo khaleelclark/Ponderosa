@@ -94,6 +94,20 @@ try {
       await page.close();
     }
     const touch = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    for (const width of [320, 390, 430]) {
+      const mobile = await browser.newPage({ viewport: { width, height: 844 }, isMobile: true, hasTouch: true });
+      await mobile.goto(`http://127.0.0.1:${server.address().port}/?case=unconfirmed&short`);
+      const dismiss = mobile.getByRole("button", { name: "Dismiss", exact: true });
+      await dismiss.waitFor();
+      const geometry = await mobile.locator('[aria-label="Message delivery status"] button').evaluateAll(buttons => buttons.map(e => {
+        const r = e.getBoundingClientRect(); return { top: r.top, left: r.left, right: r.right, height: r.height };
+      }));
+      assert(geometry.every(r => Math.abs(r.top - geometry[0].top) < 4), `follow-up controls share one row at ${width}`);
+      assert(geometry.every(r => r.left >= 0 && r.right <= width), "compact controls remain reachable");
+      await mobile.getByRole("button", { name: "Try Work Again", exact: true }).tap();
+      await mobile.getByRole("dialog").getByText(/may repeat work already completed/).waitFor();
+      await mobile.close();
+    }
     for (const width of [320, 390]) for (const mode of ["unknown", "delivered"]) {
       const mobile = await browser.newPage({ viewport: { width, height: 844 }, isMobile: true, hasTouch: true });
       await mobile.goto(`http://127.0.0.1:${server.address().port}/?case=${mode}`);

@@ -35,6 +35,25 @@ try {
     await page.getByText("Use the revised plan", { exact: true }).waitFor();
     const show = mode => page.evaluate(mode => window.showProgress(mode), mode);
     const progress = page.getByLabel("Live Agent progress", { exact: true });
+    for (const [reason, text] of [
+      ["context_refresh", "waiting for context refresh to finish"],
+      ["prior_steering", "an earlier steer is awaiting provider acknowledgement"],
+      ["revision_pending", "waiting for the message edit to be durably recorded"],
+      ["provider_not_ready", "the provider was not ready to accept steering"],
+      ["provider_unsupported", "the provider reported that steering is unsupported"],
+      ["preparation_retry", "prompt preparation did not finish"],
+      ["run_starting", "the target Run is still starting"],
+      ["scheduler_pending", "awaiting scheduler admission"],
+    ]) {
+      await show(`wait:${reason}`);
+      const status = page.getByLabel(new RegExp(text)).first();
+      await status.waitFor();
+      assert.equal(await progress.count(), 0, "waiting does not fabricate progress or delivery");
+      assert.equal(await page.getByText("Instructions delivered to Boston", { exact: true }).count(), 0);
+      assert((await status.getAttribute("aria-label")).includes("does not guarantee immediate reconsideration"));
+      if (reason === "context_refresh") await page.screenshot({ path: path.join(tmpdir(), `steering-wait-${engine}-${surface}-${width}.png`) });
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "wait labels fit narrow layouts");
+    }
     await show("pending");
     assert.equal(await progress.count(), 0);
     assert.equal(await page.getByText("Instructions delivered to Boston", { exact: true }).count(), 0);
@@ -47,6 +66,48 @@ try {
     assert.equal(await progress.count(), 1);
     await progress.getByRole("button", { name: "Open agent Boston", exact: true }).click();
     assert.equal(await page.evaluate(() => document.body.dataset.openAgent), "boston");
+    const disclosure = () => progress.getByRole("button", { name: /^(Collapse|Expand) Boston progress:/ });
+    assert.equal(await disclosure().getAttribute("aria-expanded"), "true", "expanded by default");
+    const bodyId = await disclosure().getAttribute("aria-controls");
+    assert.equal(await page.locator(`[id="${bodyId}"]`).getAttribute("hidden"), null);
+    for (const [mode, label] of [["command", "running a command"], ["browser", "using the browser"], ["tool", "using a tool"], ["working", "working"]]) {
+      await show(mode); await progress.getByText(`is ${label}`, { exact: true }).waitFor();
+      assert.equal(await disclosure().getAttribute("aria-expanded"), "true");
+    }
+    await disclosure().focus(); await page.keyboard.press("Enter");
+    assert.equal(await disclosure().getAttribute("aria-expanded"), "false");
+    assert.equal(await progress.getByText("The revised approach is now underway", { exact: true }).count(), 0);
+    for (const mode of ["first", "browser", "latest"]) {
+      await show(mode);
+      assert.equal(await disclosure().getAttribute("aria-expanded"), "false", "new updates/activity do not reopen the Run");
+    }
+    await show("steer");
+    assert.equal(await disclosure().getAttribute("aria-expanded"), "false", "moving to a new accepted steer keeps the same Run collapsed");
+    await page.getByRole("button", { name: "Remount progress surface", exact: true }).click();
+    await disclosure().waitFor();
+    assert.equal(await disclosure().getAttribute("aria-expanded"), "false", "remount preserves the Run choice");
+    await page.setViewportSize({ width: width < 900 ? 844 : 390, height: width < 900 ? width : 844 });
+    assert.equal(await disclosure().getAttribute("aria-expanded"), "false", "orientation-sized changes do not reopen progress");
+    await page.setViewportSize({ width, height: 844 });
+    await show("newrun");
+    await progress.getByText("The revised approach is now underway", { exact: true }).waitFor();
+    assert.equal(await disclosure().getAttribute("aria-expanded"), "true", "a different Run defaults to expanded");
+    await show("multi");
+    await progress.getByRole("button", { name: "Collapse Other-Agent progress: working", exact: true }).waitFor();
+    assert.equal(await disclosure().getAttribute("aria-expanded"), "false", "returning to the original Run retains its choice");
+    await progress.getByText("The other Agent's public update", { exact: true }).waitFor();
+    await show("latest"); await disclosure().click();
+    await show("longhandle");
+    const longHeader = progress.getByRole("button", { name: /^Collapse Boston-with/ });
+    await longHeader.waitFor();
+    assert((await longHeader.boundingBox()).height >= 44, "usable disclosure touch target");
+    await page.screenshot({ path: path.join(tmpdir(), `live-progress-long-handle-${engine}-${surface}-${width}.png`) });
+    assert(await progress.evaluate(el => el.scrollWidth <= el.clientWidth + 1), `long identity wraps safely: ${JSON.stringify(await progress.evaluate(el =>
+      [...el.querySelectorAll("*")].filter(child => child.scrollWidth > child.clientWidth + 1).map(child => ({ tag: child.tagName,
+        width: child.clientWidth, scroll: child.scrollWidth, text: child.textContent, whiteSpace: getComputedStyle(child).whiteSpace }))))}`);
+    await show("latest");
+    await progress.getByText("is working", { exact: true }).waitFor();
+    assert.equal(await disclosure().getAttribute("aria-expanded"), "true", "legacy missing activity falls back to working");
     await show("literal"); await progress.getByText('<img src=x onerror="alert(1)"> **literal**', { exact: true }).waitFor();
     assert.equal(await progress.locator("img").count(), 0, "no HTML/markdown execution");
     await show("wrapped");

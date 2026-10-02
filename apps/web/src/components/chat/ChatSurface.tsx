@@ -18,6 +18,7 @@ export function ChatSurface({
   children,
   beforeMessages,
   showOutgoingMessage = false,
+  canonicalCommunicationIds,
 }: {
   layoutKey: string;
   follow?: ChatFollowLatest;
@@ -28,6 +29,7 @@ export function ChatSurface({
   children: ReactNode;
   beforeMessages?: ReactNode;
   showOutgoingMessage?: boolean;
+  canonicalCommunicationIds?: readonly (string | undefined)[];
 }): JSX.Element {
   const outgoing = useOutgoingMessage();
   const pendingId = showOutgoingMessage ? outgoing?.message?.id : undefined;
@@ -83,7 +85,7 @@ export function ChatSurface({
             },
           } : undefined} />
           {children}
-          {showOutgoingMessage ? <OutgoingMessageRow /> : null}
+          {showOutgoingMessage ? <OutgoingMessageRow canonicalCommunicationIds={canonicalCommunicationIds} /> : null}
           {isEmpty && empty ? typeof empty === "string" ? <Alert severity="info">{empty}</Alert> : empty : null}
         </Stack>
       </Stack>

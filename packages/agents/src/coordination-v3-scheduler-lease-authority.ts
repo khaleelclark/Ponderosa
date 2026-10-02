@@ -397,7 +397,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         ) VALUES (?, ?, ?)
       `);
       const setAttached = this.sqlite.prepare(`
-        UPDATE agent_activations SET state = 'attached', updated_at = ?
+        UPDATE agent_activations SET state = 'attached', updated_at = ?, steering_wait_reason = NULL
         WHERE id = ? AND state IN ('pending', 'retry_pending')
       `);
       for (const activation of activations) {

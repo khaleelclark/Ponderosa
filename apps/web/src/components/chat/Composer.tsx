@@ -39,6 +39,7 @@ import {
 } from "react";
 import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
+import { collectAttachments, droppedAttachmentEntries } from "./folderAttachments";
 import { readChatState, readChatStateEntries, writeChatState } from "../../chatState";
 import { acknowledgeDraftTextRecovery, recoverDraftText, retireSubmittedDraftText, writeDraftTextRecovery } from "./draftTextRecovery";
 import { createClientId, draftSurfaceClientId } from "../../clientId";
@@ -98,6 +99,7 @@ import {
 } from "./ComposerEditor";
 import {
   canSubmitComposerText,
+  COMPOSER_MAX_FILE_BYTES,
   canonicalDraftConflictFiles,
   composerAttachmentReducer,
   composerPreparedRetryAction,
@@ -386,7 +388,18 @@ export function Composer({
   const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
   const [sending, setSending] = useState(false);
-  const [sendingAction, setSendingAction] = useState<"send" | "queue">("send");
+  const [preparingFolder, setPreparingFolder] = useState(false);
+  const attachmentImportGeneration = useRef(0);
+  const attachmentImportBusy = useRef(false);
+  const attachmentImportScope = JSON.stringify([conversationDraftId, draftStorageKey]);
+  const attachmentImportScopeRef = useRef(attachmentImportScope);
+  attachmentImportScopeRef.current = attachmentImportScope;
+  const attachmentImportAllowedRef = useRef(false);
+  useEffect(() => {
+    setPreparingFolder(false);
+    attachmentImportBusy.current = false;
+    return () => { attachmentImportGeneration.current++; attachmentImportBusy.current = false; };
+  }, [attachmentImportScope]);
   const draftMutationLockedRef = useRef(false);
   const [draftMutationLocked, setDraftMutationLocked] = useState(false);
   const draftContentGeneration = useRef(0);
@@ -542,15 +555,13 @@ export function Composer({
         0,
         textRef.current.length,
         insertion.text,
+        { caret: insertion.caret },
       );
       setSendError(undefined);
       setCaret(insertion.caret);
       setHighlighted(0);
       setSuppressMenu(false);
-      requestAnimationFrame(() => {
-        inputRef.current?.focus();
-        inputRef.current?.setSelectionOffsets(insertion.caret, insertion.caret);
-      });
+      requestAnimationFrame(() => inputRef.current?.focus());
     },
     [],
   );
@@ -681,6 +692,33 @@ export function Composer({
   const addFiles = useCallback((candidates: File[]) => {
     if (!draftMutationLockedRef.current) addDraftFiles(candidates);
   }, [addDraftFiles]);
+  const importAttachments = async (entries: Array<FileSystemEntry | File>) => {
+    if (!attachmentImportAllowedRef.current || draftMutationLockedRef.current || attachmentImportBusy.current) return;
+    attachmentImportBusy.current = true;
+    const generation = ++attachmentImportGeneration.current;
+    const scope = attachmentImportScope;
+    const checkActive = () => {
+      if (generation !== attachmentImportGeneration.current || scope !== attachmentImportScopeRef.current ||
+          !attachmentImportAllowedRef.current || draftMutationLockedRef.current) throw new Error("Folder preparation was cancelled because the destination is no longer available.");
+    };
+    setPreparingFolder(true);
+    try {
+      const maxBytes = Math.min(assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES,
+        (assetLimits?.maxMessageBytes ?? COMPOSER_MAX_FILE_BYTES) - files.reduce((sum, file) => sum + file.size, 0));
+      const result = await collectAttachments(entries, maxBytes, checkActive);
+      checkActive();
+      addFiles(result.files);
+      if (result.skipped) dispatchAttachments({ type: "set_error", error: `Skipped ${result.skipped} hidden, sensitive, or dependency items while preparing the folder ZIP.` });
+    } catch (error) {
+      if (generation === attachmentImportGeneration.current && scope === attachmentImportScopeRef.current) {
+        dispatchAttachments({ type: "set_error", error: error instanceof Error ? error.message : "The folder could not be prepared. Nothing was attached." });
+      }
+    } finally {
+      if (generation === attachmentImportGeneration.current && scope === attachmentImportScopeRef.current) {
+        attachmentImportBusy.current = false; setPreparingFolder(false);
+      }
+    }
+  };
   const removeFile = useCallback((index: number) => {
     if (!draftMutationLockedRef.current) removeDraftFile(index);
   }, [removeDraftFile]);
@@ -1104,6 +1142,7 @@ export function Composer({
   const canSend =
     mentionBindingsReady &&
     !sending &&
+    !preparingFolder &&
     !dictationSettling &&
     (!destinationError || Boolean(durableRetryAction) || Boolean(pendingSubmissionRef.current?.request)) &&
     targetRequiredRecipientTagged &&
@@ -1117,7 +1156,8 @@ export function Composer({
   const canCancel = running && Boolean(onCancel);
   const composerAttachmentsEnabled = attachmentsEnabled;
   const composerAttachmentsUnavailableReason = attachmentsUnavailableReason;
-  const fileDropEnabled = attachmentsEnabled && !disabled && !composerLocked && !draftMutationLocked;
+  attachmentImportAllowedRef.current = attachmentsEnabled && !disabled && !composerLocked && !draftMutationLocked;
+  const fileDropEnabled = attachmentImportAllowedRef.current && !preparingFolder;
   useEffect(() => {
     fileDragDepth.current = 0;
     setFileDragActive(false);
@@ -1984,14 +2024,11 @@ export function Composer({
         ],
       );
       requiredRecipient?.onClear();
+      inputRef.current?.resetDocument(next);
       update(next);
       setHighlighted(0);
-      requestAnimationFrame(() => {
-        inputRef.current?.focus();
-        const nextCaret = inputRef.current?.getCanonicalText().length ?? 0;
-        inputRef.current?.setSelectionOffsets(nextCaret, nextCaret);
-        setCaret(nextCaret);
-      });
+      inputRef.current?.focus();
+      setCaret(next.length);
       return;
     }
     const binding = (mentionBindings ?? []).find(candidate =>
@@ -2032,20 +2069,15 @@ export function Composer({
         inputRef.current.replaceCanonicalRange(0, text.length, selection.text);
       }
       inputRef.current.setSelectionOffsets(selection.start, selection.end);
-      inputRef.current.insertMention(descriptor);
-      inputRef.current.insertText(" ");
+      inputRef.current.insertMention(descriptor, " ");
     } else {
       update(
         `${selection.text.slice(0, selection.start)}#${handle} ${selection.text.slice(selection.end)}`,
       );
     }
     setHighlighted(0);
-    const nextCaret = selection.start + handle.length + 2;
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      inputRef.current?.setSelectionOffsets(nextCaret, nextCaret);
-      setCaret(nextCaret);
-    });
+    const nextCaret = selection.start + (descriptor?.handle ?? handle).length + 2;
+    setCaret(nextCaret);
   };
 
   const applyFileReference = (entry: ArtifactDto) => {
@@ -2125,6 +2157,7 @@ export function Composer({
       context?: {
         mentionedAgents?: import("@ponderosa/core").AgentMentionBindingDto[];
         newAgentRequested?: boolean;
+        onAgentCreated?(agent: import("@ponderosa/core").AgentDto): void;
         retryPreparedAttempt?: boolean;
         pendingSubmission?: DraftPendingSubmissionDto;
         persistPendingSubmission?(
@@ -2216,7 +2249,6 @@ export function Composer({
       return;
     }
     sendingRef.current = true;
-    setSendingAction(action);
     setSending(true);
     setSendError(undefined);
     const submittedText = normalizedDraft;
@@ -2305,7 +2337,9 @@ export function Composer({
     // Render before fingerprinting, durable draft persistence or upload prep.
     // Runtime commands are not authored messages and must not get an echo.
     const outgoingId = runtimeCommandSubmission ? undefined
-      : outgoing?.begin(exactSubmissionText, files.map(file => file.name));
+      : outgoing?.begin(safeNewAgentSelected && !hasComposerDestination(exactSubmissionText, NEW_AGENT_DESTINATION_HANDLE)
+        ? prependComposerDestination(exactSubmissionText, NEW_AGENT_DESTINATION_HANDLE) : exactSubmissionText,
+        files.map(file => file.name));
     if (!runtimeCommandSubmission) {
       draftMutationLockedRef.current = true;
       setDraftMutationLocked(true);
@@ -2469,6 +2503,9 @@ export function Composer({
           ? {
               mentionedAgents,
               newAgentRequested: safeNewAgentSelected,
+              onAgentCreated: (agent: import("@ponderosa/core").AgentDto) => {
+                if (outgoingId) outgoing?.agentCreated(outgoingId, agent);
+              },
               retryPreparedAttempt: retryPreparedAttempt || durableRetry,
               ...(pendingSubmission ? {
                 pendingSubmission,
@@ -2698,30 +2735,26 @@ export function Composer({
         fileDragDepth.current = 0;
         setFileDragActive(false);
         if (!fileDropEnabled || draftMutationLockedRef.current) return;
-        if (Array.from(event.dataTransfer.items).some(item => item.webkitGetAsEntry?.()?.isDirectory)) {
-          dispatchAttachments({ type: "set_error", error: "Folders can’t be attached. Drop individual files instead." });
-          return;
-        }
-        addFiles(Array.from(event.dataTransfer.files));
+        const entries = droppedAttachmentEntries(event.dataTransfer);
+        if (entries.some(entry => !(entry instanceof File) && entry.isDirectory)) void importAttachments(entries);
+        else addFiles(Array.from(event.dataTransfer.files));
       }}
     >
       <Box sx={{ display: "contents" }}>
-      {sending ? <Typography role="status" aria-live="polite" variant="caption" color="text.secondary" sx={{ px: 1.5, pt: 0.5 }}>
-        {sendingAction === "queue" ? "Queueing message…" : "Sending message…"} Your draft remains here until confirmed.
-      </Typography> : null}
+      {preparingFolder ? <Typography role="status" variant="caption" sx={{ px: 1.5, pt: 0.5 }}>Preparing folder ZIP…</Typography> : null}
       <ComposerDestinationBar
         destinationError={destinationError}
         destinationMode={destinationMode}
       />
-      <ComposerAttachmentList
+      {!draftMutationLocked && <ComposerAttachmentList
         disabled={draftMutationLocked}
         draftUploadStates={draftUploadStates}
         files={files}
         removeFile={removeFile}
         retryDraftUpload={retryDraftUpload}
-      />
+      />}
       <ComposerNotices
-        pastedText={pastedText}
+        pastedText={draftMutationLocked ? undefined : pastedText}
         pastedTextBytes={pastedText ? utf8ByteLength(pastedText) : 0}
         error={attachments.error ?? sendError}
         attachmentError={Boolean(attachments.error)}
@@ -3273,7 +3306,7 @@ export function Composer({
         }}>
         <ComposerCapabilityPicker
           fileInput={fileInput}
-          disabled={disabled || composerLocked || draftMutationLocked}
+          disabled={disabled || composerLocked || draftMutationLocked || preparingFolder}
           menuAnchor={capabilityMenuAnchor}
           listId={capabilityListId}
           filter={capabilityFilter}
@@ -3286,6 +3319,7 @@ export function Composer({
           buttonRef={capabilityButtonRef}
           visibleCapabilities={visibleCapabilities}
           onFiles={addFiles}
+          onFolderFiles={files => { void importAttachments(files); }}
           onOpen={anchor => {
             setCapabilityFilter("");
             setCapabilityMenuAnchor(anchor);
@@ -3298,7 +3332,6 @@ export function Composer({
           onFilterChange={setCapabilityFilter}
           onApplyCapability={applyCapability}
         />
-        {narrowComposer ? <Box sx={{ display: "contents", "& > *": { flexShrink: 0 } }}>
         {destinationMode === "project-chat" ? (
           <ComposerProjectDestinationAction
             disabled={draftMutationLocked}
@@ -3324,7 +3357,7 @@ export function Composer({
           ml: "auto",
         }}>
           {controls ? (
-            <Box sx={{ minWidth: 44, maxWidth: "100%" }}>
+            <Box sx={{ minWidth: narrowComposer ? 44 : 0, maxWidth: "100%" }}>
               {controls}
             </Box>
           ) : null}
@@ -3334,35 +3367,10 @@ export function Composer({
             onSettlingChange={handleDictationSettlingChange}
           /> : null}
         </Box>
-        </Box> : <Box sx={{ display: "contents", "& > *": { flexShrink: { xs: 0, md: undefined } } }}>
-        {destinationMode === "project-chat" ? (
-          <ComposerProjectDestinationAction
-            disabled={draftMutationLocked}
-            newAgentSelected={newAgentSelected}
-            toggleNewAgent={toggleNewAgentDestination}
-            replyDestination={!newAgentSelected && defaultDestination && mentionedHandles.some(
-              handle => handle.toLocaleLowerCase() === defaultDestination.handle.toLocaleLowerCase(),
-            )
-              ? defaultDestination.binding?.currentTitle ?? defaultDestination.handle
-              : undefined}
-          />
-        ) : null}
-        {leadingControls ? (
-          <Box sx={{ minWidth: 0, maxWidth: "100%" }}>
-            {leadingControls}
-          </Box>
-        ) : null}
-        <Box sx={{ flex: 1, minWidth: { xs: 0, sm: 24 } }} />
-        {controls ? (
-          <Box sx={{ minWidth: 0, maxWidth: "100%", overflowX: "auto" }}>
-            {controls}
-          </Box>
-        ) : null}
-        </Box>}
         </Box>
         <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
           <ComposerTextInput
-            text={text}
+            text={draftMutationLocked ? "" : text}
             inputRef={inputRef}
             disabled={disabled || draftMutationLocked}
             locked={composerLocked}
@@ -3372,11 +3380,11 @@ export function Composer({
             listId={mentionListId}
             highlighted={effectiveHighlighted}
             attachmentsEnabled={composerAttachmentsEnabled}
-            pastedText={pastedText}
+            pastedText={draftMutationLocked ? undefined : pastedText}
             menuSuggestions={menuSuggestions}
             destinationMode={destinationMode}
             requiredRecipient={requiredRecipient}
-            inlineDestination={renderedDefaultDestination
+            inlineDestination={!draftMutationLocked && renderedDefaultDestination
               ? {
                   handle: renderedDefaultDestination.handle,
                   title:
@@ -3388,12 +3396,16 @@ export function Composer({
                     : clearActiveDefaultDestination,
                 }
               : undefined}
-            mentionTokens={mentionTokens}
+            mentionTokens={draftMutationLocked ? [] : mentionTokens}
             mentionBindings={mentionBindings ?? []}
             mentionedBusyHandles={mentionedBusyHandles}
             mentionedHandles={mentionedHandles}
             canSend={canSend}
             onTextChange={(value, nextCaret) => {
+              // Blank presentation during intake must not rewrite the durable
+              // submitted draft or its mutation/CAS authority.
+              if (draftMutationLockedRef.current) return;
+              const contentChanged = value !== textRef.current;
               const normalized = normalizeExclusiveNewAgentDestinationForMode(
                 destinationMode,
                 value,
@@ -3401,7 +3413,7 @@ export function Composer({
                 nextCaret,
               );
               update(normalized.text);
-              setSendError(undefined);
+              if (contentChanged) setSendError(undefined);
               setCaret(normalized.caret);
               setHighlighted(0);
               setSuppressMenu(false);
@@ -3445,11 +3457,6 @@ export function Composer({
           />
         </Box>
         <Box data-composer-send-actions sx={{ display: { xs: "flex", md: "contents" }, alignItems: "center", gap: 0.25, flexShrink: 0 }}>
-        {!narrowComposer && enableVoiceDictation ? <DictationControls
-          disabled={disabled || composerLocked || sending}
-          onFinalTranscript={insertDictatedText}
-          onSettlingChange={handleDictationSettlingChange}
-        /> : null}
         <ComposerSendActions
           allowSendWhileRunning={allowSendWhileRunning}
           canCancel={canCancel}

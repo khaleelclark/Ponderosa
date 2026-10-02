@@ -19,6 +19,9 @@ test("attention keeps exact work identity, recorded cause, task and incident tim
   assert.match(copy.uncertainty, /cannot confirm.*finished/);
   assert.match(copy.uncertainty, /may duplicate changes/);
   assert.equal(copy.reference, "Assignment 123456789012");
+  assert.equal(copy.compactScope, "Chat: Watch support");
+  assert.equal(copy.summary, "Result unconfirmed. Check activity before retrying; retrying may duplicate changes.");
+  assert.equal(copy.detailWarning, undefined, "the compact warning already covers unknown-outcome uncertainty");
   assert.equal(notificationTechnicalFocusId(notice), "request:request-123456789012");
   assert.match(attentionSupportReport(notice), /Work record: request:request-123456789012/);
   assert.equal(copy.evidenceUnavailable, false);
@@ -41,6 +44,10 @@ test("legacy fallbacks disclose missing evidence, retain scope references and do
     body: "The registered folder could not be opened." });
   assert.equal(system.evidenceUnavailable, false, "known system issues are not mislabeled as missing historical work evidence");
   assert.equal(system.uncertainty, undefined);
+  assert.equal(system.summary, system.explanation, "specific recorded causes remain the summary, not an inferred failure");
+  assert.match(copy.compactScope, /Chat: Name unavailable/);
+  assert.equal(attentionPresentation({ ...notice, conversationId: undefined }).compactScope, "Project: Glance");
+  assert.equal(attentionPresentation({ ...notice, conversationId: undefined, projectId: undefined }).compactScope, "Ponderosa workspace");
 });
 
 test("a failed wait does not claim every assignment failed and opens its exact canonical wait", () => {

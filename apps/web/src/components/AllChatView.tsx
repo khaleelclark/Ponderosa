@@ -13,6 +13,7 @@ import {
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import type {
+  AgentDto,
   AgentMentionBindingDto,
   AgentDetailDto,
   AllChatDecisionEventDto,
@@ -822,6 +823,7 @@ export function AllChatView({
       draftOwnerId,
       mentionedAgents,
       newAgentRequested,
+      onAgentCreated,
       retryPreparedAttempt,
       submissionEpoch,
       submissionSourceKey,
@@ -836,6 +838,7 @@ export function AllChatView({
       draftOwnerId?: string;
       mentionedAgents: AgentMentionBindingDto[];
       newAgentRequested: boolean;
+      onAgentCreated?(agent: AgentDto): void;
       retryPreparedAttempt: boolean;
       activeRunDelivery: "steer" | "queue";
       submissionEpoch: number;
@@ -1009,7 +1012,10 @@ export function AllChatView({
           } : {}),
           idempotencyKey: `${requestId}:new-agent:0`,
         });
-        if (!("recovering" in created)) publishCreatedAgent(queryClient, created);
+        if (!("recovering" in created)) {
+          onAgentCreated?.(created);
+          publishCreatedAgent(queryClient, created);
+        }
         const createdAgentId = "recovering" in created ? created.agentId : created.id;
         setActiveOperation(createCreationOperationTracker(
           createdAgentId,
@@ -1474,7 +1480,8 @@ export function AllChatView({
       />
     ) : null;
   return (
-    <OutgoingMessageProvider scope={composerConversationId ?? "all"} profile={workspacePreferences.data?.profile}><Box
+    <OutgoingMessageProvider scope={composerConversationId ?? "all"} profile={workspacePreferences.data?.profile}
+      onOpenAgent={(agentId, projectId) => onNavigate({ kind: "agent", projectId, agentId })}><Box
       sx={{
         height: "100%",
         minHeight: 0,
@@ -1500,6 +1507,7 @@ export function AllChatView({
 
       <ChatSurface
         showOutgoingMessage
+        canonicalCommunicationIds={items.map(item => item.communicationEventId)}
         layout="workspace"
         layoutKey={layoutKey}
         label="All messages"
@@ -1952,6 +1960,7 @@ export function AllChatView({
               submissionTargetId: activeReplyTarget?.id,
               pendingSubmission: context?.pendingSubmission,
               persistPendingSubmission: context?.persistPendingSubmission,
+              onAgentCreated: context?.onAgentCreated,
             })
           }
           onQueue={(body, files, draftAttachmentIds = [], draftOwnerId, context) =>
@@ -1969,6 +1978,7 @@ export function AllChatView({
               submissionTargetId: activeReplyTarget?.id,
               pendingSubmission: context?.pendingSubmission,
               persistPendingSubmission: context?.persistPendingSubmission,
+              onAgentCreated: context?.onAgentCreated,
             })
           }
           onCancel={stopOperation}

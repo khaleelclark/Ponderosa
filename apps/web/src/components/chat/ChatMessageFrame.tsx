@@ -122,7 +122,8 @@ export function ChatMessageFrame({
         <Box sx={{
           minWidth: 0,
           width: fromOperator ? "fit-content" : `min(100%, ${maxAgentWidth}px)`,
-          maxWidth: fromOperator ? { xs: "94%", sm: "88%", md: "min(78%, 780px)" } : "100%",
+          ...(fromOperator && message.status ? { width: { xs: "100%", sm: "fit-content" } } : {}),
+          maxWidth: fromOperator ? { xs: message.status ? "100%" : "94%", sm: "88%", md: "min(78%, 780px)" } : "100%",
         }}>
           {author.kind === "agent" ? (
             <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>

@@ -7,6 +7,7 @@ import { api } from "../src/api";
 import { WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
 import { createPonderosaTheme } from "../src/theme";
 import { queryKeys } from "../src/queryKeys";
+import { readBrowserStorage, writeBrowserStorage } from "../src/browserStorage";
 
 const fixture = await (await fetch("/api/fixture")).json();
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -22,19 +23,34 @@ api.searchGlobalChats = async () => ({ results: [], truncated: false });
 
 function Fixture() {
   const capacity = new URLSearchParams(location.search).has("capacity");
-  const [preferences, setPreferences] = useState<WorkspacePreferencesDto>({ ...fixture.preferences,
+  const independent = new URLSearchParams(location.search).has("independent");
+  const fixturePreferenceKey = "test.chat-folder-display.preferences";
+  const [preferences, setPreferences] = useState<WorkspacePreferencesDto>(() => ({ ...fixture.preferences,
+    ...(independent ? JSON.parse(readBrowserStorage("sessionStorage", fixturePreferenceKey) ?? "null") ?? {
+      chatFolders: fixture.preferences.chatFolders.map((folder: { id: string }) => ({ ...folder, starred: folder.id === "apps" })),
+    } : {}),
     ...(capacity ? { chatFolders: Array.from({ length: 401 }, (_, i) => ({ id: `capacity-${i}`, name: `Capacity ${i}`, expanded: false,
-      conversationIds: [i === 400 ? fixture.chats[0].id : `unloaded-${i}`] })) } : {}) });
+      conversationIds: [i === 400 ? fixture.chats[0].id : `unloaded-${i}`] })) } : {}) }));
+  const [sidebarGeneration, setSidebarGeneration] = useState(0);
+  const [preferenceWrites, setPreferenceWrites] = useState(0);
   const action = async (name: string) => {
     await fetch(`/api/fixture-action/${name}`, { method: "POST" });
     await client.invalidateQueries({ queryKey: queryKeys.notifications.all });
   };
-  return <><div style={{ height: 720, width: "min(350px, 100vw)" }}>
-    <WorkspaceSidebar projects={fixture.projects} preferences={preferences} route={{ kind: "home" }} notifications={[]}
+  return <><div data-preference-writes={preferenceWrites} style={{ height: 720, width: "min(350px, 100vw)" }}>
+    <WorkspaceSidebar key={sidebarGeneration} projects={fixture.projects} preferences={preferences} route={{ kind: "home" }} notifications={[]}
       width={350} collapsed={false} onNavigate={() => {}} onCreate={() => {}}
-      onPreferences={patch => setPreferences(previous => ({ ...previous, ...patch }))}
+      onPreferences={patch => {
+        setPreferenceWrites(value => value + 1);
+        setPreferences(previous => {
+          const next = { ...previous, ...patch };
+          if (independent) writeBrowserStorage("sessionStorage", fixturePreferenceKey, JSON.stringify(next));
+          return next;
+        });
+      }}
       onRenameConversation={() => {}} onDeleteConversation={() => {}} onProjectDeleted={() => {}} onCollapsedChange={() => {}} />
-    </div><button onClick={() => void action("read")}>Read Newleaf</button>
+    </div><button onClick={() => setSidebarGeneration(value => value + 1)}>Remount sidebar</button>
+    <button onClick={() => void action("read")}>Read Newleaf</button>
     <button onClick={() => void action("dismiss")}>Dismiss action</button>
     <button onClick={() => void action("new")}>New notification</button>
     <button onClick={() => setPreferences(previous => ({ ...previous, chatFolders: previous.chatFolders?.map(folder => ({ ...folder,

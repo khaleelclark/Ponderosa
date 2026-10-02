@@ -1,10 +1,13 @@
-import type { MessageDeliveryReceiptDto } from "@ponderosa/core";
+import { PONDEROSA_BROWSER_TOOLS, type MessageDeliveryReceiptDto } from "@ponderosa/core";
 import type Database from "better-sqlite3";
 import type {
   RuntimeArtifactV3,
   RuntimeCommunicationV3View,
 } from "./coordination-v3-types.js";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
+import { AgentPhaseReadModel } from "./store-agent-phase-read-model.js";
+
+const browserTools = new Set(PONDEROSA_BROWSER_TOOLS.map(tool => tool.name));
 
 function deliveryRuntime(payloadJson: string): MessageDeliveryReceiptDto["runtime"] {
   try {
@@ -24,10 +27,68 @@ function deliveryRuntime(payloadJson: string): MessageDeliveryReceiptDto["runtim
 }
 
 export class CoordinationV3RuntimeCommunicationReadModel {
+  private readonly phaseReadModel: AgentPhaseReadModel;
   constructor(
     private readonly sqlite: Database.Database,
     private readonly runtimeScopeAuthority: CoordinationV3RuntimeScopeAuthority,
-  ) {}
+  ) { this.phaseReadModel = new AgentPhaseReadModel(sqlite); }
+
+  private steeringWaitReason(activation: {
+    id: string; agent_id: string; scope_key: string; dispatch_policy: string; kind: string;
+    state: string; steering_wait_reason: string | null;
+  }): MessageDeliveryReceiptDto["steeringWaitReason"] {
+    if (activation.dispatch_policy !== "steer_or_run" ||
+      !["pending", "retry_pending"].includes(activation.state)) return undefined;
+    const now = new Date().toISOString();
+    const barrier = this.sqlite.prepare(`
+      SELECT run.status,
+        EXISTS (SELECT 1 FROM context_rollovers rollover
+          WHERE rollover.agent_id = run.agent_id
+            AND rollover.state IN ('requested', 'handoff_committed', 'session_retiring', 'continuation_ready')) AS rollover,
+        EXISTS (SELECT 1 FROM scheduler_prompt_injections injection
+          WHERE injection.run_id = run.id AND injection.kind = 'steer'
+            AND injection.state IN ('pending', 'submitted')) AS prior_steering,
+        EXISTS (SELECT 1 FROM activation_outbox outbox WHERE outbox.activation_id = ?
+          AND outbox.event_kind = 'communication_revision' AND outbox.processed_at IS NULL) AS revision
+      FROM scheduler_runs run
+      WHERE run.agent_id = ? AND run.scope_key = ? AND run.status IN ('leased', 'running')
+        AND run.lease_expires_at > ?
+      ORDER BY run.created_at DESC LIMIT 1
+    `).get(activation.id, activation.agent_id, activation.scope_key, now) as {
+      status: string; rollover: number; prior_steering: number; revision: number;
+    } | undefined;
+    if (!barrier) return undefined; // Steer-or-run now awaits a new Run, not active steering.
+    if (barrier.revision) return "revision_pending";
+    if (barrier.rollover && activation.kind !== "context_rollover_handoff") return "context_refresh";
+    if (barrier.prior_steering) return "prior_steering";
+    if (barrier.status === "leased") return "run_starting";
+    // The last observed deferral remains useful until another attempt is
+    // admitted. Passing available_at only permits a retry; it proves neither
+    // provider readiness nor an attempted/accepted steer.
+    if (activation.state === "retry_pending") {
+      if (activation.steering_wait_reason === "provider_not_ready") return "provider_not_ready";
+      if (activation.steering_wait_reason === "provider_unsupported") return "provider_unsupported";
+      if (activation.steering_wait_reason === "preparation_retry") return "preparation_retry";
+    }
+    return "scheduler_pending";
+  }
+
+  private liveProgressActivity(agentId: string, executionId: string): NonNullable<MessageDeliveryReceiptDto["liveProgress"]>["activity"] {
+    // Reuse the exact open-call projection: missing call IDs, completed calls,
+    // unrelated Runs and prose do not establish an ongoing activity.
+    const phase = this.phaseReadModel.activeExecutionPhase(agentId, executionId);
+    if (phase?.kind === "running_command") return "command";
+    if (phase?.kind !== "using_tool") return "working";
+    const tool = this.sqlite.prepare(`
+      SELECT substr(json_extract(event_json, '$.name'), 1, 256) AS name
+      FROM activity_projection
+      WHERE agent_id = ? AND execution_id = ? AND event_type = 'tool_call'
+        AND json_extract(event_json, '$.id') = ?
+      ORDER BY seq DESC LIMIT 1
+    `).get(agentId, executionId, phase.callId) as { name: string | null } | undefined;
+    const name = typeof tool?.name === "string" ? tool.name.split(/\.|__/u).at(-1) : undefined;
+    return name && browserTools.has(name) ? "browser" : "tool";
+  }
 
   /** Scope comes from a canonical human delivery, never from an Agent roster,
    * message prose, or the merged Work log. Unknown historical evidence fails closed. */
@@ -76,7 +137,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
     if (!progress || typeof progress.text !== "string" || !progress.text.trim()) return undefined;
     const characters = Array.from(progress.text);
     return { text: characters.slice(0, 1200).join("").trimEnd(), createdAt: progress.created_at,
-      seq: progress.seq, recipientHandle: eligible.handle, ...(characters.length > 1200 ? { truncated: true as const } : {}) };
+      seq: progress.seq, recipientHandle: eligible.handle, activity: this.liveProgressActivity(agentId, injection.execution_id),
+      ...(characters.length > 1200 ? { truncated: true as const } : {}) };
   }
 
   runtimeCommunications(projectId?: string): RuntimeCommunicationV3View[] {
@@ -329,6 +391,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           ELSE json_extract(runtime.payload_json, '$.communication.eventId') END AS communication_event_id,
         activation.id, activation.project_id, activation.agent_id,
         activation.scope_key, activation.kind, activation.state, activation.updated_at,
+        activation.dispatch_policy, activation.steering_wait_reason,
         activation.rowid AS row_sequence,
         COALESCE(retry_lineage.attempt_number, 0) AS attempt_number,
         runtime.sender_json, runtime.intent, runtime.audience_json, runtime.payload_json
@@ -357,6 +420,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       kind: string;
       state: string;
       updated_at: string;
+      dispatch_policy: string;
+      steering_wait_reason: string | null;
       row_sequence: number;
       attempt_number: number;
       sender_json: string;
@@ -569,6 +634,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         else if (activation.state === "retry_pending") state = "retrying";
         else state = "queued";
         const runtime = deliveryRuntime(activation.payload_json);
+        const steeringWaitReason = recipientCurrentlyAuthorized && (state === "queued" || state === "retrying")
+          ? this.steeringWaitReason(activation) : undefined;
         const liveProgress = injection && recipientCurrentlyAuthorized && state === "delivered"
           ? this.liveProgress(projectId, activation.agent_id, activation.id, injection) : undefined;
         return {
@@ -580,6 +647,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
             ? { recoveryExecutionId: recoveryInjection.execution_id }
             : {}),
           state,
+          ...(steeringWaitReason ? { steeringWaitReason } : {}),
           updatedAt: [
             latestAttemptAt,
             recovery?.updated_at,

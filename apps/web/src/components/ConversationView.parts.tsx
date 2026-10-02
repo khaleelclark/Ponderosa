@@ -286,6 +286,7 @@ function ConversationHeader({
 }): JSX.Element {
   return (
     <TabbedWorkspaceFrame
+      compactMobile
       icon={<ChatBubbleOutlineIcon />}
       title={conversation.title}
       context={

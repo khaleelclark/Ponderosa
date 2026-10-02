@@ -12,9 +12,15 @@ import { starColor } from "./WorkspaceSidebar.helpers";
 import { sortChatFolderMembers, sortChatFolders } from "../resourcePreferences";
 import { SidebarNotificationBadge } from "./SidebarNotificationBadge";
 import type { UnreadNotificationProjection } from "../workspaceNavigation";
+import { readBrowserStorage, writeBrowserStorage } from "../browserStorage";
 
 type Item = WorkspaceConversationDirectoryItemDto;
 const dragType = "application/x-ponderosa-chat";
+const starredExpansionKey = (id: string) => `ponderosa.chat-folders.starred-expanded.v1.${id}`;
+const initialStarredExpansion = (folder: ChatFolderDto): boolean => {
+  const saved = readBrowserStorage("localStorage", starredExpansionKey(folder.id));
+  return saved === "true" ? true : saved === "false" ? false : folder.expanded;
+};
 
 /** Folders only store conversation IDs; all chat actions retain their original scope. */
 export function ChatFolders({ items, openItems = [], folders, sort, starredIds, filtering, folderUnread, notificationState, renderRow, onChange, onRename, onDelete, onReorder, children }: {
@@ -28,6 +34,22 @@ export function ChatFolders({ items, openItems = [], folders, sort, starredIds, 
   onReorder(source: string, target: string, position: "before" | "after", folders?: ChatFolderDto[]): void;
   children(rows: { starredRows: ReactNode; allRows: ReactNode; openRows: ReactNode }): ReactNode;
 }) {
+  // All Chats retains its existing preference; Starred is a separate display
+  // location, seeded once from the legacy value, never linked after that.
+  const [starredExpanded, setStarredExpanded] = useState(() => new Map(folders.filter(folder => folder.starred).map(folder => [folder.id, initialStarredExpansion(folder)])));
+  useEffect(() => {
+    const starredFolders = folders.filter(folder => folder.starred);
+    for (const folder of starredFolders) {
+      const saved = readBrowserStorage("localStorage", starredExpansionKey(folder.id));
+      if (saved !== "true" && saved !== "false") {
+        writeBrowserStorage("localStorage", starredExpansionKey(folder.id), String(starredExpanded.get(folder.id) ?? folder.expanded));
+      }
+    }
+    setStarredExpanded(previous => {
+      const missing = starredFolders.filter(folder => !previous.has(folder.id));
+      return missing.length ? new Map([...previous, ...missing.map(folder => [folder.id, initialStarredExpansion(folder)] as const)]) : previous;
+    });
+  }, [folders, starredExpanded]);
   const [dragged, setDragged] = useState<string>();
   const [draggedFolder, setDraggedFolder] = useState<string>();
   const [target, setTarget] = useState<{ id: string; zone: "group" | "before" | "after" }>();
@@ -128,12 +150,13 @@ export function ChatFolders({ items, openItems = [], folders, sort, starredIds, 
   const byId = new Map(items.map(item => [item.conversation.id, item]));
   const visibleFolders = sortChatFolders(folders.filter(folder => folder.conversationIds.length &&
     (!filtering || folder.conversationIds.some(id => byId.has(id)))), items, sort);
-  const folderRow = (folder: ChatFolderDto) => {
+  const folderRow = (folder: ChatFolderDto, section: "starred" | "all") => {
     const members = sortChatFolderMembers(folder, items, sort);
-    const expanded = filtering || folder.expanded;
+    const savedExpanded = section === "starred" ? starredExpanded.get(folder.id) ?? initialStarredExpansion(folder) : folder.expanded;
+    const expanded = filtering || savedExpanded;
     const active = members.some(item => (item.runningAgentCount ?? 0) > 0);
     const unread = folderUnread?.[folder.id];
-    return <Box key={folder.id} sx={{ minWidth: 0, mt: .5, mb: 1 }}>
+    return <Box key={`${section}:${folder.id}`} data-chat-folder={folder.id} data-folder-section={section} sx={{ minWidth: 0, mt: .5, mb: 1 }}>
       <Stack direction="row" draggable
         onDragStart={event => { setDraggedFolder(folder.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-ponderosa-chat-folder", folder.id); }}
         onDragEnd={endDrag}
@@ -156,7 +179,13 @@ export function ChatFolders({ items, openItems = [], folders, sort, starredIds, 
         <ListItemButton aria-label={`Folder ${folder.name}`} aria-expanded={expanded}
           aria-description={unread ? `${unread.importantCount} important unread; ${unread.ordinaryCount} ordinary unread` :
             notificationState ? `Folder notifications ${notificationState}` : undefined}
-          onClick={() => onChange(folders.map(value => value.id === folder.id ? { ...value, expanded: !folder.expanded } : value))}
+          onClick={() => {
+            if (section === "starred") {
+              const next = !savedExpanded;
+              setStarredExpanded(previous => new Map(previous).set(folder.id, next));
+              writeBrowserStorage("localStorage", starredExpansionKey(folder.id), String(next));
+            } else onChange(folders.map(value => value.id === folder.id ? { ...value, expanded: !folder.expanded } : value));
+          }}
           onKeyDown={event => { if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) { event.preventDefault(); setMenu({ anchor: event.currentTarget, folder }); } }}
           sx={{ px: .5, py: 0, minWidth: 0, minHeight: { xs: 44, sm: 34 }, gap: .75 }}>
           {expanded ? <KeyboardArrowDownIcon fontSize="small" /> : <KeyboardArrowRightIcon fontSize="small" />}
@@ -181,7 +210,7 @@ export function ChatFolders({ items, openItems = [], folders, sort, starredIds, 
       </Box> : null}
     </Box>;
   };
-  const folderRows = visibleFolders.map(folderRow);
+  const folderRows = visibleFolders.map(folder => folderRow(folder, "all"));
   const pickerContent = <>
     <TextField id="move-folder-search" autoFocus={!moveAnchor} fullWidth size="small" label="Search folders" value={folderSearch} onChange={event => setFolderSearch(event.target.value)} sx={{ mt: .5 }} />
     <List sx={{ mt: 1, maxHeight: "min(45dvh, 320px)", overflowY: "auto", overflowX: "hidden" }}>
@@ -192,7 +221,7 @@ export function ChatFolders({ items, openItems = [], folders, sort, starredIds, 
     </List>
   </>;
   return <>
-    {children({ openRows: openItems.map(row), starredRows: [...visibleFolders.filter(folder => folder.starred).map(folderRow), ...items.filter(starred).map(row)], allRows: <>{folderRows}{ungrouped.filter(item => !starred(item)).map(row)}</> })}
+    {children({ openRows: openItems.map(row), starredRows: [...visibleFolders.filter(folder => folder.starred).map(folder => folderRow(folder, "starred")), ...items.filter(starred).map(row)], allRows: <>{folderRows}{ungrouped.filter(item => !starred(item)).map(row)}</> })}
     <Menu open={Boolean(menu)} anchorEl={menu?.anchor} onClose={closeMenu} disableEnforceFocus={Boolean(moveAnchor)}>
       {menu?.item ? [
         <MenuItem key="rename" onClick={() => action(() => onRename(menu.item!.conversation))}>Rename</MenuItem>,

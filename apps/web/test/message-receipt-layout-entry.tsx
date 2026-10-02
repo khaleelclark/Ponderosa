@@ -12,7 +12,7 @@ import "../src/global.css";
 const params = new URLSearchParams(location.search);
 const mode = params.get("case") ?? "stopped";
 const name = params.has("long-name") ? "Harpers Ferry " + "long Agent name ".repeat(10) : "Harpers Ferry";
-const text = "my issue with the site is that It restates the same info a bunch of times, and it really doesnt tell you what ponderosa is or does - people with zero knowledge about this should be able to understand";
+const text = params.has("short") ? "hi" : "my issue with the site is that It restates the same info a bunch of times, and it really doesnt tell you what ponderosa is or does - people with zero knowledge about this should be able to understand";
 const receipt = { activationId: "activation", targetAgentId: "agent", state: mode === "delivered" ? "delivered" : mode === "unconfirmed" ? "run_unconfirmed" : "cancelled",
   providerAcknowledged: true, runStopState: mode === "unknown" ? "unconfirmed" : mode,
   canRetry: mode === "unconfirmed", retryMayDuplicate: true } as MessageDeliveryReceiptDto;
