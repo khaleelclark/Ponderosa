@@ -49,11 +49,10 @@ import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { MessageRequestAction } from "./MessageRequestAction";
 import { DecisionCard } from "./decisions/DecisionCard";
-import { decisionResponseSummary } from "./decisions/decisionResponse";
+import { DecisionResponseMessage } from "./decisions/DecisionResponseMessage";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import {
-  AUTO_ALLOWED_DECISION_OPTION_ID,
   type MainTimelineEntry,
 } from "./ConversationView.helpers";
 import {
@@ -431,23 +430,8 @@ function MainConversationTimeline({
           return notification ? <Box key={entry.id} data-notification-id={notification.id}>{card}</Box> : card;
         }
         if (entry.kind === "decision-response") {
-          const automatic =
-            entry.event.decision.response?.optionId ===
-            AUTO_ALLOWED_DECISION_OPTION_ID;
-          return <ChatMessageFrame
-          key={entry.id}
-          message={{
-            id: entry.id,
-            author: automatic
-              ? { kind: "notice" }
-              : { kind: "operator", profile: operatorProfile },
-            createdAt: entry.at,
-            ariaLabel: automatic ? entry.choice : decisionResponseSummary(entry.event.decision, entry.choice),
-            body: <Typography variant="body2">
-              {automatic ? entry.choice : decisionResponseSummary(entry.event.decision, entry.choice)}
-            </Typography>,
-          }}
-          />;
+          return <DecisionResponseMessage key={entry.id} event={entry.event}
+            operatorProfile={operatorProfile} onOpenAgent={onOpenAgent} />;
         }
         const message = entry.message;
         return <ConversationMessage

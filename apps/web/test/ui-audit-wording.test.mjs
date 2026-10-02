@@ -37,9 +37,9 @@ test("provider availability joins preserve existing sentence punctuation", () =>
   }
 });
 test("decision wording follows its recorded response kind and preserves punctuation", () => {
-  assert.equal(decisionResponseSummary({ mode: "choice", response: { text: "Yes!" } }, "Yes!"), "You answered Yes!");
-  assert.equal(decisionResponseSummary({ mode: "choice", response: { choiceId: "a" } }, "Proceed."), "You chose Proceed.");
-  assert.equal(decisionResponseSummary({ mode: "approval", response: { choiceId: "approve" } }, "Approved"), "Your approval response: Approved");
+  assert.equal(decisionResponseSummary({ mode: "choice", response: { text: "Yes!" } }, "Yes!", "#Boston"), "Answered #Boston: Yes!");
+  assert.equal(decisionResponseSummary({ mode: "choice", response: { optionId: "a" } }, "Proceed.", "#Boston"), "Chose for #Boston: Proceed.");
+  assert.equal(decisionResponseSummary({ mode: "approval", response: { optionId: "approve" } }, "Approved", "#Boston"), "Approval response to #Boston: Approved");
 });
 test("relative media and link routes retain authorization and return context", () => {
   const scope = { conversationId: "chat", returnTo: "/projects/p/chats/chat?view=files" };

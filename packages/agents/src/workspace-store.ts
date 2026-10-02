@@ -240,6 +240,7 @@ export class WorkspaceStore {
   private readonly decisionEventIds: string[] = [];
   private readonly decisionEventIdsByProject = new Map<string, string[]>();
   private readonly decisionEventIdsByConversation = new Map<string, string[]>();
+  private readonly decisionEventIdsByAgent = new Map<string, string[]>();
   private readonly pushSubscriptions = new Map<string, WebPushSubscriptionDto>();
   private readonly pushDeliveries = new Map<string, PushDeliveryRecord>();
   private readonly deletedProjectIds = new Set<string>();
@@ -844,6 +845,9 @@ export class WorkspaceStore {
     const projectIds = this.decisionEventIdsByProject.get(decision.projectId) ?? [];
     this.insertDecisionEventId(projectIds, eventId);
     this.decisionEventIdsByProject.set(decision.projectId, projectIds);
+    const agentIds = this.decisionEventIdsByAgent.get(decision.agentId) ?? [];
+    this.insertDecisionEventId(agentIds, eventId);
+    this.decisionEventIdsByAgent.set(decision.agentId, agentIds);
     if (decision.conversationId) {
       const conversationIds = this.decisionEventIdsByConversation.get(decision.conversationId) ?? [];
       this.insertDecisionEventId(conversationIds, eventId);
@@ -1746,11 +1750,14 @@ export class WorkspaceStore {
   listDecisionEventPage(input: {
     projectId?: string;
     conversationId?: string;
+    agentId?: string;
     limit: number;
     before?: { createdAt: string; id: string };
   }): { events: DecisionEventProjection[]; hasMore: boolean } {
     const limit = Math.max(1, Math.min(input.limit, 500));
-    const ids = input.conversationId
+    const ids = input.agentId
+      ? this.decisionEventIdsByAgent.get(input.agentId) ?? []
+      : input.conversationId
       ? this.decisionEventIdsByConversation.get(input.conversationId) ?? []
       : input.projectId
         ? this.decisionEventIdsByProject.get(input.projectId) ?? []
@@ -1777,6 +1784,7 @@ export class WorkspaceStore {
       const event = this.decisionEventForId(ids[index]!);
       if (!event ||
           (input.projectId && event.decision.projectId !== input.projectId) ||
+          (input.agentId && event.decision.agentId !== input.agentId) ||
           (input.conversationId && event.decision.conversationId !== input.conversationId)) continue;
       if (selected.length === limit) {
         hasMore = true;

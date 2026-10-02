@@ -82,7 +82,7 @@ import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
 import { loadRetainedData } from "../retainedData";
 import { DecisionCard } from "./decisions/DecisionCard";
-import { decisionResponseSummary } from "./decisions/decisionResponse";
+import { DecisionResponseMessage } from "./decisions/DecisionResponseMessage";
 import { AgentRuntimeControls } from "./AgentDetail.parts";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import {
@@ -1567,32 +1567,9 @@ export function AllChatView({
               return notification ? <Box key={entry.id} data-notification-id={notification.id}>{card}</Box> : card;
             }
             if (entry.kind === "decision-response") {
-              const automatic =
-                entry.item.decision.response?.optionId ===
-                AUTO_ALLOWED_DECISION_OPTION_ID;
-              return <ChatMessageFrame
-              key={entry.id}
-              message={{
-                id: entry.id,
-                author: automatic
-                  ? { kind: "notice" }
-                  : {
-                      kind: "operator",
-                      profile: workspacePreferences.data?.profile,
-                    },
-                createdAt: entry.at,
-                ariaLabel: automatic
-                  ? entry.choice
-                  : decisionResponseSummary(entry.item.decision, entry.choice),
-                body: (
-                  <Typography variant="body2">
-                    {automatic
-                      ? entry.choice
-                      : decisionResponseSummary(entry.item.decision, entry.choice)}
-                  </Typography>
-                ),
-              }}
-              />;
+              return <DecisionResponseMessage key={entry.id} event={entry.item}
+                operatorProfile={workspacePreferences.data?.profile}
+                onOpenAgent={agentId => onNavigate({ kind: "agent", projectId: entry.item.decision.projectId, agentId })} />;
             }
             const item = entry.item;
             const fromUser = item.author.kind === "user";

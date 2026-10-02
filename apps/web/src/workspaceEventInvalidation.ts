@@ -16,5 +16,5 @@ export function workspaceEventInvalidatesAllChat(
   return event.type === "conversation_changed" ||
     event.type === "message_delivery_changed" ||
     (event.type === "notification_changed" && Boolean(event.decisionId)) ||
-    (event.type === "agent_event" && event.category === "message");
+    (event.type === "agent_event" && (event.category === "message" || event.category === "lifecycle"));
 }

@@ -2,6 +2,7 @@ import type { AllChatPageDto } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import type { SearchRoutesContext } from "../server-context.js";
 import { searchWorkspaceFiles } from "../file-search.js";
+import { withDecisionRecipient } from "../decision-presentation.js";
 import {
   communicationRecipientAgentIds,
   recipientMentionIdentities,
@@ -120,10 +121,7 @@ export function registerSearchRoutes(
           const conversation = decision.conversationId ? store.getConversation(decision.conversationId) : undefined;
           if (!project || !conversation) return [];
           return [{
-            kind: event.kind,
-            id: event.id,
-            createdAt: event.createdAt,
-            decision,
+            ...withDecisionRecipient(store, event),
             project: { id: project.id, label: project.label },
             source: { kind: "project" as const, conversationId: conversation.id, title: conversation.title },
           }];

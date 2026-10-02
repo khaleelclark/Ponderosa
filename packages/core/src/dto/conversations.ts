@@ -431,6 +431,8 @@ export interface ConversationDecisionEventDto {
   createdAt: string;
   /** Canonical Decision state that owns this timeline event. */
   decision: DecisionDto;
+  /** Current identity resolved by decision.agentId; null means unavailable. Read-only presentation. */
+  recipientAgent?: Pick<AgentDto, "id" | "title" | "handle"> | null;
 }
 
 export interface ConversationDetailDto {
@@ -863,6 +865,7 @@ export interface AllChatDecisionEventDto {
   id: string;
   createdAt: string;
   decision: DecisionDto;
+  recipientAgent?: ConversationDecisionEventDto["recipientAgent"];
   project: Pick<ProjectDto, "id" | "label">;
   source: { kind: "project"; conversationId: string; title: string };
 }

@@ -3,7 +3,7 @@ import type { AgentEvent } from "../events.js";
 import type { AgentDto, AgentState } from "./agents.js";
 import type { ArtifactDto, ChangedFileDto } from "./artifacts.js";
 import type { HistoryPageDto, HistoryWindowDto } from "./common.js";
-import type { ConversationDto, MessageDto, ResponseFileActivityDto } from "./conversations.js";
+import type { ConversationDecisionEventDto, ConversationDto, MessageDto, ResponseFileActivityDto } from "./conversations.js";
 import type { AgentCoordinationV3Dto, AgentRunDto, WorkItemDto } from "./runs.js";
 import type {
   WorkspacePreferencesDto,
@@ -153,6 +153,8 @@ export interface RunOutputTextDto {
  * communications; Work log contains execution-scoped ordinary output.
  */
 export interface AgentDetailDto {
+  /** Read-only canonical Decision events, paginated with the Chat history. Not Communications. */
+  decisionEvents?: ConversationDecisionEventDto[];
   agent: AgentDto;
   /** Canonical owning Chat, absent only after that Chat no longer exists. */
   ownerConversation?: Pick<ConversationDto, "id" | "title">;

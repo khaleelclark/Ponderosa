@@ -116,7 +116,8 @@ export function AgentDetailPanels({
       <Box
         sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}
       >
-        <ChatPane
+          <ChatPane
+            decisionEvents={detail.decisionEvents}
           messages={chatMessages}
           agentName={detail.agent.title}
           agentNameForId={agentNameForId}
