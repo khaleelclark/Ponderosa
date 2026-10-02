@@ -31,7 +31,7 @@ try {
     const marker = `CONTINUATION_CHECK_${randomUUID()}`;
     const started = Date.now();
     const response = await app.inject({ method: 'POST', url: `/api/agents/${agent.id}/messages`, headers: { authorization: `Bearer ${token}` },
-      payload: { text: `Reply to this message with exactly ${marker}, using ponderosa_message. Do not use shell commands, browse, create files, ask questions, or delegate. Finish after publishing your reply.`, idempotencyKey: marker } });
+      payload: { text: `First emit a brief public commentary update saying you received this instruction. Then reply to this message with exactly ${marker}, using ponderosa_message. Do not use shell commands, browse, create files, ask questions, or delegate. Finish after publishing your reply.`, idempotencyKey: marker } });
     assert.ok([200, 202].includes(response.statusCode), `send rejected (${response.statusCode}): ${response.body}`);
     console.log(JSON.stringify({ checkpoint: 'send accepted', attempt: index + 1, statusCode: response.statusCode }));
     let run, reply;
@@ -47,6 +47,14 @@ try {
       terminalDelayAfterReplyMs: reply && run?.terminal_at ? Date.parse(run.terminal_at) - Date.parse(reply.created_at) : null, details });
     assert.ok(reply, 'the managed Agent must publish the requested reply');
     assert.equal(run?.status, 'completed', JSON.stringify(results));
+    const publicProgress = store.readEvents(agent.id).filter(item => item.event.executionId === run.id && item.event.type === 'text' && item.event.presentation === 'progress');
+    assert.ok(publicProgress.length > 0, 'the actual managed Run must accept public commentary through the provider boundary');
+    const detail = await app.inject({ method: 'GET', url: `/api/agents/${agent.id}`, headers: { authorization: `Bearer ${token}` } });
+    assert.equal(detail.statusCode, 200, detail.body);
+    const receipt = detail.json().messages.find(message => message.role === 'user' && message.text.includes(marker))?.deliveryReceipts?.[0];
+    assert.equal(receipt?.state, 'processed', 'commentary must not leave the accepted message unconfirmed');
+    assert.equal(receipt?.executionId, run.id, 'the original accepted Run must complete, not a later follow-up');
+    assert.equal(receipt?.providerAcknowledged, true);
     const evidence = new Map(details.map(item => [item.label, item.value]));
     assert.doesNotMatch(evidence.get('Last recorded provider progress'), /Not found/);
     assert.ok(JSON.parse(evidence.get('Recent Run event metadata')).some(event => event.type === 'tool_result'), 'ordinary provider tool results remain attributable to this exact Run');
