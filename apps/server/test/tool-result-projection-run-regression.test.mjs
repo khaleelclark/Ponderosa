@@ -267,6 +267,10 @@ async function runReplyRecoveryScenario(t, intent) {
     : "Shared answer after correcting the route.";
 
   async function* providerTurn() {
+    yield* mapCodexAppServerNotification({
+      method: "item/completed",
+      params: { item: { type: "agentMessage", text: "I received the revised instruction.", phase: "commentary" } },
+    }, "/tmp");
     const ambiguous = await dynamicToolHandler({
       id: "ambiguous-message",
       name: PONDEROSA_MESSAGE_TOOL.name,
@@ -311,6 +315,7 @@ async function runReplyRecoveryScenario(t, intent) {
   assert.equal(failedToolResult.retryable, false);
   assert.match(failedToolResult.output, /no unambiguous reply route/u);
   assert.equal(projected.some((event) => event.type === "error"), false);
+  assert.deepEqual(projected[0], { type: "text", delta: "I received the revised instruction.\n\n", presentation: "progress" });
   assert.equal(projected.at(-1)?.type, "turn_done");
 
   const activityFailure = store.getActivity(agent.id).find((activity) =>

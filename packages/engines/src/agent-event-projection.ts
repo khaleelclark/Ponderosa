@@ -277,7 +277,7 @@ export function projectAgentEvent(value: unknown): AgentEvent {
     "output", "isError", "failureCategory", "retryable", "command", "cwd", "callId", "path", "kind", "diff", "passed", "summary", "status",
     "controlOwner", "controlEpoch", "url", "title", "reason", "actor", "action", "level", "text", "artifactId",
     "width", "height", "size", "sha256", "workItemId", "usage", "providerRequestUsage", "message", "code",
-    "category", "remediation",
+    "category", "remediation", "presentation",
   ])], budget, 0);
   const type = enumeration(envelope, "type", [
     "session", "context_usage", "context_rollover_seed_overflow", "context_rollover_completed", "text", "reasoning",
@@ -329,7 +329,13 @@ export function projectAgentEvent(value: unknown): AgentEvent {
         startingOccupancy: integer(row, "startingOccupancy", budget, 2),
       };
     }
-    case "text":
+    case "text": {
+      const row = exact(value, ["delta", "presentation"], budget);
+      const presentation = row.has("presentation")
+        ? enumeration(row, "presentation", ["progress"] as const, budget, 2)
+        : undefined;
+      return { type, delta: string(row, "delta", budget, 2), ...(presentation ? { presentation } : {}) };
+    }
     case "reasoning": {
       const row = exact(value, ["delta"], budget);
       return { type, delta: string(row, "delta", budget, 2) };
