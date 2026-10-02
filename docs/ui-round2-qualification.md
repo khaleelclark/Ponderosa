@@ -286,6 +286,57 @@ Logs: `/tmp/ponderosa-live-activity-{server,typecheck,chromium,webkit,workload}.
 Original tool inputs/outputs remain in Activity, not Chat. No provider was run,
 live service changed, or shared sandbox refreshed by this follow-up.
 
+## Steering admission follow-up
+
+The scheduler no longer holds its admission lock while awaiting per-Agent
+prompt preparation or provider startup. Exact leased Run/steering jobs are
+tracked separately; polling can admit other eligible steering and Runs while
+those jobs wait. SQL still owns global Run capacity, one active Run per Agent,
+scope authorization, fences and same-Run injection ordering. Pause/stop await
+all admitted dispatch jobs; quarantine and budget are rechecked after an
+asynchronous intake lookup. Outbox audit and teardown barriers remain serial.
+
+Receipts project context refresh, pending earlier steering, uncommitted message
+edits, target-Run startup and scheduler admission from authoritative state.
+Safe observed preparation/provider deferrals are recorded in a nullable,
+enum-constrained activation field (`0018_steering_wait_reason.sql`). Historical
+rows gain no invented reason. Last observed deferral remains until a new attempt
+is admitted: reaching retry time is not proof of readiness. Unsupported steering
+is distinguished from temporarily unavailable steering. No provider prose is
+stored in this field. Explicit Queue remains Queue; routing, canonical prompts,
+unknown-outcome recovery, completion and acknowledgement authority are unchanged.
+
+The new runnable scheduler regression failed against the previous built head
+for slow preparation, slow startup and polling; all now proceed before the
+other Agent's gate is released. Additional cases cover slow steering isolation,
+same-Run ordering, budget/pause changes during intake checks, cancellation during
+preparation, drain barriers and provider retry policy. Receipt regressions cover
+all canonical barriers, reopening, schema upgrade, strict enum admission and
+unchanged original bytes/policy. Run:
+
+```sh
+node --test apps/server/test/steering-admission.test.mjs \
+  apps/server/test/coordination-outbox-permanent.test.mjs \
+  packages/agents/test/steering-wait-reasons.test.mjs
+node apps/web/test/live-agent-progress-browser.check.mjs
+```
+
+Chromium and macOS WebKit passed the updated three-surface browser fixture at
+320/390/1440px, including all eight waiting labels, accessible explanations,
+bounded mobile layouts and no false acknowledgement/progress. A 320px waiting
+label screenshot was visually inspected. These are disposable simulated delays
+and provider outcomes, not a live throughput benchmark or physical-device proof.
+Native context compaction, provider refusal and an already-running tool can
+still delay practical reconsideration. No live Agents were steered/interrupted.
+
+Final fresh `pnpm verify` on macOS / Node 24.21.0 passed **1,016 tests,
+7 platform/opt-in skips, zero failures**, including typechecks and production
+builds. The focused scheduler/outbox/wait-reason checks passed **14/14**; both
+browser engines passed the updated fixture. `git diff --check` passed. Logs:
+`/tmp/ponderosa-steering-{focused,chromium,webkit,final-verify}.log`.
+Earlier unrelated browser checks remain earlier-head evidence. Independent
+review and live concurrent-provider/physical-device qualification are pending.
+
 ## Manual checklist
 
 - [ ] Send, navigate away/back, and fail a send: no duplicate draft; failure recoverable.
@@ -299,6 +350,7 @@ live service changed, or shared sandbox refreshed by this follow-up.
 - [ ] Files: newest first after refresh and loading older files.
 - [ ] Starred folder: collapse/expand independently from All Chats; reload and search preserve both choices; unread counts remain visible in both.
 - [ ] Live progress: activity header changes on observed calls, chevron hides/shows updates, new updates stay collapsed for that Run, next Run opens by default, and completion removes the panel.
+- [ ] Steer during another Agent's startup: no cross-Agent preparation wait; actual context/provider/earlier-Steer waits have a reason and never claim acceptance prematurely.
 - [ ] Ponderosa microphone: no growing duplicates; typed text, repeated words, pause/resume preserved.
 - [ ] Attach TTF/OTF/WOFF/WOFF2 and other files; exact downloads work and fonts are not installed/previewed.
 - [ ] Drop/select a nested folder: one ZIP, preserved paths, visible exclusions; navigate during preparation without leaking it to another Chat.

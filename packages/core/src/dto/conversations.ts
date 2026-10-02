@@ -173,6 +173,9 @@ export interface MessageDeliveryReceiptDto {
   injectionId?: string;
   /** Provider submission kind, not inferred from receipt wording. */
   injectionKind?: "turn" | "steer";
+  /** Observed admission barrier, not provider acknowledgement or comprehension. */
+  steeringWaitReason?: "context_refresh" | "prior_steering" | "revision_pending" |
+    "provider_not_ready" | "provider_unsupported" | "preparation_retry" | "run_starting" | "scheduler_pending";
   /** Temporary, bounded public commentary for this exact acknowledged delivery.
    * Not authored Communication, completion, or proof of semantic understanding. */
   liveProgress?: { text: string; createdAt: string; seq: number; truncated?: true; recipientHandle: string;

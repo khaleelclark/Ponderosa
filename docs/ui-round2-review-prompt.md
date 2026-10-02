@@ -63,6 +63,23 @@ Independently verify, rather than treating implementer results as qualification:
   growing-partial failure, rapid final callbacks, replayed indices, pause/resume,
   stale callbacks, typed text and intentional repeated words. Do not deduplicate
   prose or claim that mocked callbacks prove physical-phone behavior.
+- Review the steering scheduler change as backend concurrency, not only UI.
+  Reproduce the old cross-Agent preparation/startup block, then verify polling
+  admits exact-Run steering before the slow gate is released. Check slow steering
+  isolation, same-Run ordering, global Run budget, stop/pause barriers including
+  all in-flight dispatches, quarantine/budget changes during async intake checks,
+  cancellation/deletion/fence advancement, preparation failures and watchdogs,
+  outbox audit/teardown barriers, and no duplicate original/recovery Runs. Read
+  `steering-admission.test.mjs`, run it plus `coordination-outbox-permanent.test.mjs`
+  and `steering-wait-reasons.test.mjs`, and inspect the actual dispatch integration.
+  Wait reasons must come from canonical barriers or safe observed enum deferrals,
+  not prose. Verify new schema upgrade/reopening, historical null compatibility,
+  pending/accepted/terminal distinctions, stale deferral precedence, explicit Queue
+  semantics and unchanged canonical prompt/scope/retry authority. Run the updated
+  three-surface Chromium/WebKit fixture for all waiting labels; tool cancellation
+  or immediate semantic reconsideration must never be implied by acceptance.
+  Use only disposable deterministic workloads unless separately authorized; do
+  not steer/interfere with existing live Agents for qualification.
 - Review the folder/general-file follow-up as an admission expansion. Check
   opaque font/office/source/media/archive originals through HTTP, drafts,
   prepared promotion, runtime reads and reopening. Protected image/document

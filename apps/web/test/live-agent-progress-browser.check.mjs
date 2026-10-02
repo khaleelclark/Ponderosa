@@ -35,6 +35,25 @@ try {
     await page.getByText("Use the revised plan", { exact: true }).waitFor();
     const show = mode => page.evaluate(mode => window.showProgress(mode), mode);
     const progress = page.getByLabel("Live Agent progress", { exact: true });
+    for (const [reason, text] of [
+      ["context_refresh", "waiting for context refresh to finish"],
+      ["prior_steering", "an earlier steer is awaiting provider acknowledgement"],
+      ["revision_pending", "waiting for the message edit to be durably recorded"],
+      ["provider_not_ready", "the provider was not ready to accept steering"],
+      ["provider_unsupported", "the provider reported that steering is unsupported"],
+      ["preparation_retry", "prompt preparation did not finish"],
+      ["run_starting", "the target Run is still starting"],
+      ["scheduler_pending", "awaiting scheduler admission"],
+    ]) {
+      await show(`wait:${reason}`);
+      const status = page.getByLabel(new RegExp(text)).first();
+      await status.waitFor();
+      assert.equal(await progress.count(), 0, "waiting does not fabricate progress or delivery");
+      assert.equal(await page.getByText("Instructions delivered to Boston", { exact: true }).count(), 0);
+      assert((await status.getAttribute("aria-label")).includes("does not guarantee immediate reconsideration"));
+      if (reason === "context_refresh") await page.screenshot({ path: path.join(tmpdir(), `steering-wait-${engine}-${surface}-${width}.png`) });
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "wait labels fit narrow layouts");
+    }
     await show("pending");
     assert.equal(await progress.count(), 0);
     assert.equal(await page.getByText("Instructions delivered to Boston", { exact: true }).count(), 0);

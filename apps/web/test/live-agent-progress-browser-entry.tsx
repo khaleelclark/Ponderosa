@@ -40,6 +40,11 @@ function Fixture() {
       injectionId: "steer", injectionKind: "steer", executionId: "run", attemptCount: 1,
       updatedAt: "2026-10-01T12:01:00Z", state: mode === "pending" ? "steering" : mode === "failed" ? "failed" : "delivered" };
     if (mode !== "pending") receipt.providerAcknowledged = true;
+    if (mode.startsWith("wait:")) {
+      receipt.state = "queued";
+      receipt.providerAcknowledged = undefined;
+      receipt.steeringWaitReason = mode.slice(5) as MessageDeliveryReceiptDto["steeringWaitReason"];
+    }
     if (["first", "latest", "literal", "long", "wrapped", "command", "browser", "tool", "working", "steer", "newrun", "longhandle", "multi"].includes(mode)) receipt.liveProgress = {
       text: mode === "first" ? "I am adjusting the approach" : mode === "literal" ? '<img src=x onerror="alert(1)"> **literal**' :
         mode === "long" ? "long-unbroken-update".repeat(50) : mode === "wrapped"

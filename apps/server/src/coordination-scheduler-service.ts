@@ -420,6 +420,7 @@ return new CoordinationV3Scheduler(
           retryable: true,
           retrySteering: true,
           error: "authoritative run is not currently steerable",
+          steeringWaitReason: "provider_not_ready",
         };
       }
       try {
@@ -441,6 +442,7 @@ return new CoordinationV3Scheduler(
             retryable: true,
             retrySteering: true,
             error: result.status,
+            steeringWaitReason: result.status === "unsupported" ? "provider_unsupported" : "provider_not_ready",
           };
         }
         coordinationV3.acknowledgePromptInjection({

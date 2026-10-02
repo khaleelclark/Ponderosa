@@ -5,6 +5,7 @@ export interface CoordinationV3DispatchResult {
   retryable?: boolean;
   /** Keep steer-or-run semantics instead of silently converting to Queue. */
   retrySteering?: boolean;
+  steeringWaitReason?: "provider_not_ready" | "provider_unsupported" | "preparation_retry";
   terminalOutcome?: Exclude<ActivationTerminalOutcome, "retry_exhausted">;
   outcomeUnknown?: boolean;
   error?: string;
@@ -87,6 +88,7 @@ export interface AutomaticResultMaterial {
 export class CoordinationV3Scheduler {
   private timer?: NodeJS.Timeout;
   private draining = false;
+  private readonly dispatchJobs = new Set<Promise<void>>();
   private stopped = false;
   private leasingPaused = false;
   private maintenanceDrains = 0;
@@ -187,11 +189,12 @@ export class CoordinationV3Scheduler {
 
   /** Stop all new provider work while durable intake and maintenance remain
    * available. Resolves only after an in-progress leasing pass observes the
-   * pause, so a deployment can safely wait for already-active Runs. */
+   * pause and all already-admitted dispatches settle, so deployment cannot
+   * race an in-flight provider startup. */
   async pauseLeasing(): Promise<void> {
     if (this.stopped) throw new Error("scheduler has been stopped");
     this.leasingPaused = true;
-    if (this.draining) await new Promise<void>((resolve) => this.stopWaiters.add(resolve));
+    if (this.draining || this.dispatchJobs.size) await new Promise<void>((resolve) => this.stopWaiters.add(resolve));
   }
 
   resumeLeasing(): void {
@@ -204,7 +207,7 @@ export class CoordinationV3Scheduler {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
-    if (this.draining) {
+    if (this.draining || this.dispatchJobs.size) {
       await new Promise<void>((resolve) => this.stopWaiters.add(resolve));
     }
   }
@@ -217,6 +220,7 @@ export class CoordinationV3Scheduler {
     if (this.draining || this.stopped) return 0;
     this.draining = true;
     let dispatched = 0;
+    const jobs: Promise<void>[] = [];
     try {
       const now = new Date().toISOString();
       this.store.expireDue(now);
@@ -274,89 +278,18 @@ export class CoordinationV3Scheduler {
           if (typeof agentId === "string") this.options.onMessageDeliveryChanged?.(agentId);
         }
       }
-      if (!this.leasingPaused && this.options.dispatchSteering) {
-        while (true) {
+      if (this.isLeasingRuns() && this.options.dispatchSteering) {
+        while (this.isLeasingRuns()) {
           const steering = this.store.leaseNextSteering({ workerId: this.options.workerId, now });
           if (!steering) break;
-          let compilation: ActivationPromptCompilation;
-          let prompt: string;
-          try {
-            compilation = await this.compilePromptWithDeadline(steering);
-            prompt = compilation.prompt;
-            this.store.preparePromptInjection({
-              injectionId: steering.injectionId,
-              runId: steering.runId,
-              fencingToken: steering.fencingToken,
-              prompt,
-            });
-          } catch (error) {
-            this.metrics.rejectedRuns += 1;
-            this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
-            try {
-              if (error instanceof ActivationPromptCompilationError) {
-                this.metrics.compilationFailures += 1;
-                this.metrics.poisonActivations += 1;
-                this.store.failSteeringForActivationCompilation({
-                  injectionId: steering.injectionId,
-                  runId: steering.runId,
-                  fencingToken: steering.fencingToken,
-                  activationId: error.activationId,
-                  errorCode: error.code,
-                  errorDetail: error.failure.detail,
-                });
-              } else {
-                this.metrics.preInjectionRecoveries += 1;
-                this.store.deferSteering({
-                  injectionId: steering.injectionId,
-                  runId: steering.runId,
-                  fencingToken: steering.fencingToken,
-                  retryDelayMs: 500,
-                  preserveSteering: true,
-                });
-              }
-            } catch (containmentError) {
-              // Cancellation/deletion may advance the fence after leasing. That
-              // race is already durably settled and must not reject the drain.
-              this.metrics.lastDispatchError = containmentError instanceof Error
-                ? containmentError.message
-                : String(containmentError);
-            }
-            this.options.onMessageDeliveryChanged?.(steering.agentId);
-            continue;
-          }
-          let result: CoordinationV3DispatchResult;
-          try {
-            result = await this.options.dispatchSteering(steering, prompt, compilation);
-          } catch (error) {
-            result = { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
-          }
-          if (!result.accepted) {
-            try {
-              if (result.outcomeUnknown) this.store.markSteeringOutcomeUnknown({
-                injectionId: steering.injectionId,
-                runId: steering.runId,
-                fencingToken: steering.fencingToken,
-                recoveryGraceMs: this.options.steeringRecoveryGraceMs,
-                error: result.error,
-              });
-              else this.store.deferSteering({
-                injectionId: steering.injectionId,
-                runId: steering.runId,
-                fencingToken: steering.fencingToken,
-                retryDelayMs: result.retryable === false ? 30_000 : 500,
-                preserveSteering: result.retrySteering === true,
-              });
-            } catch (error) {
-              this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
-            }
-          }
-          this.options.onMessageDeliveryChanged?.(steering.agentId);
+          jobs.push(this.trackDispatch(() => this.dispatchSteeringLease(steering)));
         }
       }
-      while (!this.leasingPaused && this.store.activeRunCount() < this.maxConcurrentRuns) {
+      while (this.isLeasingRuns() && this.store.activeRunCount() < this.maxConcurrentRuns) {
         // Dispatching yields to request handlers. Re-read quarantine before
         // each lease so newly creating/deleting Agents cannot cross this gate.
         const excludedAgentIds = await this.options.blockedAgentIds?.();
+        if (!this.isLeasingRuns() || this.store.activeRunCount() >= this.maxConcurrentRuns) break;
         const lease = this.store.leaseNextRun({
           workerId: this.options.workerId,
           leaseMs: this.options.leaseMs,
@@ -368,89 +301,7 @@ export class CoordinationV3Scheduler {
         this.options.onRunLeased?.(lease);
         dispatched += 1;
         this.metrics.claimedRuns += 1;
-        const started = Date.now();
-        this.metrics.activePreparations += 1;
-        let compilation: ActivationPromptCompilation;
-        let prompt: string;
-        try {
-          compilation = await this.compilePromptWithDeadline(lease);
-          prompt = compilation.prompt;
-          this.store.preparePromptInjection({
-            injectionId: lease.injectionId,
-            runId: lease.runId,
-            fencingToken: lease.fencingToken,
-            prompt,
-          });
-        } catch (error) {
-          this.metrics.rejectedRuns += 1;
-          this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
-          try {
-            if (error instanceof ActivationPromptCompilationError) {
-              this.metrics.compilationFailures += 1;
-              this.metrics.poisonActivations += 1;
-              this.store.failRunForActivationCompilation({
-                runId: lease.runId,
-                fencingToken: lease.fencingToken,
-                workerId: this.options.workerId,
-                activationId: error.activationId,
-                errorCode: error.code,
-                errorDetail: error.failure.detail,
-                now: new Date(Date.now()).toISOString(),
-              });
-            } else {
-              this.metrics.preInjectionRecoveries += 1;
-              this.store.failRun({
-                runId: lease.runId,
-                fencingToken: lease.fencingToken,
-                workerId: this.options.workerId,
-                sameRunResumable: false,
-                confirmedNotExecuted: true,
-                retryable: true,
-                error: error instanceof Error ? error.message : String(error),
-                now: new Date(Date.now()).toISOString(),
-              });
-            }
-          } catch (containmentError) {
-            this.metrics.lastDispatchError = containmentError instanceof Error
-              ? containmentError.message
-              : String(containmentError);
-          } finally {
-            this.metrics.activePreparations -= 1;
-          }
-          this.options.onMessageDeliveryChanged?.(lease.agentId);
-          continue;
-        }
-        this.metrics.activePreparations -= 1;
-        let result: CoordinationV3DispatchResult;
-        try {
-          result = await this.dispatch(lease, prompt, compilation);
-        } catch (error) {
-          result = { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
-        }
-        this.recordDispatchLatency(Math.max(0, Date.now() - started));
-        if (result.accepted) {
-          this.metrics.acceptedRuns += 1;
-        } else {
-          this.metrics.rejectedRuns += 1;
-          this.metrics.lastDispatchError = result.error ?? "scheduler dispatch rejected";
-          try {
-            this.store.failRun({
-              runId: lease.runId,
-              fencingToken: lease.fencingToken,
-              workerId: this.options.workerId,
-              sameRunResumable: false,
-              retryDelayMs: result.retryable === false ? 30_000 : 500,
-              retryable: result.retryable,
-              terminalOutcome: result.terminalOutcome,
-              error: result.error,
-              maxDeliveryFailures: this.options.maxDeliveryFailures,
-              now: new Date().toISOString(),
-            });
-          } catch (error) {
-            this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
-          }
-        }
-        this.options.onMessageDeliveryChanged?.(lease.agentId);
+        jobs.push(this.trackDispatch(() => this.dispatchRunLease(lease)));
       }
       this.maintenanceDrains += 1;
       if (this.maintenanceDrains % 256 === 0) {
@@ -463,10 +314,193 @@ export class CoordinationV3Scheduler {
       }
     } finally {
       this.draining = false;
-      for (const resolve of this.stopWaiters) resolve();
-      this.stopWaiters.clear();
+      this.resolveIdleWaiters();
     }
+    // Callers may await this pass's work, but the admission lock is already free.
+    await Promise.all(jobs);
     return dispatched;
+  }
+
+  private trackDispatch(work: () => Promise<void>): Promise<void> {
+    const job = Promise.resolve().then(work);
+    this.dispatchJobs.add(job);
+    const finished = () => {
+      this.dispatchJobs.delete(job);
+      this.resolveIdleWaiters();
+    };
+    // Attach both handlers immediately, including on unexpected callback errors.
+    void job.then(finished, finished);
+    return job;
+  }
+
+  private resolveIdleWaiters(): void {
+    if (this.draining || this.dispatchJobs.size) return;
+    for (const resolve of this.stopWaiters) resolve();
+    this.stopWaiters.clear();
+  }
+
+  private async dispatchSteeringLease(steering: SteeringLease): Promise<void> {
+    let compilation: ActivationPromptCompilation;
+    let prompt: string;
+    try {
+      compilation = await this.compilePromptWithDeadline(steering);
+      prompt = compilation.prompt;
+      this.store.preparePromptInjection({
+        injectionId: steering.injectionId,
+        runId: steering.runId,
+        fencingToken: steering.fencingToken,
+        prompt,
+      });
+    } catch (error) {
+      this.metrics.rejectedRuns += 1;
+      this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
+      try {
+        if (error instanceof ActivationPromptCompilationError) {
+          this.metrics.compilationFailures += 1;
+          this.metrics.poisonActivations += 1;
+          this.store.failSteeringForActivationCompilation({
+            injectionId: steering.injectionId,
+            runId: steering.runId,
+            fencingToken: steering.fencingToken,
+            activationId: error.activationId,
+            errorCode: error.code,
+            errorDetail: error.failure.detail,
+          });
+        } else {
+          this.metrics.preInjectionRecoveries += 1;
+          this.store.deferSteering({
+            injectionId: steering.injectionId,
+            runId: steering.runId,
+            fencingToken: steering.fencingToken,
+            retryDelayMs: 500,
+            preserveSteering: true,
+            waitReason: "preparation_retry",
+          });
+        }
+      } catch (containmentError) {
+        // Cancellation/deletion may advance the fence after leasing. That
+        // race is already durably settled and must not reject the drain.
+        this.metrics.lastDispatchError = containmentError instanceof Error
+          ? containmentError.message
+          : String(containmentError);
+      }
+      this.options.onMessageDeliveryChanged?.(steering.agentId);
+      return;
+    }
+    let result: CoordinationV3DispatchResult;
+    try {
+      result = await this.options.dispatchSteering!(steering, prompt, compilation);
+    } catch (error) {
+      result = { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
+    }
+    if (!result.accepted) {
+      try {
+        if (result.outcomeUnknown) this.store.markSteeringOutcomeUnknown({
+          injectionId: steering.injectionId,
+          runId: steering.runId,
+          fencingToken: steering.fencingToken,
+          recoveryGraceMs: this.options.steeringRecoveryGraceMs,
+          error: result.error,
+        });
+        else this.store.deferSteering({
+          injectionId: steering.injectionId,
+          runId: steering.runId,
+          fencingToken: steering.fencingToken,
+          retryDelayMs: result.retryable === false ? 30_000 : 500,
+          preserveSteering: result.retrySteering === true,
+          waitReason: result.steeringWaitReason,
+        });
+      } catch (error) {
+        this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    this.options.onMessageDeliveryChanged?.(steering.agentId);
+  }
+
+  private async dispatchRunLease(lease: SchedulerLease): Promise<void> {
+    const started = Date.now();
+    this.metrics.activePreparations += 1;
+    let compilation: ActivationPromptCompilation;
+    let prompt: string;
+    try {
+      compilation = await this.compilePromptWithDeadline(lease);
+      prompt = compilation.prompt;
+      this.store.preparePromptInjection({
+        injectionId: lease.injectionId,
+        runId: lease.runId,
+        fencingToken: lease.fencingToken,
+        prompt,
+      });
+    } catch (error) {
+      this.metrics.rejectedRuns += 1;
+      this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
+      try {
+        if (error instanceof ActivationPromptCompilationError) {
+          this.metrics.compilationFailures += 1;
+          this.metrics.poisonActivations += 1;
+          this.store.failRunForActivationCompilation({
+            runId: lease.runId,
+            fencingToken: lease.fencingToken,
+            workerId: this.options.workerId,
+            activationId: error.activationId,
+            errorCode: error.code,
+            errorDetail: error.failure.detail,
+            now: new Date(Date.now()).toISOString(),
+          });
+        } else {
+          this.metrics.preInjectionRecoveries += 1;
+          this.store.failRun({
+            runId: lease.runId,
+            fencingToken: lease.fencingToken,
+            workerId: this.options.workerId,
+            sameRunResumable: false,
+            confirmedNotExecuted: true,
+            retryable: true,
+            error: error instanceof Error ? error.message : String(error),
+            now: new Date(Date.now()).toISOString(),
+          });
+        }
+      } catch (containmentError) {
+        this.metrics.lastDispatchError = containmentError instanceof Error
+          ? containmentError.message
+          : String(containmentError);
+      } finally {
+        this.metrics.activePreparations -= 1;
+      }
+      this.options.onMessageDeliveryChanged?.(lease.agentId);
+      return;
+    }
+    this.metrics.activePreparations -= 1;
+    let result: CoordinationV3DispatchResult;
+    try {
+      result = await this.dispatch(lease, prompt, compilation);
+    } catch (error) {
+      result = { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
+    }
+    this.recordDispatchLatency(Math.max(0, Date.now() - started));
+    if (result.accepted) {
+      this.metrics.acceptedRuns += 1;
+    } else {
+      this.metrics.rejectedRuns += 1;
+      this.metrics.lastDispatchError = result.error ?? "scheduler dispatch rejected";
+      try {
+        this.store.failRun({
+          runId: lease.runId,
+          fencingToken: lease.fencingToken,
+          workerId: this.options.workerId,
+          sameRunResumable: false,
+          retryDelayMs: result.retryable === false ? 30_000 : 500,
+          retryable: result.retryable,
+          terminalOutcome: result.terminalOutcome,
+          error: result.error,
+          maxDeliveryFailures: this.options.maxDeliveryFailures,
+          now: new Date().toISOString(),
+        });
+      } catch (error) {
+        this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    this.options.onMessageDeliveryChanged?.(lease.agentId);
   }
 
   private async compilePromptWithDeadline(
@@ -510,11 +544,12 @@ export class CoordinationV3Scheduler {
     if (this.timer || this.stopped) return;
     this.timer = setTimeout(() => {
       this.timer = undefined;
+      // Poll admission independently of slow preparation/provider startup.
+      this.schedule(this.options.pollMs ?? 250);
       void this.drainOnce()
         .catch((error) => {
           this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
-        })
-        .finally(() => this.schedule(this.options.pollMs ?? 250));
+        });
     }, delayMs);
     this.timer.unref?.();
   }

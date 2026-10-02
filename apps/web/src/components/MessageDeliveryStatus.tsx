@@ -30,6 +30,8 @@ function deliveryLabel(
   recipientName: string,
   now: number,
 ): string {
+  const waiting = steeringWaitLabel(receipt);
+  if (waiting) return `Steer for ${recipientName}: ${waiting.detail} Provider acceptance does not guarantee immediate reconsideration or stop a running tool.`;
   switch (receipt.state) {
     case "queued": return `Queued for ${recipientName}.`;
     case "preparing": return `Preparing a Run for ${recipientName}.`;
@@ -63,6 +65,8 @@ function deliveryLabel(
 }
 
 function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto): string {
+  const waiting = steeringWaitLabel(receipt);
+  if (waiting) return waiting.compact;
   switch (receipt.state) {
     case "queued": return "Queued";
     case "preparing": return "Preparing";
@@ -81,6 +85,21 @@ function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto): string {
     case "retry_exhausted": return "Reply exhausted";
     case "failed": return receipt.providerAcknowledged ? "Follow-up failed" : "Failed";
     case "cancelled": return receipt.providerAcknowledged ? receipt.runStopState === "stopped" ? "Stopped" : receipt.runStopState === "stopping" ? "Stopping" : "Stop unconfirmed" : "Cancelled";
+  }
+}
+
+function steeringWaitLabel(receipt: MessageDeliveryReceiptDto): { compact: string; detail: string } | undefined {
+  if (receipt.state !== "queued" && receipt.state !== "retrying") return undefined;
+  switch (receipt.steeringWaitReason) {
+    case "context_refresh": return { compact: "Waiting for context refresh", detail: "waiting for context refresh to finish." };
+    case "prior_steering": return { compact: "Waiting for earlier steer", detail: "an earlier steer is awaiting provider acknowledgement." };
+    case "revision_pending": return { compact: "Saving message edit", detail: "waiting for the message edit to be durably recorded." };
+    case "provider_not_ready": return { compact: "Waiting for provider", detail: "the provider was not ready to accept steering; another attempt is scheduled." };
+    case "provider_unsupported": return { compact: "Provider cannot steer", detail: "the provider reported that steering is unsupported; these instructions have not been acknowledged." };
+    case "preparation_retry": return { compact: "Retrying steer preparation", detail: "prompt preparation did not finish; another attempt is scheduled." };
+    case "run_starting": return { compact: "Waiting for Run startup", detail: "the target Run is still starting." };
+    case "scheduler_pending": return { compact: "Steer pending", detail: "awaiting scheduler admission; no provider acknowledgement yet." };
+    default: return undefined;
   }
 }
 
