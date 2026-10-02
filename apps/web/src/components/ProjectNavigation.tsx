@@ -406,7 +406,7 @@ export function ProjectRail({
               sx={{ width: 36, height: 36, flex: "0 0 36px" }}
             >
               <Badge
-                color={attentionNotifications ? "error" : "primary"}
+                color="error"
                 badgeContent={notificationBadge}
                 max={99}
                 invisible={!notificationBadge}
@@ -693,7 +693,7 @@ export function ProjectRail({
           label="Notifications"
           selected={false}
           badge={attentionNotifications || (unreadNotificationUpdates ? 1 : undefined)}
-          badgeColor={attentionNotifications ? "error" : "primary"}
+          badgeColor="error"
           onClick={onOpenNotifications}
         >
           <NotificationsOutlinedIcon />
