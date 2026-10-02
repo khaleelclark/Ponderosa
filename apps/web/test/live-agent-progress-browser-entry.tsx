@@ -39,9 +39,11 @@ function Fixture() {
       injectionId: "steer", injectionKind: "steer", executionId: "run", attemptCount: 1,
       updatedAt: "2026-10-01T12:01:00Z", state: mode === "pending" ? "steering" : mode === "failed" ? "failed" : "delivered" };
     if (mode !== "pending") receipt.providerAcknowledged = true;
-    if (["first", "latest", "literal", "long"].includes(mode)) receipt.liveProgress = {
+    if (["first", "latest", "literal", "long", "wrapped"].includes(mode)) receipt.liveProgress = {
       text: mode === "first" ? "I am adjusting the approach" : mode === "literal" ? '<img src=x onerror="alert(1)"> **literal**' :
-        mode === "long" ? "long-unbroken-update".repeat(50) : "The revised approach is now underway",
+        mode === "long" ? "long-unbroken-update".repeat(50) : mode === "wrapped"
+          ? "I AM UPDATING THE IMPLEMENTATION TO FOLLOW YOUR REVISED INSTRUCTIONS AND CHECKING THE REMAINING DETAILS CAREFULLY. THE NEXT STEP IS TO VERIFY THE CHANGES BEFORE SHARING THE FINISHED RESULT WITH YOU NOW."
+          : "The revised approach is now underway",
       recipientHandle: "Boston", seq: mode === "first" ? 1 : 2, createdAt: "2026-10-01T12:02:00Z" };
     current = [{ ...user, deliveryReceipts: [receipt, ...(mode === "mixed" ? [{
       ...receipt, activationId: "other", targetAgentId: "other-agent", injectionKind: "turn" as const,

@@ -49,6 +49,34 @@ try {
     assert.equal(await page.evaluate(() => document.body.dataset.openAgent), "boston");
     await show("literal"); await progress.getByText('<img src=x onerror="alert(1)"> **literal**', { exact: true }).waitFor();
     assert.equal(await progress.locator("img").count(), 0, "no HTML/markdown execution");
+    await show("wrapped");
+    const wrapped = progress.getByText("I AM UPDATING THE IMPLEMENTATION", { exact: false });
+    await wrapped.waitFor();
+    assert((await wrapped.textContent()).length < 240, "regression text stays below the former character threshold");
+    const expand = progress.getByRole("button", { name: "Show full update", exact: true });
+    if (width < 900) {
+      assert(await wrapped.evaluate(el => el.scrollHeight > el.clientHeight + 1), `${surface}/${width} reproduces wrapped clipping`);
+      await expand.waitFor({ timeout: 3000 });
+      await expand.focus(); await page.keyboard.press("Enter");
+      await progress.getByRole("button", { name: "Collapse update", exact: true }).waitFor();
+      assert(await wrapped.evaluate(el => el.scrollHeight <= el.clientHeight + 1), "expansion exposes the complete wrapped update");
+      await page.setViewportSize({ width: 1440, height: 844 });
+      await progress.getByRole("button", { name: "Collapse update", exact: true }).click();
+      await expand.waitFor({ state: "detached" });
+      assert(await wrapped.evaluate(el => el.scrollHeight <= el.clientHeight + 1), "wide update is not clipped");
+      await page.setViewportSize({ width, height: 844 });
+      await expand.waitFor();
+      await page.screenshot({ path: path.join(tmpdir(), `live-progress-wrapped-${engine}-${surface}-${width}.png`) });
+    } else {
+      assert(await wrapped.evaluate(el => el.scrollHeight <= el.clientHeight + 1), "desktop update fits without expansion");
+      await expand.waitFor({ state: "detached" });
+      await page.setViewportSize({ width: 320, height: 844 });
+      await expand.waitFor();
+      await page.setViewportSize({ width, height: 844 });
+      await expand.waitFor({ state: "detached" });
+    }
+    await show("latest"); await progress.getByText("The revised approach is now underway", { exact: true }).waitFor();
+    await expand.waitFor({ state: "detached" });
     await show("long");
     await progress.getByRole("button", { name: "Show full update", exact: true }).waitFor();
     await progress.getByRole("button", { name: "Show full update", exact: true }).focus();

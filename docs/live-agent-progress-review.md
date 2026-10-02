@@ -17,8 +17,9 @@ This follow-up itself requires independent review. Do not merge or deploy.
   canonical human cause and latest injection. A pending newer injection suppresses
   old commentary. Coalesced causes show one update under the newest cause.
 - The latest update replaces earlier text; SQL limits text to 1,201 code points
-  before JS, returning at most 1,200. UI initially shows four lines and can expand
-  the bounded text. The renderer is plain text, never HTML/markdown.
+  before JS, returning at most 1,200. UI initially shows four lines and offers
+  expansion whenever the rendered text overflows, including after resizing.
+  The renderer is plain text, never HTML/markdown.
 - A scoped canonical reply since acknowledgement or a terminal/expired Run hides
   progress. Existing failure, cancellation and uncertain receipts remain.
 - A confirmed steering delivery gets a visible “Instructions delivered to …”
@@ -63,3 +64,19 @@ Provider phase contract: [official Codex app-server documentation](https://devel
   progress refreshes and no added requests from the hidden tab. This is not a live
   managed-Agent workload.
 - These are implementer results, not independent review or release approval.
+
+## Wrapped-preview review correction
+
+The independent review at `feeebce92b2e906bef7dd3f5b63b2af861b27dd2`
+found a short wrapped update could exceed four lines without an expansion
+control. The new browser regression failed against that implementation at
+320px. The correction replaces character/newline heuristics with rendered
+`scrollHeight`/`clientHeight` measurement and a scoped, cleaned-up
+`ResizeObserver`. It does not change provider events, receipt authority,
+stored output or refresh behavior.
+
+Fresh Chromium and WebKit checks cover sub-240-character updates in Project
+Chat, Agent Chat and All Messages at 320/390px, complete keyboard expansion,
+resizing to 1440px while expanded and collapsing, narrow/wide resize detection,
+and replacement with short text. The correction requires independent re-review;
+no merge, deployment, sandbox refresh or live-data repair is authorized.
