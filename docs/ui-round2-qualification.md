@@ -153,6 +153,25 @@ picker dialogs. The final full-suite log is
 `/tmp/ponderosa-folder-{chromium,webkit,font-card-chromium,font-card-webkit}.log`.
 These are implementer results, not independent approval.
 
+## Python rejection follow-up
+
+Read-only HTTP checks on October 2 found that both the earlier sandbox on port
+37443 and dev on port 10443 still returned the old `/api/asset-limits` list,
+without `application/octet-stream`. Replaying that list in the composer
+reproduces the reported Python rejection. The screenshot does not establish
+which endpoint was used; neither checked endpoint has the new admission list.
+No service or live data was changed by these checks.
+
+The current product code already accepts `.py` with Python-specific MIME,
+plain-text, generic binary and empty MIME values. A test-only follow-up adds
+explicit Python original-byte HTTP/runtime/reopening coverage and mixed
+Python/Rust/CSS/extensionless/YAML/archive drops in the actual composer.
+Fresh web tests passed 299/299, focused server tests passed 3/3, and the
+Chromium/WebKit desktop/mobile composer checks passed. Evidence is retained
+in `/tmp/ponderosa-python-{web-tests,server-tests,chromium,webkit}.log`.
+The preceding 1,002-pass full suite is evidence at `efa188376942ece808e1f927cdc9ff0232feff13`;
+this follow-up changes tests and qualification documentation only.
+
 ## Manual checklist
 
 - [ ] Send, navigate away/back, and fail a send: no duplicate draft; failure recoverable.

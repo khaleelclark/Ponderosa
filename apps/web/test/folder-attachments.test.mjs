@@ -83,5 +83,13 @@ test("fonts, code, office, media and archives are admitted as opaque files while
   for (const [name, type] of [["font.ttf", "font/ttf"], ["font.otf", "font/otf"], ["font.woff", "font/woff"], ["font.woff2", ""], ["code.ts", "text/typescript"], ["sheet.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"], ["movie.mp4", "video/mp4"], ["audio.wav", "audio/wav"], ["bundle.tar", "application/x-tar"], ["custom.bin", "application/octet-stream"]]) {
     const file = { name, type, size: 100 }; assert.deepEqual(selectComposerFiles([], [file], DEFAULT_ASSET_LIMITS).accepted, [file]);
   }
+  for (const type of ["text/x-python", "text/x-python-script", "application/x-python-code", "text/plain", "application/octet-stream", ""]) {
+    const file = { name: "script.py", type, size: 100 };
+    assert.deepEqual(selectComposerFiles([], [file], DEFAULT_ASSET_LIMITS).accepted, [file], type);
+  }
+  const oldServerLimits = { ...DEFAULT_ASSET_LIMITS, acceptedMediaTypes: DEFAULT_ASSET_LIMITS.acceptedMediaTypes.filter(type => type !== "application/octet-stream") };
+  const oldResult = selectComposerFiles([], [{ name: "script.py", type: "text/x-python", size: 100 }], oldServerLimits);
+  assert.equal(oldResult.accepted.length, 0, "do not claim support when the running server still advertises the old allowlist");
+  assert.match(oldResult.error, /file type is not supported/);
   assert.equal(selectComposerFiles([], [{ name: "image.png", type: "application/x-executable", size: 100 }], DEFAULT_ASSET_LIMITS).accepted.length, 0);
 });

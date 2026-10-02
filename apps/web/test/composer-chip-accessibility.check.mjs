@@ -45,7 +45,7 @@ try {
     const transfer = new DataTransfer();
     for (const name of names) transfer.items.add(new File(["fixture bytes"], name, {
       type: /\.(jpg|gif|avif)$/u.test(name) ? "" : name.endsWith(".png") ? "image/png" : name.endsWith(".docx")
-        ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : name.endsWith(".ttf") ? "font/ttf" : "text/plain",
+        ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : name.endsWith(".ttf") ? "font/ttf" : name.endsWith(".py") ? "text/x-python" : "text/plain",
     }));
     const event = new DragEvent(eventType, { bubbles: true, cancelable: true, dataTransfer: transfer });
     element.dispatchEvent(event);
@@ -91,6 +91,14 @@ try {
     await page.getByRole("button", { name: "Remove photo.avif", exact: true }).waitFor({ state: "detached" });
     await dropFiles(page, ".ponderosa-composer", "drop", ["Regular.ttf"]);
     await page.getByRole("button", { name: "Remove Regular.ttf", exact: true }).click();
+    const beforeSourceText = await input.innerText();
+    const sourceFiles = ["script.py", "module.rs", "style.css", "README", "rules.yaml", "archive.7z"];
+    await dropFiles(page, ".ponderosa-composer", "drop", sourceFiles);
+    for (const name of sourceFiles) {
+      await page.getByRole("button", { name: `Remove ${name}`, exact: true }).waitFor();
+    }
+    assert.equal(await input.innerText(), beforeSourceText, "mixed source/config/archive drops preserve the composer text");
+    for (const name of sourceFiles) await page.getByRole("button", { name: `Remove ${name}`, exact: true }).click();
     const beforeFolderText = await input.innerText();
     await page.locator(".ponderosa-composer").evaluate(element => {
       const transfer = new DataTransfer();
