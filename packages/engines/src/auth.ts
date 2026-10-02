@@ -115,10 +115,16 @@ export async function codexAuthStatus(
     const output = `${stdout}\n${stderr}`.trim();
     return parseCodexLoginStatus(output);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const failed = err as Error & { stdout?: string; stderr?: string };
+    const output = `${failed.stdout ?? ""}\n${failed.stderr ?? ""}`;
+    if (output.length <= 256 * 1024) {
+      const observed = parseCodexLoginStatus(output);
+      if (!observed.authenticated && observed.status !== "unknown") return observed;
+    }
     return {
       authenticated: false,
-      detail: `run \`codex login\` on the host for ChatGPT subscription auth (${message})`,
+      status: "unknown",
+      detail: "Codex authentication could not be checked; the probe failed or timed out.",
     };
   }
 }
@@ -132,6 +138,7 @@ export async function codexAvailabilityStatus(
   readAuth: () => Promise<EngineAuthStatus> = () => codexAuthStatus(env),
 ): Promise<EngineAvailabilityStatus> {
   const auth = await readAuth();
+  if (auth.status === "unknown") return { available: false, failureCategory: "unavailable", detail: "Provider authentication could not be checked." };
   if (!auth.authenticated) {
     return { available: false, failureCategory: "authentication", detail: auth.detail };
   }
@@ -216,7 +223,10 @@ export async function claudeAuthStatus(
       };
     }
     return { authenticated: false, detail: "run `claude` and sign in to your Claude Pro/Max account" };
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      return { authenticated: false, status: "unknown", detail: "Claude authentication could not be checked." };
+    }
     return { authenticated: false, detail: "run `claude` and sign in to your Claude Pro/Max account" };
   }
 }
@@ -232,6 +242,7 @@ export async function claudeAvailabilityStatus(
   readAuth: () => Promise<EngineAuthStatus> = () => claudeAuthStatus(env),
 ): Promise<EngineAvailabilityStatus> {
   const auth = await readAuth();
+  if (auth.status === "unknown") return { available: false, failureCategory: "unavailable", detail: "Provider authentication could not be checked." };
   if (!auth.authenticated) {
     return { available: false, failureCategory: "authentication", detail: auth.detail };
   }
@@ -320,5 +331,8 @@ export function parseCodexLoginStatus(output: string): EngineAuthStatus {
     return { authenticated: true, detail: detail || "logged in using ChatGPT" };
   }
 
-  return { authenticated: false, detail: detail || LOGIN_DETAIL };
+  if (/\bnot (?:logged in|authenticated)\b/iu.test(normalized)) {
+    return { authenticated: false, detail: LOGIN_DETAIL };
+  }
+  return { authenticated: false, status: "unknown", detail: "Codex returned an unrecognized authentication status." };
 }

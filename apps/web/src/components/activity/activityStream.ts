@@ -26,6 +26,9 @@ export interface ActivityStreamResult {
   isError: boolean;
   failureCategory?: ToolFailureCategory;
   retryable?: boolean;
+  exitCode?: number;
+  signal?: string;
+  retryAfterMs?: number;
   retryState?: "retrying" | "retried" | "recovered";
   outputPreview?: AgentActivityDto["outputPreview"];
 }
@@ -112,6 +115,9 @@ function activityResult(item: AgentActivityDto): ActivityStreamResult | undefine
     completedAt: item.createdAt,
     output: item.event.output,
     isError: item.event.isError === true,
+    ...(item.event.exitCode === undefined ? {} : { exitCode: item.event.exitCode }),
+    ...(item.event.signal === undefined ? {} : { signal: item.event.signal }),
+    ...(item.event.retryAfterMs === undefined ? {} : { retryAfterMs: item.event.retryAfterMs }),
     ...(failure ? { failureCategory: failure.category, retryable: failure.retryable } : {}),
     ...(item.outputPreview ? { outputPreview: item.outputPreview } : {}),
   };

@@ -232,6 +232,7 @@ export interface TeamDirectoryAgentDto {
   description: string;
   status: AgentOperationalStatus;
   currentActivity?: string;
+  admissionBlocker?: import("./common.js").QueuedAdmissionBlockerDto;
   managerAgentId?: string;
   childAgentIds: string[];
   engine: EngineId;
@@ -455,6 +456,7 @@ export interface AgentHealthDto {
   /** Timestamp of the authoritative observation that selected `status`. */
   statusTimestamp: string;
   reason: AgentOperationalReason;
+  admissionBlocker?: import("./common.js").QueuedAdmissionBlockerDto;
   /** Optional evidence-backed detail decorating the coarse operational status. */
   phase?: AgentPhaseDto;
   /** Runtime generation and bounded liveness window, when work is active. */

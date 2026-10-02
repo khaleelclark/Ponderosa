@@ -163,7 +163,7 @@ test("new Agents remain quarantined while opening assets are staged", async (t) 
       deleteAgent: () => true,
     },
     coordinationV3: { handleAgentDeletion: () => {} },
-    workspace: { getPreferences: () => ({}) },
+    workspace: { getPreferences: () => ({ providerAvailability: {} }) },
     assets: {
       stage: async () => {
         stageStarted.resolve();
@@ -263,7 +263,7 @@ function agentCreationTransactionApp({
       handleAgentDeletion: () => {},
       recordRuntimeCommunication,
     },
-    workspace: { getPreferences: () => ({}) },
+    workspace: { getPreferences: () => ({ providerAvailability: {} }) },
     assets: {
       stage,
       remove: async (_projectId, _agentId, id) => {
@@ -763,7 +763,7 @@ function agentMessageValidationApp({
       getConversation: (id) => id === chat.id ? chat : undefined,
       getRuns: () => runs,
     },
-    workspace: { getPreferences: () => ({}) },
+    workspace: { getPreferences: () => ({ providerAvailability: {} }) },
     coordinationV3,
     assets: {
       stage: async () => {
@@ -1304,6 +1304,7 @@ test("coordinate replay precedes mutable recipient checks", async (t) => {
   const author = { id: "author-a", projectId: "project-a", conversationId: "chat-a", archived: false };
   let replayed = false;
   registerAgentCoordinationRoutes(app, {
+    providerEnabled: () => true,
     store: {
       getAgent: (id) => id === author.id ? author : undefined,
       getConversationMessages: () => [],
@@ -1371,6 +1372,7 @@ test("managed Agent spawn replay canonicalizes input before current engine valid
   };
   const payloadHashes = [];
   registerAgentCoordinationRoutes(app, {
+    providerEnabled: () => true,
     store: {
       getAgent: () => manager,
       beginAgentCreationOperation: (input) => {

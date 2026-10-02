@@ -531,10 +531,14 @@ export function projectProviderCommandResult(value: unknown): RuntimeCommandResu
 /** Copy authentication probe output before it enters the shared auth cache. */
 export function projectProviderAuthStatus(value: unknown): EngineAuthStatus {
   const budget = new ProjectionBudget("auth");
-  const record = dataRecord(value, ["authenticated", "detail"], "auth", budget, 0);
+  const record = dataRecord(value, ["authenticated", "detail", "status"], "auth", budget, 0);
   const detail = optionalString(record, "detail", MAX_DESCRIPTION_CHARACTERS, "auth", budget, 1);
+  const status = optionalString(record, "status", 16, "auth", budget, 1);
+  const authenticated = requiredBoolean(record, "authenticated", "auth", budget, 1);
+  if (status !== undefined && (status !== "unknown" || authenticated)) reject("auth");
   return {
-    authenticated: requiredBoolean(record, "authenticated", "auth", budget, 1),
+    authenticated,
+    ...(status === "unknown" ? { status } : {}),
     ...(detail === undefined ? {} : { detail }),
   };
 }

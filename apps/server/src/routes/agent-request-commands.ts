@@ -1,5 +1,6 @@
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
+  REQUEST_UPDATE_TOOL_KINDS,
   canonicalizeProviderText,
   shouldBackTextWithArtifact,
   type CommunicationEvent,
@@ -111,14 +112,10 @@ export function registerAgentRequestCommandRoutes(
         return reply.code(400).send({ error: `${key} must be a string` });
       }
     }
-    const allowedKinds: readonly CoordinationRequestUpdateKind[] = [
-      "progress", "waiting_dependency", "dependency_resolved", "question", "answer",
-      "completed", "blocked", "failed", "cancelled", "superseded",
-      "recipient_unavailable", "outcome_unknown", "expired",
-    ];
+    const allowedKinds: readonly CoordinationRequestUpdateKind[] = REQUEST_UPDATE_TOOL_KINDS;
     if (candidate.kind !== undefined &&
         (typeof candidate.kind !== "string" || !allowedKinds.includes(candidate.kind as CoordinationRequestUpdateKind))) {
-      return reply.code(400).send({ error: "kind is not a recognized request update kind" });
+      return reply.code(400).send({ error: "kind is not a recognized request update kind; use waiting_dependency, not waiting", code: "invalid_input", acceptedKinds: allowedKinds });
     }
     const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
     const suppliedRequestId = request.body?.requestId?.trim();

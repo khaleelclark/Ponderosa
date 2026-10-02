@@ -22,6 +22,8 @@ import { attachmentsDir } from "@ponderosa/agents";
 import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
 import { renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
+import { canonicalDefaultReplyRoute } from "../required-reply-route.js";
+import { environmentFactsPrompt, runtimeEnvironmentFacts } from "../runtime-environment-facts.js";
 import { collectReachableArtifactIds } from "../artifact-refs.js";
 import { appendReadableArtifactReferences } from "../communication-artifacts.js";
 import {
@@ -369,7 +371,10 @@ export async function prepareAgentRun(
     ...providerDynamicTools(),
     ...(historyRetrievalBoundary ? [PONDEROSA_HISTORY_TOOL] : []),
   ];
-  const communicationPrompt = communicationV3Prompt();
+  const defaultReply = canonicalDefaultReplyRoute(coordinationV3, runId, agent.id);
+  const communicationPrompt = communicationV3Prompt(defaultReply);
+  const environmentFacts = await runtimeEnvironmentFacts({ cwd: workingCopy.rootPath, agentId: agent.id, allowedImportRoots: runContext.opts.allowedImportRoots });
+  const environmentPrompt = environmentFactsPrompt(environmentFacts);
   const providerToolHash = providerToolContractHash(availableRuntimeTools, communicationPrompt);
   const runtimeSessionContractHash = providerSessionContractHash(
     runtimeEngineId,
@@ -405,6 +410,7 @@ export async function prepareAgentRun(
     ...(projectInstructions ? [`Chat rules:\n${projectInstructions}`] : []),
     "",
     ...communicationPrompt,
+    ...environmentPrompt,
   ]);
   const systemPrompt = runtimeSystemPrompt(agent, managedRules);
   const systemPromptHash = createHash("sha256").update(systemPrompt).digest("hex");
@@ -1006,8 +1012,9 @@ ${freshGuidedPrompt}${attachmentContext}${freshBroadcastAttachmentContext}${coal
     const artifactIds = [...new Set([...submittedArtifactIds, ...retainedArtifactIds])].sort();
     return {
       schemaVersion: 3,
+      environmentFacts,
       historyMessageCount: input.submittedHistory.length + input.contextMessages.length,
-      retainedSessionSourceCount: (input.policyDelivery === "retained_session" ? 2 : 0) + retainedArtifactIds.length,
+      retainedSessionSourceCount: (input.policyDelivery === "retained_session" ? 3 : 0) + retainedArtifactIds.length,
       activationIds: manifestActivationIds,
       triggerOccurrenceIds: manifestTriggerOccurrences.map((occurrence) => occurrence.id),
       communicationEventIds,
@@ -1015,6 +1022,7 @@ ${freshGuidedPrompt}${attachmentContext}${freshBroadcastAttachmentContext}${coal
       ...(manifestConversationId ? { conversationId: manifestConversationId } : {}),
       providerSessionDisposition: input.disposition,
       sources: [
+        { kind: "environment", ref: workingCopy.id, delivery: input.policyDelivery, hash: createHash("sha256").update(JSON.stringify(environmentFacts)).digest("hex") },
         { kind: "identity", ref: agent.id, delivery: input.policyDelivery },
         {
           kind: "policy",

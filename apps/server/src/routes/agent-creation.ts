@@ -27,6 +27,7 @@ import {
   runtimeSpeedSelectionError,
 } from "../runtime-selection.js";
 import type { DraftService } from "./drafts.js";
+import { ProviderDisabledError } from "../provider-admission.js";
 
 type CommunicationArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
 
@@ -354,6 +355,17 @@ export function registerAgentCreationRoutes(
           operationId: creationOperation.id,
         });
       }
+      const executableOpening = Boolean(initialMessage || draftAttachmentIds.length);
+      const assertOpeningAdmission = () => {
+        if (executableOpening && workspace.getPreferences().providerAvailability[request.body.engine] === false) {
+          throw new ProviderDisabledError(request.body.engine);
+        }
+      };
+      try { assertOpeningAdmission(); } catch (error) {
+        if (!(error instanceof ProviderDisabledError)) throw error;
+        store.updateAgentCreationOperation(creationOperation.id, { status: "rolled_back", lastError: error.message });
+        return reply.code(409).send({ error: error.message, code: error.code, engineId: error.engineId });
+      }
       activeCreationOperations.add(creationOperation.id);
       const leaseConversationId = request.body.conversationId;
       agentCreationConversationLeases.set(
@@ -374,6 +386,7 @@ export function registerAgentCreationRoutes(
         return abandonMutationFreeOperation(400, "draft attachment is missing or belongs to another conversation");
       }
       const hasInitialTurn = Boolean(initialMessage || draftAttachments.length);
+      assertOpeningAdmission();
       if (hasInitialTurn && request.body.managerAgentId && !request.body.conversationId) {
         return abandonMutationFreeOperation(400, "a managed agent opening message requires its manager to belong to a Project chat");
       }
@@ -468,6 +481,7 @@ export function registerAgentCreationRoutes(
         });
       }
       let managedOpening: { requestIds: string[]; joinId?: string } | undefined;
+      assertOpeningAdmission();
       if (hasInitialTurn) {
         const createdAt = openingCreatedAt;
         const eventId = openingEventId;
@@ -671,6 +685,7 @@ export function registerAgentCreationRoutes(
         const status = error instanceof AssetError ? error.statusCode : 409;
         return reply.code(status).send({
           error: error instanceof Error ? error.message : "Agent opening could not be committed",
+          ...(error instanceof ProviderDisabledError ? { code: error.code, engineId: error.engineId } : {}),
         });
       } finally {
         releaseAgentDelivery();
@@ -679,6 +694,10 @@ export function registerAgentCreationRoutes(
       } catch (error) {
         const current = store.getAgentCreationOperation(creationOperation.id);
         if (current && current.agentIds.length === 0) {
+          if (error instanceof ProviderDisabledError) {
+            store.updateAgentCreationOperation(creationOperation.id, { status: "rolled_back", lastError: error.message });
+            return reply.code(409).send({ error: error.message, code: error.code, engineId: error.engineId });
+          }
           const status = error instanceof AssetError ? error.statusCode : 500;
           return abandonMutationFreeOperation(
             status,

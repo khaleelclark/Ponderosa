@@ -387,7 +387,9 @@ export function registerAgentRuntimeToolRoutes(
     const importRoot = importRootFor(workingRoot, allowedImportRoots, absoluteSourcePath);
     if (!importRoot) {
       return reply.code(403).send({
-        error: "host file is outside the Project workspace and configured import roots",
+        error: "host file is outside the Project workspace and configured import roots. Use the authorized report-output location from this Run's environment facts, publish the report as canonical text, or ask the operator to configure an import root. Do not copy the rejected file automatically or weaken symlink containment.",
+        code: "outside_import_roots",
+        boundary: { workingRoot, configuredImportRootCount: Math.min(allowedImportRoots.length, 8) },
       });
     }
     const requestHash = createHash("sha256")

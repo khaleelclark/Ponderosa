@@ -159,7 +159,10 @@ export function agentStatusPresentation(
   } = {},
 ): AgentStatusPresentation {
   const status = options.status ?? health?.status ?? "idle";
-  const coarseLabel = isProviderBlockedHealth(health)
+  const blocker = health && "admissionBlocker" in health ? health.admissionBlocker : undefined;
+  const coarseLabel = blocker && status === "blocked"
+    ? `Queued · ${blocker.providerId} ${blocker.kind === "provider_disabled" ? "disabled" : blocker.kind === "authentication_unknown" ? "authentication unknown" : blocker.kind === "authentication_required" ? "sign-in required" : "unavailable"}`
+    : isProviderBlockedHealth(health)
     ? "Provider blocked"
     : agentStatusLabel(status);
   const coarse = {

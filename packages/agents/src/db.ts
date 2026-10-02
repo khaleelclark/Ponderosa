@@ -50,6 +50,7 @@ const schemaExtensions = [
   "0014_activation_outbox_retry.sql",
   "0015_system_incident_correlation.sql",
   "0016_public_progress.sql",
+  "0017_exact_prompt_injections.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";

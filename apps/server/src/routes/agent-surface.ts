@@ -36,6 +36,7 @@ interface AgentSurfaceContext {
   capabilityOwnsAuthoritativeRun: DecisionRoutes["capabilityOwnsAuthoritativeRun"];
   publishWorkspaceSince: DecisionRoutes["publishWorkspaceSince"];
   engines: ManagementRoutes["engines"];
+  providerEnabled(engineId: string): boolean;
   managementPlans: ManagementRoutes["managementPlans"];
   deletingAgentIds: ManagementRoutes["deletingAgentIds"];
   deletingProjectIds: ReadonlySet<string>;
@@ -199,6 +200,7 @@ registerAgentCoordinationRoutes(app, {
   store,
   coordinationV3,
   engines,
+  providerEnabled: context.providerEnabled,
   deletingAgentIds,
   deletingProjectIds,
   deletingConversationIds,

@@ -93,6 +93,11 @@ export type AgentEvent =
       isError?: boolean;
       failureCategory?: ToolFailureCategory;
       retryable?: boolean;
+      /** Provider-supplied command outcome, not a Run terminal result. */
+      exitCode?: number;
+      signal?: string;
+      /** Connector-local advice only; never authorizes write replay. */
+      retryAfterMs?: number;
     }
   | { type: "command"; command: string; cwd: string; callId?: string } // → Run activity / Artifact
   | { type: "file_change"; path: string; kind: FileChangeKind; diff?: string; callId?: string } // → Artifact
@@ -148,6 +153,8 @@ export type AgentEvent =
     }
   | {
       type: "error";
+      /** Explicit provider terminal evidence, never inferred from error prose. */
+      terminalStatus?: "failed" | "interrupted" | "unknown";
       /** Finite code-owned public summary after the canonical append boundary. */
       message: string;
       code?: ProviderErrorCode;

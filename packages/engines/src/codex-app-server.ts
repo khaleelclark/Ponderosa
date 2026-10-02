@@ -15,7 +15,7 @@ import {
   safeProviderConnectionUrl,
 } from "@ponderosa/core";
 import { stripVTControlCharacters } from "node:util";
-import { mapFileChangeKind, providerErrorCodeFromDetail } from "./events.js";
+import { commandOutcome, mapFileChangeKind, providerErrorCodeFromDetail } from "./events.js";
 import { JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeCodexProviderDiscovery } from "./capabilities.js";
@@ -982,7 +982,7 @@ function normalizedToolResult(
     id,
     output,
     ...(canonicalIsError ? { isError: true } : {}),
-    ...(failure ? { failureCategory: failure.category, retryable: failure.retryable } : {}),
+    ...(failure ? { failureCategory: failure.category, retryable: failure.retryable, ...(failure.retryAfterMs === undefined ? {} : { retryAfterMs: failure.retryAfterMs }) } : {}),
   };
 }
 
@@ -1016,7 +1016,12 @@ export function mapCodexAppServerNotification(
       const message = turn.error?.message ?? "Codex turn failed";
       const rawCode = typeof turn.error?.code === "string" ? turn.error.code : undefined;
       const code = providerErrorCodeFromDetail(message, rawCode);
-      return [{ type: "error", message, ...(code ? { code } : {}) }];
+      return [{ type: "error", message, terminalStatus: "failed", ...(code ? { code } : {}) }];
+    }
+    if (turn?.status !== "completed") {
+      return [{ type: "error", terminalStatus: turn?.status === "interrupted" ? "interrupted" : "unknown", message: turn?.status === "interrupted"
+        ? "Codex turn was interrupted; successful completion was not observed."
+        : "Codex turn ended without a recognized completed status; its outcome is unconfirmed." }];
     }
     return [{
       type: "turn_done",
@@ -1040,7 +1045,7 @@ export function mapCodexAppServerNotification(
       type: "tool_result",
       id: typeof item.id === "string" ? item.id : "command",
       output: typeof item.aggregatedOutput === "string" ? sanitizeTerminalOutput(item.aggregatedOutput) : "",
-      ...(typeof item.exitCode === "number" && item.exitCode !== 0 ? { isError: true } : {}),
+      ...commandOutcome(item.exitCode, item.signal),
     }];
   }
   if (notification.method === "item/completed" && item.type === "agentMessage") {

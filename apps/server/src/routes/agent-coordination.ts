@@ -26,11 +26,13 @@ import { runtimeSelectionError } from "../runtime-selection.js";
 import { derivedRunActionKey } from "../security.js";
 import { reconcileCommittedAgentCreation } from "../agent-creation-recovery.js";
 import { leaseConversationDelivery } from "../delivery-leases.js";
+import { ProviderDisabledError } from "../provider-admission.js";
 
 interface AgentCoordinationRoutesContext {
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   engines: ReadonlyMap<string, EngineRegistration>;
+  providerEnabled(engineId: string): boolean;
   deletingAgentIds: Set<string>;
   deletingProjectIds: ReadonlySet<string>;
   deletingConversationIds: ReadonlySet<string>;
@@ -254,6 +256,11 @@ export function registerAgentCoordinationRoutes(
         lastError: null,
       });
       return { agent: legacyReplay, replayed: true };
+    }
+    if (!context.providerEnabled(engineId)) {
+      const error = new ProviderDisabledError(engineId);
+      store.updateAgentCreationOperation(creationOperation.id, { status: "rolled_back", lastError: error.message });
+      return reply.code(409).send({ error: error.message, code: error.code, engineId });
     }
     let child: AgentDto | undefined;
     let coordinated: { requestIds: string[]; joinId?: string; replayed: boolean } | undefined;

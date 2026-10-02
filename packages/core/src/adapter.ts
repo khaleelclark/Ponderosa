@@ -524,6 +524,8 @@ export interface Adapter {
 /** Reported by `/api/engines` (SPEC §8): an engine plus its live auth status. */
 export interface EngineAuthStatus {
   authenticated: boolean;
+  /** False alone is not logout evidence when the read-only probe is unknown. */
+  status?: "unknown";
   /** Optional human-readable detail (e.g. "logged in as ...", or why not). */
   detail?: string;
 }

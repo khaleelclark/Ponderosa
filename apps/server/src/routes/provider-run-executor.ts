@@ -45,6 +45,7 @@ import {
   takeProviderRuntimeCleanupFailure,
 } from "../provider-session-facade.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
+import { runtimeObservation } from "../runtime-observation.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
 import { createProviderDynamicToolHandler } from "./provider-dynamic-tool-handler.js";
 
@@ -808,6 +809,11 @@ export function startProviderRunExecution(
           }
           if (deletingAgentIds.has(agent.id) || isClosed() || controller.signal.aborted || !renewExecutionLease(agent.id, activeRun)) break;
           if (!receiveRuntimeEvent(agent.id, activeRun)) break;
+          if (event.type === "context_usage" && event.providerSessionGeneration !== undefined) {
+            activeRun.observedProviderSessionGeneration = event.providerSessionGeneration;
+          }
+          if (event.type === "turn_done") activeRun.observedProviderTerminalStatus = "completed";
+          if (event.type === "error" && event.terminalStatus !== undefined) activeRun.observedProviderTerminalStatus = event.terminalStatus;
           if (event.type === "error" && sessionId && !providerWorkObserved && shouldRolloverEngineSession(runtimeEngineId, event.message)) {
             // The provider confirmed the resumed session failed before
             // sampling. Discard its buffered session event and retry once
@@ -1322,6 +1328,9 @@ export function startProviderRunExecution(
           status: "cancelled",
           reason: "agent_cancelled",
           executionId: runId,
+          runtimeObservation: runtimeObservation(activeRun,
+            activeRun.runtimeSession?.processIdentity ?? oneShotRuntime(agent.id, runId)?.handle.processIdentity,
+            undefined, schedulerCancelled ? "scheduler cancellation" : controller.signal.aborted ? "Run abort observed" : undefined),
         });
         publish(agent.id, cancelled);
       }
@@ -1343,6 +1352,9 @@ export function startProviderRunExecution(
           status: schedulerCancelled ? "cancelled" : runError ? "failed" : "completed",
           reason: schedulerCancelled ? "agent_cancelled" : runError ? "runtime_error" : "turn_completed",
           executionId: runId,
+          runtimeObservation: runtimeObservation(activeRun,
+            activeRun.runtimeSession?.processIdentity ?? oneShotRuntime(agent.id, runId)?.handle.processIdentity,
+            undefined, schedulerCancelled ? "scheduler cancellation" : undefined),
         });
         refreshProviderUsageAfterRun(runtimeEngineId);
         if (rolloverSucceeded) {

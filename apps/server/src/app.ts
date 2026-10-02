@@ -668,6 +668,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     publishMessageDeliveryChanged,
     teamDirectory,
   } = createServerReadModels({
+    admissionBlocker: (agent) => {
+      const registration = engines.get(agent.activeEngine);
+      return registration ? runtimeAdmissionBlocker(agent.activeEngine, registration) : { kind: "provider_unavailable", providerId: agent.activeEngine.slice(0, 128) };
+    },
     store,
     coordinationV3,
     workspace,
@@ -748,6 +752,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     refreshProviderUsageAfterRun,
     reportRuntimeCapabilitiesChanged,
     runtimeStatus,
+    runtimeAdmissionBlocker,
     validateEngineModel,
   } = createEngineControlPlane({
     engines,
@@ -1025,6 +1030,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     authoritativeCommunicationDocument,
     managedProjectArtifactAgreesWithRuntime,
   } = registerAgentSurface(app, {
+    providerEnabled,
     opts,
     store,
     coordinationV3,

@@ -40,8 +40,16 @@ export interface ProviderInputSourceManifestV2 {
   }>;
 }
 
+export interface RuntimeEnvironmentFactsDto {
+  cwd: string;
+  platform: string;
+  executables: Array<{ name: "python" | "python3" | "node" | "git" | "pnpm"; availability: "available" | "not_found" | "unknown" }>;
+  reportOutputRoot?: string;
+}
+
 export interface ProviderInputSourceManifestV3 {
   schemaVersion: 3;
+  environmentFacts?: RuntimeEnvironmentFactsDto;
   /** History messages represented in the exact text submitted for this Run. */
   historyMessageCount: number;
   /** Sources known to remain only in the continued provider session. */
@@ -53,7 +61,7 @@ export interface ProviderInputSourceManifestV3 {
   conversationId?: string;
   providerSessionDisposition: "fresh_task" | "continued_session" | "reseeded";
   sources: Array<{
-    kind: "policy" | "identity" | "history_message" | "activation" | "trigger_occurrence" | "communication" | "artifact" | "team_directory" | "context_reference" | "continuation_handoff";
+    kind: "policy" | "identity" | "history_message" | "activation" | "trigger_occurrence" | "communication" | "artifact" | "team_directory" | "context_reference" | "continuation_handoff" | "environment";
     ref: string;
     /** Submitted sources contribute to exactPrompt; retained sources do not. */
     delivery: "submitted" | "retained_session";
@@ -69,6 +77,17 @@ export interface ProviderInputSourceManifestV3 {
 
 /** Earlier manifests remain readable for historical Runs; new Runs use V3. */
 export type ProviderInputSourceManifest = ProviderInputSourceManifestV1 | ProviderInputSourceManifestV2 | ProviderInputSourceManifestV3;
+
+/** Exact scheduler packet, including steering. This does not claim to snapshot
+ * opaque retained provider history or create a second execution identity. */
+export interface PromptInjectionSourceManifestDto {
+  schemaVersion: 1;
+  runId: string;
+  injectionId: string;
+  kind: "turn" | "steer";
+  activationIds: string[];
+  sources: Array<{ kind: "activation"; ref: string }>;
+}
 
 export interface ProviderInputDto {
   executionId: string;
@@ -212,6 +231,8 @@ export interface EngineDto {
    * successful authentication does not prove provider reachability. */
   authentication: "checking" | "authenticated" | "unauthenticated" | "error";
   authDetail?: string;
+  /** Bounded stale information, never intake authority when authentication is error. */
+  authLastKnown?: { authenticated: boolean; observedAt: string };
   /** Scheduler intake may start real provider work. This is admission state,
    * not a claim that a provider request has already succeeded. */
   intakeReady: boolean;

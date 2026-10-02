@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type {
   CoordinationRequestState,
   ProviderInputSourceManifest,
+  PromptInjectionSourceManifestDto,
   ProviderFailureCategory,
   OutcomeInternalFailureCode,
 } from "@ponderosa/core";
@@ -56,6 +57,23 @@ export class CoordinationV3RunLifecycleAuthority {
       WHERE id = ? AND fencing_token = ?
         AND status IN ('leased', 'running')
     `, [now, now, runId, fence]);
+  }
+
+  /** Release only an uninjected scheduler claim when admission changed during
+   * preparation. Preserve exact Activations/Requests and their retry budgets;
+   * this is not a failed execution, assignment cancellation or recovery Run. */
+  deferUninjectedRun(runId: string, fencingToken: number, now = new Date().toISOString()): void {
+    this.sqlite.transaction(() => {
+      const run = this.support.getFencedRun(runId, fencingToken);
+      if (run.status !== "leased" || run.prompt_injection_state !== "not_injected" ||
+          this.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections WHERE run_id = ? AND state <> 'pending' LIMIT 1").get(runId)) {
+        throw new Error("only an uninjected, unstarted scheduler claim can be deferred");
+      }
+      const fence = this.support.nextFence(String(run.agent_id));
+      this.sqlite.prepare(`UPDATE scheduler_runs SET status = 'cancelled', fencing_token = ?, side_effects_fenced_at = ?, updated_at = ?, terminal_at = ? WHERE id = ?`).run(fence, now, now, now, runId);
+      this.sqlite.prepare(`UPDATE agent_activations SET state = CASE WHEN delivery_failures > 0 THEN 'retry_pending' ELSE 'pending' END, available_at = ?, updated_at = ? WHERE state = 'attached' AND id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)`).run(now, now, runId);
+      this.sqlite.prepare("UPDATE scheduler_prompt_injections SET state = 'cancelled', updated_at = ?, terminal_at = ? WHERE run_id = ? AND state = 'pending'").run(now, now, runId);
+    })();
   }
 
   setRunContextDisposition(
@@ -140,11 +158,13 @@ export class CoordinationV3RunLifecycleAuthority {
     this.sqlite.transaction(() => {
       this.support.getFencedRun(input.runId, input.fencingToken);
       const row = this.sqlite.prepare(`
-        SELECT prompt_hash, state FROM scheduler_prompt_injections
+        SELECT prompt_hash, state, kind, activation_ids_json FROM scheduler_prompt_injections
         WHERE id = ? AND run_id = ?
       `).get(input.injectionId, input.runId) as {
         prompt_hash: string;
         state: string;
+        activation_ids_json: string;
+        kind: "turn" | "steer";
       } | undefined;
       if (!row) throw new Error("prompt injection not found");
       if (row.prompt_hash && row.prompt_hash !== hash) {
@@ -153,11 +173,17 @@ export class CoordinationV3RunLifecycleAuthority {
       if (row.state !== "pending" && !row.prompt_hash) {
         throw new Error("submitted injection has no durable prompt hash");
       }
+      const activationIds = JSON.parse(row.activation_ids_json) as string[];
+      const manifest: PromptInjectionSourceManifestDto = {
+        schemaVersion: 1, runId: input.runId, injectionId: input.injectionId,
+        kind: row.kind, activationIds,
+        sources: activationIds.map(ref => ({ kind: "activation", ref })),
+      };
       this.sqlite.prepare(`
         UPDATE scheduler_prompt_injections
-        SET prompt_hash = ?, updated_at = ?
+        SET prompt_hash = ?, exact_prompt = ?, source_manifest_json = ?, updated_at = ?
         WHERE id = ? AND run_id = ? AND state = 'pending'
-      `).run(hash, now, input.injectionId, input.runId);
+      `).run(hash, input.prompt, stableJson(manifest), now, input.injectionId, input.runId);
     })();
   }
 
@@ -1106,7 +1132,9 @@ export class CoordinationV3RunLifecycleAuthority {
     incidentId?: string,
     internalFailureCode?: OutcomeInternalFailureCode,
   ): void {
-    const placeholders = eligibleStates.map(() => "?").join(", ");
+    const normalCompletion = reason === "run_completed_without_request_update";
+    const directEligibleStates = normalCompletion ? continuationEligibleStates : eligibleStates;
+    const placeholders = directEligibleStates.map(() => "?").join(", ");
     const rows = this.sqlite.prepare(`
       SELECT DISTINCT request.id
       FROM scheduler_run_activations attached
@@ -1124,7 +1152,7 @@ export class CoordinationV3RunLifecycleAuthority {
       WHERE attached.run_id = ?
         AND request.recipient_agent_id = run.agent_id
         AND request.state IN (${placeholders})
-    `).all(runId, ...eligibleStates) as Array<{ id: string }>;
+    `).all(runId, ...directEligibleStates) as Array<{ id: string }>;
     const continuationPlaceholders = continuationEligibleStates
       .map(() => "?")
       .join(", ");
@@ -1144,7 +1172,7 @@ export class CoordinationV3RunLifecycleAuthority {
       WHERE attached.run_id = ?
         AND request.recipient_agent_id = run.agent_id
         AND request.state IN (${continuationPlaceholders})
-        AND NOT EXISTS (
+        AND (? OR NOT EXISTS (
           SELECT 1
           FROM coordination_joins open_join
           JOIN json_each(
@@ -1153,8 +1181,8 @@ export class CoordinationV3RunLifecycleAuthority {
           WHERE open_join.owner_agent_id = run.agent_id
             AND open_join.state = 'open'
             AND open_continuation.value = request.id
-        )
-        AND NOT EXISTS (
+        ))
+        AND (? OR NOT EXISTS (
           SELECT 1
           FROM activation_sources terminal_source
           JOIN agent_activations terminal_activation
@@ -1168,16 +1196,18 @@ export class CoordinationV3RunLifecycleAuthority {
             AND terminal_activation.state IN (
               'pending', 'retry_pending', 'leased'
             )
-        )
+        ))
     `).all(
       runId,
       ...continuationEligibleStates,
+      normalCompletion ? 1 : 0,
+      normalCompletion ? 1 : 0,
     ) as Array<{ id: string }>;
     const related = [
       ...new Map(
         [...rows, ...continuationRows].map((row) => [row.id, row]),
       ).values(),
-    ].filter((row) => !this.requestOwnedByActiveRollover(
+    ].filter((row) => !(normalCompletion && this.requestOwnsViableDependency(row.id, runId, now)) && !this.requestOwnedByActiveRollover(
       row.id,
       runId,
     ));
@@ -1223,6 +1253,47 @@ export class CoordinationV3RunLifecycleAuthority {
         reason,
       );
     }
+  }
+
+  private requestOwnsViableDependency(requestId: string, runId: string, now: string): boolean {
+    // Consult the exact canonical continuation, regardless of how this Run
+    // reached it. A consumed wakeup, dead owner or terminal Request cannot
+    // indefinitely protect unfinished work. Failure/cancellation use their
+    // existing finalization path, not this normal-completion exception.
+    return Boolean(this.sqlite.prepare(`
+      SELECT 1
+      FROM coordination_requests request
+      JOIN scheduler_runs run ON run.id = ? AND run.agent_id = request.recipient_agent_id
+      JOIN agents owner ON owner.id = run.agent_id
+        AND owner.project_id = request.project_id
+        AND owner.deleted_at IS NULL AND owner.archived = 0
+      JOIN coordination_joins dependency
+        ON dependency.owner_agent_id = owner.id
+        AND dependency.project_id = request.project_id
+        AND dependency.conversation_id IS request.conversation_id
+      JOIN json_each(dependency.continuation_request_ids_json) continuation
+        ON continuation.value = request.id
+      WHERE request.id = ?
+        AND request.state IN ('open', 'in_progress', 'waiting_dependency')
+        AND request.superseded_by_request_id IS NULL
+        AND (request.deadline_at IS NULL OR request.deadline_at > ?)
+        AND (
+          (dependency.state = 'open' AND
+            (dependency.deadline_at IS NULL OR dependency.deadline_at > ?))
+          OR (dependency.state IN ('satisfied', 'impossible') AND EXISTS (
+            SELECT 1 FROM activation_sources source
+            JOIN agent_activations activation ON activation.id = source.activation_id
+            WHERE source.source_kind = 'join' AND source.source_id = dependency.id
+              AND activation.agent_id = owner.id
+              AND activation.project_id = request.project_id
+              AND activation.state IN ('pending', 'retry_pending')
+              AND activation.kind = CASE dependency.state
+                WHEN 'satisfied' THEN 'coordination_join_satisfied'
+                ELSE 'coordination_join_impossible' END
+          ))
+        )
+      LIMIT 1
+    `).get(runId, requestId, now, now));
   }
 
   private cancelPendingRolloverHandoff(

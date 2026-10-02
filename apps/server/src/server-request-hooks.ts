@@ -156,6 +156,7 @@ export function registerRequestSecurityHooks(
   let inflight = 0;
   const admitted = new WeakSet<IncomingMessage>();
   const activeHandlers = new WeakSet<IncomingMessage>();
+  const deadlineResponses = new WeakSet<IncomingMessage>();
   const handlerDeadlines = new WeakMap<IncomingMessage, ReturnType<typeof setTimeout>>();
 
   app.addHook("onRequest", async (request, reply) => {
@@ -190,7 +191,17 @@ export function registerRequestSecurityHooks(
     const handler = route.handler;
     route.handler = async function(request, reply) {
       activeHandlers.add(request.raw);
-      try { return await handler.call(this, request, reply); }
+      try {
+        const result = await handler.call(this, request, reply);
+        // Fastify must not implicitly send a late return after the deadline.
+        return deadlineResponses.has(request.raw) ? reply : result;
+      } catch (error) {
+        if (!deadlineResponses.has(request.raw)) throw error;
+        // The handler has genuinely settled. Retain diagnostic evidence without
+        // asking Fastify to send a second error response to the closed client.
+        request.log.error({ err: error }, "request handler failed after deadline response");
+        return reply;
+      }
       finally {
         activeHandlers.delete(request.raw);
         releaseAdmission(request);
@@ -350,7 +361,15 @@ export function registerRequestSecurityHooks(
     admitted.add(request.raw);
     if (!/^\/api\/(?:workspace\/stream|agents\/[^/?]+\/stream)(?:\?|$)/u.test(request.url)) {
       handlerDeadlines.set(request.raw, setTimeout(() => {
-        if (!reply.sent) void reply.code(504).send({ error: "request handler deadline exceeded" });
+        if (!reply.sent) {
+          deadlineResponses.add(request.raw);
+          const send = reply.send;
+          void send.call(reply.code(504), { error: "request handler deadline exceeded" });
+          // Explicit late sends receive the settled reply, not another send.
+          // Apply only to deadline responses; ordinary double-send bugs remain
+          // observable, and streams are not subject to this deadline.
+          reply.send = () => reply;
+        }
       }, opts.requestLimits.handlerDeadlineMs ?? 60_000).unref());
     }
   });

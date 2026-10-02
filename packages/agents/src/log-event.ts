@@ -116,6 +116,19 @@ export interface AgentLifecycleEvent {
   engine?: string;
   model?: string;
   effort?: string;
+  /** Diagnostic evidence only; never an admission, retry, or completion authority. */
+  runtimeObservation?: {
+    runId: string;
+    fencingToken?: number;
+    runtimeGeneration: number;
+    providerSessionGeneration?: string;
+    process?: { pid: number; pgid?: number; birthMarker?: string };
+    terminalEventObserved: boolean;
+    terminalStatus?: "completed" | "failed" | "cancelled" | "interrupted" | "unknown";
+    rootExit?: { exitCode?: number; signal?: string };
+    hostOperation?: string;
+    origin: "host_operation_observed" | "not_established";
+  };
 }
 
 /** Live telemetry mirror of authoritative SQLite V3 coordination state. */
