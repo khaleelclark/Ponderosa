@@ -93,13 +93,9 @@ export function AttentionSurface({
     <Dialog open={open} onClose={() => setOpen(false)} fullScreen={mobileReview} fullWidth maxWidth="sm" aria-labelledby="current-issues-title">
       <DialogTitle id="current-issues-title">
         <Typography variant="h6">Needs Your Attention</Typography>
-        <Typography variant="body2" color="text.secondary">Check the affected work before deciding what to do next.</Typography>
       </DialogTitle>
       <DialogContent dividers sx={{ px: { xs: 1.5, sm: 3 }, minHeight: 0, overflowX: "hidden" }}>
-        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-          Dismiss removes only the notice. It does not retry, cancel, or delete work.
-        </Typography>
-        <Stack spacing={2}>
+        <Stack spacing={1.25}>
           {items.map((item) => {
             const copy = attentionPresentation(item);
             const coordination = item.resolution?.kind === "coordination_request" ? item.resolution : undefined;
@@ -110,23 +106,17 @@ export function AttentionSurface({
                 <Chip size="small" color={item.acknowledgedAt ? "default" : "warning"} label={item.acknowledgedAt ? "Reviewed · still open" : "Needs review"} />
                 <Typography component="time" dateTime={copy.occurredAt} variant="caption" color="text.secondary">{new Date(copy.occurredAt).toLocaleString()}</Typography>
               </Stack>
-              <Typography variant="caption" color="text.secondary">{copy.scopes.join(" · ")}</Typography>
-              <Typography variant="caption" color="text.secondary">{copy.reference}</Typography>
+              <Typography variant="caption" color="text.secondary">{copy.compactScope}</Typography>
               {item.kind === "decision" && item.decision
                 ? <DecisionCard decision={notificationDecision(item)!} title={item.title} context={item.body} />
                 : <Box>
-                    <Typography fontWeight={850}>{copy.title}</Typography>
+                    <Typography variant="body2" fontWeight={850}>{copy.title}</Typography>
                   </Box>}
               {item.kind !== "decision" ? <>
-                {copy.task || copy.taskUnavailableLabel ? <Typography variant="body2" fontWeight={650}>{copy.task ?? copy.taskUnavailableLabel}</Typography> : null}
-                <Typography variant="body2" color="text.secondary">{copy.explanation}</Typography>
-                {copy.evidenceUnavailable ? <Typography variant="caption" color="text.secondary">No additional cause details were retained for this older notice.</Typography> : null}
-                {!onOpen || (!item.projectId && item.action?.kind !== "open_settings") ? <Typography variant="caption" color="text.secondary">No activity link is available for this notice.</Typography> : null}
+                {copy.task || copy.taskUnavailableLabel ? <Typography variant="body2" fontWeight={650} sx={{ display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: 3, overflow: "hidden" }}>{copy.task ?? copy.taskUnavailableLabel}</Typography> : null}
+                <Typography variant="body2" color="text.secondary" sx={{ display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: copy.summary === copy.explanation ? 3 : undefined, overflow: "hidden" }}>{copy.summary}</Typography>
               </> : null}
-              {copy.uncertainty ? <Box>
-                <Typography variant="body2" color="text.secondary">{copy.uncertainty}</Typography>
-              </Box> : null}
-              <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+              <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ "& .MuiButton-root": { minHeight: 44 } }}>
                 {onOpen && (item.projectId || item.action?.kind === "open_settings") ? <Button size="small" variant="outlined" onClick={() => { setOpen(false); onOpen(item); }}>{item.action?.kind === "open_settings" ? "Open details" : "Open activity"}</Button> : null}
                 {coordination?.retryAvailable ? <Button size="small" disabled={pending} onClick={() => { retry.reset(); setRetryItem(item); }}>Retry assignment…</Button> : null}
                 {item.kind !== "decision" ? <Button size="small" color="inherit" disabled={pending} onClick={() => resolve.mutate(item.id)}>
@@ -137,13 +127,21 @@ export function AttentionSurface({
                   color="inherit"
                   endIcon={<ExpandMoreIcon sx={{ transform: expanded ? "rotate(180deg)" : "none", transition: "transform 150ms" }} />}
                   aria-expanded={expanded}
+                  aria-controls={`attention-details-${item.id}`}
                   onClick={() => setExpandedIssueId(expanded ? undefined : item.id)}
                 >
                   Details
                 </Button>
               </Stack>
               <Collapse in={expanded} unmountOnExit>
-                <Box sx={{ bgcolor: "action.hover", borderRadius: 1.5, p: 1.25 }}>
+                <Stack id={`attention-details-${item.id}`} spacing={0.75} sx={{ bgcolor: "action.hover", borderRadius: 1.5, p: 1.25 }}>
+                  <Typography variant="caption" color="text.secondary">{copy.scopes.join(" · ")}</Typography>
+                  <Typography variant="caption" color="text.secondary">{copy.reference}</Typography>
+                  {copy.task ? <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>{copy.task}</Typography> : null}
+                  {item.kind !== "decision" ? <Typography variant="body2" color="text.secondary">{copy.explanation}</Typography> : null}
+                  {copy.detailWarning ? <Typography variant="body2" color="text.secondary">{copy.detailWarning}</Typography> : null}
+                  {copy.evidenceUnavailable ? <Typography variant="caption" color="text.secondary">No additional cause details were retained for this older notice.</Typography> : null}
+                  {!onOpen || (!item.projectId && item.action?.kind !== "open_settings") ? <Typography variant="caption" color="text.secondary">No activity link is available for this notice.</Typography> : null}
                   <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>Notice ID: {item.id}</Typography>
                   {item.workContext ? <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>Work record: {item.workContext.kind}:{item.workContext.recordId}</Typography>
                     : coordination ? <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>Assignment ID: {coordination.requestId}</Typography> : null}
@@ -162,7 +160,7 @@ export function AttentionSurface({
                       {copiedIssueId === item.id ? "Copied" : "Copy Support Report"}
                     </Button>
                   </Stack>
-                </Box>
+                </Stack>
               </Collapse>
             </Stack>
           </Box>;
@@ -170,7 +168,7 @@ export function AttentionSurface({
           {resolve.isError || retry.isError ? <Alert severity="error">{(resolve.error ?? retry.error) instanceof Error ? (resolve.error ?? retry.error as Error).message : "The issue could not be updated. Review the current state and try again."}</Alert> : null}
         </Stack>
       </DialogContent>
-      <DialogActions><Button onClick={() => setOpen(false)}>Close review</Button></DialogActions>
+      <DialogActions sx={{ px: { xs: 1.5, sm: 3 } }}><Typography variant="caption" color="text.secondary" sx={{ mr: "auto" }}>Dismiss hides the notice only.</Typography><Button onClick={() => setOpen(false)}>Close</Button></DialogActions>
     </Dialog>
     <Dialog open={Boolean(retryItem)} onClose={() => { if (!retry.isPending) setRetryItem(undefined); }} fullWidth maxWidth="xs" aria-labelledby="retry-assignment-title">
       <DialogTitle id="retry-assignment-title">Retry this assignment?</DialogTitle>

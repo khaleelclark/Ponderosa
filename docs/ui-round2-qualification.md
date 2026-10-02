@@ -32,6 +32,15 @@ deployment, shared sandbox refresh, provider Run, or live-data repair is include
 - Follow-up controls stay compact and say **Dismiss**, not **Dismiss Follow-Up**.
   Existing retry confirmation and dismissal behavior are unchanged; wrapping
   remains a safe fallback for enlarged text or additional actions.
+- The **Needs Your Attention** review dialog keeps status, incident time, Chat,
+  Agent/issue and message context visible. Unknown outcomes show one short,
+  state-backed warning instead of overlapping generic explanations. Full cause,
+  scope and record IDs move to **Details**; bounded three-line message/cause
+  previews always have an expansion action. Short safety warnings are not
+  clamped. Header instructions are removed and Dismiss's notice-only meaning is
+  explained once in the footer. No notice, work outcome, retry or routing
+  authority changes; the Notifications panel and full support report retain
+  their existing evidence.
 - Modified & Created Files already sorts by recorded artifact creation time,
   newest first. No product ordering change was needed. Pagination/reload are
   covered by a runnable regression, not claimed as live filesystem-mtime sorting.
@@ -172,6 +181,26 @@ in `/tmp/ponderosa-python-{web-tests,server-tests,chromium,webkit}.log`.
 The preceding 1,002-pass full suite is evidence at `efa188376942ece808e1f927cdc9ff0232feff13`;
 this follow-up changes tests and qualification documentation only.
 
+## Compact Attention dialog verification
+
+The existing dialog reproduced the overlapping cause/uncertainty presentation
+in a disposable component fixture. After the presentation-only change:
+
+| Check | Result |
+| --- | --- |
+| Full `pnpm verify`, Node 24.21.0/macOS | 1,002 passed, 7 platform/opt-in skips, zero failures; typechecks and production builds passed |
+| Current/legacy Attention dialog and Notifications panel | Chromium and WebKit passed at 320/390/430/1440px; compact context, full evidence in Details, exact activity targets, Dismiss-only behavior and confirmed/idempotent retry |
+| Long message preview | Three-line mobile preview expands to the complete retained text at 320/390/1440px, including keyboard activation; expansion makes no authority calls |
+| Decision/warning/message separation | Chromium passed at phone, short-window and desktop sizes, with pending question actions preserved |
+| Visual inspection | Chromium 390px and 1440px collapsed-dialog screenshots inspected; no horizontal clipping |
+| `git diff --check` | Passed |
+
+Logs: `/tmp/ponderosa-attention-compact-{verify,chromium,webkit,layout}.log`.
+Screenshots use the host temporary directory with
+`attention-compact-{chromium,webkit}-<width>.png` names. These checks use
+disposable fixtures, not live conversations or a physical phone; no deployment,
+notice acknowledgement, work settlement or live-data repair was performed.
+
 ## Manual checklist
 
 - [ ] Send, navigate away/back, and fail a send: no duplicate draft; failure recoverable.
@@ -181,6 +210,7 @@ this follow-up changes tests and qualification documentation only.
 - [ ] Open/select the model with the phone keyboard up; rotate without losing the picker/draft.
 - [ ] Mobile headers: long title, usage, menu/browser, status details and Stop are usable.
 - [ ] Follow-up controls: compact **Dismiss** and guarded retry behave as before.
+- [ ] Attention dialog: status/time/Chat remain identifiable; one result warning, full retained message/cause/IDs in Details; opening/closing does not settle work.
 - [ ] Files: newest first after refresh and loading older files.
 - [ ] Ponderosa microphone: no growing duplicates; typed text, repeated words, pause/resume preserved.
 - [ ] Attach TTF/OTF/WOFF/WOFF2 and other files; exact downloads work and fonts are not installed/previewed.

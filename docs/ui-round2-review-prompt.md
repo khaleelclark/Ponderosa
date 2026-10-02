@@ -29,6 +29,13 @@ Independently verify, rather than treating implementer results as qualification:
 - Mobile Chat/Agent headers retain accessible status details, Stop, usage,
   browser/menu and tab controls at 320/390/430px; desktop remains usable.
   Compact follow-ups say Dismiss and preserve exact guarded retry semantics.
+- The Attention review dialog presents one unknown-outcome warning, keeps
+  status/time/Chat/Agent/issue context and moves full retained cause/record IDs
+  to Details. Long previews must remain readable via keyboard/touch expansion
+  at 320/390px and desktop. Preserve missing-evidence fallbacks, exact activity
+  targets, notice-only Dismiss, confirmed/idempotent retry, pending Decisions,
+  and full support reports. Viewing, expanding and closing must not mutate
+  notice/work authority. The Notifications panel is not otherwise redesigned.
 - Modified & Created Files remains newest-first after refresh and older-page
   loading; no filesystem-mtime guarantee is implied.
 - Ponderosa microphone requests final results only. Test the modeled Android

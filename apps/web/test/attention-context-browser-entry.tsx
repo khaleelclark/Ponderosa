@@ -32,6 +32,12 @@ let items: WorkspaceNotificationDto[] = [
     agentId: undefined, agentTitle: undefined, title: "A coordinated assignment needs a decision",
     body: "The coordinated workflow could not finish automatically." },
 ];
+if (new URLSearchParams(location.search).has("long")) {
+  const assignment = "Review the mobile layout and preserve the existing receipt and retry authority. ".repeat(8).trim();
+  items = items.map(item => item.id === "unknown" ? {
+    ...item, workContext: { ...item.workContext!, assignment }, resolution: { ...item.resolution!, assignment },
+  } : item);
+}
 const calls: Array<{ kind: string; id?: string; options?: unknown }> = [];
 function record(kind: string, id?: string, options?: unknown) {
   calls.push({ kind, id, options }); document.body.dataset.calls = JSON.stringify(calls);

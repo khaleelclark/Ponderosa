@@ -25,13 +25,25 @@ export function attentionPresentation(item: WorkspaceNotificationDto) {
             : work || item.category === "coordination" || item.category === "communication" || genericTitle
               ? "This notice does not establish whether the work finished or whether it made changes. Check the related activity before trying again."
               : undefined;
+  const explanation = markdownPreviewText([item.body, work?.detail].filter(Boolean).join(" ")) || "No explanation was retained for this notice.";
+  // A single state-backed warning replaces overlapping generic cause/safety prose.
+  // Retain the full evidence separately for Details and the support report.
+  const summary = state === "outcome_unknown"
+    ? "Result unconfirmed. Check activity before retrying; retrying may duplicate changes."
+    : explanation;
+  const compactScope = item.conversationId
+    ? `Chat: ${item.conversationTitle ?? `Name unavailable (${item.conversationId.slice(-8)})`}`
+    : item.projectId ? `Project: ${item.projectLabel ?? `Name unavailable (${item.projectId.slice(-8)})`}` : "Ponderosa workspace";
   return {
     title,
-    explanation: markdownPreviewText([item.body, work?.detail].filter(Boolean).join(" ")) || "No explanation was retained for this notice.",
+    explanation,
+    summary,
+    compactScope,
     task: knownTask,
     taskUnavailableLabel: item.category === "coordination" || resolution
       ? "Assignment description unavailable." : undefined,
     uncertainty,
+    detailWarning: state === "outcome_unknown" ? undefined : uncertainty,
     scopes: [
       item.projectId ? `Project: ${item.projectLabel ?? `Name unavailable (${item.projectId.slice(-8)})`}` : "Ponderosa workspace",
       item.conversationId ? `Chat: ${item.conversationTitle ?? `Name unavailable (${item.conversationId.slice(-8)})`}` : undefined,

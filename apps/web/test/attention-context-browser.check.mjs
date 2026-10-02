@@ -37,24 +37,39 @@ try {
     await page.getByRole("button", { name: "Review All", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Needs Your Attention" });
     const card = dialog.getByRole("article", { name: "Assignment 123456789012" });
-    await card.getByText("Project: Glance · Chat: Watch support · Agent: Richmond", { exact: true }).waitFor();
+    await card.getByText("Chat: Watch support", { exact: true }).waitFor();
     await card.getByText("Add a watch complication", { exact: true }).waitFor();
     assert.equal(await card.locator("time").getAttribute("datetime"), "2026-10-01T11:59:00Z");
-    assert.match(await card.innerText(), /provider disconnected/);
+    assert.doesNotMatch(await card.innerText(), /provider disconnected|Work record:|Project:|cannot confirm whether/);
+    assert.equal(await card.getByText("Result unconfirmed. Check activity before retrying; retrying may duplicate changes.", { exact: true }).count(), 1);
     assert.match(await card.innerText(), /may duplicate changes/);
     assert.equal(await dialog.getByText(/WHAT THIS AFFECTS|RECOMMENDED|What Happened\?/).count(), 0);
     const legacy = dialog.getByRole("article", { name: "Notice storical-one" });
     await legacy.getByText("Assignment description unavailable.", { exact: true }).waitFor();
-    await legacy.getByText("No additional cause details were retained for this older notice.", { exact: true }).waitFor();
+    assert.equal(await legacy.getByText("No additional cause details were retained for this older notice.", { exact: true }).count(), 0);
     assert.match(await legacy.innerText(), /Website copy/);
     assert.match(await dialog.getByRole("article", { name: "Notice storical-two" }).innerText(), /Release review/);
     const overflow = await dialog.evaluate(e => ({ width: e.getBoundingClientRect().width, scroll: e.scrollWidth, client: e.clientWidth }));
     assert(overflow.width <= width && overflow.scroll <= overflow.client + 1, "review stays inside viewport without horizontal overflow");
+    for (const button of await card.getByRole("button").all()) {
+      assert((await button.boundingBox()).height >= 44, "compact actions keep touch targets");
+    }
+    if (process.env.PONDEROSA_ATTENTION_SCREENSHOTS) {
+      await page.waitForFunction(() => Array.from(document.querySelectorAll(".MuiDialog-container")).some(e => getComputedStyle(e).opacity === "1"));
+      await page.screenshot({ path: path.join(tmpdir(), `attention-compact-${engine}-${width}.png`) });
+    }
     await card.getByRole("button", { name: "Details", exact: true }).click();
+    await card.getByText("Project: Glance · Chat: Watch support · Agent: Richmond", { exact: true }).waitFor();
+    await card.getByText("The provider disconnected before it could confirm the final result.", { exact: true }).waitFor();
     await card.getByText("Work record: request:watch-123456789012", { exact: true }).waitFor();
+    assert.equal(await card.getByRole("button", { name: "Details", exact: true }).getAttribute("aria-expanded"), "true");
+    const detailsId = await card.getByRole("button", { name: "Details", exact: true }).getAttribute("aria-controls");
+    assert.equal(await card.locator(`[id="${detailsId}"]`).count(), 1);
+    await legacy.getByRole("button", { name: "Details", exact: true }).click();
+    await legacy.getByText("No additional cause details were retained for this older notice.", { exact: true }).waitFor();
     assert.equal(await dialog.getByRole("button", { name: "Mark reviewed", exact: true }).count(), 0);
     assert.equal(await dialog.getByRole("button", { name: "Hide notice", exact: true }).count(), 0);
-    await dialog.getByRole("button", { name: "Close review", exact: true }).click();
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
     await dialog.waitFor({ state: "detached" });
     assert.equal(await page.evaluate(() => JSON.parse(document.body.dataset.calls ?? "[]").filter(c => c.kind === "retry" || c.kind === "status" || c.kind === "review").length), 0);
     await page.getByRole("button", { name: "Review All", exact: true }).click();
@@ -78,6 +93,26 @@ try {
     assert.deepEqual(await page.evaluate(() => JSON.parse(document.body.dataset.calls).find(c => c.kind === "open")),
       { kind: "open", id: "join", options: "join:wait-987654321012" });
     await page.close();
+  }
+  for (const width of [320, 390, 1440]) {
+    const longPage = await browser.newPage({ viewport: { width, height: 800 } });
+    longPage.on("pageerror", error => errors.push(error.message));
+    await longPage.goto(`${url}/?long`);
+    await longPage.getByRole("button", { name: "Review All", exact: true }).click();
+    const longCard = longPage.getByRole("dialog", { name: "Needs Your Attention" }).getByRole("article", { name: "Assignment 123456789012" });
+    const assignment = "Review the mobile layout and preserve the existing receipt and retry authority. ".repeat(8).trim();
+    const preview = longCard.getByText(assignment, { exact: true });
+    const bounds = await preview.evaluate(e => ({ client: e.clientHeight, scroll: e.scrollHeight, clamp: getComputedStyle(e).webkitLineClamp }));
+    assert.equal(bounds.clamp, "3");
+    if (width < 900) assert(bounds.scroll > bounds.client, "long mobile preview is bounded");
+    const details = longCard.getByRole("button", { name: "Details", exact: true });
+    await details.focus(); await longPage.keyboard.press("Enter");
+    await longPage.waitForFunction(() => document.querySelector('[data-notification-id="unknown"] button[aria-expanded="true"]'));
+    const full = longCard.locator('[id="attention-details-unknown"]').getByText(assignment, { exact: true });
+    await full.waitFor();
+    assert(await full.evaluate(e => e.scrollHeight <= e.clientHeight + 1), "Details exposes the complete retained message, not another clamped preview");
+    assert.equal(await longPage.evaluate(() => JSON.parse(document.body.dataset.calls ?? "[]").length), 0, "expansion is presentation-only");
+    await longPage.close();
   }
   const panelPage = await browser.newPage({ viewport: { width: 390, height: 800 } });
   panelPage.on("pageerror", error => errors.push(error.message));
