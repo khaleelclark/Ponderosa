@@ -36,7 +36,9 @@ function deliveryLabel(
     case "retrying": return `Retrying delivery to ${recipientName}.`;
     case "steering": return `Steering ${recipientName}; awaiting provider acknowledgement.`;
     case "started": return `Started a Run for ${recipientName}.`;
-    case "delivered": return `Delivered to ${recipientName}.`;
+    case "delivered": return receipt.injectionKind === "steer" && receipt.providerAcknowledged
+      ? `Instructions delivered to ${recipientName}'s active Run. This confirms delivery, not completion.`
+      : `Delivered to ${recipientName}.`;
     case "run_unconfirmed": return `Message delivered to ${recipientName}, but Ponderosa lost contact before confirming whether the work finished. Check ${recipientName}'s activity before asking it to try again.`;
     case "processed": return `Processed by ${recipientName}.`;
     case "unconfirmed": {
@@ -121,7 +123,9 @@ export function MessageDeliveryStatus({
   }, [hasCountdown]);
   if (!receipts?.length) return null;
   const allSuccessful = receipts.every(receipt => severity(receipt) === "success");
-  if (compact || (compactSuccess && allSuccessful)) {
+  const showSteeringDelivery = receipts.some(receipt => receipt.injectionKind === "steer" &&
+    receipt.providerAcknowledged && receipt.state === "delivered");
+  if (compact || (!showSteeringDelivery && compactSuccess && allSuccessful)) {
     const tones = receipts.map(receipt =>
       receipt.state === "queued"
         ? "warning"
@@ -174,9 +178,16 @@ export function MessageDeliveryStatus({
         <StatusIcon sx={{ fontSize: 14, color: `${tone}.main` }} />
       </Box>
     );
-    return compact || compactSuccessTooltip
+    const compactIndicator = compact || compactSuccessTooltip
       ? <Tooltip title={label}>{indicator}</Tooltip>
       : indicator;
+    return showSteeringDelivery ? <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexWrap: "wrap", maxWidth: "100%" }}>
+      {compactIndicator}
+      {receipts.filter(receipt => receipt.injectionKind === "steer" && receipt.providerAcknowledged && receipt.state === "delivered")
+        .map(receipt => <Typography key={receipt.activationId} variant="caption" sx={{ overflowWrap: "anywhere", color: "text.secondary" }}>
+          Instructions delivered to {recipientName(receipt.targetAgentId)}
+        </Typography>)}
+    </Box> : compactIndicator;
   }
   const letRunFinish = async (receipt: MessageDeliveryReceiptDto) => {
     if (!receipt.injectionId) return;
@@ -256,7 +267,9 @@ export function MessageDeliveryStatus({
           : tone === "error"
             ? ErrorOutlineIcon
             : InfoOutlinedIcon;
-      const shortLabel = receipt.state === "cancelled" && receipt.providerAcknowledged
+      const shortLabel = receipt.state === "delivered" && receipt.injectionKind === "steer" && receipt.providerAcknowledged
+        ? `Instructions delivered to ${name}`
+        : receipt.state === "cancelled" && receipt.providerAcknowledged
         ? `Delivered · ${compactDeliveryLabel(receipt)}`
         : compactDeliveryLabel(receipt);
       return <Stack key={receipt.activationId} direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ justifyContent: "flex-end", maxWidth: "100%" }}>

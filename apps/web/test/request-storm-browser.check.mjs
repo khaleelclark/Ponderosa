@@ -108,7 +108,22 @@ try {
   }
   assert.deepEqual(agentCounts[2], agentBaseline[2],
     "hidden tab must not refetch from its Agent stream");
-  await Promise.all(pages.map(page => page.evaluate(() => { window.stopAgentStorm(); window.startCapabilitiesStorm(); })));
+  await Promise.all(pages.map(page => page.evaluate(() => { window.stopAgentStorm(); window.startProgressStorm(); })));
+  const progressBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  await pages[0].waitForTimeout(5_600);
+  const progressCounts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
+  for (let index = 0; index < 2; index += 1) {
+    for (const key of ["chat", "delivery", "allChat"]) {
+      const added = progressCounts[index][key] - progressBaseline[index][key];
+      assert.ok(added > 0 && added <= 6, `${key} must refresh through a bounded window under public-progress output`);
+    }
+    for (const key of ["roster", "health", "directory", "allAgents", "homeActive", "homeOutcomes"]) {
+      assert.ok(progressCounts[index][key] - progressBaseline[index][key] <= 2,
+        `${key} must not get a new phase/roster burst from public commentary`);
+    }
+  }
+  assert.deepEqual(progressCounts[2], progressBaseline[2], "hidden tab must not fetch under public progress");
+  await Promise.all(pages.map(page => page.evaluate(() => { window.startCapabilitiesStorm(); })));
   const capabilityBaseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
   await pages[0].waitForTimeout(5_600);
   const capabilityCounts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));

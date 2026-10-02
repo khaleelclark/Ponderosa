@@ -83,7 +83,7 @@ export type AgentEvent =
       replacementProviderSessionId: string;
       startingOccupancy: number;
     }
-  | { type: "text"; delta: string } // ordinary response delta → Work log
+  | { type: "text"; delta: string; presentation?: "progress" } // explicit public commentary; still Work log, never Communication
   | { type: "reasoning"; delta: string } // transient reasoning → Work log
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | {

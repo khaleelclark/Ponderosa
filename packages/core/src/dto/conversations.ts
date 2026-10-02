@@ -171,6 +171,11 @@ export interface MessageDeliveryReceiptDto {
   /** The previous attempt may already have completed; a retry can duplicate work. */
   retryMayDuplicate?: true;
   injectionId?: string;
+  /** Provider submission kind, not inferred from receipt wording. */
+  injectionKind?: "turn" | "steer";
+  /** Temporary, bounded public commentary for this exact acknowledged delivery.
+   * Not authored Communication, completion, or proof of semantic understanding. */
+  liveProgress?: { text: string; createdAt: string; seq: number; truncated?: true; recipientHandle: string };
   recoveryAt?: string;
   canLetCurrentRunFinish?: boolean;
   recoveryActivationId?: string;

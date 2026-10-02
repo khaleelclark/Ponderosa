@@ -848,7 +848,10 @@ export function startProviderRunExecution(
             await persistRuntimeEvent(agent.id, activeRun, buffered);
           }
           const logEvent: LogEvent = event.type === "text" || event.type === "reasoning" || event.type === "work_item_update" || event.type === "turn_done"
-            ? { ...event, executionId: runId }
+            ? { ...event, executionId: runId,
+                ...(event.type === "text" && event.presentation === "progress" && activeRun.v3SchedulerRunId
+                  ? { progressInjectionId: coordinationV3.latestAcknowledgedSteeringInjection(activeRun.v3SchedulerRunId) ?? v3InjectionId }
+                  : {}) }
             : event;
           const stored = await persistRuntimeEvent(agent.id, activeRun, logEvent);
           if (!stored) break;

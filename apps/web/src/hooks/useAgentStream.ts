@@ -661,7 +661,9 @@ export function useAgentStream(
               : detail,
           );
 
-          if (envelope.event.type === "coordination_v3_changed") {
+          if (envelope.event.type === "text" && envelope.event.presentation === "progress") {
+            scheduleReconciliation({ detail: true }, false, 1_000);
+          } else if (envelope.event.type === "coordination_v3_changed") {
             // Request summaries are embedded in the canonical message
             // projection, not the compact coordination event. Reconcile after
             // the burst so Agent Chat cards reflect new and terminal Requests.

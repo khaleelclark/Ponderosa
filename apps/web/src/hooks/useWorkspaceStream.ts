@@ -512,6 +512,15 @@ export function useWorkspaceStream(
       invalidate(queryKeys.notifications.all), 5_000);
     const providerUsageRefresh = createRateLimitedRefresh(() =>
       invalidate(queryKeys.providerUsage.all), 5_000);
+    const pendingProgressChats = new Set<string>();
+    const publicProgressRefresh = createBoundedRefresh(() => {
+      for (const id of pendingProgressChats) {
+        invalidate(queryKeys.conversations.detailPrefix(id));
+        invalidate(queryKeys.conversations.activeDeliveryReceiptsPrefix(id));
+      }
+      pendingProgressChats.clear();
+      invalidate(queryKeys.allChatAll);
+    }, 1_000);
     const pendingTaskProjects = new Set<string>();
     const taskProjectionRefresh = createBoundedRefresh(() => {
       invalidateForBrowserPage(queryClient, queryKeys.workspaceStatus.all);
@@ -728,6 +737,8 @@ export function useWorkspaceStream(
       collaborationChatInvalidator.dispose();
       decisionConversationInvalidator.dispose();
       notificationRefresh.dispose();
+      publicProgressRefresh.dispose();
+      pendingProgressChats.clear();
       providerUsageRefresh.dispose();
       taskProjectionRefresh.dispose();
       pendingTaskProjects.clear();
@@ -923,6 +934,10 @@ export function useWorkspaceStream(
         agentWorkInvalidator.schedule(event.projectId);
       }
       else if (event.type === "agent_event") {
+        if (event.category === "progress") {
+          for (const id of event.conversationIds) pendingProgressChats.add(id);
+          publicProgressRefresh.schedule();
+        }
         if (!hasLiveAgentStream(event.agentId)) {
           agentDetailInvalidator.schedule(event.agentId);
         }
@@ -1117,6 +1132,7 @@ export function useWorkspaceStream(
       workspaceRecencyInvalidator.dispose();
       collaborationChatInvalidator.dispose();
       decisionConversationInvalidator.dispose();
+      publicProgressRefresh.dispose();
       notificationRefresh.dispose();
       providerUsageRefresh.dispose();
       taskProjectionRefresh.dispose();

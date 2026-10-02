@@ -5,7 +5,7 @@ import { useAgentStream } from "../src/hooks/useAgentStream";
 import { useWorkspaceStream } from "../src/hooks/useWorkspaceStream";
 import { queryKeys } from "../src/queryKeys";
 
-const counters = { roster: 0, health: 0, directory: 0, allAgents: 0, homeActive: 0, homeOutcomes: 0, otherAgents: 0, activityScope: 0, details: 0, task: 0, capabilities: 0, chat: 0, delivery: 0, notifications: 0, notificationProjection: 0, projectDirectory: 0, conversationDirectory: 0, providerUsage: 0 };
+const counters = { roster: 0, health: 0, directory: 0, allAgents: 0, homeActive: 0, homeOutcomes: 0, otherAgents: 0, activityScope: 0, details: 0, task: 0, capabilities: 0, chat: 0, delivery: 0, notifications: 0, notificationProjection: 0, projectDirectory: 0, conversationDirectory: 0, providerUsage: 0, allChat: 0 };
 const apiLatencies: number[] = [];
 let terminal = false;
 let chatReply = "waiting";
@@ -81,6 +81,15 @@ api.subscribeWorkspace = (_cursor, handlers) => {
       clearInterval(command);
       emitCapabilities();
       command = setInterval(emitCapabilities, 20);
+    },
+    startProgressStorm: () => {
+      clearInterval(command);
+      const emit = () => handlers.onEvent({ id: ++seq, ts: new Date().toISOString(), event: {
+        type: "agent_event", projectId: "P1", agentId: `Agent ${seq % 12}`, conversationIds: ["Chat 1"],
+        seq, eventType: "text", category: "progress", executionId: "current-run",
+      } });
+      emit();
+      command = setInterval(emit, 20);
     },
     startCoordinationStorm: () => {
       clearInterval(command);
@@ -254,6 +263,8 @@ function Probe() {
     queryKey: queryKeys.conversations.detail("Chat 1"),
     queryFn: async () => { counters.chat += 1; await probeApi(); return chatReply; },
   });
+  useQuery({ queryKey: queryKeys.allChat(50),
+    queryFn: async () => { counters.allChat += 1; await probeApi(); return "messages"; } });
   const delivery = useQuery({
     queryKey: queryKeys.conversations.activeDeliveryReceipts("Chat 1", "Message 1", ""),
     queryFn: async () => { counters.delivery += 1; await probeApi(); return deliveryState; },

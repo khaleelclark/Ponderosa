@@ -56,6 +56,7 @@ import { Composer } from "./chat/Composer";
 import { copyText } from "../clipboard";
 import { AttentionSurface } from "./AttentionSurface";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { LiveAgentProgress } from "./chat/LiveAgentProgress";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
@@ -1676,6 +1677,8 @@ export function AllChatView({
                       </ButtonBase>
                     </Stack>
                   ),
+                  belowBody: fromUser ? <LiveAgentProgress receipts={item.deliveryReceipts} onOpenAgent={agentId =>
+                    onNavigate({ kind: "agent", projectId: item.project.id, agentId })} /> : undefined,
                   status:
                     fromUser && item.deliveryReceipts?.length ? (
                       <MessageDeliveryStatus

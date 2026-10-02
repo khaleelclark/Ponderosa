@@ -29,7 +29,7 @@ export type WorkspaceEvent =
     }
   | { type: "trigger_changed"; projectId: string; agentId: string; triggerId: string; action: "created" | "updated" | "deleted" | "occurrence" }
   | { type: "usage_changed"; projectId: string; agentId: string; conversationIds: string[]; seq: number; executionId?: string }
-  | { type: "agent_event"; projectId: string; agentId: string; conversationIds: string[]; seq: number; eventType: string; category: "lifecycle" | "message" | "task" | "artifact" | "file" | "state" | "usage"; executionId?: string }
+  | { type: "agent_event"; projectId: string; agentId: string; conversationIds: string[]; seq: number; eventType: string; category: "lifecycle" | "message" | "task" | "artifact" | "file" | "state" | "usage" | "progress"; executionId?: string }
   | { type: "runtime_capabilities_changed"; projectId: string; engineId: EngineId }
   | { type: "push_subscription_changed"; deviceId: string; action: "upserted" | "deleted" }
   | { type: "push_delivery_changed"; notificationId: string; deviceId: string; action: "delivered" | "retry_scheduled" | "abandoned" };
@@ -115,7 +115,7 @@ export interface AgentOutputEvent {
 }
 
 export type AgentExecutionDeltaEvent =
-  | (Extract<AgentEvent, { type: "text" }> & { executionId?: string })
+  | (Extract<AgentEvent, { type: "text" }> & { executionId?: string; progressInjectionId?: string })
   | (Extract<AgentEvent, { type: "reasoning" }> & { executionId?: string });
 
 export interface RunOutputDto {

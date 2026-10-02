@@ -17,6 +17,7 @@ import type { ActivityStreamEntry } from "../activity/activityStream";
 import { AgentWorkReceipt } from "./AgentWorkReceipt";
 import { hasVisibleReceiptActivity } from "./receiptActivityEntries";
 import { ChatMessageFrame } from "./ChatMessageFrame";
+import { LiveAgentProgress } from "./LiveAgentProgress";
 import { ChatSurface } from "./ChatSurface";
 import {
   ChatMessageBody,
@@ -496,6 +497,7 @@ function ChatPaneComponent({
                 </>
               ),
               attachments: message.attachments,
+              belowBody: message.role === "user" ? <LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} /> : undefined,
               attachmentDensity: "compact",
               status:
                 message.role === "user" && message.deliveryReceipts?.length ? (

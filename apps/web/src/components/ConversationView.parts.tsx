@@ -51,6 +51,7 @@ import { MessageRequestAction } from "./MessageRequestAction";
 import { DecisionCard } from "./decisions/DecisionCard";
 import { DecisionResponseMessage } from "./decisions/DecisionResponseMessage";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { LiveAgentProgress } from "./chat/LiveAgentProgress";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import {
   type MainTimelineEntry,
@@ -197,6 +198,7 @@ function ConversationMessageComponent({
           </>
         ),
         attachments: message.attachments,
+        belowBody: message.role === "user" ? <LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} /> : undefined,
         status:
           message.role === "user" && message.deliveryReceipts?.length ? (
             <MessageDeliveryStatus
