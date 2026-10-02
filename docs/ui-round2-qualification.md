@@ -129,6 +129,7 @@ node apps/web/test/composer-chip-accessibility.check.mjs
 node apps/web/test/chat-folder-notifications-browser.check.mjs
 node apps/web/test/live-agent-progress-browser.check.mjs
 node apps/web/test/request-storm-browser.check.mjs
+node apps/web/test/folder-upload-browser.check.mjs
 node --test packages/agents/test/public-progress.test.mjs
 node --test apps/server/test/opaque-attachments.test.mjs
 ```
@@ -140,6 +141,9 @@ checker instead uses `PONDEROSA_BROWSER_ENGINE=webkit`. No new dependency is
 added. The folder checker uses `PONDEROSA_BROWSER_TYPE=webkit`. Fixtures use
 disposable data and real components/HTTP-store paths where
 the existing check provides them; they do not establish live multi-Agent behavior.
+The new folder-upload checker uses `PONDEROSA_TEST_BROWSER=webkit`; it and the
+mobile layout checker also accept `PONDEROSA_WEBKIT_PATH` for an explicitly
+selected installed WebKit executable.
 
 ## Initial UI verification (before the folder follow-up)
 
@@ -337,6 +341,55 @@ browser engines passed the updated fixture. `git diff --check` passed. Logs:
 Earlier unrelated browser checks remain earlier-head evidence. Independent
 review and live concurrent-provider/physical-device qualification are pending.
 
+## Independent-review follow-up: picker Escape and Unicode folder upload
+
+The review of `763ebc1c4d97dd76aebbaabde84ea9c428f704fe` requested changes for
+two defects. Both were reproduced before changing product code:
+
+- Touch-open picker + hardware Escape in the target-required composer cleared
+  the recipient. The new browser assertion failed on that exact behavior.
+- A Japanese root produced `日本語.zip`; the real browser upload hook/API failed
+  during `Headers` construction before reaching disposable draft HTTP routes.
+  ASCII control uploads succeeded.
+
+The picker now owns Escape in document capture only while open, preventing
+underlying destination handlers without moving editor focus or selection. The
+listener is removed on close/unmount, and keyboard-open dismissal still restores
+trigger focus. Generated ZIP filenames are bounded ASCII (Unicode-only roots
+use `folder.zip`); original UTF-8 root/member paths and exact bytes remain inside
+the archive. The shared transport, routing, permissions and ZIP bounds did not
+change. This is not a general fix for pre-existing raw Unicode filename headers.
+
+Fresh macOS / Node 24.21.0 qualification:
+
+- `pnpm verify`: **1,017 passed, 7 platform/opt-in skips, zero failures**;
+  all typechecks and production builds passed.
+- Updated mobile layout checker: Chromium and macOS WebKit passed, including
+  root/submenu touch-open Escape in target-required, Project and fixed composers
+  at 320/390/430px; exact draft/caret/focus preservation; normal recipient removal
+  after closing; existing desktop keyboard/picker/layout/dictation checks.
+- New `folder-upload-browser.check.mjs`: Chromium and macOS WebKit passed at
+  390/1440px for ASCII, Japanese, emoji and accented roots through folder picker
+  and directory-entry preparation, the actual draft hook/API, HTTP routes/store,
+  prepared bytes, scoped downloads, UTF-8 member paths and CRCs. No send callback
+  or upload API was mocked.
+- The focused generated-name/ZIP regression passed in the full web test suite.
+  `git diff --check` passed.
+
+The runtime's default WebKit revision was absent; checks passed using the
+existing installed `webkit-2359/pw_run.sh` via `PONDEROSA_WEBKIT_PATH`. No browser
+or dependency was installed. Logs:
+`/tmp/pr609-picker-escape-{before,chromium,webkit}.log`,
+`/tmp/pr609-folder-upload-{before,chromium,webkit}.log`,
+`/tmp/pr609-review-followup-verify.log`.
+
+No sandbox, live services/data, Agents, dev or production were changed. The user
+sandbox remains at the previous reviewed head, not this follow-up. Independent
+re-review is required before merge/promotion. Physical phone keyboards/pickers,
+installed Safari and assistive technologies remain unqualified. The review's
+320px receipt one-row checker failure was not rerun or counted as a pass here;
+the reviewer did not establish a product regression from its intentional wrap.
+
 ## Manual checklist
 
 - [ ] Send, navigate away/back, and fail a send: no duplicate draft; failure recoverable.
@@ -344,6 +397,7 @@ review and live concurrent-provider/physical-device qualification are pending.
 - [ ] Autocomplete and send a reply: subsequent typing follows the chip.
 - [ ] File/download links look clickable and show keyboard focus.
 - [ ] Open/select the model with the phone keyboard up; rotate without losing the picker/draft.
+- [ ] Touch-open the model picker, press hardware Escape: close only the picker, preserving recipient, text and cursor.
 - [ ] Mobile headers: long title, usage, menu/browser, status details and Stop are usable.
 - [ ] Follow-up controls: compact **Dismiss** and guarded retry behave as before.
 - [ ] Attention dialog: status/time/Chat remain identifiable; one result warning, full retained message/cause/IDs in Details; opening/closing does not settle work.
@@ -354,6 +408,7 @@ review and live concurrent-provider/physical-device qualification are pending.
 - [ ] Ponderosa microphone: no growing duplicates; typed text, repeated words, pause/resume preserved.
 - [ ] Attach TTF/OTF/WOFF/WOFF2 and other files; exact downloads work and fonts are not installed/previewed.
 - [ ] Drop/select a nested folder: one ZIP, preserved paths, visible exclusions; navigate during preparation without leaking it to another Chat.
+- [ ] Select/drop a Japanese- or emoji-named folder: upload succeeds; ZIP members retain their original names and bytes.
 
 Physical Samsung/iPhone keyboards, native microphone services, installed Safari,
 screen readers and a live managed-provider workload remain separate qualification.

@@ -83,13 +83,12 @@ export async function packageFolder(files: readonly FolderFile[], maxBytes: numb
   e.setUint32(0, 0x06054b50, true); e.setUint16(8, entries.length, true); e.setUint16(10, entries.length, true);
   e.setUint32(12, size - offset - end.length, true); e.setUint32(16, offset, true);
   checkActive();
-  // Leave room for .zip in the server's 160-byte display-name budget.
-  let stem = "";
-  for (const character of entries[0]!.path.split("/")[0]!.normalize("NFKC")) {
-    if (encoder.encode(stem + character).length > 140) break;
-    stem += character;
-  }
-  return new File([...parts, ...directory, end], `${stem.trim() || "folder"}.zip`, { type: "application/zip" });
+  // Upload filenames travel in a raw HTTP header. Keep the generated name
+  // ASCII and bounded; the original Unicode root/member paths remain in ZIP.
+  const stem = entries[0]!.path.split("/")[0]!.normalize("NFKC")
+    .replace(/[^\x20-\x7e]+/gu, "_").slice(0, 140).trim();
+  const name = stem.replace(/_/gu, "").trim() ? stem : "folder";
+  return new File([...parts, ...directory, end], `${name}.zip`, { type: "application/zip" });
 }
 
 /** Capture entries synchronously during drop; browsers revoke DataTransfer later. */

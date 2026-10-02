@@ -24,6 +24,12 @@ Independently verify, rather than treating implementer results as qualification:
 - Touch model selection preserves editor focus/caret and remains usable after
   keyboard-sized viewport changes and rotation. Keyboard navigation and Escape
   still work. Picker and microphone controls do not remount at breakpoints.
+  Recheck the follow-up against `763ebc1c4d97dd76aebbaabde84ea9c428f704fe`:
+  touch-open both the picker and Model submenu while the editor retains focus,
+  then hardware Escape must close only the picker. Preserve recipient, draft,
+  focus and caret in target-required (All Messages), Project and fixed composers.
+  Escape after closing must still reach normal composer handling. Check capture
+  listener cleanup and keyboard-open dismissal/focus restoration.
 - File/download links are visibly clickable and keyboard-focusable without
   changing authorization, URL admission or download behavior.
 - Mobile Chat/Agent headers retain accessible status details, Stop, usage,
@@ -90,6 +96,12 @@ Independently verify, rather than treating implementer results as qualification:
   and duplicate paths, read failure, empty folders and cancellation/navigation.
   Verify folder picker/drop at mobile/desktop widths. No partial folder or
   late archive may attach into another Chat; archive members remain untrusted.
+  Recheck Japanese, emoji and accented root names through the actual browser
+  draft upload, not a mocked callback. Generated archive names are bounded ASCII
+  for the existing raw filename header; original Unicode root/member paths and
+  bytes must remain intact. Ordinary ASCII names remain unchanged. Run
+  `folder-upload-browser.check.mjs` in Chromium and macOS WebKit; it uses real
+  draft routes/storage and the unmodified upload hook/API with disposable data.
 
 Run focused browser checks in Chromium and macOS WebKit where available, focused
 Agent projection tests, typechecks, production builds, `pnpm verify`, and

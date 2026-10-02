@@ -17,7 +17,7 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 export interface ComposerRuntimeOption {
   id: string;
@@ -123,13 +123,25 @@ export function ComposerRuntimeSelector({
   const selectedSpeed = speeds.find(option => option.id === speed);
   const selectedModelLabel = loading ? "Loading model…" : selectedModel?.label ?? (models.length ? "Choose model" : "Choose a provider");
   const selectedEffortLabel = loading ? "Loading reasoning…" : selectedEffort?.label ?? (efforts.length ? "Choose reasoning" : "Reasoning follows model");
-  const close = () => {
+  const close = useCallback(() => {
     if (!preserveEditorFocus.current && document.getElementById(menuId)?.contains(document.activeElement)) anchor?.focus();
     setAnchor(null); setSection(null);
-  };
+  }, [anchor, menuId]);
+  useEffect(() => {
+    if (!anchor) return;
+    // Touch keeps focus in the editor, outside the menu. Own Escape in capture
+    // so dismissing this picker cannot reach the editor's recipient removal.
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault(); event.stopPropagation(); close();
+    };
+    const document = anchor.ownerDocument;
+    document.addEventListener("keydown", dismiss, true);
+    return () => document.removeEventListener("keydown", dismiss, true);
+  }, [anchor, close]);
   useEffect(() => {
     if (disabled) close();
-  }, [disabled]);
+  }, [disabled, close]);
   const canSwitchEngine = !engineLocked && Boolean(onEngineChange) && engines.length > 1;
   const sections: Array<{
     id: RuntimeSection;
@@ -224,7 +236,6 @@ export function ComposerRuntimeSelector({
         <Paper
           id={menuId}
           role="menu"
-          onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); } }}
           onPointerDown={keepKeyboard}
           onMouseDown={event => { if (preserveEditorFocus.current) event.preventDefault(); }}
           elevation={12}

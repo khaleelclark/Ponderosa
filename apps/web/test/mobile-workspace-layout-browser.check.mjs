@@ -32,7 +32,7 @@ try {
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${server.address().port}`;
   browser = await playwright[engine].launch({ headless: true,
-    ...(engine === "chromium" ? { executablePath: process.env.PONDEROSA_CHROMIUM_PATH } : {}) });
+    executablePath: engine === "chromium" ? process.env.PONDEROSA_CHROMIUM_PATH : process.env.PONDEROSA_WEBKIT_PATH });
   const errors = [];
   const pageFor = async (viewport, query) => {
     const page = await browser.newPage({ viewport, hasTouch: viewport.width < 900 });
@@ -56,6 +56,36 @@ try {
     });
     await page.goto(`${url}/?${query}`); return page;
   };
+  for (const width of [390, 320, 430]) for (const mode of ["target-required", "project-chat", "fixed"]) {
+    const page = await pageFor({ width, height: 900 }, `case=composer&reply&${mode}`);
+    const input = page.locator(".composer-editor-input");
+    await input.waitFor();
+    if (mode !== "fixed") await page.getByRole("button", { name: "Remove #Boston", exact: true }).waitFor();
+    await input.focus(); await page.keyboard.type("Keep this draft");
+    await page.keyboard.press("ArrowLeft");
+    const snapshot = () => input.evaluate(element => {
+      const selection = window.getSelection();
+      return { html: element.innerHTML, focus: document.activeElement === element,
+        anchorOffset: selection.anchorOffset, focusOffset: selection.focusOffset,
+        anchorText: selection.anchorNode?.textContent, focusText: selection.focusNode?.textContent };
+    });
+    const before = await snapshot();
+    const trigger = page.getByRole("button", { name: /Choose engine, model/ });
+    for (const submenu of [false, true]) {
+      await trigger.tap();
+      if (submenu) await page.getByRole("menuitem", { name: /Model GPT/ }).tap();
+      assert.deepEqual(await snapshot(), before, "touch-open preserves the draft, destination and caret");
+      await page.keyboard.press("Escape");
+      assert.equal(await page.locator("body").getAttribute("data-recipient-cleared"), null, "picker dismissal cannot clear the All Messages recipient");
+      assert.equal(await trigger.getAttribute("aria-expanded"), "false", "Escape closes the touch-open picker before composer handling");
+      assert.deepEqual(await snapshot(), before, "picker Escape preserves editor focus, selection and canonical draft text");
+    }
+    if (mode === "target-required") {
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => document.body.dataset.recipientCleared === "yes");
+    }
+    await page.close();
+  }
   for (const width of [320, 390, 1440]) {
     const page = await pageFor({ width, height: 900 }, "case=composer");
     const input = page.locator(".composer-editor-input");

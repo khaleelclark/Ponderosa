@@ -51,9 +51,11 @@ api.getWorkspaceFileView = async (_project, path) => ({ path, mediaType: "text/p
 function Probe(): JSX.Element {
   useAppViewport();
   const [tab, setTab] = useState<AgentTab>("chat");
+  const [recipient, setRecipient] = useState(true);
   if (params.get("case") === "composer") return <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
     <Box sx={{ flex: 1 }}>Isolated Composer: no live data or provider calls.</Box>
-    <Composer enableVoiceDictation disabled={false} running={false} destinationMode="project-chat"
+    <Composer enableVoiceDictation disabled={false} running={false} destinationMode={params.has("target-required") ? "target-required" : params.has("fixed") ? "fixed" : "project-chat"}
+      requiredRecipient={params.has("target-required") && recipient ? { handle: "Boston", title: "Boston", onClear: () => { setRecipient(false); document.body.dataset.recipientCleared = "yes"; } } : undefined}
       defaultDestination={params.has("reply") ? { handle: "Boston", selectionKey: "reply-boston", binding: { agentId: "boston", projectId: "project", handle: "Boston", currentHandle: "Boston", currentTitle: "Boston" } } : undefined}
       mentionHandles={["Boston"]} mentionBindings={[{ agentId: "boston", projectId: "project", handle: "Boston", currentHandle: "Boston", currentTitle: "Boston" }]}
       controls={<ComposerRuntimeSelector engine="codex" engines={[{ id: "codex", label: "Codex" }]}

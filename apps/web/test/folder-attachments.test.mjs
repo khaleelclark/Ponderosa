@@ -56,6 +56,19 @@ test("folder-picker paths are grouped and hidden/key material is excluded", asyn
   assert.deepEqual([...readStoredZip(Buffer.from(await result.files[0].arrayBuffer())).keys()], ["Design/type.woff2"]);
 });
 
+test("generated ZIP names are bounded header-safe ASCII without changing Unicode archive members", async () => {
+  for (const root of ["Fonts", "日本語", "🎨 Fonts", "école", "長".repeat(100), "a".repeat(200)]) {
+    const path = `${root}/字形.ttf`, body = Buffer.from([0, 1, 255, 7]);
+    const zip = await packageFolder([{ path, file: new File([body], "字形.ttf") }], 10000);
+    assert.match(zip.name, /^[\x20-\x7e]+\.zip$/);
+    assert(Buffer.byteLength(zip.name) <= 144);
+    assert.equal(new Headers({ "x-ponderosa-filename": zip.name }).get("x-ponderosa-filename"), zip.name);
+    assert.deepEqual(readStoredZip(Buffer.from(await zip.arrayBuffer())), new Map([[path, body]]));
+    if (root === "Fonts") assert.equal(zip.name, "Fonts.zip", "existing ASCII names remain unchanged");
+    if (root === "日本語") assert.equal(zip.name, "folder.zip");
+  }
+});
+
 test("folders reject unsafe paths, duplicates, count/byte bounds, cancellation and unreadable entries without partial output", async () => {
   for (const path of ["../font.ttf", "Fonts/../font.ttf", "C:/font.ttf", "Fonts\\font.ttf", "Fonts/bad\u202ename.ttf", "a/".repeat(17) + "font.ttf", "日".repeat(400)]) {
     await assert.rejects(packageFolder([{ path, file: new File(["font"], "font.ttf") }], 10000));
