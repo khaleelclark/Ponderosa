@@ -1500,6 +1500,7 @@ export class WorkspaceStore {
   notificationProjection(input: {
     projectIds: readonly string[];
     conversationIds: readonly string[];
+    chatFolders?: ReadonlyArray<{ id: string; conversationIds: readonly string[] }>;
   }): WorkspaceNotificationProjectionDto {
     const requestedProjectIds = new Set(input.projectIds);
     const requestedConversationIds = new Set(input.conversationIds);
@@ -1512,6 +1513,16 @@ export class WorkspaceStore {
       affectedConversationIds: Set<string>;
     }>();
     const conversations = new Map<string, NotificationProjectionAccumulator>();
+    const chatFolders = new Map<string, NotificationProjectionAccumulator>();
+    const folderIdsByConversation = new Map<string, Set<string>>();
+    for (const folder of input.chatFolders ?? []) {
+      chatFolders.set(folder.id, emptyNotificationProjectionAccumulator());
+      for (const conversationId of folder.conversationIds) {
+        const ids = folderIdsByConversation.get(conversationId) ?? new Set<string>();
+        ids.add(folder.id);
+        folderIdsByConversation.set(conversationId, ids);
+      }
+    }
 
     for (const projectId of requestedProjectIds) {
       projects.set(projectId, {
@@ -1561,6 +1572,9 @@ export class WorkspaceStore {
       for (const conversationId of conversationIds) {
         const conversation = conversations.get(conversationId);
         if (conversation) addNotificationProjection(conversation, item, kind);
+        for (const folderId of folderIdsByConversation.get(conversationId) ?? []) {
+          addNotificationProjection(chatFolders.get(folderId)!, item, kind);
+        }
       }
     }
 
@@ -1581,6 +1595,9 @@ export class WorkspaceStore {
       conversations: Object.fromEntries([...conversations].map(([conversationId, projection]) => [
         conversationId,
         notificationProjectionCounts(projection),
+      ])),
+      chatFolders: Object.fromEntries([...chatFolders].map(([folderId, projection]) => [
+        folderId, notificationProjectionCounts(projection),
       ])),
     };
   }

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import type { WorkspaceNotificationProjectionDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import type { ChatFolderDto, WorkspaceNotificationProjectionDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useSyncExternalStore } from "react";
 import { api } from "../api";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
@@ -100,29 +100,50 @@ function scopeBatches(ids: readonly string[]): string[][] {
 export function useNotificationProjection(
   projectIds: readonly string[],
   conversationIds: readonly string[],
+  chatFolders: ReadonlyArray<Pick<ChatFolderDto, "id" | "conversationIds">> = [],
+  enabled = true,
 ) {
   const normalizedProjectIds = [...new Set(projectIds)].sort();
   const normalizedConversationIds = [...new Set(conversationIds)].sort();
+  const normalizedFolders = chatFolders.map(folder => ({ id: folder.id, conversationIds: [...new Set(folder.conversationIds)].sort() }))
+    .sort((a, b) => a.id.localeCompare(b.id));
   return useQuery({
+    enabled,
     queryKey: queryKeys.notifications.projection(
       normalizedProjectIds,
       normalizedConversationIds,
+      JSON.stringify(normalizedFolders),
     ),
-    queryFn: async (): Promise<WorkspaceNotificationProjectionDto> => {
+    queryFn: async ({ signal }): Promise<WorkspaceNotificationProjectionDto> => {
       const projectBatches = scopeBatches(normalizedProjectIds);
       const conversationBatches = scopeBatches(normalizedConversationIds);
-      const requestCount = Math.max(projectBatches.length, conversationBatches.length, 1);
-      const pages = await Promise.all(Array.from({ length: requestCount }, (_, index) =>
-        api.getNotificationProjection({
-          projectIds: projectBatches[index] ?? [],
-          conversationIds: conversationBatches[index] ?? [],
-        })));
+      // Preferences already cap folder membership at 10,000 IDs overall.
+      const folderBatches = Array.from({ length: Math.ceil(normalizedFolders.length / 200) }, (_, index) => normalizedFolders.slice(index * 200, (index + 1) * 200));
+      const requestCount = Math.max(projectBatches.length, conversationBatches.length, folderBatches.length, 1);
+      const pages: WorkspaceNotificationProjectionDto[] = new Array(requestCount);
+      let next = 0;
+      let failed = false;
+      const worker = async () => {
+        while (!failed && !signal.aborted && next < requestCount) {
+          const index = next++;
+          try {
+            pages[index] = await api.getNotificationProjection({
+              projectIds: projectBatches[index] ?? [],
+              conversationIds: conversationBatches[index] ?? [],
+              ...(folderBatches[index]?.length ? { chatFolders: folderBatches[index] } : {}),
+            }, signal);
+          } catch (error) { failed = true; throw error; }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(requestCount, 2) }, worker));
+      signal.throwIfAborted();
       const first = pages[0]!;
       return {
         workspace: first.workspace,
         allMessages: first.allMessages,
         projects: Object.assign({}, ...pages.map(page => page.projects)),
         conversations: Object.assign({}, ...pages.map(page => page.conversations)),
+        chatFolders: Object.fromEntries(pages.flatMap(page => Object.entries(page.chatFolders ?? {}))),
       };
     },
   });

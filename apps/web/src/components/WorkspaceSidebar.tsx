@@ -8,7 +8,6 @@ import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import {
   Box,
   Button,
-  Chip,
   IconButton,
   List,
   ListItemButton,
@@ -81,6 +80,7 @@ import {
 import { ProjectRail } from "./ProjectNavigation";
 import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
 import { ChatFolders } from "./ChatFolders";
+import { SidebarNotificationBadge } from "./SidebarNotificationBadge";
 import {
   useWorkspaceSidebarNavigation,
   useWorkspaceSidebarResize,
@@ -290,6 +290,11 @@ export function WorkspaceSidebar({
   const notificationProjectionQuery = useNotificationProjection(
     projects.map(project => project.id),
     projectionConversationIds,
+    preferences.chatFolders ?? [],
+    // Wait for the first visible Chat page before starting folder batches, so
+    // the initial empty directory cannot start a superseded set of requests.
+    !(preferences.chatFolders?.length && showingChats && sidebarVisible &&
+      !chatDirectoryQuery.requestState.hasResolved && !chatDirectoryQuery.requestState.isInitialError),
   );
   const emptyUnread: UnreadNotificationProjection = {
     importantCount: 0,
@@ -593,13 +598,14 @@ export function WorkspaceSidebar({
             starred={starred} emphasis={Boolean(unread.totalCount)} boldWhenStarred={false} selected={route.kind === "conversation" && route.conversationId === conversation.id}
             onOpen={() => openChat(chatProject, conversation)} onStar={() => toggleStar("conversation", conversation.id)}
             status={<>{runningAgentCount > 0 ? <AgentStatusIndicator status="running" /> : null}
-              {unread.importantCount ? <Chip size="small" color="error" label={unread.importantCount} aria-label={`${unread.importantCount} important unread`} sx={{ height: 20 }} /> : null}
-              {unread.ordinaryCount ? <Box role="img" aria-label={`${unread.ordinaryCount} ordinary unread`} sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "text.secondary" }} /> : null}</>} />
+              <SidebarNotificationBadge unread={unread} /></>} />
         </Stack>
       );
     });
   const globalChatsPanel = (
     <ChatFolders items={chatRows} folders={preferences.chatFolders ?? []} sort={chatSort}
+      folderUnread={notificationProjectionQuery.data?.chatFolders}
+      notificationState={notificationProjectionQuery.isError ? "unavailable" : "loading"}
       openItems={activeChatRow ? [activeChatRow] : []}
       starredIds={starredResourceIds} filtering={Boolean(filter.trim())}
       renderRow={item => globalChatResourceRows([item])}

@@ -59,11 +59,12 @@ export const queryKeys = {
   },
   notifications: {
     all: ["notifications"] as const,
-    projection: (projectIds: readonly string[], conversationIds: readonly string[]) => [
+    projection: (projectIds: readonly string[], conversationIds: readonly string[], chatFoldersKey = "") => [
       "notifications",
       "projection",
       projectIds.join("\0"),
       conversationIds.join("\0"),
+      chatFoldersKey,
     ] as const,
   },
   decisions: {

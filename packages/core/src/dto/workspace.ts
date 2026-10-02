@@ -424,6 +424,9 @@ export interface WorkspaceProjectNotificationProjectionDto
 export interface WorkspaceNotificationProjectionRequestDto {
   projectIds: string[];
   conversationIds: string[];
+  /** Presentation groups only; counts dedupe canonical notification identities.
+   * At most 200 groups and 10,000 total member IDs per request. */
+  chatFolders?: Array<Pick<ChatFolderDto, "id" | "conversationIds">>;
 }
 
 export interface WorkspaceNotificationProjectionDto {
@@ -431,6 +434,7 @@ export interface WorkspaceNotificationProjectionDto {
   allMessages: WorkspaceNotificationCountProjectionDto;
   projects: Record<string, WorkspaceProjectNotificationProjectionDto>;
   conversations: Record<string, WorkspaceNotificationCountProjectionDto>;
+  chatFolders?: Record<string, WorkspaceNotificationCountProjectionDto>;
 }
 
 export interface RetryCoordinationRequestResponse {

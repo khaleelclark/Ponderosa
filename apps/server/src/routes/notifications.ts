@@ -116,6 +116,7 @@ export function registerNotificationListRoute(
     async (request, reply) => {
       const projectIds = request.body?.projectIds;
       const conversationIds = request.body?.conversationIds;
+      const chatFolders = request.body?.chatFolders;
       const validIds = (value: unknown): value is string[] => Array.isArray(value) &&
         value.length <= 200 &&
         value.every((id) => typeof id === "string" && id.length > 0 && id.length <= 200);
@@ -124,9 +125,21 @@ export function registerNotificationListRoute(
           error: "projectIds and conversationIds must each contain at most 200 IDs",
         });
       }
+      if (chatFolders !== undefined) {
+        let memberCount = 0;
+        const folderIds = new Set<string>();
+        if (!Array.isArray(chatFolders) || chatFolders.length > 200 || chatFolders.some(folder => {
+          if (!folder || typeof folder.id !== "string" || !folder.id || folder.id.length > 200 || folderIds.has(folder.id) ||
+            !Array.isArray(folder.conversationIds) || folder.conversationIds.length > 10_000) return true;
+          folderIds.add(folder.id);
+          memberCount += folder.conversationIds.length;
+          return memberCount > 10_000 || folder.conversationIds.some(id => typeof id !== "string" || !id || id.length > 200);
+        })) return reply.code(400).send({ error: "chatFolders must contain at most 200 unique groups and 10000 total member IDs" });
+      }
       return options.workspace.notificationProjection({
         projectIds: [...new Set(projectIds)],
         conversationIds: [...new Set(conversationIds)],
+        ...(chatFolders ? { chatFolders } : {}),
       });
     },
   );

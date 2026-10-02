@@ -603,10 +603,12 @@ export const realApi = {
   },
   getNotificationProjection(
     request: WorkspaceNotificationProjectionRequestDto,
+    signal?: AbortSignal,
   ): Promise<WorkspaceNotificationProjectionDto> {
     return requestJson<WorkspaceNotificationProjectionDto>("/api/notifications/projection", {
       method: "POST",
       body: JSON.stringify(request satisfies WorkspaceNotificationProjectionRequestDto),
+      signal,
     });
   },
   async activeNotificationIds(notificationIds: string[]): Promise<string[]> {
