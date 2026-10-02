@@ -38,6 +38,13 @@ Independently verify, rather than treating implementer results as qualification:
   notice/work authority. The Notifications panel is not otherwise redesigned.
 - Modified & Created Files remains newest-first after refresh and older-page
   loading; no filesystem-mtime guarantee is implied.
+- Starred folder expansion is independent from All Chats in both directions.
+  Check one-time legacy seeding, reload/remount, search restoration, rename,
+  unstar/re-star and denied device storage. Starred toggles must not change
+  canonical workspace preferences, folder membership/stars, notification counts
+  or routing. All Chats retains the existing expansion preference. Run
+  `chat-folder-notifications-browser.check.mjs` in Chromium and WebKit, including
+  its existing 401-folder bounded projection, loading/failure and count checks.
 - Ponderosa microphone requests final results only. Test the modeled Android
   growing-partial failure, rapid final callbacks, replayed indices, pause/resume,
   stale callbacks, typed text and intentional repeated words. Do not deduplicate

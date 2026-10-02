@@ -11,6 +11,7 @@ import Fastify from "../../server/node_modules/fastify/fastify.js";
 import { registerNotificationListRoute } from "../../server/dist/routes/notifications.js";
 
 const baseline = process.env.PONDEROSA_EXPECT_FOLDER_BADGE_MISSING === "1";
+const expectLinkedExpansion = process.env.PONDEROSA_EXPECT_LINKED_FOLDER_EXPANSION === "1";
 const browserType = process.env.PONDEROSA_BROWSER_TYPE ?? "chromium";
 const { [browserType]: engine } = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH);
 const web = fileURLToPath(new URL("..", import.meta.url));
@@ -73,6 +74,102 @@ try {
   }).listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
   browser = await engine.launch({ headless: true, ...(browserType === "chromium" ? { executablePath: process.env.PONDEROSA_CHROMIUM_PATH } : {}) });
+  if (expectLinkedExpansion) {
+    const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
+    await page.goto(`http://127.0.0.1:${server.address().port}/?independent`);
+    const copies = page.getByRole("button", { name: "Folder Apps", exact: true });
+    await copies.nth(1).waitFor();
+    assert.equal(await copies.nth(0).getAttribute("aria-expanded"), "true");
+    assert.equal(await copies.nth(1).getAttribute("aria-expanded"), "true");
+    await copies.nth(0).click();
+    assert.equal(await copies.nth(0).getAttribute("aria-expanded"), "false");
+    assert.equal(await copies.nth(1).getAttribute("aria-expanded"), "false");
+    console.log("REPRODUCED: collapsing Starred also collapses the All Chats folder");
+    await page.close();
+  } else {
+    for (const width of [320, 390, 1440]) {
+      const page = await browser.newPage({ viewport: { width, height: 900 } });
+      const errors = []; page.on("pageerror", error => errors.push(error.message));
+      await page.goto(`http://127.0.0.1:${server.address().port}/?independent`);
+      const root = section => page.locator(`[data-chat-folder="apps"][data-folder-section="${section}"]`);
+      const folder = section => root(section).getByRole("button", { name: /^Folder / });
+      const expanded = async (starred, all) => {
+        assert.equal(await folder("starred").getAttribute("aria-expanded"), String(starred));
+        assert.equal(await folder("all").getAttribute("aria-expanded"), String(all));
+        assert.equal(await root("starred").getByRole("button", { name: "Open Chat Newleaf", exact: true }).count(), Number(starred));
+        assert.equal(await root("all").getByRole("button", { name: "Open Chat Newleaf", exact: true }).count(), Number(all));
+      };
+      const badge = section => folder(section).getByRole("img", { name: "1 important unread", exact: true });
+      await badge("all").waitFor();
+      await expanded(true, true);
+      const countRequests = requests.length;
+      // All Chats changes first: the Starred legacy seed must already be saved.
+      await folder("all").click();
+      await expanded(true, false);
+      await page.reload();
+      await badge("all").waitFor();
+      await expanded(true, false);
+      const writes = await page.locator("[data-preference-writes]").getAttribute("data-preference-writes");
+      await folder("starred").focus(); await folder("starred").press("Enter");
+      await expanded(false, false);
+      await folder("all").click();
+      await expanded(false, true);
+      const afterAll = await page.locator("[data-preference-writes]").getAttribute("data-preference-writes");
+      assert.equal(Number(afterAll), Number(writes) + 1);
+      await folder("starred").click(); await folder("starred").click();
+      assert.equal(await page.locator("[data-preference-writes]").getAttribute("data-preference-writes"), afterAll,
+        "Starred expansion is display-only and does not write canonical workspace preferences");
+      await page.getByRole("button", { name: "Remount sidebar", exact: true }).click();
+      await badge("all").waitFor();
+      await expanded(false, true);
+      await page.reload(); await badge("all").waitFor();
+      await expanded(false, true);
+      const search = page.getByRole("textbox", { name: "Search chats", exact: true });
+      await search.fill("Newleaf");
+      await root("starred").getByRole("button", { name: "Open Chat Newleaf", exact: true }).waitFor();
+      await expanded(true, true);
+      await search.fill("");
+      await page.getByRole("button", { name: "Folder Later", exact: true }).waitFor();
+      await expanded(false, true);
+      await root("all").getByRole("button", { name: "Unstar folder Apps", exact: true }).click();
+      await root("starred").waitFor({ state: "hidden" });
+      await root("all").getByRole("button", { name: "Star folder Apps", exact: true }).click();
+      await expanded(false, true);
+      // Rename uses the same stable folder ID, not a new expansion preference.
+      await folder("all").focus(); await folder("all").press("Shift+F10");
+      await page.getByRole("menuitem", { name: "Rename Folder", exact: true }).click();
+      await page.getByRole("textbox", { name: "Folder name", exact: true }).fill("Renamed Apps");
+      await page.getByRole("dialog", { name: "Rename Folder", exact: true }).getByRole("button", { name: "Rename", exact: true }).click();
+      await expanded(false, true);
+      assert.equal(await page.getByRole("button", { name: "Folder Renamed Apps", exact: true }).count(), 2);
+      await badge("starred").waitFor(); await badge("all").waitFor();
+      await page.getByRole("button", { name: "Read Newleaf", exact: true }).click();
+      await badge("starred").waitFor({ state: "hidden" }); await badge("all").waitFor({ state: "hidden" });
+      await page.getByRole("button", { name: "New notification", exact: true }).click();
+      await badge("starred").waitFor(); await badge("all").waitFor();
+      await expanded(false, true);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await page.screenshot({ path: path.join(tmpdir(), `chat-folder-independent-${browserType}-${width}.png`) });
+      assert.deepEqual(errors, []);
+      assert(requests.length > countRequests, "reload/read changes still use the existing notification projection");
+      await page.close();
+      console.log(`PASS ${browserType} ${width}: independent Starred/All Chats expansion, legacy seed, reload/remount, search, rename, re-star, keyboard and shared unread counts`);
+    }
+    const denied = await browser.newPage({ viewport: { width: 390, height: 900 } });
+    await denied.addInitScript(() => { Object.defineProperty(window, "localStorage", { configurable: true,
+      get() { throw new DOMException("Disposable denied storage", "SecurityError"); } }); });
+    await denied.goto(`http://127.0.0.1:${server.address().port}/?independent`);
+    const starred = denied.locator('[data-chat-folder="apps"][data-folder-section="starred"]').getByRole("button", { name: "Folder Apps", exact: true });
+    const all = denied.locator('[data-chat-folder="apps"][data-folder-section="all"]').getByRole("button", { name: "Folder Apps", exact: true });
+    await starred.waitFor(); await starred.click();
+    assert.equal(await starred.getAttribute("aria-expanded"), "false");
+    assert.equal(await all.getAttribute("aria-expanded"), "true");
+    await denied.getByRole("button", { name: "Remount sidebar", exact: true }).click();
+    assert.equal(await starred.getAttribute("aria-expanded"), "false");
+    assert.equal(await all.getAttribute("aria-expanded"), "true");
+    await denied.close();
+    console.log(`PASS ${browserType}: denied device storage retains independent expansion in memory`);
+  }
   for (const width of [320, 390, 1440]) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     const errors = []; page.on("pageerror", error => errors.push(error.message));

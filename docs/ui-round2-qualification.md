@@ -44,6 +44,14 @@ deployment, shared sandbox refresh, provider Run, or live-data repair is include
 - Modified & Created Files already sorts by recorded artifact creation time,
   newest first. No product ordering change was needed. Pagination/reload are
   covered by a runnable regression, not claimed as live filesystem-mtime sorting.
+- Starred folders and their All Chats copies expand/collapse independently.
+  All Chats retains its existing workspace preference; Starred saves a separate
+  browser-local display preference keyed by stable folder ID. Existing folders
+  seed the Starred value once from their old expansion state. Search can reveal
+  matches without overwriting either choice; rename and unstar/re-star preserve
+  it. If device storage is denied, the current browser session uses the existing
+  safe in-memory fallback. Folder membership, stars and notification counts
+  remain shared, and no server schema or routing authority changes.
 - Dictation requests final results only. Unused Android interim callbacks can be
   promoted to final results in continuous mode, producing growing repeated
   phrases. Final-result indices and recognition generations remain fenced;
@@ -106,6 +114,7 @@ node apps/web/test/message-receipt-layout.check.mjs
 node apps/web/test/file-preview-links-browser.check.mjs
 node apps/web/test/sent-draft-navigation.check.mjs
 node apps/web/test/composer-chip-accessibility.check.mjs
+node apps/web/test/chat-folder-notifications-browser.check.mjs
 node --test apps/server/test/opaque-attachments.test.mjs
 ```
 
@@ -113,7 +122,8 @@ Browser scripts use the existing `PONDEROSA_PLAYWRIGHT_PATH` and
 `PONDEROSA_CHROMIUM_PATH` configuration. Use `PONDEROSA_TEST_BROWSER=webkit`
 for the optimistic, mobile layout, link and draft-navigation checks. The chip
 checker instead uses `PONDEROSA_BROWSER_ENGINE=webkit`. No new dependency is
-added. Fixtures use disposable data and real components/HTTP-store paths where
+added. The folder checker uses `PONDEROSA_BROWSER_TYPE=webkit`. Fixtures use
+disposable data and real components/HTTP-store paths where
 the existing check provides them; they do not establish live multi-Agent behavior.
 
 ## Initial UI verification (before the folder follow-up)
@@ -201,6 +211,32 @@ Screenshots use the host temporary directory with
 disposable fixtures, not live conversations or a physical phone; no deployment,
 notice acknowledgement, work settlement or live-data repair was performed.
 
+## Independent folder expansion verification
+
+Before the fix, the actual WorkspaceSidebar fixture reproduced collapsing
+Starred also collapsing All Chats. The existing checker can reproduce that
+baseline with `PONDEROSA_EXPECT_LINKED_FOLDER_EXPANSION=1` on the previous source.
+
+Fresh full `pnpm verify` on this follow-up passed 1,002 tests, with 7
+platform/opt-in skips, zero failures, all typechecks and production builds passed
+(macOS / Node 24.21.0). Log: `/tmp/ponderosa-folder-independent-verify.log`.
+`git diff --check` also passed. Skipped checks are not passing qualification.
+
+Chromium and macOS WebKit checks passed at 320/390/1440px: both toggle
+directions, one-time legacy seeding, reload/remount, keyboard activation, search
+without overwriting choices, stable-ID rename, unstar/re-star, no canonical
+preference writes from Starred expansion, and shared notification updates.
+Denied device storage retained independent values through sidebar remounts.
+Existing collapsed/unloaded-member badges, move/read/dismiss, 401-folder bounded
+batching, loading and failure checks also passed. The 390px Chromium screenshot
+was visually inspected with Starred collapsed and All Chats expanded.
+
+Browser logs: `/tmp/ponderosa-folder-independent-{chromium,webkit}.log`.
+Baseline: `/tmp/ponderosa-folder-expansion-before.log`.
+Screenshots: host temporary directory, `chat-folder-independent-<engine>-<width>.png`.
+These are disposable implementer checks, not independent approval or
+physical-device qualification. No shared sandbox or live preferences changed.
+
 ## Manual checklist
 
 - [ ] Send, navigate away/back, and fail a send: no duplicate draft; failure recoverable.
@@ -212,6 +248,7 @@ notice acknowledgement, work settlement or live-data repair was performed.
 - [ ] Follow-up controls: compact **Dismiss** and guarded retry behave as before.
 - [ ] Attention dialog: status/time/Chat remain identifiable; one result warning, full retained message/cause/IDs in Details; opening/closing does not settle work.
 - [ ] Files: newest first after refresh and loading older files.
+- [ ] Starred folder: collapse/expand independently from All Chats; reload and search preserve both choices; unread counts remain visible in both.
 - [ ] Ponderosa microphone: no growing duplicates; typed text, repeated words, pause/resume preserved.
 - [ ] Attach TTF/OTF/WOFF/WOFF2 and other files; exact downloads work and fonts are not installed/previewed.
 - [ ] Drop/select a nested folder: one ZIP, preserved paths, visible exclusions; navigate during preparation without leaking it to another Chat.
