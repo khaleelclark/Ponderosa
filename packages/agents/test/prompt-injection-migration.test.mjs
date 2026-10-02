@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
 import { AgentStore, CoordinationV3Store } from "../dist/index.js";
+import { dbPath } from "../dist/paths.js";
 
 test("exact injection migration preserves historical hashes without inventing text; new packets remain immutable and attributed", () => {
   const directory = mkdtempSync(join(tmpdir(), "prompt-injection-migration-")); let store = new AgentStore(directory);
@@ -18,7 +19,9 @@ test("exact injection migration preserves historical hashes without inventing te
     coordinate("historical"); const historical = c.leaseNextRun({ workerId: "synthetic" });
     const injection = { injectionId: historical.injectionId, runId: historical.runId, fencingToken: historical.fencingToken };
     c.preparePromptInjection({ ...injection, prompt: "Historical text must not be reconstructed" }); c.markPromptSubmitted(injection); c.acknowledgePromptInjection(injection); c.completeRun(historical.runId, historical.fencingToken);
-    const file = store.sqlite.name; const original = store.sqlite.prepare("SELECT prompt_hash,state FROM scheduler_prompt_injections WHERE id=?").get(historical.injectionId);
+    // sqlite.name may be rooted through an owned /proc/self/fd descriptor on
+    // Linux. After store.close(), reopen only the stable disposable fixture path.
+    const file = dbPath(directory); const original = store.sqlite.prepare("SELECT prompt_hash,state FROM scheduler_prompt_injections WHERE id=?").get(historical.injectionId);
     store.close();
     const legacy = new Database(file); legacy.exec("ALTER TABLE scheduler_prompt_injections DROP COLUMN exact_prompt; ALTER TABLE scheduler_prompt_injections DROP COLUMN source_manifest_json; DELETE FROM _schema_version WHERE name='0017_exact_prompt_injections.sql'"); legacy.close();
     store = new AgentStore(directory); c = new CoordinationV3Store(store.sqlite);

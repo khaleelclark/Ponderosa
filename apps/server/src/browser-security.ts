@@ -24,7 +24,8 @@ const BROWSER_NAMED_KEYS = new Set([
   "PageUp", "PageDown", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
   "Control", "Meta", "Alt", "Shift", "CapsLock", "NumLock", "ScrollLock",
   "Pause", "PrintScreen", "ContextMenu", "BrowserBack", "BrowserForward", "BrowserRefresh",
-  ...Array.from({ length: 24 }, (_, index) => `F${index + 1}`),
+  // Chrome's keyboard driver supports F1–F12, not arbitrary DOM key names.
+  ...Array.from({ length: 12 }, (_, index) => `F${index + 1}`),
 ]);
 
 /** Case-sensitive driver notation, not arbitrary DOM key names. Never replay. */
@@ -41,8 +42,11 @@ export function validateBrowserKey(value: unknown): string {
     key = key.slice(key.indexOf("+") + 1);
   }
   const character = Array.from(key);
-  if (modifiers.size > 0 && key.length > 1 && character.length === 1) {
+  if (modifiers.size > 0 && character.length === 1 && !/^[\x20-\x7e]$/u.test(key)) {
     throw new BrowserSessionError("This character does not support keyboard modifier notation; use browser fill/type for Unicode text.", 400, "invalid_input");
+  }
+  if (modifiers.size > 0 && ["BrowserBack", "BrowserForward", "BrowserRefresh"].includes(key)) {
+    throw new BrowserSessionError("Browser navigation keys do not support modifiers; use BrowserBack, BrowserForward, or BrowserRefresh alone.", 400, "invalid_input");
   }
   if (!BROWSER_NAMED_KEYS.has(key) &&
       !(character.length === 1 && !/[\p{Cc}\p{Cs}]/u.test(key))) {

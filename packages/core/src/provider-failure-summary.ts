@@ -1,4 +1,4 @@
-import type { ProviderErrorCode } from "./events.js";
+import type { AgentEvent, ProviderErrorCode } from "./events.js";
 import type { EngineModelValidationError } from "./adapter.js";
 
 export const MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS = 240;
@@ -127,12 +127,14 @@ export function publicProviderFailureEvent(event: {
   message: string;
   code?: string;
   category?: ProviderFailureCategory | string;
+  terminalStatus?: Extract<AgentEvent, { type: "error" }>["terminalStatus"];
 }): {
   type: "error";
   message: string;
   code?: ProviderErrorCode;
   category: ProviderFailureCategory;
   remediation: string;
+  terminalStatus?: Extract<AgentEvent, { type: "error" }>["terminalStatus"];
 } {
   const failure = publicProviderFailure({
     detail: event.message,
@@ -146,6 +148,7 @@ export function publicProviderFailureEvent(event: {
     message: failure.summary,
     category: failure.category,
     remediation: failure.remediation,
+    ...(event.terminalStatus !== undefined ? { terminalStatus: event.terminalStatus } : {}),
   };
 }
 

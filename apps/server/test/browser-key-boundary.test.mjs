@@ -11,8 +11,8 @@ import { playwrightBrowserDriverFactory, findBrowserExecutable } from "../dist/c
 import { registerBrowserRoutes } from "../dist/routes/browsers.js";
 
 test("keyboard notation validates narrowly, without blind case normalization", () => {
-  for (const key of ["End", "Enter", "Control+A", "Meta+Shift+a", "BrowserBack", "é", "🦊", "+", "Control++"]) assert.equal(validateBrowserKey(key), key);
-  for (const key of ["END", "Unidentified", "Control+Control+A", "Control+🦊", "", "a\nb", "NotAKey", null]) assert.throws(() => validateBrowserKey(key), { statusCode: 400, code: "invalid_input" });
+  for (const key of ["End", "Enter", "Control+A", "Meta+Shift+a", "BrowserBack", "F12", "é", "中", "🦊", "+", "Control++"]) assert.equal(validateBrowserKey(key), key);
+  for (const key of ["END", "Unidentified", "Control+Control+A", "Control+🦊", "Control+é", "Shift+é", "Meta+é", "Alt+中", "F13", "F24", "Control+BrowserBack", "", "a\nb", "NotAKey", null]) assert.throws(() => validateBrowserKey(key), { statusCode: 400, code: "invalid_input" });
 });
 
 test("real Chrome accepts valid keys/Unicode and returns structured errors for invalid keys", { skip: !findBrowserExecutable() }, async () => {
@@ -26,11 +26,13 @@ test("real Chrome accepts valid keys/Unicode and returns structured errors for i
   try {
     await new Promise(resolve => fixture.listen(0, "127.0.0.1", resolve));
     const session = await manager.open(scope, `http://127.0.0.1:${fixture.address().port}`, "operator");
-    for (const key of ["End", "Enter", "Control+A", "é", "🦊", "END", "Unidentified"]) {
+    const invalid = ["END", "Unidentified", "Control+é", "Shift+é", "Meta+é", "Alt+中", "F13", "F24", "Control+BrowserBack"];
+    const observed = [];
+    for (const key of ["End", "Enter", "Control+A", "Meta+Shift+a", "Control++", "F12", "é", "中", "🦊", ...invalid]) {
       const response = await app.inject({ method: "POST", url: "/api/projects/synthetic-chat/browser/input", payload: { kind: "key", key, expectedControlEpoch: session.controlEpoch, expectedPageId: session.activePageId } });
-      assert.equal(response.statusCode, ["END", "Unidentified"].includes(key) ? 400 : 200, response.body);
-      if (response.statusCode === 400) assert.equal(response.json().code, "invalid_input");
+      observed.push({ key, status: response.statusCode, code: response.json().code });
     }
+    assert.deepEqual(observed, observed.map(({ key }) => ({ key, status: invalid.includes(key) ? 400 : 200, code: invalid.includes(key) ? "invalid_input" : undefined })));
     const stale = await app.inject({ method: "POST", url: "/api/projects/synthetic-chat/browser/input", payload: { kind: "key", key: "End", expectedControlEpoch: session.controlEpoch, expectedPageId: "stale" } });
     assert.equal(stale.statusCode, 409);
     const agentControl = await manager.setControl(scope, "agent", session.controlEpoch);

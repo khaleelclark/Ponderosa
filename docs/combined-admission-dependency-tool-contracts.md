@@ -150,3 +150,39 @@ are reported as before evidence, not passing tests.
 - Independent review remains pending. The user requested a review prompt for
   their separate reviewer. Do not describe this implementation as independently
   approved, merge it or deploy it without that next explicit authorization.
+
+## Independent-review follow-up
+
+The review of `f8483f7e0af61cfeb916dd23b58e4a3f373a9840` requested three changes.
+Each was reproduced before its implementation was changed:
+
+1. `publicProviderFailureEvent` dropped the strictly validated terminal enum.
+   Mapped failed/interrupted/unknown events lost evidence through the real
+   stream and controlled-adapter lifecycle. The sanitizer now preserves only
+   that existing optional field while still replacing private error text. New
+   adapter → stream → exact persisted lifecycle/reopening tests cover all three
+   values, invalid-enum rejection, and no inference from failure prose. The
+   scheduler's existing `outcome_unknown` failure outcome remains unchanged.
+2. The real Chrome route returned 500 for modified Unicode and F13–F24, plus
+   modified browser-navigation pseudo-keys. Validation now accepts only F1–F12
+   and printable ASCII characters with modifiers. Standalone Unicode insertion,
+   supported shortcuts and unmodified navigation keys retain their behavior.
+   The expanded real-driver test still checks stale identity/control takeover
+   and actual transport failure without action replay.
+3. The migration test reopened Linux's `/proc/self/fd` SQLite name after the
+   owning directory descriptor closed. The failure was independently reproduced
+   in this implementation's isolated Linux checkout. It now uses `dbPath` of
+   the disposable fixture; production storage and migration code are unchanged.
+
+Before evidence: `/tmp/pr608-followup-before-mac.log` on the implementation Mac
+and `/tmp/pr608-followup-linux-migration-before.log` on Pine. Linux qualification
+uses an owned detached checkout at
+`/home/phoenix/ponderosa-pr608-followup-linux-20261002`, not either review tree or
+live release. Its first installation in `/tmp` encountered an inode/space limit;
+only the implementation-owned partial dependency installation was removed and
+the fixture was recreated on the disk-backed home filesystem. No existing
+resources or evidence were deleted. This setup failure is not a product finding.
+
+Fresh full macOS/Linux results and the follow-up review head are supplied in
+the PR handoff. These changes do not resolve Richmond's unknown incident origin
+or expand the previously disclosed live-provider/platform qualifications.
