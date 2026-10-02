@@ -17,7 +17,7 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 export interface ComposerRuntimeOption {
   id: string;
@@ -75,6 +75,18 @@ export function ComposerRuntimeSelector({
 }): JSX.Element {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [section, setSection] = useState<RuntimeSection | null>(null);
+  const preserveEditorFocus = useRef(false);
+  const keepKeyboard = (event: React.PointerEvent<HTMLElement>) => {
+    if (event.pointerType === "mouse") {
+      if (!anchor) preserveEditorFocus.current = false;
+      return;
+    }
+    if (!anchor) preserveEditorFocus.current = Boolean(
+      document.activeElement?.closest('[contenteditable="true"], textarea, input'),
+    );
+    // Prevent the compatibility mouse-down focus below, not pointer-down:
+    // cancelling a touch pointer-down also suppresses clicks in WebKit.
+  };
   const [popper, setPopper] = useState<{ update(): Promise<unknown> } | null>(null);
   useEffect(() => {
     if (!anchor || !popper) return;
@@ -111,7 +123,10 @@ export function ComposerRuntimeSelector({
   const selectedSpeed = speeds.find(option => option.id === speed);
   const selectedModelLabel = loading ? "Loading model…" : selectedModel?.label ?? (models.length ? "Choose model" : "Choose a provider");
   const selectedEffortLabel = loading ? "Loading reasoning…" : selectedEffort?.label ?? (efforts.length ? "Choose reasoning" : "Reasoning follows model");
-  const close = () => { setAnchor(null); setSection(null); };
+  const close = () => {
+    if (!preserveEditorFocus.current && document.getElementById(menuId)?.contains(document.activeElement)) anchor?.focus();
+    setAnchor(null); setSection(null);
+  };
   useEffect(() => {
     if (disabled) close();
   }, [disabled]);
@@ -153,7 +168,10 @@ export function ComposerRuntimeSelector({
       aria-controls={anchor ? menuId : undefined}
       aria-expanded={Boolean(anchor)}
       disabled={disabled}
+      onPointerDown={keepKeyboard}
+      onMouseDown={event => { if (preserveEditorFocus.current) event.preventDefault(); }}
       onClick={(event) => {
+        if (event.detail === 0) preserveEditorFocus.current = false;
         if (anchor) {
           close();
           return;
@@ -197,15 +215,23 @@ export function ComposerRuntimeSelector({
       modifiers={runtimePopperModifiers}
       sx={{ zIndex: 1500 }}
     >
-      <ClickAwayListener onClickAway={close}>
+      <ClickAwayListener onClickAway={event => {
+        // The trigger owns toggling. Touch-end click-away must not close it
+        // before the subsequent click toggles the same menu open again.
+        if (event.target instanceof Node && anchor?.contains(event.target)) return;
+        close();
+      }}>
         <Paper
           id={menuId}
           role="menu"
+          onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); } }}
+          onPointerDown={keepKeyboard}
+          onMouseDown={event => { if (preserveEditorFocus.current) event.preventDefault(); }}
           elevation={12}
           sx={{
             width: 286,
             maxWidth: "calc(100vw - 24px)",
-            maxHeight: "min(62vh, 520px)",
+            maxHeight: "min(520px, calc(var(--ponderosa-app-viewport-block-size, 100dvh) - 80px))",
             overflowX: "hidden",
             overflowY: "auto",
             overscrollBehavior: "contain",
@@ -231,11 +257,11 @@ export function ComposerRuntimeSelector({
               </MenuItem>
               <Divider sx={{ my: 0.5 }} />
               <MenuList
-                autoFocusItem
+                autoFocusItem={!preserveEditorFocus.current}
                 disablePadding
                 aria-label={`${active.label} options`}
                 sx={{
-                  maxHeight: "min(50vh, 430px)",
+                  maxHeight: "min(430px, calc(var(--ponderosa-app-viewport-block-size, 100dvh) - 150px))",
                   overflowY: "auto",
                   overflowX: "hidden",
                   overscrollBehavior: "contain",
@@ -315,7 +341,7 @@ export function ComposerRuntimeSelector({
                   Runtime
                 </Typography>
               </Box>
-              <MenuList disablePadding aria-label="Runtime settings">
+              <MenuList autoFocusItem={!preserveEditorFocus.current} disablePadding aria-label="Runtime settings">
                 {sections.map((item) => (
                   <MenuItem
                     key={item.id}

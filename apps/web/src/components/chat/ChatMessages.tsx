@@ -75,8 +75,11 @@ function canonicalRecipientPrefix(
 ): string {
   const authoredHandles = new Set(messageTagTokens(text)
     .map(token => token.handle.toLocaleLowerCase()));
+  const visibleHandles = new Set(messageTagTokens(resolveMessageMentionText(text, mentions))
+    .map(token => token.handle.toLocaleLowerCase()));
   return [...new Set((mentions ?? [])
-    .filter(mention => !authoredHandles.has(mention.handle.toLocaleLowerCase()))
+    .filter(mention => !authoredHandles.has(mention.handle.toLocaleLowerCase()) &&
+      !visibleHandles.has(mention.currentHandle.toLocaleLowerCase()))
     .map(mention => `#${mention.currentHandle}`))]
     .join(" ");
 }
@@ -93,7 +96,8 @@ export function communicationVisibleText(input: {
     : input.text;
   const resolvedText = resolveMessageMentionText(routedText, input.agentMentions);
   const prefix = !input.fromAgent &&
-    (input.intent === "user_dm" || input.intent === "collaboration")
+    (input.intent === "user_dm" || input.intent === "collaboration" ||
+      input.agentMentions?.some(mention => mention.handle === "new-agent"))
     ? canonicalRecipientPrefix(input.text, input.agentMentions)
     : "";
   return prefix ? `${prefix} ${resolvedText}` : resolvedText;
@@ -106,7 +110,7 @@ export function authoredAgentMentionForHandle(
 ): { agentId: string; label: string; authoredLabel: string } | undefined {
   const binding = mentions?.find(
     mention =>
-      mention.handle.toLocaleLowerCase() === handle.toLocaleLowerCase(),
+      [mention.handle, mention.currentHandle].some(label => label.toLocaleLowerCase() === handle.toLocaleLowerCase()),
   );
   return binding
     ? {
@@ -477,7 +481,7 @@ function ChatMarkdown({
         "& th, & td": { px: 1, py: 0.5, border: 1, borderColor: "divider", minWidth: "7rem", maxWidth: "24rem", verticalAlign: "top", overflowWrap: "break-word", wordBreak: "normal" },
         "& th:first-child, & td:first-child": { minWidth: "3rem" },
         "& td a, & th a": { maxWidth: "16rem" },
-        "& a": { maxWidth: "100%", color: "inherit", textDecoration: "none", overflowWrap: "anywhere", wordBreak: "break-word" },
+        "& a": { maxWidth: "100%", color: "primary.main", textDecoration: "underline", textUnderlineOffset: "0.15em", overflowWrap: "anywhere", wordBreak: "break-word", "&:hover": { textDecorationThickness: "2px" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: 2 } },
       }}
     >
       <ReactMarkdown
@@ -564,7 +568,7 @@ function ChatMarkdown({
                 : undefined;
             if (operatorMention) return <Box component="span" sx={messageHandleSx}>{visibleLabel}</Box>;
             if (!agentId) {
-              if (["broadcast", "everyone"].includes(handle.toLocaleLowerCase())) {
+              if (["broadcast", "everyone", "new-agent"].includes(handle.toLocaleLowerCase())) {
                 return <Box component="span" sx={messageMentionSx}>{label}</Box>;
               }
               return <>{label}</>;

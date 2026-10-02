@@ -1006,7 +1006,7 @@ export function ConversationView({
       />
     ) : null;
   return (
-    <OutgoingMessageProvider scope={conversationId} profile={preferencesQuery.data?.profile}><Box
+    <OutgoingMessageProvider scope={conversationId} profile={preferencesQuery.data?.profile} onOpenAgent={id => onOpenAgent(id)}><Box
       sx={{
         height: "100%",
         minHeight: 0,
@@ -1073,6 +1073,7 @@ export function ConversationView({
         >
           <ChatSurface
             showOutgoingMessage
+            canonicalCommunicationIds={messages.map(message => message.communicationEventId)}
             layout="project"
             layoutKey={`main:${visibleMessageLayoutKey}`}
             label="Chat messages"
@@ -1521,6 +1522,7 @@ export function ConversationView({
               context?.retryPreparedAttempt,
               context?.pendingSubmission,
               context?.persistPendingSubmission,
+              context?.onAgentCreated,
             )
           }
           onQueue={(text, files, stagedIds, draftOwnerId, context) =>
@@ -1535,6 +1537,7 @@ export function ConversationView({
               context?.retryPreparedAttempt,
               context?.pendingSubmission,
               context?.persistPendingSubmission,
+              context?.onAgentCreated,
             )
           }
           agentResponding={false}

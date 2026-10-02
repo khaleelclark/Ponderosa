@@ -8,7 +8,6 @@ import {
   Paper,
   Stack,
   TextField,
-  Typography,
 } from "@mui/material";
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
@@ -386,7 +385,6 @@ export function Composer({
   const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
   const [sending, setSending] = useState(false);
-  const [sendingAction, setSendingAction] = useState<"send" | "queue">("send");
   const draftMutationLockedRef = useRef(false);
   const [draftMutationLocked, setDraftMutationLocked] = useState(false);
   const draftContentGeneration = useRef(0);
@@ -542,15 +540,13 @@ export function Composer({
         0,
         textRef.current.length,
         insertion.text,
+        { caret: insertion.caret },
       );
       setSendError(undefined);
       setCaret(insertion.caret);
       setHighlighted(0);
       setSuppressMenu(false);
-      requestAnimationFrame(() => {
-        inputRef.current?.focus();
-        inputRef.current?.setSelectionOffsets(insertion.caret, insertion.caret);
-      });
+      requestAnimationFrame(() => inputRef.current?.focus());
     },
     [],
   );
@@ -1984,14 +1980,11 @@ export function Composer({
         ],
       );
       requiredRecipient?.onClear();
+      inputRef.current?.resetDocument(next);
       update(next);
       setHighlighted(0);
-      requestAnimationFrame(() => {
-        inputRef.current?.focus();
-        const nextCaret = inputRef.current?.getCanonicalText().length ?? 0;
-        inputRef.current?.setSelectionOffsets(nextCaret, nextCaret);
-        setCaret(nextCaret);
-      });
+      inputRef.current?.focus();
+      setCaret(next.length);
       return;
     }
     const binding = (mentionBindings ?? []).find(candidate =>
@@ -2032,20 +2025,15 @@ export function Composer({
         inputRef.current.replaceCanonicalRange(0, text.length, selection.text);
       }
       inputRef.current.setSelectionOffsets(selection.start, selection.end);
-      inputRef.current.insertMention(descriptor);
-      inputRef.current.insertText(" ");
+      inputRef.current.insertMention(descriptor, " ");
     } else {
       update(
         `${selection.text.slice(0, selection.start)}#${handle} ${selection.text.slice(selection.end)}`,
       );
     }
     setHighlighted(0);
-    const nextCaret = selection.start + handle.length + 2;
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      inputRef.current?.setSelectionOffsets(nextCaret, nextCaret);
-      setCaret(nextCaret);
-    });
+    const nextCaret = selection.start + (descriptor?.handle ?? handle).length + 2;
+    setCaret(nextCaret);
   };
 
   const applyFileReference = (entry: ArtifactDto) => {
@@ -2125,6 +2113,7 @@ export function Composer({
       context?: {
         mentionedAgents?: import("@ponderosa/core").AgentMentionBindingDto[];
         newAgentRequested?: boolean;
+        onAgentCreated?(agent: import("@ponderosa/core").AgentDto): void;
         retryPreparedAttempt?: boolean;
         pendingSubmission?: DraftPendingSubmissionDto;
         persistPendingSubmission?(
@@ -2216,7 +2205,6 @@ export function Composer({
       return;
     }
     sendingRef.current = true;
-    setSendingAction(action);
     setSending(true);
     setSendError(undefined);
     const submittedText = normalizedDraft;
@@ -2305,7 +2293,9 @@ export function Composer({
     // Render before fingerprinting, durable draft persistence or upload prep.
     // Runtime commands are not authored messages and must not get an echo.
     const outgoingId = runtimeCommandSubmission ? undefined
-      : outgoing?.begin(exactSubmissionText, files.map(file => file.name));
+      : outgoing?.begin(safeNewAgentSelected && !hasComposerDestination(exactSubmissionText, NEW_AGENT_DESTINATION_HANDLE)
+        ? prependComposerDestination(exactSubmissionText, NEW_AGENT_DESTINATION_HANDLE) : exactSubmissionText,
+        files.map(file => file.name));
     if (!runtimeCommandSubmission) {
       draftMutationLockedRef.current = true;
       setDraftMutationLocked(true);
@@ -2469,6 +2459,9 @@ export function Composer({
           ? {
               mentionedAgents,
               newAgentRequested: safeNewAgentSelected,
+              onAgentCreated: (agent: import("@ponderosa/core").AgentDto) => {
+                if (outgoingId) outgoing?.agentCreated(outgoingId, agent);
+              },
               retryPreparedAttempt: retryPreparedAttempt || durableRetry,
               ...(pendingSubmission ? {
                 pendingSubmission,
@@ -2706,22 +2699,19 @@ export function Composer({
       }}
     >
       <Box sx={{ display: "contents" }}>
-      {sending ? <Typography role="status" aria-live="polite" variant="caption" color="text.secondary" sx={{ px: 1.5, pt: 0.5 }}>
-        {sendingAction === "queue" ? "Queueing message…" : "Sending message…"} Your draft remains here until confirmed.
-      </Typography> : null}
       <ComposerDestinationBar
         destinationError={destinationError}
         destinationMode={destinationMode}
       />
-      <ComposerAttachmentList
+      {!draftMutationLocked && <ComposerAttachmentList
         disabled={draftMutationLocked}
         draftUploadStates={draftUploadStates}
         files={files}
         removeFile={removeFile}
         retryDraftUpload={retryDraftUpload}
-      />
+      />}
       <ComposerNotices
-        pastedText={pastedText}
+        pastedText={draftMutationLocked ? undefined : pastedText}
         pastedTextBytes={pastedText ? utf8ByteLength(pastedText) : 0}
         error={attachments.error ?? sendError}
         attachmentError={Boolean(attachments.error)}
@@ -3298,7 +3288,6 @@ export function Composer({
           onFilterChange={setCapabilityFilter}
           onApplyCapability={applyCapability}
         />
-        {narrowComposer ? <Box sx={{ display: "contents", "& > *": { flexShrink: 0 } }}>
         {destinationMode === "project-chat" ? (
           <ComposerProjectDestinationAction
             disabled={draftMutationLocked}
@@ -3324,7 +3313,7 @@ export function Composer({
           ml: "auto",
         }}>
           {controls ? (
-            <Box sx={{ minWidth: 44, maxWidth: "100%" }}>
+            <Box sx={{ minWidth: narrowComposer ? 44 : 0, maxWidth: "100%" }}>
               {controls}
             </Box>
           ) : null}
@@ -3334,35 +3323,10 @@ export function Composer({
             onSettlingChange={handleDictationSettlingChange}
           /> : null}
         </Box>
-        </Box> : <Box sx={{ display: "contents", "& > *": { flexShrink: { xs: 0, md: undefined } } }}>
-        {destinationMode === "project-chat" ? (
-          <ComposerProjectDestinationAction
-            disabled={draftMutationLocked}
-            newAgentSelected={newAgentSelected}
-            toggleNewAgent={toggleNewAgentDestination}
-            replyDestination={!newAgentSelected && defaultDestination && mentionedHandles.some(
-              handle => handle.toLocaleLowerCase() === defaultDestination.handle.toLocaleLowerCase(),
-            )
-              ? defaultDestination.binding?.currentTitle ?? defaultDestination.handle
-              : undefined}
-          />
-        ) : null}
-        {leadingControls ? (
-          <Box sx={{ minWidth: 0, maxWidth: "100%" }}>
-            {leadingControls}
-          </Box>
-        ) : null}
-        <Box sx={{ flex: 1, minWidth: { xs: 0, sm: 24 } }} />
-        {controls ? (
-          <Box sx={{ minWidth: 0, maxWidth: "100%", overflowX: "auto" }}>
-            {controls}
-          </Box>
-        ) : null}
-        </Box>}
         </Box>
         <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
           <ComposerTextInput
-            text={text}
+            text={draftMutationLocked ? "" : text}
             inputRef={inputRef}
             disabled={disabled || draftMutationLocked}
             locked={composerLocked}
@@ -3372,11 +3336,11 @@ export function Composer({
             listId={mentionListId}
             highlighted={effectiveHighlighted}
             attachmentsEnabled={composerAttachmentsEnabled}
-            pastedText={pastedText}
+            pastedText={draftMutationLocked ? undefined : pastedText}
             menuSuggestions={menuSuggestions}
             destinationMode={destinationMode}
             requiredRecipient={requiredRecipient}
-            inlineDestination={renderedDefaultDestination
+            inlineDestination={!draftMutationLocked && renderedDefaultDestination
               ? {
                   handle: renderedDefaultDestination.handle,
                   title:
@@ -3388,12 +3352,16 @@ export function Composer({
                     : clearActiveDefaultDestination,
                 }
               : undefined}
-            mentionTokens={mentionTokens}
+            mentionTokens={draftMutationLocked ? [] : mentionTokens}
             mentionBindings={mentionBindings ?? []}
             mentionedBusyHandles={mentionedBusyHandles}
             mentionedHandles={mentionedHandles}
             canSend={canSend}
             onTextChange={(value, nextCaret) => {
+              // Blank presentation during intake must not rewrite the durable
+              // submitted draft or its mutation/CAS authority.
+              if (draftMutationLockedRef.current) return;
+              const contentChanged = value !== textRef.current;
               const normalized = normalizeExclusiveNewAgentDestinationForMode(
                 destinationMode,
                 value,
@@ -3401,7 +3369,7 @@ export function Composer({
                 nextCaret,
               );
               update(normalized.text);
-              setSendError(undefined);
+              if (contentChanged) setSendError(undefined);
               setCaret(normalized.caret);
               setHighlighted(0);
               setSuppressMenu(false);
@@ -3445,11 +3413,6 @@ export function Composer({
           />
         </Box>
         <Box data-composer-send-actions sx={{ display: { xs: "flex", md: "contents" }, alignItems: "center", gap: 0.25, flexShrink: 0 }}>
-        {!narrowComposer && enableVoiceDictation ? <DictationControls
-          disabled={disabled || composerLocked || sending}
-          onFinalTranscript={insertDictatedText}
-          onSettlingChange={handleDictationSettlingChange}
-        /> : null}
         <ComposerSendActions
           allowSendWhileRunning={allowSendWhileRunning}
           canCancel={canCancel}

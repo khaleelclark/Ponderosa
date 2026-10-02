@@ -66,5 +66,14 @@ export function communicationMentionBindings(
       currentTitle: recipient.currentTitle,
     });
   }
-  return [...result.values()];
+  // A creation tag is display-only. The exact canonical opening identity owns
+  // its replacement; ordinary #new-agent prose never identifies a recipient.
+  const openingId = event.eventId.startsWith("agent-opening:")
+    ? event.eventId.slice("agent-opening:".length) : undefined;
+  const openingAgent = openingId ? getAgent(openingId) : undefined;
+  const openingMention = openingAgent?.projectId === event.projectId
+    ? [{ projectId: event.projectId, agentId: openingAgent.id, handle: "new-agent",
+        currentHandle: openingAgent.handle, currentTitle: openingAgent.title }]
+    : [];
+  return [...result.values(), ...openingMention];
 }

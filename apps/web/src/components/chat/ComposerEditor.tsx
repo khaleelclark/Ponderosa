@@ -163,8 +163,8 @@ export interface ComposerEditorHandle {
   getCanonicalText(): string;
   getSelectionOffsets(): ComposerSelectionOffsets;
   setSelectionOffsets(start: number, end: number): void;
-  replaceCanonicalRange(start: number, end: number, content: string, options?: { focus?: boolean }): void;
-  insertMention(descriptor: Omit<ComposerMentionDescriptor, "start" | "end">): void;
+  replaceCanonicalRange(start: number, end: number, content: string, options?: { focus?: boolean; caret?: number }): void;
+  insertMention(descriptor: Omit<ComposerMentionDescriptor, "start" | "end">, trailingText?: string): void;
   insertProjectFile(
     descriptor: ComposerProjectFileDescriptor,
     replace?: ComposerSelectionOffsets,
@@ -970,21 +970,22 @@ function EditorBridge({
   useImperativeHandle(editorRef, () => ({
     placeCaretAfterLoneMention: () => {
       if (editor.isComposing()) return;
+      if (!editor.getRootElement()?.contains(document.activeElement)) return;
       if (editor.getRootElement()?.ownerDocument.getSelection()?.isCollapsed === false) return;
       editor.update(() => {
         const selection = $getSelection();
-        if (!$isRangeSelection(selection) || !selection.isCollapsed()) return;
+        if (selection && (!$isRangeSelection(selection) || !selection.isCollapsed())) return;
         const paragraph = $getRoot().getFirstChild();
         if (!$isElementNode(paragraph)) return;
         const children = paragraph.getChildren();
         const mentions = children.filter($isComposerMentionNode);
-        if (mentions.length !== 1 || mentions[0]!.getDescriptor().kind !== "agent") return;
+        if (mentions.length !== 1) return;
         if (children.some(node => !$isComposerMentionNode(node) && (!$isTextNode(node) || node.getTextContent().trim()))) return;
         // Pointer focus can land on the leading side of an atomic reply chip.
         // Only a chip-only draft has an unambiguous intended typing position.
         const end = $canonicalText().length;
         $setSelectionOffsets(end, end);
-      });
+      }, { discrete: true });
     },
     focus: () => editor.focus(),
     isFocused: () => editor.getRootElement()?.contains(document.activeElement) ?? false,
@@ -999,15 +1000,17 @@ function EditorBridge({
         $setSelectionOffsets(start, end);
         const parsed = descriptorsForCanonicalText(content, descriptorsRef.current);
         $insertCanonicalContent(content, parsed);
-      }, { tag: options?.focus === false ? SKIP_DOM_SELECTION_TAG : undefined });
+        if (options?.caret !== undefined) $setSelectionOffsets(options.caret, options.caret);
+      }, { discrete: true, tag: options?.focus === false ? SKIP_DOM_SELECTION_TAG : undefined });
       if (options?.focus !== false) requestAnimationFrame(() => editor.focus());
     },
-    insertMention: descriptor => {
+    insertMention: (descriptor, trailingText = "") => {
       editor.update(() => {
         const selection = $getSelection();
         if (!$isRangeSelection(selection)) return;
-        selection.insertNodes([$createComposerMentionNode(descriptor)]);
-      });
+        selection.insertNodes([$createComposerMentionNode(descriptor),
+          ...(trailingText ? [$createTextNode(trailingText)] : [])]);
+      }, { discrete: true });
       requestAnimationFrame(() => editor.focus());
     },
     insertProjectFile: (descriptor, replace, trailingText = "") => {
@@ -1042,7 +1045,7 @@ function EditorBridge({
         descriptorsRef.current,
         undefined,
         structuralDestinationRef.current,
-      ));
+      ), { discrete: true });
     },
     clear: () => {
       editor.update(() => $resetCanonicalDocument(
@@ -1426,6 +1429,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
       event.stopPropagation();
       return;
     }
+    if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      // A desktop continuation can finish hydrating after native focus. Do not
+      // let the first printable key reuse its pre-chip selection.
+      bridgeRef.current?.placeCaretAfterLoneMention();
+    }
     if (event.key === "Enter" && (isIOSComposer || (
       event.shiftKey && window.matchMedia("(max-width: 899.95px)").matches
     ))) {
@@ -1572,7 +1580,12 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
                 ? `${listId}-option-${highlighted}`
                 : undefined}
               onKeyDown={handleKeyDown}
-              onFocus={() => bridgeRef.current?.placeCaretAfterLoneMention()}
+              onFocus={() => {
+                // Native focus can restore a pre-chip DOM selection after the
+                // focus handler. Reconcile once it has finished, before typing.
+                queueMicrotask(() => bridgeRef.current?.placeCaretAfterLoneMention());
+                requestAnimationFrame(() => bridgeRef.current?.placeCaretAfterLoneMention());
+              }}
               onClick={() => bridgeRef.current?.placeCaretAfterLoneMention()}
             />
           }

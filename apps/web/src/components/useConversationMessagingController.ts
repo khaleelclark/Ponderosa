@@ -194,6 +194,7 @@ export function useConversationMessagingController({
       idempotencyKey,
       selectedEngine,
       runtimeConfig,
+      onAgentCreated,
     }: {
       text: string;
       draftAttachmentIds: string[];
@@ -202,6 +203,7 @@ export function useConversationMessagingController({
       idempotencyKey: string;
       selectedEngine: string;
       runtimeConfig: ReturnType<typeof selectedRunConfig>;
+      onAgentCreated?(agent: AgentDto): void;
     }) => {
       if (!conversation) throw new Error("Project chat not loaded");
       const agent = await api.createAgent(
@@ -218,6 +220,7 @@ export function useConversationMessagingController({
         },
       );
       const agentId = "recovering" in agent ? agent.agentId : agent.id;
+      if (!("recovering" in agent)) onAgentCreated?.(agent);
       setActiveOperation(createCreationOperationTracker(agentId, conversationId));
       return agent;
     },
@@ -354,6 +357,7 @@ export function useConversationMessagingController({
       value: import("@ponderosa/core").DraftPendingSubmissionDto,
       retainOnFailure?: boolean,
     ) => Promise<void>,
+    onAgentCreated?: (agent: AgentDto) => void,
   ) => {
     setSpawnNotice(undefined);
     const previous = submissionAttempt.current;
@@ -556,6 +560,7 @@ export function useConversationMessagingController({
         draftOwnerId: prepared.draftOwnerId,
         title,
         idempotencyKey: `${requestId}:new-agent:0`,
+        onAgentCreated,
         selectedEngine: prepared.engine,
         runtimeConfig: prepared.runConfig,
       });
@@ -730,6 +735,7 @@ export function useConversationMessagingController({
         draftOwnerId: prepared.draftOwnerId,
         title,
         idempotencyKey: `${requestId}:default-agent`,
+        onAgentCreated,
         selectedEngine: prepared.engine,
         runtimeConfig: prepared.runConfig,
       });

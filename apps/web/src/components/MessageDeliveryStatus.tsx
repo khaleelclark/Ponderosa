@@ -272,7 +272,7 @@ export function MessageDeliveryStatus({
         : receipt.state === "cancelled" && receipt.providerAcknowledged
         ? `Delivered · ${compactDeliveryLabel(receipt)}`
         : compactDeliveryLabel(receipt);
-      return <Stack key={receipt.activationId} direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ justifyContent: "flex-end", maxWidth: "100%" }}>
+      return <Stack key={receipt.activationId} direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ justifyContent: "flex-end", maxWidth: "100%", "& > .MuiButton-root": { minWidth: 0, px: { xs: 0.5, sm: 1 }, whiteSpace: "nowrap", fontSize: { xs: 11, sm: 13 } } }}>
         <Tooltip title={detailedLabel}>
           <Box component="span" sx={{ display: "inline-flex", minWidth: 0, maxWidth: "100%" }}>
             <ButtonBase
@@ -331,7 +331,7 @@ export function MessageDeliveryStatus({
           disabled={pendingCancelId === receipt.activationId}
           onClick={() => void cancelDelivery(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
-        >{pendingCancelId === receipt.activationId ? "Dismissing…" : receipt.providerAcknowledged ? "Dismiss Follow-Up" : "Cancel Delivery"}</Button> : null}
+        >{pendingCancelId === receipt.activationId ? "Dismissing…" : receipt.providerAcknowledged ? "Dismiss" : "Cancel Delivery"}</Button> : null}
       </Stack>;
     })}
     {error ? <Alert severity="error">{error}</Alert> : null}

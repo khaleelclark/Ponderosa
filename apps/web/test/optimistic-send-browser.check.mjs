@@ -32,21 +32,24 @@ try {
     ...(engine === "chromium" ? { executablePath: process.env.PONDEROSA_CHROMIUM_PATH } : {}) });
   const errors = [];
   for (const width of [390, 1440]) {
-    for (const scenario of ["accepted", "rejected", "scope", "creation", "direct", "direct-rejected"]) {
+    for (const scenario of ["accepted", "rejected", "scope", "creation", "creation-implicit", "creation-rejected", "direct", "direct-rejected"]) {
       const context = await browser.newContext({ viewport: { width, height: 932 } });
       const page = await context.newPage();
       page.on("pageerror", error => { errors.push(error.message); console.error(error.message); });
       await page.goto(`http://127.0.0.1:${server.address().port}/?case=${scenario}`);
-      const input = page.locator('[contenteditable="true"]');
+      const input = page.locator('.composer-editor-input');
       if (scenario === "accepted") await page.getByLabel("Choose files", { exact: true }).setInputFiles({
         name: "evidence.txt", mimeType: "text/plain", buffer: Buffer.from("attachment evidence"),
       });
-      await input.fill(`Immediate message ${scenario}`);
+      await input.fill(`Immediate message ${scenario}${scenario === "creation" ? " #new-agent" : ""}`);
       await page.getByRole("button", { name: "Send message", exact: true }).click();
       const pending = page.getByRole("article", { name: "Sending message", exact: true });
       await pending.waitFor();
+      assert(!/Immediate message/.test(await input.innerText()), "submitted text leaves the visible composer immediately");
+      assert(!/Your draft remains here until confirmed/.test(await page.locator("body").innerText()));
       assert.match(await pending.innerText(), /Immediate message/);
       assert.match(await pending.innerText(), /Sending…/);
+      if (scenario === "creation") assert.match(await pending.innerText(), /#new-agent/);
       if (scenario === "accepted") assert.match(await pending.innerText(), /evidence.txt/);
       assert.equal(await page.locator("body").getAttribute("data-send-calls"), null,
         "pending bubble appears while durable journal is blocked, before HTTP intake");
@@ -74,15 +77,24 @@ try {
         } else assert.equal(await page.getByRole("article").count(), 0, "failed message cannot become canonical");
       } else {
         await page.getByRole("button", { name: "Release send", exact: true }).click();
+        if (scenario.startsWith("creation")) {
+          await page.locator('article[id*="canonical-"]').waitFor();
+          assert.equal(await page.getByRole("article").count(), 1, "accepted creation and delayed durable commit render one message");
+          await page.getByRole("button", { name: "Release creation commit", exact: true }).click();
+        }
         await pending.waitFor({ state: "detached" });
         const canonical = page.locator('article[id*="canonical-"]');
         await canonical.waitFor();
         assert.equal(await canonical.count(), 1);
         assert(!/Delivered to|Message sent to|Deleted Agent/.test(await page.locator("body").innerText()),
           "accepted/queued message is not successful provider delivery or a deleted Agent");
-        if (scenario === "creation") {
+        if (scenario.startsWith("creation")) {
           assert.match(await canonical.innerText(), /Immediate message creation/);
           assert(!/Deleted-Agent/.test(await canonical.innerText()));
+          assert.equal(await page.locator("body").getAttribute("data-opening-text"), `Immediate message ${scenario}${scenario === "creation" ? " #new-agent" : ""}`, "stored opening retains the original content");
+          assert(!/#new-agent/.test(await canonical.innerText()), "canonical presentation uses the created identity");
+          await canonical.getByRole("button", { name: /Open agent/ }).click();
+          assert.equal(await page.locator("body").getAttribute("data-opened-agent"), "new-agent");
         } else if (scenario !== "direct") {
           await page.getByRole("button", { name: "Confirm delivery", exact: true }).click();
           await page.getByText("Delivered to Grand Canyon.", { exact: true }).waitFor();

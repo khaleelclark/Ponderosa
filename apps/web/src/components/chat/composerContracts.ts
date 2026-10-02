@@ -1,5 +1,6 @@
 import type {
   AgentMentionBindingDto,
+  AgentDto,
   DraftPendingSubmissionDto,
   EngineCommand,
   EngineComposerCapability,
@@ -26,6 +27,8 @@ export interface ChatComposerContract {
     context?: {
       mentionedAgents?: AgentMentionBindingDto[];
       newAgentRequested?: boolean;
+      /** Presentation-only handoff from the committed creation response. */
+      onAgentCreated?(agent: AgentDto): void;
       /** Re-dispatch the exact operation retained after an ambiguous response. */
       retryPreparedAttempt?: boolean;
       pendingSubmission?: DraftPendingSubmissionDto;
@@ -43,6 +46,7 @@ export interface ChatComposerContract {
     context?: {
       mentionedAgents?: AgentMentionBindingDto[];
       newAgentRequested?: boolean;
+      onAgentCreated?(agent: AgentDto): void;
       /** Re-dispatch the exact operation retained after an ambiguous response. */
       retryPreparedAttempt?: boolean;
       pendingSubmission?: DraftPendingSubmissionDto;
