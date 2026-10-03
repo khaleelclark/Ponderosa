@@ -94,8 +94,8 @@ function contextSection(
 
 function teamDirectoryPrompt(directory: TeamDirectoryDto): string {
   return contextSection("TEAM DIRECTORY", "ON-DEMAND REFERENCE", [
-    `${directory.agents.length} visible Agent${directory.agents.length === 1 ? "" : "s"} are currently in scope.`,
-    "Fetch current identities, reporting lines, and status only when needed with ponderosa_team_directory({}).",
+    `${directory.totalAgents ?? directory.agents.length} visible Agent${(directory.totalAgents ?? directory.agents.length) === 1 ? "" : "s"} are currently in scope.`,
+    "Fetch current identities, reporting lines, status, and authorized assignment summaries only when needed with ponderosa_team_directory({}).",
   ]);
 }
 

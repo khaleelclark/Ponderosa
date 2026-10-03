@@ -1,4 +1,4 @@
-import type { TeamDirectoryDto } from "@ponderosa/core";
+import type { TeamDirectoryCaller, TeamDirectoryDto } from "@ponderosa/core";
 import type { AgentStore } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type { ActiveRun, AgentMessageCapability } from "../app-contracts.js";
@@ -15,6 +15,8 @@ interface AgentDirectoryRoutesContext {
     projectId: string,
     conversationId?: string,
     fallbackAgentId?: string,
+    selectedAgentIds?: readonly string[],
+    caller?: TeamDirectoryCaller,
   ): TeamDirectoryDto;
 }
 
@@ -38,7 +40,8 @@ export function registerAgentDirectoryRoutes(
     if (!capability || !capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token || !author) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
-    return teamDirectory(author.projectId, capability.conversationId, author.id);
+    return teamDirectory(author.projectId, capability.conversationId, author.id, undefined,
+      { kind: "agent", agentId: author.id, projectId: author.projectId, conversationId: capability.conversationId });
   });
 
   app.get<{ Params: { agentId: string } }>("/api/agent-directory/:agentId", async (request, reply) => {
@@ -49,7 +52,8 @@ export function registerAgentDirectoryRoutes(
     if (!capability || !capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token || !author) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
-    const entry = teamDirectory(author.projectId, capability.conversationId, author.id).agents.find((agent) => agent.agentId === request.params.agentId);
+    const entry = teamDirectory(author.projectId, capability.conversationId, author.id, [request.params.agentId],
+      { kind: "agent", agentId: author.id, projectId: author.projectId, conversationId: capability.conversationId }).agents[0];
     return entry ?? reply.code(404).send({ error: "agent not found in this Team Chat" });
   });
 

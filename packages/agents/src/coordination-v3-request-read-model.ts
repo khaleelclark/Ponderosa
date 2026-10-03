@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { TERMINAL_REQUEST_STATES } from "@ponderosa/core";
+import { TEAM_DIRECTORY_LIMITS, TERMINAL_REQUEST_STATES, type TeamDirectoryCaller, type TeamDirectoryWorkDto } from "@ponderosa/core";
 import type { CoordinationRequestState } from "@ponderosa/core";
 import type { RequestRow } from "./coordination-v3-store-support.js";
 import type {
@@ -9,6 +9,67 @@ import type {
 
 export class CoordinationV3RequestReadModel {
   constructor(private readonly sqlite: Database.Database) {}
+
+  /** On demand, no cache. The SQL audience predicate is the canonical requester/
+   * recipient rule also used by agentCanReadRequest and Request artifacts. It
+   * applies before payloads, relationships, progress, LIMIT or omission counts. */
+  directoryWork(input: { projectId: string; conversationId?: string; agentId: string; caller: TeamDirectoryCaller }): TeamDirectoryWorkDto {
+    const { caller } = input;
+    if (caller.kind === "agent" && (caller.projectId !== input.projectId ||
+      caller.conversationId !== input.conversationId)) throw new Error("directory caller scope mismatch");
+    const params = { projectId: input.projectId, conversationId: input.conversationId ?? null,
+      agentId: input.agentId, operator: caller.kind === "operator" ? 1 : 0,
+      callerAgentId: caller.kind === "agent" ? caller.agentId : null,
+      textLimit: TEAM_DIRECTORY_LIMITS.textCharacters,
+      fetchLimit: TEAM_DIRECTORY_LIMITS.assignmentsPerAgent + 1 };
+    const scope = `r.project_id = @projectId AND (@conversationId IS NULL OR r.conversation_id = @conversationId)
+      AND r.recipient_agent_id = @agentId`;
+    const access = `(@operator = 1 OR r.requester_agent_id = @callerAgentId OR r.recipient_agent_id = @callerAgentId)`;
+    const active = `r.state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer')`;
+    const existence = this.sqlite.prepare(`SELECT
+      EXISTS(SELECT 1 FROM coordination_requests r WHERE ${scope} AND ${active}) AS tracked,
+      EXISTS(SELECT 1 FROM coordination_requests r WHERE ${scope} AND ${active} AND ${access}) AS authorized
+    `).get(params) as { tracked: number; authorized: number };
+    const rows = this.sqlite.prepare(`
+      SELECT r.id, r.requester_agent_id, r.state,
+        CASE WHEN json_type(r.payload_json, '$.text') = 'text'
+          THEN substr(json_extract(r.payload_json, '$.text'), 1, @textLimit) END AS summary,
+        (SELECT u.id FROM coordination_request_updates u WHERE u.request_id = r.id
+          AND u.kind = 'progress' AND u.actor_kind = 'agent' AND u.actor_id = r.recipient_agent_id
+          ORDER BY u.created_at DESC, u.id DESC LIMIT 1) AS progress_id,
+        (SELECT sr.status FROM activation_sources source
+          JOIN scheduler_run_activations ra ON ra.activation_id = source.activation_id
+          JOIN scheduler_runs sr ON sr.id = ra.run_id AND sr.agent_id = r.recipient_agent_id
+          WHERE ((source.source_kind = 'request' AND source.source_id = r.id)
+            OR (source.source_kind = 'request_update' AND EXISTS(SELECT 1 FROM coordination_request_updates u
+              WHERE u.id = source.source_id AND u.request_id = r.id)))
+          ORDER BY sr.created_at DESC, sr.id DESC LIMIT 1) AS execution_state,
+        (SELECT j.state FROM coordination_joins j
+          WHERE j.project_id = r.project_id AND j.owner_agent_id = r.recipient_agent_id
+            AND (@operator = 1 OR j.owner_agent_id = @callerAgentId)
+            AND EXISTS(SELECT 1 FROM json_each(j.continuation_request_ids_json) WHERE value = r.id)
+          ORDER BY j.created_at DESC, j.id DESC LIMIT 1) AS dependency_state
+      FROM coordination_requests r WHERE ${scope} AND ${access}
+      ORDER BY CASE WHEN ${active} THEN 0 ELSE 1 END, r.updated_at DESC, r.id DESC LIMIT @fetchLimit
+    `).all(params) as Array<{ id: string; requester_agent_id: string | null; state: CoordinationRequestState;
+      summary: string | null; progress_id: string | null; execution_state: string | null;
+      dependency_state: NonNullable<TeamDirectoryWorkDto["assignments"][number]["dependencyState"]> | null }>;
+    const assignments = rows.slice(0, TEAM_DIRECTORY_LIMITS.assignmentsPerAgent).map(row => {
+      const progress = row.progress_id ? this.sqlite.prepare(`SELECT
+        CASE WHEN json_type(payload_json, '$.text') = 'text'
+          THEN substr(json_extract(payload_json, '$.text'), 1, ?) END AS text, created_at
+        FROM coordination_request_updates WHERE id = ? AND request_id = ?
+      `).get(TEAM_DIRECTORY_LIMITS.textCharacters, row.progress_id, row.id) as { text: string | null; created_at: string } | undefined : undefined;
+      return { requestId: row.id, ...(row.summary ? { summary: row.summary } : {}),
+        ...(row.requester_agent_id ? { requesterAgentId: row.requester_agent_id } : {}),
+        requestState: row.state, deliveryState: this.requestDelivery(row.id)!.deliveryState,
+        ...(row.execution_state ? { executionState: row.execution_state } : {}),
+        ...(row.dependency_state ? { dependencyState: row.dependency_state } : {}),
+        ...(progress?.text ? { progress: { text: progress.text, createdAt: progress.created_at } } : {}) };
+    });
+    return { assignments, hasMoreAssignments: rows.length > TEAM_DIRECTORY_LIMITS.assignmentsPerAgent,
+      activeAssignmentDetails: existence.authorized ? "available" : existence.tracked ? "restricted" : "none" };
+  }
 
   requestForUpdate(updateId: string): CoordinationRequestV3View | undefined {
     const row = this.sqlite.prepare(`

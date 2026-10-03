@@ -888,6 +888,10 @@ export class CoordinationV3Store {
     return this.readModel.agentWorkItems(input);
   }
 
+  directoryWork(input: Parameters<CoordinationV3RequestReadModel["directoryWork"]>[0]) {
+    return this.requestReadModel.directoryWork(input);
+  }
+
   /** Exact canonical records that may still produce an operator-attention
    * trace, returned in bounded keyset pages. */
   coordinationAttentionCandidates(

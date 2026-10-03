@@ -1,6 +1,7 @@
 import {
-  agentRoleProfile,
   collaborationPresentation,
+  TEAM_DIRECTORY_LIMITS,
+  type TeamDirectoryCaller,
   type AgentDetailDto,
   type AgentDto,
   type AgentHealthProjectionDto,
@@ -681,17 +682,27 @@ export function createServerReadModels(context: ReadModelContext) {
     conversationId?: string,
     fallbackAgentId?: string,
     selectedAgentIds?: readonly string[],
+    caller?: TeamDirectoryCaller,
   ): TeamDirectoryDto {
+    if (caller?.kind === "agent") {
+      const author = store.getAgent(caller.agentId);
+      if (!author || author.projectId !== projectId || caller.projectId !== projectId ||
+          caller.conversationId !== conversationId || (conversationId && author.conversationId !== conversationId)) {
+        throw new Error("directory caller scope mismatch");
+      }
+    }
     const selectedAgents = selectedAgentIds
       ? selectedAgentIds.flatMap((agentId) => {
         const agent = store.getAgent(agentId);
         return agent?.projectId === projectId && !store.agentCreationPending(agentId) ? [agent] : [];
       })
       : store.listAgents(projectId);
-    const agents = selectedAgents.filter((agent) =>
+    const scopedAgents = selectedAgents.filter((agent) =>
       !agent.archived && (conversationId
         ? agent.conversationId === conversationId
         : fallbackAgentId ? agent.id === fallbackAgentId : true));
+    const agents = scopedAgents.sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id))
+      .slice(0, TEAM_DIRECTORY_LIMITS.agents);
     const health = agentHealth({ type: "project", id: projectId }, agents);
     const healthById = new Map(health.agents.map((agent) => [agent.agentId, agent]));
     const childIdsByParent = new Map<string, string[]>();
@@ -700,23 +711,51 @@ export function createServerReadModels(context: ReadModelContext) {
       children.push(agent.id);
       childIdsByParent.set(agent.managerAgentId, children);
     }
-    return {
+    const bounded = (text: string, limit: number = TEAM_DIRECTORY_LIMITS.textCharacters) => Array.from(text).slice(0, limit).join("");
+    const directory: TeamDirectoryDto = {
       projectId, generatedAt: health.generatedAt,
       agents: agents.map((agent) => {
-        const profile = agentRoleProfile(agent);
+        // Directory convenience fields are not a second route to spawn prompts
+        // or private preset prose, even when Request details are authorized.
+        const profile = { role: "Agent", description: `Managed ${agent.activeEngine} Agent` };
         return {
-          agentId: agent.id, displayName: agent.title,
-          role: profile.role,
-          description: profile.description,
+          agentId: agent.id, displayName: bounded(agent.title, TEAM_DIRECTORY_LIMITS.identityCharacters),
+          role: bounded(profile.role, TEAM_DIRECTORY_LIMITS.identityCharacters),
+          description: bounded(profile.description),
           status: healthById.get(agent.id)?.status ?? "idle",
           ...(healthById.get(agent.id)?.admissionBlocker ? { admissionBlocker: healthById.get(agent.id)!.admissionBlocker } : {}),
           ...(agent.managerAgentId ? { managerAgentId: agent.managerAgentId } : {}),
           childAgentIds: (childIdsByParent.get(agent.id) ?? []).sort(),
           engine: agent.activeEngine,
-          ...(agent.presetSnapshot ? { preset: { id: agent.presetSnapshot.id, name: agent.presetSnapshot.name } } : {}),
+          ...(agent.presetSnapshot ? { preset: { id: agent.presetSnapshot.id, name: bounded(agent.presetSnapshot.name, TEAM_DIRECTORY_LIMITS.identityCharacters) } } : {}),
         };
       }).sort((a, b) => a.displayName.localeCompare(b.displayName) || a.agentId.localeCompare(b.agentId)),
+      ...(scopedAgents.length > agents.length ? { totalAgents: scopedAgents.length, hasMoreAgents: true } : {}),
     };
+    // Prompt preparation deliberately calls without a caller: keep its existing
+    // lightweight roster reference and do not query/inject assignment payloads.
+    if (caller) for (const entry of directory.agents) {
+      const work = coordinationV3.directoryWork({ projectId, conversationId, agentId: entry.agentId, caller });
+      for (const assignment of work.assignments) if (assignment.requesterAgentId) {
+        const requester = store.getAgent(assignment.requesterAgentId);
+        if (requester?.projectId === projectId) assignment.requesterName = bounded(requester.title, TEAM_DIRECTORY_LIMITS.identityCharacters);
+      }
+      const running = Boolean(store.sqlite.prepare(`SELECT 1 FROM scheduler_runs WHERE project_id = ? AND agent_id = ?
+        AND status IN ('leased', 'running') LIMIT 1`).get(projectId, entry.agentId));
+      entry.currentActivity = work.activeAssignmentDetails === "restricted"
+        ? `${running ? "Working; " : ""}assignment details restricted`
+        : running && work.activeAssignmentDetails === "none" ? "Working; no tracked assignment"
+          : running ? "Working; see authorized assignments" : undefined;
+      entry.work = work;
+      if (Buffer.byteLength(JSON.stringify(directory), "utf8") > TEAM_DIRECTORY_LIMITS.responseUtf8Bytes) {
+        delete entry.work;
+        entry.workSummaryOmitted = true;
+      }
+    }
+    if (Buffer.byteLength(JSON.stringify(directory), "utf8") > TEAM_DIRECTORY_LIMITS.responseUtf8Bytes) {
+      throw new Error("team directory response exceeds its bounded size");
+    }
+    return directory;
   }
 
   return {

@@ -8,6 +8,7 @@ import type {
   CreateConversationRequest,
   ModelOption,
   TeamDirectoryDto,
+  TeamDirectoryCaller,
   UpdateConversationRequest,
 } from "@ponderosa/core";
 import {
@@ -82,7 +83,7 @@ export interface ConversationRouteDependencies {
     scope: AgentHealthProjectionDto["scope"],
     agents: AgentDto[],
   ) => AgentHealthProjectionDto;
-  teamDirectory: (projectId: string, conversationId?: string, fallbackAgentId?: string, selectedAgentIds?: readonly string[]) => TeamDirectoryDto;
+  teamDirectory: (projectId: string, conversationId?: string, fallbackAgentId?: string, selectedAgentIds?: readonly string[], caller?: TeamDirectoryCaller) => TeamDirectoryDto;
   hasActiveRun: (agentId: string) => boolean;
   projectDeletionInProgress: (projectId: string) => boolean;
   deletingConversationIds: Set<string>;
@@ -147,7 +148,7 @@ export function registerConversationRoutes(
         generationKeys: [collectionGenerationKey("agents", `project:${request.params.id}`)],
         hydrate: id => store.getAgent(id),
       });
-      const directory = teamDirectory(request.params.id, undefined, undefined, page.items.map(agent => agent.id));
+      const directory = teamDirectory(request.params.id, undefined, undefined, page.items.map(agent => agent.id), { kind: "operator" });
       applyCollectionPageHeaders(reply, page);
       return { ...directory, totalAgents: page.total, hasMoreAgents: page.hasMore, ...(page.cursor ? { agentCursor: page.cursor } : {}) };
     } catch (error) {

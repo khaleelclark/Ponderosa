@@ -24,6 +24,15 @@ export type CoordinationRequestState =
   | "outcome_unknown"
   | "expired";
 
+/** Canonical private Request audience; roster/manager visibility adds no access. */
+export function requestParticipantAgentIds(request: { requesterAgentId?: string; recipientAgentId: string }): string[] {
+  return [...new Set([...(request.requesterAgentId ? [request.requesterAgentId] : []), request.recipientAgentId])];
+}
+
+export function agentCanReadRequest(request: { requesterAgentId?: string; recipientAgentId: string }, agentId: string): boolean {
+  return requestParticipantAgentIds(request).includes(agentId);
+}
+
 export type CoordinationRequestUpdateKind =
   | "progress"
   | "waiting_dependency"
