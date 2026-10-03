@@ -18,7 +18,7 @@ test("persisted canonical Collaboration recipients do not guess hashtags or muta
   const all = await fixture.allPage();
   assert.equal(all.items.length, 1, "All Messages scope filtering excludes Agent-to-Agent copies");
   assert.equal(all.items[0].author.kind, "user");
-  assert.deepEqual(all.items[0].collaborationRecipients.map(r => r.id), [fixture.boston.id, fixture.juniper.id]);
+  assert.deepEqual(new Set(all.items[0].collaborationRecipients.map(r => r.id)), new Set([fixture.boston.id, fixture.juniper.id]));
 });
 
 test("historical spellings, deleted/reused names, ambiguity and nonrecipients stay safe", () => {

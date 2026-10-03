@@ -440,7 +440,7 @@ function ChatMarkdown({
   children: string;
   recipientPrefix?: ReactNode;
   agentIdForHandle?(handle: string): string | undefined;
-  agentMentionForHandle?(handle: string): { agentId: string; label: string; authoredLabel?: string; available?: boolean } | undefined;
+  agentMentionForHandle?(handle: string): { agentId: string; label: string; authoredLabel?: string; available?: boolean; title?: string } | undefined;
   onOpenAgent?(agentId: string): void;
   onOpenBroadcast?(): void;
   previewScope?: LinkPreviewScope;
@@ -567,10 +567,10 @@ function ChatMarkdown({
             const visibleLabel = operatorMention && handle.toLocaleLowerCase() !== "pto" && operatorHandle
               ? `#${operatorHandle}`
               : boundMention ? `#${boundMention.label}` : label;
-            const mentionTitle = boundMention?.authoredLabel &&
+            const mentionTitle = boundMention?.title ?? (boundMention?.authoredLabel &&
               boundMention.authoredLabel.toLocaleLowerCase() !== boundMention.label.toLocaleLowerCase()
                 ? `Originally authored as #${boundMention.authoredLabel}`
-                : undefined;
+                : undefined);
             if (operatorMention) return <Box component="span" sx={messageHandleSx}>{visibleLabel}</Box>;
             if (!agentId) {
               if (["broadcast", "everyone", "new-agent"].includes(handle.toLocaleLowerCase())) {
@@ -609,15 +609,17 @@ export function ChatMessageBody({ text, citations, collaborationRecipients, agen
   smallText?: boolean;
   preserveWhitespace?: boolean;
 }): JSX.Element {
-  const recipientPrefix = collaborationRecipients ? missingCollaborationRecipients(text, collaborationRecipients, agentMentions).map(recipient =>
+  const missingRecipients = collaborationRecipients ? missingCollaborationRecipients(text, collaborationRecipients, agentMentions) : [];
+  const recipientPrefix = missingRecipients.length ? missingRecipients.map(recipient =>
     <Fragment key={recipient.id}>{recipient.handle ? <AgentMention agentId={recipient.id} label={recipient.handle}
-      title={recipient.currentTitle && recipient.currentTitle !== recipient.title ? `Currently ${recipient.currentTitle}` : undefined}
+      title={!recipient.available ? "Agent no longer available" : recipient.currentTitle && recipient.currentTitle !== recipient.title ? `Currently ${recipient.currentTitle}` : undefined}
       onOpenAgent={recipient.available ? onOpenAgent : undefined} /> : <Box component="span" sx={messageHandleSx}>Unavailable recipient</Box>}{" "}</Fragment>) : undefined;
   const collaborationMention = (handle: string) => {
     const matches = agentMentions?.filter(mention => mention.handle === handle) ?? [];
     if (matches.length !== 1) return undefined;
     const binding = matches[0]!;
-    return { agentId: binding.agentId, label: handle, available: binding.available };
+    return { agentId: binding.agentId, label: handle, available: binding.available,
+      title: binding.available === false ? "Agent no longer available" : binding.currentHandle !== handle ? `Currently ${binding.currentTitle}` : undefined };
   };
   const collapsible = collapseLongMessage && isLongChatMessage(text);
   const [expanded, setExpanded] = useState(false);

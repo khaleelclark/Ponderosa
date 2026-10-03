@@ -1,16 +1,17 @@
 import CloseIcon from "@mui/icons-material/Close";
 import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
 import { Dialog, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
-import type { CollaborationRecipientDto, CoordinationRequestSummaryDto } from "@ponderosa/core";
+import type { CollaborationRecipientDto, CoordinationRequestSummaryDto, MessageDeliveryReceiptDto } from "@ponderosa/core";
 import { useId, useState } from "react";
 import { RequestLifecycleCard } from "./RequestLifecycleCard";
 
 /** Availability comes from canonical request summaries, never message prose. */
-export function MessageRequestAction({ projectId, conversationId, requests, recipients, agentTitle }: {
+export function MessageRequestAction({ projectId, conversationId, requests, recipients, receipts, agentTitle }: {
   projectId?: string;
   conversationId?: string;
   requests?: CoordinationRequestSummaryDto[];
   recipients?: CollaborationRecipientDto[];
+  receipts?: MessageDeliveryReceiptDto[];
   agentTitle: (agentId: string | undefined) => string;
 }): JSX.Element | null {
   const [open, setOpen] = useState(false);
@@ -45,7 +46,13 @@ export function MessageRequestAction({ projectId, conversationId, requests, reci
             <Typography variant="body2"><strong>Human visibility:</strong> Eligible Team and participant Agent timelines. Visibility does not grant other Agents access to this message.</Typography>
             <Typography variant="body2"><strong>Delivery evidence:</strong> {linkedRequests.length
               ? "Linked canonical Request and Join records are shown below. This visible copy is not a second delivery or evidence of leader resumption."
-              : "No linked Request or input evidence is available for this visible copy."} A visible handle does not establish delivery, reading, or understanding.</Typography>
+              : receipts?.length ? "Recorded activation delivery statuses are shown below."
+                : "No linked Request or input evidence is available for this visible copy."} A visible handle does not establish delivery, reading, or understanding.</Typography>
+            {receipts?.map(receipt => <Typography key={receipt.activationId} variant="body2">
+              {recipients.find(recipient => recipient.id === receipt.targetAgentId)?.handle
+                ? `#${recipients.find(recipient => recipient.id === receipt.targetAgentId)!.handle}` : "Recipient"}: {receipt.state.replaceAll("_", " ")}
+              {receipt.providerAcknowledged ? "; provider acknowledged input (not reading or understanding)" : ""}
+            </Typography>)}
           </> : null}
           {linkedRequests.map(request => <RequestLifecycleCard
             key={request.recordId}

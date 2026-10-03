@@ -219,6 +219,7 @@ function ConversationMessageComponent({
               conversationId={message.conversationId}
               requests={message.coordinationRequests}
               recipients={message.collaborationRecipients}
+              receipts={message.deliveryReceipts}
               agentTitle={agentTitle}
             /> : null}
             {message.authorAgentId ? (

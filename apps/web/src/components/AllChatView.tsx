@@ -1724,7 +1724,7 @@ export function AllChatView({
                         </IconButton>
                       </Tooltip>
                       <MessageRequestAction projectId={item.project.id} conversationId={item.source.conversationId}
-                        recipients={item.collaborationRecipients} requests={item.coordinationRequests} agentTitle={allChatAgentTitle} />
+                        recipients={item.collaborationRecipients} receipts={item.deliveryReceipts} requests={item.coordinationRequests} agentTitle={allChatAgentTitle} />
                       {item.author.kind === "agent" ? (
                         <ReadAloudControls
                           text={resolveMessageMentionText(

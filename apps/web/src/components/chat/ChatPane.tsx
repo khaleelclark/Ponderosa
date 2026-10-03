@@ -522,6 +522,7 @@ function ChatPaneComponent({
                     conversationId={message.conversationId}
                     requests={message.coordinationRequests}
                     recipients={message.collaborationRecipients}
+                    receipts={message.deliveryReceipts}
                     agentTitle={agentId => agentId ? agentNameForId?.(agentId) ?? "Deleted Agent" : "You"}
                   />
                   {message.role === "assistant" || message.authorAgentId ? (
