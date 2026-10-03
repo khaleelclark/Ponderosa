@@ -13,7 +13,9 @@ test('source inventory enumerates tracked matches without declaring historical e
   writeFileSync(join(root,'source.ts'),'const projectId = "stable";\nconst projection = true;\nconst Projection = true;\nconst getProject = () => null;\n');
   writeFileSync(join(root,'project-example.md'),'Historical project text remains.\n');
   writeFileSync(join(root,'ignored.ts'),'const projectId = "untracked";\n');
-  execFileSync('git',['-C',root,'add','source.ts','project-example.md']);
+  writeFileSync(join(root,'Projection.ts'),'export const projection = true;\n');
+  writeFileSync(join(root,'projector.ts'),'export const projector = true;\n');
+  execFileSync('git',['-C',root,'add','source.ts','project-example.md','Projection.ts','projector.ts']);
   execFileSync('git',['-C',root,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture']);
   const before=readFileSync(join(root,'source.ts')),status=execFileSync('git',['-C',root,'status','--porcelain'],{encoding:'utf8'});
   const report=inventoryProjectDomain(root);
