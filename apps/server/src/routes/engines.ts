@@ -48,6 +48,7 @@ interface EngineRoutesContext {
   store: Pick<AgentStore, "getAgent" | "getProject">;
   workspace: Pick<WorkspaceStore, "cursor" | "getPreferences" | "updatePreferences">;
   engineDto(registration: EngineRouteRegistration): Promise<EngineDto>;
+  resourceAdmissionHeld?(): Promise<boolean>;
   providerUsageCenter(refresh: "none" | "stale"): Promise<ProviderUsageCenterDto>;
   providerUsageState(
     registration: EngineRouteRegistration,
@@ -112,6 +113,9 @@ export function registerEngineRoutes(
     discoverCapabilities,
     readCapabilities,
   } = context;
+  // A timed-out HTTP response does not release this diagnostic slot. The
+  // provider process and cleanup must actually settle before another recheck.
+  const rechecks = new Map<string, Promise<EngineDto>>();
 
   app.get("/api/engines", async (): Promise<EngineDto[]> => {
     return Promise.all(Array.from(engines.values()).map(engineDto));
@@ -179,6 +183,11 @@ export function registerEngineRoutes(
     async (request, reply) => {
       const registration = engines.get(request.params.id);
       if (!registration) return reply.code(404).send({ error: "unknown engine" });
+      const current = rechecks.get(request.params.id);
+      if (current) return current;
+      const operationStartedAt = new Date().toISOString();
+      const operation = (async (): Promise<EngineDto> => {
+      if (await context.resourceAdmissionHeld?.()) return engineDto(registration);
       authStatuses.invalidate(request.params.id);
       let auth: EngineAuthStatus;
       try {
@@ -217,8 +226,9 @@ export function registerEngineRoutes(
         ...(result.failureCategory ? { failureCategory: result.failureCategory } : {}),
         ...(result.detail ? { detail: result.detail } : {}),
         source: "operator_probe",
+        operationStartedAt,
       });
-      if (result.available) {
+      if (evidence.available) {
         resolveOperationalNotification(`provider:${request.params.id}:unavailable`);
         notifyScheduler();
       } else {
@@ -232,6 +242,9 @@ export function registerEngineRoutes(
         });
       }
       return engineDto(registration);
+      })().finally(() => { if (rechecks.get(request.params.id) === operation) rechecks.delete(request.params.id); });
+      rechecks.set(request.params.id, operation);
+      return operation;
     },
   );
 

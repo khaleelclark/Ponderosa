@@ -54,6 +54,7 @@ export class AgentAuditReadModel {
 
   getMessages(agentId: string): MessageDto[] {
     const projectId = this.projectIdOf(agentId);
+    const conversationId = this.getAgent(agentId)?.conversationId ?? "";
     return this.db
       .select()
       .from(messages)
@@ -78,7 +79,7 @@ export class AgentAuditReadModel {
             })
           : [];
         const agentMentions = communication
-          ? communicationMentionBindings(row.text, communication, id => this.getAgent(id))
+          ? communicationMentionBindings(row.text, communication, id => this.getAgent(id), conversationId)
           : [];
         return {
           id: row.id,

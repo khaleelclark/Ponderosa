@@ -111,7 +111,7 @@ function ConversationMessageComponent({
   const senderName = fromManager
     ? (operatorProfile?.displayName ?? "You")
     : agentTitle(message.authorAgentId);
-  const resolvedCopyText = visibleText;
+  const resolvedCopyText = message.communicationIntent === "collaboration" ? message.text : visibleText;
 
   return (
     <ChatMessageFrame
@@ -138,6 +138,8 @@ function ConversationMessageComponent({
         body: (
           <ChatMessageBody
             text={visibleText}
+            collaborationRecipients={message.communicationIntent === "collaboration" ? message.collaborationRecipients ?? [] : undefined}
+            agentMentions={message.agentMentions}
             compactMarkdown
             preserveWhitespace={message.role === "user"}
             citations={message.citations}
@@ -216,6 +218,8 @@ function ConversationMessageComponent({
               projectId={projectId}
               conversationId={message.conversationId}
               requests={message.coordinationRequests}
+              recipients={message.collaborationRecipients}
+              receipts={message.deliveryReceipts}
               agentTitle={agentTitle}
             /> : null}
             {message.authorAgentId ? (

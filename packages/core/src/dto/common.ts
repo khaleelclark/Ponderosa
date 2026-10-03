@@ -47,9 +47,10 @@ export type AgentOperationalReason =
 
 /** Payload-free, current admission observation. Not an execution result. */
 export interface QueuedAdmissionBlockerDto {
-  kind: "provider_disabled" | "authentication_unknown" | "authentication_required" | "provider_unavailable";
+  kind: "provider_disabled" | "authentication_unknown" | "authentication_required" | "provider_unavailable" | "host_resource_pressure";
   providerId: string;
   observedAt?: string;
+  resourceAdmission?: import("./provider-engine.js").ResourceAdmissionDto;
   /** At most five minutes old; explicitly not current authentication authority. */
   lastKnownAuthentication?: { authenticated: boolean; observedAt: string };
 }

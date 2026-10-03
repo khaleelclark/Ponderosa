@@ -17,6 +17,7 @@ interface CachedStatus {
  */
 export class EngineAuthStatusCache {
   private readonly entries = new Map<string, CachedStatus>();
+  constructor(private readonly changed: (id: string) => void = () => {}) {}
 
   get(id: string, load: () => Promise<EngineAuthStatus>): Promise<EngineAuthStatus> {
     const current = this.entries.get(id);
@@ -28,7 +29,7 @@ export class EngineAuthStatusCache {
     const lastKnown = current?.lastKnown;
     const entry: CachedStatus = { expiresAt: now, ...(lastKnown ? { lastKnown } : {}) };
     const failed = (error: unknown): never => {
-      if (this.entries.get(id) === entry) this.entries.set(id, { ...entry, pending: undefined, error, expiresAt: Date.now() + 5_000 });
+      if (this.entries.get(id) === entry) { this.entries.set(id, { ...entry, pending: undefined, error, observedAt: Date.now(), expiresAt: Date.now() + 5_000 }); this.changed(id); }
       throw error;
     };
     const pending = Promise.resolve().then(load).then(
@@ -43,6 +44,7 @@ export class EngineAuthStatusCache {
           const observedAt = Date.now();
           this.entries.set(id, { value, observedAt, expiresAt: observedAt + (value.status === "unknown" ? 5_000 : 30_000),
             ...(value.status === "unknown" ? lastKnown ? { lastKnown } : {} : { lastKnown: { authenticated: value.authenticated, observedAt } }) });
+          this.changed(id);
         }
         return value;
       },
@@ -53,6 +55,19 @@ export class EngineAuthStatusCache {
     return pending;
   }
 
+  /** Read promptly, retaining the shared probe/cleanup slot until settlement. */
+  async read(id: string, load: () => Promise<EngineAuthStatus>, allowProbe = true): Promise<EngineAuthStatus> {
+    if (!allowProbe) {
+      const current = this.entries.get(id);
+      return current?.value && current.expiresAt > Date.now() ? current.value
+        : { authenticated: false, status: "unknown", reason: "probe_pending" };
+    }
+    let timer: NodeJS.Timeout | undefined;
+    try { return await Promise.race([this.get(id, load), new Promise<EngineAuthStatus>(resolve => {
+      timer = setTimeout(() => resolve({ authenticated: false, status: "unknown", reason: "probe_pending" }), 250);
+    })]); } finally { if (timer) clearTimeout(timer); }
+  }
+
   /** Read-only scheduling/read-model observation; never launches a probe. */
   snapshot(id: string): { state: "known" | "unknown"; authenticated?: boolean; observedAt?: string; lastKnown?: { authenticated: boolean; observedAt: string } } {
     const current = this.entries.get(id);
@@ -61,11 +76,13 @@ export class EngineAuthStatusCache {
       return { state: "known", authenticated: current.value.authenticated, observedAt: new Date(current.observedAt!).toISOString() };
     }
     const known = current?.lastKnown;
-    return { state: "unknown", ...(known && now - known.observedAt <= 300_000
+    return { state: "unknown", ...(current?.observedAt ? { observedAt: new Date(current.observedAt).toISOString() } : {}), ...(known && now - known.observedAt <= 300_000
       ? { lastKnown: { authenticated: known.authenticated, observedAt: new Date(known.observedAt).toISOString() } } : {}) };
   }
 
   invalidate(id: string): void {
-    this.entries.delete(id);
+    // Recheck cannot release a diagnostic/cleanup slot that is still owned.
+    const current = this.entries.get(id);
+    if (!current?.pending) this.entries.delete(id);
   }
 }

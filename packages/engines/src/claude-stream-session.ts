@@ -14,7 +14,7 @@ import { spawnContainedCli } from "./contained-spawn.js";
 import { mapClaudeEvent } from "./claude-events.js";
 import { ClaudeContextUsage } from "./claude-context-usage.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
-import { runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
+import { processGroupAlive, runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
 import { renderSeedPrompt } from "./seed-history.js";
@@ -171,8 +171,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   }
 
   isAlive(): boolean {
-    return !this.closed &&
-      (this.nativeAuthority?.isAlive() ?? (this.child.exitCode === null && this.child.signalCode === null));
+    return this.nativeAuthority?.isAlive() ?? processGroupAlive(this.child);
   }
 
   close(): Promise<void> {

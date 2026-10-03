@@ -3,6 +3,7 @@
 // from packages/engines except AgentEvent (re-exported through core).
 
 export { AgentStore, AgentDeletionConflictError } from "./store.js";
+export { communicationMentionBindings } from "./store-mention-bindings.js";
 export { readRetainedChatAttachment, retainedChatAttachmentContent, retainChatAttachment, presentRetainedChatAttachment } from "./chat-attachment-retention.js";
 export { CommunicationRevisionValidationError } from "./store-communication-journal-authority.js";
 export { ProjectDeletionInProgressError } from "./store-workspace-catalog-authority.js";

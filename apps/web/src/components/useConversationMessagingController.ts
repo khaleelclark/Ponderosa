@@ -767,7 +767,6 @@ export function useConversationMessagingController({
       .join(" ") || undefined,
     queuedMessageFailure: queuedMessages.failure,
     queuedMessagesQuery,
-    sendError: spawn.error ?? sendToAgents.error,
     setQueuedMessageNotice,
     setStopConfirmation,
     steerQueued,

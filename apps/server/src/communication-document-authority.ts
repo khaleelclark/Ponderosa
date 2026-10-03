@@ -1,4 +1,4 @@
-import type { ArtifactDto, CommunicationEvent } from "@ponderosa/core";
+import { agentCanReadRequest, type ArtifactDto, type CommunicationEvent } from "@ponderosa/core";
 import type {
   AgentStore,
   CoordinationV3Store,
@@ -63,7 +63,7 @@ export function createCommunicationDocumentAuthority(
     if (artifact.ownerKind === "request_update") {
       const request = coordinationV3.requestForUpdate(artifact.ownerId);
       return Boolean(request && request.projectId === artifact.projectId &&
-        (request.requesterAgentId === agentId || request.recipientAgentId === agentId));
+        agentCanReadRequest(request, agentId));
     }
     const runtime = coordinationV3.runtimeCommunication(artifact.ownerId);
     const payload = runtime?.payload && typeof runtime.payload === "object"

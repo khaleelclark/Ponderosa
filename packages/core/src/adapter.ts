@@ -230,6 +230,8 @@ export interface RuntimeProcessIdentity {
   pgid: number;
   /** OS-derived process birth marker used to reject PID/PGID reuse after restart. */
   birthMarker: string;
+  /** Optional exact Linux scope ownership; historical group-only identities remain valid. */
+  scope?: { unit: string; authorityId: string };
 }
 
 export interface RuntimeProcessHandle {
@@ -526,8 +528,15 @@ export interface EngineAuthStatus {
   authenticated: boolean;
   /** False alone is not logout evidence when the read-only probe is unknown. */
   status?: "unknown";
+  reason?: "timeout" | "spawn_failed" | "malformed" | "cleanup_failed" | "probe_failed" | "probe_pending";
+  source?: "cli_status" | "subscription_presence";
   /** Optional human-readable detail (e.g. "logged in as ...", or why not). */
   detail?: string;
+}
+
+/** Host-owned diagnostic process registration; never credential authority. */
+export interface EngineProbeOptions {
+  onRuntimeSpawned?: (handle: RuntimeProcessHandle) => void;
 }
 
 /** Positive provider evidence gathered only after an explicit operator check. */

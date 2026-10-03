@@ -1235,11 +1235,9 @@ export function AgentDetail({
         visible={tab === "chat"}
         queuedMessageNotice={queueDeliveryNotice ?? queuedMessageNotice}
         queuedMessageFailure={queuedMessageFailure}
-        sendError={
-          sendMessage.isError || cancelRun.isError
-            ? `${sendMessage.isError ? "Message not sent." : "The active Run could not be cancelled."} ${String(
-                sendMessage.error ?? cancelRun.error,
-              )}`
+        cancellationError={
+          cancelRun.isError
+            ? `The active Run could not be cancelled. ${cancelRun.error instanceof Error ? cancelRun.error.message : String(cancelRun.error)}`
             : undefined
         }
         providerUsageState={providerUsageState}

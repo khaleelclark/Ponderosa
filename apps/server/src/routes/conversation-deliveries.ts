@@ -109,7 +109,7 @@ const AGENT_MENTION_BINDING_FIELDS = {
   agentId: true,
   currentHandle: true,
   currentTitle: true,
-} as const satisfies Record<keyof AgentMentionBindingDto, true>;
+} as const satisfies Record<Exclude<keyof AgentMentionBindingDto, "available">, true>;
 const AGENT_MENTION_BINDING_KEYS = Object.keys(
   AGENT_MENTION_BINDING_FIELDS,
 ) as (keyof AgentMentionBindingDto)[];

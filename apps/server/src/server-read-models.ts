@@ -1,5 +1,7 @@
 import {
-  agentRoleProfile,
+  collaborationPresentation,
+  TEAM_DIRECTORY_LIMITS,
+  type TeamDirectoryCaller,
   type AgentDetailDto,
   type AgentDto,
   type AgentHealthProjectionDto,
@@ -15,6 +17,7 @@ import type {
   StoredLogEvent,
   WorkspaceStore,
 } from "@ponderosa/agents";
+import { communicationMentionBindings } from "@ponderosa/agents";
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
 import { sqliteCollectionPage } from "./collection-page.js";
 import { withDecisionRecipient } from "./decision-presentation.js";
@@ -101,7 +104,7 @@ export function createServerReadModels(context: ReadModelContext) {
     isClosed,
   } = context;
 
-  function withMessagePresentation<T extends { communicationEventId?: string; text: string; deliveryReceipts?: import("@ponderosa/core").MessageDeliveryReceiptDto[]; agentMentions?: import("@ponderosa/core").AgentMentionBindingDto[]; coordinationRequests?: import("@ponderosa/core").CoordinationRequestSummaryDto[] }>(projectId: string, messages: T[]): T[] {
+  function withMessagePresentation<T extends { communicationEventId?: string; text: string; deliveryReceipts?: import("@ponderosa/core").MessageDeliveryReceiptDto[]; agentMentions?: import("@ponderosa/core").AgentMentionBindingDto[]; coordinationRequests?: import("@ponderosa/core").CoordinationRequestSummaryDto[] }>(projectId: string, messages: T[], displayedConversationId?: string): T[] {
     const projectAgents = store.listAgents(projectId);
     const communicationEventIds = messages.flatMap((message) =>
       message.communicationEventId ? [message.communicationEventId] : []);
@@ -140,17 +143,15 @@ export function createServerReadModels(context: ReadModelContext) {
             };
           })
         : [];
-      const collaborationRecipients = communication?.intent === "collaboration"
-        ? recipientAgentIds.map((agentId) => {
-            const agent = projectAgents.find((candidate) => candidate.id === agentId);
-            return {
-              id: agentId,
-              title: agent?.title ?? communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent",
-              handle: agent?.handle ?? communication.identity?.recipientHandles?.[agentId] ?? agentMentionHandle(communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent"),
-            };
-          })
+      const collaboration = communication?.intent === "collaboration"
+        ? collaborationPresentation({ ...communication, text: message.text }, projectAgents) : undefined;
+      const collaborationRecipients = collaboration?.collaborationRecipients ?? [];
+      const agentOpening = communication?.eventId.startsWith("agent-opening:") ?? false;
+      const openingMentions = communication && agentOpening
+        ? communicationMentionBindings(message.text, communication, (agentId) => store.getAgent(agentId), displayedConversationId)
+            .filter((binding) => binding.handle === "new-agent")
         : [];
-      const agentMentions = resolveAgentMentionBindings(
+      const agentMentions = collaboration?.agentMentions ?? [...resolveAgentMentionBindings(
         projectId,
         message.text,
         recipientAgentIds,
@@ -163,7 +164,7 @@ export function createServerReadModels(context: ReadModelContext) {
             communication?.identity?.recipientHandles,
           ),
         ],
-      );
+      ), ...openingMentions];
       const deliveryReceipts = deliveryReceiptsByEvent.get(message.communicationEventId) ?? [];
       const requestUpdateLink = requestUpdateLinksByEvent.get(
         message.communicationEventId,
@@ -208,7 +209,7 @@ export function createServerReadModels(context: ReadModelContext) {
         ...(collaborationRecipients.length ? { collaborationRecipients } : {}),
         ...(deliveryReceipts.length ? { deliveryReceipts } : {}),
         ...(coordinationRequests.length ? { coordinationRequests } : {}),
-        ...(agentMentions.length ? { agentMentions } : {}),
+        ...(collaboration || agentOpening || agentMentions.length ? { agentMentions } : {}),
       };
     });
   }
@@ -285,7 +286,7 @@ export function createServerReadModels(context: ReadModelContext) {
         hasMore: memberPage.hasMore,
         ...(memberPage.cursor ? { cursor: memberPage.cursor } : {}),
       },
-      messages: withMessagePresentation(conversation.projectId, page.messages),
+      messages: withMessagePresentation(conversation.projectId, page.messages, conversationId),
       decisionEvents: decisionPage.events.map(event => withDecisionRecipient(store, event)),
       history: {
         limit,
@@ -445,6 +446,7 @@ export function createServerReadModels(context: ReadModelContext) {
     const projectedMessages = withMessagePresentation(
       conversation.projectId,
       messagePage.messages,
+      conversationId,
     );
     const recoveredRequestHandoffs = selectedOperations.flatMap((operation) => {
       if (operation.kind !== "request" || !operation.request?.requesterAgentId) return [];
@@ -532,7 +534,7 @@ export function createServerReadModels(context: ReadModelContext) {
         ) || store.readAgentOrganizationEvents(detail.agent.projectId).some(event =>
           event.managerAgentId === agentId
         ),
-      messages: withMessagePresentation(detail.agent.projectId, messagePage.messages),
+      messages: withMessagePresentation(detail.agent.projectId, messagePage.messages, detail.agent.conversationId ?? ""),
       decisionEvents: decisionPage.events.map(event => withDecisionRecipient(store, event)),
       history: { limit, hasMore, ...(hasMore ? { cursor: Buffer.from(JSON.stringify(nextCursor)).toString("base64url") } : {}) },
       coordinationV3: coordinationV3.agentSnapshot(agentId),
@@ -627,6 +629,7 @@ export function createServerReadModels(context: ReadModelContext) {
     const ownership = new Map<string, ActiveRunObservation>(
       [...activeRuns].map(([agentId, run]) => [agentId, {
         startedAt: run.startedAt,
+        lastActivityAt: run.lastMeaningfulActivityAt,
         executionId: run.executionId,
         schedulerRunId: run.v3SchedulerRunId,
         leaseExpiresAt: run.leaseExpiresAt,
@@ -687,17 +690,27 @@ export function createServerReadModels(context: ReadModelContext) {
     conversationId?: string,
     fallbackAgentId?: string,
     selectedAgentIds?: readonly string[],
+    caller?: TeamDirectoryCaller,
   ): TeamDirectoryDto {
+    if (caller?.kind === "agent") {
+      const author = store.getAgent(caller.agentId);
+      if (!author || author.projectId !== projectId || caller.projectId !== projectId ||
+          caller.conversationId !== conversationId || (conversationId && author.conversationId !== conversationId)) {
+        throw new Error("directory caller scope mismatch");
+      }
+    }
     const selectedAgents = selectedAgentIds
       ? selectedAgentIds.flatMap((agentId) => {
         const agent = store.getAgent(agentId);
         return agent?.projectId === projectId && !store.agentCreationPending(agentId) ? [agent] : [];
       })
       : store.listAgents(projectId);
-    const agents = selectedAgents.filter((agent) =>
+    const scopedAgents = selectedAgents.filter((agent) =>
       !agent.archived && (conversationId
         ? agent.conversationId === conversationId
         : fallbackAgentId ? agent.id === fallbackAgentId : true));
+    const agents = scopedAgents.sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id))
+      .slice(0, TEAM_DIRECTORY_LIMITS.agents);
     const health = agentHealth({ type: "project", id: projectId }, agents);
     const healthById = new Map(health.agents.map((agent) => [agent.agentId, agent]));
     const childIdsByParent = new Map<string, string[]>();
@@ -706,23 +719,61 @@ export function createServerReadModels(context: ReadModelContext) {
       children.push(agent.id);
       childIdsByParent.set(agent.managerAgentId, children);
     }
-    return {
+    const bounded = (text: string, limit: number = TEAM_DIRECTORY_LIMITS.textCharacters) => Array.from(text).slice(0, limit).join("");
+    const directory: TeamDirectoryDto = {
       projectId, generatedAt: health.generatedAt,
       agents: agents.map((agent) => {
-        const profile = agentRoleProfile(agent);
+        // Directory convenience fields are not a second route to spawn prompts
+        // or private preset prose, even when Request details are authorized.
+        const profile = { role: "Agent", description: `Managed ${agent.activeEngine} Agent` };
         return {
-          agentId: agent.id, displayName: agent.title,
-          role: profile.role,
-          description: profile.description,
+          agentId: agent.id, displayName: bounded(agent.title, TEAM_DIRECTORY_LIMITS.identityCharacters),
+          role: bounded(profile.role, TEAM_DIRECTORY_LIMITS.identityCharacters),
+          description: bounded(profile.description),
           status: healthById.get(agent.id)?.status ?? "idle",
           ...(healthById.get(agent.id)?.admissionBlocker ? { admissionBlocker: healthById.get(agent.id)!.admissionBlocker } : {}),
           ...(agent.managerAgentId ? { managerAgentId: agent.managerAgentId } : {}),
           childAgentIds: (childIdsByParent.get(agent.id) ?? []).sort(),
           engine: agent.activeEngine,
-          ...(agent.presetSnapshot ? { preset: { id: agent.presetSnapshot.id, name: agent.presetSnapshot.name } } : {}),
+          ...(agent.presetSnapshot ? { preset: { id: agent.presetSnapshot.id, name: bounded(agent.presetSnapshot.name, TEAM_DIRECTORY_LIMITS.identityCharacters) } } : {}),
         };
       }).sort((a, b) => a.displayName.localeCompare(b.displayName) || a.agentId.localeCompare(b.agentId)),
+      ...(scopedAgents.length > agents.length ? { totalAgents: scopedAgents.length, hasMoreAgents: true } : {}),
     };
+    // Prompt preparation deliberately calls without a caller: keep its existing
+    // lightweight roster reference and do not query/inject assignment payloads.
+    const workByAgent = new Map<string, import("@ponderosa/core").TeamDirectoryWorkDto>();
+    if (caller) for (const entry of directory.agents) {
+      const work = coordinationV3.directoryWork({ projectId, conversationId, agentId: entry.agentId, caller });
+      for (const assignment of work.assignments) if (assignment.requesterAgentId) {
+        const requester = store.getAgent(assignment.requesterAgentId);
+        if (requester?.projectId === projectId) assignment.requesterName = bounded(requester.title, TEAM_DIRECTORY_LIMITS.identityCharacters);
+      }
+      const running = Boolean(store.sqlite.prepare(`SELECT 1 FROM scheduler_runs WHERE project_id = ? AND agent_id = ?
+        AND status IN ('leased', 'running') LIMIT 1`).get(projectId, entry.agentId));
+      entry.currentActivity = work.activeAssignmentDetails === "restricted"
+        ? `${running ? "Working; " : ""}assignment details restricted`
+        : running && work.activeAssignmentDetails === "none" ? "Working; no tracked assignment"
+          : running ? "Working; see authorized assignments" : undefined;
+      entry.workSummaryOmitted = true;
+      workByAgent.set(entry.agentId, work);
+    }
+    // Reserve every operational label and omission flag before adding optional
+    // details; later entries must not push an earlier accepted body over budget.
+    for (const entry of directory.agents) {
+      const work = workByAgent.get(entry.agentId);
+      if (!work) continue;
+      entry.work = work;
+      delete entry.workSummaryOmitted;
+      if (Buffer.byteLength(JSON.stringify(directory), "utf8") > TEAM_DIRECTORY_LIMITS.responseUtf8Bytes) {
+        delete entry.work;
+        entry.workSummaryOmitted = true;
+      }
+    }
+    if (Buffer.byteLength(JSON.stringify(directory), "utf8") > TEAM_DIRECTORY_LIMITS.responseUtf8Bytes) {
+      throw new Error("team directory response exceeds its bounded size");
+    }
+    return directory;
   }
 
   return {

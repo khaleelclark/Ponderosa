@@ -309,7 +309,8 @@ export class AgentChatFeedProjection {
   }
 
   private projectedAgentMessageDtos(agentId: string, projected: ProjectedCommunicationMessage[]): MessageDto[] {
-    const projectId = this.rowToAgentDto(agentId)?.projectId;
+    const agent = this.rowToAgentDto(agentId);
+    const projectId = agent?.projectId;
     const communicationById = projectId
       ? this.communicationIndex(projectId).byId
       : new Map<string, CommunicationEvent>();
@@ -318,7 +319,7 @@ export class AgentChatFeedProjection {
         if (message.sequence === undefined || message.role === "system") return [];
         const communication = communicationById.get(message.eventId);
         const agentMentions = communication
-          ? communicationMentionBindings(message.text, communication, id => this.getAgent(id))
+          ? communicationMentionBindings(message.text, communication, id => this.getAgent(id), agent?.conversationId ?? "")
           : [];
         const directMessageAgents = communication
           ? userDmAgentIds(communication).map((directAgentId) => {
@@ -468,6 +469,9 @@ export class AgentChatFeedProjection {
         message.text,
         event,
         agentId => agentByProject.get(row.projectId)?.get(agentId),
+        row.chatKind === "agent"
+          ? agentByProject.get(row.projectId)?.get(row.chatId)?.conversationId ?? ""
+          : row.chatId,
       );
       const author: GlobalChatSearchAuthorDto = row.authorAgentId
         ? { kind: "agent", label: row.authorTitle ?? "Agent", agentId: row.authorAgentId }

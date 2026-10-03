@@ -513,6 +513,8 @@ export function useWorkspaceStream(
       invalidate(queryKeys.notifications.all), 5_000);
     const providerUsageRefresh = createRateLimitedRefresh(() =>
       invalidate(queryKeys.providerUsage.all), 5_000);
+    const engineStatusRefresh = createRateLimitedRefresh(() =>
+      invalidate(queryKeys.engines.all), 5_000);
     const pendingProgressChats = new Set<string>();
     const publicProgressRefresh = createBoundedRefresh(() => {
       for (const id of pendingProgressChats) {
@@ -741,6 +743,8 @@ export function useWorkspaceStream(
       publicProgressRefresh.dispose();
       pendingProgressChats.clear();
       providerUsageRefresh.dispose();
+      engineStatusRefresh.dispose();
+      invalidate(queryKeys.engines.all);
       taskProjectionRefresh.dispose();
       pendingTaskProjects.clear();
       capabilityRefresh.dispose();
@@ -853,6 +857,7 @@ export function useWorkspaceStream(
         }
       }
       if (event.type === "preferences_updated") {
+        engineStatusRefresh.schedule();
         for (const kind of preferenceDirectoryKinds) {
           directoryInvalidator.schedule(kind);
         }
@@ -872,6 +877,7 @@ export function useWorkspaceStream(
           directoryInvalidator.schedule("conversation", event.projectId);
         }
       }
+      if (event.type === "provider_status_changed") { engineStatusRefresh.schedule(); return; }
       if (event.type === "preferences_updated") return;
       if (event.type === "project_changed") {
         invalidate(queryKeys.projects.all);
@@ -949,6 +955,7 @@ export function useWorkspaceStream(
           queueAgentRoster(event.projectId);
         }
         if (event.category === "lifecycle") {
+          engineStatusRefresh.schedule();
           collaborationChatInvalidator.schedule(event.conversationIds);
           agentWorkInvalidator.schedule(event.projectId);
           agentWorkInvalidator.flush();
@@ -1037,6 +1044,7 @@ export function useWorkspaceStream(
       }, STALE_NOTICE_DELAY_MS);
     };
     const noteConnected = () => {
+      if (disconnected || !connectedOnce) engineStatusRefresh.schedule();
       disconnected = false;
       clearConnectionTimers();
       setConnection(current => ({
@@ -1136,6 +1144,7 @@ export function useWorkspaceStream(
       publicProgressRefresh.dispose();
       notificationRefresh.dispose();
       providerUsageRefresh.dispose();
+      engineStatusRefresh.dispose();
       taskProjectionRefresh.dispose();
       pendingTaskProjects.clear();
       capabilityRefresh.dispose();

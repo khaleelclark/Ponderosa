@@ -41,9 +41,9 @@ import { ClaudeAdapter } from "./claude.js";
 
 export interface EngineRegistration {
   adapter: Adapter;
-  authStatus?: () => Promise<EngineAuthStatus>;
+  authStatus?: (options?: import("@ponderosa/core").EngineProbeOptions) => Promise<EngineAuthStatus>;
   /** Explicit, provider-backed entitlement check; never run during polling. */
-  availabilityProbe?: () => Promise<EngineAvailabilityStatus>;
+  availabilityProbe?: (options?: import("@ponderosa/core").EngineProbeOptions) => Promise<EngineAvailabilityStatus>;
 }
 
 function configuredProviderBinary(
@@ -62,8 +62,8 @@ export function defaultEngineRegistrations(
   return [
     {
       adapter: new CodexAdapter({ bin: codexBin }),
-      authStatus: () => codexAuthStatus(env),
-      availabilityProbe: () => codexAvailabilityStatus(env),
+      authStatus: options => codexAuthStatus(env, options),
+      availabilityProbe: options => codexAvailabilityStatus(env, undefined, () => codexAuthStatus(env, options), options),
     },
     {
       adapter: new ClaudeAdapter({
@@ -71,7 +71,7 @@ export function defaultEngineRegistrations(
         modelEnvironment: env,
       }),
       authStatus: () => claudeAuthStatus(env),
-      availabilityProbe: () => claudeAvailabilityStatus(env),
+      availabilityProbe: options => claudeAvailabilityStatus(env, undefined, undefined, options),
     },
   ];
 }

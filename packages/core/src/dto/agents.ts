@@ -232,6 +232,9 @@ export interface TeamDirectoryAgentDto {
   description: string;
   status: AgentOperationalStatus;
   currentActivity?: string;
+  work?: TeamDirectoryWorkDto;
+  /** Fetch this Agent's focused directory entry for omitted bounded details. */
+  workSummaryOmitted?: true;
   admissionBlocker?: import("./common.js").QueuedAdmissionBlockerDto;
   managerAgentId?: string;
   childAgentIds: string[];
@@ -247,6 +250,36 @@ export interface TeamDirectoryDto {
   hasMoreAgents?: boolean;
   agentCursor?: string;
 }
+
+/** Supplied by authenticated server callers, never by directory query parameters. */
+export type TeamDirectoryCaller = { kind: "operator" } | {
+  kind: "agent"; agentId: string; projectId: string; conversationId?: string;
+};
+
+export interface TeamDirectoryWorkDto {
+  assignments: Array<{
+    requestId: string;
+    summary?: string;
+    requesterAgentId?: string;
+    requesterName?: string;
+    requestState: import("../coordination-v3.js").CoordinationRequestState;
+    deliveryState: string;
+    executionState?: string;
+    dependencyState?: "open" | "satisfied" | "impossible" | "expired" | "cancelled";
+    progress?: { text: string; createdAt: string };
+  }>;
+  /** Counts only further authorized items, never restricted assignments. */
+  hasMoreAssignments: boolean;
+  activeAssignmentDetails: "available" | "restricted" | "none";
+}
+
+export const TEAM_DIRECTORY_LIMITS = {
+  agents: 100,
+  assignmentsPerAgent: 3,
+  textCharacters: 240,
+  identityCharacters: 80,
+  responseUtf8Bytes: 256 * 1024,
+} as const;
 
 /** POST /api/projects/:id/agents body. */
 export interface CreateAgentRequest {
@@ -472,6 +505,8 @@ export interface AgentHealthDto {
     state: "responding";
     executionId: string;
     startedAt: string;
+    /** Meaningful execution evidence, not a heartbeat or this projection's clock. */
+    lastActivityAt?: string;
   };
   /** Most recent execution, regardless of whether it represented assigned work or incidental coordination. */
   latestRun?: AgentHealthRunSummaryDto;

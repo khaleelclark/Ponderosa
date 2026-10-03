@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "status": "format_only_not_verified",
+  "sourceSnapshot": null,
+  "sourceRevision": null,
+  "candidateRevision": null,
+  "legacyScopeMappings": [],
+  "resourceMappings": [],
+  "resourceMappingFields": ["resourceKind", "resourceId", "sourceAuthority", "sourceHash", "ownerChatId", "historicalCustody", "originalAudience", "evidence", "disposition"],
+  "unresolved": ["Approved coherent offline snapshot not identified", "Total canonical and companion-store ownership map not produced"],
+  "migrationImplemented": false,
+  "authorizesCutover": false
+}

@@ -59,6 +59,7 @@ import { AttentionSurface } from "./AttentionSurface";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { LiveAgentProgress } from "./chat/LiveAgentProgress";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
+import { MessageRequestAction } from "./MessageRequestAction";
 import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
 import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
@@ -1625,6 +1626,8 @@ export function AllChatView({
                   selectLabel: allChatSourceAccessibleName(item),
                   body: (
                     <ChatMessageBody
+                      collaborationRecipients={item.communicationIntent === "collaboration" ? item.collaborationRecipients ?? [] : undefined}
+                      agentMentions={item.agentMentions}
                       text={communicationVisibleText({
                         text: item.text,
                         intent: item.communicationIntent,
@@ -1709,7 +1712,7 @@ export function AllChatView({
                           aria-label="Copy message"
                           onClick={event => {
                             event.stopPropagation();
-                            void copyText(communicationVisibleText({
+                            void copyText(item.communicationIntent === "collaboration" ? item.text : communicationVisibleText({
                               text: item.text,
                               intent: item.communicationIntent,
                               fromAgent: !fromUser,
@@ -1720,6 +1723,8 @@ export function AllChatView({
                           <ContentCopyOutlinedIcon fontSize="inherit" />
                         </IconButton>
                       </Tooltip>
+                      <MessageRequestAction projectId={item.project.id} conversationId={item.source.conversationId}
+                        recipients={item.collaborationRecipients} receipts={item.deliveryReceipts} requests={item.coordinationRequests} agentTitle={allChatAgentTitle} />
                       {item.author.kind === "agent" ? (
                         <ReadAloudControls
                           text={resolveMessageMentionText(
@@ -1816,13 +1821,6 @@ export function AllChatView({
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
             Message sent. Temporary uploads for skipped recipients are still
             being cleaned up automatically.
-          </Alert>
-        ) : null}
-        {send.isError ? (
-          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            {send.error instanceof Error
-              ? send.error.message
-              : "Direct message could not be sent."}
           </Alert>
         ) : null}
         {cancelOperationError ? (

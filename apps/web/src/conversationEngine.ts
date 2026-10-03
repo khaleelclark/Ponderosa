@@ -45,11 +45,12 @@ export function engineCanTestAccess(engine: Pick<EngineDto, "authentication" | "
     (!engine.intakeReady || engine.reachability !== "reachable");
 }
 
-export function engineStatusPresentation(engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled" | "reachability">): {
-  label: "Checking" | "Reachable" | "Intake ready" | "Needs attention" | "Inactive";
+export function engineStatusPresentation(engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled" | "reachability" | "resourceAdmission">): {
+  label: "Checking" | "Reachable" | "Intake ready" | "Needs attention" | "Inactive" | "Host resources";
   color: "success" | "warning" | "default";
 } {
   if (engine.enabled === false) return { label: "Inactive", color: "default" };
+  if (engine.resourceAdmission?.state === "held") return { label: "Host resources", color: "warning" };
   if (engine.authentication === "checking" || engine.reachability === "checking") {
     return { label: "Checking", color: "default" };
   }

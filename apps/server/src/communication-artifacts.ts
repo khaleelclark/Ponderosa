@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { CommunicationEvent } from "@ponderosa/core";
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
+  requestParticipantAgentIds,
   canonicalizeProviderText,
   shouldBackTextWithArtifact,
 } from "@ponderosa/core";
@@ -133,12 +134,7 @@ export function createCommunicationArtifactAuthority(context: CommunicationArtif
     ownerId,
     audience: {
       kind: "request_agents",
-      agentIds: [
-        ...new Set([
-          ...(request.requesterAgentId ? [request.requesterAgentId] : []),
-          request.recipientAgentId,
-        ]),
-      ].sort(),
+      agentIds: requestParticipantAgentIds(request).sort(),
       ...(!request.requesterAgentId ? { userId: "local-operator" } : {}),
     },
   });

@@ -41,7 +41,7 @@ test("auth probes coalesce and failures have a bounded cooldown with explicitly 
 test("a real timed-out auth probe coalesces and observes owned root/descendant cleanup before settling", { timeout: 20000, skip: process.platform === "win32" }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "auth-probe-cleanup-"));
   const bin = join(directory, "synthetic-auth"), pids = join(directory, "pids");
-  await writeFile(bin, `#!${process.execPath}\nimport{writeFileSync}from'node:fs';import{spawn}from'node:child_process';const c=spawn(process.execPath,['-e','setTimeout(()=>{},30000)'],{stdio:'ignore'});writeFileSync(${JSON.stringify(pids)},JSON.stringify([process.pid,c.pid]));setTimeout(()=>{},30000);\n`);
+  await writeFile(bin, `#!${process.execPath}\nimport{writeFileSync}from'node:fs';import{spawn}from'node:child_process';console.log('Not logged in');const c=spawn(process.execPath,['-e','setTimeout(()=>{},30000)'],{stdio:'ignore'});writeFileSync(${JSON.stringify(pids)},JSON.stringify([process.pid,c.pid]));setTimeout(()=>{},30000);\n`);
   await chmod(bin, 0o700);
   try {
     const cache = new EngineAuthStatusCache(); let calls = 0;
@@ -51,4 +51,25 @@ test("a real timed-out auth probe coalesces and observes owned root/descendant c
     for (const pid of JSON.parse(await readFile(pids, "utf8"))) assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
     await cache.get("synthetic", probe); assert.equal(calls, 1, "timeout cooldown does not spawn another process");
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("pending reads return promptly but invalidation never releases the actual diagnostic slot", async () => {
+  let release, calls = 0; const gate = new Promise(resolve => { release = resolve; });
+  const cache = new EngineAuthStatusCache();
+  const load = async () => { calls++; await gate; return { authenticated: true, source: "cli_status" }; };
+  const first = await cache.read("synthetic", load);
+  assert.equal(first.reason, "probe_pending");
+  cache.invalidate("synthetic");
+  await Promise.all(Array.from({ length: 20 }, () => cache.read("synthetic", load)));
+  assert.equal(calls, 1); release(); await gate;
+  assert.equal((await cache.get("synthetic", load)).authenticated, true); assert.equal(calls, 1);
+});
+
+test("auth reasons remain strict and historical records compatible", () => {
+  assert.deepEqual(projectProviderAuthStatus({ authenticated: false }), { authenticated: false });
+  for (const reason of ["timeout", "spawn_failed", "malformed", "cleanup_failed", "probe_failed", "probe_pending"]) {
+    assert.equal(projectProviderAuthStatus({ authenticated: false, status: "unknown", reason, source: "cli_status" }).reason, reason);
+  }
+  for (const value of [{ authenticated: false, reason: "timeout" }, { authenticated: false, status: "unknown", reason: "logout" }, { authenticated: true, source: "token" }]) assert.throws(() => projectProviderAuthStatus(value));
+  assert.throws(() => projectProviderAuthStatus({ authenticated: false, get reason() { throw Error("must not invoke"); } }));
 });

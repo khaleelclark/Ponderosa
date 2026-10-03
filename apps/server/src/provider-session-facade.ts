@@ -154,7 +154,7 @@ function processIdentity(value: unknown): RuntimeProcessIdentity | undefined {
     const prototype = Object.getPrototypeOf(record);
     if (prototype !== Object.prototype && prototype !== null) throw new Error(INVALID_PROVIDER_STRUCTURE);
     const keys = Reflect.ownKeys(record);
-    if (keys.some((key) => key !== "pid" && key !== "pgid" && key !== "birthMarker")) {
+    if (keys.some((key) => key !== "pid" && key !== "pgid" && key !== "birthMarker" && key !== "scope")) {
       throw new Error(INVALID_PROVIDER_STRUCTURE);
     }
     const pid = dataMember(record, "pid");
@@ -166,7 +166,16 @@ function processIdentity(value: unknown): RuntimeProcessIdentity | undefined {
         birthMarker.length > 512 || UNSAFE_IDENTITY_CONTROL.test(birthMarker)) {
       throw new Error(INVALID_PROVIDER_STRUCTURE);
     }
-    return { pid: pid as number, pgid: pgid as number, birthMarker };
+    const scope = dataMember(record, "scope");
+    let scopeIdentity: RuntimeProcessIdentity["scope"];
+    if (scope !== undefined) {
+      const scoped = target(scope);
+      if (![Object.prototype, null].includes(Object.getPrototypeOf(scoped)) || Reflect.ownKeys(scoped).some(key => key !== "unit" && key !== "authorityId")) throw Error(INVALID_PROVIDER_STRUCTURE);
+      const unit = dataMember(scoped, "unit"), authorityId = dataMember(scoped, "authorityId");
+      if (typeof unit !== "string" || !/^ponderosa-agent-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.scope$/u.test(unit) || typeof authorityId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(authorityId)) throw Error(INVALID_PROVIDER_STRUCTURE);
+      scopeIdentity = { unit, authorityId };
+    }
+    return { pid: pid as number, pgid: pgid as number, birthMarker, ...(scopeIdentity ? { scope: scopeIdentity } : {}) };
   } catch {
     throw new Error(INVALID_PROVIDER_STRUCTURE);
   }

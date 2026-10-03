@@ -11,7 +11,7 @@ import type {
   AgentRunDto,
 } from "@ponderosa/core";
 
-export interface ActiveRunObservation { startedAt: string; executionId?: string; schedulerRunId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted" }
+export interface ActiveRunObservation { startedAt: string; lastActivityAt?: string; executionId?: string; schedulerRunId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted" }
 export interface PreparingRunObservation {
   runId: string;
   status: string;
@@ -150,7 +150,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
       ...(active?.ownershipState && ["running", "stalled", "cancelling", "interrupted"].includes(active.ownershipState)
         ? { runtimeOwnership: active.ownershipState as "running" | "stalled" | "cancelling" | "interrupted" } : {}),
       ...(active && (active.ownershipState === undefined || active.ownershipState === "running") && active.executionId
-        ? { runtimeActivity: { state: "responding" as const, executionId: active.executionId, startedAt: active.startedAt } }
+        ? { runtimeActivity: { state: "responding" as const, executionId: active.executionId, startedAt: active.startedAt, ...(active.lastActivityAt ? { lastActivityAt: active.lastActivityAt } : {}) } }
         : {}),
       ...(providerBlocked ? { providerBlocked } : {}),
       ...(latestRun ? { latestRun } : {}),

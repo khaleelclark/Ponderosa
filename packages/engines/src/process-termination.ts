@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import type { RuntimeProcessHandle, RuntimeProcessIdentity } from "@ponderosa/core";
 import { hostProcessBirthMarker as processBirthMarker } from "@ponderosa/native-host";
+import { closeSystemdScope, processScope, systemdScopeAlive, validateSystemdScope } from "./systemd-scope.js";
 
 export { processBirthMarker };
 
@@ -28,6 +29,14 @@ export async function terminateProcessGroup(
   opts: ObservedProcessTerminationOptions,
   nativeAuthority?: NativeProcessTreeAuthority,
 ): Promise<void> {
+  const scope = processScope(child);
+  if (scope) {
+    // Stop the launcher first so it cannot create a scope after cleanup. Then
+    // observe the complete owned scope, including setsid/daemon descendants.
+    if (child.exitCode === null && child.signalCode === null) await terminatePosixGroup(child, opts);
+    await closeSystemdScope(scope);
+    return;
+  }
   if (nativeAuthority) {
     if (!nativeAuthority.isAlive()) {
       nativeAuthority.close();
@@ -44,6 +53,10 @@ export async function terminateProcessGroup(
       `${opts.label} Windows Job Object remained active after termination and ${confirmationMs}ms confirmation`,
     );
   }
+  await terminatePosixGroup(child, opts);
+}
+
+async function terminatePosixGroup(child: ChildProcess, opts: ObservedProcessTerminationOptions): Promise<void> {
   const pid = child.pid;
   if (!processTreeAlive(child, pid)) return;
 
@@ -66,7 +79,10 @@ export async function terminateProcessGroup(
 
 /** Report ownership for the complete detached process group, not only its root. */
 export function processGroupAlive(child: ChildProcess, observedTerminal = false): boolean {
-  return processTreeAlive(child, child.pid, observedTerminal);
+  const groupAlive = processTreeAlive(child, child.pid, observedTerminal);
+  const scope = processScope(child);
+  if (!scope) return groupAlive;
+  try { return systemdScopeAlive(scope) || groupAlive; } catch { return true; }
 }
 
 /** Build the retryable host authority published synchronously at spawn time. */
@@ -99,7 +115,8 @@ export function runtimeProcessHandle(
 export function runtimeProcessIdentity(child: ChildProcess): RuntimeProcessIdentity | undefined {
   if (process.platform === "win32" || !child.pid) return undefined;
   const birthMarker = processBirthMarker(child.pid);
-  return birthMarker ? { pid: child.pid, pgid: child.pid, birthMarker } : undefined;
+  const scope = processScope(child);
+  return birthMarker ? { pid: child.pid, pgid: child.pid, birthMarker, ...(scope ? { scope } : {}) } : undefined;
 }
 
 /** Only identities backed by a platform's high-resolution, immutable process
@@ -121,10 +138,10 @@ export function recoveredRuntimeProcessHandle(
   let termination: Promise<void> | undefined;
   return {
     processIdentity: identity,
-    isAlive: () => recoveredProcessGroupAlive(identity),
+    isAlive: () => { if (identity.scope) { try { return systemdScopeAlive(identity.scope) || recoveredProcessGroupAlive(identity); } catch { return true; } } return recoveredProcessGroupAlive(identity); },
     close: () => {
       if (termination) return termination;
-      const attempt = terminateRecoveredProcessGroup(identity, opts);
+      const attempt = (async () => { await terminateRecoveredProcessGroup(identity, opts); if (identity.scope) { validateSystemdScope(identity.scope); await closeSystemdScope(identity.scope); } })();
       const shared = attempt.catch((error) => {
         if (termination === shared) termination = undefined;
         throw error;

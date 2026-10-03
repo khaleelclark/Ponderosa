@@ -469,6 +469,8 @@ function ChatPaneComponent({
               body: (
                 <ChatMessageBody
                   text={visibleText}
+                  collaborationRecipients={message.communicationIntent === "collaboration" ? message.collaborationRecipients ?? [] : undefined}
+                  agentMentions={message.agentMentions}
                   citations={message.citations}
                   collapseLongMessage={receivedInput}
                   compactMarkdown
@@ -514,11 +516,13 @@ function ChatPaneComponent({
                 ) : undefined,
               actions: (
                 <>
-                  <CopyMessageButton text={visibleAgentMessageText(message)} />
+                  <CopyMessageButton text={message.communicationIntent === "collaboration" ? message.text : visibleAgentMessageText(message)} />
                   <MessageRequestAction
                     projectId={projectId}
                     conversationId={message.conversationId}
                     requests={message.coordinationRequests}
+                    recipients={message.collaborationRecipients}
+                    receipts={message.deliveryReceipts}
                     agentTitle={agentId => agentId ? agentNameForId?.(agentId) ?? "Deleted Agent" : "You"}
                   />
                   {message.role === "assistant" || message.authorAgentId ? (

@@ -287,6 +287,79 @@ reports the exact commit. Do not start an additional SSH-owned daemon beside
 the unit. If startup verification fails, restore both the previous symlink and
 environment file before restarting the unit.
 
+### Resource admission and runtime evidence
+
+Linux admission supplements (not replaces) workspace concurrency, provider
+backoff/disable settings and durable cleanup fences. One shared sample reads
+bounded kernel counters at most once per two seconds: host `MemAvailable`,
+memory/I/O PSI `full avg10`, current cgroup ancestors and the configured Agent
+workload slice's ancestors. Finite `memory.high` and `memory.max` headroom are
+combined with host headroom; unrelated host demand therefore still counts.
+No diagnostic CLI is spawned to obtain resource samples.
+
+Defaults: `PONDEROSA_RESOURCE_RESERVE_MIB=2048` and
+`PONDEROSA_RESOURCE_STARTUP_MIB=256`. Both must be positive MiB values
+(maximum 1 TiB). A hold begins below reserve plus one startup allowance, at
+memory-full PSI 5%, or at I/O-full PSI 10%. Recovery needs two consecutive
+samples with at least 125% of that minimum, memory-full PSI at most 1%, and
+I/O-full PSI at most 2%. Available startup allowances also bound admission:
+each active scheduler claim reserves one allowance *in addition to* measured
+usage. This deliberately conservative policy needs calibration for large
+builds and hosts with small effective cgroup limits; it is not an OOM guarantee.
+
+Samples have a 500 ms reader budget and are stale ten seconds after acquisition
+starts, not after settlement. Expired results are discarded and cannot count
+toward recovery. A late sampler retains its slot until actual settlement. Missing, invalid or stale
+measurements explicitly advertise unavailable protection and fail open to
+the existing admission safeguards; they cannot strand work permanently.
+`PONDEROSA_RESOURCE_ADMISSION=off` explicitly disables this protection. macOS,
+Windows and Linux without usable PSI/cgroup observations report unsupported
+or unavailable protection; their existing containment remains unchanged.
+
+A confirmed resource hold keeps accepted Activations pending, without failed
+delivery attempts or cancellation of existing Runs. The scheduler resumes
+automatically after recovery. A second check can defer an uninjected claim if
+pressure develops during preparation. Unknown startup failures keep their
+existing uncertainty/retry authority; they are not relabeled as pressure.
+
+Systemd provider scopes now have random exact unit and ownership identities,
+persisted in the existing process ledger. Scope population is observed even
+after the launcher exits. Cleanup checks ownership, stops only that scope and
+awaits its empty cgroup; failures retain durable authority. Persistent sessions
+and shared browser ownership are not made Run-scoped. Scope observations are
+asynchronous, coalesced and serialized; status reads retain unknown authority
+rather than block the event loop or invent completed cleanup. Each systemctl
+observation has a 500 ms/8 KiB bound. A scope stop has a two-second systemd grace
+and four-second observation budget. Non-systemd POSIX installations cannot
+prove ownership of descendants that deliberately escape their process group;
+Ponderosa does not kill guessed processes in that case.
+Historical PID-only ledger rows retain their existing guarantees; a missing
+historical scope identity is not reconstructed from process names or guessed
+units. The existing application-unit `PartOf` drain remains the operational
+boundary for old, unattributed scopes.
+
+`PONDEROSA_AGENT_WORKLOAD_SLICE` can override the default workload slice for
+an explicitly isolated qualification environment or operator configuration.
+It is host-owned, stripped from provider tool environments, and does not grant
+a security sandbox. Never point a qualification at live application units.
+
+Provider status separates authentication, reachability and resource holds.
+Probe timeout, spawn, malformed-output and cleanup failures mean "could not
+verify," not logout. A completed explicit CLI logout remains unauthenticated.
+Authentication reasons, source and observation time appear in status details;
+raw provider output is not displayed. A successful older operation cannot
+erase a newer access denial or enable an operator-disabled provider. Rechecks
+share their actual diagnostic/cleanup slot even after an HTTP deadline.
+
+Canonical provider-status changes and ordinary stream reconnect refresh engine
+status promptly, bounded to one refresh per five seconds. Tool events do not
+refresh authentication. Active execution is shown as "working"; focus/hover
+details show the age of meaningful execution evidence. Heartbeats, timers and
+polls do not update that age, quiet output is not failure, and neither public
+progress nor a running session grants completion/authentication authority.
+Existing stale usage, delivery receipts and uncertain-submission recovery
+remain authoritative.
+
 The browser supervisor is a separate user unit so a shared Project browser can
 survive an application restart. The application waits for its owner-only Unix
 socket before starting. Do not restart the browser supervisor during an ordinary

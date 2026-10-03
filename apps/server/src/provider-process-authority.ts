@@ -20,6 +20,7 @@ interface ProviderProcessRow {
   pid: number;
   pgid: number;
   birth_marker: string;
+  scope_json: string | null;
   created_at: string;
 }
 
@@ -44,17 +45,18 @@ export class ProviderProcessAuthority {
       this.sqlite.prepare(`
         INSERT INTO provider_process_authority (
           id, worker_id, purpose, project_id, agent_id, run_id,
-          pid, pgid, birth_marker, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          pid, pgid, birth_marker, scope_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(worker_id, pid, birth_marker) DO UPDATE SET
           purpose = excluded.purpose,
           project_id = COALESCE(excluded.project_id, provider_process_authority.project_id),
           agent_id = COALESCE(excluded.agent_id, provider_process_authority.agent_id),
-          run_id = COALESCE(excluded.run_id, provider_process_authority.run_id)
+          run_id = COALESCE(excluded.run_id, provider_process_authority.run_id),
+          scope_json = COALESCE(excluded.scope_json, provider_process_authority.scope_json)
       `).run(
         randomUUID(), this.workerId, scope.purpose,
         scope.projectId ?? null, scope.agentId ?? null, scope.runId ?? null,
-        identity.pid, identity.pgid, identity.birthMarker, new Date().toISOString(),
+        identity.pid, identity.pgid, identity.birthMarker, identity.scope ? JSON.stringify(identity.scope) : null, new Date().toISOString(),
       );
     } catch (error) {
       // Admission cannot continue without durable restart authority. Begin
@@ -67,6 +69,11 @@ export class ProviderProcessAuthority {
 
   async recoverPreviousWorkers(): Promise<number> {
     return this.terminateRows(this.rows("worker_id <> ?", [this.workerId]), "daemon restart recovery");
+  }
+
+  /** Retry retained diagnostic cleanup before admitting its replacement. */
+  async terminatePurpose(purpose: string): Promise<number> {
+    return this.terminateRows(this.rows("purpose = ?", [purpose]), purpose);
   }
 
   async terminateRun(runId: string): Promise<number> {
@@ -108,7 +115,7 @@ export class ProviderProcessAuthority {
   private rows(where?: string, params: readonly unknown[] = []): ProviderProcessRow[] {
     return this.sqlite.prepare(`
       SELECT id, worker_id, purpose, project_id, agent_id, run_id,
-        pid, pgid, birth_marker, created_at
+        pid, pgid, birth_marker, scope_json, created_at
       FROM provider_process_authority
       ${where ? `WHERE ${where}` : ""}
       ORDER BY created_at ASC, id ASC
@@ -120,6 +127,7 @@ export class ProviderProcessAuthority {
       pid: row.pid,
       pgid: row.pgid,
       birthMarker: row.birth_marker,
+      ...(row.scope_json ? { scope: JSON.parse(row.scope_json) } : {}),
     };
     return recoveredRuntimeProcessHandle(identity, {
       label: `${row.purpose} (${row.id})`,
@@ -132,8 +140,8 @@ export class ProviderProcessAuthority {
     const failures: Error[] = [];
     let terminated = 0;
     for (const row of rows) {
-      const handle = this.recover(row);
       try {
+        const handle = this.recover(row);
         await handle.close();
         this.deleteRow(row.id);
         terminated += 1;

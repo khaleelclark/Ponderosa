@@ -41,3 +41,14 @@ test("legacy evidence remains visible but cannot claim current provenance", () =
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("late success cannot erase a denial observed after that operation began, including after reopening", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "availability-order-"));
+  try {
+    let store = new EngineAvailabilityStore(dir);
+    store.record({ engineId: "codex", available: false, source: "provider_run", observedAt: "2026-10-03T12:01:00.000Z" });
+    store = new EngineAvailabilityStore(dir);
+    assert.equal(store.record({ engineId: "codex", available: true, source: "operator_probe", operationStartedAt: "2026-10-03T12:00:00.000Z" }).available, false);
+    assert.equal(store.record({ engineId: "codex", available: true, source: "operator_probe", operationStartedAt: "2026-10-03T12:02:00.000Z" }).available, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

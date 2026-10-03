@@ -1483,13 +1483,14 @@ export function startProviderRunExecution(
           notifyManagerOfChildFailure(agent.id, runId, publicRunError);
         } else if (successfulRunStillAuthoritative) {
           const priorDenial = engineAvailability.denial(runtimeEngineId);
-          engineAvailability.record({
+          const recoveryEvidence = engineAvailability.record({
             engineId: runtimeEngineId,
             available: true,
+            operationStartedAt: activeRun.startedAt,
             detail: "provider Run completed successfully",
             source: "provider_run",
           });
-          if (priorDenial) resolveOperationalNotification(`provider:${runtimeEngineId}:unavailable`);
+          if (priorDenial && recoveryEvidence.available) resolveOperationalNotification(`provider:${runtimeEngineId}:unavailable`);
         }
       }
       const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted || schedulerCancelled ? "cancelled" : runError ? "failed" : "completed");

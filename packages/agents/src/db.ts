@@ -52,6 +52,7 @@ const schemaExtensions = [
   "0016_public_progress.sql",
   "0017_exact_prompt_injections.sql",
   "0018_steering_wait_reason.sql",
+  "0022_provider_scope_authority.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";
