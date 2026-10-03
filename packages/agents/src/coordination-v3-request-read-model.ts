@@ -6,6 +6,7 @@ import type {
   CoordinationRequestDeliveryView,
   CoordinationRequestV3View,
 } from "./coordination-v3-types.js";
+import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 
 export class CoordinationV3RequestReadModel {
   constructor(private readonly sqlite: Database.Database) {}
@@ -30,19 +31,17 @@ export class CoordinationV3RequestReadModel {
       EXISTS(SELECT 1 FROM coordination_requests r WHERE ${scope} AND ${active}) AS tracked,
       EXISTS(SELECT 1 FROM coordination_requests r WHERE ${scope} AND ${active} AND ${access}) AS authorized
     `).get(params) as { tracked: number; authorized: number };
-    const rows = this.sqlite.prepare(`
+    const rows = this.sqlite.prepare(`${REQUEST_SOURCE_LINEAGE_CTE}
       SELECT r.id, r.requester_agent_id, r.state,
         CASE WHEN json_type(r.payload_json, '$.text') = 'text'
           THEN substr(json_extract(r.payload_json, '$.text'), 1, @textLimit) END AS summary,
         (SELECT u.id FROM coordination_request_updates u WHERE u.request_id = r.id
           AND u.kind = 'progress' AND u.actor_kind = 'agent' AND u.actor_id = r.recipient_agent_id
           ORDER BY u.created_at DESC, u.id DESC LIMIT 1) AS progress_id,
-        (SELECT sr.status FROM activation_sources source
+        (SELECT sr.status FROM request_source_lineage source
           JOIN scheduler_run_activations ra ON ra.activation_id = source.activation_id
-          JOIN scheduler_runs sr ON sr.id = ra.run_id AND sr.agent_id = r.recipient_agent_id
-          WHERE ((source.source_kind = 'request' AND source.source_id = r.id)
-            OR (source.source_kind = 'request_update' AND EXISTS(SELECT 1 FROM coordination_request_updates u
-              WHERE u.id = source.source_id AND u.request_id = r.id)))
+          JOIN scheduler_runs sr ON sr.id = ra.run_id AND sr.agent_id = r.recipient_agent_id AND sr.project_id = r.project_id
+          WHERE source.request_id = r.id
           ORDER BY sr.created_at DESC, sr.id DESC LIMIT 1) AS execution_state,
         (SELECT j.state FROM coordination_joins j
           WHERE j.project_id = r.project_id AND j.owner_agent_id = r.recipient_agent_id

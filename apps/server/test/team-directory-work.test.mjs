@@ -117,3 +117,30 @@ test("directory bounds total UTF-8 output without leaking restricted omission co
   assert(restricted.agents.every(entry => entry.work.assignments.length === 0 && entry.work.hasMoreAssignments === false));
   assert(restricted.agents.every(entry => !entry.workSummaryOmitted));
 });
+
+test("directory execution follows the exact acknowledged Join continuation instead of the completed opening Run", async t => {
+  const f = await collaborationFixture(); t.after(() => f.close());
+  const c = f.coordinationV3;
+  c.coordinate({ projectId: f.project.id, conversationId: f.chat.id, actorScope: "user:local-operator", idempotencyKey: "parent",
+    requests: [{ requestId: "parent", recipientAgentId: f.cedar.id, lifetime: { kind: "indefinite" }, payload: { text: "Integrate child work" } }] });
+  const initial = c.leaseNextRun({ workerId: "owner" }); const initialAuth = acknowledge(c, initial);
+  c.coordinate({ projectId: f.project.id, conversationId: f.chat.id, requesterAgentId: f.cedar.id,
+    actorScope: `agent:${f.cedar.id}:run:${initial.runId}`, runAuthorization: initialAuth, idempotencyKey: "child",
+    requests: [{ requestId: "child", recipientAgentId: f.boston.id, lifetime: { kind: "indefinite" }, payload: { text: "Child work" } }],
+    join: { id: "dependency", mode: "all", continuationRequestIds: ["parent"] } });
+  const child = c.leaseNextRun({ workerId: "child" }); const childAuth = acknowledge(c, child);
+  c.updateRequest({ requestId: "child", updateId: "child-result", kind: "completed", actor: { kind: "agent", id: f.boston.id },
+    runAuthorization: childAuth, payload: { text: "Child result" } });
+  c.completeRun(child.runId, child.fencingToken); c.completeRun(initial.runId, initial.fencingToken);
+  const continuation = c.leaseNextRun({ workerId: "owner", excludedAgentIds: [f.boston.id] });
+  assert.equal(continuation.activations[0].kind, "coordination_join_satisfied");
+  const continuationAuth = acknowledge(c, continuation);
+  const input = { projectId: f.project.id, conversationId: f.chat.id, agentId: f.cedar.id, caller: { kind: "operator" } };
+  const running = c.directoryWork(input).assignments.find(item => item.requestId === "parent");
+  assert.equal(running.executionState, "running"); assert.equal(running.dependencyState, "satisfied");
+  c.updateRequest({ requestId: "parent", updateId: "integrated", kind: "completed", actor: { kind: "agent", id: f.cedar.id },
+    runAuthorization: continuationAuth, payload: { text: "Integrated" } });
+  c.completeRun(continuation.runId, continuation.fencingToken);
+  const terminal = c.directoryWork(input).assignments.find(item => item.requestId === "parent");
+  assert.equal(terminal.executionState, "completed"); assert.equal(terminal.requestState, "completed");
+});
