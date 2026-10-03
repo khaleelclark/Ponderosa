@@ -1,7 +1,7 @@
 // Run in a separate process so seed and refresh load genuinely different builds.
 import assert from 'node:assert/strict';
 import { createServer as createNetServer } from 'node:net';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 const { root, directory, binary, phase, scenario = 'missing', seedKind } = JSON.parse(process.env.PONDEROSA_UPGRADE_FIXTURE);
@@ -35,10 +35,11 @@ const adapter = { id: 'claude', displayName: 'Disposable', trustedSystemPromptCh
     const replacement = phase === 'refresh' && !options.resumeSessionId;
     observations.push({ resumeSessionId: options.resumeSessionId ?? null,
       acceptedSnapshot: store.resumeSessionState(agent.id), systemPrompt: options.systemPrompt,
-      dynamicTools: options.dynamicTools });
+      dynamicTools: options.dynamicTools, mcpCapturePath: join(directory, `mcp-${phase}-${observations.length}.json`) });
     if (replacement && opened.length) assert.equal(opened.at(-1).isAlive(), false, 'old process exit precedes replacement');
     const session = new ClaudeStreamSession({ ...options, bin: binary, permissionMode: 'default', killGraceMs: 100,
       environment: { ...options.environment, PONDEROSA_CLAUDE_FIXTURE_TOKENS: replacement ? '8000' : '10000',
+        PONDEROSA_CLAUDE_FIXTURE_MCP_CAPTURE: observations.at(-1).mcpCapturePath,
         PONDEROSA_CLAUDE_FIXTURE_REPLY: phase === 'seed' && seedKind === 'direct' ? '1' : '0',
         PONDEROSA_CLAUDE_FIXTURE_OBSERVATION: replacement ? scenario : 'valid',
         PONDEROSA_CLAUDE_FIXTURE_DELAY: replacement && scenario === 'cancelled' ? '500' : '' } });
@@ -82,7 +83,8 @@ try {
     const snapshot = store.resumeSessionState(agent.id);
     const snapshotEvent = store.readEvents(agent.id).find(({ event }) => event.type === 'session_snapshot').event;
     result = { snapshot, providerInput: store.getProviderInput(snapshotEvent.executionId, true),
-      dynamicTools: observations[0].dynamicTools };
+      dynamicTools: observations[0].dynamicTools,
+      mcpTools: JSON.parse(await readFile(observations[0].mcpCapturePath, 'utf8')) };
     assert.ok(result.providerInput.sourceManifest.communicationEventIds.length > 0, 'seed must include an exact canonical context boundary');
     if (scenario === 'pending-valid') {
       // Freeze scheduler admission first, then persist a genuine base-built
@@ -121,6 +123,7 @@ try {
       resetCount: store.readEvents(agent.id).filter(({ event }) => event.type === 'session_reset').length,
       originalInput: store.getProviderInput(originalSnapshots.at(-1).event.executionId, true) };
     result.errors = store.readEvents(agent.id).filter(({ event }) => event.type === 'error').map(({ event }) => event.message);
+    for (const observation of observations) observation.mcpTools = JSON.parse(await readFile(observation.mcpCapturePath, 'utf8'));
   }
 } finally {
   allowTeardown = true; app.prepareForShutdown(); await app.close(); store.close();

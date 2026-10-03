@@ -20,6 +20,7 @@ import { runtimeEnvironment } from "./runtime-environment.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeClaudeInitCapabilities } from "./capabilities.js";
 import { normalizeClaudeProviderModels } from "./claude-models.js";
+import { encodeSessionTools } from "./ponderosa-mcp-contract.js";
 
 interface ClaudeStreamSessionOptions extends OpenRuntimeSessionOptions {
   bin: string;
@@ -58,6 +59,10 @@ export class ClaudeStreamSession implements RuntimeSession {
               type: "stdio",
               command: process.execPath,
               args: [fileURLToPath(new URL("./ponderosa-mcp.js", import.meta.url))],
+              env: {
+                PONDEROSA_AGENT_TOOL_DEFINITIONS: encodeSessionTools(opts.dynamicTools),
+                PONDEROSA_AGENT_TOOL_NAMES: opts.environment.PONDEROSA_AGENT_TOOL_NAMES ?? JSON.stringify(opts.dynamicTools.map(tool => tool.name)),
+              },
             },
           },
         })

@@ -33,6 +33,9 @@ for (const scenario of process.env.PONDEROSA_UPGRADE_CONTROL === '1' ? ['missing
       assert.deepEqual(refreshed.observations[0].acceptedSnapshot, seed.snapshot, 'original accepted context is not cleared');
       assert.equal(refreshed.observations[0].systemPrompt, seed.providerInput.exactSystemPrompt, 'handoff uses exact frozen old policy');
       assert.deepEqual(refreshed.observations[0].dynamicTools, seed.dynamicTools, 'handoff supplies exact frozen tool definitions');
+      const mcpProjection = tools => tools.map(({ name, description, inputSchema }) => ({ name: name.replace(/^ponderosa_/, ''), description, inputSchema }));
+      assert.deepEqual(seed.mcpTools, mcpProjection(seed.dynamicTools), 'base MCP advertises the actual accepted tool definitions');
+      assert.deepEqual(refreshed.observations[0].mcpTools, seed.mcpTools, 'old-session MCP tools/list retains exact frozen definitions');
       if (['valid', 'direct-valid', 'pending-valid', 'authorized-root-valid'].includes(scenario)) {
         assert.equal(refreshed.rollover.completionReason, 'replacement_verified');
         assert.equal(refreshed.accepted.sessionId, refreshed.rollover.replacementSessionId);
@@ -41,6 +44,8 @@ for (const scenario of process.env.PONDEROSA_UPGRADE_CONTROL === '1' ? ['missing
         const { PONDEROSA_RUNTIME_TOOLS } = await import(pathToFileURL(join(candidate, 'packages/core/dist/index.js')).href);
         assert.deepEqual(refreshed.observations[1].dynamicTools.filter(tool => tool.name !== 'ponderosa_history'), PONDEROSA_RUNTIME_TOOLS,
           'only the fresh verified replacement adopts current tool definitions');
+        assert.deepEqual(refreshed.observations[1].mcpTools, mcpProjection(refreshed.observations[1].dynamicTools),
+          'fresh replacement MCP tools/list advertises current selected definitions');
         const { environmentFactsPrompt } = await import(pathToFileURL(join(candidate, 'apps/server/dist/runtime-environment-facts.js')).href);
         // Stored environment observations are structurally normalized; their
         // JSON key order is not the frozen prompt's byte order. Guidance is exact.
