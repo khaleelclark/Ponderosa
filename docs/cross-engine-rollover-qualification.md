@@ -62,7 +62,7 @@ The new schema migration only makes initial occupancy nullable and admits the
 new completion reason. It preserves historical rows, rowids, packets, hashes,
 indexes, triggers and historical `native_compaction` values.
 
-## Controlled verification
+## Initial controlled verification
 
 | Check | Result |
 | --- | --- |
@@ -93,7 +93,59 @@ Node path or a stale native SQLite ABI and failed; they are not passing evidence
 The final private installation rebuilt SQLite with Node 24.
 The subsequent harness commit also passed a fresh local `pnpm verify` in
 `/tmp/ponderosa-rollover-candidate-verify.log`; the remaining commit adds only
-this report and its measurements.
+this report and its measurements. These results preceded the upgrade follow-up
+below; they did not qualify sessions created by base-version code.
+
+## Upgrade compatibility follow up
+
+Independent review of `59469d92ba94c98fe2217df3b869271e491f04b4` found a
+compatibility regression: the new immutable session policy changed existing
+contract hashes. A refresh handoff could clear the original accepted snapshot
+and seed an intermediate session before replacement verification. The writer
+reproduced the missing resume ID through the actual Claude stream adapter and
+production HTTP/store/scheduler paths, using data created by built base code.
+
+The handoff now resumes a recognized base contract using its exact frozen system
+policy. Recognition permits only the old reply-line policy: every surrounding
+instruction and environment byte must match, and the old tool, model, effort,
+engine, working-copy and system hashes must reproduce the accepted contract.
+Unknown or changed contracts fail before clearing the original snapshot or
+opening a provider process. Exact-Run injected reply authority remains current;
+retained legacy wording does not grant a routing or delivery permission.
+
+The executor preserves the full original accepted snapshot during the handoff,
+rejects a different provider session ID, and disables ordinary fresh-seed fallback
+for that exact handoff Run. The new policy applies to the replacement; only
+verified replacement acceptance can replace the original fallback snapshot.
+
+Fresh follow-up verification:
+
+| Check | Result |
+| --- | --- |
+| macOS Node 24.21.0 `pnpm verify` | 1,043 passed, 7 skips, zero failures; typechecks/builds passed |
+| Pine Node 24.16.0 `pnpm verify` | 1,045 passed, 6 skips, zero failures; typechecks/builds passed |
+| Focused policy, full-route, canonical-tool and rollover-cycle tests | 26 passed, zero skips/failures |
+
+The opt-in cross-build check is `apps/server/test/context-rollover-upgrade.check.mjs`.
+It creates an accepted base session in one application process, closes it, then
+reopens the same disposable store under candidate code. Use a freshly built base
+checkout with `PONDEROSA_UPGRADE_CHECK=1 PONDEROSA_UPGRADE_BASE=/absolute/base/path`.
+`PONDEROSA_UPGRADE_CONTROL=1` runs the same-base control. No provider profile or
+subscription is used: the real stream adapter communicates with the disposable
+raw CLI fixture. These checks do not qualify live Claude access or a full crash.
+All eight candidate cases and the same-base control passed. Candidate cases cover
+missing/high replacement telemetry, exact-Run cancellation, teardown failure,
+successful policy transition, unknown contracts, changed immutable policy and a
+base Direct Message session. They preserve original packets and hashes; failed
+refreshes preserve the entire original accepted snapshot, not just its ID.
+
+Evidence on Pine includes `/tmp/pr610-writer-upgrade-before.log`,
+`/tmp/pr610-writer-upgrade-control-final.log`, `/tmp/pr610-writer-upgrade-final.log`,
+and `/tmp/pr610-upgrade-linux-final-verify.log`. The macOS full and focused logs
+are `/tmp/pr610-upgrade-macos-final-verify.log` and
+`/tmp/pr610-upgrade-focused-final.log`. The comparison does not change historical
+provider packets, production stores, services or thresholds. The earlier Codex
+benchmark was not rerun for this follow-up and remains previous-head evidence.
 
 ## Disposable Codex comparison
 
@@ -199,6 +251,7 @@ Existing services, Agents, provider authentication/configuration, browsers,
 sandbox `:38443`, and live user data were not modified by this task. Only owned
 disposable provider threads were created/archived. Thresholds were not lowered.
 
-Independent code review and independent performance qualification remain pending.
-Use the companion review prompt against the final candidate head. This report
-does not approve merge, controlled promotion or production release.
+Independent review requested code changes for the upgrade defect and accepted
+the narrowly described Codex performance qualification. The compatibility
+follow-up still requires independent re-review. This report does not approve
+merge, controlled promotion or production release.

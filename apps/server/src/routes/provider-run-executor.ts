@@ -274,6 +274,14 @@ export function startProviderRunExecution(
         throw new Error("provider Run lost its exact message capability before session creation");
       }
       const replacementCandidate = coordinationV3.contextRolloverCandidateForRun(runId, agent.id);
+      const pendingHandoff = coordinationV3.activeContextRollover(agent.id);
+      const frozenHandoffSessionId = pendingHandoff?.state === "requested" &&
+        pendingHandoff.oldProviderSessionId === resumeSessionId &&
+        coordinationV3.activationPayloads(agent.id, coordinationV3.activationIdsAttachedToRun(runId, agent.id), runId)
+          .some((activation) => activation.kind === "context_rollover_handoff" &&
+            activation.payload && typeof activation.payload === "object" &&
+            (activation.payload as { rolloverId?: unknown }).rolloverId === pendingHandoff.id)
+        ? resumeSessionId : undefined;
       const environment = {
         PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
         PONDEROSA_DOCUMENT_URL: agentMessageUrl.replace(/\/api\/agent-messages$/, "/api/agent-documents"),
@@ -710,6 +718,12 @@ export function startProviderRunExecution(
             ), "read seeded provider event stream"));
 
       const persistAcceptedSessionSnapshot = (acceptedSessionId: string): void => {
+        // A handoff may read only the frozen original generation. It cannot
+        // replace or expand accepted fallback state before verification.
+        if (frozenHandoffSessionId) {
+          if (acceptedSessionId !== frozenHandoffSessionId) throw new Error("context rollover handoff changed provider session identity");
+          return;
+        }
         const artifactIds = [...manifestArtifactIds].sort();
         const current = store.resumeSessionState(agent.id);
         const pendingRollover = contextRolloverPending.get(agent.id);
@@ -768,6 +782,9 @@ export function startProviderRunExecution(
           publishMessageDeliveryChanged(agent.id);
         }
         for await (const event of startStream(sessionId)) {
+          if (event.type === "session" && frozenHandoffSessionId && event.sessionId !== frozenHandoffSessionId) {
+            throw new Error("context rollover handoff changed provider session identity");
+          }
           if (event.type === "error" &&
               (event.code === "invalid_model" || event.code === "model_not_found") &&
               effectiveModel &&
@@ -814,7 +831,8 @@ export function startProviderRunExecution(
           }
           if (event.type === "turn_done") activeRun.observedProviderTerminalStatus = "completed";
           if (event.type === "error" && event.terminalStatus !== undefined) activeRun.observedProviderTerminalStatus = event.terminalStatus;
-          if (event.type === "error" && sessionId && !providerWorkObserved && shouldRolloverEngineSession(runtimeEngineId, event.message)) {
+          if (event.type === "error" && sessionId && !frozenHandoffSessionId &&
+              !providerWorkObserved && shouldRolloverEngineSession(runtimeEngineId, event.message)) {
             // The provider confirmed the resumed session failed before
             // sampling. Discard its buffered session event and retry once
             // with the separately persisted canonical fresh-seed packet.

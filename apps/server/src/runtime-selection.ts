@@ -68,6 +68,43 @@ export function communicationV3SessionPrompt(): string[] {
   ];
 }
 
+/** Recognize only the previous reply-line policy. All other immutable policy
+ * bytes must match; this is not permission to resume an arbitrary old contract.
+ * The returned route text is retained policy, not this Run's reply authority. */
+export function legacyCommunicationV3SessionPrompt(
+  currentSystemPrompt: string,
+  frozenSystemPrompt: string,
+): string[] | undefined {
+  const noReply = communicationV3Prompt();
+  const oldLine = frozenSystemPrompt.split("\n").find((line) => line === noReply[0] ||
+    line.startsWith("This Run has one authorized default reply route (data): "));
+  if (!oldLine) return undefined;
+  let reply: import("@ponderosa/core").CoordinationReplyAuthority | undefined;
+  if (oldLine !== noReply[0]) {
+    const match = /^This Run has one authorized default reply route \(data\): (.{1,16384})\. ponderosa_message\(\{text\}\) uses it with stable idempotency\. This convenience route does not create a reply obligation\.$/.exec(oldLine);
+    if (!match) return undefined;
+    try {
+      const value = JSON.parse(match[1]!) as Record<string, unknown>;
+      if (!value || Array.isArray(value) || typeof value !== "object" ||
+          Object.keys(value).some((key) => key !== "intent" && key !== "recipientAgentIds")) return undefined;
+      if (value.intent === "broadcast" || value.intent === "direct_to_user") {
+        if (value.recipientAgentIds !== undefined) return undefined;
+        reply = { intent: value.intent };
+      } else if (value.intent === "collaboration" && Array.isArray(value.recipientAgentIds) &&
+          value.recipientAgentIds.length > 0 && value.recipientAgentIds.length <= 200 &&
+          value.recipientAgentIds.every((id) => typeof id === "string" && /^[a-zA-Z0-9_-]{1,200}$/.test(id))) {
+        reply = { intent: "collaboration", recipientAgentIds: value.recipientAgentIds };
+      } else return undefined;
+    } catch { return undefined; }
+  }
+  const legacy = communicationV3Prompt(reply);
+  const block = legacy.join("\n");
+  // Require one exact policy block and exact surrounding identity/environment.
+  if (frozenSystemPrompt.split(block).length !== 2 ||
+      frozenSystemPrompt.replace(block, communicationV3SessionPrompt().join("\n")) !== currentSystemPrompt) return undefined;
+  return legacy;
+}
+
 export const PROVIDER_TOOL_CONTRACT_HASH = providerToolContractHash(
   PROVIDER_DYNAMIC_TOOLS,
   communicationV3SessionPrompt(),

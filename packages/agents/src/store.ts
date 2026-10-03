@@ -440,7 +440,9 @@ export class AgentStore extends AgentEventSessionFacade {
    * candidates therefore cannot contaminate the old accepted session merely by
    * appearing later in the Agent event log. Legacy snapshots without a creating
    * execution ID return undefined so rollover fails closed. */
-  acceptedProviderSessionCommunicationEventIds(agentId: string): string[] | undefined {
+  private acceptedProviderSessionBoundary(agentId: string): {
+    sessionId: string; executionId: string; rolloverId?: string;
+  } | undefined {
     const accepted = this.resumeSessionState(agentId);
     if (!accepted) return undefined;
     const events = this.readEvents(agentId);
@@ -467,12 +469,27 @@ export class AgentStore extends AgentEventSessionFacade {
     // They are not safe evidence for a new rollover boundary.
     if (!boundaryRun || boundaryRun.provider_session_id !== accepted.sessionId ||
         boundaryRun.prompt_injection_state !== "injected") return undefined;
+    return { sessionId: accepted.sessionId, executionId: boundaryExecutionId, ...(rolloverId ? { rolloverId } : {}) };
+  }
+
+  /** Exact policy packet attributed to the currently accepted session, never
+   * a later, unverified replacement candidate. */
+  acceptedProviderSessionInput(agentId: string): ProviderInputDto | undefined {
+    const boundary = this.acceptedProviderSessionBoundary(agentId);
+    return boundary ? this.getProviderInput(boundary.executionId, true) : undefined;
+  }
+
+  acceptedProviderSessionCommunicationEventIds(agentId: string): string[] | undefined {
+    const boundary = this.acceptedProviderSessionBoundary(agentId);
+    if (!boundary) return undefined;
+    const events = this.readEvents(agentId);
+    const { sessionId, rolloverId } = boundary;
     const executionIds = new Set((this.client.prepare(`
       SELECT id FROM scheduler_runs
       WHERE agent_id = ? AND provider_session_id = ?
         AND prompt_injection_state = 'injected'
       ORDER BY created_at, id
-    `).all(agentId, accepted.sessionId) as Array<{ id: string }>).map((row) => row.id));
+    `).all(agentId, sessionId) as Array<{ id: string }>).map((row) => row.id));
     const selectedHistoryIds: string[] = [];
     for (const stored of events) {
       const event = stored.event;
