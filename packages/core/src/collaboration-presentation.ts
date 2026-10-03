@@ -34,8 +34,7 @@ export function collaborationPresentation(event: CommunicationEvent, agents: rea
 }
 
 /** Recipient completeness is by ID, never spelling or the number of unknown hashtags. */
-export function missingCollaborationRecipients(text: string, recipients: readonly CollaborationRecipientDto[], mentions: readonly AgentMentionBindingDto[] = []): CollaborationRecipientDto[] {
-  const tokens = new Set(messageTagTokens(text).map(token => token.handle));
-  const representedIds = new Set(mentions.filter(mention => tokens.has(mention.handle)).map(mention => mention.agentId));
+export function missingCollaborationRecipients(recipients: readonly CollaborationRecipientDto[], renderedAgentIds: Iterable<string>): CollaborationRecipientDto[] {
+  const representedIds = new Set(renderedAgentIds);
   return [...new Map(recipients.filter(recipient => !representedIds.has(recipient.id)).map(recipient => [recipient.id, recipient])).values()];
 }

@@ -7,7 +7,7 @@ import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutl
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { messageTagTokens, missingCollaborationRecipients, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CollaborationRecipientDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
-import { Fragment, type ReactNode, type ComponentPropsWithoutRef, useEffect, useRef, useState } from "react";
+import { type ReactNode, type ComponentPropsWithoutRef, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../../clipboard";
@@ -358,6 +358,7 @@ interface MarkdownAstNode {
   value?: string;
   url?: string;
   children?: MarkdownAstNode[];
+  data?: { hProperties: Record<string, string> };
 }
 
 export const messageMentionSx = {
@@ -392,10 +393,11 @@ export function AgentMention({ agentId, label, title, onOpenAgent }: {
 }
 
 /** Mark #tags in Markdown text nodes without touching code or existing links. */
-function remarkMessageTags() {
+function remarkMessageTags(options: { recipients?: readonly CollaborationRecipientDto[]; mentions?: readonly AgentMentionBindingDto[] } = {}) {
   return (tree: MarkdownAstNode): void => {
+    const representedIds = new Set<string>();
     const visit = (node: MarkdownAstNode): void => {
-      if (!node.children || node.type === "link" || node.type === "code" || node.type === "inlineCode") return;
+      if (!node.children || ["link", "linkReference", "image", "imageReference", "code", "inlineCode"].includes(node.type)) return;
       const next: MarkdownAstNode[] = [];
       for (const child of node.children) {
         if (child.type !== "text" || child.value === undefined) {
@@ -406,6 +408,8 @@ function remarkMessageTags() {
         let cursor = 0;
         for (const token of messageTagTokens(child.value)) {
           const { handle, start: tagStart, end: tagEnd } = token;
+          const bindings = options.mentions?.filter(mention => mention.handle === handle) ?? [];
+          if (bindings.length === 1) representedIds.add(bindings[0]!.agentId);
           if (tagStart > cursor) next.push({ type: "text", value: child.value.slice(cursor, tagStart) });
           next.push({
             type: "link",
@@ -420,12 +424,24 @@ function remarkMessageTags() {
       node.children = next;
     };
     visit(tree);
+    if (!options.recipients) return;
+    const missing = missingCollaborationRecipients(options.recipients, representedIds);
+    const prefix: MarkdownAstNode[] = missing.flatMap(recipient => [{ type: "link",
+      url: `${MESSAGE_TAG_PREFIX}${encodeURIComponent(recipient.handle ?? "unavailable-recipient")}`,
+      data: { hProperties: { "data-ponderosa-recipient": recipient.id } },
+      children: [{ type: "text", value: recipient.handle ? `#${recipient.handle}` : "Unavailable recipient" }] },
+      { type: "text", value: " " }]);
+    if (!prefix.length) return;
+    const first = tree.children?.[0];
+    if (first?.type === "paragraph") first.children = [...prefix, ...(first.children ?? [])];
+    else tree.children = [{ type: "paragraph", children: prefix }, ...(tree.children ?? [])];
   };
 }
 
 function ChatMarkdown({
   children,
-  recipientPrefix,
+  collaborationRecipients,
+  agentMentions,
   agentIdForHandle,
   agentMentionForHandle,
   onOpenAgent,
@@ -438,7 +454,8 @@ function ChatMarkdown({
   preserveWhitespace = false,
 }: {
   children: string;
-  recipientPrefix?: ReactNode;
+  collaborationRecipients?: readonly CollaborationRecipientDto[];
+  agentMentions?: readonly AgentMentionBindingDto[];
   agentIdForHandle?(handle: string): string | undefined;
   agentMentionForHandle?(handle: string): { agentId: string; label: string; authoredLabel?: string; available?: boolean; title?: string } | undefined;
   onOpenAgent?(agentId: string): void;
@@ -468,7 +485,6 @@ function ChatMarkdown({
           : { xs: "0.875rem", sm: "1rem", md: "0.9375rem" },
         lineHeight: small ? 1.42 : { xs: "20px", sm: 1.48 },
         "& p": { my: compact ? 0.15 : 0.35, maxWidth: "100%", whiteSpace: preserveWhitespace ? "pre-wrap" : "normal", overflowWrap: "anywhere", wordBreak: "break-word" },
-        ...(recipientPrefix ? { "& > p:first-of-type": { display: "inline" } } : {}),
         "& h1, & h2, & h3, & h4": { mt: 1.05, mb: 0.4, lineHeight: 1.22 },
         "& h1": { fontSize: { xs: "1.22rem", sm: "1.35rem" } },
         "& h2": { fontSize: { xs: "1.1rem", sm: "1.2rem" } },
@@ -488,9 +504,8 @@ function ChatMarkdown({
         "& a": { maxWidth: "100%", color: "primary.main", textDecoration: "underline", textUnderlineOffset: "0.15em", overflowWrap: "anywhere", wordBreak: "break-word", "&:hover": { textDecorationThickness: "2px" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: 2 } },
       }}
     >
-      {recipientPrefix}
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMessageTags]}
+        remarkPlugins={[remarkGfm, [remarkMessageTags, { recipients: collaborationRecipients, mentions: agentMentions }]]}
         urlTransform={chatMarkdownUrlTransform}
         components={{
           table: ScrollableMessageTable,
@@ -502,7 +517,14 @@ function ChatMarkdown({
               ? <Box component="a" href={projectPreview} target="_blank" rel="noreferrer" aria-label={`Open ${alt ?? "agent-provided image"} full size`} sx={{ display: "inline-block", maxWidth: "100%" }}>{image}</Box>
               : image;
           },
-          a: ({ href, children: label }) => {
+          a: ({ href, children: label, node }) => {
+            // Only our AST projection sets this property; authored Markdown
+            // never chooses an added recipient's stable navigation identity.
+            const recipientId = node?.properties["data-ponderosa-recipient"];
+            const recipient = collaborationRecipients?.find(candidate => candidate.id === recipientId);
+            if (recipient) return recipient.handle ? <AgentMention agentId={recipient.id} label={recipient.handle}
+              title={!recipient.available ? "Agent no longer available" : recipient.currentTitle && recipient.currentTitle !== recipient.title ? `Currently ${recipient.currentTitle}` : undefined}
+              onOpenAgent={recipient.available ? onOpenAgent : undefined} /> : <Box component="span" sx={messageHandleSx}>Unavailable recipient</Box>;
             const fileReference = parseChatProjectFileHref(href);
             if (fileReference) {
               const filename = fileReference.currentFilename || fileReference.historicalFilename;
@@ -609,11 +631,6 @@ export function ChatMessageBody({ text, citations, collaborationRecipients, agen
   smallText?: boolean;
   preserveWhitespace?: boolean;
 }): JSX.Element {
-  const missingRecipients = collaborationRecipients ? missingCollaborationRecipients(text, collaborationRecipients, agentMentions) : [];
-  const recipientPrefix = missingRecipients.length ? missingRecipients.map(recipient =>
-    <Fragment key={recipient.id}>{recipient.handle ? <AgentMention agentId={recipient.id} label={recipient.handle}
-      title={!recipient.available ? "Agent no longer available" : recipient.currentTitle && recipient.currentTitle !== recipient.title ? `Currently ${recipient.currentTitle}` : undefined}
-      onOpenAgent={recipient.available ? onOpenAgent : undefined} /> : <Box component="span" sx={messageHandleSx}>Unavailable recipient</Box>}{" "}</Fragment>) : undefined;
   const collaborationMention = (handle: string) => {
     const matches = agentMentions?.filter(mention => mention.handle === handle) ?? [];
     if (matches.length !== 1) return undefined;
@@ -637,7 +654,7 @@ export function ChatMessageBody({ text, citations, collaborationRecipients, agen
           } : {}),
         }}
       >
-        <ChatMarkdown recipientPrefix={recipientPrefix} agentIdForHandle={collaborationRecipients ? undefined : agentIdForHandle} agentMentionForHandle={collaborationRecipients ? collaborationMention : agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} small={smallText} preserveWhitespace={preserveWhitespace}>
+        <ChatMarkdown collaborationRecipients={collaborationRecipients} agentMentions={agentMentions} agentIdForHandle={collaborationRecipients ? undefined : agentIdForHandle} agentMentionForHandle={collaborationRecipients ? collaborationMention : agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} small={smallText} preserveWhitespace={preserveWhitespace}>
           {collapsible && !expanded ? collapsedLongMessagePreview(text) : text}
         </ChatMarkdown>
       </Box>

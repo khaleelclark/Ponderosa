@@ -37,17 +37,26 @@ try {
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}/?surface=${surface}&theme=${theme}`);
-    await page.getByText(surface === "all" ? "Operator collaboration." : "Investigation complete.", { exact: true }).waitFor();
+    await page.locator("article").first().waitFor();
     const boston = page.getByRole("button", { name: /^Open agent Boston/ });
     if (baseline) assert.equal(await boston.count(), 2, "baseline omits Boston on the unaddressed result and incorrectly binds #issue");
     else {
-      assert.equal(await boston.count(), surface === "all" ? 1 : 3, "each canonical recipient is visible once per message");
+      assert.equal(await boston.count(), surface === "all" ? data.allPage.items.length : data.messages.length, "each canonical recipient is visible once per message, including tags hidden in Markdown");
       await boston.first().click();
       assert.equal(await page.evaluate(() => document.body.dataset.openAgent), data.agents[1].id);
       assert.equal(await page.getByRole("button", { name: /^Open agent Juniper/ }).count(), 1);
       if (surface !== "all") assert((await page.locator("body").textContent()).includes("#issue investigation complete"));
       assert.equal(await page.getByRole("button", { name: /Open agent issue/ }).count(), 0);
-      const article = page.locator("article").first();
+      const articles = page.locator("article");
+      for (const text of data.messages.slice(3).map(message => message.text)) {
+        const index = surface === "all" ? data.allPage.items.findIndex(item => item.text === text) : data.messages.findIndex(message => message.text === text);
+        const hidden = articles.nth(index);
+        assert.equal(await hidden.getByRole("button", { name: /^Open agent Boston/ }).count(), 1, `visible recipient for ${text}`);
+        await hidden.hover();
+        await hidden.getByRole("button", { name: surface === "all" ? "Copy message" : "Copy whole message", exact: true }).click();
+        assert.equal(await page.evaluate(() => document.body.dataset.copied), text, "Markdown and added recipients do not change copied text");
+      }
+      const article = surface === "all" ? articles.nth(data.allPage.items.findIndex(item => item.text === "Operator collaboration.")) : articles.first();
       await article.hover();
       const copy = article.getByRole("button", { name: surface === "all" ? "Copy message" : "Copy whole message", exact: true });
       await copy.focus(); await page.keyboard.press("Enter");
@@ -74,7 +83,7 @@ try {
   }
   assert.deepEqual(data.before, data.after, "presentation creates no delivery authority");
   if (!baseline) {
-    assert.equal(data.allPage.items.length, 1);
+    assert.equal(data.allPage.items.length, 1 + data.messages.slice(3).length);
     assert.equal(data.allPage.items[0].author.kind, "user", "All Messages excludes Agent-to-Agent Collaboration");
   }
   console.log(`${engine}: persisted ${baseline ? "baseline reproduction" : "recipient rendering"} passed`);

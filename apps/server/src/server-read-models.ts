@@ -203,7 +203,7 @@ export function createServerReadModels(context: ReadModelContext) {
         ...(collaborationRecipients.length ? { collaborationRecipients } : {}),
         ...(deliveryReceipts.length ? { deliveryReceipts } : {}),
         ...(coordinationRequests.length ? { coordinationRequests } : {}),
-        ...(agentMentions.length ? { agentMentions } : {}),
+        ...(collaboration || agentMentions.length ? { agentMentions } : {}),
       };
     });
   }

@@ -10,8 +10,8 @@ test("persisted canonical Collaboration recipients do not guess hashtags or muta
   const [result, unknown, group] = fixture.messages();
   assert.equal(result.collaborationRecipients[0].id, fixture.boston.id);
   assert.deepEqual(unknown.agentMentions ?? [], []);
-  assert.deepEqual(missingCollaborationRecipients(unknown.text, unknown.collaborationRecipients, unknown.agentMentions).map(r => r.id), [fixture.boston.id]);
-  assert.deepEqual(missingCollaborationRecipients(group.text, group.collaborationRecipients, group.agentMentions).map(r => r.id), [fixture.juniper.id]);
+  assert.deepEqual(missingCollaborationRecipients(unknown.collaborationRecipients, unknown.agentMentions.map(m => m.agentId)).map(r => r.id), [fixture.boston.id]);
+  assert.deepEqual(missingCollaborationRecipients(group.collaborationRecipients, group.agentMentions.map(m => m.agentId)).map(r => r.id), [fixture.juniper.id]);
   assert.deepEqual(before, fixture.authority());
   for (const event of fixture.events) assert.equal(fixture.store.getCommunicationEvent(fixture.project.id, event.eventId).text, event.text);
   assert.deepEqual(fixture.messages().map(m => m.text), fixture.events.map(e => e.text), "legacy rendered prefixes are not canonical/copyable text");
@@ -34,12 +34,30 @@ test("historical spellings, deleted/reused names, ambiguity and nonrecipients st
   assert.equal(projected.agentMentions.find(m => m.handle === "東京_支部").handle, "東京_支部");
   assert.equal(projected.agentMentions.some(m => m.handle === "issue"), false);
   assert.equal(projected.collaborationRecipients[0].handle, "Boston");
-  assert.deepEqual(missingCollaborationRecipients(event.text, projected.collaborationRecipients, projected.agentMentions).map(r => r.id), ["unknown"]);
+  assert.deepEqual(missingCollaborationRecipients(projected.collaborationRecipients, projected.agentMentions.map(m => m.agentId)).map(r => r.id), ["unknown"]);
   const deleted = collaborationPresentation(event, agents.filter(a => a.id !== "old"));
   assert.equal(deleted.agentMentions.find(m => m.handle === "Boston").available, false);
   assert.equal(deleted.agentMentions.find(m => m.handle === "Boston").agentId, "old");
   const ambiguous = collaborationPresentation({ ...event, text: "#Boston", audience: { kind: "agents", agentIds: ["old", "second"] },
     identity: { senderLabel: "Cedar", recipientHandles: { old: "Boston", second: "Boston" } } }, agents);
   assert.deepEqual(ambiguous.agentMentions, []);
-  assert.equal(missingCollaborationRecipients("#Boston", ambiguous.collaborationRecipients, []).length, 2);
+  assert.equal(missingCollaborationRecipients(ambiguous.collaborationRecipients, []).length, 2);
+});
+
+test("empty Collaboration enrichment replaces ambiguous legacy audit bindings", async t => {
+  const f = await collaborationFixture(); t.after(() => f.close());
+  const event = { ...f.events[0], eventId: "legacy-ambiguous", text: "#Same result",
+    audience: { kind: "agents", agentIds: [f.boston.id, f.juniper.id] },
+    identity: { senderLabel: "Cedar", recipientHandles: { [f.boston.id]: "Same", [f.juniper.id]: "Same" } } };
+  f.store.appendCommunicationEvent(event);
+  f.store.appendCommunicationProjection(f.project.id, { eventId: event.eventId, surface: "direct_agent_audit", projectionKey: f.cedar.id,
+    projectedAt: event.createdAt, message: { messageId: event.eventId, sequence: 1, role: "assistant", createdAt: event.createdAt,
+      authorAgentId: f.cedar.id, renderedText: event.text } });
+  const page = f.store.getProjectedAgentMessagePage(f.cedar.id, { limit: 50 });
+  const legacy = page.messages.find(message => message.communicationEventId === event.eventId);
+  assert(legacy, "actual persisted audit projection supplies the legacy DTO");
+  const projected = f.readModels.withMessagePresentation(f.project.id, [legacy])[0];
+  assert.deepEqual(projected.agentMentions, []);
+  assert.equal(projected.collaborationRecipients.length, 2);
+  assert.equal(projected.text, event.text);
 });

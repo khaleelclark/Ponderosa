@@ -7,7 +7,7 @@ import Fastify from "fastify";
 import { registerSearchRoutes } from "../../dist/routes/search.js";
 
 /** Disposable persisted Communications through the production presentation DTO. */
-export async function collaborationFixture() {
+export async function collaborationFixture({ markdownCases = false } = {}) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "collaboration-presentation-"));
   const store = new AgentStore(dataDir);
   const workspace = new WorkspaceStore(dataDir);
@@ -26,6 +26,7 @@ export async function collaborationFixture() {
     { text: "Investigation complete.", recipients: [boston] },
     { text: "#issue investigation complete", recipients: [boston] },
     { text: `#${boston.handle} Group result.`, recipients: [boston, juniper] },
+    ...(markdownCases ? ["[status](https://example.invalid/#Boston) result", "`#Boston` result", "```text\n#Boston\n```\nresult", "[#Boston](https://example.invalid) result", "![#Boston](https://example.invalid/image.png) result"].map(text => ({ text, recipients: [boston] })) : []),
   ].map((item, index) => {
     const event = { schemaVersion: 2, eventId: `fixture-${index}`, projectId: project.id, conversationId: chat.id,
       sender: { kind: "agent", agentId: cedar.id }, intent: "collaboration",
@@ -54,6 +55,12 @@ export async function collaborationFixture() {
     store.appendCommunicationEvent(event);
     store.appendCommunicationProjection(project.id, { eventId: event.eventId, surface: "collaboration_view", projectionKey: chat.id,
       projectedAt: event.createdAt, message: { messageId: event.eventId, role: "user", createdAt: event.createdAt } });
+    for (const original of events.slice(3)) {
+      const operator = { ...original, eventId: `operator-${original.eventId}`, sender: event.sender };
+      store.appendCommunicationEvent(operator);
+      store.appendCommunicationProjection(project.id, { eventId: operator.eventId, surface: "collaboration_view", projectionKey: chat.id,
+        projectedAt: operator.createdAt, message: { messageId: operator.eventId, role: "user", createdAt: operator.createdAt } });
+    }
     const app = Fastify();
     try {
       registerSearchRoutes(app, { store, workspace, coordinationV3, globalChatSearch: () => ({ items: [] }) });
@@ -67,7 +74,7 @@ export async function collaborationFixture() {
 }
 
 if (process.argv[1] === new URL(import.meta.url).pathname) {
-  const fixture = await collaborationFixture();
+  const fixture = await collaborationFixture({ markdownCases: process.argv.includes("--markdown-cases") });
   try {
     const before = fixture.authority();
     const messages = fixture.messages();
