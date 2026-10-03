@@ -22,3 +22,18 @@ runtime and browser fences/retention; restart/crash idempotency; scoped deletion
 client continuity; exact snapshot/old-binary restore; and zero active domain
 references with a finite reviewed exception list. None can be waived by a text
 scan, a typecheck, or the existing metadata-only audit.
+
+## Combined-review follow-up
+
+The inventory pathname race was independently reproduced at the checkpoint:
+replacement with a WAL database after validation could create an input-side
+SHM file. Inventory now acquires a descriptor-backed private snapshot and checks
+source/ancestor identity, stable file metadata and absent sidecars around copying.
+Only the private copy is passed to SQLite. The default runtime audit is unchanged.
+
+Node 24.21.0 on macOS: all 18 ownership-audit tests pass, including pathname and
+ancestor replacement at descriptor closure, each SQLite sidecar, same-inode
+mutation during copying, and private-staging cleanup after success/query failure.
+The original race probe reproduced the defect before the fix. Focused build and
+diff checks pass. This remains checkpoint evidence, not physical migration,
+live-state snapshot, Linux qualification or release approval.

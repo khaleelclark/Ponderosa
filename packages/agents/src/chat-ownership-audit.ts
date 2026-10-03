@@ -1,13 +1,84 @@
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
-import { resolve } from "node:path";
+import { closeSync, constants, fstatSync, lstatSync, mkdtempSync, openSync, readSync, rmSync, writeSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 interface Finding {
   code: string;
   count: number;
   examples: Record<string, unknown>[];
+}
+
+/** SQLite sees only a private copy, never the input pathname. In particular a
+ * swapped WAL database must not make even a readonly open write input sidecars. */
+function acquireInventorySnapshot(databasePath: string) {
+  const source = resolve(databasePath);
+  const ancestors: Array<{ path: string; dev: bigint; ino: bigint; mode: bigint }> = [];
+  for (let path = dirname(source); ; path = dirname(path)) {
+    const stat = lstatSync(path, { bigint: true });
+    ancestors.push({ path, dev: stat.dev, ino: stat.ino, mode: stat.mode });
+    if (dirname(path) === path) break;
+  }
+  const noSidecars = () => {
+    if (["-wal", "-shm", "-journal"].some(suffix => lstatSync(source + suffix, { throwIfNoEntry: false }) !== undefined)) {
+      throw new Error("Inventory requires a coherent offline rollback-mode SQLite export without sidecars; WAL input is not opened");
+    }
+  };
+  noSidecars();
+  let input: number | undefined;
+  let output: number | undefined;
+  let directory: string | undefined;
+  let acquired = false;
+  try {
+    input = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const before = fstatSync(input, { bigint: true });
+    if (!before.isFile()) throw new Error("Inventory requires a regular offline SQLite export");
+    const unchanged = (after: typeof before) =>
+      after.isFile() && ["dev", "ino", "mode", "nlink", "size", "mtimeNs", "ctimeNs"]
+        .every(key => after[key as keyof typeof after] === before[key as keyof typeof before]);
+    const verifySource = () => {
+      if (!unchanged(lstatSync(source, { bigint: true })) || ancestors.some(({ path, dev, ino, mode }) => {
+        const stat = lstatSync(path, { bigint: true });
+        return stat.dev !== dev || stat.ino !== ino || stat.mode !== mode;
+      })) throw new Error("Inventory input changed during snapshot acquisition");
+      noSidecars();
+    };
+    verifySource();
+    const header = Buffer.alloc(20);
+    const length = readSync(input, header, 0, header.length, 0);
+    if (length !== 20 || header.subarray(0, 16).toString("binary") !== "SQLite format 3\0" || header[18] !== 1 || header[19] !== 1) {
+      throw new Error("Inventory requires a coherent offline rollback-mode SQLite export without sidecars; WAL input is not opened");
+    }
+    if (before.size > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Inventory database is too large to snapshot safely");
+    directory = mkdtempSync(join(tmpdir(), "ponderosa-audit-"));
+    const path = join(directory, "snapshot.db");
+    output = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+    const buffer = Buffer.alloc(64 * 1024);
+    const size = Number(before.size);
+    for (let position = 0; position < size;) {
+      const read = readSync(input, buffer, 0, Math.min(buffer.length, size - position), position);
+      if (!read) throw new Error("Inventory input changed during snapshot acquisition");
+      for (let written = 0; written < read;) {
+        const count = writeSync(output, buffer, written, read - written);
+        if (!count) throw new Error("Inventory snapshot write made no progress");
+        written += count;
+      }
+      position += read;
+    }
+    if (!unchanged(fstatSync(input, { bigint: true }))) throw new Error("Inventory input changed during snapshot acquisition");
+    closeSync(output); output = undefined;
+    closeSync(input); input = undefined;
+    // Check after descriptor closure too: SQLite must not reopen a replacement.
+    verifySource();
+    acquired = true;
+    return { path, dispose: () => rmSync(directory!, { recursive: true, force: true }) };
+  } finally {
+    if (output !== undefined) closeSync(output);
+    if (input !== undefined) closeSync(input);
+    if (directory && !acquired) rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 export const unresolvedArtifactOwnershipSql = `
@@ -26,20 +97,13 @@ export const unresolvedArtifactOwnershipSql = `
  * reconciliation can write data. Passing this check is not migration approval;
  * canonical journals, file access, and runtime recovery need separate checks. */
 export function auditChatOwnership(databasePath: string, options: { inventory?: boolean } = {}) {
-  if (options.inventory) {
-    // readonly SQLite may create WAL/SHM files. Inventory accepts only an offline,
-    // rollback-mode export; never ignore committed WAL bytes via immutable=true.
-    const fd = openSync(databasePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    try {
-      if (!fstatSync(fd).isFile()) throw new Error("Inventory requires a regular offline SQLite export");
-      const header = Buffer.alloc(20);
-      const length = readSync(fd, header, 0, header.length, 0);
-      if ((length === 20 && (header[18] === 2 || header[19] === 2)) ||
-          ["-wal", "-shm", "-journal"].some(suffix => lstatSync(databasePath + suffix, { throwIfNoEntry: false }) !== undefined)) {
-        throw new Error("Inventory requires a coherent offline rollback-mode SQLite export without sidecars; WAL input is not opened");
-      }
-    } finally { closeSync(fd); }
-  }
+  const snapshot = options.inventory ? acquireInventorySnapshot(databasePath) : undefined;
+  try {
+    return inspectChatOwnership(snapshot?.path ?? databasePath, options);
+  } finally { snapshot?.dispose(); }
+}
+
+function inspectChatOwnership(databasePath: string, options: { inventory?: boolean }) {
   const db = new Database(databasePath, { readonly: true, fileMustExist: true });
   try {
     db.pragma("query_only = ON");

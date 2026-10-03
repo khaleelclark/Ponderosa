@@ -20,8 +20,13 @@ children, and every table's row count, primary key and ownership columns.
 It fingerprints schema definitions. Single-child cardinality is not a resource
 ownership proof; every report explicitly remains `inventory_only`.
 Inventory mode rejects WAL-mode databases and any SQLite sidecars before opening
-SQLite. Supply a verified coherent offline rollback-mode export, not a raw live
-database. This preserves committed WAL data rather than silently ignoring it.
+SQLite. It acquires a bounded-buffer copy from one verified descriptor into a
+private temporary directory, checking source identity/metadata, ancestor identity
+and sidecar absence before and after acquisition. SQLite opens only that copy;
+pathname replacement cannot make it open another input generation or write input
+sidecars. Private staging is removed on success and failure. Supply a verified
+coherent offline rollback-mode export, not a raw live database. This preserves
+committed WAL data rather than silently ignoring it.
 The pre-existing default audit/runtime path is unchanged; its read-only SQLite
 open is not a guarantee that WAL/SHM sidecar files cannot be created.
 
@@ -125,7 +130,7 @@ node packages/agents/dist/chat-ownership-audit.js /approved/offline/ponderosa.db
 
 Keep operator inventory output outside Git. The first tool reports tracked
 repository text/filenames and does not inspect generated/package outputs. The
-second opens only the supplied offline rollback-mode main database read-only. Neither starts
+second inspects a verified private copy of the supplied offline rollback-mode main database. Neither starts
 AgentStore, probes providers, migrates files/SQL, or approves release.
 
 ## Next required input
