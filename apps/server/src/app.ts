@@ -2,6 +2,7 @@ import { AgentStore, CoordinationV3Store, ProjectDeletionInProgressError, Worksp
 import { windowsJobObjectsSupported } from "@ponderosa/native-host";
 import type {
   DecisionDto,
+  RuntimeProcessHandle,
   TokenUsageRangeDto,
   TokenUsageSummaryDto,
   WorkspaceEventEnvelope
@@ -35,6 +36,8 @@ import { createCoordinationScheduler } from "./coordination-scheduler-service.js
 import { createDeploymentControl } from "./deployment-control.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import { EngineAvailabilityStore } from "./engine-availability-store.js";
+import { ResourceAdmission } from "./resource-admission.js";
+import { providerProcessHandleFacade } from "./provider-session-facade.js";
 import {
   createEngineControlPlane,
   ProviderAdapterBoundaryError,
@@ -264,7 +267,19 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const { vapid, webPushConfiguration, webPushConfigurationDetail, webPushConfigured, webPushDelivery } =
     createWebPushConfiguration(opts.dataDir, workspace, publishWorkspaceSince);
   store.recoverInterruptedExecutions();
-  const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
+  const engines = new Map(opts.engines.map((engine) => {
+    const diagnostic = <T>(kind: string, probe: (options?: import("@ponderosa/core").EngineProbeOptions) => Promise<T>) => async (): Promise<T> => {
+      const purpose = `${engine.adapter.id} ${kind} diagnostic`;
+      await providerProcessAuthority.terminatePurpose(purpose);
+      return probe({ onRuntimeSpawned: (raw: RuntimeProcessHandle) => {
+        providerProcessAuthority.register(providerProcessHandleFacade(raw), { purpose });
+      } });
+    };
+    return [engine.adapter.id, { ...engine,
+      ...(engine.authStatus ? { authStatus: diagnostic("authentication", options => engine.authStatus!(options)) } : {}),
+      ...(engine.availabilityProbe ? { availabilityProbe: diagnostic("availability", options => engine.availabilityProbe!(options)) } : {}),
+    }];
+  }));
   const applyOperatorModelOptions = (): void => {
     const models = workspace.getPreferences().claudeModelOptions.map((model) => ({
       id: model.id,
@@ -367,10 +382,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const oneShotRuntime = (agentId: string, runId: string): OneShotRuntimeTeardown | undefined =>
     runtimeAuthority(agentId)?.oneShots.get(runId);
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
-  const engineAuthStatuses = new EngineAuthStatusCache();
+  const providerStatusChanged = (engineId?: string) => { appendWorkspace({ type: "provider_status_changed", ...(engineId ? { engineId } : {}) }); };
+  const resourceAdmission = new ResourceAdmission(opts.resourceAdmission ?? {
+    enabled: process.env.PONDEROSA_RESOURCE_ADMISSION !== "off",
+    ...(process.env.PONDEROSA_RESOURCE_RESERVE_MIB ? { reserveBytes: Number(process.env.PONDEROSA_RESOURCE_RESERVE_MIB) * 1024 * 1024 } : {}),
+    ...(process.env.PONDEROSA_RESOURCE_STARTUP_MIB ? { startupBytes: Number(process.env.PONDEROSA_RESOURCE_STARTUP_MIB) * 1024 * 1024 } : {}),
+  }, undefined, undefined, undefined, () => providerStatusChanged());
+  const engineAuthStatuses = new EngineAuthStatusCache(providerStatusChanged);
   const engineAvailability = new EngineAvailabilityStore(
     opts.dataDir,
     opts.buildRevision?.trim() || "development",
+    providerStatusChanged,
   );
   const providerUsage = new ProviderUsageCache(opts.dataDir, undefined, undefined, (handle, providerId) => {
     providerProcessAuthority.register(handle, { purpose: `${providerId} provider usage` });
@@ -755,6 +777,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     runtimeAdmissionBlocker,
     validateEngineModel,
   } = createEngineControlPlane({
+    resourceAdmission,
     engines,
     store,
     workspace,
@@ -815,6 +838,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     assets,
   });
   const coordinationV3Scheduler = createCoordinationScheduler(app, {
+    resourceAdmission,
     opts,
     store,
     assets,
@@ -1142,6 +1166,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     engineAuthStatuses,
     engineAvailability,
     providerEnabled,
+    resourceAdmissionHeld: async () => (await resourceAdmission.observe()).state === "held",
     agentWorkProjection,
     createOperationalNotification,
     reconcileProjectWorkspace,

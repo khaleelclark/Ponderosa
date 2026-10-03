@@ -26,6 +26,7 @@ test("Linux systemd mode moves the provider into the shared Agent slice without 
     args: [
       "--user", "--scope", "--quiet", "--expand-environment=no",
       "--slice=ponderosa-agent-workloads.slice",
+      "--property=TimeoutStopSec=2s",
       "--property=PartOf=ponderosa-dev.service", "--",
       input.bin, ...input.args,
     ],
@@ -96,6 +97,7 @@ test("a Linux app-unit stop terminates its separate Agent scope", {
     } finally {
       clearTimeout(timeout);
     }
+    await handle.close();
     assert.equal(handle.isAlive(), false);
   } finally {
     await handle?.close();

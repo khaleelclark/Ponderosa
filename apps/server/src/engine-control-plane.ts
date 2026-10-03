@@ -49,6 +49,7 @@ import type {
 } from "./app-contracts.js";
 
 interface EngineControlPlaneContext {
+  resourceAdmission?: import("./resource-admission.js").ResourceAdmission;
   engines: ReadonlyMap<string, EngineRegistration>;
   store: AgentStore;
   workspace: WorkspaceStore;
@@ -140,6 +141,8 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
   const runtimeAdmissionBlocker = (id: string, registration: EngineRegistration): import("@ponderosa/core").QueuedAdmissionBlockerDto | undefined => {
     const providerId = id.slice(0, 128);
     if (!providerEnabled(id)) return { kind: "provider_disabled", providerId };
+    const resources = context.resourceAdmission?.snapshot(activeRuns.size);
+    if (resources?.state === "held") return { kind: "host_resource_pressure", providerId, observedAt: resources.observedAt, resourceAdmission: resources };
     const auth = registration.authStatus ? engineAuthStatuses.snapshot(id) : { state: "known" as const, authenticated: true };
     if (auth.state === "unknown") return { kind: "authentication_unknown", providerId,
       ...(auth.lastKnown ? { lastKnownAuthentication: auth.lastKnown } : {}) };
@@ -156,6 +159,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     intakeReady: boolean;
     reachability: "unverified" | "reachable" | "degraded";
     authDetail?: string;
+    authObservedAt?: string;
+    authReason?: import("@ponderosa/core").EngineAuthStatus["reason"];
+    authSource?: import("@ponderosa/core").EngineAuthStatus["source"];
     availabilityDetail?: string;
     availabilityCategory?: ProviderFailureCategory;
     availabilityObservedAt?: string;
@@ -167,7 +173,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     let auth: import("@ponderosa/core").EngineAuthStatus;
     try {
       auth = registration.authStatus
-        ? await engineAuthStatuses.get(id, registration.authStatus)
+        ? await engineAuthStatuses.read(id, registration.authStatus, context.resourceAdmission?.snapshot().state !== "held")
         : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
     } catch (error) {
       app.log.warn({
@@ -179,7 +185,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         configured: true,
         authentication: "error",
         intakeReady: false,
-        reachability: "degraded",
+        reachability: engineAvailability.get(id) ? engineAvailability.get(id)!.available ? "reachable" : "degraded" : "unverified",
         authDetail,
         ...(engineAuthStatuses.snapshot(id).lastKnown ? { authLastKnown: engineAuthStatuses.snapshot(id).lastKnown } : {}),
         availabilityDetail: "runtime authentication could not be checked",
@@ -197,7 +203,10 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     return {
       configured: true,
       authentication: unknown ? "error" : auth.authenticated ? "authenticated" : "unauthenticated",
-      intakeReady: enabled && !unknown && auth.authenticated && !denial,
+      intakeReady: enabled && !unknown && auth.authenticated && !denial && context.resourceAdmission?.snapshot(activeRuns.size).state !== "held",
+      authObservedAt: engineAuthStatuses.snapshot(id).observedAt,
+      ...(auth.reason ? { authReason: auth.reason } : {}),
+      ...(auth.source ? { authSource: auth.source } : {}),
       ...(unknown && engineAuthStatuses.snapshot(id).lastKnown ? { authLastKnown: engineAuthStatuses.snapshot(id).lastKnown } : {}),
       reachability: evidence ? (evidence.available ? "reachable" : "degraded") : "unverified",
       ...(evidence ? {
@@ -267,6 +276,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         enabled: providerEnabled(adapter.id),
         servingBuildRevision: engineAvailability.servingBuildRevision,
         servingInstanceId: engineAvailability.servingInstanceId,
+        ...(context.resourceAdmission ? { resourceAdmission: context.resourceAdmission.snapshot(activeRuns.size) } : {}),
         ...status,
       };
     } catch (error) {

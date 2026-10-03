@@ -31,6 +31,7 @@ export type WorkspaceEvent =
   | { type: "usage_changed"; projectId: string; agentId: string; conversationIds: string[]; seq: number; executionId?: string }
   | { type: "agent_event"; projectId: string; agentId: string; conversationIds: string[]; seq: number; eventType: string; category: "lifecycle" | "message" | "task" | "artifact" | "file" | "state" | "usage" | "progress"; executionId?: string }
   | { type: "runtime_capabilities_changed"; projectId: string; engineId: EngineId }
+  | { type: "provider_status_changed"; engineId?: EngineId }
   | { type: "push_subscription_changed"; deviceId: string; action: "upserted" | "deleted" }
   | { type: "push_delivery_changed"; notificationId: string; deviceId: string; action: "delivered" | "retry_scheduled" | "abandoned" };
 

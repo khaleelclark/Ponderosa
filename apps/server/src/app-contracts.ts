@@ -44,12 +44,13 @@ export type LinkPreviewRegistration = {
 
 export interface EngineRegistration {
   adapter: Adapter;
-  authStatus?: () => Promise<EngineAuthStatus>;
-  availabilityProbe?: () => Promise<EngineAvailabilityStatus>;
+  authStatus?: (options?: import("@ponderosa/core").EngineProbeOptions) => Promise<EngineAuthStatus>;
+  availabilityProbe?: (options?: import("@ponderosa/core").EngineProbeOptions) => Promise<EngineAvailabilityStatus>;
 }
 
 export interface CreateServerOptions {
   dataDir: string;
+  resourceAdmission?: import("./resource-admission.js").ResourceAdmissionOptions;
   /** Explicit bootstrap authority for the persistent local browser service. */
   browserServiceSocket?: string;
   /** Starts only canonical crash cleanup, never listeners, triggers, or Run leasing. */
@@ -147,6 +148,7 @@ export interface ActiveRun {
   ownershipState: RuntimeOwnershipState;
   lastEventReceivedAt?: string;
   lastEventPersistedAt?: string;
+  lastMeaningfulActivityAt?: string;
   runtimeSession?: RuntimeSession;
   /** Stable identity of the persistent provider process serving this turn.
    * Root-exit callbacks bind to this identity rather than the Run that first

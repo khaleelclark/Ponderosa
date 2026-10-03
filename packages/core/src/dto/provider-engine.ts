@@ -209,6 +209,18 @@ export interface ProviderUsageCenterDto {
 // ─── Engines ─────────────────────────────────────────────────────────────────
 
 /** GET /api/engines entry — an engine, its options, and live auth status. */
+export interface ResourceAdmissionDto {
+  state: "ready" | "held" | "unavailable" | "unsupported" | "disabled";
+  protected: boolean;
+  reason: "within_budget" | "host_resource_pressure" | "measurement_unavailable" | "measurement_stale" | "operator_disabled";
+  observedAt?: string;
+  source?: "linux_host" | "linux_host_and_cgroup";
+  availableBytes?: number;
+  reserveBytes?: number;
+  startupBytes?: number;
+  memoryFullPercent?: number;
+  ioFullPercent?: number;
+}
 export interface EngineDto {
   id: EngineId;
   displayName: string;
@@ -231,6 +243,10 @@ export interface EngineDto {
    * successful authentication does not prove provider reachability. */
   authentication: "checking" | "authenticated" | "unauthenticated" | "error";
   authDetail?: string;
+  authObservedAt?: string;
+  authReason?: import("../adapter.js").EngineAuthStatus["reason"];
+  authSource?: import("../adapter.js").EngineAuthStatus["source"];
+  resourceAdmission?: ResourceAdmissionDto;
   /** Bounded stale information, never intake authority when authentication is error. */
   authLastKnown?: { authenticated: boolean; observedAt: string };
   /** Scheduler intake may start real provider work. This is admission state,

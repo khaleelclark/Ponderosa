@@ -59,6 +59,7 @@ test("creates the canonical launch baseline for a fresh database", () => {
         "0019_conversation_deletion_ownership.ts",
         "0020_context_rollover_cycles.ts",
         "0021_context_rollover_observations.ts",
+        "0022_provider_scope_authority.sql",
       ],
     );
   } finally {

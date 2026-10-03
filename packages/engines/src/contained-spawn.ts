@@ -1,6 +1,8 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { registerSystemdScope } from "./systemd-scope.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
 import { spawnWindowsContainedProcess } from "./windows-job-process.js";
 
@@ -38,6 +40,8 @@ export function containedCliInvocation(
   if (!parentUnit || parentUnit.length > 255 || !/^[a-zA-Z0-9_.@-]+\.service$/u.test(parentUnit)) {
     throw new Error("systemd Agent scope mode requires a valid PONDEROSA_AGENT_PARENT_UNIT service name");
   }
+  const slice = environmentValue(hostEnvironment, "PONDEROSA_AGENT_WORKLOAD_SLICE") ?? "ponderosa-agent-workloads.slice";
+  if (slice.length > 255 || !/^[a-zA-Z0-9_.-]+\.slice$/u.test(slice)) throw new Error("invalid Agent workload slice");
   return {
     bin: "systemd-run",
     args: [
@@ -47,7 +51,8 @@ export function containedCliInvocation(
       // Provider arguments may contain ${...}; never let systemd reinterpret
       // them as environment substitutions.
       "--expand-environment=no",
-      "--slice=ponderosa-agent-workloads.slice",
+      `--slice=${slice}`,
+      "--property=TimeoutStopSec=2s",
       // A normal app stop/restart must also stop scopes that outlive a crashed
       // provider root. Restart recovery remains responsible for exact process
       // group teardown if a daemon dies without an orderly unit transition.
@@ -121,6 +126,8 @@ export function spawnContainedCli(
   // discovery races could otherwise outlive the public unavailable response.
   if (!executableAvailable(input)) throw missingExecutable(input);
   const invocation = containedCliInvocation(input, process.platform, hostEnvironment);
+  const scope = invocation.bin !== input.bin ? { unit: `ponderosa-agent-${randomUUID()}.scope`, authorityId: randomUUID() } : undefined;
+  if (scope) invocation.args.splice(invocation.args.indexOf("--"), 0, `--unit=${scope.unit}`, `--property=Description=Ponderosa process authority ${scope.authorityId}`);
   if (invocation.bin !== input.bin && !executableAvailable({ ...input, bin: invocation.bin })) {
     throw new Error("Agent memory isolation requires systemd-run on PATH");
   }
@@ -141,5 +148,6 @@ export function spawnContainedCli(
   // Callers retain their own listeners to preserve the operation-specific
   // unavailable/error response.
   contained.child.on("error", () => undefined);
+  if (scope) registerSystemdScope(contained.child, scope);
   return contained;
 }

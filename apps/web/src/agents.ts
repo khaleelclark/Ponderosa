@@ -161,14 +161,16 @@ export function agentStatusPresentation(
   const status = options.status ?? health?.status ?? "idle";
   const blocker = health && "admissionBlocker" in health ? health.admissionBlocker : undefined;
   const coarseLabel = blocker && status === "blocked"
-    ? `Queued · ${blocker.providerId} ${blocker.kind === "provider_disabled" ? "disabled" : blocker.kind === "authentication_unknown" ? "authentication unknown" : blocker.kind === "authentication_required" ? "sign-in required" : "unavailable"}`
+    ? blocker.kind === "host_resource_pressure" ? "Queued · host resources" : `Queued · ${blocker.providerId} ${blocker.kind === "provider_disabled" ? "disabled" : blocker.kind === "authentication_unknown" ? "authentication unknown" : blocker.kind === "authentication_required" ? "sign-in required" : "unavailable"}`
     : isProviderBlockedHealth(health)
     ? "Provider blocked"
     : agentStatusLabel(status);
   const coarse = {
     label: coarseLabel,
     accessibleLabel: `Agent status: ${coarseLabel}`,
-    detail: `Agent status: ${coarseLabel}`,
+    detail: blocker?.kind === "host_resource_pressure"
+      ? `Waiting for host headroom; existing work is not cancelled. Last observation: ${blocker.observedAt ?? "unavailable"}.`
+      : `Agent status: ${coarseLabel}`,
   };
   const phase = health?.phase;
   if (

@@ -505,6 +505,8 @@ export interface AgentHealthDto {
     state: "responding";
     executionId: string;
     startedAt: string;
+    /** Meaningful execution evidence, not a heartbeat or this projection's clock. */
+    lastActivityAt?: string;
   };
   /** Most recent execution, regardless of whether it represented assigned work or incidental coordination. */
   latestRun?: AgentHealthRunSummaryDto;

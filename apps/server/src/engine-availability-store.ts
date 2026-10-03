@@ -31,7 +31,7 @@ export class EngineAvailabilityStore {
   private readonly latest = new Map<string, EngineAvailabilityEvidence>();
   private appendNeedsSeparator = false;
 
-  constructor(dataDir: string, buildRevision: string = "development") {
+  constructor(dataDir: string, buildRevision: string = "development", private readonly changed: (id: string) => void = () => {}) {
     this.servingBuildRevision = buildRevision;
     this.servingInstanceId = randomUUID();
     this.filePath = path.join(dataDir, "engine-availability.jsonl");
@@ -76,7 +76,9 @@ export class EngineAvailabilityStore {
     return evidence && !evidence.available ? evidence : undefined;
   }
 
-  record(input: Omit<EngineAvailabilityEvidence, "observedAt" | "buildRevision" | "instanceId"> & { observedAt?: string }): EngineAvailabilityEvidence {
+  record(input: Omit<EngineAvailabilityEvidence, "observedAt" | "buildRevision" | "instanceId"> & { observedAt?: string; operationStartedAt?: string }): EngineAvailabilityEvidence {
+    const newerDenial = this.denial(input.engineId);
+    if (input.available && input.operationStartedAt && newerDenial && newerDenial.observedAt >= input.operationStartedAt) return newerDenial;
     const hasFailureCategory = Object.prototype.hasOwnProperty.call(
       input,
       "failureCategory",
@@ -95,6 +97,7 @@ export class EngineAvailabilityStore {
     };
     this.appendDurable(evidence);
     this.latest.set(evidence.engineId, evidence);
+    this.changed(evidence.engineId);
     return evidence;
   }
 

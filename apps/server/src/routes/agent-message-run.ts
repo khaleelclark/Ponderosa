@@ -181,6 +181,7 @@ export type AgentMessageRunContext =
     deploymentDraining(): boolean;
     isClosed(): boolean;
     providerEnabled(engineId: string): boolean;
+    resourceAdmissionHeld?(): Promise<boolean>;
     leaseExpiry(): string;
     reusableRuntime(agentId: string): PersistentRuntime | undefined;
     openingRuntime(agentId: string): OpeningPersistentRuntime | undefined;
@@ -1038,10 +1039,12 @@ export function registerAgentMessageRunRoute(
         if (runtimeAttachmentCleanupAfterRun) await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
         return reply.code(409).send({ error: error instanceof Error ? error.message : "working folder changed; retry safely", retryable: true });
       }
-      if (!runContext.providerEnabled(runtimeEngineId)) {
+      const resourceHeld = await runContext.resourceAdmissionHeld?.() === true;
+      if (resourceHeld || !runContext.providerEnabled(runtimeEngineId)) {
         coordinationV3.deferUninjectedRun(runId, v3FencingToken!);
         if (runtimeAttachmentCleanupAfterRun) await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
         publishCoordinationV3Changed(agent.id);
+        if (resourceHeld) return reply.code(409).send({ error: "Waiting for host resource headroom", code: "host_resource_pressure", queued: true });
         const error = new ProviderDisabledError(runtimeEngineId);
         return reply.code(409).send({ error: error.message, code: error.code, engineId: error.engineId, queued: true });
       }

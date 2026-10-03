@@ -19,13 +19,13 @@ import { runtimeEnvironment } from "./runtime-environment.js";
 type AuthCommandRunner = (
   bin: string,
   args: string[],
-  options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number; cwd?: string },
+  options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number; cwd?: string } & import("@ponderosa/core").EngineProbeOptions,
 ) => Promise<{ stdout: string; stderr: string }>;
 
 async function containedAuthCommand(
   bin: string,
   args: string[],
-  options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number; cwd?: string },
+  options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number; cwd?: string } & import("@ponderosa/core").EngineProbeOptions,
 ): Promise<{ stdout: string; stderr: string }> {
   const spawned = spawnContainedCli({
     bin,
@@ -39,13 +39,15 @@ async function containedAuthCommand(
     termGraceMs: 1_000,
     killConfirmationMs: 2_000,
   }, spawned.authority);
+  try { options.onRuntimeSpawned?.(handle); }
+  catch (error) { await handle.close(); throw error; }
   let stdout = "";
   let stderr = "";
   let bytes = 0;
   return new Promise((resolve, reject) => {
     let finished = false;
     const timer = setTimeout(() => {
-      void finish(new Error(`provider authentication probe timed out after ${options.timeout}ms`), true);
+      void finish(Object.assign(new Error(`provider authentication probe timed out after ${options.timeout}ms`), { probeReason: "timeout" }), true);
     }, options.timeout);
     const finish = async (error?: Error, terminate = false): Promise<void> => {
       if (finished) return;
@@ -60,6 +62,7 @@ async function containedAuthCommand(
           `${error?.message ?? "provider authentication probe failed"}; teardown: ` +
           `${closeError instanceof Error ? closeError.message : String(closeError)}`,
         );
+        Object.assign(error, { probeReason: "cleanup_failed" });
       }
       if (error || terminate) {
         const failure = error ?? new Error("provider authentication probe failed");
@@ -83,9 +86,9 @@ async function containedAuthCommand(
     spawned.child.once("error", (error) => void finish(error, true));
     spawned.child.once("close", (code, signal) => {
       if (code === 0) void finish();
-      else void finish(new Error(
+      else void finish(Object.assign(new Error(
         `provider authentication probe exited with ${signal ? `signal ${signal}` : `code ${code ?? "unknown"}`}`,
-      ));
+      ), { probeExitCode: code }));
     });
   });
 }
@@ -104,6 +107,7 @@ export function codexHome(env: NodeJS.ProcessEnv = process.env): string {
 /** Report whether `codex login` is using ChatGPT subscription auth. */
 export async function codexAuthStatus(
   env: NodeJS.ProcessEnv = process.env,
+  options: import("@ponderosa/core").EngineProbeOptions = {},
 ): Promise<EngineAuthStatus> {
   const bin = env.PONDEROSA_CODEX_BIN?.trim() || "codex";
   try {
@@ -111,19 +115,21 @@ export async function codexAuthStatus(
       env: runtimeEnvironment(env),
       timeout: 5000,
       maxBuffer: 256 * 1024,
+      ...options,
     });
     const output = `${stdout}\n${stderr}`.trim();
     return parseCodexLoginStatus(output);
   } catch (err) {
-    const failed = err as Error & { stdout?: string; stderr?: string };
+    const failed = err as Error & { stdout?: string; stderr?: string; probeReason?: EngineAuthStatus["reason"]; code?: string; probeExitCode?: number };
     const output = `${failed.stdout ?? ""}\n${failed.stderr ?? ""}`;
-    if (output.length <= 256 * 1024) {
+    if (!failed.probeReason && failed.probeExitCode === 1 && output.length <= 256 * 1024) {
       const observed = parseCodexLoginStatus(output);
       if (!observed.authenticated && observed.status !== "unknown") return observed;
     }
     return {
       authenticated: false,
       status: "unknown",
+      reason: failed.probeReason ?? (failed.code === "ENOENT" ? "spawn_failed" : "probe_failed"), source: "cli_status",
       detail: "Codex authentication could not be checked; the probe failed or timed out.",
     };
   }
@@ -136,6 +142,7 @@ export async function codexAvailabilityStatus(
   env: NodeJS.ProcessEnv = process.env,
   run: AuthCommandRunner = containedAuthCommand,
   readAuth: () => Promise<EngineAuthStatus> = () => codexAuthStatus(env),
+  options: import("@ponderosa/core").EngineProbeOptions = {},
 ): Promise<EngineAvailabilityStatus> {
   const auth = await readAuth();
   if (auth.status === "unknown") return { available: false, failureCategory: "unavailable", detail: "Provider authentication could not be checked." };
@@ -155,6 +162,7 @@ export async function codexAvailabilityStatus(
       timeout: 60_000,
       maxBuffer: 2 * 1024 * 1024,
       cwd,
+      ...options,
     });
     let completed = false;
     let answer: string | undefined;
@@ -183,11 +191,11 @@ export async function codexAvailabilityStatus(
       ? { available: true, detail: "Codex accepted a subscription-backed test request" }
       : { available: false, failureCategory: "unavailable", detail: "Codex did not return the test marker" };
   } catch (error) {
-    const failure = error as Error & { stderr?: string; stdout?: string };
+    const failure = error as Error & { stderr?: string; stdout?: string; probeReason?: string };
     const detail = failure.stderr?.trim() || failure.stdout?.trim() || failure.message || String(error);
     return {
       available: false,
-      failureCategory: classifyProviderFailure(detail),
+      failureCategory: failure.probeReason ? "unavailable" : classifyProviderFailure(detail),
       detail: detail.slice(0, 1_000),
     };
   } finally {
@@ -206,7 +214,7 @@ export async function claudeAuthStatus(
 ): Promise<EngineAuthStatus> {
   if (env.ANTHROPIC_API_KEY && env.ANTHROPIC_API_KEY.trim() !== "") {
     return {
-      authenticated: false,
+      authenticated: false, source: "subscription_presence",
       detail:
         "ANTHROPIC_API_KEY is set — unset it so Claude Code uses your Pro/Max subscription, not billed API auth",
     };
@@ -218,16 +226,16 @@ export async function claudeAuthStatus(
     if (config.oauthAccount) {
       const email = config.oauthAccount.emailAddress;
       return {
-        authenticated: true,
+        authenticated: true, source: "subscription_presence",
         detail: email ? `logged in as ${email} (subscription)` : "Claude subscription login present",
       };
     }
-    return { authenticated: false, detail: "run `claude` and sign in to your Claude Pro/Max account" };
+    return { authenticated: false, source: "subscription_presence", detail: "run `claude` and sign in to your Claude Pro/Max account" };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      return { authenticated: false, status: "unknown", detail: "Claude authentication could not be checked." };
+      return { authenticated: false, status: "unknown", reason: error instanceof SyntaxError ? "malformed" : "probe_failed", source: "subscription_presence", detail: "Claude authentication could not be checked." };
     }
-    return { authenticated: false, detail: "run `claude` and sign in to your Claude Pro/Max account" };
+    return { authenticated: false, source: "subscription_presence", detail: "run `claude` and sign in to your Claude Pro/Max account" };
   }
 }
 
@@ -240,6 +248,7 @@ export async function claudeAvailabilityStatus(
   env: NodeJS.ProcessEnv = process.env,
   run: AuthCommandRunner = containedAuthCommand,
   readAuth: () => Promise<EngineAuthStatus> = () => claudeAuthStatus(env),
+  options: import("@ponderosa/core").EngineProbeOptions = {},
 ): Promise<EngineAvailabilityStatus> {
   const auth = await readAuth();
   if (auth.status === "unknown") return { available: false, failureCategory: "unavailable", detail: "Provider authentication could not be checked." };
@@ -272,6 +281,7 @@ export async function claudeAvailabilityStatus(
       env: runtimeEnvironment(env),
       timeout: 60_000,
       maxBuffer: 2 * 1024 * 1024,
+      ...options,
     });
     let parsed: unknown;
     try { parsed = JSON.parse(stdout); }
@@ -301,14 +311,14 @@ export async function claudeAvailabilityStatus(
     }
     return { available: true, detail: "Claude accepted a subscription-backed test request" };
   } catch (error) {
-    const failure = error as Error & { stderr?: string; stdout?: string };
+    const failure = error as Error & { stderr?: string; stdout?: string; probeReason?: string };
     const detail = failureHint(failure.stdout)
       || failure.stderr?.trim()
       || failure.message
       || String(error);
     return {
       available: false,
-      failureCategory: classifyProviderFailure(detail),
+      failureCategory: failure.probeReason ? "unavailable" : classifyProviderFailure(detail),
       detail: detail.slice(0, 1_000),
     };
   }
@@ -319,7 +329,7 @@ export function parseCodexLoginStatus(output: string): EngineAuthStatus {
   const normalized = detail.toLowerCase();
 
   if (normalized.includes("api key") || normalized.includes("access token")) {
-    return { authenticated: false, detail: API_AUTH_DETAIL };
+    return { authenticated: false, source: "cli_status", detail: API_AUTH_DETAIL };
   }
 
   if (
@@ -328,11 +338,11 @@ export function parseCodexLoginStatus(output: string): EngineAuthStatus {
     !normalized.includes("not logged in") &&
     !normalized.includes("not authenticated")
   ) {
-    return { authenticated: true, detail: detail || "logged in using ChatGPT" };
+    return { authenticated: true, source: "cli_status", detail: "Codex subscription login present" };
   }
 
-  if (/\bnot (?:logged in|authenticated)\b/iu.test(normalized)) {
-    return { authenticated: false, detail: LOGIN_DETAIL };
+  if (/^not (?:logged in|authenticated)\.?$/iu.test(normalized)) {
+    return { authenticated: false, source: "cli_status", detail: LOGIN_DETAIL };
   }
-  return { authenticated: false, status: "unknown", detail: "Codex returned an unrecognized authentication status." };
+  return { authenticated: false, status: "unknown", reason: "malformed", source: "cli_status", detail: "Codex returned an unrecognized authentication status." };
 }

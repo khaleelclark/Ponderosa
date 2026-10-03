@@ -206,6 +206,7 @@ export async function resolveCoordinationResultArtifacts(input: {
 }
 
 interface CoordinationSchedulerContext {
+  resourceAdmission?: import("./resource-admission.js").ResourceAdmission;
   opts: CreateServerOptions;
   store: AgentStore;
   assets: AssetStore;
@@ -596,6 +597,7 @@ return new CoordinationV3Scheduler(
       });
     },
     blockedAgentIds: async () => {
+      await context.resourceAdmission?.observe();
       const intake = new Map(await Promise.all([...engines.entries()].map(async ([id, registration]) => {
         let timer: NodeJS.Timeout | undefined;
         try {
@@ -617,6 +619,7 @@ return new CoordinationV3Scheduler(
       return [...new Set([
         ...store.listAgentEngineAssignments()
           .filter((candidate) => intake.get(candidate.activeEngine) !== true)
+          .concat(context.resourceAdmission && coordinationV3.activeRunCount() >= context.resourceAdmission.capacity() ? store.listAgentEngineAssignments() : [])
           .map((candidate) => candidate.id),
         ...[...runtimeAuthorities].flatMap(([agentId, authority]) =>
           authority.opening || authority.closing || authority.oneShots.size > 0 ? [agentId] : []),

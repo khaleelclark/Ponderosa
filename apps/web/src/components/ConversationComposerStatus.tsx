@@ -1,5 +1,5 @@
 import type { AgentDto, AgentHealthDto } from "@ponderosa/core";
-import { Box } from "@mui/material";
+import { Box, Tooltip } from "@mui/material";
 import { useEffect, useState } from "react";
 import { formatExecutionElapsed } from "../time";
 import { ChatLiveBanner } from "./chat/ChatLiveBanner";
@@ -25,12 +25,19 @@ export function MasterRespondingIndicator({
   const earliest = responding
     .map(({ activity }) => activity.startedAt)
     .sort()[0]!;
+  const evidence = responding.map(({ agent, activity }) => activity.lastActivityAt
+    ? `${agent.title}: last execution activity ${formatExecutionElapsed(activity.lastActivityAt, now)} ago. Quiet output is not a failure.`
+    : `${agent.title}: execution is active; no execution activity has been received yet.`).join(" ");
   return (
     <ChatLiveBanner>
-      {names} {responding.length === 1 ? "is" : "are"} responding ·{" "}
+      <Tooltip title={evidence}>
+      <Box component="span" tabIndex={0} aria-label={`${names} working. ${evidence}`}>
+      {names} {responding.length === 1 ? "is" : "are"} working ·{" "}
       <Box component="span" sx={{ fontVariantNumeric: "tabular-nums", fontKerning: "none", whiteSpace: "nowrap" }}>
         {formatExecutionElapsed(earliest, now)}
       </Box>
+      </Box>
+      </Tooltip>
     </ChatLiveBanner>
   );
 }

@@ -24,11 +24,12 @@ function providerAvailabilityCategory(
 }
 
 export function providerAvailabilityMessage(
-  engine: Pick<EngineDto, "id" | "displayName" | "enabled" | "authentication" | "reachability" | "availabilityDetail" | "availabilityCategory" | "authDetail">,
+  engine: Pick<EngineDto, "id" | "displayName" | "enabled" | "authentication" | "reachability" | "availabilityDetail" | "availabilityCategory" | "authDetail" | "resourceAdmission">,
 ): string {
   if (engine.enabled === false) {
     return `${engine.displayName} is disabled. Enable it in Settings or choose another provider.`;
   }
+  if (engine.resourceAdmission?.state === "held") return `${engine.displayName} is waiting for host resources. Accepted work remains queued and will resume automatically when headroom recovers.`;
   if (engine.authentication === "checking" || engine.reachability === "checking") {
     return `${engine.displayName} availability is still being checked.`;
   }
