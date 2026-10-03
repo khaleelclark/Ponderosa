@@ -9,6 +9,7 @@ import type Database from "better-sqlite3";
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import type { ContextRolloverState, ContextRolloverV3 } from "./coordination-v3-types.js";
+import { stableJson } from "./coordination-v3-canonical-json.js";
 
 const MAX_CONTEXT_ROLLOVER_RECENT_TAIL_IDS = 80;
 const MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS = 1_000;
@@ -28,7 +29,7 @@ interface RolloverRow {
   id: string; project_id: string; agent_id: string; state: ContextRolloverState;
   old_provider_session_id: string; provider_session_generation: string;
   cycle_number: number;
-  detected_occupancy: number; aggregate_tokens: number | null; threshold: number;
+  detected_occupancy: number | null; aggregate_tokens: number | null; threshold: number;
   context_window: number | null; low_water_mark: number;
   low_water_confirmation_required: number; source_run_id: string;
   trigger_kind: "automatic" | "human";
@@ -61,7 +62,7 @@ export class CoordinationV3ContextRolloverAuthority {
 
   request(input: {
     projectId: string; agentId: string; oldProviderSessionId: string;
-    providerSessionGeneration: string; detectedOccupancy: number; aggregateTokens?: number;
+    providerSessionGeneration: string; detectedOccupancy?: number; aggregateTokens?: number;
     threshold: number; contextWindow?: number; lowWaterMark: number;
     triggerKind?: "automatic" | "human";
     sourceRunId: string;
@@ -71,6 +72,10 @@ export class CoordinationV3ContextRolloverAuthority {
     replyAuthority?: CoordinationReplyAuthority; visibleResponseCommitted?: boolean; now?: string;
   }): { rollover: ContextRolloverV3; created: boolean } {
     const now = input.now ?? new Date().toISOString();
+    if (input.detectedOccupancy !== undefined && (!Number.isSafeInteger(input.detectedOccupancy) ||
+        input.detectedOccupancy < 0) || input.triggerKind !== "human" && input.detectedOccupancy === undefined) {
+      throw new Error("context rollover requires valid measured occupancy or an explicit human refresh");
+    }
     if (!Number.isSafeInteger(input.compactionCutoffOrdinal) || input.compactionCutoffOrdinal <= 0 ||
         !input.compactionCutoffEventId.trim()) {
       throw new Error("context rollover requires an exact positive canonical boundary");
@@ -97,7 +102,7 @@ export class CoordinationV3ContextRolloverAuthority {
         input.compactionCutoffOrdinal, input.compactionCutoffEventId) as RolloverRow | undefined;
       const existing = matchingBoundary ?? latest;
       // Automatic pressure owns at most one attempt per durable cycle. A
-      // confirmed native compaction can start a later cycle in a later Run.
+      // restored headroom can start a later cycle in a later Run.
       // Failed handoffs cannot manufacture a rollover loop. A human may retry only
       // an attempt that failed before either a handoff or replacement candidate
       // became durable. That retry receives a new rollover ID and fresh frozen
@@ -110,20 +115,25 @@ export class CoordinationV3ContextRolloverAuthority {
           existing.id === latest?.id &&
           existing.handoff_event_id === null &&
           existing.replacement_run_id === null;
-        const nextNativeCycle = existing.id === latest?.id && !matchingBoundary &&
-          existing.state === "completed" && existing.completion_reason === "native_compaction" &&
-          existing.compaction_cutoff_ordinal < input.compactionCutoffOrdinal &&
-          existing.source_run_id !== input.sourceRunId;
+        const nextHeadroomCycle = existing.id === latest?.id &&
+          existing.state === "completed" && ["native_compaction", "headroom_restored"].includes(existing.completion_reason ?? "") &&
+          (input.triggerKind === "human" || !matchingBoundary &&
+            existing.compaction_cutoff_ordinal < input.compactionCutoffOrdinal &&
+            existing.source_run_id !== input.sourceRunId);
+        if (input.triggerKind === "human" && existing.trigger_kind === "automatic" &&
+            !explicitSafeRetry && !nextHeadroomCycle) {
+          throw new Error("context_refresh_already_underway");
+        }
         if (existing.project_id !== input.projectId ||
             existing.old_provider_session_id !== input.oldProviderSessionId ||
-            (!terminalFailure && !nextNativeCycle && (
+            (!terminalFailure && !nextHeadroomCycle && (
               existing.compaction_cutoff_ordinal !== input.compactionCutoffOrdinal ||
               existing.compaction_cutoff_event_id !== input.compactionCutoffEventId ||
               existing.recent_tail_event_ids_json !== JSON.stringify(input.recentTail.map((binding) => binding.communicationEventId)) ||
               existing.recent_tail_hashes_json !== JSON.stringify(input.recentTail.map((binding) => binding.contentSha256))))) {
           throw new Error("context rollover provider generation replay conflicts with its durable owner");
         }
-        if (!explicitSafeRetry && !nextNativeCycle) {
+        if (!explicitSafeRetry && !nextHeadroomCycle) {
           return { rollover: this.view(existing), created: false };
         }
       }
@@ -143,7 +153,7 @@ export class CoordinationV3ContextRolloverAuthority {
       `).run(
         id, input.projectId, input.agentId, input.oldProviderSessionId,
         input.providerSessionGeneration, (latest?.cycle_number ?? 0) + 1,
-        input.detectedOccupancy, input.aggregateTokens ?? null,
+        input.detectedOccupancy ?? null, input.aggregateTokens ?? null,
         input.threshold, input.contextWindow ?? null, input.lowWaterMark,
         input.sourceRunId,
         input.triggerKind ?? "automatic",
@@ -173,7 +183,7 @@ export class CoordinationV3ContextRolloverAuthority {
         dedupeKey: `context-rollover-handoff:${id}`,
         payload: {
           rolloverId: id,
-          detectedOccupancy: input.detectedOccupancy,
+          ...(input.detectedOccupancy === undefined ? {} : { detectedOccupancy: input.detectedOccupancy }),
           threshold: input.threshold,
           instruction: `The pressure source Run has ended. ${CONTEXT_ROLLOVER_HANDOFF_GUIDANCE}`,
         },
@@ -716,6 +726,7 @@ export class CoordinationV3ContextRolloverAuthority {
         artifactIds?: unknown;
         providerSessionDisposition?: unknown;
         conversationId?: unknown;
+        environmentFacts?: unknown;
         sources?: unknown;
       };
       if (manifest.schemaVersion !== 3 || manifest.providerSessionDisposition !== "reseeded" ||
@@ -832,11 +843,37 @@ export class CoordinationV3ContextRolloverAuthority {
         typeof (source as { kind?: unknown }).kind === "string" &&
         typeof (source as { ref?: unknown }).ref === "string"));
       if (sourceRecords.length !== manifest.sources.length || sourceRecords.some((source) =>
-        !["identity", "policy", "team_directory", "continuation_handoff", "communication", "activation"]
+        !["environment", "identity", "policy", "team_directory", "continuation_handoff", "communication", "activation"]
           .includes(source.kind) || source.delivery !== "submitted")) {
         throw new Error("context rollover replacement manifest contains an unapproved source kind or delivery");
       }
       const sourcesOf = (kind: string) => sourceRecords.filter((source) => source.kind === kind);
+      const environmentSources = sourcesOf("environment");
+      if (manifest.environmentFacts === undefined) {
+        // Previously frozen packets did not include these observations.
+        if (environmentSources.length) throw new Error("context rollover environment facts are unavailable");
+      } else {
+        const owner = this.sqlite.prepare("SELECT working_copy_json FROM agents WHERE id = ? AND project_id = ?")
+          .get(row.agent_id, row.project_id) as { working_copy_json: string } | undefined;
+        const workingCopy = owner ? JSON.parse(owner.working_copy_json) as { id?: unknown; rootPath?: unknown } : undefined;
+        const facts = manifest.environmentFacts as {
+          cwd?: unknown; platform?: unknown; executables?: Array<{ name?: unknown; availability?: unknown }>;
+          reportOutputRoot?: unknown;
+        } | null;
+        // The immutable source hash was produced with JSON.stringify before
+        // stableJson sorted the stored manifest. Restore that DTO field order;
+        // do not rewrite existing hashes or hash a newly sorted representation.
+        const originalFacts = facts && Array.isArray(facts.executables) ? {
+          cwd: facts.cwd, platform: facts.platform,
+          executables: facts.executables.map(({ name, availability }) => ({ name, availability })),
+          ...(facts.reportOutputRoot === undefined ? {} : { reportOutputRoot: facts.reportOutputRoot }),
+        } : undefined;
+        if (!originalFacts || stableJson(originalFacts) !== stableJson(facts) || facts!.cwd !== workingCopy?.rootPath ||
+            environmentSources.length !== 1 || environmentSources[0]!.ref !== workingCopy?.id ||
+            environmentSources[0]!.hash !== createHash("sha256").update(JSON.stringify(originalFacts)).digest("hex")) {
+          throw new Error("context rollover environment source is not bound to its exact working copy and facts");
+        }
+      }
       const identitySources = sourcesOf("identity");
       const policySources = sourcesOf("policy");
       const teamSources = sourcesOf("team_directory");
@@ -879,6 +916,9 @@ export class CoordinationV3ContextRolloverAuthority {
   }
 
   observeReplacementOccupancy(id: string, replacementSessionId: string, usedTokens: number, now = new Date().toISOString()): ContextRolloverV3 {
+    if (!Number.isSafeInteger(usedTokens) || usedTokens < 0) {
+      throw new Error("replacement context occupancy must be a nonnegative safe integer");
+    }
     const current = this.get(id);
     if (!current || current.state !== "continuation_ready" || current.replacementSessionId !== replacementSessionId) {
       throw new Error("replacement session does not own this context rollover");
@@ -915,7 +955,7 @@ export class CoordinationV3ContextRolloverAuthority {
     return result;
   }
 
-  cancelAfterNativeCompaction(input: {
+  retireAfterHeadroomRecovery(input: {
     agentId: string;
     providerSessionGeneration: string;
     providerSessionId: string;
@@ -923,6 +963,7 @@ export class CoordinationV3ContextRolloverAuthority {
     now?: string;
   }): ContextRolloverV3 | undefined {
     const now = input.now ?? new Date().toISOString();
+    if (!Number.isSafeInteger(input.usedTokens) || input.usedTokens < 0) return undefined;
     return this.sqlite.transaction(() => {
       const row = this.sqlite.prepare(`
         SELECT * FROM context_rollovers
@@ -931,9 +972,10 @@ export class CoordinationV3ContextRolloverAuthority {
           AND state IN ('requested','handoff_committed','session_retiring')
         ORDER BY updated_at DESC, id DESC LIMIT 1
       `).get(input.agentId, input.providerSessionGeneration, input.providerSessionId) as RolloverRow | undefined;
-      if (!row || input.usedTokens >= row.low_water_mark) return undefined;
+      if (!row || row.trigger_kind !== "automatic" || row.detected_occupancy === null ||
+          input.usedTokens >= row.low_water_mark || input.usedTokens >= row.detected_occupancy) return undefined;
       this.sqlite.prepare(`
-        UPDATE context_rollovers SET state = 'completed', completion_reason = 'native_compaction',
+        UPDATE context_rollovers SET state = 'completed', completion_reason = 'headroom_restored',
           updated_at = ?, terminal_at = ? WHERE id = ?
           AND state IN ('requested','handoff_committed','session_retiring')
       `).run(now, now, row.id);
@@ -1021,7 +1063,7 @@ export class CoordinationV3ContextRolloverAuthority {
       oldProviderSessionId: row.old_provider_session_id,
       providerSessionGeneration: row.provider_session_generation,
       cycleNumber: row.cycle_number,
-      detectedOccupancy: row.detected_occupancy,
+      ...(row.detected_occupancy === null ? {} : { detectedOccupancy: row.detected_occupancy }),
       ...(row.aggregate_tokens !== null ? { aggregateTokens: row.aggregate_tokens } : {}),
       threshold: row.threshold,
       ...(row.context_window !== null ? { contextWindow: row.context_window } : {}),

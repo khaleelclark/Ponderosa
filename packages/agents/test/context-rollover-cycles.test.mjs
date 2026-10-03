@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { AgentStore, CoordinationV3Store } from "../dist/index.js";
 
-test("native compaction permits a later rollover in the same provider session", () => {
+test("headroom recovery permits a later rollover in the same provider session without claiming native compaction", () => {
   const directory = mkdtempSync(join(tmpdir(), "ponderosa-rollover-cycle-"));
   const store = new AgentStore(directory);
   try {
@@ -25,12 +25,12 @@ test("native compaction permits a later rollover in the same provider session", 
     const first = coordination.requestContextRollover(firstInput);
     assert.equal(first.created, true);
     assert.equal(coordination.requestContextRollover(firstInput).rollover.id, first.rollover.id);
-    const compacted = coordination.cancelContextRolloverAfterNativeCompaction({
+    const compacted = coordination.retireContextRolloverAfterHeadroomRecovery({
       agentId: agent.id, providerSessionGeneration: "same-provider-session",
       providerSessionId: "same-provider-session", usedTokens: 50000,
     });
     assert.equal(compacted?.state, "completed");
-    assert.equal(compacted?.completionReason, "native_compaction");
+    assert.equal(compacted?.completionReason, "headroom_restored");
     assert.equal(compacted?.cycleNumber, 1);
     const secondInput = request(2, "run-two");
     const second = coordination.requestContextRollover(secondInput);
@@ -73,7 +73,7 @@ test("restart and repeated pressure do not create another handoff in the active 
       sourceActivationIds: [], scopeKey: `conversation:${conversation.id}`, conversationId: conversation.id,
     });
     const first = new CoordinationV3Store(store.sqlite).requestContextRollover(input(1));
-    new CoordinationV3Store(store.sqlite).cancelContextRolloverAfterNativeCompaction({
+    new CoordinationV3Store(store.sqlite).retireContextRolloverAfterHeadroomRecovery({
       agentId: agent.id, providerSessionGeneration: "provider-one", providerSessionId: "provider-one", usedTokens: 50000,
     });
     store.close();
@@ -123,10 +123,11 @@ test("migration preserves a completed native-compaction record and rekeys its in
     });
     const coordination = new CoordinationV3Store(store.sqlite);
     const first = coordination.requestContextRollover(input(1));
-    coordination.cancelContextRolloverAfterNativeCompaction({
+    coordination.retireContextRolloverAfterHeadroomRecovery({
       agentId: agent.id, providerSessionGeneration: "provider-one", providerSessionId: "provider-one", usedTokens: 50000,
     });
     // Recreate the previous database shape in this disposable fixture.
+    store.sqlite.prepare("UPDATE context_rollovers SET completion_reason = 'native_compaction' WHERE id = ?").run(first.rollover.id);
     store.sqlite.exec(`
       DROP INDEX idx_context_rollovers_generation_cycle;
       ALTER TABLE context_rollovers DROP COLUMN cycle_number;

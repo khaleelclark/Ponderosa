@@ -11,7 +11,8 @@ import type {
   RuntimeTurnInput,
 } from "@ponderosa/core";
 import { spawnContainedCli } from "./contained-spawn.js";
-import { mapClaudeAssistantUsage, mapClaudeEvent } from "./claude-events.js";
+import { mapClaudeEvent } from "./claude-events.js";
+import { ClaudeContextUsage } from "./claude-context-usage.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
 import { runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
@@ -39,7 +40,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   private providerModels?: EngineModelOption[];
   private claudeCodeVersion?: string;
   private readonly modelInitializationRequestId = `ponderosa-models-${randomUUID()}`;
-  private latestContextOccupancy?: number;
+  private readonly contextObservations: ClaudeContextUsage;
   private readonly nativeAuthority?: NativeProcessTreeAuthority;
   readonly processIdentity;
 
@@ -49,6 +50,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     }
     this.seedHistory = opts.resumeSessionId ? [] : [...opts.history];
     this.engineAgentId = opts.resumeSessionId ?? randomUUID();
+    this.contextObservations = new ClaudeContextUsage(this.engineAgentId);
     const ponderosaMcp = opts.dynamicTools?.length && opts.environment?.PONDEROSA_AGENT_MESSAGE_URL && opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN
       ? JSON.stringify({
           mcpServers: {
@@ -122,8 +124,15 @@ export class ClaudeStreamSession implements RuntimeSession {
     const prompt = this.opts.resumeSessionId
       ? input.prompt
       : renderSeedPrompt(this.seedHistory.splice(0), input.prompt);
-    await this.writeInput(prompt, turnId);
+    this.contextObservations.beginTurn(turnId);
     this.active = true;
+    try {
+      await this.writeInput(prompt, turnId);
+    } catch (error) {
+      this.active = false;
+      this.contextObservations.endTurn();
+      throw error;
+    }
     return { turnId };
   }
 
@@ -142,15 +151,14 @@ export class ClaudeStreamSession implements RuntimeSession {
     };
   }
 
-  contextUsage(): { usedTokens: number } | undefined {
-    return this.latestContextOccupancy === undefined
-      ? undefined
-      : { usedTokens: this.latestContextOccupancy };
+  contextUsage(): { usedTokens: number; providerSessionGeneration: string } | undefined {
+    return this.contextObservations.contextUsage();
   }
 
   async steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult> {
     if (!this.active) return { status: "not_active" };
     const turnId = input.clientMessageId ?? randomUUID();
+    this.contextObservations.submit(turnId);
     await this.writeInput(input.prompt, turnId);
     return { status: "accepted", turnId };
   }
@@ -217,15 +225,13 @@ export class ClaudeStreamSession implements RuntimeSession {
           };
           this.opts.onCapabilitiesChanged?.();
         }
-        const assistantUsage = mapClaudeAssistantUsage(raw);
-        // Claude's local slash commands emit a synthetic assistant message with
-        // an all-zero usage object even though no model request occurred. Keep
-        // the last real request occupancy instead of resetting it to zero.
-        if (assistantUsage?.inputTokens !== undefined && assistantUsage.inputTokens > 0) {
-          this.latestContextOccupancy = assistantUsage.inputTokens;
-        }
+        const observation = this.contextObservations.observe(raw);
+        if (observation) yield observation;
         for (const event of mapClaudeEvent(raw, { cwd: this.opts.cwd })) {
-          if (event.type === "turn_done" || event.type === "error") this.active = false;
+          if (event.type === "turn_done" || event.type === "error") {
+            this.active = false;
+            this.contextObservations.endTurn();
+          }
           yield event;
         }
       }

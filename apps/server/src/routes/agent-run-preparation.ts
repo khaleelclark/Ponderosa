@@ -22,7 +22,6 @@ import { attachmentsDir } from "@ponderosa/agents";
 import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
 import { renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
-import { canonicalDefaultReplyRoute } from "../required-reply-route.js";
 import { environmentFactsPrompt, runtimeEnvironmentFacts } from "../runtime-environment-facts.js";
 import { collectReachableArtifactIds } from "../artifact-refs.js";
 import { appendReadableArtifactReferences } from "../communication-artifacts.js";
@@ -46,7 +45,8 @@ import {
   type ScopedContextMessage,
 } from "../prompts.js";
 import {
-  communicationV3Prompt,
+  communicationV3SessionPrompt,
+  legacyCommunicationV3SessionPrompt,
   providerDynamicTools,
   providerSessionContractHash,
   providerToolContractHash,
@@ -371,11 +371,10 @@ export async function prepareAgentRun(
     ...providerDynamicTools(),
     ...(historyRetrievalBoundary ? [PONDEROSA_HISTORY_TOOL] : []),
   ];
-  const defaultReply = canonicalDefaultReplyRoute(coordinationV3, runId, agent.id);
-  const communicationPrompt = communicationV3Prompt(defaultReply);
+  let communicationPrompt = communicationV3SessionPrompt();
   const environmentFacts = await runtimeEnvironmentFacts({ cwd: workingCopy.rootPath, agentId: agent.id, allowedImportRoots: runContext.opts.allowedImportRoots });
   const environmentPrompt = environmentFactsPrompt(environmentFacts);
-  const providerToolHash = providerToolContractHash(availableRuntimeTools, communicationPrompt);
+  let providerToolHash = providerToolContractHash(availableRuntimeTools, communicationPrompt);
   const runtimeSessionContractHash = providerSessionContractHash(
     runtimeEngineId,
     workingCopy.id,
@@ -412,12 +411,44 @@ export async function prepareAgentRun(
     ...communicationPrompt,
     ...environmentPrompt,
   ]);
-  const systemPrompt = runtimeSystemPrompt(agent, managedRules);
+  let systemPrompt = runtimeSystemPrompt(agent, managedRules);
   const systemPromptHash = createHash("sha256").update(systemPrompt).digest("hex");
-  const effectiveRuntimeSessionContractHash = createHash("sha256").update(JSON.stringify({
+  let effectiveRuntimeSessionContractHash = createHash("sha256").update(JSON.stringify({
     runtimeSessionContractHash,
     systemPromptHash,
   })).digest("hex");
+  const ownsFrozenHandoff = preflightActiveRollover?.state === "requested" &&
+    manifestActivationPayloads.some((activation) => activation.kind === "context_rollover_handoff" &&
+      activation.payload && typeof activation.payload === "object" &&
+      (activation.payload as { rolloverId?: unknown }).rolloverId === preflightActiveRollover.id);
+  if (ownsFrozenHandoff) {
+    if (!preflightResumeSessionState ||
+        preflightResumeSessionState.sessionId !== preflightActiveRollover.oldProviderSessionId) {
+      throw new Error("context rollover handoff has no matching accepted original session");
+    }
+    if (preflightResumeSessionState.toolContractHash !== effectiveRuntimeSessionContractHash) {
+      const frozenInput = store.acceptedProviderSessionInput(agent.id);
+      const legacyPrompt = frozenInput?.exactSystemPrompt
+        ? legacyCommunicationV3SessionPrompt(systemPrompt, frozenInput.exactSystemPrompt)
+        : undefined;
+      const legacyToolHash = legacyPrompt ? providerToolContractHash(availableRuntimeTools, legacyPrompt) : undefined;
+      const frozenSystemHash = frozenInput?.exactSystemPrompt
+        ? createHash("sha256").update(frozenInput.exactSystemPrompt).digest("hex") : undefined;
+      const legacyHash = legacyToolHash && frozenSystemHash
+        ? createHash("sha256").update(JSON.stringify({
+            runtimeSessionContractHash: providerSessionContractHash(runtimeEngineId, workingCopy.id,
+              effectiveModel, effectiveEffort, legacyToolHash), systemPromptHash: frozenSystemHash,
+          })).digest("hex") : undefined;
+      if (!legacyPrompt || frozenSystemHash !== frozenInput?.systemPromptHash ||
+          legacyHash !== preflightResumeSessionState.toolContractHash) {
+        throw new Error("context rollover handoff contract is incompatible; original accepted context retained");
+      }
+      communicationPrompt = legacyPrompt;
+      providerToolHash = legacyToolHash!;
+      systemPrompt = frozenInput!.exactSystemPrompt!;
+      effectiveRuntimeSessionContractHash = legacyHash!;
+    }
+  }
   const runtimeAttachmentsFollowSession = Boolean(engine.adapter.openSession);
   let runtimeAttachmentDirectory: string | undefined;
   const runtimeAttachmentCopies = new Map<
@@ -520,6 +551,7 @@ export async function prepareAgentRun(
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "continuation handoff rollover", project.id);
   } else if (requestContextRollover) {
+    if (ownsFrozenHandoff) throw new Error("context rollover handoff cannot reseed the original session");
     // Provider sessions are resumable caches, not agent identity. A newly
     // created inbound request is an independent task context, while answer,
     // join, human, and steering activations continue their current context.
@@ -532,6 +564,7 @@ export async function prepareAgentRun(
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "request context rollover", project.id);
   } else if (resumeSessionState && resumeSessionState.toolContractHash !== effectiveRuntimeSessionContractHash) {
+    if (ownsFrozenHandoff) throw new Error("context rollover handoff contract changed; original accepted context retained");
     // A provider session is a cache of both context and its immutable
     // provider, model, reasoning, and tool contract. Missing hashes are
     // intentionally incompatible: canonical Agent state survives while

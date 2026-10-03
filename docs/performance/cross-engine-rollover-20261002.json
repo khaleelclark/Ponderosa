@@ -1,0 +1,1392 @@
+{
+  "provenance": {
+    "base": "5622c62733d5c5967de5d5f81cdb566cb9fa6f7d",
+    "correctnessHead": "a35691219b0cb3c8a544f00f75c92cc305378dd8",
+    "harnessHead": "0cb0ce1469be54f73e70c1ed1c11f79eccc7a45b",
+    "harnessSha256": "d40901dda182616ec88954bc04ac7a0dc6e90e27bc9581a32f40566ce6e471bb",
+    "nodeVersion": "24.16.0",
+    "sourceLog": "/tmp/rollover-a3569121-final-live.log",
+    "authority": "Writer-produced disposable qualification, not independent approval"
+  },
+  "calibrations": [
+    {
+      "sourceLog": "/tmp/rollover-a3569121-live.log",
+      "attempts": 2,
+      "passes": 1,
+      "failures": 1,
+      "excludedFromFinalAggregates": true,
+      "reasons": [
+        "Different fixture identities/paths caused nonmatching instruction hashes",
+        "Native wrapper's 10-second post-command usage wait expired"
+      ]
+    },
+    {
+      "sourceLog": "/tmp/rollover-a3569121-paired-live.log",
+      "attempts": 7,
+      "passes": 6,
+      "failures": 1,
+      "excludedFromFinalAggregates": true,
+      "reasons": [
+        "The 350-record ledger seed completed, but receipt lookup wrongly compared full text against its preview"
+      ]
+    }
+  ],
+  "metrics": {
+    "ponderosa": {
+      "safeSchedulerBoundaryMs": {
+        "n": 6,
+        "median": 38,
+        "maximum": 62
+      },
+      "handoffGenerationMs": {
+        "n": 6,
+        "median": 7570.5,
+        "maximum": 7955
+      },
+      "teardownMs": {
+        "n": 6,
+        "median": 32,
+        "maximum": 40
+      },
+      "replacementStartupMs": {
+        "n": 6,
+        "median": 347.5,
+        "maximum": 362
+      },
+      "submissionToVerificationMs": {
+        "n": 6,
+        "median": 6404.5,
+        "maximum": 7074
+      },
+      "nativeCompactionMs": null,
+      "refreshInterruptionMs": {
+        "n": 6,
+        "median": 13989,
+        "maximum": 14951
+      },
+      "firstCorrectResumedResultMs": {
+        "n": 6,
+        "median": 19012,
+        "maximum": 19354
+      }
+    },
+    "native": {
+      "safeSchedulerBoundaryMs": null,
+      "handoffGenerationMs": null,
+      "teardownMs": null,
+      "replacementStartupMs": null,
+      "submissionToVerificationMs": null,
+      "nativeCompactionMs": {
+        "n": 6,
+        "median": 14065,
+        "maximum": 18905
+      },
+      "refreshInterruptionMs": {
+        "n": 6,
+        "median": 20057.5,
+        "maximum": 24553
+      },
+      "firstCorrectResumedResultMs": {
+        "n": 6,
+        "median": 25535,
+        "maximum": 30394
+      }
+    }
+  },
+  "samples": [
+    {
+      "workload": "facts",
+      "mode": "ponderosa",
+      "repetition": 1,
+      "pairId": "8549a388-cd34-4627-af93-90f452df17bb",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "version": "codex-cli 0.159.2",
+      "host": "pine",
+      "load": [
+        1.22,
+        1.91,
+        1.77
+      ],
+      "availableMemory": 11708743680,
+      "totalMemory": 32956268544,
+      "concurrency": "one qualification sample; unrelated host work is uncontrolled",
+      "cacheState": "not reset; measured input/cache counters recorded",
+      "pressureDetectionToSafeBoundaryMs": null,
+      "seedCharacters": 415,
+      "startingContext": {
+        "usedTokens": 19062,
+        "windowTokens": 258400,
+        "aggregateTokens": 38037,
+        "providerSessionGeneration": "01a0ff1a-d272-7093-8f39-457f577262a2"
+      },
+      "initialToolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+      "initialSystemPromptHash": "1f6efe94c734220bff28570796fcf4f4ae7cf2de77bbe68e6aee8e4b33fda490",
+      "providerModel": "gpt-6.1-sol",
+      "seedUsage": [
+        {
+          "inputTokens": 38008,
+          "cachedInputTokens": 18816,
+          "outputTokens": 29,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 38037
+        }
+      ],
+      "rollover": {
+        "id": "cc520b4e-c7f2-4fe5-8c6f-a9d6760d6b27",
+        "projectId": "343b6111-29c4-52f6-a58c-41d96f6444a5",
+        "agentId": "53d7e9da-e7a4-4adb-a25c-1d5fcc95d7bd",
+        "state": "completed",
+        "oldProviderSessionId": "01a0ff1a-d272-7093-8f39-457f577262a2",
+        "providerSessionGeneration": "01a0ff1a-d272-7093-8f39-457f577262a2",
+        "cycleNumber": 1,
+        "detectedOccupancy": 19062,
+        "aggregateTokens": 38037,
+        "threshold": 150000,
+        "contextWindow": 258400,
+        "lowWaterMark": 90000,
+        "triggerKind": "human",
+        "compactionCutoffOrdinal": 1,
+        "compactionCutoffEventId": "user-message-ae86020f331ee3c52095da3c08501aabde1f60cffa0f94f1d16195b48b5b188b",
+        "recentTailCommunicationEventIds": [
+          "user-message-ae86020f331ee3c52095da3c08501aabde1f60cffa0f94f1d16195b48b5b188b"
+        ],
+        "recentTailContentHashes": [
+          "823235672ff4bb924e0ed66a9b70037fe0060146bdfc58a3f1797193319597e6"
+        ],
+        "sourceRunId": "0a8e175b-bb6c-4b0e-a001-d29e73c7b5af",
+        "sourceActivationIds": [],
+        "scopeKey": "conversation:b3dc6cc5-0f5d-5c1d-b604-7a20392ea6ba",
+        "conversationId": "b3dc6cc5-0f5d-5c1d-b604-7a20392ea6ba",
+        "handoffEventId": "e7e6b6e6-39f7-48c7-871b-e3fc1bc96476",
+        "continuationActivationId": "bb346571-45c7-4fd7-9e86-188bf5f4fcab",
+        "replacementSessionId": "01a0ff1b-0520-71f1-a953-a3897b3f1104",
+        "replacementRunId": "1cc25b85-7041-4d47-8378-5cf02d2502d2",
+        "replacementPromptHash": "7407342df39ab5212e6d1dbf8f94bfbf7d14caf5498472036809a283f81039a2",
+        "replacementSystemPromptHash": "1f6efe94c734220bff28570796fcf4f4ae7cf2de77bbe68e6aee8e4b33fda490",
+        "replacementManifestHash": "a70bf7fd5052cda4f1a59b95c1c89de12473ea010ef6fd3a356149cbb63a6f31",
+        "replacementAttempt": 1,
+        "visibleResponseCommitted": false,
+        "handoffCommittedAt": "2026-10-03T00:12:35.660Z",
+        "sessionRetiringAt": "2026-10-03T00:12:35.662Z",
+        "continuationReadyAt": "2026-10-03T00:12:35.662Z",
+        "replacementSessionAt": "2026-10-03T00:12:36.145Z",
+        "replacementInputCommittedAt": "2026-10-03T00:12:35.769Z",
+        "replacementVerifiedAt": "2026-10-03T00:12:42.962Z",
+        "completionReason": "replacement_verified",
+        "failureProvenance": "internal",
+        "createdAt": "2026-10-03T00:12:29.286Z",
+        "updatedAt": "2026-10-03T00:12:42.964Z",
+        "terminalAt": "2026-10-03T00:12:42.964Z"
+      },
+      "safeSchedulerBoundaryMs": 38,
+      "handoffGenerationMs": 6344,
+      "teardownMs": 33,
+      "replacementStartupMs": 349,
+      "submissionToVerificationMs": 6834,
+      "refreshInterruptionMs": 13684,
+      "firstCorrectResumedResultMs": 18414,
+      "resumedRunId": "c30981a7-0f98-4d20-b629-3e02524c6f2e",
+      "generations": [
+        {
+          "sessionId": "01a0ff1a-d272-7093-8f39-457f577262a2",
+          "startedAt": 1790986342807,
+          "openedAt": 1790986343145,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "1f6efe94c734220bff28570796fcf4f4ae7cf2de77bbe68e6aee8e4b33fda490"
+        },
+        {
+          "sessionId": "01a0ff1b-0520-71f1-a953-a3897b3f1104",
+          "startedAt": 1790986355775,
+          "openedAt": 1790986356124,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "1f6efe94c734220bff28570796fcf4f4ae7cf2de77bbe68e6aee8e4b33fda490"
+        }
+      ],
+      "observedTeardowns": [
+        {
+          "sessionId": "01a0ff1a-d272-7093-8f39-457f577262a2",
+          "start": 1790986355731,
+          "end": 1790986355764,
+          "observedClosed": true
+        },
+        {
+          "sessionId": "01a0ff1b-0520-71f1-a953-a3897b3f1104",
+          "start": 1790986369857,
+          "end": 1790986369884,
+          "observedClosed": true
+        }
+      ],
+      "status": "pass",
+      "archivedSessions": [
+        "01a0ff1a-d272-7093-8f39-457f577262a2",
+        "01a0ff1b-0520-71f1-a953-a3897b3f1104"
+      ],
+      "allProcessesObservedClosed": true,
+      "privateDataRemoved": true
+    },
+    {
+      "workload": "facts",
+      "mode": "native",
+      "repetition": 1,
+      "pairId": "8549a388-cd34-4627-af93-90f452df17bb",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "version": "codex-cli 0.159.2",
+      "host": "pine",
+      "load": [
+        1.79,
+        1.98,
+        1.8
+      ],
+      "availableMemory": 12000423936,
+      "totalMemory": 32956268544,
+      "concurrency": "one qualification sample; unrelated host work is uncontrolled",
+      "cacheState": "not reset; measured input/cache counters recorded",
+      "pressureDetectionToSafeBoundaryMs": null,
+      "seedCharacters": 415,
+      "startingContext": {
+        "usedTokens": 19000,
+        "windowTokens": 258400,
+        "aggregateTokens": 37973,
+        "providerSessionGeneration": "01a0ff1b-3d1f-7fe2-8cfe-fd947dce2946"
+      },
+      "initialToolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+      "initialSystemPromptHash": "1f6efe94c734220bff28570796fcf4f4ae7cf2de77bbe68e6aee8e4b33fda490",
+      "providerModel": "gpt-6.1-sol",
+      "seedUsage": [
+        {
+          "inputTokens": 37946,
+          "cachedInputTokens": 18816,
+          "outputTokens": 27,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 37973
+        }
+      ],
+      "nativeCompaction": {
+        "sessionId": "01a0ff1b-3d1f-7fe2-8cfe-fd947dce2946",
+        "itemId": "01a0ff1b-6cce-70f0-b9c1-13bec1798478",
+        "startedAt": 1790986382542,
+        "completedAt": 1790986392782
+      },
+      "refreshInterruptionMs": 16017,
+      "nativeCompactionMs": 10240,
+      "firstCorrectResumedResultMs": 22158,
+      "resumedRunId": "04732976-2327-41ce-926d-677851f84624",
+      "generations": [
+        {
+          "sessionId": "01a0ff1b-3d1f-7fe2-8cfe-fd947dce2946",
+          "startedAt": 1790986370116,
+          "openedAt": 1790986370448,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "1f6efe94c734220bff28570796fcf4f4ae7cf2de77bbe68e6aee8e4b33fda490"
+        }
+      ],
+      "observedTeardowns": [
+        {
+          "sessionId": "01a0ff1b-3d1f-7fe2-8cfe-fd947dce2946",
+          "start": 1790986400960,
+          "end": 1790986400989,
+          "observedClosed": true
+        }
+      ],
+      "status": "pass",
+      "archivedSessions": [
+        "01a0ff1b-3d1f-7fe2-8cfe-fd947dce2946"
+      ],
+      "allProcessesObservedClosed": true,
+      "privateDataRemoved": true
+    },
+    {
+      "workload": "facts",
+      "mode": "native",
+      "repetition": 2,
+      "pairId": "a2ab0e96-c2d7-4647-8906-289b48f7c241",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "version": "codex-cli 0.159.2",
+      "host": "pine",
+      "load": [
+        1.41,
+        1.87,
+        1.77
+      ],
+      "availableMemory": 12031619072,
+      "totalMemory": 32956268544,
+      "concurrency": "one qualification sample; unrelated host work is uncontrolled",
+      "cacheState": "not reset; measured input/cache counters recorded",
+      "pressureDetectionToSafeBoundaryMs": null,
+      "seedCharacters": 415,
+      "startingContext": {
+        "usedTokens": 19065,
+        "windowTokens": 258400,
+        "aggregateTokens": 38039,
+        "providerSessionGeneration": "01a0ff1b-b6a3-7252-b857-7ba4951eae75"
+      },
+      "initialToolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+      "initialSystemPromptHash": "474c118637dfbb58603fc025739ff38dfbd2f54a172e18e594a1b5bb0e2539b9",
+      "providerModel": "gpt-6.1-sol",
+      "seedUsage": [
+        {
+          "inputTokens": 38010,
+          "cachedInputTokens": 33920,
+          "outputTokens": 29,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 38039
+        }
+      ],
+      "nativeCompaction": {
+        "sessionId": "01a0ff1b-b6a3-7252-b857-7ba4951eae75",
+        "itemId": "01a0ff1b-ea2f-7e52-a577-b1e66bc9b453",
+        "startedAt": 1790986414639,
+        "completedAt": 1790986427987
+      },
+      "refreshInterruptionMs": 19121,
+      "nativeCompactionMs": 13348,
+      "firstCorrectResumedResultMs": 25012,
+      "resumedRunId": "76bc2220-8cdd-47c4-8865-3b75417004e2",
+      "generations": [
+        {
+          "sessionId": "01a0ff1b-b6a3-7252-b857-7ba4951eae75",
+          "startedAt": 1790986401221,
+          "openedAt": 1790986401547,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "474c118637dfbb58603fc025739ff38dfbd2f54a172e18e594a1b5bb0e2539b9"
+        }
+      ],
+      "observedTeardowns": [
+        {
+          "sessionId": "01a0ff1b-b6a3-7252-b857-7ba4951eae75",
+          "start": 1790986435753,
+          "end": 1790986435781,
+          "observedClosed": true
+        }
+      ],
+      "status": "pass",
+      "archivedSessions": [
+        "01a0ff1b-b6a3-7252-b857-7ba4951eae75"
+      ],
+      "allProcessesObservedClosed": true,
+      "privateDataRemoved": true
+    },
+    {
+      "workload": "facts",
+      "mode": "ponderosa",
+      "repetition": 2,
+      "pairId": "a2ab0e96-c2d7-4647-8906-289b48f7c241",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "version": "codex-cli 0.159.2",
+      "host": "pine",
+      "load": [
+        1.23,
+        1.78,
+        1.74
+      ],
+      "availableMemory": 12013543424,
+      "totalMemory": 32956268544,
+      "concurrency": "one qualification sample; unrelated host work is uncontrolled",
+      "cacheState": "not reset; measured input/cache counters recorded",
+      "pressureDetectionToSafeBoundaryMs": null,
+      "seedCharacters": 415,
+      "startingContext": {
+        "usedTokens": 19062,
+        "windowTokens": 258400,
+        "aggregateTokens": 38036,
+        "providerSessionGeneration": "01a0ff1c-3e82-7431-ac88-0cf91dc5fc1d"
+      },
+      "initialToolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+      "initialSystemPromptHash": "474c118637dfbb58603fc025739ff38dfbd2f54a172e18e594a1b5bb0e2539b9",
+      "providerModel": "gpt-6.1-sol",
+      "seedUsage": [
+        {
+          "inputTokens": 38007,
+          "cachedInputTokens": 18816,
+          "outputTokens": 29,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 38036
+        }
+      ],
+      "rollover": {
+        "id": "e108b3a6-a0dd-4f91-9d61-7facd0a9408b",
+        "projectId": "7cea3a6d-7b54-5d1a-b1b5-5727be94ad64",
+        "agentId": "752d6601-fc91-4dcb-9fc5-7d605118ec32",
+        "state": "completed",
+        "oldProviderSessionId": "01a0ff1c-3e82-7431-ac88-0cf91dc5fc1d",
+        "providerSessionGeneration": "01a0ff1c-3e82-7431-ac88-0cf91dc5fc1d",
+        "cycleNumber": 1,
+        "detectedOccupancy": 19062,
+        "aggregateTokens": 38036,
+        "threshold": 150000,
+        "contextWindow": 258400,
+        "lowWaterMark": 90000,
+        "triggerKind": "human",
+        "compactionCutoffOrdinal": 1,
+        "compactionCutoffEventId": "user-message-269e5a3dabb577ee0a4e2ad798c46178d4a84219638c1238a2954cdfe07c271c",
+        "recentTailCommunicationEventIds": [
+          "user-message-269e5a3dabb577ee0a4e2ad798c46178d4a84219638c1238a2954cdfe07c271c"
+        ],
+        "recentTailContentHashes": [
+          "823235672ff4bb924e0ed66a9b70037fe0060146bdfc58a3f1797193319597e6"
+        ],
+        "sourceRunId": "65ac7a60-55a4-4b14-8bfe-01c12f6363c5",
+        "sourceActivationIds": [],
+        "scopeKey": "conversation:752886b3-3fbe-59d9-96e7-29b248df66cf",
+        "conversationId": "752886b3-3fbe-59d9-96e7-29b248df66cf",
+        "handoffEventId": "c42056db-ddff-4fee-b0dd-b78b50eeeea4",
+        "continuationActivationId": "a60e8031-67e4-41af-9a63-bd0420137261",
+        "replacementSessionId": "01a0ff1c-77c1-75d1-9423-5e6a05175c7b",
+        "replacementRunId": "cb67a5d6-9370-4ee5-b433-46f53e33261d",
+        "replacementPromptHash": "4d3aa7bbb26db08e1b245f6c588e57a867a789855b8df2f27878cb4c185d4663",
+        "replacementSystemPromptHash": "474c118637dfbb58603fc025739ff38dfbd2f54a172e18e594a1b5bb0e2539b9",
+        "replacementManifestHash": "336eea88f7712be783cf1f6cc2e5c908ea824a5a2b9b0b6cca6404874511d291",
+        "replacementAttempt": 1,
+        "visibleResponseCommitted": false,
+        "handoffCommittedAt": "2026-10-03T00:14:10.598Z",
+        "sessionRetiringAt": "2026-10-03T00:14:10.599Z",
+        "continuationReadyAt": "2026-10-03T00:14:10.599Z",
+        "replacementSessionAt": "2026-10-03T00:14:11.016Z",
+        "replacementInputCommittedAt": "2026-10-03T00:14:10.662Z",
+        "replacementVerifiedAt": "2026-10-03T00:14:16.578Z",
+        "completionReason": "replacement_verified",
+        "failureProvenance": "internal",
+        "createdAt": "2026-10-03T00:14:02.773Z",
+        "updatedAt": "2026-10-03T00:14:16.580Z",
+        "terminalAt": "2026-10-03T00:14:16.580Z"
+      },
+      "safeSchedulerBoundaryMs": 35,
+      "handoffGenerationMs": 7798,
+      "teardownMs": 34,
+      "replacementStartupMs": 331,
+      "submissionToVerificationMs": 5578,
+      "refreshInterruptionMs": 13813,
+      "firstCorrectResumedResultMs": 18411,
+      "resumedRunId": "95bac5a5-0138-49c5-a7f6-fd2fcb360488",
+      "generations": [
+        {
+          "sessionId": "01a0ff1c-3e82-7431-ac88-0cf91dc5fc1d",
+          "startedAt": 1790986436010,
+          "openedAt": 1790986436335,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "474c118637dfbb58603fc025739ff38dfbd2f54a172e18e594a1b5bb0e2539b9"
+        },
+        {
+          "sessionId": "01a0ff1c-77c1-75d1-9423-5e6a05175c7b",
+          "startedAt": 1790986450667,
+          "openedAt": 1790986450998,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "474c118637dfbb58603fc025739ff38dfbd2f54a172e18e594a1b5bb0e2539b9"
+        }
+      ],
+      "observedTeardowns": [
+        {
+          "sessionId": "01a0ff1c-3e82-7431-ac88-0cf91dc5fc1d",
+          "start": 1790986450625,
+          "end": 1790986450659,
+          "observedClosed": true
+        },
+        {
+          "sessionId": "01a0ff1c-77c1-75d1-9423-5e6a05175c7b",
+          "start": 1790986467270,
+          "end": 1790986467302,
+          "observedClosed": true
+        }
+      ],
+      "status": "pass",
+      "archivedSessions": [
+        "01a0ff1c-3e82-7431-ac88-0cf91dc5fc1d",
+        "01a0ff1c-77c1-75d1-9423-5e6a05175c7b"
+      ],
+      "allProcessesObservedClosed": true,
+      "privateDataRemoved": true
+    },
+    {
+      "workload": "facts",
+      "mode": "ponderosa",
+      "repetition": 3,
+      "pairId": "2c4b7402-b572-4f3d-9143-0c45ade2f3cf",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "version": "codex-cli 0.159.2",
+      "host": "pine",
+      "load": [
+        0.92,
+        1.65,
+        1.7
+      ],
+      "availableMemory": 11959848960,
+      "totalMemory": 32956268544,
+      "concurrency": "one qualification sample; unrelated host work is uncontrolled",
+      "cacheState": "not reset; measured input/cache counters recorded",
+      "pressureDetectionToSafeBoundaryMs": null,
+      "seedCharacters": 415,
+      "startingContext": {
+        "usedTokens": 19058,
+        "windowTokens": 258400,
+        "aggregateTokens": 38026,
+        "providerSessionGeneration": "01a0ff1c-b9be-7c20-bec5-3b1d4093757a"
+      },
+      "initialToolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+      "initialSystemPromptHash": "13b86684f9d4772877ee1ae407795c28f5c6b9b315a8b532aed24571b644a000",
+      "providerModel": "gpt-6.1-sol",
+      "seedUsage": [
+        {
+          "inputTokens": 37997,
+          "cachedInputTokens": 33920,
+          "outputTokens": 29,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 38026
+        }
+      ],
+      "rollover": {
+        "id": "2b77b533-e1d6-4853-b525-856985b59796",
+        "projectId": "873f936b-23fb-5b74-920d-64cbfcdb9417",
+        "agentId": "094ef188-09eb-49f2-9bd2-f654b6587ad5",
+        "state": "completed",
+        "oldProviderSessionId": "01a0ff1c-b9be-7c20-bec5-3b1d4093757a",
+        "providerSessionGeneration": "01a0ff1c-b9be-7c20-bec5-3b1d4093757a",
+        "cycleNumber": 1,
+        "detectedOccupancy": 19058,
+        "aggregateTokens": 38026,
+        "threshold": 150000,
+        "contextWindow": 258400,
+        "lowWaterMark": 90000,
+        "triggerKind": "human",
+        "compactionCutoffOrdinal": 1,
+        "compactionCutoffEventId": "user-message-c0c393ecc260dbad1de599cebe54925eb94e35e099eedd9d5f42c77a0cf5d659",
+        "recentTailCommunicationEventIds": [
+          "user-message-c0c393ecc260dbad1de599cebe54925eb94e35e099eedd9d5f42c77a0cf5d659"
+        ],
+        "recentTailContentHashes": [
+          "823235672ff4bb924e0ed66a9b70037fe0060146bdfc58a3f1797193319597e6"
+        ],
+        "sourceRunId": "c56a894d-0ca1-40a7-9437-db6ce475f2a9",
+        "sourceActivationIds": [],
+        "scopeKey": "conversation:cf072c1d-3fc0-52ac-9395-feccc6bbe947",
+        "conversationId": "cf072c1d-3fc0-52ac-9395-feccc6bbe947",
+        "handoffEventId": "f5443d22-4330-43cc-8993-2bf53945eab3",
+        "continuationActivationId": "bcc15381-ce54-4834-9768-2d65cc7d5b7d",
+        "replacementSessionId": "01a0ff1c-f25c-7cf2-97c0-c39922a08c43",
+        "replacementRunId": "42e55801-bd3e-425d-8da0-9389b7537cd5",
+        "replacementPromptHash": "3d863336edb1ccc6dc18c2b06f8d1ec4e8fcfa999fd56d4dcedbc308522ef122",
+        "replacementSystemPromptHash": "13b86684f9d4772877ee1ae407795c28f5c6b9b315a8b532aed24571b644a000",
+        "replacementManifestHash": "43b9ec178ed4e150cf004ee7757a79db7169e6fe486da1251912f9f79cbb91de",
+        "replacementAttempt": 1,
+        "visibleResponseCommitted": false,
+        "handoffCommittedAt": "2026-10-03T00:14:41.973Z",
+        "sessionRetiringAt": "2026-10-03T00:14:41.975Z",
+        "continuationReadyAt": "2026-10-03T00:14:41.975Z",
+        "replacementSessionAt": "2026-10-03T00:14:42.418Z",
+        "replacementInputCommittedAt": "2026-10-03T00:14:42.042Z",
+        "replacementVerifiedAt": "2026-10-03T00:14:49.473Z",
+        "completionReason": "replacement_verified",
+        "failureProvenance": "internal",
+        "createdAt": "2026-10-03T00:14:35.312Z",
+        "updatedAt": "2026-10-03T00:14:49.475Z",
+        "terminalAt": "2026-10-03T00:14:49.475Z"
+      },
+      "safeSchedulerBoundaryMs": 28,
+      "handoffGenerationMs": 6637,
+      "teardownMs": 31,
+      "replacementStartupMs": 350,
+      "submissionToVerificationMs": 7074,
+      "refreshInterruptionMs": 14165,
+      "firstCorrectResumedResultMs": 18959,
+      "resumedRunId": "2e45bd0b-f802-47f2-924e-e391424c3e8d",
+      "generations": [
+        {
+          "sessionId": "01a0ff1c-b9be-7c20-bec5-3b1d4093757a",
+          "startedAt": 1790986467550,
+          "openedAt": 1790986467892,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "13b86684f9d4772877ee1ae407795c28f5c6b9b315a8b532aed24571b644a000"
+        },
+        {
+          "sessionId": "01a0ff1c-f25c-7cf2-97c0-c39922a08c43",
+          "startedAt": 1790986482046,
+          "openedAt": 1790986482396,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "13b86684f9d4772877ee1ae407795c28f5c6b9b315a8b532aed24571b644a000"
+        }
+      ],
+      "observedTeardowns": [
+        {
+          "sessionId": "01a0ff1c-b9be-7c20-bec5-3b1d4093757a",
+          "start": 1790986482007,
+          "end": 1790986482038,
+          "observedClosed": true
+        },
+        {
+          "sessionId": "01a0ff1c-f25c-7cf2-97c0-c39922a08c43",
+          "start": 1790986496272,
+          "end": 1790986496306,
+          "observedClosed": true
+        }
+      ],
+      "status": "pass",
+      "archivedSessions": [
+        "01a0ff1c-b9be-7c20-bec5-3b1d4093757a",
+        "01a0ff1c-f25c-7cf2-97c0-c39922a08c43"
+      ],
+      "allProcessesObservedClosed": true,
+      "privateDataRemoved": true
+    },
+    {
+      "workload": "facts",
+      "mode": "native",
+      "repetition": 3,
+      "pairId": "2c4b7402-b572-4f3d-9143-0c45ade2f3cf",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "version": "codex-cli 0.159.2",
+      "host": "pine",
+      "load": [
+        2.04,
+        1.91,
+        1.78
+      ],
+      "availableMemory": 11927416832,
+      "totalMemory": 32956268544,
+      "concurrency": "one qualification sample; unrelated host work is uncontrolled",
+      "cacheState": "not reset; measured input/cache counters recorded",
+      "pressureDetectionToSafeBoundaryMs": null,
+      "seedCharacters": 415,
+      "startingContext": {
+        "usedTokens": 19061,
+        "windowTokens": 258400,
+        "aggregateTokens": 38029,
+        "providerSessionGeneration": "01a0ff1d-2ae4-7101-b407-29ea8400a66c"
+      },
+      "initialToolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+      "initialSystemPromptHash": "13b86684f9d4772877ee1ae407795c28f5c6b9b315a8b532aed24571b644a000",
+      "providerModel": "gpt-6.1-sol",
+      "seedUsage": [
+        {
+          "inputTokens": 38000,
+          "cachedInputTokens": 18816,
+          "outputTokens": 29,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 38029
+        }
+      ],
+      "nativeCompaction": {
+        "sessionId": "01a0ff1d-2ae4-7101-b407-29ea8400a66c",
+        "itemId": "01a0ff1d-5ea3-76a1-a835-71eefba1eabd",
+        "startedAt": 1790986509987,
+        "completedAt": 1790986522266
+      },
+      "refreshInterruptionMs": 18701,
+      "nativeCompactionMs": 12279,
+      "firstCorrectResumedResultMs": 23320,
+      "resumedRunId": "9905f7c1-3720-4dce-903b-148ac1211500",
+      "generations": [
+        {
+          "sessionId": "01a0ff1d-2ae4-7101-b407-29ea8400a66c",
+          "startedAt": 1790986496523,
+          "openedAt": 1790986496843,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "13b86684f9d4772877ee1ae407795c28f5c6b9b315a8b532aed24571b644a000"
+        }
+      ],
+      "observedTeardowns": [
+        {
+          "sessionId": "01a0ff1d-2ae4-7101-b407-29ea8400a66c",
+          "start": 1790986528811,
+          "end": 1790986528840,
+          "observedClosed": true
+        }
+      ],
+      "status": "pass",
+      "archivedSessions": [
+        "01a0ff1d-2ae4-7101-b407-29ea8400a66c"
+      ],
+      "allProcessesObservedClosed": true,
+      "privateDataRemoved": true
+    },
+    {
+      "workload": "ledger",
+      "mode": "ponderosa",
+      "repetition": 1,
+      "pairId": "9b9585f9-df15-46ed-805e-3f007a43b251",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "version": "codex-cli 0.159.2",
+      "host": "pine",
+      "load": [
+        2.63,
+        2.11,
+        1.86
+      ],
+      "availableMemory": 12065402880,
+      "totalMemory": 32956268544,
+      "concurrency": "one qualification sample; unrelated host work is uncontrolled",
+      "cacheState": "not reset; measured input/cache counters recorded",
+      "pressureDetectionToSafeBoundaryMs": null,
+      "seedCharacters": 9134,
+      "startingContext": {
+        "usedTokens": 21684,
+        "windowTokens": 258400,
+        "aggregateTokens": 43280,
+        "providerSessionGeneration": "01a0ff1d-aa0f-72e3-b733-b75f847e5cb1"
+      },
+      "initialToolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+      "initialSystemPromptHash": "cf9913fd3ab00ce3b1646e0388b5de0e8df1c4146d160f96a758dcecbdea019e",
+      "providerModel": "gpt-6.1-sol",
+      "seedUsage": [
+        {
+          "inputTokens": 43251,
+          "cachedInputTokens": 36480,
+          "outputTokens": 29,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 43280
+        }
+      ],
+      "rollover": {
+        "id": "8b8cf8a5-62b9-456c-b955-4cae94faf730",
+        "projectId": "c0da1ad7-742b-59ce-a71d-50ee2f2a1e9b",
+        "agentId": "f0d47dce-8ff6-46c9-a0b1-80f985b11f06",
+        "state": "completed",
+        "oldProviderSessionId": "01a0ff1d-aa0f-72e3-b733-b75f847e5cb1",
+        "providerSessionGeneration": "01a0ff1d-aa0f-72e3-b733-b75f847e5cb1",
+        "cycleNumber": 1,
+        "detectedOccupancy": 21684,
+        "aggregateTokens": 43280,
+        "threshold": 150000,
+        "contextWindow": 258400,
+        "lowWaterMark": 90000,
+        "triggerKind": "human",
+        "compactionCutoffOrdinal": 1,
+        "compactionCutoffEventId": "user-message-2d58867eb1378018cd0ebef0822dd7810ee82e291de464913a5b2df4d56cfc5c",
+        "recentTailCommunicationEventIds": [
+          "user-message-2d58867eb1378018cd0ebef0822dd7810ee82e291de464913a5b2df4d56cfc5c"
+        ],
+        "recentTailContentHashes": [
+          "7712df6bc928acb6e7eadbba86bc77397708bb39baea21731876decb05568e30"
+        ],
+        "sourceRunId": "18e2a9a2-56fe-448c-a825-f00d12959e19",
+        "sourceActivationIds": [],
+        "scopeKey": "conversation:78fdf60d-f4de-50f5-bf91-dab997dd6eeb",
+        "conversationId": "78fdf60d-f4de-50f5-bf91-dab997dd6eeb",
+        "handoffEventId": "ad288f15-bf42-45a4-87cd-be63a511427e",
+        "continuationActivationId": "e8cb478c-6f50-4008-96af-a6f347fe1b59",
+        "replacementSessionId": "01a0ff1d-e7e0-77e3-8997-3ba4d1e65214",
+        "replacementRunId": "dcd62221-83b3-4360-9c25-ef984812d968",
+        "replacementPromptHash": "3ca11409e096ab7b3677435a59ff10fff75c2f8fda115698cde7ec5ce042843e",
+        "replacementSystemPromptHash": "cf9913fd3ab00ce3b1646e0388b5de0e8df1c4146d160f96a758dcecbdea019e",
+        "replacementManifestHash": "f569dea8a03ae09670df4120ddb4d656443faa8dc0082b5f76ff07f81a59f4c5",
+        "replacementAttempt": 1,
+        "visibleResponseCommitted": false,
+        "handoffCommittedAt": "2026-10-03T00:15:44.829Z",
+        "sessionRetiringAt": "2026-10-03T00:15:44.830Z",
+        "continuationReadyAt": "2026-10-03T00:15:44.831Z",
+        "replacementSessionAt": "2026-10-03T00:15:45.259Z",
+        "replacementInputCommittedAt": "2026-10-03T00:15:44.894Z",
+        "replacementVerifiedAt": "2026-10-03T00:15:51.029Z",
+        "completionReason": "replacement_verified",
+        "failureProvenance": "internal",
+        "createdAt": "2026-10-03T00:15:37.334Z",
+        "updatedAt": "2026-10-03T00:15:51.030Z",
+        "terminalAt": "2026-10-03T00:15:51.030Z"
+      },
+      "safeSchedulerBoundaryMs": 38,
+      "handoffGenerationMs": 7460,
+      "teardownMs": 30,
+      "replacementStartupMs": 340,
+      "submissionToVerificationMs": 5788,
+      "refreshInterruptionMs": 13698,
+      "firstCorrectResumedResultMs": 19074,
+      "resumedRunId": "4084d51e-6dab-4867-b251-f6a0519d1578",
+      "generations": [
+        {
+          "sessionId": "01a0ff1d-aa0f-72e3-b733-b75f847e5cb1",
+          "startedAt": 1790986529063,
+          "openedAt": 1790986529414,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "cf9913fd3ab00ce3b1646e0388b5de0e8df1c4146d160f96a758dcecbdea019e"
+        },
+        {
+          "sessionId": "01a0ff1d-e7e0-77e3-8997-3ba4d1e65214",
+          "startedAt": 1790986544898,
+          "openedAt": 1790986545238,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "cf9913fd3ab00ce3b1646e0388b5de0e8df1c4146d160f96a758dcecbdea019e"
+        }
+      ],
+      "observedTeardowns": [
+        {
+          "sessionId": "01a0ff1d-aa0f-72e3-b733-b75f847e5cb1",
+          "start": 1790986544860,
+          "end": 1790986544890,
+          "observedClosed": true
+        },
+        {
+          "sessionId": "01a0ff1d-e7e0-77e3-8997-3ba4d1e65214",
+          "start": 1790986559805,
+          "end": 1790986559832,
+          "observedClosed": true
+        }
+      ],
+      "status": "pass",
+      "archivedSessions": [
+        "01a0ff1d-aa0f-72e3-b733-b75f847e5cb1",
+        "01a0ff1d-e7e0-77e3-8997-3ba4d1e65214"
+      ],
+      "allProcessesObservedClosed": true,
+      "privateDataRemoved": true
+    },
+    {
+      "workload": "ledger",
+      "mode": "native",
+      "repetition": 1,
+      "pairId": "9b9585f9-df15-46ed-805e-3f007a43b251",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "version": "codex-cli 0.159.2",
+      "host": "pine",
+      "load": [
+        1.85,
+        1.97,
+        1.82
+      ],
+      "availableMemory": 12051197952,
+      "totalMemory": 32956268544,
+      "concurrency": "one qualification sample; unrelated host work is uncontrolled",
+      "cacheState": "not reset; measured input/cache counters recorded",
+      "pressureDetectionToSafeBoundaryMs": null,
+      "seedCharacters": 9134,
+      "startingContext": {
+        "usedTokens": 21686,
+        "windowTokens": 258400,
+        "aggregateTokens": 43282,
+        "providerSessionGeneration": "01a0ff1e-230d-7e81-acb8-90b62a95c5e2"
+      },
+      "initialToolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+      "initialSystemPromptHash": "cf9913fd3ab00ce3b1646e0388b5de0e8df1c4146d160f96a758dcecbdea019e",
+      "providerModel": "gpt-6.1-sol",
+      "seedUsage": [
+        {
+          "inputTokens": 43253,
+          "cachedInputTokens": 21376,
+          "outputTokens": 29,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 43282
+        }
+      ],
+      "nativeCompaction": {
+        "sessionId": "01a0ff1e-230d-7e81-acb8-90b62a95c5e2",
+        "itemId": "01a0ff1e-52e8-74c2-b864-610fce6abfc1",
+        "startedAt": 1790986572521,
+        "completedAt": 1790986587303
+      },
+      "refreshInterruptionMs": 20994,
+      "nativeCompactionMs": 14782,
+      "firstCorrectResumedResultMs": 26058,
+      "resumedRunId": "43fc7771-dbe1-4a1d-bdc4-5bdc2de79b9c",
+      "generations": [
+        {
+          "sessionId": "01a0ff1e-230d-7e81-acb8-90b62a95c5e2",
+          "startedAt": 1790986560054,
+          "openedAt": 1790986560376,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "cf9913fd3ab00ce3b1646e0388b5de0e8df1c4146d160f96a758dcecbdea019e"
+        }
+      ],
+      "observedTeardowns": [
+        {
+          "sessionId": "01a0ff1e-230d-7e81-acb8-90b62a95c5e2",
+          "start": 1790986594532,
+          "end": 1790986594557,
+          "observedClosed": true
+        }
+      ],
+      "status": "pass",
+      "archivedSessions": [
+        "01a0ff1e-230d-7e81-acb8-90b62a95c5e2"
+      ],
+      "allProcessesObservedClosed": true,
+      "privateDataRemoved": true
+    },
+    {
+      "workload": "ledger",
+      "mode": "native",
+      "repetition": 2,
+      "pairId": "79eb848a-aa27-4006-8867-ae22b9427453",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "version": "codex-cli 0.159.2",
+      "host": "pine",
+      "load": [
+        1.29,
+        1.82,
+        1.77
+      ],
+      "availableMemory": 12025761792,
+      "totalMemory": 32956268544,
+      "concurrency": "one qualification sample; unrelated host work is uncontrolled",
+      "cacheState": "not reset; measured input/cache counters recorded",
+      "pressureDetectionToSafeBoundaryMs": null,
+      "seedCharacters": 9134,
+      "startingContext": {
+        "usedTokens": 21664,
+        "windowTokens": 258400,
+        "aggregateTokens": 43239,
+        "providerSessionGeneration": "01a0ff1e-aaab-7a70-9348-708bad26771e"
+      },
+      "initialToolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+      "initialSystemPromptHash": "86b22840253581263ec6fe0d2858de951f57d0257d7352cf655b0f28a17b5e05",
+      "providerModel": "gpt-6.1-sol",
+      "seedUsage": [
+        {
+          "inputTokens": 43205,
+          "cachedInputTokens": 21376,
+          "outputTokens": 34,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 43239
+        }
+      ],
+      "nativeCompaction": {
+        "sessionId": "01a0ff1e-aaab-7a70-9348-708bad26771e",
+        "itemId": "01a0ff1e-e022-70e2-9401-7b03b511ee19",
+        "startedAt": 1790986608674,
+        "completedAt": 1790986627579
+      },
+      "refreshInterruptionMs": 24553,
+      "nativeCompactionMs": 18905,
+      "firstCorrectResumedResultMs": 30394,
+      "resumedRunId": "a2e086b6-74bf-481a-859d-d442618f8ffa",
+      "generations": [
+        {
+          "sessionId": "01a0ff1e-aaab-7a70-9348-708bad26771e",
+          "startedAt": 1790986594765,
+          "openedAt": 1790986595104,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "86b22840253581263ec6fe0d2858de951f57d0257d7352cf655b0f28a17b5e05"
+        }
+      ],
+      "observedTeardowns": [
+        {
+          "sessionId": "01a0ff1e-aaab-7a70-9348-708bad26771e",
+          "start": 1790986635697,
+          "end": 1790986635725,
+          "observedClosed": true
+        }
+      ],
+      "status": "pass",
+      "archivedSessions": [
+        "01a0ff1e-aaab-7a70-9348-708bad26771e"
+      ],
+      "allProcessesObservedClosed": true,
+      "privateDataRemoved": true
+    },
+    {
+      "workload": "ledger",
+      "mode": "ponderosa",
+      "repetition": 2,
+      "pairId": "79eb848a-aa27-4006-8867-ae22b9427453",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "version": "codex-cli 0.159.2",
+      "host": "pine",
+      "load": [
+        1.06,
+        1.68,
+        1.73
+      ],
+      "availableMemory": 12247699456,
+      "totalMemory": 32956268544,
+      "concurrency": "one qualification sample; unrelated host work is uncontrolled",
+      "cacheState": "not reset; measured input/cache counters recorded",
+      "pressureDetectionToSafeBoundaryMs": null,
+      "seedCharacters": 9134,
+      "startingContext": {
+        "usedTokens": 21655,
+        "windowTokens": 258400,
+        "aggregateTokens": 43225,
+        "providerSessionGeneration": "01a0ff1f-4b80-7ce0-ba54-b23c69030a3d"
+      },
+      "initialToolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+      "initialSystemPromptHash": "86b22840253581263ec6fe0d2858de951f57d0257d7352cf655b0f28a17b5e05",
+      "providerModel": "gpt-6.1-sol",
+      "seedUsage": [
+        {
+          "inputTokens": 43196,
+          "cachedInputTokens": 21376,
+          "outputTokens": 29,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 43225
+        }
+      ],
+      "rollover": {
+        "id": "6cbba121-5b5b-4a6f-a507-c8961b5fdc10",
+        "projectId": "cddef12a-6f0d-5ec5-b118-1c910cbae26f",
+        "agentId": "bafedf38-56ac-4319-83f8-1609c64974ba",
+        "state": "completed",
+        "oldProviderSessionId": "01a0ff1f-4b80-7ce0-ba54-b23c69030a3d",
+        "providerSessionGeneration": "01a0ff1f-4b80-7ce0-ba54-b23c69030a3d",
+        "cycleNumber": 1,
+        "detectedOccupancy": 21655,
+        "aggregateTokens": 43225,
+        "threshold": 150000,
+        "contextWindow": 258400,
+        "lowWaterMark": 90000,
+        "triggerKind": "human",
+        "compactionCutoffOrdinal": 1,
+        "compactionCutoffEventId": "user-message-888847a01882c4f09d44e4c1a3ba6c4e468df89aa45b1adb620d19dbb7b3e761",
+        "recentTailCommunicationEventIds": [
+          "user-message-888847a01882c4f09d44e4c1a3ba6c4e468df89aa45b1adb620d19dbb7b3e761"
+        ],
+        "recentTailContentHashes": [
+          "7712df6bc928acb6e7eadbba86bc77397708bb39baea21731876decb05568e30"
+        ],
+        "sourceRunId": "50c51d1d-f279-42e8-9e9e-aa5cf2582e5b",
+        "sourceActivationIds": [],
+        "scopeKey": "conversation:c26cc064-f8d5-5ccf-95f8-c3ad4d027c60",
+        "conversationId": "c26cc064-f8d5-5ccf-95f8-c3ad4d027c60",
+        "handoffEventId": "9a9aa319-aa5e-47bc-9f58-220121406eeb",
+        "continuationActivationId": "ea2ee002-9481-45e7-99db-62e1990d6e46",
+        "replacementSessionId": "01a0ff1f-87fd-7da0-94d8-b7d1d056142a",
+        "replacementRunId": "471fe1b9-1301-4126-b973-5fa5399162e6",
+        "replacementPromptHash": "8d1144aec0a17fea0e1693a7b276a42724dce7c733ec4c28697825e2bf6f0a2f",
+        "replacementSystemPromptHash": "86b22840253581263ec6fe0d2858de951f57d0257d7352cf655b0f28a17b5e05",
+        "replacementManifestHash": "c35359150d10d2c5bd81459724eddc314078f80d85be319777fe3e3ce207bcaa",
+        "replacementAttempt": 1,
+        "visibleResponseCommitted": false,
+        "handoffCommittedAt": "2026-10-03T00:17:31.322Z",
+        "sessionRetiringAt": "2026-10-03T00:17:31.323Z",
+        "continuationReadyAt": "2026-10-03T00:17:31.324Z",
+        "replacementSessionAt": "2026-10-03T00:17:31.794Z",
+        "replacementInputCommittedAt": "2026-10-03T00:17:31.404Z",
+        "replacementVerifiedAt": "2026-10-03T00:17:38.256Z",
+        "completionReason": "replacement_verified",
+        "failureProvenance": "internal",
+        "createdAt": "2026-10-03T00:17:23.313Z",
+        "updatedAt": "2026-10-03T00:17:38.258Z",
+        "terminalAt": "2026-10-03T00:17:38.258Z"
+      },
+      "safeSchedulerBoundaryMs": 62,
+      "handoffGenerationMs": 7955,
+      "teardownMs": 40,
+      "replacementStartupMs": 362,
+      "submissionToVerificationMs": 6482,
+      "refreshInterruptionMs": 14951,
+      "firstCorrectResumedResultMs": 19065,
+      "resumedRunId": "5ad6a71a-8ead-4ffc-a4a2-d24498ecc7af",
+      "generations": [
+        {
+          "sessionId": "01a0ff1f-4b80-7ce0-ba54-b23c69030a3d",
+          "startedAt": 1790986635937,
+          "openedAt": 1790986636276,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "86b22840253581263ec6fe0d2858de951f57d0257d7352cf655b0f28a17b5e05"
+        },
+        {
+          "sessionId": "01a0ff1f-87fd-7da0-94d8-b7d1d056142a",
+          "startedAt": 1790986651408,
+          "openedAt": 1790986651770,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "86b22840253581263ec6fe0d2858de951f57d0257d7352cf655b0f28a17b5e05"
+        }
+      ],
+      "observedTeardowns": [
+        {
+          "sessionId": "01a0ff1f-4b80-7ce0-ba54-b23c69030a3d",
+          "start": 1790986651360,
+          "end": 1790986651400,
+          "observedClosed": true
+        },
+        {
+          "sessionId": "01a0ff1f-87fd-7da0-94d8-b7d1d056142a",
+          "start": 1790986664573,
+          "end": 1790986664600,
+          "observedClosed": true
+        }
+      ],
+      "status": "pass",
+      "archivedSessions": [
+        "01a0ff1f-4b80-7ce0-ba54-b23c69030a3d",
+        "01a0ff1f-87fd-7da0-94d8-b7d1d056142a"
+      ],
+      "allProcessesObservedClosed": true,
+      "privateDataRemoved": true
+    },
+    {
+      "workload": "ledger",
+      "mode": "ponderosa",
+      "repetition": 3,
+      "pairId": "941a42df-96fb-4d71-a8b6-81420e1fa4f5",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "version": "codex-cli 0.159.2",
+      "host": "pine",
+      "load": [
+        1.02,
+        1.62,
+        1.71
+      ],
+      "availableMemory": 12163780608,
+      "totalMemory": 32956268544,
+      "concurrency": "one qualification sample; unrelated host work is uncontrolled",
+      "cacheState": "not reset; measured input/cache counters recorded",
+      "pressureDetectionToSafeBoundaryMs": null,
+      "seedCharacters": 9134,
+      "startingContext": {
+        "usedTokens": 21735,
+        "windowTokens": 258400,
+        "aggregateTokens": 64962,
+        "providerSessionGeneration": "01a0ff1f-bc41-7170-8e80-73c53c0c6bc0"
+      },
+      "initialToolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+      "initialSystemPromptHash": "65fb0c233adb553bde038da26d1ce502bb252b176c75016705207af684689297",
+      "providerModel": "gpt-6.1-sol",
+      "seedUsage": [
+        {
+          "inputTokens": 64898,
+          "cachedInputTokens": 57856,
+          "outputTokens": 64,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 64962
+        }
+      ],
+      "rollover": {
+        "id": "661f2bbe-9c9a-4c32-8476-e72f2f7bf8ba",
+        "projectId": "951cd0d2-6ab6-5e8c-b87d-5b6d06111562",
+        "agentId": "9a0f3fc3-8054-4110-b925-5f2e15c695af",
+        "state": "completed",
+        "oldProviderSessionId": "01a0ff1f-bc41-7170-8e80-73c53c0c6bc0",
+        "providerSessionGeneration": "01a0ff1f-bc41-7170-8e80-73c53c0c6bc0",
+        "cycleNumber": 1,
+        "detectedOccupancy": 21735,
+        "aggregateTokens": 64962,
+        "threshold": 150000,
+        "contextWindow": 258400,
+        "lowWaterMark": 90000,
+        "triggerKind": "human",
+        "compactionCutoffOrdinal": 1,
+        "compactionCutoffEventId": "user-message-9f8083b6f598e3af140eee3ab757faa396da7ba1c5fa45dded593390f6b4f78f",
+        "recentTailCommunicationEventIds": [
+          "user-message-9f8083b6f598e3af140eee3ab757faa396da7ba1c5fa45dded593390f6b4f78f"
+        ],
+        "recentTailContentHashes": [
+          "7712df6bc928acb6e7eadbba86bc77397708bb39baea21731876decb05568e30"
+        ],
+        "sourceRunId": "86d75d04-2f3c-4e26-9d40-ffa3c870e932",
+        "sourceActivationIds": [],
+        "scopeKey": "conversation:a0d093c4-28d0-5647-adb2-cad1a9e16e6f",
+        "conversationId": "a0d093c4-28d0-5647-adb2-cad1a9e16e6f",
+        "handoffEventId": "c4ee2a79-bb63-4148-a093-4e7cd622ac93",
+        "continuationActivationId": "b0c004ca-c963-44fd-9839-a7464ee9c389",
+        "replacementSessionId": "01a0ff20-02dc-7271-8d50-6cd62170ac3d",
+        "replacementRunId": "d04f2620-74e4-48b9-882a-dc7d8a946760",
+        "replacementPromptHash": "0d97f9b6142e3f66d8e7ad6b635c2da7a748a59e8f0586e03b42d1ca8d7aae6f",
+        "replacementSystemPromptHash": "65fb0c233adb553bde038da26d1ce502bb252b176c75016705207af684689297",
+        "replacementManifestHash": "79d3c20d5ef97fb744604943e4175a6d9831bb012b02ac2bc27a4ef11429b324",
+        "replacementAttempt": 1,
+        "visibleResponseCommitted": false,
+        "handoffCommittedAt": "2026-10-03T00:18:02.807Z",
+        "sessionRetiringAt": "2026-10-03T00:18:02.808Z",
+        "continuationReadyAt": "2026-10-03T00:18:02.809Z",
+        "replacementSessionAt": "2026-10-03T00:18:03.242Z",
+        "replacementInputCommittedAt": "2026-10-03T00:18:02.868Z",
+        "replacementVerifiedAt": "2026-10-03T00:18:09.549Z",
+        "completionReason": "replacement_verified",
+        "failureProvenance": "internal",
+        "createdAt": "2026-10-03T00:17:55.074Z",
+        "updatedAt": "2026-10-03T00:18:09.550Z",
+        "terminalAt": "2026-10-03T00:18:09.550Z"
+      },
+      "safeSchedulerBoundaryMs": 60,
+      "handoffGenerationMs": 7681,
+      "teardownMs": 30,
+      "replacementStartupMs": 346,
+      "submissionToVerificationMs": 6327,
+      "refreshInterruptionMs": 14483,
+      "firstCorrectResumedResultMs": 19354,
+      "resumedRunId": "01dd5a9b-86a3-4857-a520-fb4c55fe8952",
+      "generations": [
+        {
+          "sessionId": "01a0ff1f-bc41-7170-8e80-73c53c0c6bc0",
+          "startedAt": 1790986664801,
+          "openedAt": 1790986665135,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "65fb0c233adb553bde038da26d1ce502bb252b176c75016705207af684689297"
+        },
+        {
+          "sessionId": "01a0ff20-02dc-7271-8d50-6cd62170ac3d",
+          "startedAt": 1790986682873,
+          "openedAt": 1790986683219,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "65fb0c233adb553bde038da26d1ce502bb252b176c75016705207af684689297"
+        }
+      ],
+      "observedTeardowns": [
+        {
+          "sessionId": "01a0ff1f-bc41-7170-8e80-73c53c0c6bc0",
+          "start": 1790986682834,
+          "end": 1790986682864,
+          "observedClosed": true
+        },
+        {
+          "sessionId": "01a0ff20-02dc-7271-8d50-6cd62170ac3d",
+          "start": 1790986696465,
+          "end": 1790986696493,
+          "observedClosed": true
+        }
+      ],
+      "status": "pass",
+      "archivedSessions": [
+        "01a0ff1f-bc41-7170-8e80-73c53c0c6bc0",
+        "01a0ff20-02dc-7271-8d50-6cd62170ac3d"
+      ],
+      "allProcessesObservedClosed": true,
+      "privateDataRemoved": true
+    },
+    {
+      "workload": "ledger",
+      "mode": "native",
+      "repetition": 3,
+      "pairId": "941a42df-96fb-4d71-a8b6-81420e1fa4f5",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "version": "codex-cli 0.159.2",
+      "host": "pine",
+      "load": [
+        1,
+        1.56,
+        1.68
+      ],
+      "availableMemory": 12144254976,
+      "totalMemory": 32956268544,
+      "concurrency": "one qualification sample; unrelated host work is uncontrolled",
+      "cacheState": "not reset; measured input/cache counters recorded",
+      "pressureDetectionToSafeBoundaryMs": null,
+      "seedCharacters": 9134,
+      "startingContext": {
+        "usedTokens": 21663,
+        "windowTokens": 258400,
+        "aggregateTokens": 43238,
+        "providerSessionGeneration": "01a0ff20-38d9-7ee3-871d-be3e9b7e1da2"
+      },
+      "initialToolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+      "initialSystemPromptHash": "65fb0c233adb553bde038da26d1ce502bb252b176c75016705207af684689297",
+      "providerModel": "gpt-6.1-sol",
+      "seedUsage": [
+        {
+          "inputTokens": 43209,
+          "cachedInputTokens": 36480,
+          "outputTokens": 29,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 43238
+        }
+      ],
+      "nativeCompaction": {
+        "sessionId": "01a0ff20-38d9-7ee3-871d-be3e9b7e1da2",
+        "itemId": "01a0ff20-6e28-7bd2-a8e0-1ca0ced05ef0",
+        "startedAt": 1790986710568,
+        "completedAt": 1790986726183
+      },
+      "refreshInterruptionMs": 21513,
+      "nativeCompactionMs": 15615,
+      "firstCorrectResumedResultMs": 26544,
+      "resumedRunId": "00878bc3-6a1d-47bb-9c6b-291e44cdd41c",
+      "generations": [
+        {
+          "sessionId": "01a0ff20-38d9-7ee3-871d-be3e9b7e1da2",
+          "startedAt": 1790986696698,
+          "openedAt": 1790986697038,
+          "model": "gpt-6.1-sol",
+          "effort": "low",
+          "toolsHash": "5fd681d9b7ce331fd871f239afd6944e55fb59254aaa04e4544935c8e9431196",
+          "systemPromptHash": "65fb0c233adb553bde038da26d1ce502bb252b176c75016705207af684689297"
+        }
+      ],
+      "observedTeardowns": [
+        {
+          "sessionId": "01a0ff20-38d9-7ee3-871d-be3e9b7e1da2",
+          "start": 1790986734207,
+          "end": 1790986734235,
+          "observedClosed": true
+        }
+      ],
+      "status": "pass",
+      "archivedSessions": [
+        "01a0ff20-38d9-7ee3-871d-be3e9b7e1da2"
+      ],
+      "allProcessesObservedClosed": true,
+      "privateDataRemoved": true
+    }
+  ],
+  "summary": {
+    "version": "codex-cli 0.159.2",
+    "model": "gpt-6.1-sol",
+    "effort": "low",
+    "aggregates": [
+      {
+        "mode": "ponderosa",
+        "attempts": 6,
+        "passes": 6,
+        "failures": 0,
+        "metrics": {
+          "refreshInterruptionMs": {
+            "median": 13989,
+            "maximum": 14951
+          },
+          "firstCorrectResumedResultMs": {
+            "median": 19012,
+            "maximum": 19354
+          }
+        }
+      },
+      {
+        "mode": "native",
+        "attempts": 6,
+        "passes": 6,
+        "failures": 0,
+        "metrics": {
+          "refreshInterruptionMs": {
+            "median": 20057.5,
+            "maximum": 24553
+          },
+          "firstCorrectResumedResultMs": {
+            "median": 25535,
+            "maximum": 30394
+          }
+        }
+      }
+    ],
+    "limitation": "Explicit below-pressure warm refresh samples. Pressure timing, high-context tails, Claude live qualification and a general speed advantage are not established."
+  }
+}

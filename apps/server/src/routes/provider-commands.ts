@@ -398,7 +398,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         const providerSessionGeneration = usage?.providerSessionGeneration;
         if (usage && providerSessionGeneration) {
           const providerSessionId = readProviderSessionIdentifier(session);
-          const cancelled = coordinationV3.cancelContextRolloverAfterNativeCompaction({
+          const cancelled = coordinationV3.retireContextRolloverAfterHeadroomRecovery({
             agentId: agent.id,
             providerSessionGeneration,
             providerSessionId,
@@ -652,33 +652,45 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
       retryable: false,
     });
   }
-  const requested = coordinationV3.requestContextRollover({
-    projectId: agent.projectId,
-    agentId: agent.id,
-    oldProviderSessionId: persisted.sessionId,
-    providerSessionGeneration: usage?.providerSessionGeneration ?? persisted.sessionId,
-    detectedOccupancy: usage?.usedTokens ?? pressure.threshold,
-    ...(usage?.aggregateTokens !== undefined ? { aggregateTokens: usage.aggregateTokens } : {}),
-    threshold: pressure.threshold,
-    ...(usage?.windowTokens !== undefined ? { contextWindow: usage.windowTokens } : {}),
-    lowWaterMark: pressure.lowWaterMark,
-    triggerKind: "human",
-    compactionCutoffOrdinal: rolloverBoundary.canonicalOrdinal,
-    compactionCutoffEventId: rolloverBoundary.communicationEventId,
-    recentTail: rolloverBoundary.recentTail,
-    sourceRunId: latestRun.id,
-    sourceActivationIds: [],
-    // Scheduler authorization accepts only canonical conversation or Agent
-    // scopes. The rollover ID and provider generation already provide durable
-    // dedupe; inventing a command-specific scope makes the handoff Activation
-    // unauthorized and can strand the rollover in requested forever.
-    scopeKey: rolloverConversationId
-      ? `conversation:${rolloverConversationId}`
-      : `agent:${agent.id}`,
-    ...(rolloverConversationId
-      ? { conversationId: rolloverConversationId }
-      : {}),
-  });
+  let requested: ReturnType<typeof coordinationV3.requestContextRollover>;
+  try {
+    requested = coordinationV3.requestContextRollover({
+      projectId: agent.projectId,
+      agentId: agent.id,
+      oldProviderSessionId: persisted.sessionId,
+      providerSessionGeneration: usage?.providerSessionGeneration ?? persisted.sessionId,
+      ...(usage === undefined ? {} : { detectedOccupancy: usage.usedTokens }),
+      ...(usage?.aggregateTokens !== undefined ? { aggregateTokens: usage.aggregateTokens } : {}),
+      threshold: pressure.threshold,
+      ...(usage?.windowTokens !== undefined ? { contextWindow: usage.windowTokens } : {}),
+      lowWaterMark: pressure.lowWaterMark,
+      triggerKind: "human",
+      compactionCutoffOrdinal: rolloverBoundary.canonicalOrdinal,
+      compactionCutoffEventId: rolloverBoundary.communicationEventId,
+      recentTail: rolloverBoundary.recentTail,
+      sourceRunId: latestRun.id,
+      sourceActivationIds: [],
+      // Scheduler authorization accepts only canonical conversation or Agent
+      // scopes. The rollover ID and provider generation already provide durable
+      // dedupe; inventing a command-specific scope makes the handoff Activation
+      // unauthorized and can strand the rollover in requested forever.
+      scopeKey: rolloverConversationId
+        ? `conversation:${rolloverConversationId}`
+        : `agent:${agent.id}`,
+      ...(rolloverConversationId
+        ? { conversationId: rolloverConversationId }
+        : {}),
+    });
+  } catch (error) {
+    return reply.code(409).send({
+      error: error instanceof Error && error.message === "context_refresh_already_underway"
+        ? "An automatic context refresh is already underway. Wait for it to finish before requesting a manual refresh."
+        : "Context refresh conflicts with an existing durable boundary.",
+      code: error instanceof Error && error.message === "context_refresh_already_underway"
+        ? "context_refresh_already_underway" : "context_refresh_conflict",
+      retryable: true,
+    });
+  }
   notifyScheduler();
   return {
     compacted: true,
