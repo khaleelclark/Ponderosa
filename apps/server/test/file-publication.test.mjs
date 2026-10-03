@@ -3,7 +3,7 @@ import test from "node:test";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { mkdtemp, mkdir, realpath, writeFile, rm, symlink, unlink, open } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, writeFile, rm, symlink, link, unlink, open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import Fastify from "fastify";
@@ -59,8 +59,18 @@ async function fixture(t, engine = "codex") {
   const send = (file = source, toolCallId = randomUUID(), extra = {}) => app.inject({ method: "POST", url: "/api/agent-import-file", headers: { authorization: `Bearer ${token}` }, payload: { path: file, toolCallId, ...extra } });
   const events = () => store.readEvents(agent.id).filter(row => row.event.type === "generated_artifact");
   async function request() {
-    const response = await send(); assert.equal(response.statusCode, 403, response.body); assert.equal(response.json().code, "outside_import_roots");
-    const decision = workspace.getDecision(response.json().decisionId); assert.ok(decision); return decision;
+    // Historical pre-upgrade record, not a new import requesting approval.
+    return workspace.createDecision({
+      idempotencyKey: `historical:${active.runId}:${source}`, projectId: project.id,
+      conversationId: chat.id, agentId: agent.id, runId: active.runId, coordinationRunId: active.runId,
+      mode: "approval", question: "Publish the historical synthetic deliverable?",
+      options: [{ id: "approve", label: "Publish this file" }, { id: "do_not_approve", label: "Not now" }],
+      allowOther: false, blocking: true,
+      approvalScope: { kind: "artifact_publication", operationId: randomUUID(), projectId: project.id,
+        conversationId: chat.id, agentId: agent.id, sourcePath: source, filename: path.basename(source),
+        size: body.length, sha256: createHash("sha256").update(body).digest("hex"),
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() },
+    });
   }
   const resolve = (decision, optionId = "approve") => workspace.resolveDecision(decision.id, { optionId, respondedAt: new Date().toISOString() });
   async function closeStorage() {
@@ -76,58 +86,143 @@ async function fixture(t, engine = "codex") {
   t.after(async () => { await closeStorage(); await rm(root, { recursive: true, force: true }); });
   return { root, workingRoot, external, dataDir, body, source, project, chat, agent, send, events, request, resolve, reopen, closeStorage, lease, finish,
     deletingProjectIds, deletingAgentIds, deletingConversationIds,
-    get app() { return app; }, get store() { return store; }, get workspace() { return workspace; }, get coordinator() { return coordinator; }, get active() { return active; }, get token() { return token; }, get assets() { return assets; } };
+    get app() { return app; }, get store() { return store; }, get workspace() { return workspace; }, get coordinator() { return coordinator; }, get active() { return active; }, get token() { return token; }, get capability() { return capability; }, get assets() { return assets; } };
 }
 
-for (const engine of ["codex", "claude"]) test(`${engine}: ordinary external import remains rejected; scoped approval publishes exact bytes and retries one receipt`, async t => {
+for (const engine of ["codex", "claude"]) test(`${engine}: external host import publishes directly without roots or Decisions and retries one exact receipt`, async t => {
   const f = await fixture(t, engine);
-  const decision = await f.request();
-  assert.equal(decision.status, "pending"); assert.equal(f.events().length, 0);
-  assert.deepEqual(decision.options.map(option => option.label), ["Publish this file", "Not now"]);
-  assert.equal(decision.approvalScope.sha256, createHash("sha256").update(f.body).digest("hex"));
-  assert.equal(decision.approvalScope.sourcePath, f.source); assert.equal(decision.conversationId, f.chat.id);
-  assert.match(decision.context, /does not authorize other files/);
-  assert.equal((await f.send()).json().decisionId, decision.id);
-  f.resolve(decision);
-  const first = await f.send(), repeated = await f.send();
+  const cursor = f.workspace.cursor();
+  f.workspace.createDecision = () => { throw new Error("new publication Decisions must not be created"); };
+  f.workspace.createNotification = () => { throw new Error("new publication notifications must not be created"); };
+  const first = await f.send(f.source, "direct-import"), repeated = await f.send(f.source, "direct-import");
   assert.equal(first.statusCode, 200, first.body); assert.equal(repeated.statusCode, 200, repeated.body);
   assert.equal(first.json().artifact.id, repeated.json().artifact.id); assert.equal(f.events().length, 1);
   assert.equal(first.json().artifact.name, path.basename(f.source));
   const downloaded = await f.app.inject(first.json().artifact.downloadUrl);
   assert.equal(downloaded.statusCode, 200, downloaded.body); assert.deepEqual(downloaded.rawPayload, f.body);
   assert.ok(f.assets.authoritativeGeneratedArtifact(f.project.id, f.store.getProjectArtifact(f.project.id, first.json().artifact.id)));
+  assert.equal(f.workspace.listDecisions().length, 0); assert.equal(f.workspace.cursor(), cursor);
+  assert.equal(f.store.getMessages(f.agent.id).length, 0);
 });
 
-test("pending, denied, cancelled, expired and failed approval persistence publish nothing", async t => {
-  for (const outcome of ["pending", "denied", "cancelled", "expired", "failed"]) await t.test(outcome, async t => {
+test("workspace-relative, parent-relative and hidden host files are explicit trusted imports, not automatic context", async t => {
+  const f = await fixture(t);
+  const inside = path.join(f.workingRoot, "inside.txt"); await writeFile(inside, f.body);
+  assert.equal((await f.send("inside.txt", "relative")).statusCode, 200);
+  const relative = path.relative(f.workingRoot, f.source);
+  const imported = await f.send(relative, "external-relative"); assert.equal(imported.statusCode, 200, imported.body);
+  const absolute = await f.send(f.source, "external-relative");
+  assert.equal(absolute.json().artifact.id, imported.json().artifact.id, "normalized paths keep exact attempt identity");
+  const hidden = path.join(f.external, ".synthetic-private-file"); await writeFile(hidden, f.body);
+  assert.equal((await f.send(hidden, "hidden")).statusCode, 200, "default trust includes eligible host-user private files");
+  assert.equal(f.workspace.listDecisions().length, 0); assert.equal(f.store.getMessages(f.agent.id).length, 0);
+});
+
+test("trusted imports reject links, symbolic ancestors, directories and empty files without creating Decisions", async t => {
+  const f = await fixture(t);
+  const empty = path.join(f.external, "empty.bin"); await writeFile(empty, "");
+  const symbolic = path.join(f.external, "symbolic.bin"); await symlink(f.source, symbolic);
+  const alias = path.join(f.root, "symbolic-parent"); await symlink(f.external, alias, "dir");
+  assert.equal((await f.send(empty)).json().code, "publication_empty_file");
+  for (const source of [f.external, symbolic, path.join(alias, "deliverable.bin")]) {
+    const rejected = await f.send(source); assert.equal(rejected.statusCode, 400, rejected.body);
+    assert.equal(rejected.json().code, "publication_unsafe_file");
+  }
+  const hardlink = path.join(f.external, "hardlink.bin"); await link(f.source, hardlink);
+  for (const source of [f.source, hardlink]) assert.equal((await f.send(source)).json().code, "publication_unsafe_file");
+  assert.equal(f.events().length, 0); assert.equal(f.workspace.listDecisions().length, 0);
+});
+
+test("trusted publication keeps exact capability/fence and server-owned scope, not payload authority", async t => {
+  const f = await fixture(t);
+  const unauthenticated = await f.app.inject({ method: "POST", url: "/api/agent-import-file", payload: { path: f.source, toolCallId: "unauthorized" } });
+  assert.equal(unauthenticated.statusCode, 401);
+  const names = f.capability.availableToolNames; f.capability.availableToolNames = [];
+  assert.equal((await f.send()).statusCode, 401); f.capability.availableToolNames = names;
+  const foreign = f.store.createProject({ label: "Foreign", hostPath: f.external, defaultEngine: "codex" });
+  const imported = await f.send(f.source, "owned", { projectId: foreign.id, agentId: randomUUID(), decisionId: randomUUID() });
+  assert.equal(imported.statusCode, 200, imported.body);
+  const artifact = f.store.getProjectArtifact(f.project.id, imported.json().artifact.id);
+  assert.equal(artifact.agentId, f.agent.id); assert.equal(artifact.executionId, f.active.runId);
+  const wrongScope = await f.app.inject(`/api/projects/${foreign.id}/artifacts/${artifact.id}/download`);
+  assert.equal(wrongScope.statusCode, 404);
+  f.coordinator.cancelAgentRun({ agentId: f.agent.id, expectedRunId: f.active.runId, idempotencyKey: randomUUID() });
+  assert.equal((await f.send(f.source, "stale")).statusCode, 401);
+  assert.equal(f.events().length, 1); assert.equal(f.workspace.listDecisions().length, 0);
+});
+
+test("direct import receipts survive concurrent retry, changed/missing sources and reopening; new attempts capture new builds", async t => {
+  const f = await fixture(t), attempt = "same-direct-attempt";
+  const responses = await Promise.all([f.send(f.source, attempt), f.send(f.source, attempt), f.send(f.source, attempt)]);
+  for (let index = 0; index < responses.length; index++) {
+    if (responses[index].statusCode === 503) responses[index] = await f.send(f.source, attempt);
+    assert.equal(responses[index].statusCode, 200, responses[index].body);
+  }
+  assert.equal(new Set(responses.map(response => response.json().artifact.id)).size, 1);
+  const original = responses[0].json().artifact;
+  const sibling = path.join(f.external, "sibling.bin"); await writeFile(sibling, f.body);
+  assert.equal((await f.send(sibling, attempt)).statusCode, 409, "one attempt cannot change arguments");
+  const later = Buffer.from("Synthetic next build"); await writeFile(f.source, later);
+  assert.equal((await f.send(f.source, attempt)).json().artifact.id, original.id);
+  const next = await f.send(f.source, "new-build"); assert.equal(next.statusCode, 200, next.body);
+  assert.notEqual(next.json().artifact.id, original.id);
+  assert.deepEqual((await f.app.inject(next.json().artifact.downloadUrl)).rawPayload, later);
+  await unlink(f.source); await f.reopen();
+  const replay = await f.send(f.source, attempt); assert.equal(replay.statusCode, 200, replay.body);
+  assert.equal(replay.json().artifact.id, original.id);
+  assert.deepEqual((await f.app.inject(original.downloadUrl)).rawPayload, f.body);
+  assert.equal(f.events().length, 2); assert.equal(f.workspace.listDecisions().length, 0);
+  assert.equal(f.store.getMessages(f.agent.id).length, 0);
+});
+
+test("direct import storage failure recovers its durable exact-attempt receipt", async t => {
+  const f = await fixture(t), attempt = "interrupted-import";
+  const register = f.assets.registerPublishedGeneratedArtifactImport.bind(f.assets);
+  let fail = true;
+  f.assets.registerPublishedGeneratedArtifactImport = (...args) => {
+    const receipt = register(...args); if (fail) { fail = false; throw new Error("failure after durable receipt"); } return receipt;
+  };
+  const failed = await f.send(f.source, attempt); assert.equal(failed.statusCode, 503, failed.body);
+  await f.reopen();
+  const recovered = await f.send(f.source, attempt); assert.equal(recovered.statusCode, 200, recovered.body);
+  assert.equal(f.events().length, 1); assert.equal(f.workspace.listDecisions().length, 0);
+});
+
+test("historical pending, denied, cancelled and expired operations are not silently approved", async t => {
+  for (const outcome of ["pending", "denied", "cancelled", "expired"]) await t.test(outcome, async t => {
     const f = await fixture(t);
-    if (outcome === "failed") {
-      f.workspace.createDecision = () => { throw new Error("disposable persistence failure"); };
-      const response = await f.send(); assert.equal(response.statusCode, 503); assert.equal(response.json().code, "publication_approval_storage_failure");
-      assert.equal(f.workspace.listDecisions().length, 0);
-    } else {
       const decision = await f.request();
       if (outcome === "denied") f.resolve(decision, "do_not_approve");
       if (outcome === "cancelled") f.workspace.cancelDecision(decision.id);
       if (outcome === "expired") { decision.approvalScope.expiresAt = new Date(0).toISOString(); f.resolve(decision); }
       const result = await f.send(); assert.notEqual(result.statusCode, 200);
       assert.equal(result.json().code, { pending: "outside_import_roots", denied: "publication_denied", cancelled: "publication_cancelled", expired: "publication_expired" }[outcome]);
-    }
     assert.equal(f.events().length, 0); assert.equal(f.store.getProjectArtifacts(f.project.id).length, 0);
   });
 });
 
-test("changed bytes, symlinks, siblings and substituted paths cannot reuse approval", async t => {
+test("an unrelated new Run does not inherit a historical pending approval or silently resolve it", async t => {
+  const f = await fixture(t), decision = await f.request();
+  f.finish(); f.lease();
+  const imported = await f.send(f.source, "new-explicit-import"); assert.equal(imported.statusCode, 200, imported.body);
+  assert.equal(f.workspace.getDecision(decision.id).status, "pending");
+  assert.equal(f.workspace.getDecision(decision.id).response, undefined);
+  assert.equal(f.workspace.listDecisions().length, 1);
+  assert.equal(f.store.getProjectArtifact(f.project.id, imported.json().artifact.id).executionId, f.active.runId);
+});
+
+test("historical byte approval stays exact; a new sibling import needs no approval but links remain rejected", async t => {
   const f = await fixture(t), decision = await f.request(); f.resolve(decision);
   await writeFile(f.source, "different bytes");
   assert.equal((await f.send()).json().code, "publication_file_changed");
   const sibling = path.join(f.external, "sibling.bin"); await writeFile(sibling, f.body);
-  const rejected = await f.send(sibling); assert.equal(rejected.statusCode, 403); assert.notEqual(rejected.json().decisionId, decision.id);
+  const imported = await f.send(sibling); assert.equal(imported.statusCode, 200, imported.body);
+  assert.equal(f.workspace.listDecisions().length, 1);
   await unlink(f.source); await symlink(sibling, f.source);
   assert.equal((await f.send()).json().code, "publication_unsafe_file");
   const alias = path.join(f.root, "alias"); await symlink(f.external, alias, "dir");
   assert.equal((await f.send(path.join(alias, "sibling.bin"))).json().code, "publication_unsafe_file");
-  assert.equal(f.events().length, 0);
+  assert.equal(f.events().length, 1);
 });
 
 test("workspace imports are unchanged; oversized and missing external files fail before approval", async t => {
@@ -154,17 +249,19 @@ test("exact Decision continuation and store reopening retain approval without du
   assert.equal(replay.json().artifact.id, first.json().artifact.id); assert.equal(f.events().length, 1);
 });
 
-test("other Runs and Agents cannot use an approval; payload prose is not continuation authority", async t => {
+test("other Runs and Agents import under their own authority, never an unrelated historical approval or receipt", async t => {
   const f = await fixture(t), decision = await f.request(); f.resolve(decision); f.finish();
   f.lease(randomUUID(), f.agent, { decision: { id: decision.id } });
   assert.equal(f.coordinator.decisionResponseAttachedToRun(decision.id, f.active.runId, f.agent.id), false);
-  const unrelated = await f.send(); assert.equal(unrelated.statusCode, 403); assert.notEqual(unrelated.json().decisionId, decision.id);
+  const unrelated = await f.send(); assert.equal(unrelated.statusCode, 200, unrelated.body);
   f.finish();
   const otherChat = f.store.createConversation(f.project.id, { title: "Other Chat" });
   const other = f.store.createAgent(f.project.id, { title: "Other", engine: "codex", conversationId: otherChat.id });
   f.lease(`decision:${decision.id}:response`, other, { decision: { id: decision.id } });
-  const rejected = await f.send(); assert.equal(rejected.statusCode, 403); assert.notEqual(rejected.json().decisionId, decision.id);
-  assert.equal(f.events().length, 0);
+  const imported = await f.send(); assert.equal(imported.statusCode, 200, imported.body);
+  assert.notEqual(imported.json().artifact.id, unrelated.json().artifact.id);
+  assert.equal(f.store.getProjectArtifact(f.project.id, imported.json().artifact.id).agentId, other.id);
+  assert.equal(f.workspace.listDecisions().length, 1);
 });
 
 test("deletion and Run cancellation fence publication after approval", async t => {
@@ -190,9 +287,8 @@ test("storage failure reuses the approved operation rather than duplicating its 
 test("provider dynamic-tool rejection stays an ordinary recoverable result", async t => {
   const f = await fixture(t);
   const handler = createProviderDynamicToolHandler(f.app, [PONDEROSA_IMPORT_FILE_TOOL], f.token);
-  const rejected = await handler({ id: "proposal", name: PONDEROSA_IMPORT_FILE_TOOL.name, arguments: { path: f.source } });
-  assert.equal(rejected.success, false); const body = JSON.parse(rejected.text); assert.equal(body.code, "outside_import_roots");
-  f.resolve(f.workspace.getDecision(body.decisionId));
+  const rejected = await handler({ id: "proposal", name: PONDEROSA_IMPORT_FILE_TOOL.name, arguments: { path: path.join(f.external, "missing.bin") } });
+  assert.equal(rejected.success, false); const body = JSON.parse(rejected.text); assert.equal(body.code, "publication_file_missing");
   const published = await handler({ id: "retry", name: PONDEROSA_IMPORT_FILE_TOOL.name, arguments: { path: f.source } });
   assert.equal(published.success, true); assert.equal(f.events().length, 1);
 });
@@ -229,7 +325,7 @@ test("real operator Decision response persists first, rejects expired/deleted ow
   await f.reopen();
 });
 
-test("Claude MCP transport exposes the same recoverable publication Decision and exact receipt", async t => {
+test("Claude MCP transport imports external files directly and replays the exact tool attempt", async t => {
   const f = await fixture(t, "claude");
   await f.app.listen({ host: "127.0.0.1", port: 0 });
   const endpoint = `http://127.0.0.1:${f.app.server.address().port}/api/agent-import-file`;
@@ -250,13 +346,11 @@ test("Claude MCP transport exposes the same recoverable publication Decision and
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "import_file", arguments: { path: f.source } } }) + "\n");
   });
   try {
-    const rejected = await call(1); assert.equal(rejected.isError, true);
-    const result = JSON.parse(rejected.content[0].text); assert.equal(result.code, "outside_import_roots");
-    f.resolve(f.workspace.getDecision(result.decisionId));
     const accepted = await call(2); assert.equal(accepted.isError, false);
-    const replay = await call(3); assert.equal(replay.isError, false);
+    const replay = await call(2); assert.equal(replay.isError, false);
     assert.equal(JSON.parse(accepted.content[0].text).artifact.id, JSON.parse(replay.content[0].text).artifact.id);
     assert.equal(f.events().length, 1);
+    assert.equal(f.workspace.listDecisions().length, 0);
   } finally {
     const exited = new Promise(resolve => child.once("exit", resolve)); child.stdin.end(); await exited;
   }
@@ -266,14 +360,13 @@ test("external publication preserves existing format handling and exact bytes ac
   const f = await fixture(t);
   for (const extension of ["pdf", "png", "jpg", "jpeg", "webp", "gif", "svg", "docx", "xlsx", "pptx", "jar", "md", "txt", "csv", "log", "json", "html", "zip", "apk", "ttf", "py", "bin"]) {
     const source = path.join(f.external, `${randomUUID()}.${extension}`); await writeFile(source, f.body);
-    const pending = await f.send(source); assert.equal(pending.statusCode, 403, pending.body);
-    f.resolve(f.workspace.getDecision(pending.json().decisionId));
     const published = await f.send(source); assert.equal(published.statusCode, 200, published.body);
     const downloaded = await f.app.inject(published.json().artifact.downloadUrl);
     assert.deepEqual(downloaded.rawPayload, f.body, extension);
     const inside = path.join(f.workingRoot, `${randomUUID()}.${extension}`); await writeFile(inside, f.body);
     assert.equal((await f.send(inside)).json().artifact.mediaType, published.json().artifact.mediaType, extension);
   }
+  assert.equal(f.workspace.listDecisions().length, 0);
 });
 
 test("concurrent calls and missing or changed sources after publication recover one immutable receipt without communication", async t => {
@@ -296,7 +389,7 @@ test("concurrent calls and missing or changed sources after publication recover 
 
 test("lost Run or deleting owner after the secure read cannot commit an artifact", async t => {
   for (const target of ["run", "chat"]) await t.test(target, async t => {
-    const f = await fixture(t), decision = await f.request(); f.resolve(decision);
+    const f = await fixture(t);
     const ownsRun = f.coordinator.ownsRun.bind(f.coordinator); let checks = 0;
     f.coordinator.ownsRun = (...args) => {
       if (++checks === 3) {
@@ -340,7 +433,7 @@ test("fresh application processes retain a pending Decision and persist approval
 });
 
 test("the published artifact attaches through the real Agent message route with one canonical idempotent response", async t => {
-  const f = await fixture(t), decision = await f.request(); f.resolve(decision);
+  const f = await fixture(t);
   const imported = await f.send(); assert.equal(imported.statusCode, 200, imported.body);
   const artifactId = imported.json().artifact.id;
   const coordinator = new CoordinationV3Store(f.store.sqlite, {

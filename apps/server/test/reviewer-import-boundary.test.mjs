@@ -11,7 +11,7 @@ import { AssetStore } from "../dist/assets.js";
 import { registerAgentRuntimeToolRoutes } from "../dist/routes/agent-runtime-tools.js";
 import { runtimeEnvironmentFacts } from "../dist/runtime-environment-facts.js";
 
-test("a reviewer publishes from the existing external root; rejected and symbolic paths are never copied or granted", async () => {
+test("a reviewer can publish outside configured roots without staging files in the writer checkout; symbolic paths remain rejected", async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "reviewer-publication-")));
   const writer = join(directory, "writer"), authorized = join(directory, "reports"), outside = join(directory, "outside");
   await Promise.all([writer, authorized, outside].map(path => mkdir(path)));
@@ -30,10 +30,11 @@ test("a reviewer publishes from the existing external root; rejected and symboli
     const first = await send(report, "publish"); assert.equal(first.statusCode, 200, first.body);
     const replay = await send(report, "publish"); assert.equal(replay.statusCode, 200, replay.body); assert.equal(replay.json().artifact.id, first.json().artifact.id);
     assert.equal(store.readEvents(a.id).filter(item => item.event.type === "generated_artifact").length, 1);
-    const excluded = join(outside, "excluded.md"); await writeFile(excluded, "Must not be copied");
-    const rejected = await send(excluded, "excluded"); assert.equal(rejected.statusCode, 403); assert.equal(rejected.json().code, "outside_import_roots"); assert.ok(rejected.json().decisionId); assert.match(rejected.json().error, /single-file publication Decision/);
+    const excluded = join(outside, "excluded.md"); await writeFile(excluded, "Explicit external deliverable");
+    const imported = await send(excluded, "excluded"); assert.equal(imported.statusCode, 200, imported.body);
+    assert.equal(new WorkspaceStore(join(directory, "data")).listDecisions().length, 0);
     const escape = join(facts.reportOutputRoot, "escape.md"); await symlink(excluded, escape);
     const symbolic = await send(escape, "escape"); assert.notEqual(symbolic.statusCode, 200);
-    assert.equal(store.readEvents(a.id).filter(item => item.event.type === "generated_artifact").length, 1);
+    assert.equal(store.readEvents(a.id).filter(item => item.event.type === "generated_artifact").length, 2);
   } finally { await app.close(); assets.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
 });

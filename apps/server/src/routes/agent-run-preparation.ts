@@ -23,7 +23,7 @@ import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
 import { renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
 import { environmentFactsPrompt, runtimeEnvironmentFacts } from "../runtime-environment-facts.js";
-import { previousPublicationSessionContract } from "../previous-publication-session-contract.js";
+import { previousPublicationSessionContracts } from "../previous-publication-session-contract.js";
 import { collectReachableArtifactIds } from "../artifact-refs.js";
 import { appendReadableArtifactReferences } from "../communication-artifacts.js";
 import {
@@ -433,14 +433,14 @@ export async function prepareAgentRun(
         ? legacyCommunicationV3SessionPrompt(systemPrompt, frozenInput.exactSystemPrompt)
         : undefined;
       const previousPublication = frozenInput?.exactSystemPrompt
-        ? previousPublicationSessionContract({ currentSystemPrompt: systemPrompt,
+        ? previousPublicationSessionContracts({ currentSystemPrompt: systemPrompt,
             frozenSystemPrompt: frozenInput.exactSystemPrompt, currentTools: availableRuntimeTools, environmentFacts })
-        : undefined;
+        : [];
       const frozenSystemHash = frozenInput?.exactSystemPrompt
         ? createHash("sha256").update(frozenInput.exactSystemPrompt).digest("hex") : undefined;
       const compatible = [
         ...(legacyPrompt ? [{ tools: availableRuntimeTools, communicationPrompt: legacyPrompt }] : []),
-        ...(previousPublication ? [previousPublication] : []),
+        ...previousPublication,
       ].map(contract => {
         const toolHash = providerToolContractHash(contract.tools, contract.communicationPrompt);
         const sessionHash = createHash("sha256").update(JSON.stringify({
