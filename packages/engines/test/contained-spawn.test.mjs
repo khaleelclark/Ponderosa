@@ -70,7 +70,7 @@ test("a Linux app-unit stop terminates its separate Agent scope", {
   skip: process.platform !== "linux" || process.env.PONDEROSA_TEST_SYSTEMD_SCOPE !== "1",
 }, async () => {
   const parentUnit = `ponderosa-containment-${randomUUID()}.service`;
-  execFileSync("systemd-run", ["--user", "--quiet", `--unit=${parentUnit}`, "/bin/sleep", "10"]);
+  execFileSync("systemd-run", ["--user", "--quiet", `--unit=${parentUnit}`, ...(process.env.PONDEROSA_TEST_PRIVATE_SLICE ? [`--slice=${process.env.PONDEROSA_TEST_PRIVATE_SLICE}`] : []), "/bin/sleep", "10"]);
   let handle;
   try {
     const { child } = spawnContainedCli({
@@ -80,7 +80,7 @@ test("a Linux app-unit stop terminates its separate Agent scope", {
       cwd: process.cwd(),
       env: runtimeEnvironment(),
       stdin: "ignore",
-    }, { ...hostEnvironment, PONDEROSA_AGENT_PARENT_UNIT: parentUnit });
+    }, { ...hostEnvironment, PONDEROSA_AGENT_PARENT_UNIT: parentUnit, ...(process.env.PONDEROSA_TEST_PRIVATE_SLICE ? { PONDEROSA_AGENT_WORKLOAD_SLICE: process.env.PONDEROSA_TEST_PRIVATE_SLICE } : {}) });
     handle = runtimeProcessHandle(child, { label: "test Agent scope", termGraceMs: 200 });
     const closed = once(child, "close");
     await new Promise((resolve) => setTimeout(resolve, 200));
