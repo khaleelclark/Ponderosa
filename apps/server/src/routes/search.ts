@@ -1,4 +1,4 @@
-import type { AllChatPageDto } from "@ponderosa/core";
+import { collaborationPresentation, type AllChatPageDto } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import type { SearchRoutesContext } from "../server-context.js";
 import { searchWorkspaceFiles } from "../file-search.js";
@@ -89,6 +89,10 @@ export function registerSearchRoutes(
           return deliveryReceipts.length ? { ...item, deliveryReceipts } : item;
         }
         const projectAgents = store.listAgents(item.project.id);
+        if (communication?.intent === "collaboration") {
+          return { ...item, ...collaborationPresentation(communication, projectAgents),
+            ...(deliveryReceipts.length ? { deliveryReceipts } : {}) };
+        }
         const agentMentions = resolveAgentMentionBindings(
           item.project.id,
           item.text,

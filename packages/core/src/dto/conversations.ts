@@ -88,6 +88,18 @@ export interface AgentMentionBindingDto {
   currentHandle: string;
   /** Current authoritative display title, or the last durable label after deletion. */
   currentTitle: string;
+  /** Explicitly false for a historical Collaboration identity with no live Agent. */
+  available?: boolean;
+}
+
+export interface CollaborationRecipientDto {
+  id: string;
+  /** Immutable send-time identity preferred over a current name. */
+  title: string;
+  handle?: string;
+  available: boolean;
+  currentTitle?: string;
+  currentHandle?: string;
 }
 
 /** A message in the project-level conversation (a team group chat). */
@@ -100,7 +112,7 @@ export interface ConversationMessageDto {
   /** Stable Direct-message participants resolved to their current display names. */
   directMessageAgents?: Array<Pick<AgentDto, "id" | "title" | "handle">>;
   /** Stable collaboration recipients resolved from the canonical audience. */
-  collaborationRecipients?: Array<Pick<AgentDto, "id" | "title" | "handle">>;
+  collaborationRecipients?: CollaborationRecipientDto[];
   conversationId: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -626,6 +638,7 @@ export interface MessageDto {
   communicationEventId?: string;
   /** Canonical scope used to explain where this audit projection originated. */
   communicationIntent?: CommunicationIntent;
+  collaborationRecipients?: CollaborationRecipientDto[];
   /** Stable Direct-message participants resolved to their current display names. */
   directMessageAgents?: Array<Pick<AgentDto, "id" | "title" | "handle">>;
   /** Immutable Project-chat scope of the canonical communication, when present. */
@@ -852,6 +865,8 @@ export interface AllChatItemDto {
   communicationEventId: string;
   messageId: string;
   communicationIntent: CommunicationIntent;
+  collaborationRecipients?: CollaborationRecipientDto[];
+  coordinationRequests?: CoordinationRequestSummaryDto[];
   /** Stable Direct-message participants resolved to their current display names. */
   directMessageAgents?: Array<Pick<AgentDto, "id" | "title" | "handle">>;
   /** Authored routing handles bound to their stable Direct recipients. */

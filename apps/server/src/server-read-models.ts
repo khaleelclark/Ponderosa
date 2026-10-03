@@ -1,5 +1,6 @@
 import {
   agentRoleProfile,
+  collaborationPresentation,
   type AgentDetailDto,
   type AgentDto,
   type AgentHealthProjectionDto,
@@ -140,17 +141,10 @@ export function createServerReadModels(context: ReadModelContext) {
             };
           })
         : [];
-      const collaborationRecipients = communication?.intent === "collaboration"
-        ? recipientAgentIds.map((agentId) => {
-            const agent = projectAgents.find((candidate) => candidate.id === agentId);
-            return {
-              id: agentId,
-              title: agent?.title ?? communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent",
-              handle: agent?.handle ?? communication.identity?.recipientHandles?.[agentId] ?? agentMentionHandle(communication.identity?.recipientLabels?.[agentId] ?? "Deleted Agent"),
-            };
-          })
-        : [];
-      const agentMentions = resolveAgentMentionBindings(
+      const collaboration = communication?.intent === "collaboration"
+        ? collaborationPresentation(communication, projectAgents) : undefined;
+      const collaborationRecipients = collaboration?.collaborationRecipients ?? [];
+      const agentMentions = collaboration?.agentMentions ?? resolveAgentMentionBindings(
         projectId,
         message.text,
         recipientAgentIds,

@@ -5,9 +5,9 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
-import { messageTagTokens, unicodeCodePointLength } from "@ponderosa/core";
-import type { AgentMentionBindingDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
-import { type ReactNode, type ComponentPropsWithoutRef, useEffect, useRef, useState } from "react";
+import { messageTagTokens, missingCollaborationRecipients, unicodeCodePointLength } from "@ponderosa/core";
+import type { AgentMentionBindingDto, CollaborationRecipientDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
+import { Fragment, type ReactNode, type ComponentPropsWithoutRef, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../../clipboard";
@@ -91,6 +91,7 @@ export function communicationVisibleText(input: {
   fromAgent: boolean;
   agentMentions?: readonly AgentMentionBindingDto[];
 }): string {
+  if (input.intent === "collaboration") return input.text;
   const routedText = input.intent === "broadcast"
     ? stripLeadingRoutingHandle(input.text, "broadcast")
     : input.text;
@@ -424,6 +425,7 @@ function remarkMessageTags() {
 
 function ChatMarkdown({
   children,
+  recipientPrefix,
   agentIdForHandle,
   agentMentionForHandle,
   onOpenAgent,
@@ -436,8 +438,9 @@ function ChatMarkdown({
   preserveWhitespace = false,
 }: {
   children: string;
+  recipientPrefix?: ReactNode;
   agentIdForHandle?(handle: string): string | undefined;
-  agentMentionForHandle?(handle: string): { agentId: string; label: string; authoredLabel?: string } | undefined;
+  agentMentionForHandle?(handle: string): { agentId: string; label: string; authoredLabel?: string; available?: boolean } | undefined;
   onOpenAgent?(agentId: string): void;
   onOpenBroadcast?(): void;
   previewScope?: LinkPreviewScope;
@@ -465,6 +468,7 @@ function ChatMarkdown({
           : { xs: "0.875rem", sm: "1rem", md: "0.9375rem" },
         lineHeight: small ? 1.42 : { xs: "20px", sm: 1.48 },
         "& p": { my: compact ? 0.15 : 0.35, maxWidth: "100%", whiteSpace: preserveWhitespace ? "pre-wrap" : "normal", overflowWrap: "anywhere", wordBreak: "break-word" },
+        ...(recipientPrefix ? { "& > p:first-of-type": { display: "inline" } } : {}),
         "& h1, & h2, & h3, & h4": { mt: 1.05, mb: 0.4, lineHeight: 1.22 },
         "& h1": { fontSize: { xs: "1.22rem", sm: "1.35rem" } },
         "& h2": { fontSize: { xs: "1.1rem", sm: "1.2rem" } },
@@ -484,6 +488,7 @@ function ChatMarkdown({
         "& a": { maxWidth: "100%", color: "primary.main", textDecoration: "underline", textUnderlineOffset: "0.15em", overflowWrap: "anywhere", wordBreak: "break-word", "&:hover": { textDecorationThickness: "2px" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: 2 } },
       }}
     >
+      {recipientPrefix}
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMessageTags]}
         urlTransform={chatMarkdownUrlTransform}
@@ -573,7 +578,7 @@ function ChatMarkdown({
               }
               return <>{label}</>;
             }
-            return <AgentMention agentId={agentId} label={boundMention?.label ?? handle} title={mentionTitle} onOpenAgent={onOpenAgent} />;
+            return <AgentMention agentId={agentId} label={boundMention?.label ?? handle} title={mentionTitle} onOpenAgent={boundMention?.available === false ? undefined : onOpenAgent} />;
           },
         }}
       >
@@ -587,8 +592,10 @@ export function CommunicationDocumentCard({ document }: { document: Communicatio
   return <ChatDocumentCard document={document} renderMarkdown={(content) => <ChatMarkdown>{content}</ChatMarkdown>} />;
 }
 
-export function ChatMessageBody({ text, citations, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId, operatorHandle, compactMarkdown = false, smallText = false, preserveWhitespace = false }: {
+export function ChatMessageBody({ text, citations, collaborationRecipients, agentMentions, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId, operatorHandle, compactMarkdown = false, smallText = false, preserveWhitespace = false }: {
   text: string;
+  collaborationRecipients?: readonly CollaborationRecipientDto[];
+  agentMentions?: readonly AgentMentionBindingDto[];
   citations?: VerifiedCitationDto[];
   collapseLongMessage?: boolean;
   agentIdForHandle?(handle: string): string | undefined;
@@ -602,6 +609,16 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
   smallText?: boolean;
   preserveWhitespace?: boolean;
 }): JSX.Element {
+  const recipientPrefix = collaborationRecipients ? missingCollaborationRecipients(text, collaborationRecipients, agentMentions).map(recipient =>
+    <Fragment key={recipient.id}>{recipient.handle ? <AgentMention agentId={recipient.id} label={recipient.handle}
+      title={recipient.currentTitle && recipient.currentTitle !== recipient.title ? `Currently ${recipient.currentTitle}` : undefined}
+      onOpenAgent={recipient.available ? onOpenAgent : undefined} /> : <Box component="span" sx={messageHandleSx}>Unavailable recipient</Box>}{" "}</Fragment>) : undefined;
+  const collaborationMention = (handle: string) => {
+    const matches = agentMentions?.filter(mention => mention.handle === handle) ?? [];
+    if (matches.length !== 1) return undefined;
+    const binding = matches[0]!;
+    return { agentId: binding.agentId, label: handle, available: binding.available };
+  };
   const collapsible = collapseLongMessage && isLongChatMessage(text);
   const [expanded, setExpanded] = useState(false);
   return (
@@ -618,7 +635,7 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
           } : {}),
         }}
       >
-        <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} small={smallText} preserveWhitespace={preserveWhitespace}>
+        <ChatMarkdown recipientPrefix={recipientPrefix} agentIdForHandle={collaborationRecipients ? undefined : agentIdForHandle} agentMentionForHandle={collaborationRecipients ? collaborationMention : agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} small={smallText} preserveWhitespace={preserveWhitespace}>
           {collapsible && !expanded ? collapsedLongMessagePreview(text) : text}
         </ChatMarkdown>
       </Box>

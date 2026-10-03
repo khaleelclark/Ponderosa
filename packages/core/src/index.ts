@@ -20,3 +20,4 @@ export * from "./tool-failure.js";
 export * from "./outcome-cause.js";
 export * from "./markdown-preview.js";
 export * from "./dto/local-browser.js";
+export * from "./collaboration-presentation.js";
