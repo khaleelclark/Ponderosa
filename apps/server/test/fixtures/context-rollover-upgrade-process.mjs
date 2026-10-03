@@ -1,6 +1,7 @@
 // Run in a separate process so seed and refresh load genuinely different builds.
 import assert from 'node:assert/strict';
 import { createServer as createNetServer } from 'node:net';
+import { mkdir, readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 const { root, directory, binary, phase, scenario = 'missing', seedKind } = JSON.parse(process.env.PONDEROSA_UPGRADE_FIXTURE);
@@ -13,7 +14,10 @@ new WorkspaceStore(directory).updatePreferences({ contextRolloverEnabled: false,
   ...(phase === 'refresh' && scenario === 'changed-policy' ? { globalInstructions: 'Changed immutable operator policy' } : {}) });
 let project, chat, agent;
 if (phase === 'seed') {
-  project = store.createProject({ label: 'Upgrade fixture', hostPath: directory, defaultEngine: 'claude' });
+  const hostPath = scenario === 'authorized-root-valid' ? join(directory, 'workspace') : directory;
+  await mkdir(hostPath, { recursive: true });
+  if (scenario === 'authorized-root-valid') await mkdir(join(directory, 'approved'));
+  project = store.createProject({ label: 'Upgrade fixture', hostPath, defaultEngine: 'claude' });
   chat = store.createConversation(project.id, { title: 'Upgrade fixture' });
   agent = store.createAgent(project.id, { title: 'Upgrade fixture', engine: 'claude', conversationId: chat.id });
 } else {
@@ -30,10 +34,12 @@ const adapter = { id: 'claude', displayName: 'Disposable', trustedSystemPromptCh
   async openSession(options) {
     const replacement = phase === 'refresh' && !options.resumeSessionId;
     observations.push({ resumeSessionId: options.resumeSessionId ?? null,
-      acceptedSnapshot: store.resumeSessionState(agent.id), systemPrompt: options.systemPrompt });
+      acceptedSnapshot: store.resumeSessionState(agent.id), systemPrompt: options.systemPrompt,
+      dynamicTools: options.dynamicTools, mcpCapturePath: join(directory, `mcp-${phase}-${observations.length}.json`) });
     if (replacement && opened.length) assert.equal(opened.at(-1).isAlive(), false, 'old process exit precedes replacement');
     const session = new ClaudeStreamSession({ ...options, bin: binary, permissionMode: 'default', killGraceMs: 100,
       environment: { ...options.environment, PONDEROSA_CLAUDE_FIXTURE_TOKENS: replacement ? '8000' : '10000',
+        PONDEROSA_CLAUDE_FIXTURE_MCP_CAPTURE: observations.at(-1).mcpCapturePath,
         PONDEROSA_CLAUDE_FIXTURE_REPLY: phase === 'seed' && seedKind === 'direct' ? '1' : '0',
         PONDEROSA_CLAUDE_FIXTURE_OBSERVATION: replacement ? scenario : 'valid',
         PONDEROSA_CLAUDE_FIXTURE_DELAY: replacement && scenario === 'cancelled' ? '500' : '' } });
@@ -48,6 +54,7 @@ await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve));
 const port = reservation.address().port;
 await new Promise(resolve => reservation.close(resolve));
 const app = createServer({ dataDir: directory, store, agentBaseUrl: `http://127.0.0.1:${port}`,
+  allowedImportRoots: scenario === 'authorized-root-valid' ? [join(directory, 'approved')] : [],
   engines: [{ adapter, authStatus: async () => ({ authenticated: true }) }], logger: false, communicationV3: { pollMs: 10 } });
 async function waitFor(check) {
   const deadline = Date.now() + 12000;
@@ -75,15 +82,33 @@ try {
     await waitFor(() => store.resumeSessionState(agent.id) && coordination.activeRunCount() === 0);
     const snapshot = store.resumeSessionState(agent.id);
     const snapshotEvent = store.readEvents(agent.id).find(({ event }) => event.type === 'session_snapshot').event;
-    result = { snapshot, providerInput: store.getProviderInput(snapshotEvent.executionId, true) };
+    result = { snapshot, providerInput: store.getProviderInput(snapshotEvent.executionId, true),
+      dynamicTools: observations[0].dynamicTools,
+      mcpTools: JSON.parse(await readFile(observations[0].mcpCapturePath, 'utf8')) };
     assert.ok(result.providerInput.sourceManifest.communicationEventIds.length > 0, 'seed must include an exact canonical context boundary');
+    if (scenario === 'pending-valid') {
+      // Freeze scheduler admission first, then persist a genuine base-built
+      // refresh request. The candidate must continue it without a new command.
+      app.prepareForShutdown();
+      const response = await app.inject({ method: 'POST', url: `/api/agents/${agent.id}/compact` });
+      assert.equal(response.statusCode, 200, response.body);
+      result.pendingRolloverId = response.json().rolloverId;
+      assert.equal(coordination.contextRollover(result.pendingRolloverId).state, 'requested');
+      assert.equal(coordination.activeRunCount(), 0);
+    }
   } else {
     if (scenario === 'unknown') store.appendEvent(agent.id, { type: 'session_snapshot', sessionId: original.sessionId,
       executionId: originalSnapshots.at(-1).event.executionId, toolContractHash: 'a'.repeat(64), artifactIds: original.artifactIds });
     const before = store.resumeSessionState(agent.id);
-    const response = await app.inject({ method: 'POST', url: `/api/agents/${agent.id}/compact` });
-    assert.equal(response.statusCode, 200, response.body);
-    const rolloverId = response.json().rolloverId;
+    let rolloverId;
+    if (scenario === 'pending-valid') {
+      rolloverId = coordination.activeContextRollover(agent.id)?.id;
+      assert.ok(rolloverId, 'base-created pending handoff survives reopening');
+    } else {
+      const response = await app.inject({ method: 'POST', url: `/api/agents/${agent.id}/compact` });
+      assert.equal(response.statusCode, 200, response.body);
+      rolloverId = response.json().rolloverId;
+    }
     if (scenario === 'cancelled') {
       const candidate = await waitFor(() => { const row = coordination.contextRollover(rolloverId); return row.replacementSessionId && row; });
       const stop = await app.inject({ method: 'POST', url: `/api/agents/${agent.id}/cancel`,
@@ -97,6 +122,8 @@ try {
       rollover: coordination.contextRollover(rolloverId), closeAttempts,
       resetCount: store.readEvents(agent.id).filter(({ event }) => event.type === 'session_reset').length,
       originalInput: store.getProviderInput(originalSnapshots.at(-1).event.executionId, true) };
+    result.errors = store.readEvents(agent.id).filter(({ event }) => event.type === 'error').map(({ event }) => event.message);
+    for (const observation of observations) observation.mcpTools = JSON.parse(await readFile(observation.mcpCapturePath, 'utf8'));
   }
 } finally {
   allowTeardown = true; app.prepareForShutdown(); await app.close(); store.close();

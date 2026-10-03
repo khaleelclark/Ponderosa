@@ -470,7 +470,7 @@ export interface DecisionDto {
     mode: "url" | "form" | "openai/form";
     serverName: string;
   };
-  /** Server-owned destructive authorization scope. Provider-authored Decisions
+  /** Server-owned authorization scope. Provider-authored Decisions
    * never populate this field. */
   approvalScope?: {
     kind: "agent_management";
@@ -484,6 +484,17 @@ export interface DecisionDto {
     profileId: string;
     projectId: string;
     agentId: string;
+  } | {
+    kind: "artifact_publication";
+    operationId: string;
+    projectId: string;
+    conversationId: string;
+    agentId: string;
+    sourcePath: string;
+    filename: string;
+    sha256: string;
+    size: number;
+    expiresAt: string;
   };
   status: "pending" | "resolved" | "cancelled";
   response?: { optionId?: string; text?: string; respondedAt: string };

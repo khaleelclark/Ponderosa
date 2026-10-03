@@ -1,6 +1,25 @@
 #!/usr/bin/env node
 // Disposable raw CLI transport. Never invokes a provider or reads a profile.
 import { createInterface } from 'node:readline';
+import { spawn } from 'node:child_process';
+import { writeFile } from 'node:fs/promises';
+if (process.env.PONDEROSA_CLAUDE_FIXTURE_MCP_CAPTURE) {
+  // Behave like the provider: start the configured MCP process and observe its
+  // actual protocol response, not the adapter's pre-transport options.
+  const config = JSON.parse(process.argv[process.argv.indexOf('--mcp-config') + 1]).mcpServers.ponderosa;
+  const child = spawn(config.command, config.args, { env: { ...process.env, ...config.env }, stdio: ['pipe', 'pipe', 'inherit'] });
+  const exited = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(Error(`MCP exited ${code}`))); });
+  child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) + '\n');
+  try {
+    for await (const line of createInterface({ input: child.stdout })) {
+      const response = JSON.parse(line);
+      if (response.id === 1) {
+        await writeFile(process.env.PONDEROSA_CLAUDE_FIXTURE_MCP_CAPTURE, JSON.stringify(response.result.tools));
+        break;
+      }
+    }
+  } finally { child.stdin.end(); await exited; }
+}
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 let count = 0;
 for await (const line of createInterface({ input: process.stdin })) {

@@ -12,6 +12,7 @@ import {
   type BrowserScope,
 } from "../browser-session-manager.js";
 import { BrowserProfileError } from "../browser-profile-authority.js";
+import { publicationOwnerIsCurrent } from "../file-publication.js";
 import {
   type ActiveRun,
   type AgentMessageCapability,
@@ -821,6 +822,15 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
     }
   }
   const respondedAt = new Date().toISOString();
+  if (current.approvalScope?.kind === "artifact_publication" && optionId === "approve") {
+    if (!publicationOwnerIsCurrent(store, current) || deletingAgentIds.has(current.agentId) ||
+        deletingConversationIds.has(current.approvalScope.conversationId)) {
+      return reply.code(409).send({ code: "publication_cancelled", error: "The publication owner changed or is being deleted. Nothing was published." });
+    }
+    if (Date.parse(current.approvalScope.expiresAt) <= Date.now()) {
+      return reply.code(410).send({ code: "publication_expired", error: "This single-file publication request expired. Nothing was published." });
+    }
+  }
   if (current.approvalScope?.kind === "agent_management") {
     try {
       if (!store.resolveAgentManagementApproval(current.id, optionId === "approve", respondedAt)) {
@@ -849,7 +859,15 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
     }
   }
   const cursor = workspace.cursor();
-  const decision = workspace.resolveDecision(current.id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}), respondedAt })!;
+  let decision: DecisionDto;
+  try {
+    decision = workspace.resolveDecision(current.id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}), respondedAt })!;
+  } catch (error) {
+    if (current.approvalScope?.kind === "artifact_publication") {
+      return reply.code(503).send({ code: "publication_approval_storage_failure", error: "Publication approval was not recorded. Nothing was published. Retry this Decision response." });
+    }
+    throw error;
+  }
   if (savedBrowserRequest && optionId === "approve") {
     try {
       if (!applyResolvedSavedBrowserApproval(decision)) {

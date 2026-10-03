@@ -170,6 +170,7 @@ registerAgentManagementRoutes(app, {
 
 registerAgentRuntimeToolRoutes(app, {
   store,
+  coordinationV3,
   dataDir: opts.dataDir,
   allowedImportRoots: opts.allowedImportRoots,
   assets,
@@ -184,6 +185,7 @@ registerAgentRuntimeToolRoutes(app, {
   projectBrowserGrants,
   deletingProjectIds,
   deletingAgentIds,
+  deletingConversationIds,
   projectBrowserScope,
   capabilityOwnsAuthoritativeRun,
 });

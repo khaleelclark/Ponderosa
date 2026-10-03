@@ -620,6 +620,10 @@ export class CoordinationV3Store {
     return this.activationReadModel.activationIdsAttachedToRun(runId, agentId);
   }
 
+  decisionResponseAttachedToRun(decisionId: string, runId: string, agentId: string): boolean {
+    return this.activationReadModel.decisionResponseAttachedToRun(decisionId, runId, agentId);
+  }
+
   runScopeKey(runId: string, agentId: string): string {
     return this.runContextReadModel.scopeKey(runId, agentId);
   }

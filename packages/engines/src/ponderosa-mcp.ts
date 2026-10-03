@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import {
   PONDEROSA_RUNTIME_TOOLS,
 } from "@ponderosa/core";
+import { decodeSessionTools } from "./ponderosa-mcp-contract.js";
 
 type RpcRequest = { id?: string | number; method?: string; params?: unknown };
 
@@ -33,19 +34,23 @@ function send(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
-/** Claude's MCP definitions are derived from the same canonical objects Codex
- * receives as dynamic tools; only the protocol-required name prefix differs. */
+/** Legacy standalone MCP default. Managed sessions supply their exact selected
+ * definitions below; only the protocol-required name prefix differs. */
 export const PONDEROSA_MCP_TOOLS = PONDEROSA_RUNTIME_TOOLS.map((tool) => ({
   name: tool.name.replace(/^ponderosa_/, ""),
   description: tool.description,
   inputSchema: tool.inputSchema,
 }));
+const selectedSessionTools = decodeSessionTools(process.env.PONDEROSA_AGENT_TOOL_DEFINITIONS);
+const sessionMcpTools = selectedSessionTools === undefined ? PONDEROSA_MCP_TOOLS : selectedSessionTools.map(tool => ({
+  name: tool.name.replace(/^ponderosa_/, ""), description: tool.description, inputSchema: tool.inputSchema,
+}));
 
 export const enabledPonderosaMcpTools = (
   enabledNames: ReadonlySet<string> | undefined = configuredToolNames,
 ) => enabledNames === undefined
-  ? PONDEROSA_MCP_TOOLS
-  : PONDEROSA_MCP_TOOLS.filter((tool) => enabledNames.has(tool.name));
+  ? sessionMcpTools
+  : sessionMcpTools.filter((tool) => enabledNames.has(tool.name));
 
 async function handle(request: RpcRequest): Promise<void> {
   if (request.id === undefined) return;

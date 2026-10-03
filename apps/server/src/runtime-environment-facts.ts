@@ -59,6 +59,6 @@ export function environmentFactsPrompt(facts: RuntimeEnvironmentFactsDto): strin
     "Executable availability is a bounded PATH observation, not an installation or compatibility guarantee. Use python3 when python is absent and python3 is available; do not install software without authorization.",
     facts.reportOutputRoot
       ? "The reportOutputRoot is an Agent-owned publication location under an existing operator-authorized import root, outside this checkout. It is not automatically created. A read-only reviewer may write its report there and use ponderosa_import_file; do not write into the writer's checkout or broaden import roots. File APIs still enforce symlink containment."
-      : "No external report-output root is authorized. A read-only reviewer can return its report through a canonical reply, or ask the operator to configure an import root. Do not write a report into the writer's checkout, silently grant a root, or copy a rejected file automatically.",
+      : "No external report-output root is authorized. Use ponderosa_import_file on the exact external deliverable to request a single-file publication Decision, or return a report through a canonical reply. Approval publishes only the verified file, not a directory or future imports. End the Run while approval is pending; retry the same path after its exact Decision continuation resumes. Do not write a report into the writer's checkout, silently grant a root, or copy a rejected file automatically.",
   ];
 }

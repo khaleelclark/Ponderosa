@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import type { AgentStore, StoredLogEvent, WorkspaceStore } from "@ponderosa/agents";
+import type { AgentStore, CoordinationV3Store, StoredLogEvent, WorkspaceStore } from "@ponderosa/agents";
 import {
   CompactionHistoryQueryError,
   MANAGED_ARTIFACT_MAX_BYTES,
@@ -23,10 +23,12 @@ import type {
 } from "../app-contracts.js";
 import type { AssetStore, GeneratedArtifactImportReceipt } from "../assets.js";
 import { readWorkspaceArtifactFileAsync } from "../project-file-access.js";
+import { externalPublicationDecision, FilePublicationError, publicationOwnerIsCurrent, readPublicationSource } from "../file-publication.js";
 
 interface AgentRuntimeToolRoutesContext {
   allowedImportRoots?: string[];
   store: AgentStore;
+  coordinationV3: CoordinationV3Store;
   agentMessageCapabilities: ReadonlyMap<string, AgentMessageCapability>;
   activeRuns: ReadonlyMap<string, ActiveRun>;
   browserSessions: BrowserSessionManager;
@@ -37,6 +39,7 @@ interface AgentRuntimeToolRoutesContext {
   projectBrowserGrants: Map<string, { agentId: string; runId: string }>;
   deletingProjectIds: ReadonlySet<string>;
   deletingAgentIds: ReadonlySet<string>;
+  deletingConversationIds: ReadonlySet<string>;
   dataDir: string;
   assets: AssetStore;
   publish(agentId: string, stored: StoredLogEvent): void;
@@ -140,6 +143,7 @@ export function registerAgentRuntimeToolRoutes(
 ): void {
   const {
     store,
+    coordinationV3,
     agentMessageCapabilities,
     activeRuns,
     browserSessions,
@@ -384,16 +388,38 @@ export function registerAgentRuntimeToolRoutes(
     const absoluteSourcePath = path.isAbsolute(requestedPath)
       ? path.resolve(requestedPath)
       : path.resolve(workingRoot, requestedPath);
+    const authorityIsCurrent = () => {
+      const current = activeRuns.get(agent.id);
+      const owner = store.getAgent(agent.id);
+      const chat = store.getConversation(agent.conversationId);
+      return current === active && !active.controller.signal.aborted &&
+        capabilityOwnsAuthoritativeRun(capability, current) && current.messageCapability === token &&
+        owner?.projectId === agent.projectId && owner.conversationId === agent.conversationId &&
+        Boolean(chat && !chat.archived) &&
+        !context.deletingAgentIds?.has(agent.id) && !context.deletingProjectIds?.has(agent.projectId) &&
+        !context.deletingConversationIds?.has(agent.conversationId);
+    };
     const importRoot = importRootFor(workingRoot, allowedImportRoots, absoluteSourcePath);
+    let publication: Awaited<ReturnType<typeof externalPublicationDecision>> | undefined;
     if (!importRoot) {
-      return reply.code(403).send({
-        error: "host file is outside the Project workspace and configured import roots. Use the authorized report-output location from this Run's environment facts, publish the report as canonical text, or ask the operator to configure an import root. Do not copy the rejected file automatically or weaken symlink containment.",
-        code: "outside_import_roots",
-        boundary: { workingRoot, configuredImportRootCount: Math.min(allowedImportRoots.length, 8) },
-      });
+      try {
+        publication = await externalPublicationDecision({
+          workspace, store, coordinationV3, agentId: agent.id, projectId: agent.projectId,
+          conversationId: agent.conversationId, runId: active.runId, coordinationRunId: capability.runId,
+          sourcePath: absoluteSourcePath, signal: active.controller.signal,
+          authorityIsCurrent, publishWorkspaceSince: context.publishWorkspaceSince,
+        });
+      } catch (error) {
+        if (error instanceof FilePublicationError) return reply.code(error.statusCode).send({
+          error: error.message, code: error.code, ...(error.decisionId ? { decisionId: error.decisionId } : {}),
+        });
+        return reply.code(503).send({ code: "publication_approval_storage_failure", error: "Publication approval could not be recorded. Nothing was published. Retry this import request." });
+      }
     }
+    const receiptRunId = publication?.runId ?? active.runId;
+    const receiptToolCallId = publication ? `publication:${publication.approvalScope.operationId}` : toolCallId;
     const requestHash = createHash("sha256")
-      .update(JSON.stringify({ path: absoluteSourcePath }))
+      .update(JSON.stringify({ path: absoluteSourcePath, ...(publication ? { operationId: publication.approvalScope.operationId, sha256: publication.approvalScope.sha256 } : {}) }))
       .digest("hex");
     const artifactResponse = (
       catalogArtifact: ReturnType<typeof projectImportReceipt>,
@@ -419,9 +445,10 @@ export function registerAgentRuntimeToolRoutes(
       };
     };
     const prior = assets.generatedArtifactImportReceipt(
-      agent.projectId, active.runId, toolCallId,
+      agent.projectId, receiptRunId, receiptToolCallId,
     );
     if (prior) {
+      if (!authorityIsCurrent()) return reply.code(409).send({ code: "publication_cancelled", error: "Run authority ended before receipt recovery." });
       if (prior.requestHash !== requestHash) {
         return reply.code(409).send({
           error: "tool call was already used for a different file import",
@@ -437,70 +464,76 @@ export function registerAgentRuntimeToolRoutes(
       }
       return artifactResponse(catalogArtifact, resolved.body);
     }
-    const authorityIsCurrent = () => {
-      const current = activeRuns.get(agent.id);
-      return current === active &&
-        !active.controller.signal.aborted &&
-        capabilityOwnsAuthoritativeRun(capability, current) &&
-        current.messageCapability === token;
-    };
-    const source = await readWorkspaceArtifactFileAsync({
-      rootPath: importRoot,
-      requestedPath: absoluteSourcePath,
-      purpose: "host_import",
-      maxBytes: MANAGED_ARTIFACT_MAX_BYTES,
-      requireNonEmpty: true,
-      signal: active.controller.signal,
-    });
+    const publicationIsCurrent = () => !publication ||
+      workspace.getDecision(publication.id)?.status === "resolved" &&
+      workspace.getDecision(publication.id)?.response?.optionId === "approve" &&
+      Date.parse(publication.approvalScope.expiresAt) > Date.now() && publicationOwnerIsCurrent(store, publication);
+    let source: Awaited<ReturnType<typeof readWorkspaceArtifactFileAsync>>;
+    try {
+      source = publication ? await readPublicationSource(absoluteSourcePath, active.controller.signal) : await readWorkspaceArtifactFileAsync({
+        rootPath: importRoot!,
+        requestedPath: absoluteSourcePath,
+        purpose: "host_import",
+        maxBytes: MANAGED_ARTIFACT_MAX_BYTES,
+        requireNonEmpty: true,
+        signal: active.controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof FilePublicationError) return reply.code(error.statusCode).send({ code: error.code, error: error.message });
+      return reply.code(400).send({ code: "publication_unsafe_file", error: "The source file could not be read safely." });
+    }
     if (!source) {
       return reply.code(400).send({
         error: "host file is unavailable, unsafe, empty, changing, or larger than 64 MiB",
       });
     }
-    if (!authorityIsCurrent()) {
-      return reply.code(409).send({ error: "run authority ended before file import" });
+    if (publication && (source.body.length !== publication.approvalScope.size ||
+        createHash("sha256").update(source.body).digest("hex") !== publication.approvalScope.sha256)) {
+      return reply.code(409).send({ code: "publication_file_changed", error: "The source bytes differ from the approved file. Nothing was published." });
     }
-    const artifactId = stableImportArtifactId(agent.projectId, active.runId, toolCallId);
+    if (!authorityIsCurrent() || !publicationIsCurrent()) {
+      return reply.code(409).send({ code: "publication_cancelled", error: "Run or publication authority ended before file import." });
+    }
+    const artifactId = stableImportArtifactId(agent.projectId, receiptRunId, receiptToolCallId);
     const extension = path.extname(source.name).toLowerCase();
-    const name = source.name
+    const name = publication?.approvalScope.filename ?? (source.name
       .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, "_")
-      .trim() || `imported-${artifactId}${extension}`;
+      .trim() || `imported-${artifactId}${extension}`);
     const mediaType = importedArtifactMediaType(name);
     const managedPath = `imported/${artifactId}${extension}`;
-    const publishedArtifact = await publishManagedArtifactContentAsync(
-      dataDir,
-      agent.projectId,
-      artifactId,
-      source.body,
-      active.controller.signal,
-    );
-    if (!authorityIsCurrent()) {
-      return reply.code(409).send({ error: "run authority ended during file import" });
+    try {
+      const publishedArtifact = await publishManagedArtifactContentAsync(
+        dataDir, agent.projectId, artifactId, source.body, active.controller.signal,
+      );
+      if (!authorityIsCurrent() || !publicationIsCurrent()) {
+        return reply.code(409).send({ code: "publication_cancelled", error: "Run or publication authority ended during file import." });
+      }
+      const receipt = assets.registerPublishedGeneratedArtifactImport({
+        id: artifactId,
+        projectId: agent.projectId,
+        agentId: agent.id,
+        originAgentId: agent.id,
+        executionId: active.executionId,
+        kind: "generated_file",
+        path: managedPath,
+        sourcePath: absoluteSourcePath,
+        summary: name,
+        createdAt: new Date().toISOString(),
+        mediaType,
+        size: publishedArtifact.size,
+        sha256: publishedArtifact.sha256,
+      }, publishedArtifact, { runId: receiptRunId, toolCallId: receiptToolCallId, requestHash });
+      const catalogArtifact = projectImportReceipt(receipt);
+      if (!catalogArtifact) {
+        return reply.code(409).send({ code: "publication_storage_failure", error: "File import could not be projected. Retry the same publication." });
+      }
+      return artifactResponse(catalogArtifact, source.body);
+    } catch {
+      if (!authorityIsCurrent() || !publicationIsCurrent()) {
+        return reply.code(409).send({ code: "publication_cancelled", error: "Run or publication authority ended during file import." });
+      }
+      return reply.code(503).send({ code: "publication_storage_failure", error: "The file could not be published or its receipt recovered. Retry the same publication; do not copy it elsewhere." });
     }
-    const receipt = assets.registerPublishedGeneratedArtifactImport({
-      id: artifactId,
-      projectId: agent.projectId,
-      agentId: agent.id,
-      originAgentId: agent.id,
-      executionId: active.executionId,
-      kind: "generated_file",
-      path: managedPath,
-      sourcePath: absoluteSourcePath,
-      summary: name,
-      createdAt: new Date().toISOString(),
-      mediaType,
-      size: publishedArtifact.size,
-      sha256: publishedArtifact.sha256,
-    }, publishedArtifact, {
-      runId: active.runId,
-      toolCallId,
-      requestHash,
-    });
-    const catalogArtifact = projectImportReceipt(receipt);
-    if (!catalogArtifact) {
-      return reply.code(409).send({ error: "file import could not be projected" });
-    }
-    return artifactResponse(catalogArtifact, source.body);
   });
 
   app.post<{

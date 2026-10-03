@@ -600,6 +600,17 @@ export function createServerReadModels(context: ReadModelContext) {
           id: decision.id,
           question: decision.question,
           response: decision.response,
+          // Data for this exact continuation, not filesystem or routing authority.
+          ...(decision.approvalScope?.kind === "artifact_publication" && decision.response.optionId === "approve"
+            ? { publication: {
+                sourcePath: decision.approvalScope.sourcePath,
+                filename: decision.approvalScope.filename,
+                operationId: decision.approvalScope.operationId,
+                sha256: decision.approvalScope.sha256,
+                size: decision.approvalScope.size,
+                expiresAt: decision.approvalScope.expiresAt,
+              } }
+            : {}),
         },
       },
       bypassCapacity: true,
