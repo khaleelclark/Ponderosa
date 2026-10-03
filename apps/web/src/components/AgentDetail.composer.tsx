@@ -13,7 +13,7 @@ interface AgentDetailComposerProps {
   visible: boolean;
   queuedMessageNotice?: string;
   queuedMessageFailure?: { error: Error; retry(): void };
-  sendError?: string;
+  cancellationError?: string;
   providerUsageState?: ProviderUsageStateDto;
   agentId: string;
   onCloseProviderUsage(): void;
@@ -32,7 +32,7 @@ export function AgentDetailComposer({
   visible,
   queuedMessageNotice,
   queuedMessageFailure,
-  sendError,
+  cancellationError,
   providerUsageState,
   agentId,
   onCloseProviderUsage,
@@ -55,9 +55,9 @@ export function AgentDetailComposer({
           {queuedMessageNotice}
         </Alert>
       ) : null}
-      {sendError ? (
+      {cancellationError ? (
         <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-          {sendError}
+          {cancellationError}
         </Alert>
       ) : null}
       {queuedMessageFailure ? (

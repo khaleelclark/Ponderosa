@@ -75,3 +75,28 @@ for(const kind of ['direct','broadcast']) {
     assert.deepEqual(message,f.expected());assert.equal(f.records(),1);
   });
 }
+
+test('opening presentation uses exact identity, not prose, and clears stale bindings for deleted or wrong-Project Agents', () => {
+  const agent = { id: 'created', projectId: 'project', handle: 'Boston', title: 'Boston' };
+  let current = agent;
+  const communication = { schemaVersion: 2, projectId: 'project', eventId: 'agent-opening:created',
+    intent: 'broadcast', sender: { kind: 'user', id: 'operator' }, audience: { kind: 'project' } };
+  const store = { listAgents: () => current ? [current] : [], getAgent: id => id === agent.id ? current : undefined,
+    getCommunicationEvent: () => communication };
+  const coordinationV3 = { deliveryReceiptsForCommunications: () => new Map(), requestSummariesForCommunications: () => new Map() };
+  const { withMessagePresentation } = createServerReadModels({ store, coordinationV3 });
+  const message = { communicationEventId: communication.eventId, text: '#new-agent unchanged text' };
+  const read = () => withMessagePresentation('project', [message])[0];
+  assert.equal(read().agentMentions[0].agentId, 'created');
+  message.agentMentions = read().agentMentions;
+  current = undefined;
+  assert.deepEqual(read().agentMentions, [], 'missing Agent cannot retain a clickable opening binding');
+  current = { ...agent, projectId: 'another-project' };
+  assert.deepEqual(read().agentMentions, [], 'same-looking cross-Project Agent cannot supply the binding');
+  current = agent; communication.eventId = 'ordinary-communication';
+  delete message.agentMentions;
+  assert.equal(read().agentMentions, undefined, 'ordinary reserved prose is not an opening');
+  communication.eventId = 'agent-opening:missing';
+  assert.deepEqual(read().agentMentions, [], 'another existing Agent cannot substitute for the exact missing identity');
+  assert.equal(read().text, message.text);
+});

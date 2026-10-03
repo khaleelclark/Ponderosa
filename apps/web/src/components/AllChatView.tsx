@@ -1823,13 +1823,6 @@ export function AllChatView({
             being cleaned up automatically.
           </Alert>
         ) : null}
-        {send.isError ? (
-          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            {send.error instanceof Error
-              ? send.error.message
-              : "Direct message could not be sent."}
-          </Alert>
-        ) : null}
         {cancelOperationError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
             Cancellation failed. {cancelOperationError.message}

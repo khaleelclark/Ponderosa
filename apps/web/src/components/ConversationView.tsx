@@ -652,7 +652,6 @@ export function ConversationView({
     queuedMessageFailure,
     queuedMessageNotice,
     queuedMessagesQuery,
-    sendError,
     setQueuedMessageNotice,
     setStopConfirmation,
     steerQueued,
@@ -1387,11 +1386,6 @@ export function ConversationView({
             }}
           >
             {queuedMessageNotice}
-          </Alert>
-        ) : null}
-        {sendError ? (
-          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            Message not sent. {String(sendError)}
           </Alert>
         ) : null}
         {persistTargetRuntime.error || persistDefaults.error ? (

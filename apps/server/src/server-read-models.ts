@@ -17,6 +17,7 @@ import type {
   StoredLogEvent,
   WorkspaceStore,
 } from "@ponderosa/agents";
+import { communicationMentionBindings } from "@ponderosa/agents";
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
 import { sqliteCollectionPage } from "./collection-page.js";
 import { withDecisionRecipient } from "./decision-presentation.js";
@@ -145,7 +146,12 @@ export function createServerReadModels(context: ReadModelContext) {
       const collaboration = communication?.intent === "collaboration"
         ? collaborationPresentation({ ...communication, text: message.text }, projectAgents) : undefined;
       const collaborationRecipients = collaboration?.collaborationRecipients ?? [];
-      const agentMentions = collaboration?.agentMentions ?? resolveAgentMentionBindings(
+      const agentOpening = communication?.eventId.startsWith("agent-opening:") ?? false;
+      const openingMentions = communication && agentOpening
+        ? communicationMentionBindings(message.text, communication, (agentId) => store.getAgent(agentId))
+            .filter((binding) => binding.handle === "new-agent")
+        : [];
+      const agentMentions = collaboration?.agentMentions ?? [...resolveAgentMentionBindings(
         projectId,
         message.text,
         recipientAgentIds,
@@ -158,7 +164,7 @@ export function createServerReadModels(context: ReadModelContext) {
             communication?.identity?.recipientHandles,
           ),
         ],
-      );
+      ), ...openingMentions];
       const deliveryReceipts = deliveryReceiptsByEvent.get(message.communicationEventId) ?? [];
       const requestUpdateLink = requestUpdateLinksByEvent.get(
         message.communicationEventId,
@@ -203,7 +209,7 @@ export function createServerReadModels(context: ReadModelContext) {
         ...(collaborationRecipients.length ? { collaborationRecipients } : {}),
         ...(deliveryReceipts.length ? { deliveryReceipts } : {}),
         ...(coordinationRequests.length ? { coordinationRequests } : {}),
-        ...(collaboration || agentMentions.length ? { agentMentions } : {}),
+        ...(collaboration || agentOpening || agentMentions.length ? { agentMentions } : {}),
       };
     });
   }
