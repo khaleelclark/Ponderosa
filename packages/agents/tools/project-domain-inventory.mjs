@@ -14,7 +14,7 @@ export function inventoryProjectDomain(root) {
     if(stat.size>16*1024**2)throw Error(`Tracked file exceeds inventory bound: ${name}`);
     const bytes=readFileSync(file);if(bytes.subarray(0,8192).includes(0))continue;
     const lines=bytes.toString('utf8').split('\n'),locations=[];
-    for(let i=0;i<lines.length;i++)if(/\b(?:[A-Za-z_]*[Pp]roject(?:[A-Z_][A-Za-z0-9_]*|s(?:[A-Z_][A-Za-z0-9_]*)?)?|project_id)\b/u.test(lines[i]))locations.push(i+1);
+    for(let i=0;i<lines.length;i++)if(/\b(?:[A-Za-z_]*[Pp]roject(?:[A-Z_][A-Za-z0-9_]*|s(?:[A-Z_][A-Za-z0-9_]*)?)?|[A-Z_]*PROJECT(?:_[A-Z0-9_]+)?|project_id)\b/u.test(lines[i]))locations.push(i+1);
     if(!locations.length&&!filenameReference(name))continue;
     const category=/\/schema\/\d+[^/]*\.sql$/u.test(name)?'deployed_schema_requires_immutable_upgrade_reader':
       /(?:^|\/)test(?:\/|s\/)|\.test\.|\.check\./u.test(name)?'test_or_fixture_requires_classification':

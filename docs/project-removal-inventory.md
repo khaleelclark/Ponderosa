@@ -19,6 +19,11 @@ every retained scope's actual child Chat IDs, including zero and multiple
 children, and every table's row count, primary key and ownership columns.
 It fingerprints schema definitions. Single-child cardinality is not a resource
 ownership proof; every report explicitly remains `inventory_only`.
+Inventory mode rejects WAL-mode databases and any SQLite sidecars before opening
+SQLite. Supply a verified coherent offline rollback-mode export, not a raw live
+database. This preserves committed WAL data rather than silently ignoring it.
+The pre-existing default audit/runtime path is unchanged; its read-only SQLite
+open is not a guarantee that WAL/SHM sidecar files cannot be created.
 
 `chat-ownership-qualification.mjs` already captures coherent database/file
 manifests, rehearses on disposable clones, rejects changed inputs, verifies
@@ -120,7 +125,7 @@ node packages/agents/dist/chat-ownership-audit.js /approved/offline/ponderosa.db
 
 Keep operator inventory output outside Git. The first tool reports tracked
 repository text/filenames and does not inspect generated/package outputs. The
-second opens only the supplied main database read-only. Neither starts
+second opens only the supplied offline rollback-mode main database read-only. Neither starts
 AgentStore, probes providers, migrates files/SQL, or approves release.
 
 ## Next required input

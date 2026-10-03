@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -46,6 +46,18 @@ test("opening a missing database never creates it",()=>{
   try { assert.throws(()=>auditChatOwnership(path)); assert.equal(existsSync(path),false); }
   finally { rmSync(root,{recursive:true,force:true}); }
 });
+test("inventory rejects WAL inputs without creating, deleting or changing database sidecars",()=>fixture((db,path)=>{
+  db.pragma('journal_mode = WAL');
+  db.exec("INSERT INTO projects VALUES ('committed-in-wal')");
+  const manifest=()=>readdirSync(join(path,'..')).sort().map(name=>[name,readFileSync(join(path,'..',name))]);
+  const before=manifest();
+  assert.throws(()=>auditChatOwnership(path,{inventory:true}),/WAL input is not opened/);
+  assert.deepEqual(manifest(),before,'committed WAL and shared-memory bytes are untouched');
+  db.close();
+  const closed=manifest();
+  assert.throws(()=>auditChatOwnership(path,{inventory:true}),/WAL input is not opened/);
+  assert.deepEqual(manifest(),closed,'closed WAL-mode database does not acquire new sidecars');
+}));
 test("optional migration inventory enumerates all sibling Chat identities and scoped tables without selecting an owner or writing",()=>fixture((db,path)=>{
   db.exec("CREATE TABLE extra_authority(id TEXT PRIMARY KEY,project_id TEXT,conversation_id TEXT); INSERT INTO extra_authority VALUES ('receipt','P','C2'); INSERT INTO projects VALUES ('empty');");
   const before=readFileSync(path), schemaBefore=db.prepare("SELECT sql FROM sqlite_master ORDER BY name").all();
@@ -65,6 +77,19 @@ test("inventory distinguishes measured single-Chat scopes without substituting t
   assert.deepEqual(inventory.scopes,[{legacyScopeId:'P',chatIds:['C1'],cardinality:'single'}]);
   assert.deepEqual(inventory.nonSingletonScopeIds,[]);
   assert.equal(inventory.status,'inventory_only','even a single child does not qualify resource ownership or migration');
+}));
+test("inventory includes valid sqlite-like names, quoted identifiers and generated scope columns",()=>fixture((db,path)=>{
+  db.exec(`CREATE TABLE sqliteXauthority(id TEXT PRIMARY KEY,source TEXT,project_id TEXT GENERATED ALWAYS AS (source) STORED,conversation_id TEXT GENERATED ALWAYS AS ('C1') VIRTUAL);
+    INSERT INTO sqliteXauthority(id,source) VALUES ('owned','P');
+    CREATE TABLE "quoted\"\"authority"("odd\"\"id" TEXT PRIMARY KEY,chat_id TEXT);
+    INSERT INTO "quoted\"\"authority" VALUES ('exact','C1');`);
+  const before=readFileSync(path), inventory=auditChatOwnership(path,{inventory:true}).inventory;
+  assert.deepEqual(inventory.tables.find(table=>table.name==='sqliteXauthority'),{name:'sqliteXauthority',rows:1,primaryKey:['id'],scopeColumns:['project_id','conversation_id']});
+  assert.deepEqual(inventory.tables.find(table=>table.name==='quoted"authority'),{name:'quoted"authority',rows:1,primaryKey:['odd"id'],scopeColumns:['chat_id']});
+  const hash=inventory.schemaHash;db.exec('CREATE TABLE sqliteYauthority(id TEXT)');
+  assert.notEqual(auditChatOwnership(path,{inventory:true}).inventory.schemaHash,hash,'valid sqlite-like schema contributes to fingerprint');
+  // Only the explicit fixture CREATE changed bytes; each audit itself is read-only.
+  assert.ok(before.length);const after=readFileSync(path);auditChatOwnership(path,{inventory:true});assert.deepEqual(readFileSync(path),after);
 }));
 test("human-authored documents resolve through communication ownership, not a fictitious agent",()=>fixture((db,path)=>{
   db.exec(`UPDATE managed_artifact_projection SET artifact_json='{"originAgentId":"local-operator"}',owner_kind='communication',owner_id='message';

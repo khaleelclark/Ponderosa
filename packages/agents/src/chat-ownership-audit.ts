@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
+import { closeSync, constants, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -25,6 +26,20 @@ export const unresolvedArtifactOwnershipSql = `
  * reconciliation can write data. Passing this check is not migration approval;
  * canonical journals, file access, and runtime recovery need separate checks. */
 export function auditChatOwnership(databasePath: string, options: { inventory?: boolean } = {}) {
+  if (options.inventory) {
+    // readonly SQLite may create WAL/SHM files. Inventory accepts only an offline,
+    // rollback-mode export; never ignore committed WAL bytes via immutable=true.
+    const fd = openSync(databasePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      if (!fstatSync(fd).isFile()) throw new Error("Inventory requires a regular offline SQLite export");
+      const header = Buffer.alloc(20);
+      const length = readSync(fd, header, 0, header.length, 0);
+      if ((length === 20 && (header[18] === 2 || header[19] === 2)) ||
+          ["-wal", "-shm", "-journal"].some(suffix => existsSync(databasePath + suffix))) {
+        throw new Error("Inventory requires a coherent offline rollback-mode SQLite export without sidecars; WAL input is not opened");
+      }
+    } finally { closeSync(fd); }
+  }
   const db = new Database(databasePath, { readonly: true, fileMustExist: true });
   try {
     db.pragma("query_only = ON");
@@ -55,9 +70,9 @@ export function auditChatOwnership(databasePath: string, options: { inventory?: 
           const chatIds = (db.prepare("SELECT id FROM conversations WHERE project_id=? ORDER BY id").all(scope.id) as Array<{ id: string }>).map(chat => chat.id);
           return { legacyScopeId: scope.id, chatIds, cardinality: chatIds.length === 0 ? "empty" : chatIds.length === 1 ? "single" : "multiple" };
         });
-        const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
-        const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Array<{ name: string }>).map(({ name }) => {
-          const columns = db.prepare(`PRAGMA table_info(${quote(name)})`).all() as Array<{ name: string; pk: number }>;
+        const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' ORDER BY type,name").all();
+        const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name").all() as Array<{ name: string }>).map(({ name }) => {
+          const columns = db.prepare(`PRAGMA table_xinfo(${quote(name)})`).all() as Array<{ name: string; pk: number }>;
           return { name, rows: (db.prepare(`SELECT COUNT(*) AS n FROM ${quote(name)}`).get() as { n: number }).n,
             primaryKey: columns.filter(column => column.pk > 0).sort((a, b) => a.pk - b.pk).map(column => column.name),
             scopeColumns: columns.filter(column => ["project_id", "conversation_id", "chat_id"].includes(column.name)).map(column => column.name) };
