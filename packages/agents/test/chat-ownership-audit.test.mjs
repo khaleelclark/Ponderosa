@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, existsSync, readdirSync, symlinkSync, readlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import Database from "better-sqlite3";
 import test from "node:test";
 import { auditChatOwnership } from "../dist/chat-ownership-audit.js";
@@ -80,6 +82,66 @@ test("inventory rejects dangling sidecar symlinks without following or changing 
     assert.equal(readlinkSync(sidecar),target);assert.equal(existsSync(target),false);
     unlinkSync(sidecar);
   }
+}));
+for (const change of ['pathname', 'ancestor', '-wal', '-shm', '-journal']) {
+  test(`inventory rejects ${change} replacement at descriptor closure without opening or writing input SQLite`, () => fixture((db, originalPath) => {
+    const root = join(originalPath, '..'), input = join(root, 'input'), replacement = join(root, 'replacement');
+    fs.mkdirSync(input); fs.mkdirSync(replacement);
+    const path = join(input, 'audit.db');
+    fs.copyFileSync(originalPath, path);
+    const walPath = join(replacement, 'audit.db');
+    fs.copyFileSync(originalPath, walPath);
+    const wal = new Database(walPath); wal.pragma('journal_mode = WAL'); wal.close();
+    const manifest = () => fs.readdirSync(input).sort().map(name => [name, fs.readFileSync(join(input, name))]);
+    const source = fs.statSync(path), close = fs.closeSync;
+    let changed = false, expected, error;
+    fs.closeSync = fd => {
+      const stat = fs.fstatSync(fd);
+      close(fd);
+      if (changed || stat.ino !== source.ino || stat.dev !== source.dev) return;
+      changed = true;
+      if (change === 'pathname') { fs.renameSync(path, path + '.original'); fs.renameSync(walPath, path); }
+      else if (change === 'ancestor') { fs.renameSync(input, input + '.original'); fs.renameSync(replacement, input); }
+      else fs.writeFileSync(path + change, 'disposable sidecar');
+      expected = manifest();
+    };
+    syncBuiltinESMExports();
+    try { auditChatOwnership(path, { inventory: true }); } catch (failure) { error = failure; }
+    finally { fs.closeSync = close; syncBuiltinESMExports(); }
+    assert(changed, 'race hook must reach the validated source descriptor');
+    assert.deepEqual(manifest(), expected, 'audit never creates, deletes or changes input-side files');
+    assert.match(String(error), /input changed|without sidecars/, 'changed source must be rejected, not inventoried');
+  }));
+}
+test('inventory rejects same-inode mutation during bounded copy and removes private staging', () => fixture((db, path) => {
+  const read = fs.readSync;
+  let changed = false, error;
+  const before = fs.readdirSync(tmpdir()).filter(name => name.startsWith('ponderosa-audit-')).sort();
+  fs.readSync = (...args) => {
+    const count = read(...args);
+    if (!changed && args[3] > 20) { changed = true; db.exec("INSERT INTO projects VALUES ('changed-during-copy')"); }
+    return count;
+  };
+  syncBuiltinESMExports();
+  try { auditChatOwnership(path, { inventory: true }); } catch (failure) { error = failure; }
+  finally { fs.readSync = read; syncBuiltinESMExports(); }
+  assert(changed);
+  assert.match(String(error), /input changed/);
+  assert.deepEqual(fs.readdirSync(tmpdir()).filter(name => name.startsWith('ponderosa-audit-')).sort(), before);
+}));
+test('inventory inspects only a private snapshot and removes it on success and SQLite failure', () => fixture((db, path) => {
+  const pragma = Database.prototype.pragma, opened = [];
+  Database.prototype.pragma = function (...args) { opened.push(this.name); return pragma.apply(this, args); };
+  try {
+    const before = fs.readFileSync(path);
+    assert.equal(auditChatOwnership(path, { inventory: true }).counts.chats, 2);
+    assert.equal(opened.length, 1); assert.notEqual(opened[0], path);
+    assert.equal(fs.existsSync(opened[0]), false, 'private snapshot is removed after inspection');
+    assert.deepEqual(fs.readFileSync(path), before);
+    db.exec('DROP TABLE projects');
+    assert.throws(() => auditChatOwnership(path, { inventory: true }), /no such table/);
+    assert.equal(opened.length, 2); assert.equal(fs.existsSync(opened[1]), false, 'query failure removes private snapshot too');
+  } finally { Database.prototype.pragma = pragma; }
 }));
 test("optional migration inventory enumerates all sibling Chat identities and scoped tables without selecting an owner or writing",()=>fixture((db,path)=>{
   db.exec("CREATE TABLE extra_authority(id TEXT PRIMARY KEY,project_id TEXT,conversation_id TEXT); INSERT INTO extra_authority VALUES ('receipt','P','C2'); INSERT INTO projects VALUES ('empty');");
