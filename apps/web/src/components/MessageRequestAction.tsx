@@ -2,7 +2,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
 import { Dialog, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import type { CollaborationRecipientDto, CoordinationRequestSummaryDto } from "@ponderosa/core";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { RequestLifecycleCard } from "./RequestLifecycleCard";
 
 /** Availability comes from canonical request summaries, never message prose. */
@@ -14,6 +14,7 @@ export function MessageRequestAction({ projectId, conversationId, requests, reci
   agentTitle: (agentId: string | undefined) => string;
 }): JSX.Element | null {
   const [open, setOpen] = useState(false);
+  const titleId = useId();
   const linkedRequests = [...new Map((requests ?? [])
     .filter(request => request.recordId.trim())
     .map(request => [request.recordId, request])).values()];
@@ -29,12 +30,13 @@ export function MessageRequestAction({ projectId, conversationId, requests, reci
       </IconButton>
     </Tooltip>
     {open ? <Dialog open onClose={() => setOpen(false)} fullWidth maxWidth="md"
+      aria-labelledby={titleId}
       aria-label={recipients?.length ? "Message details" : linkedRequests.length === 1 ? "Request details" : "Request details for this message"}
       onClick={event => event.stopPropagation()}
     >
-      <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        {recipients?.length ? "Message details" : "Request details"}
-        <IconButton aria-label="Close request details" onClick={() => setOpen(false)}><CloseIcon /></IconButton>
+      <DialogTitle id={`${titleId}-container`} sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span id={titleId}>{recipients?.length ? "Message details" : "Request details"}</span>
+        <IconButton aria-label={recipients?.length ? "Close message details" : "Close request details"} onClick={() => setOpen(false)}><CloseIcon /></IconButton>
       </DialogTitle>
       <DialogContent>
         <Stack spacing={1}>

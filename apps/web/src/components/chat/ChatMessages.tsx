@@ -97,7 +97,7 @@ export function communicationVisibleText(input: {
     : input.text;
   const resolvedText = resolveMessageMentionText(routedText, input.agentMentions);
   const prefix = !input.fromAgent &&
-    (input.intent === "user_dm" || input.intent === "collaboration" ||
+    (input.intent === "user_dm" ||
       input.agentMentions?.some(mention => mention.handle === "new-agent"))
     ? canonicalRecipientPrefix(input.text, input.agentMentions)
     : "";

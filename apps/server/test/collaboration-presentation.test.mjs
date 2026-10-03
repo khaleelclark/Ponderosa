@@ -14,6 +14,11 @@ test("persisted canonical Collaboration recipients do not guess hashtags or muta
   assert.deepEqual(missingCollaborationRecipients(group.text, group.collaborationRecipients, group.agentMentions).map(r => r.id), [fixture.juniper.id]);
   assert.deepEqual(before, fixture.authority());
   for (const event of fixture.events) assert.equal(fixture.store.getCommunicationEvent(fixture.project.id, event.eventId).text, event.text);
+  assert.deepEqual(fixture.messages().map(m => m.text), fixture.events.map(e => e.text), "legacy rendered prefixes are not canonical/copyable text");
+  const all = await fixture.allPage();
+  assert.equal(all.items.length, 1, "All Messages scope filtering excludes Agent-to-Agent copies");
+  assert.equal(all.items[0].author.kind, "user");
+  assert.deepEqual(all.items[0].collaborationRecipients.map(r => r.id), [fixture.boston.id, fixture.juniper.id]);
 });
 
 test("historical spellings, deleted/reused names, ambiguity and nonrecipients stay safe", () => {

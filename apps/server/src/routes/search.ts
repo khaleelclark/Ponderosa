@@ -90,7 +90,7 @@ export function registerSearchRoutes(
         }
         const projectAgents = store.listAgents(item.project.id);
         if (communication?.intent === "collaboration") {
-          return { ...item, ...collaborationPresentation(communication, projectAgents),
+          return { ...item, ...collaborationPresentation({ ...communication, text: item.text }, projectAgents),
             ...(deliveryReceipts.length ? { deliveryReceipts } : {}) };
         }
         const agentMentions = resolveAgentMentionBindings(

@@ -142,7 +142,7 @@ export function createServerReadModels(context: ReadModelContext) {
           })
         : [];
       const collaboration = communication?.intent === "collaboration"
-        ? collaborationPresentation(communication, projectAgents) : undefined;
+        ? collaborationPresentation({ ...communication, text: message.text }, projectAgents) : undefined;
       const collaborationRecipients = collaboration?.collaborationRecipients ?? [];
       const agentMentions = collaboration?.agentMentions ?? resolveAgentMentionBindings(
         projectId,

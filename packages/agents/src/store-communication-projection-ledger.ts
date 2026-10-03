@@ -289,7 +289,8 @@ export class AgentCommunicationProjectionLedger {
           ...(event.conversationId ? { conversationId: event.conversationId } : {}),
           surface: projection.surface, projectionKey: projection.projectionKey, messageId: message.messageId,
           role: canonicalRole,
-          text: latestRevision ? revisedRenderedText(renderedText, event.text, latestRevision.text) : renderedText,
+          text: event.intent === "collaboration" ? latestRevision?.text ?? event.text
+            : latestRevision ? revisedRenderedText(renderedText, event.text, latestRevision.text) : renderedText,
           createdAt: message.createdAt,
           ...(message.orderKey ? { orderKey: message.orderKey } : {}),
           ...(message.sequence !== undefined ? { sequence: message.sequence } : {}),
