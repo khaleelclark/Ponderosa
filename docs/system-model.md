@@ -222,11 +222,18 @@ for browsing and preview. Generated Project artifacts can outlive their
 originating Agent. Pinning or publishing changes their Project presentation and
 visibility; it does not move or rewrite the user's source file.
 
-An Agent can import a regular file from the Project folder or an
-operator-configured import root into managed storage. Import validates the path
-and stable bytes and fails closed on links, changing files, unsupported scope,
-or size limits. Browser upload accepts one of these authorized managed
-artifacts, never an arbitrary host path.
+Host-file publication is trusted by default, matching the Agent's host-user
+filesystem authority. An explicit import can capture an eligible regular file
+from any securely readable host path without configured roots or a new per-file
+approval. This includes private files readable by the host user; it is not a
+secret-protection sandbox. Import still validates exact Run authority and stable
+bytes, rejects links, changing/empty files and files over 64 MiB, and stores
+immutable bytes under the owning Chat/Project compatibility scope. It does not
+automatically send a message, execute the file, or add its contents to context.
+Project browsing/download authority and browser-upload eligibility are unchanged.
+Browser upload accepts an authorized managed artifact, never an arbitrary host
+path. Historical publication Decisions and receipts remain compatible; upgrades
+do not automatically approve pending Decisions or resume their Agents.
 
 Deleting a Project removes Ponderosa-owned state only after runtime authority is
 fenced and drained. It does not delete the registered Project folder, including

@@ -20,7 +20,8 @@ test("environment observations are bounded and reviewer output reuses only an ex
     assert.equal(first.reportOutputRoot, path.join(outputs, "ponderosa-review", "reviewer"));
     const absent = await runtimeEnvironmentFacts({ ...input, allowedImportRoots: [] });
     assert.equal(absent.reportOutputRoot, undefined);
-    assert.match(environmentFactsPrompt(absent).join("\n"), /No external report-output root is authorized/);
+    assert.match(environmentFactsPrompt(absent).join("\n"), /Host-file publication is trusted by default/);
+    assert.doesNotMatch(environmentFactsPrompt(absent).join("\n"), /request a single-file publication Decision/);
     await writeFile(path.join(bin, "python"), "synthetic fixture"); await chmod(path.join(bin, "python"), 0o700);
     assert.equal((await runtimeEnvironmentFacts(input)).executables.find(item => item.name === "python").availability, "available");
     await symlink(checkout, path.join(outputs, "ponderosa-review"));
