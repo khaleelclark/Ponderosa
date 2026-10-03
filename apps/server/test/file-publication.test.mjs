@@ -330,7 +330,12 @@ test("fresh application processes retain a pending Decision and persist approval
     assert.equal(f.workspace.getDecision(decision.id).status, approve ? "resolved" : "pending");
     assert.equal(f.events().length, 0);
   }
-  f.lease(`decision:${decision.id}:response`);
+  const continuation = f.lease(`decision:${decision.id}:response`);
+  const activated = f.coordinator.activationPayloads(f.agent.id, continuation.activationIds, continuation.runId);
+  assert.deepEqual(activated[0].payload.decision.publication, {
+    sourcePath: f.source, filename: path.basename(f.source), operationId: decision.approvalScope.operationId,
+    sha256: decision.approvalScope.sha256, size: f.body.length, expiresAt: decision.approvalScope.expiresAt,
+  }, "a fresh continuation receives approved metadata without relying on provider memory");
   const response = await f.send(); assert.equal(response.statusCode, 200, response.body); assert.equal(f.events().length, 1);
 });
 
