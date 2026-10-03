@@ -104,7 +104,7 @@ export function createServerReadModels(context: ReadModelContext) {
     isClosed,
   } = context;
 
-  function withMessagePresentation<T extends { communicationEventId?: string; text: string; deliveryReceipts?: import("@ponderosa/core").MessageDeliveryReceiptDto[]; agentMentions?: import("@ponderosa/core").AgentMentionBindingDto[]; coordinationRequests?: import("@ponderosa/core").CoordinationRequestSummaryDto[] }>(projectId: string, messages: T[]): T[] {
+  function withMessagePresentation<T extends { communicationEventId?: string; text: string; deliveryReceipts?: import("@ponderosa/core").MessageDeliveryReceiptDto[]; agentMentions?: import("@ponderosa/core").AgentMentionBindingDto[]; coordinationRequests?: import("@ponderosa/core").CoordinationRequestSummaryDto[] }>(projectId: string, messages: T[], displayedConversationId?: string): T[] {
     const projectAgents = store.listAgents(projectId);
     const communicationEventIds = messages.flatMap((message) =>
       message.communicationEventId ? [message.communicationEventId] : []);
@@ -148,7 +148,7 @@ export function createServerReadModels(context: ReadModelContext) {
       const collaborationRecipients = collaboration?.collaborationRecipients ?? [];
       const agentOpening = communication?.eventId.startsWith("agent-opening:") ?? false;
       const openingMentions = communication && agentOpening
-        ? communicationMentionBindings(message.text, communication, (agentId) => store.getAgent(agentId))
+        ? communicationMentionBindings(message.text, communication, (agentId) => store.getAgent(agentId), displayedConversationId)
             .filter((binding) => binding.handle === "new-agent")
         : [];
       const agentMentions = collaboration?.agentMentions ?? [...resolveAgentMentionBindings(
@@ -286,7 +286,7 @@ export function createServerReadModels(context: ReadModelContext) {
         hasMore: memberPage.hasMore,
         ...(memberPage.cursor ? { cursor: memberPage.cursor } : {}),
       },
-      messages: withMessagePresentation(conversation.projectId, page.messages),
+      messages: withMessagePresentation(conversation.projectId, page.messages, conversationId),
       decisionEvents: decisionPage.events.map(event => withDecisionRecipient(store, event)),
       history: {
         limit,
@@ -446,6 +446,7 @@ export function createServerReadModels(context: ReadModelContext) {
     const projectedMessages = withMessagePresentation(
       conversation.projectId,
       messagePage.messages,
+      conversationId,
     );
     const recoveredRequestHandoffs = selectedOperations.flatMap((operation) => {
       if (operation.kind !== "request" || !operation.request?.requesterAgentId) return [];
@@ -533,7 +534,7 @@ export function createServerReadModels(context: ReadModelContext) {
         ) || store.readAgentOrganizationEvents(detail.agent.projectId).some(event =>
           event.managerAgentId === agentId
         ),
-      messages: withMessagePresentation(detail.agent.projectId, messagePage.messages),
+      messages: withMessagePresentation(detail.agent.projectId, messagePage.messages, detail.agent.conversationId ?? ""),
       decisionEvents: decisionPage.events.map(event => withDecisionRecipient(store, event)),
       history: { limit, hasMore, ...(hasMore ? { cursor: Buffer.from(JSON.stringify(nextCursor)).toString("base64url") } : {}) },
       coordinationV3: coordinationV3.agentSnapshot(agentId),

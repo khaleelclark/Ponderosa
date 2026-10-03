@@ -77,9 +77,9 @@ for(const kind of ['direct','broadcast']) {
 }
 
 test('opening presentation uses exact identity, not prose, and clears stale bindings for deleted or wrong-Project Agents', () => {
-  const agent = { id: 'created', projectId: 'project', handle: 'Boston', title: 'Boston' };
+  const agent = { id: 'created', projectId: 'project', conversationId: 'chat', handle: 'Boston', title: 'Boston' };
   let current = agent;
-  const communication = { schemaVersion: 2, projectId: 'project', eventId: 'agent-opening:created',
+  const communication = { schemaVersion: 2, projectId: 'project', conversationId: 'chat', eventId: 'agent-opening:created',
     intent: 'broadcast', sender: { kind: 'user', id: 'operator' }, audience: { kind: 'project' } };
   const store = { listAgents: () => current ? [current] : [], getAgent: id => id === agent.id ? current : undefined,
     getCommunicationEvent: () => communication };
@@ -93,6 +93,10 @@ test('opening presentation uses exact identity, not prose, and clears stale bind
   assert.deepEqual(read().agentMentions, [], 'missing Agent cannot retain a clickable opening binding');
   current = { ...agent, projectId: 'another-project' };
   assert.deepEqual(read().agentMentions, [], 'same-looking cross-Project Agent cannot supply the binding');
+  current = { ...agent, conversationId: 'sibling-chat' };
+  assert.deepEqual(read().agentMentions, [], 'same-Project cross-Chat Agent cannot supply the binding');
+  current = agent;
+  assert.deepEqual(withMessagePresentation('project', [message], 'sibling-chat')[0].agentMentions, [], 'wrong displayed Chat clears stale bindings too');
   current = agent; communication.eventId = 'ordinary-communication';
   delete message.agentMentions;
   assert.equal(read().agentMentions, undefined, 'ordinary reserved prose is not an opening');

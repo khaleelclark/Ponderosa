@@ -3,9 +3,9 @@ import test from "node:test";
 import { communicationMentionBindings } from "../dist/store-mention-bindings.js";
 
 test("creation tag resolves only the exact opening identity without rewriting communication", () => {
-  const event = { eventId: "agent-opening:boston", projectId: "project", intent: "broadcast",
+  const event = { eventId: "agent-opening:boston", projectId: "project", conversationId: "chat", intent: "broadcast",
     sender: { kind: "user" }, audience: { kind: "organization", organizationId: "project" }, text: "hi #new-agent" };
-  const agent = { id: "boston", projectId: "project", handle: "Boston", title: "Boston" };
+  const agent = { id: "boston", projectId: "project", conversationId: "chat", handle: "Boston", title: "Boston" };
   const getAgent = id => id === agent.id ? agent : undefined;
   assert.deepEqual(communicationMentionBindings(event.text, event, getAgent), [{
     projectId: "project", agentId: "boston", handle: "new-agent", currentHandle: "Boston", currentTitle: "Boston",
@@ -18,4 +18,7 @@ test("creation tag resolves only the exact opening identity without rewriting co
   assert.deepEqual(communicationMentionBindings(event.text, event, () => undefined), [], "deleted identity stays an inert pending tag");
   assert.deepEqual(communicationMentionBindings(event.text, event, () => ({ ...agent, projectId: "other" })), []);
   assert.deepEqual(communicationMentionBindings("hi #new-agent", { ...event, eventId: "agent-opening:wrong" }, getAgent), []);
+  assert.deepEqual(communicationMentionBindings(event.text, event, () => ({ ...agent, conversationId: "sibling-chat" })), []);
+  assert.deepEqual(communicationMentionBindings(event.text, { ...event, conversationId: undefined }, getAgent), [], "missing canonical owner stays inert");
+  assert.deepEqual(communicationMentionBindings(event.text, event, getAgent, "sibling-chat"), [], "wrong displayed Chat stays inert even when the canonical owner is valid");
 });

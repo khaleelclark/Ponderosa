@@ -28,6 +28,7 @@ export function communicationMentionBindings(
   text: string,
   event: CommunicationEvent,
   getAgent: (agentId: string) => AgentDto | undefined,
+  displayedConversationId: string | undefined = event.conversationId,
 ): AgentMentionBindingDto[] {
   const recipients = recipientIds(event).map(agentId => {
     const current = getAgent(agentId);
@@ -71,7 +72,9 @@ export function communicationMentionBindings(
   const openingId = event.eventId.startsWith("agent-opening:")
     ? event.eventId.slice("agent-opening:".length) : undefined;
   const openingAgent = openingId ? getAgent(openingId) : undefined;
-  const openingMention = openingAgent?.projectId === event.projectId
+  const openingMention = openingAgent?.projectId === event.projectId &&
+    Boolean(event.conversationId) && openingAgent.conversationId === event.conversationId &&
+    displayedConversationId === event.conversationId
     ? [{ projectId: event.projectId, agentId: openingAgent.id, handle: "new-agent",
         currentHandle: openingAgent.handle, currentTitle: openingAgent.title }]
     : [];

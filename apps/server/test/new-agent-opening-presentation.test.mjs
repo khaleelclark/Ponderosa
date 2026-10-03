@@ -52,3 +52,50 @@ test("actual Chat HTTP presentation binds only the exact created opening, includ
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test("actual Chat HTTP and All Messages keep same-Project wrong-owner opening identities inert after reopening", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "opening-wrong-owner-"));
+  let store = new AgentStore(dataDir), app;
+  const open = async () => {
+    app = createServer({ dataDir, store, engines: [], logger: false, startDrained: true, resourceAdmission: { enabled: false } });
+    await app.ready();
+  };
+  const close = async () => { app.prepareForShutdown(); await app.close(); store.close(); };
+  try {
+    const project = store.createProject({ label: "Synthetic siblings", hostPath: dataDir, defaultEngine: "codex" });
+    const chatA = store.createConversation(project.id, { title: "Chat A" });
+    const chatB = store.createConversation(project.id, { title: "Chat B" });
+    const agent = store.createAgent(project.id, { title: "Boston", engine: "codex", conversationId: chatB.id });
+    const records = [
+      { eventId: `agent-opening:${agent.id}`, conversationId: chatA.id, projectionKey: chatA.id, text: "#new-agent wrong canonical owner" },
+    ];
+    for (const record of records) {
+      const event = { schemaVersion: 2, projectId: project.id, eventId: record.eventId, conversationId: record.conversationId,
+        sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+        audience: { kind: "organization", organizationId: project.id }, text: record.text, createdAt: new Date().toISOString() };
+      store.appendCommunicationEvent(event);
+      store.appendCommunicationProjection(project.id, { eventId: event.eventId, surface: "conversation", projectionKey: record.projectionKey,
+        projectedAt: event.createdAt, message: { messageId: event.eventId, role: "user", createdAt: event.createdAt } });
+    }
+    await open();
+    const check = async () => {
+      const chat = await app.inject(`/api/conversations/${chatA.id}`);
+      const all = await app.inject('/api/all-chat');
+      assert.equal(chat.statusCode, 200, chat.body); assert.equal(all.statusCode, 200, all.body);
+      for (const record of records) {
+        for (const messages of [chat.json().messages, all.json().items]) {
+          const message = messages.find(message => message.communicationEventId === record.eventId);
+          assert(message, `historical opening ${record.eventId} must remain visible`);
+          assert.equal(message.agentMentions?.some(mention => mention.handle === 'new-agent') ?? false, false, record.text);
+        }
+        assert.equal(store.getCommunicationEvent(project.id, record.eventId).text, record.text);
+      }
+    };
+    await check();
+    await close(); store = new AgentStore(dataDir); await open(); await check();
+  } finally {
+    if (app) await close();
+    else store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

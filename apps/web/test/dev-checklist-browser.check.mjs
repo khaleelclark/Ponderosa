@@ -62,6 +62,16 @@ try {
       draftAttachmentIds: attachments, draftOwnerId: "checklist-owner", idempotencyKey: "checklist-opening" } });
   assert.equal(created.statusCode, 200, created.body);
   const agent = created.json();
+  for (const [openingAgent, canonicalChat, marker] of [
+    [otherAgent, chat.id, "wrong canonical owner opening"],
+  ]) {
+    const event = { eventId: `agent-opening:${openingAgent.id}`, schemaVersion: 2, projectId: project.id,
+      conversationId: canonicalChat, sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id }, text: `#new-agent ${marker}`, createdAt: new Date().toISOString() };
+    store.appendCommunicationEvent(event);
+    store.appendCommunicationProjection(project.id, { eventId: event.eventId, surface: "conversation", projectionKey: chat.id,
+      projectedAt: event.createdAt, message: { messageId: event.eventId, role: "user", createdAt: event.createdAt } });
+  }
   // Passive synthetic reply gives All Messages a real, explicit reply target.
   // This is fixture data, not evidence that a provider consumed the opening.
   const reply = { eventId: "checklist-synthetic-reply", schemaVersion: 2, projectId: project.id,
@@ -91,6 +101,12 @@ try {
     page.on("pageerror", error => { errors.push(error.message); });
     const url = `${origin}/?${new URLSearchParams({ chat: chat.id, agent: agent.id })}`;
     await page.goto(url);
+    if (!beforeFix) {
+      for (const marker of ["wrong canonical owner opening"]) {
+        const invalidOpening = page.getByRole("article").filter({ hasText: marker }); await invalidOpening.waitFor();
+        assert.equal(await invalidOpening.getByRole("button", { name: /Open agent/ }).count(), 0, "wrong-owner opening has no navigation");
+      }
+    }
     const article = page.getByRole("article").filter({ hasText: "exact browser opening" }); await article.waitFor();
     const mention = article.getByRole("button", { name: /Open agent/ });
     assert.equal(await mention.count(), beforeFix ? 0 : 1, "actual HTTP opening resolves to exactly one clickable Agent");
@@ -116,6 +132,14 @@ try {
         assert(await preview.evaluate(node => node === document.activeElement), "closing restores focus");
       }
       await page.reload(); await mention.waitFor(); assert.equal(await article.count(), 1, "reloading preserves one opening");
+      await page.goto(`${url}&surface=all`);
+      for (const marker of ["wrong canonical owner opening"]) {
+        const invalidOpening = page.getByRole("article").filter({ hasText: marker }); await invalidOpening.waitFor();
+        assert.equal(await invalidOpening.getByRole("button", { name: /Open agent/ }).count(), 0, "All Messages cannot navigate a wrong-owner opening");
+      }
+      const allValid = page.getByRole("article").filter({ hasText: "exact browser opening" });
+      await allValid.getByRole("button", { name: /Open agent/ }).click();
+      assert.equal(await page.locator("body").getAttribute("data-opened-agent"), agent.id);
     }
     console.log(`Checked opening/PDF at ${width}px`);
     await page.close();
