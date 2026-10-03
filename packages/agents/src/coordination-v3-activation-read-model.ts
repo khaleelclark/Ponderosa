@@ -329,4 +329,19 @@ export class CoordinationV3ActivationReadModel {
       ORDER BY attached.attached_at, attached.activation_id
     `).all(runId, agentId, agentId) as Array<{ id: string }>).map((row) => row.id);
   }
+
+  decisionResponseAttachedToRun(decisionId: string, runId: string, agentId: string): boolean {
+    // Authority comes from the canonical source identity, never payload prose.
+    return Boolean(this.sqlite.prepare(`
+      SELECT 1 FROM scheduler_run_activations attached
+      JOIN scheduler_runs run ON run.id = attached.run_id
+      JOIN agent_activations activation ON activation.id = attached.activation_id
+      JOIN activation_sources source ON source.activation_id = activation.id
+      WHERE run.id = ? AND run.agent_id = ? AND activation.agent_id = ?
+        AND activation.kind = 'human_message'
+        AND activation.state IN ('attached', 'consumed')
+        AND source.source_kind = 'message' AND source.source_id = ?
+      LIMIT 1
+    `).get(runId, agentId, agentId, `decision:${decisionId}:response`));
+  }
 }

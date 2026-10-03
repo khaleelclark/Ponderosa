@@ -433,7 +433,7 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
 
 export const PONDEROSA_IMPORT_FILE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_import_file",
-  description: "Import one regular host file into this Run's Project files, making it available to the operator, ponderosa_message, and ponderosa_browser_upload when its format is supported. Pass a path relative to the Project workspace, or an absolute path inside an operator-configured import root. The server securely copies exact stable bytes into immutable Project-managed storage and returns the artifact ID. Symlinks, empty files, changing files, files outside authorized roots, and files larger than 64 MiB fail closed.",
+  description: "Import one regular host file into managed downloadable storage, making it available to the operator, ponderosa_message, and ponderosa_browser_upload when its format is supported. Workspace files and server-wide operator-configured import roots retain their existing permissions. An external file stays rejected while a single-file publication Decision is pending. End the Run without copying it into the workspace; after approval resumes you, retry this exact path. Approval binds this Agent, owning Chat, one publication operation, and server-verified bytes; it does not grant a directory or future imports. The server returns the immutable artifact ID and reuses its receipt on retry. Symlinks, empty, changed, or oversized files fail closed; the existing 64 MiB limit remains.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
