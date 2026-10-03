@@ -734,6 +734,7 @@ export function createServerReadModels(context: ReadModelContext) {
     };
     // Prompt preparation deliberately calls without a caller: keep its existing
     // lightweight roster reference and do not query/inject assignment payloads.
+    const workByAgent = new Map<string, import("@ponderosa/core").TeamDirectoryWorkDto>();
     if (caller) for (const entry of directory.agents) {
       const work = coordinationV3.directoryWork({ projectId, conversationId, agentId: entry.agentId, caller });
       for (const assignment of work.assignments) if (assignment.requesterAgentId) {
@@ -746,7 +747,16 @@ export function createServerReadModels(context: ReadModelContext) {
         ? `${running ? "Working; " : ""}assignment details restricted`
         : running && work.activeAssignmentDetails === "none" ? "Working; no tracked assignment"
           : running ? "Working; see authorized assignments" : undefined;
+      entry.workSummaryOmitted = true;
+      workByAgent.set(entry.agentId, work);
+    }
+    // Reserve every operational label and omission flag before adding optional
+    // details; later entries must not push an earlier accepted body over budget.
+    for (const entry of directory.agents) {
+      const work = workByAgent.get(entry.agentId);
+      if (!work) continue;
       entry.work = work;
+      delete entry.workSummaryOmitted;
       if (Buffer.byteLength(JSON.stringify(directory), "utf8") > TEAM_DIRECTORY_LIMITS.responseUtf8Bytes) {
         delete entry.work;
         entry.workSummaryOmitted = true;
