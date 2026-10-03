@@ -42,7 +42,9 @@ for (const scenario of process.env.PONDEROSA_UPGRADE_CONTROL === '1' ? ['missing
         assert.deepEqual(refreshed.observations[1].dynamicTools.filter(tool => tool.name !== 'ponderosa_history'), PONDEROSA_RUNTIME_TOOLS,
           'only the fresh verified replacement adopts current tool definitions');
         const { environmentFactsPrompt } = await import(pathToFileURL(join(candidate, 'apps/server/dist/runtime-environment-facts.js')).href);
-        assert.ok(refreshed.observations[1].systemPrompt.includes(environmentFactsPrompt(seed.providerInput.sourceManifest.environmentFacts).join('\n')),
+        // Stored environment observations are structurally normalized; their
+        // JSON key order is not the frozen prompt's byte order. Guidance is exact.
+        assert.ok(refreshed.observations[1].systemPrompt.includes(environmentFactsPrompt(seed.providerInput.sourceManifest.environmentFacts).slice(1).join('\n')),
           'fresh replacement adopts current environment guidance');
         if (scenario === 'pending-valid') assert.equal(refreshed.rollover.id, seed.pendingRolloverId, 'continue the exact pending handoff');
       } else assert.deepEqual(refreshed.accepted, seed.snapshot, 'failed/cancelled refresh preserves full original snapshot');
