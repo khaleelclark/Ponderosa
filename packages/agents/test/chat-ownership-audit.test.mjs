@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,6 +46,16 @@ test("opening a missing database never creates it",()=>{
   const root=mkdtempSync(join(tmpdir(),"ponderosa-chat-audit-missing-")), path=join(root,"missing.db");
   try { assert.throws(()=>auditChatOwnership(path)); assert.equal(existsSync(path),false); }
   finally { rmSync(root,{recursive:true,force:true}); }
+});
+test("inventory rejects a named pipe without waiting for a writer",{skip:process.platform==='win32'},()=>{
+  const root=mkdtempSync(join(tmpdir(),"ponderosa-chat-audit-fifo-")), path=join(root,"input.db");
+  try {
+    execFileSync('mkfifo',[path]);
+    const module=new URL('../dist/chat-ownership-audit.js',import.meta.url).href;
+    execFileSync(process.execPath,['--input-type=module','-e',
+      `import assert from 'node:assert/strict';import {auditChatOwnership} from ${JSON.stringify(module)};assert.throws(()=>auditChatOwnership(${JSON.stringify(path)},{inventory:true}),/regular offline SQLite export/);`],{timeout:3000});
+    assert.deepEqual(readdirSync(root),['input.db']);
+  } finally {rmSync(root,{recursive:true,force:true});}
 });
 test("inventory rejects WAL inputs without creating, deleting or changing database sidecars",()=>fixture((db,path)=>{
   db.pragma('journal_mode = WAL');

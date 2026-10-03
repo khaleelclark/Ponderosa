@@ -29,7 +29,7 @@ export function auditChatOwnership(databasePath: string, options: { inventory?: 
   if (options.inventory) {
     // readonly SQLite may create WAL/SHM files. Inventory accepts only an offline,
     // rollback-mode export; never ignore committed WAL bytes via immutable=true.
-    const fd = openSync(databasePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const fd = openSync(databasePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       if (!fstatSync(fd).isFile()) throw new Error("Inventory requires a regular offline SQLite export");
       const header = Buffer.alloc(20);
