@@ -92,6 +92,7 @@ export class ResourceAdmission {
       const operation = Promise.resolve().then(this.load).then(sample => {
         if (!Number.isSafeInteger(sample.availableBytes) || sample.availableBytes < 0 ||
             ![sample.memoryFullPercent, sample.ioFullPercent].every(value => Number.isFinite(value) && value >= 0 && value <= 100)) throw Error("invalid resource observation");
+        const previousCapacity = this.capacity();
         this.sample = sample; this.sampledAt = this.now();
         const minimum = this.config.reserveBytes + this.config.startupBytes;
         const pressured = sample.availableBytes < minimum || sample.memoryFullPercent >= 5 || sample.ioFullPercent >= 10;
@@ -102,7 +103,7 @@ export class ResourceAdmission {
         this.value = { state: this.held ? "held" : "ready", protected: true, reason: this.held ? "host_resource_pressure" : "within_budget",
           observedAt: new Date(this.sampledAt).toISOString(), source: sample.source, availableBytes: sample.availableBytes,
           reserveBytes: this.config.reserveBytes, startupBytes: this.config.startupBytes, memoryFullPercent: sample.memoryFullPercent, ioFullPercent: sample.ioFullPercent };
-        if (old !== this.value.state) this.changed();
+        if (old !== this.value.state || previousCapacity !== this.capacity()) this.changed();
       }).catch(() => { const old = this.value.state; this.sample = undefined; this.held = false; this.recovery = 0;
         this.value = { state: "unavailable", protected: false, reason: "measurement_unavailable" }; if (old !== this.value.state) this.changed();
       }).finally(() => { if (this.pending === operation) this.pending = undefined; });

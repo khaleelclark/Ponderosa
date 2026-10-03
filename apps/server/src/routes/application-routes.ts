@@ -1002,6 +1002,7 @@ registerEngineRoutes(app, {
   store,
   workspace,
   engineDto,
+  resourceAdmissionHeld,
   providerUsageCenter,
   providerUsageState,
   publishWorkspaceSince,

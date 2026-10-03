@@ -332,6 +332,10 @@ observation has a 500 ms/8 KiB bound. A scope stop has a two-second systemd grac
 and four-second observation budget. Non-systemd POSIX installations cannot
 prove ownership of descendants that deliberately escape their process group;
 Ponderosa does not kill guessed processes in that case.
+Historical PID-only ledger rows retain their existing guarantees; a missing
+historical scope identity is not reconstructed from process names or guessed
+units. The existing application-unit `PartOf` drain remains the operational
+boundary for old, unattributed scopes.
 
 `PONDEROSA_AGENT_WORKLOAD_SLICE` can override the default workload slice for
 an explicitly isolated qualification environment or operator configuration.

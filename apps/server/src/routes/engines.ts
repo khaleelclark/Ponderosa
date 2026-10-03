@@ -48,6 +48,7 @@ interface EngineRoutesContext {
   store: Pick<AgentStore, "getAgent" | "getProject">;
   workspace: Pick<WorkspaceStore, "cursor" | "getPreferences" | "updatePreferences">;
   engineDto(registration: EngineRouteRegistration): Promise<EngineDto>;
+  resourceAdmissionHeld?(): Promise<boolean>;
   providerUsageCenter(refresh: "none" | "stale"): Promise<ProviderUsageCenterDto>;
   providerUsageState(
     registration: EngineRouteRegistration,
@@ -186,8 +187,7 @@ export function registerEngineRoutes(
       if (current) return current;
       const operationStartedAt = new Date().toISOString();
       const operation = (async (): Promise<EngineDto> => {
-      const readiness = await engineDto(registration);
-      if (readiness.resourceAdmission?.state === "held") return readiness;
+      if (await context.resourceAdmissionHeld?.()) return engineDto(registration);
       authStatuses.invalidate(request.params.id);
       let auth: EngineAuthStatus;
       try {

@@ -955,6 +955,7 @@ export function useWorkspaceStream(
           queueAgentRoster(event.projectId);
         }
         if (event.category === "lifecycle") {
+          engineStatusRefresh.schedule();
           collaborationChatInvalidator.schedule(event.conversationIds);
           agentWorkInvalidator.schedule(event.projectId);
           agentWorkInvalidator.flush();
