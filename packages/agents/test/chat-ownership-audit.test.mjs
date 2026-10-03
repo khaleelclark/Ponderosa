@@ -46,6 +46,26 @@ test("opening a missing database never creates it",()=>{
   try { assert.throws(()=>auditChatOwnership(path)); assert.equal(existsSync(path),false); }
   finally { rmSync(root,{recursive:true,force:true}); }
 });
+test("optional migration inventory enumerates all sibling Chat identities and scoped tables without selecting an owner or writing",()=>fixture((db,path)=>{
+  db.exec("CREATE TABLE extra_authority(id TEXT PRIMARY KEY,project_id TEXT,conversation_id TEXT); INSERT INTO extra_authority VALUES ('receipt','P','C2'); INSERT INTO projects VALUES ('empty');");
+  const before=readFileSync(path), schemaBefore=db.prepare("SELECT sql FROM sqlite_master ORDER BY name").all();
+  assert.equal(auditChatOwnership(path).inventory,undefined);
+  const inventory=auditChatOwnership(path,{inventory:true}).inventory;
+  assert.equal(inventory.status,'inventory_only'); assert.equal(inventory.migrationImplemented,false);
+  assert.deepEqual(inventory.scopes,[{legacyScopeId:'P',chatIds:['C1','C2'],cardinality:'multiple'},{legacyScopeId:'empty',chatIds:[],cardinality:'empty'}]);
+  assert.deepEqual(inventory.nonSingletonScopeIds,['P','empty']);
+  assert.deepEqual(inventory.tables.find(table=>table.name==='extra_authority'),{name:'extra_authority',rows:1,primaryKey:['id'],scopeColumns:['project_id','conversation_id']});
+  assert.match(inventory.schemaHash,/^[a-f0-9]{64}$/);assert.ok(inventory.requiredBeforeTransform.includes('companion_databases_and_browser_ownership'));
+  assert.equal(inventory.schemaHash,auditChatOwnership(path,{inventory:true}).inventory.schemaHash);
+  assert.deepEqual(readFileSync(path),before);assert.deepEqual(db.prepare("SELECT sql FROM sqlite_master ORDER BY name").all(),schemaBefore);
+}));
+test("inventory distinguishes measured single-Chat scopes without substituting the legacy ID for the stable Chat ID",()=>fixture((db,path)=>{
+  db.exec("DELETE FROM conversations WHERE id='C2'; UPDATE agents SET deleted_at='historical' WHERE id='D';");
+  const {inventory}=auditChatOwnership(path,{inventory:true});
+  assert.deepEqual(inventory.scopes,[{legacyScopeId:'P',chatIds:['C1'],cardinality:'single'}]);
+  assert.deepEqual(inventory.nonSingletonScopeIds,[]);
+  assert.equal(inventory.status,'inventory_only','even a single child does not qualify resource ownership or migration');
+}));
 test("human-authored documents resolve through communication ownership, not a fictitious agent",()=>fixture((db,path)=>{
   db.exec(`UPDATE managed_artifact_projection SET artifact_json='{"originAgentId":"local-operator"}',owner_kind='communication',owner_id='message';
     INSERT INTO chat_search_messages VALUES ('P','message','C1'),('P','message','C1');`);

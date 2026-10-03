@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "status": "not_qualified",
+  "checkpoint": "inventory_and_design_only",
+  "stackBase": "61d0a66f22c7b175e478e0ddcde91e708bb73c0d",
+  "candidateRevision": null,
+  "sourceSnapshot": null,
+  "sourceSnapshotHash": null,
+  "migrationImplemented": false,
+  "checks": {"fullOwnershipMap": false, "physicalSchemaLayoutMigration": false, "crashBoundaryRecovery": false, "canonicalPreservation": false, "fullStateRollback": false, "noActiveProjectDomain": false, "packagedInstall": false},
+  "limitations": ["This tracked file defines the handoff shape; it is not operator-data qualification evidence", "A passing source/audit fixture does not qualify migration", "Merge and deployment are not authorized"]
+}

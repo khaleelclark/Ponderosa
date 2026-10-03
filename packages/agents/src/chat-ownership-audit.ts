@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -23,7 +24,7 @@ export const unresolvedArtifactOwnershipSql = `
 /** Read-only ownership preflight. This never opens AgentStore: its startup
  * reconciliation can write data. Passing this check is not migration approval;
  * canonical journals, file access, and runtime recovery need separate checks. */
-export function auditChatOwnership(databasePath: string) {
+export function auditChatOwnership(databasePath: string, options: { inventory?: boolean } = {}) {
   const db = new Database(databasePath, { readonly: true, fileMustExist: true });
   try {
     db.pragma("query_only = ON");
@@ -48,12 +49,31 @@ export function auditChatOwnership(databasePath: string) {
         WHERE a.conversation_id IS NOT NULL AND b.conversation_id IS NOT NULL AND a.conversation_id<>b.conversation_id`);
       check("artifact_without_resolvable_chat", unresolvedArtifactOwnershipSql);
       const count = (table: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+      const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
+      const inventory = options.inventory ? (() => {
+        const scopes = (db.prepare("SELECT id FROM projects ORDER BY id").all() as Array<{ id: string }>).map(scope => {
+          const chatIds = (db.prepare("SELECT id FROM conversations WHERE project_id=? ORDER BY id").all(scope.id) as Array<{ id: string }>).map(chat => chat.id);
+          return { legacyScopeId: scope.id, chatIds, cardinality: chatIds.length === 0 ? "empty" : chatIds.length === 1 ? "single" : "multiple" };
+        });
+        const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type,name").all();
+        const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Array<{ name: string }>).map(({ name }) => {
+          const columns = db.prepare(`PRAGMA table_info(${quote(name)})`).all() as Array<{ name: string; pk: number }>;
+          return { name, rows: (db.prepare(`SELECT COUNT(*) AS n FROM ${quote(name)}`).get() as { n: number }).n,
+            primaryKey: columns.filter(column => column.pk > 0).sort((a, b) => a.pk - b.pk).map(column => column.name),
+            scopeColumns: columns.filter(column => ["project_id", "conversation_id", "chat_id"].includes(column.name)).map(column => column.name) };
+        });
+        return { version: 1, status: "inventory_only", migrationImplemented: false,
+          schemaHash: createHash("sha256").update(JSON.stringify(schema)).digest("hex"), scopes, tables,
+          nonSingletonScopeIds: scopes.filter(scope => scope.cardinality !== "single").map(scope => scope.legacyScopeId),
+          requiredBeforeTransform: ["exact_snapshot_and_source_identity", "canonical_resource_ownership_and_custody", "companion_databases_and_browser_ownership", "canonical_bytes_and_filesystem_integrity", "runtime_drain_and_recovery_disposition", "staged_transform_and_full_state_restore"] };
+      })() : undefined;
       return {
         version: 1,
         scope: "sqlite-ownership-preflight-only",
         migrationImplemented: false,
         canonicalJournalVerificationRequired: true,
         findings,
+        ...(inventory ? { inventory } : {}),
         counts: {
           projects: count("projects"), chats: count("conversations"), agents: count("agents"),
           artifacts: count("managed_artifact_projection"), requests: count("coordination_requests"),
@@ -65,8 +85,8 @@ export function auditChatOwnership(databasePath: string) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  if (process.argv.length !== 3) throw new Error("Usage: node chat-ownership-audit.js /path/to/ponderosa.db");
-  const result = auditChatOwnership(process.argv[2]!);
+  if (process.argv.length !== 3 && !(process.argv.length === 4 && process.argv[3] === "--inventory")) throw new Error("Usage: node chat-ownership-audit.js /path/to/ponderosa.db [--inventory]");
+  const result = auditChatOwnership(process.argv[2]!, { inventory: process.argv[3] === "--inventory" });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   if (result.findings.length) process.exitCode = 2;
 }
