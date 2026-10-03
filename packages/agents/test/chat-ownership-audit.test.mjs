@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, existsSync, readdirSync, symlinkSync, readlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -68,6 +68,18 @@ test("inventory rejects WAL inputs without creating, deleting or changing databa
   const closed=manifest();
   assert.throws(()=>auditChatOwnership(path,{inventory:true}),/WAL input is not opened/);
   assert.deepEqual(manifest(),closed,'closed WAL-mode database does not acquire new sidecars');
+}));
+test("inventory rejects dangling sidecar symlinks without following or changing them",{skip:process.platform==='win32'},()=>fixture((db,path)=>{
+  const before=readFileSync(path);
+  for(const suffix of ['-wal','-shm','-journal']) {
+    const sidecar=path+suffix,target=path+'.missing';symlinkSync(target,sidecar);
+    const names=readdirSync(join(path,'..')).sort();
+    assert.throws(()=>auditChatOwnership(path,{inventory:true}),/without sidecars/);
+    assert.deepEqual(readFileSync(path),before);
+    assert.deepEqual(readdirSync(join(path,'..')).sort(),names);
+    assert.equal(readlinkSync(sidecar),target);assert.equal(existsSync(target),false);
+    unlinkSync(sidecar);
+  }
 }));
 test("optional migration inventory enumerates all sibling Chat identities and scoped tables without selecting an owner or writing",()=>fixture((db,path)=>{
   db.exec("CREATE TABLE extra_authority(id TEXT PRIMARY KEY,project_id TEXT,conversation_id TEXT); INSERT INTO extra_authority VALUES ('receipt','P','C2'); INSERT INTO projects VALUES ('empty');");

@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -35,7 +35,7 @@ export function auditChatOwnership(databasePath: string, options: { inventory?: 
       const header = Buffer.alloc(20);
       const length = readSync(fd, header, 0, header.length, 0);
       if ((length === 20 && (header[18] === 2 || header[19] === 2)) ||
-          ["-wal", "-shm", "-journal"].some(suffix => existsSync(databasePath + suffix))) {
+          ["-wal", "-shm", "-journal"].some(suffix => lstatSync(databasePath + suffix, { throwIfNoEntry: false }) !== undefined)) {
         throw new Error("Inventory requires a coherent offline rollback-mode SQLite export without sidecars; WAL input is not opened");
       }
     } finally { closeSync(fd); }
