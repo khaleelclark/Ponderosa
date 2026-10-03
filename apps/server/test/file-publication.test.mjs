@@ -15,6 +15,7 @@ import { registerArtifactRoutes } from "../dist/routes/artifacts.js";
 import { ProjectFileAuthority } from "../dist/routes/project-files.js";
 import { createProviderDynamicToolHandler } from "../dist/routes/provider-dynamic-tool-handler.js";
 import { createServer } from "../dist/app.js";
+import { registerAgentCommunicationRoutes } from "../dist/routes/agent-communications.js";
 
 async function fixture(t, engine = "codex") {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "file-publication-")));
@@ -331,4 +332,50 @@ test("fresh application processes retain a pending Decision and persist approval
   }
   f.lease(`decision:${decision.id}:response`);
   const response = await f.send(); assert.equal(response.statusCode, 200, response.body); assert.equal(f.events().length, 1);
+});
+
+test("the published artifact attaches through the real Agent message route with one canonical idempotent response", async t => {
+  const f = await fixture(t), decision = await f.request(); f.resolve(decision);
+  const imported = await f.send(); assert.equal(imported.statusCode, 200, imported.body);
+  const artifactId = imported.json().artifact.id;
+  const coordinator = new CoordinationV3Store(f.store.sqlite, {
+    managedArtifactAttachmentAuthority: ({ projectId, artifactIds, sender, audience }) => {
+      assert.equal(sender.agentId, f.agent.id); assert.equal(audience.kind, "user_agent");
+      for (const id of artifactIds) {
+        const artifact = f.store.getProjectArtifact(projectId, id);
+        assert(f.store.agentCanReadProjectArtifact(projectId, id, sender.agentId));
+        assert(f.store.operatorCanReadProjectArtifact(projectId, id));
+        assert(f.store.agentCanReadProjectArtifact(projectId, id, audience.agentId));
+        assert(f.assets.managedProjectArtifactMetadataIsAuthoritative(projectId, artifact));
+      }
+    },
+    managedArtifactAttachmentRevalidator: ({ projectId, artifactIds }) => {
+      for (const id of artifactIds) assert(f.assets.managedProjectArtifactIsAvailable(projectId, f.store.getProjectArtifact(projectId, id)));
+    },
+  });
+  f.store.configureCommunicationAttachmentMetadataAuthority((projectId, artifact) =>
+    f.assets.managedProjectArtifactMetadataIsAuthoritative(projectId, artifact));
+  const messageApp = Fastify(); t.after(() => messageApp.close());
+  const capability = { agentId: f.agent.id, conversationId: f.chat.id, runId: f.active.runId, v3FencingToken: f.active.v3FencingToken };
+  registerAgentCommunicationRoutes(messageApp, {
+    store: f.store, workspace: f.workspace, coordinationV3: coordinator,
+    activeRuns: new Map([[f.agent.id, f.active]]), agentMessageCapabilities: new Map([[f.token, capability]]),
+    projectDeletionInProgress: () => false, conversationDeletionInProgress: () => false, agentDeletionInProgress: () => false,
+    conversationDeliveryLeases: new Map(), agentDeliveryLeases: new Map(),
+    capabilityOwnsAuthoritativeRun: cap => coordinator.ownsRun(cap.runId, cap.v3FencingToken),
+    runAuthorization: cap => ({ runId: cap.runId, agentId: cap.agentId, fencingToken: cap.v3FencingToken }),
+    reconcileRuntimeCommunicationProjections: async ({ communicationEventId }) => {
+      f.store.appendCommunicationEvent(coordinator.runtimeCommunication(communicationEventId).payload.communication);
+      return 1;
+    },
+    resolveOperationalNotification: () => {}, notifyScheduler: () => {},
+  });
+  const request = { method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${f.token}` },
+    payload: { intent: "direct_to_user", text: "The synthetic deliverable is ready.", artifactIds: [artifactId], idempotencyKey: "publication-response" } };
+  const first = await messageApp.inject(request), replay = await messageApp.inject(request);
+  assert.equal(first.statusCode, 200, first.body); assert.equal(replay.statusCode, 200, replay.body);
+  assert.equal(first.json().eventId, replay.json().eventId); assert.equal(replay.json().replayed, true);
+  assert.deepEqual(coordinator.runtimeCommunication(first.json().eventId).payload.communication.artifactIds, [artifactId]);
+  const download = await f.app.inject(imported.json().artifact.downloadUrl);
+  assert.deepEqual(download.rawPayload, f.body); assert.equal(f.events().length, 1);
 });
