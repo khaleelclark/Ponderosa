@@ -307,8 +307,9 @@ each active scheduler claim reserves one allowance *in addition to* measured
 usage. This deliberately conservative policy needs calibration for large
 builds and hosts with small effective cgroup limits; it is not an OOM guarantee.
 
-Samples have a 500 ms reader budget and are stale after ten seconds. A late
-sampler retains its slot until actual settlement. Missing, invalid or stale
+Samples have a 500 ms reader budget and are stale ten seconds after acquisition
+starts, not after settlement. Expired results are discarded and cannot count
+toward recovery. A late sampler retains its slot until actual settlement. Missing, invalid or stale
 measurements explicitly advertise unavailable protection and fail open to
 the existing admission safeguards; they cannot strand work permanently.
 `PONDEROSA_RESOURCE_ADMISSION=off` explicitly disables this protection. macOS,

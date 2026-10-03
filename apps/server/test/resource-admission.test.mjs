@@ -32,12 +32,39 @@ test("measurement failures and unsupported hosts advertise no protection; unreso
   await Promise.all(Array.from({ length: 30 }, () => monitor.observe())); assert.equal(calls, 1);
   now += 11000; await monitor.observe(); assert.equal(calls, 1); assert.equal(monitor.capacity(), Infinity);
   release(); await gate; await new Promise(resolve => setImmediate(resolve));
-  assert.equal(monitor.snapshot().state, "held", "default reserve exceeds this synthetic host's headroom");
+  assert.equal(monitor.snapshot().state, "unavailable"); assert.equal(monitor.snapshot().reason, "measurement_stale");
+  assert.equal(monitor.snapshot().protected, false); assert.equal(monitor.capacity(), Infinity);
+  assert.equal(monitor.snapshot().observedAt, new Date(0).toISOString());
   now += 2000; monitor.load = async () => { throw Error("controlled read failure"); }; await monitor.observe();
   assert.equal(monitor.snapshot().state, "unavailable"); assert.equal(monitor.capacity(), Infinity);
   const unavailable = new ResourceAdmission({}, async () => { throw Error("must not run"); }, Date.now, "darwin");
   assert.equal((await unavailable.observe()).state, "unsupported");
   assert.throws(() => new ResourceAdmission({ reserveBytes: NaN }));
+});
+
+test("late counters cannot become fresh evidence or count toward recovery from a confirmed hold", async () => {
+  let now = 0, sample = { ...healthy, memoryFullPercent: 8 }, release, calls = 0;
+  const monitor = new ResourceAdmission({ reserveBytes: 128 * MiB, startupBytes: 64 * MiB }, async () => {
+    calls++; return sample;
+  }, () => now, "linux");
+  assert.equal((await monitor.observe()).state, "held");
+  now = 2000;
+  sample = new Promise(resolve => { release = resolve; });
+  await Promise.all(Array.from({ length: 20 }, () => monitor.observe())); assert.equal(calls, 2);
+  now = 13_001; release(healthy); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(monitor.snapshot().state, "unavailable"); assert.equal(monitor.snapshot().reason, "measurement_stale");
+  assert.equal(monitor.snapshot().protected, false); assert.equal(monitor.capacity(), Infinity);
+  assert.equal(monitor.snapshot().observedAt, new Date(2000).toISOString());
+  sample = healthy; now += 2000; await monitor.observe(); assert.equal(monitor.snapshot().state, "held");
+  now += 2000; await monitor.observe(); assert.equal(monitor.snapshot().state, "ready");
+  assert.equal(monitor.snapshot().observedAt, new Date(now).toISOString());
+  // A short delayed result retains its acquisition age, not settlement time.
+  now += 2000; const started = now; sample = new Promise(resolve => { release = resolve; });
+  const pending = monitor.observe(); await new Promise(resolve => setImmediate(resolve));
+  now += 400; release(healthy); await pending;
+  assert.equal(monitor.snapshot().observedAt, new Date(started).toISOString());
+  now = started + 10_000; assert.equal(monitor.snapshot().protected, true);
+  now++; assert.equal(monitor.snapshot().protected, false);
 });
 
 test("a confirmed resource hold preserves canonical pending activation without leasing or failed-delivery attempts; recovery resumes", async () => {

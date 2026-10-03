@@ -89,11 +89,21 @@ export class ResourceAdmission {
     if (!this.config.enabled || this.platform !== "linux") return this.snapshot();
     if (!this.pending && this.now() - this.lastStarted >= this.config.sampleMs) {
       this.lastStarted = this.now();
+      const sampleStartedAt = this.lastStarted;
       const operation = Promise.resolve().then(this.load).then(sample => {
         if (!Number.isSafeInteger(sample.availableBytes) || sample.availableBytes < 0 ||
             ![sample.memoryFullPercent, sample.ioFullPercent].every(value => Number.isFinite(value) && value >= 0 && value <= 100)) throw Error("invalid resource observation");
         const previousCapacity = this.capacity();
-        this.sample = sample; this.sampledAt = this.now();
+        if (this.now() - sampleStartedAt > this.config.maxAgeMs) {
+          const old = this.value.state;
+          this.sample = undefined; this.sampledAt = sampleStartedAt; this.recovery = 0;
+          this.value = { state: "unavailable", reason: "measurement_stale", protected: false, observedAt: new Date(sampleStartedAt).toISOString() };
+          // Retain the last confirmed hold, but advertise no current protection.
+          // Expired counters cannot count toward its healthy-sample recovery.
+          if (old !== this.value.state || previousCapacity !== this.capacity()) this.changed();
+          return;
+        }
+        this.sample = sample; this.sampledAt = sampleStartedAt;
         const minimum = this.config.reserveBytes + this.config.startupBytes;
         const pressured = sample.availableBytes < minimum || sample.memoryFullPercent >= 5 || sample.ioFullPercent >= 10;
         const recovered = sample.availableBytes >= minimum * 1.25 && sample.memoryFullPercent <= 1 && sample.ioFullPercent <= 2;
