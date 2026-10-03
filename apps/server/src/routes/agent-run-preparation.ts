@@ -23,6 +23,7 @@ import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
 import { renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
 import { environmentFactsPrompt, runtimeEnvironmentFacts } from "../runtime-environment-facts.js";
+import { previousPublicationSessionContract } from "../previous-publication-session-contract.js";
 import { collectReachableArtifactIds } from "../artifact-refs.js";
 import { appendReadableArtifactReferences } from "../communication-artifacts.js";
 import {
@@ -367,7 +368,7 @@ export async function prepareAgentRun(
   // Provider tools are immutable for a persistent session. Expose history only
   // when a fresh rollover generation owns a durable boundary; every later Run
   // in that replacement session derives the same contract from its session ID.
-  const availableRuntimeTools: RuntimeDynamicToolSpec[] = [
+  let availableRuntimeTools: RuntimeDynamicToolSpec[] = [
     ...providerDynamicTools(),
     ...(historyRetrievalBoundary ? [PONDEROSA_HISTORY_TOOL] : []),
   ];
@@ -431,22 +432,31 @@ export async function prepareAgentRun(
       const legacyPrompt = frozenInput?.exactSystemPrompt
         ? legacyCommunicationV3SessionPrompt(systemPrompt, frozenInput.exactSystemPrompt)
         : undefined;
-      const legacyToolHash = legacyPrompt ? providerToolContractHash(availableRuntimeTools, legacyPrompt) : undefined;
+      const previousPublication = frozenInput?.exactSystemPrompt
+        ? previousPublicationSessionContract({ currentSystemPrompt: systemPrompt,
+            frozenSystemPrompt: frozenInput.exactSystemPrompt, currentTools: availableRuntimeTools, environmentFacts })
+        : undefined;
       const frozenSystemHash = frozenInput?.exactSystemPrompt
         ? createHash("sha256").update(frozenInput.exactSystemPrompt).digest("hex") : undefined;
-      const legacyHash = legacyToolHash && frozenSystemHash
-        ? createHash("sha256").update(JSON.stringify({
+      const compatible = [
+        ...(legacyPrompt ? [{ tools: availableRuntimeTools, communicationPrompt: legacyPrompt }] : []),
+        ...(previousPublication ? [previousPublication] : []),
+      ].map(contract => {
+        const toolHash = providerToolContractHash(contract.tools, contract.communicationPrompt);
+        const sessionHash = createHash("sha256").update(JSON.stringify({
             runtimeSessionContractHash: providerSessionContractHash(runtimeEngineId, workingCopy.id,
-              effectiveModel, effectiveEffort, legacyToolHash), systemPromptHash: frozenSystemHash,
-          })).digest("hex") : undefined;
-      if (!legacyPrompt || frozenSystemHash !== frozenInput?.systemPromptHash ||
-          legacyHash !== preflightResumeSessionState.toolContractHash) {
+              effectiveModel, effectiveEffort, toolHash), systemPromptHash: frozenSystemHash,
+          })).digest("hex");
+        return { ...contract, toolHash, sessionHash };
+      }).find(contract => contract.sessionHash === preflightResumeSessionState.toolContractHash);
+      if (!compatible || !frozenSystemHash || frozenSystemHash !== frozenInput?.systemPromptHash) {
         throw new Error("context rollover handoff contract is incompatible; original accepted context retained");
       }
-      communicationPrompt = legacyPrompt;
-      providerToolHash = legacyToolHash!;
+      availableRuntimeTools = compatible.tools;
+      communicationPrompt = compatible.communicationPrompt;
+      providerToolHash = compatible.toolHash;
       systemPrompt = frozenInput!.exactSystemPrompt!;
-      effectiveRuntimeSessionContractHash = legacyHash!;
+      effectiveRuntimeSessionContractHash = compatible.sessionHash;
     }
   }
   const runtimeAttachmentsFollowSession = Boolean(engine.adapter.openSession);
