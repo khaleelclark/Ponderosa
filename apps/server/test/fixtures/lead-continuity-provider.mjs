@@ -35,6 +35,10 @@ for await (const line of createInterface({ input: process.stdin })) {
   const text = JSON.stringify(frame.message);
   const fence = text.match(/Prompt injection fence: ([a-f0-9-]+)\./)?.[1];
   if (role === 'lead' && turn === 1) {
+    if (env.CONTINUITY_DECISION_BEFORE === '1') await call(env.PONDEROSA_AGENT_DECISION_URL,
+      { idempotencyKey: 'controlled-task-permission', mode: 'approval',
+        question: 'Approve the disposable final-delivery fixture?', blocking: true },
+      env.CONTINUITY_ASSOCIATION_FAILURE === '1' ? 500 : undefined);
     await call(env.PONDEROSA_AGENT_COORDINATE_URL, { idempotencyKey: 'review', requests: [{ requestId: 'controlled-review',
       recipientAgentId: env.CONTINUITY_PEER, text: 'Read-only reviewer: validate only; report to lead.', lifetime: { kind: 'indefinite' } }],
       join: { id: 'controlled-join', mode: 'all' } });
@@ -50,6 +54,10 @@ for await (const line of createInterface({ input: process.stdin })) {
     await call(env.PONDEROSA_AGENT_MESSAGE_URL, { intent: 'direct_to_user', steeringInjectionId: fence,
       text: 'Review received; final validation still in progress.' });
     if (env.CONTINUITY_DECISION === '1' && !text.includes('Approve the disposable final-delivery fixture?')) {
+      if (env.CONTINUITY_DECISION_BEFORE === '1') {
+        // No final attempt, Decision replay or restart may repair this case:
+        // the promoted task must already retain its exact pending approval.
+      } else {
       const request = { idempotencyKey: 'controlled-task-permission', mode: 'approval',
         question: 'Approve the disposable final-delivery fixture?', blocking: true };
       if (env.CONTINUITY_ASSOCIATION_FAILURE === '1') {
@@ -69,6 +77,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       const premature = await call(env.PONDEROSA_AGENT_MESSAGE_URL, { intent: 'direct_to_user',
         idempotencyKey: 'premature-final', taskDelivery: 'final', text: 'Must not publish before approval.' }, 409);
       if (!premature.error.startsWith('task_delivery_dependencies_pending')) throw Error('unexpected premature-final rejection');
+      }
     } else {
     const body = { intent: 'direct_to_user', idempotencyKey: 'exact-final', steeringInjectionId: fence, taskDelivery: 'final',
       text: 'Disposable final delivery: review integrated; validation passed. No real release was signed, pushed or published.' };

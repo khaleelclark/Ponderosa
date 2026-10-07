@@ -5,7 +5,7 @@ import { requestSourceLineageBody } from "./coordination-v3-request-lineage.js";
  * The same-Agent/Project/Chat Run is the authority; payload text is never used. */
 function delegationOriginsCte(candidateWhere: string, pending = false): string {
   return `WITH task_wake_candidates AS MATERIALIZED (
-      SELECT rowid AS selection_rowid, * FROM agent_activations
+      SELECT rowid AS selection_rowid, id, project_id, agent_id, scope_key, kind, priority, created_at FROM agent_activations
       ${pending ? "INDEXED BY agent_activations_agent_scope_runnable" : ""} WHERE ${candidateWhere}
     ), task_wake_sources AS MATERIALIZED (
       SELECT canonical_source.* FROM task_wake_candidates candidate

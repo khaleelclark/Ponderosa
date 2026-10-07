@@ -94,14 +94,16 @@ export function registerAgentDecisionRoutes(
       : coordinationV3.outboundAwaitingQuestionRequestIdsAttachedToRun(
           capability.runId, agent.id,
         );
-    if (body.blocking !== false && coordinationV3.requiredReplyObligationsForRun(capability.v3SchedulerRunId)
-      .some(o => o.deliveryPhase === 'final' && o.state === 'pending')) {
+    const taskReplyRoots = coordinationV3.requiredReplyObligationsForRun(capability.v3SchedulerRunId)
+      .filter(o => ['broadcast','direct_to_user'].includes(o.replyAuthority.intent) &&
+        (o.state === 'pending' || (o.deliveryPhase === 'initial' && o.state === 'satisfied')));
+    if (body.blocking !== false && taskReplyRoots.length) {
       const replay = workspace.decisionForIdempotency(agent.id, idempotencyKey);
       const origins = new Set(coordinationV3.taskOriginRunIds(capability.v3SchedulerRunId));
       const blockers = workspace.decisionsForRuns(origins).filter(d => d.blocking && d.status === 'pending' &&
         d.agentId === agent.id && d.projectId === agent.projectId && d.conversationId === active.conversationId);
-      if (blockers.some(d => d.id !== replay?.id) || coordinationV3.requiredReplyObligationsForRun(capability.v3SchedulerRunId)
-        .some(o => o.deliveryPhase === 'final' && o.state === 'pending' && o.blockingDecisionId && o.blockingDecisionId !== replay?.id)) {
+      if (blockers.some(d => d.id !== replay?.id) || taskReplyRoots
+        .some(o => o.blockingDecisionId && o.blockingDecisionId !== replay?.id)) {
         return reply.code(409).send({ error: 'task_decision_already_pending: answer the existing exact blocking Decision first' });
       }
     }

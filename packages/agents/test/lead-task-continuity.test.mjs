@@ -156,7 +156,7 @@ test('a retirement callback is selected by lineage before a burst of unrelated i
 
 test('task wake selection searches scoped source identities instead of global historical sources', () => {
   const f = fixture();
-  const prepare = f.store.sqlite.prepare.bind(f.store.sqlite), plans = [];
+  const prepare = f.store.sqlite.prepare.bind(f.store.sqlite), plans = [], bytecodes = [];
   try {
     const lead = f.human(); f.delegate(lead); f.reply(lead, 'interim'); f.finish(lead); f.review();
     const wake = prepare("SELECT id FROM agent_activations WHERE kind='coordination_join_satisfied'").get();
@@ -165,6 +165,7 @@ test('task wake selection searches scoped source identities instead of global hi
       if (!sql.startsWith('WITH task_wake_candidates')) return statement;
       return { all(...args) {
         plans.push(prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args));
+        bytecodes.push(prepare(`EXPLAIN ${sql}`).all(...args));
         return statement.all(...args);
       } };
     };
@@ -181,7 +182,47 @@ test('task wake selection searches scoped source identities instead of global hi
     }
     assert.ok(plans[1].some(row => row.detail.includes('agent_activations_agent_scope_runnable')),
       'pending candidates must use the existing runnable-state index');
+    const rootpage = prepare("SELECT rootpage FROM sqlite_schema WHERE name='agent_activations'").get().rootpage;
+    const payloadColumn = prepare('PRAGMA table_info(agent_activations)').all().find(column => column.name === 'payload_json').cid;
+    for (const bytecode of bytecodes) {
+      const cursors = new Map();
+      for (const operation of bytecode) {
+        if (operation.opcode === 'OpenRead') cursors.set(operation.p1, operation.p2 === rootpage);
+        else if (operation.opcode.startsWith('Open')) cursors.set(operation.p1, false);
+        assert.ok(!(operation.opcode === 'Column' && cursors.get(operation.p1) && operation.p2 === payloadColumn),
+          'task wake lineage must not read or materialize queued payload_json');
+      }
+    }
   } finally { f.store.sqlite.prepare = prepare; f.close(); }
+});
+
+for (const timing of ['pending-initial', 'satisfied-initial', 'answer-before-promotion']) test(`Decision ownership survives delegation from ${timing}`, () => {
+  const f = fixture();
+  try {
+    const lead = f.human();
+    if (timing === 'satisfied-initial') f.reply(lead, 'initial-reply');
+    f.c.waitForTaskDecision({ runAuthorization: f.auth(lead), decisionId: 'before-delegation', scopeKey: `conversation:${f.chat.id}` });
+    assert.throws(() => f.c.waitForTaskDecision({ runAuthorization: f.auth(lead), decisionId: 'another',
+      scopeKey: `conversation:${f.chat.id}` }), /task_decision_already_pending/);
+    const answer = () => {
+      const id = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+        scopeKey: `conversation:${f.chat.id}`, messageId: 'decision:before-delegation:response', kind: 'human',
+        payload: { decision: { id: 'before-delegation' } } });
+      f.c.attachTaskDecisionWake('before-delegation', id);
+    };
+    if (timing === 'answer-before-promotion') answer();
+    f.delegate(lead, 1, { noRoute: true }); f.reply(lead, 'interim'); f.finish(lead); f.review();
+    let result = f.c.leaseNextRun({ workerId: 'lead', excludedAgentIds: [f.peer.id] });
+    if (timing !== 'answer-before-promotion') {
+      assert.equal(f.c.requiredReplyObligationsForRun(result.runId)[0].blockingDecisionId, 'before-delegation');
+      f.finish(result); f.reopen();
+      assert.equal(f.c.leaseNextRun({ workerId: 'no-recovery', excludedAgentIds: [f.peer.id] }), undefined);
+      answer(); result = f.c.leaseNextRun({ workerId: 'answer', excludedAgentIds: [f.peer.id] });
+    }
+    assert.equal(f.c.requiredReplyObligationsForRun(result.runId)[0].blockingDecisionId, undefined);
+    f.final(result, 'after-exact-answer'); f.finish(result);
+    assert.equal(f.c.leaseNextRun({ workerId: 'done', excludedAgentIds: [f.peer.id] }), undefined);
+  } finally { f.close(); }
 });
 
 test('an initial reply before delegation becomes interim, and two terminal wakes must both be integrated', () => {

@@ -358,13 +358,15 @@ export class CoordinationV3RequiredReplyAuthority {
    * the active Run's authenticated server route. A Decision is a wait, not
    * fabricated completion or permission. Its exact response supplies a wake. */
   waitForDecision(runId: string, decisionId: string, now: string): void {
-    if (this.forRun(runId).some(o => o.deliveryPhase === 'final' && o.state === 'pending' &&
+    if (this.forRun(runId).some(o => ['broadcast','direct_to_user'].includes(o.replyAuthority.intent) &&
+        (o.state === 'pending' || (o.deliveryPhase === 'initial' && o.state === 'satisfied')) &&
         o.blockingDecisionId && o.blockingDecisionId !== decisionId)) {
       throw new Error('task_decision_already_pending: answer the existing exact blocking Decision first');
     }
     this.sqlite.prepare(`UPDATE required_reply_obligations
       SET blocking_decision_id = ?, updated_at = ?
-      WHERE run_id = ? AND delivery_phase = 'final' AND state = 'pending'`)
+      WHERE run_id = ? AND (state = 'pending' OR (delivery_phase = 'initial' AND state = 'satisfied'))
+        AND json_extract(reply_authority_json, '$.intent') IN ('broadcast','direct_to_user')`)
       .run(decisionId, now, runId);
   }
 
@@ -376,7 +378,8 @@ export class CoordinationV3RequiredReplyAuthority {
           AND obligation.scope_key = wake.scope_key
       WHERE wake.id = ? AND obligation.blocking_decision_id = ?
         AND json_extract(wake.payload_json, '$.decision.id')=obligation.blocking_decision_id
-        AND obligation.delivery_phase = 'final' AND obligation.state = 'pending'`)
+        AND (obligation.state = 'pending' OR (obligation.delivery_phase = 'initial' AND obligation.state = 'satisfied'))
+        AND json_extract(obligation.reply_authority_json, '$.intent') IN ('broadcast','direct_to_user')`)
       .run(activationId, decisionId);
   }
 

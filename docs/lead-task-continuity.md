@@ -24,6 +24,10 @@ assignment subsystem.
   Decision is rejected before canonical creation while the first is unanswered;
   replay preserves the exact original Decision. Canonical pending Decisions
   also guard final delivery if their SQLite association requires repair.
+  Decision ownership can be recorded before delegation or an initial reply;
+  promotion retains it without changing initial reply semantics. Canonical
+  pending waits are repaired before successful terminal accounting as well as
+  before final-delivery rejection, preventing recovery through an association gap.
 - Recovery transfers one original source root and its increasing bounded retry
   generation. After six unsuccessful delivery Runs, existing actionable
   delivery-failure handling stops automatic recovery. No final text is fabricated.
@@ -50,6 +54,8 @@ observed-process-closure, provider-input manifest and low-water guards remain.
 Retirement filters wakes by structural task lineage before applying its bounded
 selection limit. Normal inbox priorities remain unchanged; unrelated inputs
 cannot consume the callback's handoff even if they run first.
+The scoped lookup materializes only identity and ordering fields, never queued
+message payloads.
 Cancellation, deletion and terminal task roots retire waiting eligibility.
 Historical handoff text may remain as audit evidence; a generic later task can
 never select a rollover-owned obsolete handoff.
