@@ -442,7 +442,8 @@ export class CoordinationV3RequiredReplyAuthority {
     // Conversely, reopening must not restore a wait for an exact response
     // already acknowledged by the provider. An arbitrary Decision-shaped
     // payload, consumed activation or task tag is not acknowledgement.
-    const answerAcknowledged = input.response && (this.sqlite.prepare(`SELECT wake.payload_json, injection.run_id
+    const answerAcknowledged = input.response && (this.sqlite.prepare(`SELECT wake.payload_json, injection.run_id,
+        acknowledged_run.side_effects_fenced_at
       FROM activation_sources source JOIN agent_activations wake ON wake.id=source.activation_id
       JOIN scheduler_run_activations attached ON attached.activation_id=wake.id
       JOIN scheduler_prompt_injections injection ON injection.run_id=attached.run_id
@@ -453,10 +454,9 @@ export class CoordinationV3RequiredReplyAuthority {
         AND wake.agent_id=? AND wake.project_id=? AND wake.scope_key=?
         AND acknowledged_run.agent_id=wake.agent_id AND acknowledged_run.project_id=wake.project_id
         AND acknowledged_run.scope_key=wake.scope_key
-        AND acknowledged_run.side_effects_fenced_at IS NULL
         AND json_extract(wake.payload_json,'$.decision.id')=? AND injection.state='acknowledged'
       LIMIT 1`).get(`decision:${input.decisionId}:response`, `message:decision:${input.decisionId}:response`,
-      input.agentId, input.projectId, input.scopeKey, input.decisionId) as { payload_json: string; run_id: string } | undefined);
+      input.agentId, input.projectId, input.scopeKey, input.decisionId) as { payload_json: string; run_id: string; side_effects_fenced_at: string | null } | undefined);
     const confirmedAnswer = Boolean(answerAcknowledged &&
       stableJson(record(record(JSON.parse(answerAcknowledged.payload_json))?.decision)?.response) === stableJson(input.response));
     for (const root of this.forRun(input.runId).filter(o => ['broadcast','direct_to_user'].includes(o.replyAuthority.intent))) {
@@ -484,6 +484,9 @@ export class CoordinationV3RequiredReplyAuthority {
         // manufacture a new task owner during startup repair.
         if (!this.forRun(answerAcknowledged!.run_id).some(o => o.sourceActivationId === root.sourceActivationId &&
             o.agentId === input.agentId && o.projectId === input.projectId && o.scopeKey === input.scopeKey)) continue;
+        // Fencing cannot erase an accepted answer or reopen its cleared wait.
+        // Nor may startup clear a still-present blocker on a fenced Run.
+        if (answerAcknowledged!.side_effects_fenced_at !== null) continue;
         this.sqlite.prepare(`UPDATE required_reply_obligations SET blocking_decision_id=NULL, updated_at=?
           WHERE run_id=? AND source_activation_id=? AND blocking_decision_id=?`)
           .run(now, pending.runId, pending.sourceActivationId, input.decisionId);
