@@ -150,9 +150,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       ? `durable work is unavailable: ${processContainment.detail}`
       : undefined;
   const assets = new AssetStore(opts.dataDir);
+  const workspace = new WorkspaceStore(opts.dataDir);
   store.configureCommunicationAttachmentMetadataAuthority((projectId, artifact) =>
     assets.managedProjectArtifactMetadataIsAuthoritative(projectId, artifact));
   const coordinationV3 = new CoordinationV3Store(store.sqlite, {
+    canonicalTaskDecisions: runIds => workspace.decisionsForRuns(runIds),
     attachmentAuthority: {
       resolve: (projectId, agentId, attachmentId) =>
         assets.authoritativeRuntimeAttachment(projectId, agentId, attachmentId),
@@ -235,7 +237,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   } = createCommunicationArtifactAuthority({ dataDir: opts.dataDir, assets, store });
   const coordinationV3WorkerId = `server:${randomUUID()}`;
   const providerProcessAuthority = new ProviderProcessAuthority(store.sqlite, coordinationV3WorkerId);
-  const workspace = new WorkspaceStore(opts.dataDir);
   const runtimeElicitations = new RuntimeElicitationBroker();
   // Startup recovery terminates any surviving prior-boot provider group before
   // readiness. Retire prompts whose sensitive live half cannot cross the boot.

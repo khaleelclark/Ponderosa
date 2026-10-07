@@ -619,7 +619,8 @@ export function createServerReadModels(context: ReadModelContext) {
         : {}),
       now: decision.response.respondedAt,
     });
-    coordinationV3.attachTaskDecisionWake(decision.id, activationId, decision.response.respondedAt);
+    coordinationV3.attachTaskDecisionWake(decision.id, activationId, decision.response.respondedAt,
+      decision.blocking ? decision.coordinationRunId : undefined);
     return activationId;
   }
 

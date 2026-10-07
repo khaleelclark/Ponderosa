@@ -49,6 +49,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
     }) => void,
     private readonly recoverRequiredReply: (runId: string, now: string) => void,
     private readonly settleRetriedRequiredReply: (runId: string, now: string) => void,
+    private readonly restoreUninjectedDecisionRoots: (runId: string, now: string) => void,
   ) {}
 
   recoverOrphanedRuns(
@@ -93,6 +94,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
             SET state = 'cancelled', updated_at = ?, terminal_at = ?
             WHERE run_id = ? AND state = 'pending'
           `).run(now, now, run.id);
+          this.restoreUninjectedDecisionRoots(run.id, now);
           this.settleRetriedRequiredReply(run.id, now);
           retried += 1;
         } else {
@@ -167,6 +169,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending')
           AND a.available_at <= ?
+          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind='task_decision_repair_wait')
           ${excludedClause}
           AND (
             (a.kind = 'context_rollover_handoff' AND EXISTS (
@@ -215,6 +218,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         SELECT * FROM agent_activations
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending') AND available_at <= ?
+          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=agent_activations.id AND held.source_kind='task_decision_repair_wait')
           AND (
             (kind = 'context_rollover_handoff' AND EXISTS (
               SELECT 1 FROM context_rollovers rollover
@@ -501,6 +505,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
           SET state = 'cancelled', updated_at = ?, terminal_at = ?
           WHERE run_id = ? AND state = 'pending'
         `).run(now, now, run.id);
+        this.restoreUninjectedDecisionRoots(run.id, now);
         this.settleRetriedRequiredReply(run.id, now);
         retried += 1;
       } else {

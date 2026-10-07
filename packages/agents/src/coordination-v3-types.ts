@@ -8,6 +8,7 @@ import type {
   CoordinationReplyAuthority,
   CoordinationRequestState,
   CoordinationRequestUpdateKind,
+  DecisionDto,
   ProviderFailureCategory,
   RequestLifetime,
   TriggerRunBudgetDto,
@@ -546,6 +547,8 @@ export interface TriggerOccurrenceResult {
 }
 
 export interface CoordinationV3StoreOptions {
+  /** Trusted canonical WorkspaceStore index, never provider-supplied input. */
+  canonicalTaskDecisions?: (runIds: ReadonlySet<string>) => readonly DecisionDto[];
   /** Backpressure only applies to new external/model-authored intake. Internal
    * terminal outcomes remain writable so quota pressure cannot strand work. */
   maxPendingActivationsPerAgent?: number;

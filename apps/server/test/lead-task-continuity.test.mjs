@@ -16,6 +16,77 @@ async function waitFor(check, description) {
   assert.fail(`Timed out: ${typeof description === 'function' ? description() : description}`);
 }
 
+for (const persistent of [false, true]) test(`provider error repairs a canonical Decision wait without a recovery Run; persistent association failure=${persistent}`, async () => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'ponderosa-decision-error-')));
+  let store = new AgentStore(directory);
+  const project = store.createProject({ label: 'Disposable provider error', hostPath: directory, defaultEngine: 'claude' });
+  const chat = store.createConversation(project.id, { title: 'Exact Decision wait' });
+  const lead = store.createAgent(project.id, { title: 'Lead', engine: 'claude', conversationId: chat.id });
+  const reservation = createNetServer(); await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve));
+  const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
+  const adapter = { id: 'claude', displayName: 'Disposable CLI', trustedSystemPromptChannel: 'system', listModels: () => [], listEfforts: () => [],
+    async openSession(options) { return new ClaudeStreamSession({ ...options,
+      bin: fileURLToPath(new URL('./fixtures/lead-continuity-provider.mjs', import.meta.url)), permissionMode: 'default', killGraceMs: 100,
+      environment: { ...options.environment, CONTINUITY_ROLE: 'association-error', CONTINUITY_CAPTURE: join(directory, 'provider.jsonl'),
+        CONTINUITY_ERROR_SEEN: join(directory, 'first-error') } }); } };
+  const makeApp = () => {
+    const app = createServer({ dataDir: directory, store, engines: [{ adapter, authStatus: async () => ({ authenticated: true }) }],
+      agentBaseUrl: `http://127.0.0.1:${port}`, logger: false, communicationV3: { pollMs: 10 } });
+    app.addHook('onSend', async (_request, reply) => {
+      if (!persistent && reply.statusCode === 500) store.sqlite.exec('DROP TRIGGER IF EXISTS association_error');
+    }); return app;
+  };
+  let app = makeApp();
+  try {
+    await app.listen({ host: '127.0.0.1', port });
+    store.sqlite.exec(`CREATE ${persistent ? '' : 'TEMP '}TRIGGER association_error BEFORE UPDATE OF blocking_decision_id ON required_reply_obligations
+      WHEN NEW.blocking_decision_id IS NOT NULL AND OLD.blocking_decision_id IS NULL
+      BEGIN SELECT RAISE(ABORT, 'disposable association rollback'); END`);
+    const sent = await app.inject({ method: 'POST', url: `/api/agents/${lead.id}/messages`,
+      payload: { text: 'Ask before delivering the disposable task.', idempotencyKey: 'error-task' } });
+    assert.ok([200, 202].includes(sent.statusCode), sent.body);
+    const original = await waitFor(() => store.sqlite.prepare("SELECT id,status FROM scheduler_runs WHERE agent_id=? AND status='outcome_unknown'").get(lead.id), 'actual provider failure');
+    await waitFor(() => new CoordinationV3Store(store.sqlite).activeRunCount() === 0, 'original Run quiescence');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(lead.id).n, 1);
+    assert.equal(store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 0);
+    const decision = (await app.inject('/api/decisions?status=pending')).json()[0];
+    assert.equal(decision.coordinationRunId, original.id); assert.equal(decision.blocking, true);
+    const root = new CoordinationV3Store(store.sqlite).requiredReplyObligationsForRun(original.id)[0];
+    assert.equal(Boolean(root.decisionWaitRepairPending), persistent);
+    if (persistent) {
+      const early = await app.inject({ method: 'POST', url: `/api/decisions/${decision.id}/respond`, payload: { optionId: 'approve' } });
+      assert.equal(early.statusCode, 200, early.body);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(lead.id).n, 1);
+      assert.equal(store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE source_kind='task_decision_repair_wait'").get().n, 1);
+    }
+    app.prepareForShutdown(); await app.close(); store.close();
+    store = new AgentStore(directory); app = makeApp(); await app.listen({ host: '127.0.0.1', port });
+    if (persistent) {
+      assert.equal(new CoordinationV3Store(store.sqlite).requiredReplyObligationsForRun(original.id)[0].decisionWaitRepairPending, true);
+      assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(lead.id).n, 1);
+      store.sqlite.exec('DROP TRIGGER association_error');
+    }
+    if (!persistent) {
+      assert.equal(new CoordinationV3Store(store.sqlite).taskDecisionOwnsDelivery(decision.id), true);
+      const answer = await app.inject({ method: 'POST', url: `/api/decisions/${decision.id}/respond`, payload: { optionId: 'approve' } });
+      assert.equal(answer.statusCode, 200, answer.body);
+    }
+    await waitFor(() => store.sqlite.prepare("SELECT COUNT(*) n FROM runtime_communications WHERE json_extract(payload_json,'$.communication.text')='Exact approved task delivered after the provider error.'").get().n === 1,
+      'exact approved response');
+    await waitFor(() => store.sqlite.prepare("SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=? AND status='completed'").get(lead.id).n === 1, 'answer Run completed');
+    const replay = await app.inject({ method: 'POST', url: `/api/decisions/${decision.id}/respond`, payload: { optionId: 'approve' } });
+    assert.equal(replay.statusCode, 200, replay.body);
+    assert.equal(store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(original.id).status, 'outcome_unknown');
+    const runs = store.sqlite.prepare('SELECT id FROM scheduler_runs WHERE agent_id=? ORDER BY rowid').all(lead.id);
+    assert.equal(runs.length, 2);
+    const roots = new CoordinationV3Store(store.sqlite).requiredReplyObligationsForRun(runs[1].id);
+    assert.equal(roots.length, 1); assert.equal(roots[0].sourceActivationId, root.sourceActivationId); assert.equal(roots[0].state, 'satisfied');
+    assert.equal(store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 0);
+  } finally { app.prepareForShutdown(); await app.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 for (const { decisionWait, associationFailure, decisionBefore, decisionSteer, decisionOnly, answerRestart, unrelatedRun } of [{ decisionWait: false }, { decisionWait: true }, { decisionWait: true, associationFailure: true },
   { decisionWait: true, decisionBefore: true }, { decisionWait: true, decisionBefore: true, associationFailure: true },
   { decisionWait: true, decisionSteer: true }, { decisionWait: true, decisionBefore: true, decisionOnly: true },

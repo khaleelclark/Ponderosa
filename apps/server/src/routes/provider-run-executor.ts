@@ -1542,18 +1542,8 @@ export function startProviderRunExecution(
           });
           }
           else {
-            // A Decision may precede delegation, or its association write may
-            // fail after canonical creation. Repair exact task waits before
-            // terminal accounting can schedule a reply-recovery Run.
-            const origins = new Set(coordinationV3!.taskOriginRunIds(activeRun.v3SchedulerRunId));
-            for (const decision of workspace.decisionsForRuns(origins)) {
-              if (!decision.blocking || decision.status !== 'pending' || decision.agentId !== agent.id ||
-                  decision.projectId !== project.id || decision.conversationId !== routingConversationId ||
-                  !decision.coordinationRunId) continue;
-              coordinationV3!.reconcileTaskDecision({ decisionId: decision.id, runId: decision.coordinationRunId,
-                projectId: decision.projectId, agentId: decision.agentId,
-                scopeKey: routingConversationId ? `conversation:${routingConversationId}` : `agent:${agent.id}` });
-            }
+            // Canonical Decision wait repair is shared by all terminal paths
+            // in CoordinationV3Store, including provider failure and lease recovery.
             coordinationV3!.completeRun(activeRun.v3SchedulerRunId, activeRun.v3FencingToken);
             if (routingConversationId && pendingCommunicationV4NextRunDeliveryIds.length > 0) {
               // runId identifies the exact provider-input manifest used as
