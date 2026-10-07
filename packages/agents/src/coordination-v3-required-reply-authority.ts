@@ -298,19 +298,17 @@ export class CoordinationV3RequiredReplyAuthority {
   }, originRunIds: string[], finalOnly = false): void {
     for (const originRunId of new Set(originRunIds)) {
       const roots = this.forRun(originRunId).filter(o =>
-        o.projectId === input.projectId && o.agentId === input.agentId && o.scopeKey === input.scopeKey &&
-        (!finalOnly || o.deliveryPhase === "final"));
+        o.projectId === input.projectId && o.agentId === input.agentId && o.scopeKey === input.scopeKey);
       for (const root of roots) {
         const row = this.sqlite.prepare(`
-          SELECT obligation.run_id FROM required_reply_obligations obligation
+          SELECT obligation.run_id, run.status AS run_status FROM required_reply_obligations obligation
           JOIN scheduler_runs run ON run.id = obligation.run_id
           WHERE obligation.source_activation_id = ? AND obligation.project_id = ?
             AND obligation.agent_id = ? AND obligation.scope_key = ?
           ORDER BY run.rowid DESC LIMIT 1
-        `).get(root.sourceActivationId, input.projectId, input.agentId, input.scopeKey) as { run_id: string } | undefined;
+        `).get(root.sourceActivationId, input.projectId, input.agentId, input.scopeKey) as { run_id: string; run_status: string } | undefined;
         const predecessor = row ? this.forRun(row.run_id).find(o => o.sourceActivationId === root.sourceActivationId) : undefined;
-        if (!predecessor || predecessor.runId === input.runId ||
-            !["pending", "recovery_pending", "retried"].includes(predecessor.state)) continue;
+        if (!predecessor || predecessor.runId === input.runId) continue;
         const isRecovery = input.activations?.some(a => a.id === predecessor.recoveryActivationId && a.kind === 'required_reply_recovery');
         const answeredDecision = predecessor.blockingDecisionId && input.activations?.some(a => Boolean(this.sqlite.prepare(`
           SELECT 1 FROM activation_sources source JOIN agent_activations wake ON wake.id=source.activation_id
@@ -318,15 +316,26 @@ export class CoordinationV3RequiredReplyAuthority {
             AND wake.agent_id=? AND wake.project_id=? AND wake.scope_key=?
             AND json_extract(wake.payload_json, '$.decision.id')=source.source_id
         `).get(a.id, predecessor.blockingDecisionId, input.agentId, input.projectId, input.scopeKey)));
+        // Only an exact answered Decision may carry a satisfied initial root
+        // into a later Run. It remains satisfied until this Run delegates;
+        // ordinary callbacks cannot revive completed or cancelled work.
+        const answeredInitial = predecessor.deliveryPhase === 'initial' && predecessor.state === 'satisfied' &&
+          answeredDecision && row?.run_status !== 'cancelled';
+        if (!["pending", "recovery_pending", "retried"].includes(predecessor.state) && !answeredInitial) continue;
+        if (finalOnly && predecessor.deliveryPhase !== 'final' && !answeredInitial) continue;
         this.sqlite.prepare(`
           INSERT OR IGNORE INTO required_reply_obligations (
             run_id, source_activation_id, project_id, agent_id, scope_key, reply_authority_json,
-            attempt_count, state, delivery_phase, interim_communication_id, blocking_decision_id, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+            attempt_count, state, delivery_phase, interim_communication_id, blocking_decision_id,
+            satisfied_communication_id, terminal_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(input.runId, predecessor.sourceActivationId, input.projectId, input.agentId, input.scopeKey,
-          stableJson(predecessor.replyAuthority), predecessor.attemptCount + (isRecovery ? 1 : 0), predecessor.deliveryPhase,
+          stableJson(predecessor.replyAuthority), predecessor.attemptCount + (isRecovery ? 1 : 0),
+          answeredInitial ? 'satisfied' : 'pending', predecessor.deliveryPhase,
           predecessor.interimCommunicationId ?? null,
-          answeredDecision ? null : predecessor.blockingDecisionId ?? null, input.now, input.now);
+          answeredDecision ? null : predecessor.blockingDecisionId ?? null,
+          answeredInitial ? predecessor.satisfiedCommunicationId ?? null : null,
+          answeredInitial ? input.now : null, input.now, input.now);
         if (predecessor.recoveryActivationId) this.sqlite.prepare(`
           UPDATE agent_activations SET state = 'cancelled', updated_at = ?, terminal_at = ?
           WHERE id = ? AND state IN ('pending','retry_pending')

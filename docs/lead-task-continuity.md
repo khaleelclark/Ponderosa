@@ -28,6 +28,9 @@ assignment subsystem.
   promotion retains it without changing initial reply semantics. Canonical
   pending waits are repaired before successful terminal accounting as well as
   before final-delivery rejection, preventing recovery through an association gap.
+  An exact Decision answer in a later Run can carry an already-satisfied initial
+  origin without requiring another initial reply. Only subsequent delegation
+  promotes that origin to final delivery; generic callbacks cannot revive it.
 - Recovery transfers one original source root and its increasing bounded retry
   generation. After six unsuccessful delivery Runs, existing actionable
   delivery-failure handling stops automatic recovery. No final text is fabricated.

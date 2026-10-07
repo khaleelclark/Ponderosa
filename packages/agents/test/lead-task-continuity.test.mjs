@@ -225,6 +225,61 @@ for (const timing of ['pending-initial', 'satisfied-initial', 'answer-before-pro
   } finally { f.close(); }
 });
 
+test('an exact next-Run Decision answer carries a satisfied initial task origin for later delegation', () => {
+  const f = fixture();
+  try {
+    const lead = f.human(); f.reply(lead, 'initial-acknowledgement');
+    f.c.waitForTaskDecision({ runAuthorization: f.auth(lead), decisionId: 'approve-before-work', scopeKey: `conversation:${f.chat.id}` });
+    f.finish(lead); f.reopen();
+    assert.equal(f.c.leaseNextRun({ workerId: 'no-extra-reply', excludedAgentIds: [f.peer.id] }), undefined);
+    const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+      scopeKey: `conversation:${f.chat.id}`, messageId: 'decision:approve-before-work:response', kind: 'human',
+      payload: { decision: { id: 'approve-before-work' } } });
+    f.c.attachTaskDecisionWake('approve-before-work', answer);
+    const resumed = f.c.leaseNextRun({ workerId: 'approval', excludedAgentIds: [f.peer.id] });
+    const root = f.c.requiredReplyObligationsForRun(resumed.runId)[0];
+    assert.equal(root.sourceActivationId, lead.activations[0].id);
+    assert.equal(root.state, 'satisfied'); assert.equal(root.deliveryPhase, 'initial');
+    assert.equal(root.satisfiedCommunicationId, 'initial-acknowledgement');
+    assert.equal(root.blockingDecisionId, undefined);
+    f.delegate(resumed, 1, { noRoute: true });
+    assert.equal(f.c.requiredReplyObligationsForRun(resumed.runId)[0].interimCommunicationId, 'initial-acknowledgement');
+    f.finish(resumed); f.review();
+    const integrated = f.c.leaseNextRun({ workerId: 'integration', excludedAgentIds: [f.peer.id] });
+    assert.ok(f.c.requiredReplyAuthoritiesForRun(integrated.runId).some(route => route.intent === 'direct_to_user'));
+    f.final(integrated, 'one-final-after-approval'); f.finish(integrated); f.reopen();
+    assert.equal(f.c.leaseNextRun({ workerId: 'done', excludedAgentIds: [f.peer.id] }), undefined);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM runtime_communications WHERE id='initial-acknowledgement'").get().n, 1);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM runtime_communications WHERE id='one-final-after-approval'").get().n, 1);
+    const lateAnswer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+      scopeKey: `conversation:${f.chat.id}`, messageId: 'late-answer-alias', kind: 'human',
+      payload: { decision: { id: 'approve-before-work' } } });
+    f.c.attachTaskDecisionWake('approve-before-work', lateAnswer);
+    const late = f.c.leaseNextRun({ workerId: 'late-answer', excludedAgentIds: [f.peer.id] });
+    assert.equal(f.c.requiredReplyObligationsForRun(late.runId).some(o => o.sourceActivationId === lead.activations[0].id), false,
+      'an already completed final task must not be revived by a late answer alias');
+  } finally { f.close(); }
+});
+
+for (const boundary of ['untagged-answer', 'cancelled-origin']) test(`satisfied initial task origin is not revived through ${boundary}`, () => {
+  const f = fixture();
+  try {
+    const lead = f.human(); f.reply(lead, 'initial-acknowledgement');
+    f.c.waitForTaskDecision({ runAuthorization: f.auth(lead), decisionId: 'approval', scopeKey: `conversation:${f.chat.id}` });
+    if (boundary === 'cancelled-origin') {
+      f.c.cancelAgentRun({ agentId: f.lead.id, expectedRunId: lead.runId, idempotencyKey: 'cancel-origin' });
+    } else f.finish(lead);
+    f.reopen();
+    const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+      scopeKey: `conversation:${f.chat.id}`, messageId: `answer-${boundary}`, kind: 'human',
+      payload: { decision: { id: 'approval' } } });
+    if (boundary === 'cancelled-origin') f.c.attachTaskDecisionWake('approval', answer);
+    const resumed = f.c.leaseNextRun({ workerId: 'answer', excludedAgentIds: [f.peer.id] });
+    assert.ok(resumed, 'the new input remains independently runnable');
+    assert.equal(f.c.requiredReplyObligationsForRun(resumed.runId).some(o => o.sourceActivationId === lead.activations[0].id), false);
+  } finally { f.close(); }
+});
+
 test('an initial reply before delegation becomes interim, and two terminal wakes must both be integrated', () => {
   const f = fixture();
   try {
