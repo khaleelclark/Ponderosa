@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import { runOwnsAwaitedDelegation } from "./coordination-v3-task-lineage.js";
+import type { RunAuthorizationV3 } from "./coordination-v3-types.js";
 import {
   type MessageDeliveryReceiptDto,
   type CommunicationEvent,
@@ -192,6 +194,7 @@ export class CoordinationV3Store {
     this.requiredReplyAuthority = new CoordinationV3RequiredReplyAuthority(
       sqlite,
       input => this.createActivation(input),
+      (activationId, now) => this.contextRolloverAuthority.bindWaitingWake(activationId, now),
     );
     this.contextRolloverAuthority = new CoordinationV3ContextRolloverAuthority(
       sqlite,
@@ -363,6 +366,7 @@ export class CoordinationV3Store {
       (runId, now) => { this.requiredReplyAuthority.recoverPending(runId, now); },
       (runId, now) => { this.requiredReplyAuthority.settleRetried(runId, now); },
     );
+    this.contextRolloverAuthority.reconcileRetainedContinuity(new Date().toISOString());
   }
 
   recordRuntimeCommunication(input: RuntimeCommunicationV3Input): RuntimeCommunicationV3Result {
@@ -668,7 +672,13 @@ export class CoordinationV3Store {
   }
 
   coordinate(input: CoordinateV3Input, now = new Date().toISOString()): CoordinateV3Result {
-    return this.coordinateAuthority.coordinate(input, now);
+    return this.sqlite.transaction(() => {
+      const result = this.coordinateAuthority.coordinate(input, now);
+      if (!result.replayed && input.runAuthorization && runOwnsAwaitedDelegation(this.sqlite, input.runAuthorization.runId)) {
+        this.requiredReplyAuthority.retainForDelegation(input.runAuthorization.runId, now);
+      }
+      return result;
+    })();
   }
 
   replayCoordinate(input: CoordinateV3Input): CoordinateV3Result | undefined {
@@ -677,6 +687,31 @@ export class CoordinationV3Store {
 
   enqueueMessageActivation(input: EnqueueMessageActivationInput): string {
     return this.coordinateAuthority.enqueueMessageActivation(input);
+  }
+
+  waitForTaskDecision(input: { runAuthorization: RunAuthorizationV3; decisionId: string; scopeKey: string }, now = new Date().toISOString()): void {
+    this.sqlite.transaction(() => {
+      this.support.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
+      this.requiredReplyAuthority.waitForDecision(input.runAuthorization.runId, input.decisionId, now);
+    })();
+  }
+
+  attachTaskDecisionWake(decisionId: string, activationId: string, now = new Date().toISOString()): void {
+    this.sqlite.transaction(() => {
+      this.requiredReplyAuthority.attachDecisionWake(decisionId, activationId);
+      this.contextRolloverAuthority.bindWaitingWake(activationId, now);
+    })();
+  }
+
+  /** Startup reconciliation from canonical Workspace Decisions only. Never
+   * called with model text or operator-supplied routing/ownership metadata. */
+  reconcileTaskDecision(input: Parameters<CoordinationV3RequiredReplyAuthority['reconcileDecision']>[0], now = new Date().toISOString()): void {
+    this.sqlite.transaction(() => this.requiredReplyAuthority.reconcileDecision(input, now))();
+  }
+
+  taskDecisionOwnsDelivery(decisionId: string): boolean {
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM required_reply_obligations
+      WHERE blocking_decision_id = ? AND delivery_phase = 'final' AND state = 'pending' LIMIT 1`).get(decisionId));
   }
 
   createTriggerDefinition(input: CreateTriggerDefinitionInput): TriggerDefinitionDto {
@@ -1226,7 +1261,9 @@ export class CoordinationV3Store {
   }
 
   cancelAgentRun(input: { agentId: string; idempotencyKey: string; expectedRunId?: string; now?: string }): CancellationResult {
-    return this.runLifecycleAuthority.cancelAgentRun(input);
+    const result = this.runLifecycleAuthority.cancelAgentRun(input);
+    this.contextRolloverAuthority.reconcileRetainedContinuity(input.now ?? new Date().toISOString());
+    return result;
   }
 
   cancellationReceipt(agentId: string, idempotencyKey: string): CancellationResult | undefined {
@@ -1301,6 +1338,11 @@ export class CoordinationV3Store {
 
   activeContextRollover(agentId: string): ContextRolloverV3 | undefined {
     return this.contextRolloverAuthority.activeForAgent(agentId);
+  }
+
+  rolloverOwnsContinuationHandoff(agentId: string, handoffId: string): boolean {
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM context_rollovers
+      WHERE agent_id = ? AND handoff_event_id = ? LIMIT 1`).get(agentId, handoffId));
   }
 
   hasViableContextRolloverHandoffActivation(id: string): boolean {
@@ -1412,7 +1454,11 @@ export class CoordinationV3Store {
   }
 
   private createActivation(input: CreateActivationV3Input): string {
-    return this.activationFactory.create(input);
+    const id = this.activationFactory.create(input);
+    if (input.kind.startsWith("coordination_") || input.kind === "required_reply_recovery") {
+      this.contextRolloverAuthority.bindWaitingWake(id, input.now);
+    }
+    return id;
   }
 
 }

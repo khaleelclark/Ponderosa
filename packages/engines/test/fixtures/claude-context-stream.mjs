@@ -25,6 +25,7 @@ let count = 0;
 for await (const line of createInterface({ input: process.stdin })) {
   const frame = JSON.parse(line);
   if (frame.type !== 'user') continue;
+  if (process.env.PONDEROSA_SEED_CAPTURE) await writeFile(process.env.PONDEROSA_SEED_CAPTURE, JSON.stringify(frame));
   count++;
   send({ type: 'system', subtype: 'init', session_id: frame.session_id });
   const input = Number(process.env.PONDEROSA_CLAUDE_FIXTURE_TOKENS ?? 150001);

@@ -589,7 +589,7 @@ export function createServerReadModels(context: ReadModelContext) {
       if (!conversation || conversation.projectId !== project.id || conversation.archived ||
           agent.conversationId !== conversation.id) return undefined;
     }
-    return coordinationV3.enqueueMessageActivation({
+    const activationId = coordinationV3.enqueueMessageActivation({
       projectId: decision.projectId,
       agentId: decision.agentId,
       scopeKey: decision.conversationId ? `conversation:${decision.conversationId}` : `agent:${decision.agentId}`,
@@ -619,6 +619,8 @@ export function createServerReadModels(context: ReadModelContext) {
         : {}),
       now: decision.response.respondedAt,
     });
+    coordinationV3.attachTaskDecisionWake(decision.id, activationId, decision.response.respondedAt);
+    return activationId;
   }
 
   const agentMessages = (agentId: string) => store.getProjectedAgentMessages(agentId);

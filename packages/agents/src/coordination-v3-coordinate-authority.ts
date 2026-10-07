@@ -10,6 +10,7 @@ import type { CreateActivationV3Input } from "./coordination-v3-runtime-communic
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import { isIso } from "./coordination-v3-runtime-validation.js";
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
+import { taskOriginRunIds } from "./coordination-v3-task-lineage.js";
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import type { CoordinationV3RequestRecoveryAuthority } from "./coordination-v3-request-recovery-authority.js";
 import type {
@@ -138,6 +139,9 @@ export class CoordinationV3CoordinateAuthority {
       if (input.runAuthorization && !input.conversationId) {
         throw new Error("provider coordination requires a Team Chat scope");
       }
+      if (input.runAuthorization && input.requesterAgentId !== input.runAuthorization.agentId) {
+        throw new Error("delegation origin must be the authorized Run's Agent");
+      }
       if (input.rolloverRecoveryForRequestId) {
         const retry = input.requests[0];
         if (
@@ -214,8 +218,8 @@ export class CoordinationV3CoordinateAuthority {
             id, project_id, conversation_id, requester_agent_id,
             recipient_agent_id, communication_event_id, payload_json,
             reply_authority_json, state, version, lifetime_kind, deadline_at,
-            created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 0, ?, ?, ?, ?)
+            created_at, updated_at, origin_run_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 0, ?, ?, ?, ?, ?)
         `).run(
           requestId,
           input.projectId,
@@ -231,6 +235,7 @@ export class CoordinationV3CoordinateAuthority {
             : null,
           now,
           now,
+          input.runAuthorization?.runId ?? null,
         );
         if (request.recoveryOfRequestId) {
           this.requestRecoveryAuthority.bind({
@@ -415,16 +420,25 @@ export class CoordinationV3CoordinateAuthority {
           wakePolicy,
           deadlineAt: input.join.deadlineAt ?? null,
           continuationRequestIds: [...continuationRequestIds].sort(),
+          ...(input.runAuthorization ? { taskOrigins: (() => {
+            const roots = (this.sqlite.prepare(`SELECT source_activation_id FROM required_reply_obligations
+              WHERE run_id = ? AND json_extract(reply_authority_json, '$.intent') IN ('broadcast','direct_to_user')
+              ORDER BY source_activation_id`).all(input.runAuthorization.runId) as Array<{ source_activation_id: string }>);
+            return roots.length ? roots.map(r => r.source_activation_id) : [`run:${input.runAuthorization.runId}`];
+          })() } : {}),
         });
         const equivalent = this.sqlite.prepare(`
           SELECT id FROM coordination_joins
           WHERE project_id = ? AND owner_agent_id = ? AND definition_hash = ?
+            AND ((origin_run_id IS NULL AND ? IS NULL) OR origin_run_id IN (SELECT value FROM json_each(?)))
             AND state IN ('open', 'satisfied', 'impossible')
           ORDER BY created_at LIMIT 1
         `).get(
           input.projectId,
           input.requesterAgentId,
           definitionHash,
+          input.runAuthorization?.runId ?? null,
+          JSON.stringify(input.runAuthorization ? taskOriginRunIds(this.sqlite, input.runAuthorization.runId) : []),
         ) as { id: string } | undefined;
         if (equivalent) {
           joinId = equivalent.id;
@@ -449,8 +463,8 @@ export class CoordinationV3CoordinateAuthority {
             id, project_id, conversation_id, owner_agent_id, mode,
             wake_policy, quorum, satisfying_outcomes_json, state, deadline_at,
             definition_hash, continuation_request_ids_json,
-            created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
+            created_at, updated_at, origin_run_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)
         `).run(
           joinId,
           input.projectId,
@@ -465,6 +479,7 @@ export class CoordinationV3CoordinateAuthority {
           stableJson(continuationRequestIds),
           now,
           now,
+          input.runAuthorization?.runId ?? null,
         );
         const insertMember = this.sqlite.prepare(`
           INSERT INTO coordination_join_members (

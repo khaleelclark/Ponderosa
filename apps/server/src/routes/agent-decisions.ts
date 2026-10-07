@@ -110,6 +110,11 @@ export function registerAgentDecisionRoutes(
       ...(continuationRequestIds.length ? { continuationRequestIds } : {}),
       blocking: body.blocking !== false,
     });
+    if (decision.blocking) coordinationV3.waitForTaskDecision({
+      runAuthorization: { runId: capability.v3SchedulerRunId, agentId: capability.agentId, fencingToken: capability.v3FencingToken },
+      decisionId: decision.id,
+      scopeKey: active.conversationId ? `conversation:${active.conversationId}` : `agent:${agent.id}`,
+    });
     if (decision.blocking && decision.continuationRequestIds?.length) coordinationV3.suspendQuestionsForDecision({
       runId: capability.runId,
       agentId: agent.id,

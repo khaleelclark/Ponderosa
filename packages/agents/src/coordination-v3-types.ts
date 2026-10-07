@@ -184,6 +184,8 @@ export interface ContextRolloverV3 {
   replacementManifestHash?: string;
   replacementAttempt: number;
   visibleResponseCommitted: boolean;
+  /** Old process retirement is complete, but task continuity awaits a canonical delegation wake. */
+  continuityWaiting: boolean;
   handoffCommittedAt?: string;
   sessionRetiringAt?: string;
   continuationReadyAt?: string;
@@ -211,6 +213,7 @@ interface RuntimeCommunicationV3InputBase {
   /** Server-owned proof that this Communication is the Run's inferred reply,
    * rather than another explicit Communication using the same route. */
   satisfiesRequiredReply?: boolean;
+  taskDelivery?: "final" | "blocked";
   artifacts?: RuntimeArtifactInputV3[];
   activation?: {
     agentId: string;

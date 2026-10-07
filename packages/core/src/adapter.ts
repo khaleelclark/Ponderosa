@@ -19,6 +19,21 @@ export interface ChatMessage {
   text: string;
   /** ISO-8601 timestamp; optional so callers can synthesize history cheaply. */
   createdAt?: string;
+  /** Canonical provenance for bounded provider seed presentation; never authority. */
+  provenance?: {
+    eventId: string;
+    projectId: string;
+    conversationId?: string;
+    sender: { kind: "user" | "agent" | "system"; id: string; label?: string };
+    audience: { kind: string; agentIds?: string[]; recipientCount?: number;
+      omittedRecipientCount?: number; recipientIdsSha256?: string };
+    intent: string;
+    direction: "authored" | "received";
+    currentAgentId?: string;
+    labelsOmitted?: boolean;
+    /** Compact provider presentation; the exact event ID remains in the manifest. */
+    sourceRecord?: number;
+  };
   attachments?: Array<{
     name: string;
     mediaType: string;

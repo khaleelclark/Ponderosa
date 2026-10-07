@@ -593,6 +593,11 @@ export function registerServerLifecycle(
       });
     }
     for (const decision of workspace.listDecisions({ status: "pending" })) {
+      if (decision.blocking && decision.coordinationRunId) coordinationV3.reconcileTaskDecision({
+        decisionId: decision.id, runId: decision.coordinationRunId, projectId: decision.projectId,
+        agentId: decision.agentId,
+        scopeKey: decision.conversationId ? `conversation:${decision.conversationId}` : `agent:${decision.agentId}`,
+      });
       if (!decision.blocking || !(decision.continuationRequestIds?.length)) continue;
       coordinationV3.suspendQuestionsForDecision({
         runId: decision.coordinationRunId ?? decision.runId,
@@ -611,7 +616,7 @@ export function registerServerLifecycle(
           continue;
         }
       }
-      if (decision.continuationRequestIds?.length || decision.approvalScope?.kind === "saved_browser") {
+      if (decision.continuationRequestIds?.length || decision.approvalScope?.kind === "saved_browser" || coordinationV3.taskDecisionOwnsDelivery(decision.id)) {
         ensureDecisionResponseActivation(decision);
       }
     }

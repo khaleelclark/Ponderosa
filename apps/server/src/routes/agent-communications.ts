@@ -29,7 +29,7 @@ import {
 } from "../communication-artifacts.js";
 import { derivedRunActionKey } from "../security.js";
 import { normalizeExternalCitations } from "../external-content.js";
-import { selectsRequiredReply } from "../required-reply-route.js";
+import { requiredReplyAuthorityKey, selectsRequiredReply } from "../required-reply-route.js";
 import { leaseAgentDelivery, leaseConversationDelivery } from "../delivery-leases.js";
 import {
   conversationDeliveryRequestFingerprint,
@@ -86,6 +86,7 @@ interface AgentCommunicationRoutesContext {
 const AGENT_MESSAGE_FIELDS = new Set([
   "intent", "text", "artifactIds", "steeringInjectionId", "recipientAgentIds",
   "urgency", "idempotencyKey", "document", "citations", "delivery", "expiresAt",
+  "taskDelivery",
 ]);
 
 export function validateAgentMessageBodyShape(body: unknown): string | undefined {
@@ -103,6 +104,12 @@ export function validateAgentMessageBodyShape(body: unknown): string | undefined
   if (candidate.intent !== undefined &&
       !["broadcast", "direct_to_user", "collaboration"].includes(candidate.intent as string)) {
     return "intent must be broadcast, direct_to_user, or collaboration";
+  }
+  if (candidate.taskDelivery !== undefined && candidate.taskDelivery !== 'final' && candidate.taskDelivery !== 'blocked') {
+    return 'taskDelivery must be final or blocked';
+  }
+  if (candidate.taskDelivery !== undefined && (candidate.delivery !== undefined || candidate.intent === 'collaboration')) {
+    return 'taskDelivery is only an immediate operator-facing outcome';
   }
   if (candidate.urgency !== undefined &&
       candidate.urgency !== "ordinary" && candidate.urgency !== "urgent") {
@@ -416,14 +423,21 @@ export function registerAgentCommunicationRoutes(
         ? { recipientAgentIds: [...inferredRecipientAgentIds].sort() }
         : {}),
     };
+    const taskDelivery = request.body?.taskDelivery;
+    if (taskDelivery && !coordinationV3.requiredReplyObligationsForRun(capability.v3SchedulerRunId)
+      .some(o => o.deliveryPhase === 'final' && ['pending','satisfied'].includes(o.state) &&
+        requiredReplyAuthorityKey(o.replyAuthority) === requiredReplyAuthorityKey(selectedReplyAuthority))) {
+      return reply.code(400).send({ error: 'taskDelivery requires this exact task origin and operator reply route' });
+    }
     const candidateRequiredReplyFingerprint = createHash("sha256").update(JSON.stringify({
       intent, text, recipientAgentIds: inferredRecipientAgentIds,
       artifactIds: artifactIds ?? [],
       document: documentTitle && documentContent ? { title: documentTitle, content: documentContent, mediaType: "text/markdown" } : null,
       citations,
       steeringInjectionId: requiredSteeringFence ?? null,
+      ...(taskDelivery ? { taskDelivery } : {}),
     })).digest("hex");
-    const requestFingerprint = conversationDeliveryRequestFingerprint({
+    const baseRequestFingerprint = conversationDeliveryRequestFingerprint({
       version: 1,
       intent,
       text,
@@ -435,6 +449,9 @@ export function registerAgentCommunicationRoutes(
       citations,
       urgency: v3Urgency ?? "ordinary",
     });
+    const requestFingerprint = taskDelivery
+      ? createHash('sha256').update(JSON.stringify({ baseRequestFingerprint, taskDelivery })).digest('hex')
+      : baseRequestFingerprint;
     const requestedIdempotencyKey = request.body?.idempotencyKey?.trim();
     if (requestedIdempotencyKey && requestedIdempotencyKey.length > 200) {
       return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
@@ -515,6 +532,13 @@ export function registerAgentCommunicationRoutes(
         : undefined;
     const suppliedSteeringFence = request.body?.steeringInjectionId?.trim();
     const pendingRequiredReplyAuthorities = coordinationV3.requiredReplyAuthoritiesForRun(capability.runId);
+    const interimRoutes = new Set(coordinationV3.requiredReplyObligationsForRun(capability.runId)
+      .filter(o => o.state === 'pending' && o.deliveryPhase === 'final' && o.interimCommunicationId)
+      .map(o => requiredReplyAuthorityKey(o.replyAuthority)));
+    // An initial/interim receipt must not fence out the exact task's later
+    // final reply on this same Run. Already-final fingerprints stay fenced.
+    const publishedReplyFingerprints = Object.fromEntries(Object.entries(capability.requiredReplyFingerprints ?? {})
+      .filter(([route]) => !interimRoutes.has(route)));
     const {
       selectedReplyAuthorityKey,
       requiredReplyAction,
@@ -522,7 +546,7 @@ export function registerAgentCommunicationRoutes(
       inferredReply,
       selectedReplyAuthority,
       pendingReplyAuthorities: pendingRequiredReplyAuthorities,
-      publishedReplyFingerprints: capability.requiredReplyFingerprints,
+      publishedReplyFingerprints,
       requestedIdempotencyKey,
       candidateReplyFingerprint: candidateRequiredReplyFingerprint,
       keyedReplayRequiredReplyFingerprint,
@@ -532,7 +556,7 @@ export function registerAgentCommunicationRoutes(
       ? candidateRequiredReplyFingerprint
       : undefined;
     const previousRequiredReplyFingerprint = requiredReplyAction
-      ? capability.requiredReplyFingerprints?.[selectedReplyAuthorityKey]
+      ? publishedReplyFingerprints[selectedReplyAuthorityKey]
       : undefined;
     if (inferredReplyFingerprint && previousRequiredReplyFingerprint && previousRequiredReplyFingerprint !== inferredReplyFingerprint) {
       return reply.code(409).send({ error: "this Run already published its required reply on this route; supply an idempotencyKey for an additional advanced communication" });
@@ -690,6 +714,7 @@ export function registerAgentCommunicationRoutes(
           audience: proposedCommunication.audience,
           payload: {
             communication: proposedCommunication,
+            ...(taskDelivery ? { taskDelivery } : {}),
             ...(!replay ? { requestFingerprint } : {}),
             ...(inferredReplyFingerprint
               ? { requiredReplyFingerprint: inferredReplyFingerprint }
@@ -699,6 +724,7 @@ export function registerAgentCommunicationRoutes(
           scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
           runAuthorization: runAuthorization(capability),
           ...(inferredReplyFingerprint ? { satisfiesRequiredReply: true } : {}),
+          ...(taskDelivery ? { taskDelivery } : {}),
           now: proposedCommunication.createdAt,
         });
         artifactsCommitted = true;
@@ -826,6 +852,7 @@ export function registerAgentCommunicationRoutes(
         audience: proposedCommunication.audience,
         payload: {
           communication: proposedCommunication,
+          ...(taskDelivery ? { taskDelivery } : {}),
           ...(!replay ? { requestFingerprint } : {}),
           ...(inferredReplyFingerprint
             ? { requiredReplyFingerprint: inferredReplyFingerprint }
@@ -836,6 +863,7 @@ export function registerAgentCommunicationRoutes(
         scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
         runAuthorization: runAuthorization(capability),
         ...(inferredReplyFingerprint ? { satisfiesRequiredReply: true } : {}),
+        ...(taskDelivery ? { taskDelivery } : {}),
         ...(intent === "collaboration" ? {
           activations: actionableRoutingIntents.map((delivery, index) => ({
             agentId: delivery.targetAgentId,

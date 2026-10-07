@@ -6,6 +6,7 @@ import type {
 } from "@ponderosa/core";
 import { PRIORITY } from "./coordination-v3-activation.js";
 import { stableJson } from "./coordination-v3-canonical-json.js";
+import { delegationOriginsForActivation, hasOutstandingDelegation } from "./coordination-v3-task-lineage.js";
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
 
 const MAX_REQUIRED_REPLY_ATTEMPTS = 5;
@@ -23,6 +24,9 @@ export interface RequiredReplyObligation {
   scopeKey: string;
   replyAuthority: CoordinationReplyAuthority;
   attemptCount: number;
+  deliveryPhase: "initial" | "final";
+  interimCommunicationId?: string;
+  blockingDecisionId?: string;
   state:
     | "pending"
     | "satisfied"
@@ -125,6 +129,7 @@ export class CoordinationV3RequiredReplyAuthority {
   constructor(
     private readonly sqlite: Database.Database,
     private readonly createActivation: (input: CreateActivationV3Input) => string,
+    private readonly afterRecoveryCreated: (activationId: string, now: string) => void,
   ) {}
 
   registerForRun(input: {
@@ -136,6 +141,11 @@ export class CoordinationV3RequiredReplyAuthority {
     now: string;
   }): RequiredReplyObligation[] {
     this.transferContextRolloverObligations(input);
+    this.transferFromOrigins(input, input.activations.flatMap(a =>
+      delegationOriginsForActivation(this.sqlite, a.id)), true);
+    const inheritedFinalRoutes = new Set(input.activations.flatMap(a => delegationOriginsForActivation(this.sqlite, a.id))
+      .flatMap(origin => this.forRun(origin)).filter(o => o.deliveryPhase === 'final')
+      .map(o => stableJson(o.replyAuthority)));
     const required = requiredReplyAuthoritiesForActivations(input.activations);
     const insert = this.sqlite.prepare(`
       INSERT OR IGNORE INTO required_reply_obligations (
@@ -144,6 +154,14 @@ export class CoordinationV3RequiredReplyAuthority {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
     `);
     for (const obligation of required) {
+      if (inheritedFinalRoutes.has(stableJson(obligation.replyAuthority))) continue;
+      // Final-delivery recovery retains one root and increments its existing
+      // generation. Do not also create a second initial-response obligation.
+      if (input.activations.some(a => a.id === obligation.activationId && a.kind === 'required_reply_recovery') &&
+          this.sqlite.prepare(`SELECT 1 FROM required_reply_obligations
+            WHERE recovery_activation_id = ? AND delivery_phase = 'final'
+              AND project_id = ? AND agent_id = ? AND scope_key = ?`)
+            .get(obligation.activationId, input.projectId, input.agentId, input.scopeKey)) continue;
       this.sqlite.prepare(`
         UPDATE required_reply_obligations
         SET state = 'superseded', updated_at = ?, terminal_at = ?
@@ -221,10 +239,9 @@ export class CoordinationV3RequiredReplyAuthority {
       if (payloadReplyAuthority) {
         throw new Error("context rollover continuation reply authority conflicts with its durable owner");
       }
-      return;
     }
-    if (!payloadReplyAuthority ||
-        stableJson(payloadReplyAuthority) !== rollover.reply_authority_json) {
+    if (rollover.reply_authority_json && (!payloadReplyAuthority ||
+        stableJson(payloadReplyAuthority) !== rollover.reply_authority_json)) {
       throw new Error("context rollover continuation reply authority conflicts with its durable owner");
     }
     const sourceActivationIds = JSON.parse(
@@ -267,114 +284,111 @@ export class CoordinationV3RequiredReplyAuthority {
     if (attachedSourceCount.count !== sourceActivationIds.length) {
       throw new Error("context rollover source activation lineage conflicts with its source Run");
     }
-    // A transferred obligation deliberately retains its authored/recovery
-    // source Activation rather than adopting the continuation Activation. A
-    // later rollover therefore derives the durable roots from the exact source
-    // Run, while a retry of this same continuation follows those roots to the
-    // newest unfinished owner created by the prior lease.
-    const sourceRoots = this.sqlite.prepare(`
-      SELECT source_activation_id
-      FROM required_reply_obligations
-      WHERE run_id = ? AND project_id = ? AND agent_id = ? AND scope_key = ?
-        AND reply_authority_json = ?
-      ORDER BY source_activation_id
-    `).all(
-      rollover.source_run_id,
-      input.projectId,
-      input.agentId,
-      input.scopeKey,
-      rollover.reply_authority_json,
-    ) as Array<{ source_activation_id: string }>;
-    if (sourceRoots.length === 0) return;
-    const rootIds = sourceRoots.map((row) => row.source_activation_id);
-    const placeholders = rootIds.map(() => "?").join(", ");
-    const owners = this.sqlite.prepare(`
-      SELECT obligation.run_id, obligation.source_activation_id,
-        obligation.project_id, obligation.agent_id, obligation.scope_key,
-        obligation.reply_authority_json, obligation.attempt_count,
-        obligation.state, obligation.recovery_activation_id,
-        run.rowid AS run_sequence
-      FROM required_reply_obligations obligation
-      JOIN scheduler_runs run ON run.id = obligation.run_id
-      WHERE obligation.source_activation_id IN (${placeholders})
-        AND obligation.project_id = ? AND obligation.agent_id = ?
-        AND obligation.scope_key = ? AND obligation.reply_authority_json = ?
-      ORDER BY obligation.source_activation_id, run.rowid DESC
-    `).all(
-      ...rootIds,
-      input.projectId,
-      input.agentId,
-      input.scopeKey,
-      rollover.reply_authority_json,
-    ) as Array<{
-      run_id: string;
-      source_activation_id: string;
-      project_id: string;
-      agent_id: string;
-      scope_key: string;
-      reply_authority_json: string;
-      attempt_count: number;
-      state: RequiredReplyObligation["state"];
-      recovery_activation_id: string | null;
-      run_sequence: number;
-    }>;
-    const latestBySource = new Map<string, typeof owners[number]>();
-    for (const owner of owners) {
-      if (!latestBySource.has(owner.source_activation_id)) {
-        latestBySource.set(owner.source_activation_id, owner);
+    this.transferFromOrigins(input, [rollover.source_run_id]);
+  }
+
+  private transferFromOrigins(input: {
+    runId: string; projectId: string; agentId: string; scopeKey: string; now: string;
+    activations?: readonly ActivationInput[];
+  }, originRunIds: string[], finalOnly = false): void {
+    for (const originRunId of new Set(originRunIds)) {
+      const roots = this.forRun(originRunId).filter(o =>
+        o.projectId === input.projectId && o.agentId === input.agentId && o.scopeKey === input.scopeKey &&
+        (!finalOnly || o.deliveryPhase === "final"));
+      for (const root of roots) {
+        const row = this.sqlite.prepare(`
+          SELECT obligation.run_id FROM required_reply_obligations obligation
+          JOIN scheduler_runs run ON run.id = obligation.run_id
+          WHERE obligation.source_activation_id = ? AND obligation.project_id = ?
+            AND obligation.agent_id = ? AND obligation.scope_key = ?
+          ORDER BY run.rowid DESC LIMIT 1
+        `).get(root.sourceActivationId, input.projectId, input.agentId, input.scopeKey) as { run_id: string } | undefined;
+        const predecessor = row ? this.forRun(row.run_id).find(o => o.sourceActivationId === root.sourceActivationId) : undefined;
+        if (!predecessor || predecessor.runId === input.runId ||
+            !["pending", "recovery_pending", "retried"].includes(predecessor.state)) continue;
+        const isRecovery = input.activations?.some(a => a.id === predecessor.recoveryActivationId && a.kind === 'required_reply_recovery');
+        this.sqlite.prepare(`
+          INSERT OR IGNORE INTO required_reply_obligations (
+            run_id, source_activation_id, project_id, agent_id, scope_key, reply_authority_json,
+            attempt_count, state, delivery_phase, interim_communication_id, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+        `).run(input.runId, predecessor.sourceActivationId, input.projectId, input.agentId, input.scopeKey,
+          stableJson(predecessor.replyAuthority), predecessor.attemptCount + (isRecovery ? 1 : 0), predecessor.deliveryPhase,
+          predecessor.interimCommunicationId ?? null, input.now, input.now);
+        if (predecessor.recoveryActivationId) this.sqlite.prepare(`
+          UPDATE agent_activations SET state = 'cancelled', updated_at = ?, terminal_at = ?
+          WHERE id = ? AND state IN ('pending','retry_pending')
+        `).run(input.now, input.now, predecessor.recoveryActivationId);
+        this.sqlite.prepare(`
+          UPDATE required_reply_obligations SET state = 'superseded', updated_at = ?, terminal_at = ?
+          WHERE run_id = ? AND source_activation_id = ? AND state IN ('pending','recovery_pending','retried')
+        `).run(input.now, input.now, predecessor.runId, predecessor.sourceActivationId);
       }
     }
-    const predecessors = [...latestBySource.values()].filter((owner) =>
-      owner.state === "pending" || owner.state === "recovery_pending" ||
-      owner.state === "retried");
-    if (predecessors.length === 0) return;
-    const insert = this.sqlite.prepare(`
-      INSERT OR IGNORE INTO required_reply_obligations (
-        run_id, source_activation_id, project_id, agent_id, scope_key,
-        reply_authority_json, attempt_count, state, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-    `);
-    for (const predecessor of predecessors) {
-      insert.run(
-        input.runId,
-        predecessor.source_activation_id,
-        input.projectId,
-        input.agentId,
-        input.scopeKey,
-        predecessor.reply_authority_json,
-        predecessor.attempt_count,
-        input.now,
-        input.now,
-      );
-      if (predecessor.recovery_activation_id) {
-        this.sqlite.prepare(`
-          UPDATE agent_activations
-          SET state = 'cancelled', updated_at = ?, terminal_at = ?
-          WHERE id = ? AND state IN ('pending','retry_pending')
-        `).run(
-          input.now,
-          input.now,
-          predecessor.recovery_activation_id,
-        );
-      }
-      this.sqlite.prepare(`
-        UPDATE required_reply_obligations
-        SET state = 'superseded', updated_at = ?, terminal_at = ?
-        WHERE run_id = ? AND source_activation_id = ?
-          AND state IN ('pending','recovery_pending')
-      `).run(
-        input.now,
-        input.now,
-        predecessor.run_id,
-        predecessor.source_activation_id,
-      );
+  }
+
+  /** Creating a tracked delegation establishes a distinct final-delivery
+   * obligation. An earlier initial reply is preserved as an interim receipt,
+   * not retroactively presented as task completion. Historical rows are never
+   * inferred or backfilled. An already satisfied final obligation stays final. */
+  retainForDelegation(runId: string, now: string): void {
+    this.sqlite.prepare(`
+      UPDATE required_reply_obligations SET delivery_phase = 'final', state = 'pending',
+        interim_communication_id = satisfied_communication_id, satisfied_communication_id = NULL,
+        terminal_at = NULL, updated_at = ?
+      WHERE run_id = ? AND delivery_phase = 'initial'
+        AND state IN ('pending','satisfied')
+        AND json_extract(reply_authority_json, '$.intent') IN ('broadcast','direct_to_user')
+    `).run(now, runId);
+  }
+
+  /** Called only after a canonical, blocking operator Decision is stored by
+   * the active Run's authenticated server route. A Decision is a wait, not
+   * fabricated completion or permission. Its exact response supplies a wake. */
+  waitForDecision(runId: string, decisionId: string, now: string): void {
+    this.sqlite.prepare(`UPDATE required_reply_obligations
+      SET blocking_decision_id = ?, updated_at = ?
+      WHERE run_id = ? AND delivery_phase = 'final' AND state = 'pending'`)
+      .run(decisionId, now, runId);
+  }
+
+  attachDecisionWake(decisionId: string, activationId: string): void {
+    this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources (activation_id, source_kind, source_id)
+      SELECT wake.id, 'task_decision', obligation.blocking_decision_id
+      FROM agent_activations wake JOIN required_reply_obligations obligation
+        ON obligation.agent_id = wake.agent_id AND obligation.project_id = wake.project_id
+          AND obligation.scope_key = wake.scope_key
+      WHERE wake.id = ? AND obligation.blocking_decision_id = ?
+        AND obligation.delivery_phase = 'final' AND obligation.state = 'pending'`)
+      .run(activationId, decisionId);
+  }
+
+  reconcileDecision(input: { decisionId: string; runId: string; projectId: string; agentId: string; scopeKey: string }, now: string): void {
+    const source = this.sqlite.prepare(`SELECT 1 FROM scheduler_runs run JOIN agents owner ON owner.id = run.agent_id
+      WHERE run.id = ? AND run.agent_id = ? AND run.project_id = ? AND run.scope_key = ?
+        AND run.status <> 'cancelled' AND owner.archived = 0 AND owner.deleted_at IS NULL`)
+      .get(input.runId, input.agentId, input.projectId, input.scopeKey);
+    if (!source) return;
+    for (const root of this.forRun(input.runId).filter(o => o.deliveryPhase === 'final')) {
+      const latest = this.sqlite.prepare(`SELECT obligation.run_id FROM required_reply_obligations obligation
+        JOIN scheduler_runs run ON run.id = obligation.run_id
+        WHERE source_activation_id = ? AND obligation.agent_id = ? AND obligation.project_id = ? AND obligation.scope_key = ?
+        ORDER BY run.rowid DESC LIMIT 1`).get(root.sourceActivationId, input.agentId, input.projectId, input.scopeKey) as { run_id: string } | undefined;
+      if (!latest) continue;
+      const pending = this.forRun(latest.run_id).find(o => o.sourceActivationId === root.sourceActivationId);
+      if (!pending || !['pending','recovery_pending'].includes(pending.state)) continue;
+      if (pending.recoveryActivationId) this.sqlite.prepare(`UPDATE agent_activations SET state='cancelled', updated_at=?, terminal_at=?
+        WHERE id=? AND state IN ('pending','retry_pending')`).run(now, now, pending.recoveryActivationId);
+      this.sqlite.prepare(`UPDATE required_reply_obligations SET state='pending', blocking_decision_id=?,
+        recovery_activation_id=NULL, updated_at=? WHERE run_id=? AND source_activation_id=?`)
+        .run(input.decisionId, now, pending.runId, pending.sourceActivationId);
     }
   }
 
   forRun(runId: string): RequiredReplyObligation[] {
     const rows = this.sqlite.prepare(`
       SELECT run_id, source_activation_id, project_id, agent_id, scope_key,
-        reply_authority_json, attempt_count, state,
+        reply_authority_json, attempt_count, state, delivery_phase, interim_communication_id, blocking_decision_id,
         satisfied_communication_id, recovery_activation_id
       FROM required_reply_obligations WHERE run_id = ?
       ORDER BY source_activation_id
@@ -382,6 +396,8 @@ export class CoordinationV3RequiredReplyAuthority {
       run_id: string; source_activation_id: string; project_id: string;
       agent_id: string; scope_key: string; reply_authority_json: string;
       attempt_count: number; state: RequiredReplyObligation["state"];
+      delivery_phase: "initial" | "final"; interim_communication_id: string | null;
+      blocking_decision_id: string | null;
       satisfied_communication_id: string | null; recovery_activation_id: string | null;
     }>;
     return rows.map((row) => ({
@@ -392,6 +408,9 @@ export class CoordinationV3RequiredReplyAuthority {
       scopeKey: row.scope_key,
       replyAuthority: JSON.parse(row.reply_authority_json) as CoordinationReplyAuthority,
       attemptCount: row.attempt_count,
+      deliveryPhase: row.delivery_phase,
+      ...(row.interim_communication_id ? { interimCommunicationId: row.interim_communication_id } : {}),
+      ...(row.blocking_decision_id ? { blockingDecisionId: row.blocking_decision_id } : {}),
       state: row.state,
       ...(row.satisfied_communication_id ? { satisfiedCommunicationId: row.satisfied_communication_id } : {}),
       ...(row.recovery_activation_id ? { recoveryActivationId: row.recovery_activation_id } : {}),
@@ -417,6 +436,7 @@ export class CoordinationV3RequiredReplyAuthority {
     communicationId: string;
     intent: CommunicationIntent | string;
     audience: CommunicationAudience;
+    taskDelivery?: "final" | "blocked";
     now: string;
   }): number {
     const update = this.sqlite.prepare(`
@@ -428,6 +448,19 @@ export class CoordinationV3RequiredReplyAuthority {
     for (const obligation of this.forRun(input.runId)) {
       if (obligation.state !== "pending" ||
           !communicationSatisfiesReplyAuthority(obligation.replyAuthority, input.intent, input.audience)) continue;
+      if (obligation.deliveryPhase === 'final' && obligation.interimCommunicationId === input.communicationId) continue;
+      if (obligation.deliveryPhase === 'final' && input.taskDelivery === 'final' &&
+          (obligation.blockingDecisionId || hasOutstandingDelegation(this.sqlite, obligation))) {
+        throw new Error('task_delivery_dependencies_pending: integrate the exact pending results or publish an explicit blocked outcome');
+      }
+      // A blocked status can accompany an actionable Decision, but must not
+      // sever the exact answer's continuation from its unfinished task.
+      if (obligation.deliveryPhase === "final" && (!input.taskDelivery || obligation.blockingDecisionId)) {
+        this.sqlite.prepare(`UPDATE required_reply_obligations SET interim_communication_id = ?, updated_at = ?
+          WHERE run_id = ? AND source_activation_id = ? AND state = 'pending'`)
+          .run(input.communicationId, input.now, input.runId, obligation.sourceActivationId);
+        continue;
+      }
       satisfied += update.run(
         input.communicationId,
         input.now,
@@ -442,6 +475,7 @@ export class CoordinationV3RequiredReplyAuthority {
   recoverPending(runId: string, now: string): RequiredReplyObligation[] {
     for (const obligation of this.forRun(runId)) {
       if (obligation.state !== "pending") continue;
+      if (obligation.deliveryPhase === "final" && (obligation.blockingDecisionId || hasOutstandingDelegation(this.sqlite, obligation))) continue;
       if (obligation.attemptCount >= MAX_REQUIRED_REPLY_ATTEMPTS) {
         const sourceActivation = this.sqlite.prepare(`
           WITH RECURSIVE reply_chain(activation_id, depth) AS (
@@ -517,6 +551,7 @@ export class CoordinationV3RequiredReplyAuthority {
         SET state = 'recovery_pending', recovery_activation_id = ?, updated_at = ?
         WHERE run_id = ? AND source_activation_id = ? AND state = 'pending'
       `).run(activationId, now, runId, obligation.sourceActivationId);
+      this.afterRecoveryCreated(activationId, now);
     }
     return this.forRun(runId);
   }

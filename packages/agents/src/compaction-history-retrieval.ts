@@ -13,6 +13,7 @@ import {
   type HistoryWarning,
 } from "@ponderosa/core";
 import type Database from "better-sqlite3";
+import { communicationSeedProvenance, renderSeedHistoryMessage } from "@ponderosa/core/seed-history";
 
 export const MAX_HISTORY_SEARCH_RESULTS = 8;
 export const MAX_HISTORY_SEARCH_RESPONSE_UTF8_BYTES = 6_000;
@@ -730,10 +731,13 @@ export function bindContextRolloverBoundary(input: Omit<
   const newest = rawRows[0];
   if (!newest) throw new CompactionHistoryQueryError("context rollover has no submitted canonical boundary");
   const selected: IndexedMessage[] = [];
-  let remainingBytes = MAX_CONTEXT_ROLLOVER_TAIL_UTF8_BYTES;
+  let remainingBytes = MAX_CONTEXT_ROLLOVER_TAIL_UTF8_BYTES - 64;
   for (const raw of rawRows) {
     const candidate = hydrateIndexedMessage(rowFromSql(raw), authorityInput);
-    const bytes = Buffer.byteLength(candidate.text, "utf8");
+    const author = candidate.event.sender.kind === 'agent' ? input.getAgent(candidate.event.sender.agentId)?.title : undefined;
+    const bytes = Buffer.byteLength(renderSeedHistoryMessage({ role: 'assistant', text: candidate.text,
+      provenance: communicationSeedProvenance(candidate.event, input.agent.id, candidate.event.identity?.senderLabel ?? author),
+    }), "utf8") + 1;
     if (bytes > remainingBytes) {
       if (selected.length === 0) {
         throw new CompactionHistoryQueryError("newest context rollover tail message exceeds the replacement tail bound");
