@@ -215,9 +215,7 @@ export class CoordinationV3RequiredReplyAuthority {
         // Carry the exact existing uncertainty onto its latest owner. Without
         // this marker, reopening with the reader restored could visit only a
         // superseded origin and never resume the completed current owner's repair.
-        this.sqlite.prepare("INSERT OR IGNORE INTO activation_sources (activation_id,source_kind,source_id) VALUES (?,'task_decision_repair',?)")
-          .run(root.sourceActivationId, runId);
-        this.holdExistingReplyRecovery(root);
+        this.holdTaskOwnerRepair(root);
         held = true;
       }
       return !held;
@@ -267,16 +265,15 @@ export class CoordinationV3RequiredReplyAuthority {
       })();
       return true;
     } catch {
+      const heldRuns = new Set([runId]);
       for (const root of eligible) {
-        this.sqlite.prepare("INSERT OR IGNORE INTO activation_sources (activation_id,source_kind,source_id) VALUES (?,'task_decision_repair',?)")
-          .run(root.sourceActivationId, runId);
-        this.holdExistingReplyRecovery(root);
+        for (const heldRunId of this.holdTaskOwnerRepair(root)) heldRuns.add(heldRunId);
       }
       // Age the whole attempted marker cohort, including displaced roots.
       // Otherwise one stale sibling can pin this Run in every bounded batch.
-      this.sqlite.prepare(`UPDATE required_reply_obligations SET updated_at=MAX(updated_at,?) WHERE run_id=?
+      for (const heldRunId of heldRuns) this.sqlite.prepare(`UPDATE required_reply_obligations SET updated_at=MAX(updated_at,?) WHERE run_id=?
         AND source_activation_id IN (SELECT activation_id FROM activation_sources
-          WHERE source_kind='task_decision_repair' AND source_id=?)`).run(now, runId, runId);
+          WHERE source_kind='task_decision_repair' AND source_id=?)`).run(now, heldRunId, heldRunId);
       return false;
     }
   }
@@ -287,6 +284,27 @@ export class CoordinationV3RequiredReplyAuthority {
         WHERE source_kind IN ('task_decision_repair_wait','task_reply_repair_wait') AND source_id=?)`).run(now, now, runId);
     this.sqlite.prepare("DELETE FROM activation_sources WHERE source_kind IN ('task_decision_repair','task_decision_repair_wait','task_reply_repair_wait') AND source_id=?").run(runId);
     this.sqlite.prepare("DELETE FROM activation_sources WHERE source_kind='task_decision_pending_repair' AND json_extract(source_id,'$.runId')=?").run(runId);
+  }
+
+  /** Startup repairs the original Decision Run, which may no longer own the
+   * task. Retain its evidence and hold the exact latest live owner as well;
+   * only that owner may have the pre-upgrade recovery awaiting admission. */
+  private holdTaskOwnerRepair(root: RequiredReplyObligation): string[] {
+    const latest = this.sqlite.prepare(`SELECT obligation.run_id,run.status FROM required_reply_obligations obligation
+      JOIN scheduler_runs run ON run.id=obligation.run_id
+      WHERE obligation.source_activation_id=? AND obligation.agent_id=? AND obligation.project_id=? AND obligation.scope_key=?
+      ORDER BY run.rowid DESC LIMIT 1`).get(root.sourceActivationId, root.agentId, root.projectId, root.scopeKey) as
+      { run_id: string; status: string } | undefined;
+    const owner = latest?.status !== 'cancelled' && latest && this.forRun(latest.run_id).find(o =>
+      o.sourceActivationId === root.sourceActivationId && stableJson(o.replyAuthority) === stableJson(root.replyAuthority) &&
+      (['pending','recovery_pending'].includes(o.state) || (o.state === 'satisfied' && o.deliveryPhase === 'initial')));
+    const roots = owner && owner.runId !== root.runId ? [root, owner] : [root];
+    for (const held of roots) {
+      this.sqlite.prepare("INSERT OR IGNORE INTO activation_sources (activation_id,source_kind,source_id) VALUES (?,'task_decision_repair',?)")
+        .run(held.sourceActivationId, held.runId);
+      this.holdExistingReplyRecovery(held);
+    }
+    return roots.map(held => held.runId);
   }
 
   /** An upgrade can reopen a recovery queued before canonical wait repair

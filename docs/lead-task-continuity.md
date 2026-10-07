@@ -51,6 +51,10 @@ assignment subsystem.
   Recovery already queued by an earlier build is also held if it names this
   exact uncertain root. A healthy pending Decision cancels that recovery; a
   healthy empty index releases the original bounded attempt without duplication.
+  Startup repair of an older Decision Run holds its exact latest task owner
+  too, including recovery queued by that owner before upgrade. The original
+  evidence remains intact; unrelated sources and newer cancelled or completed
+  final owners cannot inherit this hold or acquire renewed task authority.
   An already-satisfied initial receipt can retain that wait after an association
   rollback only with durable proof that the trusted canonical reader observed
   this exact pending Decision for its original Run and root. A generic read

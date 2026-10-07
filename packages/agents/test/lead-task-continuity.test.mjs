@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { AgentStore, CoordinationV3Store } from '../dist/index.js';
+import { AgentStore, CoordinationV3Store, WorkspaceStore } from '../dist/index.js';
 import { delegationOriginsForActivation, pendingTaskWakeIds } from '../dist/coordination-v3-task-lineage.js';
 
 function fixture(options = {}) {
@@ -398,6 +398,61 @@ for (const canonicalWait of [false, true]) {
       assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 1,
         'repair must cancel or release the original recovery, not duplicate it');
       assert.equal(f.store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(source.runId).status, 'outcome_unknown');
+    } finally { f.close(); }
+  });
+}
+
+for (const outcome of ['pending', 'empty', 'cancelled']) {
+  test(`startup repair of a historical Decision holds its latest owner recovery; outcome=${outcome}`, () => {
+    const f = fixture();
+    try {
+      const workspace = new WorkspaceStore(f.project.hostPath);
+      const source = f.human(); f.delegate(source, 1, { noRoute: true });
+      const decision = workspace.createDecision({ idempotencyKey: 'historical-owner-exact', projectId: f.project.id,
+        agentId: f.lead.id, conversationId: f.chat.id, runId: source.runId, coordinationRunId: source.runId,
+        mode: 'approval', question: 'Approve this exact task?', options: [{ id: 'approve', label: 'Approve' }], allowOther: true, blocking: true });
+      f.store.sqlite.exec(`CREATE TRIGGER historical_owner_wait_rollback BEFORE UPDATE OF blocking_decision_id ON required_reply_obligations
+        WHEN NEW.blocking_decision_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'fixture historical owner wait rollback'); END`);
+      assert.throws(() => f.c.waitForTaskDecision({ runAuthorization: f.auth(source), decisionId: decision.id,
+        scopeKey: `conversation:${f.chat.id}` }));
+      f.reply(source, 'historical-owner-interim'); f.finish(source); f.review();
+      const current = f.c.leaseNextRun({ workerId: 'legacy-owner', excludedAgentIds: [f.peer.id] }); f.finish(current);
+      const root = f.c.requiredReplyObligationsForRun(current.runId)[0];
+      assert.equal(root.sourceActivationId, source.activationIds[0]); assert.equal(root.state, 'recovery_pending');
+      assert.ok(root.recoveryActivationId);
+      const options = { canonicalTaskDecisions: ids => workspace.decisionsForRuns(ids) };
+      f.reopen(options);
+      assert.equal(f.c.repairCanonicalTaskDecisionWait(source.runId), false, 'startup visits the canonical origin, not the newer owner');
+      assert.equal(f.c.requiredReplyObligationsForRun(source.runId)[0].decisionWaitRepairPending, true);
+      assert.equal(f.c.requiredReplyObligationsForRun(current.runId)[0].decisionWaitRepairPending, true);
+      assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE activation_id=? AND source_kind='task_reply_repair_wait' AND source_id=?")
+        .get(root.recoveryActivationId, current.runId).n, 1);
+      f.c.recoverOrphanedRuns('after-upgrade');
+      assert.equal(f.c.leaseNextRun({ workerId: 'must-not-recover' }), undefined);
+      // Default-reader reopening must retain both markers; unrelated inputs
+      // remain runnable without coalescing the held recovery or its root.
+      f.reopen({});
+      const unrelated = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+        scopeKey: `conversation:${f.chat.id}`, messageId: 'historical-owner-unrelated', kind: 'human', payload: { text: 'Independent input' } });
+      const independent = f.c.leaseNextRun({ workerId: 'independent' });
+      assert.deepEqual(independent.activationIds, [unrelated]); assert.deepEqual(f.c.requiredReplyObligationsForRun(independent.runId), []);
+      assert.equal(f.c.leaseNextSteering({ workerId: 'no-held-coalescing' }), undefined); f.finish(independent);
+      if (outcome === 'cancelled') f.c.cancelAgentRun({ agentId: f.lead.id, expectedRunId: current.runId, idempotencyKey: 'cancel-held-latest' });
+      f.store.sqlite.exec('DROP TRIGGER historical_owner_wait_rollback');
+      if (outcome === 'empty') workspace.cancelDecision(decision.id);
+      f.reopen(options);
+      const next = f.c.leaseNextRun({ workerId: 'canonical-restored', now: new Date(Date.now() + 1000).toISOString() });
+      if (outcome === 'empty') {
+        assert.deepEqual(next.activationIds, [root.recoveryActivationId]);
+        const recovered = f.c.requiredReplyObligationsForRun(next.runId)[0];
+        assert.equal(recovered.sourceActivationId, source.activationIds[0]); assert.equal(recovered.attemptCount, 1);
+      } else {
+        assert.equal(next, undefined);
+        if (outcome === 'pending') assert.equal(f.c.requiredReplyObligationsForRun(current.runId)[0].blockingDecisionId, decision.id);
+        assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(root.recoveryActivationId).state, 'cancelled');
+      }
+      assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE source_kind IN ('task_decision_repair','task_reply_repair_wait')").get().n, 0);
+      assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 1);
     } finally { f.close(); }
   });
 }
