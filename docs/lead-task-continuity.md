@@ -28,9 +28,18 @@ assignment subsystem.
   promotion retains it without changing initial reply semantics. Canonical
   pending waits are repaired before successful terminal accounting as well as
   before final-delivery rejection, preventing recovery through an association gap.
-  An exact Decision answer in a later Run can carry an already-satisfied initial
-  origin without requiring another initial reply. Only subsequent delegation
+  An exact Decision answer in a later Run can carry a pending or already-satisfied
+  initial origin, preserving its initial receipt. Only subsequent delegation
   promotes that origin to final delivery; generic callbacks cannot revive it.
+  If the provider acknowledges the exact answer as steering into its owning
+  active Run, that acknowledgement and removal of the matching wait commit
+  atomically. Unsubmitted, unrelated or stale-fenced inputs cannot release it.
+  Steering claims recheck every coalesced Decision answer against the receiving
+  Run's exact live task root. An answer for a different task waits for its own
+  continuation, even if the same Agent is busy in the same Chat.
+  Canonical repair also covers initial-phase waits and saved answers whose wake
+  was not enqueued before reopening. Exact acknowledged answers are not reblocked;
+  receipt satisfaction, cancellation and newer terminal roots remain authoritative.
 - Recovery transfers one original source root and its increasing bounded retry
   generation. After six unsuccessful delivery Runs, existing actionable
   delivery-failure handling stops automatic recovery. No final text is fabricated.
@@ -60,6 +69,9 @@ cannot consume the callback's handoff even if they run first.
 The scoped lookup materializes only identity and ordering fields, never queued
 message payloads.
 Cancellation, deletion and terminal task roots retire waiting eligibility.
+An exact, still-live blocking Decision retains the handoff even when it precedes
+all delegation and the initial reply has already been published. Its answer can
+arrive before, during or after retirement without adding a polling Run.
 Historical handoff text may remain as audit evidence; a generic later task can
 never select a rollover-owned obsolete handoff.
 
@@ -94,7 +106,9 @@ and blocked outcomes, Decisions, idempotency, cancellation, deletion, unrelated
 and cross-Chat controls, bounded legacy tails, and actual Codex/Claude adapter
 serialization. The production HTTP/store/scheduler fixture records exact Run,
 activation, handoff, final-event and provider-input hashes, including an exact
-Decision continuation.
+Decision continuation, same-Run steering acknowledgement, Decision-only waits
+before/during/after retirement, canonical-association rollback, and a saved
+answer recovered by reopening the application.
 
 Orderly store reopening and an injected association-transaction rollback are
 distinct checks, not abrupt crash/power-loss qualification. Local synthetic CLI

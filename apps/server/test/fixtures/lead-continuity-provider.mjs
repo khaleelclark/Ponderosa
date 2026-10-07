@@ -14,18 +14,21 @@ async function call(url, body, expectedStatus) {
   if (expectedStatus !== undefined ? response.status !== expectedStatus : !response.ok) throw Error(`${response.status}: ${await response.text()}`);
   return response.json();
 }
-async function awaitGate() {
-  try { await access(env.CONTINUITY_GATE); return; } catch {}
+async function awaitGate(path = env.CONTINUITY_GATE) {
+  try { await access(path); return; } catch {}
   await new Promise((resolve, reject) => {
     const watcher = watch(env.CONTINUITY_DIRECTORY, async () => {
-      try { await access(env.CONTINUITY_GATE); watcher.close(); resolve(); } catch {}
+      try { await access(path); watcher.close(); resolve(); } catch {}
     });
     watcher.on('error', reject);
-    access(env.CONTINUITY_GATE).then(() => { watcher.close(); resolve(); }, () => {});
+    access(path).then(() => { watcher.close(); resolve(); }, () => {});
   });
 }
 let turn = 0;
-for await (const line of createInterface({ input: process.stdin })) {
+const input = createInterface({ input: process.stdin })[Symbol.asyncIterator]();
+for (;;) {
+  const next = await input.next(); if (next.done) break;
+  const line = next.value;
   const frame = JSON.parse(line); if (frame.type !== 'user') continue; turn++;
   await appendFile(env.CONTINUITY_CAPTURE, JSON.stringify(frame) + '\n');
   send({ type: 'system', subtype: 'init', session_id: frame.session_id });
@@ -34,12 +37,19 @@ for await (const line of createInterface({ input: process.stdin })) {
   const role = env.CONTINUITY_ROLE;
   const text = JSON.stringify(frame.message);
   const fence = text.match(/Prompt injection fence: ([a-f0-9-]+)\./)?.[1];
-  if (role === 'lead' && turn === 1) {
+  if (text.includes('Unrelated active-work fixture')) {
+    send({ type: 'assistant', session_id: frame.session_id, parent_tool_use_id: null,
+      message: { id: 'unrelated-ready', role: 'assistant', model: 'claude-sonnet-4-6', content: [{ type: 'text', text: 'Unrelated public work remains active.' }],
+        usage: { input_tokens: 8000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 10 } } });
+    await appendFile(env.CONTINUITY_UNRELATED_READY, 'ready'); await awaitGate(env.CONTINUITY_UNRELATED_GATE);
+    await call(env.PONDEROSA_AGENT_MESSAGE_URL, { intent: 'direct_to_user', steeringInjectionId: fence,
+      text: 'Unrelated active-work fixture completed independently.' });
+  } else if (role === 'lead' && turn === 1) {
     if (env.CONTINUITY_DECISION_BEFORE === '1') await call(env.PONDEROSA_AGENT_DECISION_URL,
       { idempotencyKey: 'controlled-task-permission', mode: 'approval',
         question: 'Approve the disposable final-delivery fixture?', blocking: true },
       env.CONTINUITY_ASSOCIATION_FAILURE === '1' ? 500 : undefined);
-    await call(env.PONDEROSA_AGENT_COORDINATE_URL, { idempotencyKey: 'review', requests: [{ requestId: 'controlled-review',
+    if (env.CONTINUITY_DECISION_ONLY !== '1') await call(env.PONDEROSA_AGENT_COORDINATE_URL, { idempotencyKey: 'review', requests: [{ requestId: 'controlled-review',
       recipientAgentId: env.CONTINUITY_PEER, text: 'Read-only reviewer: validate only; report to lead.', lifetime: { kind: 'indefinite' } }],
       join: { id: 'controlled-join', mode: 'all' } });
     await call(env.PONDEROSA_AGENT_MESSAGE_URL, { text: 'Implementation underway; review and delivery remain.', steeringInjectionId: fence });
@@ -49,11 +59,24 @@ for await (const line of createInterface({ input: process.stdin })) {
       idempotencyKey: 'peer-report', text: 'Read-only reviewer report: no blockers. I do not own implementation or release delivery.' });
     await call(env.PONDEROSA_AGENT_UPDATE_REQUEST_URL, { requestId: 'controlled-review', updateId: 'controlled-result', kind: 'completed', text: 'Read-only review passed; lead still owns final integration and delivery.' });
   } else if (role === 'replacement') {
+    if (env.CONTINUITY_DECISION_STEER === '1') send({ type: 'assistant', session_id: frame.session_id, parent_tool_use_id: null,
+      message: { id: 'verified-replacement', role: 'assistant', model: 'claude-sonnet-4-6',
+        content: [{ type: 'text', text: 'Public replacement verification; final work remains active.' }],
+        usage: { input_tokens: 8000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 10 } } });
     // Verify the real route permits an interim update then a different final
     // receipt on the same exact Run, without confusing replay authority.
     await call(env.PONDEROSA_AGENT_MESSAGE_URL, { intent: 'direct_to_user', steeringInjectionId: fence,
       text: 'Review received; final validation still in progress.' });
-    if (env.CONTINUITY_DECISION === '1' && !text.includes('Approve the disposable final-delivery fixture?')) {
+    let needsDecisionOnlyDelegation = false;
+    if (env.CONTINUITY_DECISION_ONLY === '1') {
+      try { await access(env.CONTINUITY_DELEGATED_GATE); } catch { needsDecisionOnlyDelegation = true; }
+    }
+    if (needsDecisionOnlyDelegation) {
+      await call(env.PONDEROSA_AGENT_COORDINATE_URL, { idempotencyKey: 'review', requests: [{ requestId: 'controlled-review',
+        recipientAgentId: env.CONTINUITY_PEER, text: 'Read-only reviewer: validate only; report to lead.', lifetime: { kind: 'indefinite' } }],
+        join: { id: 'controlled-join', mode: 'all' } });
+      await appendFile(env.CONTINUITY_DELEGATED_GATE, 'delegated');
+    } else if (env.CONTINUITY_DECISION_ONLY !== '1' && env.CONTINUITY_DECISION === '1' && !text.includes('Approve the disposable final-delivery fixture?')) {
       if (env.CONTINUITY_DECISION_BEFORE === '1') {
         // No final attempt, Decision replay or restart may repair this case:
         // the promoted task must already retain its exact pending approval.
@@ -77,6 +100,23 @@ for await (const line of createInterface({ input: process.stdin })) {
       const premature = await call(env.PONDEROSA_AGENT_MESSAGE_URL, { intent: 'direct_to_user',
         idempotencyKey: 'premature-final', taskDelivery: 'final', text: 'Must not publish before approval.' }, 409);
       if (!premature.error.startsWith('task_delivery_dependencies_pending')) throw Error('unexpected premature-final rejection');
+      if (env.CONTINUITY_DECISION_STEER === '1') {
+        await appendFile(env.CONTINUITY_DECISION_READY, 'ready');
+        const response = await input.next();
+        if (response.done) throw Error('Decision steering input missing');
+        const answer = JSON.parse(response.value);
+        if (answer.type !== 'user') throw Error('Decision steering was not a user input');
+        await appendFile(env.CONTINUITY_CAPTURE, JSON.stringify(answer) + '\n');
+        send({ ...answer, parent_tool_use_id: null, isReplay: true });
+        const answerFence = JSON.stringify(answer.message).match(/Prompt injection fence: ([a-f0-9-]+)\./)?.[1];
+        if (!answerFence || answerFence === fence) throw Error('missing exact Decision steering fence');
+        await awaitGate(env.CONTINUITY_FINAL_GATE);
+        const body = { intent: 'direct_to_user', idempotencyKey: 'exact-final', steeringInjectionId: answerFence, taskDelivery: 'final',
+          text: 'Disposable final delivery: review integrated; validation passed. No real release was signed, pushed or published.' };
+        const first = await call(env.PONDEROSA_AGENT_MESSAGE_URL, body);
+        const replay = await call(env.PONDEROSA_AGENT_MESSAGE_URL, body);
+        if (first.eventId !== replay.eventId) throw Error('canonical steered final replay duplicated');
+      }
       }
     } else {
     const body = { intent: 'direct_to_user', idempotencyKey: 'exact-final', steeringInjectionId: fence, taskDelivery: 'final',

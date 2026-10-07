@@ -532,12 +532,12 @@ export class CoordinationV3ContextRolloverAuthority {
       if (!current) throw new Error("context rollover not found");
       if (current.state === "completed" || current.state === "continuation_ready") return current;
       if (current.state !== "session_retiring") throw new Error("context rollover session is not retiring");
-      if (current.triggerKind === "automatic" && this.hasOwnedDelegation(current)) {
+      if (current.triggerKind === "automatic" && (this.hasOwnedDelegation(current) || this.hasOutstandingDecisionWait(current))) {
         const wake = pendingTaskWakeIds(this.sqlite, { projectId: current.projectId, agentId: current.agentId,
           scopeKey: current.scopeKey, originRunIds: taskOriginRunIds(this.sqlite, current.sourceRunId) })
           .find(id => this.wakeBelongsToTask(current, id));
         if (wake) return this.bindDelegationWake(current, wake, now);
-        if (this.hasOwnedDelegation(current, true)) {
+        if (this.hasOwnedDelegation(current, true) || this.hasOutstandingDecisionWait(current)) {
           this.sqlite.prepare(`UPDATE context_rollovers SET state = 'completed',
             completion_reason = 'no_continuation_required', continuity_waiting = 1,
             updated_at = ?, terminal_at = ? WHERE id = ? AND state = 'session_retiring'`)
@@ -642,19 +642,48 @@ export class CoordinationV3ContextRolloverAuthority {
           AND source.status <> 'cancelled' AND owner.archived = 0 AND owner.deleted_at IS NULL`)
         .get(row.source_run_id, row.project_id, row.scope_key);
       const roots = this.sqlite.prepare(`SELECT source_activation_id FROM required_reply_obligations
-        WHERE run_id = ? AND delivery_phase = 'final'`).all(row.source_run_id) as Array<{ source_activation_id: string }>;
+        WHERE run_id = ? AND json_extract(reply_authority_json, '$.intent') IN ('broadcast','direct_to_user')`)
+        .all(row.source_run_id) as Array<{ source_activation_id: string }>;
       const pending = roots.length ? roots.some(root => this.sqlite.prepare(`SELECT 1 FROM (
-        SELECT obligation.state FROM required_reply_obligations obligation
+        SELECT obligation.state, run.status AS run_status FROM required_reply_obligations obligation
         JOIN scheduler_runs run ON run.id = obligation.run_id
         WHERE obligation.source_activation_id = ? AND obligation.agent_id = ?
           AND obligation.project_id = ? AND obligation.scope_key = ?
-        ORDER BY run.rowid DESC LIMIT 1) WHERE state IN ('pending','recovery_pending','retried')`)
+        ORDER BY run.rowid DESC LIMIT 1) WHERE run_status <> 'cancelled' AND state IN ('pending','recovery_pending','retried')`)
         .get(root.source_activation_id, row.agent_id, row.project_id, row.scope_key))
+          || this.hasOutstandingDecisionWait(this.view(row))
         : !this.inheritedTaskIsTerminal(this.view(row)) &&
           (this.continuationObligationRemains(this.view(row)) || this.hasOwnedDelegation(this.view(row), true));
       if (!owner || !pending) this.sqlite.prepare(`UPDATE context_rollovers
         SET continuity_waiting = 0, updated_at = ? WHERE id = ? AND continuity_waiting = 1`).run(now, row.id);
     }
+  }
+
+  /** A satisfied initial receipt is not task completion while its exact
+   * Decision remains outstanding. Only the latest live scoped owner counts;
+   * an answer wake must name that blocker in both provenance and payload. */
+  private hasOutstandingDecisionWait(r: ContextRolloverV3, activationId?: string): boolean {
+    if (this.inheritedTaskIsTerminal(r)) return false;
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM required_reply_obligations origin
+      JOIN scheduler_runs source_run ON source_run.id = origin.run_id AND source_run.status <> 'cancelled'
+      JOIN agents owner ON owner.id = origin.agent_id AND owner.archived = 0 AND owner.deleted_at IS NULL
+      JOIN required_reply_obligations latest ON latest.source_activation_id = origin.source_activation_id
+        AND latest.agent_id = origin.agent_id AND latest.project_id = origin.project_id AND latest.scope_key = origin.scope_key
+      JOIN scheduler_runs latest_run ON latest_run.id = latest.run_id AND latest_run.status <> 'cancelled'
+      WHERE origin.run_id = ? AND origin.agent_id = ? AND origin.project_id = ? AND origin.scope_key = ?
+        AND latest.run_id = (SELECT candidate.run_id FROM required_reply_obligations candidate
+          JOIN scheduler_runs candidate_run ON candidate_run.id = candidate.run_id
+          WHERE candidate.source_activation_id = origin.source_activation_id AND candidate.agent_id = origin.agent_id
+            AND candidate.project_id = origin.project_id AND candidate.scope_key = origin.scope_key
+          ORDER BY candidate_run.rowid DESC LIMIT 1)
+        AND latest.blocking_decision_id IS NOT NULL
+        AND (latest.state IN ('pending','recovery_pending','retried') OR (latest.delivery_phase = 'initial' AND latest.state = 'satisfied'))
+        AND json_extract(latest.reply_authority_json, '$.intent') IN ('broadcast','direct_to_user')
+        AND (? IS NULL OR EXISTS (SELECT 1 FROM agent_activations wake
+          JOIN activation_sources provenance ON provenance.activation_id = wake.id AND provenance.source_kind = 'task_decision'
+          WHERE wake.id = ? AND wake.agent_id = latest.agent_id AND wake.project_id = latest.project_id AND wake.scope_key = latest.scope_key
+            AND provenance.source_id = latest.blocking_decision_id AND json_extract(wake.payload_json, '$.decision.id') = provenance.source_id)) LIMIT 1`)
+      .get(r.sourceRunId, r.agentId, r.projectId, r.scopeKey, activationId ?? null, activationId ?? null));
   }
 
   private hasOwnedDelegation(r: ContextRolloverV3, outstanding = false): boolean {
@@ -700,12 +729,13 @@ export class CoordinationV3ContextRolloverAuthority {
     const roots = this.sqlite.prepare(`SELECT source_activation_id FROM required_reply_obligations WHERE run_id = ?`)
       .all(r.sourceRunId) as Array<{ source_activation_id: string }>;
     if (!roots.length) return this.continuationObligationRemains(r);
-    return roots.some(root => Boolean(this.sqlite.prepare(`SELECT 1 FROM (
-      SELECT obligation.state FROM required_reply_obligations obligation
+    return this.hasOutstandingDecisionWait(r, activationId) || roots.some(root => Boolean(this.sqlite.prepare(`SELECT 1 FROM (
+      SELECT obligation.state, obligation.delivery_phase, obligation.blocking_decision_id, run.status AS run_status FROM required_reply_obligations obligation
       JOIN scheduler_runs run ON run.id = obligation.run_id
       WHERE obligation.source_activation_id = ? AND obligation.agent_id = ?
         AND obligation.project_id = ? AND obligation.scope_key = ?
-      ORDER BY run.rowid DESC LIMIT 1) WHERE state IN ('pending','recovery_pending','retried')`)
+      ORDER BY run.rowid DESC LIMIT 1) WHERE run_status <> 'cancelled' AND state IN ('pending','recovery_pending','retried')
+        AND NOT (delivery_phase = 'initial' AND blocking_decision_id IS NOT NULL)`)
       .get(root.source_activation_id, r.agentId, r.projectId, r.scopeKey)));
   }
 

@@ -608,6 +608,12 @@ export function registerServerLifecycle(
       });
     }
     for (const decision of workspace.listDecisions({ status: "resolved" })) {
+      if (decision.blocking && decision.coordinationRunId && decision.response) coordinationV3.reconcileTaskDecision({
+        decisionId: decision.id, runId: decision.coordinationRunId, projectId: decision.projectId,
+        agentId: decision.agentId,
+        scopeKey: decision.conversationId ? `conversation:${decision.conversationId}` : `agent:${decision.agentId}`,
+        response: decision.response,
+      });
       if (decision.approvalScope?.kind === "saved_browser" && decision.response?.optionId === "approve") {
         try {
           if (!applyResolvedSavedBrowserApproval(decision)) continue;
