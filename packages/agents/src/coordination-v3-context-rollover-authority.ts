@@ -10,7 +10,7 @@ import type { CreateActivationV3Input } from "./coordination-v3-runtime-communic
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import type { ContextRolloverState, ContextRolloverV3 } from "./coordination-v3-types.js";
 import { stableJson } from "./coordination-v3-canonical-json.js";
-import { delegationOriginsForActivation, hasOutstandingDelegation, runOwnsAwaitedDelegation, taskOriginRunIds } from "./coordination-v3-task-lineage.js";
+import { delegationOriginsForActivation, hasOutstandingDelegation, pendingTaskWakeIds, runOwnsAwaitedDelegation, taskOriginRunIds } from "./coordination-v3-task-lineage.js";
 
 const MAX_CONTEXT_ROLLOVER_RECENT_TAIL_IDS = 80;
 const MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS = 1_000;
@@ -533,14 +533,10 @@ export class CoordinationV3ContextRolloverAuthority {
       if (current.state === "completed" || current.state === "continuation_ready") return current;
       if (current.state !== "session_retiring") throw new Error("context rollover session is not retiring");
       if (current.triggerKind === "automatic" && this.hasOwnedDelegation(current)) {
-        const wake = (this.sqlite.prepare(`SELECT id FROM agent_activations
-          WHERE project_id = ? AND agent_id = ? AND scope_key = ?
-            AND state IN ('pending','retry_pending')
-            AND (kind LIKE 'coordination_%' OR kind = 'required_reply_recovery' OR kind = 'human_message')
-          ORDER BY priority DESC, created_at, rowid LIMIT 64`)
-          .all(current.projectId, current.agentId, current.scopeKey) as Array<{ id: string }>)
-          .find(a => this.wakeBelongsToTask(current, a.id));
-        if (wake) return this.bindDelegationWake(current, wake.id, now);
+        const wake = pendingTaskWakeIds(this.sqlite, { projectId: current.projectId, agentId: current.agentId,
+          scopeKey: current.scopeKey, originRunIds: taskOriginRunIds(this.sqlite, current.sourceRunId) })
+          .find(id => this.wakeBelongsToTask(current, id));
+        if (wake) return this.bindDelegationWake(current, wake, now);
         if (this.hasOwnedDelegation(current, true)) {
           this.sqlite.prepare(`UPDATE context_rollovers SET state = 'completed',
             completion_reason = 'no_continuation_required', continuity_waiting = 1,

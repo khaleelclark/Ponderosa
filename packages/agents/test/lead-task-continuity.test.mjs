@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { AgentStore, CoordinationV3Store } from '../dist/index.js';
-import { delegationOriginsForActivation } from '../dist/coordination-v3-task-lineage.js';
+import { delegationOriginsForActivation, pendingTaskWakeIds } from '../dist/coordination-v3-task-lineage.js';
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'ponderosa-lead-continuity-'));
@@ -128,6 +128,62 @@ for (const timing of ['before', 'during', 'after']) test(`one exact continuation
   } finally { f.close(); }
 });
 
+test('a retirement callback is selected by lineage before a burst of unrelated inbox rows', () => {
+  const f = fixture();
+  try {
+    const lead = f.human(); f.delegate(lead, 1, { noRoute: true }); f.reply(lead, 'interim'); const r = f.rollover(lead); f.finish(lead);
+    const ready = f.retire(r, phase => {
+      if (phase !== 'during') return;
+      for (let i = 0; i < 64; i++) f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+        scopeKey: `conversation:${f.chat.id}`, messageId: `unrelated-${i}`, kind: 'human', payload: { text: `Unrelated request ${i}` } });
+      f.review();
+    });
+    assert.equal(ready.state, 'continuation_ready');
+    // Keep normal inbox priorities: unrelated human input may run first, but
+    // cannot consume the exact callback's retained handoff.
+    const unrelated = f.c.leaseNextRun({ workerId: 'unrelated', excludedAgentIds: [f.peer.id], coalesceLimit: 64 });
+    assert.equal(unrelated.activations.length, 64);
+    assert.equal(f.c.contextRolloverForContinuationRun(unrelated.runId, f.lead.id), undefined);
+    f.finish(unrelated);
+    const exact = f.c.leaseNextRun({ workerId: 'exact', excludedAgentIds: [f.peer.id], coalesceLimit: 64 });
+    assert.equal(exact.activations.length, 1);
+    assert.equal(exact.activations[0].kind, 'coordination_join_satisfied');
+    assert.equal(f.c.contextRolloverForContinuationRun(exact.runId, f.lead.id).id, r.id);
+    f.final(exact, 'one-final'); f.finish(exact);
+    assert.equal(f.c.leaseNextRun({ workerId: 'done', excludedAgentIds: [f.peer.id] }), undefined);
+  } finally { f.close(); }
+});
+
+test('task wake selection searches scoped source identities instead of global historical sources', () => {
+  const f = fixture();
+  const prepare = f.store.sqlite.prepare.bind(f.store.sqlite), plans = [];
+  try {
+    const lead = f.human(); f.delegate(lead); f.reply(lead, 'interim'); f.finish(lead); f.review();
+    const wake = prepare("SELECT id FROM agent_activations WHERE kind='coordination_join_satisfied'").get();
+    f.store.sqlite.prepare = sql => {
+      const statement = prepare(sql);
+      if (!sql.startsWith('WITH task_wake_candidates')) return statement;
+      return { all(...args) {
+        plans.push(prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args));
+        return statement.all(...args);
+      } };
+    };
+    assert.deepEqual(delegationOriginsForActivation(f.store.sqlite, wake.id), [lead.runId]);
+    assert.deepEqual(pendingTaskWakeIds(f.store.sqlite, { projectId: f.project.id, agentId: f.lead.id,
+      scopeKey: `conversation:${f.chat.id}`, originRunIds: [lead.runId] }), [wake.id]);
+    assert.equal(plans.length, 2);
+    for (const plan of plans) {
+      const sourceSearches = plan.map(row => row.detail).filter(detail => /(?:SEARCH|SCAN) canonical_source\b/.test(detail));
+      assert.ok(sourceSearches.length);
+      assert.ok(sourceSearches.every(detail => detail.includes('activation_id=?')), sourceSearches.join('\n'));
+      assert.ok(plan.some(row => row.detail.includes('idx_reply_recovery_activation')),
+        'recovery lineage must use its narrow identity index');
+    }
+    assert.ok(plans[1].some(row => row.detail.includes('agent_activations_agent_scope_runnable')),
+      'pending candidates must use the existing runnable-state index');
+  } finally { f.store.sqlite.prepare = prepare; f.close(); }
+});
+
 test('an initial reply before delegation becomes interim, and two terminal wakes must both be integrated', () => {
   const f = fixture();
   try {
@@ -208,6 +264,53 @@ test('after the final Join, ordinary updates remain interim and explicit final d
     assert.equal(f.c.requiredReplyObligationsForRun(integration.runId)[0].satisfiedCommunicationId, 'exact-completion');
     assert.equal(f.c.leaseNextRun({ workerId: 'duplicate', excludedAgentIds: [f.peer.id] }), undefined);
     assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM runtime_communications WHERE id='exact-completion'").get().n, 1);
+  } finally { f.close(); }
+});
+
+test('a Join result preserves an unanswered Decision until its exact answer arrives', () => {
+  const f = fixture();
+  try {
+    const lead = f.human(); f.delegate(lead, 1, { noRoute: true });
+    f.c.waitForTaskDecision({ runAuthorization: f.auth(lead), decisionId: 'still-unanswered', scopeKey: `conversation:${f.chat.id}` });
+    assert.throws(() => f.c.waitForTaskDecision({ runAuthorization: f.auth(lead), decisionId: 'second-blocker',
+      scopeKey: `conversation:${f.chat.id}` }), /task_decision_already_pending/);
+    assert.equal(f.c.requiredReplyObligationsForRun(lead.runId)[0].blockingDecisionId, 'still-unanswered');
+    f.reply(lead, 'permission-wait', 'user_dm', 'blocked'); f.finish(lead); f.review();
+    const result = f.c.leaseNextRun({ workerId: 'lead', excludedAgentIds: [f.peer.id] });
+    assert.equal(f.c.requiredReplyObligationsForRun(result.runId)[0].blockingDecisionId, 'still-unanswered');
+    assert.throws(() => f.final(result, 'cannot-bypass-permission'), /task_delivery_dependencies_pending/);
+    f.finish(result); f.reopen();
+    assert.equal(f.c.leaseNextRun({ workerId: 'no-permission-recovery', excludedAgentIds: [f.peer.id] }), undefined);
+    const wrong = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+      scopeKey: `conversation:${f.chat.id}`, messageId: 'wrong-answer', kind: 'human', payload: { decision: { id: 'other' } } });
+    f.c.attachTaskDecisionWake('still-unanswered', wrong);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE activation_id=? AND source_kind='task_decision'").get(wrong).n, 0);
+    const unrelated = f.c.leaseNextRun({ workerId: 'unrelated', excludedAgentIds: [f.peer.id] }); f.finish(unrelated);
+    const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+      scopeKey: `conversation:${f.chat.id}`, messageId: 'exact-answer', kind: 'human', payload: { decision: { id: 'still-unanswered', response: { optionId: 'approve' } } } });
+    f.c.attachTaskDecisionWake('still-unanswered', answer);
+    const resumed = f.c.leaseNextRun({ workerId: 'lead', excludedAgentIds: [f.peer.id] });
+    assert.equal(f.c.requiredReplyObligationsForRun(resumed.runId)[0].blockingDecisionId, undefined);
+    f.final(resumed, 'final-with-exact-answer'); f.finish(resumed);
+    assert.equal(f.c.leaseNextRun({ workerId: 'duplicate', excludedAgentIds: [f.peer.id] }), undefined);
+  } finally { f.close(); }
+});
+
+test('an unrelated coalesced human input keeps its own obligation on the same reply route', () => {
+  const f = fixture();
+  try {
+    const lead = f.human(); f.delegate(lead, 1, { noRoute: true }); f.reply(lead, 'interim'); f.finish(lead); f.review();
+    const combined = f.human('unrelated-new-input');
+    assert.ok(combined.activations.some(a => a.kind === 'coordination_join_satisfied'));
+    const obligations = f.c.requiredReplyObligationsForRun(combined.runId);
+    assert.equal(obligations.length, 2);
+    assert.equal(obligations.find(o => o.sourceActivationId === lead.activations[0].id).deliveryPhase, 'final');
+    assert.equal(obligations.find(o => o.sourceActivationId !== lead.activations[0].id).deliveryPhase, 'initial');
+    f.reply(combined, 'new-input-response');
+    assert.equal(f.c.requiredReplyObligationsForRun(combined.runId).find(o => o.deliveryPhase === 'initial').state, 'satisfied');
+    assert.equal(f.c.requiredReplyObligationsForRun(combined.runId).find(o => o.deliveryPhase === 'final').state, 'pending');
+    f.final(combined, 'old-task-final'); f.finish(combined); f.reopen();
+    assert.equal(f.c.leaseNextRun({ workerId: 'duplicate', excludedAgentIds: [f.peer.id] }), undefined);
   } finally { f.close(); }
 });
 

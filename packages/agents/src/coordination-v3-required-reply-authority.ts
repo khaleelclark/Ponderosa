@@ -154,7 +154,12 @@ export class CoordinationV3RequiredReplyAuthority {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
     `);
     for (const obligation of required) {
-      if (inheritedFinalRoutes.has(stableJson(obligation.replyAuthority))) continue;
+      const source = input.activations.find(a => a.id === obligation.activationId);
+      // Callback convenience routes must not create a second copy of their
+      // task root. A distinct authored input or recovery still owns its own
+      // obligation even when its route happens to match that root.
+      if (source && ['coordination_outcome', 'coordination_join_satisfied', 'coordination_join_impossible'].includes(source.kind) &&
+          inheritedFinalRoutes.has(stableJson(obligation.replyAuthority))) continue;
       // Final-delivery recovery retains one root and increments its existing
       // generation. Do not also create a second initial-response obligation.
       if (input.activations.some(a => a.id === obligation.activationId && a.kind === 'required_reply_recovery') &&
@@ -307,14 +312,21 @@ export class CoordinationV3RequiredReplyAuthority {
         if (!predecessor || predecessor.runId === input.runId ||
             !["pending", "recovery_pending", "retried"].includes(predecessor.state)) continue;
         const isRecovery = input.activations?.some(a => a.id === predecessor.recoveryActivationId && a.kind === 'required_reply_recovery');
+        const answeredDecision = predecessor.blockingDecisionId && input.activations?.some(a => Boolean(this.sqlite.prepare(`
+          SELECT 1 FROM activation_sources source JOIN agent_activations wake ON wake.id=source.activation_id
+          WHERE source.activation_id=? AND source.source_kind='task_decision' AND source.source_id=?
+            AND wake.agent_id=? AND wake.project_id=? AND wake.scope_key=?
+            AND json_extract(wake.payload_json, '$.decision.id')=source.source_id
+        `).get(a.id, predecessor.blockingDecisionId, input.agentId, input.projectId, input.scopeKey)));
         this.sqlite.prepare(`
           INSERT OR IGNORE INTO required_reply_obligations (
             run_id, source_activation_id, project_id, agent_id, scope_key, reply_authority_json,
-            attempt_count, state, delivery_phase, interim_communication_id, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+            attempt_count, state, delivery_phase, interim_communication_id, blocking_decision_id, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
         `).run(input.runId, predecessor.sourceActivationId, input.projectId, input.agentId, input.scopeKey,
           stableJson(predecessor.replyAuthority), predecessor.attemptCount + (isRecovery ? 1 : 0), predecessor.deliveryPhase,
-          predecessor.interimCommunicationId ?? null, input.now, input.now);
+          predecessor.interimCommunicationId ?? null,
+          answeredDecision ? null : predecessor.blockingDecisionId ?? null, input.now, input.now);
         if (predecessor.recoveryActivationId) this.sqlite.prepare(`
           UPDATE agent_activations SET state = 'cancelled', updated_at = ?, terminal_at = ?
           WHERE id = ? AND state IN ('pending','retry_pending')
@@ -346,6 +358,10 @@ export class CoordinationV3RequiredReplyAuthority {
    * the active Run's authenticated server route. A Decision is a wait, not
    * fabricated completion or permission. Its exact response supplies a wake. */
   waitForDecision(runId: string, decisionId: string, now: string): void {
+    if (this.forRun(runId).some(o => o.deliveryPhase === 'final' && o.state === 'pending' &&
+        o.blockingDecisionId && o.blockingDecisionId !== decisionId)) {
+      throw new Error('task_decision_already_pending: answer the existing exact blocking Decision first');
+    }
     this.sqlite.prepare(`UPDATE required_reply_obligations
       SET blocking_decision_id = ?, updated_at = ?
       WHERE run_id = ? AND delivery_phase = 'final' AND state = 'pending'`)
@@ -359,6 +375,7 @@ export class CoordinationV3RequiredReplyAuthority {
         ON obligation.agent_id = wake.agent_id AND obligation.project_id = wake.project_id
           AND obligation.scope_key = wake.scope_key
       WHERE wake.id = ? AND obligation.blocking_decision_id = ?
+        AND json_extract(wake.payload_json, '$.decision.id')=obligation.blocking_decision_id
         AND obligation.delivery_phase = 'final' AND obligation.state = 'pending'`)
       .run(activationId, decisionId);
   }
@@ -377,6 +394,7 @@ export class CoordinationV3RequiredReplyAuthority {
       if (!latest) continue;
       const pending = this.forRun(latest.run_id).find(o => o.sourceActivationId === root.sourceActivationId);
       if (!pending || !['pending','recovery_pending'].includes(pending.state)) continue;
+      if (pending.blockingDecisionId && pending.blockingDecisionId !== input.decisionId) continue;
       if (pending.recoveryActivationId) this.sqlite.prepare(`UPDATE agent_activations SET state='cancelled', updated_at=?, terminal_at=?
         WHERE id=? AND state IN ('pending','retry_pending')`).run(now, now, pending.recoveryActivationId);
       this.sqlite.prepare(`UPDATE required_reply_obligations SET state='pending', blocking_decision_id=?,

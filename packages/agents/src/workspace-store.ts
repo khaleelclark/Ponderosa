@@ -803,9 +803,11 @@ export class WorkspaceStore {
         decision.id,
       );
     }
-    const runIds = this.decisionIdsByRun.get(decision.runId) ?? new Set<string>();
-    runIds.add(decision.id);
-    this.decisionIdsByRun.set(decision.runId, runIds);
+    for (const runId of new Set([decision.runId, decision.coordinationRunId].filter((id): id is string => Boolean(id)))) {
+      const runIds = this.decisionIdsByRun.get(runId) ?? new Set<string>();
+      runIds.add(decision.id);
+      this.decisionIdsByRun.set(runId, runIds);
+    }
   }
 
   private decisionEventId(decisionId: string, kind: DecisionEventProjection["kind"]): string {
@@ -1703,6 +1705,11 @@ export class WorkspaceStore {
       );
     }
     return ids.length;
+  }
+
+  decisionForIdempotency(agentId: string, idempotencyKey: string): DecisionDto | undefined {
+    const id = this.decisionIdempotency.get(`${agentId}\u0000${idempotencyKey}`);
+    return id ? this.decisions.get(id) : undefined;
   }
 
   createDecision(input: Omit<DecisionDto, "id" | "status" | "createdAt" | "updatedAt"> & { idempotencyKey: string }): DecisionDto {

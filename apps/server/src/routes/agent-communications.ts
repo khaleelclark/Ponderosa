@@ -170,6 +170,7 @@ export function registerAgentCommunicationRoutes(
   const {
     store,
     coordinationV3,
+    workspace,
     agentMessageCapabilities,
     activeRuns,
     projectDeletionInProgress,
@@ -428,6 +429,21 @@ export function registerAgentCommunicationRoutes(
       .some(o => o.deliveryPhase === 'final' && ['pending','satisfied'].includes(o.state) &&
         requiredReplyAuthorityKey(o.replyAuthority) === requiredReplyAuthorityKey(selectedReplyAuthority))) {
       return reply.code(400).send({ error: 'taskDelivery requires this exact task origin and operator reply route' });
+    }
+    if (taskDelivery) {
+      // Also check canonical Decisions after a possible association failure;
+      // a missing/superseded SQLite wait must never imply permission answered.
+      const origins = new Set(coordinationV3.taskOriginRunIds(capability.v3SchedulerRunId));
+      const blockers = workspace.decisionsForRuns(origins).filter(d => d.blocking && d.status === 'pending' &&
+          d.agentId === capability.agentId && d.projectId === currentAuthor?.projectId &&
+          d.conversationId === capability.conversationId);
+      for (const decision of blockers) if (decision.coordinationRunId) coordinationV3.reconcileTaskDecision({
+        decisionId: decision.id, runId: decision.coordinationRunId, projectId: decision.projectId,
+        agentId: decision.agentId, scopeKey: decision.conversationId ? `conversation:${decision.conversationId}` : `agent:${decision.agentId}`,
+      });
+      if (taskDelivery === 'final' && blockers.length) {
+        return reply.code(409).send({ error: 'task_delivery_dependencies_pending: answer the exact blocking Decision first' });
+      }
     }
     const candidateRequiredReplyFingerprint = createHash("sha256").update(JSON.stringify({
       intent, text, recipientAgentIds: inferredRecipientAgentIds,

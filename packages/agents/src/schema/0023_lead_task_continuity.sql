@@ -10,5 +10,7 @@ ALTER TABLE context_rollovers ADD COLUMN continuity_waiting INTEGER NOT NULL DEF
 CREATE INDEX idx_requests_task_origin ON coordination_requests(origin_run_id, state);
 CREATE INDEX idx_joins_task_origin ON coordination_joins(origin_run_id, state);
 CREATE INDEX idx_reply_task_decision ON required_reply_obligations(blocking_decision_id);
+CREATE INDEX idx_reply_recovery_activation ON required_reply_obligations(recovery_activation_id)
+  WHERE recovery_activation_id IS NOT NULL;
 CREATE INDEX idx_reply_task_root ON required_reply_obligations(source_activation_id, project_id, agent_id, scope_key, run_id);
 CREATE INDEX idx_rollover_retained_continuity ON context_rollovers(agent_id, scope_key) WHERE continuity_waiting = 1;

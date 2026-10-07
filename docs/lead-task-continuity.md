@@ -20,6 +20,10 @@ assignment subsystem.
 - A blocking Decision preserves the pending task and exact answer association,
   including when accompanied by a blocked-status message. Its answer resumes
   the existing delivery responsibility rather than creating a new assignment.
+  Unrelated review callbacks retain that wait. A second distinct blocking
+  Decision is rejected before canonical creation while the first is unanswered;
+  replay preserves the exact original Decision. Canonical pending Decisions
+  also guard final delivery if their SQLite association requires repair.
 - Recovery transfers one original source root and its increasing bounded retry
   generation. After six unsuccessful delivery Runs, existing actionable
   delivery-failure handling stops automatic recovery. No final text is fabricated.
@@ -29,6 +33,8 @@ signatures, pushes or releases exist. A completed Run is still only an execution
 fact. No completion or permission is inferred from message prose. Multiple
 coalesced source routes remain separately authorized; a private specialist reply
 does not satisfy an operator obligation or get forwarded to the operator.
+Distinct authored inputs keep their own reply roots even when their operator
+route matches an inherited task's route.
 
 ## Waiting rollover
 
@@ -41,6 +47,9 @@ Canonical Request/Join/question/Decision wakes bind this retained handoff before
 leasing. The existing scheduler isolates that activation as the replacement
 candidate; there is no polling Run or extra synthetic continuation. Existing
 observed-process-closure, provider-input manifest and low-water guards remain.
+Retirement filters wakes by structural task lineage before applying its bounded
+selection limit. Normal inbox priorities remain unchanged; unrelated inputs
+cannot consume the callback's handoff even if they run first.
 Cancellation, deletion and terminal task roots retire waiting eligibility.
 Historical handoff text may remain as audit evidence; a generic later task can
 never select a rollover-owned obsolete handoff.

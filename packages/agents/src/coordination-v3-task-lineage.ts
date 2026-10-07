@@ -1,41 +1,69 @@
 import type Database from "better-sqlite3";
-import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
+import { requestSourceLineageBody } from "./coordination-v3-request-lineage.js";
 
 /** Structural delegation origins, not the callback's incidental reply route.
  * The same-Agent/Project/Chat Run is the authority; payload text is never used. */
-export function delegationOriginsForActivation(sqlite: Database.Database, activationId: string): string[] {
-  return (sqlite.prepare(`
-    ${REQUEST_SOURCE_LINEAGE_CTE}
-    SELECT DISTINCT origin.id
-    FROM agent_activations activation
+function delegationOriginsCte(candidateWhere: string, pending = false): string {
+  return `WITH task_wake_candidates AS MATERIALIZED (
+      SELECT rowid AS selection_rowid, * FROM agent_activations
+      ${pending ? "INDEXED BY agent_activations_agent_scope_runnable" : ""} WHERE ${candidateWhere}
+    ), task_wake_sources AS MATERIALIZED (
+      SELECT canonical_source.* FROM task_wake_candidates candidate
+      CROSS JOIN activation_sources canonical_source WHERE canonical_source.activation_id=candidate.id
+    ), ${requestSourceLineageBody("task_wake_sources")},
+    delegation_origins(activation_id, origin_run_id) AS (
+    SELECT DISTINCT activation.id, origin.id
+    FROM task_wake_candidates activation
     JOIN request_source_lineage lineage ON lineage.activation_id = activation.id
     JOIN coordination_requests request ON request.id = lineage.request_id
     JOIN scheduler_runs origin ON origin.id = request.origin_run_id
-    WHERE activation.id = ? AND request.requester_agent_id = activation.agent_id
+    WHERE request.requester_agent_id = activation.agent_id
       AND origin.agent_id = activation.agent_id AND origin.project_id = activation.project_id
       AND origin.scope_key = activation.scope_key
     UNION
-    SELECT origin.run_id AS id FROM required_reply_obligations origin
-    JOIN agent_activations activation ON activation.id = origin.recovery_activation_id
-    WHERE activation.id = ? AND origin.agent_id = activation.agent_id
+    SELECT activation.id, origin.run_id FROM task_wake_candidates activation
+    CROSS JOIN required_reply_obligations origin
+    WHERE origin.recovery_activation_id = activation.id
+      AND activation.kind = 'required_reply_recovery' AND origin.agent_id = activation.agent_id
       AND origin.project_id = activation.project_id AND origin.scope_key = activation.scope_key
     UNION
-    SELECT DISTINCT origin.id
-    FROM agent_activations activation
-    JOIN activation_sources source ON source.activation_id = activation.id AND source.source_kind = 'join'
+    SELECT DISTINCT activation.id, origin.id
+    FROM task_wake_candidates activation
+    JOIN task_wake_sources source ON source.activation_id = activation.id AND source.source_kind = 'join'
     JOIN coordination_joins dependency ON dependency.id = source.source_id
     JOIN scheduler_runs origin ON origin.id = dependency.origin_run_id
-    WHERE activation.id = ? AND dependency.owner_agent_id = activation.agent_id
+    WHERE dependency.owner_agent_id = activation.agent_id
       AND origin.agent_id = activation.agent_id AND origin.project_id = activation.project_id
       AND origin.scope_key = activation.scope_key
     UNION
-    SELECT origin.run_id AS id FROM required_reply_obligations origin
-    JOIN activation_sources source ON source.source_kind = 'task_decision'
+    SELECT activation.id, origin.run_id FROM required_reply_obligations origin
+    JOIN task_wake_sources source ON source.source_kind = 'task_decision'
       AND source.source_id = origin.blocking_decision_id
-    JOIN agent_activations activation ON activation.id = source.activation_id
-    WHERE activation.id = ? AND origin.agent_id = activation.agent_id
+    JOIN task_wake_candidates activation ON activation.id = source.activation_id
+    WHERE origin.agent_id = activation.agent_id
       AND origin.project_id = activation.project_id AND origin.scope_key = activation.scope_key
-  `).all(activationId, activationId, activationId, activationId) as Array<{ id: string }>).map(row => row.id);
+    )`;
+}
+
+export function delegationOriginsForActivation(sqlite: Database.Database, activationId: string): string[] {
+  return (sqlite.prepare(`${delegationOriginsCte("id=?")}
+    SELECT DISTINCT origin_run_id AS id FROM delegation_origins`)
+    .all(activationId) as Array<{ id: string }>).map(row => row.id);
+}
+
+/** Bound after structural lineage filtering, never after unrelated inbox rows. */
+export function pendingTaskWakeIds(sqlite: Database.Database, input: {
+  projectId: string; agentId: string; scopeKey: string; originRunIds: string[];
+}): string[] {
+  if (!input.originRunIds.length) return [];
+  return (sqlite.prepare(`${delegationOriginsCte(`project_id=? AND agent_id=? AND scope_key=?
+      AND state IN ('pending','retry_pending')
+      AND (kind LIKE 'coordination_%' OR kind='required_reply_recovery' OR kind='human_message')`, true)}
+    SELECT DISTINCT wake.id FROM task_wake_candidates wake
+    JOIN delegation_origins origin ON origin.activation_id=wake.id
+    WHERE origin.origin_run_id IN (SELECT value FROM json_each(?))
+    ORDER BY wake.priority DESC, wake.created_at, wake.selection_rowid LIMIT 64`)
+    .all(input.projectId, input.agentId, input.scopeKey, JSON.stringify(input.originRunIds)) as Array<{ id: string }>).map(row => row.id);
 }
 
 /** All Runs carrying the same durable task roots, with exact ownership/scope. */

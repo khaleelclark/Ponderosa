@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { runOwnsAwaitedDelegation } from "./coordination-v3-task-lineage.js";
+import { runOwnsAwaitedDelegation, taskOriginRunIds } from "./coordination-v3-task-lineage.js";
 import type { RunAuthorizationV3 } from "./coordination-v3-types.js";
 import {
   type MessageDeliveryReceiptDto,
@@ -712,6 +712,10 @@ export class CoordinationV3Store {
   taskDecisionOwnsDelivery(decisionId: string): boolean {
     return Boolean(this.sqlite.prepare(`SELECT 1 FROM required_reply_obligations
       WHERE blocking_decision_id = ? AND delivery_phase = 'final' AND state = 'pending' LIMIT 1`).get(decisionId));
+  }
+
+  taskOriginRunIds(runId: string): string[] {
+    return taskOriginRunIds(this.sqlite, runId);
   }
 
   createTriggerDefinition(input: CreateTriggerDefinitionInput): TriggerDefinitionDto {

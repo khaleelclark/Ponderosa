@@ -6,12 +6,12 @@ import { appendFile, access } from 'node:fs/promises';
 import { watch } from 'node:fs';
 const env = process.env;
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
-async function call(url, body) {
+async function call(url, body, expectedStatus) {
   if (new URL(url).hostname !== '127.0.0.1') throw Error('fixture refuses non-loopback requests');
   const response = await fetch(url, { method: 'POST', headers: {
     authorization: `Bearer ${env.PONDEROSA_AGENT_MESSAGE_TOKEN}`, 'content-type': 'application/json',
   }, body: JSON.stringify(body) });
-  if (!response.ok) throw Error(`${response.status}: ${await response.text()}`);
+  if (expectedStatus !== undefined ? response.status !== expectedStatus : !response.ok) throw Error(`${response.status}: ${await response.text()}`);
   return response.json();
 }
 async function awaitGate() {
@@ -50,8 +50,25 @@ for await (const line of createInterface({ input: process.stdin })) {
     await call(env.PONDEROSA_AGENT_MESSAGE_URL, { intent: 'direct_to_user', steeringInjectionId: fence,
       text: 'Review received; final validation still in progress.' });
     if (env.CONTINUITY_DECISION === '1' && !text.includes('Approve the disposable final-delivery fixture?')) {
-      await call(env.PONDEROSA_AGENT_DECISION_URL, { idempotencyKey: 'controlled-task-permission', mode: 'approval',
-        question: 'Approve the disposable final-delivery fixture?', blocking: true });
+      const request = { idempotencyKey: 'controlled-task-permission', mode: 'approval',
+        question: 'Approve the disposable final-delivery fixture?', blocking: true };
+      if (env.CONTINUITY_ASSOCIATION_FAILURE === '1') {
+        await call(env.PONDEROSA_AGENT_DECISION_URL, request, 500);
+        // The canonical Decision exists, but its SQLite wait rolled back. A
+        // rejected final attempt must repair the wait before this Run ends.
+        const denied = await call(env.PONDEROSA_AGENT_MESSAGE_URL, { intent: 'direct_to_user',
+          idempotencyKey: 'gap-final', taskDelivery: 'final', text: 'Must not publish through an association gap.' }, 409);
+        if (!denied.error.startsWith('task_delivery_dependencies_pending')) throw Error('unexpected association-gap denial');
+      }
+      const first = await call(env.PONDEROSA_AGENT_DECISION_URL, request);
+      const replay = await call(env.PONDEROSA_AGENT_DECISION_URL, request);
+      if (first.id !== replay.id) throw Error('canonical Decision replay duplicated');
+      const second = await call(env.PONDEROSA_AGENT_DECISION_URL, { ...request,
+        idempotencyKey: 'different-task-permission', question: 'A second unanswered permission?' }, 409);
+      if (!second.error.startsWith('task_decision_already_pending')) throw Error('unexpected second-Decision rejection');
+      const premature = await call(env.PONDEROSA_AGENT_MESSAGE_URL, { intent: 'direct_to_user',
+        idempotencyKey: 'premature-final', taskDelivery: 'final', text: 'Must not publish before approval.' }, 409);
+      if (!premature.error.startsWith('task_delivery_dependencies_pending')) throw Error('unexpected premature-final rejection');
     } else {
     const body = { intent: 'direct_to_user', idempotencyKey: 'exact-final', steeringInjectionId: fence, taskDelivery: 'final',
       text: 'Disposable final delivery: review integrated; validation passed. No real release was signed, pushed or published.' };

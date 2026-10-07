@@ -912,6 +912,7 @@ function agentCommunicationArtifactApp({
       steeringInjectionIds: () => [],
       latestAcknowledgedSteeringInjection: () => undefined,
       requiredReplyAuthoritiesForRun: () => [],
+      requiredReplyObligationsForRun: () => [],
       runtimeCommunication: () => undefined,
       runtimeArtifact,
       recordRuntimeCommunication,

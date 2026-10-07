@@ -94,6 +94,17 @@ export function registerAgentDecisionRoutes(
       : coordinationV3.outboundAwaitingQuestionRequestIdsAttachedToRun(
           capability.runId, agent.id,
         );
+    if (body.blocking !== false && coordinationV3.requiredReplyObligationsForRun(capability.v3SchedulerRunId)
+      .some(o => o.deliveryPhase === 'final' && o.state === 'pending')) {
+      const replay = workspace.decisionForIdempotency(agent.id, idempotencyKey);
+      const origins = new Set(coordinationV3.taskOriginRunIds(capability.v3SchedulerRunId));
+      const blockers = workspace.decisionsForRuns(origins).filter(d => d.blocking && d.status === 'pending' &&
+        d.agentId === agent.id && d.projectId === agent.projectId && d.conversationId === active.conversationId);
+      if (blockers.some(d => d.id !== replay?.id) || coordinationV3.requiredReplyObligationsForRun(capability.v3SchedulerRunId)
+        .some(o => o.deliveryPhase === 'final' && o.state === 'pending' && o.blockingDecisionId && o.blockingDecisionId !== replay?.id)) {
+        return reply.code(409).send({ error: 'task_decision_already_pending: answer the existing exact blocking Decision first' });
+      }
+    }
     const cursor = workspace.cursor();
     const decision = workspace.createDecision({
       idempotencyKey,
@@ -110,7 +121,7 @@ export function registerAgentDecisionRoutes(
       ...(continuationRequestIds.length ? { continuationRequestIds } : {}),
       blocking: body.blocking !== false,
     });
-    if (decision.blocking) coordinationV3.waitForTaskDecision({
+    if (decision.blocking && decision.status === 'pending') coordinationV3.waitForTaskDecision({
       runAuthorization: { runId: capability.v3SchedulerRunId, agentId: capability.agentId, fencingToken: capability.v3FencingToken },
       decisionId: decision.id,
       scopeKey: active.conversationId ? `conversation:${active.conversationId}` : `agent:${agent.id}`,
