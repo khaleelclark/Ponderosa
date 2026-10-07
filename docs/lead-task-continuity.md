@@ -32,7 +32,9 @@ assignment subsystem.
   a durable recovery hold; it does not leave a falsely active Run. Only operator
   task roots are held, not unrelated collaboration recovery. Bounded repair
   batches rotate by their last attempt, so a persistently failing batch cannot
-  strand later healthy tasks.
+  strand later healthy tasks, including when a held Run has a displaced sibling
+  root. A store reopened without its canonical Decision reader cannot release
+  an existing hold or launch recovery through it.
   An exact Decision answer in a later Run can carry a pending or already-satisfied
   initial origin, preserving its initial receipt. Only subsequent delegation
   promotes that origin to final delivery; generic callbacks cannot revive it.
@@ -45,6 +47,10 @@ assignment subsystem.
   An answer recorded while association repair remains unavailable is held from
   both fresh-Run and steering claims. Healthy canonical repair attaches its
   exact task provenance before releasing it; cancellation retires the hold.
+  An already-satisfied initial receipt can retain that wait after an association
+  rollback only with durable proof that the trusted canonical reader observed
+  this exact pending Decision for its original Run and root. A generic read
+  outage, another Decision, or historical answer text cannot supply that proof.
   If the provider acknowledges the exact answer as steering into its owning
   active Run, that acknowledgement and removal of the matching wait commit
   atomically. Unsubmitted, unrelated or stale-fenced inputs cannot release it.

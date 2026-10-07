@@ -73,7 +73,7 @@ function fixture(options = {}) {
   }
   return { get store() { return store; }, get c() { return c; }, project, chat, lead, peer, auth, human, delegate, reply,
     final(l, id) { return reply(l, id, 'user_dm', 'final'); }, finish, rollover, retire, review,
-    reopen() { store.close(); store = new AgentStore(dir); c = new CoordinationV3Store(store.sqlite, options); },
+    reopen(newOptions = options) { store.close(); store = new AgentStore(dir); c = new CoordinationV3Store(store.sqlite, newOptions); },
     close() { store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
@@ -215,6 +215,149 @@ test('bounded repair visits a later healthy hold despite 64 persistently failing
     assert.equal(f.c.requiredReplyObligationsForRun(healthyRun)[0].blockingDecisionId, 'later-canonical');
     assert.equal(f.c.requiredReplyObligationsForRun(healthyRun)[0].decisionWaitRepairPending, undefined);
     assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE source_kind='task_decision_repair'").get().n, 64);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 0);
+  } finally { f.close(); }
+});
+
+for (const terminal of ['error', 'expiry', 'orphan']) {
+  test(`a satisfied initial receipt retains its exact early answer through ${terminal} association rollback`, () => {
+    let decisions = [];
+    const f = fixture({ canonicalTaskDecisions: () => decisions });
+    try {
+      const source = f.human(); accept(f, source); f.reply(source, 'initial-receipt');
+      decisions = [{ id: 'exact-pending', blocking: true, status: 'pending', coordinationRunId: source.runId,
+        agentId: f.lead.id, projectId: f.project.id, conversationId: f.chat.id }];
+      f.store.sqlite.exec(`CREATE TRIGGER initial_wait_rollback BEFORE UPDATE OF blocking_decision_id ON required_reply_obligations
+        WHEN NEW.blocking_decision_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'fixture initial wait rollback'); END`);
+      if (terminal === 'error') f.c.failRun({ runId: source.runId, fencingToken: source.fencingToken,
+        workerId: 'lead', sameRunResumable: false, failureKind: 'unknown' });
+      if (terminal === 'expiry') f.c.recoverExpiredRuns(new Date(Date.parse(source.leaseExpiresAt) + 1).toISOString());
+      if (terminal === 'orphan') f.c.recoverOrphanedRuns('replacement-worker');
+      const response = { optionId: 'approve', respondedAt: new Date().toISOString() };
+      decisions = [{ ...decisions[0], status: 'resolved', response }];
+      const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+        scopeKey: `conversation:${f.chat.id}`, messageId: 'decision:exact-pending:response', kind: 'human',
+        payload: { decision: { id: 'exact-pending', response } } });
+      f.c.attachTaskDecisionWake('exact-pending', answer, new Date().toISOString(), source.runId);
+      f.reopen();
+      assert.equal(f.c.leaseNextRun({ workerId: 'must-stay-held' }), undefined);
+      assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE source_kind='task_decision_pending_repair'").get().n, 1);
+      assert.equal(f.c.requiredReplyObligationsForRun(source.runId)[0].decisionWaitRepairPending, true);
+      f.store.sqlite.exec('DROP TRIGGER initial_wait_rollback');
+      const next = f.c.leaseNextRun({ workerId: 'exact-answer', now: new Date(Date.now() + 1000).toISOString() });
+      assert.deepEqual(next.activationIds, [answer]);
+      const root = f.c.requiredReplyObligationsForRun(next.runId)[0];
+      assert.equal(root.sourceActivationId, source.activationIds[0]); assert.equal(root.state, 'satisfied');
+      assert.deepEqual(root.replyAuthority, { intent: 'direct_to_user' });
+      assert.equal(root.satisfiedCommunicationId, 'initial-receipt'); assert.equal(root.attemptCount, 0);
+      assert.equal(root.blockingDecisionId, undefined);
+      assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE source_kind IN ('task_decision_pending_repair','task_decision_repair','task_decision_repair_wait')").get().n, 0);
+      assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 0);
+      assert.equal(f.store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(source.runId).status, 'outcome_unknown');
+    } finally { f.close(); }
+  });
+}
+
+for (const failure of ['read', 'different-pending']) {
+  test(`an uncertain initial receipt does not revive a historical resolved Decision; evidence=${failure}`, () => {
+    let outage = failure === 'read', decisions = [];
+    const f = fixture({ canonicalTaskDecisions: () => { if (outage) throw Error('fixture reader outage'); return decisions; } });
+    try {
+      const source = f.human(); accept(f, source); f.reply(source, 'historical-receipt');
+      const old = { id: 'historical', blocking: true, status: 'resolved', coordinationRunId: source.runId,
+        agentId: f.lead.id, projectId: f.project.id, conversationId: f.chat.id, response: { optionId: 'approve' } };
+      decisions = failure === 'read' ? [old] : [{ ...old, id: 'different-pending', status: 'pending', response: undefined }];
+      f.store.sqlite.exec(`CREATE TEMP TRIGGER historical_wait_rollback BEFORE UPDATE OF blocking_decision_id ON required_reply_obligations
+        WHEN NEW.blocking_decision_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'fixture historical rollback'); END`);
+      f.c.failRun({ runId: source.runId, fencingToken: source.fencingToken, workerId: 'lead', sameRunResumable: false });
+      assert.equal(f.c.requiredReplyObligationsForRun(source.runId)[0].decisionWaitRepairPending, true);
+      outage = false; decisions = [old]; f.store.sqlite.exec('DROP TRIGGER historical_wait_rollback');
+      assert.equal(f.c.repairCanonicalTaskDecisionWait(source.runId), true);
+      const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
+        messageId: 'decision:historical:response', kind: 'human', payload: { decision: { id: old.id, response: old.response } } });
+      f.c.attachTaskDecisionWake(old.id, answer, new Date().toISOString(), source.runId);
+      const generic = f.c.leaseNextRun({ workerId: 'historical-answer' });
+      assert.deepEqual(generic.activationIds, [answer]); assert.deepEqual(f.c.requiredReplyObligationsForRun(generic.runId), []);
+      assert.equal(f.c.requiredReplyObligationsForRun(source.runId)[0].blockingDecisionId, undefined);
+      assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE source_kind='task_decision_pending_repair'").get().n, 0);
+    } finally { f.close(); }
+  });
+}
+
+test('reopening without a canonical reader cannot release an existing hold on completion', () => {
+  let outage = true;
+  const f = fixture({ canonicalTaskDecisions: () => { if (outage) throw Error('fixture reader outage'); return []; } });
+  try {
+    const source = f.human(); accept(f, source);
+    assert.equal(f.c.repairCanonicalTaskDecisionWait(source.runId), false);
+    f.reopen({}); assert.equal(f.c.repairCanonicalTaskDecisionWait(source.runId), false);
+    f.c.completeRun(source.runId, source.fencingToken);
+    assert.equal(f.c.requiredReplyObligationsForRun(source.runId)[0].decisionWaitRepairPending, true);
+    assert.equal(f.c.leaseNextRun({ workerId: 'must-remain-held' }), undefined);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 0);
+    outage = false; f.reopen();
+    const recovery = f.c.leaseNextRun({ workerId: 'trusted-reader-restored', now: new Date(Date.now() + 1000).toISOString() });
+    assert.equal(recovery.activations[0].kind, 'required_reply_recovery');
+  } finally { f.close(); }
+});
+
+test('genuine cancellation retires exact pending proof and cannot revive its initial receipt', () => {
+  let decisions = [];
+  const f = fixture({ canonicalTaskDecisions: () => decisions });
+  try {
+    const source = f.human(); accept(f, source); f.reply(source, 'cancelled-initial-receipt');
+    decisions = [{ id: 'cancelled-exact', blocking: true, status: 'pending', coordinationRunId: source.runId,
+      agentId: f.lead.id, projectId: f.project.id, conversationId: f.chat.id }];
+    f.store.sqlite.exec(`CREATE TEMP TRIGGER cancelled_wait_rollback BEFORE UPDATE OF blocking_decision_id ON required_reply_obligations
+      WHEN NEW.blocking_decision_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'fixture cancelled wait rollback'); END`);
+    assert.equal(f.c.repairCanonicalTaskDecisionWait(source.runId), false);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE source_kind='task_decision_pending_repair'").get().n, 1);
+    decisions = [{ ...decisions[0], status: 'resolved', response: { optionId: 'approve' } }];
+    const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
+      messageId: 'decision:cancelled-exact:response', kind: 'human', payload: { decision: { id: 'cancelled-exact', response: decisions[0].response } } });
+    f.c.attachTaskDecisionWake('cancelled-exact', answer, new Date().toISOString(), source.runId);
+    assert.equal(f.c.cancelAgentRun({ agentId: f.lead.id, expectedRunId: source.runId, idempotencyKey: 'cancel-exact-pending-proof' }).cancelled, true);
+    assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(answer).state, 'cancelled');
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE source_kind IN ('task_decision_pending_repair','task_decision_repair','task_decision_repair_wait')").get().n, 0);
+    f.reopen(); assert.equal(f.c.repairCanonicalTaskDecisionWait(source.runId), false);
+    assert.equal(f.c.leaseNextRun({ workerId: 'no-cancelled-root-revival' }), undefined);
+    assert.equal(f.c.taskDecisionOwnsDelivery('cancelled-exact'), false);
+    assert.equal(f.c.requiredReplyObligationsForRun(source.runId)[0].satisfiedCommunicationId, 'cancelled-initial-receipt');
+  } finally { f.close(); }
+});
+
+test('bounded repair ages displaced siblings rather than starving healthy hold 65', () => {
+  let setup = true, healthyRun, decision;
+  const f = fixture({ canonicalTaskDecisions: ids => {
+    if (!setup && ids.has(healthyRun)) return [decision];
+    throw Error('fixture persistent mixed-root read failure');
+  } });
+  try {
+    const predecessors = [];
+    for (let i = 0; i < 65; i++) {
+      if (i < 64) f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+        scopeKey: `conversation:${f.chat.id}`, messageId: `sibling-${i}`, kind: 'human',
+        payload: { replyAuthority: { intent: 'direct_to_user' } } });
+      const source = f.human(`mixed-held-${i}`); accept(f, source);
+      f.c.failRun({ runId: source.runId, fencingToken: source.fencingToken, workerId: 'lead', sameRunResumable: false });
+      if (i < 64) { assert.equal(f.c.requiredReplyObligationsForRun(source.runId).length, 2); predecessors.push(source.runId); }
+      else healthyRun = source.runId;
+    }
+    // One historical sibling has become terminal while this same held Run
+    // still owns another live root. Both markers belong to the retry cohort.
+    for (const runId of predecessors) {
+      const roots = f.c.requiredReplyObligationsForRun(runId);
+      f.store.sqlite.prepare("UPDATE required_reply_obligations SET state='cancelled' WHERE run_id=? AND source_activation_id=?")
+        .run(runId, roots[0].sourceActivationId);
+      f.store.sqlite.prepare("UPDATE required_reply_obligations SET updated_at='2026-01-01T00:00:00.000Z' WHERE run_id=?").run(runId);
+    }
+    decision = { id: 'healthy-after-mixed', blocking: true, status: 'pending', coordinationRunId: healthyRun,
+      agentId: f.lead.id, projectId: f.project.id, conversationId: f.chat.id };
+    setup = false; const now = new Date(Date.now() + 1000).toISOString();
+    assert.equal(f.c.leaseNextRun({ workerId: 'mixed-first-batch', now }), undefined);
+    assert.equal(f.c.leaseNextRun({ workerId: 'mixed-next-batch', now: new Date(Date.parse(now) + 1).toISOString() }), undefined);
+    assert.equal(f.c.requiredReplyObligationsForRun(healthyRun)[0].blockingDecisionId, decision.id);
+    assert.equal(f.c.requiredReplyObligationsForRun(healthyRun)[0].decisionWaitRepairPending, undefined);
     assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 0);
   } finally { f.close(); }
 });
