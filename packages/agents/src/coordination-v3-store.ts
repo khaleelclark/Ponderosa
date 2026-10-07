@@ -1052,7 +1052,14 @@ export class CoordinationV3Store {
     coalesceLimit?: number;
     excludedAgentIds?: readonly string[];
   }): SchedulerLease | undefined {
-    this.sqlite.transaction(() => this.requiredReplyAuthority.retryDecisionWaitRepairs(input.now ?? new Date().toISOString()))();
+    this.sqlite.transaction(() => {
+      const now = input.now ?? new Date().toISOString();
+      for (const runId of this.requiredReplyAuthority.retryDecisionWaitRepairs(now)) {
+        const rollovers = this.sqlite.prepare("SELECT id FROM context_rollovers WHERE source_run_id=? AND state='session_retiring'")
+          .all(runId) as Array<{ id: string }>;
+        for (const rollover of rollovers) this.prepareContextRolloverContinuation({ id: rollover.id, now });
+      }
+    })();
     return this.schedulerLeaseAuthority.leaseNextRun(input);
   }
 
@@ -1429,7 +1436,18 @@ export class CoordinationV3Store {
   }
 
   prepareContextRolloverContinuation(input: { id: string; now?: string }): ContextRolloverV3 {
-    return this.contextRolloverAuthority.prepareContinuation(input);
+    return this.sqlite.transaction(() => {
+      const current = this.contextRolloverAuthority.get(input.id);
+      if (current?.state === 'session_retiring' &&
+          !this.requiredReplyAuthority.repairCanonicalDecisionWait(current.sourceRunId, input.now ?? new Date().toISOString()) &&
+          this.requiredReplyAuthority.forRun(current.sourceRunId).some(root => root.decisionWaitRepairPending)) {
+        // Do not certify completion or consume a bounded handoff while its
+        // source task accounting is uncertain. Bounded repair maintenance
+        // resumes this exact retirement after the canonical reader recovers.
+        return current;
+      }
+      return this.contextRolloverAuthority.prepareContinuation(input);
+    })();
   }
 
   recordContextRolloverReplacementSessionForRun(runId: string, agentId: string, replacementSessionId: string, now?: string): ContextRolloverV3 | undefined {

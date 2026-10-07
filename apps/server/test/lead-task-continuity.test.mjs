@@ -92,12 +92,13 @@ for (const persistent of [false, true]) for (const receipt of [false, true]) tes
   } finally { app.prepareForShutdown(); await app.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-for (const { decisionWait, associationFailure, decisionBefore, decisionSteer, decisionOnly, answerRestart, unrelatedRun } of [{ decisionWait: false }, { decisionWait: true }, { decisionWait: true, associationFailure: true },
+for (const { decisionWait, associationFailure, decisionBefore, decisionSteer, decisionOnly, answerRestart, unrelatedRun, retirementRepair } of [{ decisionWait: false }, { decisionWait: true }, { decisionWait: true, associationFailure: true },
   { decisionWait: true, decisionBefore: true }, { decisionWait: true, decisionBefore: true, associationFailure: true },
   { decisionWait: true, decisionSteer: true }, { decisionWait: true, decisionBefore: true, decisionOnly: true },
   { decisionWait: true, decisionBefore: true, decisionOnly: true, associationFailure: true },
   { decisionWait: true, decisionBefore: true, decisionOnly: true, answerRestart: true },
-  { decisionWait: true, unrelatedRun: true }]) test(`production HTTP/scheduler retains lead continuity through review${decisionWait ? ' and an exact Decision' : ''}${decisionBefore ? ' created before delegation' : ''}${decisionOnly ? ' and rollover before any delegation' : ''}${decisionSteer ? ' answered during its active Run' : ''}${associationFailure ? ' after an association rollback' : ''}${answerRestart ? ' with a saved answer recovered after reopening' : ''}${unrelatedRun ? ' answered while unrelated same-Chat work is active' : ''} and one final delivery`, { timeout: 30000 }, async () => {
+  { decisionWait: true, unrelatedRun: true },
+  { decisionWait: true, decisionBefore: true, decisionOnly: true, associationFailure: true, retirementRepair: true }]) test(`production HTTP/scheduler retains lead continuity through review${decisionWait ? ' and an exact Decision' : ''}${decisionBefore ? ' created before delegation' : ''}${decisionOnly ? ' and rollover before any delegation' : ''}${decisionSteer ? ' answered during its active Run' : ''}${associationFailure ? ' after an association rollback' : ''}${answerRestart ? ' with a saved answer recovered after reopening' : ''}${unrelatedRun ? ' answered while unrelated same-Chat work is active' : ''}${retirementRepair ? ' held through rollover retirement' : ''} and one final delivery`, { timeout: 30000 }, async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'ponderosa-lead-app-')));
   let store = new AgentStore(directory), workspace = new WorkspaceStore(directory);
   workspace.updatePreferences({ contextRolloverEnabled: true });
@@ -141,7 +142,7 @@ for (const { decisionWait, associationFailure, decisionBefore, decisionSteer, de
       agentBaseUrl: `http://127.0.0.1:${port}`, logger: false, communicationV3: { pollMs: 10 } });
     server.addHook('onSend', async (_request, reply, payload) => {
       if (reply.statusCode >= 400) failures.push({ status: reply.statusCode, payload });
-      if (associationFailure && reply.statusCode === 500) store.sqlite.exec('DROP TRIGGER IF EXISTS fixture_decision_association_failure');
+      if (associationFailure && !retirementRepair && reply.statusCode === 500) store.sqlite.exec('DROP TRIGGER IF EXISTS fixture_decision_association_failure');
     });
     return server;
   };
@@ -155,8 +156,20 @@ for (const { decisionWait, associationFailure, decisionBefore, decisionSteer, de
     if (associationFailure && decisionBefore) failAssociation();
     const send = await app.inject({ method: 'POST', url: `/api/agents/${lead.id}/messages`, payload: { text: 'Implement, validate and deliver this disposable lead-task fixture.', idempotencyKey: 'operator-task' } });
     assert.ok([200, 202].includes(send.statusCode), send.body);
+    if (retirementRepair) {
+      const held = await waitFor(() => {
+        const row = store.sqlite.prepare("SELECT id,source_run_id,handoff_event_id FROM context_rollovers WHERE state='session_retiring'").get();
+        return row && coordination.activeRunCount() === 0 && row;
+      }, 'original source repair holds rollover retirement');
+      const heldRoot = coordination.requiredReplyObligationsForRun(held.source_run_id)[0];
+      assert.equal(heldRoot.decisionWaitRepairPending, true); assert.equal(heldRoot.state, 'satisfied');
+      assert.equal(heldRoot.blockingDecisionId, undefined); assert.ok(heldRoot.satisfiedCommunicationId);
+      assert.equal(store.continuationHandoffForRollover(lead.id, held.handoff_event_id)?.consumedAt, undefined);
+      assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(lead.id).n, 2);
+      store.sqlite.exec('DROP TRIGGER fixture_decision_association_failure');
+    }
     const waiting = await waitFor(() => { const row = store.sqlite.prepare('SELECT id FROM context_rollovers WHERE continuity_waiting=1').get();
-      return row && !opened[0].session.isAlive() && coordination.contextRollover(row.id); }, () => JSON.stringify({ failures, runs: store.sqlite.prepare('SELECT agent_id,status FROM scheduler_runs').all(), rollovers: store.sqlite.prepare('SELECT state,last_error,continuity_waiting FROM context_rollovers').all(), events: store.readEvents(lead.id).slice(-4) }));
+      return row && (retirementRepair || !opened[0].session.isAlive()) && coordination.contextRollover(row.id); }, () => JSON.stringify({ failures, runs: store.sqlite.prepare('SELECT agent_id,status FROM scheduler_runs').all(), rollovers: store.sqlite.prepare('SELECT state,last_error,continuity_waiting FROM context_rollovers').all(), events: store.readEvents(lead.id).slice(-4) }));
     assert.equal(store.continuationHandoffForRollover(lead.id, waiting.handoffEventId)?.consumedAt, undefined);
     assert.ok(store.continuationHandoffForRollover(lead.id, waiting.handoffEventId)?.text);
     assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(lead.id).n, 2);

@@ -34,7 +34,8 @@ assignment subsystem.
   batches rotate by their last attempt, so a persistently failing batch cannot
   strand later healthy tasks, including when a held Run has a displaced sibling
   root. A store reopened without its canonical Decision reader cannot release
-  an existing hold or launch recovery through it.
+  an existing hold or launch recovery through it, including after the same root
+  transfers to a later owner. Restoring the reader retries that exact owner.
   An exact Decision answer in a later Run can carry a pending or already-satisfied
   initial origin, preserving its initial receipt. Only subsequent delegation
   promotes that origin to final delivery; generic callbacks cannot revive it.
@@ -47,10 +48,18 @@ assignment subsystem.
   An answer recorded while association repair remains unavailable is held from
   both fresh-Run and steering claims. Healthy canonical repair attaches its
   exact task provenance before releasing it; cancellation retires the hold.
+  Recovery already queued by an earlier build is also held if it names this
+  exact uncertain root. A healthy pending Decision cancels that recovery; a
+  healthy empty index releases the original bounded attempt without duplication.
   An already-satisfied initial receipt can retain that wait after an association
   rollback only with durable proof that the trusted canonical reader observed
   this exact pending Decision for its original Run and root. A generic read
   outage, another Decision, or historical answer text cannot supply that proof.
+  Rollover retirement also checks the original source's canonical accounting
+  before deciding that no continuation is needed. A held source leaves the
+  retirement retryable and its handoff intact. Bounded repair maintenance then
+  resumes that exact retirement: pending questions retain continuity, while a
+  healthy empty index can retire genuinely completed work without an extra Run.
   If the provider acknowledges the exact answer as steering into its owning
   active Run, that acknowledgement and removal of the matching wait commit
   atomically. Unsubmitted, unrelated or stale-fenced inputs cannot release it.
