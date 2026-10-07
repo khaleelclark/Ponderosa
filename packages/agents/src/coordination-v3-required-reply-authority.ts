@@ -184,7 +184,6 @@ export class CoordinationV3RequiredReplyAuthority {
    * abandoned leases. A savepoint failure holds recovery durably without
    * rolling back the actual provider outcome or fabricating a Decision. */
   repairCanonicalDecisionWait(runId: string, now: string): boolean {
-    if (!this.canonicalTaskDecisions) return true;
     const run = this.sqlite.prepare('SELECT agent_id, project_id, scope_key, status FROM scheduler_runs WHERE id=?')
       .get(runId) as { agent_id: string; project_id: string; scope_key: string; status: string } | undefined;
     if (!run) return false;
@@ -200,15 +199,30 @@ export class CoordinationV3RequiredReplyAuthority {
       this.retireDecisionRepairHold(runId, now);
       return run.status !== 'cancelled';
     }
+    // A default store may reopen durable holds, but cannot certify canonical
+    // accounting without the trusted reader that created those holds.
+    if (!this.canonicalTaskDecisions) return !this.sqlite.prepare(
+      "SELECT 1 FROM activation_sources WHERE source_kind='task_decision_repair' AND source_id=? LIMIT 1",
+    ).get(runId);
     try {
+      const origins = new Set(taskOriginRunIds(this.sqlite, runId));
+      const decisions = this.canonicalTaskDecisions(origins).filter(decision => {
+        const scope = decision.conversationId ? `conversation:${decision.conversationId}` : `agent:${decision.agentId}`;
+        return decision.blocking && decision.coordinationRunId && origins.has(decision.coordinationRunId) &&
+          decision.agentId === run.agent_id && decision.projectId === run.project_id && scope === run.scope_key &&
+          (decision.status === 'pending' || (decision.status === 'resolved' && decision.response));
+      });
+      // Keep exact, server-observed pending evidence outside the association
+      // savepoint. A generic read outage is not proof that a satisfied initial
+      // receipt still owns a question; nor can historical answer prose be one.
+      for (const decision of decisions.filter(d => d.status === 'pending')) for (const root of eligible) {
+        this.sqlite.prepare("INSERT OR IGNORE INTO activation_sources (activation_id,source_kind,source_id) VALUES (?,'task_decision_pending_repair',?)")
+          .run(root.sourceActivationId, stableJson({ runId, decisionRunId: decision.coordinationRunId, decisionId: decision.id }));
+      }
       this.sqlite.transaction(() => {
-        const origins = new Set(taskOriginRunIds(this.sqlite, runId));
-        for (const decision of this.canonicalTaskDecisions!(origins)) {
+        for (const decision of decisions) {
           const scope = decision.conversationId ? `conversation:${decision.conversationId}` : `agent:${decision.agentId}`;
-          if (!decision.blocking || !decision.coordinationRunId || !origins.has(decision.coordinationRunId) ||
-              decision.agentId !== run.agent_id || decision.projectId !== run.project_id || scope !== run.scope_key ||
-              !(decision.status === 'pending' || (decision.status === 'resolved' && decision.response))) continue;
-          this.reconcileDecision({ decisionId: decision.id, runId: decision.coordinationRunId,
+          this.reconcileDecision({ decisionId: decision.id, runId: decision.coordinationRunId!,
             agentId: decision.agentId, projectId: decision.projectId, scopeKey: scope,
             ...(decision.response ? { response: decision.response } : {}) }, now);
           if (decision.status === 'resolved' && decision.response) {
@@ -230,15 +244,19 @@ export class CoordinationV3RequiredReplyAuthority {
           }
         }
         this.sqlite.prepare("DELETE FROM activation_sources WHERE source_kind='task_decision_repair' AND source_id=?").run(runId);
+        this.sqlite.prepare("DELETE FROM activation_sources WHERE source_kind='task_decision_pending_repair' AND json_extract(source_id,'$.runId')=?").run(runId);
       })();
       return true;
     } catch {
       for (const root of eligible) {
         this.sqlite.prepare("INSERT OR IGNORE INTO activation_sources (activation_id,source_kind,source_id) VALUES (?,'task_decision_repair',?)")
           .run(root.sourceActivationId, runId);
-        this.sqlite.prepare('UPDATE required_reply_obligations SET updated_at=MAX(updated_at,?) WHERE run_id=? AND source_activation_id=?')
-          .run(now, runId, root.sourceActivationId);
       }
+      // Age the whole attempted marker cohort, including displaced roots.
+      // Otherwise one stale sibling can pin this Run in every bounded batch.
+      this.sqlite.prepare(`UPDATE required_reply_obligations SET updated_at=MAX(updated_at,?) WHERE run_id=?
+        AND source_activation_id IN (SELECT activation_id FROM activation_sources
+          WHERE source_kind='task_decision_repair' AND source_id=?)`).run(now, runId, runId);
       return false;
     }
   }
@@ -248,6 +266,7 @@ export class CoordinationV3RequiredReplyAuthority {
       WHERE state IN ('pending','retry_pending') AND id IN (SELECT activation_id FROM activation_sources
         WHERE source_kind='task_decision_repair_wait' AND source_id=?)`).run(now, now, runId);
     this.sqlite.prepare("DELETE FROM activation_sources WHERE source_kind IN ('task_decision_repair','task_decision_repair_wait') AND source_id=?").run(runId);
+    this.sqlite.prepare("DELETE FROM activation_sources WHERE source_kind='task_decision_pending_repair' AND json_extract(source_id,'$.runId')=?").run(runId);
   }
 
   holdDecisionWakeForRepair(runId: string, decisionId: string, activationId: string): boolean {
@@ -617,7 +636,15 @@ export class CoordinationV3RequiredReplyAuthority {
       // while its exact Run is active or a durable retained rollover still
       // records that task's live wait; never revive it from answer prose.
       if (input.response && pending.state === 'satisfied' && !pending.blockingDecisionId &&
-          latest.status !== 'running' && !this.sqlite.prepare(`SELECT 1 FROM context_rollovers
+          latest.status !== 'running' && !this.sqlite.prepare(`SELECT 1 FROM activation_sources observed
+            JOIN activation_sources held ON held.activation_id=observed.activation_id AND held.source_kind='task_decision_repair'
+              AND held.source_id=json_extract(observed.source_id,'$.runId')
+            JOIN required_reply_obligations held_root ON held_root.run_id=held.source_id AND held_root.source_activation_id=held.activation_id
+            WHERE observed.activation_id=? AND observed.source_kind='task_decision_pending_repair'
+              AND json_extract(observed.source_id,'$.decisionRunId')=? AND json_extract(observed.source_id,'$.decisionId')=?
+              AND held_root.agent_id=? AND held_root.project_id=? AND held_root.scope_key=? LIMIT 1`)
+            .get(root.sourceActivationId, input.runId, input.decisionId, input.agentId, input.projectId, input.scopeKey) &&
+          !this.sqlite.prepare(`SELECT 1 FROM context_rollovers
             WHERE source_run_id=? AND agent_id=? AND project_id=? AND scope_key=?
               AND continuity_waiting=1 AND state='completed' AND completion_reason='no_continuation_required' LIMIT 1`)
             .get(input.runId, input.agentId, input.projectId, input.scopeKey)) continue;

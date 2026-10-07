@@ -16,7 +16,7 @@ async function waitFor(check, description) {
   assert.fail(`Timed out: ${typeof description === 'function' ? description() : description}`);
 }
 
-for (const persistent of [false, true]) test(`provider error repairs a canonical Decision wait without a recovery Run; persistent association failure=${persistent}`, async () => {
+for (const persistent of [false, true]) for (const receipt of [false, true]) test(`provider error repairs a canonical Decision wait without a recovery Run; persistent association failure=${persistent}, initial receipt=${receipt}`, async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'ponderosa-decision-error-')));
   let store = new AgentStore(directory);
   const project = store.createProject({ label: 'Disposable provider error', hostPath: directory, defaultEngine: 'claude' });
@@ -28,7 +28,7 @@ for (const persistent of [false, true]) test(`provider error repairs a canonical
     async openSession(options) { return new ClaudeStreamSession({ ...options,
       bin: fileURLToPath(new URL('./fixtures/lead-continuity-provider.mjs', import.meta.url)), permissionMode: 'default', killGraceMs: 100,
       environment: { ...options.environment, CONTINUITY_ROLE: 'association-error', CONTINUITY_CAPTURE: join(directory, 'provider.jsonl'),
-        CONTINUITY_ERROR_SEEN: join(directory, 'first-error') } }); } };
+        CONTINUITY_ERROR_SEEN: join(directory, 'first-error'), CONTINUITY_INITIAL_RECEIPT: receipt ? '1' : '0' } }); } };
   const makeApp = () => {
     const app = createServer({ dataDir: directory, store, engines: [{ adapter, authStatus: async () => ({ authenticated: true }) }],
       agentBaseUrl: `http://127.0.0.1:${port}`, logger: false, communicationV3: { pollMs: 10 } });
@@ -53,6 +53,8 @@ for (const persistent of [false, true]) test(`provider error repairs a canonical
     const decision = (await app.inject('/api/decisions?status=pending')).json()[0];
     assert.equal(decision.coordinationRunId, original.id); assert.equal(decision.blocking, true);
     const root = new CoordinationV3Store(store.sqlite).requiredReplyObligationsForRun(original.id)[0];
+    assert.equal(root.state, receipt ? 'satisfied' : 'pending');
+    assert.equal(Boolean(root.satisfiedCommunicationId), receipt);
     assert.equal(Boolean(root.decisionWaitRepairPending), persistent);
     if (persistent) {
       const early = await app.inject({ method: 'POST', url: `/api/decisions/${decision.id}/respond`, payload: { optionId: 'approve' } });
@@ -83,6 +85,9 @@ for (const persistent of [false, true]) test(`provider error repairs a canonical
     assert.equal(runs.length, 2);
     const roots = new CoordinationV3Store(store.sqlite).requiredReplyObligationsForRun(runs[1].id);
     assert.equal(roots.length, 1); assert.equal(roots[0].sourceActivationId, root.sourceActivationId); assert.equal(roots[0].state, 'satisfied');
+    assert.equal(roots[0].attemptCount, 0);
+    if (receipt) assert.equal(roots[0].satisfiedCommunicationId, root.satisfiedCommunicationId);
+    assert.equal(store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE source_kind IN ('task_decision_pending_repair','task_decision_repair','task_decision_repair_wait')").get().n, 0);
     assert.equal(store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 0);
   } finally { app.prepareForShutdown(); await app.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
 });

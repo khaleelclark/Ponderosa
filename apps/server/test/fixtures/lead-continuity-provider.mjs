@@ -41,6 +41,9 @@ for (;;) {
     let answered = false;
     try { await access(env.CONTINUITY_ERROR_SEEN); answered = true; } catch {}
     if (!answered) {
+      if (env.CONTINUITY_INITIAL_RECEIPT === '1') await call(env.PONDEROSA_AGENT_MESSAGE_URL, {
+        intent: 'direct_to_user', idempotencyKey: 'pre-error-initial', steeringInjectionId: fence,
+        text: 'Initial receipt before the exact blocking Decision.' });
       await call(env.PONDEROSA_AGENT_DECISION_URL, { idempotencyKey: 'provider-error-permission',
         mode: 'approval', question: 'Approve after the disposable provider error?', blocking: true }, 500);
       await appendFile(env.CONTINUITY_ERROR_SEEN, 'failed');
