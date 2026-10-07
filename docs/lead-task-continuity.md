@@ -55,6 +55,11 @@ assignment subsystem.
   too, including recovery queued by that owner before upgrade. The original
   evidence remains intact; unrelated sources and newer cancelled or completed
   final owners cannot inherit this hold or acquire renewed task authority.
+  This includes an exact recovery claimed before restart but never submitted.
+  Requeuing that claim returns only its copied final root to the immediate
+  predecessor, preserving the original activation and retry budget. Repaired
+  blockers and existing repair evidence survive the transfer; accepted packets,
+  submitted inputs, started providers and genuine cancellation cannot use it.
   An already-satisfied initial receipt can retain that wait after an association
   rollback only with durable proof that the trusted canonical reader observed
   this exact pending Decision for its original Run and root. A generic read
@@ -89,8 +94,9 @@ route matches an inherited task's route.
 
 Old-process retirement, immediate replacement scheduling, and retained continuity
 are separate. A rollover can be `completed/no_continuation_required` with
-`continuity_waiting=1`: the old process is closed, no replacement is needed yet,
-and its bounded handoff remains available only to an exact task-related wake.
+`continuity_waiting=1`: no replacement is needed yet, and its bounded handoff
+remains available only to an exact task-related wake. Runtime retirement is
+separate; observed old-process closure is required before opening a replacement.
 
 Canonical Request/Join/question/Decision wakes bind this retained handoff before
 leasing. The existing scheduler isolates that activation as the replacement
