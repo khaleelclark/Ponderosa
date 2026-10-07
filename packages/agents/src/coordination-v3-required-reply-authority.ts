@@ -136,18 +136,18 @@ export class CoordinationV3RequiredReplyAuthority {
     private readonly canonicalTaskDecisions?: (runIds: ReadonlySet<string>) => readonly DecisionDto[],
   ) {}
 
-  /** Undo only a copied, unaccepted initial Decision root when its exact
-   * answer is requeued. Keep the released Run/input audit and the original
+  /** Undo only an exact copied, unaccepted Decision or delivery-recovery root
+   * when its input is requeued. Keep the released Run/input audit and original
    * receipt, route and retry budget. Cancellation never calls this method. */
   restoreUninjectedDecisionRoots(runId: string, now: string): void {
-    if (!this.sqlite.prepare(`SELECT 1 FROM scheduler_runs run WHERE run.id=?
+    if (!this.sqlite.prepare(`SELECT 1 FROM scheduler_runs run WHERE run.id=? AND run.status<>'cancelled'
       AND run.prompt_injection_state='not_injected' AND run.started_at IS NULL
       AND NOT EXISTS (SELECT 1 FROM provider_inputs WHERE scheduler_run_id=run.id)
       AND NOT EXISTS (SELECT 1 FROM scheduler_prompt_injections WHERE run_id=run.id
         AND state NOT IN ('pending','cancelled'))`).get(runId)) return;
     for (const current of this.forRun(runId)) {
-      if (current.deliveryPhase !== 'initial' || !['pending','satisfied'].includes(current.state) ||
-          current.blockingDecisionId || current.recoveryActivationId) continue;
+      if (!['pending','satisfied'].includes(current.state) || current.recoveryActivationId ||
+          (current.deliveryPhase === 'initial' && current.blockingDecisionId)) continue;
       const previousRow = this.sqlite.prepare(`SELECT prior.run_id, previous.status FROM required_reply_obligations prior
         JOIN scheduler_runs previous ON previous.id=prior.run_id
         JOIN scheduler_runs current ON current.id=?
@@ -159,6 +159,50 @@ export class CoordinationV3RequiredReplyAuthority {
         ORDER BY previous.rowid DESC LIMIT 1`)
         .get(runId, current.sourceActivationId, current.agentId, current.projectId, current.scopeKey) as { run_id: string; status: string } | undefined;
       const previous = previousRow && this.forRun(previousRow.run_id).find(o => o.sourceActivationId === current.sourceActivationId);
+      if (current.deliveryPhase === 'final') {
+        if (!previous || previousRow?.status === 'cancelled' || previous.state !== 'superseded' || previous.deliveryPhase !== 'final' ||
+            current.state !== 'pending' || !previous.recoveryActivationId || current.attemptCount !== previous.attemptCount + 1 ||
+            stableJson(previous.replyAuthority) !== stableJson(current.replyAuthority) ||
+            previous.interimCommunicationId !== current.interimCommunicationId || previous.satisfiedCommunicationId !== current.satisfiedCommunicationId ||
+            (previous.blockingDecisionId && current.blockingDecisionId && previous.blockingDecisionId !== current.blockingDecisionId) ||
+            this.sqlite.prepare('SELECT 1 FROM coordination_requests WHERE origin_run_id=? UNION ALL SELECT 1 FROM coordination_joins WHERE origin_run_id=? LIMIT 1')
+              .get(runId, runId)) continue;
+        const blocker = current.blockingDecisionId ?? previous.blockingDecisionId;
+        const exactRecovery = this.sqlite.prepare(`SELECT 1 FROM scheduler_run_activations attached
+          JOIN agent_activations recovery ON recovery.id=attached.activation_id
+          JOIN activation_sources source ON source.activation_id=recovery.id AND source.source_kind='required_reply' AND source.source_id=?
+          WHERE attached.run_id=? AND recovery.id=? AND recovery.kind='required_reply_recovery'
+            AND (recovery.state IN ('attached','pending','retry_pending') OR (recovery.state='cancelled' AND ? IS NOT NULL))
+            AND recovery.agent_id=? AND recovery.project_id=? AND recovery.scope_key=?
+            AND recovery.dedupe_key=? AND json_extract(recovery.payload_json,'$.requiredReplyRecovery.sourceRunId')=?
+            AND json_extract(recovery.payload_json,'$.requiredReplyRecovery.sourceActivationId')=?
+            AND json_extract(recovery.payload_json,'$.requiredReplyRecovery.attempt')=?`)
+          .get(`${previous.runId}:${previous.sourceActivationId}`, runId, previous.recoveryActivationId, blocker ?? null,
+            current.agentId, current.projectId, current.scopeKey, `required-reply-recovery:${previous.runId}:${previous.sourceActivationId}`,
+            previous.runId, previous.sourceActivationId, current.attemptCount);
+        if (!exactRecovery) continue;
+        this.sqlite.prepare(`UPDATE required_reply_obligations SET state=?, recovery_activation_id=?, blocking_decision_id=?,
+          terminal_at=NULL, updated_at=? WHERE run_id=? AND source_activation_id=? AND state='superseded'`)
+          .run(blocker ? 'pending' : 'recovery_pending', blocker ? null : previous.recoveryActivationId, blocker ?? null,
+            now, previous.runId, previous.sourceActivationId);
+        this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources SELECT activation_id,source_kind,? FROM activation_sources
+          WHERE activation_id=? AND source_kind='task_decision_repair' AND source_id=?`)
+          .run(previous.runId, current.sourceActivationId, runId);
+        this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources SELECT activation_id,source_kind,json_set(source_id,'$.runId',?)
+          FROM activation_sources WHERE activation_id=? AND source_kind='task_decision_pending_repair' AND json_extract(source_id,'$.runId')=?`)
+          .run(previous.runId, current.sourceActivationId, runId);
+        this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources SELECT activation_id,source_kind,? FROM activation_sources
+          WHERE activation_id=? AND source_kind='task_reply_repair_wait' AND source_id=?`)
+          .run(previous.runId, previous.recoveryActivationId, runId);
+        this.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='task_decision_repair' AND source_id=?")
+          .run(current.sourceActivationId, runId);
+        this.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='task_decision_pending_repair' AND json_extract(source_id,'$.runId')=?")
+          .run(current.sourceActivationId, runId);
+        this.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='task_reply_repair_wait' AND source_id=?")
+          .run(previous.recoveryActivationId, runId);
+        this.sqlite.prepare('DELETE FROM required_reply_obligations WHERE run_id=? AND source_activation_id=?').run(runId, current.sourceActivationId);
+        continue;
+      }
       if (!previous || previousRow?.status === 'cancelled' || previous.deliveryPhase !== 'initial' || !previous.blockingDecisionId || previous.recoveryActivationId ||
           previous.state !== (current.state === 'satisfied' ? 'satisfied' : 'superseded') ||
           previous.attemptCount !== current.attemptCount || stableJson(previous.replyAuthority) !== stableJson(current.replyAuthority) ||
@@ -311,17 +355,39 @@ export class CoordinationV3RequiredReplyAuthority {
    * existed. Hold only that exact, still-unaccepted server-owned recovery;
    * unrelated inputs remain independent of the original task's uncertainty. */
   private holdExistingReplyRecovery(root: RequiredReplyObligation): void {
-    if (!root.recoveryActivationId) return;
-    this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources (activation_id,source_kind,source_id)
-      SELECT recovery.id,'task_reply_repair_wait',? FROM agent_activations recovery
-      JOIN activation_sources source ON source.activation_id=recovery.id AND source.source_kind='required_reply' AND source.source_id=?
-      WHERE recovery.id=? AND recovery.kind='required_reply_recovery' AND recovery.state IN ('pending','retry_pending')
-        AND recovery.agent_id=? AND recovery.project_id=? AND recovery.scope_key=?
-        AND recovery.dedupe_key=? AND json_extract(recovery.payload_json,'$.requiredReplyRecovery.sourceRunId')=?
-        AND json_extract(recovery.payload_json,'$.requiredReplyRecovery.sourceActivationId')=?`)
-      .run(root.runId, `${root.runId}:${root.sourceActivationId}`, root.recoveryActivationId,
-        root.agentId, root.projectId, root.scopeKey, `required-reply-recovery:${root.runId}:${root.sourceActivationId}`,
-        root.runId, root.sourceActivationId);
+    for (const activationId of this.unacceptedTaskReplyRecoveryIds(root)) {
+      this.sqlite.prepare("INSERT OR IGNORE INTO activation_sources (activation_id,source_kind,source_id) VALUES (?,'task_reply_repair_wait',?)")
+        .run(activationId, root.runId);
+    }
+  }
+
+  /** A pre-upgrade claim can move the root while the exact recovery pointer
+   * stays on its predecessor. Follow that scoped source, not just the latest
+   * row's pointer. An attached claim is eligible only before any submission,
+   * accepted packet or provider start; historical accepted work is untouched. */
+  private unacceptedTaskReplyRecoveryIds(root: RequiredReplyObligation): string[] {
+    return (this.sqlite.prepare(`SELECT DISTINCT recovery.id FROM required_reply_obligations predecessor
+      JOIN scheduler_runs predecessor_run ON predecessor_run.id=predecessor.run_id AND predecessor_run.status<>'cancelled'
+      JOIN scheduler_runs owner_run ON owner_run.id=? AND owner_run.status<>'cancelled' AND predecessor_run.rowid<=owner_run.rowid
+      JOIN agent_activations recovery ON recovery.id=predecessor.recovery_activation_id
+      JOIN activation_sources source ON source.activation_id=recovery.id AND source.source_kind='required_reply'
+        AND source.source_id=predecessor.run_id||':'||predecessor.source_activation_id
+      WHERE predecessor.source_activation_id=? AND predecessor.agent_id=? AND predecessor.project_id=? AND predecessor.scope_key=?
+        AND predecessor.reply_authority_json=? AND predecessor.state IN ('recovery_pending','superseded')
+        AND recovery.kind='required_reply_recovery' AND recovery.agent_id=predecessor.agent_id
+        AND recovery.project_id=predecessor.project_id AND recovery.scope_key=predecessor.scope_key
+        AND recovery.dedupe_key='required-reply-recovery:'||predecessor.run_id||':'||predecessor.source_activation_id
+        AND json_extract(recovery.payload_json,'$.requiredReplyRecovery.sourceRunId')=predecessor.run_id
+        AND json_extract(recovery.payload_json,'$.requiredReplyRecovery.sourceActivationId')=predecessor.source_activation_id
+        AND json_extract(recovery.payload_json,'$.requiredReplyRecovery.attempt')=predecessor.attempt_count+1
+        AND (recovery.state IN ('pending','retry_pending') OR (recovery.state='attached'
+          AND owner_run.prompt_injection_state='not_injected' AND owner_run.started_at IS NULL
+          AND EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.run_id=owner_run.id AND attached.activation_id=recovery.id)))
+        AND NOT EXISTS (SELECT 1 FROM scheduler_run_activations attached JOIN scheduler_runs accepted ON accepted.id=attached.run_id
+          WHERE attached.activation_id=recovery.id AND (accepted.prompt_injection_state<>'not_injected' OR accepted.started_at IS NOT NULL
+            OR EXISTS (SELECT 1 FROM provider_inputs packet WHERE packet.scheduler_run_id=accepted.id)
+            OR EXISTS (SELECT 1 FROM scheduler_prompt_injections injection WHERE injection.run_id=accepted.id AND injection.state NOT IN ('pending','cancelled'))))`)
+      .all(root.runId, root.sourceActivationId, root.agentId, root.projectId, root.scopeKey, stableJson(root.replyAuthority)) as Array<{ id: string }>).map(row => row.id);
   }
 
   holdDecisionWakeForRepair(runId: string, decisionId: string, activationId: string): boolean {
@@ -720,8 +786,9 @@ export class CoordinationV3RequiredReplyAuthority {
           .run(now, pending.runId, pending.sourceActivationId, input.decisionId);
         continue;
       }
-      if (pending.recoveryActivationId) this.sqlite.prepare(`UPDATE agent_activations SET state='cancelled', updated_at=?, terminal_at=?
-        WHERE id=? AND state IN ('pending','retry_pending')`).run(now, now, pending.recoveryActivationId);
+      for (const activationId of this.unacceptedTaskReplyRecoveryIds(pending)) this.sqlite.prepare(`UPDATE agent_activations
+        SET state='cancelled', updated_at=?, terminal_at=? WHERE id=? AND state IN ('pending','retry_pending','attached')`)
+        .run(now, now, activationId);
       this.sqlite.prepare(`UPDATE required_reply_obligations SET state=?, blocking_decision_id=?,
         recovery_activation_id=NULL, updated_at=? WHERE run_id=? AND source_activation_id=?`)
         .run(pending.state === 'satisfied' ? 'satisfied' : 'pending', input.decisionId, now, pending.runId, pending.sourceActivationId);

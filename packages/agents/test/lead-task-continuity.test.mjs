@@ -402,8 +402,8 @@ for (const canonicalWait of [false, true]) {
   });
 }
 
-for (const outcome of ['pending', 'empty', 'cancelled']) {
-  test(`startup repair of a historical Decision holds its latest owner recovery; outcome=${outcome}`, () => {
+for (const claimed of [false, true]) for (const outcome of claimed ? ['pending', 'empty', 'cancelled'] : ['pending', 'empty']) {
+  test(`startup repair of a historical Decision holds its latest owner recovery; outcome=${outcome}, claimed=${claimed}`, () => {
     const f = fixture();
     try {
       const workspace = new WorkspaceStore(f.project.hostPath);
@@ -420,14 +420,24 @@ for (const outcome of ['pending', 'empty', 'cancelled']) {
       const root = f.c.requiredReplyObligationsForRun(current.runId)[0];
       assert.equal(root.sourceActivationId, source.activationIds[0]); assert.equal(root.state, 'recovery_pending');
       assert.ok(root.recoveryActivationId);
+      const claim = claimed && f.c.leaseNextRun({ workerId: 'legacy-uninjected-claim', excludedAgentIds: [f.peer.id] });
+      if (claim) assert.deepEqual(claim.activationIds, [root.recoveryActivationId]);
       const options = { canonicalTaskDecisions: ids => workspace.decisionsForRuns(ids) };
       f.reopen(options);
       assert.equal(f.c.repairCanonicalTaskDecisionWait(source.runId), false, 'startup visits the canonical origin, not the newer owner');
       assert.equal(f.c.requiredReplyObligationsForRun(source.runId)[0].decisionWaitRepairPending, true);
-      assert.equal(f.c.requiredReplyObligationsForRun(current.runId)[0].decisionWaitRepairPending, true);
+      assert.equal(f.c.requiredReplyObligationsForRun(claim ? claim.runId : current.runId)[0].decisionWaitRepairPending, true);
       assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE activation_id=? AND source_kind='task_reply_repair_wait' AND source_id=?")
-        .get(root.recoveryActivationId, current.runId).n, 1);
+        .get(root.recoveryActivationId, claim ? claim.runId : current.runId).n, 1);
+      if (outcome === 'cancelled') assert.equal(f.c.cancelAgentRun({ agentId: f.lead.id, expectedRunId: claim.runId,
+        idempotencyKey: 'cancel-held-live-claim' }).cancelled, true, 'exercise a genuine live-Run cancellation');
       f.c.recoverOrphanedRuns('after-upgrade');
+      if (claim && outcome !== 'cancelled') {
+        assert.deepEqual(f.c.requiredReplyObligationsForRun(claim.runId), [], 'only the unaccepted copied recovery root is retired');
+        const restored = f.c.requiredReplyObligationsForRun(current.runId)[0];
+        assert.equal(restored.attemptCount, 0); assert.equal(restored.recoveryActivationId, root.recoveryActivationId);
+        assert.equal(restored.decisionWaitRepairPending, true);
+      }
       assert.equal(f.c.leaseNextRun({ workerId: 'must-not-recover' }), undefined);
       // Default-reader reopening must retain both markers; unrelated inputs
       // remain runnable without coalescing the held recovery or its root.
@@ -437,7 +447,6 @@ for (const outcome of ['pending', 'empty', 'cancelled']) {
       const independent = f.c.leaseNextRun({ workerId: 'independent' });
       assert.deepEqual(independent.activationIds, [unrelated]); assert.deepEqual(f.c.requiredReplyObligationsForRun(independent.runId), []);
       assert.equal(f.c.leaseNextSteering({ workerId: 'no-held-coalescing' }), undefined); f.finish(independent);
-      if (outcome === 'cancelled') f.c.cancelAgentRun({ agentId: f.lead.id, expectedRunId: current.runId, idempotencyKey: 'cancel-held-latest' });
       f.store.sqlite.exec('DROP TRIGGER historical_owner_wait_rollback');
       if (outcome === 'empty') workspace.cancelDecision(decision.id);
       f.reopen(options);
@@ -453,6 +462,70 @@ for (const outcome of ['pending', 'empty', 'cancelled']) {
       }
       assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE source_kind IN ('task_decision_repair','task_reply_repair_wait')").get().n, 0);
       assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 1);
+    } finally { f.close(); }
+  });
+}
+
+for (const release of ['defer', 'retry', 'expiry', 'orphan']) test(`an unsubmitted final recovery retains its exact activation and budget through ${release}`, () => {
+  const f = fixture();
+  try {
+    const source = f.human(); f.delegate(source, 1, { noRoute: true }); f.reply(source, 'recovery-interim'); f.finish(source); f.review();
+    const owner = f.c.leaseNextRun({ workerId: 'owner', excludedAgentIds: [f.peer.id] }); f.finish(owner);
+    const root = f.c.requiredReplyObligationsForRun(owner.runId)[0];
+    let now = Date.now(), claim = f.c.leaseNextRun({ workerId: 'recovery', now: new Date(now).toISOString() });
+    for (let iteration = 0; iteration < 2; iteration++) {
+      assert.deepEqual(claim.activationIds, [root.recoveryActivationId]);
+      f.c.preparePromptInjection({ injectionId: claim.injectionId, runId: claim.runId, fencingToken: claim.fencingToken,
+        prompt: 'Exact prepared but never submitted recovery' });
+      if (release === 'defer') f.c.deferUninjectedRun(claim.runId, claim.fencingToken);
+      if (release === 'retry') f.c.failRun({ runId: claim.runId, fencingToken: claim.fencingToken, workerId: 'recovery',
+        sameRunResumable: false, confirmedNotExecuted: true, retryDelayMs: 0 });
+      if (release === 'expiry') { now = Date.parse(claim.leaseExpiresAt) + 1; f.c.recoverExpiredRuns(new Date(now).toISOString()); }
+      if (release === 'orphan') f.c.recoverOrphanedRuns(`replacement-${iteration}`);
+      assert.deepEqual(f.c.requiredReplyObligationsForRun(claim.runId), []);
+      const restored = f.c.requiredReplyObligationsForRun(owner.runId)[0];
+      assert.equal(restored.state, 'recovery_pending'); assert.equal(restored.attemptCount, 0);
+      assert.equal(restored.recoveryActivationId, root.recoveryActivationId); f.reopen();
+      now = Math.max(now, Date.now()) + 1;
+      claim = f.c.leaseNextRun({ workerId: 'recovery', now: new Date(now).toISOString() });
+      const next = f.c.requiredReplyObligationsForRun(claim.runId)[0];
+      assert.equal(next.sourceActivationId, source.activationIds[0]); assert.equal(next.attemptCount, 1);
+      assert.equal(next.interimCommunicationId, 'recovery-interim');
+      assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 1);
+    }
+  } finally { f.close(); }
+});
+
+for (const evidence of ['started', 'provider-input', 'submitted', 'acknowledged']) for (const failure of [false, true]) {
+  test(`canonical recovery repair preserves ${evidence} evidence; association failure=${failure}`, () => {
+    const f = fixture();
+    try {
+      const source = f.human(); f.delegate(source, 1, { noRoute: true }); f.finish(source); f.review();
+      const owner = f.c.leaseNextRun({ workerId: 'owner', excludedAgentIds: [f.peer.id] }); f.finish(owner);
+      const recoveryId = f.c.requiredReplyObligationsForRun(owner.runId)[0].recoveryActivationId;
+      const claim = f.c.leaseNextRun({ workerId: 'protected-recovery' });
+      if (evidence === 'started') f.c.markRunStarted(claim.runId, claim.fencingToken);
+      if (evidence === 'provider-input') f.c.recordProviderInput({ executionId: 'exact-recovery-packet', schedulerRunId: claim.runId,
+        fencingToken: claim.fencingToken, agentId: f.lead.id, projectId: f.project.id, prompt: 'Exact immutable recovery packet',
+        sourceManifest: { schemaVersion: 1, historyMessageCount: 0, activationIds: claim.activationIds, communicationEventIds: [],
+          artifactIds: [], conversationId: f.chat.id, providerSessionDisposition: 'fresh_task', sources: [] } });
+      if (evidence === 'submitted' || evidence === 'acknowledged') {
+        const input = { injectionId: claim.injectionId, runId: claim.runId, fencingToken: claim.fencingToken };
+        f.c.preparePromptInjection({ ...input, prompt: 'Exact submitted recovery' }); f.c.markPromptSubmitted(input);
+        if (evidence === 'acknowledged') f.c.acknowledgePromptInjection(input);
+      }
+      const snapshot = () => JSON.stringify({ run: f.store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(claim.runId),
+        injections: f.store.sqlite.prepare('SELECT * FROM scheduler_prompt_injections WHERE run_id=?').all(claim.runId),
+        packets: f.store.sqlite.prepare('SELECT * FROM provider_inputs WHERE scheduler_run_id=?').all(claim.runId) });
+      const before = snapshot();
+      f.reopen({ canonicalTaskDecisions: () => [{ id: 'protected-decision', blocking: true, status: 'pending', coordinationRunId: source.runId,
+        agentId: f.lead.id, projectId: f.project.id, conversationId: f.chat.id }] });
+      if (failure) f.store.sqlite.exec(`CREATE TRIGGER protected_wait_rollback BEFORE UPDATE OF blocking_decision_id ON required_reply_obligations
+        WHEN NEW.blocking_decision_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'fixture protected wait rollback'); END`);
+      assert.equal(f.c.repairCanonicalTaskDecisionWait(source.runId), !failure);
+      assert.equal(snapshot(), before);
+      assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(recoveryId).state, 'attached');
+      assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE activation_id=? AND source_kind='task_reply_repair_wait'").get(recoveryId).n, 0);
     } finally { f.close(); }
   });
 }
