@@ -51,6 +51,14 @@ export interface EngineRegistration {
 export interface CreateServerOptions {
   dataDir: string;
   resourceAdmission?: import("./resource-admission.js").ResourceAdmissionOptions;
+  /** Programmatic observation inputs for isolated qualification/embeddings.
+   * Never supplied by HTTP or environment configuration. Admission policy,
+   * capacity, deadlines and notifications remain server-owned. */
+  resourceAdmissionObservation?: {
+    sample?: () => Promise<import("./resource-admission.js").ResourceSample>;
+    now?: () => number;
+    platform?: NodeJS.Platform;
+  };
   /** Explicit bootstrap authority for the persistent local browser service. */
   browserServiceSocket?: string;
   /** Starts only canonical crash cleanup, never listeners, triggers, or Run leasing. */

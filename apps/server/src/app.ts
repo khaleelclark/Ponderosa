@@ -387,7 +387,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     enabled: process.env.PONDEROSA_RESOURCE_ADMISSION !== "off",
     ...(process.env.PONDEROSA_RESOURCE_RESERVE_MIB ? { reserveBytes: Number(process.env.PONDEROSA_RESOURCE_RESERVE_MIB) * 1024 * 1024 } : {}),
     ...(process.env.PONDEROSA_RESOURCE_STARTUP_MIB ? { startupBytes: Number(process.env.PONDEROSA_RESOURCE_STARTUP_MIB) * 1024 * 1024 } : {}),
-  }, undefined, undefined, undefined, () => providerStatusChanged());
+  }, opts.resourceAdmissionObservation?.sample, opts.resourceAdmissionObservation?.now,
+  opts.resourceAdmissionObservation?.platform, () => providerStatusChanged());
   const engineAuthStatuses = new EngineAuthStatusCache(providerStatusChanged);
   const engineAvailability = new EngineAvailabilityStore(
     opts.dataDir,
