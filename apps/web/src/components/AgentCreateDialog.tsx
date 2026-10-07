@@ -469,6 +469,7 @@ export function AgentCreateForm({
       <FormControl fullWidth size="small">
         <InputLabel id="create-agent-manager-label">Delegated under</InputLabel>
         <Select
+          id="ag-manager"
           labelId="create-agent-manager-label"
           label="Delegated under"
           value={managerAgentId}
@@ -529,7 +530,7 @@ export function AgentCreateForm({
         >
           Cancel
         </Button>
-        <Button
+        <Button id="ag-create"
           variant="contained"
           disabled={
             !projectId || !conversationId || !conversationAvailable ||

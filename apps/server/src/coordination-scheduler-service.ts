@@ -249,6 +249,7 @@ interface CoordinationSchedulerContext {
   communicationArtifactAccess: ArtifactAuthority["communicationArtifactAccess"];
   projectCommunicationArtifact: ArtifactAuthority["projectCommunicationArtifact"];
   providerProcessAuthority: ProviderProcessAuthority;
+  workflowOperations?: { tick(admit: boolean): Promise<void>; requestStop?(): void; stop(): Promise<void> };
 }
 
 export function createCoordinationScheduler(
@@ -408,6 +409,7 @@ return new CoordinationV3Scheduler(
   },
   {
     workerId: coordinationV3WorkerId,
+    workflowOperations: context.workflowOperations,
     maxConcurrentRuns: opts.communicationV3?.maxConcurrentRuns ?? workspace.getPreferences().maxConcurrentAgentRuns,
     pollMs: opts.communicationV3?.pollMs,
     leaseMs: coordinationV3LeaseMs,

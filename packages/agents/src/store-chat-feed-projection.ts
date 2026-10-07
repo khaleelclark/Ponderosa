@@ -167,6 +167,15 @@ export class AgentChatFeedProjection {
         AND chat_agent.id = search.chat_id AND chat_agent.archived = 0
       WHERE search.project_id = ? AND search.communication_event_id = ?
         AND (conversation.id IS NOT NULL OR chat_agent.id IS NOT NULL)
+        AND NOT EXISTS (
+          SELECT 1 FROM branch_installation_resources inactive_chat
+          WHERE inactive_chat.local_id = COALESCE(conversation.id, chat_agent.conversation_id)
+            AND inactive_chat.state != 'active'
+        )
+        AND (search.chat_kind != 'agent' OR NOT EXISTS (
+          SELECT 1 FROM branch_installation_resources inactive_agent
+          WHERE inactive_agent.local_id = chat_agent.id AND inactive_agent.state != 'active'
+        ))
       ORDER BY CASE search.chat_kind
         WHEN 'conversation' THEN 0
         WHEN 'collaboration' THEN 1
@@ -373,10 +382,10 @@ export class AgentChatFeedProjection {
    * text is rematerialized from the canonical Communication ledger so edits are
    * reflected without making SQLite authoritative.
    */
-  getAllChatPage(input: { limit?: number; cursor?: string } = {}): AllChatPageDto {
+  getAllChatPage(input: { limit?: number; cursor?: string; product?: "dev" | "branches" } = {}): AllChatPageDto {
     const limit = Math.max(1, Math.min(100, input.limit ?? 50));
     const boundary = input.cursor
-      ? this.decodeHistoryCursor(input.cursor, "all-chat", "workspace")
+      ? this.decodeHistoryCursor(input.cursor, "all-chat", `workspace:${input.product??"all"}`)
       : undefined;
     type AllChatRow = {
       rowKey: string;
@@ -413,7 +422,16 @@ export class AgentChatFeedProjection {
         ON search.chat_kind IN ('conversation', 'collaboration') AND conversation.id = search.chat_id
       LEFT JOIN agents chat_agent ON search.chat_kind = 'agent' AND chat_agent.id = search.chat_id
       LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
-      WHERE 1 = 1
+      WHERE NOT EXISTS (
+          SELECT 1 FROM branch_installation_resources inactive_chat
+          WHERE inactive_chat.local_id = COALESCE(conversation.id, chat_agent.conversation_id)
+            AND inactive_chat.state != 'active'
+        )
+        AND (search.chat_kind != 'agent' OR NOT EXISTS (
+          SELECT 1 FROM branch_installation_resources inactive_agent
+          WHERE inactive_agent.local_id = chat_agent.id AND inactive_agent.state != 'active'
+        ))
+        AND (? IS NULL OR (COALESCE(conversation.branch_id,(SELECT branch_id FROM conversations WHERE id=chat_agent.conversation_id)) IS NOT NULL)=?)
         AND (
           search.communication_intent IN ('broadcast', 'user_dm')
           OR (search.communication_intent = 'collaboration' AND search.sender_kind = 'user')
@@ -421,7 +439,7 @@ export class AgentChatFeedProjection {
         ${boundary ? "AND (feed.order_key < ? OR (feed.order_key = ? AND feed.row_key < ?))" : ""}
       ORDER BY feed.order_key DESC, feed.row_key DESC
       LIMIT ?
-    `).all(...(boundary
+    `).all(input.product??null,input.product==="branches"?1:0,...(boundary
       ? [boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
       : [limit + 1])) as AllChatRow[];
     const hasMore = rows.length > limit;
@@ -518,7 +536,7 @@ export class AgentChatFeedProjection {
         hasMore,
         ...(hasMore && oldest ? {
           cursor: this.encodeHistoryCursor({
-            stream: "all-chat", scope: "workspace", orderKey: oldest.orderKey, rowKey: oldest.rowKey,
+            stream: "all-chat", scope: `workspace:${input.product??"all"}`, orderKey: oldest.orderKey, rowKey: oldest.rowKey,
           }),
         } : {}),
       },

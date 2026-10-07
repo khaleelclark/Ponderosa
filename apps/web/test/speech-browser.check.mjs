@@ -40,7 +40,8 @@ try {
   assert.equal((await call("speechSnapshot")).ownerId, "two");
   assert.equal((await call("speechSnapshot")).status, "speaking");
   await call("end");
-  assert.deepEqual(await call("speechSnapshot"), { ownerId: "two", status: "stopped" });
+  assert.equal((await call("speechSnapshot")).status, "stopped");
+  assert.equal(await page.evaluate(() => window.speechTest.stats.completions), 1);
   await call("start", "one");
   await page.evaluate(() => { document.getElementById("one").hidden = true; });
   await page.waitForFunction(() => window.speechTest.speechSnapshot().status === "stopped");

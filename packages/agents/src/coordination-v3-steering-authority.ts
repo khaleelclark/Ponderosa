@@ -64,6 +64,9 @@ export class CoordinationV3SteeringAuthority {
           ON r.agent_id = a.agent_id AND r.scope_key = a.scope_key
           AND r.status = 'running'
         WHERE a.state IN ('pending', 'retry_pending')
+          AND NOT EXISTS (SELECT 1 FROM branch_resource_members bm JOIN branch_resources br ON br.step_execution_id=bm.step_execution_id
+            JOIN branch_executions be ON be.id=br.execution_id JOIN branch_step_executions bs ON bs.id=br.step_execution_id JOIN branch_paths bp ON bp.id=bs.path_id
+            WHERE bm.agent_id=a.agent_id AND (br.state='archived' OR br.retry_draining=1 OR be.cancel_requested=1 OR bp.state='canceled'))
           AND a.available_at <= ?
           AND a.dispatch_policy = 'steer_or_run'
           AND (a.kind = 'context_rollover_handoff' OR NOT EXISTS (

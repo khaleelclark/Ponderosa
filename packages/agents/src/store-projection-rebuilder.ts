@@ -191,6 +191,8 @@ export class AgentProjectionRebuilder {
               id: m.id,
               projectId: m.projectId,
               title: m.title,
+              branchId: m.branchId ?? null,
+              executionId: m.executionId ?? null,
               defaultEngine: m.defaultEngine ?? null,
               defaultModel: m.defaultModel ?? null,
               defaultEffort: m.defaultEffort ?? null,

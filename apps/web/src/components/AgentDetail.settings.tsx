@@ -35,7 +35,7 @@ import type {
   EngineDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { HostPathPresentation } from "./HostPathPresentation";
@@ -334,6 +334,7 @@ export function AgentSettingsPane({
   onUpdateManagementPermissions(value: AgentManagementPermissionsDto): void;
   onChangeReportingLine(): void;
 }): JSX.Element {
+  const organizationSection = useRef<HTMLDivElement>(null);
   return (
     <Stack
       spacing={2}
@@ -363,6 +364,10 @@ export function AgentSettingsPane({
           {freshSessionPending ? "Scheduling fresh session…" : "Start Fresh Provider Session For Next Run"}
         </Button>
       </Stack>
+      <Stack direction="row" spacing={1} flexWrap="wrap">
+        <Button onClick={() => organizationSection.current?.scrollIntoView({block:"start"})}>Organization settings</Button>
+        <Button onClick={onChangeReportingLine}>Change Reporting Line</Button>
+      </Stack>
       {freshSessionError ? <Alert severity="error">{freshSessionError}</Alert> : freshSessionNotice ? <Alert severity={freshSessionPending ? "info" : "success"} role="status">{freshSessionNotice}</Alert> : null}
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Typography variant="subtitle1" fontWeight={800}>
@@ -384,7 +389,7 @@ export function AgentSettingsPane({
       <AgentWorkingCopySettings agent={agent} />
       <Paper variant="outlined" sx={{ p: 2 }}><ResourceNotificationSettings kind="agent" id={agent.id} /></Paper>
       <AgentBrowserProfileSettings agent={agent} />
-      <Paper variant="outlined" sx={{ p: 2 }}>
+      <Paper ref={organizationSection} variant="outlined" sx={{ p: 2 }}>
         <Typography variant="subtitle1" fontWeight={800}>
           Organization And Automatic Child Management
         </Typography>

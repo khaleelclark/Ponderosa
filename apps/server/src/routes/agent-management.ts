@@ -16,6 +16,7 @@ interface AgentManagementRoutesContext {
   deletingAgentIds: Set<string>;
   cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
   capabilityOwnsAuthoritativeRun(capability: AgentMessageCapability, run: ActiveRun | undefined): boolean;
+  managedAgentCreationRestricted?(agentId: string, runId: string): boolean;
   publicManagementOperations(operations: ManagementOperation[]): ManagementOperation[];
   commitAgentDeletion(rootAgentIds: string[], previewHash: string, authorization?: AgentManagementAuthorization): Promise<CommitAgentDeletionResponse>;
   appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): unknown;
@@ -94,7 +95,8 @@ function parseOperations(value: unknown, injectionIds: readonly string[]): { ope
 export function registerAgentManagementRoutes(app: FastifyInstance, context: AgentManagementRoutesContext): void {
   const { store, coordinationV3, workspace, engines, managementPlans, activeRuns,
     agentMessageCapabilities, deletingAgentIds, cachedModelOptions,
-    capabilityOwnsAuthoritativeRun, publicManagementOperations, commitAgentDeletion,
+    capabilityOwnsAuthoritativeRun, managedAgentCreationRestricted = () => false,
+    publicManagementOperations, commitAgentDeletion,
     appendWorkspace, publishWorkspaceSince, notifyScheduler, authToken } = context;
   const durableStore = store as AgentStore & Partial<Pick<AgentStore,
     "getAgentManagementPlan" | "findAgentManagementPlan" | "createAgentManagementPlan" | "updateAgentManagementPlan">>;
@@ -138,6 +140,7 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
     }
     const action = body.action as keyof typeof ACTION_FIELDS;
     if (!hasOnlyFields(body, ACTION_FIELDS[action])) return reply.code(400).send({ error: `${action} request contains an unknown field` });
+    const creationRestricted = managedAgentCreationRestricted(owner.id, active.runId);
 
     if (action === "describe") {
       const descendants = store.listAgentSubtree(owner.id).slice(1);
@@ -146,7 +149,7 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
         descendants: descendants.map((agent) => ({ agentId: agent.id, title: agent.title,
           managerAgentId: agent.managerAgentId, engine: agent.activeEngine, state: agent.state })),
         permissions: {
-          autonomous: ["create_agent", "rename_agent", "stop_agent",
+          autonomous: [...(!creationRestricted ? ["create_agent"] : []), "rename_agent", "stop_agent",
             ...(owner.managementPermissions.allowAutomaticDescendantDeletion ? ["delete_agent"] : []),
             ...(owner.managementPermissions.allowAutomaticDescendantReorganization ? ["set_manager"] : [])],
           requiresApprovalDecision: [
@@ -167,6 +170,9 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
       }
       let plan: ManagementPlan = loadedPlan;
       if (plan.status === "completed" || plan.appliedAt) return { planId: plan.id, replayed: true, result: plan.result };
+      if (creationRestricted && plan.operations.some((operation) => operation.kind === "create_agent")) {
+        return reply.code(403).send({ error: "managed Agent creation is restricted for this Run" });
+      }
       if (plan.approvalRequired && !plan.approvalDecisionId) {
         return reply.code(409).send({ error: "this exact management plan still requires the user's approval" });
       }
@@ -329,6 +335,9 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
     const parsed = parseOperations(body.operations, coordinationV3.steeringInjectionIds(capability.runId));
     if (!parsed.operations) return reply.code(400).send({ error: parsed.error });
     const operations = parsed.operations;
+    if (creationRestricted && operations.some((operation) => operation.kind === "create_agent")) {
+      return reply.code(403).send({ error: "managed Agent creation is restricted for this Run" });
+    }
     const requestHash = createHash("sha256").update(stableJson({ operations })).digest("hex");
     const ensureApproval = (candidate: ManagementPlan): ManagementPlan => {
       if (!candidate.approvalRequired || candidate.approvalDecisionId) return candidate;

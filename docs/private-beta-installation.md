@@ -57,6 +57,14 @@ The Windows installer requests lowest privileges and installs below
 install application bytes below `/opt`; the application itself runs as the
 desktop user.
 
+## Deployment trust boundary
+
+A Ponderosa installation runs under one trusted host operator. Projects organize work; they are not separate security tenants. Operator access to the Engine includes access to Project and Branch execution data across that installation. Use separate installations for mutually untrusted operators or workloads.
+
+## Upgrade and rollback
+
+Back up the complete Ponderosa data directory and any registered Project folders outside it before upgrading. Database schema changes run when the new Engine first opens the data directory. An older Engine is not guaranteed to read the upgraded database, so rollback means stopping the new Engine and restoring the pre-upgrade backup with the matching older application. Do not downgrade the live data directory in place.
+
 ## Provider subscription login
 
 Ponderosa does not accept provider API keys and does not store provider

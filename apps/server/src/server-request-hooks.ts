@@ -305,7 +305,9 @@ export function registerRequestSecurityHooks(
       : !capability && (opts.authToken || opts.launcherSecurity)
         ? classifyOperatorRequest(request.method, request.url)
         : "standard";
-    const bucketKey = `${source}\0${requestClass}`;
+    const readOnlyStandard = requestClass === "standard" && request.method === "GET" &&
+      opts.requestLimits.maxReadRequestsPerMinute !== undefined;
+    const bucketKey = `${source}\0${readOnlyStandard ? "read" : requestClass}`;
     const current = requestBuckets.get(bucketKey);
     const operatorId = source.startsWith("operator")
       ? createHmac("sha256", operatorLogKey).update(source).digest("hex").slice(0, 24)
@@ -325,7 +327,9 @@ export function registerRequestSecurityHooks(
         if (now - value.startedAt >= 60_000) requestBuckets.delete(key);
       }
     }
-    const limit = requestClass === "critical"
+    const limit = readOnlyStandard
+      ? opts.requestLimits.maxReadRequestsPerMinute!
+      : requestClass === "critical"
       ? opts.requestLimits.maxCriticalRequestsPerMinute ?? opts.requestLimits.maxRequestsPerMinute
       : requestClass === "stream"
         ? opts.requestLimits.maxStreamRequestsPerMinute ?? 120

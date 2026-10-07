@@ -1,4 +1,9 @@
-import { AgentStore, CoordinationV3Store, ProjectDeletionInProgressError, WorkspaceStore, type LogEvent } from "@ponderosa/agents";
+import {BranchInstallationService} from './branch-installation-service.js';
+import { registerProductScope, rewriteProductUrl } from "./product-scope.js";
+import { BranchResourceService } from "./branch-resource-service.js";
+import { BranchScriptService } from "./branch-script-service.js";
+import { registerBranchRoutes } from "./routes/branches.js";
+import { AgentStore, BranchStore, CoordinationV3Store, ProjectDeletionInProgressError, WorkspaceStore, type LogEvent } from "@ponderosa/agents";
 import { windowsJobObjectsSupported } from "@ponderosa/native-host";
 import type {
   DecisionDto,
@@ -297,7 +302,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   };
   applyOperatorModelOptions();
   const tokenUsage = (
-    scope: { type: "overall" } | { type: "project" | "agent" | "conversation"; id: string },
+    scope: { type: "overall" | "branches"; product?: "dev" | "branches" } | { type: "project" | "branch" | "agent" | "conversation"; id: string; product?: "dev" | "branches" },
     range: TokenUsageRangeDto = {},
   ): TokenUsageSummaryDto => store.getTokenUsage(scope, range);
   const activeRuns = new Map<string, ActiveRun>();
@@ -415,6 +420,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     coordinationV3,
     workspace,
     publishWorkspaceSince,
+    notifyWebPush: () => webPushDelivery?.notify(),
   });
   for (const engineId of engines.keys()) {
     const denial = engineAvailability.denial(engineId);
@@ -516,10 +522,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const v3DispatchKey = randomUUID();
   const subscribers = new Map<string, Set<Subscriber>>();
   const rejectQuarantinedTriggerMutation = (
-    target: { projectId: string; agentId: string },
+    target: { projectId: string; agentId?: string },
     reply: FastifyReply,
   ): boolean => {
-    if (!deletingProjectIds.has(target.projectId) && !deletingAgentIds.has(target.agentId)) return false;
+    if (!deletingProjectIds.has(target.projectId) && (!target.agentId || !deletingAgentIds.has(target.agentId))) return false;
     void reply.code(409).send({ error: "Automation Project or execution Agent deletion is in progress" });
     return true;
   };
@@ -711,6 +717,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
   const app = Fastify({
+    rewriteUrl: rewriteProductUrl,
     bodyLimit: ASSET_LIMITS.maxRequestBytes,
     // A bounded two-upload lane permits an 80 MiB phone upload without
     // weakening the ordinary JSON/text body limits.
@@ -729,6 +736,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       },
     },
   }) as unknown as PonderosaServer;
+  registerProductScope(app,store,workspace,request=>{
+    const token=request.headers.authorization?.replace(/^Bearer\s+/i,'');
+    const capability=token?agentMessageCapabilities.get(token):undefined;
+    if(capability)return capability.conversationId;
+    if(request.headers['x-ponderosa-v3-dispatch']===v3DispatchKey){
+      const id=(request.params as {id?:string})?.id;
+      if(id)return store.getAgent(id)?.conversationId;
+    }
+    return undefined;
+  },request=>request.headers['x-ponderosa-v3-dispatch']===v3DispatchKey);
   const serverMetrics = new ServerMetrics(opts.dataDir, store.startupProfile());
   serverMetrics.install(app);
   app.addHook("onReady", restoreSharedBrowsers);
@@ -837,7 +854,34 @@ app.server.on("upgrade", linkPreviewUpgrade);
     workingCopies,
     assets,
   });
+  const branches = new BranchStore(store.sqlite, coordinationV3);
+  const branchResources = new BranchResourceService(branches, store, async agentIds => {
+    if (agentIds.some(id => activeRuns.has(id) || (agentDeliveryLeases.get(id) ?? 0) > 0)) throw new Error("Ephemeral Agent activity is still draining");
+    await drainProviderRuntimeAuthority("Branch resource archival", new Set(agentIds));
+    await providerProcessAuthority.terminateAgents(new Set(agentIds), "Branch resource archival");
+    for (const id of agentIds) await closeAgentBrowsers(id, "Branch resource archival");
+  });
+  const branchInstallations=new BranchInstallationService(store,branches,async id=>{
+    const response=await app.inject({method:'DELETE',url:`/api/branches/engine/conversations/${id}`,headers:{'x-ponderosa-v3-dispatch':v3DispatchKey}});
+    if((response.statusCode>=400&&response.statusCode!==404)||response.statusCode===202)throw new Error('Chat lifecycle cleanup remains pending');
+  },async id=>{
+    if(!store.getAgent(id))return;
+    const preview=store.previewAgentDeletion([id]);
+    if(preview.affectedAgents.some(a=>store.sqlite.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND state='active'").get(a.id)))throw new Error('Deletion would affect an active installed Agent');
+    await commitAgentDeletion([id],preview.previewHash);
+  },branchId=>{
+    const cursor=workspace.cursor();
+    workspace.forEachNotification(notification=>{
+      if(notification.branchId===branchId&&(notification.status??'open')==='open')workspace.setNotificationStatus(notification.id,'resolved');
+    });
+    publishWorkspaceSince(cursor);
+  });
+  const branchScripts = new BranchScriptService(branches, store, coordinationV3WorkerId, { ...opts.branches, resources: branchResources, installations:branchInstallations, appendAudit: appendWorkspace,
+    notifyAction: input => createOperationalNotification({dedupeKey:input.dedupeKey,branchId:input.branchId,branchExecutionId:input.branchExecutionId,projectId:input.projectId,conversationId:input.chatId,category:"system",severity:"info",push:true,title:input.title,body:input.body,action:{kind:"open_branch",targetId:input.branchId}}).id,
+    notifyGate: input => { createOperationalNotification({dedupeKey:input.dedupeKey,branchId:input.branchId,branchExecutionId:input.branchExecutionId,category:"decision",severity:"attention",push:true,title:input.title,body:input.body,action:{kind:"open_branch",targetId:input.branchId}}); },
+    resolveGateNotification: resolveOperationalNotification });
   const coordinationV3Scheduler = createCoordinationScheduler(app, {
+    workflowOperations: branchScripts,
     resourceAdmission,
     opts,
     store,
@@ -914,7 +958,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
           : `Filesystem activity remains durably pending when possible, but the latest watcher event could not be persisted: ${error}`,
         projectId: trigger.projectId,
         conversationId: trigger.conversationId,
-        action: { kind: "open_agent", targetId: trigger.targetAgentId },
+        action: trigger.branchId ? { kind: "open_conversation", targetId: trigger.conversationId } : { kind: "open_agent", targetId: trigger.targetAgentId },
       });
     },
     onSourceRecovered: (triggerId, kind) => {
@@ -1128,7 +1172,46 @@ app.server.on("upgrade", linkPreviewUpgrade);
     serverMetrics,
   });
 
+  registerBranchRoutes(app, {
+    branches,
+    store,
+    installations:branchInstallations,
+    sources: triggerSources,
+    engineAvailable: id => engines.has(id) && providerEnabled(id),
+    providerStatus: async id => {
+      const registration=engines.get(id);
+      return registration?{...await runtimeStatus(id,registration),enabled:providerEnabled(id)}:{authentication:"error",intakeReady:false,availabilityDetail:"Provider is not configured"};
+    },
+    discoverConnectors: async branchId => {
+      const rows=store.sqlite.prepare(`
+        SELECT agents.id
+        FROM agents
+        JOIN conversations ON conversations.id=agents.conversation_id
+        WHERE conversations.branch_id=?
+          AND conversations.branch_execution_id IS NULL
+          AND agents.deleted_at IS NULL
+      `).all(branchId) as Array<{id:string}>;
+      const discoveries=new Map<string,Promise<{engineId:string;capabilities:import('@ponderosa/core').EngineCapabilities}>>();
+      for(const engineId of new Set(Object.values(branches.localConfiguration(branchId)?.engines??{}))){
+        const engine=engines.get(engineId);
+        if(!engine||!providerEnabled(engineId))continue;
+        const projectId=`branch:${branchId}`,key=[projectId,opts.dataDir,engineId,''].join('\0');
+        discoveries.set(key,discoverEngineCapabilities(projectId,opts.dataDir,engine.adapter,undefined,false).then(capabilities=>({engineId,capabilities})));
+      }
+      for(const row of rows){
+        const agent=store.getAgent(row.id),project=agent?store.getChatContext(agent.conversationId):undefined,engine=agent?engines.get(agent.activeEngine):undefined;
+        if(!agent||!project||!engine||!providerEnabled(agent.activeEngine))continue;
+        const key=[project.id,project.hostPath,agent.activeEngine,agent.model??''].join('\0');
+        discoveries.set(key,discoveries.get(key)??discoverEngineCapabilities(project.id,project.hostPath,engine.adapter,agent.model,false).then(capabilities=>({engineId:agent.activeEngine,capabilities})));
+      }
+      const settled=await Promise.allSettled(discoveries.values());
+      return settled.flatMap(result=>result.status==='fulfilled'?result.value.capabilities.mcpServers.map(server=>({engineId:result.value.engineId,name:server.name,usable:server.usable,detail:server.detail})):[]);
+    },
+    notify: () => coordinationV3Scheduler.notify(),
+  });
   registerApplicationRoutes(app, {
+    branchResources,
+    branchInstallations,
     opts,
     store,
     assets,

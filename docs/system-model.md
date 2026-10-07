@@ -87,6 +87,8 @@ between Agents in the same Project.
 
 ## Chats and Project ownership
 
+Projects organize Chats, Agents, files, and work for one trusted Ponderosa operator. They do not create separate security principals or tenant-isolated API access. Anyone with operator access to this deployment can inspect work across its Projects. Use separate Ponderosa deployments for mutually untrusted users or workloads.
+
 Every live Agent belongs to one Chat within its Project. Agent creation requires
 that Chat identity. Automations belong to the Project and name an explicit
 destination Chat and target Agent; dependent Automations must be handled before
@@ -353,7 +355,8 @@ See [Deployment](../deploy/README.md) for the drain and recovery procedure.
 Dictation inserts recognized speech into the message composer; it is separate
 from sending the message. Read-aloud plays message text through browser/system
 speech only. No server-side synthesis, model download, or custom voice package is used.
-Browser/device support determines recognition and playback availability.
+Talk remains a turn-based conversation: listen, review, send, and hear the completed
+reply. Browser/device support determines recognition and playback availability.
 There is no continuous, phone-like Agent conversation mode.
 
 ## Current limits and proposed Next behavior

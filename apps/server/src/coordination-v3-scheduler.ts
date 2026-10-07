@@ -118,6 +118,7 @@ export class CoordinationV3Scheduler {
     ) => Promise<CoordinationV3DispatchResult>,
     private readonly options: {
       workerId: string;
+      workflowOperations?: { tick(admit: boolean): Promise<void>; requestStop?(): void; stop(): Promise<void> };
       maxConcurrentRuns?: number;
       pollMs?: number;
       leaseMs?: number;
@@ -207,9 +208,11 @@ export class CoordinationV3Scheduler {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
+    this.options.workflowOperations?.requestStop?.();
     if (this.draining || this.dispatchJobs.size) {
       await new Promise<void>((resolve) => this.stopWaiters.add(resolve));
     }
+    await this.options.workflowOperations?.stop();
   }
 
   snapshotMetrics(): CoordinationV3SchedulerMetrics {
@@ -277,6 +280,12 @@ export class CoordinationV3Scheduler {
           const agentId = (operation.payload as { agentId?: unknown } | null)?.agentId;
           if (typeof agentId === "string") this.options.onMessageDeliveryChanged?.(agentId);
         }
+      }
+      try {
+        await this.options.workflowOperations?.tick(!this.leasingPaused && !this.stopped);
+      } catch (error) {
+        // Workflow failures retain their durable authority without disabling Dev.
+        this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
       }
       if (this.isLeasingRuns() && this.options.dispatchSteering) {
         while (this.isLeasingRuns()) {

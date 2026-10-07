@@ -75,3 +75,6 @@ export function defaultEngineRegistrations(
     },
   ];
 }
+
+export { spawnContainedCli } from "./contained-spawn.js";
+export { runtimeProcessHandle } from "./process-termination.js";

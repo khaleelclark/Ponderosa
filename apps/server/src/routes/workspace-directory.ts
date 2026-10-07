@@ -1,3 +1,4 @@
+import { chatProductSql, projectProductSql, requestProduct, type ProductScope } from "../product-scope.js";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
@@ -161,10 +162,11 @@ function decodeCursor(
 }
 
 /** Shared activity projection for Project and Chat directory indicators. */
-function runningAgentCountSql(scope: "active_agent.project_id = p.id" | "active_agent.conversation_id = c.id"): string {
+function runningAgentCountSql(scope: string): string {
   return `(SELECT COUNT(*) FROM agents active_agent
     WHERE ${scope}
       AND active_agent.archived = 0 AND active_agent.deleted_at IS NULL
+      AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id=active_agent.id AND inactive.state!='active')
       AND NOT EXISTS (
         SELECT 1 FROM agent_creation_operation_members creation_members
         JOIN agent_creation_operations creation_operations ON creation_operations.id = creation_members.operation_id
@@ -242,8 +244,10 @@ function baseDirectoryQuery(
   filteredAgentIds: readonly string[],
   workingAgentIds: readonly string[],
   outcomeAgentIds: readonly string[],
+  product: ProductScope,
 ): { sql: string; params: unknown[] } {
-  const where: string[] = [];
+  const productScope=kind === "project" ? projectProductSql("p.id",product) : kind === "conversation" ? chatProductSql("c",product) : kind === "agent" ? `EXISTS(SELECT 1 FROM conversations product_owner WHERE product_owner.id=a.conversation_id AND ${chatProductSql("product_owner",product)} AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive_owner WHERE inactive_owner.local_id=product_owner.id AND inactive_owner.state!='active'))` : `EXISTS(SELECT 1 FROM conversations product_owner WHERE product_owner.id=t.conversation_id AND ${chatProductSql("product_owner",product)} AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive_owner WHERE inactive_owner.local_id=product_owner.id AND inactive_owner.state!='active'))`;
+  const where: string[] = [productScope];
   const params: unknown[] = [];
   const pattern = likePattern(normalizedSearch);
 
@@ -259,6 +263,8 @@ function baseDirectoryQuery(
           SELECT 1 FROM conversations search_conversation
           WHERE search_conversation.project_id = p.id
             AND search_conversation.archived = 0
+            AND ${chatProductSql('search_conversation',product)}
+            AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id=search_conversation.id AND inactive.state!='active')
             AND lower(search_conversation.title) LIKE ? ESCAPE '\\'
         )
       )`);
@@ -277,23 +283,31 @@ function baseDirectoryQuery(
             SELECT COUNT(*) FROM conversations count_conversation
             WHERE count_conversation.project_id = p.id
               AND count_conversation.archived = 0
+              AND ${chatProductSql('count_conversation',product)}
+              AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id=count_conversation.id AND inactive.state!='active')
           ) AS conversation_count,
           (
             SELECT recent.id FROM conversations recent
             WHERE recent.project_id = p.id AND recent.archived = 0
+              AND ${chatProductSql('recent',product)}
+              AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id=recent.id AND inactive.state!='active')
             ORDER BY recent.updated_at DESC, recent.id ASC LIMIT 1
           ) AS recent_conversation_id,
           (
             SELECT recent.title FROM conversations recent
             WHERE recent.project_id = p.id AND recent.archived = 0
+              AND ${chatProductSql('recent',product)}
+              AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id=recent.id AND inactive.state!='active')
             ORDER BY recent.updated_at DESC, recent.id ASC LIMIT 1
           ) AS recent_conversation_title,
           (
             SELECT recent.updated_at FROM conversations recent
             WHERE recent.project_id = p.id AND recent.archived = 0
+              AND ${chatProductSql('recent',product)}
+              AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id=recent.id AND inactive.state!='active')
             ORDER BY recent.updated_at DESC, recent.id ASC LIMIT 1
           ) AS recent_conversation_updated_at,
-          ${runningAgentCountSql("active_agent.project_id = p.id")} AS running_agent_count,
+          ${runningAgentCountSql(`active_agent.project_id = p.id AND EXISTS(SELECT 1 FROM conversations active_owner WHERE active_owner.id=active_agent.conversation_id AND ${chatProductSql("active_owner",product)} AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive_owner WHERE inactive_owner.local_id=active_owner.id AND inactive_owner.state!='active'))`)} AS running_agent_count,
           NULL AS next_fire_at
         FROM projects p
         ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
@@ -303,7 +317,7 @@ function baseDirectoryQuery(
   }
 
   if (kind === "conversation") {
-    where.push("c.archived = 0");
+    where.push("c.archived = 0", "NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id=c.id AND inactive.state!='active')");
     if (query.projectId) {
       where.push("c.project_id = ?");
       params.push(query.projectId);
@@ -336,7 +350,7 @@ function baseDirectoryQuery(
   }
 
   if (kind === "agent") {
-    where.push("a.archived = 0", "a.deleted_at IS NULL");
+    where.push("a.archived = 0", "a.deleted_at IS NULL", "NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id=a.id AND inactive.state!='active')");
     where.push(`NOT EXISTS (
       SELECT 1
       FROM agent_creation_operation_members creation_members
@@ -409,6 +423,7 @@ function baseDirectoryQuery(
     WHERE creation_members.agent_id = a.id
       AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
   )`);
+  where.push("NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id=a.id AND inactive.state!='active')");
   if (filteredAgentIds.length > 0) {
     where.push(`t.agent_id IN (${placeholders(filteredAgentIds.length)})`);
     params.push(...filteredAgentIds);
@@ -543,6 +558,7 @@ const FINISHED_ASSIGNED_WORK_STATUSES = new Set<AgentRunStatus>([
 
 function workspaceAgentHealth(
   context: WorkspaceDirectoryRoutesContext,
+  product:ProductScope,
   projectId?: string,
   includeRunHistory = true,
 ): {
@@ -553,8 +569,10 @@ function workspaceAgentHealth(
 } {
   const rows = context.store.sqlite.prepare(`
     SELECT a.id, a.project_id
-    FROM agents a
+    FROM agents a JOIN conversations c ON c.id=a.conversation_id
     WHERE a.archived = 0 AND a.deleted_at IS NULL
+      AND ${chatProductSql('c',product)}
+      AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id IN (a.id,c.id) AND inactive.state!='active')
       ${projectId ? "AND a.project_id = ?" : ""}
       AND NOT EXISTS (
         SELECT 1
@@ -615,13 +633,16 @@ function workspaceAgentHealth(
   };
 }
 
-function workspaceEnabledTriggerCount(sqlite: Database.Database): number {
+function workspaceEnabledTriggerCount(sqlite: Database.Database,product:ProductScope): number {
   const row = sqlite.prepare(`
     SELECT COUNT(*) AS count
     FROM trigger_definitions t
     JOIN agents a ON a.id = t.agent_id
       AND a.archived = 0 AND a.deleted_at IS NULL
+    JOIN conversations c ON c.id=t.conversation_id
     WHERE t.enabled = 1
+      AND ${chatProductSql('c',product)}
+      AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id IN (a.id,c.id) AND inactive.state!='active')
       AND NOT EXISTS (
         SELECT 1
         FROM agent_creation_operation_members creation_members
@@ -708,8 +729,10 @@ export function registerWorkspaceDirectoryRoutes(
     // Only canonical health-filtered views need the complete workspace projection
     // (including its global counts and top-100 outcome selection).
     const scopedActiveSummary = activeAgents && request.query.summary === "true";
+    const product=requestProduct(request);
     const health = canonicalAgentView ? workspaceAgentHealth(
       context,
+      product,
       scopedActiveSummary ? request.query.projectId : undefined,
       !scopedActiveSummary,
     ) : undefined;
@@ -739,6 +762,7 @@ export function registerWorkspaceDirectoryRoutes(
       .digest("base64url");
     const scope = JSON.stringify({
       kind,
+      product,
       search: normalizedSearch,
       projectId: request.query.projectId ?? "",
       agentIds: [...filteredAgentIds].sort(),
@@ -757,6 +781,7 @@ export function registerWorkspaceDirectoryRoutes(
       filteredAgentIds,
       workingAgentIds,
       outcomeAgentIds,
+      product,
     );
     const projectScope = request.query.projectId;
     const scoped = (collection: string): string => projectScope
@@ -873,7 +898,7 @@ export function registerWorkspaceDirectoryRoutes(
         if (agents.every(agent => agentHealthById.has(agent.id))) continue;
         // Relationships belong to the visible Project roster, not the page.
         // Read identities only; off-page Agents need no detailed health.
-        const rosterQuery = baseDirectoryQuery("agent", { projectId }, "", [], [], []);
+        const rosterQuery = baseDirectoryQuery("agent", { projectId }, "", [], [], [], requestProduct(request));
         const roster = sqlite.prepare(`
           SELECT a.id, a.manager_agent_id
           FROM (${rosterQuery.sql}) visible JOIN agents a ON a.id = visible.id
@@ -951,6 +976,10 @@ export function registerWorkspaceDirectoryRoutes(
                 ownerConversation: {
                   id: ownerConversation.id,
                   title: ownerConversation.title,
+                  ...(ownerConversation.branchId ? {
+                    branchId: ownerConversation.branchId,
+                    branchName: (sqlite.prepare('SELECT name FROM branches WHERE id = ?').get(ownerConversation.branchId) as { name: string } | undefined)?.name,
+                  } : {}),
                 },
               }
             : {}),
@@ -989,7 +1018,7 @@ export function registerWorkspaceDirectoryRoutes(
         ? { activeCount: workingAgentIds.length }
         : {}),
       ...(kind === "trigger"
-        ? { enabledCount: workspaceEnabledTriggerCount(sqlite) }
+        ? { enabledCount: workspaceEnabledTriggerCount(sqlite,product) }
         : {}),
       history: {
         limit,

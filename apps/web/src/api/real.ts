@@ -1,3 +1,4 @@
+import { productApiPath } from "./productScope";
 import type {
   LocalBrowserConnectionDto,
   ResponseFileReviewDto,
@@ -147,6 +148,7 @@ import type {
   WorkspaceStatusDto,
   WorkspaceStreamStatusDto,
 } from "@ponderosa/core";
+import {tokenUsagePath} from "../providerUsageQuery";
 import { createClientId } from "../clientId";
 import {
   AGENT_DETAIL_PAGE_SIZE,
@@ -192,7 +194,7 @@ async function probeStreamRateLimit(): Promise<void> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2_000);
   try {
-    const response = await fetch("/api/streams/probe", {
+    const response = await fetch(productApiPath("/api/streams/probe"), {
       cache: "no-store",
       signal: controller.signal,
     });
@@ -312,7 +314,7 @@ async function collectCollectionPages<T>(path: string): Promise<T[]> {
 }
 
 async function requestText(path: string, init?: RequestInit): Promise<string> {
-  const response = await fetch(`${API_BASE}${path}`, init);
+  const response = await fetch(productApiPath(`${API_BASE}${path}`), init);
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
     if (response.headers.get("content-type")?.includes("application/json")) {
@@ -407,7 +409,7 @@ export const realApi = {
     })}`);
   },
   getTokenUsage(scope: TokenUsageScope, id?: string, range?: TokenUsageRangeDto): Promise<TokenUsageSummaryDto> {
-    const path = scope === "overall" ? "/api/usage" : `/api/${scope}s/${encodeURIComponent(id ?? "")}/usage`;
+    const path = tokenUsagePath(scope,id);
     const url = `${path}${toQuery({ from: range?.from, to: range?.to })}`;
     return requestJson<TokenUsageSummaryDto>(url);
   },
@@ -538,12 +540,12 @@ export const realApi = {
     }), shouldRetry);
   },
   async downloadDraftAttachment(attachment: DraftAttachmentDto): Promise<File> {
-    const response = await fetch(attachment.downloadUrl, { cache: "no-store" });
+    const response = await fetch(productApiPath(attachment.downloadUrl), { cache: "no-store" });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return new File([await response.blob()], attachment.name, { type: attachment.mediaType });
   },
   async deleteDraftAttachment(conversationId: string, ownerId: string, attachmentId: string): Promise<void> {
-    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments/${encodeURIComponent(attachmentId)}?ownerId=${encodeURIComponent(ownerId)}`, { method: "DELETE" });
+    const response = await fetch(productApiPath(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments/${encodeURIComponent(attachmentId)}?ownerId=${encodeURIComponent(ownerId)}`), { method: "DELETE" });
     if (!response.ok && response.status !== 404) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
   },
   generateConversationTitle(conversationId: string): Promise<GenerateConversationTitleResponse> {
@@ -1264,7 +1266,7 @@ export const realApi = {
   },
   async getProjectBrowserFrame(projectId: string, pageId?: string, signal?: AbortSignal): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }> {
     await waitForBackgroundCooldown(signal);
-    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/browser/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, { cache: "no-store", signal });
+    const response = await fetch(productApiPath(`/api/projects/${encodeURIComponent(projectId)}/browser/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`), { cache: "no-store", signal });
     if (response.status === 429) noteBackgroundRateLimit(response.headers.get("retry-after"));
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0), metadata: JSON.parse(response.headers.get("x-ponderosa-browser-frame") ?? "null") ?? undefined };
@@ -1274,9 +1276,9 @@ export const realApi = {
     return createResilientEventSource({
       probeRateLimit: probeStreamRateLimit,
       reconnectCooldownMs: backgroundCooldownRemaining,
-      createSource: () => new EventSource(`/api/agents/${encodeURIComponent(agentId)}/stream${toQuery({
+      createSource: () => new EventSource(productApiPath(`/api/agents/${encodeURIComponent(agentId)}/stream${toQuery({
         lastEventId: cursor,
-      })}`),
+      })}`)),
       onOpen: () => handlers.onOpen?.(),
       onError: (event) => handlers.onError?.(event),
       configure(source) {
@@ -1299,7 +1301,7 @@ export const realApi = {
     return createResilientEventSource({
       probeRateLimit: probeStreamRateLimit,
       reconnectCooldownMs: backgroundCooldownRemaining,
-      createSource: () => new EventSource(`/api/workspace/stream${toQuery({ lastEventId: cursor, bootstrap: true })}`),
+      createSource: () => new EventSource(productApiPath(`/api/workspace/stream${toQuery({ lastEventId: cursor, bootstrap: true })}`)),
       onOpen: () => handlers.onOpen?.(),
       onError: (event) => handlers.onError?.(event),
       configure(source) {

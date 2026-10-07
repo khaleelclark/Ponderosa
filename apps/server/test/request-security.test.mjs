@@ -89,6 +89,16 @@ test("global request admission returns Retry-After instead of unbounded work", a
   const limited = await app.inject({ method: "GET", url: "/api/projects" });
   assert.equal(limited.statusCode, 429);
   assert.ok(limited.headers["retry-after"]);
+  assert.equal((await app.inject({ method: "POST", url: "/api/projects" })).statusCode, 429);
+});
+
+test("read-heavy operator activity does not exhaust the write admission bucket", async t => {
+  const app = await fixture({ requestLimits: { maxRequestsPerMinute: 1, maxReadRequestsPerMinute: 3, maxInflight: 4 } });
+  t.after(() => app.close());
+  for (let i = 0; i < 3; i++) assert.equal((await app.inject({ method: "GET", url: "/api/projects" })).statusCode, 200);
+  assert.equal((await app.inject({ method: "GET", url: "/api/projects" })).statusCode, 429);
+  assert.equal((await app.inject({ method: "POST", url: "/api/projects" })).statusCode, 200);
+  assert.equal((await app.inject({ method: "POST", url: "/api/projects" })).statusCode, 429);
 });
 
 test("health and readiness have a separate bounded budget from operator reads", async t => {

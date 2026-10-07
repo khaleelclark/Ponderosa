@@ -98,7 +98,7 @@ export function ProjectSettingsPanel({
               Project Settings
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Manage this Project’s name, Agent rules, and lifecycle.
+              Manage this Project’s name, Agent rules, and lifecycle. Projects organize work inside one trusted deployment; they are not separate security tenants.
             </Typography>
           </Box>
           <TextField

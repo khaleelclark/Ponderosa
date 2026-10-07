@@ -17,6 +17,8 @@ interface ContainedSpawnInput {
   cwd: string;
   env: NodeJS.ProcessEnv;
   stdin: "ignore" | "pipe";
+  /** POSIX launch gate, distinct from workload stdin. */
+  controlPipe?: boolean;
 }
 
 /**
@@ -137,7 +139,7 @@ export function spawnContainedCli(
     child: nodeSpawn(invocation.bin, invocation.args, {
       cwd: input.cwd,
       env: input.env,
-      stdio: [input.stdin, "pipe", "pipe"],
+      stdio: input.controlPipe ? [input.stdin, "pipe", "pipe", "pipe"] : [input.stdin, "pipe", "pipe"],
       detached: true,
     }),
   };

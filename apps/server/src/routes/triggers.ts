@@ -20,11 +20,12 @@ import {
   parseCreateTrigger,
   parseUpdateTrigger,
 } from "../trigger-validation.js";
+import {occurrenceProductSql,requestProduct,triggerProductSql} from "../product-scope.js";
 
 interface TriggerChangedEvent {
   type: "trigger_changed";
   projectId: string;
-  agentId: string;
+  agentId?: string;
   triggerId: string;
   action: "created" | "updated" | "deleted";
 }
@@ -36,7 +37,7 @@ export interface TriggerRoutesContext {
   readonly sources: TriggerSourceService;
   readonly webhookRawBodies: WeakMap<IncomingMessage, Buffer>;
   readonly rejectQuarantinedMutation: (
-    target: { projectId: string; agentId: string },
+    target: { projectId: string; agentId?: string },
     reply: FastifyReply,
   ) => boolean;
   readonly appendWorkspace: (event: TriggerChangedEvent) => unknown;
@@ -65,29 +66,30 @@ export function registerTriggerRoutes(
   app.get<{ Querystring: CollectionQuery & { projectId?: string; targetAgentId?: string } }>("/api/triggers", async (request, reply) => {
     try {
       const normalizedSearch = request.query.search?.trim().toLocaleLowerCase() ?? "";
-      const conditions: string[] = [];
+      const product=requestProduct(request);
+      const conditions: string[] = [triggerProductSql("t",product)];
       const params: unknown[] = [];
       if (request.query.targetAgentId) {
-        conditions.push("agent_id = ?");
+        conditions.push("t.agent_id = ?");
         params.push(request.query.targetAgentId);
       }
       if (request.query.projectId) {
-        conditions.push("project_id = ?");
+        conditions.push("t.project_id = ?");
         params.push(request.query.projectId);
       }
       if (normalizedSearch) {
-        conditions.push("lower(name || ' ' || instructions || ' ' || source_kind) LIKE ? ESCAPE '\\\\'");
+        conditions.push("lower(t.name || ' ' || t.instructions || ' ' || t.source_kind) LIKE ? ESCAPE '\\'");
         params.push(`%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`);
       }
       const page = sqliteCollectionPage(store.sqlite, request.query, {
         baseSql: `
-          SELECT id, name AS title, updated_at
-          FROM trigger_definitions
+          SELECT t.id, t.name AS title, t.updated_at
+          FROM trigger_definitions t
           ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
         `,
         params,
         order: "updated",
-        scope: `triggers:${request.query.projectId ?? "*"}:${request.query.targetAgentId ?? "*"}`,
+        scope: `triggers:${product}:${request.query.projectId ?? "*"}:${request.query.targetAgentId ?? "*"}`,
         generationKeys: [
           request.query.targetAgentId
             ? collectionGenerationKey("triggers", `agent:${request.query.targetAgentId}`)
@@ -122,7 +124,7 @@ export function registerTriggerRoutes(
           conversation.archived || deletingConversationIds.has(conversation.id)) {
         return reply.code(400).send({ error: "Automation destination must be an active Chat in this Project" });
       }
-      const targetAgent = store.getAgent(body.targetAgentId);
+      const targetAgent = body.targetAgentId ? store.getAgent(body.targetAgentId) : undefined;
       if (!targetAgent || targetAgent.projectId !== project.id) {
         return reply.code(400).send({ error: "Automation target must be an active Agent in this Project" });
       }
@@ -189,14 +191,19 @@ export function registerTriggerRoutes(
       }
       try {
         const body = parseUpdateTrigger(request.body, current.sourceKind);
+        if (current.branchId && Object.keys(body).some(key => key !== "enabled")) throw new Error("Edit Branch trigger configuration through a new Branch deployment");
+        if (current.branchId) {
+          const branch = store.sqlite.prepare('SELECT deleting FROM branches WHERE id=?').get(current.branchId) as {deleting:number}|undefined;
+          if (!branch || branch.deleting) return reply.code(409).send({error:'This Branch is unavailable or being deleted. Trigger intake cannot change.'});
+        }
         const proposedConversationId = body.conversationId ?? current.conversationId;
         if (deletingConversationIds.has(current.conversationId) ||
             deletingConversationIds.has(proposedConversationId)) {
           return reply.code(409).send({ error: "Automation Chat deletion is in progress" });
         }
         const proposedConversation = store.getConversation(proposedConversationId);
-        if (!proposedConversation || proposedConversation.projectId !== current.projectId ||
-            proposedConversation.deletedAt || proposedConversation.archived) {
+        if (!current.branchId && (!proposedConversation || proposedConversation.projectId !== current.projectId ||
+            proposedConversation.deletedAt || proposedConversation.archived)) {
           return reply.code(400).send({ error: "Automation destination must be an active Chat in this Project" });
         }
         if (rejectQuarantinedMutation(
@@ -209,6 +216,9 @@ export function registerTriggerRoutes(
               { projectId: current.projectId, agentId: proposedTargetAgentId },
               reply,
             )) return reply;
+        if (body.enabled === true && current.sourceKind === "webhook" && !current.secretFingerprint) {
+          throw new Error("Rotate the webhook signing secret before enabling automatic intake");
+        }
         const needsReschedule =
           body.sourceConfig !== undefined ||
           (body.enabled === true && !current.enabled);
@@ -263,6 +273,7 @@ export function registerTriggerRoutes(
         return reply.code(404).send({ error: "Automation not found" });
       }
       if (rejectQuarantinedMutation({ projectId: current.projectId, agentId: current.targetAgentId }, reply)) return reply;
+      if (current.branchId) return reply.code(409).send({ error: "Remove the trigger through a Branch deployment" });
       coordination.deleteTriggerDefinition(current.id);
       await sources.applyDefinitionChange(current, undefined);
       reconcileOperationalNotifications();
@@ -396,6 +407,7 @@ export function registerTriggerRoutes(
       return coordination.listTriggerOccurrences(
         request.params.id,
         Number.isFinite(limit) ? limit : 100,
+        requestProduct(request),
       );
     },
   );
@@ -410,6 +422,7 @@ export function registerTriggerRoutes(
       return coordination.listAgentTriggerOccurrences(
         request.params.id,
         Number.isFinite(limit) ? limit : 100,
+        requestProduct(request),
       );
     },
   );
@@ -424,15 +437,20 @@ export function registerTriggerRoutes(
       return coordination.listProjectTriggerOccurrences(
         request.params.id,
         Number.isFinite(limit) ? limit : 100,
+        requestProduct(request),
       );
     },
   );
 
   app.get<{ Params: { id: string } }>(
     "/api/trigger-occurrences/:id",
-    async (request, reply) =>
-      coordination.getTriggerOccurrence(request.params.id) ??
-      reply.code(404).send({ error: "Automation occurrence not found" }),
+    async (request, reply) => {
+      const product=requestProduct(request);
+      const owned=store.sqlite.prepare(`SELECT 1 FROM trigger_occurrences occurrence WHERE occurrence.id=? AND ${occurrenceProductSql("occurrence",product)}`).get(request.params.id);
+      if(!owned)return reply.code(404).send({ error: "Automation occurrence not found" });
+      return coordination.getTriggerOccurrence(request.params.id) ??
+        reply.code(404).send({ error: "Automation occurrence not found" });
+    },
   );
 
   app.post<{ Params: { id: string }; Body: unknown }>(

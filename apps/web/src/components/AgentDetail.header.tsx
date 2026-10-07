@@ -127,6 +127,7 @@ function AgentRunState({
 
 interface AgentDetailHeaderProps {
   agent: AgentDto;
+  auditOnly?: boolean;
   projectLabel?: string;
   chats: AgentHeaderChat[];
   lineageAgent?: AgentDto;
@@ -163,6 +164,7 @@ interface AgentDetailHeaderProps {
 
 export function AgentDetailHeader({
   agent,
+  auditOnly,
   projectLabel,
   chats,
   lineageAgent,
@@ -242,19 +244,29 @@ export function AgentDetailHeader({
           ) : null}
         </Stack>
       }
-      status={<Stack direction="row" sx={{ alignItems: "center" }}>
-        <AgentRunState
-          status={status}
-          statusLabelOverride={statusLabelOverride}
-          health={health}
-          connectionStatus={connectionStatus}
-          phaseEvidenceFresh={phaseEvidenceFresh}
-          startedAt={startedAt}
-          agentNameForId={agentNameForId}
-        />
-        {running ? <Tooltip title={stopping ? "Cancelling…" : "Stop"}><IconButton color="error" disabled={stopping} onClick={onStop}
-          aria-label={stopping ? "Cancelling…" : "Stop"} sx={{ display: { xs: "inline-flex", md: "none" }, width: 44, height: 44 }}><StopCircleOutlinedIcon /></IconButton></Tooltip> : null}
-      </Stack>}
+      status={
+        <Stack direction="row" sx={{ alignItems: "center" }}>
+          {agent.archived ? (
+            <SemanticStatus
+              status="disabled"
+              label="Archived"
+              detail="This Agent is archived and available for history inspection."
+            />
+          ) : (
+            <AgentRunState
+              status={status}
+              statusLabelOverride={statusLabelOverride}
+              health={health}
+              connectionStatus={connectionStatus}
+              phaseEvidenceFresh={phaseEvidenceFresh}
+              startedAt={startedAt}
+              agentNameForId={agentNameForId}
+            />
+          )}
+          {running && !agent.archived ? <Tooltip title={stopping ? "Cancelling…" : "Stop"}><IconButton color="error" disabled={stopping} onClick={onStop}
+            aria-label={stopping ? "Cancelling…" : "Stop"} sx={{ display: { xs: "inline-flex", md: "none" }, width: 44, height: 44 }}><StopCircleOutlinedIcon /></IconButton></Tooltip> : null}
+        </Stack>
+      }
       actions={
         <Stack
           direction="row"
@@ -263,7 +275,7 @@ export function AgentDetailHeader({
           flexWrap="wrap"
           sx={{ alignItems: "center" }}
         >
-          {running ? (
+          {running && !auditOnly ? (
             <Button
               size="small"
               color="error"
@@ -286,6 +298,7 @@ export function AgentDetailHeader({
                 icon: <DataObjectOutlinedIcon fontSize="small" />,
                 onSelect: onOpenTechnical,
               },
+              ...(!auditOnly ? [
               {
                 label: "Rename",
                 icon: <DriveFileRenameOutlineIcon fontSize="small" />,
@@ -333,6 +346,7 @@ export function AgentDetailHeader({
                 destructive: true,
                 onSelect: onDelete,
               },
+              ] : []),
             ]}
           />
         </Stack>
@@ -344,7 +358,8 @@ export function AgentDetailHeader({
         onChange: onTabChange,
         items: AGENT_DETAIL_TABS.filter(item =>
           (item.value !== "subagents" || showSubagents) &&
-          (item.value !== "triggers" || showAutomations)
+          (item.value !== "triggers" || showAutomations) &&
+          (!auditOnly || !['subagents','triggers','settings'].includes(item.value))
         ),
       }}
     />

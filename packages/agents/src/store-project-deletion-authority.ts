@@ -63,6 +63,9 @@ export class AgentProjectDeletionAuthority {
   }
 
   markProjectDeletionPending(projectId: string, now = new Date().toISOString()): string[] {
+    if (this.client.prepare("SELECT 1 FROM branches b JOIN conversations c ON c.id = b.chat_id WHERE c.project_id = ? LIMIT 1").get(projectId)) {
+      throw new Error("Delete owned Branches after draining their executions before deleting this legacy container");
+    }
     if (!this.getProject(projectId)) throw new Error("project not found");
     const draftSurfaceIds = this.draftSurfaceIds(projectId);
     this.db.insert(projectDeletionPending).values({
@@ -96,6 +99,7 @@ export class AgentProjectDeletionAuthority {
       .where(eq(projectDeletionReceipts.projectId, projectId)).get();
     return row ? {
       projectId: row.projectId,
+      productScope: row.productScope as "dev" | "branches",
       tombstoneName: row.tombstoneName,
       ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
       removalStarted: row.removalStarted === 1,
@@ -113,6 +117,7 @@ export class AgentProjectDeletionAuthority {
   listProjectDeletionReceipts(): ProjectDeletionReceipt[] {
     return this.db.select().from(projectDeletionReceipts).all().map((row) => ({
       projectId: row.projectId,
+      productScope: row.productScope as "dev" | "branches",
       tombstoneName: row.tombstoneName,
       ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
       removalStarted: row.removalStarted === 1,
@@ -133,6 +138,7 @@ export class AgentProjectDeletionAuthority {
         row.assetAuthorityCleanupCompleted === 0)
       .map((row) => ({
         projectId: row.projectId,
+        productScope: row.productScope as "dev" | "branches",
         tombstoneName: row.tombstoneName,
         ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
         removalStarted: row.removalStarted === 1,
@@ -249,6 +255,15 @@ export class AgentProjectDeletionAuthority {
     if (priorReceipt) return priorReceipt;
     const current = this.getProject(id);
     if (!current) return undefined;
+    const ownership = this.client.prepare(`
+      SELECT
+        EXISTS(SELECT 1 FROM conversations WHERE project_id = ? AND branch_id IS NULL) AS devOwned,
+        EXISTS(SELECT 1 FROM conversations WHERE project_id = ? AND branch_id IS NOT NULL) AS branchOwned
+    `).get(id, id) as { devOwned: number; branchOwned: number };
+    if (ownership.devOwned && ownership.branchOwned) {
+      throw new Error("Mixed Dev and Branches Projects must be separated before Project deletion");
+    }
+    const productScope: ProjectDeletionReceipt["productScope"] = ownership.branchOwned ? "branches" : "dev";
     const agentIds = this.listAgents(id).map((agent) => agent.id);
     const canonicalDir = projectDir(this.dataDir, id);
     this.markProjectDeletionPending(id);
@@ -332,6 +347,7 @@ export class AgentProjectDeletionAuthority {
         this.client.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
         this.db.insert(projectDeletionReceipts).values({
           projectId: id,
+          productScope,
           tombstoneName,
           ownershipToken,
           storageCleanupCompleted: 0,

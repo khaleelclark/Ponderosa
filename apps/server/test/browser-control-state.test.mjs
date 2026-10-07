@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {createServer} from 'node:http';
+import {chromeBrowserDriverFactory,findBrowserExecutable} from '../dist/chrome-cdp-driver.js';
+
+test('offscreen browser controls activate once and expose expansion and native selection', {skip:!findBrowserExecutable(),timeout:30000},async t=>{
+ const root=await mkdtemp(path.join(tmpdir(),'ponderosa-control-'));
+ const server=createServer((_q,res)=>{res.setHeader('Content-Type','text/html');res.end(`<main><button id="named">Save <span aria-hidden="true">decorative</span></button><div style="height:1600px">Scroll fixture</div><div style="height:180px;overflow:auto"><div style="height:600px"></div><button id="toggle" aria-expanded="false" aria-controls="details" onclick="this.setAttribute('aria-expanded',this.getAttribute('aria-expanded')==='false'?'true':'false');document.querySelector('#details').hidden=this.getAttribute('aria-expanded')!=='true';document.querySelector('#count').textContent=++window.clicks">Run Branch completed</button><section id="details" hidden><a id="child" href="/child">Child execution</a></section></div><select id="manager"><option value="lead" selected>Lead</option></select><p id="count">0</p></main><script>window.clicks=0</script>`)});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ let driver;t.after(async()=>{await driver?.close();await new Promise(resolve=>server.close(resolve));await rm(root,{recursive:true,force:true})});
+ driver=await chromeBrowserDriverFactory(root)('test',()=>{},undefined,undefined,{hostedHeaded:false});
+ await driver.navigate(`http://127.0.0.1:${server.address().port}`);
+ await driver.click('#toggle');
+ const snapshot=JSON.parse(await driver.inspect('main'));
+ assert.equal(snapshot.controls.find(c=>c.selector==='#toggle').expanded,'true');
+ assert.equal(snapshot.controls.find(c=>c.selector==='#toggle').name,'Run Branch completed');
+ assert.equal(snapshot.controls.find(c=>c.selector==='#named').name,'Save');
+ assert.equal(snapshot.controls.find(c=>c.selector==='#child').name,'Child execution');
+ assert.equal(snapshot.controls.find(c=>c.selector==='#toggle').controls,'details');
+ assert.equal(snapshot.controls.find(c=>c.selector==='#manager').value,'lead');
+ assert.ok(snapshot.controls.some(c=>c.href?.endsWith('/child')));
+ const count=JSON.parse(await driver.inspect('#count'));assert.ok(count.changedRegions.some(r=>r.text==='1'));
+ await driver.click('#child');
+ assert.match((await driver.pageInfo()).url,/\/child$/);
+ const navigated=JSON.parse(await driver.inspect('#count'));assert.ok(navigated.changedRegions.some(r=>r.text==='0'));
+ await driver.click('#toggle');
+ await driver.click('#toggle');
+ const closed=JSON.parse(await driver.inspect('#toggle'));assert.equal(closed.controls[0].expanded,'false');
+});

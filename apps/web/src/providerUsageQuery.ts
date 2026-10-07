@@ -1,9 +1,17 @@
 import type {
   ProviderUsageCenterDto,
   ProviderUsageStateDto,
+  TokenUsageScope,
 } from "@ponderosa/core";
 import type { QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "./queryKeys.js";
+
+export function tokenUsagePath(scope: TokenUsageScope, id?: string): string {
+  if (scope === "overall") return "/api/usage";
+  if (scope === "branches") return "/api/branches/usage";
+  if (scope === "branch") return `/api/branches/${encodeURIComponent(id ?? "")}/usage`;
+  return `/api/${scope}s/${encodeURIComponent(id ?? "")}/usage`;
+}
 
 export function providerUsageRefreshInterval(
   center: ProviderUsageCenterDto | undefined,

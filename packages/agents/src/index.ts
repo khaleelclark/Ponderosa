@@ -162,3 +162,22 @@ export type {
   ArtifactRow,
   EventRow,
 } from "./schema.js";
+export { artifactAgentProductSql } from "./artifact-product-scope.js";
+export { BranchStore } from "./branch-store.js";
+export type { BranchScriptLease } from "./branch-store.js";
+
+export { validateBranchTemplate } from "./branch-template.js";
+
+export type { BranchResourceProvision } from "./branch-store.js";
+
+export { branchRequirements, exportBranchPackage, importBranchPackage } from "./branch-package.js";
+
+export type { BranchActionLease } from "./branch-store.js";
+
+export * from "./branch-parameters.js";
+
+export { validateBranchDefinition, validateBranchBindings } from './branch-definition.js';
+
+export {branchDefinitionChanges} from "./branch-definition-diff.js";
+
+export { CapabilityPolicyStore, CapabilityPolicyRevisionConflictError } from "./capability-policy-store.js";

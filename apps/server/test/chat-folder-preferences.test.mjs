@@ -12,7 +12,7 @@ test("chat folders validate, conflict safely, persist, and leave Project folders
     const workspace=new WorkspaceStore(dataDir);
     const projectFolders=[{id:"p",name:"Projects",projectIds:["P1","P2"],expanded:true}];
     workspace.updatePreferences({projectFolders});
-    registerWorkspacePreferenceRoutes(app,{opts:{dataDir},workspace,store:{getConversation:id=>["A","B"].includes(id)?{id}:undefined},engines:new Map(),publishWorkspaceSince(){}});
+    registerWorkspacePreferenceRoutes(app,{opts:{dataDir},workspace,store:{sqlite:{prepare:sql=>({get:id=>sql.includes('FROM conversations c WHERE')?(["A","B"].includes(id)?{branch_id:null}:undefined):sql.includes('branch_installation_resources')?undefined:{project_id:'dev-project'}})},getConversation:id=>["A","B"].includes(id)?{id}:undefined},engines:new Map(),publishWorkspaceSince(){}});
     const folder={id:"f",name:"Chats",conversationIds:["A"],expanded:true};
     const send=(chatFolders,chatFoldersRevision=workspace.getPreferences().revision)=>app.inject({method:"PATCH",url:"/api/workspace/preferences",payload:{chatFolders,chatFoldersRevision}});
     assert.equal((await send([folder])).statusCode,200);

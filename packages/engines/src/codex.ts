@@ -1,3 +1,4 @@
+import { CODEX_APP_TOOL_POLICY_ARGS } from './codex-tool-policy.js';
 // The Codex adapter (SPEC §5). Drives the already-authenticated `codex` CLI as a
 // subscription-backed engine (AGENTS.md invariant 1 — NEVER an API key). Spawns
 // `codex exec --json` / `codex exec resume`, streams JSONL, and maps it to
@@ -305,6 +306,7 @@ export class CodexAdapter implements Adapter {
       `sandbox_mode=${JSON.stringify(this.sandboxMode)}`,
       "-c",
       'approval_policy="never"',
+      ...CODEX_APP_TOOL_POLICY_ARGS,
     ];
     if (systemPrompt) args.push("-c", `developer_instructions=${JSON.stringify(systemPrompt)}`);
     if (model) args.push("-m", model);

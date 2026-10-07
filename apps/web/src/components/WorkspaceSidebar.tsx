@@ -58,7 +58,6 @@ import {
   projectDisambiguator,
   type UnreadNotificationProjection,
 } from "../workspaceNavigation";
-import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { ResourceContextMenu, type ResourceContextMenuAction } from "./ResourceContextMenu";
@@ -85,6 +84,7 @@ import {
   useWorkspaceSidebarNavigation,
   useWorkspaceSidebarResize,
 } from "./useWorkspaceSidebarState";
+import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 import { SearchSnippet, routeForGlobalSearchSelection } from "./GlobalChatSearch";
 

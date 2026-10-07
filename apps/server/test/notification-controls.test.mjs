@@ -12,19 +12,23 @@ import { createCommunicationJournal } from "../dist/communication-journal.js";
 test("tab clear route dismisses the complete selected feed, not just its loaded page", async () => {
   const root = await mkdtemp(join(tmpdir(), "notification-controls-"));
   const app = Fastify();
+  let store;
   try {
+    store = new AgentStore(root);
     const workspace = new WorkspaceStore(root);
+    const project = store.createProject({ label: "Notifications", hostPath: root, defaultEngine: "codex" });
+    const chatId = project.lastConversationId;
     const published = [];
     registerNotificationMutationRoutes(app, {
       workspace,
-      store: { getAgentTitleProjection: () => new Map() },
+      store,
       publishWorkspaceSince: cursor => published.push(cursor),
     });
     const updates = Array.from({ length: 105 }, (_, index) => workspace.createNotification({
-      projectId: "project", conversationId: "chat", kind: "direct_responses", title: `Update ${index}`, body: "Reply",
+      projectId: project.id, conversationId: chatId, kind: "direct_responses", title: `Update ${index}`, body: "Reply",
     }));
     const action = workspace.createNotification({
-      projectId: "project", conversationId: "chat", kind: "operational", severity: "urgent", title: "Action", body: "Review",
+      projectId: project.id, conversationId: chatId, kind: "operational", severity: "urgent", title: "Action", body: "Review",
     });
     assert.equal((await app.inject({ method: "POST", url: "/api/notifications/dismiss-all", payload: { kind: "both" } })).statusCode, 400);
     const cleared = await app.inject({ method: "POST", url: "/api/notifications/dismiss-all", payload: { kind: "updates" } });
@@ -36,7 +40,7 @@ test("tab clear route dismisses the complete selected feed, not just its loaded 
     assert.equal(workspace.getNotification(action.id).status, "dismissed");
     assert.equal(workspace.listNotificationPage({ limit: 100 }).items.length, 0);
     assert.equal(published.length, 2);
-  } finally { await app.close(); await rm(root, { recursive: true, force: true }); }
+  } finally { await app.close(); store?.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 test("new reply notifications format before truncation and retain canonical Markdown", async () => {

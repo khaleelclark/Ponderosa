@@ -29,6 +29,7 @@ import {
   safeRelativePath,
 } from "../project-files.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
+import { chatProductSql, requestProduct } from "../product-scope.js";
 import { displayProjectPath } from "../project-path-display.js";
 import type { ServerContext } from "../server-context.js";
 import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js";
@@ -481,6 +482,8 @@ app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects
         SELECT id, title, updated_at
         FROM agents
         WHERE project_id = ? AND deleted_at IS NULL
+          AND EXISTS(SELECT 1 FROM conversations product_owner WHERE product_owner.id=agents.conversation_id AND ${chatProductSql('product_owner',requestProduct(request))})
+          AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id=agents.id AND inactive.state!='active')
           AND NOT EXISTS (
             SELECT 1
             FROM agent_creation_operation_members members
@@ -488,7 +491,7 @@ app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects
             WHERE members.agent_id = agents.id
               AND operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
           )
-          ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE '\\\\'" : ""}
+          ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE '\\'" : ""}
       `,
       params: normalizedSearch
         ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
@@ -580,6 +583,10 @@ app.get<{ Params: { id: string } }>("/api/agent-trigger-occurrences/:id", async 
     return reply.code(401).send({ error: "Automation occurrence capability is not authorized for an active Run" });
   }
   const occurrence = coordinationV3.getTriggerOccurrence(request.params.id);
+  if (occurrence?.branchExecutionId) {
+    if (!coordinationV3.canReadBranchTriggerOccurrence(occurrence.id, capability.runId, capability.agentId)) return reply.code(404).send({ error: "Branch occurrence is not attached to this Run" });
+    return occurrence;
+  }
   if (!occurrence || occurrence.agentId !== capability.agentId) return reply.code(404).send({ error: "Automation occurrence not found" });
   if (!occurrence.activationId || coordinationV3.activationPayloads(capability.agentId, [occurrence.activationId], capability.runId).length !== 1) {
     return reply.code(404).send({ error: "Automation occurrence is not attached to this Run" });
@@ -612,6 +619,8 @@ app.get<{ Params: { id: string; seq: string } }>(
 );
 
 registerAgentPackageRoutes(app, {
+  branchResources: context.branchResources,
+  branchInstallations: context.branchInstallations,
   dataDir: opts.dataDir,
   store,
   coordination: coordinationV3,
@@ -640,6 +649,7 @@ registerAgentMaintenanceRoutes(app, {
 });
 
 const globalChatSearch = (query: {
+  product?: "dev" | "branches";
   q?: string;
   limit?: string | number;
   kind?: string;
@@ -657,7 +667,7 @@ const globalChatSearch = (query: {
     query: q,
     limit,
     chatKind,
-    distinctChats: query.distinct === "chats",
+    product: query.product,
     notificationState: (input) => workspace.notificationSearchState(input),
   });
 };
@@ -998,7 +1008,7 @@ registerProviderCommandRoutes(app, {
   workingCopies,
 });
 
-registerCommunicationDocumentRoutes(app, authoritativeCommunicationDocument);
+registerCommunicationDocumentRoutes(app, authoritativeCommunicationDocument, store);
 const projectFileAuthority = new ProjectFileAuthority(store, workingCopies);
 registerArtifactRoutes(app, {
   store,

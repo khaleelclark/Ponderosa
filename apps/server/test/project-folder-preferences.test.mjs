@@ -11,7 +11,7 @@ test("folder preferences reject malformed or duplicate membership without changi
   const app = Fastify();
   try {
     const workspace = new WorkspaceStore(dataDir);
-    registerWorkspacePreferenceRoutes(app, { opts: { dataDir }, workspace, engines: new Map(), publishWorkspaceSince() {} });
+    registerWorkspacePreferenceRoutes(app, { opts: { dataDir }, workspace, store:{sqlite:{prepare:()=>({get:()=>({id:'dev-project'})})}}, engines: new Map(), publishWorkspaceSince() {} });
     const valid = [{ id: "work", name: "Work", projectIds: ["a", "b"], expanded: true }];
     const send = (projectFolders, projectFoldersRevision=workspace.getPreferences().revision) => app.inject({ method: "PATCH", url: "/api/workspace/preferences", payload: { projectFolders, projectFoldersRevision } });
     assert.equal((await send(valid)).statusCode, 200);

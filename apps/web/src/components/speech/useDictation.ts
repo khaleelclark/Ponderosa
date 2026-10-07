@@ -29,6 +29,7 @@ export function useDictation(
   onFinalTranscript: (transcript: string) => void,
   onSettlingChange: (settling: boolean) => void,
   surfaceRef: RefObject<HTMLElement | null>,
+  continuous = true,
 ): DictationController {
   const unavailableReason = dictationUnavailableReason();
   const [status, setStatus] = useState<DictationStatus>("ready");
@@ -196,12 +197,8 @@ export function useDictation(
       }
       const activeRecognition = recognition;
       recognitionRef.current = activeRecognition;
-      activeRecognition.continuous = true;
-      // We insert final text only. Android Chromium's continuous recognizer
-      // promotes partial callbacks to final results; requesting unused interim
-      // results can therefore append every growing hypothesis as new speech.
-      // Do not deduplicate phrases: intentional repetition must survive.
-      activeRecognition.interimResults = false;
+      activeRecognition.continuous = continuous;
+      activeRecognition.interimResults = true;
       activeRecognition.lang = navigator.language || "en-US";
       activeRecognition.maxAlternatives = 1;
       // Newer browsers can infer punctuation from speech without spoken commands.
@@ -281,6 +278,7 @@ export function useDictation(
     abandonGeneration,
     abandonForSurfaceLoss,
     clearSettleTimer,
+    continuous,
     releaseRecognition,
     surfaceRef,
     unavailableReason,

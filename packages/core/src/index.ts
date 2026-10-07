@@ -16,6 +16,8 @@ export * from "./file-activity.js";
 export * from "./provider-failure-summary.js";
 export * from "./agent-handles.js";
 export * from "./provider-connection-url.js";
+export * from "./branches.js";
+export * from "./capability-policy.js";
 export * from "./tool-failure.js";
 export * from "./outcome-cause.js";
 export * from "./markdown-preview.js";

@@ -21,6 +21,9 @@ import type { OutcomeCause } from "../outcome-cause.js";
 export interface ConversationDto {
   id: string;
   projectId: string;
+  /** Absent for Dev. Immutable product ownership inherited by every Agent. */
+  branchId?: string;
+  executionId?: string;
   title: string;
   /** Chat-owned execution context. Legacy projectId only locates stored history. */
   workingDirectory?: string;
@@ -799,6 +802,9 @@ export interface GlobalChatTargetDto {
   kind: "conversation" | "agent";
   id: string;
   title: string;
+  /** Branches search only: product ownership and the Agent's owning Chat. */
+  ownerBranch?: { id: string; name: string };
+  ownerChat?: { id: string; title: string };
 }
 
 export interface GlobalChatSearchAuthorDto {

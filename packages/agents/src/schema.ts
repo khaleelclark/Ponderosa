@@ -33,6 +33,7 @@ export const projectDeletionPending = sqliteTable("project_deletion_pending", {
  * filesystem tombstone cleanup. */
 export const projectDeletionReceipts = sqliteTable("project_deletion_receipts", {
   projectId: text("project_id").primaryKey(),
+  productScope: text("product_scope").notNull().default("dev"),
   tombstoneName: text("tombstone_name").notNull(),
   ownershipToken: text("ownership_token"),
   /** Durable boundary proving that exact owned storage was authorized for removal. */
@@ -132,6 +133,7 @@ export const agentDeletionTombstones = sqliteTable("agent_deletion_tombstones", 
 export const agentDeletionReceipts = sqliteTable("agent_deletion_receipts", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
+  productScope: text("product_scope").notNull().default("unknown"),
   previewHash: text("preview_hash").notNull(),
   rootAgentIdsJson: text("root_agent_ids_json").notNull(),
   deletedAgentIdsJson: text("deleted_agent_ids_json").notNull(),
@@ -160,6 +162,8 @@ export const agentManagementApprovals = sqliteTable("agent_management_approvals"
 });
 
 export const conversations = sqliteTable("conversations", {
+  branchId: text("branch_id"),
+  executionId: text("branch_execution_id"),
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
   title: text("title").notNull(),
@@ -175,6 +179,7 @@ export const conversations = sqliteTable("conversations", {
 /** Durable intent and phase receipt for canonical Chat deletion and its
  * retryable filesystem, draft, Automation, and workspace cleanup. */
 export const conversationDeletionReceipts = sqliteTable("conversation_deletion_receipts", {
+  branchId:text("branch_id"),
   conversationId: text("conversation_id").primaryKey(),
   projectId: text("project_id").notNull(),
   tombstoneName: text("tombstone_name"),

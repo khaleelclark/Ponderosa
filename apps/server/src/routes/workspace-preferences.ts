@@ -1,3 +1,4 @@
+import {requestProduct,resourceInProduct,mergeProductPreferencePatch} from '../product-scope.js';
 import type {
   MarkWorkspaceResourceUsedRequest,
   ModelOption,
@@ -112,7 +113,7 @@ export function registerWorkspacePreferenceRoutes(
       if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
         return reply.code(400).send({ error: "limit must be an integer between 1 and 1000" });
       }
-      const recency = workspace.listResourceRecency(limit);
+      const recency = workspace.listResourceRecency(limit,resource=>resourceInProduct(store,resource.kind,resource.resourceId,requestProduct(request)));
       return {
         ...recency,
         resources: recency.resources.filter((resource) =>
@@ -282,7 +283,7 @@ export function registerWorkspacePreferenceRoutes(
     const globalInstructionsChanged = patch.globalInstructions !== undefined && patch.globalInstructions !== previousPreferences.globalInstructions;
     const profileChanged = patch.profile !== undefined && JSON.stringify(patch.profile) !== JSON.stringify(previousPreferences.profile);
     const cursor = workspace.cursor();
-    const preferences = workspace.updatePreferences(patch);
+    const preferences = workspace.updatePreferences(mergeProductPreferencePatch(store,workspace.getPreferences(),patch,requestProduct(request)));
     if (patch.claudeModelOptions !== undefined) {
       applyOperatorModelOptions();
       for (const entry of engineModelCatalogCache.values()) entry.expiresAt = 0;

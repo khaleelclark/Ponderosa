@@ -10,12 +10,19 @@ import type {
 } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import { sendInspectorJson } from "../inspector-response.js";
+import {
+  decisionInProduct,
+  requestProduct,
+  resourceInProduct,
+  type ProductScope,
+} from "../product-scope.js";
 
 export class AgentWorkProjection {
   constructor(
     private readonly store: Pick<
       AgentStore,
-      "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact" | "agentCreationPending"
+      "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact" |
+      "agentCreationPending" | "sqlite"
     >,
     private readonly coordination: Pick<
       CoordinationV3Store,
@@ -27,20 +34,121 @@ export class AgentWorkProjection {
     >,
   ) {}
 
+  private scopedConversationIds(
+    projectId: string,
+    conversationId: string | undefined,
+    product: ProductScope | undefined,
+  ): Array<string | undefined> {
+    if (conversationId) return [conversationId];
+    if (!product) return [undefined];
+    const rows = this.store.sqlite.prepare(
+      "SELECT id FROM conversations WHERE project_id=? ORDER BY id",
+    ).all(projectId) as Array<{ id: string }>;
+    return rows
+      .map((row) => row.id)
+      .filter((id) => resourceInProduct(this.store, "conversation", id, product));
+  }
+
+  private itemInProduct(input: {
+    projectId: string;
+    kind: AgentWorkItemDto["kind"];
+    recordId: string;
+    product: ProductScope;
+  }): boolean {
+    if (input.kind === "decision") {
+      const decision = this.workspace.getDecision(input.recordId);
+      return Boolean(decision && decision.projectId === input.projectId &&
+        decisionInProduct(this.store, decision, input.product));
+    }
+    if (input.kind === "request") {
+      const row = this.store.sqlite.prepare(
+        "SELECT conversation_id,requester_agent_id,recipient_agent_id FROM coordination_requests WHERE id=? AND project_id=?",
+      ).get(input.recordId, input.projectId) as {
+        conversation_id: string | null;
+        requester_agent_id: string | null;
+        recipient_agent_id: string;
+      } | undefined;
+      return Boolean(row?.conversation_id &&
+        resourceInProduct(this.store, "conversation", row.conversation_id, input.product) &&
+        (!row.requester_agent_id ||
+          resourceInProduct(this.store, "agent", row.requester_agent_id, input.product)) &&
+        resourceInProduct(this.store, "agent", row.recipient_agent_id, input.product));
+    }
+    if (input.kind === "join") {
+      const row = this.store.sqlite.prepare(
+        "SELECT conversation_id,owner_agent_id FROM coordination_joins WHERE id=? AND project_id=?",
+      ).get(input.recordId, input.projectId) as {
+        conversation_id: string | null;
+        owner_agent_id: string;
+      } | undefined;
+      return Boolean(row?.conversation_id &&
+        resourceInProduct(this.store, "conversation", row.conversation_id, input.product) &&
+        resourceInProduct(this.store, "agent", row.owner_agent_id, input.product));
+    }
+    const table = input.kind === "activation"
+      ? "agent_activations"
+      : input.kind === "run"
+        ? "scheduler_runs"
+        : "trigger_occurrences";
+    const row = this.store.sqlite.prepare(
+      `SELECT agent_id FROM ${table} WHERE id=? AND project_id=?`,
+    ).get(input.recordId, input.projectId) as { agent_id: string } | undefined;
+    if (!row || !resourceInProduct(this.store, "agent", row.agent_id, input.product)) return false;
+    if (input.kind !== "trigger") return true;
+    const trigger = this.store.sqlite.prepare(
+      "SELECT trigger_id FROM trigger_occurrences WHERE id=? AND project_id=?",
+    ).get(input.recordId, input.projectId) as { trigger_id: string } | undefined;
+    return Boolean(trigger &&
+      resourceInProduct(this.store, "trigger", trigger.trigger_id, input.product));
+  }
+
   inspect(input: {
     projectId: string;
     conversationId?: string;
     agentId?: string;
     focusId?: string;
     limit?: number;
+    product?: ProductScope;
   }): AgentWorkInspectorDto {
-    const projectAgents = this.store.listAgents(input.projectId);
+    const projectAgents: Array<{ id: string; title: string }> = input.product
+      ? this.store.sqlite.prepare(`
+          SELECT agent.id,agent.title
+          FROM agents agent
+          JOIN conversations owner ON owner.id=agent.conversation_id
+          WHERE agent.project_id=? AND agent.deleted_at IS NULL
+            AND owner.branch_id IS ${input.product === "branches" ? "NOT " : ""}NULL
+            AND NOT EXISTS(
+              SELECT 1 FROM branch_installation_resources inactive
+              WHERE inactive.local_id IN (agent.id,owner.id) AND inactive.state!='active'
+            )
+          ORDER BY agent.id
+        `).all(input.projectId) as Array<{ id: string; title: string }>
+      : this.store.listAgents(input.projectId);
     const names = new Map(projectAgents.map((agent) => [agent.id, agent.title]));
     const agentName = (id: string | undefined): string =>
       id ? names.get(id) ?? "Deleted Agent" : "You";
-    const projection = this.coordination.agentWorkItems(input);
+    const conversationIds = this.scopedConversationIds(
+      input.projectId,
+      input.conversationId,
+      input.product,
+    );
+    const projections = conversationIds.map((conversationId) =>
+      this.coordination.agentWorkItems({
+        projectId: input.projectId,
+        ...(conversationId ? { conversationId } : {}),
+        ...(input.agentId ? { agentId: input.agentId } : {}),
+        ...(input.focusId ? { focusId: input.focusId } : {}),
+        ...(input.limit ? { limit: input.limit } : {}),
+      }));
+    const projection = {
+      items: [...new Map(projections.flatMap((candidate) =>
+        candidate.items.map((item) => [item.id, item] as const))).values()],
+      truncated: projections.some((candidate) => candidate.truncated),
+    };
     const items = projection.items.filter((item) =>
-      !item.agentIds.some((agentId) => this.store.agentCreationPending(agentId)));
+      !item.agentIds.some((agentId) =>
+        this.store.agentCreationPending(agentId) ||
+        Boolean(input.product && !resourceInProduct(this.store, "agent", agentId, input.product))));
     for (const item of items) {
       if (item.kind === "request") {
         item.title = `${agentName(item.requesterAgentId)} asked ${agentName(item.recipientAgentId)} to work`;
@@ -72,12 +180,21 @@ export class AgentWorkProjection {
     }
 
     const decisionLimit = input.limit ?? 300;
-    const recentDecisionPage = this.workspace.listDecisionPage({
-      projectId: input.projectId,
-      ...(input.conversationId ? { conversationId: input.conversationId } : {}),
-      ...(input.agentId ? { agentId: input.agentId } : {}),
-      limit: decisionLimit + 1,
-    });
+    const recentDecisionPages = conversationIds.map((conversationId) =>
+      this.workspace.listDecisionPage({
+        projectId: input.projectId,
+        ...(conversationId ? { conversationId } : {}),
+        ...(input.agentId ? { agentId: input.agentId } : {}),
+        limit: decisionLimit + 1,
+        ...(input.product
+          ? { include: decision => decisionInProduct(this.store, decision, input.product!) }
+          : {}),
+      }));
+    const recentDecisionPage = {
+      decisions: [...new Map(recentDecisionPages.flatMap((page) =>
+        page.decisions.map((decision) => [decision.id, decision] as const))).values()],
+      hasMore: recentDecisionPages.some((page) => page.hasMore),
+    };
     const relatedRunIds = new Set(
       items.flatMap((item) => item.kind === "run" ? [item.recordId] : []),
     );
@@ -91,7 +208,9 @@ export class AgentWorkProjection {
       NonNullable<ReturnType<WorkspaceStore["getDecision"]>>
     >();
     for (const decision of recentDecisionPage.decisions) {
-      decisionCandidates.set(decision.id, decision);
+      if (!input.product || decisionInProduct(this.store, decision, input.product)) {
+        decisionCandidates.set(decision.id, decision);
+      }
     }
     const focusRecordId = input.focusId?.includes(":")
       ? input.focusId.slice(input.focusId.indexOf(":") + 1)
@@ -102,12 +221,14 @@ export class AgentWorkProjection {
         focusedDecision?.projectId === input.projectId
         && (!input.conversationId || focusedDecision.conversationId === input.conversationId)
         && (!input.agentId || focusedDecision.agentId === input.agentId)
+        && (!input.product || decisionInProduct(this.store, focusedDecision, input.product))
       ) decisionCandidates.set(focusedDecision.id, focusedDecision);
     }
     for (const decision of this.workspace.decisionsForRuns(relatedRunIds)) {
       if (
         decision.projectId === input.projectId
         && (!input.conversationId || decision.conversationId === input.conversationId)
+        && (!input.product || decisionInProduct(this.store, decision, input.product))
       ) decisionCandidates.set(decision.id, decision);
     }
     for (const decisionId of relatedDecisionIds) {
@@ -115,6 +236,7 @@ export class AgentWorkProjection {
       if (
         decision?.projectId === input.projectId
         && (!input.conversationId || decision.conversationId === input.conversationId)
+        && (!input.product || decisionInProduct(this.store, decision, input.product))
       ) decisionCandidates.set(decision.id, decision);
     }
     const orderedDecisions = [...decisionCandidates.values()].sort((left, right) =>
@@ -401,7 +523,14 @@ export class AgentWorkProjection {
     conversationId?: string;
     kind: AgentWorkItemDto["kind"];
     recordId: string;
+    product?: ProductScope;
   }): AgentWorkItemDetailsDto | undefined {
+    if (input.product && !this.itemInProduct({
+      projectId: input.projectId,
+      kind: input.kind,
+      recordId: input.recordId,
+      product: input.product,
+    })) return undefined;
     const focused = this.coordination.agentWorkItems({
       projectId: input.projectId,
       ...(input.conversationId ? { conversationId: input.conversationId } : {}),
@@ -491,7 +620,10 @@ export class AgentWorkProjection {
 export function registerAgentWorkRoutes(
   app: FastifyInstance,
   context: {
-    store: Pick<AgentStore, "getProject" | "getConversation" | "getAgent" | "agentCreationPending">;
+    store: Pick<
+      AgentStore,
+      "getProject" | "getConversation" | "getAgent" | "agentCreationPending" | "sqlite"
+    >;
     projection: AgentWorkProjection;
   },
 ): void {
@@ -504,13 +636,15 @@ export function registerAgentWorkRoutes(
     if (!project) return reply.code(404).send({ error: "project not found" });
     if (request.query.conversationId) {
       const conversation = store.getConversation(request.query.conversationId);
-      if (!conversation || conversation.projectId !== project.id) {
+      if (!conversation || conversation.projectId !== project.id ||
+          !resourceInProduct(store, "conversation", conversation.id, requestProduct(request))) {
         return reply.code(404).send({ error: "conversation not found in project" });
       }
     }
     if (request.query.agentId) {
       const agent = store.getAgent(request.query.agentId);
-      if (!agent || agent.projectId !== project.id || store.agentCreationPending(agent.id)) {
+      if (!agent || agent.projectId !== project.id || store.agentCreationPending(agent.id) ||
+          !resourceInProduct(store, "agent", agent.id, requestProduct(request))) {
         return reply.code(404).send({ error: "agent not found in project" });
       }
     }
@@ -535,6 +669,7 @@ export function registerAgentWorkRoutes(
       ...(request.query.agentId ? { agentId: request.query.agentId } : {}),
       ...(focusId ? { focusId } : {}),
       ...(parsedLimit ? { limit: parsedLimit } : {}),
+      product: requestProduct(request),
     });
     return sendInspectorJson(reply, request.headers["accept-encoding"], result);
   });
@@ -547,7 +682,8 @@ export function registerAgentWorkRoutes(
     if (!project) return reply.code(404).send({ error: "project not found" });
     if (request.query.conversationId) {
       const conversation = store.getConversation(request.query.conversationId);
-      if (!conversation || conversation.projectId !== project.id) {
+      if (!conversation || conversation.projectId !== project.id ||
+          !resourceInProduct(store, "conversation", conversation.id, requestProduct(request))) {
         return reply.code(404).send({ error: "conversation not found in project" });
       }
     }
@@ -569,6 +705,7 @@ export function registerAgentWorkRoutes(
         : {}),
       kind: request.params.kind as AgentWorkItemDto["kind"],
       recordId: request.params.recordId,
+      product: requestProduct(request),
     });
     if (!result) {
       return reply.code(404).send({ error: "Agent work item not found in scope" });

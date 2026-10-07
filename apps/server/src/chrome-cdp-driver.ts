@@ -119,6 +119,23 @@ export interface BrowserTerminationHandle {
   close(): Promise<void>;
 }
 
+/** CDP needs explicit character text for typing and virtual keys for navigation. */
+export function browserKeyEvent(key: string): { key: string; modifiers: number; windowsVirtualKeyCode: number; text?: string } {
+  const parts = key.length === 1 ? [key] : key.split("+");
+  const modifiers = parts.length > 1 ? parts.slice(0, -1).reduce((mask, modifier) =>
+    mask | ({ alt: 1, control: 2, ctrl: 2, meta: 4, cmd: 4, shift: 8 }[modifier.toLowerCase()] ?? 0), 0) : 0;
+  const raw = parts.length > 1 ? parts.at(-1)! : key;
+  const normalized = ({ return: "Enter", enter: "Enter", esc: "Escape", escape: "Escape", space: " ", tab: "Tab", backspace: "Backspace", delete: "Delete", home: "Home", end: "End", pageup: "PageUp", pagedown: "PageDown", up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight", arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight" } as Record<string, string>)[raw.toLowerCase()] ?? raw;
+  const virtualKey = ({ Backspace: 8, Tab: 9, Enter: 13, Escape: 27, " ": 32, PageUp: 33, PageDown: 34,
+    End: 35, Home: 36, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Delete: 46 } as Record<string, number>)[normalized]
+    ?? (normalized.length === 1 ? normalized.toUpperCase().charCodeAt(0) : 0);
+  const shifted: Record<string, string> = { "1": "!", "2": "@", "3": "#", "4": "$", "5": "%", "6": "^", "7": "&", "8": "*", "9": "(", "0": ")", "-": "_", "=": "+", "[": "{", "]": "}", ";": ":", "'": '"', ",": "<", ".": ">", "/": "?", "`": "~", "\\": "|" };
+  const printable = normalized.length === 1;
+  const resolved = printable && (modifiers & 8) ? shifted[normalized] ?? normalized.toUpperCase() : normalized;
+  return { key: resolved, modifiers, windowsVirtualKeyCode: virtualKey,
+    ...(printable && !(modifiers & 7) ? { text: resolved } : {}) };
+}
+
 export interface BrowserDriver extends BrowserTerminationHandle {
   /** Release app access while a separately supervised service retains Chrome. */
   suspend?(chooserAlreadyCancelled?: boolean): Promise<void>;
@@ -1184,7 +1201,16 @@ export class ChromeCdpDriver implements BrowserDriver {
             }
           }
         }
-        return { selector: null, identityKind: 'unaddressable' };
+        // A page-local identity remains attached to this exact DOM element;
+        // it never falls back to a positional selector that could hit a sibling.
+        let token = el.getAttribute('data-ponderosa-control');
+        let candidate = token ? '[data-ponderosa-control=' + JSON.stringify(token) + ']' : '';
+        if (!candidate || !uniqueSelector(candidate)) {
+          token = crypto.randomUUID();
+          el.setAttribute('data-ponderosa-control', token);
+          candidate = '[data-ponderosa-control=' + JSON.stringify(token) + ']';
+        }
+        return { selector: candidate, identityKind: 'page-control' };
       };
       const textFrom = (root, visibleOnly = true) => {
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -1241,6 +1267,16 @@ export class ChromeCdpDriver implements BrowserDriver {
       }
       const regions = regionRoots.map((entry) => ({ id: entry.id, kind: entry.kind, label: entry.label, ...textFrom(entry.root, entry.visibleOnly) }));
       const controlSelector = 'a[href],button,input,textarea,select,[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=menuitem],[role=tab],[role=combobox],[role=option],[role=radio],[role=switch],[role=spinbutton],[role=slider],[tabindex]';
+      const visibleControlText = (el) => {
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        const parts = [];
+        let node;
+        while ((node = walker.nextNode()) && parts.join(' ').length < 160) {
+          const parent = node.parentElement;
+          if (parent && !parent.closest('[aria-hidden="true"],[hidden],[inert]') && rendered(parent)) parts.push(node.nodeValue || '');
+        }
+        return parts.join(' ');
+      };
       const controlRoot = requestedRoot || document;
       const controls = [...(requestedRoot?.matches(controlSelector) ? [requestedRoot] : []), ...controlRoot.querySelectorAll(controlSelector)]
         .filter(requestedRoot ? rendered : intersectsViewport)
@@ -1249,6 +1285,9 @@ export class ChromeCdpDriver implements BrowserDriver {
           const identity = stableSelector(el);
           const rect = el.getBoundingClientRect();
           const valueRedacted = el instanceof HTMLInputElement && el.type === 'password';
+          const contentNamed = el.matches('button,a[href],[role=button],[role=link],[role=tab],[role=menuitem],[role=option],[role=checkbox],[role=radio],[role=switch]');
+          const contentName = contentNamed ? visibleControlText(el) : '';
+          const inputButtonName = el instanceof HTMLInputElement && ['button', 'submit', 'reset'].includes(el.type) ? el.value : '';
           return {
             controlId: identity.selector || ('unaddressable:' + (el.getAttribute('role') || el.tagName.toLowerCase()) + ':' + (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 80)),
             selector: identity.selector,
@@ -1256,9 +1295,15 @@ export class ChromeCdpDriver implements BrowserDriver {
             addressable: Boolean(identity.selector),
             tag: el.tagName.toLowerCase(),
             role: el.getAttribute('role') || '',
-            name: (el.getAttribute('aria-label') || (el.getAttribute('aria-labelledby') || '').split(/\\s+/).map(id=>document.getElementById(id)?.textContent || '').join(' ') || (el.labels ? [...el.labels].map(label=>label.textContent || '').join(' ') : '') || el.getAttribute('name') || el.getAttribute('placeholder') || '').trim().slice(0, 160),
+            name: (el.getAttribute('aria-label') || (el.getAttribute('aria-labelledby') || '').split(/\\s+/).map(id=>document.getElementById(id)?.textContent || '').join(' ') || (el.labels ? [...el.labels].map(label=>label.textContent || '').join(' ') : '') || inputButtonName || contentName || el.getAttribute('title') || el.getAttribute('placeholder') || el.getAttribute('name') || '').replace(/\\s+/g, ' ').trim().slice(0, 160),
             text: valueRedacted ? '[redacted]' : (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el.value : el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 240),
             valueRedacted,
+            expanded: el.getAttribute('aria-expanded'),
+            selected: el.getAttribute('aria-selected'),
+            checked: el instanceof HTMLInputElement ? el.checked : el.getAttribute('aria-checked'),
+            value: el instanceof HTMLSelectElement ? el.value : null,
+            controls: el.getAttribute('aria-controls'),
+            href: el instanceof HTMLAnchorElement ? el.href : null,
             disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true'),
             x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height),
           };
@@ -1438,7 +1483,14 @@ export class ChromeCdpDriver implements BrowserDriver {
       let el; try { el=document.querySelector(${JSON.stringify(selector)}); } catch { return 'invalid_selector'; }
       if (!el) return 'selector_not_found';
       if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable)) return 'selector_not_editable';
-      el.focus(); if ('value' in el) { el.value=''; el.dispatchEvent(new Event('input',{bubbles:true})); } else { el.textContent=''; }
+      el.focus();
+      if ('value' in el) {
+        // Use the platform setter, bypassing React's instance value tracker so
+        // the input event really clears controlled fields before insertText.
+        const prototype = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(prototype, 'value').set.call(el, '');
+        el.dispatchEvent(new Event('input',{bubbles:true}));
+      } else { el.textContent=''; el.dispatchEvent(new Event('input',{bubbles:true})); }
       return 'ok';
     })()`);
     if (result !== "ok") throw new BrowserDriverActionError(result);
@@ -1497,7 +1549,7 @@ export class ChromeCdpDriver implements BrowserDriver {
     return this.pageInfo();
   }
 
-  async pointer(x: number, y: number, record = true): Promise<BrowserPageInfo> {
+  async pointer(x: number, y: number, record = true, hover = true): Promise<BrowserPageInfo> {
     this.lastActivity = { pageId: this.activePageId, kind: "click", x, y, at: Date.now() };
     if (record) this.markInteraction();
     if (this.playwright) {
@@ -1505,10 +1557,10 @@ export class ChromeCdpDriver implements BrowserDriver {
       return this.pageInfo();
     }
     const page = this.currentPage();
-    await this.connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, page.cdpSessionId);
-    await this.connection.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 }, page.cdpSessionId);
-    await this.connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 }, page.cdpSessionId);
-    return this.pageInfo();
+    if (hover) await this.connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, page.cdpSessionId);
+    await this.connection.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 }, page.cdpSessionId);
+    await this.connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }, page.cdpSessionId);
+    return this.refreshPage(this.pagesById.get(this.activePageId)??page);
   }
 
   async type(text: string): Promise<BrowserPageInfo> {

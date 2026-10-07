@@ -324,6 +324,40 @@ test("management rejects malformed envelopes and operation types before traversa
   assert.equal(traversals, 0);
 });
 
+test("managed Agent restriction gates management describe, plan, and apply", async (t) => {
+  const app = Fastify();
+  t.after(() => app.close());
+  const owner = { id: "owner-restricted", projectId: "project-a", conversationId: "chat-a",
+    activeEngine: "codex", managementPermissions: {
+      allowAutomaticDescendantDeletion: false, allowAutomaticDescendantReorganization: false,
+    } };
+  const plan = { id: "plan-restricted", agentId: owner.id, runId: "run-a", conversationId: "chat-a",
+    projectId: "project-a", idempotencyKey: "key", requestHash: "hash", scopeHash: "scope",
+    approvalRequired: false, status: "planned", operationProgress: [], refs: {}, changedAgentIds: [],
+    createdAt: new Date().toISOString(), operations: [{kind:"create_agent",ref:"child",title:"Child"}] };
+  registerAgentManagementRoutes(app, {
+    store: { getAgent: () => owner, listAgentSubtree: () => [owner] },
+    coordinationV3: { steeringInjectionIds: () => [] }, workspace: {}, engines: new Map(),
+    managementPlans: new Map([[plan.id, plan]]),
+    activeRuns: new Map([[owner.id, { runId: "run-a", messageCapability: "token-a" }]]),
+    agentMessageCapabilities: new Map([["token-a", { agentId: owner.id, runId: "run-a", conversationId: "chat-a" }]]),
+    deletingAgentIds: new Set(), cachedModelOptions: () => [], capabilityOwnsAuthoritativeRun: () => true,
+    managedAgentCreationRestricted: () => true, publicManagementOperations: (operations) => operations,
+    commitAgentDeletion: async () => { throw new Error("unexpected deletion"); }, appendWorkspace: () => {},
+    publishWorkspaceSince: () => {}, notifyScheduler: () => {},
+  });
+  const headers = { authorization: "Bearer token-a" };
+  const describe = await app.inject({method:"POST",url:"/api/agent-management",headers,payload:{action:"describe"}});
+  assert.equal(describe.statusCode,200);
+  assert.equal(describe.json().permissions.autonomous.includes("create_agent"),false);
+  const planned = await app.inject({method:"POST",url:"/api/agent-management",headers,
+    payload:{action:"plan",idempotencyKey:"new-key",operations:[{kind:"create_agent",ref:"new",title:"New"}]}});
+  assert.equal(planned.statusCode,403);
+  const applied = await app.inject({method:"POST",url:"/api/agent-management",headers,
+    payload:{action:"apply",planId:plan.id}});
+  assert.equal(applied.statusCode,403);
+});
+
 test("PUT Agent manager rejects non-objects and unknown fields before mutation", async (t) => {
   const app = Fastify();
   t.after(() => app.close());

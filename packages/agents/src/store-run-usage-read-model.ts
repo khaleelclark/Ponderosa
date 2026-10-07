@@ -31,8 +31,8 @@ type DecodeHistoryCursor = (
   scope: string,
 ) => HistoryCursor;
 type UsageScope =
-  | { type: "overall" }
-  | { type: "project" | "agent" | "conversation"; id: string };
+  | { type: "overall" | "branches"; product?: "dev" | "branches" }
+  | { type: "project" | "branch" | "agent" | "conversation"; id: string; product?: "dev" | "branches" };
 
 export class AgentRunUsageReadModel {
   constructor(
@@ -474,7 +474,7 @@ export class AgentRunUsageReadModel {
     }
     return {
       scope: scope.type,
-      ...(scope.type !== "overall" ? { scopeId: scope.id } : {}),
+      ...("id" in scope ? { scopeId: scope.id } : {}),
       ...totals,
       finalizedRuns,
       reportedRuns,
@@ -598,6 +598,7 @@ export class AgentRunUsageReadModel {
           runs.reasoning_output_tokens, runs.total_tokens,
           runs.provider_request_usage_json
         FROM runs JOIN agents ON agents.id = runs.agent_id
+        LEFT JOIN conversations ON conversations.id = agents.conversation_id
         WHERE ${predicates.join(" AND ")}
       `)
       .all(...params) as Array<{
@@ -619,46 +620,59 @@ export class AgentRunUsageReadModel {
       total_tokens: number | null;
       provider_request_usage_json: string | null;
     }>;
-    return rows.map(row => ({
-      projectId: row.project_id,
-      // Prefer the immutable communication's room over mutable current
-      // membership so historical usage remains scoped to its original chat.
-      conversationId: row.communication_event_id
+    const branchByConversation = new Map<string, string | null | undefined>();
+    const owningBranch = (conversationId: string | null): string | null | undefined => {
+      if (!conversationId) return undefined;
+      if (branchByConversation.has(conversationId)) return branchByConversation.get(conversationId);
+      const owner = this.client.prepare(`
+        SELECT branch_id FROM conversations WHERE id=?
+        UNION ALL
+        SELECT branch_id FROM conversation_deletion_receipts WHERE conversation_id=?
+        LIMIT 1
+      `).get(conversationId, conversationId) as { branch_id: string | null } | undefined;
+      const value = owner?.branch_id;
+      branchByConversation.set(conversationId, value);
+      return value;
+    };
+    return rows.map(row => {
+      // Historical usage follows the communication's original Chat, rather
+      // than mutable current membership.
+      const conversationId = row.communication_event_id
         ? (this.communicationConversationId(
             row.project_id,
             row.communication_event_id,
           ) ?? row.conversation_id)
-        : row.conversation_id,
-      agentId: row.agent_id,
-      agentTitle: row.agent_title,
-      executionId: row.execution_id,
-      engine: row.engine,
-      model: row.model ?? undefined,
-      startedAt: row.started_at,
-      completedAt: row.completed_at ?? undefined,
-      totalTokens: row.total_tokens ?? undefined,
-      usage: {
-        ...(row.input_tokens !== null
-          ? { inputTokens: row.input_tokens }
-          : {}),
-        ...(row.cached_input_tokens !== null
-          ? { cachedInputTokens: row.cached_input_tokens }
-          : {}),
-        ...(row.cache_write_input_tokens !== null
-          ? { cacheWriteInputTokens: row.cache_write_input_tokens }
-          : {}),
-        ...(row.output_tokens !== null
-          ? { outputTokens: row.output_tokens }
-          : {}),
-        ...(row.reasoning_output_tokens !== null
-          ? { reasoningOutputTokens: row.reasoning_output_tokens }
-          : {}),
-        ...(row.total_tokens !== null
-          ? { totalTokens: row.total_tokens }
-          : {}),
-      },
-      providerRequestUsageJson: row.provider_request_usage_json,
-    })).filter(row => scope.type !== "conversation" || row.conversationId === scope.id);
+        : row.conversation_id;
+      return {
+        projectId: row.project_id,
+        conversationId,
+        agentId: row.agent_id,
+        agentTitle: row.agent_title,
+        executionId: row.execution_id,
+        engine: row.engine,
+        model: row.model ?? undefined,
+        startedAt: row.started_at,
+        completedAt: row.completed_at ?? undefined,
+        totalTokens: row.total_tokens ?? undefined,
+        usage: {
+          ...(row.input_tokens !== null ? { inputTokens: row.input_tokens } : {}),
+          ...(row.cached_input_tokens !== null ? { cachedInputTokens: row.cached_input_tokens } : {}),
+          ...(row.cache_write_input_tokens !== null ? { cacheWriteInputTokens: row.cache_write_input_tokens } : {}),
+          ...(row.output_tokens !== null ? { outputTokens: row.output_tokens } : {}),
+          ...(row.reasoning_output_tokens !== null ? { reasoningOutputTokens: row.reasoning_output_tokens } : {}),
+          ...(row.total_tokens !== null ? { totalTokens: row.total_tokens } : {}),
+        },
+        providerRequestUsageJson: row.provider_request_usage_json,
+      };
+    }).filter(row => {
+      if (scope.type === "conversation" && row.conversationId !== scope.id) return false;
+      const branchId = owningBranch(row.conversationId);
+      if (scope.type === "branches" && !branchId) return false;
+      if (scope.type === "branch" && branchId !== scope.id) return false;
+      if (scope.product === "branches" && !branchId) return false;
+      if (scope.product === "dev" && branchId !== null) return false;
+      return true;
+    });
   }
 
   private exactWakeCauses(

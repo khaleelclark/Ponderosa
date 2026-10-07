@@ -1,4 +1,6 @@
 import type { FastifyInstance } from "fastify";
+import { CAPABILITY_IDS } from "@ponderosa/core";
+import { CapabilityPolicyStore } from "@ponderosa/agents";
 import type { CreateServerOptions } from "../app-contracts.js";
 import type { AssetStore } from "../assets.js";
 import { createAgentEventService } from "../agent-event-service.js";
@@ -160,6 +162,9 @@ registerAgentManagementRoutes(app, {
   deletingAgentIds,
   cachedModelOptions,
   capabilityOwnsAuthoritativeRun,
+  managedAgentCreationRestricted: (agentId, runId) =>
+    new CapabilityPolicyStore(store.sqlite).resolveForAgent(agentId, runId)
+      .restrictedCapabilityIds.includes(CAPABILITY_IDS.managedAgentCreate),
   publicManagementOperations,
   commitAgentDeletion,
   appendWorkspace,

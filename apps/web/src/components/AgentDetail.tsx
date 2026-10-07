@@ -91,6 +91,7 @@ import { useReloadBlocker } from "../reloadSafety";
 export function AgentDetail({
   agentId,
   projectId,
+  auditOnly=false,
   focusMessageId,
   focusTelemetry,
   technicalFocusId,
@@ -1112,6 +1113,7 @@ export function AgentDetail({
     >
       <AgentDetailHeader
         agent={detail.agent}
+        auditOnly={auditOnly}
         projectLabel={project?.label}
         chats={headerChats}
         lineageAgent={lineageAgent}
@@ -1127,7 +1129,7 @@ export function AgentDetail({
         agentNameForId={agentNameForId}
         running={running}
         stopping={cancelRun.isPending}
-        tab={tab}
+        tab={auditOnly&&['subagents','triggers','settings'].includes(tab)?'chat':tab}
         showSubagents={showSubagents}
         showAutomations={showAutomations}
         transcriptMarkdown={transcriptMarkdown}
@@ -1151,6 +1153,7 @@ export function AgentDetail({
         }}
         onDelete={() => setDeleteOpen(true)}
         onTabChange={value => {
+          if(auditOnly&&['subagents','triggers','settings'].includes(value))return;
           setTab(value);
           onViewChange?.(value);
         }}
@@ -1192,7 +1195,7 @@ export function AgentDetail({
       ) : null}
 
       <AgentDetailPanels
-        tab={tab}
+        tab={auditOnly&&['subagents','triggers','settings'].includes(tab)?'chat':tab}
         detail={detail}
         chatMessages={visibleChatMessages}
         agentId={agentId}
@@ -1231,7 +1234,7 @@ export function AgentDetail({
         onOpenArtifact={onOpenArtifact}
       />
 
-      <AgentDetailComposer
+      {auditOnly||detail.agent.archived ? <Alert severity="info" sx={{m:1}}>This Agent is archived. Its conversation and work history are available for inspection.</Alert> : <AgentDetailComposer
         visible={tab === "chat"}
         queuedMessageNotice={queueDeliveryNotice ?? queuedMessageNotice}
         queuedMessageFailure={queuedMessageFailure}
@@ -1303,9 +1306,9 @@ export function AgentDetail({
           onQueue: runtimeActivity ? submitAgentMessage("queue") : undefined,
           onCancel: stopActiveRun,
         }}
-      />
+      />}
 
-      <AgentDetailDialogs
+      {!auditOnly&&<AgentDetailDialogs
         recheckEngine={{
           open: recheckEngineOpen,
           pending: recheckEngine.isPending,
@@ -1349,23 +1352,23 @@ export function AgentDetail({
           agents,
           updateOrganization,
         }}
-      />
-      <AgentPackageExportDialog
+      />}
+      {!auditOnly && <AgentPackageExportDialog
         open={exportOpen}
         source={detail.agent}
         agents={agents}
         onClose={() => setExportOpen(false)}
         onCopy={copyAgentPackage}
         onDownload={downloadAgentPackage}
-      />
-      <AgentDuplicateDialog
+      />}
+      {!auditOnly && <AgentDuplicateDialog
         open={duplicateOpen}
         source={detail.agent}
         agents={agents}
         conversations={conversations}
         onClose={() => setDuplicateOpen(false)}
         onCreated={onOpenAgent}
-      />
+      />}
     </Box></OutgoingMessageProvider>
   );
 }

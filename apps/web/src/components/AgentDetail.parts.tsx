@@ -7,7 +7,6 @@ import {
   DialogTitle,
   FormControl,
   InputLabel,
-  MenuItem,
   Select,
   TextField,
   Typography,
@@ -208,13 +207,15 @@ function AgentOrganizationDialog({
       fullWidth
       maxWidth="xs"
     >
-      <DialogTitle>Agent organization</DialogTitle>
+      <DialogTitle>Change reporting line · {agent.title}</DialogTitle>
       <DialogContent>
         <FormControl fullWidth sx={{ mt: 1 }}>
-          <InputLabel id="agent-organizational-parent-label" shrink>
+          <InputLabel htmlFor="agent-manager-select" id="agent-organizational-parent-label">
             Delegated under
           </InputLabel>
           <Select
+            native
+            inputProps={{id:"agent-manager-select"}}
             labelId="agent-organizational-parent-label"
             displayEmpty
             renderValue={value => value ? eligibleOrganizationParents(agent, agents).find(candidate => candidate.id === value)?.title ?? "Unavailable Agent" : "Top Level"}
@@ -222,18 +223,18 @@ function AgentOrganizationDialog({
             label="Delegated under"
             onChange={event => setOrganizationParentId(event.target.value)}
           >
-            <MenuItem value="">Top Level</MenuItem>
+            <option value="">Top level — reports to you</option>
             {eligibleOrganizationParents(agent, agents).map(
               candidate => (
-                <MenuItem key={candidate.id} value={candidate.id}>
+                <option key={candidate.id} value={candidate.id}>
                   {candidate.title}
-                </MenuItem>
+                </option>
               ),
             )}
           </Select>
         </FormControl>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
-          This changes which Agent delegates work to this Agent. Its Run and
+          This changes which Agent delegates work to this Agent. Its work and
           message history remain attached to the same Agent.
         </Typography>
         {updateOrganization.isError ? (

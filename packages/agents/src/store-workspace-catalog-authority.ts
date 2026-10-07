@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import type {
   AgentDto,
   AgentPresetDto,
@@ -375,8 +375,10 @@ export class AgentWorkspaceCatalogAuthority {
 
   createProject(
     input: Omit<CreateProjectRequest, "defaultEngine"> & {
-      hostPath: string;
+      hostPath?: string;
       chatOwned?: boolean;
+      branchId?: string;
+      executionId?: string;
       defaultEngine?: CreateProjectRequest["defaultEngine"];
     },
     identity?: WorkspaceCreationIdentity,
@@ -387,13 +389,19 @@ export class AgentWorkspaceCatalogAuthority {
     const conversationId = identity
       ? creationId("conversation", id, `${identity.idempotencyKey}:default`)
       : randomUUID();
+    const managedWorkingDirectory = !input.hostPath?.trim();
+    if (managedWorkingDirectory && !(input.chatOwned && input.branchId && input.executionId
+      && this.db.get(sql`SELECT 1 FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=${input.executionId} AND b.id=${input.branchId}`))) {
+      throw new Error("An internal working folder requires an existing execution of the owning Branch");
+    }
+    const hostPath = managedWorkingDirectory ? join(projectDir(this.dataDir, id), "workspace") : input.hostPath!;
     const now = new Date().toISOString();
     const defaultEngine = input.defaultEngine ?? "codex";
     const record: ProjectJson = {
       id,
       ...(input.chatOwned ? { ownerConversationId: conversationId } : {}),
       label: input.label,
-      hostPath: input.hostPath,
+      hostPath,
       createdAt: now,
       lastUsedAt: now,
       defaultEngine,
@@ -406,8 +414,10 @@ export class AgentWorkspaceCatalogAuthority {
       } : {}),
     };
     const conversation: ConversationJson = {
-      id: conversationId, projectId: id, title: "New Chat", defaultEngine,
-      workingDirectory: input.hostPath, instructions: "", chatOwnershipVersion: 1,
+      ...(input.branchId ? { branchId: input.branchId } : {}),
+      ...(input.executionId ? { executionId: input.executionId } : {}),
+      id: conversationId, projectId: id, title: input.branchId?input.label:"New Chat", defaultEngine,
+      workingDirectory: hostPath, instructions: "", chatOwnershipVersion: 1,
       ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}),
       ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}),
       ...(input.defaultSpeed ? { defaultSpeed: input.defaultSpeed } : {}),
@@ -424,6 +434,7 @@ export class AgentWorkspaceCatalogAuthority {
         rmSync(stagingRoot, { recursive: true });
       }
       writeJson(projectJsonPath(this.dataDir, stagingId), record);
+      if (managedWorkingDirectory) mkdirSync(join(stagingRoot, "workspace"), { recursive: true });
       mkdirSync(conversationDir(this.dataDir, stagingId, conversationId), { recursive: true });
       writeJson(conversationJsonPath(this.dataDir, stagingId, conversationId), conversation);
       mkdirSync(agentsDir(this.dataDir, stagingId), { recursive: true });
@@ -452,8 +463,8 @@ export class AgentWorkspaceCatalogAuthority {
       publishedIdentity = { dev: staged.dev, ino: staged.ino };
       fsyncDirectory(projectsDir(this.dataDir));
       this.db.transaction((tx) => {
-        tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, lastConversationId: conversationId }).run();
-        tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, defaultSpeed: input.defaultSpeed ?? null, createdAt: now, updatedAt: now, archived: 0 }).run();
+        tx.insert(projects).values({ id, label: input.label, hostPath, createdAt: now, lastUsedAt: now, defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, lastConversationId: conversationId }).run();
+        tx.insert(conversations).values({ branchId: input.branchId ?? null, executionId: input.executionId ?? null, id: conversationId, projectId: id, title: input.branchId?input.label:"New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, defaultSpeed: input.defaultSpeed ?? null, createdAt: now, updatedAt: now, archived: 0 }).run();
         for (const event of presets) {
           tx.insert(agentPresets).values({ ...event.preset, enabled: 1 }).run();
         }
@@ -473,7 +484,7 @@ export class AgentWorkspaceCatalogAuthority {
       fsyncDirectory(projectsDir(this.dataDir));
       throw error;
     }
-    return { id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}), ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}), lastConversationId: conversationId };
+    return { id, label: input.label, hostPath, createdAt: now, lastUsedAt: now, defaultEngine, ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}), ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}), lastConversationId: conversationId };
   }
 
   updateProject(id: string, input: UpdateProjectRequest): ProjectDto | undefined {
@@ -995,6 +1006,7 @@ export class AgentWorkspaceCatalogAuthority {
     return row ? {
       conversationId: row.conversationId,
       projectId: row.projectId,
+      ...(row.branchId ? { branchId: row.branchId } : {}),
       ...(row.tombstoneName ? { tombstoneName: row.tombstoneName } : {}),
       ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
       removalStarted: row.removalStarted === 1,
@@ -1015,6 +1027,7 @@ export class AgentWorkspaceCatalogAuthority {
       .map(row => ({
         conversationId: row.conversationId,
         projectId: row.projectId,
+        ...(row.branchId ? { branchId: row.branchId } : {}),
         ...(row.tombstoneName ? { tombstoneName: row.tombstoneName } : {}),
         ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
         removalStarted: row.removalStarted === 1,
@@ -1029,6 +1042,14 @@ export class AgentWorkspaceCatalogAuthority {
   }
 
   markConversationDeletionPending(id: string): ConversationDeletionReceipt {
+    if (this.db.get(sql`SELECT 1 FROM branches WHERE chat_id = ${id} LIMIT 1`)) {
+      throw new Error("Delete this Chat's Branches after draining their executions before deleting the Chat");
+    }
+    if(this.db.get(sql`SELECT 1 FROM conversations c WHERE c.id=${id} AND c.branch_id IS NOT NULL AND (
+      NOT EXISTS(SELECT 1 FROM branch_installation_resources r WHERE r.local_id=c.id AND r.agent_ref='' AND r.state='retiring')
+      OR EXISTS(SELECT 1 FROM branch_executions e WHERE e.id=c.branch_execution_id AND e.state IN ('queued','running','waiting'))
+      OR EXISTS(SELECT 1 FROM branch_resource_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.chat_id=c.id AND e.state IN ('queued','running','waiting'))
+    )`))throw new Error('Remove this Chat through a reviewed Branch update and wait for existing executions to drain');
     const prior = this.getConversationDeletionReceipt(id);
     if (prior) return prior;
     const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
@@ -1038,6 +1059,7 @@ export class AgentWorkspaceCatalogAuthority {
     this.db.insert(conversationDeletionReceipts).values({
       conversationId: id,
       projectId: row.projectId,
+      branchId: row.branchId,
       tombstoneName: `.${id}.deleting-${ownershipToken}`,
       ownershipToken,
       removalStarted: 0,
@@ -1248,6 +1270,8 @@ export class AgentWorkspaceCatalogAuthority {
       id: row.id,
       projectId: row.projectId,
       title: row.title,
+      ...(row.branchId ? { branchId: row.branchId } : {}),
+      ...(row.executionId ? { executionId: row.executionId } : {}),
       workingDirectory: context.workingDirectory,
       instructions: context.instructions,
       defaultEngine: row.defaultEngine ?? undefined,

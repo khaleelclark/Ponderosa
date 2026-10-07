@@ -1,4 +1,5 @@
 import { collaborationPresentation, type AllChatPageDto } from "@ponderosa/core";
+import { decisionInProduct, projectInProduct, requestProduct, resourceInProduct } from "../product-scope.js";
 import type { FastifyInstance } from "fastify";
 import type { SearchRoutesContext } from "../server-context.js";
 import { searchWorkspaceFiles } from "../file-search.js";
@@ -22,11 +23,11 @@ export function registerSearchRoutes(
     if (request.query.conversationId) {
       const conversation = store.getConversation(request.query.conversationId);
       const project = conversation && store.getProject(conversation.projectId);
-      if (!conversation || !project || conversation.projectId !== request.query.projectId || conversation.archived || conversation.deletedAt || !conversation.workingDirectory) return reply.code(404).send({ error: "Chat folder is unavailable" });
+      if (!conversation || !project || !resourceInProduct(store, "conversation", conversation.id, requestProduct(request)) || conversation.projectId !== request.query.projectId || conversation.archived || conversation.deletedAt || !conversation.workingDirectory) return reply.code(404).send({ error: "Chat folder is unavailable" });
       roots = [{ ...project, hostPath: conversation.workingDirectory, label: conversation.title }];
     } else if (request.query.projectId) {
       const project = store.getProject(request.query.projectId);
-      if (!project) return reply.code(404).send({ error: "Project not found" });
+      if (!project || !projectInProduct(store, project.id, requestProduct(request))) return reply.code(404).send({ error: "Project not found" });
       roots = [project];
     }
     if (filesInFlight >= 2) return reply.header("Retry-After", "2").code(429).send({ error: "File search is busy. Wait a moment, then try again." });
@@ -65,7 +66,7 @@ export function registerSearchRoutes(
       }
       const messagePage = combined?.messagesDone
         ? { items: [], history: { limit, hasMore: false } }
-        : store.getAllChatPage({ limit, cursor: combined?.messages });
+        : store.getAllChatPage({ limit, cursor: combined?.messages,product:requestProduct(request) });
       const receiptMaps = new Map([...new Set(
         messagePage.items.map(item => item.project.id),
       )].map(projectId => [
@@ -117,7 +118,7 @@ export function registerSearchRoutes(
       });
       const decisionPage = combined?.decisionsDone
         ? { events: [], hasMore: false as const }
-        : workspace.listDecisionEventPage({ limit, before: combined?.decisions });
+        : workspace.listDecisionEventPage({ limit, include:decision=>decisionInProduct(store,decision,requestProduct(request)), before: combined?.decisions });
       const decisions = decisionPage.events
         .flatMap((event) => {
           const decision = event.decision;

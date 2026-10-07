@@ -47,13 +47,14 @@ export class AgentDeletionAuthority {
 
   getAgentDeletionReceiptByPreviewHash(previewHash: string): AgentDeletionReceipt | undefined {
     const row = this.client.prepare(`SELECT * FROM agent_deletion_receipts WHERE preview_hash = ?`).get(previewHash) as {
-      id: string; project_id: string; preview_hash: string; root_agent_ids_json: string;
+      id: string; project_id: string; product_scope: AgentDeletionReceipt["productScope"]; preview_hash: string; root_agent_ids_json: string;
       deleted_agent_ids_json: string; storage_cleanup_completed: number; server_cleanup_completed: number;
       last_error: string | null; created_at: string; updated_at: string; completed_at: string | null;
     } | undefined;
     return row ? {
       id: row.id,
       projectId: row.project_id,
+      productScope: row.product_scope,
       previewHash: row.preview_hash,
       rootAgentIds: JSON.parse(row.root_agent_ids_json) as string[],
       deletedAgentIds: JSON.parse(row.deleted_agent_ids_json) as string[],
@@ -227,10 +228,19 @@ export class AgentDeletionAuthority {
           this.authorizeAgentManagementPlan(authorization, current.affectedAgents.map((agent) => agent.id));
         }
         committedPreview = current;
+        const ownershipScopes = new Set((this.client.prepare(`
+          SELECT CASE WHEN chat.branch_id IS NULL THEN 'dev' ELSE 'branches' END productScope
+          FROM agents agent JOIN conversations chat ON chat.id=agent.conversation_id
+          WHERE agent.id IN (${current.affectedAgents.map(() => "?").join(",")})
+        `).all(...current.affectedAgents.map(agent => agent.id)) as Array<{productScope:"dev"|"branches"}>).map(row=>row.productScope));
+        const productScope: AgentDeletionReceipt["productScope"] = ownershipScopes.size===1
+          ? [...ownershipScopes][0]!
+          : "mixed";
         const receiptId = `agent-deletion-${current.previewHash}`;
         tx.insert(agentDeletionReceipts).values({
           id: receiptId,
           projectId: current.projectId,
+          productScope,
           previewHash: current.previewHash,
           rootAgentIdsJson: JSON.stringify(current.rootAgentIds),
           deletedAgentIdsJson: JSON.stringify(current.affectedAgents.map((agent) => agent.id)),

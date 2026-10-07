@@ -1,19 +1,30 @@
 import type { FastifyInstance } from "fastify";
 import type { ServerContext } from "../server-context.js";
 import { parseTokenUsageRange } from "../token-usage.js";
+import { requestProduct } from "../product-scope.js";
 
 export function registerUsageRoutes(
   app: FastifyInstance,
   { store, tokenUsage }: ServerContext,
 ): void {
   app.get<{ Querystring: { from?: string; to?: string } }>("/api/usage", async (request, reply) => {
-    try { return tokenUsage({ type: "overall" }, parseTokenUsageRange(request.query)); }
+    try { return tokenUsage({ type: "overall", product: requestProduct(request) }, parseTokenUsageRange(request.query)); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
   });
 
   app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/projects/:id/usage", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    try { return tokenUsage({ type: "project", id: request.params.id }, parseTokenUsageRange(request.query)); }
+    try { return tokenUsage({ type: "project", id: request.params.id, product: requestProduct(request) }, parseTokenUsageRange(request.query)); }
+    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
+  });
+
+  app.get<{ Querystring: { from?: string; to?: string } }>("/api/branches/usage", async (request, reply) => {
+    try { return tokenUsage({ type: "branches" }, parseTokenUsageRange(request.query)); }
+    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/branches/:id/usage", async (request, reply) => {
+    try { return tokenUsage({ type: "branch", id: request.params.id }, parseTokenUsageRange(request.query)); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
   });
   app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/conversations/:id/usage", async (request, reply) => {

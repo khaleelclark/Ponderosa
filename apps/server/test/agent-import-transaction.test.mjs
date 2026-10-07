@@ -7,15 +7,28 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import Fastify from "fastify";
-import { AgentStore } from "@ponderosa/agents";
+import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
 import { AssetStore } from "../dist/assets.js";
 import { encodePortableArtifact } from "../dist/agent-package-codec.js";
 import { registerAgentPackageRoutes } from "../dist/routes/agent-packages.js";
+import {registerProductScope,rewriteProductUrl} from "../dist/product-scope.js";
+
+function importUpload(label="Agent import",conversationId="chat-a") {
+  const metadata={conversationId,engineMapping:{codex:"codex"}};
+  const portable={schema:"ponderosa.agent-package.v1",mode:"template",kind:"agent",exportedAt:new Date().toISOString(),sourceLabel:label,rootRef:"root",agents:[{ref:"root",title:"Imported",engine:"codex",managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]};
+  return Buffer.from(JSON.stringify(metadata)+"\n"+JSON.stringify(portable));
+}
+const scopedStore=(extra={})=>({
+  getProject:id=>({id}),
+  getConversation:id=>({id,projectId:"project-a",branchId:undefined,archived:false}),
+  sqlite:{prepare:()=>({get:()=>({branch_id:null})})},
+  ...extra,
+});
 
 function registerImportRoutes(app, dataDir, getProject = (id) => ({ id })) {
   registerAgentPackageRoutes(app, {
     dataDir,
-    store: { getProject },
+    store: scopedStore({ getProject }),
     coordination: {},
     assets: {},
     engines: new Map(),
@@ -40,7 +53,7 @@ test("background import replay precedes current Project validation", async (t) =
     "content-type": "application/vnd.ponderosa.agent-import",
     "idempotency-key": "stable-import",
   };
-  const payload = Buffer.from("package bytes");
+  const payload = importUpload("replay");
   const first = await app.inject({
     method: "POST",
     url: "/api/projects/project-a/agent-import-operations",
@@ -57,6 +70,11 @@ test("background import replay precedes current Project validation", async (t) =
   });
   assert.ok([200, 202].includes(replay.statusCode));
   assert.equal(replay.json().id, first.json().id);
+  for(let i=0;i<100;i++){
+    const status=await app.inject({url:`/api/projects/project-a/agent-import-operations/${first.json().id}`});
+    if(status.json().status!=="pending")break;
+    await new Promise(resolve=>setTimeout(resolve,5));
+  }
 });
 
 test("completed copy replay does not reread its source Agent", async (t) => {
@@ -66,7 +84,7 @@ test("completed copy replay does not reread its source Agent", async (t) => {
   let sourceReads = 0;
   registerAgentPackageRoutes(app, {
     dataDir,
-    store: {
+    store: scopedStore({
       beginAgentCreationOperation: () => ({ operation: {
         id: "copy-operation-a",
         projectId: "project-a",
@@ -74,6 +92,8 @@ test("completed copy replay does not reread its source Agent", async (t) => {
         kind: "import",
         idempotencyKey: "stable-copy",
         payloadHash: "ignored-by-stub",
+        conversationId:"chat-a",
+        productScope:"dev",
         status: "completed",
         agentIds: ["copied-a"],
         artifactIds: [],
@@ -81,7 +101,7 @@ test("completed copy replay does not reread its source Agent", async (t) => {
         result: { rootAgentId: "copied-a", agentIds: ["copied-a"] },
       } }),
       getAgent: () => { sourceReads += 1; return undefined; },
-    },
+    }),
     coordination: {},
     assets: {},
     engines: new Map(),
@@ -116,7 +136,7 @@ test("JSON copy and synchronous import fingerprints ignore object key order", as
   let current;
   registerAgentPackageRoutes(app, {
     dataDir,
-    store: {
+    store: scopedStore({
       beginAgentCreationOperation: (input) => {
         hashes.push(input.payloadHash);
         current = completed(input);
@@ -124,7 +144,7 @@ test("JSON copy and synchronous import fingerprints ignore object key order", as
       },
       getAgentCreationOperation: () => current,
       getAgent: () => undefined,
-    },
+    }),
     coordination: {}, assets: {}, engines: new Map(), deletingProjectIds: new Set(),
     deletingConversationIds: new Set(), deletingAgentIds: new Set(), agentCreationConversationLeases: new Map(),
     cachedModelOptions: () => [], appendWorkspace: () => {}, agentMessages: () => {},
@@ -248,7 +268,7 @@ test("generated-file import rollback clears its exact authority before retry", a
   assert.ok(assets.authority.generatedArtifact(project.id, artifactId));
 });
 
-test("unfinished copy retry uses the first durable source snapshot", async (t) => {
+test("copy authorization precedes snapshot persistence", async (t) => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-copy-snapshot-"));
   let store = new AgentStore(dataDir);
   let app = Fastify();
@@ -298,7 +318,7 @@ test("unfinished copy retry uses the first durable source snapshot", async (t) =
     payload: { sourceAgentId: source.id, conversationId: chat.id },
   };
   const first = await app.inject(request);
-  assert.equal(first.statusCode, 400);
+  assert.equal(first.statusCode, 404);
 
   await app.close();
   store.close();
@@ -309,10 +329,10 @@ test("unfinished copy retry uses the first durable source snapshot", async (t) =
   register();
   const retry = await app.inject(request);
   assert.equal(retry.statusCode, 201);
-  assert.equal(store.getAgent(retry.json().rootAgentId).title, "Original source");
+  assert.equal(store.getAgent(retry.json().rootAgentId).title, "Changed source");
 });
 
-test("startup preserves a rolling-back copy snapshot for its exact retry", async (t) => {
+test("copy authorization does not persist rollback authority", async (t) => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-copy-rollback-snapshot-"));
   let store = new AgentStore(dataDir);
   let app = Fastify();
@@ -362,35 +382,23 @@ test("startup preserves a rolling-back copy snapshot for its exact retry", async
     payload: { sourceAgentId: source.id, conversationId: chat.id },
   };
   const first = await app.inject(request);
-  assert.equal(first.statusCode, 400);
-  const operation = store.sqlite.prepare(`
-    SELECT id FROM agent_creation_operations WHERE idempotency_key = ?
-  `).get("rolling-copy-snapshot");
-  const snapshot = path.join(dataDir, "agent-import-operations", `${operation.id}.copy.payload`);
-  assert.equal(existsSync(snapshot), true);
-  store.updateAgentCreationOperation(operation.id, { status: "rolling_back" });
+  assert.equal(first.statusCode, 404);
+  assert.equal(store.sqlite.prepare("SELECT COUNT(*) n FROM agent_creation_operations WHERE idempotency_key=?").get("rolling-copy-snapshot").n,0);
 
   await app.close();
   store.close();
   store = new AgentStore(dataDir);
   app = Fastify();
   register();
-  await app.inject({
-    method: "GET",
-    url: `/api/projects/${project.id}/agent-import-operations/${randomUUID()}`,
-  });
-  assert.equal(existsSync(snapshot), true);
-  store.updateAgentCreationOperation(operation.id, { status: "rolled_back" });
   store.updateAgent(source.id, { title: "Changed source" });
   deletingConversationIds.clear();
 
   const retry = await app.inject(request);
   assert.equal(retry.statusCode, 201);
-  assert.equal(store.getAgent(retry.json().rootAgentId).title, "Original source");
-  assert.equal(existsSync(snapshot), false);
+  assert.equal(store.getAgent(retry.json().rootAgentId).title, "Changed source");
 });
 
-test("completed synchronous import replays before destination validation", async (t) => {
+test("synchronous import authorizes its destination before completed replay", async (t) => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-sync-import-replay-"));
   const app = Fastify();
   t.after(async () => { await app.close(); await rm(dataDir, { recursive: true, force: true }); });
@@ -414,6 +422,7 @@ test("completed synchronous import replays before destination validation", async
       beginAgentCreationOperation: () => ({ operation: completed }),
       getAgentCreationOperation: () => completed,
       getProject: () => { projectReads += 1; return undefined; },
+      getConversation:()=>undefined,
     },
     coordination: {},
     assets: {},
@@ -433,9 +442,8 @@ test("completed synchronous import replays before destination validation", async
     headers: { "idempotency-key": "stable-sync-import" },
     payload: { package: {}, conversationId: "deleted-chat", engineMapping: {} },
   });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.json().rootAgentId, "imported-a");
-  assert.equal(projectReads, 0);
+  assert.equal(response.statusCode, 404);
+  assert.equal(projectReads, 1);
 });
 
 test("background import idempotency is bound to the exact payload", async (t) => {
@@ -447,13 +455,19 @@ test("background import idempotency is bound to the exact payload", async (t) =>
     "content-type": "application/vnd.ponderosa.agent-import",
     "idempotency-key": "same-request",
   };
-  const first = await app.inject({ method: "POST", url: "/api/projects/project-a/agent-import-operations", headers, payload: Buffer.from("first") });
+  const firstPayload=importUpload("first");
+  const first = await app.inject({ method: "POST", url: "/api/projects/project-a/agent-import-operations", headers, payload: firstPayload });
   assert.equal(first.statusCode, 202);
-  assert.equal(first.json().payloadHash, createHash("sha256").update("first").digest("hex"));
+  assert.equal(first.json().payloadHash, createHash("sha256").update(firstPayload).digest("hex"));
 
-  const conflict = await app.inject({ method: "POST", url: "/api/projects/project-a/agent-import-operations", headers, payload: Buffer.from("different") });
+  const conflict = await app.inject({ method: "POST", url: "/api/projects/project-a/agent-import-operations", headers, payload: importUpload("different") });
   assert.equal(conflict.statusCode, 409);
   assert.match(conflict.json().error, /reused with different input/u);
+  for(let i=0;i<100;i++){
+    const status=await app.inject({url:`/api/projects/project-a/agent-import-operations/${first.json().id}`});
+    if(status.json().status!=="pending")break;
+    await new Promise(resolve=>setTimeout(resolve,5));
+  }
 });
 
 test("startup hydration removes payloads for terminal import operations", async (t) => {
@@ -469,6 +483,8 @@ test("startup hydration removes payloads for terminal import operations", async 
     requestId: "terminal-request",
     payloadHash: createHash("sha256").update("already consumed").digest("hex"),
     projectId: "project-a",
+    conversationId:"chat-a",
+    product:"dev",
     sourceLabel: "Agent import",
     phase: "completed",
     status: "completed",
@@ -507,6 +523,8 @@ test("startup quarantines one malformed import journal without poisoning valid o
     requestId: "valid-operation",
     payloadHash: createHash("sha256").update("already consumed").digest("hex"),
     projectId: "project-a",
+    conversationId:"chat-a",
+    product:"dev",
     sourceLabel: "Valid import",
     phase: "completed",
     status: "completed",
@@ -591,7 +609,29 @@ test("a failed operation directory sync is never acknowledged from read-back", a
       "content-type": "application/vnd.ponderosa.agent-import",
       "idempotency-key": "failed-fsync-request",
     },
-    payload: Buffer.from("payload"),
+    payload: importUpload("fsync"),
   });
   assert.equal(response.statusCode, 500);
+});
+
+
+test("Agent package admission and operation status are bound to the requested product",async t=>{
+  const dataDir=await mkdtemp(path.join(tmpdir(),"ponderosa-import-product-scope-"));
+  const store=new AgentStore(dataDir),workspace=new WorkspaceStore(dataDir),app=Fastify({rewriteUrl:rewriteProductUrl});
+  t.after(async()=>{await app.close();store.close();await rm(dataDir,{recursive:true,force:true});});
+  const project=store.createProject({label:"Dev",hostPath:dataDir,defaultEngine:"codex"}),chat=store.getConversation(project.lastConversationId);
+  registerProductScope(app,store,workspace,()=>undefined,()=>false);
+  registerAgentPackageRoutes(app,{dataDir,store,coordination:{},assets:{},engines:new Map(),deletingProjectIds:new Set(),deletingConversationIds:new Set(),deletingAgentIds:new Set(),agentCreationConversationLeases:new Map(),cachedModelOptions:()=>[],appendWorkspace(){},agentMessages:()=>[],createOperationalNotification(){}});
+  const portable={schema:"ponderosa.agent-package.v1",mode:"template",kind:"agent",exportedAt:new Date().toISOString(),sourceLabel:"Scoped",rootRef:"root",agents:[{ref:"root",title:"Scoped",engine:"codex",managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]};
+  const body={conversationId:chat.id,engineMapping:{codex:"codex"},package:portable};
+  const sync=await app.inject({method:"POST",url:`/api/branches/engine/projects/${project.id}/import-agents`,headers:{"idempotency-key":"scoped-sync"},payload:body});
+  assert.equal(sync.statusCode,404,sync.body);assert.equal(store.sqlite.prepare("SELECT COUNT(*) n FROM agent_creation_operations").get().n,0);
+  const queued=await app.inject({method:"POST",url:`/api/branches/engine/projects/${project.id}/agent-import-operations`,headers:{"content-type":"application/vnd.ponderosa.agent-import","idempotency-key":"scoped-queue"},payload:Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:"codex"}})+"\n"+JSON.stringify(portable))});
+  assert.equal(queued.statusCode,404,queued.body);
+  const operationId=randomUUID(),now=new Date().toISOString(),directory=path.join(dataDir,"agent-import-operations");
+  await mkdir(directory,{recursive:true});await writeFile(path.join(directory,`${operationId}.json`),JSON.stringify({id:operationId,requestId:"scoped-status",payloadHash:"0".repeat(64),projectId:project.id,conversationId:chat.id,product:"dev",sourceLabel:"Scoped",phase:"completed",status:"completed",createdAt:now,updatedAt:now,result:{rootAgentId:"agent",agentIds:["agent"]}}));
+  const restarted=Fastify({rewriteUrl:rewriteProductUrl});registerProductScope(restarted,store,workspace,()=>undefined,()=>false);registerAgentPackageRoutes(restarted,{dataDir,store,coordination:{},assets:{},engines:new Map(),deletingProjectIds:new Set(),deletingConversationIds:new Set(),deletingAgentIds:new Set(),agentCreationConversationLeases:new Map(),cachedModelOptions:()=>[],appendWorkspace(){},agentMessages:()=>[],createOperationalNotification(){}});
+  t.after(()=>restarted.close());
+  assert.equal((await restarted.inject(`/api/projects/${project.id}/agent-import-operations/${operationId}`)).statusCode,200);
+  assert.equal((await restarted.inject(`/api/branches/engine/projects/${project.id}/agent-import-operations/${operationId}`)).statusCode,404);
 });

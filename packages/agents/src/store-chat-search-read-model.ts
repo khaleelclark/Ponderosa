@@ -10,6 +10,7 @@ import {
 } from "./chat-search.js";
 
 export interface GlobalChatSearchInput {
+  product?: "dev" | "branches";
   query?: string;
   limit?: number;
   chatKind?: "conversation" | "agent";
@@ -49,6 +50,10 @@ export class AgentChatSearchReadModel {
       chatKind: "conversation" | "agent";
       chatId: string;
       chatTitle: string;
+      ownerChatId: string | null;
+      ownerChatTitle: string | null;
+      ownerBranchId: string | null;
+      ownerBranchName: string | null;
       messageId: string;
       communicationEventId: string;
       role: "user" | "assistant" | "system";
@@ -67,6 +72,10 @@ export class AgentChatSearchReadModel {
           search.chat_kind AS chatKind,
           search.chat_id AS chatId,
           COALESCE(conversation.title, chat_agent.title) AS chatTitle,
+          owner_conversation.id AS ownerChatId,
+          owner_conversation.title AS ownerChatTitle,
+          owner_branch.id AS ownerBranchId,
+          owner_branch.name AS ownerBranchName,
           search.message_id AS messageId,
           search.communication_event_id AS communicationEventId,
           search.role AS role,
@@ -80,8 +89,21 @@ export class AgentChatSearchReadModel {
           ON search.chat_kind = 'conversation' AND conversation.id = search.chat_id AND conversation.archived = 0
         LEFT JOIN agents chat_agent
           ON search.chat_kind = 'agent' AND chat_agent.id = search.chat_id AND chat_agent.archived = 0
+        LEFT JOIN conversations owner_conversation
+          ON owner_conversation.id = COALESCE(conversation.id, chat_agent.conversation_id)
+        LEFT JOIN branches owner_branch ON owner_branch.id = owner_conversation.branch_id
         LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
         WHERE (conversation.id IS NOT NULL OR chat_agent.id IS NOT NULL)
+          AND NOT EXISTS (
+            SELECT 1 FROM branch_installation_resources inactive_chat
+            WHERE inactive_chat.local_id = COALESCE(conversation.id, chat_agent.conversation_id)
+              AND inactive_chat.state != 'active'
+          )
+          AND (search.chat_kind != 'agent' OR NOT EXISTS (
+            SELECT 1 FROM branch_installation_resources inactive_agent
+            WHERE inactive_agent.local_id = chat_agent.id AND inactive_agent.state != 'active'
+          ))
+          AND (? IS NULL OR (COALESCE(conversation.branch_id,(SELECT branch_id FROM conversations WHERE id=chat_agent.conversation_id)) IS NOT NULL) = ?)
           AND (? IS NULL OR search.chat_kind = ?)
           AND NOT (
             search.chat_kind = 'agent' AND EXISTS (
@@ -98,6 +120,7 @@ export class AgentChatSearchReadModel {
         LIMIT ?
       `)
       .all(
+        input.product ?? null, input.product === "branches" ? 1 : 0,
         input.chatKind ?? null,
         input.chatKind ?? null,
         maxScannedMessages + 1,
@@ -110,18 +133,28 @@ export class AgentChatSearchReadModel {
             conversation.title AS chatTitle,
             conversation.project_id AS projectId,
             project.label AS projectLabel,
+            owner_branch.id AS ownerBranchId,
+            owner_branch.name AS ownerBranchName,
             conversation.updated_at AS updatedAt
           FROM conversations conversation
           JOIN projects project ON project.id = conversation.project_id
+          LEFT JOIN branches owner_branch ON owner_branch.id = conversation.branch_id
           WHERE conversation.archived = 0
+            AND NOT EXISTS (
+              SELECT 1 FROM branch_installation_resources inactive_chat
+              WHERE inactive_chat.local_id = conversation.id AND inactive_chat.state != 'active'
+            )
+            AND (? IS NULL OR (conversation.branch_id IS NOT NULL)=?)
           ORDER BY conversation.updated_at DESC, conversation.id DESC
           LIMIT ?
         `)
-        .all(recentLimit) as Array<{
+        .all(input.product ?? null,input.product === "branches" ? 1 : 0,recentLimit) as Array<{
           chatId: string;
           chatTitle: string;
           projectId: string;
           projectLabel: string;
+          ownerBranchId: string | null;
+          ownerBranchName: string | null;
           updatedAt: string;
         }>
       : [];
@@ -148,7 +181,10 @@ export class AgentChatSearchReadModel {
             : { kind: "agent", label: "Agent" };
       return {
         project: { id: row.projectId, label: row.projectLabel },
-        chat: { kind: row.chatKind, id: row.chatId, title: row.chatTitle },
+        chat: { kind: row.chatKind, id: row.chatId, title: row.chatTitle,
+          ...(row.ownerBranchId && row.ownerBranchName ? { ownerBranch: { id: row.ownerBranchId, name: row.ownerBranchName } } : {}),
+          ...(row.chatKind === 'agent' && row.ownerChatId && row.ownerChatTitle ? { ownerChat: { id: row.ownerChatId, title: row.ownerChatTitle } } : {}),
+        },
         messageId: row.messageId,
         communicationEventId: row.communicationEventId,
         author,
@@ -209,6 +245,7 @@ export class AgentChatSearchReadModel {
             kind: "conversation",
             id: conversation.chatId,
             title: conversation.chatTitle,
+            ...(conversation.ownerBranchId && conversation.ownerBranchName ? { ownerBranch: { id: conversation.ownerBranchId, name: conversation.ownerBranchName } } : {}),
           },
           lastActivityAt: conversation.updatedAt,
           unreadCount:

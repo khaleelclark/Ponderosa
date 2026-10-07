@@ -209,7 +209,7 @@ export const queryKeys = {
   tokenUsage: {
     all: ["token-usage"] as const,
     detail: (
-      scope: "overall" | "project" | "agent" | "conversation",
+      scope: "overall" | "branches" | "project" | "branch" | "agent" | "conversation",
       scopeId: string | undefined,
       rangeKey: "24h" | "7d" | "30d" | "all",
     ) => ["token-usage", scope, scopeId, rangeKey] as const,
@@ -224,7 +224,8 @@ export const queryKeys = {
       query: string,
       limit = 25,
       kind?: "conversation" | "agent",
-    ) => ["global-search", query, limit, kind ?? "all"] as const,
+      product: "dev" | "branches" = "dev",
+    ) => ["global-search", product, query, limit, kind ?? "all"] as const,
   },
   projectBrowser: {
     all: ["project-browser"] as const,

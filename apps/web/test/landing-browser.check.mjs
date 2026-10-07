@@ -21,7 +21,7 @@ try {
   const page=await browser.newPage();
   const origin=`http://127.0.0.1:${server.address().port}`;
   await page.goto(origin);
-  await page.waitForFunction(()=>document.querySelector("#route")?.textContent.includes('"kind":"create"'));
+  await page.waitForFunction(()=>document.querySelector("#route")?.textContent.includes('"kind":"home"'));
   await page.goto(origin+"/projects/old-project?view=settings");
   await page.waitForURL("**/home");
   assert.equal(JSON.parse(await page.locator("#route").innerText()).kind,"home");
@@ -37,5 +37,5 @@ try {
   await page.waitForURL("**/projects/p/chats/c");
   assert.equal(JSON.parse(await page.locator("#route").innerText()).kind,"conversation");
   await page.close();
-  console.log("PASS launch: unsaved Chat default, restored workspace, direct link precedence, logo and browser Back");
+  console.log("PASS launch: Home default, restored workspace, direct link precedence, logo and browser Back");
 }finally{await browser?.close();server?.close();await rm(output,{recursive:true,force:true});}

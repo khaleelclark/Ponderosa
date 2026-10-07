@@ -484,7 +484,8 @@ export interface TriggerFilesystemBurst {
   triggerId: string;
   occurrenceKey: string;
   projectId: string;
-  agentId: string;
+  agentId?: string;
+  branchId?: string;
   startedAt: string;
   lastAt: string;
   eventCount: number;
@@ -496,7 +497,8 @@ export interface CreateTriggerDefinitionInput {
   id?: string;
   projectId: string;
   conversationId: string;
-  targetAgentId: string;
+  targetAgentId?: string;
+  branchId?: string;
   name: string;
   instructions: string;
   sourceKind: TriggerSourceKind;
@@ -510,6 +512,7 @@ export interface CreateTriggerDefinitionInput {
 }
 
 export interface UpdateTriggerDefinitionInput {
+  branchId?: string;
   conversationId?: string;
   targetAgentId?: string;
   name?: string;
@@ -567,4 +570,10 @@ export interface CoordinationV3StoreOptions {
   managedArtifactAttachmentRevalidator?: (
     input: RuntimeManagedArtifactAttachmentAuthorizationV3,
   ) => void;
+}
+
+export interface BranchTriggerIntake {
+  triggerId: string;
+  branchId: string; occurrenceId: string; inputHash: string; payload: unknown;
+  provenance: Record<string, unknown>; payloadMediaType: string; now: string;
 }

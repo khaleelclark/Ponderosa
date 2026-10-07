@@ -256,6 +256,7 @@ function ConversationMessageComponent({
 const ConversationMessage = memo(ConversationMessageComponent);
 
 function ConversationHeader({
+  auditOnly,
   onChatSettings,
   activeView,
   agentWorkOpen,
@@ -272,6 +273,7 @@ function ConversationHeader({
   setDeleteOpen,
   setActiveView,
 }: {
+  auditOnly?: boolean;
   activeView: "main" | "collaboration" | "files" | "agents" | "triggers";
   onChatSettings(): void;
   agentWorkOpen: boolean;
@@ -299,11 +301,11 @@ function ConversationHeader({
           onOpenProject={onOpenProject}
         />
       }
-      actions={
+      actions={auditOnly?null:
         <>
-          <Tooltip title="Open Project Browser">
+          <Tooltip title="Open Chat browser">
             <IconButton
-              aria-label="Open Project Browser"
+              aria-label="Open Chat browser"
               onClick={onOpenProjectBrowser}
             >
               <LanguageIcon />
@@ -333,12 +335,12 @@ function ConversationHeader({
                 icon: <AddIcon fontSize="small" />,
                 onSelect: () => setAddAgentsOpen(true),
               },
-              {
+              ...(!conversation.branchId ? [{
                 label: "Delete",
                 icon: <DeleteOutlineIcon fontSize="small" />,
                 destructive: true,
                 onSelect: () => setDeleteOpen(true),
-              },
+              }] : []),
             ]}
           />
         </>
@@ -368,16 +370,16 @@ function ConversationHeader({
             label: "Files & Results",
             icon: <Inventory2OutlinedIcon fontSize="small" />,
           },
-          {
-            value: "agents",
+          ...(!auditOnly?[{
+            value: "agents" as const,
             label: "Agents",
             icon: <SmartToyOutlinedIcon fontSize="small" />,
-          },
-          {
-            value: "triggers",
+          }]:[]),
+          ...(!conversation.branchId ? [{
+            value: "triggers" as const,
             label: "Automations",
             icon: <BoltOutlinedIcon fontSize="small" />,
-          },
+          }] : []),
         ],
       }}
     />

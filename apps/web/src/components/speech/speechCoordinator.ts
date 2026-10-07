@@ -48,7 +48,7 @@ function fail(owner: Owner): void {
   if (active !== owner) return;
   try { release(owner); } finally { publish({ ownerId: owner.id, status: "error", error: "The browser could not read this message aloud." }); }
 }
-export function startSpeech(id: string, text: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null): void {
+export function startSpeech(id: string, text: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void): void {
   stopSpeech();
   const owner: Owner = { id };
   active = owner;
@@ -60,7 +60,7 @@ export function startSpeech(id: string, text: string, preferences: SpeechPrefere
     utterance.lang = navigator.language || "en-US";
     utterance.rate = preferences.speed;
     utterance.onstart = () => { if (active === owner) publish({ ownerId: id, status: "speaking" }); };
-    utterance.onend = () => { if (active === owner) stopSpeech(id); };
+    utterance.onend = () => { if (active === owner) { stopSpeech(id); onComplete?.(); } };
     utterance.onerror = () => fail(owner);
     window.speechSynthesis.speak(utterance);
     if (active === owner) publish({ ownerId: id, status: "speaking" });

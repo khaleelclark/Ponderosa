@@ -25,6 +25,7 @@ import {
   PROJECT_FILE_PREVIEW_WEIGHT,
   type ProjectFileAuthority,
 } from "./project-files.js";
+import {requestProduct} from "../product-scope.js";
 
 interface ArtifactRoutesContext {
   store: AgentStore;
@@ -149,11 +150,14 @@ export function registerArtifactRoutes(
     }
     const limit = Math.min(500, Math.max(1, Number(request.query.limit ?? 100) || 100));
     try {
+      const product=requestProduct(request);
       return store.getProjectArtifactPage(request.params.projectId, {
         limit,
         cursor: request.query.cursor,
         conversationId,
         search: request.query.q,
+        branchOwned: product === "branches",
+        scope: product,
       });
     } catch (error) {
       return reply.code(400).send({

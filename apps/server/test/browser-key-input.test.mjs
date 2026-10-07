@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {browserKeyEvent} from '../dist/chrome-cdp-driver.js';
+test('browser keys distinguish typing, shifted characters, shortcuts and navigation',()=>{
+ assert.equal(browserKeyEvent('a').text,'a');
+ assert.equal(browserKeyEvent('+').text,'+');
+ assert.equal(browserKeyEvent('Shift+a').text,'A');
+ assert.equal(browserKeyEvent('Shift+a').key,'A');
+ assert.equal(browserKeyEvent('Shift+1').text,'!');
+ assert.equal(browserKeyEvent('Shift+;').text,':');
+ assert.equal(browserKeyEvent('Space').text,' ');
+ assert.equal(browserKeyEvent('Ctrl+a').text,undefined);
+ assert.equal(browserKeyEvent('Ctrl+a').modifiers,2);
+ assert.equal(browserKeyEvent('Ctrl+a').windowsVirtualKeyCode,65);
+ assert.equal(browserKeyEvent('Control+Shift+a').text,undefined);
+ assert.equal(browserKeyEvent('Shift+Tab').windowsVirtualKeyCode,9);
+ assert.equal(browserKeyEvent('Shift+Tab').modifiers,8);
+ assert.equal(browserKeyEvent('ArrowDown').windowsVirtualKeyCode,40);
+ assert.equal(browserKeyEvent('PageDown').windowsVirtualKeyCode,34);
+ assert.equal(browserKeyEvent('Return').key,'Enter');
+ assert.equal(browserKeyEvent('Escape').text,undefined);
+ assert.equal(browserKeyEvent('ENTER').key,'Enter');
+ assert.equal(browserKeyEvent('CTRL+A').modifiers,2);
+ assert.equal(browserKeyEvent('PAGEDOWN').windowsVirtualKeyCode,34);
+});

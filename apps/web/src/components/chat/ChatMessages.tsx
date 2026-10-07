@@ -4,7 +4,7 @@ import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
-import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
+import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography, useMediaQuery } from "@mui/material";
 import { messageTagTokens, missingCollaborationRecipients, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CollaborationRecipientDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
 import { type ReactNode, type ComponentPropsWithoutRef, useEffect, useRef, useState } from "react";
@@ -28,7 +28,9 @@ function isLoopbackLink(url: URL): boolean {
 }
 
 function ScrollableMessageTable({node: _node, ...props}: ComponentPropsWithoutRef<"table"> & {node?: unknown}): JSX.Element {
+  const mobile = useMediaQuery("(max-width: 899.95px)");
   return <div style={{minWidth: 0, maxWidth: "100%"}}>
+    {mobile ? <Typography variant="caption" color="text.secondary">Swipe or scroll sideways to read the table.</Typography> : null}
     <div role="region" tabIndex={0} aria-label="Scrollable message table" style={{maxWidth: "100%", overflowX: "auto", overscrollBehaviorX: "contain"}}>
       <table {...props} />
     </div>

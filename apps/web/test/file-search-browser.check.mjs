@@ -24,19 +24,19 @@ try {
     assert.equal(await page.getByRole("button",{name:/Projects/}).count(),0);
     await page.getByRole("button",{name:"Files",exact:true}).click();
     await page.getByRole("group",{name:"Recent files",exact:true}).waitFor();
-    await page.getByRole("option",{name:"Open file report.txt in Workspace",exact:true}).waitFor();
+    await page.getByRole("option",{name:"Open file report.txt",exact:true}).waitFor();
     const input=page.getByRole("combobox",{name:"Search Ponderosa"});
     await input.fill("report");
-    await page.getByRole("option",{name:"Open file report.txt in Workspace",exact:true}).waitFor();
+    await page.getByRole("option",{name:"Open file report.txt",exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     await page.screenshot({path:`/tmp/file-search-${width}.png`});
     await input.press("ArrowDown");await input.press("Enter");
     assert.deepEqual(JSON.parse(await page.locator("#selected-route").innerText()),{kind:"workspaceFile",projectId:"p",path:"docs/report.txt"});
     await page.getByRole("button",{name:"Open search",exact:true}).click();
     await page.getByRole("button",{name:"All",exact:true}).click();
-    await page.getByRole("option",{name:"Open file report.txt in Workspace",exact:true}).waitFor();
+    await page.getByRole("option",{name:"Open file report.txt",exact:true}).waitFor();
     await page.getByRole("button",{name:"Chats",exact:true}).click();
-    assert.equal(await page.getByRole("option",{name:"Open file report.txt in Workspace",exact:true}).count(),0);
+    assert.equal(await page.getByRole("option",{name:"Open file report.txt",exact:true}).count(),0);
     assert.deepEqual(errors,[]);
     await page.close();console.log(`PASS ${width}: Files and All, scope isolation, keyboard file navigation, no Projects or overflow`);
   }

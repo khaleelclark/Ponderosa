@@ -121,7 +121,6 @@ function GeneralSettingsSection({
   onRolloverFraction,
   onSaveRollover,
   rolloverSaving,
-  rolloverSaved,
   rolloverSaveError,
 }: {
   preferences: WorkspacePreferencesDto;
@@ -142,7 +141,6 @@ function GeneralSettingsSection({
   onRolloverFraction(value: string): void;
   onSaveRollover(tokens: number, fraction: number): void;
   rolloverSaving: boolean;
-  rolloverSaved: boolean;
   rolloverSaveError?: string;
 }): JSX.Element {
   const parsedRolloverTokens = Number(rolloverTokens);
@@ -290,9 +288,9 @@ function GeneralSettingsSection({
               parsedRolloverFraction,
             )}
           >
-            {rolloverSaving ? "Saving…" : "Save Rollover Limits"}
+            {rolloverSaving ? "Saving Rollover Limits…" : "Save Rollover Limits"}
           </Button>
-          {rolloverSaveError ? <Alert severity="error">{rolloverSaveError}</Alert> : rolloverSaved ? <Alert severity="success" role="status">Rollover limits saved</Alert> : null}
+          {rolloverSaveError ? <Alert severity="error" role="alert">{rolloverSaveError}</Alert> : null}
         </Stack>
       </Paper>
     </Stack>
@@ -829,8 +827,10 @@ export function WorkspaceSettingsView({
   onToggleColorMode,
   onPreferences,
   onSavePreferences,
+  onDirtyChange,
   section = "general",
   activityProjectId,
+  showHeader = true,
 }: {
   preferences: WorkspacePreferencesDto;
   engines: EngineDto[];
@@ -841,8 +841,10 @@ export function WorkspaceSettingsView({
   onSavePreferences(
     patch: Partial<WorkspacePreferencesDto>,
   ): Promise<WorkspacePreferencesDto>;
+  onDirtyChange?(dirty: boolean): void;
   section?: "profile" | "general" | "providers" | "notifications" | "activity";
   activityProjectId?: string;
+  showHeader?: boolean;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const validationProject = projects[0];
@@ -875,10 +877,10 @@ export function WorkspaceSettingsView({
   const [limitDirty, setLimitDirty] = useState(false);
   const [rolloverTokensDirty, setRolloverTokensDirty] = useState(false);
   const [rolloverFractionDirty, setRolloverFractionDirty] = useState(false);
-  useReloadBlocker(
-    "workspace-settings",
-    instructionsDirty || limitDirty || rolloverTokensDirty || rolloverFractionDirty,
-  );
+  const settingsDirty=instructionsDirty||limitDirty||rolloverTokensDirty||rolloverFractionDirty;
+  useReloadBlocker("workspace-settings", settingsDirty);
+  useEffect(()=>{onDirtyChange?.(settingsDirty)},[onDirtyChange,settingsDirty]);
+  useEffect(()=>()=>onDirtyChange?.(false),[onDirtyChange]);
   const instructionsRef = useRef(instructions);
   const limitRef = useRef(limit);
   const rolloverTokensRef = useRef(rolloverTokens);
@@ -972,10 +974,13 @@ export function WorkspaceSettingsView({
     },
   });
   const saveRollover = useMutation({
-    mutationFn: (patch: { contextRolloverTokens: number; contextRolloverWindowFraction: number }) => onSavePreferences(patch),
-    onSuccess: (_saved, submitted) => {
-      setRolloverTokensDirty(rolloverTokensRef.current !== String(submitted.contextRolloverTokens));
-      setRolloverFractionDirty(rolloverFractionRef.current !== String(submitted.contextRolloverWindowFraction));
+    mutationFn: (submitted: { tokens: number; fraction: number }) => onSavePreferences({
+      contextRolloverTokens: submitted.tokens,
+      contextRolloverWindowFraction: submitted.fraction,
+    }),
+    onSuccess: (_preferences, submitted) => {
+      setRolloverTokensDirty(draftChangedSinceSubmission(rolloverTokensRef.current, String(submitted.tokens)));
+      setRolloverFractionDirty(draftChangedSinceSubmission(rolloverFractionRef.current, String(submitted.fraction)));
     },
   });
   useEffect(() => {
@@ -995,7 +1000,7 @@ export function WorkspaceSettingsView({
   };
   return (
     <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflow: "auto" }}>
-      <SettingsHeader />
+      {showHeader ? <SettingsHeader /> : null}
       <Box sx={{ maxWidth: 900, mx: "auto", p: { xs: 2, md: 4 } }}>
         {section === "profile" ? (
           <OperatorProfileSettingsSection
@@ -1040,22 +1045,18 @@ export function WorkspaceSettingsView({
                 : undefined
             }
             onRolloverTokens={value => {
+              saveRollover.reset();
               setRolloverTokensDirty(true);
               setRolloverTokens(value);
             }}
             onRolloverFraction={value => {
+              saveRollover.reset();
               setRolloverFractionDirty(true);
               setRolloverFraction(value);
             }}
-            onSaveRollover={(tokens, fraction) => {
-              saveRollover.mutate({
-                contextRolloverTokens: tokens,
-                contextRolloverWindowFraction: fraction,
-              });
-            }}
+            onSaveRollover={(tokens, fraction) => saveRollover.mutate({ tokens, fraction })}
             rolloverSaving={saveRollover.isPending}
-            rolloverSaved={saveRollover.isSuccess && !rolloverTokensDirty && !rolloverFractionDirty}
-            rolloverSaveError={saveRollover.isError ? saveRollover.error instanceof Error ? saveRollover.error.message : "Rollover limits could not be saved. Try again." : undefined}
+            rolloverSaveError={saveRollover.isError ? saveRollover.error instanceof Error ? saveRollover.error.message : "Rollover limits could not be saved." : undefined}
           />
         ) : null}
         {section === "notifications" ? (
@@ -1187,13 +1188,15 @@ function OperatorProfileSettingsSection({
 export function OperatorProfileWorkspace({
   preferences,
   onSavePreferences,
+  showHeader = true,
 }: {
   preferences: WorkspacePreferencesDto;
   onSavePreferences(patch: Partial<WorkspacePreferencesDto>): Promise<WorkspacePreferencesDto>;
+  showHeader?: boolean;
 }): JSX.Element {
   return (
     <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflow: "auto" }}>
-      <SettingsHeader profile />
+      {showHeader ? <SettingsHeader profile /> : null}
       <Box sx={{ maxWidth: 720, mx: "auto", p: { xs: 2, md: 4 } }}>
         <OperatorProfileSettingsSection
           preferences={preferences}

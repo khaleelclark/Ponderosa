@@ -12,6 +12,7 @@ import {
   type AgentDeletionDirectoryIdentity,
   validateAgentDeletionDirectory,
 } from "./agent-deletion-identity.js";
+import { artifactAgentProductSql } from "./artifact-product-scope.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import { agentDir, communicationEventsPath, managedArtifactContentPath, managedArtifactsLogPath } from "./paths.js";
 import type {
@@ -299,7 +300,7 @@ export class AgentArtifactCatalog {
    * the same stable key before the response page is formed. */
   getProjectArtifactPage(
     projectId: string,
-    input: { limit: number; cursor?: string; conversationId?: string; search?: string },
+    input: { limit: number; cursor?: string; conversationId?: string; search?: string; branchOwned?: boolean; scope?: string },
   ): HistoryPageDto<ArtifactDto> {
     const limit = Math.max(1, Math.min(input.limit, 500));
     const conversationId = input.conversationId?.trim() || undefined;
@@ -309,7 +310,9 @@ export class AgentArtifactCatalog {
     const baseScope = conversationId
       ? `${projectId}:conversation:${conversationId}`
       : projectId;
-    const cursorScope = search ? `${baseScope}:search:${createHash("sha256").update(search).digest("hex")}` : baseScope;
+    const productScope = `${input.scope ?? "all"}:${baseScope}`;
+    const cursorScope = search ? `${productScope}:search:${createHash("sha256").update(search).digest("hex")}` : productScope;
+    const ownerFilter = input.branchOwned === undefined ? "" : `AND ${artifactAgentProductSql("agent", input.branchOwned ? "branches" : "dev")}`;
     const boundary = input.cursor
       ? this.decodeHistoryCursor(input.cursor, "project:artifacts", cursorScope)
       : undefined;
@@ -320,6 +323,7 @@ export class AgentArtifactCatalog {
       FROM artifacts artifact
       JOIN agents agent ON agent.id = artifact.agent_id
       WHERE agent.project_id = ?
+        ${ownerFilter}
         ${conversationId ? `AND (agent.conversation_id = ? OR EXISTS (
           SELECT 1 FROM agent_conversation_memberships membership
           WHERE membership.agent_id = artifact.agent_id
@@ -343,8 +347,11 @@ export class AgentArtifactCatalog {
       return artifact ? [{ ...artifact, projectId }] : [];
     });
     const managedRows = this.client.prepare(`
-      SELECT artifact_json FROM managed_artifact_projection
+      SELECT artifact_json FROM managed_artifact_projection artifact
       WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
+        ${input.branchOwned === undefined ? "" : `AND EXISTS (SELECT 1 FROM agents owner_agent
+          WHERE owner_agent.id = COALESCE(json_extract(artifact.artifact_json, '$.legacyRecovery.custodianAgentId'), json_extract(artifact.artifact_json, '$.originAgentId'))
+            AND ${artifactAgentProductSql("owner_agent", input.branchOwned ? "branches" : "dev")})`}
         ${conversationId ? `AND (EXISTS (
           SELECT 1 FROM agent_conversation_memberships membership
           WHERE membership.agent_id = COALESCE(json_extract(artifact_json, '$.legacyRecovery.custodianAgentId'), json_extract(artifact_json, '$.originAgentId'))
@@ -352,12 +359,12 @@ export class AgentArtifactCatalog {
         ) OR EXISTS (
           SELECT 1 FROM agents origin
           WHERE origin.id = COALESCE(json_extract(artifact_json, '$.legacyRecovery.custodianAgentId'), json_extract(artifact_json, '$.originAgentId'))
-            AND origin.project_id = managed_artifact_projection.project_id
+            AND origin.project_id = artifact.project_id
             AND origin.conversation_id = ?
         ) OR EXISTS (
           SELECT 1 FROM agent_deletion_tombstones tombstone
           WHERE tombstone.agent_id = COALESCE(json_extract(artifact_json, '$.legacyRecovery.custodianAgentId'), json_extract(artifact_json, '$.originAgentId'))
-            AND tombstone.project_id = managed_artifact_projection.project_id
+            AND tombstone.project_id = artifact.project_id
             AND tombstone.conversation_id = ?
         ))` : ""}
         ${boundary ? "AND (created_at < ? OR (created_at = ? AND artifact_id < ?))" : ""}

@@ -99,6 +99,7 @@ import {
 
 export function ConversationView({
   conversationId,
+  auditOnly=false,
   focusMessageId,
   initialView,
   onViewChange,
@@ -124,6 +125,7 @@ export function ConversationView({
   onDeleted,
 }: {
   conversationId: string;
+  auditOnly?: boolean;
   focusMessageId?: string;
   initialView?: ConversationDetailView;
   onViewChange?(view: ConversationDetailView): void;
@@ -157,10 +159,11 @@ export function ConversationView({
   onDeleted(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const [activeView, setActiveView] = useConversationActiveViewState(
+  const [storedView, setActiveView] = useConversationActiveViewState(
     conversationId,
     initialView,
   );
+  const activeView=auditOnly&&(storedView==='agents'||storedView==='triggers')?'main':storedView;
   const {
     agents,
     collaborationHistory,
@@ -1017,6 +1020,7 @@ export function ConversationView({
       }}
     >
       <ConversationHeader
+        auditOnly={auditOnly}
         activeView={activeView}
         agentWorkOpen={agentWorkOpen}
         conversation={conversation}
@@ -1363,7 +1367,7 @@ export function ConversationView({
         ) : null}
       </Box>
 
-      <ChatComposerDock
+      {auditOnly?<Alert severity="info" sx={{m:1}}>This temporary Chat belongs to a workflow execution. Its history is available for inspection.</Alert>:<ChatComposerDock
         visible={!agentWorkOpen && activeView === "main"}
       >
         {activeView === "main" && engineUnavailableMessage ? (
@@ -1439,6 +1443,7 @@ export function ConversationView({
         ) : null}
         <Composer
           enableVoiceDictation
+          talkContext={activeView === "main" && !agentWorkOpen ? { projectId: conversation.projectId, conversationId, agents: conversationAgents } : undefined}
           draftStorageKey={chatStateKey(
             "draft",
             `conversation.${conversationId}.main`,
@@ -1539,9 +1544,9 @@ export function ConversationView({
           onCancel={stopOperation}
           cancelPending={cancelOperationPending}
         />
-      </ChatComposerDock>
+      </ChatComposerDock>}
 
-      <ConversationDialogs
+      {!auditOnly&&<ConversationDialogs
         conversation={conversation}
         engines={engines}
         addAgentsOpen={addAgentsOpen}
@@ -1570,7 +1575,7 @@ export function ConversationView({
         onRename={() => rename.mutate(renameValue.trim())}
         onDeleteClose={() => setDeleteOpen(false)}
         onDelete={(expectedAgentIds) => deleteConversation.mutate(expectedAgentIds)}
-      />
+      />}
 
     </Box></OutgoingMessageProvider>
   );

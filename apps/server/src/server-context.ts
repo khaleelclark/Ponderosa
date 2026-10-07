@@ -42,14 +42,15 @@ export interface ServerContext {
     | "getWorkItemPage"
   >;
   readonly tokenUsage: (
-    scope: { type: "overall" } | { type: "project" | "agent" | "conversation"; id: string },
+    scope: { type: "overall" | "branches"; product?: "dev" | "branches" } | { type: "project" | "branch" | "agent" | "conversation"; id: string; product?: "dev" | "branches" },
     range?: TokenUsageRangeDto,
   ) => TokenUsageSummaryDto;
 }
 
 export interface SearchRoutesContext extends ServerContext {
-  readonly store: ServerContext["store"] & Pick<AgentStore, "listProjects">;
+  readonly store: ServerContext["store"] & Pick<AgentStore, "listProjects" | "sqlite">;
   readonly globalChatSearch: (query: {
+    product?: "dev" | "branches";
     q?: string;
     limit?: string | number;
     kind?: string;

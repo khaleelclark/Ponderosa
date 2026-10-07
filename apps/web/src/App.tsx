@@ -768,9 +768,10 @@ export default function App({
               onOpenNotifications={openNotifications}
               collapsed={sidebarPresentation.collapsed}
               width={sidebarPresentation.width}
-              onCollapsedChange={collapsed =>
-                setSidebarPresentation(current => ({ ...current, collapsed }))
-              }
+              onCollapsedChange={collapsed => {
+                setSidebarPresentation(current => ({ ...current, collapsed }));
+                if(collapsed)requestAnimationFrame(()=>document.querySelector<HTMLButtonElement>('[aria-label="Open workspace navigation"]')?.focus());
+              }}
               onWidthChange={width =>
                 setSidebarPresentation(current => ({ ...current, width }))
               }

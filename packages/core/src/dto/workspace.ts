@@ -122,7 +122,7 @@ export interface WorkspaceAgentDirectoryItemDto {
   kind: "agent";
   project: Pick<ProjectDto, "id" | "label" | "hostPath">;
   agent: AgentDto;
-  ownerConversation?: Pick<ConversationDto, "id" | "title">;
+  ownerConversation?: Pick<ConversationDto, "id" | "title" | "branchId"> & { branchName?: string };
   health: AgentHealthDto;
 }
 
@@ -330,6 +330,8 @@ export interface GenerateConversationTitleResponse {
 }
 
 export interface WorkspaceNotificationDto {
+  branchId?: string;
+  branchExecutionId?: string;
   id: string;
   /** Authored source for notification policy, independent of navigation target. */
   sourceAgentId?: string;
@@ -352,7 +354,7 @@ export interface WorkspaceNotificationDto {
   status?: "open" | "resolved" | "dismissed";
   /** Stable key used to converge repeated reports of the same operational problem. */
   dedupeKey?: string;
-  action?: { kind: "open_settings" | "open_project" | "open_conversation" | "open_agent" | "open_decision"; targetId?: string };
+  action?: { kind: "open_branch" | "open_settings" | "open_project" | "open_conversation" | "open_agent" | "open_decision"; targetId?: string };
   title: string;
   body: string;
   /** Bounded in-app context; never included in lock-screen push copy. */

@@ -27,7 +27,9 @@ export interface TriggerDefinitionDto {
   /** The Chat whose context receives work created by this Project Automation. */
   conversationId: string;
   /** The existing Agent that executes each occurrence. The Automation remains Project-owned. */
-  targetAgentId: string;
+  targetAgentId?: string;
+  /** Exclusive alternative to the existing Agent destination. */
+  branchId?: string;
   name: string;
   /** Operator-authored trusted instructions, kept separate from occurrence payloads. */
   instructions: string;
@@ -49,7 +51,9 @@ export interface TriggerDefinitionDto {
 
 export interface CreateTriggerRequest {
   conversationId: string;
-  targetAgentId: string;
+  targetAgentId?: string;
+  /** Exclusive alternative to the existing Agent destination. */
+  branchId?: string;
   name: string;
   instructions: string;
   sourceKind: TriggerSourceKind;
@@ -96,14 +100,16 @@ export interface TriggerOccurrenceDto {
   artifactId: string;
   triggerId: string;
   projectId: string;
-  agentId: string;
+  agentId?: string;
+  branchId?: string;
+  branchExecutionId?: string;
   state: TriggerOccurrenceState;
   payload: unknown;
   provenance: Record<string, unknown>;
   payloadMediaType: string;
   inputHash: string;
   /** Immutable definition snapshot captured when the occurrence was accepted. */
-  triggerSnapshot?: Pick<TriggerDefinitionDto, "id" | "conversationId" | "targetAgentId" | "name" | "instructions" | "sourceKind" | "sourceConfig" | "fullAccess">;
+  triggerSnapshot?: Pick<TriggerDefinitionDto, "id" | "conversationId" | "branchId" | "targetAgentId" | "name" | "instructions" | "sourceKind" | "sourceConfig" | "fullAccess"> & { productScope?: "dev" | "branches" };
   activationId?: string;
   lastError?: string;
   occurredAt: string;

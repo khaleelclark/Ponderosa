@@ -224,6 +224,7 @@ test("legacy Project receipt recovery removes only orphan draft authority across
     ALTER TABLE project_deletion_receipts RENAME TO current_project_deletion_receipts;
     CREATE TABLE project_deletion_receipts (
       project_id TEXT PRIMARY KEY NOT NULL,
+      product_scope TEXT NOT NULL DEFAULT 'dev',
       tombstone_name TEXT NOT NULL,
       ownership_token TEXT,
       removal_started INTEGER NOT NULL DEFAULT 0,
@@ -235,9 +236,10 @@ test("legacy Project receipt recovery removes only orphan draft authority across
     );
   `);
   const now = new Date().toISOString();
-  sqlite.prepare("INSERT INTO project_deletion_receipts VALUES (?,?,?,?,?,?,?,?,?)")
+  sqlite.prepare("INSERT INTO project_deletion_receipts VALUES (?,?,?,?,?,?,?,?,?,?)")
     .run(
       deletedProjectId,
+      "dev",
       `.${deletedProjectId}.deleting-legacy`,
       randomUUID(),
       1,

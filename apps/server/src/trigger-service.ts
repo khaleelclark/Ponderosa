@@ -3,7 +3,7 @@ import path from "node:path";
 import { watch, type FSWatcher } from "chokidar";
 import { Cron } from "croner";
 import picomatch from "picomatch";
-import type { AgentStore, CoordinationV3Store, TriggerFilesystemBurst } from "@ponderosa/agents";
+import { interpolateBranchText, validateBranchConfiguration, type AgentStore, type CoordinationV3Store, type TriggerFilesystemBurst } from "@ponderosa/agents";
 import type {
   TriggerDefinitionDto,
   TriggerFilesystemConfig,
@@ -175,10 +175,39 @@ export class TriggerSourceService {
       (trigger) => trigger?.sourceKind === "filesystem" && trigger.enabled,
     );
     if (!affectsFilesystem || this.stopping || !this.started) return;
-    const projectId = next?.projectId ?? previous!.projectId;
+    const projectId = this.sourceOwner(next??previous!);
     const operation = this.refreshChain.then(() => this.refreshNow(projectId));
     this.refreshChain = operation.catch(() => undefined);
     await operation;
+  }
+
+  /** Reconcile this Branch's durable filesystem source after an idempotent deploy replay. */
+  async reconcileBranch(branchId:string):Promise<void> {
+    if (this.stopping || !this.started) return;
+    const operation=this.refreshChain.then(()=>this.refreshNow(`branch:${branchId}`));
+    this.refreshChain=operation.catch(()=>undefined);
+    await operation;
+  }
+
+  private destinationAvailable(trigger: TriggerDefinitionDto): boolean {
+    if(trigger.branchId)return Boolean(this.options.store.sqlite.prepare("SELECT 1 FROM branches WHERE id=? AND trigger_id=? AND enabled=1 AND deleting=0").get(trigger.branchId,trigger.id));
+    if(!(this.options.projectAvailable?.(trigger.projectId)??true))return false;
+    const conversation=this.options.store.getConversation(trigger.conversationId);
+    if(!conversation || conversation.deletedAt || conversation.archived)return false;
+    const agent=trigger.targetAgentId?this.options.store.getAgent(trigger.targetAgentId):undefined;
+    return Boolean(agent && !agent.archived && agent.conversationId===conversation.id);
+  }
+  private sourceOwner(trigger:TriggerDefinitionDto):string{return trigger.branchId?`branch:${trigger.branchId}`:trigger.projectId;}
+  private sourceDirectory(owner:string):{hostPath:string}|undefined {
+    if(!owner.startsWith('branch:'))return this.options.store.getProject(owner);
+    const row=this.options.store.sqlite.prepare('SELECT b.bindings_json,v.definition_json,w.configuration_json FROM branches w JOIN branch_bindings b ON w.binding_revision_id=b.id JOIN branch_versions v ON w.active_version_id=v.id WHERE w.id=?').get(owner.slice(7)) as {bindings_json:string;definition_json:string;configuration_json:string}|undefined;
+    if(!row)return undefined;
+    try{
+      const directory=JSON.parse(row.bindings_json).directories?.workspace;
+      if(typeof directory!=='string'||!directory)return undefined;
+      const definition=JSON.parse(row.definition_json),configuration=validateBranchConfiguration(JSON.parse(row.configuration_json),definition);
+      return {hostPath:interpolateBranchText(directory,definition,configuration)};
+    }catch{return undefined;}
   }
 
   private async refreshNow(onlyProjectId?: string): Promise<void> {
@@ -189,31 +218,27 @@ export class TriggerSourceService {
       return;
     }
     const desired = this.options.coordination.listTriggerDefinitions()
-      .filter((trigger) => !onlyProjectId || trigger.projectId === onlyProjectId)
+      .filter((trigger) => !onlyProjectId || this.sourceOwner(trigger) === onlyProjectId)
       .filter((trigger) => {
-        const agent = this.options.store.getAgent(trigger.targetAgentId);
-        const conversation = this.options.store.getConversation(trigger.conversationId);
         return trigger.enabled && trigger.sourceKind === "filesystem" &&
-          (this.options.projectAvailable?.(trigger.projectId) ?? true) && Boolean(
-          agent && !agent.archived && conversation && !conversation.deletedAt && !conversation.archived && agent.conversationId === conversation.id,
-        );
+          this.destinationAvailable(trigger);
       });
     const routesByProject = new Map<string, Map<string, FilesystemRoute>>();
     for (const trigger of desired) {
       const config = trigger.sourceConfig as TriggerFilesystemConfig;
-      const routes = routesByProject.get(trigger.projectId) ?? new Map<string, FilesystemRoute>();
+      const routes = routesByProject.get(this.sourceOwner(trigger)) ?? new Map<string, FilesystemRoute>();
       routes.set(trigger.id, {
         trigger,
         configKey: JSON.stringify(trigger.sourceConfig),
         include: picomatch(config.include, { dot: true }),
         exclude: picomatch(config.exclude, { dot: true }),
       });
-      routesByProject.set(trigger.projectId, routes);
+      routesByProject.set(this.sourceOwner(trigger), routes);
     }
 
     for (const [projectId, active] of this.watchers) {
       if (onlyProjectId && projectId !== onlyProjectId) continue;
-      const project = this.options.store.getProject(projectId);
+      const project = this.sourceDirectory(projectId);
       const routes = routesByProject.get(projectId);
       if (!project || !routes || active.projectPath !== project.hostPath) {
         await active.watcher.close();
@@ -235,7 +260,7 @@ export class TriggerSourceService {
         return;
       }
       if (this.watchers.has(projectId)) continue;
-      const project = this.options.store.getProject(projectId);
+      const project = this.sourceDirectory(projectId);
       if (!project) continue;
       const watcher = watch(project.hostPath, {
         ignoreInitial: true,
@@ -301,12 +326,8 @@ export class TriggerSourceService {
     if (!this.sourceAvailable()) throw new Error("Automation sources are unavailable");
     const trigger = this.options.coordination.getTriggerDefinition(input.triggerId);
     if (!trigger || !trigger.enabled || trigger.sourceKind !== "webhook") throw new Error("webhook Automation not found");
-    if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) throw new Error("Automation Project is unavailable");
-    const agent = this.options.store.getAgent(trigger.targetAgentId);
-    const conversation = this.options.store.getConversation(trigger.conversationId);
-    if (!agent || agent.archived || !conversation || conversation.deletedAt || conversation.archived || agent.conversationId !== conversation.id) {
-      throw new Error("Automation destination or execution Agent is unavailable");
-    }
+    if (!this.destinationAvailable(trigger)) throw new Error("Automation Project is unavailable");
+    if (!this.destinationAvailable(trigger)) throw new Error("Automation destination is unavailable");
     if (!input.eventId.trim() || input.eventId.length > 200) throw new Error("X-Ponderosa-Event-Id is required");
     const timestampSeconds = Number(input.timestamp);
     const config = trigger.sourceConfig as TriggerWebhookConfig;
@@ -344,10 +365,8 @@ export class TriggerSourceService {
     }
     for (const trigger of this.options.coordination.listDueScheduleTriggers(now.toISOString())) {
       try {
-        if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) continue;
-        const agent = this.options.store.getAgent(trigger.targetAgentId);
-        const conversation = this.options.store.getConversation(trigger.conversationId);
-        if (!agent || agent.archived || !conversation || conversation.deletedAt || conversation.archived || agent.conversationId !== conversation.id) continue;
+        if (!this.destinationAvailable(trigger)) continue;
+        if (!this.destinationAvailable(trigger)) continue;
         this.fireSchedule(trigger, now);
       } catch {
         // A concurrent edit or one malformed historical definition must not
@@ -421,7 +440,7 @@ export class TriggerSourceService {
 
   private addFileEvent(trigger: TriggerDefinitionDto, changedPath: string, type: string): void {
     if (!this.sourceAvailable()) return;
-    if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) return;
+    if (!this.destinationAvailable(trigger)) return;
     const now = new Date().toISOString();
     try {
       const burst = this.options.coordination.recordFilesystemTriggerEvent({
@@ -446,7 +465,7 @@ export class TriggerSourceService {
     this.clearBurst(triggerId);
     if (!this.sourceAvailable()) return;
     const owner = this.options.coordination.getTriggerDefinition(triggerId);
-    if (!owner || !owner.enabled || !(this.options.projectAvailable?.(owner.projectId) ?? true)) return;
+    if (!owner || !owner.enabled || !this.destinationAvailable(owner)) return;
     try {
       const result = this.options.coordination.flushFilesystemTriggerBurst(triggerId);
       if (result) this.options.notify(triggerId);

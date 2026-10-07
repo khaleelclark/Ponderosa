@@ -85,6 +85,7 @@ import type {
   CreateTriggerDefinitionInput,
   UpdateTriggerDefinitionInput,
   RecordTriggerOccurrenceInput,
+  BranchTriggerIntake,
   TriggerOccurrenceResult,
   CoordinationV3StoreOptions,
   ContextRolloverV3,
@@ -165,6 +166,8 @@ export class CoordinationV3Store {
   private readonly runContextReadModel: CoordinationV3RunContextReadModel;
   private readonly schedulerStatusReadModel: CoordinationV3SchedulerStatusReadModel;
   private readonly operationalOutboxAuthority: CoordinationV3OperationalOutboxAuthority;
+  private branchTriggerIntake?: (input: BranchTriggerIntake) => string;
+  setBranchTriggerIntake(handler: (input: BranchTriggerIntake) => string): void { this.branchTriggerIntake = handler; }
   private readonly triggerRegistry: CoordinationV3TriggerRegistry;
   private readonly activationFactory: CoordinationV3ActivationFactory;
   private readonly activationLifecycle: CoordinationV3ActivationLifecycleAuthority;
@@ -265,6 +268,10 @@ export class CoordinationV3Store {
         this.support,
         this.triggerRegistry,
         input => this.createActivation(input),
+        input => {
+          if (!this.branchTriggerIntake) throw new Error("Branch trigger intake is unavailable");
+          return this.branchTriggerIntake(input);
+        },
       );
     this.questionAuthority = new CoordinationV3QuestionAuthority(
       sqlite,
@@ -708,16 +715,25 @@ export class CoordinationV3Store {
     return this.triggerRegistry.delete(id, now);
   }
 
-  listTriggerOccurrences(triggerId: string, limit = 100): TriggerOccurrenceDto[] {
-    return this.triggerRegistry.listOccurrences(triggerId, limit);
+  listTriggerOccurrences(triggerId: string, limit = 100, product?: "dev" | "branches"): TriggerOccurrenceDto[] {
+    return this.triggerRegistry.listOccurrences(triggerId, limit, product);
   }
 
-  listAgentTriggerOccurrences(agentId: string, limit = 100): TriggerOccurrenceDto[] {
-    return this.triggerRegistry.listAgentOccurrences(agentId, limit);
+  listAgentTriggerOccurrences(agentId: string, limit = 100, product?: "dev" | "branches"): TriggerOccurrenceDto[] {
+    return this.triggerRegistry.listAgentOccurrences(agentId, limit, product);
   }
 
-  listProjectTriggerOccurrences(projectId: string, limit = 100): TriggerOccurrenceDto[] {
-    return this.triggerRegistry.listProjectOccurrences(projectId, limit);
+  listProjectTriggerOccurrences(projectId: string, limit = 100, product?: "dev" | "branches"): TriggerOccurrenceDto[] {
+    return this.triggerRegistry.listProjectOccurrences(projectId, limit, product);
+  }
+
+  canReadBranchTriggerOccurrence(occurrenceId: string, runId: string, agentId: string): boolean {
+    const occurrence = this.triggerRegistry.getOccurrence(occurrenceId);
+    if (!occurrence?.branchExecutionId) return false;
+    const requestIds = this.requestIdsAttachedToRun(runId, agentId);
+    return requestIds.some(id => Boolean(this.sqlite.prepare(`SELECT 1 FROM branch_attempts a
+      JOIN branch_step_executions s ON s.id=a.step_execution_id JOIN coordination_requests r ON r.id=a.request_id
+      WHERE s.execution_id=? AND r.id=? AND r.recipient_agent_id=?`).get(occurrence.branchExecutionId,id,agentId)));
   }
 
   getTriggerOccurrence(id: string): TriggerOccurrenceDto | undefined {

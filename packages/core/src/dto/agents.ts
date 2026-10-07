@@ -182,6 +182,9 @@ export interface AgentImportOperationDto {
   /** SHA-256 of the exact submitted payload bound to requestId. */
   payloadHash: string;
   projectId: string;
+  /** Canonical destination bound before the durable operation is admitted. */
+  conversationId: string;
+  product: "dev" | "branches";
   sourceLabel: string;
   phase: AgentImportPhase;
   status: "pending" | "completed" | "failed";

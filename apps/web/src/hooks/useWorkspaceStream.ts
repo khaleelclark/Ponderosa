@@ -934,10 +934,10 @@ export function useWorkspaceStream(
         }
       }
       else if (event.type === "trigger_changed") {
-        invalidate(queryKeys.triggers.project(event.projectId));
-        invalidate(queryKeys.triggers.occurrence(event.triggerId));
-        invalidate(queryKeys.triggers.agentOccurrences(event.agentId));
-        invalidate(queryKeys.triggers.projectOccurrences(event.projectId));
+        void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.project(event.projectId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.occurrence(event.triggerId) });
+        if (event.agentId) void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agentOccurrences(event.agentId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.projectOccurrences(event.projectId) });
         agentWorkInvalidator.schedule(event.projectId);
       }
       else if (event.type === "agent_event") {

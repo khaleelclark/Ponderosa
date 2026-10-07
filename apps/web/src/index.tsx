@@ -2,9 +2,10 @@ import CssBaseline from "@mui/material/CssBaseline";
 import "@fontsource-variable/inter";
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode, useEffect, useMemo, useState } from "react";
+import { StrictMode, Suspense, lazy, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import App from "./App";
+const App = lazy(() => import("./App"));
+const BranchesView = lazy(() => import("./components/BranchesView").then(module => ({ default: module.BranchesView })));
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { MutationNotificationProvider } from "./components/MutationNotifications";
 import "./global.css";
@@ -41,10 +42,12 @@ function Root(): JSX.Element {
         <CssBaseline />
         <MutationNotificationProvider>
           <WorkspaceErrorBoundary title="Ponderosa could not display the workspace.">
-            <App
-              colorMode={colorMode}
-              onToggleColorMode={() => setColorMode((current) => (current === "light" ? "dark" : "light"))}
-            />
+            <Suspense fallback={<div role="status" style={{ padding: 24 }}>Loading Ponderosa…</div>}>
+              {window.location.pathname.startsWith("/branches") ? <BranchesView colorMode={colorMode} onToggleColorMode={() => setColorMode(current => current === "light" ? "dark" : "light")} /> : <App
+                colorMode={colorMode}
+                onToggleColorMode={() => setColorMode((current) => (current === "light" ? "dark" : "light"))}
+              />}
+            </Suspense>
           </WorkspaceErrorBoundary>
         </MutationNotificationProvider>
       </ThemeProvider>

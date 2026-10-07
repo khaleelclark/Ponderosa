@@ -16,9 +16,11 @@ import {
   type RuntimeDynamicToolSpec,
   type TeamDirectoryDto,
   PONDEROSA_HISTORY_TOOL,
+  filterRuntimeToolsForCapabilities,
+  runtimeRestrictions,
   unicodeCodePointLength,
 } from "@ponderosa/core";
-import { attachmentsDir } from "@ponderosa/agents";
+import { attachmentsDir, CapabilityPolicyStore } from "@ponderosa/agents";
 import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
 import { renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
@@ -368,14 +370,21 @@ export async function prepareAgentRun(
   // Provider tools are immutable for a persistent session. Expose history only
   // when a fresh rollover generation owns a durable boundary; every later Run
   // in that replacement session derives the same contract from its session ID.
-  let availableRuntimeTools: RuntimeDynamicToolSpec[] = [
+  const capabilityPolicy = new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id, runId);
+  const capabilityRestrictions = runtimeRestrictions(capabilityPolicy, runtimeEngineId);
+  let availableRuntimeTools: RuntimeDynamicToolSpec[] = filterRuntimeToolsForCapabilities([
     ...providerDynamicTools(),
     ...(historyRetrievalBoundary ? [PONDEROSA_HISTORY_TOOL] : []),
-  ];
+  ], capabilityPolicy);
   let communicationPrompt = communicationV3SessionPrompt();
   const environmentFacts = await runtimeEnvironmentFacts({ cwd: workingCopy.rootPath, agentId: agent.id, allowedImportRoots: runContext.opts.allowedImportRoots });
   const environmentPrompt = environmentFactsPrompt(environmentFacts);
-  let providerToolHash = providerToolContractHash(availableRuntimeTools, communicationPrompt);
+  const toolHash = (tools: RuntimeDynamicToolSpec[], prompt: string[]) =>
+    createHash("sha256").update(JSON.stringify({
+      tools: providerToolContractHash(tools, prompt),
+      restrictions: capabilityRestrictions,
+    })).digest("hex");
+  let providerToolHash = toolHash(availableRuntimeTools, communicationPrompt);
   const runtimeSessionContractHash = providerSessionContractHash(
     runtimeEngineId,
     workingCopy.id,
@@ -442,12 +451,12 @@ export async function prepareAgentRun(
         ...(legacyPrompt ? [{ tools: availableRuntimeTools, communicationPrompt: legacyPrompt }] : []),
         ...previousPublication,
       ].map(contract => {
-        const toolHash = providerToolContractHash(contract.tools, contract.communicationPrompt);
+        const toolHashValue = toolHash(contract.tools, contract.communicationPrompt);
         const sessionHash = createHash("sha256").update(JSON.stringify({
             runtimeSessionContractHash: providerSessionContractHash(runtimeEngineId, workingCopy.id,
-              effectiveModel, effectiveEffort, toolHash), systemPromptHash: frozenSystemHash,
+              effectiveModel, effectiveEffort, toolHashValue), systemPromptHash: frozenSystemHash,
           })).digest("hex");
-        return { ...contract, toolHash, sessionHash };
+        return { ...contract, toolHash: toolHashValue, sessionHash };
       }).find(contract => contract.sessionHash === preflightResumeSessionState.toolContractHash);
       if (!compatible || !frozenSystemHash || frozenSystemHash !== frozenInput?.systemPromptHash) {
         throw new Error("context rollover handoff contract is incompatible; original accepted context retained");
@@ -933,6 +942,7 @@ export async function prepareAgentRun(
     globalInstructions,
     projectInstructions,
     operatorProfile,
+    capabilityRestrictions,
   })).digest("hex");
   // Stable identity, policy, routing, and response rules are delivered through
   // the provider system channel. A resumed provider session already retains that
@@ -1218,6 +1228,7 @@ ${freshGuidedPrompt}${attachmentContext}${freshBroadcastAttachmentContext}${coal
     workingCopy,
     availableRuntimeTools,
     availableRuntimeToolNames,
+    capabilityRestrictions,
     historyRetrievalBoundary,
     historyRetrievalFrozenExclusions,
     prompt: effectivePrompt,

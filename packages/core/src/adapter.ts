@@ -5,6 +5,7 @@
 
 import type { AgentEvent } from "./events.js";
 import type { ProviderFailureCategory } from "./provider-failure-summary.js";
+import type { RuntimeCapabilityRestrictions } from "./capability-policy.js";
 
 /** A stable engine identifier, e.g. "codex" or "claude". */
 export type EngineId = string;
@@ -291,6 +292,9 @@ export interface OpenRuntimeSessionOptions {
   environment?: Record<string, string>;
   /** Host tools are transported by the adapter, never through the agent shell. */
   dynamicTools?: RuntimeDynamicToolSpec[];
+  /** Engine-level restrictions already resolved across product ownership. The
+   * adapter translates only restrictions it can enforce truthfully. */
+  capabilityRestrictions?: RuntimeCapabilityRestrictions;
   handleDynamicToolCall?: RuntimeDynamicToolHandler;
   /** User-facing provider requests are handled by the host without exposing
    * engine-specific request methods outside packages/engines. */

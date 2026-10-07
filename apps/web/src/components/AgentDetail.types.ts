@@ -12,6 +12,7 @@ import type { AgentDetailView, AgentTelemetryFocus } from "../routing";
 export interface AgentDetailProps {
   agentId: string;
   projectId: string;
+  auditOnly?: boolean;
   focusMessageId?: string;
   focusTelemetry?: AgentTelemetryFocus;
   technicalFocusId?: string;

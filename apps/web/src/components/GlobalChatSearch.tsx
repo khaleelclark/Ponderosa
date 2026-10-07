@@ -165,16 +165,14 @@ function GlobalSearchResultItem({ result, query, onSelect, active = false, id, o
     active={active}
     onActive={onActive}
     onSelect={onSelect}
-    ariaLabel={result.messageId
-      ? `Open ${result.chat.title} at message by ${result.author.label}`
-      : `Open Agent ${result.chat.title}`}
+    ariaLabel={`${result.messageId ? `Open ${result.chat.title} at message by ${result.author.label}` : `Open Agent ${result.chat.title}`}${result.chat.ownerBranch ? ` in Branch ${result.chat.ownerBranch.name}` : ''}${result.chat.ownerChat ? `, Chat ${result.chat.ownerChat.title}` : ''}`}
     primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
         <Typography fontWeight={700} noWrap sx={{ minWidth: 0 }}>{result.chat.title}</Typography>
         {result.unread ? <Box component="span" aria-label="Unread" sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "primary.main", flexShrink: 0 }} /> : null}
         <Typography variant="caption" color="text.secondary" noWrap sx={{ ml: "auto !important", flexShrink: 0 }}>{new Date(result.timestamp).toLocaleString()}</Typography>
       </Stack>}
     secondary={<Stack spacing={.25} component="span">
-        <Typography component="span" variant="caption" color="text.secondary">{result.chat.kind === "agent" ? "Agent" : "Chat"} · {result.author.label}</Typography>
+        <Typography component="span" variant="caption" color="text.secondary">{result.chat.kind === "agent" ? "Agent" : "Chat"} · {result.chat.ownerBranch ? `Branch: ${result.chat.ownerBranch.name} · ` : ''}{result.chat.ownerChat ? `Chat: ${result.chat.ownerChat.title} · ` : ''}{result.author.label}</Typography>
         <SearchSnippet snippet={result.snippet} ranges={result.highlights} query={query} />
       </Stack>}
   />;
@@ -192,30 +190,36 @@ function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
     active={active}
     onActive={onActive}
     onSelect={onSelect}
-    ariaLabel={`Open recent chat ${recent.chat.title}`}
+    ariaLabel={`Open recent chat ${recent.chat.title}${recent.chat.ownerBranch ? ` in Branch ${recent.chat.ownerBranch.name}` : ''}${recent.chat.ownerChat ? `, Chat ${recent.chat.ownerChat.title}` : ''}`}
     primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <Typography fontWeight={700} noWrap>{recent.chat.title}</Typography>
         {recent.unreadCount > 0 ? <Typography variant="caption" color="primary" sx={{ fontWeight: 800 }}>{recent.unreadCount} unread</Typography> : null}
       </Stack>}
     secondary={<Stack component="span" spacing={.25}>
-        <Typography component="span" variant="caption" color="text.secondary">{recent.chat.kind === "agent" ? "Agent" : "Chat"}</Typography>
+        <Typography component="span" variant="caption" color="text.secondary">{recent.chat.kind === "agent" ? "Agent" : "Chat"}{recent.chat.ownerBranch ? ` · Branch: ${recent.chat.ownerBranch.name}` : ''}{recent.chat.ownerChat ? ` · Chat: ${recent.chat.ownerChat.title}` : ''}</Typography>
         {recent.snippet ? <Typography component="span" variant="body2" color="text.secondary" noWrap>{plainGlobalSearchSnippet(recent.snippet)}</Typography> : null}
       </Stack>}
   />;
 }
 
-export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSearch }: {
+export type GlobalChatSearchScope = "all" | "chats" | "agents" | "files";
+const defaultGlobalChatSearchScopes: readonly GlobalChatSearchScope[] = ["all", "chats", "agents", "files"];
+
+export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSearch, title = "Search Ponderosa", scopes = defaultGlobalChatSearchScopes, product = "dev" }: {
   open: boolean;
   onClose(): void;
   onExited?(): void;
   onSelect(selection: GlobalSearchSelection): void;
-  initialSearch?: { query: string; scope: "chats" };
+  initialSearch?: { query: string; scope: GlobalChatSearchScope };
+  title?: string;
+  scopes?: readonly GlobalChatSearchScope[];
+  product?: "dev" | "branches";
 }): JSX.Element {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const notifications = useNotifications();
   const [query, setQuery] = useState("");
-  const [scope, setScope] = useState<"all" | "chats" | "agents" | "files">("all");
+  const [scope, setScope] = useState<GlobalChatSearchScope>(scopes[0] ?? "all");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
   const [resultLimit, setResultLimit] = useState(25);
@@ -237,16 +241,19 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
   useEffect(() => {
     if (open) setDebouncedQuery(query.trim());
   }, [open]);
+  useEffect(() => {
+    if (!scopes.includes(scope)) setScope(scopes[0] ?? "all");
+  }, [scope, scopes]);
   const search = useQuery({
-    queryKey: queryKeys.globalSearch.results(debouncedQuery, resultLimit, resultKind),
+    queryKey: queryKeys.globalSearch.results(debouncedQuery, resultLimit, resultKind, product),
     queryFn: () => api.searchGlobalChats(debouncedQuery, resultLimit, resultKind),
     enabled: open && scope !== "files",
     staleTime: 5_000,
     refetchOnReconnect: true,
   });
-  const filesEnabled = open && (scope === "all" || scope === "files");
+  const filesEnabled = scopes.includes("files") && open && (scope === "all" || scope === "files");
   const files = useQuery({
-    queryKey: ["global-search-files", debouncedQuery, resultLimit],
+    queryKey: ["global-search-files", product, debouncedQuery, resultLimit],
     queryFn: () => api.searchGlobalFiles(debouncedQuery, resultLimit),
     enabled: filesEnabled,
     staleTime: 5_000,
@@ -254,7 +261,7 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
   });
   const fileResults = filesEnabled ? files.data?.results ?? [] : [];
   const matchingAgents = useQuery({
-    queryKey: ["global-search-agent-titles", debouncedQuery, resultLimit],
+    queryKey: ["global-search-agent-titles", product, debouncedQuery, resultLimit],
     queryFn: () => api.getWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>(
       "agent",
       { search: debouncedQuery, limit: resultLimit },
@@ -274,7 +281,10 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
       ...(matchingAgents.data?.items ?? []),
     ].filter(item => !seen.has(item.agent.id)).map(item => ({
       project: { id: item.project.id, label: item.project.label },
-      chat: { kind: "agent" as const, id: item.agent.id, title: item.agent.title },
+      chat: { kind: "agent" as const, id: item.agent.id, title: item.agent.title,
+        ...(item.ownerConversation?.branchId && item.ownerConversation.branchName ? { ownerBranch: { id: item.ownerConversation.branchId, name: item.ownerConversation.branchName } } : {}),
+        ...(item.ownerConversation ? { ownerChat: { id: item.ownerConversation.id, title: item.ownerConversation.title } } : {}),
+      },
       messageId: "",
       author: { kind: "agent" as const, label: item.agent.title, agentId: item.agent.id },
       timestamp: item.agent.updatedAt,
@@ -348,7 +358,7 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
         component="h2"
         sx={{ position: "absolute", width: "1px", height: "1px", p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}
       >
-        Search Ponderosa
+        {title}
       </Typography>
       <TextField
           autoFocus
@@ -356,10 +366,10 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={handleSearchKeyDown}
-          placeholder="Search Ponderosa"
+          placeholder={title}
           inputProps={{
             maxLength: 200,
-            "aria-label": "Search Ponderosa",
+            "aria-label": title,
             role: "combobox",
             "aria-expanded": open,
             "aria-controls": "global-search-results",
@@ -372,7 +382,7 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
     </Box>
     <DialogContent sx={{ px: { xs: 1.5, sm: 2 }, pt: "16px !important", pb: 1.5, minHeight: { sm: 520 } }}>
       <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
-        {(["all", "chats", "agents", "files"] as const).map((value) => <Chip key={value} clickable aria-pressed={scope === value} label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
+        {scopes.map((value) => <Chip key={value} clickable aria-pressed={scope === value} label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
       </Stack>
       {isSearching ? <LinearProgress aria-label="Searching Ponderosa" sx={{ mb: 1 }} /> : null}
       {searchFailed ? <Alert severity="error" sx={{ mb: 1 }}>Some search results could not load. Any available results remain below. Check the connection and try again.</Alert> : null}
@@ -441,9 +451,9 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
       </Box>
       {filesEnabled && (files.data?.truncated || files.data?.unavailableRoots) ? <Typography variant="caption" color="text.secondary" component="p">File search covered a limited set of accessible folders. Some files may not be listed.</Typography> : null}
       {filesEnabled && files.data?.truncated && resultLimit < 50 && !(scope !== "files" && search.data?.truncated) ? <Button color="inherit" onClick={() => setResultLimit(50)}>Show more results</Button> : null}
-      {scope === "files" && !searchFailed && !debouncedQuery && !isSearching && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 1 }}>No recent files are available. Search files by name or path.</Typography> : null}
-      {debouncedQuery && !searchFailed && !isSearching && visibleResults.length === 0 && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{`No ${scope === "all" ? "messages, Agents or files" : scope} match “${debouncedQuery}”.`}</Typography> : null}
-      {scope !== "files" && !searchFailed && !debouncedQuery && !isSearching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>{openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention.` : "You’re all caught up."}</Typography> : null}
+      {scope === "files" && !debouncedQuery && !isSearching && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 1 }}>No recent files are available. Search files by name or path.</Typography> : null}
+      {debouncedQuery && !isSearching && visibleResults.length === 0 && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{`No ${scope === "all" ? (scopes.includes("files") ? "messages, Agents or files" : "messages or Agents") : scope} match “${debouncedQuery}”.`}</Typography> : null}
+      {scope !== "files" && !debouncedQuery && !isSearching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>{openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention.` : "You’re all caught up."}</Typography> : null}
       {scope !== "files" && search.data?.truncated ? <Stack spacing={1} sx={{ mt: 1 }}>
         <Alert severity="info">Showing the newest matches from a bounded search. Add more terms to narrow the result.</Alert>
         {resultLimit < 50 ? <Button

@@ -849,8 +849,11 @@ export function registerProjectRoutes(
     }
   };
 
-  for (const creationPath of ["/api/projects", "/api/chats"]) app.post<{ Body: CreateProjectRequest; Headers: { "idempotency-key"?: string } }>(creationPath, async (request, reply) => {
-    const standaloneChat = creationPath === "/api/chats";
+  for (const creationPath of ["/api/projects", "/api/chats", "/api/branches/:branchId/chats"]) app.post<{ Body: CreateProjectRequest; Headers: { "idempotency-key"?: string } }>(creationPath, async (request, reply) => {
+    const branchId=(request.params as {branchId?:string}).branchId;
+    if(branchId&&store.sqlite.prepare("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')").get(branchId))return reply.code(409).send({error:'Wait for the current Branch update to finish'});
+    if(branchId&&!store.sqlite.prepare("SELECT 1 FROM branches WHERE id=? AND deleting=0").get(branchId))return reply.code(404).send({error:'Branch unavailable'});
+    const standaloneChat = creationPath !== "/api/projects";
     const idempotencyKey = request.headers["idempotency-key"]?.trim();
     if (!idempotencyKey || !/^[A-Za-z0-9_-]{8,128}$/u.test(idempotencyKey)) {
       return reply.code(400).send({ error: "a valid Project creation idempotency key is required" });
@@ -874,6 +877,7 @@ export function registerProjectRoutes(
       idempotencyKey,
       payloadHash: createHash("sha256").update(stableJson({
         ...(standaloneChat ? { ownership: "chat" } : {}),
+        ...(branchId?{branchId}:{}),
         label,
         hostPath,
         defaultEngine,
@@ -959,6 +963,7 @@ export function registerProjectRoutes(
       project = store.createProject({
         label,
         chatOwned: standaloneChat,
+        ...(branchId?{branchId}:{}),
         hostPath,
         defaultEngine,
         ...(request.body.defaultModel ? { defaultModel: request.body.defaultModel } : {}),

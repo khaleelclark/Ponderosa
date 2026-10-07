@@ -18,6 +18,7 @@ import {
   StaleCollectionCursorError,
   type CollectionQuery,
 } from "../collection-page.js";
+import { activeChatProductSql, requestProduct, resourceInProduct } from "../product-scope.js";
 
 const ORGANIZATION_STATUSES = new Set<AgentOperationalStatus>([
   "idle",
@@ -134,6 +135,7 @@ export function registerAgentOrganizationRoutes(
     Querystring: OrganizationQuery;
   }>("/api/projects/:projectId/agent-organization", async (request, reply) => {
     const { projectId } = request.params;
+    const product = requestProduct(request);
     if (!context.store.getProject(projectId)) {
       return reply.code(404).send({ error: "project not found" });
     }
@@ -147,7 +149,9 @@ export function registerAgentOrganizationRoutes(
         return reply.code(400).send({ error: "parentAgentId is required for children" });
       }
       const parent = context.store.getAgent(parentAgentId);
-      if (!parent || parent.projectId !== projectId || parent.archived || context.store.agentCreationPending(parentAgentId)) {
+      if (!parent || parent.projectId !== projectId || parent.archived ||
+          !resourceInProduct(context.store, "agent", parentAgentId, product) ||
+          context.store.agentCreationPending(parentAgentId)) {
         return reply.code(404).send({ error: "parent Agent not found" });
       }
     } else if (parentAgentId) {
@@ -188,8 +192,10 @@ export function registerAgentOrganizationRoutes(
         AND a.manager_agent_id IS NOT NULL
         AND NOT EXISTS (
           SELECT 1 FROM agents manager
+          JOIN conversations manager_owner ON manager_owner.id = manager.conversation_id
           WHERE manager.id = a.manager_agent_id
             AND manager.project_id = a.project_id
+            AND ${activeChatProductSql("manager_owner", product)}
             AND manager.deleted_at IS NULL
             AND manager.archived = 0
             AND NOT EXISTS (
@@ -208,7 +214,8 @@ export function registerAgentOrganizationRoutes(
     const baseSql = `
       SELECT a.id, a.title, a.updated_at
       FROM agents a
-      WHERE a.project_id = ? AND ${scopePredicate}
+      JOIN conversations owner_chat ON owner_chat.id = a.conversation_id
+      WHERE a.project_id = ? AND ${activeChatProductSql("owner_chat", product)} AND ${scopePredicate}
       AND NOT EXISTS (
         SELECT 1
         FROM agent_creation_operation_members creation_members
@@ -250,8 +257,10 @@ export function registerAgentOrganizationRoutes(
           SUM(CASE WHEN a.deleted_at IS NULL AND a.archived = 0
             AND a.manager_agent_id IS NOT NULL AND NOT EXISTS (
               SELECT 1 FROM agents manager
+              JOIN conversations manager_owner ON manager_owner.id = manager.conversation_id
               WHERE manager.id = a.manager_agent_id
                 AND manager.project_id = a.project_id
+                AND ${activeChatProductSql("manager_owner", product)}
                 AND manager.deleted_at IS NULL
                 AND manager.archived = 0
                 AND NOT EXISTS (
@@ -263,7 +272,9 @@ export function registerAgentOrganizationRoutes(
                 )
             ) THEN 1 ELSE 0 END) AS orphaned,
           SUM(CASE WHEN a.deleted_at IS NOT NULL THEN 1 ELSE 0 END) AS deleted
-        FROM agents a WHERE a.project_id = ?
+        FROM agents a
+        JOIN conversations owner_chat ON owner_chat.id = a.conversation_id
+        WHERE a.project_id = ? AND ${activeChatProductSql("owner_chat", product)}
           AND NOT EXISTS (
             SELECT 1
             FROM agent_creation_operation_members creation_members
@@ -306,7 +317,9 @@ export function registerAgentOrganizationRoutes(
             manager.id AS manager_id, manager.title AS manager_title,
             (
               SELECT COUNT(*) FROM agents child
+              JOIN conversations child_owner ON child_owner.id = child.conversation_id
               WHERE child.project_id = a.project_id
+                AND ${activeChatProductSql("child_owner", product)}
                 AND child.manager_agent_id = a.id
                 AND child.deleted_at IS NULL
                 AND child.archived = 0
@@ -323,6 +336,11 @@ export function registerAgentOrganizationRoutes(
             ON manager.id = a.manager_agent_id
             AND manager.project_id = a.project_id
             AND manager.deleted_at IS NULL
+            AND EXISTS (
+              SELECT 1 FROM conversations manager_owner
+              WHERE manager_owner.id = manager.conversation_id
+                AND ${activeChatProductSql("manager_owner", product)}
+            )
             AND manager.archived = 0
             AND NOT EXISTS (
               SELECT 1

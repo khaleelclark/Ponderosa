@@ -22,7 +22,8 @@ export interface TriggerDefinitionRow {
   id: string;
   project_id: string;
   conversation_id: string;
-  agent_id: string;
+  agent_id: string | null;
+  branch_id: string | null;
   name: string;
   instructions: string;
   source_kind: TriggerSourceKind;
@@ -45,7 +46,9 @@ interface TriggerOccurrenceRow {
   id: string;
   trigger_id: string;
   project_id: string;
-  agent_id: string;
+  agent_id: string | null;
+  branch_id: string | null;
+  branch_execution_id?: string | null;
   state: TriggerOccurrenceState;
   payload_json: string;
   provenance_json: string;
@@ -63,7 +66,8 @@ interface TriggerFilesystemBurstRow {
   trigger_id: string;
   occurrence_key: string;
   project_id: string;
-  agent_id: string;
+  agent_id: string | null;
+  branch_id: string | null;
   started_at: string;
   last_at: string;
   event_count: number;
@@ -90,6 +94,13 @@ export class CoordinationV3TriggerRegistry {
     ) => TriggerOccurrenceResult,
   ) {}
 
+  private requireDestination(projectId: string, conversationId: string, agentId?: string, branchId?: string, runBudget?: TriggerRunBudgetDto): void {
+    if (Boolean(agentId) === Boolean(branchId)) throw new Error("Trigger requires exactly one Agent or Branch destination");
+    if (branchId) {
+      if (runBudget) throw new Error("Branch triggers use Branch execution budgets, not provider Run budgets");
+      if (!this.sqlite.prepare("SELECT 1 FROM branches WHERE id = ? AND deleting = 0").get(branchId)) throw new Error("Branch destination is unavailable");
+    } else { this.requireAgent(projectId, agentId!); this.requireConversationMember(conversationId, agentId!); }
+  }
   create(input: CreateTriggerDefinitionInput): TriggerDefinitionDto {
     const name = input.name.trim();
     const instructions = input.instructions.trim();
@@ -103,35 +114,35 @@ export class CoordinationV3TriggerRegistry {
     const now = input.now ?? new Date().toISOString();
     const id = input.id ?? randomUUID();
     return this.sqlite.transaction(() => {
-      this.requireProject(input.projectId);
-      this.requireAgent(input.projectId, input.targetAgentId);
-      this.requireConversation(input.projectId, input.conversationId);
-      this.requireConversationMember(input.conversationId, input.targetAgentId);
+      if(!input.branchId){this.requireProject(input.projectId);
+      this.requireConversation(input.projectId, input.conversationId);}
+      this.requireDestination(input.projectId, input.conversationId, input.targetAgentId, input.branchId, input.runBudget);
       const projectCount = (this.sqlite.prepare(`
         SELECT COUNT(*) AS count FROM trigger_definitions WHERE project_id = ?
       `).get(input.projectId) as { count: number }).count;
-      if (projectCount >= 500) throw new Error("a Project may contain at most 500 Automations");
+      if (!input.branchId && projectCount >= 500) throw new Error("a Project may contain at most 500 Automations");
       if (input.sourceKind === "filesystem") {
         const watcherCount = (this.sqlite.prepare(`
           SELECT COUNT(*) AS count FROM trigger_definitions
           WHERE project_id = ? AND source_kind = 'filesystem'
         `).get(input.projectId) as { count: number }).count;
-        if (watcherCount >= 100) {
+        if (!input.branchId && watcherCount >= 100) {
           throw new Error("a Project may contain at most 100 filesystem Automations");
         }
       }
       this.sqlite.prepare(`
         INSERT INTO trigger_definitions (
-          id, project_id, conversation_id, agent_id, name, instructions,
+          id, project_id, conversation_id, agent_id, branch_id, name, instructions,
           source_kind, source_config_json, enabled, next_fire_at,
           run_budget_limit, run_budget_period, run_budget_used, run_budget_allowance, run_budget_period_started_at,
           secret_ciphertext, secret_fingerprint, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)
       `).run(
         id,
         input.projectId,
         input.conversationId,
-        input.targetAgentId,
+        input.targetAgentId ?? null,
+        input.branchId ?? null,
         name,
         instructions,
         input.sourceKind,
@@ -218,10 +229,11 @@ export class CoordinationV3TriggerRegistry {
         this.validateRunBudget(input.runBudget);
       }
       const conversationId = input.conversationId ?? row.conversation_id;
+      if (input.branchId !== undefined && input.branchId !== row.branch_id) throw new Error("Trigger destination kind and Branch identity are immutable");
+      if (row.branch_id && input.targetAgentId !== undefined) throw new Error("Branch trigger cannot also target an Agent");
       const targetAgentId = input.targetAgentId ?? row.agent_id;
-      this.requireConversation(row.project_id, conversationId);
-      this.requireAgent(row.project_id, targetAgentId);
-      this.requireConversationMember(conversationId, targetAgentId);
+      if(!row.branch_id)this.requireConversation(row.project_id, conversationId);
+      this.requireDestination(row.project_id, conversationId, targetAgentId ?? undefined, row.branch_id ?? undefined, input.runBudget ?? undefined);
       const nextFireAt = input.nextFireAt === undefined
         ? row.next_fire_at
         : input.nextFireAt;
@@ -274,27 +286,33 @@ export class CoordinationV3TriggerRegistry {
     })();
   }
 
-  listOccurrences(triggerId: string, limit = 100): TriggerOccurrenceDto[] {
+  private occurrenceProductClause(product?: "dev" | "branches"): string {
+    return product
+      ? " AND COALESCE(json_extract(trigger_snapshot_json,'$.productScope'),CASE WHEN branch_id IS NOT NULL THEN 'branches' ELSE 'dev' END)=?"
+      : "";
+  }
+
+  listOccurrences(triggerId: string, limit = 100, product?: "dev" | "branches"): TriggerOccurrenceDto[] {
     const rows = this.sqlite.prepare(`
-      SELECT * FROM trigger_occurrences WHERE trigger_id = ?
+      SELECT * FROM trigger_occurrences WHERE trigger_id = ?${this.occurrenceProductClause(product)}
       ORDER BY occurred_at DESC, id DESC LIMIT ?
-    `).all(triggerId, Math.max(1, Math.min(limit, 500))) as TriggerOccurrenceRow[];
+    `).all(...(product?[triggerId,product,Math.max(1,Math.min(limit,500))]:[triggerId,Math.max(1,Math.min(limit,500))])) as TriggerOccurrenceRow[];
     return rows.map((row) => this.occurrenceDto(row));
   }
 
-  listAgentOccurrences(agentId: string, limit = 100): TriggerOccurrenceDto[] {
+  listAgentOccurrences(agentId: string, limit = 100, product?: "dev" | "branches"): TriggerOccurrenceDto[] {
     const rows = this.sqlite.prepare(`
-      SELECT * FROM trigger_occurrences WHERE agent_id = ?
+      SELECT * FROM trigger_occurrences WHERE agent_id = ?${this.occurrenceProductClause(product)}
       ORDER BY occurred_at DESC, id DESC LIMIT ?
-    `).all(agentId, Math.max(1, Math.min(limit, 500))) as TriggerOccurrenceRow[];
+    `).all(...(product?[agentId,product,Math.max(1,Math.min(limit,500))]:[agentId,Math.max(1,Math.min(limit,500))])) as TriggerOccurrenceRow[];
     return rows.map((row) => this.occurrenceDto(row));
   }
 
-  listProjectOccurrences(projectId: string, limit = 100): TriggerOccurrenceDto[] {
+  listProjectOccurrences(projectId: string, limit = 100, product?: "dev" | "branches"): TriggerOccurrenceDto[] {
     const rows = this.sqlite.prepare(`
-      SELECT * FROM trigger_occurrences WHERE project_id = ?
+      SELECT * FROM trigger_occurrences WHERE project_id = ?${this.occurrenceProductClause(product)}
       ORDER BY occurred_at DESC, id DESC LIMIT ?
-    `).all(projectId, Math.max(1, Math.min(limit, 500))) as TriggerOccurrenceRow[];
+    `).all(...(product?[projectId,product,Math.max(1,Math.min(limit,500))]:[projectId,Math.max(1,Math.min(limit,500))])) as TriggerOccurrenceRow[];
     return rows.map((row) => this.occurrenceDto(row));
   }
 
@@ -337,14 +355,15 @@ export class CoordinationV3TriggerRegistry {
       if (!existing) {
         this.sqlite.prepare(`
           INSERT INTO trigger_filesystem_bursts (
-            trigger_id, occurrence_key, project_id, agent_id, started_at, last_at,
+            trigger_id, occurrence_key, project_id, agent_id, branch_id, started_at, last_at,
             event_count, changes_json, dropped_path_event_count, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, 0, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 0, ?)
         `).run(
           definition.id,
           `filesystem:${randomUUID()}`,
           definition.project_id,
           definition.agent_id,
+          definition.branch_id,
           now,
           now,
           stableJson([{ path: input.path, types: [input.eventType] }]),
@@ -447,7 +466,8 @@ export class CoordinationV3TriggerRegistry {
       id: row.id,
       projectId: row.project_id,
       conversationId: row.conversation_id,
-      targetAgentId: row.agent_id,
+      ...(row.agent_id ? { targetAgentId: row.agent_id } : {}),
+      ...(row.branch_id ? { branchId: row.branch_id } : {}),
       name: row.name,
       instructions: row.instructions,
       sourceKind: row.source_kind,
@@ -528,7 +548,9 @@ export class CoordinationV3TriggerRegistry {
       artifactId: `trigger-occurrence:${row.id}`,
       triggerId: row.trigger_id,
       projectId: row.project_id,
-      agentId: row.agent_id,
+      ...(row.agent_id ? { agentId: row.agent_id } : {}),
+      ...(row.branch_id ? { branchId: row.branch_id } : {}),
+      ...(row.branch_execution_id ? { branchExecutionId: row.branch_execution_id } : {}),
       state: row.state,
       payload: JSON.parse(row.payload_json) as unknown,
       provenance: JSON.parse(row.provenance_json) as Record<string, unknown>,
@@ -548,7 +570,8 @@ export class CoordinationV3TriggerRegistry {
       triggerId: row.trigger_id,
       occurrenceKey: row.occurrence_key,
       projectId: row.project_id,
-      agentId: row.agent_id,
+      ...(row.agent_id ? { agentId: row.agent_id } : {}),
+      ...(row.branch_id ? { branchId: row.branch_id } : {}),
       startedAt: row.started_at,
       lastAt: row.last_at,
       eventCount: row.event_count,

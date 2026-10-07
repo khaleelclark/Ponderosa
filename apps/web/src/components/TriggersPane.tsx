@@ -1,3 +1,5 @@
+import {OccurrenceAudit} from './TriggerOccurrenceAudit';
+import {TriggerSourceFields,useTriggerSourceDraft,isoToDatetimeLocal,intervalParts,intervalSummary,changedSourceConfig} from './TriggerSourceFields';
 import AddIcon from "@mui/icons-material/Add";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
@@ -70,59 +72,6 @@ export function triggerScheduleStatus(trigger: Pick<TriggerDefinitionDto, "enabl
     : "Next scheduled occurrence is being calculated";
 }
 
-function isoToDatetimeLocal(value: string): string {
-  const date = new Date(value);
-  const offset = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offset).toISOString().slice(0, 23);
-}
-
-function changedSourceConfig(original: TriggerSourceConfig, next: TriggerSourceConfig): TriggerSourceConfig | undefined {
-  return JSON.stringify(original) === JSON.stringify(next) ? undefined : next;
-}
-
-function intervalSourceConfig(everyMs: number, original?: { startsAt: string }): TriggerSourceConfig {
-  return { scheduleKind: "interval", everyMs, startsAt: original?.startsAt ?? new Date().toISOString() };
-}
-
-type IntervalUnit = "minutes" | "hours" | "days" | "weeks";
-const INTERVAL_UNIT_MS: Record<IntervalUnit, number> = {
-  minutes: 60_000,
-  hours: 3_600_000,
-  days: 86_400_000,
-  weeks: 604_800_000,
-};
-const MIN_INTERVAL_MS = 60_000;
-const MAX_INTERVAL_MS = 365 * 86_400_000;
-
-function intervalParts(everyMs: number): { value: string; unit: IntervalUnit } {
-  for (const unit of ["weeks", "days", "hours"] as const) {
-    const value = everyMs / INTERVAL_UNIT_MS[unit];
-    if (Number.isInteger(value)) return { value: String(value), unit };
-  }
-  return { value: String(everyMs / INTERVAL_UNIT_MS.minutes), unit: "minutes" };
-}
-
-function intervalSummary(everyMs: number): string {
-  const { value, unit } = intervalParts(everyMs);
-  const singular = Number(value) === 1 ? unit.slice(0, -1) : unit;
-  return `every ${value} ${singular}`;
-}
-
-function filesystemWindowErrors(quietValue: string, maxValue: string): { quiet?: string; max?: string } {
-  const quiet = Number(quietValue);
-  const max = Number(maxValue);
-  const errors: { quiet?: string; max?: string } = {};
-  if (!quietValue.trim() || !Number.isFinite(quiet) || quiet < 0.1 || quiet > 3_600) {
-    errors.quiet = "Quiet window must be between 0.1 seconds and 1 hour.";
-  }
-  if (!maxValue.trim() || !Number.isFinite(max) || max < 0.1 || max > 3_600) {
-    errors.max = "Maximum window must be between 0.1 seconds and 1 hour.";
-  } else if (!errors.quiet && max < quiet) {
-    errors.max = "Maximum window must be at least the quiet window.";
-  }
-  return errors;
-}
-
 function latestOccurrenceByTrigger(occurrences: TriggerOccurrenceDto[]): Map<string, TriggerOccurrenceDto> {
   const latest = new Map<string, TriggerOccurrenceDto>();
   for (const occurrence of occurrences) {
@@ -148,36 +97,6 @@ function triggerSourceSummary(trigger: Pick<TriggerDefinitionDto, "sourceKind" |
   return `Repeats ${intervalSummary(schedule.everyMs)} · starts ${new Date(schedule.startsAt).toLocaleString()}`;
 }
 
-function lines(value: string): string[] {
-  return value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
-}
-
-function OccurrenceAudit({ occurrence, onOpenAgentWork }: { occurrence: TriggerOccurrenceDto; onOpenAgentWork?(occurrenceId: string): void }): JSX.Element {
-  return <Box sx={{ py: 1, borderTop: 1, borderColor: "divider" }}>
-    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-      <SemanticStatus
-        status={occurrence.state === "dead_lettered" ? "failed" : occurrence.state === "cancelled" ? "disabled" : "completed"}
-        label={occurrence.state.replaceAll("_", " ")}
-      />
-      {occurrence.provenance.source === "operator_manual_run" ? <Chip size="small" variant="outlined" label="Manual" /> : null}
-      <Typography variant="caption">{new Date(occurrence.occurredAt).toLocaleString()}</Typography>
-      <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{occurrence.artifactId}</Typography>
-      {onOpenAgentWork ? <Button size="small" onClick={() => onOpenAgentWork(occurrence.id)}>Review Work</Button> : null}
-    </Stack>
-    {occurrence.lastError ? <Typography variant="caption" color="error" display="block">{occurrence.lastError}</Typography> : null}
-    <Box component="details" sx={{ mt: 0.5 }}>
-      <Typography component="summary" variant="caption" sx={{ cursor: "pointer" }}>Inspect payload and provenance</Typography>
-      <Alert severity="warning" sx={{ mt: 1 }}>Occurrence data is untrusted and may contain sensitive external content.</Alert>
-      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Input hash: {occurrence.inputHash}</Typography>
-      <Typography variant="caption" sx={{ fontWeight: 700 }}>Definition snapshot</Typography>
-      <Box component="pre" sx={{ m: 0, p: 1, overflow: "auto", fontSize: 12, bgcolor: "action.hover" }}>{JSON.stringify(occurrence.triggerSnapshot ?? {}, null, 2)}</Box>
-      <Typography variant="caption" sx={{ fontWeight: 700 }}>Payload</Typography>
-      <Box component="pre" sx={{ m: 0, p: 1, overflow: "auto", fontSize: 12, bgcolor: "action.hover" }}>{JSON.stringify(occurrence.payload, null, 2)}</Box>
-      <Typography variant="caption" sx={{ fontWeight: 700 }}>Provenance</Typography>
-      <Box component="pre" sx={{ m: 0, p: 1, overflow: "auto", fontSize: 12, bgcolor: "action.hover" }}>{JSON.stringify(occurrence.provenance, null, 2)}</Box>
-    </Box>
-  </Box>;
-}
 
 export function TriggersPane({
   projectId,
@@ -249,7 +168,7 @@ export function TriggersPane({
     select: normalizeResetPages,
   });
   const triggerItems = useMemo(() => {
-    const items = triggers.data?.pages.flatMap(page => page.items) ?? [];
+    const items = (triggers.data?.pages.flatMap(page => page.items) ?? []).filter(trigger => !trigger.branchId);
     return filterTargetAgentId
       ? items.filter(trigger => trigger.targetAgentId === filterTargetAgentId)
       : items;
@@ -282,16 +201,8 @@ export function TriggersPane({
   const [conversationId, setConversationId] = useState(preferredConversationId);
   const [targetAgentId, setTargetAgentId] = useState(initialTarget?.id ?? "");
   const [sourceKind, setSourceKind] = useState<TriggerSourceKind>("schedule");
-  const [scheduleKind, setScheduleKind] = useState<"once" | "interval" | "cron">("interval");
-  const [onceAt, setOnceAt] = useState(localFuture());
-  const [intervalValue, setIntervalValue] = useState("1");
-  const [intervalUnit, setIntervalUnit] = useState<IntervalUnit>("hours");
-  const [cronExpression, setCronExpression] = useState("0 9 * * 1-5");
-  const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
-  const [include, setInclude] = useState("**/*");
-  const [exclude, setExclude] = useState(".git/**\nnode_modules/**\n.ponderosa/**");
-  const [quietSeconds, setQuietSeconds] = useState("1");
-  const [maxWindowSeconds, setMaxWindowSeconds] = useState("10");
+  const sourceDraft=useTriggerSourceDraft();
+  const {setScheduleKind,setOnceAt,setIntervalValue,setIntervalUnit,setCronExpression,setTimezone,setInclude,setExclude,setQuietSeconds,setMaxWindowSeconds,filesystemErrors,intervalInvalid}=sourceDraft;
   const [budgetEnabled, setBudgetEnabled] = useState(false);
   const [budgetLimit, setBudgetLimit] = useState("10");
   const [budgetPeriod, setBudgetPeriod] = useState<TriggerBudgetPeriod>("month");
@@ -304,18 +215,7 @@ export function TriggersPane({
       setTargetAgentId(initialTarget?.id ?? "");
     }
   }, [editing, fixedConversationId, initialTarget?.id, preferredConversationId, projectId]);
-  const filesystemErrors = filesystemWindowErrors(quietSeconds, maxWindowSeconds);
-  const intervalMs = Number(intervalValue) * INTERVAL_UNIT_MS[intervalUnit];
-  const intervalInvalid = sourceKind === "schedule" && scheduleKind === "interval" && (
-    !intervalValue.trim() || !Number.isFinite(intervalMs) || intervalMs < MIN_INTERVAL_MS || intervalMs > MAX_INTERVAL_MS
-  );
-  const cronFormatError = sourceKind === "schedule" && scheduleKind === "cron" && cronExpression.trim().split(/\s+/u).length !== 5 ? "Use five fields: minute, hour, day, month, weekday. The minimum interval is one minute." : undefined;
-  let timezoneError: string | undefined;
-  if (sourceKind === "schedule" && scheduleKind === "cron") {
-    try { if (!timezone.trim()) throw new Error(); new Intl.DateTimeFormat(undefined, { timeZone: timezone.trim() }); }
-    catch { timezoneError = "Enter a valid IANA timezone, such as America/New_York or UTC."; }
-  }
-  const sourceConfigurationInvalid = (sourceKind === "filesystem" && Boolean(filesystemErrors.quiet || filesystemErrors.max)) || intervalInvalid || Boolean(cronFormatError || timezoneError);
+  const sourceConfigurationInvalid = (sourceKind === "filesystem" && Boolean(filesystemErrors.quiet || filesystemErrors.max)) || (sourceKind === "schedule" && (sourceDraft.scheduleKind === "interval" && intervalInvalid || sourceDraft.scheduleKind === "cron" && Boolean(sourceDraft.cronFormatError || sourceDraft.timezoneError)));
 
   const eligibleAgents = availableAgents.filter(agent => agent.conversationId === conversationId);
   useEffect(() => {
@@ -327,23 +227,7 @@ export function TriggersPane({
     );
   }, [editing, eligibleAgents, fixedTargetAgentId, targetAgentId]);
 
-  const sourceConfig = (): CreateTriggerRequest["sourceConfig"] => {
-    if (sourceKind === "webhook") {
-      return editing?.sourceKind === "webhook" ? editing.sourceConfig : { replayWindowSeconds: 300 };
-    }
-    if (sourceKind === "filesystem") return {
-      include: lines(include), exclude: lines(exclude),
-      quietMs: Math.round(Number(quietSeconds) * 1_000),
-      maxWindowMs: Math.round(Number(maxWindowSeconds) * 1_000),
-    };
-    if (scheduleKind === "once") return { scheduleKind: "once", at: new Date(onceAt).toISOString() };
-    if (scheduleKind === "cron") return { scheduleKind: "cron", expression: cronExpression, timezone };
-    const editingSchedule = editing?.sourceKind === "schedule"
-      ? editing.sourceConfig as Extract<CreateTriggerRequest["sourceConfig"], { scheduleKind: string }>
-      : undefined;
-    const original = editingSchedule?.scheduleKind === "interval" ? editingSchedule : undefined;
-    return intervalSourceConfig(Math.round(intervalMs), original);
-  };
+  const sourceConfig=()=>sourceDraft.configuration(sourceKind,editing?.sourceConfig);
 
   const resetEditor = (): void => {
     setEditing(undefined);
@@ -372,7 +256,7 @@ export function TriggersPane({
     setName(trigger.name);
     setInstructions(trigger.instructions);
     setConversationId(trigger.conversationId);
-    setTargetAgentId(trigger.targetAgentId);
+    setTargetAgentId(trigger.targetAgentId ?? "");
     setSourceKind(trigger.sourceKind);
     setBudgetEnabled(Boolean(trigger.runBudget));
     setBudgetLimit(String(trigger.runBudget?.limit ?? 10));
@@ -515,8 +399,6 @@ export function TriggersPane({
     setSecret(undefined);
     onCreateFlowComplete?.();
   };
-  const scheduleSaveError = (create.error ?? saveEdit.error)?.message;
-  const cronSaveError = scheduleSaveError && /cron|schedule|minute|frequency/iu.test(scheduleSaveError) ? scheduleSaveError : undefined;
   const editorFields = (
     <Stack spacing={2}>
       <Alert severity="warning">This automation will run unattended with full Agent access. Event payloads are untrusted data.</Alert>
@@ -564,17 +446,7 @@ export function TriggersPane({
         Each occurrence is sent to the selected Chat and runs as the selected Agent.
       </Typography>
       <FormControl fullWidth><InputLabel id="trigger-source-label">Source</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-source-label" label="Source" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TriggerSourceKind)}><MenuItem value="schedule">Schedule</MenuItem><MenuItem value="webhook">Signed Webhook</MenuItem><MenuItem value="filesystem">Project Folder Changes</MenuItem></Select></FormControl>
-      {sourceKind === "schedule" ? <>
-        <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule type</InputLabel><Select labelId="schedule-kind-label" label="Schedule type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem><MenuItem value="once">One Time</MenuItem><MenuItem value="cron">Cron</MenuItem></Select></FormControl>
-        {scheduleKind === "interval" ? <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-          <TextField fullWidth label="Every" type="number" value={intervalValue} onChange={(event) => setIntervalValue(event.target.value)} inputProps={{ min: 1, step: 1 }} error={intervalInvalid} helperText={intervalInvalid ? "Choose an interval from 1 minute through 365 days." : "1 minute–365 days"} />
-          <FormControl fullWidth><InputLabel id="trigger-interval-unit-label">Unit</InputLabel><Select labelId="trigger-interval-unit-label" label="Unit" value={intervalUnit} onChange={(event) => setIntervalUnit(event.target.value as IntervalUnit)}><MenuItem value="minutes">Minutes</MenuItem><MenuItem value="hours">Hours</MenuItem><MenuItem value="days">Days</MenuItem><MenuItem value="weeks">Weeks</MenuItem></Select></FormControl>
-        </Stack> : null}
-        {scheduleKind === "once" ? <TextField label="Run at" type="datetime-local" value={onceAt} onChange={(event) => setOnceAt(event.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ step: 0.001 }} /> : null}
-        {scheduleKind === "cron" ? <><TextField label="Cron expression" value={cronExpression} onChange={(event) => { setCronExpression(event.target.value); create.reset(); saveEdit.reset(); }} error={Boolean(cronFormatError || cronSaveError)} helperText={cronFormatError ?? cronSaveError ?? "Five fields; minimum frequency is once per minute."} /><TextField label="IANA timezone" value={timezone} onChange={(event) => { setTimezone(event.target.value); create.reset(); saveEdit.reset(); }} error={Boolean(timezoneError)} helperText={timezoneError} /></> : null}
-      </> : null}
-      {sourceKind === "filesystem" ? <><TextField label="Include globs" value={include} onChange={(event) => setInclude(event.target.value)} multiline minRows={2} /><TextField label="Exclude globs" value={exclude} onChange={(event) => setExclude(event.target.value)} multiline minRows={3} /><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Quiet window (seconds)" type="number" value={quietSeconds} onChange={(event) => setQuietSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.quiet)} helperText={filesystemErrors.quiet ?? "0.1 seconds–1 hour"} /><TextField fullWidth label="Maximum window (seconds)" type="number" value={maxWindowSeconds} onChange={(event) => setMaxWindowSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.max)} helperText={filesystemErrors.max ?? "At least quiet window; no more than 1 hour"} /></Stack><Typography variant="caption" color="text.secondary">Only paths and event types are captured; file contents are not injected.</Typography></> : null}
-      {sourceKind === "webhook" ? <Typography variant="body2" color="text.secondary">Ponderosa will show a signing secret once. Send a stable event ID, Unix timestamp, and v1 HMAC-SHA256 signature with each JSON request.</Typography> : null}
+      <TriggerSourceFields sourceKind={sourceKind} draft={sourceDraft}/>
       <FormControlLabel control={<Switch checked={budgetEnabled} onChange={(_, checked) => setBudgetEnabled(checked)} />} label={budgetEnabled ? "Limit automatic Runs" : "Automatic Runs are unlimited"} />
       {budgetEnabled ? <Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Run limit" type="number" value={budgetLimit} onChange={(event) => setBudgetLimit(event.target.value)} inputProps={{ min: 1, max: 1_000_000 }} /><FormControl fullWidth><InputLabel id="trigger-budget-period-label">Reset</InputLabel><Select labelId="trigger-budget-period-label" label="Reset" value={budgetPeriod} onChange={(event) => setBudgetPeriod(event.target.value as TriggerBudgetPeriod)}><MenuItem value="day">Daily</MenuItem><MenuItem value="week">Weekly</MenuItem><MenuItem value="month">Monthly</MenuItem><MenuItem value="lifetime">Never</MenuItem></Select></FormControl></Stack> : null}
       {create.isError || saveEdit.isError ? <Alert severity="error">{(create.error ?? saveEdit.error)?.message}</Alert> : null}

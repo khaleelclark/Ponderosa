@@ -25,6 +25,7 @@ import { projectedProjectCount } from "../readiness.js";
 import { writeLauncherShutdownReceipt } from "../launcher-shutdown-receipt.js";
 import { processBirthMarker } from "@ponderosa/engines";
 import { browserResidueCleanupStatus } from "../browser-session-residue.js";
+import { projectProductSql, requestProduct } from "../product-scope.js";
 import type { ServerMetrics } from "../server-metrics.js";
 import { secretEqual } from "../security.js";
 import { browserSessionCookie } from "../launcher-security.js";
@@ -734,17 +735,21 @@ app.get("/api/diagnostics/ready", async (_request, reply): Promise<ReadinessDto>
 app.get<{ Querystring: CollectionQuery }>("/api/projects", async (request, reply) => {
   try {
     const normalizedSearch = request.query.search?.trim().toLocaleLowerCase() ?? "";
+    const product=requestProduct(request);
+    const conditions=[projectProductSql("projects.id",product)];
+    const params:unknown[]=[];
+    if(normalizedSearch){
+      conditions.push("lower(label || ' ' || host_path) LIKE ? ESCAPE '\\'");
+      params.push(`%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`);
+    }
     const page = sqliteCollectionPage(store.sqlite, request.query, {
       baseSql: `
         SELECT id, label AS title, COALESCE(last_used_at, created_at) AS updated_at
-        FROM projects
-        ${normalizedSearch ? "WHERE lower(label || ' ' || host_path) LIKE ? ESCAPE '\\\\'" : ""}
+        FROM projects WHERE ${conditions.join(" AND ")}
       `,
-      params: normalizedSearch
-        ? [`%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
-        : [],
+      params,
       order: "updated",
-      scope: "projects",
+      scope: `projects:${product}`,
       generationKeys: ["projects"],
       hydrate: id => store.getProject(id),
     });

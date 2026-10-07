@@ -161,6 +161,8 @@ export interface AgentCreationOperation {
   kind: "human" | "managed" | "import";
   idempotencyKey: string;
   payloadHash: string;
+  conversationId?: string;
+  productScope?: "dev" | "branches";
   status: AgentCreationOperationStatus;
   agentIds: string[];
   artifactIds: string[];
@@ -803,11 +805,15 @@ export class AgentStore extends AgentEventSessionFacade {
     kind: AgentCreationOperation["kind"];
     idempotencyKey: string;
     payloadHash: string;
+    conversationId?: string;
+    productScope?: "dev" | "branches";
   }): { operation: AgentCreationOperation; replayed: boolean } {
     const id = this.agentCreationOperationId(input);
     const existing = this.getAgentCreationOperation(id);
     if (existing) {
-      if (existing.payloadHash !== input.payloadHash) {
+      if (existing.payloadHash !== input.payloadHash ||
+          (input.conversationId !== undefined && existing.conversationId !== input.conversationId) ||
+          (input.productScope !== undefined && existing.productScope !== input.productScope)) {
         throw new Error("Agent creation idempotency key was reused with different input");
       }
       if (existing.status === "rolled_back") {
@@ -828,12 +834,17 @@ export class AgentStore extends AgentEventSessionFacade {
     try {
       this.client.prepare(`
         INSERT INTO agent_creation_operations
-          (id, project_id, actor_scope, kind, idempotency_key, payload_hash, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'preparing', ?, ?)
-      `).run(id, input.projectId, input.actorScope, input.kind, input.idempotencyKey, input.payloadHash, now, now);
+          (id, project_id, actor_scope, kind, idempotency_key, payload_hash, conversation_id, product_scope, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'preparing', ?, ?)
+      `).run(id, input.projectId, input.actorScope, input.kind, input.idempotencyKey, input.payloadHash,
+        input.conversationId ?? null, input.productScope ?? null, now, now);
     } catch (error) {
       const raced = this.getAgentCreationOperation(id);
-      if (!raced || raced.payloadHash !== input.payloadHash) throw error;
+      if (!raced || raced.payloadHash !== input.payloadHash ||
+          (input.conversationId !== undefined && raced.conversationId !== input.conversationId) ||
+          (input.productScope !== undefined && raced.productScope !== input.productScope)) {
+        throw error;
+      }
       return { operation: raced, replayed: true };
     }
     return { operation: this.getAgentCreationOperation(id)!, replayed: false };
@@ -861,12 +872,12 @@ export class AgentStore extends AgentEventSessionFacade {
 
   getAgentCreationOperation(id: string): AgentCreationOperation | undefined {
     const row = this.client.prepare(`
-      SELECT id, project_id, actor_scope, kind, idempotency_key, payload_hash, status,
+      SELECT id, project_id, actor_scope, kind, idempotency_key, payload_hash, conversation_id, product_scope, status,
         communication_event_id, artifact_ids_json, artifact_identities_json, result_json, last_error
       FROM agent_creation_operations WHERE id = ?
     `).get(id) as {
       id: string; project_id: string; actor_scope: string; kind: AgentCreationOperation["kind"];
-      idempotency_key: string; payload_hash: string; status: AgentCreationOperationStatus;
+      idempotency_key: string; payload_hash: string; conversation_id: string | null; product_scope: "dev" | "branches" | null; status: AgentCreationOperationStatus;
       communication_event_id: string | null; artifact_ids_json: string; artifact_identities_json: string;
       result_json: string | null; last_error: string | null;
     } | undefined;
@@ -881,6 +892,8 @@ export class AgentStore extends AgentEventSessionFacade {
       kind: row.kind,
       idempotencyKey: row.idempotency_key,
       payloadHash: row.payload_hash,
+      ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
+      ...(row.product_scope ? { productScope: row.product_scope } : {}),
       status: row.status,
       agentIds: members.map((member) => member.agent_id),
       artifactIds: JSON.parse(row.artifact_ids_json) as string[],
@@ -946,8 +959,8 @@ export class AgentStore extends AgentEventSessionFacade {
 
   createProject(
     input: Omit<CreateProjectRequest, "defaultEngine"> & {
-      hostPath: string;
-      chatOwned?: boolean;
+      hostPath?: string;
+      chatOwned?: boolean; branchId?: string; executionId?: string;
       defaultEngine?: CreateProjectRequest["defaultEngine"];
     },
     identity?: WorkspaceCreationIdentity,
@@ -1410,6 +1423,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentManagement.updateAgent(id, patch);
   }
 
+  restoreAgentConfiguration(id: string, snapshot: Pick<AgentDto, "title" | "handle" | "activeEngine" | "managementPermissions"> & { model: string | null; effort: string | null }): AgentDto | undefined {
+    return this.agentManagement.restoreAgentConfiguration(id, snapshot);
+  }
+
   updateAgentOrganization(id: string, input: UpdateAgentOrganizationRequest): AgentDto | undefined {
     return this.agentManagement.updateAgentOrganization(id, input);
   }
@@ -1606,7 +1623,7 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.chatFeed.searchGlobalChats(input);
   }
 
-  getAllChatPage(input: { limit?: number; cursor?: string } = {}): AllChatPageDto {
+  getAllChatPage(input: { limit?: number; cursor?: string; product?: "dev" | "branches" } = {}): AllChatPageDto {
     return this.chatFeed.getAllChatPage(input);
   }
 
@@ -1628,14 +1645,14 @@ export class AgentStore extends AgentEventSessionFacade {
   }
 
   getTokenUsage(
-    scope: { type: "overall" } | { type: "project" | "agent" | "conversation"; id: string },
+    scope: { type: "overall" | "branches"; product?: "dev" | "branches" } | { type: "project" | "branch" | "agent" | "conversation"; id: string; product?: "dev" | "branches" },
     range: TokenUsageRangeDto = {},
   ): TokenUsageSummaryDto {
     return this.runUsage.getTokenUsage(scope, range);
   }
 
   /** Metered canonical runs used by the server's adapter-owned pricing projection. */
-  getMeteredRuns(scope: { type: "overall" } | { type: "project" | "agent"; id: string }, range: TokenUsageRangeDto = {}): Array<{
+  getMeteredRuns(scope: { type: "overall" | "branches"; product?: "dev" | "branches" } | { type: "project" | "branch" | "agent"; id: string; product?: "dev" | "branches" }, range: TokenUsageRangeDto = {}): Array<{
     projectId: string; conversationId?: string; agentId: string; agentTitle: string; executionId: string; engine: string; model?: string;
     startedAt: string; completedAt?: string; usage: NonNullable<AgentRunDto["usage"]>; providerRequestUsage?: TokenUsage[];
   }> {
@@ -1666,7 +1683,7 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.artifactCatalog.projectHasArtifactSourcePath(projectId, sourcePath);
   }
 
-  getProjectArtifactPage(projectId: string, input: { limit: number; cursor?: string; conversationId?: string; search?: string }): HistoryPageDto<ArtifactDto> {
+  getProjectArtifactPage(projectId: string, input: { limit: number; cursor?: string; conversationId?: string; search?: string; branchOwned?: boolean; scope?: string }): HistoryPageDto<ArtifactDto> {
     return this.artifactCatalog.getProjectArtifactPage(projectId, input);
   }
 

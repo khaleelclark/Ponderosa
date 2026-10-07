@@ -17,6 +17,7 @@ import {
   type ConversationDeletionReceipt,
   type WorkspaceStore,
 } from "@ponderosa/agents";
+import { chatProductSql, requestProduct } from "../product-scope.js";
 import { concreteRuntimeSelection, runtimeSelectionError, runtimeSpeedSelectionError } from "../runtime-selection.js";
 import { applyCollectionPageHeaders, collectionGenerationKey, sendCollectionPageError, sqliteCollectionPage, type CollectionQuery } from "../collection-page.js";
 
@@ -131,6 +132,8 @@ export function registerConversationRoutes(
           SELECT id, title, updated_at
           FROM agents
           WHERE project_id = ? AND deleted_at IS NULL AND archived = 0
+            AND EXISTS(SELECT 1 FROM conversations product_owner WHERE product_owner.id=agents.conversation_id AND ${chatProductSql('product_owner',requestProduct(request))})
+            AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id=agents.id AND inactive.state!='active')
             AND NOT EXISTS (
               SELECT 1
               FROM agent_creation_operation_members members
@@ -138,7 +141,7 @@ export function registerConversationRoutes(
               WHERE members.agent_id = agents.id
                 AND operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
             )
-            ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE '\\\\'" : ""}
+            ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE '\\'" : ""}
         `,
         params: normalizedSearch
           ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
@@ -165,7 +168,9 @@ export function registerConversationRoutes(
           SELECT id, title, updated_at
           FROM conversations
           WHERE project_id = ?
-            ${normalizedSearch ? "AND lower(title) LIKE ? ESCAPE '\\\\'" : ""}
+            AND ${chatProductSql('conversations',requestProduct(request))}
+            AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id=conversations.id AND inactive.state!='active')
+            ${normalizedSearch ? "AND lower(title) LIKE ? ESCAPE '\\'" : ""}
         `,
         params: normalizedSearch
           ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
@@ -194,6 +199,7 @@ export function registerConversationRoutes(
             SELECT agent.id, agent.title, agent.updated_at
             FROM agents agent
             WHERE agent.conversation_id = ? AND agent.deleted_at IS NULL
+              AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id=agent.id AND inactive.state!='active')
               AND NOT EXISTS (
                 SELECT 1
                 FROM agent_creation_operation_members creation_members
@@ -201,7 +207,7 @@ export function registerConversationRoutes(
                 WHERE creation_members.agent_id = agent.id
                   AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
               )
-              ${normalizedSearch ? "AND lower(agent.title || ' ' || agent.active_engine || ' ' || COALESCE(agent.model, '')) LIKE ? ESCAPE '\\\\'" : ""}
+              ${normalizedSearch ? "AND lower(agent.title || ' ' || agent.active_engine || ' ' || COALESCE(agent.model, '')) LIKE ? ESCAPE '\\'" : ""}
           `,
           params: normalizedSearch
             ? [conversation.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]

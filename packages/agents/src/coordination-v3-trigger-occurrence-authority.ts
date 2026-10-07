@@ -21,6 +21,7 @@ import type {
   ActivationPromptClass,
   CoordinationV3StoreOptions,
   RecordTriggerOccurrenceInput,
+  BranchTriggerIntake,
   TriggerOccurrenceResult,
   TriggerOccurrenceState,
 } from "./coordination-v3-types.js";
@@ -36,6 +37,7 @@ export class CoordinationV3TriggerOccurrenceAuthority {
     private readonly support: CoordinationV3StoreSupport,
     private readonly triggerRegistry: CoordinationV3TriggerRegistry,
     private readonly createActivation: (input: CreateActivationV3Input) => string,
+    private readonly acceptBranch: (input: BranchTriggerIntake) => string,
   ) {}
 
   recordTriggerOccurrence(
@@ -66,7 +68,7 @@ export class CoordinationV3TriggerOccurrenceAuthority {
       if (!definition.enabled && !input.allowDisabled) {
         throw new Error("Automation is disabled");
       }
-      const scopeKey = `conversation:${definition.conversation_id}`;
+      const scopeKey = definition.branch_id?`branch:${definition.branch_id}`:`conversation:${definition.conversation_id}`;
       const activationConfig = {
         conversationId: definition.conversation_id,
         priority: PRIORITY.actionable,
@@ -75,10 +77,17 @@ export class CoordinationV3TriggerOccurrenceAuthority {
         retryDelayMs,
         allowDisabled: input.allowDisabled === true,
       };
+      const productScope = definition.branch_id || (this.sqlite.prepare(
+        "SELECT branch_id FROM conversations WHERE id=?",
+      ).get(definition.conversation_id) as {branch_id:string|null}|undefined)?.branch_id
+        ? "branches" as const
+        : "dev" as const;
       const triggerSnapshot = {
         id: definition.id,
+        productScope,
         conversationId: definition.conversation_id,
-        targetAgentId: definition.agent_id,
+        ...(definition.agent_id ? { targetAgentId: definition.agent_id } : {}),
+        ...(definition.branch_id ? { branchId: definition.branch_id } : {}),
         name: definition.name,
         instructions: definition.instructions,
         sourceKind: definition.source_kind,
@@ -117,10 +126,11 @@ export class CoordinationV3TriggerOccurrenceAuthority {
         };
       }
 
+      if (!definition.branch_id) {
       this.support.requireProject(definition.project_id);
       this.support.requireAgent(
         definition.project_id,
-        definition.agent_id,
+        definition.agent_id!,
       );
       this.support.requireConversation(
         definition.project_id,
@@ -128,7 +138,7 @@ export class CoordinationV3TriggerOccurrenceAuthority {
       );
       this.support.requireConversationMember(
         definition.conversation_id,
-        definition.agent_id,
+        definition.agent_id!,
       );
       const maximumPending = Math.max(
         1,
@@ -143,6 +153,8 @@ export class CoordinationV3TriggerOccurrenceAuthority {
         throw new PendingActivationCapacityError(
           `pending Automation occurrence limit reached for Agent (${maximumPending})`,
         );
+      }
+
       }
 
       const occurrenceId = randomUUID();
@@ -176,7 +188,11 @@ export class CoordinationV3TriggerOccurrenceAuthority {
         now,
         null,
       );
-      this.processTriggerOccurrence(occurrenceId, now);
+      if (definition.branch_id) {
+        const executionId = this.acceptBranch({ triggerId: definition.id, branchId: definition.branch_id, occurrenceId, inputHash: hash,
+          payload: input.payload, provenance: input.provenance, payloadMediaType: input.payloadMediaType ?? "application/json", now });
+        this.sqlite.prepare("UPDATE trigger_occurrences SET branch_id = ?, branch_execution_id = ?, state = 'activated' WHERE id = ?").run(definition.branch_id, executionId, occurrenceId);
+      } else this.processTriggerOccurrence(occurrenceId, now);
       return this.triggerOccurrenceResult(occurrenceId, false);
     })();
   }

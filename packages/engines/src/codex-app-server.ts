@@ -1,3 +1,4 @@
+import { CODEX_APP_TOOL_POLICY_ARGS } from './codex-tool-policy.js';
 import {
   classifyToolFailure,
   truncateUnicodeCodePoints,
@@ -74,6 +75,22 @@ interface AppServerSessionOptions extends OpenRuntimeSessionOptions {
   killGraceMs: number;
   enableFastMode: boolean;
   configuredMcps?: EngineMcpServer[];
+}
+
+export function codexCapabilityRuntimeOptions(
+  sandboxMode: string,
+  restrictions: OpenRuntimeSessionOptions["capabilityRestrictions"],
+): { sandboxMode: string; config?: Record<string, Record<string, { enabled: boolean }>> } {
+  const restrictedConnectors = [...new Set(restrictions?.restrictedConnectorNames ?? [])].sort();
+  return {
+    sandboxMode: restrictions?.filesystemWriteRestricted ? "read-only" : sandboxMode,
+    ...(restrictedConnectors.length ? {
+      config: {
+        apps: Object.fromEntries(restrictedConnectors.map(name => [name, { enabled: false }])),
+        mcp_servers: Object.fromEntries(restrictedConnectors.map(name => [name, { enabled: false }])),
+      },
+    } : {}),
+  };
 }
 
 async function optionalRequest(rpc: JsonRpcProcess, method: string, params: unknown): Promise<unknown> {
@@ -267,6 +284,7 @@ export async function discoverCodexAppServerCapabilities(opts: {
       "app-server", "--stdio",
       "-c", `sandbox_mode=${JSON.stringify(opts.sandboxMode)}`,
       "-c", 'approval_policy="never"',
+      ...CODEX_APP_TOOL_POLICY_ARGS,
     ],
     cwd: opts.cwd,
     signal: controller.signal,
@@ -477,13 +495,19 @@ export class CodexAppServerSession implements RuntimeSession {
       throw new Error("persistent runtime opening requires a spawn-time termination registrar");
     }
     let session: CodexAppServerSession | undefined;
+    const { sandboxMode: effectiveSandboxMode, config: sessionConfig } = codexCapabilityRuntimeOptions(
+      opts.sandboxMode,
+      opts.capabilityRestrictions,
+    );
+    const restrictedConnectors = new Set(opts.capabilityRestrictions?.restrictedConnectorNames ?? []);
     const rpc = new JsonRpcProcess({
       bin: opts.bin,
       args: [
         "app-server",
         "--stdio",
-        "-c", `sandbox_mode=${JSON.stringify(opts.sandboxMode)}`,
+        "-c", `sandbox_mode=${JSON.stringify(effectiveSandboxMode)}`,
         "-c", 'approval_policy="never"',
+        ...CODEX_APP_TOOL_POLICY_ARGS,
         ...(opts.enableFastMode ? ["-c", "features.fast_mode=true"] : []),
       ],
       cwd: opts.cwd,
@@ -527,16 +551,18 @@ export class CodexAppServerSession implements RuntimeSession {
           model: opts.model || null,
           serviceTier: serviceTierForSpeed(opts.speed),
           approvalPolicy: "never",
-          sandbox: opts.sandboxMode,
+          sandbox: effectiveSandboxMode,
           developerInstructions: opts.systemPrompt ?? null,
+          config: sessionConfig ?? null,
         })
       : await rpc.request<ThreadResponse>("thread/start", {
           cwd: opts.cwd,
           model: opts.model || null,
           serviceTier: serviceTierForSpeed(opts.speed),
           approvalPolicy: "never",
-          sandbox: opts.sandboxMode,
+          sandbox: effectiveSandboxMode,
           developerInstructions: opts.systemPrompt ?? null,
+          config: sessionConfig ?? null,
           ephemeral: false,
           experimentalRawEvents: false,
           dynamicTools: opts.dynamicTools?.map((tool) => ({
@@ -553,7 +579,7 @@ export class CodexAppServerSession implements RuntimeSession {
       !opts.resumeSessionId,
       opts.resumeSessionId ? [] : [...opts.history],
       typeof response.model === "string" && response.model.trim() ? response.model.trim() : opts.model,
-      opts.configuredMcps ?? [],
+      (opts.configuredMcps ?? []).filter(server => !restrictedConnectors.has(server.name)),
       opts.onCapabilitiesChanged,
     );
     return session;

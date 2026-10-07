@@ -101,7 +101,7 @@ export interface ProviderInputDto {
   updatedAt: string;
 }
 
-export type TokenUsageScope = "overall" | "project" | "agent" | "conversation";
+export type TokenUsageScope = "overall" | "branches" | "project" | "branch" | "agent" | "conversation";
 
 export type TokenUsageMetric = "inputTokens" | "cachedInputTokens" | "cacheWriteInputTokens" | "outputTokens" | "reasoningOutputTokens" | "totalTokens";
 

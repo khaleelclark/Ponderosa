@@ -225,6 +225,7 @@ function ProjectCreateForm({
     <>
       <Stack spacing={2.25}>
         <TextField label="Project Name" value={label} onChange={event => setLabel(event.target.value)} autoFocus fullWidth />
+        <Typography variant="body2" color="text.secondary">Projects organize work within this trusted Ponderosa deployment. They are not separate security tenants.</Typography>
         <Box>
           <Typography variant="subtitle2">Default AI Runtime</Typography>
           <Typography variant="body2" color="text.secondary">Choose the provider for this Project. Chats and Agents can override its model and reasoning later.</Typography>

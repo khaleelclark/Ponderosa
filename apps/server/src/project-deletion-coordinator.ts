@@ -11,7 +11,7 @@ import type {
   ProjectDeletionReceipt,
   WorkspaceStore,
 } from "@ponderosa/agents";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type { BrowserSessionManager } from "./browser-session-manager.js";
 import type { BrowserProfileAuthority } from "./browser-profile-authority.js";
 import type { ContextCursorStore } from "./context-cursors.js";
@@ -31,6 +31,7 @@ import type { AgentWorkingCopyService } from "./agent-working-copy-service.js";
 import { drainProjectConversationDeletions } from "./conversation-deletion-authority.js";
 import type { DraftService } from "./routes/drafts.js";
 import type { AssetStore } from "./assets.js";
+import { requestProduct, type ProductScope } from "./product-scope.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 
@@ -190,6 +191,16 @@ export function registerProjectDeletionRoutes(
     assets,
   } = context;
 
+  const deletionScopeOwnsEveryChat=(projectId:string,product:ProductScope):boolean=>{
+    const chats=store.sqlite.prepare("SELECT branch_id FROM conversations WHERE project_id=?").all(projectId) as Array<{branch_id:string|null}>;
+    return chats.every(chat=>Boolean(chat.branch_id)===(product==="branches"));
+  };
+  const rejectMixedProductDeletion=(projectId:string,product:ProductScope,reply:FastifyReply)=>{
+    if(deletionScopeOwnsEveryChat(projectId,product))return false;
+    reply.code(409).send({error:"This Project contains Chats owned by another product and cannot be deleted here"});
+    return true;
+  };
+
   const ensureProjectDraftFence = async (projectId: string, draftSurfaceIds: string[]) => {
     await drafts.fenceMutationGroup(`project:${projectId}`, draftSurfaceIds);
   };
@@ -207,6 +218,7 @@ export function registerProjectDeletionRoutes(
   app.get<{ Params: { id: string } }>("/api/projects/:id/deletion-preview", async (request, reply) => {
     const project = store.getProject(request.params.id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    if(rejectMixedProductDeletion(project.id,requestProduct(request),reply))return reply;
     const agents = store.listAgents(project.id);
     const agentIds = new Set(agents.map(agent => agent.id));
     const activeAgents = agents
@@ -293,6 +305,7 @@ export function registerProjectDeletionRoutes(
     }
     const project = store.getProject(request.params.id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    if(rejectMixedProductDeletion(project.id,requestProduct(request),reply))return reply;
     if (!await drainProjectConversationDeletions(
       store,
       project.id,

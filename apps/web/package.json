@@ -10,7 +10,7 @@
     "build": "rsbuild build && node tools/check-bundle-budget.mjs",
     "dev": "rsbuild dev",
     "preview": "rsbuild preview",
-    "test:built": "sh -c 'tmp=$(mktemp -d); trap \"rm -rf \\\"$tmp\\\"\" EXIT; tsc --module NodeNext --moduleResolution NodeNext --target ES2022 --jsx react-jsx --skipLibCheck --outDir \"$tmp\" --rootDir . src/downloads.ts src/components/filePreview/readDocxPreview.ts src/components/filePreview/readPdfPreview.ts src/markdownPreviewText.ts src/projectPathPresentation.ts src/browserStorage.ts src/browserInteraction.ts src/components/browser/browserWindowSizing.ts src/attention.ts src/clientId.ts src/conversationAgentCache.ts src/conversationEngine.ts src/reloadSafety.ts src/retainedData.ts src/resourcePreferences.ts src/workspaceEventInvalidation.ts src/workspacePreferencesWriter.ts src/components/settingsDrafts.ts src/components/decisions/decisionResponse.ts src/components/activeOperationTracker.ts src/components/agentCreateOwnership.ts src/components/allChatRouting.ts src/components/idempotentAttempt.ts src/components/recipientUploadControls.ts src/components/queuedMessageCommandAttempts.ts src/components/providerUsagePresentation.ts src/providerUsageQuery.ts src/routeRegistry.ts src/routing.ts src/workspaceDirectoryScope.ts src/hooks/useManagedWorkspaceCollection.ts src/boundedRefresh.ts src/api/backgroundCooldown.ts src/api/queryRetry.ts src/api/uploadRetry.ts src/components/chat/chatMarkdownLink.ts src/components/chat/composerDestination.ts src/components/chat/composerMentionBindings.ts src/components/chat/composerUtils.ts src/components/chat/folderAttachments.ts src/components/chat/draftTextRecovery.ts src/components/chat/messageMentionPresentation.ts src/components/chat/messageSelection.ts src/components/chat/receiptActivityEntries.ts src/components/filePreview/workspaceMarkdownLinks.ts src/api/resilientEventSource.ts src/conversationMessageReceipt.ts src/conversationRouting.ts src/mentions.ts src/notificationNavigation.ts src/notificationVisibility.ts && ln -s \"$PWD/node_modules\" \"$tmp/node_modules\" && mkdir -p \"$tmp/test\" && cp -r test/fixtures \"$tmp/test/\" && cp test/*.test.mjs \"$tmp/test/\" && node --test \"$tmp\"/test/*.test.mjs'",
+    "test:built": "sh -c 'tmp=$(mktemp -d); trap \"rm -rf \\\"$tmp\\\"\" EXIT; tsc --module NodeNext --moduleResolution NodeNext --target ES2022 --jsx react-jsx --skipLibCheck --outDir \"$tmp\" --rootDir . src/components/speech/voiceReply.ts src/components/branches/model.ts src/components/branches/executionPresentation.ts src/attention.ts src/clientId.ts src/retainedData.ts src/resourcePreferences.ts src/workspaceEventInvalidation.ts src/workspacePreferencesWriter.ts src/components/settingsDrafts.ts src/components/triggerSourceValues.ts src/components/capabilityPolicyDraft.ts src/components/decisions/decisionResponse.ts src/components/activeOperationTracker.ts src/components/agentCreateOwnership.ts src/components/allChatRouting.ts src/components/idempotentAttempt.ts src/components/queuedMessageCommandAttempts.ts src/components/providerUsagePresentation.ts src/providerUsageQuery.ts src/branchesRouting.ts src/routeRegistry.ts src/routing.ts src/workspaceDirectoryScope.ts src/components/chat/chatMarkdownLink.ts src/components/chat/composerDestination.ts src/components/chat/composerMentionBindings.ts src/components/chat/composerUtils.ts src/components/chat/draftTextRecovery.ts src/components/chat/messageSelection.ts src/conversationMessageReceipt.ts src/conversationRouting.ts src/mentions.ts src/notificationVisibility.ts src/components/browser/browserWindowSizing.ts src/conversationAgentCache.ts src/conversationEngine.ts src/reloadSafety.ts src/components/chat/messageMentionPresentation.ts src/components/chat/receiptActivityEntries.ts src/api/resilientEventSource.ts src/downloads.ts src/components/filePreview/readDocxPreview.ts src/components/filePreview/readPdfPreview.ts src/markdownPreviewText.ts src/projectPathPresentation.ts src/browserStorage.ts src/browserInteraction.ts src/components/recipientUploadControls.ts src/hooks/useManagedWorkspaceCollection.ts src/boundedRefresh.ts src/api/backgroundCooldown.ts src/api/queryRetry.ts src/api/uploadRetry.ts src/components/chat/folderAttachments.ts src/components/filePreview/workspaceMarkdownLinks.ts src/notificationNavigation.ts && ln -s \"$PWD/node_modules\" \"$tmp/node_modules\" && mkdir -p \"$tmp/test\" && cp -r test/fixtures \"$tmp/test/\" && cp test/*.test.mjs \"$tmp/test/\" && node --test \"$tmp\"/test/*.test.mjs'",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -20,7 +20,6 @@
     "@lexical/react": "^0.49.0",
     "@mui/icons-material": "^6.5.0",
     "@mui/material": "^6.3.0",
-    "@novnc/novnc": "1.5.0",
     "@ponderosa/core": "workspace:*",
     "@tanstack/react-query": "^5.101.2",
     "lexical": "^0.49.0",
@@ -30,7 +29,8 @@
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.1",
     "remark-gfm": "^4.0.1",
-    "rsbuild-plugin-pwa": "^2.10.0"
+    "rsbuild-plugin-pwa": "^2.10.0",
+    "@novnc/novnc": "1.5.0"
   },
   "devDependencies": {
     "@rsbuild/core": "^1.1.0",

@@ -28,6 +28,27 @@ interface ClaudeStreamSessionOptions extends OpenRuntimeSessionOptions {
   killGraceMs: number;
 }
 
+export function claudeCapabilityRestrictionArgs(
+  restrictions: OpenRuntimeSessionOptions["capabilityRestrictions"],
+): string[] {
+  if (!restrictions) return [];
+  const disallowed = new Set<string>();
+  if (restrictions.filesystemWriteRestricted) {
+    // Claude's Bash tool can write files just as readily as its editor tools.
+    // Claude does not expose a trustworthy read-only shell mode, so the
+    // deny-only capability must remove Bash rather than claim partial safety.
+    disallowed.add("Bash");
+    disallowed.add("Write");
+    disallowed.add("Edit");
+    disallowed.add("NotebookEdit");
+  }
+  for (const connectorName of restrictions.restrictedConnectorNames) {
+    const normalized = connectorName.replace(/[^\p{L}\p{N}_-]/gu, "_");
+    disallowed.add(`mcp__${normalized}`);
+  }
+  return disallowed.size ? ["--disallowedTools", [...disallowed].sort().join(",")] : [];
+}
+
 export class ClaudeStreamSession implements RuntimeSession {
   readonly engineAgentId: string;
   readonly events: AsyncIterable<AgentEvent>;
@@ -74,6 +95,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       "--verbose",
       "--replay-user-messages",
       "--permission-mode", opts.permissionMode,
+      ...claudeCapabilityRestrictionArgs(opts.capabilityRestrictions),
       ...(opts.systemPrompt ? ["--append-system-prompt", opts.systemPrompt] : []),
       ...(ponderosaMcp ? ["--mcp-config", ponderosaMcp] : []),
       ...(opts.model ? ["--model", opts.model] : []),

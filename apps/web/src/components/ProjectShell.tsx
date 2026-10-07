@@ -1,6 +1,7 @@
 import { Alert, Box, Button, LinearProgress, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import type {
+  AgentDto,
   AgentHealthDto,
   ConversationDto,
   EngineDto,
@@ -12,6 +13,7 @@ import type {
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { api } from "../api";
 import { mergeAgentStatuses } from "../agents";
 import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
@@ -56,6 +58,9 @@ export function ProjectShell({
   onResourceDeleted,
   onProjectDeleted,
   onCreate,
+  navigationFallback,
+  routedAgentOverride,
+  executionAudit=false,
 }: {
   projectId: string;
   project: ProjectDto;
@@ -81,6 +86,11 @@ export function ProjectShell({
       agentId?: string;
     },
   ): void;
+  /** Supplied by an embedding product when ProjectShell's normal header has not mounted yet. */
+  navigationFallback?: ReactNode;
+  /** Exact historical Agent supplied by an embedding execution audit; never added to the active roster. */
+  routedAgentOverride?: AgentDto;
+  executionAudit?: boolean;
 }): JSX.Element {
   const projectBrowser = useProjectBrowser();
   const theme = useTheme();
@@ -113,7 +123,7 @@ export function ProjectShell({
     [engines, modelCatalogQuery.data],
   );
   const routedAgent = route.kind === "agent"
-    ? agents.find((agent) => agent.id === route.agentId)
+    ? agents.find((agent) => agent.id === route.agentId) ?? (routedAgentOverride?.id === route.agentId && routedAgentOverride.projectId === projectId ? routedAgentOverride : undefined)
     : undefined;
   const routedAgentHasLiveSession = route.kind === "agent" && Boolean(
     projectedHealth.find((agent) => agent.agentId === route.agentId)
@@ -228,7 +238,7 @@ export function ProjectShell({
     (Boolean(routeConversationId) && conversationsFailure === "initial") ||
     (Boolean(routeTriggerId) && triggersFailure === "initial");
   const routeResourceUnavailable =
-    (Boolean(routeAgentId) && agentsQuery.isSuccess && !agents.some(agent => agent.id === routeAgentId)) ||
+    (Boolean(routeAgentId) && agentsQuery.isSuccess && !routedAgent) ||
     (Boolean(routeConversationId) && conversationsQuery.isSuccess && !conversations.some(conversation => conversation.id === routeConversationId)) ||
     (Boolean(routeTriggerId) && triggersQuery.isSuccess && !triggersQuery.data?.some(trigger => trigger.id === routeTriggerId));
 
@@ -244,9 +254,10 @@ export function ProjectShell({
   });
 
 
-  if (routeResourceLoading) return <LinearProgress aria-label="Loading requested resource" />;
+  const earlyNavigation = navigationFallback ? <Box sx={{ flexShrink: 0 }}>{navigationFallback}</Box> : null;
+  if (routeResourceLoading) return navigationFallback ? <Box sx={{ display: "flex", alignItems: "center", gap: 1, p: 1 }}>{earlyNavigation}<LinearProgress aria-label="Loading requested resource" sx={{ flex: 1 }} /></Box> : <LinearProgress aria-label="Loading requested resource" />;
   if (routeResourceError) {
-    return <Box sx={{ p: 2 }}><Alert severity="error" action={<Button onClick={() => {
+    return <Box sx={{ p: 2 }}>{earlyNavigation&&<Box sx={{ mb: 1 }}>{earlyNavigation}</Box>}<Alert severity="error" action={<Button onClick={() => {
       if (routeAgentId) void agentsQuery.refetch();
       if (routeConversationId) void conversationsQuery.refetch();
       if (routeTriggerId) void triggersQuery.refetch();
@@ -259,6 +270,7 @@ export function ProjectShell({
   if (conversationsFailure === "initial" || agentsFailure === "initial") {
     return (
       <Box sx={{ p: 2 }}>
+        {earlyNavigation&&<Box sx={{ mb: 1 }}>{earlyNavigation}</Box>}
         <Alert
           severity="error"
           action={
@@ -286,6 +298,7 @@ export function ProjectShell({
       <ConversationView
         key={route.conversationId}
         conversationId={route.conversationId}
+        auditOnly={executionAudit}
         focusMessageId={route.focusMessageId}
         initialView={route.urlDriven
           ? (route.view ?? route.channel ?? "main")
@@ -339,6 +352,7 @@ export function ProjectShell({
         key={route.agentId}
         agentId={route.agentId}
         projectId={projectId}
+        auditOnly={executionAudit}
         focusMessageId={route.focusMessageId}
         focusTelemetry={route.focusTelemetry}
         technicalFocusId={route.technicalFocusId}

@@ -14,6 +14,7 @@ interface OperationalNotificationsContext {
   coordinationV3: CoordinationV3Store;
   workspace: WorkspaceStore;
   publishWorkspaceSince(cursor: number): void;
+  notifyWebPush?(): void;
 }
 
 export function createOperationalNotifications(context: OperationalNotificationsContext) {
@@ -33,7 +34,8 @@ export function createOperationalNotifications(context: OperationalNotifications
 
   const createOperationalNotification = (input: {
     dedupeKey: string;
-    informational?: boolean;
+    branchId?: string;
+    branchExecutionId?: string;
     category: "communication" | "provider" | "trigger" | "budget" | "coordination" | "decision" | "system";
     severity: "info" | "attention" | "urgent";
     title: string;
@@ -47,11 +49,15 @@ export function createOperationalNotifications(context: OperationalNotifications
     agentIds?: string[];
     action?: WorkspaceNotificationDto["action"];
     resolution?: WorkspaceNotificationDto["resolution"];
+    /** Queue browser push even when the in-app severity is informational. */
+    push?: boolean;
   }): WorkspaceNotificationDto => {
     const cursor = workspace.cursor();
-    const { informational, ...notificationInput } = input;
-    const notification = workspace.createNotification({ kind: informational ? "information" : "operational", status: "open", ...notificationInput }, input.severity !== "info");
+    const { push, ...notificationInput } = input;
+    const queueWebPush = push ?? input.severity !== "info";
+    const notification = workspace.createNotification({ kind: "operational", status: "open", ...notificationInput }, queueWebPush);
     publishWorkspaceSince(cursor);
+    if (queueWebPush) context.notifyWebPush?.();
     return notification;
   };
   const resolveOperationalNotification = (dedupeKey: string): void => {

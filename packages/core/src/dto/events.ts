@@ -11,6 +11,7 @@ import type {
 } from "./workspace.js";
 
 export type WorkspaceEvent =
+  | { type: "branch_checkpoint"; checkpointId: number; branchId: string; chatId: string; executionId: string; kind: string; evidence: unknown }
   | { type: "preferences_updated"; preferences: WorkspacePreferencesDto }
   | { type: "resource_used"; kind: WorkspaceResourceKind; resourceId: string }
   | { type: "project_changed"; projectId: string; action: "created" | "updated" | "deleted" | "used" }
@@ -27,7 +28,7 @@ export type WorkspaceEvent =
       /** Exact affected Chats when known; absent on legacy persisted events. */
       conversationIds?: string[];
     }
-  | { type: "trigger_changed"; projectId: string; agentId: string; triggerId: string; action: "created" | "updated" | "deleted" | "occurrence" }
+  | { type: "trigger_changed"; projectId: string; agentId?: string; triggerId: string; action: "created" | "updated" | "deleted" | "occurrence" }
   | { type: "usage_changed"; projectId: string; agentId: string; conversationIds: string[]; seq: number; executionId?: string }
   | { type: "agent_event"; projectId: string; agentId: string; conversationIds: string[]; seq: number; eventType: string; category: "lifecycle" | "message" | "task" | "artifact" | "file" | "state" | "usage" | "progress"; executionId?: string }
   | { type: "runtime_capabilities_changed"; projectId: string; engineId: EngineId }

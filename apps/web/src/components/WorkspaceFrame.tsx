@@ -13,6 +13,8 @@ import {
   useMediaQuery,
 } from "@mui/material";
 import {
+  createContext,
+  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -28,67 +30,69 @@ import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
 type WorkspaceTabItem<T extends string> = { value: T; label: string; icon?: ReactElement };
 
-const WORKSPACE_HEADER_COLLAPSED_KEY = "ponderosa.workspace-header.collapsed.v1";
-const workspaceHeaderListeners = new Set<() => void>();
-let memoryHeaderCollapsed = false;
+const DEFAULT_WORKSPACE_HEADER_COLLAPSED_KEY = "ponderosa.workspace-header.collapsed.v1";
+const WorkspaceHeaderPreferenceContext = createContext(DEFAULT_WORKSPACE_HEADER_COLLAPSED_KEY);
+const workspaceHeaderListeners = new Map<string,Set<() => void>>();
+const memoryHeaderCollapsed = new Map<string,boolean>();
 
-function readHeaderCollapsed(): boolean {
+export function WorkspaceHeaderPreferenceProvider({storageKey,children}:{storageKey:string;children:ReactNode}):JSX.Element {
+  return <WorkspaceHeaderPreferenceContext.Provider value={storageKey}>{children}</WorkspaceHeaderPreferenceContext.Provider>;
+}
+
+function readHeaderCollapsed(storageKey:string): boolean {
+  const memory=memoryHeaderCollapsed.get(storageKey)??false;
   try {
-    if (typeof window === "undefined") return memoryHeaderCollapsed;
-    const stored = window.localStorage.getItem(WORKSPACE_HEADER_COLLAPSED_KEY);
-    return stored === null ? memoryHeaderCollapsed : stored === "true";
+    if (typeof window === "undefined") return memory;
+    const stored = window.localStorage.getItem(storageKey);
+    return stored === null ? memory : stored === "true";
   } catch {
-    return memoryHeaderCollapsed;
+    return memory;
   }
 }
 
-function subscribeHeaderCollapsed(listener: () => void): () => void {
-  workspaceHeaderListeners.add(listener);
+function subscribeHeaderCollapsed(storageKey:string,listener: () => void): () => void {
+  const listeners=workspaceHeaderListeners.get(storageKey)??new Set<() => void>();
+  listeners.add(listener);workspaceHeaderListeners.set(storageKey,listeners);
   const handleStorage = (event: StorageEvent) => {
-    if (event.key !== WORKSPACE_HEADER_COLLAPSED_KEY) return;
-    memoryHeaderCollapsed = event.newValue === "true";
+    if (event.key !== storageKey) return;
+    memoryHeaderCollapsed.set(storageKey,event.newValue === "true");
     listener();
   };
-  if (typeof window !== "undefined") {
-    window.addEventListener("storage", handleStorage);
-  }
+  if (typeof window !== "undefined") window.addEventListener("storage", handleStorage);
   return () => {
-    workspaceHeaderListeners.delete(listener);
-    if (typeof window !== "undefined") {
-      window.removeEventListener("storage", handleStorage);
-    }
+    listeners.delete(listener);
+    if (!listeners.size) workspaceHeaderListeners.delete(storageKey);
+    if (typeof window !== "undefined") window.removeEventListener("storage", handleStorage);
   };
 }
 
-function writeHeaderCollapsed(collapsed: boolean): void {
-  memoryHeaderCollapsed = collapsed;
+function writeHeaderCollapsed(storageKey:string,collapsed: boolean): void {
+  memoryHeaderCollapsed.set(storageKey,collapsed);
   try {
-    window.localStorage.setItem(
-      WORKSPACE_HEADER_COLLAPSED_KEY,
-      String(collapsed),
-    );
+    window.localStorage.setItem(storageKey,String(collapsed));
   } catch {
     // The in-memory preference keeps controls usable without device storage.
   }
-  workspaceHeaderListeners.forEach(listener => listener());
+  workspaceHeaderListeners.get(storageKey)?.forEach(listener => listener());
 }
 
 export function useWorkspaceHeaderCollapse(): {
   collapsed: boolean;
   toggleCollapsed(): void;
 } {
+  const storageKey=useContext(WorkspaceHeaderPreferenceContext);
   const mobile = useMediaQuery("(max-width: 899.95px)");
   const [mobileCollapsed, setMobileCollapsed] = useState(true);
   const collapsed = useSyncExternalStore(
-    subscribeHeaderCollapsed,
-    readHeaderCollapsed,
+    listener=>subscribeHeaderCollapsed(storageKey,listener),
+    ()=>readHeaderCollapsed(storageKey),
     () => false,
   );
   return {
     collapsed: mobile ? mobileCollapsed : collapsed,
     toggleCollapsed: () => mobile
       ? setMobileCollapsed(value => !value)
-      : writeHeaderCollapsed(!collapsed),
+      : writeHeaderCollapsed(storageKey,!collapsed),
   };
 }
 

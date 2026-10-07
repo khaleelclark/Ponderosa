@@ -1,5 +1,13 @@
 <!doctype html>
 <html lang="en">
-  <head><meta charset="utf-8"><title>Ponderosa</title></head>
-  <body><div id="root"></div></body>
+  <head>
+    <meta charset="utf-8">
+    <title>Ponderosa</title>
+    <style>
+      .startup { position: fixed; inset: 0; padding: 32px; box-sizing: border-box; background: #faf6f3; color: #20382b; font: 16px system-ui, sans-serif; }
+      .startup h1 { margin: 0 0 12px; font-size: 24px; }
+      @media (prefers-color-scheme: dark) { .startup { background: #101310; color: #ece9df; } }
+    </style>
+  </head>
+  <body><div id="root"><main class="startup" aria-busy="true"><h1>Ponderosa</h1><p role="status">Opening Ponderosa…</p><noscript>Enable JavaScript to open your workspace.</noscript></main></div></body>
 </html>

@@ -85,11 +85,10 @@ export interface CreateServerOptions {
   /** Global admission limits. Tests and embedded servers may omit them. */
   requestLimits?: {
     maxRequestsPerMinute: number;
-    /** Separate bounded capacity for operator-authored drafts and messages. */
+    /** Separate ceiling for read-only requests; writes retain maxRequestsPerMinute. */
+    maxReadRequestsPerMinute?: number;
     maxCriticalRequestsPerMinute?: number;
-    /** Separate bounded capacity for live EventSource connections and probes. */
     maxStreamRequestsPerMinute?: number;
-    /** A bounded bucket for health/readiness probes, independent of UI reads. */
     maxMonitorRequestsPerMinute?: number;
     maxInflight: number;
     /** Response deadline; admission remains held until the handler settles. */
@@ -120,6 +119,7 @@ export interface CreateServerOptions {
   /** Host-local origin injected into runtime tools; agents run on this server host. */
   agentBaseUrl?: string;
   logger?: boolean;
+  branches?: { maxConcurrentScripts?: number };
   /** Communication V3 scheduler tuning. V3 is unconditional. */
   communicationV3?: {
     maxConcurrentRuns?: number;

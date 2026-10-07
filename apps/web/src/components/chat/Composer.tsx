@@ -280,6 +280,7 @@ export function Composer({
   attachmentsEnabled = true,
   attachmentsUnavailableReason,
   enableVoiceDictation = false,
+  talkContext,
   busyMentionHandles,
   allowUnmentionedSend = true,
   sendUnavailableReason,
@@ -3365,6 +3366,7 @@ export function Composer({
             disabled={disabled || composerLocked || sending}
             onFinalTranscript={insertDictatedText}
             onSettlingChange={handleDictationSettlingChange}
+            talkContext={talkContext}
           /> : null}
         </Box>
         </Box>

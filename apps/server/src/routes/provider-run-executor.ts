@@ -7,6 +7,7 @@ import {
   type ProviderErrorCode,
   type ProviderFailureCategory,
   type ProviderInputSourceManifest,
+  type RuntimeCapabilityRestrictions,
   type RuntimeDynamicToolSpec,
   type RuntimeProcessHandle,
   unicodeCodePointLength,
@@ -71,6 +72,7 @@ export function contextRolloverHandoffValidationError(
 export interface ProviderRunExecutionInput {
   activeRun: ActiveRun;
   availableRuntimeTools: RuntimeDynamicToolSpec[];
+  capabilityRestrictions: RuntimeCapabilityRestrictions;
   agent: AgentDto;
   agentMessageUrl: string;
   broadcastCanonicalTipId: string | undefined;
@@ -188,6 +190,7 @@ export function startProviderRunExecution(
   const {
     activeRun,
     availableRuntimeTools,
+    capabilityRestrictions,
     agent,
     agentMessageUrl,
     broadcastCanonicalTipId,
@@ -313,6 +316,7 @@ export function startProviderRunExecution(
           speed: effectiveSpeed,
           environment,
           dynamicTools: availableRuntimeTools,
+          capabilityRestrictions,
           handleDynamicToolCall: createProviderDynamicToolHandler(
             app,
             availableRuntimeTools,

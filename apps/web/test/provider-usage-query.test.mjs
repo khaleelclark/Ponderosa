@@ -6,6 +6,7 @@ import {
   providerUsageRefreshInterval,
   refreshLatestAgentProviderUsage,
   refreshLatestProviderUsage,
+  tokenUsagePath,
 } from "../src/providerUsageQuery.js";
 import { queryKeys } from "../src/queryKeys.js";
 
@@ -14,6 +15,12 @@ function deferred() {
   const promise = new Promise((settle) => { resolve = settle; });
   return { promise, resolve };
 }
+
+test("provider activity uses the canonical Branch and all-Branches routes", () => {
+  assert.equal(tokenUsagePath("branches"), "/api/branches/usage");
+  assert.equal(tokenUsagePath("branch", "security review"), "/api/branches/security%20review/usage");
+  assert.equal(tokenUsagePath("project", "project-a"), "/api/projects/project-a/usage");
+});
 
 test("an older provider query cannot overwrite an explicit refresh", async () => {
   const queryClient = new QueryClient();

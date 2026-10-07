@@ -127,6 +127,8 @@ export type PresetEvent = {
 } | { type: "delete"; id: string; at: string };
 
 export interface ConversationJson {
+  branchId?: string;
+  executionId?: string;
   id: string;
   projectId: string;
   title: string;
@@ -177,6 +179,7 @@ export interface MessageDispatchRecord {
 export interface AgentDeletionReceipt {
   id: string;
   projectId: string;
+  productScope: "dev" | "branches" | "mixed" | "unknown";
   previewHash: string;
   rootAgentIds: string[];
   deletedAgentIds: string[];
@@ -190,6 +193,7 @@ export interface AgentDeletionReceipt {
 
 export interface ProjectDeletionReceipt {
   projectId: string;
+  productScope: "dev" | "branches";
   tombstoneName: string;
   ownershipToken?: string;
   removalStarted?: boolean;
@@ -205,6 +209,7 @@ export interface ProjectDeletionReceipt {
 
 export interface ConversationDeletionReceipt {
   conversationId: string;
+  branchId?: string;
   projectId: string;
   tombstoneName?: string;
   ownershipToken?: string;
