@@ -367,9 +367,11 @@ for (const answerState of ['unsubmitted', 'submitted', 'acknowledged', 'fenced-b
     const turn = { injectionId: lead.injectionId, runId: lead.runId, fencingToken: lead.fencingToken };
     f.c.preparePromptInjection({ ...turn, prompt: 'Original task' }); f.c.markPromptSubmitted(turn); f.c.acknowledgePromptInjection(turn);
     const response = { optionId: 'approve', respondedAt: '2026-10-07T00:00:00.000Z' };
+    if (answerState.startsWith('fenced-')) f.c.waitForTaskDecision({ runAuthorization: f.auth(lead), decisionId: 'approval', scopeKey: `conversation:${f.chat.id}` });
     const id = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
       scopeKey: `conversation:${f.chat.id}`, messageId: answerState === 'unanchored' ? 'unrelated' : 'decision:approval:response',
       kind: 'human', payload: { decision: { id: 'approval', response: answerState === 'different-response' ? { ...response, optionId: 'deny' } : response } } });
+    if (answerState.startsWith('fenced-')) f.c.attachTaskDecisionWake('approval', id);
     const run = f.c.leaseNextSteering({ workerId: 'answer' });
     const injection = { injectionId: run.injectionId, runId: run.runId, fencingToken: run.fencingToken };
     if (answerState !== 'unsubmitted') {
@@ -380,9 +382,9 @@ for (const answerState of ['unsubmitted', 'submitted', 'acknowledged', 'fenced-b
     }
     f.c.reconcileTaskDecision({ decisionId: 'approval', runId: lead.runId, agentId: f.lead.id,
       projectId: f.project.id, scopeKey: `conversation:${f.chat.id}`, response });
-    assert.equal(f.c.requiredReplyObligationsForRun(lead.runId)[0].blockingDecisionId,
-      answerState === 'acknowledged' ? undefined : 'approval');
-    assert.equal(f.c.taskDecisionOwnsDelivery('approval'), answerState !== 'acknowledged');
+    const cleared = answerState === 'acknowledged' || answerState === 'fenced-after-ack';
+    assert.equal(f.c.requiredReplyObligationsForRun(lead.runId)[0].blockingDecisionId, cleared ? undefined : 'approval');
+    assert.equal(f.c.taskDecisionOwnsDelivery('approval'), !cleared);
     assert.equal(JSON.parse(f.store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(id).payload_json).decision.response.optionId,
       answerState === 'different-response' ? 'deny' : 'approve');
     assert.equal(f.c.requiredReplyObligationsForRun(lead.runId)[0].satisfiedCommunicationId, 'initial-ack');
