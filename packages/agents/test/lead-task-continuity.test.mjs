@@ -261,6 +261,288 @@ test('an exact next-Run Decision answer carries a satisfied initial task origin 
   } finally { f.close(); }
 });
 
+test('an exact acknowledged same-Run Decision answer releases final delivery atomically', () => {
+  const f = fixture();
+  try {
+    const lead = f.human(); f.delegate(lead, 1, { noRoute: true }); f.reply(lead, 'interim'); f.finish(lead); f.review();
+    const integration = f.c.leaseNextRun({ workerId: 'integration', excludedAgentIds: [f.peer.id] });
+    const turn = { injectionId: integration.injectionId, runId: integration.runId, fencingToken: integration.fencingToken };
+    f.c.preparePromptInjection({ ...turn, prompt: 'Exact integration input' }); f.c.markPromptSubmitted(turn); f.c.acknowledgePromptInjection(turn);
+    f.c.waitForTaskDecision({ runAuthorization: f.auth(integration), decisionId: 'same-run-approval', scopeKey: `conversation:${f.chat.id}` });
+    const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+      scopeKey: `conversation:${f.chat.id}`, messageId: 'decision:same-run-approval:response', kind: 'human',
+      payload: { decision: { id: 'same-run-approval' } } });
+    f.c.attachTaskDecisionWake('same-run-approval', answer);
+    const steering = f.c.leaseNextSteering({ workerId: 'steering' });
+    assert.equal(steering.runId, integration.runId); assert.deepEqual(steering.activationIds, [answer]);
+    const injection = { injectionId: steering.injectionId, runId: steering.runId, fencingToken: steering.fencingToken };
+    f.c.preparePromptInjection({ ...injection, prompt: 'Exact Decision response input' }); f.c.markPromptSubmitted(injection);
+    assert.throws(() => f.final(integration, 'before-ack'), /task_delivery_dependencies_pending/);
+    f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_decision_ack BEFORE UPDATE OF blocking_decision_id ON required_reply_obligations
+      WHEN OLD.blocking_decision_id IS NOT NULL AND NEW.blocking_decision_id IS NULL
+      BEGIN SELECT RAISE(ABORT, 'controlled Decision acknowledgement rollback'); END`);
+    assert.throws(() => f.c.acknowledgePromptInjection(injection), /controlled Decision acknowledgement rollback/);
+    assert.equal(f.c.promptInjectionForActivation(integration.runId, answer).state, 'submitted');
+    assert.equal(f.c.requiredReplyObligationsForRun(integration.runId)[0].blockingDecisionId, 'same-run-approval');
+    f.store.sqlite.exec('DROP TRIGGER fail_decision_ack');
+    f.c.acknowledgePromptInjection(injection); f.c.acknowledgePromptInjection(injection);
+    assert.equal(f.c.requiredReplyObligationsForRun(integration.runId)[0].blockingDecisionId, undefined);
+    f.final(integration, 'same-run-final'); f.final(integration, 'same-run-final');
+    f.c.completeRun(integration.runId, integration.fencingToken); f.reopen();
+    assert.equal(f.c.requiredReplyObligationsForRun(integration.runId)[0].satisfiedCommunicationId, 'same-run-final');
+    assert.equal(f.c.requiredReplyObligationsForRun(integration.runId)[0].blockingDecisionId, undefined);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM runtime_communications WHERE id='same-run-final'").get().n, 1);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 0);
+    assert.equal(f.c.leaseNextRun({ workerId: 'no-recovery', excludedAgentIds: [f.peer.id] }), undefined);
+  } finally { f.close(); }
+});
+
+for (const initialReply of [false, true]) for (const timing of ['before', 'during', 'after']) test(`a Decision-only wait retains its handoff with an exact answer ${timing} retirement and later delegation (${initialReply ? 'satisfied' : 'pending'} initial receipt)`, () => {
+  const f = fixture();
+  try {
+    const lead = f.human(); if (initialReply) f.reply(lead, 'initial-ack');
+    f.c.waitForTaskDecision({ runAuthorization: f.auth(lead), decisionId: 'decision-only', scopeKey: `conversation:${f.chat.id}` });
+    const rollover = f.rollover(lead); f.c.markContextRolloverVisibleResponseCommitted(f.lead.id, lead.runId); f.finish(lead);
+    const answer = () => {
+      const id = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+        scopeKey: `conversation:${f.chat.id}`, messageId: 'decision:decision-only:response', kind: 'human',
+        payload: { decision: { id: 'decision-only' } } });
+      f.c.attachTaskDecisionWake('decision-only', id);
+    };
+    const retired = f.retire(rollover, phase => { if (phase === timing) answer(); });
+    if (timing === 'after') {
+      assert.equal(retired.continuityWaiting, true); assert.equal(retired.completionReason, 'no_continuation_required');
+      assert.equal(f.c.leaseNextRun({ workerId: 'no-polling', excludedAgentIds: [f.peer.id] }), undefined);
+      f.reopen(); answer();
+    } else assert.equal(retired.state, 'continuation_ready');
+    const resumed = f.c.leaseNextRun({ workerId: 'approval', excludedAgentIds: [f.peer.id] });
+    assert.equal(f.c.contextRolloverForContinuationRun(resumed.runId, f.lead.id)?.id, rollover.id);
+    assert.equal(f.c.contextRolloverForContinuationRun(resumed.runId, f.lead.id)?.handoffEventId, 'bounded-handoff');
+    const root = f.c.requiredReplyObligationsForRun(resumed.runId)[0];
+    assert.equal(root.sourceActivationId, lead.activations[0].id); assert.equal(root.state, initialReply ? 'satisfied' : 'pending');
+    assert.equal(root.blockingDecisionId, undefined); assert.equal(root.satisfiedCommunicationId, initialReply ? 'initial-ack' : undefined);
+    f.delegate(resumed, 1, { noRoute: true }); f.finish(resumed); f.review();
+    const final = f.c.leaseNextRun({ workerId: 'integration', excludedAgentIds: [f.peer.id] });
+    f.final(final, 'decision-only-final'); f.finish(final); f.reopen();
+    assert.equal(f.c.leaseNextRun({ workerId: 'done', excludedAgentIds: [f.peer.id] }), undefined);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM runtime_communications WHERE id='decision-only-final'").get().n, 1);
+  } finally { f.close(); }
+});
+
+for (const initialReply of [false, true]) test(`canonical repair preserves a Decision-only ${initialReply ? 'satisfied' : 'pending'} initial root`, () => {
+  const f = fixture();
+  try {
+    const lead = f.human(); if (initialReply) f.reply(lead, 'initial-ack');
+    assert.throws(() => f.store.sqlite.transaction(() => {
+      f.c.waitForTaskDecision({ runAuthorization: f.auth(lead), decisionId: 'canonical-initial', scopeKey: `conversation:${f.chat.id}` });
+      throw Error('injected rollback');
+    })(), /injected rollback/);
+    const source = { runId: lead.runId, agentId: f.lead.id, projectId: f.project.id, scopeKey: `conversation:${f.chat.id}` };
+    f.c.reconcileTaskDecision({ ...source, decisionId: 'canonical-initial', agentId: f.peer.id });
+    assert.equal(f.c.taskDecisionOwnsDelivery('canonical-initial'), false);
+    f.c.reconcileTaskDecision({ ...source, decisionId: 'canonical-initial' });
+    f.c.reconcileTaskDecision({ ...source, decisionId: 'canonical-initial' });
+    const repaired = f.c.requiredReplyObligationsForRun(lead.runId)[0];
+    assert.equal(repaired.state, initialReply ? 'satisfied' : 'pending');
+    assert.equal(repaired.satisfiedCommunicationId, initialReply ? 'initial-ack' : undefined);
+    assert.equal(repaired.blockingDecisionId, 'canonical-initial');
+    assert.equal(f.c.taskDecisionOwnsDelivery('canonical-initial'), true);
+    const rollover = f.rollover(lead); f.finish(lead); assert.equal(f.retire(rollover).continuityWaiting, true);
+    f.reopen(); assert.equal(f.c.taskDecisionOwnsDelivery('canonical-initial'), true);
+    assert.equal(f.c.leaseNextRun({ workerId: 'no-poll', excludedAgentIds: [f.peer.id] }), undefined);
+    f.c.cancelAgentRun({ agentId: f.lead.id, idempotencyKey: 'cancel-task' });
+    // Cancellation of an idle Agent does not invent a task terminal. A
+    // genuinely cancelled source Run must not be revived by canonical repair.
+    f.store.sqlite.prepare("UPDATE scheduler_runs SET status='cancelled' WHERE id=?").run(lead.runId);
+    assert.equal(f.c.taskDecisionOwnsDelivery('canonical-initial'), false);
+    f.c.reconcileTaskDecision({ ...source, decisionId: 'other' });
+    assert.equal(f.c.requiredReplyObligationsForRun(lead.runId)[0].blockingDecisionId, 'canonical-initial');
+  } finally { f.close(); }
+});
+
+for (const answerState of ['unsubmitted', 'submitted', 'acknowledged', 'different-response', 'unanchored']) test(`resolved Decision repair respects ${answerState} canonical answer evidence`, () => {
+  const f = fixture();
+  try {
+    const lead = f.human(); f.reply(lead, 'initial-ack');
+    const turn = { injectionId: lead.injectionId, runId: lead.runId, fencingToken: lead.fencingToken };
+    f.c.preparePromptInjection({ ...turn, prompt: 'Original task' }); f.c.markPromptSubmitted(turn); f.c.acknowledgePromptInjection(turn);
+    const response = { optionId: 'approve', respondedAt: '2026-10-07T00:00:00.000Z' };
+    const id = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+      scopeKey: `conversation:${f.chat.id}`, messageId: answerState === 'unanchored' ? 'unrelated' : 'decision:approval:response',
+      kind: 'human', payload: { decision: { id: 'approval', response: answerState === 'different-response' ? { ...response, optionId: 'deny' } : response } } });
+    const run = f.c.leaseNextSteering({ workerId: 'answer' });
+    const injection = { injectionId: run.injectionId, runId: run.runId, fencingToken: run.fencingToken };
+    if (answerState !== 'unsubmitted') {
+      f.c.preparePromptInjection({ ...injection, prompt: 'Exact canonical answer' }); f.c.markPromptSubmitted(injection);
+      if (answerState !== 'submitted') f.c.acknowledgePromptInjection(injection);
+    }
+    f.c.reconcileTaskDecision({ decisionId: 'approval', runId: lead.runId, agentId: f.lead.id,
+      projectId: f.project.id, scopeKey: `conversation:${f.chat.id}`, response });
+    assert.equal(f.c.requiredReplyObligationsForRun(lead.runId)[0].blockingDecisionId,
+      answerState === 'acknowledged' ? undefined : 'approval');
+    assert.equal(f.c.taskDecisionOwnsDelivery('approval'), answerState !== 'acknowledged');
+    assert.equal(JSON.parse(f.store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(id).payload_json).decision.response.optionId,
+      answerState === 'different-response' ? 'deny' : 'approve');
+    assert.equal(f.c.requiredReplyObligationsForRun(lead.runId)[0].satisfiedCommunicationId, 'initial-ack');
+  } finally { f.close(); }
+});
+
+test('resolved historical Decisions cannot revive a completed initial receipt without an exact live wait', () => {
+  const f = fixture();
+  try {
+    const lead = f.human(); f.reply(lead, 'initial-done'); f.finish(lead); f.reopen();
+    f.c.reconcileTaskDecision({ decisionId: 'historical-answer', runId: lead.runId, agentId: f.lead.id,
+      projectId: f.project.id, scopeKey: `conversation:${f.chat.id}`,
+      response: { optionId: 'approve', respondedAt: '2026-10-07T00:00:00.000Z' } });
+    assert.equal(f.c.taskDecisionOwnsDelivery('historical-answer'), false);
+    assert.equal(f.c.requiredReplyObligationsForRun(lead.runId)[0].blockingDecisionId, undefined);
+    assert.equal(f.c.leaseNextRun({ workerId: 'no-revival', excludedAgentIds: [f.peer.id] }), undefined);
+  } finally { f.close(); }
+});
+
+test('a historical answer acknowledged by unrelated work cannot clear the original task root', () => {
+  const f = fixture();
+  try {
+    const lead = f.human(); f.reply(lead, 'initial-ack');
+    f.c.waitForTaskDecision({ runAuthorization: f.auth(lead), decisionId: 'approval', scopeKey: `conversation:${f.chat.id}` }); f.finish(lead);
+    const unrelated = f.human('unrelated');
+    const turn = { injectionId: unrelated.injectionId, runId: unrelated.runId, fencingToken: unrelated.fencingToken };
+    f.c.preparePromptInjection({ ...turn, prompt: 'Unrelated' }); f.c.markPromptSubmitted(turn); f.c.acknowledgePromptInjection(turn);
+    const response = { optionId: 'approve', respondedAt: '2026-10-07T00:00:00.000Z' };
+    f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
+      messageId: 'decision:approval:response', kind: 'human', payload: { decision: { id: 'approval', response } } });
+    // Simulate the old acceptance ordering before the exact task tag existed.
+    const answer = f.c.leaseNextSteering({ workerId: 'historical-ordering' });
+    const injection = { injectionId: answer.injectionId, runId: answer.runId, fencingToken: answer.fencingToken };
+    f.c.preparePromptInjection({ ...injection, prompt: 'Historical exact answer' }); f.c.markPromptSubmitted(injection); f.c.acknowledgePromptInjection(injection);
+    f.c.reconcileTaskDecision({ decisionId: 'approval', runId: lead.runId, agentId: f.lead.id,
+      projectId: f.project.id, scopeKey: `conversation:${f.chat.id}`, response });
+    assert.equal(f.c.requiredReplyObligationsForRun(lead.runId)[0].blockingDecisionId, 'approval');
+    assert.notEqual(f.c.requiredReplyObligationsForRun(unrelated.runId)[0].sourceActivationId, lead.activations[0].id);
+  } finally { f.close(); }
+});
+
+for (const boundary of ['untagged', 'mismatched', 'stale-fence', 'cancelled', 'side-effects-fenced', 'newer-blocker']) test(`Decision steering cannot release delivery through ${boundary}`, () => {
+  const f = fixture();
+  try {
+    const lead = f.human(); f.delegate(lead, 1, { noRoute: true }); f.reply(lead, 'interim'); f.finish(lead); f.review();
+    const run = f.c.leaseNextRun({ workerId: 'integration', excludedAgentIds: [f.peer.id] });
+    const turn = { injectionId: run.injectionId, runId: run.runId, fencingToken: run.fencingToken };
+    f.c.preparePromptInjection({ ...turn, prompt: 'Integration' }); f.c.markPromptSubmitted(turn); f.c.acknowledgePromptInjection(turn);
+    f.c.waitForTaskDecision({ runAuthorization: f.auth(run), decisionId: 'approval', scopeKey: `conversation:${f.chat.id}` });
+    const id = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
+      messageId: `answer-${boundary}`, kind: 'human', payload: { decision: { id: boundary === 'mismatched' ? 'other' : 'approval' } } });
+    if (boundary !== 'untagged') f.c.attachTaskDecisionWake('approval', id);
+    const steer = f.c.leaseNextSteering({ workerId: 'steer' });
+    const injection = { injectionId: steer.injectionId, runId: steer.runId, fencingToken: steer.fencingToken };
+    f.c.preparePromptInjection({ ...injection, prompt: 'Decision response' }); f.c.markPromptSubmitted(injection);
+    if (boundary === 'stale-fence') {
+      assert.throws(() => f.c.acknowledgePromptInjection({ ...injection, fencingToken: injection.fencingToken - 1 }));
+      assert.equal(f.c.promptInjectionForActivation(run.runId, id).state, 'submitted');
+    } else if (boundary === 'cancelled') {
+      f.c.cancelAgentRun({ agentId: f.lead.id, expectedRunId: run.runId, idempotencyKey: 'cancel-before-ack' });
+      assert.throws(() => f.c.acknowledgePromptInjection(injection));
+    } else {
+      if (boundary === 'side-effects-fenced') f.store.sqlite.prepare('UPDATE scheduler_runs SET side_effects_fenced_at=? WHERE id=?').run(new Date().toISOString(), run.runId);
+      f.c.acknowledgePromptInjection(injection);
+      if (boundary === 'newer-blocker') {
+        f.c.waitForTaskDecision({ runAuthorization: f.auth(run), decisionId: 'next-approval', scopeKey: `conversation:${f.chat.id}` });
+        f.c.acknowledgePromptInjection(injection);
+      }
+    }
+    assert.equal(f.c.requiredReplyObligationsForRun(run.runId)[0].blockingDecisionId, boundary === 'newer-blocker' ? 'next-approval' : 'approval');
+    assert.throws(() => f.final(run, 'must-not-publish'));
+    assert.equal(f.c.runtimeCommunication('must-not-publish'), undefined);
+  } finally { f.close(); }
+});
+
+for (const phase of ['initial', 'final']) for (const timing of ['before-owner-finishes', 'during-unrelated-run']) test(`an exact ${phase}-phase Decision answer attached ${timing} waits instead of steering unrelated same-Chat work`, () => {
+  const f = fixture();
+  try {
+    const lead = f.human(); let owner = lead;
+    if (phase === 'final') {
+      f.delegate(lead, 1, { noRoute: true }); f.reply(lead, 'interim'); f.finish(lead); f.review();
+      owner = f.c.leaseNextRun({ workerId: 'integration', excludedAgentIds: [f.peer.id] });
+    } else f.reply(owner, 'initial-ack');
+    f.c.waitForTaskDecision({ runAuthorization: f.auth(owner), decisionId: 'original-approval', scopeKey: `conversation:${f.chat.id}` });
+    const enqueueAnswer = () => {
+      const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
+        messageId: 'decision:original-approval:response', kind: 'human', payload: { decision: { id: 'original-approval' } } });
+      f.c.attachTaskDecisionWake('original-approval', answer); return answer;
+    };
+    let answer, unrelated;
+    if (timing === 'before-owner-finishes') {
+      const communication = { schemaVersion: 2, eventId: 'unrelated', projectId: f.project.id, conversationId: f.chat.id,
+        sender: { kind: 'user', userId: 'local-operator' }, intent: 'user_dm',
+        audience: { kind: 'user_agent', userId: 'local-operator', agentId: f.lead.id }, text: 'Unrelated request', createdAt: new Date().toISOString() };
+      f.c.recordRuntimeCommunication({ id: 'unrelated', projectId: f.project.id, sender: communication.sender,
+        intent: communication.intent, audience: communication.audience, payload: { communication },
+        activation: { agentId: f.lead.id, kind: 'human_message', priority: 100, dispatchPolicy: 'next_run', promptClass: 'human' } });
+      answer = enqueueAnswer(); f.finish(owner);
+      unrelated = f.c.leaseNextRun({ workerId: 'unrelated', coalesceLimit: 1, excludedAgentIds: [f.peer.id] });
+    } else { f.finish(owner); unrelated = f.human('unrelated'); }
+    const turn = { injectionId: unrelated.injectionId, runId: unrelated.runId, fencingToken: unrelated.fencingToken };
+    f.c.preparePromptInjection({ ...turn, prompt: 'Unrelated exact input' }); f.c.markPromptSubmitted(turn); f.c.acknowledgePromptInjection(turn);
+    if (!answer) answer = enqueueAnswer();
+    assert.equal(f.c.leaseNextSteering({ workerId: 'must-not-steer-unrelated' }), undefined);
+    const generic = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
+      messageId: 'generic-steering', kind: 'human', payload: { text: 'Unrelated task steering' } });
+    const coalesced = f.c.leaseNextSteering({ workerId: 'coalesced-steering', coalesceLimit: 16 });
+    assert.deepEqual(coalesced.activationIds, [generic], 'an unrelated Decision must be excluded from every coalesced injection');
+    const steer = { injectionId: coalesced.injectionId, runId: coalesced.runId, fencingToken: coalesced.fencingToken };
+    f.c.preparePromptInjection({ ...steer, prompt: 'Generic steering' }); f.c.markPromptSubmitted(steer); f.c.acknowledgePromptInjection(steer);
+    assert.equal(f.c.requiredReplyObligationsForRun(owner.runId)[0].blockingDecisionId, 'original-approval');
+    assert.equal(f.c.requiredReplyObligationsForRun(unrelated.runId).length, 1);
+    assert.notEqual(f.c.requiredReplyObligationsForRun(unrelated.runId)[0].sourceActivationId, lead.activations[0].id);
+    f.reply(unrelated, 'unrelated-done'); f.c.completeRun(unrelated.runId, unrelated.fencingToken);
+    const resumed = f.c.leaseNextRun({ workerId: 'exact-answer', excludedAgentIds: [f.peer.id] });
+    assert.deepEqual(resumed.activationIds, [answer]);
+    assert.equal(f.c.requiredReplyObligationsForRun(resumed.runId)[0].sourceActivationId, lead.activations[0].id);
+    assert.equal(f.c.requiredReplyObligationsForRun(resumed.runId)[0].blockingDecisionId, undefined);
+    let delivery = resumed;
+    if (phase === 'initial') {
+      f.delegate(resumed, 1, { noRoute: true }); f.finish(resumed); f.review();
+      delivery = f.c.leaseNextRun({ workerId: 'integration', excludedAgentIds: [f.peer.id] });
+    }
+    f.final(delivery, 'original-task-final'); f.finish(delivery); f.reopen();
+    assert.equal(f.c.leaseNextRun({ workerId: 'no-duplicate', excludedAgentIds: [f.peer.id] }), undefined);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM runtime_communications WHERE id='original-task-final'").get().n, 1);
+  } finally { f.close(); }
+});
+
+for (const boundary of ['untagged', 'forged-tag', 'foreign-scope', 'foreign-agent', 'cancelled-source', 'latest-cancelled', 'latest-final']) test(`Decision-only continuity rejects ${boundary}`, () => {
+  const f = fixture();
+  try {
+    const lead = f.human(); f.reply(lead, 'initial');
+    f.c.waitForTaskDecision({ runAuthorization: f.auth(lead), decisionId: 'exact', scopeKey: `conversation:${f.chat.id}` });
+    const r = f.rollover(lead); f.finish(lead); f.retire(r);
+    if (boundary === 'cancelled-source') f.store.sqlite.prepare("UPDATE scheduler_runs SET status='cancelled' WHERE id=?").run(lead.runId);
+    const id = f.c.enqueueMessageActivation({ projectId: f.project.id,
+      agentId: boundary === 'foreign-agent' ? f.peer.id : f.lead.id,
+      scopeKey: boundary === 'foreign-scope' ? `agent:${f.lead.id}` : `conversation:${f.chat.id}`,
+      messageId: `decision-${boundary}`, kind: 'human', payload: { decision: { id: boundary === 'forged-tag' ? 'other' : 'exact' } } });
+    if (boundary !== 'untagged') f.c.attachTaskDecisionWake('exact', id);
+    if (boundary === 'forged-tag') f.store.sqlite.prepare("INSERT INTO activation_sources VALUES (?, 'task_decision', 'exact')").run(id);
+    if (boundary.startsWith('latest-')) {
+      const first = f.c.leaseNextRun({ workerId: 'exact', excludedAgentIds: [f.peer.id] });
+      assert.equal(f.c.contextRolloverForContinuationRun(first.runId, f.lead.id)?.id, r.id);
+      if (boundary === 'latest-cancelled') f.c.cancelAgentRun({ agentId: f.lead.id, expectedRunId: first.runId, idempotencyKey: 'cancel-latest' });
+      else { f.delegate(first, 1, { noRoute: true }); f.finish(first); f.review();
+        const final = f.c.leaseNextRun({ workerId: 'final', excludedAgentIds: [f.peer.id] }); f.final(final, 'completed'); f.finish(final); }
+      // Exercise old retained audit state with the actual newer terminal root.
+      f.store.sqlite.prepare("UPDATE context_rollovers SET state='completed', continuity_waiting=1 WHERE id=?").run(r.id);
+      f.reopen();
+      const alias = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
+        messageId: `late-${boundary}`, kind: 'human', payload: { decision: { id: 'exact' } } });
+      f.c.attachTaskDecisionWake('exact', alias);
+    }
+    const run = f.c.leaseNextRun({ workerId: 'boundary' });
+    assert.equal(run && f.c.contextRolloverForContinuationRun(run.runId, run.agentId), undefined);
+    if (boundary === 'cancelled-source' || boundary.startsWith('latest-')) assert.equal(f.c.contextRollover(r.id).continuityWaiting, false);
+    else assert.equal(f.c.contextRollover(r.id).continuityWaiting, true);
+  } finally { f.close(); }
+});
+
 for (const boundary of ['untagged-answer', 'cancelled-origin']) test(`satisfied initial task origin is not revived through ${boundary}`, () => {
   const f = fixture();
   try {

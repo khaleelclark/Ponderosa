@@ -3,6 +3,7 @@ import type {
   CommunicationAudience,
   CommunicationIntent,
   CoordinationReplyAuthority,
+  DecisionDto,
 } from "@ponderosa/core";
 import { PRIORITY } from "./coordination-v3-activation.js";
 import { stableJson } from "./coordination-v3-canonical-json.js";
@@ -316,11 +317,12 @@ export class CoordinationV3RequiredReplyAuthority {
             AND wake.agent_id=? AND wake.project_id=? AND wake.scope_key=?
             AND json_extract(wake.payload_json, '$.decision.id')=source.source_id
         `).get(a.id, predecessor.blockingDecisionId, input.agentId, input.projectId, input.scopeKey)));
-        // Only an exact answered Decision may carry a satisfied initial root
+        // Only an exact answered Decision may carry a pending or satisfied initial root
         // into a later Run. It remains satisfied until this Run delegates;
         // ordinary callbacks cannot revive completed or cancelled work.
-        const answeredInitial = predecessor.deliveryPhase === 'initial' && predecessor.state === 'satisfied' &&
+        const answeredInitial = predecessor.deliveryPhase === 'initial' && ['pending','satisfied'].includes(predecessor.state) &&
           answeredDecision && row?.run_status !== 'cancelled';
+        const satisfiedInitial = answeredInitial && predecessor.state === 'satisfied';
         if (!["pending", "recovery_pending", "retried"].includes(predecessor.state) && !answeredInitial) continue;
         if (finalOnly && predecessor.deliveryPhase !== 'final' && !answeredInitial) continue;
         this.sqlite.prepare(`
@@ -331,11 +333,11 @@ export class CoordinationV3RequiredReplyAuthority {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(input.runId, predecessor.sourceActivationId, input.projectId, input.agentId, input.scopeKey,
           stableJson(predecessor.replyAuthority), predecessor.attemptCount + (isRecovery ? 1 : 0),
-          answeredInitial ? 'satisfied' : 'pending', predecessor.deliveryPhase,
+          satisfiedInitial ? 'satisfied' : 'pending', predecessor.deliveryPhase,
           predecessor.interimCommunicationId ?? null,
           answeredDecision ? null : predecessor.blockingDecisionId ?? null,
-          answeredInitial ? predecessor.satisfiedCommunicationId ?? null : null,
-          answeredInitial ? input.now : null, input.now, input.now);
+          satisfiedInitial ? predecessor.satisfiedCommunicationId ?? null : null,
+          satisfiedInitial ? input.now : null, input.now, input.now);
         if (predecessor.recoveryActivationId) this.sqlite.prepare(`
           UPDATE agent_activations SET state = 'cancelled', updated_at = ?, terminal_at = ?
           WHERE id = ? AND state IN ('pending','retry_pending')
@@ -388,31 +390,128 @@ export class CoordinationV3RequiredReplyAuthority {
       WHERE wake.id = ? AND obligation.blocking_decision_id = ?
         AND json_extract(wake.payload_json, '$.decision.id')=obligation.blocking_decision_id
         AND (obligation.state = 'pending' OR (obligation.delivery_phase = 'initial' AND obligation.state = 'satisfied'))
-        AND json_extract(obligation.reply_authority_json, '$.intent') IN ('broadcast','direct_to_user')`)
+        AND json_extract(obligation.reply_authority_json, '$.intent') IN ('broadcast','direct_to_user')
+        AND EXISTS (SELECT 1 FROM scheduler_runs run JOIN agents owner ON owner.id=run.agent_id
+          WHERE run.id=obligation.run_id AND run.status<>'cancelled' AND owner.archived=0 AND owner.deleted_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM required_reply_obligations newer JOIN scheduler_runs newer_run ON newer_run.id=newer.run_id
+              WHERE newer.source_activation_id=obligation.source_activation_id AND newer.agent_id=obligation.agent_id
+                AND newer.project_id=obligation.project_id AND newer.scope_key=obligation.scope_key AND newer_run.rowid>run.rowid))`)
       .run(activationId, decisionId);
   }
 
-  reconcileDecision(input: { decisionId: string; runId: string; projectId: string; agentId: string; scopeKey: string }, now: string): void {
+  /** A confirmed steering answer belongs to the current Run, so no later
+   * obligation transfer will clear its wait. Called in the acknowledgement
+   * transaction, after the Run fence and exact injection have been checked. */
+  acknowledgeDecisionSteering(injectionId: string, runId: string, now: string): void {
+    this.sqlite.prepare(`UPDATE required_reply_obligations AS obligation
+      SET blocking_decision_id = NULL, updated_at = ?
+      WHERE obligation.run_id = ? AND obligation.blocking_decision_id IS NOT NULL
+        AND (obligation.state = 'pending' OR (obligation.delivery_phase = 'initial' AND obligation.state = 'satisfied'))
+        AND json_extract(obligation.reply_authority_json, '$.intent') IN ('broadcast','direct_to_user')
+        AND NOT EXISTS (SELECT 1 FROM required_reply_obligations newer
+          JOIN scheduler_runs newer_run ON newer_run.id = newer.run_id
+          JOIN scheduler_runs current_run ON current_run.id = obligation.run_id
+          WHERE newer.source_activation_id = obligation.source_activation_id
+            AND newer.agent_id = obligation.agent_id AND newer.project_id = obligation.project_id
+            AND newer.scope_key = obligation.scope_key AND newer_run.rowid > current_run.rowid)
+        AND EXISTS (SELECT 1 FROM scheduler_prompt_injections injection
+          JOIN scheduler_runs run ON run.id = injection.run_id
+          JOIN agents owner ON owner.id = run.agent_id AND owner.archived = 0 AND owner.deleted_at IS NULL
+          JOIN json_each(injection.activation_ids_json) member
+          JOIN scheduler_run_activations attached ON attached.activation_id = member.value AND attached.run_id = run.id
+          JOIN agent_activations wake ON wake.id = member.value
+          JOIN activation_sources source ON source.activation_id = wake.id AND source.source_kind = 'task_decision'
+          WHERE injection.id = ? AND injection.run_id = obligation.run_id
+            AND injection.kind = 'steer' AND injection.state = 'acknowledged' AND run.status = 'running'
+            AND run.side_effects_fenced_at IS NULL
+            AND run.agent_id = obligation.agent_id AND run.project_id = obligation.project_id AND run.scope_key = obligation.scope_key
+            AND wake.agent_id = run.agent_id AND wake.project_id = run.project_id AND wake.scope_key = run.scope_key
+            AND source.source_id = obligation.blocking_decision_id
+            AND json_extract(wake.payload_json, '$.decision.id') = source.source_id)`)
+      .run(now, runId, injectionId);
+  }
+
+  reconcileDecision(input: { decisionId: string; runId: string; projectId: string; agentId: string; scopeKey: string;
+    response?: NonNullable<DecisionDto['response']> }, now: string): void {
     const source = this.sqlite.prepare(`SELECT 1 FROM scheduler_runs run JOIN agents owner ON owner.id = run.agent_id
       WHERE run.id = ? AND run.agent_id = ? AND run.project_id = ? AND run.scope_key = ?
         AND run.status <> 'cancelled' AND owner.archived = 0 AND owner.deleted_at IS NULL`)
       .get(input.runId, input.agentId, input.projectId, input.scopeKey);
     if (!source) return;
-    for (const root of this.forRun(input.runId).filter(o => o.deliveryPhase === 'final')) {
-      const latest = this.sqlite.prepare(`SELECT obligation.run_id FROM required_reply_obligations obligation
+    // A canonical response can survive before its activation is enqueued.
+    // Conversely, reopening must not restore a wait for an exact response
+    // already acknowledged by the provider. An arbitrary Decision-shaped
+    // payload, consumed activation or task tag is not acknowledgement.
+    const answerAcknowledged = input.response && (this.sqlite.prepare(`SELECT wake.payload_json, injection.run_id
+      FROM activation_sources source JOIN agent_activations wake ON wake.id=source.activation_id
+      JOIN scheduler_run_activations attached ON attached.activation_id=wake.id
+      JOIN scheduler_prompt_injections injection ON injection.run_id=attached.run_id
+      JOIN scheduler_runs acknowledged_run ON acknowledged_run.id=injection.run_id
+      JOIN json_each(injection.activation_ids_json) member ON member.value=wake.id
+      WHERE source.source_kind='message' AND source.source_id=?
+        AND wake.dedupe_key=? AND wake.kind='human_message'
+        AND wake.agent_id=? AND wake.project_id=? AND wake.scope_key=?
+        AND acknowledged_run.agent_id=wake.agent_id AND acknowledged_run.project_id=wake.project_id
+        AND acknowledged_run.scope_key=wake.scope_key
+        AND json_extract(wake.payload_json,'$.decision.id')=? AND injection.state='acknowledged'
+      LIMIT 1`).get(`decision:${input.decisionId}:response`, `message:decision:${input.decisionId}:response`,
+      input.agentId, input.projectId, input.scopeKey, input.decisionId) as { payload_json: string; run_id: string } | undefined);
+    const confirmedAnswer = Boolean(answerAcknowledged &&
+      stableJson(record(record(JSON.parse(answerAcknowledged.payload_json))?.decision)?.response) === stableJson(input.response));
+    for (const root of this.forRun(input.runId).filter(o => ['broadcast','direct_to_user'].includes(o.replyAuthority.intent))) {
+      const latest = this.sqlite.prepare(`SELECT obligation.run_id, run.status FROM required_reply_obligations obligation
         JOIN scheduler_runs run ON run.id = obligation.run_id
         WHERE source_activation_id = ? AND obligation.agent_id = ? AND obligation.project_id = ? AND obligation.scope_key = ?
-        ORDER BY run.rowid DESC LIMIT 1`).get(root.sourceActivationId, input.agentId, input.projectId, input.scopeKey) as { run_id: string } | undefined;
-      if (!latest) continue;
+        ORDER BY run.rowid DESC LIMIT 1`).get(root.sourceActivationId, input.agentId, input.projectId, input.scopeKey) as { run_id: string; status: string } | undefined;
+      if (!latest || latest.status === 'cancelled') continue;
       const pending = this.forRun(latest.run_id).find(o => o.sourceActivationId === root.sourceActivationId);
-      if (!pending || !['pending','recovery_pending'].includes(pending.state)) continue;
+      if (!pending || !(['pending','recovery_pending'].includes(pending.state) ||
+          (pending.deliveryPhase === 'initial' && pending.state === 'satisfied'))) continue;
       if (pending.blockingDecisionId && pending.blockingDecisionId !== input.decisionId) continue;
+      // A resolved historical initial receipt is not unfinished work merely
+      // because it once asked a question. Repair its missing association only
+      // while its exact Run is active or a durable retained rollover still
+      // records that task's live wait; never revive it from answer prose.
+      if (input.response && pending.state === 'satisfied' && !pending.blockingDecisionId &&
+          latest.status !== 'running' && !this.sqlite.prepare(`SELECT 1 FROM context_rollovers
+            WHERE source_run_id=? AND agent_id=? AND project_id=? AND scope_key=?
+              AND continuity_waiting=1 AND state='completed' AND completion_reason='no_continuation_required' LIMIT 1`)
+            .get(input.runId, input.agentId, input.projectId, input.scopeKey)) continue;
+      if (confirmedAnswer) {
+        // An ambiguous historical answer accepted into unrelated work does
+        // not grant that work authority over this root. Do not replay it or
+        // manufacture a new task owner during startup repair.
+        if (!this.forRun(answerAcknowledged!.run_id).some(o => o.sourceActivationId === root.sourceActivationId &&
+            o.agentId === input.agentId && o.projectId === input.projectId && o.scopeKey === input.scopeKey)) continue;
+        this.sqlite.prepare(`UPDATE required_reply_obligations SET blocking_decision_id=NULL, updated_at=?
+          WHERE run_id=? AND source_activation_id=? AND blocking_decision_id=?`)
+          .run(now, pending.runId, pending.sourceActivationId, input.decisionId);
+        continue;
+      }
       if (pending.recoveryActivationId) this.sqlite.prepare(`UPDATE agent_activations SET state='cancelled', updated_at=?, terminal_at=?
         WHERE id=? AND state IN ('pending','retry_pending')`).run(now, now, pending.recoveryActivationId);
-      this.sqlite.prepare(`UPDATE required_reply_obligations SET state='pending', blocking_decision_id=?,
+      this.sqlite.prepare(`UPDATE required_reply_obligations SET state=?, blocking_decision_id=?,
         recovery_activation_id=NULL, updated_at=? WHERE run_id=? AND source_activation_id=?`)
-        .run(input.decisionId, now, pending.runId, pending.sourceActivationId);
+        .run(pending.state === 'satisfied' ? 'satisfied' : 'pending', input.decisionId, now, pending.runId, pending.sourceActivationId);
     }
+  }
+
+  /** An unanswered task wait can precede delegation and its initial receipt.
+   * Historical associations are not authority after cancellation or a newer
+   * terminal root. Used only to recover the exact canonical response wake. */
+  ownsDecision(decisionId: string): boolean {
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM required_reply_obligations obligation
+      JOIN scheduler_runs run ON run.id=obligation.run_id
+      JOIN agents owner ON owner.id=obligation.agent_id AND owner.archived=0 AND owner.deleted_at IS NULL
+      WHERE obligation.blocking_decision_id=? AND run.status<>'cancelled'
+        AND (obligation.state='pending' OR (obligation.delivery_phase='initial' AND obligation.state='satisfied'))
+        AND json_extract(obligation.reply_authority_json,'$.intent') IN ('broadcast','direct_to_user')
+        AND NOT EXISTS (SELECT 1 FROM required_reply_obligations newer
+          JOIN scheduler_runs newer_run ON newer_run.id=newer.run_id
+          WHERE newer.source_activation_id=obligation.source_activation_id
+            AND newer.agent_id=obligation.agent_id AND newer.project_id=obligation.project_id
+            AND newer.scope_key=obligation.scope_key AND newer_run.rowid>run.rowid)
+      LIMIT 1`).get(decisionId));
   }
 
   forRun(runId: string): RequiredReplyObligation[] {
@@ -505,7 +604,7 @@ export class CoordinationV3RequiredReplyAuthority {
   recoverPending(runId: string, now: string): RequiredReplyObligation[] {
     for (const obligation of this.forRun(runId)) {
       if (obligation.state !== "pending") continue;
-      if (obligation.deliveryPhase === "final" && (obligation.blockingDecisionId || hasOutstandingDelegation(this.sqlite, obligation))) continue;
+      if (obligation.blockingDecisionId || (obligation.deliveryPhase === "final" && hasOutstandingDelegation(this.sqlite, obligation))) continue;
       if (obligation.attemptCount >= MAX_REQUIRED_REPLY_ATTEMPTS) {
         const sourceActivation = this.sqlite.prepare(`
           WITH RECURSIVE reply_chain(activation_id, depth) AS (

@@ -710,8 +710,7 @@ export class CoordinationV3Store {
   }
 
   taskDecisionOwnsDelivery(decisionId: string): boolean {
-    return Boolean(this.sqlite.prepare(`SELECT 1 FROM required_reply_obligations
-      WHERE blocking_decision_id = ? AND delivery_phase = 'final' AND state = 'pending' LIMIT 1`).get(decisionId));
+    return this.requiredReplyAuthority.ownsDecision(decisionId);
   }
 
   taskOriginRunIds(runId: string): string[] {
@@ -1190,7 +1189,11 @@ export class CoordinationV3Store {
     injectionId: string; runId: string; fencingToken: number;
     providerTurnId?: string; providerSessionId?: string; now?: string;
   }): void {
-    this.runLifecycleAuthority.acknowledgePromptInjection(input);
+    const now = input.now ?? new Date().toISOString();
+    this.sqlite.transaction(() => {
+      this.runLifecycleAuthority.acknowledgePromptInjection({ ...input, now });
+      this.requiredReplyAuthority.acknowledgeDecisionSteering(input.injectionId, input.runId, now);
+    })();
   }
 
   renewLease(runId: string, fence: number, workerId: string, leaseMs = 30_000, now = new Date().toISOString()): string {
