@@ -360,7 +360,7 @@ for (const initialReply of [false, true]) test(`canonical repair preserves a Dec
   } finally { f.close(); }
 });
 
-for (const answerState of ['unsubmitted', 'submitted', 'acknowledged', 'different-response', 'unanchored']) test(`resolved Decision repair respects ${answerState} canonical answer evidence`, () => {
+for (const answerState of ['unsubmitted', 'submitted', 'acknowledged', 'fenced-before-ack', 'fenced-after-ack', 'different-response', 'unanchored']) test(`resolved Decision repair respects ${answerState} canonical answer evidence`, () => {
   const f = fixture();
   try {
     const lead = f.human(); f.reply(lead, 'initial-ack');
@@ -374,7 +374,9 @@ for (const answerState of ['unsubmitted', 'submitted', 'acknowledged', 'differen
     const injection = { injectionId: run.injectionId, runId: run.runId, fencingToken: run.fencingToken };
     if (answerState !== 'unsubmitted') {
       f.c.preparePromptInjection({ ...injection, prompt: 'Exact canonical answer' }); f.c.markPromptSubmitted(injection);
+      if (answerState === 'fenced-before-ack') f.store.sqlite.prepare('UPDATE scheduler_runs SET side_effects_fenced_at=? WHERE id=?').run(new Date().toISOString(), lead.runId);
       if (answerState !== 'submitted') f.c.acknowledgePromptInjection(injection);
+      if (answerState === 'fenced-after-ack') f.store.sqlite.prepare('UPDATE scheduler_runs SET side_effects_fenced_at=? WHERE id=?').run(new Date().toISOString(), lead.runId);
     }
     f.c.reconcileTaskDecision({ decisionId: 'approval', runId: lead.runId, agentId: f.lead.id,
       projectId: f.project.id, scopeKey: `conversation:${f.chat.id}`, response });
@@ -464,6 +466,9 @@ for (const phase of ['initial', 'final']) for (const timing of ['before-owner-fi
       f.delegate(lead, 1, { noRoute: true }); f.reply(lead, 'interim'); f.finish(lead); f.review();
       owner = f.c.leaseNextRun({ workerId: 'integration', excludedAgentIds: [f.peer.id] });
     } else f.reply(owner, 'initial-ack');
+    const ownerTurn = { injectionId: owner.injectionId, runId: owner.runId, fencingToken: owner.fencingToken };
+    f.c.preparePromptInjection({ ...ownerTurn, prompt: 'Disposable exact input' }); f.c.markPromptSubmitted(ownerTurn); f.c.acknowledgePromptInjection(ownerTurn);
+    assert.equal(f.store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(owner.runId).status, 'running');
     f.c.waitForTaskDecision({ runAuthorization: f.auth(owner), decisionId: 'original-approval', scopeKey: `conversation:${f.chat.id}` });
     const enqueueAnswer = () => {
       const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
@@ -478,9 +483,9 @@ for (const phase of ['initial', 'final']) for (const timing of ['before-owner-fi
       f.c.recordRuntimeCommunication({ id: 'unrelated', projectId: f.project.id, sender: communication.sender,
         intent: communication.intent, audience: communication.audience, payload: { communication },
         activation: { agentId: f.lead.id, kind: 'human_message', priority: 100, dispatchPolicy: 'next_run', promptClass: 'human' } });
-      answer = enqueueAnswer(); f.finish(owner);
+      answer = enqueueAnswer(); f.c.completeRun(owner.runId, owner.fencingToken);
       unrelated = f.c.leaseNextRun({ workerId: 'unrelated', coalesceLimit: 1, excludedAgentIds: [f.peer.id] });
-    } else { f.finish(owner); unrelated = f.human('unrelated'); }
+    } else { f.c.completeRun(owner.runId, owner.fencingToken); unrelated = f.human('unrelated'); }
     const turn = { injectionId: unrelated.injectionId, runId: unrelated.runId, fencingToken: unrelated.fencingToken };
     f.c.preparePromptInjection({ ...turn, prompt: 'Unrelated exact input' }); f.c.markPromptSubmitted(turn); f.c.acknowledgePromptInjection(turn);
     if (!answer) answer = enqueueAnswer();

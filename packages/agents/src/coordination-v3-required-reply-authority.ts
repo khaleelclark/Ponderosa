@@ -453,6 +453,7 @@ export class CoordinationV3RequiredReplyAuthority {
         AND wake.agent_id=? AND wake.project_id=? AND wake.scope_key=?
         AND acknowledged_run.agent_id=wake.agent_id AND acknowledged_run.project_id=wake.project_id
         AND acknowledged_run.scope_key=wake.scope_key
+        AND acknowledged_run.side_effects_fenced_at IS NULL
         AND json_extract(wake.payload_json,'$.decision.id')=? AND injection.state='acknowledged'
       LIMIT 1`).get(`decision:${input.decisionId}:response`, `message:decision:${input.decisionId}:response`,
       input.agentId, input.projectId, input.scopeKey, input.decisionId) as { payload_json: string; run_id: string } | undefined);
