@@ -60,6 +60,15 @@ assignment subsystem.
   predecessor, preserving the original activation and retry budget. Repaired
   blockers and existing repair evidence survive the transfer; accepted packets,
   submitted inputs, started providers and genuine cancellation cannot use it.
+  If that optional ownership copy fails, its savepoint preserves the current
+  exact owner and a durable repair hold without aborting actual lease recovery.
+  Unrelated work remains runnable; later canonical repair and the exact answer
+  can continue the same task. Bounded maintenance retries the copy before
+  releasing the original recovery, preserving its retry budget once writes
+  recover. Failed copies age the full held Run cohort; still-live admission
+  deferral remains atomic. Restart and expiry retry an Activation only when
+  all provider acceptance evidence is absent, not from the injection flag alone.
+  Otherwise its real outcome remains unknown and its accepted input is not replayed.
   An already-satisfied initial receipt can retain that wait after an association
   rollback only with durable proof that the trusted canonical reader observed
   this exact pending Decision for its original Run and root. A generic read
@@ -152,7 +161,9 @@ Additional regressions cover repeated exact-answer deferral/reopening, ordinary
 uninjected retry/expiry/orphan recovery, compilation-survivor isolation, atomic
 restoration rollback, mixed unrelated inputs, provider error after association
 rollback, and a persistent repair failure with an answer recorded before
-repair and reopening. They assert no rootless answer Run, no unnecessary
+repair and reopening. They also cover repair succeeding before a later ownership
+copy failure, subsequent exact-answer delivery, and accepted-input restart/expiry
+boundaries. They assert no rootless answer Run, no unnecessary
 reply-recovery Run, unchanged failure truth and one eventual canonical reply.
 
 Orderly store reopening and an injected association-transaction rollback are

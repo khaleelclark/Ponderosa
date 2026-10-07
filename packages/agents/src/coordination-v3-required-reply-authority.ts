@@ -139,12 +139,13 @@ export class CoordinationV3RequiredReplyAuthority {
   /** Undo only an exact copied, unaccepted Decision or delivery-recovery root
    * when its input is requeued. Keep the released Run/input audit and original
    * receipt, route and retry budget. Cancellation never calls this method. */
-  restoreUninjectedDecisionRoots(runId: string, now: string): void {
+  restoreUninjectedDecisionRoots(runId: string, now: string): boolean {
     if (!this.sqlite.prepare(`SELECT 1 FROM scheduler_runs run WHERE run.id=? AND run.status<>'cancelled'
       AND run.prompt_injection_state='not_injected' AND run.started_at IS NULL
       AND NOT EXISTS (SELECT 1 FROM provider_inputs WHERE scheduler_run_id=run.id)
       AND NOT EXISTS (SELECT 1 FROM scheduler_prompt_injections WHERE run_id=run.id
-        AND state NOT IN ('pending','cancelled'))`).get(runId)) return;
+        AND state NOT IN ('pending','cancelled'))`).get(runId)) return true;
+    let restored = true;
     for (const current of this.forRun(runId)) {
       if (!['pending','satisfied'].includes(current.state) || current.recoveryActivationId ||
           (current.deliveryPhase === 'initial' && current.blockingDecisionId)) continue;
@@ -181,26 +182,43 @@ export class CoordinationV3RequiredReplyAuthority {
             current.agentId, current.projectId, current.scopeKey, `required-reply-recovery:${previous.runId}:${previous.sourceActivationId}`,
             previous.runId, previous.sourceActivationId, current.attemptCount);
         if (!exactRecovery) continue;
-        this.sqlite.prepare(`UPDATE required_reply_obligations SET state=?, recovery_activation_id=?, blocking_decision_id=?,
-          terminal_at=NULL, updated_at=? WHERE run_id=? AND source_activation_id=? AND state='superseded'`)
-          .run(blocker ? 'pending' : 'recovery_pending', blocker ? null : previous.recoveryActivationId, blocker ?? null,
-            now, previous.runId, previous.sourceActivationId);
-        this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources SELECT activation_id,source_kind,? FROM activation_sources
-          WHERE activation_id=? AND source_kind='task_decision_repair' AND source_id=?`)
-          .run(previous.runId, current.sourceActivationId, runId);
-        this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources SELECT activation_id,source_kind,json_set(source_id,'$.runId',?)
-          FROM activation_sources WHERE activation_id=? AND source_kind='task_decision_pending_repair' AND json_extract(source_id,'$.runId')=?`)
-          .run(previous.runId, current.sourceActivationId, runId);
-        this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources SELECT activation_id,source_kind,? FROM activation_sources
-          WHERE activation_id=? AND source_kind='task_reply_repair_wait' AND source_id=?`)
-          .run(previous.runId, previous.recoveryActivationId, runId);
-        this.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='task_decision_repair' AND source_id=?")
-          .run(current.sourceActivationId, runId);
-        this.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='task_decision_pending_repair' AND json_extract(source_id,'$.runId')=?")
-          .run(current.sourceActivationId, runId);
-        this.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='task_reply_repair_wait' AND source_id=?")
-          .run(previous.recoveryActivationId, runId);
-        this.sqlite.prepare('DELETE FROM required_reply_obligations WHERE run_id=? AND source_activation_id=?').run(runId, current.sourceActivationId);
+        try {
+          this.sqlite.transaction(() => {
+            this.sqlite.prepare(`UPDATE required_reply_obligations SET state=?, recovery_activation_id=?, blocking_decision_id=?,
+              terminal_at=NULL, updated_at=? WHERE run_id=? AND source_activation_id=? AND state='superseded'`)
+              .run(blocker ? 'pending' : 'recovery_pending', blocker ? null : previous.recoveryActivationId, blocker ?? null,
+                now, previous.runId, previous.sourceActivationId);
+            this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources SELECT activation_id,source_kind,? FROM activation_sources
+              WHERE activation_id=? AND source_kind='task_decision_repair' AND source_id=?`)
+              .run(previous.runId, current.sourceActivationId, runId);
+            this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources SELECT activation_id,source_kind,json_set(source_id,'$.runId',?)
+              FROM activation_sources WHERE activation_id=? AND source_kind='task_decision_pending_repair' AND json_extract(source_id,'$.runId')=?`)
+              .run(previous.runId, current.sourceActivationId, runId);
+            this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources SELECT activation_id,source_kind,? FROM activation_sources
+              WHERE activation_id=? AND source_kind='task_reply_repair_wait' AND source_id=?`)
+              .run(previous.runId, previous.recoveryActivationId, runId);
+            this.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='task_decision_repair' AND source_id=?")
+              .run(current.sourceActivationId, runId);
+            this.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='task_decision_pending_repair' AND json_extract(source_id,'$.runId')=?")
+              .run(current.sourceActivationId, runId);
+            this.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='task_reply_repair_wait' AND source_id=?")
+              .run(previous.recoveryActivationId, runId);
+            this.sqlite.prepare('DELETE FROM required_reply_obligations WHERE run_id=? AND source_activation_id=?').run(runId, current.sourceActivationId);
+          })();
+        } catch (error) {
+          // Optional ownership compensation must not undo actual lease recovery.
+          // Keep the exact current owner and retry its canonical accounting;
+          // the savepoint preserves both roots and existing proof on failure.
+          // A still-live benign deferral must remain atomic: it subsequently
+          // marks the claim cancelled, so it cannot retain that claim as owner.
+          const status = this.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(runId) as { status: string };
+          if (!['failed','outcome_unknown'].includes(status.status)) throw error;
+          for (const heldRunId of this.holdTaskOwnerRepair(current)) this.sqlite.prepare(`UPDATE required_reply_obligations
+            SET updated_at=MAX(updated_at,?) WHERE run_id=? AND source_activation_id IN
+              (SELECT activation_id FROM activation_sources WHERE source_kind='task_decision_repair' AND source_id=?)`)
+            .run(now, heldRunId, heldRunId);
+          restored = false;
+        }
         continue;
       }
       if (!previous || previousRow?.status === 'cancelled' || previous.deliveryPhase !== 'initial' || !previous.blockingDecisionId || previous.recoveryActivationId ||
@@ -222,6 +240,7 @@ export class CoordinationV3RequiredReplyAuthority {
       this.sqlite.prepare('DELETE FROM required_reply_obligations WHERE run_id=? AND source_activation_id=?')
         .run(runId, current.sourceActivationId);
     }
+    return restored;
   }
 
   /** Repair at the common terminal-accounting seam, including failures and
@@ -231,6 +250,11 @@ export class CoordinationV3RequiredReplyAuthority {
     const run = this.sqlite.prepare('SELECT agent_id, project_id, scope_key, status FROM scheduler_runs WHERE id=?')
       .get(runId) as { agent_id: string; project_id: string; scope_key: string; status: string } | undefined;
     if (!run) return false;
+    // Retry optional compensation before canonical accounting can release its
+    // old Activation and mint a second recovery for the copied current root.
+    if (run.status === 'failed' && this.sqlite.prepare(
+      "SELECT 1 FROM activation_sources WHERE source_kind='task_decision_repair' AND source_id=? LIMIT 1",
+    ).get(runId) && !this.restoreUninjectedDecisionRoots(runId, now)) return false;
     const eligible = this.forRun(runId).filter(o => ['broadcast','direct_to_user'].includes(o.replyAuthority.intent) &&
       Boolean(this.sqlite.prepare(`SELECT 1 FROM required_reply_obligations latest JOIN scheduler_runs owner ON owner.id=latest.run_id
         WHERE latest.source_activation_id=? AND latest.agent_id=? AND latest.project_id=? AND latest.scope_key=?

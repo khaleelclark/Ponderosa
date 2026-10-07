@@ -496,8 +496,106 @@ for (const release of ['defer', 'retry', 'expiry', 'orphan']) test(`an unsubmitt
   } finally { f.close(); }
 });
 
-for (const evidence of ['started', 'provider-input', 'submitted', 'acknowledged']) for (const failure of [false, true]) {
-  test(`canonical recovery repair preserves ${evidence} evidence; association failure=${failure}`, () => {
+for (const release of ['orphan', 'expiry']) test(`failed recovery compensation preserves the blocked owner through ${release}`, () => {
+  const f = fixture();
+  try {
+    const workspace = new WorkspaceStore(f.project.hostPath);
+    const source = f.human(); f.delegate(source, 1, { noRoute: true }); f.reply(source, 'late-fault-interim'); f.finish(source); f.review();
+    const owner = f.c.leaseNextRun({ workerId: 'legacy-owner', excludedAgentIds: [f.peer.id] }); f.finish(owner);
+    const recoveryId = f.c.requiredReplyObligationsForRun(owner.runId)[0].recoveryActivationId;
+    const claim = f.c.leaseNextRun({ workerId: 'uninjected-claim' });
+    const decision = workspace.createDecision({ idempotencyKey: 'late-compensation-fault', projectId: f.project.id,
+      agentId: f.lead.id, conversationId: f.chat.id, runId: source.runId, coordinationRunId: source.runId,
+      mode: 'approval', question: 'Approve the exact task?', options: [{ id: 'approve', label: 'Approve' }], allowOther: true, blocking: true });
+    const options = { canonicalTaskDecisions: ids => workspace.decisionsForRuns(ids) };
+    f.reopen(options);
+    assert.equal(f.c.repairCanonicalTaskDecisionWait(source.runId), true);
+    const current = f.c.requiredReplyObligationsForRun(claim.runId)[0];
+    assert.equal(current.blockingDecisionId, decision.id);
+    assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(recoveryId).state, 'cancelled');
+    f.store.sqlite.exec(`CREATE TRIGGER late_compensation_fault BEFORE UPDATE OF blocking_decision_id ON required_reply_obligations
+      WHEN NEW.blocking_decision_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'fixture late compensation failure'); END`);
+    const now = new Date(Date.parse(claim.leaseExpiresAt) + 1).toISOString();
+    const result = release === 'orphan' ? f.c.recoverOrphanedRuns('replacement-worker', now) : f.c.recoverExpiredRuns(now);
+    assert.deepEqual(result, { retried: 1, outcomeUnknown: 0 });
+    assert.equal(f.store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(claim.runId).status, 'failed');
+    assert.equal(f.c.requiredReplyObligationsForRun(owner.runId)[0].state, 'superseded');
+    const retained = f.c.requiredReplyObligationsForRun(claim.runId)[0];
+    assert.equal(retained.blockingDecisionId, decision.id); assert.equal(retained.attemptCount, current.attemptCount);
+    assert.deepEqual(retained.replyAuthority, current.replyAuthority); assert.equal(retained.interimCommunicationId, 'late-fault-interim');
+    assert.equal(retained.decisionWaitRepairPending, true);
+    const unrelated = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+      scopeKey: `conversation:${f.chat.id}`, messageId: 'late-compensation-unrelated', kind: 'human', payload: { text: 'Unrelated input' } });
+    const next = f.c.leaseNextRun({ workerId: 'independent', now });
+    assert.deepEqual(next.activationIds, [unrelated]); assert.deepEqual(f.c.requiredReplyObligationsForRun(next.runId), []);
+    assert.equal(f.store.sqlite.prepare('SELECT updated_at FROM required_reply_obligations WHERE run_id=? AND source_activation_id=?')
+      .get(claim.runId, source.activationIds[0]).updated_at, now, 'failed compensation ages the whole held Run cohort');
+    f.finish(next); f.reopen(options);
+    assert.equal(f.c.leaseNextRun({ workerId: 'still-held', now }), undefined);
+    f.store.sqlite.exec('DROP TRIGGER late_compensation_fault');
+    assert.equal(f.c.leaseNextRun({ workerId: 'repair-restored', now }), undefined);
+    assert.equal(f.c.leaseNextRun({ workerId: 'repair-parent', now }), undefined);
+    assert.deepEqual(f.c.requiredReplyObligationsForRun(claim.runId), []);
+    const restored = f.c.requiredReplyObligationsForRun(owner.runId)[0];
+    assert.equal(restored.blockingDecisionId, decision.id); assert.equal(restored.attemptCount, 0);
+    assert.equal(Boolean(restored.decisionWaitRepairPending), false);
+    const response = { optionId: 'approve', respondedAt: new Date().toISOString() };
+    workspace.resolveDecision(decision.id, response);
+    const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+      scopeKey: `conversation:${f.chat.id}`, messageId: `decision:${decision.id}:response`, kind: 'human',
+      payload: { decision: { id: decision.id, response } } });
+    f.c.attachTaskDecisionWake(decision.id, answer);
+    const final = f.c.leaseNextRun({ workerId: 'exact-answer', now });
+    assert.deepEqual(final.activationIds, [answer]);
+    const finalRoot = f.c.requiredReplyObligationsForRun(final.runId)[0];
+    assert.equal(finalRoot.sourceActivationId, source.activationIds[0]); assert.equal(finalRoot.attemptCount, restored.attemptCount);
+    assert.deepEqual(finalRoot.replyAuthority, current.replyAuthority); assert.equal(finalRoot.blockingDecisionId, undefined);
+    accept(f, final); f.final(final, 'late-fault-final'); f.c.completeRun(final.runId, final.fencingToken); f.reopen(options);
+    assert.equal(f.c.leaseNextRun({ workerId: 'no-extra-recovery', now }), undefined);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM runtime_communications WHERE id='late-fault-final'").get().n, 1);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 1);
+  } finally { f.close(); }
+});
+
+for (const release of ['defer', 'orphan', 'expiry']) test(`partial recovery copy failure cannot release duplicate work through ${release}`, () => {
+  const f = fixture({ canonicalTaskDecisions: () => [] });
+  try {
+    const source = f.human(); f.delegate(source, 1, { noRoute: true }); f.finish(source); f.review();
+    const owner = f.c.leaseNextRun({ workerId: 'owner', excludedAgentIds: [f.peer.id] }); f.finish(owner);
+    const recoveryId = f.c.requiredReplyObligationsForRun(owner.runId)[0].recoveryActivationId;
+    const claim = f.c.leaseNextRun({ workerId: 'unaccepted' });
+    f.store.sqlite.exec(`CREATE TRIGGER partial_recovery_copy_failure BEFORE DELETE ON required_reply_obligations
+      WHEN OLD.run_id='${claim.runId}' BEGIN SELECT RAISE(ABORT, 'fixture partial recovery copy failure'); END`);
+    const now = new Date(Date.parse(claim.leaseExpiresAt) + 1).toISOString();
+    if (release === 'defer') {
+      assert.throws(() => f.c.deferUninjectedRun(claim.runId, claim.fencingToken), /partial recovery copy failure/);
+      assert.equal(f.store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(claim.runId).status, 'leased');
+      assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(recoveryId).state, 'attached');
+      assert.equal(f.c.requiredReplyObligationsForRun(owner.runId)[0].state, 'superseded');
+      assert.equal(f.c.requiredReplyObligationsForRun(claim.runId)[0].attemptCount, 1);
+      f.store.sqlite.exec('DROP TRIGGER partial_recovery_copy_failure');
+      f.c.deferUninjectedRun(claim.runId, claim.fencingToken);
+    } else {
+      const result = release === 'orphan' ? f.c.recoverOrphanedRuns('replacement', now) : f.c.recoverExpiredRuns(now);
+      assert.deepEqual(result, { retried: 1, outcomeUnknown: 0 });
+      assert.equal(f.c.requiredReplyObligationsForRun(owner.runId)[0].state, 'superseded');
+      assert.equal(f.c.requiredReplyObligationsForRun(claim.runId)[0].decisionWaitRepairPending, true);
+      assert.equal(f.c.leaseNextRun({ workerId: 'copy-still-failing', now }), undefined);
+      assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 1);
+      f.store.sqlite.exec('DROP TRIGGER partial_recovery_copy_failure');
+    }
+    f.reopen({ canonicalTaskDecisions: () => [] });
+    let next = f.c.leaseNextRun({ workerId: 'copy-restored', now });
+    next ??= f.c.leaseNextRun({ workerId: 'restored-parent', now });
+    assert.deepEqual(next.activationIds, [recoveryId]);
+    const root = f.c.requiredReplyObligationsForRun(next.runId)[0];
+    assert.equal(root.sourceActivationId, source.activationIds[0]); assert.equal(root.attemptCount, 1);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 1);
+  } finally { f.close(); }
+});
+
+for (const evidence of ['started', 'provider-input', 'submitted', 'acknowledged']) for (const failure of [false, true]) for (const release of ['orphan', 'expiry']) {
+  test(`canonical recovery repair preserves ${evidence} evidence through ${release}; association failure=${failure}`, () => {
     const f = fixture();
     try {
       const source = f.human(); f.delegate(source, 1, { noRoute: true }); f.finish(source); f.review();
@@ -526,6 +624,16 @@ for (const evidence of ['started', 'provider-input', 'submitted', 'acknowledged'
       assert.equal(snapshot(), before);
       assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(recoveryId).state, 'attached');
       assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE activation_id=? AND source_kind='task_reply_repair_wait'").get(recoveryId).n, 0);
+      const acceptedAudit = () => JSON.stringify(f.store.sqlite.prepare('SELECT * FROM provider_inputs WHERE scheduler_run_id=?').all(claim.runId));
+      const audit = acceptedAudit(), now = new Date(Date.parse(claim.leaseExpiresAt) + 1).toISOString();
+      const result = release === 'orphan' ? f.c.recoverOrphanedRuns('replacement-worker', now) : f.c.recoverExpiredRuns(now);
+      assert.deepEqual(result, { retried: 0, outcomeUnknown: 1 });
+      assert.equal(f.store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(claim.runId).status, 'outcome_unknown');
+      assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(recoveryId).state, 'outcome_unknown');
+      assert.equal(acceptedAudit(), audit);
+      assert.equal(f.c.requiredReplyObligationsForRun(claim.runId)[0].sourceActivationId, source.activationIds[0]);
+      assert.equal(f.c.leaseNextRun({ workerId: 'must-not-replay-accepted', now }), undefined);
+      assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 1);
     } finally { f.close(); }
   });
 }
