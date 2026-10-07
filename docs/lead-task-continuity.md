@@ -26,11 +26,25 @@ assignment subsystem.
   also guard final delivery if their SQLite association requires repair.
   Decision ownership can be recorded before delegation or an initial reply;
   promotion retains it without changing initial reply semantics. Canonical
-  pending waits are repaired before successful terminal accounting as well as
-  before final-delivery rejection, preventing recovery through an association gap.
+  pending waits are repaired at shared terminal accounting, including provider
+  failure, lease expiry and orphan recovery, as well as before final-delivery
+  rejection. A repair failure preserves the actual terminal outcome and records
+  a durable recovery hold; it does not leave a falsely active Run. Only operator
+  task roots are held, not unrelated collaboration recovery. Bounded repair
+  batches rotate by their last attempt, so a persistently failing batch cannot
+  strand later healthy tasks.
   An exact Decision answer in a later Run can carry a pending or already-satisfied
   initial origin, preserving its initial receipt. Only subsequent delegation
   promotes that origin to final delivery; generic callbacks cannot revive it.
+  An unstarted, uninjected claim that requeues this exact answer restores only
+  its unaccepted copied initial root to the immediately preceding live owner.
+  Admission deferral, safe preparation retry, partial-compilation isolation and
+  abandoned uninjected leases preserve the route, receipt and retry budget.
+  Accepted provider input, a new receipt/delegation or genuine cancellation
+  cannot use that restoration. The released Run and input audit remain intact.
+  An answer recorded while association repair remains unavailable is held from
+  both fresh-Run and steering claims. Healthy canonical repair attaches its
+  exact task provenance before releasing it; cancellation retires the hold.
   If the provider acknowledges the exact answer as steering into its owning
   active Run, that acknowledgement and removal of the matching wait commit
   atomically. Unsubmitted, unrelated or stale-fenced inputs cannot release it.
@@ -109,6 +123,12 @@ activation, handoff, final-event and provider-input hashes, including an exact
 Decision continuation, same-Run steering acknowledgement, Decision-only waits
 before/during/after retirement, canonical-association rollback, and a saved
 answer recovered by reopening the application.
+Additional regressions cover repeated exact-answer deferral/reopening, ordinary
+uninjected retry/expiry/orphan recovery, compilation-survivor isolation, atomic
+restoration rollback, mixed unrelated inputs, provider error after association
+rollback, and a persistent repair failure with an answer recorded before
+repair and reopening. They assert no rootless answer Run, no unnecessary
+reply-recovery Run, unchanged failure truth and one eventual canonical reply.
 
 Orderly store reopening and an injected association-transaction rollback are
 distinct checks, not abrupt crash/power-loss qualification. Local synthetic CLI

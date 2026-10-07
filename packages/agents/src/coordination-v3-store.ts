@@ -195,6 +195,7 @@ export class CoordinationV3Store {
       sqlite,
       input => this.createActivation(input),
       (activationId, now) => this.contextRolloverAuthority.bindWaitingWake(activationId, now),
+      options.canonicalTaskDecisions,
     );
     this.contextRolloverAuthority = new CoordinationV3ContextRolloverAuthority(
       sqlite,
@@ -300,6 +301,7 @@ export class CoordinationV3Store {
       (runId, now) => { this.requiredReplyAuthority.recoverPending(runId, now); },
       (runId, now) => { this.requiredReplyAuthority.settleRetried(runId, now); },
       (runId, now) => { this.requiredReplyAuthority.settleForRun(runId, "cancelled", now); },
+      (runId, now) => { this.requiredReplyAuthority.restoreUninjectedDecisionRoots(runId, now); },
     );
     this.deletionAuthority = new CoordinationV3DeletionAuthority(
       sqlite,
@@ -365,6 +367,7 @@ export class CoordinationV3Store {
       input => { this.requiredReplyAuthority.registerForRun(input); },
       (runId, now) => { this.requiredReplyAuthority.recoverPending(runId, now); },
       (runId, now) => { this.requiredReplyAuthority.settleRetried(runId, now); },
+      (runId, now) => { this.requiredReplyAuthority.restoreUninjectedDecisionRoots(runId, now); },
     );
     this.contextRolloverAuthority.reconcileRetainedContinuity(new Date().toISOString());
   }
@@ -696,8 +699,10 @@ export class CoordinationV3Store {
     })();
   }
 
-  attachTaskDecisionWake(decisionId: string, activationId: string, now = new Date().toISOString()): void {
+  attachTaskDecisionWake(decisionId: string, activationId: string, now = new Date().toISOString(), canonicalRunId?: string): void {
     this.sqlite.transaction(() => {
+      if (canonicalRunId && !this.requiredReplyAuthority.repairCanonicalDecisionWait(canonicalRunId, now) &&
+          this.requiredReplyAuthority.holdDecisionWakeForRepair(canonicalRunId, decisionId, activationId)) return;
       this.requiredReplyAuthority.attachDecisionWake(decisionId, activationId);
       this.contextRolloverAuthority.bindWaitingWake(activationId, now);
     })();
@@ -707,6 +712,10 @@ export class CoordinationV3Store {
    * called with model text or operator-supplied routing/ownership metadata. */
   reconcileTaskDecision(input: Parameters<CoordinationV3RequiredReplyAuthority['reconcileDecision']>[0], now = new Date().toISOString()): void {
     this.sqlite.transaction(() => this.requiredReplyAuthority.reconcileDecision(input, now))();
+  }
+
+  repairCanonicalTaskDecisionWait(runId: string, now = new Date().toISOString()): boolean {
+    return this.sqlite.transaction(() => this.requiredReplyAuthority.repairCanonicalDecisionWait(runId, now))();
   }
 
   taskDecisionOwnsDelivery(decisionId: string): boolean {
@@ -1043,6 +1052,7 @@ export class CoordinationV3Store {
     coalesceLimit?: number;
     excludedAgentIds?: readonly string[];
   }): SchedulerLease | undefined {
+    this.sqlite.transaction(() => this.requiredReplyAuthority.retryDecisionWaitRepairs(input.now ?? new Date().toISOString()))();
     return this.schedulerLeaseAuthority.leaseNextRun(input);
   }
 

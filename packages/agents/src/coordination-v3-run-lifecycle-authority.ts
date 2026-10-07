@@ -43,6 +43,7 @@ export class CoordinationV3RunLifecycleAuthority {
     private readonly recoverRequiredReply: (runId: string, now: string) => void,
     private readonly settleRetriedRequiredReply: (runId: string, now: string) => void,
     private readonly cancelRequiredReply: (runId: string, now: string) => void,
+    private readonly restoreUninjectedDecisionRoots: (runId: string, now: string) => void,
   ) {}
 
   markRunStarted(
@@ -65,10 +66,12 @@ export class CoordinationV3RunLifecycleAuthority {
   deferUninjectedRun(runId: string, fencingToken: number, now = new Date().toISOString()): void {
     this.sqlite.transaction(() => {
       const run = this.support.getFencedRun(runId, fencingToken);
-      if (run.status !== "leased" || run.prompt_injection_state !== "not_injected" ||
+      if (run.status !== "leased" || run.prompt_injection_state !== "not_injected" || run.started_at !== null ||
+          this.sqlite.prepare("SELECT 1 FROM provider_inputs WHERE scheduler_run_id=? LIMIT 1").get(runId) ||
           this.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections WHERE run_id = ? AND state <> 'pending' LIMIT 1").get(runId)) {
         throw new Error("only an uninjected, unstarted scheduler claim can be deferred");
       }
+      this.restoreUninjectedDecisionRoots(runId, now);
       const fence = this.support.nextFence(String(run.agent_id));
       this.sqlite.prepare(`UPDATE scheduler_runs SET status = 'cancelled', fencing_token = ?, side_effects_fenced_at = ?, updated_at = ?, terminal_at = ? WHERE id = ?`).run(fence, now, now, now, runId);
       this.sqlite.prepare(`UPDATE agent_activations SET state = CASE WHEN delivery_failures > 0 THEN 'retry_pending' ELSE 'pending' END, available_at = ?, updated_at = ? WHERE state = 'attached' AND id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)`).run(now, now, runId);
@@ -476,6 +479,7 @@ export class CoordinationV3RunLifecycleAuthority {
         [input.activationId],
         now,
       );
+      this.restoreUninjectedDecisionRoots(input.runId, now);
       this.settleRetriedRequiredReply(input.runId, now);
       this.recoverRequiredReply(input.runId, now);
     })();
@@ -745,6 +749,7 @@ export class CoordinationV3RunLifecycleAuthority {
             WHERE run_id = ?
           ) AND state = 'retry_pending'
         `).get(input.runId) as { count: number }).count;
+        this.restoreUninjectedDecisionRoots(input.runId, now);
         this.settleRetriedRequiredReply(input.runId, now);
         this.recoverRequiredReply(input.runId, now);
         if (pending === 0) {

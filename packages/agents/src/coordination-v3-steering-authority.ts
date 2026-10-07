@@ -86,6 +86,7 @@ export class CoordinationV3SteeringAuthority {
         WHERE a.state IN ('pending', 'retry_pending')
           AND a.available_at <= ?
           AND a.dispatch_policy = 'steer_or_run'
+          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind='task_decision_repair_wait')
           AND ${decisionSteeringAuthority('a', 'r.id')}
           AND (a.kind = 'context_rollover_handoff' OR NOT EXISTS (
             SELECT 1 FROM context_rollovers rollover
@@ -120,6 +121,7 @@ export class CoordinationV3SteeringAuthority {
           AND state IN ('pending', 'retry_pending')
           AND available_at <= ?
           AND dispatch_policy = 'steer_or_run'
+          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=agent_activations.id AND held.source_kind='task_decision_repair_wait')
           AND ${decisionSteeringAuthority('agent_activations', '?')}
           AND (kind = 'context_rollover_handoff' OR NOT EXISTS (
             SELECT 1 FROM context_rollovers rollover

@@ -6,9 +6,9 @@ import test from 'node:test';
 import { AgentStore, CoordinationV3Store } from '../dist/index.js';
 import { delegationOriginsForActivation, pendingTaskWakeIds } from '../dist/coordination-v3-task-lineage.js';
 
-function fixture() {
+function fixture(options = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'ponderosa-lead-continuity-'));
-  let store = new AgentStore(dir), c = new CoordinationV3Store(store.sqlite);
+  let store = new AgentStore(dir), c = new CoordinationV3Store(store.sqlite, options);
   const project = store.createProject({ label: 'Disposable', hostPath: dir, defaultEngine: 'codex' });
   const chat = store.createConversation(project.id, { title: 'Delivery task' });
   const lead = store.createAgent(project.id, { title: 'Lead', engine: 'codex', conversationId: chat.id });
@@ -73,9 +73,246 @@ function fixture() {
   }
   return { get store() { return store; }, get c() { return c; }, project, chat, lead, peer, auth, human, delegate, reply,
     final(l, id) { return reply(l, id, 'user_dm', 'final'); }, finish, rollover, retire, review,
-    reopen() { store.close(); store = new AgentStore(dir); c = new CoordinationV3Store(store.sqlite); },
+    reopen() { store.close(); store = new AgentStore(dir); c = new CoordinationV3Store(store.sqlite, options); },
     close() { store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
+
+function accept(f, lease) {
+  const input = { injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken };
+  f.c.preparePromptInjection({ ...input, prompt: 'Exact disposable Decision answer' });
+  f.c.markPromptSubmitted(input); f.c.acknowledgePromptInjection(input);
+}
+
+for (const receipt of [false, true]) for (const rollover of [false, true]) {
+  for (const release of rollover ? ['defer', 'cancel'] : ['defer', 'retry', 'expiry', 'orphan', 'cancel']) {
+    test(`exact Decision root survives ${release}, receipt=${receipt}, retained=${rollover}`, () => {
+      const f = fixture();
+      try {
+        const source = f.human();
+        if (receipt) f.reply(source, 'initial-receipt');
+        f.c.waitForTaskDecision({ runAuthorization: f.auth(source), decisionId: 'exact', scopeKey: `conversation:${f.chat.id}` });
+        const r = rollover && f.rollover(source); f.finish(source);
+        if (r) assert.equal(f.retire(r).continuityWaiting, true);
+        const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id,
+          scopeKey: `conversation:${f.chat.id}`, messageId: 'decision:exact:response', kind: 'human', payload: { decision: { id: 'exact' } } });
+        f.c.attachTaskDecisionWake('exact', answer);
+        let now = Date.now(), lease = f.c.leaseNextRun({ workerId: 'answer', now: new Date(now).toISOString() });
+        if (release === 'cancel') {
+          f.c.cancelAgentRun({ agentId: f.lead.id, expectedRunId: lease.runId, idempotencyKey: 'operator-stop' });
+          f.reopen(); assert.equal(f.c.taskDecisionOwnsDelivery('exact'), false);
+          assert.equal(f.c.leaseNextRun({ workerId: 'no-revival' }), undefined); return;
+        }
+        for (let i = 0; i < 2; i++) {
+          const before = f.c.requiredReplyObligationsForRun(lease.runId);
+          assert.equal(before.length, 1); assert.equal(before[0].sourceActivationId, source.activationIds[0]);
+          assert.equal(before[0].state, receipt ? 'satisfied' : 'pending');
+          assert.equal(before[0].satisfiedCommunicationId, receipt ? 'initial-receipt' : undefined);
+          if (release === 'defer') f.c.deferUninjectedRun(lease.runId, lease.fencingToken);
+          if (release === 'retry') f.c.failRun({ runId: lease.runId, fencingToken: lease.fencingToken,
+            workerId: 'answer', sameRunResumable: false, confirmedNotExecuted: true, retryDelayMs: 0 });
+          if (release === 'expiry') { now = Date.parse(lease.leaseExpiresAt) + 1; f.c.recoverExpiredRuns(new Date(now).toISOString()); }
+          if (release === 'orphan') f.c.recoverOrphanedRuns(`replacement-worker-${i}`);
+          assert.equal(f.c.requiredReplyObligationsForRun(lease.runId).length, 0, 'only the unaccepted copy is retired');
+          assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 0);
+          f.reopen();
+          now = Math.max(now, Date.now()) + 1;
+          lease = f.c.leaseNextRun({ workerId: 'retry', now: new Date(now).toISOString(), excludedAgentIds: [f.peer.id] });
+          assert.deepEqual(lease.activationIds, [answer]);
+          const root = f.c.requiredReplyObligationsForRun(lease.runId)[0];
+          assert.equal(root.sourceActivationId, source.activationIds[0]); assert.equal(root.attemptCount, 0);
+          assert.deepEqual(root.replyAuthority, { intent: 'direct_to_user' });
+          if (r) assert.equal(f.c.contextRolloverForContinuationRun(lease.runId, f.lead.id)?.id, r.id);
+        }
+        accept(f, lease); f.delegate(lease, 1, { noRoute: true });
+        assert.equal(f.c.requiredReplyObligationsForRun(lease.runId)[0].deliveryPhase, 'final');
+        f.c.completeRun(lease.runId, lease.fencingToken); f.review();
+        now = Math.max(now, Date.now()) + 1;
+        const final = f.c.leaseNextRun({ workerId: 'final', excludedAgentIds: [f.peer.id], now: new Date(now).toISOString() });
+        assert.equal(f.c.requiredReplyObligationsForRun(final.runId)[0].sourceActivationId, source.activationIds[0]);
+        f.final(final, 'exact-final'); f.finish(final); f.reopen();
+        assert.equal(f.c.leaseNextRun({ workerId: 'no-duplicate' }), undefined);
+        assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM runtime_communications WHERE id='exact-final'").get().n, 1);
+      } finally { f.close(); }
+    });
+  }
+}
+
+test('Decision-root restoration rolls back atomically and never releases a started or submitted claim', () => {
+  const f = fixture();
+  try {
+    const source = f.human(); f.c.waitForTaskDecision({ runAuthorization: f.auth(source), decisionId: 'exact', scopeKey: `conversation:${f.chat.id}` }); f.finish(source);
+    const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
+      messageId: 'decision:exact:response', kind: 'human', payload: { decision: { id: 'exact' } } }); f.c.attachTaskDecisionWake('exact', answer);
+    const claim = f.c.leaseNextRun({ workerId: 'answer' });
+    f.store.sqlite.exec(`CREATE TEMP TRIGGER restoration_failure BEFORE DELETE ON required_reply_obligations
+      BEGIN SELECT RAISE(ABORT, 'fixture restoration rollback'); END`);
+    assert.throws(() => f.c.deferUninjectedRun(claim.runId, claim.fencingToken), /restoration rollback/);
+    assert.equal(f.c.requiredReplyObligationsForRun(source.runId)[0].state, 'superseded');
+    assert.equal(f.c.requiredReplyObligationsForRun(claim.runId).length, 1);
+    assert.equal(f.store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(claim.runId).status, 'leased');
+    assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(answer).state, 'attached');
+    f.store.sqlite.exec('DROP TRIGGER restoration_failure');
+    assert.throws(() => f.c.deferUninjectedRun(claim.runId, claim.fencingToken - 1));
+    const input = { injectionId: claim.injectionId, runId: claim.runId, fencingToken: claim.fencingToken };
+    f.c.preparePromptInjection({ ...input, prompt: 'Exact accepted answer' }); f.c.markPromptSubmitted(input);
+    assert.throws(() => f.c.deferUninjectedRun(claim.runId, claim.fencingToken), /uninjected/);
+    f.c.acknowledgePromptInjection(input);
+    assert.throws(() => f.c.deferUninjectedRun(claim.runId, claim.fencingToken), /uninjected/);
+    assert.equal(f.c.requiredReplyObligationsForRun(claim.runId).length, 1);
+  } finally { f.close(); }
+});
+
+for (const terminal of ['error', 'expiry', 'orphan']) for (const failure of ['none', 'read', 'association']) {
+  test(`canonical Decision wait repair precedes ${terminal} recovery; repair failure=${failure}`, () => {
+    let decisions = [], readFails = failure === 'read';
+    const f = fixture({ canonicalTaskDecisions: () => { if (readFails) throw Error('fixture canonical index unavailable'); return decisions; } });
+    try {
+      const source = f.human(); accept(f, source);
+      decisions = [{ id: 'canonical', blocking: true, status: 'pending', coordinationRunId: source.runId,
+        agentId: f.lead.id, projectId: f.project.id, conversationId: f.chat.id }];
+      if (failure === 'association') f.store.sqlite.exec(`CREATE TEMP TRIGGER wait_repair_failure
+        BEFORE UPDATE OF blocking_decision_id ON required_reply_obligations
+        WHEN NEW.blocking_decision_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'fixture repair rollback'); END`);
+      if (terminal === 'error') f.c.failRun({ runId: source.runId, fencingToken: source.fencingToken,
+        workerId: 'lead', sameRunResumable: false, failureKind: 'unknown', error: 'Fixture provider failure' });
+      if (terminal === 'expiry') f.c.recoverExpiredRuns(new Date(Date.parse(source.leaseExpiresAt) + 1).toISOString());
+      if (terminal === 'orphan') f.c.recoverOrphanedRuns('new-worker');
+      assert.equal(f.store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(source.runId).status, 'outcome_unknown');
+      assert.equal(f.c.activeRunCount(), 0);
+      assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 0);
+      assert.equal(Boolean(f.c.requiredReplyObligationsForRun(source.runId)[0].decisionWaitRepairPending), failure !== 'none');
+      if (failure !== 'none') {
+        assert.equal(f.c.leaseNextRun({ workerId: 'still-held' }), undefined);
+        readFails = false; if (failure === 'association') f.store.sqlite.exec('DROP TRIGGER wait_repair_failure');
+        f.reopen(); assert.equal(f.c.leaseNextRun({ workerId: 'repair' }), undefined);
+      }
+      const root = f.c.requiredReplyObligationsForRun(source.runId)[0];
+      assert.equal(root.blockingDecisionId, 'canonical'); assert.equal(root.decisionWaitRepairPending, undefined);
+      assert.equal(f.c.taskDecisionOwnsDelivery('canonical'), true);
+      assert.equal(f.store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(source.runId).status, 'outcome_unknown');
+    } finally { f.close(); }
+  });
+}
+
+test('bounded repair visits a later healthy hold despite 64 persistently failing predecessors', () => {
+  let healthyRun, setup = true, decision;
+  const f = fixture({ canonicalTaskDecisions: ids => {
+    if (!setup && ids.has(healthyRun)) return [decision];
+    throw Error('fixture persistent canonical read failure');
+  } });
+  try {
+    for (let i = 0; i < 65; i++) {
+      const lease = f.human(`held-task-${i}`); accept(f, lease);
+      f.c.failRun({ runId: lease.runId, fencingToken: lease.fencingToken, workerId: 'lead', sameRunResumable: false });
+      healthyRun = lease.runId;
+    }
+    decision = { id: 'later-canonical', blocking: true, status: 'pending', coordinationRunId: healthyRun,
+      agentId: f.lead.id, projectId: f.project.id, conversationId: f.chat.id };
+    setup = false;
+    const now = new Date(Date.now() + 1000).toISOString();
+    assert.equal(f.c.leaseNextRun({ workerId: 'repair-first-batch', now }), undefined);
+    assert.equal(f.c.leaseNextRun({ workerId: 'repair-next-batch', now: new Date(Date.parse(now) + 1).toISOString() }), undefined);
+    assert.equal(f.c.requiredReplyObligationsForRun(healthyRun)[0].blockingDecisionId, 'later-canonical');
+    assert.equal(f.c.requiredReplyObligationsForRun(healthyRun)[0].decisionWaitRepairPending, undefined);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE source_kind='task_decision_repair'").get().n, 64);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 0);
+  } finally { f.close(); }
+});
+
+test('an unrelated coalesced input cannot borrow the deferred Decision root', () => {
+  const f = fixture();
+  try {
+    const source = f.human(); f.reply(source, 'initial');
+    f.c.waitForTaskDecision({ runAuthorization: f.auth(source), decisionId: 'exact', scopeKey: `conversation:${f.chat.id}` }); f.finish(source);
+    const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
+      messageId: 'decision:exact:response', kind: 'human', payload: { decision: { id: 'exact' } } }); f.c.attachTaskDecisionWake('exact', answer);
+    const unrelated = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
+      messageId: 'unrelated-input', kind: 'human', payload: { text: 'Different work, not a Decision answer' } });
+    const mixed = f.c.leaseNextRun({ workerId: 'mixed' }); assert.deepEqual(new Set(mixed.activationIds), new Set([answer, unrelated]));
+    f.c.deferUninjectedRun(mixed.runId, mixed.fencingToken); f.reopen();
+    f.store.sqlite.prepare('UPDATE agent_activations SET priority=1000 WHERE id=?').run(unrelated);
+    const generic = f.c.leaseNextRun({ workerId: 'generic', coalesceLimit: 1 }); assert.deepEqual(generic.activationIds, [unrelated]);
+    assert.equal(f.c.requiredReplyObligationsForRun(generic.runId).length, 0); f.finish(generic);
+    const exact = f.c.leaseNextRun({ workerId: 'exact' }); assert.deepEqual(exact.activationIds, [answer]);
+    assert.equal(f.c.requiredReplyObligationsForRun(exact.runId)[0].sourceActivationId, source.activationIds[0]);
+  } finally { f.close(); }
+});
+
+for (const receipt of [false, true]) for (const poisonAnswer of [false, true]) {
+  test(`partial compilation restores only a surviving exact answer; receipt=${receipt}, poisonAnswer=${poisonAnswer}`, () => {
+    const f = fixture();
+    try {
+      const source = f.human(); if (receipt) f.reply(source, 'initial');
+      f.c.waitForTaskDecision({ runAuthorization: f.auth(source), decisionId: 'exact', scopeKey: `conversation:${f.chat.id}` }); f.finish(source);
+      const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
+        messageId: 'decision:exact:response', kind: 'human', payload: { decision: { id: 'exact' } } }); f.c.attachTaskDecisionWake('exact', answer);
+      const poison = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
+        messageId: 'poison-input', kind: 'human', payload: { text: 'Unrelated bad attachment' } });
+      const claim = f.c.leaseNextRun({ workerId: 'prepare' });
+      f.c.failRunForActivationCompilation({ runId: claim.runId, fencingToken: claim.fencingToken, workerId: 'prepare',
+        activationId: poisonAnswer ? answer : poison, errorCode: 'attachment_unavailable' });
+      assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(poisonAnswer ? answer : poison).state, 'failed');
+      if (poisonAnswer) {
+        assert.equal(f.c.requiredReplyObligationsForRun(claim.runId).some(o => o.sourceActivationId === source.activationIds[0]), true,
+          'a permanently rejected answer must not restore an earlier owner');
+      } else {
+        assert.equal(f.c.requiredReplyObligationsForRun(claim.runId).length, 0); f.reopen();
+        const retried = f.c.leaseNextRun({ workerId: 'retry' }); assert.deepEqual(retried.activationIds, [answer]);
+        const root = f.c.requiredReplyObligationsForRun(retried.runId)[0];
+        assert.equal(root.sourceActivationId, source.activationIds[0]); assert.equal(root.state, receipt ? 'satisfied' : 'pending');
+        assert.equal(root.satisfiedCommunicationId, receipt ? 'initial' : undefined); assert.equal(root.attemptCount, 0);
+        assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 0);
+      }
+    } finally { f.close(); }
+  });
+}
+
+test('a repaired empty canonical index releases one bounded recovery, but foreign Decisions grant no wait', () => {
+  let fails = true, decisions = [];
+  const f = fixture({ canonicalTaskDecisions: () => { if (fails) throw Error('fixture read failure'); return decisions; } });
+  try {
+    const source = f.human(); accept(f, source); f.c.failRun({ runId: source.runId, fencingToken: source.fencingToken, workerId: 'lead', sameRunResumable: false });
+    fails = false;
+    decisions = [{ id: 'foreign', blocking: true, status: 'pending', coordinationRunId: source.runId,
+      agentId: f.peer.id, projectId: f.project.id, conversationId: f.chat.id }];
+    const recovery = f.c.leaseNextRun({ workerId: 'legitimate-recovery' });
+    assert.equal(recovery.activations[0].kind, 'required_reply_recovery');
+    assert.equal(f.c.requiredReplyObligationsForRun(recovery.runId)[0].blockingDecisionId, undefined);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='required_reply_recovery'").get().n, 1);
+  } finally { f.close(); }
+});
+
+test('a canonical reader fault does not hold collaboration-only recovery', () => {
+  let reads = 0;
+  const f = fixture({ canonicalTaskDecisions: () => { reads++; throw Error('fixture reader failure'); } });
+  try {
+    f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
+      messageId: 'collaboration-only', kind: 'human', payload: { replyAuthority: { intent: 'collaboration', recipientAgentIds: [f.peer.id] } } });
+    const run = f.c.leaseNextRun({ workerId: 'specialist' }); f.finish(run);
+    assert.equal(reads, 0);
+    assert.equal(f.c.requiredReplyObligationsForRun(run.runId)[0].state, 'recovery_pending');
+    assert.equal(f.c.requiredReplyObligationsForRun(run.runId)[0].decisionWaitRepairPending, undefined);
+    const recovery = f.c.leaseNextRun({ workerId: 'specialist-recovery' });
+    assert.deepEqual(f.c.requiredReplyAuthoritiesForRun(recovery.runId), [{ intent: 'collaboration', recipientAgentIds: [f.peer.id] }]);
+  } finally { f.close(); }
+});
+
+test('an exact response is held from both Run and steering claims, and cancellation retires its hold', () => {
+  const f = fixture({ canonicalTaskDecisions: () => { throw Error('fixture reader failure'); } });
+  try {
+    const source = f.human(); accept(f, source);
+    const answer = f.c.enqueueMessageActivation({ projectId: f.project.id, agentId: f.lead.id, scopeKey: `conversation:${f.chat.id}`,
+      messageId: 'decision:held:response', kind: 'human', payload: { decision: { id: 'held', response: { optionId: 'approve' } } } });
+    f.c.attachTaskDecisionWake('held', answer, new Date().toISOString(), source.runId);
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE source_kind='task_decision_repair_wait'").get().n, 1);
+    assert.equal(f.c.leaseNextSteering({ workerId: 'must-not-steer' }), undefined);
+    assert.equal(f.c.leaseNextRun({ workerId: 'must-not-run' }), undefined);
+    f.c.cancelAgentRun({ agentId: f.lead.id, expectedRunId: source.runId, idempotencyKey: 'cancel-held-owner' });
+    assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(answer).state, 'cancelled');
+    assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM activation_sources WHERE source_kind IN ('task_decision_repair','task_decision_repair_wait')").get().n, 0);
+    f.reopen(); assert.equal(f.c.leaseNextRun({ workerId: 'no-revival' }), undefined);
+  } finally { f.close(); }
+});
 
 test('lead waiting on its own delegation retains continuity without starting a replacement Run', () => {
   const f = fixture();

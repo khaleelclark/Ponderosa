@@ -593,11 +593,9 @@ export function registerServerLifecycle(
       });
     }
     for (const decision of workspace.listDecisions({ status: "pending" })) {
-      if (decision.blocking && decision.coordinationRunId) coordinationV3.reconcileTaskDecision({
-        decisionId: decision.id, runId: decision.coordinationRunId, projectId: decision.projectId,
-        agentId: decision.agentId,
-        scopeKey: decision.conversationId ? `conversation:${decision.conversationId}` : `agent:${decision.agentId}`,
-      });
+      if (decision.blocking && decision.coordinationRunId && !coordinationV3.repairCanonicalTaskDecisionWait(decision.coordinationRunId)) {
+        app.log.warn({ decisionId: decision.id }, "canonical Decision wait repair remains held");
+      }
       if (!decision.blocking || !(decision.continuationRequestIds?.length)) continue;
       coordinationV3.suspendQuestionsForDecision({
         runId: decision.coordinationRunId ?? decision.runId,
@@ -608,12 +606,10 @@ export function registerServerLifecycle(
       });
     }
     for (const decision of workspace.listDecisions({ status: "resolved" })) {
-      if (decision.blocking && decision.coordinationRunId && decision.response) coordinationV3.reconcileTaskDecision({
-        decisionId: decision.id, runId: decision.coordinationRunId, projectId: decision.projectId,
-        agentId: decision.agentId,
-        scopeKey: decision.conversationId ? `conversation:${decision.conversationId}` : `agent:${decision.agentId}`,
-        response: decision.response,
-      });
+      if (decision.blocking && decision.coordinationRunId && decision.response && !coordinationV3.repairCanonicalTaskDecisionWait(decision.coordinationRunId)) {
+        app.log.warn({ decisionId: decision.id }, "canonical Decision answer repair remains held");
+        continue;
+      }
       if (decision.approvalScope?.kind === "saved_browser" && decision.response?.optionId === "approve") {
         try {
           if (!applyResolvedSavedBrowserApproval(decision)) continue;

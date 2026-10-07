@@ -37,6 +37,25 @@ for (;;) {
   const role = env.CONTINUITY_ROLE;
   const text = JSON.stringify(frame.message);
   const fence = text.match(/Prompt injection fence: ([a-f0-9-]+)\./)?.[1];
+  if (role === 'association-error') {
+    let answered = false;
+    try { await access(env.CONTINUITY_ERROR_SEEN); answered = true; } catch {}
+    if (!answered) {
+      await call(env.PONDEROSA_AGENT_DECISION_URL, { idempotencyKey: 'provider-error-permission',
+        mode: 'approval', question: 'Approve after the disposable provider error?', blocking: true }, 500);
+      await appendFile(env.CONTINUITY_ERROR_SEEN, 'failed');
+      send({ type: 'result', subtype: 'error_during_execution', session_id: frame.session_id,
+        is_error: true, result: 'Disposable provider error after canonical Decision association rollback' });
+      continue;
+    }
+    const body = { intent: 'direct_to_user', idempotencyKey: 'post-error-final', steeringInjectionId: fence,
+      text: 'Exact approved task delivered after the provider error.' };
+    const first = await call(env.PONDEROSA_AGENT_MESSAGE_URL, body);
+    const replay = await call(env.PONDEROSA_AGENT_MESSAGE_URL, body);
+    if (first.eventId !== replay.eventId) throw Error('post-error final duplicated');
+    send({ type: 'result', subtype: 'success', session_id: frame.session_id, is_error: false, result: 'Delivered' });
+    continue;
+  }
   if (text.includes('Unrelated active-work fixture')) {
     send({ type: 'assistant', session_id: frame.session_id, parent_tool_use_id: null,
       message: { id: 'unrelated-ready', role: 'assistant', model: 'claude-sonnet-4-6', content: [{ type: 'text', text: 'Unrelated public work remains active.' }],
