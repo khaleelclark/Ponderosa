@@ -201,9 +201,27 @@ export class CoordinationV3RequiredReplyAuthority {
     }
     // A default store may reopen durable holds, but cannot certify canonical
     // accounting without the trusted reader that created those holds.
-    if (!this.canonicalTaskDecisions) return !this.sqlite.prepare(
-      "SELECT 1 FROM activation_sources WHERE source_kind='task_decision_repair' AND source_id=? LIMIT 1",
-    ).get(runId);
+    if (!this.canonicalTaskDecisions) {
+      let held = false;
+      for (const root of eligible) {
+        const inheritedHold = this.sqlite.prepare(`SELECT 1 FROM activation_sources source
+          JOIN required_reply_obligations previous ON previous.run_id=source.source_id AND previous.source_activation_id=source.activation_id
+          JOIN scheduler_runs previous_run ON previous_run.id=previous.run_id AND previous_run.status<>'cancelled'
+          WHERE source.source_kind='task_decision_repair' AND source.activation_id=?
+            AND previous.agent_id=? AND previous.project_id=? AND previous.scope_key=? AND previous.reply_authority_json=?
+            AND previous.state NOT IN ('cancelled','failed') LIMIT 1`)
+          .get(root.sourceActivationId, root.agentId, root.projectId, root.scopeKey, stableJson(root.replyAuthority));
+        if (!inheritedHold) continue;
+        // Carry the exact existing uncertainty onto its latest owner. Without
+        // this marker, reopening with the reader restored could visit only a
+        // superseded origin and never resume the completed current owner's repair.
+        this.sqlite.prepare("INSERT OR IGNORE INTO activation_sources (activation_id,source_kind,source_id) VALUES (?,'task_decision_repair',?)")
+          .run(root.sourceActivationId, runId);
+        this.holdExistingReplyRecovery(root);
+        held = true;
+      }
+      return !held;
+    }
     try {
       const origins = new Set(taskOriginRunIds(this.sqlite, runId));
       const decisions = this.canonicalTaskDecisions(origins).filter(decision => {
@@ -244,6 +262,7 @@ export class CoordinationV3RequiredReplyAuthority {
           }
         }
         this.sqlite.prepare("DELETE FROM activation_sources WHERE source_kind='task_decision_repair' AND source_id=?").run(runId);
+        this.sqlite.prepare("DELETE FROM activation_sources WHERE source_kind='task_reply_repair_wait' AND source_id=?").run(runId);
         this.sqlite.prepare("DELETE FROM activation_sources WHERE source_kind='task_decision_pending_repair' AND json_extract(source_id,'$.runId')=?").run(runId);
       })();
       return true;
@@ -251,6 +270,7 @@ export class CoordinationV3RequiredReplyAuthority {
       for (const root of eligible) {
         this.sqlite.prepare("INSERT OR IGNORE INTO activation_sources (activation_id,source_kind,source_id) VALUES (?,'task_decision_repair',?)")
           .run(root.sourceActivationId, runId);
+        this.holdExistingReplyRecovery(root);
       }
       // Age the whole attempted marker cohort, including displaced roots.
       // Otherwise one stale sibling can pin this Run in every bounded batch.
@@ -264,9 +284,26 @@ export class CoordinationV3RequiredReplyAuthority {
   private retireDecisionRepairHold(runId: string, now: string): void {
     this.sqlite.prepare(`UPDATE agent_activations SET state='cancelled', terminal_outcome=NULL, terminal_at=?, updated_at=?
       WHERE state IN ('pending','retry_pending') AND id IN (SELECT activation_id FROM activation_sources
-        WHERE source_kind='task_decision_repair_wait' AND source_id=?)`).run(now, now, runId);
-    this.sqlite.prepare("DELETE FROM activation_sources WHERE source_kind IN ('task_decision_repair','task_decision_repair_wait') AND source_id=?").run(runId);
+        WHERE source_kind IN ('task_decision_repair_wait','task_reply_repair_wait') AND source_id=?)`).run(now, now, runId);
+    this.sqlite.prepare("DELETE FROM activation_sources WHERE source_kind IN ('task_decision_repair','task_decision_repair_wait','task_reply_repair_wait') AND source_id=?").run(runId);
     this.sqlite.prepare("DELETE FROM activation_sources WHERE source_kind='task_decision_pending_repair' AND json_extract(source_id,'$.runId')=?").run(runId);
+  }
+
+  /** An upgrade can reopen a recovery queued before canonical wait repair
+   * existed. Hold only that exact, still-unaccepted server-owned recovery;
+   * unrelated inputs remain independent of the original task's uncertainty. */
+  private holdExistingReplyRecovery(root: RequiredReplyObligation): void {
+    if (!root.recoveryActivationId) return;
+    this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources (activation_id,source_kind,source_id)
+      SELECT recovery.id,'task_reply_repair_wait',? FROM agent_activations recovery
+      JOIN activation_sources source ON source.activation_id=recovery.id AND source.source_kind='required_reply' AND source.source_id=?
+      WHERE recovery.id=? AND recovery.kind='required_reply_recovery' AND recovery.state IN ('pending','retry_pending')
+        AND recovery.agent_id=? AND recovery.project_id=? AND recovery.scope_key=?
+        AND recovery.dedupe_key=? AND json_extract(recovery.payload_json,'$.requiredReplyRecovery.sourceRunId')=?
+        AND json_extract(recovery.payload_json,'$.requiredReplyRecovery.sourceActivationId')=?`)
+      .run(root.runId, `${root.runId}:${root.sourceActivationId}`, root.recoveryActivationId,
+        root.agentId, root.projectId, root.scopeKey, `required-reply-recovery:${root.runId}:${root.sourceActivationId}`,
+        root.runId, root.sourceActivationId);
   }
 
   holdDecisionWakeForRepair(runId: string, decisionId: string, activationId: string): boolean {
@@ -285,14 +322,17 @@ export class CoordinationV3RequiredReplyAuthority {
         .get(activationId, runId));
   }
 
-  retryDecisionWaitRepairs(now: string): void {
-    if (!this.canonicalTaskDecisions) return;
+  retryDecisionWaitRepairs(now: string): string[] {
+    if (!this.canonicalTaskDecisions) return [];
     const rows = this.sqlite.prepare(`SELECT source.source_id AS run_id FROM activation_sources source
       JOIN scheduler_runs run ON run.id=source.source_id
       JOIN required_reply_obligations obligation ON obligation.run_id=run.id AND obligation.source_activation_id=source.activation_id
       WHERE source.source_kind='task_decision_repair' AND run.status IN ('completed','failed','outcome_unknown')
       GROUP BY source.source_id ORDER BY MIN(obligation.updated_at), run.rowid LIMIT 64`).all() as Array<{ run_id: string }>;
     for (const row of rows) this.recoverPending(row.run_id, now);
+    return rows.filter(row => !this.sqlite.prepare(
+      "SELECT 1 FROM activation_sources WHERE source_kind='task_decision_repair' AND source_id=? LIMIT 1",
+    ).get(row.run_id)).map(row => row.run_id);
   }
 
   registerForRun(input: {

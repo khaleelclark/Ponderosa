@@ -169,7 +169,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending')
           AND a.available_at <= ?
-          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind='task_decision_repair_wait')
+          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait'))
           ${excludedClause}
           AND (
             (a.kind = 'context_rollover_handoff' AND EXISTS (
@@ -218,7 +218,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         SELECT * FROM agent_activations
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending') AND available_at <= ?
-          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=agent_activations.id AND held.source_kind='task_decision_repair_wait')
+          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=agent_activations.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait'))
           AND (
             (kind = 'context_rollover_handoff' AND EXISTS (
               SELECT 1 FROM context_rollovers rollover
