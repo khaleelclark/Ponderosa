@@ -10,7 +10,7 @@ export function inspectBranchExecution(db:Database.Database,e:BranchExecutionDto
  if(['queued','running','waiting'].includes(e.state)){
   if(row('SELECT cancel_requested FROM branch_executions WHERE id=?',e.id)?.cancel_requested)waits.push({kind:'cleanup',message:'Canceling this execution and its children; waiting for owned work and processes to stop.'});
   else {
-   if(e.state==='queued')waits.push(e.budgetWait?{kind:'execution_budget',branchId:e.branchId,executionId:e.id,message:'Accepted and saved. Waiting for this Branch’s automatic execution budget; no workflow work has started.'}:{kind:'capacity',message:'Accepted. Waiting for workflow capacity to start.'});
+   if(e.state==='queued')waits.push(e.budgetWait?{kind:'execution_budget',branchId:e.branchId,message:'Accepted and saved. Waiting for this Branch’s automatic execution budget; no workflow work has started.'}:{kind:'capacity',message:'Accepted. Waiting for workflow capacity to start.'});
    const attempts=rows(`SELECT a.*,s.step_id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
     WHERE s.execution_id=? AND a.state IN ('prepared','leased','running','waiting','outcome_unknown') ORDER BY a.rowid LIMIT 100`,e.id);
    for(const a of attempts){

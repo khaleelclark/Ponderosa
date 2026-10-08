@@ -21,17 +21,85 @@ function fixture(t){
 }
 function call(f,child,key){const parent=f.deploy('parent-'+key,[{id:'call',kind:'branch_call',branchRef:'child'}],{branches:{child:child.id}});const e=f.branches.accept(parent.id,key,'input',now);f.branches.advance(now);return {parent:e,child:f.branches.listExecutions(child.id).find(x=>x.parentExecutionId===e.id)}}
 function grant(f,id,additional=1,at=now){const b=f.branches.executionBudget(id,at);const input={commandKey:crypto.randomUUID(),expectedRevision:b.revision,expectedPeriodId:b.periodId,additional};return {input,result:f.branches.grantExecutions(id,input,at)}}
+function triggered(f,name,steps=[gate],maxConcurrentExecutions=10){
+ const base=f.deploy(name,steps),config={scheduleKind:'once',at:'2027-01-01T00:00:00.000Z'};
+ return f.branches.deploy({chatId:'',branchId:base.id,expectedVersionId:base.versionId,idempotencyKey:name+'-trigger',definition:{...f.branches.version(base.id,base.versionId).definition,trigger:{kind:'schedule',configRef:'source'},policy:{maxConcurrentExecutions,failure:{action:'stop'}}},bindings:{agents:{},directories:{root:f.dir},triggers:{source:{enabled:true,sourceConfig:config}}}},now,{sourceConfig:config});
+}
+function intake(f,b,key,at=now){const occurrence=f.coordination.recordTriggerOccurrence({triggerId:b.triggerId,occurrenceKey:key,payload:{key},provenance:{source:'test'},now:at});return f.coordination.getTriggerOccurrence(occurrence.occurrenceId).branchExecutionId}
+function assertAdmissions(f,b,ids,started,at=now){
+ assert.deepEqual(ids.filter(id=>f.branches.execution(id).admittedAt),started);
+ for(const id of ids){
+  const admitted=started.includes(id);
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM branch_paths WHERE execution_id=?').get(id).n,admitted?1:0);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM branch_checkpoints WHERE execution_id=? AND kind='workflow_started'").get(id).n,admitted?1:0);
+  assert.equal(Boolean(f.db.prepare('SELECT admission_json FROM branch_executions WHERE id=?').get(id).admission_json),admitted);
+  if(admitted)assert.equal(f.branches.execution(id).admittedAt,at);
+ }
+}
+for(const release of ['grant','rollover'])test(`rotating scan starts oldest same-time automatic execution after scarce ${release}, while manual and other Branches progress`,t=>{
+ const f=fixture(t),b=triggered(f,'fifo-'+release);f.budget(b.id,{limit:1,period:release==='grant'?'lifetime':'day'});
+ intake(f,b,'exhaust');f.branches.advance(now);
+ const queued=Array.from({length:100},(_,i)=>intake(f,b,'queued-'+i));
+ const manual=f.branches.accept(b.id,'manual','operator input',now),other=f.deploy('other-'+release),independent=f.branches.accept(other.id,'independent','input',now);
+ f.branches.advance(now);
+ assert.ok(f.branches.execution(queued[0]).budgetWait);assert.equal(f.branches.execution(queued[99]).budgetWait,undefined);
+ const at=release==='grant'?now:'2026-01-02T00:00:00.000Z';if(release==='grant')grant(f,b.id);
+ f.branches.advance(at);
+ assertAdmissions(f,b,queued,[queued[0]],at);
+ assert.equal(f.branches.executionBudget(b.id,at).used,release==='grant'?2:1);
+ assert.ok(f.branches.execution(manual.id).admittedAt);assert.ok(f.branches.execution(independent.id).admittedAt);
+ assert.equal(JSON.parse(f.db.prepare('SELECT admission_json FROM branch_executions WHERE id=?').get(manual.id).admission_json).kind,'manual');
+ f.reopen();f.branches.advance(at);assertAdmissions(f,b,queued,[queued[0]],at);
+});
+test('one acceptance order covers triggers and Calls, skipping canceled/terminal/started rows and retaining exact child',t=>{
+ const f=fixture(t),b=triggered(f,'mixed-fifo');f.budget(b.id,{limit:1,period:'lifetime'});
+ const initial=intake(f,b,'exhaust');f.branches.advance(now);
+ const canceled=intake(f,b,'cancel'),skipped=intake(f,b,'skip');f.branches.advance(now);
+ f.branches.cancel(canceled,now);f.branches.intervene(skipped,{commandKey:'skip',expectedRevision:f.branches.execution(skipped).revision,action:'skip',reason:'skip'},now);
+ const older=intake(f,b,'older-trigger'),c=call(f,b,'fifo'),newer=Array.from({length:100},(_,i)=>intake(f,b,'newer-trigger-'+i));f.branches.advance(now);
+ assert.equal(f.branches.execution(c.child.id).admissionSource,'call');grant(f,b.id);f.branches.advance(now);
+ assertAdmissions(f,b,[older,c.child.id,...newer],[older]);
+ grant(f,b.id);f.branches.advance(now);assertAdmissions(f,b,[older,c.child.id,...newer],[older,c.child.id]);
+ assert.equal(f.branches.detail(c.parent.id).attempts[0].childExecutionId,c.child.id);
+ for(const id of [canceled,skipped])assert.equal(f.branches.execution(id).admittedAt,undefined);
+ assert.equal(f.branches.execution(initial).admittedAt,now);assert.equal(f.branches.executionBudget(b.id,now).used,3);
+});
+test('competing rotated reducer processes grant the last unit to the same oldest accepted execution', {timeout:15000},async t=>{
+ const f=fixture(t),b=triggered(f,'rotated-race');f.budget(b.id,{limit:1,period:'lifetime'});intake(f,b,'exhaust');f.branches.advance(now);
+ const queued=Array.from({length:100},(_,i)=>intake(f,b,'queued-'+i));
+ const workers=[0,1].map(()=>fork(new URL('./branch-execution-budget-worker.mjs',import.meta.url),[join(f.dir,'ponderosa.db'),'rotated'],{stdio:['ignore','ignore','inherit','ipc']}));t.after(()=>workers.forEach(w=>w.kill()));
+ await Promise.all(workers.map(w=>new Promise((resolve,reject)=>{w.once('message',m=>m==='ready'?resolve():reject(m));w.once('error',reject);w.once('exit',code=>reject(new Error('worker exited before ready '+code)))})));
+ assert.ok(f.branches.execution(queued[0]).budgetWait);grant(f,b.id);
+ const done=workers.map(w=>new Promise((resolve,reject)=>{w.once('exit',code=>code===0?resolve():reject(new Error('worker exit '+code)))}));workers.forEach(w=>w.send('go'));await Promise.all(done);
+ f.reopen();assertAdmissions(f,b,queued,[queued[0]]);assert.equal(f.branches.executionBudget(b.id,now).used,2);
+ f.branches.advance(now);assertAdmissions(f,b,queued,[queued[0]]);
+});
+test('oldest-eligible admission uses each frozen concurrency policy; a full older snapshot does not block newer eligible work',t=>{
+ const f=fixture(t),b=triggered(f,'capacity-fifo',[script],1);f.budget(b.id,{limit:1,period:'lifetime'});
+ const active=intake(f,b,'active');f.branches.advance(now);const lease=f.branches.claimScript('worker',now);assert.equal(lease.executionId,active);
+ const blocked=intake(f,b,'capacity-blocked');
+ const current=f.branches.getBranch(b.id),version=f.branches.version(b.id,current.versionId);
+ const bindings=JSON.parse(f.db.prepare('SELECT bindings_json FROM branch_bindings WHERE id=?').get(current.bindingRevisionId).bindings_json);
+ f.branches.deploy({chatId:'',branchId:b.id,expectedVersionId:current.versionId,idempotencyKey:'capacity-two',definition:{...version.definition,policy:{...version.definition.policy,maxConcurrentExecutions:2}},bindings},now,{sourceConfig:bindings.triggers.source.sourceConfig});
+ const eligible=intake(f,b,'eligible');grant(f,b.id);f.branches.advance(now);
+ assertAdmissions(f,b,[blocked,eligible],[eligible]);assert.equal(f.branches.executionBudget(b.id,now).used,2);
+ assert.notEqual(f.branches.execution(blocked).versionId,f.branches.execution(eligible).versionId);
+ f.branches.settleScript(lease,{failed:false,output:'done'},now);grant(f,b.id);f.branches.advance(now);
+ assertAdmissions(f,b,[blocked,eligible],[blocked,eligible]);assert.equal(f.branches.executionBudget(b.id,now).used,3);
+});
 test('last unit starts once; held child is pinned, resource-free, restartable and not a traversal failure',t=>{
  const f=fixture(t),b=f.deploy('child');f.budget(b.id);
  const first=call(f,b,'one');f.branches.advance(now);assert.equal(f.branches.executionBudget(b.id,now).used,1);
  const second=call(f,b,'two');f.branches.advance(now);const held=f.branches.execution(second.child.id);
  assert.equal(held.state,'queued');assert.ok(held.budgetWait);assert.equal(held.budgetExhausted,false);
  for(const table of ['branch_paths','branch_step_executions','branch_resources'])assert.equal(f.db.prepare(`SELECT COUNT(*) n FROM ${table} WHERE execution_id=?`).get(held.id).n,0);
- assert.equal(f.branches.detail(second.parent.id).waits[0].kind,'execution_budget');
- assert.equal(f.branches.detail(held.id).waits[0].kind,'execution_budget');
+ const parentWait=f.branches.detail(second.parent.id).waits[0],selfWait=f.branches.detail(held.id).waits[0];
+ assert.equal(parentWait.kind,'execution_budget');assert.equal(parentWait.branchId,b.id);assert.equal(parentWait.executionId,held.id);
+ assert.equal(selfWait.kind,'execution_budget');assert.equal(selfWait.branchId,b.id);assert.equal(selfWait.executionId,undefined);
  const oldVersion=held.versionId;f.branches.deploy({chatId:'',branchId:b.id,expectedVersionId:b.versionId,idempotencyKey:'updated-child',definition:{...f.branches.version(b.id,b.versionId).definition,name:'Updated'},bindings:{agents:{},directories:{root:f.dir}}},now);
  f.reopen();f.branches.setEnabled(b.id,false);grant(f,b.id);f.branches.advance(now);
  assert.equal(f.branches.execution(held.id).versionId,oldVersion);assert.ok(f.branches.execution(held.id).admittedAt);
+ const childWait=f.branches.detail(second.parent.id).waits[0];assert.equal(childWait.kind,'child');assert.equal(childWait.executionId,held.id);assert.equal(childWait.branchId,b.id);
  assert.equal(f.branches.executionBudget(b.id,now).used,2);f.branches.advance(now);assert.equal(f.branches.executionBudget(b.id,now).used,2);
  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM branch_paths WHERE execution_id=?').get(held.id).n,1);
 });

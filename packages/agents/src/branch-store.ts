@@ -621,10 +621,13 @@ export class BranchStore {
     for (const row of batch) {
       this.advanceCursor = row.position;
       this.sqlite.transaction(() => {
-        const execution = this.execution(row.id)!;
-        const definition = this.definition(execution), branch = this.getBranch(execution.branchId)!;
+        let execution = this.execution(row.id)!;
+        if(!['queued','running','waiting'].includes(execution.state))return;
+        const branch = this.getBranch(execution.branchId)!;
         if (this.row("SELECT cancel_requested FROM branch_executions WHERE id = ?", execution.id)!.cancel_requested) { this.aggregate(execution.id, now); return; }
         try { if(branch.chatId)this.chat(branch.chatId); } catch { this.cancel(execution.id, now); return; }
+        if(execution.state==='queued')execution=this.execution(this.executionBudgets.selectForStart(execution,now,id=>this.hasRunnableCapacity(id)))!;
+        const definition = this.definition(execution);
         if (execution.state === "queued") {
           if(!this.hasRunnableCapacity(execution.id)) return;
           if(!this.executionBudgets.admit(execution.id,now)) {

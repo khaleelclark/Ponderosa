@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import type { BranchExecutionBudgetDto, BranchExecutionBudgetUpdate, BranchExecutionBudgetGrant, BranchExecutionBudgetPolicy } from '@ponderosa/core';
+import type { BranchExecutionDto, BranchExecutionBudgetDto, BranchExecutionBudgetUpdate, BranchExecutionBudgetGrant, BranchExecutionBudgetPolicy } from '@ponderosa/core';
 import { triggerBudgetEndsAt } from './coordination-v3-trigger-budget.js';
 import { payloadHash, stableJson } from './coordination-v3-canonical-json.js';
 import { branchKey } from './branch-definition.js';
@@ -62,6 +62,22 @@ export class BranchExecutionBudgetAuthority {
     this.db.prepare('INSERT INTO branch_execution_budget_commands VALUES(?,?,?,?,?)').run(branchId,input.commandKey,hash,stableJson(result),now);
     this.event(branchId,kind==='grant'?'allowance_granted':'policy_saved',{commandKey:input.commandKey,...result},now);
     return result;
+  }
+  /** The global cursor visits Branches; acceptance order owns scarce automatic starts.
+   * Selection, capacity check, debit and the selected execution's entry path share
+   * the caller's immediate transaction. Manual starts keep their exemption.
+   */
+  selectForStart(execution:BranchExecutionDto,now:string,eligible:(id:string)=>boolean):string {
+    if(execution.admissionSource==='manual'||execution.admittedAt)return execution.id;
+    const budget=this.rotate(this.row(execution.branchId,now),now);
+    // Visit each exhausted row normally so its durable budget wait is published.
+    if(budget.limit_count!==null&&budget.used>=budget.limit_count+budget.allowance)return execution.id;
+    // Intake caps the queued pool at 1,000. rowid is committed acceptance order,
+    // including ties in timestamps and mixed trigger/Call intake.
+    const queued=this.db.prepare(`SELECT id FROM branch_executions WHERE branch_id=?
+      AND state='queued' AND cancel_requested=0 AND admitted_at IS NULL
+      AND admission_source<>'manual' ORDER BY rowid LIMIT 1000`).all(execution.branchId) as {id:string}[];
+    return queued.find(candidate=>eligible(candidate.id))?.id??execution.id;
   }
   /** Debit and receipt must commit with queued→running and the entry path. */
   admit(executionId:string,now:string):boolean {
