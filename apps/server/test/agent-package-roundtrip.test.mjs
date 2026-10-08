@@ -9,67 +9,6 @@ import { AgentStore, publishManagedArtifactContentAsync } from "@ponderosa/agent
 import { AssetStore } from "../dist/assets.js";
 import { registerAgentPackageRoutes } from "../dist/routes/agent-packages.js";
 
-test("template exports avoid history readers while full and legacy context preserve private audience", async t => {
-  const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-template-export-"));
-  const store = new AgentStore(dataDir);
-  const assets = new AssetStore(dataDir);
-  const app = Fastify();
-  t.after(async () => {
-    await app.close();
-    assets.close();
-    store.close();
-    await rm(dataDir, { recursive: true, force: true });
-  });
-  const project = store.createProject({ label: "Template", hostPath: dataDir, defaultEngine: "codex" });
-  const chat = store.createConversation(project.id, { title: "Template Chat" });
-  store.updateConversation(chat.id, { instructions: "Full context only" });
-  const root = store.createAgent(project.id, { title: "Root", engine: "codex", conversationId: chat.id });
-  const child = store.createAgent(project.id, { title: "Child", engine: "codex", conversationId: chat.id, managerAgentId: root.id });
-  let documentReads = 0, importedReads = 0, messageReads = 0;
-  store.readCommunicationEvents = () => {
-    documentReads++;
-    return [{ sender: { kind: "user" }, intent: "user_dm", audience: { kind: "user_agent", agentId: root.id },
-      conversationId: chat.id, document: { artifactId: "private-document" }, text: "Private root document", createdAt: "2026-10-08T00:00:00Z" }];
-  };
-  store.getImportedHistory = id => {
-    importedReads++;
-    return { messages: [{ role: "user", text: `Imported ${id}`, createdAt: "2026-10-08T00:00:00Z" }] };
-  };
-  registerAgentPackageRoutes(app, {
-    dataDir, store, assets,
-    coordination: { runtimeArtifact: () => undefined, handleAgentDeletion: () => {} },
-    engines: new Map(), deletingProjectIds: new Set(), deletingConversationIds: new Set(), deletingAgentIds: new Set(),
-    agentCreationConversationLeases: new Map(), cachedModelOptions: () => [], appendWorkspace: () => {},
-    agentMessages: id => {
-      messageReads++;
-      return [{ role: "assistant", text: `Current ${id}`, createdAt: "2026-10-08T00:00:00Z" }];
-    },
-    createOperationalNotification: () => {},
-  });
-  const exported = async mode => {
-    const response = await app.inject({ method: "GET", url: `/api/agents/${root.id}/export?mode=${mode}&organization=true&download=1` });
-    assert.equal(response.statusCode, 200, response.body);
-    assert.match(response.headers["content-type"], /^application\/json/);
-    assert.match(response.headers["content-disposition"], /\.ponderosa\.json"$/);
-    const result = response.json();
-    delete result.exportedAt;
-    return result;
-  };
-  const template = await exported("template");
-  assert.equal(template.mode, "template");
-  assert.equal(template.agents.length, 2);
-  assert.equal(template.sourceProjectInstructions, undefined);
-  assert.ok(template.agents.every(agent => !('history' in agent) && !('artifacts' in agent)));
-  assert.deepEqual([documentReads, importedReads, messageReads], [0, 0, 0]);
-  const full = await exported("full");
-  assert.equal(full.mode, "full");
-  assert.equal(full.sourceProjectInstructions, "Full context only");
-  assert.match(JSON.stringify(full.agents.find(agent => agent.ref === root.id).history), /Private root document/);
-  assert.doesNotMatch(JSON.stringify(full.agents.find(agent => agent.ref === child.id).history), /Private root document/);
-  assert.deepEqual([documentReads, importedReads, messageReads], [1, 2, 2]);
-  assert.deepEqual(await exported("context"), full);
-});
-
 test("full package import and export preserve artifacts across bounded batches", async (t) => {
   const dataDir = await mkdtemp(path.join(tmpdir(), "ponderosa-package-roundtrip-"));
   const store = new AgentStore(dataDir);

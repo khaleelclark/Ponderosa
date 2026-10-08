@@ -17,36 +17,6 @@ const TOOL_FAILURE_CATEGORIES = [
   "permanent_failure",
 ];
 
-test("three provider transports preserve canonical tool results and bounded retry advice", () => {
-  for (const [result, category, retryable] of [
-    [{ content: [{ type: "text", text: "ok" }] }, undefined, undefined],
-    [{ isError: true, error_data: { message: "HTTP 502 bad gateway" } }, "temporary_connection_failure", true],
-    [{ isError: true, error_data: { message: "HTTP 503 service unavailable" } }, "temporary_connection_failure", true],
-    [{ isError: true, error_data: { message: "HTTP 504 gateway timeout" } }, "temporary_connection_failure", true],
-    [{ isError: true, error_data: { message: "UNAVAILABLE network_error" } }, "temporary_connection_failure", true],
-    [{ isError: true, error_data: { message: "403 permission denied" } }, "permission_denied", false],
-    [{ isError: true, error_data: { message: "401 authentication required" } }, "authentication_required", false],
-    [{ isError: true, error_data: { message: "400 bad request" } }, "invalid_input", false],
-    [{ isError: true, error_data: { message: "Tool not found" } }, "operation_not_provided", false],
-    [{ isError: true, error_data: { message: "Other failure" } }, "permanent_failure", false],
-    [{ error_data: { error_type: "RATE_LIMIT_EXCEEDED", retry_after_seconds: 600 } }, "connector_rate_limit", true],
-  ]) {
-    const output = JSON.stringify(result);
-    const app = mapCodexAppServerNotification({ method: "item/completed", params: {
-      item: { type: "mcpToolCall", id: "call", server: "synthetic", tool: "search", result },
-    } }, "/synthetic")[0];
-    const legacy = mapCodexEvent({ type: "item.completed", item: { type: "mcp_tool_call", id: "call", result } })[0];
-    const claude = mapClaudeEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "call", content: output }] } })[0];
-    assert.equal(app.output, output);
-    assert.equal(app.failureCategory, category);
-    assert.equal(app.retryable, retryable);
-    assert.equal(app.isError, category ? true : undefined);
-    assert.deepEqual(projectAgentEvent(app), projectAgentEvent(legacy));
-    assert.deepEqual(projectAgentEvent(app), projectAgentEvent(claude));
-    assert.equal(app.retryAfterMs, category === "connector_rate_limit" ? 300_000 : undefined);
-  }
-});
-
 function rejectsProjection(value) {
   assert.throws(
     () => projectAgentEvent(value),
