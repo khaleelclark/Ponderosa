@@ -379,6 +379,7 @@ export function registerTriggerRoutes(
         const result = coordination.recordTriggerOccurrence({
           triggerId: current.id,
           occurrenceKey: `manual:${randomUUID()}`,
+          ...(current.branchId ? { branchOperatorManual: true } : {}),
           payload: { kind: "manual_run", requestedAt: now },
           provenance: {
             source: "operator_manual_run",

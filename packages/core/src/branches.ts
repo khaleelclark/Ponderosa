@@ -1,7 +1,21 @@
 import type { ConversationDto } from "./dto/conversations.js";
 import type { AgentPortablePackageDto } from "./dto/agents.js";
-import type { TriggerSourceConfig } from "./dto/triggers.js";
+import type { TriggerBudgetPeriod, TriggerSourceConfig } from "./dto/triggers.js";
 /** Branch definitions are desired structure. Runtime records never live in a package. */
+/** Local operational policy; never part of portable definitions or execution snapshots. */
+export interface BranchExecutionBudgetPolicy { limit: number; period: TriggerBudgetPeriod }
+export interface BranchExecutionBudgetDto {
+  branchId: string; revision: number; policy: BranchExecutionBudgetPolicy | null;
+  used: number; allowance: number; periodId: string | null; periodStartedAt: string | null;
+  resetsAt?: string; heldCount: number; observedAt: string;
+}
+export interface BranchExecutionBudgetUpdate {
+  commandKey: string; expectedRevision: number; expectedPeriodId: string | null;
+  policy: BranchExecutionBudgetPolicy | null; acknowledgeNewPeriod?: boolean;
+}
+export interface BranchExecutionBudgetGrant {
+  commandKey: string; expectedRevision: number; expectedPeriodId: string; additional: number;
+}
 export interface BranchResult { failed: boolean; output?: string }
 export interface BranchSealedResultDto {
   id: string; executionId: string; pathId: string; stepExecutionId: string;
@@ -77,6 +91,9 @@ export interface BranchExecutionDto {
   occurrenceKey: string; input: string; inputHash: string; state: BranchExecutionState;
   /** Canonical Engine budget flag; never inferred from Step output text. */
   budgetExhausted?: boolean;
+  admissionSource?: 'manual' | 'automatic' | 'call';
+  admittedAt?: string;
+  budgetWait?: {kind:'execution_budget'; branchId:string};
   waitReason?: string; output?: string; mergedInto?: string; revision: number;
   createdAt: string; updatedAt: string;
 }
@@ -115,7 +132,7 @@ export interface BranchStepEvidenceDto {
 }
 /** Read-only explanations projected from canonical workflow records. */
 export interface BranchWaitDto {
-  kind:'child'|'disabled_branch'|'approval'|'retry'|'join'|'agent'|'capacity'|'cleanup'|'reconciliation'|'operation';
+  kind:'execution_budget'|'child'|'disabled_branch'|'approval'|'retry'|'join'|'agent'|'capacity'|'cleanup'|'reconciliation'|'operation';
   message:string; stepId?:string; requestId?:string; branchId?:string; executionId?:string; availableAt?:string;
 }
 export interface BranchOperationalSummaryDto {

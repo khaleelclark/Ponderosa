@@ -933,6 +933,11 @@ export function useWorkspaceStream(
           invalidate(queryKeys.conversations.targetedNextRun(conversationId));
         }
       }
+      else if (event.type === "branch_execution_budget" || event.type === "branch_checkpoint") {
+        invalidate(['branch-execution-budget',event.branchId]);
+        invalidate(['branch-executions',event.branchId]);
+        if(event.type === "branch_checkpoint")invalidate(['branch-execution',event.executionId]);
+      }
       else if (event.type === "trigger_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.project(event.projectId) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.occurrence(event.triggerId) });

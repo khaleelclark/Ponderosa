@@ -1,3 +1,4 @@
+import { BranchExecutionBudgetAuthority } from "./branch-execution-budget.js";
 import {inspectBranchExecution} from "./branch-inspection.js";
 import {branchTraversalPreflight} from "./branch-budget-preflight.js";
 import {extractBranchMapItems} from "./branch-map-items.js";
@@ -29,6 +30,7 @@ export interface BranchScriptLease {
 }
 /** The same SQLite transaction owns a workflow boundary and its Agent Request. */
 export class BranchStore {
+  private readonly executionBudgets: BranchExecutionBudgetAuthority;
   private readonly capabilityPolicies: CapabilityPolicyStore;
   private advanceCursor = 0;
   private advanceCeiling = 0;
@@ -36,6 +38,7 @@ export class BranchStore {
   private cleanupCursor = 0;
   private cleanupCeiling = 0;
   constructor(readonly sqlite: Database.Database, private readonly coordination: CoordinationV3Store) {
+    this.executionBudgets = new BranchExecutionBudgetAuthority(sqlite);
     this.capabilityPolicies = new CapabilityPolicyStore(sqlite);
     coordination.setBranchTriggerIntake(input => {
       if (this.getBranch(input.branchId)?.triggerId !== input.triggerId) throw new Error("Branch trigger is no longer attached");
@@ -44,7 +47,7 @@ export class BranchStore {
       try { text = branchText(stableJson(envelope)); }
       catch { text = stableJson({ artifactRef: `trigger-occurrence:${input.occurrenceId}`, notice: "Event exceeds inline input limit. Retrieve this explicit occurrence reference for its complete untrusted payload and provenance." }); }
       return this.acceptInput(input.branchId, `trigger:${input.occurrenceId}`, text, input.inputHash,
-        { ...input.provenance, source: "trigger", occurrenceId: input.occurrenceId, contentInjected: false }, input.now).id;
+        { ...input.provenance, source: "trigger", occurrenceId: input.occurrenceId, contentInjected: false }, input.now, input.admissionSource).id;
     });
   }
   private row(sql: string, ...args: unknown[]): Row | undefined { return this.sqlite.prepare(sql).get(...args) as Row | undefined; }
@@ -81,6 +84,10 @@ export class BranchStore {
   }
   /** Durable outbox into the existing append-only workspace audit. Replays carry the same checkpoint ID. */
   publishAudit(append: (event: WorkspaceEvent) => unknown): void {
+    for (const event of this.rows("SELECT * FROM branch_execution_budget_events WHERE audit_published=0 ORDER BY id LIMIT 100")) {
+      append({type:"branch_execution_budget",budgetEventId:event.id,branchId:event.branch_id,kind:event.kind,evidence:JSON.parse(event.evidence_json)});
+      this.run("UPDATE branch_execution_budget_events SET audit_published=1 WHERE id=?",event.id);
+    }
     for (const row of this.rows(`SELECT c.*, e.branch_id, b.chat_id FROM branch_checkpoints c
       JOIN branch_executions e ON e.id = c.execution_id JOIN branches b ON b.id = e.branch_id
       WHERE c.audit_published = 0 ORDER BY c.id LIMIT 100`)) {
@@ -88,6 +95,15 @@ export class BranchStore {
         executionId: row.execution_id, kind: row.kind, evidence: JSON.parse(row.evidence_json) });
       this.run("UPDATE branch_checkpoints SET audit_published = 1 WHERE id = ?", row.id);
     }
+  }
+  executionBudget(branchId:string,now=new Date().toISOString()):import('@ponderosa/core').BranchExecutionBudgetDto {
+    return this.sqlite.transaction(()=>this.executionBudgets.read(branchId,now)).immediate();
+  }
+  updateExecutionBudget(branchId:string,input:import('@ponderosa/core').BranchExecutionBudgetUpdate,now=new Date().toISOString()):import('@ponderosa/core').BranchExecutionBudgetDto {
+    return this.sqlite.transaction(()=>this.executionBudgets.command(branchId,'policy',input,now)).immediate();
+  }
+  grantExecutions(branchId:string,input:import('@ponderosa/core').BranchExecutionBudgetGrant,now=new Date().toISOString()):import('@ponderosa/core').BranchExecutionBudgetDto {
+    return this.sqlite.transaction(()=>this.executionBudgets.command(branchId,'grant',input,now)).immediate();
   }
   create(name: string, idempotencyKey: string): BranchDto {
     branchKey(idempotencyKey); name=branchText(name).trim();
@@ -257,13 +273,13 @@ export class BranchStore {
   accept(branchId: string, occurrenceKey: string, value: string, now = new Date().toISOString()): BranchExecutionDto {
     branchKey(occurrenceKey);
     const input = branchText(value), hash = payloadHash({ input, source: "manual" });
-    return this.acceptInput(branchId, occurrenceKey, input, hash, { source: "manual", operator: "local-operator" }, now);
+    return this.acceptInput(branchId, occurrenceKey, input, hash, { source: "manual", operator: "local-operator" }, now, "manual");
   }
-  private acceptInput(branchId: string, occurrenceKey: string, input: string, hash: string, provenance: Record<string, unknown>, now: string): BranchExecutionDto {
+  private acceptInput(branchId: string, occurrenceKey: string, input: string, hash: string, provenance: Record<string, unknown>, now: string, admissionSource: "manual" | "automatic" | "call"): BranchExecutionDto {
     return this.sqlite.transaction(() => {
-      const prior = this.row("SELECT id, input_hash FROM branch_executions WHERE branch_id = ? AND occurrence_key = ?", branchId, occurrenceKey);
+      const prior = this.row("SELECT id, input_hash, admission_source FROM branch_executions WHERE branch_id = ? AND occurrence_key = ?", branchId, occurrenceKey);
       if (prior) {
-        if (prior.input_hash !== hash) throw new Error("Branch occurrence idempotency conflict");
+        if (prior.input_hash !== hash || prior.admission_source !== admissionSource) throw new Error("Branch occurrence idempotency conflict");
         return this.execution(prior.id)!;
       }
       const branch = this.getBranch(branchId);
@@ -278,8 +294,8 @@ export class BranchStore {
       if(!budget.uncertain&&budget.minimum>configuration.limits.maxTraversals)
         throw new Error(`Traversal preflight: a successful run needs at least ${budget.minimum} visits, above the configured maxTraversals ${configuration.limits.maxTraversals}. Increase the Branch limit before running.`);
       const id = randomUUID();
-      this.run(`INSERT INTO branch_executions(id,branch_id,version_id,binding_revision_id,occurrence_key,input_text,input_hash,provenance_json,state,created_at,updated_at)
-        VALUES(?,?,?,?,?,?,?,?, 'queued',?,?)`, id, branch.id, branch.versionId, branch.bindingRevisionId, occurrenceKey, input, hash, stableJson(provenance), now, now);
+      this.run(`INSERT INTO branch_executions(id,branch_id,version_id,binding_revision_id,occurrence_key,input_text,input_hash,provenance_json,admission_source,state,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?, 'queued',?,?)`, id, branch.id, branch.versionId, branch.bindingRevisionId, occurrenceKey, input, hash, stableJson(provenance), admissionSource, now, now);
       this.validateTextReferences(definition,configuration);
       for(const directory of Object.values(this.localConfiguration(branchId)!.directories))interpolateBranchText(directory,definition,configuration);
       this.run("UPDATE branch_executions SET configuration_json=?,depth_ceiling=? WHERE id=?",stableJson(configuration),configuration.limits.maxCallDepth,id);
@@ -430,7 +446,7 @@ export class BranchStore {
   }
   execution(id: string): BranchExecutionDto | undefined {
     const r = this.row("SELECT * FROM branch_executions WHERE id = ?", id);
-    return r && { id: r.id, branchId: r.branch_id, versionId: r.version_id, bindingRevisionId: r.binding_revision_id, configuration: JSON.parse(r.configuration_json), callDepth: r.call_depth, ...(r.parent_execution_id?{parentExecutionId:r.parent_execution_id,parentAttemptId:r.parent_attempt_id}:{}), occurrenceKey: r.occurrence_key, input: r.input_text, inputHash: r.input_hash, state: r.state, budgetExhausted:Boolean(r.budget_exhausted), revision: r.revision, createdAt: r.created_at, updatedAt: r.updated_at, ...(r.wait_reason ? { waitReason: r.wait_reason } : {}), ...(r.output_text !== null ? { output: r.output_text } : {}), ...(r.merged_into ? { mergedInto: r.merged_into } : {}) };
+    return r && { id: r.id, branchId: r.branch_id, versionId: r.version_id, bindingRevisionId: r.binding_revision_id, configuration: JSON.parse(r.configuration_json), callDepth: r.call_depth, ...(r.parent_execution_id?{parentExecutionId:r.parent_execution_id,parentAttemptId:r.parent_attempt_id}:{}), occurrenceKey: r.occurrence_key, input: r.input_text, inputHash: r.input_hash, state: r.state, admissionSource:r.admission_source, ...(r.admitted_at?{admittedAt:r.admitted_at}:{}), ...(r.state==="queued"&&r.budget_wait&&!r.cancel_requested?{budgetWait:{kind:"execution_budget" as const,branchId:r.branch_id}}:{}), budgetExhausted:Boolean(r.budget_exhausted), revision: r.revision, createdAt: r.created_at, updatedAt: r.updated_at, ...(r.wait_reason ? { waitReason: r.wait_reason } : {}), ...(r.output_text !== null ? { output: r.output_text } : {}), ...(r.merged_into ? { mergedInto: r.merged_into } : {}) };
   }
   private scriptEvidence(attemptId:string):import('@ponderosa/core').BranchAttemptDto['scriptEvidence'] {
     const evidence=this.row("SELECT evidence_json FROM branch_checkpoints WHERE kind='script_process_exit' AND transition_key GLOB ? ORDER BY id DESC LIMIT 1",`process-exit:${attemptId}:*`);
@@ -611,6 +627,16 @@ export class BranchStore {
         try { if(branch.chatId)this.chat(branch.chatId); } catch { this.cancel(execution.id, now); return; }
         if (execution.state === "queued") {
           if(!this.hasRunnableCapacity(execution.id)) return;
+          if(!this.executionBudgets.admit(execution.id,now)) {
+            if(!execution.budgetWait){
+              this.run("UPDATE branch_executions SET budget_wait=1 WHERE id=?",execution.id);
+              this.state(execution.id,"queued",now,"Waiting for this Branch's automatic execution budget");
+              this.checkpoint(execution.id,`budget-held:${execution.revision+1}`,"execution_budget_held",{branchId:execution.branchId},now);
+            }
+            return;
+          }
+          if(execution.budgetWait)this.checkpoint(execution.id,`budget-released:${execution.revision+1}`,"execution_budget_released",{},now);
+          this.checkpoint(execution.id,"workflow-started","workflow_started",{admission:JSON.parse(this.row("SELECT admission_json FROM branch_executions WHERE id=?",execution.id)!.admission_json)},now);
           this.state(execution.id, "running", now);
           this.run("INSERT INTO branch_paths(id,execution_id,state,node_id,input_text) VALUES(?,?,'active',?,?)", randomUUID(), execution.id, definition.entry, execution.input);
         }
@@ -694,7 +720,7 @@ export class BranchStore {
         }
         this.drivePaths(execution.id, now);
         this.aggregate(execution.id, now);
-      })();
+      }).immediate();
     }
   }
   private finish(attemptId: string, result: BranchResult, now: string, outcome = result.failed ? "failure" : "success"): void {
@@ -1258,6 +1284,10 @@ export class BranchStore {
       this.run('DELETE FROM branch_dependencies WHERE branch_id=? OR target_branch_id=?',id,id);
       this.run('DELETE FROM branch_retirement_errors WHERE resource_id IN (SELECT local_id FROM branch_installation_resources WHERE branch_id=?)',id);
       this.run('DELETE FROM branch_installation_resources WHERE branch_id=?',id);
+      if(this.row("SELECT 1 FROM branch_execution_budget_events WHERE branch_id=? AND audit_published=0",id))throw new Error("Branch budget audit publication is still pending");
+      this.run("DELETE FROM branch_execution_budget_events WHERE branch_id=?",id);
+      this.run("DELETE FROM branch_execution_budget_commands WHERE branch_id=?",id);
+      this.run("DELETE FROM branch_execution_budgets WHERE branch_id=?",id);
       this.run("DELETE FROM branches WHERE id = ?", id);
     })();
   }
@@ -1397,7 +1427,7 @@ export class BranchStore {
           childInput=`branch-result-bundle:${execution.id}:${id}`;
         }
       }
-      try{accepted=this.acceptInput(branch.id,`call:${attempt.id}`,childInput,payloadHash({parentAttempt:attempt.id,input:attempt.input_text}),{source:'branch_call',parentExecutionId:execution.id,parentAttemptId:attempt.id},now);}catch(error){
+      try{accepted=this.acceptInput(branch.id,`call:${attempt.id}`,childInput,payloadHash({parentAttempt:attempt.id,input:attempt.input_text}),{source:'branch_call',parentExecutionId:execution.id,parentAttemptId:attempt.id},now,'call');}catch(error){
         if(forwardedBundle)this.run('DELETE FROM branch_result_bundles WHERE id=?',forwardedBundle.id);
         this.finish(attempt.id,{failed:true,output:`Child Branch could not start: ${(error as Error).message}`},now);return;
       }

@@ -10,7 +10,7 @@ export function inspectBranchExecution(db:Database.Database,e:BranchExecutionDto
  if(['queued','running','waiting'].includes(e.state)){
   if(row('SELECT cancel_requested FROM branch_executions WHERE id=?',e.id)?.cancel_requested)waits.push({kind:'cleanup',message:'Canceling this execution and its children; waiting for owned work and processes to stop.'});
   else {
-   if(e.state==='queued')waits.push({kind:'capacity',message:'Accepted. Waiting for workflow capacity to start.'});
+   if(e.state==='queued')waits.push(e.budgetWait?{kind:'execution_budget',branchId:e.branchId,executionId:e.id,message:'Accepted and saved. Waiting for this Branch’s automatic execution budget; no workflow work has started.'}:{kind:'capacity',message:'Accepted. Waiting for workflow capacity to start.'});
    const attempts=rows(`SELECT a.*,s.step_id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
     WHERE s.execution_id=? AND a.state IN ('prepared','leased','running','waiting','outcome_unknown') ORDER BY a.rowid LIMIT 100`,e.id);
    for(const a of attempts){
@@ -21,8 +21,8 @@ export function inspectBranchExecution(db:Database.Database,e:BranchExecutionDto
     if(row("SELECT id FROM branch_gates WHERE attempt_id=? AND state='waiting'",a.id)){add({kind:'approval',message:`“${name(step.id)}” is waiting for your decision.`});continue;}
     if(step.kind==='branch_call'&&a.purpose==='step'){
      const target=b.branches?.[step.branchRef],branch=target?row('SELECT id,name,enabled FROM branches WHERE id=?',target):undefined;
-     const child=row('SELECT id,state FROM branch_executions WHERE parent_attempt_id=?',a.id);
-     if(child)add({kind:'child',message:`Waiting for ${branch?.name??'called Branch'} · ${child.id.slice(0,8)} (${child.state}).`,branchId:target,executionId:child.id});
+     const child=row('SELECT id,state,budget_wait FROM branch_executions WHERE parent_attempt_id=?',a.id);
+     if(child)add({kind:child.state==='queued'&&child.budget_wait?'execution_budget':'child',message:`Waiting for ${branch?.name??'called Branch'} · ${child.id.slice(0,8)} (${child.state==='queued'&&child.budget_wait?'waiting for its automatic execution budget':child.state}).`,branchId:target,executionId:child.id});
      else if(branch&&!branch.enabled)add({kind:'disabled_branch',message:`Waiting because Branch “${branch.name}” is disabled. This call resumes when it is enabled.`,branchId:branch.id});
      else add({kind:'capacity',message:`“${name(step.id)}” is waiting to start ${branch?.name??'the called Branch'}.`,branchId:target});
     }else if(a.request_id){

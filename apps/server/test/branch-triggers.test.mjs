@@ -1,9 +1,10 @@
+import {registerTriggerRoutes} from '../dist/routes/triggers.js';
 import {BranchInstallationService} from '../dist/branch-installation-service.js';
 import assert from 'node:assert/strict';
 import {mkdirSync,mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createHmac} from 'node:crypto';
+import {createHmac,createHash} from 'node:crypto';
 import test from 'node:test';
 import Fastify from 'fastify';
 import {AgentStore,CoordinationV3Store,BranchStore} from '@ponderosa/agents';
@@ -14,6 +15,7 @@ async function fixture(t,kind='webhook',sourceConfig={replayWindowSeconds:300}){
  const owner=branches.create('Triggers','owner');
  const project=store.createProject({label:'Triggers',hostPath:dir,defaultEngine:'codex',chatOwned:true,branchId:owner.id}),chat=store.getConversation(project.lastConversationId);
  const sources=new TriggerSourceService({store,coordination,dataDir:dir,notify(){}}),app=Fastify();registerBranchRoutes(app,{store,branches,installations:new BranchInstallationService(store,branches,async()=>{},async()=>{}),sources,notify(){}});
+ registerTriggerRoutes(app,{store,coordination,sources,deletingConversationIds:new Set(),webhookRawBodies:new WeakMap(),rejectQuarantinedMutation:()=>false,appendWorkspace(){},reconcileOperationalNotifications(){},resolveOperationalNotification(){},notifyScheduler(){}});
  t.after(async()=>{await sources.stop();await app.close();store.close();rmSync(dir,{recursive:true,force:true})});
  const input={chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:'deploy',definition:{schema:'ponderosa.branch.v1',name:'Trigger graph',trigger:{kind,configRef:'source'},entry:'gate',steps:[{id:'gate',kind:'human_gate',prompt:'Review',editable:false}],controls:[],edges:[],policy:{maxConcurrentExecutions:2,failure:{action:'stop'}}},bindings:{agents:{},directories:{workspace:dir},triggers:{source:{sourceConfig,enabled:true}}}};
  const deploy=async body=>{const response=await app.inject({method:'POST',url:'/api/branches/deploy',payload:body});assert.equal(response.statusCode,200,response.body);return response.json()};
@@ -175,4 +177,50 @@ test('Branch trigger pause and resume validate the Branch, not a nonexistent Dev
 test('deployment validation identifies the Branch, Script and missing directory without leaking filesystem errors',async t=>{
  const f=await fixture(t);const input={...f.input,expectedVersionId:f.branch.versionId,definition:{...f.input.definition,entry:'format',steps:[{id:'format',label:'Format Report',kind:'script',runtime:'node',source:'',cwdRef:'work',timeoutMs:1000}]},bindings:{agents:{},directories:{work:''}}};
  const response=await f.app.inject({method:'POST',url:'/api/branches/preview',payload:input});assert.equal(response.statusCode,400);assert.match(response.json().error,/Branch.*Trigger graph.*Format Report.*Working directory is required/);
+});
+
+test('budget API revisions, idempotent grants, editability and trusted trigger Run once',async t=>{
+ const f=await fixture(t,'schedule',{scheduleKind:'once',at:new Date(Date.now()+60000).toISOString()});
+ const url=`/api/branches/${f.branch.id}/execution-budget`;
+ const unlimited=(await f.app.inject(url)).json();assert.equal(unlimited.policy,null);
+ const input={commandKey:'budget-set',expectedRevision:0,expectedPeriodId:null,policy:{limit:1,period:'lifetime'},acknowledgeNewPeriod:true};
+ const set=await f.app.inject({method:'PUT',url,payload:input});assert.equal(set.statusCode,200,set.body);
+ const budget=set.json();
+ const at=new Date().toISOString();
+ // Untrusted metadata and a manual-looking key do not exempt ordinary intake.
+ const occurrence=f.coordination.recordTriggerOccurrence({triggerId:f.branch.triggerId,occurrenceKey:'manual:forged',payload:{source:'operator_manual_run'},provenance:{source:'operator_manual_run',automaticBudgetConsumed:false},now:at});
+ const {stableJson}=await import('@ponderosa/agents');const payloadHash=value=>createHash('sha256').update(stableJson(value)).digest('hex');assert.equal(f.coordination.getTriggerOccurrence(occurrence.occurrenceId).inputHash,payloadHash({triggerId:f.branch.triggerId,occurrenceKey:'manual:forged',payload:{source:'operator_manual_run'},payloadMediaType:'application/json'}));
+ assert.equal(f.coordination.recordTriggerOccurrence({triggerId:f.branch.triggerId,occurrenceKey:'manual:forged',payload:{source:'operator_manual_run'},provenance:{source:'webhook'},now:at}).replayed,true);
+ assert.throws(()=>f.coordination.recordTriggerOccurrence({triggerId:f.branch.triggerId,occurrenceKey:'manual:forged',payload:{source:'operator_manual_run'},provenance:{source:'manual'},branchOperatorManual:true,now:at}),/conflict/);
+ const first=f.coordination.getTriggerOccurrence(occurrence.occurrenceId).branchExecutionId;f.branches.advance(at);assert.equal(f.branches.execution(first).admissionSource,'automatic');assert.equal(f.branches.executionBudget(f.branch.id).used,1);
+ const run=await f.app.inject({method:'POST',url:`/api/triggers/${f.branch.triggerId}/run`,payload:{}});assert.equal(run.statusCode,200,run.body);
+ const manual=f.coordination.getTriggerOccurrence(run.json().occurrenceId).branchExecutionId;f.branches.advance();assert.equal(f.branches.execution(manual).admissionSource,'manual');assert.ok(f.branches.execution(manual).admittedAt);assert.equal(f.branches.executionBudget(f.branch.id).used,1);
+ const heldOccurrence=f.coordination.recordTriggerOccurrence({triggerId:f.branch.triggerId,occurrenceKey:'held',payload:{},provenance:{source:'test'}});const heldId=f.coordination.getTriggerOccurrence(heldOccurrence.occurrenceId).branchExecutionId;f.branches.advance();
+ const held=(await f.app.inject(url)).json();assert.equal(held.heldCount,1);
+ const grantInput={commandKey:'grant',expectedRevision:held.revision,expectedPeriodId:held.periodId,additional:1};
+ const granted=await f.app.inject({method:'POST',url:url+'/allow',payload:grantInput});assert.equal(granted.statusCode,200,granted.body);
+ const replay=await f.app.inject({method:'POST',url:url+'/allow',payload:grantInput});assert.deepEqual(replay.json(),granted.json());
+ assert.equal((await f.app.inject({method:'POST',url:url+'/allow',payload:{...grantInput,additional:2}})).statusCode,409);
+ assert.equal((await f.app.inject({method:'POST',url:url+'/allow',payload:{...grantInput,commandKey:'stale'}})).statusCode,409);
+ assert.equal((await f.app.inject({method:'PUT',url,payload:{...input,commandKey:'invalid',policy:{limit:0,period:'day'},expectedRevision:granted.json().revision,expectedPeriodId:budget.periodId}})).statusCode,400);
+ assert.equal((await f.app.inject({method:'PUT',url,payload:{...input,source:'manual'}})).statusCode,400);
+ assert.equal((await f.app.inject('/api/branches/missing/execution-budget')).statusCode,404);
+ f.branches.advance();assert.ok(f.branches.execution(heldId).admittedAt);assert.equal(f.branches.executionBudget(f.branch.id).used,2);
+ const events=[];f.branches.publishAudit(e=>events.push(e));const {workspaceEventInProduct}=await import('../dist/routes/streams.js');
+ for(const event of events.filter(e=>e.type==='branch_execution_budget')){assert.equal(workspaceEventInProduct(f.store,{},event,'branches'),true);assert.equal(workspaceEventInProduct(f.store,{},event,'dev'),false);assert.equal(workspaceEventInProduct(f.store,{}, {...event,branchId:'forged'},'branches'),false)}
+});
+for(const kind of ['schedule','webhook','filesystem'])test(`${kind} intake shares automatic budget and held work keeps its exact occurrence`,async t=>{
+ const config=kind==='schedule'?{scheduleKind:'once',at:new Date(Date.now()+60000).toISOString()}:kind==='filesystem'?{include:['**/*.txt'],exclude:[],quietMs:100,maxWindowMs:1000}:{replayWindowSeconds:300};
+ const f=await fixture(t,kind,config),b=f.branches.executionBudget(f.branch.id);
+ f.branches.updateExecutionBudget(f.branch.id,{commandKey:'source-budget',expectedRevision:b.revision,expectedPeriodId:b.periodId,policy:{limit:1,period:'lifetime'},acknowledgeNewPeriod:true});
+ let last;
+ for(let i=0;i<2;i++){
+ if(kind==='schedule'){const due=new Date(Date.now()-1000).toISOString();f.coordination.updateTriggerDefinition(f.branch.triggerId,{nextFireAt:due,enabled:true});await f.sources.processDueSchedules()}
+ else if(kind==='filesystem'){f.coordination.recordFilesystemTriggerEvent({triggerId:f.branch.triggerId,path:`${i}.txt`,eventType:'change',maxCapturedPaths:10});f.coordination.flushFilesystemTriggerBurst(f.branch.triggerId)}
+ else{const rawBody=Buffer.from(JSON.stringify({manual:true,automaticBudgetConsumed:false})),timestamp=String(Math.floor(Date.now()/1000)),eventId=`budget-${i}`,signature='v1='+createHmac('sha256',f.branch.webhookSecret).update(`${timestamp}.${eventId}.`).update(rawBody).digest('hex');f.sources.verifyAndRecordWebhook({triggerId:f.branch.triggerId,eventId,timestamp,signature,rawBody,payload:JSON.parse(rawBody)})}
+ f.branches.advance();last=f.branches.listExecutions(f.branch.id)[0];
+ }
+ assert.equal(f.branches.executionBudget(f.branch.id).used,1);assert.equal(last.admissionSource,'automatic');assert.ok(last.budgetWait);assert.equal(last.state,'queued');
+ const occurrence=f.coordination.listTriggerOccurrences(f.branch.triggerId).find(o=>o.branchExecutionId===last.id);assert.ok(occurrence);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_paths WHERE execution_id=?').get(last.id).n,0);
 });

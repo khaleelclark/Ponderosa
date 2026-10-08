@@ -537,3 +537,31 @@ test('Branch package preview uses the standalone mutation-free nested Agent pars
  ];
  for(const item of cases){const candidate=structuredClone(base);item.mutate(candidate);const response=await f.app.inject({method:'POST',url:'/api/branches/install-preview',payload:{package:candidate,bindings:f.bindings,branchId:branch.id}});assert.equal(response.statusCode,400,`${item.name}: ${response.body}`);assert.match(response.body,item.error);assert.deepEqual({plans:f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_installation_plans').get().n,resources:f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_installation_resources').get().n},before,item.name);}
 });
+
+test('budget-held snapshot protects retired Chats and package updates preserve local budget',async t=>{
+ const f=await fixture(t),p=pkg(),installed=await f.installations.confirm(f.installations.preview(p,f.bindings).id),id=installed.branchId;
+ const initial=f.branches.executionBudget(id);const budget=f.branches.updateExecutionBudget(id,{commandKey:'policy',expectedRevision:initial.revision,expectedPeriodId:initial.periodId,policy:{limit:1,period:'lifetime'},acknowledgeNewPeriod:true});
+ const parent=f.branches.create('Caller','budget-caller');f.branches.deploy({chatId:'',branchId:parent.id,expectedVersionId:'',idempotencyKey:'caller-definition',definition:{...definition,name:'Caller',entry:'call',steps:[{id:'call',kind:'branch_call',branchRef:'child'}]},bindings:{agents:{},directories:{},branches:{child:id}}});
+ const first=f.branches.accept(parent.id,'first','input');f.branches.advance();f.branches.advance();
+ const next=f.branches.accept(parent.id,'next','input');f.branches.advance();f.branches.advance();const held=f.branches.listExecutions(id).find(e=>e.parentExecutionId===next.id);assert.ok(held.budgetWait);
+ const chatId=f.store.getAgent(f.branches.localConfiguration(id).agents.lead).conversationId;
+ const removed={...p,chats:[],agentBindings:{}};const updated=await f.installations.confirm(f.installations.preview(removed,f.bindings,id).id);assert.equal(updated.state,'completed',updated.error);
+ assert.ok(f.store.getConversation(chatId));assert.equal(f.branches.executionBudget(id).used,1);assert.equal(f.branches.executionBudget(id).periodId,budget.periodId);assert.equal(f.branches.executionBudget(id).policy.limit,1);
+ const portable=await f.installations.export(id,'template');assert.equal(portable.executionBudget,undefined);
+ const current=f.branches.executionBudget(id);f.branches.grantExecutions(id,{commandKey:'release',expectedRevision:current.revision,expectedPeriodId:current.periodId,additional:1});f.branches.advance();assert.equal(f.branches.execution(held.id).versionId,held.versionId);
+ f.branches.cancel(first.id);f.branches.cancel(next.id);await f.installations.tick();assert.equal(f.store.getConversation(chatId),undefined);
+});
+
+test('budget routes retain product ownership and installation fences, including read-only command replay',async t=>{
+ const f=await fixture(t),installed=await f.installations.confirm(f.installations.preview(pkg(),f.bindings).id),id=installed.branchId,url=`/api/branches/${id}/execution-budget`;
+ const input={commandKey:'owned-policy',expectedRevision:0,expectedPeriodId:null,policy:{limit:2,period:'lifetime'},acknowledgeNewPeriod:true};
+ const result=await f.app.inject({method:'PUT',url,payload:input});assert.equal(result.statusCode,200,result.body);
+ assert.equal((await f.app.inject(`/api/branches/engine/branches/${id}/execution-budget`)).statusCode,200);
+ const current=result.json(),grant={commandKey:'owned-grant',expectedRevision:current.revision,expectedPeriodId:current.periodId,additional:1};
+ const granted=await f.app.inject({method:'POST',url:url+'/allow',payload:grant});assert.equal(granted.statusCode,200,granted.body);
+ const plan=f.installations.preview({...pkg(),definition:{...definition,name:'Updating'}},f.bindings,id);
+ f.store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying' WHERE id=?").run(plan.id);
+ assert.equal((await f.app.inject({method:'POST',url:url+'/allow',payload:{...grant,commandKey:'fenced-new',expectedRevision:granted.json().revision}})).statusCode,409);
+ assert.deepEqual((await f.app.inject({method:'POST',url:url+'/allow',payload:grant})).json(),granted.json());
+ assert.equal((await f.app.inject('/api/branches/engine/branches/foreign/execution-budget')).statusCode,404);
+});

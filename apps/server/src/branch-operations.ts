@@ -143,7 +143,7 @@ export async function branchOperationalSummary(
   else if (classifiedWaits.some(wait => wait.state === "provider_retry" || wait.state === "retry_pending") || scheduledRetries) { state = "retrying"; label = "Retry scheduled"; }
   else if (counts.running) { state = "running"; label = "Running normally"; }
   else if (waitingAttempts.length) { state = "waiting_agent"; label = "Waiting for Agent"; }
-  else if (execution.state === "queued") { state = "queued"; label = "Queued"; }
+  else if (execution.state === "queued") { state = "queued"; label = execution.budgetWait ? "Waiting for automatic execution budget" : "Queued"; }
   else { state = "blocked"; label = "Waiting for other work"; }
   const agentWaits = classifiedWaits.slice(0, 100);
   return { executionId: execution.id, state, label, observedAt: now, counts, agentWaits, additionalAgentWaits: Math.max(0, classifiedWaits.length - agentWaits.length) };

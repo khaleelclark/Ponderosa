@@ -527,6 +527,8 @@ export interface UpdateTriggerDefinitionInput {
 }
 
 export interface RecordTriggerOccurrenceInput {
+  /** Trusted server intake flag, never copied from payload or provenance. Branch-only. */
+  branchOperatorManual?: boolean;
   triggerId: string;
   occurrenceKey: string;
   payload: unknown;
@@ -573,6 +575,7 @@ export interface CoordinationV3StoreOptions {
 }
 
 export interface BranchTriggerIntake {
+  admissionSource: "manual" | "automatic";
   triggerId: string;
   branchId: string; occurrenceId: string; inputHash: string; payload: unknown;
   provenance: Record<string, unknown>; payloadMediaType: string; now: string;

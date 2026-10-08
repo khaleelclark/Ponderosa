@@ -97,6 +97,7 @@ export class CoordinationV3TriggerOccurrenceAuthority {
         fullAccess: true as const,
       };
       const hash = payloadHash({
+        ...(definition.branch_id && input.branchOperatorManual === true ? { branchAdmissionSource: "manual" } : {}),
         triggerId: definition.id,
         occurrenceKey: input.occurrenceKey,
         payload: input.payload,
@@ -189,7 +190,7 @@ export class CoordinationV3TriggerOccurrenceAuthority {
         null,
       );
       if (definition.branch_id) {
-        const executionId = this.acceptBranch({ triggerId: definition.id, branchId: definition.branch_id, occurrenceId, inputHash: hash,
+        const executionId = this.acceptBranch({ admissionSource: input.branchOperatorManual === true ? "manual" : "automatic", triggerId: definition.id, branchId: definition.branch_id, occurrenceId, inputHash: hash,
           payload: input.payload, provenance: input.provenance, payloadMediaType: input.payloadMediaType ?? "application/json", now });
         this.sqlite.prepare("UPDATE trigger_occurrences SET branch_id = ?, branch_execution_id = ?, state = 'activated' WHERE id = ?").run(definition.branch_id, executionId, occurrenceId);
       } else this.processTriggerOccurrence(occurrenceId, now);

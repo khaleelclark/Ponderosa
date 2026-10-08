@@ -117,6 +117,30 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
     const rows=store.sqlite.prepare("SELECT id FROM conversations WHERE branch_id=? AND branch_execution_id IS ? AND archived=0 AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r WHERE r.local_id=conversations.id AND r.state IN ('retiring','staging','deleted')) ORDER BY created_at,id").all(request.params.id,request.query.executionId??null) as Array<{id:string}>;
     return rows.flatMap(({id})=>{const chat=store.getConversation(id),context=store.getChatContext(id);return chat&&context?[{...chat,workingDirectory:context.hostPath,defaultEngine:context.defaultEngine}]:[]});
   });
+  app.get<{Params:{id:string}}>('/api/branches/:id/execution-budget',async(request,reply)=>{
+    if(!branches.getBranch(request.params.id))return reply.code(404).send({error:'Branch not found'});
+    try{return branches.executionBudget(request.params.id)}catch(error){return reply.code(409).send({error:(error as Error).message})}
+  });
+  const assertBudgetEditable=(id:string,commandKey:string)=>{
+    // A committed receipt is a read-only replay, even while installation work fences new commands.
+    if(!store.sqlite.prepare('SELECT 1 FROM branch_execution_budget_commands WHERE branch_id=? AND command_key=?').get(id,commandKey))assertEditable(id);
+  };
+  const budgetError=(error:unknown)=>({error:error instanceof Error?error.message:'Invalid execution budget'});
+  const validateBudgetCommand=(body:unknown,allowed:string[])=>{
+    if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>!allowed.includes(key)))throw new Error('Invalid execution budget command');
+  };
+  app.put<{Params:{id:string};Body:import('@ponderosa/core').BranchExecutionBudgetUpdate}>('/api/branches/:id/execution-budget',async(request,reply)=>{
+    if(!branches.getBranch(request.params.id))return reply.code(404).send({error:'Branch not found'});
+    try{validateBudgetCommand(request.body,['commandKey','expectedRevision','expectedPeriodId','policy','acknowledgeNewPeriod']);assertBudgetEditable(request.params.id,request.body.commandKey);
+      const result=branches.updateExecutionBudget(request.params.id,request.body);notify();return result;
+    }catch(error){const body=budgetError(error);return reply.code(/conflict|applying|deleting/.test(body.error)?409:400).send(body)}
+  });
+  app.post<{Params:{id:string};Body:import('@ponderosa/core').BranchExecutionBudgetGrant}>('/api/branches/:id/execution-budget/allow',async(request,reply)=>{
+    if(!branches.getBranch(request.params.id))return reply.code(404).send({error:'Branch not found'});
+    try{validateBudgetCommand(request.body,['commandKey','expectedRevision','expectedPeriodId','additional']);assertBudgetEditable(request.params.id,request.body.commandKey);
+      const result=branches.grantExecutions(request.params.id,request.body);notify();return result;
+    }catch(error){const body=budgetError(error);return reply.code(/conflict|applying|deleting/.test(body.error)?409:400).send(body)}
+  });
   app.get<{Params:{id:string}}>('/api/branches/:id/settings',async(request,reply)=>{
     if(!branches.getBranch(request.params.id))return reply.code(404).send({error:'Branch not found'});
     return publicSettings(request.params.id);

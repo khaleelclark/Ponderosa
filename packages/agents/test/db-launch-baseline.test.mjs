@@ -78,6 +78,7 @@ test("creates the canonical launch baseline for a fresh database", () => {
         "0028_deletion_product_scope.sql",
         "0029_branch_map_results.sql",
         "0030_historical_artifact_product_scope.sql",
+        "0031_branch_execution_budgets.sql",
       ],
     );
     assert.ok(client.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='branch_execution_branch_state'").get());

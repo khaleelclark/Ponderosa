@@ -22,6 +22,7 @@ test('abrupt runtime death preserves a mixed fork without replaying completed ef
  const childBranch=branches.create('Child gate','mixed-child');
  const childDefinition={schema:'ponderosa.branch.v1',name:'Child gate',trigger:{kind:'manual'},entry:'child-gate',steps:[{id:'child-gate',kind:'human_gate',prompt:'Child decision',editable:false}],controls:[],edges:[],policy:{maxConcurrentExecutions:2,failure:{action:'stop'}}};
  branches.deploy({chatId:'',branchId:childBranch.id,expectedVersionId:childBranch.versionId,idempotencyKey:'child-deploy',definition:childDefinition,bindings:{agents:{},directories:{}}});
+ const initialBudget=branches.executionBudget(childBranch.id);branches.updateExecutionBudget(childBranch.id,{commandKey:'mixed-budget',expectedRevision:initialBudget.revision,expectedPeriodId:initialBudget.periodId,policy:{limit:1,period:'lifetime'},acknowledgeNewPeriod:true});
  const parent=branches.create('Mixed restart','mixed-parent');
  const steps=[script('done',`console.log('completed')`),script('effect',`import {appendFileSync} from 'node:fs';appendFileSync('effects','once\\n');console.log('effect completed')`),script('retry',`throw new Error('retry me')`),script('active',`import {writeFileSync} from 'node:fs';writeFileSync('active-started','yes');setInterval(()=>{},1000);`),{id:'gate',kind:'human_gate',prompt:'Parent decision',editable:false},{id:'call',kind:'branch_call',branchRef:'child'}];
  steps[2].failure={action:'retry',maxAttempts:2,delayMs:120_000};
@@ -38,6 +39,7 @@ test('abrupt runtime death preserves a mixed fork without replaying completed ef
  assert.equal(branches.detail(execution.id).gates.filter(g=>g.state==='waiting').length,1);
  assert.equal(store.sqlite.prepare("SELECT COUNT(*) n FROM branch_join_arrivals WHERE outcome='completed'").get().n,2);
  const nested=store.sqlite.prepare('SELECT id,state FROM branch_executions WHERE parent_execution_id=?').get(execution.id);
+ assert.equal(branches.executionBudget(childBranch.id).used,1);
  assert.ok(nested);assert.equal(branches.detail(nested.id).gates.filter(g=>g.state==='waiting').length,1);
  const due=store.sqlite.prepare("SELECT available_at FROM branch_attempts WHERE number=2 AND state='prepared'").get().available_at;
  const workspace=new WorkspaceStore(dir);branches.publishAudit(event=>workspace.append(event));
@@ -53,6 +55,7 @@ test('abrupt runtime death preserves a mixed fork without replaying completed ef
  assert.equal(branches.scriptRecoveries('restart').length,1);
  await worker.tick(true);
  assert.equal(branches.scriptRecoveries('restart').length,0);
+ assert.equal(branches.executionBudget(childBranch.id).used,1);
  const recovered=branches.detail(execution.id);
  assert.equal(recovered.execution.state,'waiting');
  assert.equal(recovered.steps.find(step=>step.stepId==='done').state,'completed');

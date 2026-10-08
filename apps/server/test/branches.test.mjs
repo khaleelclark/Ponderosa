@@ -290,7 +290,10 @@ test('adapter exception keeps one Branch Request through restart while unrelated
  const f=await fixture(t,`process.stdout.write('independent')`);f.branches.cancel(f.execution.id);
  const agent=f.store.createAgent(f.project.id,{title:'Persistent provider worker',engine:'codex',conversationId:f.chat.id});
  const branch=f.branches.deploy({chatId:f.chat.id,idempotencyKey:'provider-exception',definition:{schema:'ponderosa.branch.v1',name:'Provider exception',trigger:{kind:'manual'},entry:'work',controls:[],steps:[{id:'work',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Return one result'}],edges:[],policy:{maxConcurrentExecutions:2,failure:{action:'stop'}}},bindings:{agents:{worker:agent.id},directories:{}}});
- const execution=f.branches.accept(branch.id,'provider-exception-run','source');await f.worker.tick(true);
+ const initialBudget=f.branches.executionBudget(branch.id);f.branches.updateExecutionBudget(branch.id,{commandKey:'provider-budget',expectedRevision:initialBudget.revision,expectedPeriodId:initialBudget.periodId,policy:{limit:1,period:'lifetime'},acknowledgeNewPeriod:true});
+ const caller=f.branches.create('Provider caller','provider-caller');f.branches.deploy({chatId:'',branchId:caller.id,expectedVersionId:'',idempotencyKey:'provider-caller-definition',definition:{schema:'ponderosa.branch.v1',name:'Provider caller',trigger:{kind:'manual'},entry:'call',controls:[],steps:[{id:'call',kind:'branch_call',branchRef:'child'}],edges:[],policy:{maxConcurrentExecutions:2,failure:{action:'stop'}}},bindings:{agents:{},directories:{},branches:{child:branch.id}}});
+ const root=f.branches.accept(caller.id,'provider-exception-run','source');await f.worker.tick(true);await f.worker.tick(true);
+ const execution=f.branches.listExecutions(branch.id).find(e=>e.parentExecutionId===root.id);assert.ok(execution);assert.equal(f.branches.executionBudget(branch.id).used,1);
  const request=f.branches.detail(execution.id).attempts[0].requestId;assert.ok(request);
  const failing=new CoordinationV3Scheduler(f.coordination,async()=>{throw new Error('simulated adapter exception')},{workerId:'failure-matrix',maxConcurrentRuns:1});
  t.after(()=>failing.stop());
@@ -310,6 +313,7 @@ test('adapter exception keeps one Branch Request through restart while unrelated
  await delay(600);await recovering.drainOnce();
  f.coordination.updateRequest({requestId:request,updateId:'recovered-answer',kind:'completed',actor:{kind:'agent',id:agent.id},payload:{text:'Recovered once'}});
  for(let i=0;i<80&&f.branches.execution(execution.id).state!=='completed';i++){await f.worker.tick(true);await delay(20)}
+ assert.equal(f.branches.executionBudget(branch.id).used,1);
  assert.equal(f.branches.execution(execution.id).output,'Recovered once');
  assert.equal(f.branches.detail(execution.id).attempts.length,1);
 });

@@ -58,6 +58,8 @@ export function workspaceEventInProduct(
   const agentsInProduct = (ids: string[]): boolean =>
     ids.length > 0 && ids.every(id => resourceInProduct(store, "agent", id, product));
   switch (event.type) {
+    case "branch_execution_budget":
+      return product === "branches" && Boolean(store.sqlite.prepare("SELECT 1 FROM branch_execution_budget_events WHERE id=? AND branch_id=?").get(event.budgetEventId,event.branchId));
     case "branch_checkpoint":
       // Legacy Branches do not have a Chat. Resolve the checkpoint's canonical
       // execution and owner instead of trusting the event's optional Chat ID.
