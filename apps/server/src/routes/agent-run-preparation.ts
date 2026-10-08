@@ -454,18 +454,26 @@ export async function prepareAgentRun(
       const frozenSystemHash = frozenInput?.exactSystemPrompt
         ? createHash("sha256").update(frozenInput.exactSystemPrompt).digest("hex") : undefined;
       const compatible = [
+        ...(frozenInput?.exactSystemPrompt === systemPrompt ? [{ tools: availableRuntimeTools, communicationPrompt }] : []),
         ...(legacyPrompt ? [{ tools: availableRuntimeTools, communicationPrompt: legacyPrompt }] : []),
         ...previousPublication,
         ...(frozenInput?.exactSystemPrompt === systemPrompt ? [{ tools: priorDeliveryTools, communicationPrompt }] : []),
         ...(legacyPrompt ? [{ tools: priorDeliveryTools, communicationPrompt: legacyPrompt }] : []),
         ...priorDeliveryPublication,
-      ].map(contract => {
-        const toolHashValue = toolHash(contract.tools, contract.communicationPrompt);
-        const sessionHash = createHash("sha256").update(JSON.stringify({
+      ].flatMap(contract => {
+        // Before capability policies, unrestricted sessions hashed the exact
+        // tools/prompt directly. Only reconstruct known predecessor packets;
+        // any current restriction forbids that unrestricted compatibility.
+        const hashes = [toolHash(contract.tools, contract.communicationPrompt),
+          ...(capabilityPolicy.restrictedCapabilityIds.length === 0
+            ? [providerToolContractHash(contract.tools, contract.communicationPrompt)] : [])];
+        return hashes.map(toolHashValue => {
+          const sessionHash = createHash("sha256").update(JSON.stringify({
             runtimeSessionContractHash: providerSessionContractHash(runtimeEngineId, workingCopy.id,
               effectiveModel, effectiveEffort, toolHashValue), systemPromptHash: frozenSystemHash,
           })).digest("hex");
-        return { ...contract, toolHash: toolHashValue, sessionHash };
+          return { ...contract, toolHash: toolHashValue, sessionHash };
+        });
       }).find(contract => contract.sessionHash === preflightResumeSessionState.toolContractHash);
       if (!compatible || !frozenSystemHash || frozenSystemHash !== frozenInput?.systemPromptHash) {
         throw new Error("context rollover handoff contract is incompatible; original accepted context retained");

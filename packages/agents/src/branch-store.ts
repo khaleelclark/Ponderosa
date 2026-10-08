@@ -34,6 +34,8 @@ export class BranchStore {
   private readonly capabilityPolicies: CapabilityPolicyStore;
   private advanceCursor = 0;
   private advanceCeiling = 0;
+  private scriptCursor = 0;
+  private scriptCeiling = 0;
   private provisionCursor = 0;
   private cleanupCursor = 0;
   private cleanupCeiling = 0;
@@ -1141,8 +1143,24 @@ export class BranchStore {
   }
   claimScript(workerId: string, now = new Date().toISOString()): BranchScriptLease | undefined {
     return this.sqlite.transaction(() => {
-      for (const attempt of this.rows(`SELECT a.*, s.execution_id, s.step_id, s.input_text FROM branch_attempts a JOIN branch_step_executions s ON s.id = a.step_execution_id
-        JOIN branch_executions e ON e.id = s.execution_id WHERE a.state = 'prepared' AND a.purpose = 'step' AND a.cancel_requested = 0 AND (a.available_at IS NULL OR a.available_at <= ?) AND e.state IN ('running','waiting') AND e.cancel_requested = 0 ORDER BY a.rowid LIMIT 100`, now)) {
+      // Frozen Script kinds select this lane. Rotate bounded batches past full
+      // executions; a blocked row must not reserve every future claim scan.
+      const candidates = `FROM branch_attempts a JOIN branch_step_executions s ON s.id = a.step_execution_id
+        JOIN branch_executions e ON e.id = s.execution_id JOIN branch_versions v ON v.id = e.version_id
+        WHERE a.state = 'prepared' AND a.purpose = 'step' AND a.cancel_requested = 0
+          AND (a.available_at IS NULL OR a.available_at <= ?) AND e.state IN ('running','waiting') AND e.cancel_requested = 0
+          AND EXISTS(SELECT 1 FROM json_each(v.definition_json,'$.steps') node
+            WHERE json_extract(node.value,'$.id')=s.step_id AND json_extract(node.value,'$.kind')='script')`;
+      const batch = () => this.rows(`SELECT a.rowid position, a.*, s.execution_id, s.step_id, s.input_text ${candidates}
+        AND a.rowid > ? AND a.rowid <= ? ORDER BY a.rowid LIMIT 100`, now, this.scriptCursor, this.scriptCeiling);
+      let attempts = batch();
+      if (!attempts.length) {
+        this.scriptCursor = 0;
+        this.scriptCeiling = this.row('SELECT COALESCE(MAX(rowid),0) n FROM branch_attempts')!.n;
+        attempts = batch();
+      }
+      for (const attempt of attempts) {
+        this.scriptCursor = attempt.position;
         const execution = this.execution(attempt.execution_id)!;if(!this.hasRunnableCapacity(execution.id))continue;const step = this.definition(execution).steps.find(s => s.id === attempt.step_id);
         if (step?.kind !== "script") continue;
         if(this.restricted(execution.branchId,CAPABILITY_IDS.scripts)){this.finish(attempt.id,{failed:true,output:'Script Steps are restricted by capability policy'},now);continue;}
@@ -1162,7 +1180,7 @@ export class BranchStore {
         return { attemptId: attempt.id, executionId: execution.id, fence, workerId, input: bundle?.content_text??attempt.input_text,...(bundle?{inputBundleId:bundleId,inputBundleHash:bundle.content_hash}:{}), parameters: execution.configuration!.parameters, source: step.source, timeoutMs: step.timeoutMs, cwd: this.text(execution,this.bindings(execution).directories[step.cwdRef]!) };
       }
       return undefined;
-    })();
+    }).immediate();
   }
   authorizeScript(lease: BranchScriptLease, identity: RuntimeProcessIdentity, now = new Date().toISOString()): void {
     this.sqlite.transaction(() => {

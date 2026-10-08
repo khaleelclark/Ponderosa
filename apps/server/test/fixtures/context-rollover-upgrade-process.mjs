@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 const { root, directory, binary, phase, scenario = 'missing', seedKind } = JSON.parse(process.env.PONDEROSA_UPGRADE_FIXTURE);
 const load = path => import(pathToFileURL(join(root, path)).href);
-const { AgentStore, CoordinationV3Store, WorkspaceStore } = await load('packages/agents/dist/index.js');
+const { AgentStore, CoordinationV3Store, WorkspaceStore, CapabilityPolicyStore } = await load('packages/agents/dist/index.js');
 const { ClaudeStreamSession } = await load('packages/engines/dist/index.js');
 const { createServer } = await load('apps/server/dist/app.js');
 const store = new AgentStore(directory), coordination = new CoordinationV3Store(store.sqlite);
@@ -24,6 +24,11 @@ if (phase === 'seed') {
   const row = store.sqlite.prepare('SELECT id FROM agents LIMIT 1').get();
   agent = store.getAgent(row.id); project = store.getProject(agent.projectId);
   chat = { id: agent.conversationId };
+}
+if(phase === 'refresh' && scenario === 'changed-restrictions') {
+  const {CAPABILITY_IDS}=await load('packages/core/dist/index.js');
+  new CapabilityPolicyStore(store.sqlite).put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,
+    restrictedCapabilityIds:[CAPABILITY_IDS.filesystemWrite]});
 }
 const original = store.resumeSessionState(agent.id);
 const originalSnapshots = store.readEvents(agent.id).filter(({ event }) => event.type === 'session_snapshot');
@@ -116,7 +121,7 @@ try {
       assert.equal(stop.statusCode, 200, stop.body);
     }
     if (scenario === 'teardown') await waitFor(() => closeAttempts > 0);
-    else if (scenario === 'unknown' || scenario === 'changed-policy') await waitFor(() => store.sqlite.prepare("SELECT COUNT(*) n FROM scheduler_runs WHERE status='failed'").get().n > 0);
+    else if (scenario === 'unknown' || scenario === 'changed-policy' || scenario === 'changed-restrictions') await waitFor(() => store.sqlite.prepare("SELECT COUNT(*) n FROM scheduler_runs WHERE status='failed'").get().n > 0);
     else await waitFor(() => ['completed', 'failed', 'outcome_unknown'].includes(coordination.contextRollover(rolloverId).state));
     result = { original: before, accepted: store.resumeSessionState(agent.id), observations,
       rollover: coordination.contextRollover(rolloverId), closeAttempts,

@@ -741,10 +741,20 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   registerProductScope(app,store,workspace,request=>{
     const token=request.headers.authorization?.replace(/^Bearer\s+/i,'');
     const capability=token?agentMessageCapabilities.get(token):undefined;
-    if(capability)return capability.conversationId;
+    if(capability&&capability.conversationId){
+      if(!coordinationV3.ownsRun(capability.v3SchedulerRunId,capability.v3FencingToken,coordinationV3WorkerId))return capability.conversationId;
+      return {conversationId:capability.conversationId,agentId:capability.agentId,
+        runId:capability.v3SchedulerRunId,fencingToken:capability.v3FencingToken};
+    }
     if(request.headers['x-ponderosa-v3-dispatch']===v3DispatchKey){
       const id=(request.params as {id?:string})?.id;
-      if(id)return store.getAgent(id)?.conversationId;
+      const body=request.body as {v3SchedulerRunId?:string;v3FencingToken?:number}|undefined;
+      const conversationId=id?store.getAgent(id)?.conversationId:undefined;
+      if(id&&conversationId&&body?.v3SchedulerRunId&&Number.isSafeInteger(body.v3FencingToken)&&
+          coordinationV3.ownsRun(body.v3SchedulerRunId,body.v3FencingToken!,coordinationV3WorkerId)&&
+          store.sqlite.prepare('SELECT 1 FROM scheduler_runs WHERE id=? AND agent_id=?').get(body.v3SchedulerRunId,id))
+        return {conversationId,agentId:id,runId:body.v3SchedulerRunId,fencingToken:body.v3FencingToken!};
+      return conversationId;
     }
     return undefined;
   },request=>request.headers['x-ponderosa-v3-dispatch']===v3DispatchKey);

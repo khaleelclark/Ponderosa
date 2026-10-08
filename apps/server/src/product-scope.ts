@@ -157,9 +157,35 @@ export function mergeProductPreferencePatch(store:Pick<AgentStore,'sqlite'>,curr
  }
  return result;
 }
+/** Supplied only after server authentication and exact live scheduler ownership. */
+export interface RuntimeProductOwner { conversationId: string; agentId: string; runId: string; fencingToken: number }
+function retainedRuntimeResources(store:Pick<AgentStore,'sqlite'>,owner:string|RuntimeProductOwner|undefined):Set<string> {
+  if(!owner||typeof owner==='string')return new Set();
+  const retained=store.sqlite.prepare(`SELECT chat.project_id FROM scheduler_runs run
+    JOIN scheduler_run_activations attached ON attached.run_id=run.id
+    JOIN agent_activations activation ON activation.id=attached.activation_id AND activation.agent_id=run.agent_id
+    JOIN activation_sources source ON source.activation_id=activation.id AND source.source_kind='request'
+    JOIN coordination_requests request ON request.id=source.source_id AND request.recipient_agent_id=run.agent_id
+    JOIN branch_attempts attempt ON attempt.request_id=request.id
+    JOIN branch_step_executions step ON step.id=attempt.step_execution_id
+    JOIN branch_executions execution ON execution.id=step.execution_id
+    JOIN branch_resource_references ref ON ref.execution_id=execution.id AND ref.chat_id=?
+    JOIN agents agent ON agent.id=run.agent_id AND agent.conversation_id=ref.chat_id AND agent.deleted_at IS NULL
+    JOIN conversations chat ON chat.id=ref.chat_id AND chat.branch_id=execution.branch_id
+    WHERE run.id=? AND run.agent_id=? AND run.fencing_token=? AND run.status IN ('leased','running')
+      AND run.side_effects_fenced_at IS NULL AND run.lease_expires_at>?
+      AND request.state IN ('open','in_progress','waiting_dependency','awaiting_answer')
+      AND execution.state IN ('running','waiting') AND execution.cancel_requested=0 AND attempt.cancel_requested=0
+      AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive
+        WHERE inactive.local_id IN (agent.id,chat.id) AND inactive.state NOT IN ('active','retiring'))
+      AND EXISTS(SELECT 1 FROM branch_installation_resources retired
+        WHERE retired.local_id IN (agent.id,chat.id) AND retired.state='retiring')
+    LIMIT 1`).get(owner.conversationId,owner.runId,owner.agentId,owner.fencingToken,new Date().toISOString()) as {project_id:string}|undefined;
+  return new Set(retained?[owner.conversationId,owner.agentId,retained.project_id]:[]);
+}
 export function registerProductScope(app:FastifyInstance,store:AgentStore,workspace:WorkspaceStore,
-  runtimeOwner:(request:FastifyRequest)=>string|undefined,lifecycleAuthority:(request:FastifyRequest)=>boolean):void {
-  const belongs=(id:string,kind:string,product:ProductScope):boolean=>{
+  runtimeOwner:(request:FastifyRequest)=>string|RuntimeProductOwner|undefined,lifecycleAuthority:(request:FastifyRequest)=>boolean):void {
+  const ordinaryBelongs=(id:string,kind:string,product:ProductScope):boolean=>{
     if(['project','agent','conversation','chat','trigger'].includes(kind))return resourceInProduct(store,kind,id,product);
     if(kind==='notification'){const notification=workspace.getNotification(id);return Boolean(notification&&notificationInProduct(store,notification,product));}
     if(kind==='decision'){const decision=workspace.getDecision(id);return Boolean(decision&&decisionInProduct(store,decision,product));}
@@ -167,7 +193,11 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
   };
   app.addHook('preHandler',async(request,reply)=>{
     if(!request.url.startsWith('/api/'))return;
-    const runtimeChat=runtimeOwner(request);
+    const owner=runtimeOwner(request);
+    const runtimeChat=typeof owner==='string'?owner:owner?.conversationId;
+    const retained=retainedRuntimeResources(store,owner);
+    const belongs=(id:string,kind:string,product:ProductScope):boolean=>
+      (product==='branches'&&['agent','conversation','chat','project'].includes(kind)&&retained.has(id))||ordinaryBelongs(id,kind,product);
     if(runtimeChat){(request.raw as ProductRequest).ponderosaProduct=store.getConversation(runtimeChat)?.branchId?'branches':'dev';}
     const product=requestProduct(request);
     const externalMutation=!['GET','HEAD','OPTIONS'].includes(request.method)&&!runtimeChat&&!lifecycleAuthority(request);
@@ -182,7 +212,7 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
         WHERE resource.local_id=? AND resource.agent_ref='' AND resource.state='retiring'
           AND COALESCE(chat.branch_id,receipt.branch_id) IS NOT NULL`).get(id))return;
     }
-    const resourceMutable=(id:string):boolean=>!store.sqlite.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND state!='active'").get(id)&&(!externalMutation||!store.sqlite.prepare("SELECT 1 FROM conversations c JOIN branch_installation_plans p ON p.branch_id=c.branch_id WHERE p.state IN ('applying','canceling') AND (c.id=? OR c.project_id=? OR EXISTS(SELECT 1 FROM agents a WHERE a.conversation_id=c.id AND a.id=?))").get(id,id,id));
+    const resourceMutable=(id:string):boolean=>(retained.has(id)||!store.sqlite.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND state!='active'").get(id))&&(!externalMutation||!store.sqlite.prepare("SELECT 1 FROM conversations c JOIN branch_installation_plans p ON p.branch_id=c.branch_id WHERE p.state IN ('applying','canceling') AND (c.id=? OR c.project_id=? OR EXISTS(SELECT 1 FROM agents a WHERE a.conversation_id=c.id AND a.id=?))").get(id,id,id));
     // Branch lifecycle routes validate their own installed Branch and Chat bindings.
     if(/^\/api\/branch(?:es|\-executions|\-gates)(?:\/|$)/.test(request.url))return;
     if(externalMutation&&product==='branches'){
@@ -266,6 +296,9 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
   app.addHook('preSerialization',async(request,_reply,payload)=>{
     if(!request.url.startsWith('/api/')||/^\/api\/branch(?:es|\-executions|\-gates)(?:\/|$)/.test(request.url))return payload;
     const product=requestProduct(request);
+    const retained=retainedRuntimeResources(store,runtimeOwner(request));
+    const belongs=(id:string,kind:string,scope:ProductScope):boolean=>
+      (scope==='branches'&&['agent','conversation','chat','project'].includes(kind)&&retained.has(id))||ordinaryBelongs(id,kind,scope);
     if(['/api/workspace/preferences','/api/notification-settings/:kind/:id'].includes(request.routeOptions.url??'')&&payload&&typeof payload==='object'&&'projectOrder' in payload)return productPreferences(store,payload as WorkspacePreferencesDto,product);
     const filter=(value:unknown):unknown=>{
       if(Array.isArray(value))return value.map(filter).filter(v=>v!==undefined);

@@ -19,12 +19,12 @@ async function run(input) {
   const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
   assert.equal(code, 0); assert.ok(result); return result;
 }
-for (const scenario of process.env.PONDEROSA_UPGRADE_CONTROL === '1' ? ['missing', 'valid', 'pending-valid', 'unknown', 'changed-policy'] : ['missing', 'high', 'cancelled', 'teardown', 'valid', 'unknown', 'changed-policy', 'direct-valid', 'pending-valid', 'authorized-root-valid']) {
+for (const scenario of process.env.PONDEROSA_UPGRADE_CONTROL === '1' ? ['missing', 'valid', 'pending-valid', 'unknown', 'changed-policy'] : ['missing', 'high', 'cancelled', 'teardown', 'valid', 'unknown', 'changed-policy', 'changed-restrictions', 'direct-valid', 'pending-valid', 'authorized-root-valid']) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'ponderosa-upgrade-')));
   try {
     const seed = await run({ root: base, directory, phase: 'seed', scenario, ...(scenario === 'direct-valid' ? { seedKind: 'direct' } : {}) });
     const refreshed = await run({ root: candidate, directory, phase: 'refresh', scenario });
-    if (scenario === 'unknown' || scenario === 'changed-policy') {
+    if (scenario === 'unknown' || scenario === 'changed-policy' || scenario === 'changed-restrictions') {
       assert.equal(refreshed.observations.length, 0, 'unknown contract fails before opening a process');
       assert.deepEqual(refreshed.accepted, refreshed.original);
     } else {
@@ -39,7 +39,7 @@ for (const scenario of process.env.PONDEROSA_UPGRADE_CONTROL === '1' ? ['missing
       if (['valid', 'direct-valid', 'pending-valid', 'authorized-root-valid'].includes(scenario)) {
         assert.equal(refreshed.rollover.completionReason, 'replacement_verified');
         assert.equal(refreshed.accepted.sessionId, refreshed.rollover.replacementSessionId);
-        if (process.env.PONDEROSA_UPGRADE_CONTROL !== '1') assert.notEqual(refreshed.accepted.toolContractHash, seed.snapshot.toolContractHash);
+        if (candidate !== base && process.env.PONDEROSA_UPGRADE_CONTROL !== '1') assert.notEqual(refreshed.accepted.toolContractHash, seed.snapshot.toolContractHash);
         assert.match(refreshed.observations[1].systemPrompt, /Use only the current Run's host-provided reply route/);
         const { PONDEROSA_RUNTIME_TOOLS } = await import(pathToFileURL(join(candidate, 'packages/core/dist/index.js')).href);
         assert.deepEqual(refreshed.observations[1].dynamicTools.filter(tool => tool.name !== 'ponderosa_history'), PONDEROSA_RUNTIME_TOOLS,
