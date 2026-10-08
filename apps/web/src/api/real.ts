@@ -209,6 +209,7 @@ async function probeStreamRateLimit(): Promise<void> {
 export function requestJson<T>(path: string, init?: RequestInit, acceptedErrorStatuses: number[] = []): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
   const isBackground = backgroundRead(method, path);
+  path = productApiPath(path);
   const load = async (): Promise<T> => {
     const headers = new Headers(init?.headers);
     if (init?.body != null && !headers.has("content-type")) {
@@ -266,6 +267,7 @@ function withoutCursor(path: string): string {
 }
 
 function requestCollectionPage<T>(path: string, resetOnStale = true): Promise<CollectionPage<T>> {
+  path = productApiPath(path);
   return coalesceBackgroundRead(`page:${path}:${resetOnStale}`, async () => {
     await waitForBackgroundCooldown();
     const response = await fetch(`${API_BASE}${path}`);
@@ -851,7 +853,7 @@ export const realApi = {
     return requestText(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization) })}`);
   },
   agentExportDownloadUrl(agentId: string, mode: AgentExportMode, organization: boolean = false): string {
-    return `/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), download: 1 })}`;
+    return productApiPath(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), download: 1 })}`);
   },
   importAgents(projectId: string, request: ImportAgentPackageRequest, requestId = createClientId()): Promise<ImportAgentPackageResponse> {
     return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, {
@@ -1151,7 +1153,7 @@ export const realApi = {
   },
   async getBrowserFrame(projectId: string, agentId: string, runId: string, pageId?: string, signal?: AbortSignal): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }> {
     await waitForBackgroundCooldown(signal);
-    const response = await fetch(`${browserPath(projectId, agentId, runId)}/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, { cache: "no-store", signal });
+    const response = await fetch(productApiPath(`${browserPath(projectId, agentId, runId)}/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`), { cache: "no-store", signal });
     if (response.status === 429) noteBackgroundRateLimit(response.headers.get("retry-after"));
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0), metadata: JSON.parse(response.headers.get("x-ponderosa-browser-frame") ?? "null") ?? undefined };

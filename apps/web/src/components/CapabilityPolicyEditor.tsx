@@ -35,7 +35,7 @@ export function CapabilityPolicyEditor({endpoint,scopeKind,title="Capabilities",
   const toggle=(id:string,allow:boolean)=>setDraft(current=>{const base=current??{restricted:query.data!.policy.restrictedCapabilityIds,baseline:query.data!.policy.restrictedCapabilityIds,revision:query.data!.policy.revision};const next=new Set(base.restricted);if(allow)next.delete(id);else next.add(id);return {...base,restricted:[...next].sort()}});
   return <Stack spacing={2}>
     <Box><Typography variant="h6" fontWeight={800}>{title}</Typography><Typography variant="body2" color="text.secondary">Available by default. Restrictions at a broader scope stay in effect, and this {scopeKind} can narrow authority further.</Typography></Box>
-    {conflict&&<Alert severity="warning" action={<Button color="inherit" onClick={()=>setDraft({restricted:query.data!.policy.restrictedCapabilityIds,baseline:query.data!.policy.restrictedCapabilityIds,revision:query.data!.policy.revision})}>Load latest</Button>}>Capability restrictions changed elsewhere. Load the latest policy, then reapply your edits.</Alert>}
+    {conflict&&<Alert severity="warning" action={<Button disabled={save.isPending} color="inherit" onClick={()=>setDraft({restricted:query.data!.policy.restrictedCapabilityIds,baseline:query.data!.policy.restrictedCapabilityIds,revision:query.data!.policy.revision})}>Load latest</Button>}>Capability restrictions changed elsewhere. Load the latest policy, then reapply your edits.</Alert>}
     {save.error&&<Alert severity="error">{save.error.message}</Alert>}
     {save.isSuccess&&!dirty&&<Alert severity="success">Capability restrictions saved. New Runs use the updated tool contract.</Alert>}
     {groups.map(([label,items])=><Paper key={label} variant="outlined" sx={{overflow:"hidden"}}>
@@ -50,10 +50,10 @@ export function CapabilityPolicyEditor({endpoint,scopeKind,title="Capabilities",
         return <Box key={item.id} sx={{px:2,py:1.5,borderTop:index?1:0,borderColor:"divider"}}><Stack direction={{xs:"column",sm:"row"}} gap={1.5} alignItems={{sm:"center"}}>
           <Box sx={{flex:1,minWidth:0}}><Typography fontWeight={650}>{item.label}</Typography><Typography variant="body2" color="text.secondary">{item.description}</Typography>{!item.available&&item.unavailableReason&&<Typography variant="caption" color="text.secondary">{item.unavailableReason}</Typography>}</Box>
           <Chip size="small" variant="outlined" icon={!item.available||effectiveRestricted?<BlockOutlinedIcon/>:<CheckCircleOutlineIcon/>} color={!item.available?"default":effectiveRestricted?"warning":"success"} label={state}/>
-          <FormControlLabel sx={{m:0,minWidth:92}} label="Allow" labelPlacement="start" control={<Switch checked={item.available&&!effectiveRestricted} disabled={inherited||(!item.available&&!restrictedHere)} onChange={(_,allow)=>toggle(item.id,allow)}/>}/>
+          <FormControlLabel sx={{m:0,minWidth:92}} label="Allow" labelPlacement="start" control={<Switch checked={item.available&&!effectiveRestricted} disabled={save.isPending||inherited||(!item.available&&!restrictedHere)} onChange={(_,allow)=>toggle(item.id,allow)}/>}/>
         </Stack></Box>;
       })}
     </Paper>)}
-    <Stack direction="row" gap={1}><Button variant="contained" disabled={!dirty||conflict||save.isPending} onClick={()=>save.mutate()}>{save.isPending?"Saving…":"Save capabilities"}</Button>{dirty&&<Button onClick={()=>setDraft({restricted:query.data!.policy.restrictedCapabilityIds,baseline:query.data!.policy.restrictedCapabilityIds,revision:query.data!.policy.revision})}>Discard</Button>}</Stack>
+    <Stack direction="row" gap={1}><Button variant="contained" disabled={!dirty||conflict||save.isPending} onClick={()=>save.mutate()}>{save.isPending?"Saving…":"Save capabilities"}</Button>{dirty&&<Button disabled={save.isPending} onClick={()=>setDraft({restricted:query.data!.policy.restrictedCapabilityIds,baseline:query.data!.policy.restrictedCapabilityIds,revision:query.data!.policy.revision})}>Discard</Button>}</Stack>
   </Stack>;
 }

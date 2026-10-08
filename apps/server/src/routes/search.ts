@@ -38,7 +38,7 @@ export function registerSearchRoutes(
   app.get<{ Querystring: { q?: string; limit?: string; kind?: string; distinct?: string } }>("/api/search", async (request, reply) => {
     try {
       if (request.query.distinct !== undefined && request.query.distinct !== "chats") throw new Error("invalid search grouping");
-      return globalChatSearch(request.query);
+      return globalChatSearch({ ...request.query, product: requestProduct(request) });
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid search query" });
     }

@@ -11,7 +11,7 @@ import '../../src/global.css';
 const now='2026-09-22T00:00:00Z';
 const branch={id:'b',name:'Qualification workflow',chatId:'c',enabled:false,versionId:'v',activeExecutions:0,createdAt:now};
 const otherBranch={...branch,id:'b2',name:'Other workflow',versionId:'v-b2'};
-const definition={schema:'ponderosa.branch.v1',name:branch.name,trigger:{kind:'manual'},parameters:{message:{type:'text',help:'Message to process'}},entry:'script',steps:[{id:'script',kind:'script',runtime:'node',source:'return input',cwdRef:'workspace',timeoutMs:1000}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
+const definition={schema:'ponderosa.branch.v1',name:branch.name,trigger:{kind:'manual'},parameters:{message:{type:'text',help:'Message to process'},...(new URLSearchParams(location.search).has('formSaves')?{flag:{type:'boolean'},count:{type:'number'}}:{})},entry:'script',steps:[{id:'script',kind:'script',runtime:'node',source:'return input',cwdRef:'workspace',timeoutMs:1000}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
 const project={id:'p',label:'Branch workspace',hostPath:'/tmp/qualification',defaultEngine:'codex',createdAt:now};
 const chat={id:'c',branchId:'b',projectId:'p',title:'Branch Chat',workingDirectory:'/tmp/qualification',defaultEngine:'codex',createdAt:now};
 const preferences={revision:1,profile:{displayName:'Tester',handle:'tester',avatarId:'default-user'},notifications:{directResponses:true,broadcasts:true},starredProjectIds:[],starredResourceIds:[],projectOrder:[],chatOrder:[],agentOrder:[],triggerOrder:[],engineDefaults:{},claudeModelOptions:[],globalInstructions:'',maxConcurrentAgentRuns:8,providerAvailability:{},contextRolloverTokens:150000,contextRolloverWindowFraction:.7};
@@ -33,7 +33,11 @@ let branchFetchCount=0,version2FetchCount=0,packageFinalFetch=false;
 let preferenceState={...preferences};
 let createdChat:typeof chat|undefined;
 window.fetch=async(input,init)=>{
- const requestUrl=new URL(String(input),location.origin),path=requestUrl.pathname.replace('/api/branches/engine/','/api/');
+ const requestUrl=new URL(String(input),location.origin);
+ const scoped=requestUrl.pathname.startsWith('/api/branches/engine/');
+ const native=/^\/api\/branch(?:es|\-executions|\-gates)(?:\/|$)/.test(requestUrl.pathname)&&!scoped;
+ if(!scoped&&!native)return new Response(JSON.stringify({error:'Fixture requires Branches engine namespace'}),{status:404,headers:{'content-type':'application/json'}});
+ const path=scoped?'/api/'+requestUrl.pathname.slice('/api/branches/engine/'.length):requestUrl.pathname;
  let value:unknown=[];
  if(path==='/api/branches/install-preview'&&init?.method==='POST')return new Response(JSON.stringify({id:'install-op',operations:[]}),{headers:{'content-type':'application/json'}});
  if(path==='/api/branches/installations/install-op/confirm'&&init?.method==='POST'){packageFinalFetch=true;return new Response(JSON.stringify({state:'completed',branchId:'b'}),{headers:{'content-type':'application/json'}});}
@@ -82,7 +86,7 @@ window.fetch=async(input,init)=>{
  else if(path==='/api/projects/p/agents'){if(slowProjectResources)await new Promise(resolve=>setTimeout(resolve,1200));if(failProjectResources)return new Response(JSON.stringify({error:'Project Agents unavailable'}),{status:503,headers:{'content-type':'application/json'}});value=[];}
  else if(path==='/api/projects/p/agent-organization')value={scope:'project',items:[],total:0,limit:25,collectionGeneration:'fixture',specialGroupCounts:{independent:0,orphaned:0,deleted:0}};
  else if(path==='/api/conversations/c'||path==='/api/conversations/created-chat')value={conversation:path.endsWith('created-chat')?createdChat:chat,messages:[],history:{hasMore:false},agents:[],members:{total:0,limit:100,hasMore:false},events:[],receipts:[]};
- else if(path.includes('members'))value=[];
+ else if(path.includes('members'))value=fixtureParams.has('formSaves')?[{id:'a',projectId:'p',conversationId:'c',title:'Test Agent',engine:'codex',status:'idle',createdAt:now}]:[];
  else if(path.endsWith('/agent-health'))value={agents:[]};
  else if(path.includes('/next-run-deliveries'))value={receipts:[]};
  else if(path.includes('/draft'))value={text:'',attachmentIds:[],revision:0};

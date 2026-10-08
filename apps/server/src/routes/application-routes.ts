@@ -668,6 +668,7 @@ const globalChatSearch = (query: {
     limit,
     chatKind,
     product: query.product,
+    distinctChats: query.distinct === "chats",
     notificationState: (input) => workspace.notificationSearchState(input),
   });
 };

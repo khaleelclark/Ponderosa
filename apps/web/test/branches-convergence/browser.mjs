@@ -9,6 +9,7 @@ try {
  for(const dark of [false,true])for(const width of [320,375,768,1280]) {
   const page=await newPage({viewport:{width,height:844}});
   await page.goto(`${base}/branches?branch=b&tab=executions${dark?'&dark=1':''}`);
+  assert.equal(await page.evaluate(async()=> (await fetch('/api/projects/p')).status),404,'unscoped shared Branch fixture requests fail closed');
   await page.getByText('Run the deployed workflow',{exact:true}).click();
   await page.getByRole('button',{name:'Run workflow',exact:true}).waitFor();
   assert.equal(await page.getByRole('button',{name:'Run workflow',exact:true}).isDisabled(),true,'disabled Branch cannot run');
