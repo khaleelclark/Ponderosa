@@ -24,7 +24,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - name: Prepare the Linux test sandbox
-        run: bash .github/scripts/prepare-linux-speech-tests.sh
-      - name: Verify sandbox and recovery boundaries
-        run: node --test apps/server/test/gui-qualification-pid.test.mjs apps/server/test/speech-sandbox.test.mjs apps/server/test/speech-cleanup-race.test.mjs apps/server/test/speech-recovery.test.mjs
+      - name: Install the pinned Chromium for browser speech checks
+        run: pnpm --filter @ponderosa/server exec playwright-core install --with-deps chromium
+      - name: Verify runtime recovery and browser speech ownership
+        env:
+          PONDEROSA_BROWSER_DISABLE_SANDBOX: "1"
+        run: pnpm test:recovery

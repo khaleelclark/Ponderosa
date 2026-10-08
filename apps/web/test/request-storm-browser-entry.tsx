@@ -13,11 +13,15 @@ let deliveryState = "preparing";
 let failNextPhaseFetch = false;
 let agentCommandEnabled = false;
 let ownerChatTitle = "Original owner";
-async function probeApi(): Promise<void> {
+async function probeApi(url = "/api/storm-probe", record = true): Promise<void> {
   const start = performance.now();
-  const response = await fetch("/api/storm-probe");
+  // Distinct product reads must not become one identical-URL HTTP cache lock.
+  const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) throw new Error(`probe returned ${response.status}`);
-  apiLatencies.push(performance.now() - start);
+  // Preserve the original fetch-to-headers 250 ms criterion; validate and
+  // consume the body afterward so sockets are released on every read.
+  if (record) apiLatencies.push(performance.now() - start);
+  if (await response.text() !== "ok") throw new Error("invalid probe response");
 }
 
 api.subscribeWorkspace = (_cursor, handlers) => {
@@ -66,6 +70,10 @@ api.subscribeWorkspace = (_cursor, handlers) => {
   let replay: ReturnType<typeof setInterval> | undefined;
   Object.assign(window, {
     stormCounters: () => ({ ...counters }),
+    stormProbeOracle: () => Promise.all([
+      probeApi("/api/storm-probe?overlap", false),
+      probeApi("/api/storm-probe?overlap", false),
+    ]),
     stormApiLatencies: () => [...apiLatencies],
     renameOwnerChat: () => {
       ownerChatTitle = "Renamed owner";

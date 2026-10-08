@@ -35,5 +35,7 @@ createRoot(document.getElementById("root")!).render(<QueryClientProvider client=
 Object.assign(window, { voiceTest: { stats,
   recognized(text: string) { recognition.onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: text } }] }); recognition.onend?.(); },
   complete() { utterance.onend?.(); },
+  staleResult() { return recognition.onresult; },
+  staleEnd() { return recognition.onend; },
   failRecognition(error: string) { recognition.onerror?.({error}); },
 } });

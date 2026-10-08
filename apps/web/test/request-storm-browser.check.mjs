@@ -16,6 +16,8 @@ const playwrightModule = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? s
 const chromium = playwrightModule.chromium ?? playwrightModule.default.chromium;
 let browser;
 let server;
+const overlappingProbes = [];
+let overlapObserved = false;
 const loopDelay = monitorEventLoopDelay({ resolution: 10 });
 loopDelay.enable();
 try {
@@ -34,6 +36,19 @@ try {
       const pathname = new URL(req.url, "http://localhost").pathname;
       if (pathname === "/api/storm-probe") {
         res.setHeader("Content-Type", "text/plain");
+        if (req.url.includes("?overlap")) {
+          // The first response is held until a second identical-URL fetch reaches
+          // the server. Cache-serialized probes cannot satisfy this oracle.
+          overlappingProbes.push(res);
+          if (overlappingProbes.length === 2) {
+            overlapObserved = true;
+            for (const pending of overlappingProbes) pending.end("ok");
+          } else {
+            const timer = setTimeout(() => res.writeHead(503).end("probe serialized"), 5_000);
+            res.once("finish", () => clearTimeout(timer));
+          }
+          return;
+        }
         res.end("ok");
         return;
       }
@@ -49,6 +64,7 @@ try {
     args: process.env.PONDEROSA_BROWSER_DISABLE_SANDBOX === "1" ? ["--no-sandbox"] : [],
   });
   const pages = [];
+  const probeTimings = [];
   for (let index = 0; index < 3; index += 1) {
     const context = await browser.newContext();
     if (index === 2) {
@@ -58,12 +74,15 @@ try {
     }
     const page = await context.newPage();
     pages.push(page);
+    page.on("requestfinished", request => { if (request.url().includes("/api/storm-probe")) probeTimings.push(request.timing()); });
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.locator("#roster").getByText("working").waitFor();
     await page.locator("#all-agents").getByText("working").waitFor();
     await page.locator("#home-active").getByText("working").waitFor();
     await page.locator("#home-outcomes").getByText("none").waitFor();
   }
+  await pages[0].evaluate(() => window.stormProbeOracle());
+  assert.equal(overlapObserved, true, "independent probes must reach the server concurrently");
   const baseline = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
   await pages[0].waitForTimeout(5_600);
   const counts = await Promise.all(pages.map(page => page.evaluate(() => window.stormCounters())));
@@ -278,6 +297,10 @@ try {
   samples.sort((a, b) => a - b);
   const apiP95Ms = samples[Math.ceil(samples.length * 0.95) - 1];
   const eventLoopP95Ms = loopDelay.percentile(95) / 1_000_000;
+  const percentile = values => values.sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1];
+  const queueP95Ms = percentile(probeTimings.map(t => t.requestStart));
+  const wireP95Ms = percentile(probeTimings.map(t => t.responseStart - t.requestStart));
+  console.log(`Probe diagnostics: ${samples.length} end-to-end samples; browser queue p95 ${queueP95Ms.toFixed(1)} ms; request-to-headers p95 ${wireP95Ms.toFixed(1)} ms; identical-URL overlap oracle passed`);
   assert.ok(apiP95Ms < 250, `isolated API p95 must stay under 250 ms; got ${apiP95Ms}`);
   assert.ok(eventLoopP95Ms < 100, `isolated event-loop p95 must stay under 100 ms; got ${eventLoopP95Ms}`);
   console.log(`PASS 12-Agent, three-tab stream: bounded refresh and replay, live Chat and receipt delivery, hidden-tab pause/reconcile, terminal and failed-fetch recovery; isolated API p95 ${apiP95Ms.toFixed(1)} ms, event-loop p95 ${eventLoopP95Ms.toFixed(1)} ms`);

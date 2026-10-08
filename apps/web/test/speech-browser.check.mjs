@@ -26,7 +26,7 @@ try {
     } catch { response.writeHead(404).end(); }
   }).listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
-  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH, args: process.env.CI === "true" ? ["--no-sandbox"] : [] }); const page = await browser.newPage();
+  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH, args: (process.env.PONDEROSA_BROWSER_DISABLE_SANDBOX === "1" || (process.env.CI === "true" && process.platform === "linux")) ? ["--no-sandbox"] : [] }); const page = await browser.newPage();
   const errors = []; page.on("pageerror", error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.waitForFunction(() => Boolean(window.speechTest));
@@ -51,8 +51,37 @@ try {
   await call("start", "two"); await call("releaseSpeechSurface", "two");
   assert.equal((await call("speechSnapshot")).status, "stopped");
   assert.equal(await page.evaluate(() => window.speechTest.stats.requests), 0);
+  // Retained callbacks from an old generation must be inert even when the
+  // replacement reuses the same surface ID and cancellation itself throws.
+  await call("start", "two");
+  await page.evaluate(() => {
+    window.oldEnd = window.speechTest.staleEnd();
+    window.oldError = window.speechTest.staleError();
+    window.speechTest.stats.cancelThrows = true;
+  });
+  await call("start", "two");
+  await page.evaluate(() => { window.oldEnd(); window.oldError(); });
+  assert.equal((await call("speechSnapshot")).status, "speaking");
+  assert.equal((await call("speechSnapshot")).ownerId, "two");
+  assert.equal(await page.evaluate(() => window.speechTest.stats.completions), 1);
+  await page.evaluate(() => { window.speechTest.stats.cancelThrows = false; });
+  for (const failure of ["constructorThrows", "speakThrows"]) {
+    await page.evaluate(failure => { window.speechTest.stats[failure] = true; }, failure);
+    await call("start", "one");
+    assert.equal((await call("speechSnapshot")).status, "error");
+    await page.evaluate(failure => { window.speechTest.stats[failure] = false; }, failure);
+    await call("start", "two");
+    assert.equal((await call("speechSnapshot")).status, "speaking", `${failure} permits a fresh retry`);
+  }
+  await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+  assert.equal((await call("speechSnapshot")).status, "stopped");
+  await call("start", "one");
+  assert.equal((await call("speechSnapshot")).status, "speaking");
+  await call("releaseSpeechSurface", "one");
+  assert.equal((await call("speechSnapshot")).status, "stopped");
+  assert.equal(await page.evaluate(() => window.speechTest.stats.requests), 0);
   assert.deepEqual(errors, []);
-  console.log("PASS browser-only playback, pause/resume, completion, hidden-surface cleanup, supersession, stale callbacks, failure and zero synthesis requests.");
+  console.log("PASS browser-only playback, pause/resume, completion, hidden-surface cleanup, supersession, stale callbacks, failure/retry, throwing cleanup, same-owner stale callbacks, pagehide and zero synthesis requests.");
 } finally {
   await browser?.close(); await new Promise(resolve => server ? server.close(resolve) : resolve());
   await rm(output, { recursive: true, force: true });

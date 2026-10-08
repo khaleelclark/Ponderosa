@@ -101,14 +101,15 @@ jobs:
         shell: bash
         run: pnpm verify
 
-      - name: Install Linux voice test sandbox dependencies
-        if: runner.os == 'Linux'
+      - name: Install the pinned Chromium for browser speech checks
         shell: bash
-        run: bash .github/scripts/prepare-linux-speech-tests.sh
+        run: pnpm --filter @ponderosa/server exec playwright-core install --with-deps chromium
 
-      - name: Verify native voice storage recovery
+      - name: Verify runtime recovery and browser speech ownership
         shell: bash
-        run: node --test apps/server/test/gui-qualification-pid.test.mjs apps/server/test/speech-sandbox.test.mjs apps/server/test/speech-cleanup-race.test.mjs apps/server/test/speech-recovery.test.mjs
+        env:
+          PONDEROSA_BROWSER_DISABLE_SANDBOX: ${{ runner.os == 'Linux' && '1' || '0' }}
+        run: pnpm test:recovery
 
       - name: Prepare checksummed official Node 24
         shell: bash

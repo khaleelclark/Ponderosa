@@ -3,13 +3,16 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { pluginReact } from "@rsbuild/plugin-react";
 import { createRsbuild } from "@rsbuild/core";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const output = await mkdtemp(path.join(tmpdir(), "ponderosa-speech-browser-"));
-const { chromium } = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? "playwright");
+const serverRequire = createRequire(new URL("../../server/package.json", import.meta.url));
+const playwrightModule = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? serverRequire.resolve("playwright-core"));
+const chromium = playwrightModule.chromium ?? playwrightModule.default.chromium;
 let browser; let server;
 try {
   const build = await createRsbuild({ cwd: root, rsbuildConfig: { plugins: [pluginReact()],
@@ -27,7 +30,7 @@ try {
     } catch { response.writeHead(404).end(); }
   }).listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
-  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH }); const page = await browser.newPage();
+  browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH, args: process.env.PONDEROSA_BROWSER_DISABLE_SANDBOX === "1" ? ["--no-sandbox"] : [] }); const page = await browser.newPage();
   const errors = []; page.on("pageerror", error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   assert.equal(await page.getByRole("button", { name: "Talk · Preview" }).count(), 0);
@@ -87,7 +90,30 @@ try {
     await page.waitForTimeout(3300);
     assert.equal(await alert.innerText(),message,`${failure} must remain actionable after three seconds`);
   }
-  console.log("PASS voice transcript review, exact reply, manual next turn, stable retry, queued recipient, and end-session late-response fence (browser fixture).");
+  await page.evaluate(() => { window.voiceTest.stats.hangStop = false; window.voiceTest.stats.finalOnStop = false; });
+  await page.getByRole("button", { name: "Voice input", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Dictate", exact: true }).click();
+  const draftBefore = await page.locator("#draft").textContent();
+  const sendsBefore = await page.evaluate(() => window.voiceTest.stats.sends.length);
+  await page.evaluate(() => {
+    window.oldResult = window.voiceTest.staleResult();
+    window.oldEnd = window.voiceTest.staleEnd();
+    window.dispatchEvent(new Event("pagehide"));
+    window.oldResult({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: "Late abandoned speech" } }] });
+    window.oldEnd();
+  });
+  assert.equal(await page.locator("#draft").textContent(), draftBefore, "abandoned recognition cannot append speech");
+  await page.getByRole("button", { name: "Voice input", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Dictate", exact: true }).click();
+  await page.evaluate(() => {
+    window.oldResult({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: "Late replacement speech" } }] });
+    window.oldEnd();
+    window.voiceTest.recognized("Fresh recovered speech");
+  });
+  assert.equal(await page.locator("#draft").textContent(), `${draftBefore}Fresh recovered speech`);
+  assert.equal(await page.evaluate(() => window.voiceTest.stats.sends.length), sendsBefore, "dictation recovery never submits a message");
+  assert.deepEqual(errors, []);
+  console.log("PASS voice transcript review, exact reply, manual next turn, stable retry, queued recipient, and end-session late-response fence, abandoned recognition and fresh-generation recovery (browser fixture).");
 
 } finally {
   await browser?.close(); await new Promise(resolve => server ? server.close(resolve) : resolve());
