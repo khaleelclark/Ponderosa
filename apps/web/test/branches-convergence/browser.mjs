@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
-const {chromium}=createRequire(process.env.PLAYWRIGHT_PACKAGE)('playwright');
+const {chromium}=createRequire(process.env.PLAYWRIGHT_PACKAGE??new URL('../../../server/package.json',import.meta.url))('playwright-core');
 const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH,headless:true});
+const pageErrors=[];
+async function newPage(options){const page=await browser.newPage(options);page.on('pageerror',error=>{pageErrors.push(error.message);console.error(error.message)});return page;}
 const base=process.env.BRANCHES_TEST_URL??'http://127.0.0.1:21859';
 try {
  for(const dark of [false,true])for(const width of [320,375,768,1280]) {
-  const page=await browser.newPage({viewport:{width,height:844}});
+  const page=await newPage({viewport:{width,height:844}});
   await page.goto(`${base}/branches?branch=b&tab=executions${dark?'&dark=1':''}`);
   await page.getByText('Run the deployed workflow',{exact:true}).click();
   await page.getByRole('button',{name:'Run workflow',exact:true}).waitFor();
@@ -35,7 +37,7 @@ try {
   console.log(`PASS ${width}px ${dark?'dark':'light'}: disabled run, URL reload, guard, initial failure retry, focus, overflow`);
   await page.close();
  }
- const page=await browser.newPage({viewport:{width:1280,height:844}});
+ const page=await newPage({viewport:{width:1280,height:844}});
  await page.goto(`${base}/branches?branch=b&tab=chats&chat=c`);
  const composer=page.locator('[contenteditable="true"]').first();
  await composer.waitFor();
@@ -50,7 +52,7 @@ try {
  console.log('PASS Chat height at mobile keyboard size and desktop effective 200% viewport');
  await page.close();
 
- const navigation=await browser.newPage({viewport:{width:640,height:422}});
+ const navigation=await newPage({viewport:{width:640,height:422}});
  await navigation.goto(`${base}/branches?branch=wrong&execution=e&tab=workflow`);
  await navigation.waitForURL(url=>url.searchParams.get('branch')==='b');
  await navigation.getByRole('heading',{name:'Qualification workflow',exact:true}).waitFor();
@@ -85,8 +87,8 @@ try {
  await navigation.goto(`${base}/branches?branch=b&tab=chats&chat=foreign`);
  await navigation.getByText('This Chat is unavailable or no longer belongs to a Branch.',{exact:true}).waitFor();
  assert.equal(await navigation.getByRole('button',{name:'Open workspace navigation',exact:true}).count(),1,'invalid Chat keeps one navigation opener');
- await navigation.goto(`${base}/branches?branch=b&tab=chats&chat=c&workspace=${encodeURIComponent('/projects/p/agents')}`);
- await navigation.getByRole('heading',{name:'Agent organization',exact:true}).waitFor();
+ await navigation.goto(`${base}/branches?branch=b&tab=chats&chat=c&workspace=${encodeURIComponent('/projects/p/chats/c?view=agents')}`);
+ await navigation.locator('#chat-workspace-agents-panel').waitFor();
  assert.equal(await navigation.getByRole('button',{name:'Open workspace navigation',exact:true}).count(),1,'embedded Agents keeps one navigation opener');
  await navigation.goto(`${base}/branches?branch=b&tab=chats&execution=e&chat=c`);
  await navigation.waitForURL(url=>!url.searchParams.get('execution'));
@@ -97,7 +99,7 @@ try {
  console.log('PASS canonical ownership, replace-history defaults, global guards, current semantics, Chat errors, and short settings viewport');
  await navigation.close();
 
- const unavailable=await browser.newPage({viewport:{width:640,height:422}});
+ const unavailable=await newPage({viewport:{width:640,height:422}});
  await unavailable.goto(`${base}/branches?branch=missing&tab=chats`);
  await unavailable.getByText('Branch not found',{exact:true}).waitFor();
  assert.equal(await unavailable.getByRole('button',{name:'Open workflow navigation',exact:true}).count(),1,'missing Branch Chat route keeps product navigation');
@@ -107,52 +109,52 @@ try {
  console.log('PASS missing Branch and failed global-settings navigation fallbacks');
  await unavailable.close();
 
- const early=await browser.newPage({viewport:{width:640,height:422}});
+ const early=await newPage({viewport:{width:640,height:422}});
  await early.goto(`${base}/branches?branch=b&tab=chats&chat=c&slowProjectResources=1`);
  await early.getByRole('button',{name:'Open workspace navigation',exact:true}).waitFor();
  assert.equal(await early.getByRole('button',{name:'Open workspace navigation',exact:true}).count(),1,'ProjectShell loading keeps exactly one navigation opener');
  await early.goto(`${base}/branches?branch=b&tab=chats&chat=c&failProjectResources=1`);
  await early.getByText('The requested resource could not be checked.',{exact:true}).waitFor();
  assert.equal(await early.getByRole('button',{name:'Open workspace navigation',exact:true}).count(),1,'ProjectShell error keeps exactly one navigation opener');
- await early.goto(`${base}/branches?branch=b&tab=chats&chat=c&workspace=${encodeURIComponent('/projects/p/agents')}&failProjectResources=1`);
+ await early.goto(`${base}/branches?branch=b&tab=chats&chat=c&workspace=${encodeURIComponent('/projects/p/chats/c?view=agents')}&failProjectResources=1`);
  assert.equal(await early.getByRole('button',{name:'Open workspace navigation',exact:true}).count(),1,'failed embedded Agents keeps exactly one navigation opener');
  await early.close();
 
- const pristineDeployment=await browser.newPage({viewport:{width:900,height:700}});
+ const pristineDeployment=await newPage({viewport:{width:900,height:700}});
  await pristineDeployment.goto(`${base}/branches?branch=b&backgroundDeploy=1`);
  await pristineDeployment.getByRole('heading',{name:'Deployed workflow',exact:true}).waitFor({timeout:8000});
- assert.equal(await pristineDeployment.getByText('A package update finished while this draft has local edits.',{exact:false}).count(),0,'pristine draft adopts a background deployment');
+ assert.equal(await pristineDeployment.getByText('The deployed workflow changed while this draft has local edits.',{exact:false}).count(),0,'pristine draft adopts a background deployment');
  await pristineDeployment.close();
 
- const dirtyDeployment=await browser.newPage({viewport:{width:900,height:700}});
+ const dirtyDeployment=await newPage({viewport:{width:900,height:700}});
  await dirtyDeployment.goto(`${base}/branches?branch=b&backgroundDeployDirty=1`);
  await dirtyDeployment.getByLabel('Workflow name',{exact:true}).fill('My local workflow edit');
- await dirtyDeployment.getByText('A package update finished while this draft has local edits.',{exact:false}).waitFor({timeout:8000});
+ await dirtyDeployment.getByText('The deployed workflow changed while this draft has local edits.',{exact:false}).waitFor({timeout:8000});
  assert.equal(await dirtyDeployment.getByLabel('Workflow name',{exact:true}).inputValue(),'My local workflow edit','background deployment preserves a dirty draft');
  dirtyDeployment.once('dialog',dialog=>dialog.accept());
  await dirtyDeployment.getByRole('button',{name:'Load deployed version',exact:true}).click();
  await dirtyDeployment.getByRole('heading',{name:'Deployed workflow',exact:true}).waitFor();
  await dirtyDeployment.close();
 
- const scopedDeployment=await browser.newPage({viewport:{width:900,height:700}});
+ const scopedDeployment=await newPage({viewport:{width:900,height:700}});
  await scopedDeployment.goto(`${base}/branches?branch=b&backgroundDeployDirty=1`);
  await scopedDeployment.getByLabel('Workflow name',{exact:true}).fill('Scoped local edit');
- await scopedDeployment.getByText('A package update finished while this draft has local edits.',{exact:false}).waitFor({timeout:8000});
+ await scopedDeployment.getByText('The deployed workflow changed while this draft has local edits.',{exact:false}).waitFor({timeout:8000});
  scopedDeployment.once('dialog',dialog=>dialog.accept());
  await scopedDeployment.getByText('Other workflow',{exact:true}).first().click();
  await scopedDeployment.getByRole('heading',{name:'Other workflow',exact:true}).waitFor();
- assert.equal(await scopedDeployment.getByText('A package update finished while this draft has local edits.',{exact:false}).count(),0,'deployment notice is scoped to its Branch');
+ assert.equal(await scopedDeployment.getByText('The deployed workflow changed while this draft has local edits.',{exact:false}).count(),0,'deployment notice is scoped to its Branch');
  await scopedDeployment.close();
 
- const failedDeployment=await browser.newPage({viewport:{width:900,height:700}});
+ const failedDeployment=await newPage({viewport:{width:900,height:700}});
  await failedDeployment.goto(`${base}/branches?branch=b&backgroundDeploy=1&failBackgroundVersionOnce=1`);
- await failedDeployment.getByText('The package update finished, but the deployed workflow could not be loaded.',{exact:false}).waitFor({timeout:8000});
+ await failedDeployment.getByText('Changes were published, but the deployed workflow could not be loaded.',{exact:false}).waitFor({timeout:8000});
  await failedDeployment.getByRole('button',{name:'Retry loading',exact:true}).click();
  await failedDeployment.getByRole('heading',{name:'Deployed workflow',exact:true}).waitFor();
  assert.equal(await failedDeployment.getByRole('button',{name:'Retry loading',exact:true}).count(),0,'failed deployment reconciliation remains retryable');
  await failedDeployment.close();
 
- const latePackage=await browser.newPage({viewport:{width:900,height:700}});
+ const latePackage=await newPage({viewport:{width:900,height:700}});
  await latePackage.goto(`${base}/branches?branch=b&slowPackageFinish=1`);
  const portablePackage={schema:'ponderosa.branch-installation.v1',packageId:'late-package',mode:'template',exportedAt:new Date().toISOString(),definition:{schema:'ponderosa.branch.v1',name:'Late package',trigger:{kind:'manual'},parameters:{},entry:'script',steps:[{id:'script',kind:'script',runtime:'node',source:'return input',cwdRef:'workspace',timeoutMs:1000}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},chats:[],agentBindings:{},limits:{maxCallDepth:100,maxLoopIterations:100,maxTraversals:100}};
  await latePackage.getByText('Apply package update…',{exact:true}).locator('input[type=file]').setInputFiles({name:'late.ponderosa.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(portablePackage))});
@@ -170,14 +172,14 @@ try {
  console.log('PASS dismissed package completion is fenced from later navigation and edits');
  await latePackage.close();
 
- const rollover=await browser.newPage({viewport:{width:900,height:700}});
+ const rollover=await newPage({viewport:{width:900,height:700}});
  await rollover.goto(`${base}/branches?branch=b&settings=general&slowRollover=1`);
  const tokens=rollover.getByLabel('Roll over above (context tokens)',{exact:true}),saveRollover=rollover.getByRole('button',{name:'Save Rollover Limits',exact:true});
  await tokens.fill('180000');await saveRollover.click();await rollover.getByRole('button',{name:'Saving Rollover Limits…',exact:true}).waitFor();await tokens.fill('190000');await rollover.getByRole('button',{name:'Save Rollover Limits',exact:true}).waitFor();assert.equal(await tokens.inputValue(),'190000','edits made during a delayed save remain');
  await rollover.goto(`${base}/branches?branch=b&settings=general&rejectRollover=1`);await rollover.getByLabel('Roll over above (context tokens)',{exact:true}).fill('175000');await rollover.getByRole('button',{name:'Save Rollover Limits',exact:true}).click();await rollover.getByText('Rollover save rejected',{exact:true}).waitFor();assert.equal(await rollover.getByLabel('Roll over above (context tokens)',{exact:true}).inputValue(),'175000','failed save keeps the draft');
  await rollover.close();
 
- const creation=await browser.newPage({viewport:{width:640,height:600}});
+ const creation=await newPage({viewport:{width:640,height:600}});
  await creation.goto(`${base}/branches?branch=b&tab=chats&emptyChats=1`);
  await creation.getByRole('button',{name:'Chat actions',exact:true}).click();
  await creation.getByRole('menuitem',{name:'Create Chat',exact:true}).click();
@@ -189,7 +191,7 @@ try {
  console.log('PASS Branch Chat ConversationDto creation contract and ProjectShell early-state navigation');
  await creation.close();
 
- const accessibility=await browser.newPage({viewport:{width:900,height:844}});
+ const accessibility=await newPage({viewport:{width:900,height:844}});
  await accessibility.goto(`${base}/branches?branch=b&tab=workflow`);
  const assertTabPanels=async()=>assert.deepEqual(await accessibility.getByRole('tablist',{name:'Branch views',exact:true}).getByRole('tab').evaluateAll(tabs=>tabs.map(tab=>({controls:tab.getAttribute('aria-controls'),mounted:Boolean(document.getElementById(tab.getAttribute('aria-controls')??''))}))),[
   {controls:'branch-panel-0',mounted:true},
@@ -226,7 +228,7 @@ try {
  console.log('PASS required Step removal, deterministic focus, mounted tab panels, keyboard tabs, and single-sidebar settings from 320px through 900px');
  await accessibility.close();
 
- const dataflow=await browser.newPage({viewport:{width:1280,height:844}});
+ const dataflow=await newPage({viewport:{width:1280,height:844}});
  await dataflow.goto(`${base}/branches?branch=b&tab=workflow`);
  await dataflow.getByLabel('Add after selected').click();
  await dataflow.getByRole('option',{name:'For Each item'}).click();
@@ -258,4 +260,5 @@ try {
  assert.ok(await dataflow.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'For Each editor has no desktop document overflow');
  console.log('PASS For Each authoring, worker selection, Join controls, and editor bounds');
  await dataflow.close();
+ assert.deepEqual(pageErrors,[],'Branch fixture renders without page errors');
 }finally{await browser.close()}

@@ -6,6 +6,7 @@ import {BranchesView} from '../../src/components/BranchesView';
 import {MutationNotificationProvider} from '../../src/components/MutationNotifications';
 import {createPonderosaTheme} from '../../src/theme';
 import {realApi} from '../../src/api/real';
+import type {BranchExecutionBudgetDto,BranchOperationalSummaryDto} from '@ponderosa/core';
 import '../../src/global.css';
 const now='2026-09-22T00:00:00Z';
 const branch={id:'b',name:'Qualification workflow',chatId:'c',enabled:false,versionId:'v',activeExecutions:0,createdAt:now};
@@ -56,6 +57,8 @@ window.fetch=async(input,init)=>{
  else if(path==='/api/branches/contexts/execution-chat')value={...chat,id:'execution-chat',executionId:'e2'};
  else if(path==='/api/branches/contexts/c')value=chat;
  else if(path==='/api/branches/b/executions')value=[execution];
+ else if(/^\/api\/branches\/b2?\/execution-budget$/.test(path))value={branchId:path.split('/')[3]!,revision:0,policy:null,used:0,allowance:0,periodId:null,periodStartedAt:null,heldCount:0,observedAt:now} satisfies BranchExecutionBudgetDto;
+ else if(/^\/api\/branch-executions\/e2?\/operations$/.test(path))value={executionId:path.split('/')[3]!,state:'completed',label:'Completed',observedAt:now,counts:{completed:0,running:0,retrying:0,failed:0,waitingAgent:0,waitingHuman:0,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0} satisfies BranchOperationalSummaryDto;
  else if(path==='/api/branch-executions/e')value={execution,steps:[],attempts:[],paths:[],gates:[],resources:[],waits:[],decisions:[]};
  else if(path==='/api/branch-executions/e2')value={execution:{...execution,id:'e2'},steps:[],attempts:[],paths:[],gates:[],resources:[],waits:[],decisions:[]};
  else if(path==='/api/branches/b/lifecycle'||path==='/api/branches/b2/lifecycle')value={deleting:false,chats:1,activeExecutions:0,callers:[],pendingRemoval:[],updates:[]};
