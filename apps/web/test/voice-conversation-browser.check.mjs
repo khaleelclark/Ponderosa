@@ -2,19 +2,20 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { pluginReact } from "@rsbuild/plugin-react";
 import { createRsbuild } from "@rsbuild/core";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const output = await mkdtemp(path.join(tmpdir(), "ponderosa-speech-browser-"));
+let output;
 const serverRequire = createRequire(new URL("../../server/package.json", import.meta.url));
-const playwrightModule = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? serverRequire.resolve("playwright-core"));
-const chromium = playwrightModule.chromium ?? playwrightModule.default.chromium;
 let browser; let server;
 try {
+  output = await mkdtemp(path.join(tmpdir(), "ponderosa-speech-browser-"));
+  const playwrightModule = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? pathToFileURL(serverRequire.resolve("playwright-core")).href);
+  const chromium = playwrightModule.chromium ?? playwrightModule.default.chromium;
   const build = await createRsbuild({ cwd: root, rsbuildConfig: { plugins: [pluginReact()],
     source: { transformImport: [], entry: { index: path.join(root, "test/voice-conversation-browser-entry.tsx") } },
     output: { distPath: { root: output } }, logLevel: "error",
@@ -117,5 +118,5 @@ try {
 
 } finally {
   await browser?.close(); await new Promise(resolve => server ? server.close(resolve) : resolve());
-  await rm(output, { recursive: true, force: true });
+  if (output) await rm(output, { recursive: true, force: true });
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { monitorEventLoopDelay } from "node:perf_hooks";
@@ -10,10 +10,8 @@ import { pluginReact } from "@rsbuild/plugin-react";
 import { createRsbuild } from "@rsbuild/core";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const output = await mkdtemp(path.join(tmpdir(), "request-storm-browser-"));
+let output;
 const serverRequire = createRequire(new URL("../../server/package.json", import.meta.url));
-const playwrightModule = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? serverRequire.resolve("playwright-core"));
-const chromium = playwrightModule.chromium ?? playwrightModule.default.chromium;
 let browser;
 let server;
 const overlappingProbes = [];
@@ -21,6 +19,9 @@ let overlapObserved = false;
 const loopDelay = monitorEventLoopDelay({ resolution: 10 });
 loopDelay.enable();
 try {
+  output = await mkdtemp(path.join(tmpdir(), "request-storm-browser-"));
+  const playwrightModule = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? pathToFileURL(serverRequire.resolve("playwright-core")).href);
+  const chromium = playwrightModule.chromium ?? playwrightModule.default.chromium;
   const build = await createRsbuild({
     cwd: root,
     rsbuildConfig: {
@@ -309,5 +310,5 @@ try {
   loopDelay.disable();
   if (browser) await browser.close();
   if (server) await new Promise(resolve => server.close(resolve));
-  await rm(output, { recursive: true, force: true });
+  if (output) await rm(output, { recursive: true, force: true });
 }
