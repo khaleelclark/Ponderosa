@@ -27,8 +27,9 @@ export function DictationControls({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [talkOpenFor, setTalkOpenFor] = useState<string>();
-  const talkOpen = Boolean(talkContext && talkOpenFor === talkContext.conversationId);
-  useEffect(() => { setMenuAnchor(null); setTalkOpenFor(undefined); }, [talkContext?.conversationId]);
+  const talkKey = talkContext && JSON.stringify([talkContext.projectId, talkContext.conversationId, talkContext.selectedAgentId]);
+  const talkOpen = Boolean(talkKey && talkOpenFor === talkKey);
+  useEffect(() => { setMenuAnchor(null); setTalkOpenFor(undefined); }, [talkKey]);
   const dictation = useDictation(
     onFinalTranscript,
     onSettlingChange,
@@ -52,6 +53,7 @@ export function DictationControls({
   }, [canStopForDisabled, dictation.stop, disabled]);
 
   const unavailable = dictation.unavailableReason;
+  const callAvailable = talkContext?.agents.some(agent => !agent.archived && agent.projectId === talkContext.projectId && agent.conversationId === talkContext.conversationId && (!talkContext.selectedAgentId || agent.id === talkContext.selectedAgentId));
   const chooseMode = Boolean(talkContext) && !active && !paused;
   const primaryLabel = chooseMode ? "Voice input" : unavailable
     ? unavailable
@@ -120,7 +122,7 @@ export function DictationControls({
         if (event.key === "Escape" || event.key === "Tab") { if(event.key === "Escape")event.preventDefault(); menuAnchor?.focus({ preventScroll: true }); setMenuAnchor(null); }
       }}>
         <MenuItem disabled={disabled || Boolean(unavailable)} onClick={() => { setMenuAnchor(null); dictation.start(); }}>Dictate</MenuItem>
-        <MenuItem disabled={disabled || !talkContext?.agents.some(agent => !agent.archived)} onClick={() => { setMenuAnchor(null); setTalkOpenFor(talkContext?.conversationId); }}>Talk</MenuItem>
+        <MenuItem disabled={disabled || !callAvailable} onClick={() => { setMenuAnchor(null); setTalkOpenFor(talkKey); }}>Call Agent</MenuItem>
       </MenuList>
       </Paper>
       </ClickAwayListener>

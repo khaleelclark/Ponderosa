@@ -1282,6 +1282,7 @@ export function AgentDetail({
             ? engineCapability?.composerCapabilities
             : [],
           enableVoiceDictation: true,
+          talkContext: { projectId: detail.agent.projectId, conversationId: detail.agent.conversationId, agents: [detail.agent], selectedAgentId: detail.agent.id, lockAgent: true },
           onCapabilitiesOpen: () =>
             onRefreshCapabilities({ engineId: engine?.id, model, agentId }),
           projectId: detail.agent.projectId,

@@ -1,36 +1,41 @@
-# Beta12 voice conversation development
+# Agent calls (preview)
 
-The first development preview adds Talk to an existing Chat with at least one
-Agent. Select the Agent explicitly, tap Listen, review the recognized text, and
-send the turn. The Agent's completed reply is read aloud using
-browser speech. Tap Listen to continue.
-This preview is turn-based; automatic end-of-turn sending and automatic microphone
-reactivation are intentionally not enabled until real-device qualification.
+Calls use browser speech and Ponderosa's ordinary private Direct Messages. Select **Voice input → Call Agent** in a live Chat, or in an Agent's private composer. Agent detail pins the selected Agent. Historical, archived and unavailable members cannot start a call. The component accepts `projectId`, `conversationId`, `agents`, optional `selectedAgentId` and `lockAgent`; Pinecone can later use the same ordinary Agent identity after separately reviewed integration.
 
-Voice turns use the existing direct-message intake, stable Agent IDs, an
-idempotency key retained for retries within the open session, and queued delivery. They use the selected
-Agent's saved runtime configuration. There is no new provider, API-key path,
-communication log, or scheduler. Replies follow the accepted direct message’s canonical delivery receipt and exact
-completed execution ID. Only one matching direct reply from the selected Agent in
-the same Chat is read; ambiguous or artifact-backed replies return to Chat.
-Background messages, provider output and historical replies are never speech input.
+Opening a call requests no microphone permission and submits no work. **Listen** is an explicit use-time gesture. Browser recognition can use the browser vendor's remote processing; this feature does not promise local or offline recognition. You may type instead. Recognition and synthesis are independently feature-detected, so missing recognition leaves typed input and missing synthesis leaves readable replies. Insecure remote HTTP cannot capture. No new audio backend, API keys, downloads, accounts or telephony are involved.
 
-Pause, hidden surfaces, navigation and End session stop capture/playback. Ending a
-session does not cancel an already-sent request. Questions, failed outcomes,
-truncated replies and a two-minute wait return the user to ordinary Chat. Sending
-requires a visible transcript review. Speech recognition remains browser-dependent.
+Finish a turn, review/edit the final words, and explicitly **Send turn**. Interim recognition never submits or persists. Send queues one immutable, single-recipient Direct Message with the same body and idempotency key on deliberate retry in the still-mounted call. Calls do not change engine/model/settings, resume a paused Pinecone, create Runs directly or bypass canonical SQLite intake. Codex and Claude use the same subscription-backed text Adapter path.
 
-Before treating this as a Beta12 release feature, qualify microphone permission,
-actual recognition, speaker echo, browser autoplay, interruption, backgrounding,
-reconnect, long replies and delivery failures on real Mac and phone browsers.
-Add automatic listening only after these checks support it. True simultaneous
-speech/interruption and background phone-call behavior remain future work.
-Windows and Claude execution tests deferred for Beta11 are not carried forward as
-passing evidence. No Beta12 release or production deployment is implied.
+The display distinguishes starting microphone, listening, finishing transcript, sending, queued, waiting, loading speech and speaking. Speaking begins only after the browser's playback-start callback. Three-second recognition start/finish and speech-start timeouts leave an actionable fallback. A call displays at most ten canonical turn pairs (twenty Communications), deduplicated by canonical message identity. Unsent words stay in the editable draft, outside this transient transcript. Full history, Decisions and files remain in Chat.
 
-Unsent text and ambiguous retry identity are currently session-local. End or reload
-discards them; check Chat before resending an unconfirmed turn in a new session.
+**Mute microphone** abandons recognition immediately, preserving already-final words and discarding unfinished words. **Unmute** never starts capture. **Finish turn** gracefully waits for final words before enabling Send. **Stop speaking** keeps the reply visible. **End call / Open Chat** close the call, fence callbacks and discard unsent words. Already accepted work continues. None of these controls cancels a Request, Activation, Run or provider session. Use existing Chat controls for work cancellation or Decisions.
 
-The latest 20-message page must still include the accepted voice turn. If Chat
-activity pushes it outside that window, voice pauses instead of treating a partial
-history sample as a unique reply. This is the initial bounded-history ceiling.
+Capture and playback share one page-local owner across calls, ordinary dictation and Read aloud. Starting dictation stops playback; starting playback abandons capture. Old cleanup/callbacks cannot release a replacement owner. End, unmount, route/context changes, surface loss, backgrounding and unavailable membership fence callbacks and release recognition handlers, settlement/start/deadline/poll timers, accessibility observers/listeners and owned synthesis. Background recovery requires a deliberate Resume/Listen; reconnect or playback completion never restarts the microphone. No application-owned MediaStream tracks are created. Browser cancellation is best-effort: a cleanup exception reports uncertainty; check browser microphone/audio controls if its indicator remains active. This is not acoustic echo cancellation or cross-tab hardware coordination.
+
+## Pending sends and recovery limits
+
+The complete immutable reviewed request exists only in the still-mounted call's retry reference. Fallible sessionStorage and its shared memory fallback retain **only an unresolved identity marker**: route (origin/product/Project/Chat/Agent), server-authored instance hint, idempotency key, fingerprint and preparation time. No private request text, recipient bodies, audio, interim words or transcript are persisted by call recovery. At most one unresolved marker may occupy a route. Turns remain limited to the existing 10,000-code-point inline threshold; use Chat for larger text.
+
+A lost acknowledgement leaves the outcome unknown. In the still-mounted call, **Retry same turn** deliberately sends exactly the frozen body/key/recipient/queue, rechecking its fingerprint, route, instance hint and 24-hour retry limit. Changed identity or definitive 4xx blocks retry. End/unmount drops the application-owned retry reference; reopening/remount/reload never reconstructs the payload or creates a replacement key. Only Chat review is available. Accepted work continues after hangup. In-flight hashing/HTTP transport may still hold bytes until it settles; no forensic erasure of browser, JavaScript or network memory is promised.
+
+A late acknowledgement settles only the matching marker after hangup, without reviving UI/audio or deleting a different attempt. Server idempotency and immutable recipients remain authoritative. A marker does not authorize restored sends. The existing workspace SSE hook's `workspace_status` supplies the hint stored as `ponderosa.workspace.instance.v1`; that cursor is not fresh connection proof. No new stream freshness or identity contract is introduced. Storage denial permits mounted retry with a text-free memory marker, warns about reload recovery, and requires Chat after closure.
+
+Expiry limits mounted retry to 24 hours. Minimal unknown-outcome markers remain for Chat review; no physical deletion deadline or background expiration resource is promised. Repeated reopening of expired/invalid records cannot silently permit a fresh send. Legacy full-text records are inspected only in the exact current route's slot with a 128,000-character parsing bound: raw text is removed before asynchronous validation, valid identity is converted to a marker, and corrupt/future/oversized data becomes a text-free review warning. Legacy text is never returned to the call draft. Other route/operator storage is not scanned. Browser-denied removal cannot guarantee physical deletion of preexisting inaccessible legacy bytes; cleanup is retried on a later accessible inspection. SessionStorage is browser-session storage, not secrecy from authorized host operators.
+
+## Exact reply safety and limits
+
+The existing latest-20-message, 120-second ceiling is retained. A reply must follow the accepted turn's sole canonical processed/recovered delivery and exact execution, selected author, Chat and `user_dm` intent. Multiple replies, artifact-backed projections, missing sent turns, failed/uncertain deliveries or unresolved recovery stop playback and require Chat. Only canonical authored replies enter the transcript/audio; work logs, normalized provider deltas, tool output and Decision/approval UI never become spoken reply text. Polls do not overlap; late reads are ignored after a fence. An in-flight HTTP read cannot be physically aborted by the current API, but cannot affect the closed/replaced call.
+
+Membership is checked through the existing product-scoped Chat read and current props. The bounded initial member page may omit a later member; that conservative case falls back to Chat. No expanded page scan, new endpoint/DTO/schema or scheduling subsystem is introduced.
+
+## Qualification
+
+This is a foreground, half-duplex, reviewed-turn preview. Desktop Linux/macOS/Windows browsers, mobile browsers and installed PWAs are eligible only when runtime checks pass, browser permissions/services work, the host is reachable and the Agent's subscription runtime is usable. Microphone/synthesis run on the client; text execution runs on the host. Embedded WebViews/Firefox/managed browsers may require typed/readable fallback. Background/screen-lock, offline and multiple-tab behavior have no ongoing-call guarantee. No native desktop speech bridge or true duplex/provider-audio capability is qualified.
+
+Synthetic checks cover reviewed/private turns, immutable retry identity, canonical reply filters, ten-turn bound, start/settlement/autoplay failures, missing/insecure capabilities, stale lifecycle callbacks, storage isolation/expiry/failure, foreground cleanup and ordinary dictation/read-aloud. A disposable real HTTP + SQLite scheduler fixture, with fake normalized Codex/Claude text Adapters, verifies one canonical Communication/Activation for lost acknowledgement and concurrent exact retry, including input-manifest scope and canonical private reply.
+
+Qualified physical devices: **NONE**. Shims do not qualify microphone permission/physical cessation, recognition/language accuracy, loudspeaker/Bluetooth echo, autoplay after delayed replies, iOS/Android/PWA/background/audio-focus behavior, real subscription providers, native Windows/macOS or release readiness. Separate physical/live qualification and independent exact-head review are required. Branches release priority, strict `<250 ms` runtime blocker and later integration/native/CI gates remain unchanged.
+
+The isolated release integration keeps the release's Project browser stream recipe and portable Playwright fixture loader. `voiceCallAttempt.test.mjs` retains a real positive attempt before mutation negatives, checks the unchanged attempt again, restores the instance and settles only its own marker.
+
+Run `node apps/web/test/voice-agent-detail-browser.check.mjs` after the existing dependency-order core/native-host/engines/agents/server builds. Set `PONDEROSA_CHROMIUM_PATH` to an already-installed Chromium executable; set `VOICE_FIXTURE_ENGINE=claude` for the second inert Adapter variant (default Codex). This focused synthetic fixture mounts the actual AgentDetail, AgentDetailComposer and Composer with the app's notification provider, uses unmocked realApi/requestJson/fetch and an owned disposable HTTP/SQLite/production scheduler, drops acknowledgements, then deliberately retries the same mounted turn. Browser transport may replay a dropped connection; every observed body/key must remain identical and the fixture asserts one Communication/Activation/Run, private audience, queue policy, input manifest and exact canonical reply playback. It also exercises locked recipient selection, hidden/audit/archived entry suppression and ordinary composer dictation without sending. Speech is shimmed, not device-qualified. The 54-case call/privacy fixture and shared Read aloud checks remain separate explicit commands; the default web helper recipe does not implicitly run these additional voice fixtures.

@@ -80,6 +80,13 @@ try {
   await call("releaseSpeechSurface", "one");
   assert.equal((await call("speechSnapshot")).status, "stopped");
   assert.equal(await page.evaluate(() => window.speechTest.stats.requests), 0);
+  await page.evaluate(() => { window.speechTest.stats.hangStart = true; });
+  await call("start", "one"); assert.equal((await call("speechSnapshot")).status, "loading", "speak() does not prove playback started");
+  await page.waitForFunction(() => window.speechTest.speechSnapshot().status === "error", {timeout:5000});
+  await page.evaluate(() => { window.speechTest.stats.hangStart = false; window.speechTest.stats.cancelThrows = true; });
+  await call("start", "one"); await call("stopSpeech", "one");
+  assert.match((await call("speechSnapshot")).error, /cleanup could not be confirmed/);
+  await page.evaluate(() => { window.speechTest.stats.cancelThrows = false; });
   assert.deepEqual(errors, []);
   console.log("PASS browser-only playback, pause/resume, completion, hidden-surface cleanup, supersession, stale callbacks, failure/retry, throwing cleanup, same-owner stale callbacks, pagehide and zero synthesis requests.");
 } finally {

@@ -1,10 +1,10 @@
 import { DEFAULT_SPEECH_PREFERENCES } from "@ponderosa/core";
 import * as coordinator from "../src/components/speech/speechCoordinator";
-const stats = { requests: 0, starts: 0, cancels: 0, completions: 0, speakThrows: false, cancelThrows: false, constructorThrows: false };
+const stats = { requests: 0, starts: 0, cancels: 0, completions: 0, speakThrows: false, cancelThrows: false, constructorThrows: false, hangStart: false };
 let utterance: any;
 Object.defineProperty(window, "SpeechSynthesisUtterance", { value: class { constructor(public text: string) { if (stats.constructorThrows) throw new Error("injected unavailable speech"); } } });
 Object.defineProperty(window, "speechSynthesis", { value: {
-  speak(item: any) { utterance = item; stats.starts++; if (stats.speakThrows) throw new Error("injected playback failure"); item.onstart?.(); },
+  speak(item: any) { utterance = item; stats.starts++; if (stats.speakThrows) throw new Error("injected playback failure"); if (!stats.hangStart) item.onstart?.(); },
   cancel() { stats.cancels++; if (stats.cancelThrows) throw new Error("injected cancellation failure"); }, pause() {}, resume() {},
 } });
 window.fetch = async () => { stats.requests++; throw new Error("Speech must not use a server"); };
