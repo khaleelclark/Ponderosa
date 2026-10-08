@@ -4,29 +4,18 @@ import type {
   WorkspaceResourceRecencyDto,
   WorkspaceResourceRecencyListDto,
 } from "@ponderosa/core";
-import { useQuery, type QueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { api } from "./api";
 import { queryKeys } from "./queryKeys";
 import type { Route } from "./routing";
 
 export const WORKSPACE_RESOURCE_RECENCY_LIMIT = 100;
-const OLDEST_RESOURCE_TIME = new Date(0).toISOString();
 
 export function workspaceResourceKey(
   kind: WorkspaceResourceKind,
   resourceId: string,
 ): `${WorkspaceResourceKind}:${string}` {
   return `${kind}:${resourceId}`;
-}
-
-export function workspaceResourceRecencyTime(
-  recency: WorkspaceResourceRecencyListDto | undefined,
-  resourceKey: string,
-  fallback: string,
-): string {
-  const item = recency?.resources.find(resource => resource.resourceKey === resourceKey);
-  if (item) return item.lastUsedAt;
-  return recency?.truncated ? OLDEST_RESOURCE_TIME : fallback;
 }
 
 export function boundWorkspaceResourceRecency(
@@ -44,14 +33,6 @@ export function boundWorkspaceResourceRecency(
     if (unstarredCount >= limit) return false;
     unstarredCount += 1;
     return true;
-  });
-}
-
-export function useWorkspaceResourceRecency() {
-  return useQuery({
-    queryKey: queryKeys.workspaceResourceRecency.all,
-    queryFn: () => api.getWorkspaceResourceRecency(),
-    staleTime: 5_000,
   });
 }
 

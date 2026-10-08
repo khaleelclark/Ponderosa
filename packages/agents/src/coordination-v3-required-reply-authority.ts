@@ -102,16 +102,6 @@ export function requiredReplyAuthoritiesForActivations(
   });
 }
 
-export function requiredReplyAuthorityForActivations(
-  activations: readonly ActivationInput[],
-): CoordinationReplyAuthority | undefined {
-  const distinct = [...new Map(
-    requiredReplyAuthoritiesForActivations(activations)
-      .map(({ replyAuthority }) => [stableJson(replyAuthority), replyAuthority]),
-  ).values()];
-  return distinct.length === 1 ? distinct[0] : undefined;
-}
-
 export function communicationSatisfiesReplyAuthority(
   authority: CoordinationReplyAuthority,
   intent: CommunicationIntent | string,

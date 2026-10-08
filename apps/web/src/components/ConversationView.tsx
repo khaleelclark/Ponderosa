@@ -181,7 +181,6 @@ export function ConversationView({
   } = useConversationHistory(conversationId, activeView);
   const notificationsQuery = useNotifications();
   const markCommunicationVisible = useConversationNotificationVisibility(
-    notificationsQuery,
     queryClient,
   );
   const preferencesQuery = useWorkspacePreferences();

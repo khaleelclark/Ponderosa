@@ -1,6 +1,6 @@
-// @ponderosa/agents — the append-only event log + rebuildable SQLite projections
-// (SPEC §4/§7). A library consumed by apps/server; exposes no HTTP. Does not import
-// from packages/engines except AgentEvent (re-exported through core).
+// @ponderosa/agents — authored event-log authority, canonical V3 SQLite
+// coordination/scheduler state, and rebuildable UI projections. Consumed by
+// apps/server; exposes no HTTP and imports shared AgentEvent through core.
 
 export { AgentStore, AgentDeletionConflictError } from "./store.js";
 export { communicationMentionBindings } from "./store-mention-bindings.js";

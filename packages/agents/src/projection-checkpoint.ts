@@ -1,3 +1,4 @@
+import { fsyncDirectory } from "./store-filesystem.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -33,13 +34,6 @@ type ProjectionCheckpoint = {
   canonicalFingerprint: string;
   writtenAt: string;
 };
-
-function fsyncDirectory(directory: string): void {
-  if (process.platform === "win32") return;
-  const descriptor = openSync(directory, "r");
-  try { fsyncSync(descriptor); }
-  finally { closeSync(descriptor); }
-}
 
 function schemaFingerprint(client: Database.Database): string {
   const names = (client.prepare(`SELECT name FROM _schema_version ORDER BY name`).all() as Array<{ name: string }>)

@@ -1,4 +1,3 @@
-import type { WorkspaceNotificationDto, WorkspaceNotificationPageDto } from "@ponderosa/core";
 import type { QueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
 import { api } from "../api";
@@ -12,7 +11,6 @@ import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 const VISIBLE_COMMUNICATION_BATCH_SIZE = 100;
 
 export function useConversationNotificationVisibility(
-  _notificationsQuery: { data?: WorkspaceNotificationPageDto | WorkspaceNotificationDto[] },
   queryClient: QueryClient,
 ): (
   communicationEventId: string | undefined,

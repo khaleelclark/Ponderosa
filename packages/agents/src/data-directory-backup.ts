@@ -1,3 +1,4 @@
+import { fsyncDirectory } from "./store-filesystem.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -89,13 +90,6 @@ function removePublishedRoot(root: string, identity: string): void {
   }
   rmSync(root, { recursive: true, force: true });
   fsyncDirectory(path.dirname(root));
-}
-
-function fsyncDirectory(directory: string): void {
-  if (process.platform === "win32") return;
-  const descriptor = openSync(directory, "r");
-  try { fsyncSync(descriptor); }
-  finally { closeSync(descriptor); }
 }
 
 function safeRelative(relative: string): string {

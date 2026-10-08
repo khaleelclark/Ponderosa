@@ -40,11 +40,9 @@ import { reconcileDeletedProjectClientState, useWorkspaceStream } from "./hooks/
 import {
   parseRoute,
   routeProjectId,
-  saveLastProjectId,
   useRoute,
   type Route,
 } from "./routing";
-import { rememberProjectRoute } from "./projectNavigation";
 import { isProjectRoute, routeToPath } from "./routeRegistry";
 import type { ColorMode } from "./theme";
 import {
@@ -73,14 +71,12 @@ import {
   markWorkspaceResourceUsed,
   workspaceResourceFromRoute,
 } from "./workspaceRecency";
-import { MobileWorkspaceActionsProvider } from "./components/MobileWorkspaceActionsContext";
 import { MobileNavigationProvider } from "./components/MobileNavigationContext";
 import {
   notificationsForAvailableProjects,
 } from "./attention";
 import { useAppViewport } from "./hooks/useAppViewport";
 import {
-  ActiveNotificationViewProvider,
   activeNotificationViewForRoute,
 } from "./notificationActiveView";
 import { PrimaryHeaderActionsProvider } from "./components/PrimaryHeaderActions";
@@ -568,12 +564,6 @@ export default function App({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  useEffect(() => {
-    rememberProjectRoute(route);
-    const projectId = routeProjectId(route);
-    if (projectId) saveLastProjectId(projectId);
-  }, [route]);
-
   const recordWorkspaceRouteUse = (next: Route) => {
     const resource = workspaceResourceFromRoute(next);
     if (resource) {
@@ -684,7 +674,6 @@ export default function App({
           });
         }}
       >
-        <MobileWorkspaceActionsProvider>
         <Box
         sx={{
           height: {
@@ -806,7 +795,6 @@ export default function App({
                   display: "grid",
                 }}
               >
-              <ActiveNotificationViewProvider value={activeNotificationView}>
               <WorkspaceConnectionProvider value={workspaceConnection}>
               <PrimaryHeaderActionsProvider
                 preferredProvider={defaultUsageProvider}
@@ -888,7 +876,6 @@ export default function App({
                 </WorkspaceErrorBoundary>
               </PrimaryHeaderActionsProvider>
               </WorkspaceConnectionProvider>
-              </ActiveNotificationViewProvider>
               </Box>
               </WorkspaceRefreshProvider>
             </Box>
@@ -933,7 +920,6 @@ export default function App({
           onClose={closeGlobalSearch}
           onExited={restoreOverlayTrigger}
           onSelect={selection => {
-            saveLastProjectId(selection.projectId);
             if ("chat" in selection && selection.chat.kind === "conversation") {
               void api.markProjectUsed(selection.projectId, selection.chat.id);
             }
@@ -999,7 +985,6 @@ export default function App({
           onRequestHandled={(requestId) => setProjectBrowserRequest(current => consumeProjectBrowserRequest(current, requestId))}
           onClose={() => setBrowserPanelProjectId(undefined)}
         /> : null}
-        </MobileWorkspaceActionsProvider>
       </MobileNavigationProvider>
     </ProjectBrowserContext.Provider>
   );

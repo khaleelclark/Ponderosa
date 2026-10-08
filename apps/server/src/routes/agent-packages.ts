@@ -424,10 +424,12 @@ export function registerAgentPackageRoutes(
     const chat = store.getConversation(root.conversationId);
     const project = { ...store.getProject(root.projectId)!, label: chat?.title ?? root.title, instructions: chat?.instructions };
     let portableArtifactBytes = 0;
-    const canonicalUserDocuments = store.readCommunicationEvents(root.projectId)
-      .filter((event) =>
-        event.sender.kind === "user" && Boolean(event.document?.artifactId));
-    const histories = new Map(nodes.map((agent) => {
+    const canonicalUserDocuments = mode === "template"
+      ? []
+      : store.readCommunicationEvents(root.projectId)
+        .filter((event) =>
+          event.sender.kind === "user" && Boolean(event.document?.artifactId));
+    const histories = new Map((mode === "template" ? [] : nodes).map((agent) => {
       const history = [
         ...(store.getImportedHistory(agent.id)?.messages ?? []),
         ...agentMessages(agent.id).map((message) => ({
@@ -480,17 +482,10 @@ export function registerAgentPackageRoutes(
     const agents: AgentPortablePackageDto["agents"] = [];
     for (const agent of nodes) {
       const history = histories.get(agent.id) ?? [];
-      const historyText = history.map((message) => message.text).join("\n");
       const selectedArtifacts = mode === "template"
         ? []
         : projectArtifacts.filter((artifact) =>
-          artifactOwner.get(artifact.id) === agent.id
-          && (
-            mode === "full"
-            || artifact.pinned
-            || artifact.visibility === "published"
-            || historyText.includes(artifact.id)
-          ));
+          artifactOwner.get(artifact.id) === agent.id);
       const artifacts: NonNullable<AgentPortablePackageDto["agents"][number]["artifacts"]> = [];
       const pendingArtifacts: Array<{
         artifact: typeof selectedArtifacts[number];

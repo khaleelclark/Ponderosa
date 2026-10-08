@@ -1,5 +1,4 @@
 import {
-  agentMentionHandleBase,
   messageTagTokens,
   type AgentDto,
 } from "@ponderosa/core";
@@ -17,11 +16,6 @@ export function messageTagHandle(href: string | undefined): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-/** Stable, typeable handle derived from the agent's current display name. */
-export function agentMentionHandle(title: string): string {
-  return agentMentionHandleBase(title);
 }
 
 /**
@@ -68,16 +62,4 @@ export function agentIdForMentionHandle(
   const normalized = handle.toLocaleLowerCase();
   if (RESERVED_SCOPE_HANDLES.has(normalized)) return undefined;
   return agents.find((agent) => agent.handle.toLocaleLowerCase() === normalized)?.id;
-}
-
-/** Resolve every distinct #tag against the agents currently in a conversation. */
-export function findMentionedAgents(text: string, agents: AgentDto[]): AgentDto[] {
-  const byHandle = new Map(
-    agents
-      .map((agent) => [agent.handle.toLocaleLowerCase(), agent] as const)
-      .filter(([handle]) => !RESERVED_SCOPE_HANDLES.has(handle)),
-  );
-  return findMentionedHandles(text, byHandle.keys())
-    .map((handle) => byHandle.get(handle.toLocaleLowerCase()))
-    .filter((agent): agent is AgentDto => Boolean(agent));
 }

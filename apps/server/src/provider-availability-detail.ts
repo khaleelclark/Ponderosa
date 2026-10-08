@@ -1,13 +1,11 @@
 import {
   publicProviderFailure,
-  publicProviderFailureCategorySummary,
   publicProviderFailureSummary,
   type ProviderFailureCategory,
 } from "@ponderosa/core";
 import { guardedProviderExceptionStringProperty } from "./provider-exception-properties.js";
 
 export const publicProviderAvailabilityDetail = publicProviderFailureSummary;
-export { publicProviderFailureCategorySummary };
 
 export interface PublicProviderErrorResponse {
   error: string;

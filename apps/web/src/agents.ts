@@ -263,29 +263,6 @@ export function isProviderBlockedHealth(
   return health?.status === "blocked" && health.reason === "provider_capacity_unavailable";
 }
 
-export function agentStatusColor(
-  status: AgentStatus,
-): "success" | "warning" | "info" | "error" | "default" {
-  switch (status) {
-    case "running":
-    case "preparing":
-    case "compacting":
-      return "info";
-    case "waiting":
-    case "needs_decision":
-      return "warning";
-    case "completed":
-      return "success";
-    case "blocked":
-    case "failed":
-    case "stalled":
-    case "interrupted":
-      return "error";
-    default:
-      return "default";
-  }
-}
-
 export function relativeTime(iso: string | undefined): string {
   if (!iso) {
     return "";

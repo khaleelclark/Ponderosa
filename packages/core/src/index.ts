@@ -1,12 +1,11 @@
-// @ponderosa/core — the shared contracts imported by BOTH apps/web and apps/server
-// (AGENTS.md: don't duplicate these per app). This barrel is intentionally pure and
-// JSON-serializable: it re-exports only types/DTOs. The Node-only config and logger
-// are separate subpath entry points (`@ponderosa/core/config`, `.../logger`) so the
-// browser bundle never pulls in node built-ins.
+// @ponderosa/core — shared contracts and browser-safe runtime helpers.
+// Node-only config and logger remain separate subpaths so this barrel does not
+// pull Node built-ins into the browser bundle.
 
 export * from "./events.js";
 export * from "./adapter.js";
 export * from "./dto.js";
+export type { CollectionPageDto } from "./dto/collections.js";
 export * from "./sse.js";
 export * from "./communication.js";
 export * from "./managed-tools.js";

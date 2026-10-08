@@ -11,17 +11,16 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { api } from "../api";
 import { mergeAgentStatuses } from "../agents";
-import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
+import { useAgent, useAgentHealth, useConversations, useAgents } from "../hooks/queries";
 import { queryKeys } from "../queryKeys";
 import { retainedDataFailure } from "../retainedData";
 import { enginesWithModelCatalog } from "../conversationEngine";
 import { assertNeverRoute, nestedProjectRouteResources, routeToPath, type ProjectRoute } from "../routeRegistry";
 import { routeReturnTarget, routeReturnLabel, type Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
-import { PresetManagerDialog } from "./dialogs";
 import { ConversationView } from "./ConversationView";
 import { ProjectArtifactsView } from "./ProjectArtifactsView";
 import { AgentWorkInspector } from "./AgentWorkInspector";
@@ -100,7 +99,6 @@ export function ProjectShell({
   const conversations = conversationsQuery.data ?? [];
   const agents = agentsQuery.data ?? [];
   const projectedHealth = healthQuery.data?.agents ?? [];
-  const presetsQuery = useAgentPresets(projectId);
   const claudeEngine = engines.find((engine) => engine.id === "claude");
   const modelCatalogQuery = useQuery({
     queryKey: queryKeys.engines.models(projectId, "claude"),
@@ -155,8 +153,6 @@ export function ProjectShell({
     queryClient.setQueryData(capabilityQueryKey, discovered);
     return discovered;
   }, [capabilityQueryKey, projectId, queryClient]);
-  const presets = presetsQuery.data ?? [];
-  const [presetsOpen, setPresetsOpen] = useState(false);
 
   const statusByAgentId = useMemo(() => {
     return mergeAgentStatuses(agents, projectedHealth, new Map());
@@ -501,19 +497,6 @@ export function ProjectShell({
   }
 
 
-  const dialogs = (
-    <>
-      <PresetManagerDialog open={presetsOpen} engines={projectEngines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={async (id, input, idempotencyKey) => {
-        const action = id ? api.updateAgentPreset(id, input) : api.createAgentPreset(projectId, input, idempotencyKey!);
-        await action;
-        await queryClient.invalidateQueries({ queryKey: queryKeys.agents.presets(projectId) });
-      }} onDelete={async (id) => {
-        await api.deleteAgentPreset(id);
-        await queryClient.invalidateQueries({ queryKey: queryKeys.agents.presets(projectId) });
-      }} />
-    </>
-  );
-
   // Workspace navigation is owned by App on every viewport. Mobile opens the
   // same project hierarchy in an AppBar drawer, so the former per-project list
   // and its title/engine chat-creation form must never become a second flow.
@@ -522,7 +505,6 @@ export function ProjectShell({
       <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
         {loading ? <LinearProgress /> : <Box />}
         <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr)" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
-        {dialogs}
       </Box>
     );
   }
@@ -530,7 +512,6 @@ export function ProjectShell({
   return (
     <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "minmax(0, 1fr)" }}>
       <Box component="section" aria-label="Project workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr)", bgcolor: "background.default" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
-      {dialogs}
     </Box>
   );
 }

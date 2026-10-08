@@ -12,7 +12,6 @@ import type {
   SendMessageResponse,
 } from "@ponderosa/core";
 import { buildMarkdownTranscript } from "../chatTranscript";
-import { downloadBlob } from "../downloads";
 import { uniqueBy } from "../collections";
 import type { AgentDetailView } from "../routing";
 import { projectAgentChat } from "./chat/agentChatProjection";
@@ -169,13 +168,6 @@ function portablePackageFileName(
     .toLocaleLowerCase()
     .slice(0, 80);
   return `${safe || (organization ? "organization" : "agent")}-${mode === "template" ? "template" : "full"}.ponderosa.json`;
-}
-
-function downloadJson(value: unknown, fileName: string): void {
-  const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], {
-    type: "application/json;charset=utf-8",
-  });
-  downloadBlob(blob, fileName);
 }
 
 function eligibleOrganizationParents(
@@ -400,7 +392,6 @@ export {
   agentTranscriptMarkdown,
   compareAgentChatMessages,
   directAgentDeliveryNotice,
-  downloadJson,
   eligibleOrganizationParents,
   mcpPresentation,
   mergeAgentDetailProjection,

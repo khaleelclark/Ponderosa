@@ -1,5 +1,5 @@
+import { normalizedToolResult } from "./tool-result.js";
 import {
-  classifyToolFailure,
   truncateUnicodeCodePoints,
   type AgentEvent,
   type EngineCapabilities,
@@ -967,22 +967,6 @@ export function mapCodexTokenUsage(value: unknown): TokenUsage | undefined {
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
     totalTokens: providerTotal ?? (inputTokens ?? 0) + (outputTokens ?? 0),
-  };
-}
-
-function normalizedToolResult(
-  id: string,
-  output: string,
-  isError: boolean,
-): Extract<AgentEvent, { type: "tool_result" }> {
-  const failure = classifyToolFailure(output, isError);
-  const canonicalIsError = isError || failure !== undefined;
-  return {
-    type: "tool_result",
-    id,
-    output,
-    ...(canonicalIsError ? { isError: true } : {}),
-    ...(failure ? { failureCategory: failure.category, retryable: failure.retryable, ...(failure.retryAfterMs === undefined ? {} : { retryAfterMs: failure.retryAfterMs }) } : {}),
   };
 }
 

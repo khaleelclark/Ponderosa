@@ -1062,7 +1062,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     coordinationV3,
     subscribers,
     recordCommunication,
-    collaborationViewDetail,
     refreshProviderUsageAfterRun,
     appendWorkspace,
     publishCoordinationV3Changed,

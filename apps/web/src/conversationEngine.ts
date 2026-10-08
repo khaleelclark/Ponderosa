@@ -30,15 +30,6 @@ export function soleAvailableEngineId(engines: readonly EngineDto[]): string | u
   return available.length === 1 ? available[0]!.id : undefined;
 }
 
-export function validEngineSelection(
-  engines: readonly EngineDto[],
-  selected: string | undefined,
-): string | undefined {
-  const explicit = engines.find(engine => engine.id === selected);
-  if (explicit && engineIsAvailable(explicit)) return explicit.id;
-  return soleAvailableEngineId(engines);
-}
-
 /** An operator-disabled provider is intentionally inactive, not unhealthy. */
 export function engineCanTestAccess(engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled" | "reachability">): boolean {
   return engine.enabled !== false && engineIsAuthenticated(engine) &&

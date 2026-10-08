@@ -88,8 +88,6 @@ export type Route =
   | { kind: "automation"; projectId: string; triggerId: string; returnTo?: string }
   | { kind: "review"; projectId: string; agentId: string; path?: string; executionId?: string; returnTo?: string };
 
-const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
-
 function decodeRouteSegment(value: string): string | undefined {
   try {
     return decodeURIComponent(value) || undefined;
@@ -316,14 +314,6 @@ function initialWorkspaceLocation(): { route: Route; replacement?: string } {
   let remembered: string | null = null;
   try { remembered = window.localStorage.getItem(LAST_WORKSPACE_PATH_KEY); } catch { /* Private mode still supports navigation. */ }
   return resolveStartupLocation(window.location.pathname, window.location.search, remembered);
-}
-
-export function saveLastProjectId(projectId: string): void {
-  try {
-    window.localStorage.setItem(LAST_PROJECT_KEY, projectId);
-  } catch {
-    // Ignore storage failures (private mode, quota) — routing still works.
-  }
 }
 
 export function useRoute(): {

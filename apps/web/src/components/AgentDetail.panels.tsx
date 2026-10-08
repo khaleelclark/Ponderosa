@@ -106,7 +106,6 @@ export function AgentDetailPanels({
 }: AgentDetailPanelsProps): JSX.Element {
   const queryClient = useQueryClient();
   const markCommunicationVisible = useConversationNotificationVisibility(
-    { data: notifications },
     queryClient,
   );
   const [visibleSubagentCount, setVisibleSubagentCount] = useState(25);
