@@ -49,7 +49,19 @@ export class CoordinationV3SchedulerLeaseAuthority {
     }) => void,
     private readonly recoverRequiredReply: (runId: string, now: string) => void,
     private readonly settleRetriedRequiredReply: (runId: string, now: string) => void,
+    private readonly restoreUninjectedDecisionRoots: (runId: string, now: string) => void,
   ) {}
+
+  /** A coarse injection flag alone cannot certify that abandoned work never
+   * reached a provider. Preserve accepted evidence and use unknown-outcome
+   * accounting rather than replaying its exact Activation. */
+  private canRetryUninjectedRun(runId: string): boolean {
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM scheduler_runs run WHERE run.id=?
+      AND run.prompt_injection_state='not_injected' AND run.started_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM provider_inputs WHERE scheduler_run_id=run.id)
+      AND NOT EXISTS (SELECT 1 FROM scheduler_prompt_injections WHERE run_id=run.id
+        AND state NOT IN ('pending','cancelled'))`).get(runId));
+  }
 
   recoverOrphanedRuns(
     workerId: string,
@@ -65,7 +77,8 @@ export class CoordinationV3SchedulerLeaseAuthority {
       }>;
       let retried = 0;
       let outcomeUnknown = 0;
-      const incidentId = runs.some(run => run.prompt_injection_state !== "not_injected")
+      const retryableRunIds = new Set(runs.filter(run => this.canRetryUninjectedRun(run.id)).map(run => run.id));
+      const incidentId = runs.some(run => !retryableRunIds.has(run.id))
         ? randomUUID() : undefined;
       if (incidentId) {
         this.sqlite.prepare(`
@@ -74,7 +87,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         `).run(incidentId, now);
       }
       for (const run of runs) {
-        if (run.prompt_injection_state === "not_injected") {
+        if (retryableRunIds.has(run.id)) {
           this.sqlite.prepare(`
             UPDATE scheduler_runs
             SET status = 'failed', updated_at = ?, terminal_at = ?
@@ -93,6 +106,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
             SET state = 'cancelled', updated_at = ?, terminal_at = ?
             WHERE run_id = ? AND state = 'pending'
           `).run(now, now, run.id);
+          this.restoreUninjectedDecisionRoots(run.id, now);
           this.settleRetriedRequiredReply(run.id, now);
           retried += 1;
         } else {
@@ -170,6 +184,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
             JOIN branch_executions be ON be.id=br.execution_id JOIN branch_step_executions bs ON bs.id=br.step_execution_id JOIN branch_paths bp ON bp.id=bs.path_id
             WHERE bm.agent_id=a.agent_id AND (br.state='archived' OR br.retry_draining=1 OR be.cancel_requested=1 OR bp.state='canceled'))
           AND a.available_at <= ?
+          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait'))
           ${excludedClause}
           AND (
             (a.kind = 'context_rollover_handoff' AND EXISTS (
@@ -218,6 +233,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         SELECT * FROM agent_activations
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending') AND available_at <= ?
+          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=agent_activations.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait'))
           AND (
             (kind = 'context_rollover_handoff' AND EXISTS (
               SELECT 1 FROM context_rollovers rollover
@@ -485,7 +501,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
     let retried = 0;
     let outcomeUnknown = 0;
     for (const run of runs) {
-      if (run.prompt_injection_state === "not_injected") {
+      if (this.canRetryUninjectedRun(run.id)) {
         this.sqlite.prepare(`
           UPDATE scheduler_runs
           SET status = 'failed', updated_at = ?, terminal_at = ?
@@ -504,6 +520,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
           SET state = 'cancelled', updated_at = ?, terminal_at = ?
           WHERE run_id = ? AND state = 'pending'
         `).run(now, now, run.id);
+        this.restoreUninjectedDecisionRoots(run.id, now);
         this.settleRetriedRequiredReply(run.id, now);
         retried += 1;
       } else {

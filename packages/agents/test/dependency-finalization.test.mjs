@@ -110,12 +110,15 @@ test("dependency wait → progress → durable rollover → completion → exact
     assert.equal(c.prepareContextRolloverContinuation({ id: rollover.id }).state, "continuation_ready");
     store.close(); store = new AgentStore(directory); c = new CoordinationV3Store(store.sqlite);
     const replacement = c.leaseNextRun({ workerId: "owner", coalesceLimit: 1, excludedAgentIds: [child.id] });
-    assert.equal(replacement.activations[0].kind, "context_rollover_continuation");
-    assert.equal(replacement.activations[0].payload.instruction.includes("opening assignment must not replay"), false);
+    // The already-ready canonical Join wake is the isolated replacement,
+    // rather than an extra handoff Run followed by a second Join Run.
+    assert.equal(replacement.activations[0].kind, "coordination_join_satisfied");
+    assert.equal(c.contextRolloverForContinuationRun(replacement.runId, owner.id)?.id, rollover.id);
+    assert.equal(replacement.activations[0].payload.joinId, 'dependency');
     assert.equal(replacement.activationIds.includes(initial.activationIds[0]), false);
-    acknowledge(c, replacement); c.completeRun(replacement.runId, replacement.fencingToken);
+    acknowledge(c, replacement);
     assert.equal(c.getRequest("parent").state, "in_progress");
-    const wake = c.leaseNextRun({ workerId: "owner", excludedAgentIds: [child.id] }); assert.equal(wake.activations[0].kind, "coordination_join_satisfied"); acknowledge(c, wake);
+    const wake = replacement;
     const result = { requestId: "parent", updateId: "terminal", kind: "completed", actor: { kind: "agent", id: owner.id }, runAuthorization: authorization(wake), payload: {} }; c.updateRequest(result); c.updateRequest(result); c.completeRun(wake.runId, wake.fencingToken);
     assert.equal(c.getRequest("parent").state, "completed");
     assert.equal(store.sqlite.prepare("SELECT COUNT(*) n FROM coordination_request_updates WHERE request_id='parent' AND kind='completed'").get().n, 1);

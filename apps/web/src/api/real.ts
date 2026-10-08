@@ -1,4 +1,5 @@
 import { productApiPath } from "./productScope";
+import type { CollectionPageDto } from "@ponderosa/core";
 import type {
   LocalBrowserConnectionDto,
   ResponseFileReviewDto,
@@ -253,12 +254,7 @@ export function requestJson<T>(path: string, init?: RequestInit, acceptedErrorSt
     : load();
 }
 
-export interface CollectionPage<T> {
-  items: T[];
-  total: number;
-  limit: number;
-  hasMore: boolean;
-  cursor?: string;
+export interface CollectionPage<T> extends CollectionPageDto<T> {
   /** Client-only marker: a stale continuation was transparently restarted. */
   reset?: boolean;
 }

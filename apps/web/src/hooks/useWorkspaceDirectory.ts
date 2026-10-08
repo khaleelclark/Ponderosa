@@ -33,23 +33,6 @@ export interface WorkspaceDirectoryRequestState {
   fetchNextPage(): Promise<unknown>;
 }
 
-export function combineWorkspaceDirectoryRequestStates(
-  states: readonly WorkspaceDirectoryRequestState[],
-): WorkspaceDirectoryRequestState {
-  return {
-    hasResolved: states.every(state => state.hasResolved),
-    isInitialLoading: states.some(state => state.isInitialLoading),
-    isRefreshing: states.some(state => state.isRefreshing),
-    isInitialError: states.some(state => state.isInitialError),
-    isPaginationError: states.some(state => state.isPaginationError),
-    isRefreshError: states.some(state => state.isRefreshError),
-    isFetchingNextPage: states.some(state => state.isFetchingNextPage),
-    hasNextPage: states.some(state => state.hasNextPage),
-    retry: () => Promise.all(states.map(state => state.retry())),
-    fetchNextPage: () => Promise.all(states.filter(state => state.isPaginationError || state.hasNextPage).map(state => state.fetchNextPage())),
-  };
-}
-
 export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
   kind: WorkspaceDirectoryKind,
   options: {

@@ -9,10 +9,6 @@ export function createClientId(prefix = "", fallback?: () => string): string {
 // sessionStorage when a browser duplicates or restores a tab.
 const PAGE_CLIENT_ID = createClientId("page:");
 
-export function pageClientId(): string {
-  return PAGE_CLIENT_ID;
-}
-
 /**
  * Identifies one mounted visit to one durable draft surface. The page prefix
  * keeps the existing server compatibility contract, while the fresh suffix

@@ -1,3 +1,4 @@
+import { normalizedToolResult } from "./tool-result.js";
 // Codex JSONL → normalized AgentEvent mapping. THE HEART OF THIS CHUNK.
 //
 // This is the only place in the codebase that knows Codex's event shapes
@@ -17,7 +18,6 @@
 
 import {
   classifyProviderFailure,
-  classifyToolFailure,
   type AgentEvent,
   type FileChangeKind,
   type ProviderErrorCode,
@@ -186,18 +186,6 @@ export function commandOutcome(exitCode: unknown, signal: unknown): Pick<Extract
   };
 }
 
-function mcpToolResult(id: string, output: string, isError: boolean): Extract<AgentEvent, { type: "tool_result" }> {
-  const failure = classifyToolFailure(output, isError);
-  const canonicalIsError = isError || failure !== undefined;
-  return {
-    type: "tool_result",
-    id,
-    output,
-    ...(canonicalIsError ? { isError: true } : {}),
-    ...(failure ? { failureCategory: failure.category, retryable: failure.retryable, ...(failure.retryAfterMs === undefined ? {} : { retryAfterMs: failure.retryAfterMs }) } : {}),
-  };
-}
-
 // ─── The mapper ──────────────────────────────────────────────────────────────
 
 /**
@@ -309,7 +297,7 @@ function mapItemCompleted(item: RawItem | undefined, _ctx: CodexMapContext): Age
       const isError = it.error != null;
       const value = it.result ?? it.error ?? null;
       const output = typeof value === "string" ? value : JSON.stringify(value);
-      return [mcpToolResult(it.id ?? "", output, isError)];
+      return [normalizedToolResult(it.id ?? "", output, isError)];
     }
     case "web_search": {
       const it = item as RawWebSearch;

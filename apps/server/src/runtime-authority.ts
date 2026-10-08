@@ -303,7 +303,7 @@ export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
 
     const notificationKey = `context-rollover:${rollover.id}:session-retirement`;
     try {
-      if (rollover.handoffEventId) {
+      if (rollover.handoffEventId && !rollover.continuityWaiting) {
         const consumed = store.consumeContinuationHandoff(
           input.agentId,
           rollover.handoffEventId,

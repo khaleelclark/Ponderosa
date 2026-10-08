@@ -28,7 +28,6 @@ interface AgentSurfaceContext {
   coordinationV3: AgentEventsInput["coordinationV3"];
   subscribers: AgentEventsInput["subscribers"];
   recordCommunication: AgentEventsInput["recordCommunication"];
-  collaborationViewDetail: AgentEventsInput["collaborationViewDetail"];
   refreshProviderUsageAfterRun: AgentEventsInput["refreshProviderUsageAfterRun"];
   appendWorkspace: AgentEventsInput["appendWorkspace"];
   publishCoordinationV3Changed: AgentEventsInput["publishCoordinationV3Changed"];
@@ -78,7 +77,6 @@ export function registerAgentSurface(
     coordinationV3,
     subscribers,
     recordCommunication,
-    collaborationViewDetail,
     refreshProviderUsageAfterRun,
     appendWorkspace,
     publishCoordinationV3Changed,
@@ -125,7 +123,6 @@ const {
   projectBroadcastToAgentAudits,
   projectCommunicationToAgentAudit,
   publish,
-  resolveCollaborationIntents,
   resolveExplicitCollaborationIntents,
   subscribe,
 } = createAgentEventService({
@@ -133,7 +130,6 @@ const {
   coordinationV3,
   subscribers,
   recordCommunication,
-  collaborationViewDetail,
   refreshProviderUsageAfterRun,
   appendWorkspace,
   notifyScheduler: notifyScheduler,
@@ -305,7 +301,6 @@ const {
     projectBroadcastToAgentAudits,
     projectCommunicationToAgentAudit,
     publish,
-    resolveCollaborationIntents,
     resolveExplicitCollaborationIntents,
     subscribe,
     agentCanReadDocument,

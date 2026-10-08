@@ -1,6 +1,5 @@
 import AddIcon from "@mui/icons-material/Add";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
-import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
@@ -12,7 +11,7 @@ import {
   MenuItem, Paper, Select, Stack, TextField, Tooltip, Typography,
 } from "@mui/material";
 import type {
-  ConversationDto, EngineDto, ProjectDto, TriggerDefinitionDto,
+  EngineDto, ProjectDto, TriggerDefinitionDto,
   WorkspaceAgentDirectoryItemDto,
   WorkspaceConversationDirectoryItemDto,
   WorkspacePreferencesDto,
@@ -48,131 +47,6 @@ import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceCo
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
 import { ResourceDeletionDialog, TextInputDialog } from "./ConfirmationDialogs";
 import { globalAgentCreateContext } from "./agentCreateOwnership";
-
-type ChatDirectoryResource = {
-  route: Route;
-  conversation: ConversationDto;
-};
-
-export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPreferences, onNavigate, onCreate, onConversationAction }: {
-  projects: ProjectDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
-  onPreferences(patch: Partial<WorkspacePreferencesDto>): void; onNavigate(route: Route): void; onCreate(projectId?: string): void;
-  onConversationAction(kind: "rename" | "delete", conversation: ConversationDto): void;
-}): JSX.Element {
-  const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<ChatDirectoryResource>>();
-  useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
-  const sort = workspaceResourceSort(preferences, "chat"); const starred = starredWorkspaceResources(preferences);
-  const directoryQuery =
-    useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
-      search,
-      projectId: (filterProjectId ?? projectId) || undefined,
-    });
-  const directory = workspaceDirectoryItems(directoryQuery.data?.pages, preferences);
-  const ordered = [...directory.starredItems, ...directory.items];
-  const scopedProject = filterProjectId
-    ? projects.find(project => project.id === filterProjectId)
-    : undefined;
-  const filtersActive = Boolean(search.trim() || (!filterProjectId && projectId));
-  return <CollectionWorkspace
-    icon={<ChatBubbleOutlineIcon />}
-    title="All Chats"
-    detail={
-      directoryQuery.requestState.hasResolved
-        ? scopedProject
-          ? `${directory.total} ${directory.total === 1 ? "Chat" : "Chats"} in ${scopedProject.label}`
-          : filtersActive
-            ? `${directory.total} matching ${directory.total === 1 ? "Chat" : "Chats"}`
-            : `${directory.total} ${directory.total === 1 ? "Chat" : "Chats"} across Ponderosa`
-        : undefined
-    }
-    primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={() => onCreate(projectId || undefined)}>New Chat</Button>}
-    compactPrimaryAction={<Tooltip title="New Chat"><IconButton aria-label="New Chat" onClick={() => onCreate(projectId || undefined)}><AddIcon /></IconButton></Tooltip>}
-    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Chats" reorderHint compactControls={<CollectionSortButton sort={sort} onSort={value => onPreferences(workspaceResourceSortPatch("chat", value))} />}>
-      <CollectionDirectoryControls
-        projects={undefined}
-        projectId={undefined}
-        onProject={undefined}
-        sort={sort}
-        onSort={value => onPreferences(workspaceResourceSortPatch("chat", value))}
-      />
-    </CollectionToolbar>}
-    listLabel="All Chats"
-    busy={directoryQuery.requestState.isInitialLoading || directoryQuery.requestState.isRefreshing || directoryQuery.requestState.isFetchingNextPage}
-  >
-    {ordered.map(({ project, conversation }, index) => {
-      const route: Route = { kind: "conversation", projectId: project.id, conversationId: conversation.id };
-      const menuResource = { route, conversation };
-      const key = resourcePreferenceKey("conversation", conversation.id);
-      return <ResourceRow
-        key={conversation.id}
-        resourceIdentity={`conversation:${conversation.id}`}
-        label={conversation.title}
-        description={undefined}
-        icon={<ChatBubbleOutlineIcon />}
-        meta={<CollectionTimestamp value={conversation.updatedAt} />}
-        starAction={<Tooltip title={starred.has(key) ? "Unstar Chat" : "Star Chat"}><IconButton aria-label={starred.has(key) ? `Unstar ${conversation.title}` : `Star ${conversation.title}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "conversation", conversation.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
-        overflowAction={<Tooltip title={`Actions for ${conversation.title}`}><IconButton data-resource-menu-trigger aria-haspopup="menu" aria-expanded={menu?.resource.conversation.id === conversation.id} aria-label={`Actions for ${conversation.title}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: menuResource })}><MoreVertIcon /></IconButton></Tooltip>}
-        onOpen={() => onNavigate(route)}
-        onContextMenu={(anchor) => setMenu({ anchor, resource: menuResource })}
-        draggable
-        onDragStart={() => setDragged(conversation.id)}
-        onDragEnd={() => setDragged(undefined)}
-        onDrop={() => {
-          if (dragged) onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, ordered.map((row) => row.conversation.id), dragged, conversation.id) });
-          setDragged(undefined);
-        }}
-        onKeyboardMove={(direction) => {
-          const target = ordered[direction === "up" ? index - 1 : index + 1];
-          if (!target) return false;
-          onPreferences({
-            chatSort: "custom",
-            chatOrder: reorderStableIds(
-              preferences.chatOrder,
-              ordered.map(row => row.conversation.id),
-              conversation.id,
-              target.conversation.id,
-              direction === "up" ? "before" : "after",
-            ),
-          });
-          return {
-            position: direction === "up" ? index : index + 2,
-            total: ordered.length,
-          };
-        }}
-      />;
-    })}
-    <CollectionStateFeedback
-      request={directoryQuery.requestState}
-      itemCount={ordered.length}
-      filtersActive={filtersActive}
-      resourceLabel="Chats"
-      emptyTitle="No Chats Yet"
-      emptyDetail="Create a Chat to get started."
-      noMatchTitle="No Chats match these filters"
-      noMatchDetail={filterProjectId ? "Try a different search." : "Try a different search."}
-      onClearFilters={() => { setSearch(""); if (!filterProjectId) setProjectId(""); }}
-    />
-    <ResourceContextMenu
-      state={menu}
-      onClose={() => setMenu(undefined)}
-      actions={[
-        {
-          id: "rename",
-          label: "Rename",
-          icon: <EditOutlinedIcon fontSize="small" />,
-          onSelect: ({ conversation }) => onConversationAction("rename", conversation),
-        },
-        {
-          id: "delete",
-          label: "Delete",
-          icon: <DeleteOutlineIcon fontSize="small" />,
-          color: "error",
-          onSelect: ({ conversation }) => onConversationAction("delete", conversation),
-        },
-      ]}
-    />
-  </CollectionWorkspace>;
-}
 
 export function AllAgentsWorkspace({ projects, engines, filterProjectId, preferences, onPreferences, onNavigate, onCreate, onAgentsDeleted, managementMode = false }: {
   projects: ProjectDto[]; engines: EngineDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;

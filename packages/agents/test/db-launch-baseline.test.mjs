@@ -71,6 +71,7 @@ test("creates the canonical launch baseline for a fresh database", () => {
         "0022_capability_policies.sql",
         "0022_provider_scope_authority.sql",
         "0023_branch_installation_lifecycle.sql",
+        "0023_lead_task_continuity.sql",
         "0024_branch_installation_saga.sql",
         "0025_branch_installation_receipts.sql",
         "0026_branch_gate_notifications.sql",

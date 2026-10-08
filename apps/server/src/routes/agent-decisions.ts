@@ -94,6 +94,19 @@ export function registerAgentDecisionRoutes(
       : coordinationV3.outboundAwaitingQuestionRequestIdsAttachedToRun(
           capability.runId, agent.id,
         );
+    const taskReplyRoots = coordinationV3.requiredReplyObligationsForRun(capability.v3SchedulerRunId)
+      .filter(o => ['broadcast','direct_to_user'].includes(o.replyAuthority.intent) &&
+        (o.state === 'pending' || (o.deliveryPhase === 'initial' && o.state === 'satisfied')));
+    if (body.blocking !== false && taskReplyRoots.length) {
+      const replay = workspace.decisionForIdempotency(agent.id, idempotencyKey);
+      const origins = new Set(coordinationV3.taskOriginRunIds(capability.v3SchedulerRunId));
+      const blockers = workspace.decisionsForRuns(origins).filter(d => d.blocking && d.status === 'pending' &&
+        d.agentId === agent.id && d.projectId === agent.projectId && d.conversationId === active.conversationId);
+      if (blockers.some(d => d.id !== replay?.id) || taskReplyRoots
+        .some(o => o.blockingDecisionId && o.blockingDecisionId !== replay?.id)) {
+        return reply.code(409).send({ error: 'task_decision_already_pending: answer the existing exact blocking Decision first' });
+      }
+    }
     const cursor = workspace.cursor();
     const decision = workspace.createDecision({
       idempotencyKey,
@@ -109,6 +122,11 @@ export function registerAgentDecisionRoutes(
       allowOther: true,
       ...(continuationRequestIds.length ? { continuationRequestIds } : {}),
       blocking: body.blocking !== false,
+    });
+    if (decision.blocking && decision.status === 'pending') coordinationV3.waitForTaskDecision({
+      runAuthorization: { runId: capability.v3SchedulerRunId, agentId: capability.agentId, fencingToken: capability.v3FencingToken },
+      decisionId: decision.id,
+      scopeKey: active.conversationId ? `conversation:${active.conversationId}` : `agent:${agent.id}`,
     });
     if (decision.blocking && decision.continuationRequestIds?.length) coordinationV3.suspendQuestionsForDecision({
       runId: capability.runId,

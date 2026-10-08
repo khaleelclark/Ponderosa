@@ -21,7 +21,7 @@ const MAX_SEED_HISTORY_MESSAGES = 40;
  * session boundary forces Ponderosa to seed again; canonical history remains on
  * disk and can still be queried explicitly.
  */
-export function boundedSeedHistory<T extends { text: string }>(
+export function boundedSeedHistory<T extends { text: string; provenance?: unknown }>(
   messages: T[],
   maxChars = MAX_SEED_HISTORY_CHARS,
   maxMessages = MAX_SEED_HISTORY_MESSAGES,
@@ -30,6 +30,9 @@ export function boundedSeedHistory<T extends { text: string }>(
   let remaining = maxChars;
   for (let index = messages.length - 1; index >= 0 && selected.length < maxMessages && remaining > 0; index -= 1) {
     const message = messages[index]!;
+    const overhead = message.provenance ? unicodeCodePointLength(JSON.stringify(message.provenance)) + 100 : 0;
+    if (overhead >= remaining) break;
+    remaining -= overhead;
     const messageLength = unicodeCodePointLength(message.text);
     if (messageLength <= remaining) {
       selected.push(message);

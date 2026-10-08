@@ -1,3 +1,4 @@
+import type { CollectionPageDto } from "@ponderosa/core";
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { FastifyReply } from "fastify";
@@ -8,13 +9,7 @@ export interface CollectionQuery {
   search?: string;
 }
 
-export interface CollectionPage<T> {
-  items: T[];
-  total: number;
-  limit: number;
-  hasMore: boolean;
-  cursor?: string;
-}
+export type CollectionPage<T> = CollectionPageDto<T>;
 
 type CollectionOrder = "updated" | "title";
 

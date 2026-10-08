@@ -236,7 +236,6 @@ export function AllChatView({
   const projectsQuery = useProjects();
   const queryClient = useQueryClient();
   const markCommunicationVisible = useConversationNotificationVisibility(
-    { data: notifications },
     queryClient,
   );
   const [older, setOlder] = useState<{

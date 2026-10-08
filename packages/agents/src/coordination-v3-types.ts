@@ -8,6 +8,7 @@ import type {
   CoordinationReplyAuthority,
   CoordinationRequestState,
   CoordinationRequestUpdateKind,
+  DecisionDto,
   ProviderFailureCategory,
   RequestLifetime,
   TriggerRunBudgetDto,
@@ -184,6 +185,8 @@ export interface ContextRolloverV3 {
   replacementManifestHash?: string;
   replacementAttempt: number;
   visibleResponseCommitted: boolean;
+  /** Old process retirement is complete, but task continuity awaits a canonical delegation wake. */
+  continuityWaiting: boolean;
   handoffCommittedAt?: string;
   sessionRetiringAt?: string;
   continuationReadyAt?: string;
@@ -211,6 +214,7 @@ interface RuntimeCommunicationV3InputBase {
   /** Server-owned proof that this Communication is the Run's inferred reply,
    * rather than another explicit Communication using the same route. */
   satisfiesRequiredReply?: boolean;
+  taskDelivery?: "final" | "blocked";
   artifacts?: RuntimeArtifactInputV3[];
   activation?: {
     agentId: string;
@@ -548,6 +552,8 @@ export interface TriggerOccurrenceResult {
 }
 
 export interface CoordinationV3StoreOptions {
+  /** Trusted canonical WorkspaceStore index, never provider-supplied input. */
+  canonicalTaskDecisions?: (runIds: ReadonlySet<string>) => readonly DecisionDto[];
   /** Backpressure only applies to new external/model-authored intake. Internal
    * terminal outcomes remain writable so quota pressure cannot strand work. */
   maxPendingActivationsPerAgent?: number;

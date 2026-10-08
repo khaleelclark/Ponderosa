@@ -773,7 +773,7 @@ type ImmediateAgentMessageRequest = AgentMessageRequestBase & (
       /** Urgent collaboration may steer; ordinary collaboration queues. */
       urgency?: "ordinary" | "urgent";
     }
-) & { delivery?: never; expiresAt?: never };
+) & { delivery?: never; expiresAt?: never; taskDelivery?: "final" | "blocked" };
 
 type NextRunAgentMessageRequest = Omit<
   AgentMessageRequestBase,
@@ -785,6 +785,7 @@ type NextRunAgentMessageRequest = Omit<
   expiresAt?: string;
   intent?: never;
   urgency?: never;
+  taskDelivery?: never;
 };
 
 /** POST /api/agent-messages body. The server derives the author from the capability. */

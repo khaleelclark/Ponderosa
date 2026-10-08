@@ -7,33 +7,7 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
-import { routeProjectId, type Route } from "./routing";
-
-export function mobileRouteAfterResourceRemoval(
-  current: Route,
-  removed: Route,
-): Route | undefined {
-  if (removed.kind === "project") {
-    return routeProjectId(current) === removed.projectId
-      ? { kind: "home" }
-      : undefined;
-  }
-  if (
-    removed.kind === "conversation" &&
-    current.kind === "conversation" &&
-    current.projectId === removed.projectId &&
-    current.conversationId === removed.conversationId
-  ) {
-    return { kind: "home" };
-  }
-  if (
-    removed.kind === "agent" && current.kind === "agent" &&
-    current.projectId === removed.projectId && current.agentId === removed.agentId
-  ) {
-    return { kind: "home" };
-  }
-  return undefined;
-}
+import { type Route } from "./routing";
 
 interface MobileWorkspaceDrawerProps {
   open: boolean;

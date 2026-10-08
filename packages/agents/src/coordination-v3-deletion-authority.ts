@@ -38,10 +38,10 @@ export class CoordinationV3DeletionAuthority {
       `).run(now, now, agentId);
       this.sqlite.prepare(`
         UPDATE context_rollovers
-        SET state = 'failed', last_error = 'agent deletion fenced context rollover',
+        SET state = 'failed', continuity_waiting = 0, last_error = 'agent deletion fenced context rollover',
           updated_at = ?, terminal_at = COALESCE(terminal_at, ?)
         WHERE agent_id = ?
-          AND state IN ('requested','handoff_committed','session_retiring','continuation_ready')
+          AND (state IN ('requested','handoff_committed','session_retiring','continuation_ready') OR continuity_waiting = 1)
       `).run(now, now, agentId);
       const owned = this.sqlite.prepare(`
         SELECT id FROM coordination_joins

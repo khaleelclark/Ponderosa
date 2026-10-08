@@ -52,6 +52,7 @@ export class CoordinationV3RuntimeCommunicationAuthority {
       communicationId: string;
       intent: string;
       audience: CommunicationAudience;
+      taskDelivery?: "final" | "blocked";
       now: string;
     }) => void,
   ) {}
@@ -75,6 +76,15 @@ export class CoordinationV3RuntimeCommunicationAuthority {
         activationInputs.map((item) => item.agentId),
       );
     const payload = preparedAttachments.payload;
+    if (input.taskDelivery !== undefined &&
+        ((input.taskDelivery !== 'final' && input.taskDelivery !== 'blocked') || !input.runAuthorization ||
+         !input.satisfiesRequiredReply || (input.intent !== 'broadcast' && input.intent !== 'user_dm'))) {
+      throw new Error('task delivery requires an exact authorized operator-facing outcome');
+    }
+    if (input.taskDelivery !== undefined && (!payload || typeof payload !== 'object' ||
+        (payload as { taskDelivery?: unknown }).taskDelivery !== input.taskDelivery)) {
+      throw new Error('task delivery outcome must match its exact durable receipt');
+    }
     const managedArtifactIds = this.managedArtifactIds(payload);
     const activationScopeKeys = activationInputs.map((activation) =>
       input.scopeKey ??
@@ -203,6 +213,7 @@ export class CoordinationV3RuntimeCommunicationAuthority {
               communicationId: input.id,
               intent: input.intent,
               audience: input.audience,
+              ...(input.taskDelivery ? { taskDelivery: input.taskDelivery } : {}),
               now,
             });
             return {
@@ -263,6 +274,7 @@ export class CoordinationV3RuntimeCommunicationAuthority {
             communicationId: input.id,
             intent: input.intent,
             audience: input.audience,
+            ...(input.taskDelivery ? { taskDelivery: input.taskDelivery } : {}),
             now,
           });
           const insertArtifact = this.sqlite.prepare(`

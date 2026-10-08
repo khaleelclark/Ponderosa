@@ -4,7 +4,6 @@ import {
   type AssetDto,
   type CommunicationEvent,
   type ConversationMessageDto,
-  type CollaborationViewDto,
 } from "@ponderosa/core";
 import type {
   AgentStore,
@@ -16,8 +15,6 @@ import type {
 import type { Subscriber } from "./app-contracts.js";
 import {
   advanceMentionTrail,
-  hasEveryoneMention,
-  mentionedAgents,
   mentionRelayFingerprint,
   renderScopedMessage,
 } from "./agent-mentions.js";
@@ -28,10 +25,6 @@ interface AgentEventServiceContext {
   coordinationV3: CoordinationV3Store;
   subscribers: Map<string, Set<Subscriber>>;
   recordCommunication(event: CommunicationEvent): CommunicationEvent;
-  collaborationViewDetail(
-    conversationId: string,
-    input?: { limit?: number; cursor?: string; focusId?: string },
-  ): CollaborationViewDto | undefined;
   refreshProviderUsageAfterRun(engineId: string): void;
   appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): unknown;
   notifyScheduler(): void;
@@ -48,7 +41,6 @@ export function createAgentEventService(context: AgentEventServiceContext) {
     coordinationV3,
     subscribers,
     recordCommunication,
-    collaborationViewDetail,
     refreshProviderUsageAfterRun,
     appendWorkspace,
     notifyScheduler,
@@ -169,45 +161,6 @@ export function createAgentEventService(context: AgentEventServiceContext) {
       set?.delete(subscriber);
       if (set?.size === 0) subscribers.delete(agentId);
     };
-  }
-
-  function resolveCollaborationIntents(
-    conversationId: string,
-    authorAgentId: string,
-    text: string,
-    _relayDepth: number,
-    mentionTrail: string[],
-  ): { intents: ConversationDeliveryIntent[]; blocked: Array<{ handle: string; reason: string }> } {
-    const detail = collaborationViewDetail(conversationId);
-    const eligible = detail?.agents.filter((agent) => !agent.archived && agent.id !== authorAgentId) ?? [];
-    const targetsById = new Map(
-      mentionedAgents(text, eligible, authorAgentId).map((agent) => [agent.id, agent]),
-    );
-    if (hasEveryoneMention(text)) {
-      for (const agent of eligible) targetsById.set(agent.id, agent);
-    }
-    const targets = [...targetsById.values()];
-    const intents: ConversationDeliveryIntent[] = [];
-    const blocked: Array<{ handle: string; reason: string }> = [];
-    for (const target of targets) {
-      const fingerprint = mentionRelayFingerprint(authorAgentId, target.id, text);
-      const blockedReason = authorAgentId && mentionTrail.includes(fingerprint)
-        ? "the same handoff already occurred in this collaboration chain"
-        : undefined;
-      if (blockedReason) {
-        blocked.push({ handle: target.handle, reason: blockedReason });
-      } else {
-        const nextTrail = authorAgentId ? advanceMentionTrail(mentionTrail, fingerprint) : [];
-        intents.push({
-          targetAgentId: target.id,
-          relayDepth: nextTrail.length,
-          mentionTrail: nextTrail,
-          kind: "tag",
-          audience: hasEveryoneMention(text) ? "everyone" : "mention",
-        });
-      }
-    }
-    return { intents, blocked };
   }
 
   function resolveExplicitCollaborationIntents(
@@ -342,7 +295,6 @@ export function createAgentEventService(context: AgentEventServiceContext) {
     projectBroadcastToAgentAudits,
     projectCommunicationToAgentAudit,
     publish,
-    resolveCollaborationIntents,
     resolveExplicitCollaborationIntents,
     subscribe,
   };

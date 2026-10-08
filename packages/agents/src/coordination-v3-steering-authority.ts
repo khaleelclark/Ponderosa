@@ -35,6 +35,26 @@ type CancelAgentRunInput = {
   now?: string;
 };
 
+// Revalidate at claim time, not when the Decision answer was enqueued: its
+// owning Run can finish before another same-Chat task starts. Every coalesced
+// answer must belong to this Run's latest live root; ordinary steering keeps
+// its established Agent/scope selection.
+const decisionSteeringAuthority = (activation: string, runId: string): string => `NOT EXISTS (
+  SELECT 1 FROM activation_sources decision
+  WHERE decision.activation_id=${activation}.id AND decision.source_kind='task_decision'
+    AND NOT EXISTS (SELECT 1 FROM required_reply_obligations obligation
+      JOIN scheduler_runs owner_run ON owner_run.id=obligation.run_id
+      WHERE obligation.run_id=${runId} AND owner_run.side_effects_fenced_at IS NULL
+        AND obligation.agent_id=${activation}.agent_id AND obligation.project_id=${activation}.project_id
+        AND obligation.scope_key=${activation}.scope_key AND obligation.blocking_decision_id=decision.source_id
+        AND json_extract(${activation}.payload_json,'$.decision.id')=decision.source_id
+        AND (obligation.state='pending' OR (obligation.delivery_phase='initial' AND obligation.state='satisfied'))
+        AND json_extract(obligation.reply_authority_json,'$.intent') IN ('broadcast','direct_to_user')
+        AND NOT EXISTS (SELECT 1 FROM required_reply_obligations newer JOIN scheduler_runs newer_run ON newer_run.id=newer.run_id
+          WHERE newer.source_activation_id=obligation.source_activation_id AND newer.agent_id=obligation.agent_id
+            AND newer.project_id=obligation.project_id AND newer.scope_key=obligation.scope_key AND newer_run.rowid>owner_run.rowid))
+)`;
+
 /** Claims, defers, settles, and recovers steering prompt injections. */
 export class CoordinationV3SteeringAuthority {
   constructor(
@@ -69,6 +89,8 @@ export class CoordinationV3SteeringAuthority {
             WHERE bm.agent_id=a.agent_id AND (br.state='archived' OR br.retry_draining=1 OR be.cancel_requested=1 OR bp.state='canceled'))
           AND a.available_at <= ?
           AND a.dispatch_policy = 'steer_or_run'
+          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait'))
+          AND ${decisionSteeringAuthority('a', 'r.id')}
           AND (a.kind = 'context_rollover_handoff' OR NOT EXISTS (
             SELECT 1 FROM context_rollovers rollover
             WHERE rollover.agent_id = a.agent_id
@@ -102,6 +124,8 @@ export class CoordinationV3SteeringAuthority {
           AND state IN ('pending', 'retry_pending')
           AND available_at <= ?
           AND dispatch_policy = 'steer_or_run'
+          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=agent_activations.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait'))
+          AND ${decisionSteeringAuthority('agent_activations', '?')}
           AND (kind = 'context_rollover_handoff' OR NOT EXISTS (
             SELECT 1 FROM context_rollovers rollover
             WHERE rollover.agent_id = agent_activations.agent_id
@@ -118,6 +142,7 @@ export class CoordinationV3SteeringAuthority {
         candidate.agent_id,
         candidate.scope_key,
         now,
+        candidate.run_id,
         limit,
       ) as ActivationRow[];
       if (activations.length === 0) return undefined;

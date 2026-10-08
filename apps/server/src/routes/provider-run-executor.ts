@@ -1546,6 +1546,8 @@ export function startProviderRunExecution(
           });
           }
           else {
+            // Canonical Decision wait repair is shared by all terminal paths
+            // in CoordinationV3Store, including provider failure and lease recovery.
             coordinationV3!.completeRun(activeRun.v3SchedulerRunId, activeRun.v3FencingToken);
             if (routingConversationId && pendingCommunicationV4NextRunDeliveryIds.length > 0) {
               // runId identifies the exact provider-input manifest used as

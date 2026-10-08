@@ -10,6 +10,7 @@ import type { CreateActivationV3Input } from "./coordination-v3-runtime-communic
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import type { ContextRolloverState, ContextRolloverV3 } from "./coordination-v3-types.js";
 import { stableJson } from "./coordination-v3-canonical-json.js";
+import { delegationOriginsForActivation, hasOutstandingDelegation, pendingTaskWakeIds, runOwnsAwaitedDelegation, taskOriginRunIds } from "./coordination-v3-task-lineage.js";
 
 const MAX_CONTEXT_ROLLOVER_RECENT_TAIL_IDS = 80;
 const MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS = 1_000;
@@ -40,6 +41,7 @@ interface RolloverRow {
   reply_authority_json: string | null;
   handoff_event_id: string | null; continuation_activation_id: string | null;
   replacement_session_id: string | null; visible_response_committed: number;
+  continuity_waiting: number;
   replacement_run_id: string | null; replacement_prompt_hash: string | null;
   replacement_system_prompt_hash: string | null;
   replacement_manifest_hash: string | null;
@@ -530,6 +532,19 @@ export class CoordinationV3ContextRolloverAuthority {
       if (!current) throw new Error("context rollover not found");
       if (current.state === "completed" || current.state === "continuation_ready") return current;
       if (current.state !== "session_retiring") throw new Error("context rollover session is not retiring");
+      if (current.triggerKind === "automatic" && (this.hasOwnedDelegation(current) || this.hasOutstandingDecisionWait(current))) {
+        const wake = pendingTaskWakeIds(this.sqlite, { projectId: current.projectId, agentId: current.agentId,
+          scopeKey: current.scopeKey, originRunIds: taskOriginRunIds(this.sqlite, current.sourceRunId) })
+          .find(id => this.wakeBelongsToTask(current, id));
+        if (wake) return this.bindDelegationWake(current, wake, now);
+        if (this.hasOwnedDelegation(current, true) || this.hasOutstandingDecisionWait(current)) {
+          this.sqlite.prepare(`UPDATE context_rollovers SET state = 'completed',
+            completion_reason = 'no_continuation_required', continuity_waiting = 1,
+            updated_at = ?, terminal_at = ? WHERE id = ? AND state = 'session_retiring'`)
+            .run(now, now, current.id);
+          return this.get(current.id)!;
+        }
+      }
       if (current.triggerKind !== "human" && (
         current.visibleResponseCommitted ||
         !this.continuationObligationRemains(current)
@@ -595,6 +610,150 @@ export class CoordinationV3ContextRolloverAuthority {
       `).run(activationId, now, now, input.id);
       return this.get(input.id)!;
     })();
+  }
+
+  /** A delegation result supplies the wake; no polling or idle replacement Run.
+   * Bind before leasing so the existing scheduler's candidate isolation applies. */
+  bindWaitingWake(activationId: string, now: string): void {
+    this.reconcileRetainedContinuity(now);
+    const owners = this.sqlite.prepare(`SELECT rollover.* FROM context_rollovers rollover
+      JOIN agent_activations wake ON wake.agent_id = rollover.agent_id
+        AND wake.project_id = rollover.project_id AND wake.scope_key = rollover.scope_key
+      JOIN agents owner ON owner.id = rollover.agent_id AND owner.archived = 0 AND owner.deleted_at IS NULL
+      WHERE wake.id = ? AND wake.state IN ('pending','retry_pending')
+        AND rollover.state = 'completed' AND rollover.continuity_waiting = 1
+      ORDER BY rollover.rowid DESC`)
+      .all(activationId) as RolloverRow[];
+    const matches = owners.map(row => this.view(row)).filter(r => this.wakeBelongsToTask(r, activationId));
+    if (matches.length > 1) throw new Error("delegation wake has multiple retained continuity owners");
+    if (matches[0]) this.bindDelegationWake(matches[0], activationId, now);
+  }
+
+  /** Retained working state is not an immortal session or task. Terminal
+   * ownership removes its availability without rewriting the historical
+   * handoff or fabricating a successful delivery. */
+  reconcileRetainedContinuity(now: string): void {
+    const rows = this.sqlite.prepare(`SELECT * FROM context_rollovers
+      WHERE state = 'completed' AND continuity_waiting = 1`).all() as RolloverRow[];
+    for (const row of rows) {
+      const owner = this.sqlite.prepare(`SELECT 1 FROM agents owner
+        JOIN scheduler_runs source ON source.agent_id = owner.id
+        WHERE source.id = ? AND source.project_id = ? AND source.scope_key = ?
+          AND source.status <> 'cancelled' AND owner.archived = 0 AND owner.deleted_at IS NULL`)
+        .get(row.source_run_id, row.project_id, row.scope_key);
+      const roots = this.sqlite.prepare(`SELECT source_activation_id FROM required_reply_obligations
+        WHERE run_id = ? AND json_extract(reply_authority_json, '$.intent') IN ('broadcast','direct_to_user')`)
+        .all(row.source_run_id) as Array<{ source_activation_id: string }>;
+      const pending = roots.length ? roots.some(root => this.sqlite.prepare(`SELECT 1 FROM (
+        SELECT obligation.state, run.status AS run_status FROM required_reply_obligations obligation
+        JOIN scheduler_runs run ON run.id = obligation.run_id
+        WHERE obligation.source_activation_id = ? AND obligation.agent_id = ?
+          AND obligation.project_id = ? AND obligation.scope_key = ?
+        ORDER BY run.rowid DESC LIMIT 1) WHERE run_status <> 'cancelled' AND state IN ('pending','recovery_pending','retried')`)
+        .get(root.source_activation_id, row.agent_id, row.project_id, row.scope_key))
+          || this.hasOutstandingDecisionWait(this.view(row))
+        : !this.inheritedTaskIsTerminal(this.view(row)) &&
+          (this.continuationObligationRemains(this.view(row)) || this.hasOwnedDelegation(this.view(row), true));
+      if (!owner || !pending) this.sqlite.prepare(`UPDATE context_rollovers
+        SET continuity_waiting = 0, updated_at = ? WHERE id = ? AND continuity_waiting = 1`).run(now, row.id);
+    }
+  }
+
+  /** A satisfied initial receipt is not task completion while its exact
+   * Decision remains outstanding. Only the latest live scoped owner counts;
+   * an answer wake must name that blocker in both provenance and payload. */
+  private hasOutstandingDecisionWait(r: ContextRolloverV3, activationId?: string): boolean {
+    if (this.inheritedTaskIsTerminal(r)) return false;
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM required_reply_obligations origin
+      JOIN scheduler_runs source_run ON source_run.id = origin.run_id AND source_run.status <> 'cancelled'
+      JOIN agents owner ON owner.id = origin.agent_id AND owner.archived = 0 AND owner.deleted_at IS NULL
+      JOIN required_reply_obligations latest ON latest.source_activation_id = origin.source_activation_id
+        AND latest.agent_id = origin.agent_id AND latest.project_id = origin.project_id AND latest.scope_key = origin.scope_key
+      JOIN scheduler_runs latest_run ON latest_run.id = latest.run_id AND latest_run.status <> 'cancelled'
+      WHERE origin.run_id = ? AND origin.agent_id = ? AND origin.project_id = ? AND origin.scope_key = ?
+        AND latest.run_id = (SELECT candidate.run_id FROM required_reply_obligations candidate
+          JOIN scheduler_runs candidate_run ON candidate_run.id = candidate.run_id
+          WHERE candidate.source_activation_id = origin.source_activation_id AND candidate.agent_id = origin.agent_id
+            AND candidate.project_id = origin.project_id AND candidate.scope_key = origin.scope_key
+          ORDER BY candidate_run.rowid DESC LIMIT 1)
+        AND latest.blocking_decision_id IS NOT NULL
+        AND (latest.state IN ('pending','recovery_pending','retried') OR (latest.delivery_phase = 'initial' AND latest.state = 'satisfied'))
+        AND json_extract(latest.reply_authority_json, '$.intent') IN ('broadcast','direct_to_user')
+        AND (? IS NULL OR EXISTS (SELECT 1 FROM agent_activations wake
+          JOIN activation_sources provenance ON provenance.activation_id = wake.id AND provenance.source_kind = 'task_decision'
+          WHERE wake.id = ? AND wake.agent_id = latest.agent_id AND wake.project_id = latest.project_id AND wake.scope_key = latest.scope_key
+            AND provenance.source_id = latest.blocking_decision_id AND json_extract(wake.payload_json, '$.decision.id') = provenance.source_id)) LIMIT 1`)
+      .get(r.sourceRunId, r.agentId, r.projectId, r.scopeKey, activationId ?? null, activationId ?? null));
+  }
+
+  private hasOwnedDelegation(r: ContextRolloverV3, outstanding = false): boolean {
+    if (this.inheritedTaskIsTerminal(r)) return false;
+    const origins = taskOriginRunIds(this.sqlite, r.sourceRunId);
+    if (!outstanding) return origins.some(id => runOwnsAwaitedDelegation(this.sqlite, id));
+    const roots = this.sqlite.prepare(`SELECT source_activation_id, blocking_decision_id
+      FROM required_reply_obligations WHERE run_id = ? AND delivery_phase = 'final'
+        AND state IN ('pending','recovery_pending','retried')`)
+      .all(r.sourceRunId) as Array<{ source_activation_id: string; blocking_decision_id: string | null }>;
+    if (roots.length) return roots.some(root => Boolean(root.blocking_decision_id) || hasOutstandingDelegation(this.sqlite, {
+      sourceActivationId: root.source_activation_id, projectId: r.projectId,
+      agentId: r.agentId, scopeKey: r.scopeKey, runId: r.sourceRunId,
+    }));
+    // Agent-owned work without an operator reply root still retains its own
+    // pending dependencies, but never acquires operator routing authority.
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM coordination_requests
+      WHERE origin_run_id IN (SELECT value FROM json_each(?))
+        AND COALESCE(json_extract(payload_json, '$.completionMode'), '') <> 'record'
+        AND state NOT IN ('completed','failed','cancelled','superseded','expired','outcome_unknown')
+      UNION ALL SELECT 1 FROM coordination_joins
+      WHERE origin_run_id IN (SELECT value FROM json_each(?)) AND state = 'open' LIMIT 1`)
+      .get(JSON.stringify(origins), JSON.stringify(origins)));
+  }
+
+  private inheritedTaskIsTerminal(r: ContextRolloverV3): boolean {
+    const inherited = this.sqlite.prepare(`${REQUEST_SOURCE_LINEAGE_CTE}
+      SELECT DISTINCT request.state FROM request_source_lineage lineage
+      JOIN coordination_requests request ON request.id = lineage.request_id
+      WHERE lineage.activation_id IN (SELECT value FROM json_each(?))
+        AND request.recipient_agent_id = ? AND request.project_id = ?`)
+      .all(JSON.stringify(r.sourceActivationIds), r.agentId, r.projectId) as Array<{ state: CoordinationRequestState }>;
+    return inherited.length > 0 && inherited.every(request => TERMINAL_REQUEST_STATES.has(request.state));
+  }
+
+  private wakeBelongsToTask(r: ContextRolloverV3, activationId: string): boolean {
+    const source = this.sqlite.prepare(`SELECT status FROM scheduler_runs
+      WHERE id = ? AND agent_id = ? AND project_id = ? AND scope_key = ?`)
+      .get(r.sourceRunId, r.agentId, r.projectId, r.scopeKey) as { status: string } | undefined;
+    if (!source || source.status === 'cancelled') return false;
+    const origins = delegationOriginsForActivation(this.sqlite, activationId);
+    if (!origins.some(id => taskOriginRunIds(this.sqlite, r.sourceRunId).includes(id))) return false;
+    const roots = this.sqlite.prepare(`SELECT source_activation_id FROM required_reply_obligations WHERE run_id = ?`)
+      .all(r.sourceRunId) as Array<{ source_activation_id: string }>;
+    if (!roots.length) return this.continuationObligationRemains(r);
+    return this.hasOutstandingDecisionWait(r, activationId) || roots.some(root => Boolean(this.sqlite.prepare(`SELECT 1 FROM (
+      SELECT obligation.state, obligation.delivery_phase, obligation.blocking_decision_id, run.status AS run_status FROM required_reply_obligations obligation
+      JOIN scheduler_runs run ON run.id = obligation.run_id
+      WHERE obligation.source_activation_id = ? AND obligation.agent_id = ?
+        AND obligation.project_id = ? AND obligation.scope_key = ?
+      ORDER BY run.rowid DESC LIMIT 1) WHERE run_status <> 'cancelled' AND state IN ('pending','recovery_pending','retried')
+        AND NOT (delivery_phase = 'initial' AND blocking_decision_id IS NOT NULL)`)
+      .get(root.source_activation_id, r.agentId, r.projectId, r.scopeKey)));
+  }
+
+  private bindDelegationWake(r: ContextRolloverV3, activationId: string, now: string): ContextRolloverV3 {
+    this.sqlite.prepare(`UPDATE context_rollovers SET state = 'continuation_ready',
+      continuity_waiting = 0, completion_reason = NULL, terminal_at = NULL,
+      continuation_activation_id = ?, continuation_ready_at = ?, updated_at = ?
+      WHERE id = ? AND (state = 'session_retiring' OR (state = 'completed' AND continuity_waiting = 1))`)
+      .run(activationId, now, now, r.id);
+    this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources (activation_id, source_kind, source_id)
+      VALUES (?, 'context_rollover', ?)` ).run(activationId, r.id);
+    this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources (activation_id, source_kind, source_id)
+      SELECT ?, source.source_kind, source.source_id FROM activation_sources source
+      JOIN agent_activations original ON original.id = source.activation_id
+      WHERE source.activation_id IN (SELECT value FROM json_each(?))
+        AND original.agent_id = ? AND original.project_id = ? AND original.scope_key = ?`)
+      .run(activationId, JSON.stringify(r.sourceActivationIds), r.agentId, r.projectId, r.scopeKey);
+    return this.get(r.id)!;
   }
 
   recordReplacementSessionForRun(runId: string, agentId: string, replacementSessionId: string, now = new Date().toISOString()): ContextRolloverV3 | undefined {
@@ -1089,6 +1248,7 @@ export class CoordinationV3ContextRolloverAuthority {
       ...(row.replacement_manifest_hash ? { replacementManifestHash: row.replacement_manifest_hash } : {}),
       replacementAttempt: row.replacement_attempt,
       visibleResponseCommitted: row.visible_response_committed === 1,
+      continuityWaiting: row.continuity_waiting === 1,
       ...(row.handoff_committed_at ? { handoffCommittedAt: row.handoff_committed_at } : {}),
       ...(row.session_retiring_at ? { sessionRetiringAt: row.session_retiring_at } : {}),
       ...(row.continuation_ready_at ? { continuationReadyAt: row.continuation_ready_at } : {}),

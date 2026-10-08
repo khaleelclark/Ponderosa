@@ -155,9 +155,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       ? `durable work is unavailable: ${processContainment.detail}`
       : undefined;
   const assets = new AssetStore(opts.dataDir);
+  const workspace = new WorkspaceStore(opts.dataDir);
   store.configureCommunicationAttachmentMetadataAuthority((projectId, artifact) =>
     assets.managedProjectArtifactMetadataIsAuthoritative(projectId, artifact));
   const coordinationV3 = new CoordinationV3Store(store.sqlite, {
+    canonicalTaskDecisions: runIds => workspace.decisionsForRuns(runIds),
     attachmentAuthority: {
       resolve: (projectId, agentId, attachmentId) =>
         assets.authoritativeRuntimeAttachment(projectId, agentId, attachmentId),
@@ -240,7 +242,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   } = createCommunicationArtifactAuthority({ dataDir: opts.dataDir, assets, store });
   const coordinationV3WorkerId = `server:${randomUUID()}`;
   const providerProcessAuthority = new ProviderProcessAuthority(store.sqlite, coordinationV3WorkerId);
-  const workspace = new WorkspaceStore(opts.dataDir);
   const runtimeElicitations = new RuntimeElicitationBroker();
   // Startup recovery terminates any surviving prior-boot provider group before
   // readiness. Retire prompts whose sensitive live half cannot cross the boot.
@@ -392,7 +393,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     enabled: process.env.PONDEROSA_RESOURCE_ADMISSION !== "off",
     ...(process.env.PONDEROSA_RESOURCE_RESERVE_MIB ? { reserveBytes: Number(process.env.PONDEROSA_RESOURCE_RESERVE_MIB) * 1024 * 1024 } : {}),
     ...(process.env.PONDEROSA_RESOURCE_STARTUP_MIB ? { startupBytes: Number(process.env.PONDEROSA_RESOURCE_STARTUP_MIB) * 1024 * 1024 } : {}),
-  }, undefined, undefined, undefined, () => providerStatusChanged());
+  }, opts.resourceAdmissionObservation?.sample, opts.resourceAdmissionObservation?.now,
+  opts.resourceAdmissionObservation?.platform, () => providerStatusChanged());
   const engineAuthStatuses = new EngineAuthStatusCache(providerStatusChanged);
   const engineAvailability = new EngineAvailabilityStore(
     opts.dataDir,
@@ -1104,7 +1106,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     coordinationV3,
     subscribers,
     recordCommunication,
-    collaborationViewDetail,
     refreshProviderUsageAfterRun,
     appendWorkspace,
     publishCoordinationV3Changed,
