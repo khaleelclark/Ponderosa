@@ -1,0 +1,299 @@
+{
+  "provenance": {
+    "date": "2026-10-08",
+    "binaryVersion": "grok 1.0.46 (2765805b9442)",
+    "binarySha256": "41626a53292324140b92556b9d42ff5542e3dcd04aff85eafb8689dd4adb44fc",
+    "evidenceZipSha256": "b97217e49c1b8dce9a66f5e2193a1ca90af053ca60ed5076341c5c5a16ab0ef7",
+    "sourceMemberSha256": {
+      "acp-hostwire.json": "eace3d187b6a8c1304ea2feedd3f359693d6a35ce8be1e7d58b44fd781b4c608",
+      "acp-mcp.json": "7a4b583d6ea3f16a9c63b9d7e676fb05f7979a942a4ef19c02bea750024477cb",
+      "acp-mcp-locked.json": "62dad61ae27daf2ac0bb945c2199eeb0764a6b27e342dd5598ee7c535fea460b"
+    },
+    "sanitization": "Private scratch prefix and local agent/instance/hostname metadata replaced. Send/receive shapes otherwise preserved. No live model or reverse request was captured.",
+    "selection": "All hostwire send/receive frames; only servers_updated receive frames from the two inventory cases."
+  },
+  "cases": {
+    "acp-hostwire.json": [
+      {
+        "send": {
+          "id": 1,
+          "method": "initialize",
+          "params": {
+            "protocolVersion": 1,
+            "clientCapabilities": {
+              "fs": {
+                "readTextFile": false,
+                "writeTextFile": false
+              },
+              "terminal": false
+            },
+            "clientInfo": {
+              "name": "ponderosa-stage0-inert",
+              "version": "0"
+            }
+          }
+        }
+      },
+      {
+        "receive": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": {
+            "protocolVersion": 1,
+            "agentCapabilities": {
+              "loadSession": true,
+              "promptCapabilities": {
+                "image": false,
+                "audio": false,
+                "embeddedContext": true
+              },
+              "mcpCapabilities": {
+                "http": true,
+                "sse": true
+              },
+              "sessionCapabilities": {
+                "list": {},
+                "resume": {},
+                "close": {}
+              },
+              "auth": {},
+              "_meta": {
+                "x.ai/fs_notify": true,
+                "x.ai/hooks": {
+                  "blockingEvents": [
+                    "pre_tool_use",
+                    "stop",
+                    "subagent_stop"
+                  ],
+                  "decisions": [
+                    "deny",
+                    "block"
+                  ],
+                  "stopSignals": [
+                    "continue",
+                    "stopReason",
+                    "additionalContext"
+                  ]
+                },
+                "x.ai/capabilities": {
+                  "toolOverrides": {
+                    "x_keyword_search": true,
+                    "x_semantic_search": true,
+                    "x_user_search": false,
+                    "x_thread_fetch": false
+                  }
+                }
+              }
+            },
+            "authMethods": [
+              {
+                "id": "grok.com",
+                "name": "Grok",
+                "description": "Sign in with Grok"
+              }
+            ],
+            "_meta": {
+              "grokShell": true,
+              "defaultAuthMethodId": null,
+              "x.ai/mcp/sdk": true,
+              "x.ai/pluginDirs": true,
+              "currentWorkingDirectory": "/fixture/private-scratch/acp-hostwire/cwd",
+              "agentVersion": "1.0.46",
+              "agentId": "[fixture metadata]",
+              "agentInstanceId": "[fixture metadata]",
+              "hostname": "[fixture metadata]",
+              "modelState": {
+                "currentModelId": "grok-4.6",
+                "availableModels": [
+                  {
+                    "modelId": "grok-4.6",
+                    "name": "Grok 4.6",
+                    "description": "SpaceXAI's latest frontier model",
+                    "_meta": {
+                      "totalContextTokens": 500000,
+                      "agentType": "grok-build-plan",
+                      "supportsReasoningEffort": true,
+                      "reasoningEffort": "high",
+                      "reasoningEfforts": [
+                        {
+                          "id": "xhigh",
+                          "value": "xhigh",
+                          "label": "Extra High Effort",
+                          "description": "Highest effort and reasoning level",
+                          "default": false
+                        },
+                        {
+                          "id": "high",
+                          "value": "high",
+                          "label": "High Effort",
+                          "description": "Higher implementation quality with extensive reasoning",
+                          "default": true
+                        },
+                        {
+                          "id": "medium",
+                          "value": "medium",
+                          "label": "Medium Effort",
+                          "description": "Balanced effort with standard implementation and testing",
+                          "default": false
+                        },
+                        {
+                          "id": "low",
+                          "value": "low",
+                          "label": "Low Effort",
+                          "description": "Quick, fast implementations",
+                          "default": false
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "modelId": "grok-4.5",
+                    "name": "Grok 4.5",
+                    "_meta": {
+                      "totalContextTokens": 500000,
+                      "agentType": "grok-build-plan",
+                      "supportsReasoningEffort": true,
+                      "reasoningEffort": "high",
+                      "reasoningEfforts": [
+                        {
+                          "id": "high",
+                          "value": "high",
+                          "label": "High Effort",
+                          "description": "Highest implementation quality with extensive reasoning",
+                          "default": true
+                        },
+                        {
+                          "id": "medium",
+                          "value": "medium",
+                          "label": "Medium Effort",
+                          "description": "Balanced effort with standard implementation and testing",
+                          "default": false
+                        },
+                        {
+                          "id": "low",
+                          "value": "low",
+                          "label": "Low Effort",
+                          "description": "Quick, fast implementations",
+                          "default": false
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "mcpServers": [],
+              "mcpApps": false,
+              "metadata": null,
+              "availableCommands": [
+                {
+                  "name": "compact",
+                  "description": "Compress conversation history to save context window",
+                  "input": null
+                },
+                {
+                  "name": "always-approve",
+                  "description": "Toggle always-approve mode (skip all permission prompts)",
+                  "input": {
+                    "hint": "on|off"
+                  }
+                },
+                {
+                  "name": "context",
+                  "description": "Show context window usage and session stats",
+                  "input": null
+                },
+                {
+                  "name": "session-info",
+                  "description": "Show session details (model, turns, context usage)",
+                  "input": null
+                }
+              ],
+              "cancelRewind": true,
+              "sessionRecap": false,
+              "feedbackTraceOffer": false,
+              "voiceMode": false
+            }
+          }
+        }
+      },
+      {
+        "send": {
+          "id": 2,
+          "method": "stage0/unknown",
+          "params": {}
+        }
+      },
+      {
+        "receive": {
+          "jsonrpc": "2.0",
+          "id": 2,
+          "error": {
+            "code": -32601,
+            "message": "Method not found"
+          }
+        }
+      },
+      {
+        "send": {
+          "method": "session/cancel",
+          "params": {
+            "sessionId": "stage0-nonexistent"
+          }
+        }
+      },
+      {
+        "send": {
+          "id": 3,
+          "method": "session/close",
+          "params": {
+            "sessionId": "stage0-nonexistent"
+          }
+        }
+      },
+      {
+        "receive": {
+          "jsonrpc": "2.0",
+          "id": 3,
+          "result": {
+            "_meta": {
+              "x.ai/closeOutcome": "notResident"
+            }
+          }
+        }
+      }
+    ],
+    "acp-mcp.json": [
+      {
+        "receive": {
+          "jsonrpc": "2.0",
+          "method": "_x.ai/mcp/servers_updated",
+          "params": {
+            "mcpServers": [
+              {
+                "name": "stage0_inert",
+                "source": "local",
+                "type": "stdio",
+                "command": "/usr/bin/python3",
+                "args": [
+                  "/fixture/private-scratch/acp-mcp/inert-mcp.py",
+                  "/fixture/private-scratch/acp-mcp/mcp-started.txt"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "acp-mcp-locked.json": [
+      {
+        "receive": {
+          "jsonrpc": "2.0",
+          "method": "_x.ai/mcp/servers_updated",
+          "params": {
+            "mcpServers": []
+          }
+        }
+      }
+    ]
+  }
+}

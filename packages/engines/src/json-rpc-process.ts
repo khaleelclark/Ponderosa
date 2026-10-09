@@ -6,7 +6,7 @@ import type { NativeProcessTreeAuthority } from "./process-termination.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer } from "./jsonl.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
 
-type RpcId = number;
+type RpcId = number | string;
 type RpcMessage = {
   id?: RpcId;
   method?: string;
@@ -20,15 +20,26 @@ class AsyncQueue<T> implements AsyncIterable<T> {
   private waiters: Array<(value: IteratorResult<T>) => void> = [];
   private ended = false;
 
-  push(value: T): void {
-    if (this.ended) return;
+  constructor(private readonly maxValues?: number) {}
+
+  push(value: T): boolean {
+    if (this.ended) return true;
     const waiter = this.waiters.shift();
     if (waiter) waiter({ value, done: false });
-    else this.values.push(value);
+    else {
+      if (this.maxValues !== undefined && this.values.length >= this.maxValues) return false;
+      this.values.push(value);
+    }
+    return true;
   }
 
-  end(): void {
+  end(finalValue?: T): void {
     if (this.ended) return;
+    if (finalValue !== undefined && !this.push(finalValue)) {
+      // A full bounded queue must still deliver its terminal error.
+      this.values.pop();
+      this.push(finalValue);
+    }
     this.ended = true;
     for (const waiter of this.waiters.splice(0)) waiter({ value: undefined, done: true });
   }
@@ -60,20 +71,27 @@ export interface JsonRpcProcessOptions {
   /** Register authority immediately after spawn, before transport setup. */
   onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
   onRuntimeRootExit: (detail?: ProviderRootExitDetail) => void;
-  handleServerRequest?: (requestId: number, method: string, params: unknown) => Promise<unknown>;
+  handleServerRequest?: (requestId: RpcId, method: string, params: unknown) => Promise<unknown>;
   /** Observe provider notifications even while the Agent has no active turn and
    * the event iterator is not currently being pulled. */
   onNotification?: (notification: JsonRpcNotification) => void;
   /** Aggregate stdout budget for short-lived helpers whose notification stream
    * is not consumed. Long-lived runtime sessions leave this unset. */
   maxOutputBytes?: number;
+  /** Optional caps for bounded protocol qualification. Existing runtimes keep
+   * their current limits unless they explicitly opt in. The pending cap applies
+   * separately to each direction; deadlines remain owned by the caller's signal. */
+  maxPendingRequests?: number;
+  maxQueuedNotifications?: number;
 }
 
 /** Minimal JSONL JSON-RPC client for subscription-authenticated engine daemons. */
 export class JsonRpcProcess {
   private readonly child: ChildProcess;
   private readonly pending = new Map<RpcId, { resolve(value: unknown): void; reject(error: Error): void }>();
-  private readonly queue = new AsyncQueue<JsonRpcNotification>();
+  private readonly queue: AsyncQueue<JsonRpcNotification>;
+  private readonly serverRequests = new Set<RpcId>();
+  private readonly failTransport: (error: Error) => void;
   private nextId = 1;
   private stderrTail = "";
   private closed = false;
@@ -81,9 +99,16 @@ export class JsonRpcProcess {
   private readonly nativeAuthority?: NativeProcessTreeAuthority;
   readonly processIdentity;
 
-  readonly notifications: AsyncIterable<JsonRpcNotification> = this.queue;
+  readonly notifications: AsyncIterable<JsonRpcNotification>;
 
   constructor(private readonly opts: JsonRpcProcessOptions) {
+    for (const limit of [opts.maxPendingRequests, opts.maxQueuedNotifications]) {
+      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+        throw new Error("engine RPC limits must be positive safe integers");
+      }
+    }
+    this.queue = new AsyncQueue(opts.maxQueuedNotifications);
+    this.notifications = this.queue;
     const environment = runtimeEnvironment(opts.environment);
     const contained = spawnContainedCli({
       bin: opts.bin,
@@ -102,6 +127,15 @@ export class JsonRpcProcess {
       rootExitReported = true;
       opts.onRuntimeRootExit?.(detail);
     };
+    this.failTransport = (error) => {
+      if (this.closed) return;
+      // Preserve the cause and revoke work before the host callback can
+      // synchronously abort or close this same registered transport.
+      this.finish(error);
+      this.child.stdout?.destroy();
+      reportRootExit();
+      void this.close().catch(() => undefined);
+    };
     this.child.stdin?.on("error", () => undefined);
     this.child.stderr?.setEncoding("utf8");
     this.child.stderr?.on("data", (chunk: string) => {
@@ -116,23 +150,14 @@ export class JsonRpcProcess {
     };
     this.child.stdout?.once("close", clearPostExitDrain);
     const failRecord = () => {
-      if (this.closed) return;
-      reportRootExit();
-      this.child.stdout?.destroy();
-      this.finish(new Error(
+      this.failTransport(new Error(
         `${opts.bin} JSONL record exceeded the ${JSONL_MAX_RECORD_BYTES / (1024 * 1024)} MiB limit`,
       ));
-      void this.close().catch(() => undefined);
     };
     this.child.stdout?.on("data", (chunk: Buffer | string) => {
       outputBytes += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
       if (opts.maxOutputBytes !== undefined && outputBytes > opts.maxOutputBytes) {
-        if (!this.closed) {
-          reportRootExit();
-          this.child.stdout?.destroy();
-          this.finish(new Error(`${opts.bin} JSON-RPC output exceeded the aggregate limit`));
-          void this.close().catch(() => undefined);
-        }
+        this.failTransport(new Error(`${opts.bin} JSON-RPC output exceeded the aggregate limit`));
         return;
       }
       try {
@@ -157,7 +182,9 @@ export class JsonRpcProcess {
       // buffered output to drain briefly, then close the transport locally.
       postExitDrainTimer ??= setTimeout(() => this.child.stdout?.destroy(), 1_000);
     };
-    this.child.once("error", (error) => { rootExited(); this.finish(new Error(`failed to spawn ${opts.bin}: ${error.message}`)); });
+    this.child.once("error", (error) => {
+      this.failTransport(new Error(`failed to spawn ${opts.bin}: ${error.message}`));
+    });
     this.child.once("exit", rootExited);
     this.child.once("close", (code) => this.finish(code === 0 || this.closed
       ? undefined
@@ -177,11 +204,19 @@ export class JsonRpcProcess {
 
   request<T>(method: string, params?: unknown): Promise<T> {
     if (this.closed) return Promise.reject(new Error("engine RPC process is closed"));
+    if (this.opts.maxPendingRequests !== undefined && this.pending.size >= this.opts.maxPendingRequests) {
+      return Promise.reject(new Error("engine RPC pending request limit exceeded"));
+    }
     const id = this.nextId++;
     const promise = new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: (value) => resolve(value as T), reject });
     });
-    this.write({ id, method, params });
+    try { this.write({ id, method, params }); }
+    catch (error) {
+      const pending = this.pending.get(id);
+      this.pending.delete(id);
+      pending?.reject(error instanceof Error ? error : new Error("engine RPC write failed"));
+    }
     return promise;
   }
 
@@ -195,7 +230,9 @@ export class JsonRpcProcess {
 
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
-    this.closed = true;
+    // Revoke transport work immediately, even if process teardown fails. The
+    // host's registered handle still owns the live tree and can retry close.
+    this.finish();
     const attempt = terminateProcessGroup(this.child, {
       label: this.opts.bin,
       termGraceMs: this.opts.killGraceMs ?? 3_000,
@@ -217,9 +254,20 @@ export class JsonRpcProcess {
   }
 
   private receive(line: string): void {
-    let message: RpcMessage;
-    try { message = JSON.parse(line) as RpcMessage; } catch { return; }
-    if (message.id !== undefined && ("result" in message || message.error)) {
+    if (this.closed) return;
+    let parsed: unknown;
+    try { parsed = JSON.parse(line); } catch { return; }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+    const message = parsed as RpcMessage & { jsonrpc?: unknown };
+    if (message.jsonrpc !== undefined && message.jsonrpc !== "2.0") return;
+    // Preserve string reverse IDs already handled by the original transport;
+    // outgoing request IDs remain numeric and correlate without coercion.
+    if (message.id !== undefined && typeof message.id !== "string" && !Number.isSafeInteger(message.id)) return;
+    const hasResult = Object.hasOwn(message, "result"), hasError = Object.hasOwn(message, "error");
+    if (hasResult || hasError) {
+      if (message.id === undefined || message.method !== undefined || hasResult === hasError) return;
+      if (hasError && (!message.error || typeof message.error !== "object" || Array.isArray(message.error) ||
+          !Number.isSafeInteger(message.error.code) || typeof message.error.message !== "string")) return;
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
@@ -227,14 +275,23 @@ export class JsonRpcProcess {
       else pending.resolve(message.result);
       return;
     }
-    if (message.id !== undefined && message.method) {
-      void this.respondToServerRequest(message.id, message.method, message.params);
+    if (typeof message.method !== "string" || !message.method) return;
+    if (message.id !== undefined) {
+      if (this.serverRequests.has(message.id)) return;
+      if (this.opts.maxPendingRequests !== undefined && this.serverRequests.size >= this.opts.maxPendingRequests) {
+        this.failTransport(new Error("engine RPC reverse request limit exceeded"));
+        return;
+      }
+      this.serverRequests.add(message.id);
+      void this.respondToServerRequest(message.id, message.method, message.params)
+        .finally(() => this.serverRequests.delete(message.id!))
+        .catch(error => this.failTransport(error instanceof Error ? error : new Error("engine RPC response failed")));
       return;
     }
     if (message.method) {
       const notification = { method: message.method, params: message.params };
       this.opts.onNotification?.(notification);
-      this.queue.push(notification);
+      if (!this.queue.push(notification)) this.failTransport(new Error("engine RPC notification queue limit exceeded"));
     }
   }
 
@@ -245,9 +302,9 @@ export class JsonRpcProcess {
     }
     try {
       const result = await this.opts.handleServerRequest(id, method, params);
-      this.write({ id, result });
+      if (!this.closed) this.write({ id, result });
     } catch (error) {
-      this.write({
+      if (!this.closed) this.write({
         id,
         error: {
           code: -32000,
@@ -261,8 +318,7 @@ export class JsonRpcProcess {
     this.closed = true;
     for (const pending of this.pending.values()) pending.reject(error ?? new Error("engine RPC process closed"));
     this.pending.clear();
-    if (error) this.queue.push({ method: "ponderosa/processError", params: { message: error.message } });
-    this.queue.end();
+    this.queue.end(error ? { method: "ponderosa/processError", params: { message: error.message } } : undefined);
   }
 
 }
