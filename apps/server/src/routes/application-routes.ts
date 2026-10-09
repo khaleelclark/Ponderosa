@@ -527,7 +527,10 @@ registerAgentPresetRoutes(app, {
   },
 });
 
-registerPineconeRoutes(app, { store, deletingAgentIds, deletingProjectIds, deletingConversationIds });
+registerPineconeRoutes(app, { store, deletingAgentIds, deletingProjectIds, deletingConversationIds, agentMessageCapabilities,
+  profileChanged: profile => appendWorkspace({ type: "project_changed", projectId: profile.projectId, action: "updated" }),
+  resumeAdmission: () => { notifyScheduler(); void triggerSources.processDueSchedules().catch(() => undefined); },
+});
 registerAgentCapabilityRoutes(app, { store, agentMessageCapabilities, deletingAgentIds, deletingProjectIds, deletingConversationIds });
 
 registerAgentCreationRoutes(app, {

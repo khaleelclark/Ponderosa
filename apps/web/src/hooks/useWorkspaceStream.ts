@@ -883,6 +883,7 @@ export function useWorkspaceStream(
         invalidate(queryKeys.projects.all);
         if (event.action !== "used") {
           invalidate(queryKeys.agents.project(event.projectId));
+          invalidate(["pinecone"]);
           invalidate(queryKeys.agents.allChat);
         }
         // Mark collapsed sibling pages stale as ownership may have changed,

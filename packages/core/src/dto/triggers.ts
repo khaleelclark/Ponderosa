@@ -62,7 +62,30 @@ export interface CreateTriggerRequest {
   runBudget?: TriggerRunBudgetDto;
 }
 
+/** Operator-reviewed authority, excluding fire times and budget consumption telemetry.
+ * Null explicitly represents an absent destination alternative or configured budget. */
+export interface ReviewedTriggerDefinition {
+  id: string;
+  projectId: string;
+  conversationId: string;
+  targetAgentId: string | null;
+  branchId: string | null;
+  name: string;
+  instructions: string;
+  sourceKind: TriggerSourceKind;
+  sourceConfig: TriggerSourceConfig;
+  enabled: boolean;
+  fullAccess: true;
+  runBudget: TriggerRunBudgetDto | null;
+}
+
+export interface RunTriggerRequest {
+  confirmDisabled?: boolean;
+  reviewedDefinition?: ReviewedTriggerDefinition;
+}
+
 export interface UpdateTriggerRequest {
+  reviewedDefinition?: ReviewedTriggerDefinition;
   conversationId?: string;
   targetAgentId?: string;
   name?: string;

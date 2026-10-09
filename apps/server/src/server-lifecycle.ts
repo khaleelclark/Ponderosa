@@ -210,7 +210,7 @@ type ServerLifecycleContext =
   Pick<ReadModels, "ensureDecisionResponseActivation"> &
   Pick<CommunicationJournal,
     "refreshCommunicationReconciliation" | "stopCommunicationReconciliation"> &
-  Pick<BrowserAuthority, "closeRunBrowser"> & {
+  Pick<BrowserAuthority, "closeRunBrowser" | "browserProfiles"> & {
     opts: CreateServerOptions;
     store: AgentStore;
     assets: AssetStore;
@@ -293,6 +293,7 @@ export function registerServerLifecycle(
     attachmentDeletionInProgress,
     reconcilingAssetAgentIds,
     projectBrowserGrants,
+    browserProfiles,
     browserSessions,
     projectBrowserSessions,
     providerUsage,
@@ -942,6 +943,7 @@ export function registerServerLifecycle(
   let shutdownStorageClosed = false;
   const closeShutdownStorageIfReady = (): void => {
     if (!providerRuntimeShutdownFinalized || !shutdownBackgroundCleanupSucceeded || shutdownStorageClosed) return;
+    browserProfiles.close();
     assets.close();
     // All provider and background cleanup has settled, so an orderly server
     // shutdown may replay write-active projections once and mint the clean

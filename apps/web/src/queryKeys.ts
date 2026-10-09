@@ -139,6 +139,7 @@ export const queryKeys = {
   },
   triggers: {
     all: ["triggers"] as const,
+    pinecone: (projectId: string, conversationId: string, agentId: string) => ["triggers", "project", projectId, "pinecone", conversationId, agentId] as const,
     project: (projectId: string) => ["triggers", "project", projectId] as const,
     projectOwnership: (projectId: string) => ["triggers", "project-ownership", projectId] as const,
     occurrencesAll: ["trigger-occurrences"] as const,

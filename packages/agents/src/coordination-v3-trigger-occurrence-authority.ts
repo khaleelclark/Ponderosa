@@ -208,6 +208,16 @@ export class CoordinationV3TriggerOccurrenceAuthority {
       if (!row || !row.enabled || row.source_kind !== "schedule") {
         throw new Error("scheduled Automation is unavailable");
       }
+      if (row.agent_id && this.sqlite.prepare("SELECT 1 FROM pinecone_profiles WHERE agent_id=? AND admission_state='paused'").get(row.agent_id)) {
+        throw new Error("Pinecone scheduled admission is paused");
+      }
+      // Revalidate the actual destination in the same transaction as automatic intake.
+      if (!row.branch_id) {
+        this.support.requireProject(row.project_id);
+        this.support.requireAgent(row.project_id, row.agent_id!);
+        this.support.requireConversation(row.project_id, row.conversation_id);
+        this.support.requireConversationMember(row.conversation_id, row.agent_id!);
+      }
       if (row.next_fire_at !== input.expectedNextFireAt) {
         throw new Error("scheduled Automation cursor changed");
       }

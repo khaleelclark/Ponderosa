@@ -84,6 +84,7 @@ export class CoordinationV3SteeringAuthority {
           ON r.agent_id = a.agent_id AND r.scope_key = a.scope_key
           AND r.status = 'running'
         WHERE a.state IN ('pending', 'retry_pending')
+          AND NOT EXISTS (SELECT 1 FROM pinecone_profiles hold WHERE hold.agent_id=a.agent_id AND hold.admission_state='paused')
           AND NOT EXISTS (SELECT 1 FROM branch_resource_members bm JOIN branch_resources br ON br.step_execution_id=bm.step_execution_id
             JOIN branch_executions be ON be.id=br.execution_id JOIN branch_step_executions bs ON bs.id=br.step_execution_id JOIN branch_paths bp ON bp.id=bs.path_id
             WHERE bm.agent_id=a.agent_id AND (br.state='archived' OR br.retry_draining=1 OR be.cancel_requested=1 OR bp.state='canceled'))
@@ -121,6 +122,7 @@ export class CoordinationV3SteeringAuthority {
       const activations = this.sqlite.prepare(`
         SELECT * FROM agent_activations
         WHERE agent_id = ? AND scope_key = ?
+          AND NOT EXISTS (SELECT 1 FROM pinecone_profiles hold WHERE hold.agent_id=agent_activations.agent_id AND hold.admission_state='paused')
           AND state IN ('pending', 'retry_pending')
           AND available_at <= ?
           AND dispatch_policy = 'steer_or_run'

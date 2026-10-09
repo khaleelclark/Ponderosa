@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import {
@@ -9,6 +10,8 @@ import type {
   CreateTriggerRequest,
   CreateTriggerResponse,
   RunTriggerResponse,
+  TriggerDefinitionDto,
+  ReviewedTriggerDefinition,
 } from "@ponderosa/core";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import {
@@ -19,8 +22,25 @@ import { applyCollectionPageHeaders, collectionGenerationKey, sendCollectionPage
 import {
   parseCreateTrigger,
   parseUpdateTrigger,
+  parseRunTrigger,
 } from "../trigger-validation.js";
 import {occurrenceProductSql,requestProduct,triggerProductSql} from "../product-scope.js";
+
+class StaleTriggerDefinitionError extends Error {}
+
+function assertReviewedDefinition(current: TriggerDefinitionDto, reviewed?: ReviewedTriggerDefinition): void {
+  if (!reviewed) return; // Supported legacy callers remain unguarded.
+  // Validate complete configured values without treating an already-fired one-time schedule as malformed.
+  normalizeTriggerSourceConfig(reviewed.sourceKind, reviewed.sourceConfig, new Date(0));
+  const actual: ReviewedTriggerDefinition = {
+    id: current.id, projectId: current.projectId, conversationId: current.conversationId,
+    targetAgentId: current.targetAgentId ?? null, branchId: current.branchId ?? null,
+    name: current.name, instructions: current.instructions, sourceKind: current.sourceKind,
+    sourceConfig: current.sourceConfig, enabled: current.enabled, fullAccess: current.fullAccess,
+    runBudget: current.runBudget ?? null,
+  };
+  if (!isDeepStrictEqual(actual, reviewed)) throw new StaleTriggerDefinitionError("This Automation changed. Review its current destination, instructions, schedule and budget before acting.");
+}
 
 interface TriggerChangedEvent {
   type: "trigger_changed";
@@ -185,58 +205,62 @@ export function registerTriggerRoutes(
   app.patch<{ Params: { id: string }; Body: unknown }>(
     "/api/triggers/:id",
     async (request, reply) => {
-      const current = coordination.getTriggerDefinition(request.params.id);
-      if (!current) {
-        return reply.code(404).send({ error: "Automation not found" });
-      }
       try {
-        const body = parseUpdateTrigger(request.body, current.sourceKind);
-        if (current.branchId && Object.keys(body).some(key => key !== "enabled")) throw new Error("Edit Branch trigger configuration through a new Branch deployment");
-        if (current.branchId) {
-          const branch = store.sqlite.prepare('SELECT deleting FROM branches WHERE id=?').get(current.branchId) as {deleting:number}|undefined;
-          if (!branch || branch.deleting) return reply.code(409).send({error:'This Branch is unavailable or being deleted. Trigger intake cannot change.'});
-        }
-        const proposedConversationId = body.conversationId ?? current.conversationId;
-        if (deletingConversationIds.has(current.conversationId) ||
-            deletingConversationIds.has(proposedConversationId)) {
-          return reply.code(409).send({ error: "Automation Chat deletion is in progress" });
-        }
-        const proposedConversation = store.getConversation(proposedConversationId);
-        if (!current.branchId && (!proposedConversation || proposedConversation.projectId !== current.projectId ||
-            proposedConversation.deletedAt || proposedConversation.archived)) {
-          return reply.code(400).send({ error: "Automation destination must be an active Chat in this Project" });
-        }
-        if (rejectQuarantinedMutation(
-          { projectId: current.projectId, agentId: current.targetAgentId },
-          reply,
-        )) return reply;
-        const proposedTargetAgentId = body.targetAgentId ?? current.targetAgentId;
-        if (proposedTargetAgentId !== current.targetAgentId &&
-            rejectQuarantinedMutation(
-              { projectId: current.projectId, agentId: proposedTargetAgentId },
-              reply,
-            )) return reply;
-        if (body.enabled === true && current.sourceKind === "webhook" && !current.secretFingerprint) {
-          throw new Error("Rotate the webhook signing secret before enabling automatic intake");
-        }
-        const needsReschedule =
-          body.sourceConfig !== undefined ||
-          (body.enabled === true && !current.enabled);
-        const normalized = needsReschedule
-          ? normalizeTriggerSourceConfig(
-              current.sourceKind,
-              body.sourceConfig ?? current.sourceConfig,
-            )
-          : undefined;
-        const trigger = coordination.updateTriggerDefinition(current.id, {
-          ...body,
-          ...(normalized
-            ? {
-                sourceConfig: normalized.config,
-                nextFireAt: normalized.nextFireAt ?? null,
-              }
-            : {}),
-        });
+        const accepted = store.sqlite.transaction(() => {
+          const current = coordination.getTriggerDefinition(request.params.id);
+          if (!current) { reply.code(404).send({ error: "Automation not found" }); return; }
+          const { reviewedDefinition, ...body } = parseUpdateTrigger(request.body, current.sourceKind);
+          assertReviewedDefinition(current, reviewedDefinition);
+          if (current.branchId && Object.keys(body).some(key => key !== "enabled")) throw new Error("Edit Branch trigger configuration through a new Branch deployment");
+          if (current.branchId) {
+            const branch = store.sqlite.prepare('SELECT deleting FROM branches WHERE id=?').get(current.branchId) as {deleting:number}|undefined;
+            if (!branch || branch.deleting) { reply.code(409).send({error:'This Branch is unavailable or being deleted. Trigger intake cannot change.'}); return; }
+          }
+          const proposedConversationId = body.conversationId ?? current.conversationId;
+          if (deletingConversationIds.has(current.conversationId) ||
+              deletingConversationIds.has(proposedConversationId)) {
+            reply.code(409).send({ error: "Automation Chat deletion is in progress" }); return;
+          }
+          const proposedConversation = store.getConversation(proposedConversationId);
+          if (!current.branchId && (!proposedConversation || proposedConversation.projectId !== current.projectId ||
+              proposedConversation.deletedAt || proposedConversation.archived)) {
+            reply.code(400).send({ error: "Automation destination must be an active Chat in this Project" }); return;
+          }
+          if (rejectQuarantinedMutation(
+            { projectId: current.projectId, agentId: current.targetAgentId },
+            reply,
+          )) return;
+          const proposedTargetAgentId = body.targetAgentId ?? current.targetAgentId;
+          if (proposedTargetAgentId !== current.targetAgentId &&
+              rejectQuarantinedMutation(
+                { projectId: current.projectId, agentId: proposedTargetAgentId },
+                reply,
+              )) return;
+          if (body.enabled === true && current.sourceKind === "webhook" && !current.secretFingerprint) {
+            throw new Error("Rotate the webhook signing secret before enabling automatic intake");
+          }
+          const needsReschedule =
+            body.sourceConfig !== undefined ||
+            (body.enabled === true && !current.enabled);
+          const normalized = needsReschedule
+            ? normalizeTriggerSourceConfig(
+                current.sourceKind,
+                body.sourceConfig ?? current.sourceConfig,
+              )
+            : undefined;
+          const trigger = coordination.updateTriggerDefinition(current.id, {
+            ...body,
+            ...(normalized
+              ? {
+                  sourceConfig: normalized.config,
+                  nextFireAt: normalized.nextFireAt ?? null,
+                }
+              : {}),
+          });
+          return { current, body, trigger };
+        })();
+        if (!accepted || reply.sent) return reply;
+        const { current, body, trigger } = accepted;
         await sources.applyDefinitionChange(current, trigger);
         reconcileOperationalNotifications();
         if (body.enabled === false) {
@@ -258,7 +282,7 @@ export function registerTriggerRoutes(
         }
         return trigger;
       } catch (error) {
-        return reply.code(400).send({
+        return reply.code(error instanceof StaleTriggerDefinitionError ? 409 : 400).send({
           error: error instanceof Error ? error.message : "invalid Automation",
         });
       }
@@ -360,41 +384,39 @@ export function registerTriggerRoutes(
     },
   );
 
-  app.post<{ Params: { id: string }; Body: { confirmDisabled?: boolean } }>(
+  app.post<{ Params: { id: string }; Body: unknown }>(
     "/api/triggers/:id/run",
     async (request, reply) => {
-      const current = coordination.getTriggerDefinition(request.params.id);
-      if (!current) {
-        return reply.code(404).send({ error: "Automation not found" });
-      }
-      if (rejectQuarantinedMutation({ projectId: current.projectId, agentId: current.targetAgentId }, reply)) return reply;
-      if (!current.enabled && request.body?.confirmDisabled !== true) {
-        return reply.code(409).send({
-          error: "Confirm this one-time run of the disabled Automation.",
-          confirmationRequired: true,
-        });
-      }
       try {
-        const now = new Date().toISOString();
-        const result = coordination.recordTriggerOccurrence({
-          triggerId: current.id,
-          occurrenceKey: `manual:${randomUUID()}`,
-          ...(current.branchId ? { branchOperatorManual: true } : {}),
-          payload: { kind: "manual_run", requestedAt: now },
-          provenance: {
-            source: "operator_manual_run",
-            actor: "operator",
-            requestedAt: now,
-            automaticBudgetConsumed: false,
-          },
-          allowDisabled: !current.enabled,
-          now,
-        });
+        const body = parseRunTrigger(request.body);
+        const result = store.sqlite.transaction(() => {
+          const current = coordination.getTriggerDefinition(request.params.id);
+          if (!current) { reply.code(404).send({ error: "Automation not found" }); return; }
+          assertReviewedDefinition(current, body.reviewedDefinition);
+          if (rejectQuarantinedMutation({ projectId: current.projectId, agentId: current.targetAgentId }, reply)) return;
+          if (deletingConversationIds.has(current.conversationId)) {
+            reply.code(409).send({ error: "Automation Chat deletion is in progress" }); return;
+          }
+          if (!current.enabled && body.confirmDisabled !== true) {
+            reply.code(409).send({ error: "Confirm this one-time run of the disabled Automation.", confirmationRequired: true }); return;
+          }
+          const now = new Date().toISOString();
+          return coordination.recordTriggerOccurrence({
+            triggerId: current.id,
+            occurrenceKey: `manual:${randomUUID()}`,
+            ...(current.branchId ? { branchOperatorManual: true } : {}),
+            payload: { kind: "manual_run", requestedAt: now },
+            provenance: { source: "operator_manual_run", actor: "operator", requestedAt: now, automaticBudgetConsumed: false },
+            allowDisabled: !current.enabled,
+            now,
+          });
+        })();
+        if (!result || reply.sent) return reply;
         reconcileOperationalNotifications();
         notifyScheduler();
         return result satisfies RunTriggerResponse;
       } catch (error) {
-        return reply.code(400).send({
+        return reply.code(error instanceof StaleTriggerDefinitionError ? 409 : 400).send({
           error: error instanceof Error ? error.message : "Automation could not run",
         });
       }

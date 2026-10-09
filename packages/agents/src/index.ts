@@ -162,7 +162,7 @@ export type {
   ArtifactRow,
   EventRow,
 } from "./schema.js";
-export { artifactAgentProductSql } from "./artifact-product-scope.js";
+export { artifactAgentProductSql, userCommunicationArtifactOwners, managedArtifactProductSql } from "./artifact-product-scope.js";
 export { BranchStore } from "./branch-store.js";
 export type { BranchScriptLease } from "./branch-store.js";
 

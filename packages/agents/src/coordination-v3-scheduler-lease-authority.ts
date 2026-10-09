@@ -180,6 +180,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         SELECT a.agent_id, a.project_id, a.scope_key
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending')
+          AND NOT EXISTS (SELECT 1 FROM pinecone_profiles hold WHERE hold.agent_id=a.agent_id AND hold.admission_state='paused')
           AND NOT EXISTS (SELECT 1 FROM branch_resource_members bm JOIN branch_resources br ON br.step_execution_id=bm.step_execution_id
             JOIN branch_executions be ON be.id=br.execution_id JOIN branch_step_executions bs ON bs.id=br.step_execution_id JOIN branch_paths bp ON bp.id=bs.path_id
             WHERE bm.agent_id=a.agent_id AND (br.state='archived' OR br.retry_draining=1 OR be.cancel_requested=1 OR bp.state='canceled'))
@@ -232,6 +233,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
       const queuedActivations = this.sqlite.prepare(`
         SELECT * FROM agent_activations
         WHERE agent_id = ? AND scope_key = ?
+          AND NOT EXISTS (SELECT 1 FROM pinecone_profiles hold WHERE hold.agent_id=agent_activations.agent_id AND hold.admission_state='paused')
           AND state IN ('pending', 'retry_pending') AND available_at <= ?
           AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=agent_activations.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait'))
           AND (
@@ -259,6 +261,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         candidate.scope_key,
         now,
       ) as ActivationRow[];
+      if (queuedActivations.length === 0) return undefined;
       const startsFreshTask = (activation: ActivationRow) =>
         activation.kind === "coordination_request";
       const candidateStartsFreshTask = startsFreshTask(

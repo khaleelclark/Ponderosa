@@ -1056,6 +1056,23 @@ CREATE TABLE IF NOT EXISTS pinecone_profiles (
   project_id TEXT NOT NULL REFERENCES projects(id) DEFERRABLE INITIALLY DEFERRED,
   conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) DEFERRABLE INITIALLY DEFERRED,
   guidance_version INTEGER NOT NULL CHECK(guidance_version = 1),
+  admission_state TEXT NOT NULL DEFAULT 'active' CHECK(admission_state IN ('active','paused')),
+  revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+  updated_at TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pinecone_profiles_project ON pinecone_profiles(project_id);
+
+CREATE INDEX IF NOT EXISTS pinecone_profiles_admission ON pinecone_profiles(agent_id,admission_state);
+CREATE TABLE IF NOT EXISTS pinecone_admission_receipts (
+  agent_id TEXT NOT NULL REFERENCES pinecone_profiles(agent_id) DEFERRABLE INITIALLY DEFERRED,
+  project_id TEXT NOT NULL REFERENCES projects(id) DEFERRABLE INITIALLY DEFERRED,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) DEFERRABLE INITIALLY DEFERRED,
+  operation_key TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(agent_id,operation_key)
+);
+CREATE INDEX IF NOT EXISTS pinecone_admission_receipts_project ON pinecone_admission_receipts(project_id);
+CREATE INDEX IF NOT EXISTS pinecone_admission_receipts_chat ON pinecone_admission_receipts(conversation_id);

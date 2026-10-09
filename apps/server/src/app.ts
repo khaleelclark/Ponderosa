@@ -1055,6 +1055,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
       .some((key) => key.startsWith(`${agentId}\0`)),
     reconcilingAssetAgentIds,
     projectBrowserGrants,
+    browserProfiles,
     browserSessions,
     projectBrowserSessions,
     providerUsage,

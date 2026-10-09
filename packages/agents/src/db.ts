@@ -73,6 +73,7 @@ const schemaExtensions = [
   "0030_historical_artifact_product_scope.sql",
   "0031_branch_execution_budgets.sql",
   "0037_pinecone_profiles.sql",
+  "0039_pinecone_admission_hold.sql",
   "0023_lead_task_continuity.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
@@ -143,9 +144,15 @@ function establishSchemaExtensions(sqlite: Database.Database): void {
       .get(extensionName) !== undefined;
     if (applied) continue;
     sqlite.transaction(() => {
-      sqlite.exec(sql);
+      // Fresh baseline already has these columns; upgrade and its marker remain atomic.
+      const extensionSql = extensionName === "0039_pinecone_admission_hold.sql"
+        ? sql.split("\n").filter(line => {
+          const column = /^ALTER TABLE pinecone_profiles ADD COLUMN (\w+) /.exec(line)?.[1];
+          return !column || !(sqlite.pragma("table_info(pinecone_profiles)") as Array<{ name: string }>).some(item => item.name === column);
+        }).join("\n") : sql;
+      sqlite.exec(extensionSql);
       sqlite
-        .prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)`)
+        .prepare(`INSERT INTO ${schemaVersionTable} (name, applied_at) VALUES (?, ?)` )
         .run(extensionName, new Date().toISOString());
     })();
   }

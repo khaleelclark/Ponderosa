@@ -1,3 +1,4 @@
+import { PineconePanel } from "./pinecone/PineconePanel";
 import { PineconeWelcome } from "./pinecone/PineconeWelcome";
 import { useWorkspaceDirectory } from "../hooks/useWorkspaceDirectory";
 import {
@@ -23,6 +24,7 @@ import {
   deriveAgentStatus,
 } from "../agents";
 import {
+  usePineconeProfile,
   useAgent,
   useNotifications,
   useProjects,
@@ -556,8 +558,10 @@ export function AgentDetail({
     );
   }, [engine, effort, model]);
 
+  const pineconeProfile = usePineconeProfile(auditOnly ? undefined : agentId);
   const runtimeActivity = projectedHealth?.runtimeActivity;
-  const running = Boolean(runtimeActivity) || sendMessage.isPending;
+  const observedRunId = runtimeActivity?.executionId ?? projectedHealth?.schedulerRunId;
+  const running = Boolean(observedRunId) || sendMessage.isPending;
 
   const deliveryPhase = operationPhaseByAgentId.get(agentId);
   const transientPhase = deliveryPhase ?? (sendMessage.isPending ? "sending" : undefined);
@@ -574,7 +578,7 @@ export function AgentDetail({
 
   const { cancelRun, stopActiveRun } = useAgentRunCancellation(
     agentId,
-    runtimeActivity?.executionId,
+    observedRunId,
   );
   const recheckEngine = useMutation({
     mutationFn: (engineId: string) => api.recheckEngine(engineId),
@@ -1197,6 +1201,10 @@ export function AgentDetail({
 
       <Box sx={{ minHeight: 0, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {!auditOnly && !detail.agent.archived && tab === "chat" ? <PineconeWelcome agentId={agentId} title={detail.agent.title} empty={visibleChatMessages.length === 0} /> : null}
+        {!auditOnly && !detail.agent.archived && detail.agent.id === agentId ? <PineconePanel key={agentId}
+          agent={detail.agent} visible={tab === "chat"} decisions={detail.decisionEvents ?? []}
+          onOpenWork={openTechnicalDetails} onOpenAutomations={() => setTab("triggers")}
+          onOpenFiles={() => setTab("artifacts")} /> : null}
         <Box sx={{ flex: 1, minHeight: 0 }}>
       <AgentDetailPanels
         tab={auditOnly&&['subagents','triggers','settings'].includes(tab)?'chat':tab}
@@ -1242,7 +1250,7 @@ export function AgentDetail({
 
       {auditOnly||detail.agent.archived ? <Alert severity="info" sx={{m:1}}>This Agent is archived. Its conversation and work history are available for inspection.</Alert> : <AgentDetailComposer
         visible={tab === "chat"}
-        queuedMessageNotice={queueDeliveryNotice ?? queuedMessageNotice}
+        queuedMessageNotice={pineconeProfile.data?.admissionState === "paused" && queuedMessagesQuery.data?.length ? "Queued until resumed" : queueDeliveryNotice ?? queuedMessageNotice}
         queuedMessageFailure={queuedMessageFailure}
         cancellationError={
           cancelRun.isError

@@ -1,8 +1,9 @@
-import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { ChatFolderDto, WorkspaceNotificationProjectionDto } from "@ponderosa/core";
 import { useSyncExternalStore } from "react";
 import { api } from "../api";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
+import { normalizeResetPages } from "../collections";
 import { queryKeys } from "../queryKeys";
 import type { WorkspacePreferencesWriter } from "../workspacePreferencesWriter";
 
@@ -11,6 +12,26 @@ const workspacePreferenceWriters = new WeakMap<QueryClient, WorkspacePreferences
 export function usePineconeProfile(agentId: string | undefined) {
   return useQuery({ queryKey: queryKeys.pinecone(agentId ?? ""),
     queryFn: () => api.getPineconeProfile(agentId!), enabled: Boolean(agentId), staleTime: Infinity });
+}
+
+/** Filter before server pagination; retain all pages and the established SSE prefixes. */
+export function usePineconeResponsibilities(projectId: string, conversationId: string, agentId: string, enabled: boolean) {
+  return useInfiniteQuery({
+    queryKey: queryKeys.triggers.pinecone(projectId, conversationId, agentId),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) => api.listTriggersPage(projectId, { targetAgentId: agentId, limit: 25, cursor: pageParam }),
+    getNextPageParam: page => page.hasMore ? page.cursor : undefined,
+    select: normalizeResetPages,
+    enabled,
+  });
+}
+
+export function usePineconeWork(projectId: string, conversationId: string, agentId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: [...queryKeys.agentWork.list(projectId, conversationId, agentId, undefined), "pinecone"],
+    queryFn: () => api.getAgentWork(projectId, { conversationId, agentId, limit: 20 }),
+    enabled,
+  });
 }
 
 export function useProjects() {

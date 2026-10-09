@@ -342,6 +342,7 @@ export class AgentProjectDeletionAuthority {
         this.client.prepare(`DELETE FROM compaction_history_relation_candidates WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM compaction_history_messages WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM managed_artifact_projection WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM pinecone_admission_receipts WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM pinecone_profiles WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM conversations WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agents WHERE project_id = ?`).run(id);

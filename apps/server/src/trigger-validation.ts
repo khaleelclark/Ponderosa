@@ -1,5 +1,7 @@
 import type {
   CreateTriggerRequest,
+  ReviewedTriggerDefinition,
+  RunTriggerRequest,
   TriggerSourceConfig,
   TriggerSourceKind,
   UpdateTriggerRequest,
@@ -176,7 +178,7 @@ export function parseUpdateTrigger(
   const body = triggerObject(value, "Automation patch");
   exactTriggerFields(
     body,
-    ["conversationId", "targetAgentId", "name", "instructions", "sourceConfig", "enabled", "runBudget"],
+    ["conversationId", "targetAgentId", "name", "instructions", "sourceConfig", "enabled", "runBudget", "reviewedDefinition"],
     "Automation patch",
   );
   if (body.name !== undefined && typeof body.name !== "string") {
@@ -226,5 +228,43 @@ export function parseUpdateTrigger(
       : { sourceConfig: triggerSourceConfig(sourceKind, body.sourceConfig) }),
     ...(body.enabled === undefined ? {} : { enabled: body.enabled }),
     ...(runBudget === undefined ? {} : { runBudget }),
+    ...(Object.hasOwn(body, "reviewedDefinition") ? { reviewedDefinition: parseReviewedTriggerDefinition(body.reviewedDefinition) } : {}),
+  };
+}
+
+/** A present guard must be complete; malformed guards never fall back to legacy behavior. */
+export function parseReviewedTriggerDefinition(value: unknown): ReviewedTriggerDefinition {
+  const body = triggerObject(value, "reviewedDefinition");
+  const fields = ["id", "projectId", "conversationId", "targetAgentId", "branchId", "name", "instructions", "sourceKind", "sourceConfig", "enabled", "fullAccess", "runBudget"];
+  exactTriggerFields(body, fields, "reviewedDefinition");
+  if (fields.some(key => !Object.hasOwn(body, key))) throw new Error("reviewedDefinition must contain every authority field");
+  for (const key of ["id", "projectId", "conversationId", "name"]) {
+    if (typeof body[key] !== "string" || !String(body[key]).trim()) throw new Error(`reviewedDefinition ${key} must be a nonempty string`);
+  }
+  if (typeof body.instructions !== "string" || !body.instructions.trim() || body.instructions.length > 20_000 || String(body.name).length > 120) throw new Error("invalid reviewedDefinition name or instructions");
+  for (const key of ["targetAgentId", "branchId"]) {
+    if (body[key] !== null && (typeof body[key] !== "string" || !String(body[key]).trim())) throw new Error(`reviewedDefinition ${key} must be a nonempty string or null`);
+  }
+  if ((body.targetAgentId === null) === (body.branchId === null)) throw new Error("reviewedDefinition requires one destination");
+  if (typeof body.enabled !== "boolean" || body.fullAccess !== true) throw new Error("invalid reviewedDefinition authority");
+  if (body.sourceKind !== "schedule" && body.sourceKind !== "webhook" && body.sourceKind !== "filesystem") throw new Error("invalid reviewedDefinition sourceKind");
+  const config = triggerSourceConfig(body.sourceKind, body.sourceConfig);
+  const required = body.sourceKind === "webhook" ? ["replayWindowSeconds"] : body.sourceKind === "filesystem" ? ["include", "exclude", "quietMs", "maxWindowMs"] : config && "scheduleKind" in config && config.scheduleKind === "once" ? ["scheduleKind", "at"] : config && "scheduleKind" in config && config.scheduleKind === "interval" ? ["scheduleKind", "everyMs", "startsAt"] : ["scheduleKind", "expression", "timezone"];
+  if (required.some(key => !Object.hasOwn(config, key))) throw new Error("reviewedDefinition sourceConfig must be complete");
+  if (body.runBudget !== null) {
+    const budget = triggerObject(body.runBudget, "reviewedDefinition runBudget");
+    exactTriggerFields(budget, ["limit", "period"], "reviewedDefinition runBudget");
+    if (!Number.isSafeInteger(budget.limit) || Number(budget.limit) < 1 || Number(budget.limit) > 1_000_000 || !["day", "week", "month", "lifetime"].includes(String(budget.period))) throw new Error("invalid reviewedDefinition runBudget");
+  }
+  return body as unknown as ReviewedTriggerDefinition;
+}
+
+export function parseRunTrigger(value: unknown): RunTriggerRequest {
+  const body = value === undefined ? {} : triggerObject(value, "Automation run");
+  exactTriggerFields(body, ["confirmDisabled", "reviewedDefinition"], "Automation run");
+  if (body.confirmDisabled !== undefined && typeof body.confirmDisabled !== "boolean") throw new Error("confirmDisabled must be a boolean");
+  return {
+    ...(body.confirmDisabled === undefined ? {} : { confirmDisabled: body.confirmDisabled }),
+    ...(Object.hasOwn(body, "reviewedDefinition") ? { reviewedDefinition: parseReviewedTriggerDefinition(body.reviewedDefinition) } : {}),
   };
 }

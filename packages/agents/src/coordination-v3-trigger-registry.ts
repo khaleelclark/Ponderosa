@@ -442,6 +442,7 @@ export class CoordinationV3TriggerRegistry {
     const rows = this.sqlite.prepare(`
       SELECT * FROM trigger_definitions
       WHERE enabled = 1 AND source_kind = 'schedule'
+        AND NOT EXISTS (SELECT 1 FROM pinecone_profiles hold WHERE hold.agent_id=trigger_definitions.agent_id AND hold.admission_state='paused')
         AND next_fire_at IS NOT NULL AND next_fire_at <= ?
       ORDER BY next_fire_at, id LIMIT ?
     `).all(now, Math.max(1, Math.min(limit, 500))) as TriggerDefinitionRow[];

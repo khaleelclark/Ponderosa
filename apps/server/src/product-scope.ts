@@ -4,7 +4,7 @@ import type {
   WorkspacePreferencesDto,
   UpdateWorkspacePreferencesRequest,
 } from '@ponderosa/core';
-import { artifactAgentProductSql, type AgentStore, type WorkspaceStore } from '@ponderosa/agents';
+import { userCommunicationArtifactOwners, artifactAgentProductSql, type AgentStore, type WorkspaceStore } from '@ponderosa/agents';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { IncomingMessage } from 'node:http';
 export type ProductScope = 'dev' | 'branches';
@@ -65,6 +65,15 @@ export function activeChatResourceOwner(store:Pick<AgentStore,'sqlite'>,kind:'co
 export function artifactAgentInProduct(store:Pick<AgentStore,'sqlite'>,agentId:string,projectId:string,product:ProductScope):boolean {
   return Boolean(store.sqlite.prepare(`SELECT 1 FROM agents artifact_agent WHERE artifact_agent.id=?
     AND artifact_agent.project_id=? AND ${artifactAgentProductSql('artifact_agent',product)}`).get(agentId,projectId));
+}
+function artifactInProduct(store:AgentStore,projectId:string,artifactId:string,product:ProductScope):boolean {
+  const artifact=store.getProjectArtifact(projectId,artifactId);
+  if(!artifact)return false;
+  const owner=artifact.legacyRecovery?.custodianAgentId??artifact.originAgentId??artifact.agentId;
+  const events=store.readCommunicationEvents(projectId);
+  if(owner==='local-operator'||events.some(event=>event.sender.kind==='user'&&event.document?.artifactId===artifactId))
+    return userCommunicationArtifactOwners(store.sqlite,events,projectId).get(artifactId)?.product===product;
+  return artifactAgentInProduct(store,owner,projectId,product);
 }
 export function resourceInProduct(store:Pick<AgentStore,'sqlite'>,kind:string,id:string,product:ProductScope):boolean {
   if(kind==='project')return projectInProduct(store,id,product);
@@ -319,7 +328,7 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
     const resource=/\/(projects|agents|conversations|chats|triggers|notifications|decisions)\/:id(?:\/|$)/.exec(request.routeOptions.url??'')
       ?? /^\/api\/(projects|agents|conversations|chats|triggers|notifications|decisions)\/([^/?]+)/.exec(request.url);
     const params=request.params as Record<string,string>;
-    if(params.projectId&&params.aid){const artifact=store.getProjectArtifact(params.projectId,params.aid);const owner=artifact?.agentId??artifact?.originAgentId;if(owner&&!artifactAgentInProduct(store,owner,params.projectId,product))return reply.code(404).send({error:'Resource is unavailable in this product'});}
+    if(params.projectId&&params.aid&&!artifactInProduct(store,params.projectId,params.aid,product))return reply.code(404).send({error:'Resource is unavailable in this product'});
     const pathAvailable=draftOwner
       ? resourceMutable(draftOwner.agentId)&&resourceMutable(draftOwner.conversationId)
         &&ordinaryBelongs(draftOwner.agentId,'agent',product)&&ordinaryBelongs(draftOwner.conversationId,'conversation',product)
@@ -350,7 +359,7 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
       const artifactRoute=request.routeOptions.url?.startsWith('/api/projects/:projectId/artifacts');
       const artifactOwner=typeof object.originAgentId==='string'?object.originAgentId:typeof object.agentId==='string'?object.agentId:undefined;
       const scopedArtifact=Boolean(artifactRoute&&typeof object.id==='string'&&typeof object.path==='string'&&typeof object.projectId==='string'&&artifactOwner);
-      if(scopedArtifact&&!artifactAgentInProduct(store,artifactOwner!,object.projectId as string,product))return undefined;
+      if(scopedArtifact&&!artifactInProduct(store,object.projectId as string,object.id as string,product))return undefined;
       if(typeof object.id==='string'&&typeof object.hostPath==='string'&&!belongs(object.id,'project',product))return undefined;
       if(typeof object.id==='string'&&typeof object.activeEngine==='string'&&!belongs(object.id,'agent',product))return undefined;
       if(typeof object.id==='string'&&typeof object.defaultEngine==='string'&&typeof object.projectId==='string'&&!belongs(object.id,'conversation',product))return undefined;

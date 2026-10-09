@@ -66,6 +66,7 @@ import type {
   CreateTriggerRequest,
   CreateTriggerResponse,
   RunTriggerResponse,
+  ReviewedTriggerDefinition,
   DecisionDto,
   DraftAttachmentDto,
   EditQueuedMessageRequest,
@@ -763,6 +764,9 @@ export const realApi = {
       };
     }
   },
+  updatePineconeAdmission(agentId: string, request: import("@ponderosa/core").UpdatePineconeAdmissionRequest): Promise<import("@ponderosa/core").PineconeProfileDto> {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/pinecone`, { method: "PATCH", body: JSON.stringify(request) });
+  },
   getPineconeProfile(agentId: string): Promise<import("@ponderosa/core").PineconeProfileDto | null> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/pinecone`, undefined, [404]).then(result =>
       result && typeof result === "object" && "agentId" in result ? result as import("@ponderosa/core").PineconeProfileDto : null);
@@ -927,11 +931,11 @@ export const realApi = {
       },
     );
   },
-  listTriggers(projectId: string): Promise<TriggerDefinitionDto[]> {
-    return collectCollectionPages<TriggerDefinitionDto>(`/api/triggers${toQuery({ projectId })}`);
+  listTriggers(projectId: string, targetAgentId?: string): Promise<TriggerDefinitionDto[]> {
+    return collectCollectionPages<TriggerDefinitionDto>(`/api/triggers${toQuery({ projectId, targetAgentId })}`);
   },
-  listTriggersPage(projectId: string, options: { limit?: number; cursor?: string; search?: string } = {}): Promise<CollectionPage<TriggerDefinitionDto>> {
-    return requestCollectionPage<TriggerDefinitionDto>(`/api/triggers${toQuery({ projectId, limit: options.limit, cursor: options.cursor, search: options.search })}`);
+  listTriggersPage(projectId: string, options: { limit?: number; cursor?: string; search?: string; targetAgentId?: string } = {}): Promise<CollectionPage<TriggerDefinitionDto>> {
+    return requestCollectionPage<TriggerDefinitionDto>(`/api/triggers${toQuery({ projectId, targetAgentId: options.targetAgentId, limit: options.limit, cursor: options.cursor, search: options.search })}`);
   },
   listAllTriggers(): Promise<TriggerDefinitionDto[]> {
     return collectCollectionPages<TriggerDefinitionDto>("/api/triggers");
@@ -951,10 +955,10 @@ export const realApi = {
   allowTriggerRuns(triggerId: string, additionalRuns: number): Promise<TriggerDefinitionDto> {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/allow-runs`, { method: "POST", body: JSON.stringify({ additionalRuns }) });
   },
-  runTrigger(triggerId: string, confirmDisabled = false): Promise<RunTriggerResponse> {
+  runTrigger(triggerId: string, confirmDisabled = false, reviewedDefinition?: ReviewedTriggerDefinition): Promise<RunTriggerResponse> {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/run`, {
       method: "POST",
-      body: JSON.stringify({ confirmDisabled }),
+      body: JSON.stringify({ confirmDisabled, ...(reviewedDefinition ? { reviewedDefinition } : {}) }),
     });
   },
   listTriggerOccurrences(triggerId: string, limit: number = 100): Promise<TriggerOccurrenceDto[]> {

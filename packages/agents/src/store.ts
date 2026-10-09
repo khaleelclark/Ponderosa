@@ -1241,6 +1241,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.conversationProjection.getMessageById(conversationId, channel, id);
   }
 
+  updatePineconeAdmission(agentId: string, input: import("@ponderosa/core").UpdatePineconeAdmissionRequest) {
+    return new PineconeProfileStore(this.client).updateAdmission(agentId, input);
+  }
+
   getPineconeProfile(agentId: string) {
     return new PineconeProfileStore(this.client).get(agentId);
   }

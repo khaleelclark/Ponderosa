@@ -15,6 +15,7 @@ const { createRsbuild } = await import(pathToFileURL(webRequire.resolve('@rsbuil
 const module = await import(pathToFileURL(require.resolve('playwright-core')));
 const { chromium } = module.default ?? module;
 const drivers = [], sockets = new Set(), responses = [], entered = new Set();
+const invocations = [], replies = [];
 const pageId = 'page /?&+#%';
 const driverModule = pathToFileURL(join(root, 'apps/server/dist/chrome-cdp-driver.js'));
 const actualDriverModule = await import(driverModule);
@@ -61,7 +62,26 @@ try {
   await (await createRsbuild({ cwd: join(root, 'apps/web'), rsbuildConfig: {
     source: { entry: { index: join(root, 'apps/web/test/browser-stream-routing-entry.ts') } },
     output: { distPath: { root: output } }, logLevel: 'error' } })).build();
-  const run = async function* (options) { entered.add(options.agentId); await held; yield { type: 'turn_done' }; };
+  const run = async function* (options) {
+    const identity = store.sqlite.prepare("SELECT id,agent_id,status,fencing_token FROM scheduler_runs WHERE agent_id=? AND status='running'").get(options.agentId);
+    assert.ok(identity); invocations.push(identity); entered.add(options.agentId);
+    await held;
+    // Complete the human source's canonical reply before terminal accounting.
+    // Ordinary Adapter output alone leaves a required reply pending and recovers another Run.
+    assert.deepEqual(coordination.requiredReplyAuthoritiesForRun(identity.id), [{ intent: 'direct_to_user' }]);
+    assert.equal(coordination.latestAcknowledgedSteeringInjection(identity.id), undefined);
+    const reply = await app.inject({ method: 'POST', url: '/api/agent-messages',
+      headers: { authorization: `Bearer ${options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+      payload: { intent: 'direct_to_user', text: 'Disposable canonical browser route reply' } });
+    assert.equal(reply.statusCode, 200, reply.body);
+    const obligations = coordination.requiredReplyObligationsForRun(identity.id);
+    assert.equal(obligations.length, 1); assert.equal(obligations[0].state, 'satisfied');
+    assert.ok(obligations[0].satisfiedCommunicationId);
+    assert.equal(reply.json().eventId, obligations[0].satisfiedCommunicationId);
+    replies.push({ runId: identity.id, agentId: options.agentId, status: reply.statusCode,
+      communicationId: obligations[0].satisfiedCommunicationId });
+    yield { type: 'turn_done' };
+  };
   app = createServer({ dataDir: join(temp, 'data'), store, webDist: output, logger: false, communicationV3: { pollMs: 10 },
     engines: [{ adapter: { id: 'codex', displayName: 'Inert subscription fixture', trustedSystemPromptChannel: 'developer', seed: run, continue: run,
       listModels: () => [], listEfforts: () => [] }, authStatus: async () => ({ authenticated: true }) }] });
@@ -171,16 +191,56 @@ try {
   store.sqlite.prepare("UPDATE branch_installation_resources SET state='active' WHERE package_id='agent-routing-negative'").run();
   const restored = await json('/api/branches/engine/projects/' + projects[0].id + '/agents/' + agents[0].id + '/runs/' + runs[0].id + '/browser');
   assert.equal(restored.status, 200);
+  const activeRuns = store.sqlite.prepare('SELECT id,agent_id,status FROM scheduler_runs ORDER BY rowid').all();
+  assert.equal(activeRuns.length, 2); assert.ok(activeRuns.every(run => run.status === 'running'));
+  assert.deepEqual(activeRuns.map(run => run.id).sort(), runs.map(run => run.id).sort());
+  console.log('CANONICAL HELD ' + JSON.stringify({ activeRuns, invocations }));
   release();
   await until(() => store.sqlite.prepare("SELECT count(*) AS n FROM scheduler_runs WHERE status='running'").get().n === 0);
+  const completedRuns = store.sqlite.prepare('SELECT id,agent_id,status,terminal_at FROM scheduler_runs ORDER BY rowid').all();
+  const activations = store.sqlite.prepare('SELECT id,agent_id,kind,state,consumed_at FROM agent_activations ORDER BY rowid').all();
+  const attachments = store.sqlite.prepare('SELECT run_id,activation_id,consumed_at FROM scheduler_run_activations ORDER BY rowid').all();
+  const injections = store.sqlite.prepare('SELECT id,run_id,kind,state,acknowledged_at FROM scheduler_prompt_injections ORDER BY rowid').all();
+  const obligations = runs.flatMap(run => coordination.requiredReplyObligationsForRun(run.id));
+  console.log('CANONICAL SETTLED ' + JSON.stringify({ invocations, replies, completedRuns, activations, attachments, injections, obligations }));
+  assert.equal(invocations.length, 2); assert.equal(new Set(invocations.map(run => run.id)).size, 2);
+  assert.deepEqual(invocations.map(run => run.id).sort(), runs.map(run => run.id).sort());
+  assert.equal(completedRuns.length, 2); assert.ok(completedRuns.every(run => run.status === 'completed' && run.terminal_at));
+  assert.deepEqual(completedRuns.map(run => run.id).sort(), runs.map(run => run.id).sort());
+  assert.equal(activations.length, 2); assert.ok(activations.every(activation => activation.kind === 'human_message' && activation.state === 'consumed' && activation.consumed_at));
+  assert.equal(attachments.length, 2); assert.ok(attachments.every(attachment => attachment.consumed_at));
+  assert.deepEqual(attachments.map(attachment => attachment.activation_id).sort(), activations.map(activation => activation.id).sort());
+  assert.deepEqual(attachments.map(attachment => attachment.run_id).sort(), runs.map(run => run.id).sort());
+  assert.equal(injections.length, 2); assert.ok(injections.every(injection => injection.kind === 'turn' && injection.state === 'acknowledged' && injection.acknowledged_at));
+  assert.deepEqual(injections.map(injection => injection.run_id).sort(), runs.map(run => run.id).sort());
+  assert.equal(replies.length, 2); assert.equal(new Set(replies.map(reply => reply.communicationId)).size, 2);
+  assert.equal(obligations.length, 2);
+  assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM required_reply_obligations WHERE state<>'satisfied'").get().n, 0);
+  for (const obligation of obligations) {
+    assert.equal(obligation.state, 'satisfied'); assert.equal(obligation.attemptCount, 0); assert.ok(!obligation.recoveryActivationId);
+    assert.deepEqual(obligation.replyAuthority, { intent: 'direct_to_user' });
+    assert.ok(attachments.some(attachment => attachment.run_id === obligation.runId && attachment.activation_id === obligation.sourceActivationId));
+    assert.ok(replies.some(reply => reply.runId === obligation.runId && reply.agentId === obligation.agentId && reply.communicationId === obligation.satisfiedCommunicationId));
+    const communication = coordination.runtimeCommunication(obligation.satisfiedCommunicationId)?.payload.communication;
+    assert.ok(communication); assert.equal(communication.eventId, obligation.satisfiedCommunicationId);
+    assert.equal(communication.intent, 'user_dm');
+    assert.equal(communication.sender.kind, 'agent'); assert.equal(communication.sender.agentId, obligation.agentId);
+    assert.equal(communication.sender.executionId, obligation.runId); assert.equal(communication.audience.kind, 'user_agent');
+    assert.equal(communication.audience.agentId, obligation.agentId);
+  }
   for (let index = 0; index < agents.length; index++) {
     const prefix = index ? '/api/' : '/api/branches/engine/';
     await deny('settled-run', prefix, projects[index].id, agents[index].id, runs[index].id, 'browser access requires the exact active run');
   }
   assert.equal(store.deleteAgent(agents[1].id), true, 'canonical deletion must finish before the deleted-Agent denial');
   await deny('deleted-agent', '/api/', projects[1].id, agents[1].id, runs[1].id, 'Resource is unavailable in this product');
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM scheduler_runs').get().n, 2);
+  assert.equal(invocations.length, 2);
+  assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM agent_activations WHERE kind='required_reply_recovery' OR state IN ('pending','attached','retry_pending')").get().n, 0);
+  assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM required_reply_obligations WHERE state<>'satisfied'").get().n, 0);
   assert.equal(entered.size, 2); assert.equal(drivers.length, 2); assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ rows, denials, restored, responses, errors, canonicalInertSchedulerStarts: entered.size }, null, 2));
+  console.log(JSON.stringify({ rows, denials, restored, responses, errors, canonicalInertSchedulerStarts: invocations.length,
+    canonicalRunCount: completedRuns.length, canonicalReplyCount: replies.length }, null, 2));
 } finally {
   release();
   await browser?.close();

@@ -12,7 +12,7 @@ import {
   type AgentDeletionDirectoryIdentity,
   validateAgentDeletionDirectory,
 } from "./agent-deletion-identity.js";
-import { artifactAgentProductSql } from "./artifact-product-scope.js";
+import { artifactAgentProductSql, managedArtifactProductSql, userCommunicationArtifactOwners } from "./artifact-product-scope.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import { agentDir, communicationEventsPath, managedArtifactContentPath, managedArtifactsLogPath } from "./paths.js";
 import type {
@@ -346,13 +346,20 @@ export class AgentArtifactCatalog {
       const artifact = this.artifactDtoFromProjectionRow(row.agent_id, row);
       return artifact ? [{ ...artifact, projectId }] : [];
     });
+    const canonicalEvents = readRepairableJsonl<CommunicationEvent>(
+      communicationEventsPath(this.dataDir, projectId), "communication log", true);
+    const userDocumentIds = canonicalEvents.filter(event => event.sender.kind === 'user' && event.document)
+      .map(event => event.document!.artifactId);
+    const userOwners = userCommunicationArtifactOwners(this.client, canonicalEvents, projectId);
+    const userIds = [...userOwners].filter(([,owner]) =>
+      (input.branchOwned === undefined || owner.product === (input.branchOwned ? 'branches' : 'dev')) &&
+      (!conversationId || owner.conversationId === conversationId)).map(([id]) => id);
+    const userIdsSql = `(SELECT value FROM json_each('${JSON.stringify(userIds).replace(/'/gu, "''")}'))`;
     const managedRows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection artifact
       WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
-        ${input.branchOwned === undefined ? "" : `AND EXISTS (SELECT 1 FROM agents owner_agent
-          WHERE owner_agent.id = COALESCE(json_extract(artifact.artifact_json, '$.legacyRecovery.custodianAgentId'), json_extract(artifact.artifact_json, '$.originAgentId'))
-            AND ${artifactAgentProductSql("owner_agent", input.branchOwned ? "branches" : "dev")})`}
-        ${conversationId ? `AND (EXISTS (
+        ${input.branchOwned === undefined ? "" : `AND ${managedArtifactProductSql("artifact", input.branchOwned ? "branches" : "dev", userIds, userDocumentIds)}`}
+        ${conversationId ? `AND (artifact.artifact_id IN ${userIdsSql} OR EXISTS (
           SELECT 1 FROM agent_conversation_memberships membership
           WHERE membership.agent_id = COALESCE(json_extract(artifact_json, '$.legacyRecovery.custodianAgentId'), json_extract(artifact_json, '$.originAgentId'))
             AND membership.conversation_id = ?
@@ -525,7 +532,10 @@ export class AgentArtifactCatalog {
     const originId = artifact?.legacyRecovery?.custodianAgentId ?? artifact?.originAgentId ?? artifact?.agentId;
     const origin = originId ? this.agentById(originId) : undefined;
     let ownerChat = origin?.conversationId;
-    if (!ownerChat && access.ownerKind === "communication") {
+    const events = readRepairableJsonl<CommunicationEvent>(communicationEventsPath(this.dataDir, projectId), "communication log", true);
+    if (originId === "local-operator" || events.some(event => event.sender.kind === 'user' && event.document?.artifactId === artifactIdValue)) {
+      ownerChat = userCommunicationArtifactOwners(this.client, events, projectId).get(artifactIdValue)?.conversationId;
+    } else if (!ownerChat && access.ownerKind === "communication") {
       ownerChat = readRepairableJsonl<CommunicationEvent>(
         communicationEventsPath(this.dataDir, projectId), "communication log", true,
       ).find(event => event.eventId === access.ownerId)?.conversationId;
@@ -543,11 +553,19 @@ export class AgentArtifactCatalog {
 
   getProjectContextArtifacts(projectId: string, limit = 100, conversationId?: string): ArtifactDto[] {
     const boundedLimit = Math.max(1, Math.min(limit, 500));
+    const events = readRepairableJsonl<CommunicationEvent>(communicationEventsPath(this.dataDir, projectId), "communication log", true);
+    const userDocumentIds = events.filter(event => event.sender.kind === 'user' && event.document).map(event => event.document!.artifactId);
+    const userIds = [...userCommunicationArtifactOwners(this.client, events, projectId)]
+      .filter(([,owner]) => !conversationId || owner.conversationId === conversationId).map(([id]) => id);
     const rows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
       WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
+        AND (json_extract(artifact_json, '$.originAgentId') != 'local-operator'
+          AND artifact_id NOT IN (SELECT value FROM json_each('${JSON.stringify(userDocumentIds).replace(/'/gu, "''")}'))
+          OR artifact_id IN (SELECT value FROM json_each('${JSON.stringify(userIds).replace(/'/gu, "''")}')))
         AND (pinned = 1 OR visibility = 'published')
-        AND (? IS NULL OR COALESCE(json_extract(artifact_json, '$.legacyRecovery.custodianAgentId'), json_extract(artifact_json, '$.originAgentId')) IN
+        AND (? IS NULL OR artifact_id IN (SELECT value FROM json_each('${JSON.stringify(userIds).replace(/'/gu, "''")}'))
+          OR COALESCE(json_extract(artifact_json, '$.legacyRecovery.custodianAgentId'), json_extract(artifact_json, '$.originAgentId')) IN
           (SELECT id FROM agents WHERE conversation_id = ?))
       ORDER BY created_at DESC, artifact_id DESC LIMIT ?
     `).all(projectId, conversationId ?? null, conversationId ?? null, boundedLimit) as Array<{ artifact_json: string }>;

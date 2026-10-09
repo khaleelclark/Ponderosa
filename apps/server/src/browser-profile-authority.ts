@@ -71,6 +71,7 @@ export class BrowserProfileAuthority {
   private readonly pending: PendingLaunch[] = [];
   private readonly active = new Map<string, ActiveLaunch>();
   private pumping = false;
+  private closed = false;
 
   constructor(
     dataDir: string,
@@ -481,6 +482,7 @@ export class BrowserProfileAuthority {
     signal: AbortSignal,
     onQueue: PendingLaunch["onQueue"],
   ): Promise<BrowserLaunchLease> {
+    if (this.closed) throw new BrowserProfileError(409, "Browser profile authority is closed.");
     if (signal.aborted) throw new BrowserProfileError(409, "Browser opening was cancelled.");
     return new Promise<BrowserLaunchLease>((resolve, reject) => {
       const pending: PendingLaunch = {
@@ -561,6 +563,15 @@ export class BrowserProfileAuthority {
     } finally {
       this.pumping = false;
     }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    if (this.active.size || this.pending.length || this.pumping) {
+      throw new BrowserProfileError(409, "Browser profile authority still has active or queued launch leases.");
+    }
+    this.db.close();
+    this.closed = true;
   }
 
   status(): { active: number; queued: number; capacity: number; trustedProfilesInUse: number } {
