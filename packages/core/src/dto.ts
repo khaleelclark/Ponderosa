@@ -9,6 +9,7 @@ export * from "./dto/provider-engine.js";
 export * from "./dto/projects.js";
 export * from "./dto/triggers.js";
 export * from "./dto/agents.js";
+export * from "./dto/pinecone.js";
 export * from "./dto/workspace.js";
 export * from "./dto/conversations.js";
 export * from "./dto/runs.js";

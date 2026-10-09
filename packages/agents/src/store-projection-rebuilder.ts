@@ -78,6 +78,15 @@ export class AgentProjectionRebuilder {
   private rebuildProjectionsInTransaction(): void {
     this.recoveryIssues = [];
     this.recoverAgentDeletionDirectories();
+    // These rows are authority, not projections. Snapshot only after true
+    // deletion recovery has run; projection DELETE triggers must not erase them.
+    const policies = this.client.prepare(`SELECT scope_kind, scope_id, revision,
+      restricted_capability_ids_json, updated_at FROM capability_policies
+      WHERE scope_kind IN ('agent', 'chat', 'run')`).all() as Array<{
+        scope_kind: string; scope_id: string; revision: number;
+        restricted_capability_ids_json: string; updated_at: string;
+      }>;
+    try {
     this.client.prepare(`DELETE FROM all_chat_feed_projection`).run();
     this.client.prepare(`DELETE FROM agent_health_projection`).run();
     this.client.prepare(`DELETE FROM agent_event_head_projection`).run();
@@ -360,6 +369,15 @@ export class AgentProjectionRebuilder {
       }
     }
     this.rebuildGlobalChatSearchProjection();
+    } finally {
+      // Keep exact bytes/revisions even for quarantined projection failures.
+      // The enclosing transaction rolls this back with any failed rebuild.
+      const restore = this.client.prepare(`INSERT OR REPLACE INTO capability_policies
+        (scope_kind, scope_id, revision, restricted_capability_ids_json, updated_at)
+        VALUES (?, ?, ?, ?, ?)`);
+      for (const row of policies) restore.run(row.scope_kind, row.scope_id,
+        row.revision, row.restricted_capability_ids_json, row.updated_at);
+    }
   }
 
   listRecoveryIssues(): ReadonlyArray<{ projectId: string; detail: string }> {

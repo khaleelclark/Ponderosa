@@ -1,3 +1,5 @@
+import { requestProduct, resourceInProduct } from "../product-scope.js";
+import { pineconeGuidance } from "../pinecone-guidance.js";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   AgentDto,
@@ -5,6 +7,7 @@ import type {
   CommunicationEvent,
   ModelOption,
 } from "@ponderosa/core";
+import { PINECONE_GUIDANCE_VERSION } from "@ponderosa/core";
 import {
   readManagedArtifactContent,
   removeManagedArtifactContent,
@@ -88,7 +91,7 @@ export function registerAgentCreationRoutes(
 
   app.post<{
     Params: { id: string };
-    Body: { title: string; engine: string; conversationId: string; model?: string; effort?: string; speed?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean; idempotencyKey?: string; managementPermissions?: { allowAutomaticDescendantDeletion: boolean; allowAutomaticDescendantReorganization: boolean } };
+    Body: { experience?: "pinecone"; title: string; engine: string; conversationId: string; model?: string; effort?: string; speed?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean; idempotencyKey?: string; managementPermissions?: { allowAutomaticDescendantDeletion: boolean; allowAutomaticDescendantReorganization: boolean } };
   }>(
     "/api/projects/:id/agents",
     async (request, reply) => {
@@ -100,11 +103,27 @@ export function registerAgentCreationRoutes(
       const allowedFields = new Set([
         "title", "engine", "conversationId", "model", "effort", "speed", "initialMessage",
         "draftAttachmentIds", "draftOwnerId", "presetId", "managerAgentId", "awaitResult",
-        "idempotencyKey", "managementPermissions",
+        "idempotencyKey", "managementPermissions", "experience",
       ]);
       const unknownFields = Object.keys(candidate).filter((key) => !allowedFields.has(key));
       if (unknownFields.length) {
         return reply.code(400).send({ error: `unknown Agent field(s): ${unknownFields.join(", ")}` });
+      }
+      if (candidate.experience !== undefined && candidate.experience !== "pinecone") {
+        return reply.code(400).send({ error: "unknown Agent experience" });
+      }
+      if (candidate.experience === "pinecone" && (
+          requestProduct(request) !== "dev" || typeof candidate.conversationId !== "string" ||
+          ["initialMessage", "draftAttachmentIds", "draftOwnerId", "presetId", "managerAgentId", "awaitResult", "managementPermissions"].some(key => candidate[key] !== undefined) ||
+          typeof candidate.idempotencyKey !== "string" || !candidate.idempotencyKey.trim())) {
+        return reply.code(400).send({ error: "Pinecone requires empty operator creation in Dev with an idempotency key" });
+      }
+      if (candidate.experience === "pinecone" && (
+          !resourceInProduct(store, "conversation", String(candidate.conversationId), "dev") ||
+          deletingProjectIds.has(request.params.id) || deletingConversationIds.has(String(candidate.conversationId)) ||
+          store.getConversation(String(candidate.conversationId))?.projectId !== request.params.id ||
+          store.getConversation(String(candidate.conversationId))?.archived)) {
+        return reply.code(400).send({ error: "Pinecone owner must be a live Dev Chat in this Project" });
       }
       for (const key of ["title", "engine", "conversationId", "model", "effort", "speed", "initialMessage", "draftOwnerId", "presetId", "managerAgentId", "idempotencyKey"] as const) {
         if (candidate[key] !== undefined && typeof candidate[key] !== "string") {
@@ -157,6 +176,7 @@ export function registerAgentCreationRoutes(
       const operationIdempotencyKey = creationIdempotencyKey ?? randomUUID();
       const operationPayloadHash = createHash("sha256").update(stableJson({
         projectId: request.params.id,
+        ...(request.body.experience ? { experience: request.body.experience, guidanceVersion: PINECONE_GUIDANCE_VERSION } : {}),
         title: request.body.title,
         engine: request.body.engine,
         conversationId: request.body.conversationId,
@@ -177,6 +197,7 @@ export function registerAgentCreationRoutes(
           projectId: request.params.id,
           actorScope: "user:local-operator",
           kind: "human",
+          ...(request.body.experience ? { conversationId: request.body.conversationId, productScope: "dev" as const } : {}),
           idempotencyKey: operationIdempotencyKey,
           payloadHash: operationPayloadHash,
         }).operation;
@@ -258,7 +279,8 @@ export function registerAgentCreationRoutes(
       if (savedPlan) {
         request.body = { ...savedPlan.input };
       } else {
-        let presetSnapshot: AgentDto["presetSnapshot"];
+        let presetSnapshot: AgentDto["presetSnapshot"] = request.body.experience === "pinecone"
+          ? pineconeGuidance(request.body.engine) : undefined;
         if (request.body.presetId) {
           const preset = store.getAgentPreset(request.body.presetId);
           if (!preset || preset.projectId !== request.params.id || !preset.enabled) {
@@ -340,7 +362,7 @@ export function registerAgentCreationRoutes(
       }
       if (creationIdempotencyKey) {
         const legacyExisting = store.findAgentCreation(request.params.id, creationIdempotencyKey);
-        if (legacyExisting) {
+        if (legacyExisting && !request.body.experience) {
           store.updateAgentCreationOperation(creationOperation.id, {
             status: "completed",
             result: legacyExisting,

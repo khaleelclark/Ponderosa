@@ -13,7 +13,9 @@ import type {
   PortableAgentHistoryMessageDto,
   ProjectDto,
 } from "@ponderosa/core";
-import { allocateAgentMentionHandle } from "@ponderosa/core";
+import { CAPABILITY_IDS, PINECONE_PRESET_ID, allocateAgentMentionHandle } from "@ponderosa/core";
+import { CapabilityPolicyStore } from "./capability-policy-store.js";
+import { PineconeProfileStore } from "./pinecone-profile-store.js";
 import type { Db } from "./db.js";
 import { normalizeAgentTitle } from "./agent-identity.js";
 import { sharedWorkingCopy } from "./working-copy.js";
@@ -212,10 +214,22 @@ export class AgentCatalogAuthority {
     predeterminedId: string = randomUUID(),
     resolvedPresetSnapshot?: AgentDto["presetSnapshot"] | null,
   ): AgentDto {
+    if (input.experience !== undefined && input.experience !== "pinecone") throw new Error("unknown Agent experience");
+    if (input.experience === "pinecone" && (origin || input.managerAgentId !== undefined ||
+        input.initialMessage !== undefined || input.draftAttachmentIds !== undefined ||
+        input.draftOwnerId !== undefined || input.presetId !== undefined || input.managementPermissions !== undefined ||
+        !input.idempotencyKey?.trim() || resolvedPresetSnapshot?.id !== PINECONE_PRESET_ID)) {
+      throw new Error("Pinecone requires operator-authored empty creation with built-in guidance");
+    }
     const creationIdempotencyKey = input.idempotencyKey?.trim() || undefined;
     if (creationIdempotencyKey) {
       const existing = this.findAgentCreation(projectId, creationIdempotencyKey);
       if (existing) {
+        const profile = new PineconeProfileStore(this.client).get(existing.id);
+        if (Boolean(profile) !== (input.experience === "pinecone") ||
+            (profile && profile.conversationId !== input.conversationId)) {
+          throw new Error("Agent creation key belongs to a different experience or Chat");
+        }
         const receipt = this.readCreationReceipt(projectId, existing.id);
         if (receipt) this.finishCreationReceipt(receipt);
         return this.rowToAgentDto(existing.id)!;
@@ -370,6 +384,12 @@ export class AgentCatalogAuthority {
         workingCopyJson: JSON.stringify(workingCopy),
       })
       .run();
+      if (input.experience === "pinecone") {
+        new PineconeProfileStore(this.client).insert({ agentId: id, projectId,
+          conversationId: input.conversationId, guidanceVersion: 1, createdAt: now });
+        new CapabilityPolicyStore(this.client).put({ scopeKind: "agent", scopeId: id,
+          expectedRevision: 0, restrictedCapabilityIds: [CAPABILITY_IDS.managedAgentCreate] });
+      }
       this.db.insert(agentConversationMemberships).values({
         agentId: id,
         conversationId: input.conversationId,

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import Fastify from "fastify";
+import {PONDEROSA_MANAGE_TOOL,PONDEROSA_CREATE_MANAGED_AGENT_TOOL} from '@ponderosa/core';
+const scopeStore={getConversation:id=>({id,projectId:'project-a'}),getProject:id=>({id}),
+ agentCreationPending:()=>false,getProjectDeletionReceipt:()=>undefined,getConversationDeletionReceipt:()=>undefined,
+ sqlite:{prepare:sql=>({get:()=>sql.includes('SELECT c.branch_id')?{branch_id:null}:undefined})}};
+const admitted=entries=>new Map(entries.map(([token,cap])=>[token,{...cap,availableToolNames:[PONDEROSA_MANAGE_TOOL.name,PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name]}]));
 import { registerAgentMaintenanceRoutes } from "../dist/routes/agent-maintenance.js";
 import { registerAgentManagementRoutes } from "../dist/routes/agent-management.js";
 
@@ -44,7 +49,7 @@ test("post-commit publication failure cannot turn management success into a 409"
   const managementPlans = new Map([[plan.id, plan]]);
   const capability = { agentId: owner.id, runId: plan.runId, conversationId: owner.conversationId };
   registerAgentManagementRoutes(app, {
-    store: {
+    store: { ...scopeStore,
       getAgent: (id) => id === owner.id ? owner : id === child.id ? child : undefined,
       listAgentSubtree: () => [owner, child],
       applyAuthorizedAgentReorganization: () => [child.id],
@@ -54,8 +59,9 @@ test("post-commit publication failure cannot turn management success into a 409"
     engines: new Map(),
     managementPlans,
     activeRuns: new Map([[owner.id, { runId: plan.runId, messageCapability: "token-a" }]]),
-    agentMessageCapabilities: new Map([["token-a", capability]]),
-    deletingAgentIds: new Set(),
+    agentMessageCapabilities: admitted([["token-a", capability]]),
+    deletingAgentIds: new Set(), deletingProjectIds:new Set(), deletingConversationIds:new Set(),
+    managedAgentCreationRestricted:()=>false,
     cachedModelOptions: () => [],
     capabilityOwnsAuthoritativeRun: () => true,
     publicManagementOperations: (operations) => operations,
@@ -148,7 +154,7 @@ test("management retry replays completed creates and exact stops before mutable 
     return receipt;
   });
   registerAgentManagementRoutes(app, {
-    store: {
+    store: { ...scopeStore,
       getAgent: (id) => id === owner.id ? owner : id === child.id ? child
         : id === createdAgent?.id ? createdAgent : undefined,
       listAgentSubtree: () => [owner, child],
@@ -196,8 +202,9 @@ test("management retry replays completed creates and exact stops before mutable 
       runId: plan.runId,
       messageCapability: "token-a",
     }]]),
-    agentMessageCapabilities: new Map([["token-a", capability]]),
-    deletingAgentIds: new Set(),
+    agentMessageCapabilities: admitted([["token-a", capability]]),
+    deletingAgentIds: new Set(), deletingProjectIds:new Set(), deletingConversationIds:new Set(),
+    managedAgentCreationRestricted:()=>false,
     cachedModelOptions: () => [],
     capabilityOwnsAuthoritativeRun: () => true,
     publicManagementOperations: (operations) => operations,
@@ -252,7 +259,7 @@ test("restart resumes a partially applied rename then stop plan from durable pro
       receipt = { cancelled: true, runId: request.body.targetRunId };
       return receipt;
     });
-    const store = {
+    const store = { ...scopeStore,
       getAgent: (id) => id === owner.id ? owner : id === child.id ? child : undefined,
       listAgentSubtree: () => [owner, child],
       getAgentManagementPlan: (id) => id === durable.id ? structuredClone(durable) : undefined,
@@ -270,8 +277,9 @@ test("restart resumes a partially applied rename then stop plan from durable pro
       },
       workspace: {}, engines: new Map(), managementPlans: new Map(),
       activeRuns: new Map([[owner.id, { runId: ownerRunId, messageCapability: `token-${ownerRunId}` }]]),
-      agentMessageCapabilities: new Map([[`token-${ownerRunId}`, { agentId: owner.id, runId: ownerRunId, conversationId: "chat-a" }]]),
-      deletingAgentIds: new Set(), cachedModelOptions: () => [], capabilityOwnsAuthoritativeRun: () => true,
+      agentMessageCapabilities: admitted([[`token-${ownerRunId}`, { agentId: owner.id, runId: ownerRunId, conversationId: "chat-a" }]]),
+      deletingAgentIds: new Set(), deletingProjectIds:new Set(), deletingConversationIds:new Set(),
+      managedAgentCreationRestricted:()=>false, cachedModelOptions: () => [], capabilityOwnsAuthoritativeRun: () => true,
       publicManagementOperations: (operations) => operations,
       commitAgentDeletion: async () => { throw new Error("unexpected deletion"); },
       appendWorkspace: () => {}, publishWorkspaceSince: () => {}, notifyScheduler: () => {},
@@ -301,12 +309,13 @@ test("management rejects malformed envelopes and operation types before traversa
   const owner = { id: "owner-validation", projectId: "project-a", conversationId: "chat-a", activeEngine: "codex" };
   let traversals = 0;
   registerAgentManagementRoutes(app, {
-    store: { getAgent: () => owner, listAgentSubtree: () => { traversals += 1; return [owner]; } },
+    store: { ...scopeStore, getAgent: () => owner, listAgentSubtree: () => { traversals += 1; return [owner]; } },
     coordinationV3: { steeringInjectionIds: () => { throw new Error("must not inspect malformed operation"); } },
     workspace: {}, engines: new Map(), managementPlans: new Map(),
     activeRuns: new Map([[owner.id, { runId: "run-a", messageCapability: "token-a" }]]),
-    agentMessageCapabilities: new Map([["token-a", { agentId: owner.id, runId: "run-a", conversationId: "chat-a" }]]),
-    deletingAgentIds: new Set(), cachedModelOptions: () => [], capabilityOwnsAuthoritativeRun: () => true,
+    agentMessageCapabilities: admitted([["token-a", { agentId: owner.id, runId: "run-a", conversationId: "chat-a" }]]),
+    deletingAgentIds: new Set(), deletingProjectIds:new Set(), deletingConversationIds:new Set(),
+    managedAgentCreationRestricted:()=>false, cachedModelOptions: () => [], capabilityOwnsAuthoritativeRun: () => true,
     publicManagementOperations: (operations) => operations,
     commitAgentDeletion: async () => { throw new Error("unexpected deletion"); }, appendWorkspace: () => {},
     publishWorkspaceSince: () => {}, notifyScheduler: () => {},
@@ -336,12 +345,13 @@ test("managed Agent restriction gates management describe, plan, and apply", asy
     approvalRequired: false, status: "planned", operationProgress: [], refs: {}, changedAgentIds: [],
     createdAt: new Date().toISOString(), operations: [{kind:"create_agent",ref:"child",title:"Child"}] };
   registerAgentManagementRoutes(app, {
-    store: { getAgent: () => owner, listAgentSubtree: () => [owner] },
+    store: { ...scopeStore, getAgent: () => owner, listAgentSubtree: () => [owner] },
     coordinationV3: { steeringInjectionIds: () => [] }, workspace: {}, engines: new Map(),
     managementPlans: new Map([[plan.id, plan]]),
     activeRuns: new Map([[owner.id, { runId: "run-a", messageCapability: "token-a" }]]),
-    agentMessageCapabilities: new Map([["token-a", { agentId: owner.id, runId: "run-a", conversationId: "chat-a" }]]),
-    deletingAgentIds: new Set(), cachedModelOptions: () => [], capabilityOwnsAuthoritativeRun: () => true,
+    agentMessageCapabilities: admitted([["token-a", { agentId: owner.id, runId: "run-a", conversationId: "chat-a" }]]),
+    deletingAgentIds: new Set(), deletingProjectIds:new Set(), deletingConversationIds:new Set(),
+    cachedModelOptions: () => [], capabilityOwnsAuthoritativeRun: () => true,
     managedAgentCreationRestricted: () => true, publicManagementOperations: (operations) => operations,
     commitAgentDeletion: async () => { throw new Error("unexpected deletion"); }, appendWorkspace: () => {},
     publishWorkspaceSince: () => {}, notifyScheduler: () => {},

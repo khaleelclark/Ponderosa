@@ -66,6 +66,10 @@ jobs:
         shell: bash
         run: pnpm install --frozen-lockfile
 
+      - name: Install the pinned Chromium for browser checks
+        shell: bash
+        run: pnpm --filter @ponderosa/server exec playwright-core install --with-deps chromium
+
       - name: Full verification and production audit
         shell: bash
         run: |

@@ -147,6 +147,11 @@ registerAgentDecisionRoutes(app, {
   publishWorkspaceSince,
 });
 
+const capabilityPolicies = new CapabilityPolicyStore(store.sqlite);
+const managedAgentCreationRestricted = (agentId: string, runId: string): boolean =>
+  capabilityPolicies.resolveForAgent(agentId, runId)
+    .restrictedCapabilityIds.includes(CAPABILITY_IDS.managedAgentCreate);
+
 registerAgentManagementRoutes(app, {
   store,
   coordinationV3,
@@ -158,9 +163,9 @@ registerAgentManagementRoutes(app, {
   deletingAgentIds,
   cachedModelOptions,
   capabilityOwnsAuthoritativeRun,
-  managedAgentCreationRestricted: (agentId, runId) =>
-    new CapabilityPolicyStore(store.sqlite).resolveForAgent(agentId, runId)
-      .restrictedCapabilityIds.includes(CAPABILITY_IDS.managedAgentCreate),
+  managedAgentCreationRestricted,
+  deletingProjectIds,
+  deletingConversationIds,
   publicManagementOperations,
   commitAgentDeletion,
   appendWorkspace,
@@ -204,6 +209,7 @@ registerAgentCoordinationRoutes(app, {
   coordinationV3,
   engines,
   providerEnabled: context.providerEnabled,
+  managedAgentCreationRestricted,
   deletingAgentIds,
   deletingProjectIds,
   deletingConversationIds,

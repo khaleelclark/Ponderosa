@@ -763,6 +763,10 @@ export const realApi = {
       };
     }
   },
+  getPineconeProfile(agentId: string): Promise<import("@ponderosa/core").PineconeProfileDto | null> {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/pinecone`, undefined, [404]).then(result =>
+      result && typeof result === "object" && "agentId" in result ? result as import("@ponderosa/core").PineconeProfileDto : null);
+  },
   createAgentRecord(projectId: string, request: CreateAgentRequest): Promise<CreateAgentResponse> {
     return requestJson<CreateAgentResponse>(`/api/projects/${encodeURIComponent(projectId)}/agents`, {
       method: "POST",
@@ -771,6 +775,7 @@ export const realApi = {
   },
   createAgent(projectId: string, conversationId: string, options: CreateAgentOptions): Promise<CreateAgentResponse> {
     return this.createAgentRecord(projectId, {
+      experience: options.experience,
       title: options.title,
       engine: options.engine as CreateAgentRequest["engine"],
       conversationId,

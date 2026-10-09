@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import Fastify from "fastify";
+import {PONDEROSA_CREATE_MANAGED_AGENT_TOOL} from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
 import { createServer } from "../dist/app.js";
 import { registerAgentCoordinationRoutes } from "../dist/routes/agent-coordination.js";
@@ -44,8 +45,8 @@ test("managed creation shares disabled admission and committed replay precedes a
     c.coordinate({ projectId: project.id, conversationId: chat.id, actorScope: "user:local-operator", idempotencyKey: "parent", requests: [{ requestId: "parent", recipientAgentId: manager.id, lifetime: { kind: "indefinite" }, payload: {} }] });
     const lease = c.leaseNextRun({ workerId: "synthetic" }); let enabled = true;
     const authorization = { runId: lease.runId, agentId: manager.id, fencingToken: lease.fencingToken };
-    const capability = { agentId: manager.id, conversationId: chat.id, runId: lease.runId, v3SchedulerRunId: lease.runId, v3FencingToken: lease.fencingToken };
-    registerAgentCoordinationRoutes(app, { store, coordinationV3: c, engines: new Map([["codex", { adapter: { id: "codex", listModels: () => [], listEfforts: () => [] } }]]), providerEnabled: () => enabled,
+    const capability = { agentId: manager.id, conversationId: chat.id, runId: lease.runId, v3SchedulerRunId: lease.runId, v3FencingToken: lease.fencingToken,availableToolNames:[PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name] };
+    registerAgentCoordinationRoutes(app, { store,managedAgentCreationRestricted:()=>false, coordinationV3: c, engines: new Map([["codex", { adapter: { id: "codex", listModels: () => [], listEfforts: () => [] } }]]), providerEnabled: () => enabled,
       deletingAgentIds: new Set(), deletingProjectIds: new Set(), deletingConversationIds: new Set(), conversationDeliveryLeases: new Map(), agentDeliveryLeases: new Map(), agentMessageCapabilities: new Map([["synthetic", capability]]), activeRuns: new Map([[manager.id, { messageCapability: "synthetic" }]]), cachedModelOptions: () => [], capabilityOwnsAuthoritativeRun: () => true, runAuthorization: () => authorization, reconcileRuntimeCommunicationProjections: async () => 0, recordCommunication: event => event, projectCommunicationToAgentAudit: () => {}, publishCoordinationV3Changed: () => {}, notifyScheduler: () => {}, logWarn: () => {} });
     const create = key => app.inject({ method: "POST", url: "/api/agent-spawn", headers: { authorization: "Bearer synthetic" }, payload: { idempotencyKey: key, title: key, engine: "codex", text: "Opening work", lifetime: { kind: "indefinite" } } });
     const first = await create("committed"); assert.equal(first.statusCode, 200, first.body);

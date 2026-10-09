@@ -157,6 +157,34 @@ export function mergeProductPreferencePatch(store:Pick<AgentStore,'sqlite'>,curr
  }
  return result;
 }
+// Draft surface IDs are storage keys, not globally valid conversation aliases.
+// Keep this list aligned with the registered DraftService routes and methods.
+const agentDraftMethods: Readonly<Record<string, readonly string[]>> = {
+  '/api/conversations/:id/draft': ['GET', 'HEAD', 'PUT'],
+  '/api/conversations/:id/draft-conflicts': ['GET', 'HEAD'],
+  '/api/conversations/:id/draft-conflicts/:conflictId/restore': ['POST'],
+  '/api/conversations/:id/draft-conflicts/:conflictId': ['DELETE'],
+  '/api/conversations/:id/draft-attachments': ['POST'],
+  '/api/conversations/:id/draft-attachments/:attachmentId': ['GET', 'HEAD', 'DELETE'],
+};
+function agentDraftOwner(store:AgentStore,request:FastifyRequest):{surfaceId:string;agentId:string;conversationId:string}|undefined {
+  if(!agentDraftMethods[request.routeOptions.url??'']?.includes(request.method))return undefined;
+  const surfaceId=(request.params as {id?:string}).id;
+  const match=typeof surfaceId==='string'?/^agent:([^:\s/\\%]+)$/u.exec(surfaceId):null;
+  if(!match||surfaceId!.length>200)return undefined;
+  const agentId=match[1]!;
+  const row=store.sqlite.prepare(`SELECT a.conversation_id FROM agents a
+    JOIN conversations c ON c.id=a.conversation_id AND c.project_id=a.project_id
+    JOIN projects p ON p.id=c.project_id
+    WHERE a.id=? AND a.deleted_at IS NULL AND a.archived=0 AND c.archived=0
+      AND NOT EXISTS(SELECT 1 FROM agent_deletion_pending WHERE agent_id=a.id)
+      AND NOT EXISTS(SELECT 1 FROM project_deletion_pending WHERE project_id=p.id)
+      AND NOT EXISTS(SELECT 1 FROM conversation_deletion_receipts WHERE conversation_id=c.id)
+      AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive
+        WHERE inactive.local_id IN (a.id,c.id) AND inactive.state!='active')`).get(agentId) as {conversation_id:string}|undefined;
+  if(!row||store.agentCreationPending(agentId))return undefined;
+  return {surfaceId:surfaceId!,agentId,conversationId:row.conversation_id};
+}
 /** Supplied only after server authentication and exact live scheduler ownership. */
 export interface RuntimeProductOwner { conversationId: string; agentId: string; runId: string; fencingToken: number }
 function retainedRuntimeResources(store:Pick<AgentStore,'sqlite'>,owner:string|RuntimeProductOwner|undefined):Set<string> {
@@ -200,6 +228,7 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
       (product==='branches'&&['agent','conversation','chat','project'].includes(kind)&&retained.has(id))||ordinaryBelongs(id,kind,product);
     if(runtimeChat){(request.raw as ProductRequest).ponderosaProduct=store.getConversation(runtimeChat)?.branchId?'branches':'dev';}
     const product=requestProduct(request);
+    const draftOwner=agentDraftOwner(store,request);
     const externalMutation=!['GET','HEAD','OPTIONS'].includes(request.method)&&!runtimeChat&&!lifecycleAuthority(request);
     // The Branch lifecycle must be able to finish deleting a Chat after its
     // installation binding has moved to retiring. Ordinary product reads and
@@ -220,7 +249,7 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
       const tempAgent=(id:string)=>Boolean(store.sqlite.prepare('SELECT 1 FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE a.id=? AND c.branch_execution_id IS NOT NULL').get(id));
       const scoped=request.routeOptions.url??'';
       const params=request.params as Record<string,string>;
-      const pathTarget=(scoped.startsWith('/api/agents/:id')&&params.id&&tempAgent(params.id))||(scoped.startsWith('/api/conversations/:id')&&params.id&&tempChat(params.id));
+      const pathTarget=(draftOwner&&tempAgent(draftOwner.agentId))||(scoped.startsWith('/api/agents/:id')&&params.id&&tempAgent(params.id))||(scoped.startsWith('/api/conversations/:id')&&params.id&&tempChat(params.id));
       const targetIds=(value:unknown,depth=0):boolean=>{
         if(depth>12||!value||typeof value!=='object'||Buffer.isBuffer(value))return false;
         if(Array.isArray(value))return value.some(item=>targetIds(item,depth+1));
@@ -286,16 +315,23 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
     };
     if(request.routeOptions.url==='/api/notification-settings/:kind/:id'){const p=request.params as {kind:string;id:string};if(!resourceInProduct(store,p.kind,p.id,product))return reply.code(404).send({error:'Resource is unavailable in this product'});}
     if(request.routeOptions.url==='/api/workspace/recent-resources/use'){const b=request.body as {kind?:string;resourceId?:string};if(b?.kind&&b.resourceId&&!resourceInProduct(store,b.kind,b.resourceId,product))return reply.code(404).send({error:'Resource is unavailable in this product'});}
-    const resource=/^\/api\/(projects|agents|conversations|chats|triggers|notifications|decisions)\/([^/?]+)/.exec(request.url);
+    // Nested :id belongs to its declared resource, not the outer Project.
+    const resource=/\/(projects|agents|conversations|chats|triggers|notifications|decisions)\/:id(?:\/|$)/.exec(request.routeOptions.url??'')
+      ?? /^\/api\/(projects|agents|conversations|chats|triggers|notifications|decisions)\/([^/?]+)/.exec(request.url);
     const params=request.params as Record<string,string>;
     if(params.projectId&&params.aid){const artifact=store.getProjectArtifact(params.projectId,params.aid);const owner=artifact?.agentId??artifact?.originAgentId;if(owner&&!artifactAgentInProduct(store,owner,params.projectId,product))return reply.code(404).send({error:'Resource is unavailable in this product'});}
-    if(resource&&params.id&&(!resourceMutable(params.id)||!belongs(params.id,resource[1]!.replace(/s$/,''),product))||!inspect(request.body)||!inspect(request.query)||!inspect(request.params))return reply.code(404).send({error:'Resource is unavailable in this product'});
+    const pathAvailable=draftOwner
+      ? resourceMutable(draftOwner.agentId)&&resourceMutable(draftOwner.conversationId)
+        &&ordinaryBelongs(draftOwner.agentId,'agent',product)&&ordinaryBelongs(draftOwner.conversationId,'conversation',product)
+      : !resource||!params.id||(resourceMutable(params.id)&&belongs(params.id,resource[1]!.replace(/s$/,''),product));
+    if(!pathAvailable||!inspect(request.body)||!inspect(request.query)||!inspect(request.params))return reply.code(404).send({error:'Resource is unavailable in this product'});
     if(product==='branches'&&request.method==='POST'&&['/api/projects','/api/chats'].includes(request.url))return reply.code(400).send({error:'Create Chats inside a Branch'});
   });
   // Defense in depth for global projections; primary collections filter before pagination.
   app.addHook('preSerialization',async(request,_reply,payload)=>{
     if(!request.url.startsWith('/api/')||/^\/api\/branch(?:es|\-executions|\-gates)(?:\/|$)/.test(request.url))return payload;
     const product=requestProduct(request);
+    const draftOwner=agentDraftOwner(store,request);
     const retained=retainedRuntimeResources(store,runtimeOwner(request));
     const belongs=(id:string,kind:string,scope:ProductScope):boolean=>
       (scope==='branches'&&['agent','conversation','chat','project'].includes(kind)&&retained.has(id))||ordinaryBelongs(id,kind,scope);
@@ -321,7 +357,9 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
       if(!scopedArtifact&&typeof object.agentId==='string'&&!belongs(object.agentId,'agent',product)&&
         !(typeof object.conversationId==='string'&&decisionInProduct(store,{agentId:object.agentId,conversationId:object.conversationId},product)))return undefined;
       if(!scopedArtifact&&typeof object.originAgentId==='string'&&!belongs(object.originAgentId,'agent',product))return undefined;
-      if(typeof object.conversationId==='string'&&!belongs(object.conversationId,'conversation',product))return undefined;
+      if(typeof object.conversationId==='string'&&!(draftOwner&&object.conversationId===draftOwner.surfaceId
+        &&ordinaryBelongs(draftOwner.agentId,'agent',product)&&ordinaryBelongs(draftOwner.conversationId,'conversation',product))
+        &&!belongs(object.conversationId,'conversation',product))return undefined;
       if(!scopedArtifact&&typeof object.projectId==='string'&&!belongs(object.projectId,'project',product))return undefined;
       const result:Record<string,unknown>=Object.create(null);
       for(const [key,v] of Object.entries(object)){

@@ -8,6 +8,11 @@ import type { WorkspacePreferencesWriter } from "../workspacePreferencesWriter";
 
 const workspacePreferenceWriters = new WeakMap<QueryClient, WorkspacePreferencesWriter>();
 
+export function usePineconeProfile(agentId: string | undefined) {
+  return useQuery({ queryKey: queryKeys.pinecone(agentId ?? ""),
+    queryFn: () => api.getPineconeProfile(agentId!), enabled: Boolean(agentId), staleTime: Infinity });
+}
+
 export function useProjects() {
   return useQuery({
     queryKey: queryKeys.projects.all,

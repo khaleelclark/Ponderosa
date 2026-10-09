@@ -1373,8 +1373,11 @@ test("managed Agent spawn replay canonicalizes input before current engine valid
   };
   const payloadHashes = [];
   registerAgentCoordinationRoutes(app, {
-    providerEnabled: () => true,
+    providerEnabled: () => true, managedAgentCreationRestricted:()=>false,
     store: {
+      getProject:()=>({id:manager.projectId}),getConversation:()=>({id:manager.conversationId,projectId:manager.projectId}),
+      agentCreationPending:()=>false,getProjectDeletionReceipt:()=>undefined,getConversationDeletionReceipt:()=>undefined,
+      sqlite:{prepare:sql=>({get:()=>sql.includes('SELECT c.branch_id')?{branch_id:null}:undefined})},
       getAgent: () => manager,
       beginAgentCreationOperation: (input) => {
         payloadHashes.push(input.payloadHash);
@@ -1397,7 +1400,7 @@ test("managed Agent spawn replay canonicalizes input before current engine valid
     },
     coordinationV3: { steeringInjectionIds: () => [] },
     engines: new Map(),
-    deletingAgentIds: new Set([manager.id]),
+    deletingAgentIds: new Set(),
     deletingProjectIds: new Set(),
     deletingConversationIds: new Set(),
     conversationDeliveryLeases: new Map(),
@@ -1407,7 +1410,7 @@ test("managed Agent spawn replay canonicalizes input before current engine valid
       runId: "run-a",
       conversationId: manager.conversationId,
       mentionDepth: 0,
-      mentionTrail: [],
+      mentionTrail: [], availableToolNames:["ponderosa_create_managed_agent"],
     }]]),
     activeRuns: new Map([[manager.id, { messageCapability: "token" }]]),
     cachedModelOptions: () => [],

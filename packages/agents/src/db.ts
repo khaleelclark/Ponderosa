@@ -72,6 +72,7 @@ const schemaExtensions = [
   "0029_branch_map_results.sql",
   "0030_historical_artifact_product_scope.sql",
   "0031_branch_execution_budgets.sql",
+  "0037_pinecone_profiles.sql",
   "0023_lead_task_continuity.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";

@@ -1,3 +1,4 @@
+import { PineconeMark } from "./pinecone/PineconeMark";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { publishCreatedAgent } from "../conversationAgentCache";
 import UploadFileOutlinedIcon from "@mui/icons-material/UploadFileOutlined";
@@ -56,6 +57,7 @@ export interface AgentCreateFormProps {
   onCancel(): void;
   onCreated(projectId: string, agent: AgentDto): void;
   onPendingChange?(pending: boolean): void;
+  experience?: "pinecone";
   stickyActions?: boolean;
 }
 
@@ -78,6 +80,7 @@ export function AgentCreateForm({
   onCancel,
   onCreated,
   onPendingChange,
+  experience,
   stickyActions = false,
 }: AgentCreateFormProps): JSX.Element {
   const queryClient = useQueryClient();
@@ -180,7 +183,7 @@ export function AgentCreateForm({
     titleEditedRef.current = Boolean(initialName);
     conversationEditedRef.current = false;
     managerEditedRef.current = false;
-    setTitle(initialName ?? pickAgentName([]));
+    setTitle(initialName ?? (experience === "pinecone" ? "Pinecone" : pickAgentName([])));
     setEngine(
       initialEngine ??
         project?.defaultEngine ??
@@ -203,6 +206,7 @@ export function AgentCreateForm({
     initialEngine,
     initialModel,
     initialName,
+    experience,
     project?.defaultEffort,
     project?.defaultEngine,
     project?.defaultModel,
@@ -210,7 +214,7 @@ export function AgentCreateForm({
   ]);
 
   useEffect(() => {
-    if (!agentsQuery.isSuccess) return;
+    if (!agentsQuery.isSuccess || experience === "pinecone") return;
     const loadedAgents = agentsQuery.data ?? [];
     if (
       !titleEditedRef.current &&
@@ -219,7 +223,7 @@ export function AgentCreateForm({
     ) {
       setTitle(pickAgentName(loadedAgents.map(agent => agent.title)));
     }
-  }, [agentsQuery.data, agentsQuery.isSuccess, initialManagerAgentId]);
+  }, [agentsQuery.data, agentsQuery.isSuccess, initialManagerAgentId, experience]);
 
   useEffect(() => {
     setOwnership(current => reconcileAgentCreateOwnership(current, {
@@ -253,6 +257,7 @@ export function AgentCreateForm({
   const create = useMutation({
     mutationFn: () => {
       const options = {
+        experience,
         title: title.trim(),
         engine,
         model: modelSelectionIsCompatible(activeEngine, model)
@@ -261,9 +266,9 @@ export function AgentCreateForm({
         effort: effortSelectionIsCompatible(activeEngine, model, effort)
           ? effort || undefined
           : undefined,
-        presetId: presetId || undefined,
-        managerAgentId: managerAgentId || undefined,
-        initialMessage: initialMessage.trim() || undefined,
+        presetId: experience ? undefined : presetId || undefined,
+        managerAgentId: experience ? undefined : managerAgentId || undefined,
+        initialMessage: experience ? undefined : initialMessage.trim() || undefined,
       };
       createAttemptRef.current = retainIdempotentAttempt(
         createAttemptRef.current,
@@ -333,7 +338,7 @@ export function AgentCreateForm({
           </Select>
         </FormControl>
       ) : null}
-      <FormControl fullWidth size="small">
+      {!experience ? <FormControl fullWidth size="small">
         <InputLabel id="create-agent-preset-label">Preset (optional)</InputLabel>
         <Select
           labelId="create-agent-preset-label"
@@ -359,7 +364,8 @@ export function AgentCreateForm({
               </MenuItem>
             ))}
         </Select>
-      </FormControl>
+      </FormControl> : null}
+      {experience ? <Alert severity="info">One coordinator in this Chat. Creation starts no work; submit your first task privately in Agent chat. Work requires your host and Ponderosa online. Agents have full host-user authority; Project scope is not an OS sandbox. New Pinecones start with managed helper creation restricted. Allow helpers explicitly in private Agent chat settings. Authorized host operators can access messages. Setup collects no files or preferences.</Alert> : null}
       <TextField
         label="Name"
         value={title}
@@ -466,7 +472,7 @@ export function AgentCreateForm({
           size="small"
         />
       )}
-      <FormControl fullWidth size="small">
+      {!experience ? <FormControl fullWidth size="small">
         <InputLabel id="create-agent-manager-label">Delegated under</InputLabel>
         <Select
           id="ag-manager"
@@ -490,15 +496,15 @@ export function AgentCreateForm({
               </MenuItem>
             ))}
         </Select>
-      </FormControl>
-      <TextField
+      </FormControl> : null}
+      {!experience ? <TextField
         label="Initial message (optional)"
         helperText="Give the Agent a task, role, or introduction—or leave it idle."
         value={initialMessage}
         onChange={event => setInitialMessage(event.target.value)}
         multiline
         minRows={3}
-      />
+      /> : null}
       {!projects.length ? (
         <Alert severity="info">
           Create a Project before creating an Agent.
@@ -531,6 +537,7 @@ export function AgentCreateForm({
           Cancel
         </Button>
         <Button id="ag-create"
+          sx={experience ? { minHeight: 44 } : undefined}
           variant="contained"
           disabled={
             !projectId || !conversationId || !conversationAvailable ||
@@ -544,7 +551,7 @@ export function AgentCreateForm({
             create.mutate();
           }}
         >
-          {create.isPending ? "Creating…" : "Create Agent"}
+          {create.isPending ? "Creating…" : experience ? "Create Pinecone" : "Create Agent"}
         </Button>
       </Stack>
     </Stack>
@@ -617,7 +624,9 @@ function ScopedAgentCreateSurface({
   stickyActions = false,
   ...createProps
 }: AgentCreateSurfaceProps): JSX.Element {
-  const [mode, setMode] = useState<"create" | "import">("create");
+  const [mode, setMode] = useState<"create" | "pinecone" | "import">("create");
+  const ownerChat = useConversation(fixedConversationId, 1);
+  const pineconeAllowed = Boolean(!createProps.initialManagerAgentId && ownerChat.data?.conversation && !ownerChat.data.conversation.branchId && !ownerChat.data.conversation.archived && !ownerChat.data.conversation.deletedAt);
   const [pending, setPending] = useState(false);
   const updatePending = (nextPending: boolean) => {
     setPending(nextPending);
@@ -726,9 +735,9 @@ function ScopedAgentCreateSurface({
         sx={{ alignItems: "center", justifyContent: "space-between" }}
       >
         <div>
-          <Typography variant="h6">Create Agent</Typography>
+          <Typography variant="h6">{mode === "pinecone" ? "Create Pinecone" : "Create Agent"}</Typography>
           <Typography variant="body2" color="text.secondary">
-            Create a managed Agent in a chat.
+            {mode === "pinecone" ? "Keep one named coordinator in this Chat." : "Create a managed Agent in a chat."}
           </Typography>
         </div>
         <Button
@@ -740,7 +749,12 @@ function ScopedAgentCreateSurface({
           Import Agent package
         </Button>
       </Stack>
+      {pineconeAllowed ? <Button startIcon={mode === "pinecone" ? undefined : <PineconeMark aria-hidden="true" />} disabled={pending} sx={{ minHeight: 44, alignSelf: "flex-start" }} onClick={() => setMode(mode === "pinecone" ? "create" : "pinecone")}>
+        {mode === "pinecone" ? "Create an ordinary Agent" : "Create Pinecone"}
+      </Button> : null}
       <AgentCreateForm
+        key={mode}
+        experience={mode === "pinecone" ? "pinecone" : undefined}
         projects={projects}
         engines={engines}
         initialProjectId={initialProjectId}

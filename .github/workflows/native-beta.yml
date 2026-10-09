@@ -97,13 +97,13 @@ jobs:
         shell: bash
         run: pnpm install --frozen-lockfile
 
+      - name: Install the pinned Chromium for browser checks
+        shell: bash
+        run: pnpm --filter @ponderosa/server exec playwright-core install --with-deps chromium
+
       - name: Full verification
         shell: bash
         run: pnpm verify
-
-      - name: Install the pinned Chromium for browser speech checks
-        shell: bash
-        run: pnpm --filter @ponderosa/server exec playwright-core install --with-deps chromium
 
       - name: Verify runtime recovery and browser speech ownership
         shell: bash

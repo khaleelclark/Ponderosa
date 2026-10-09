@@ -108,6 +108,7 @@ export const queryKeys = {
       activationIds,
     ] as const,
   },
+  pinecone: (agentId: string) => ["pinecone", agentId] as const,
   agents: {
     all: ["agents"] as const,
     allChat: ["agents", "all-chat"] as const,

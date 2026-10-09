@@ -1,3 +1,4 @@
+import { PineconeWelcome } from "./pinecone/PineconeWelcome";
 import { useWorkspaceDirectory } from "../hooks/useWorkspaceDirectory";
 import {
   Alert,
@@ -1194,6 +1195,9 @@ export function AgentDetail({
         </Stack>
       ) : null}
 
+      <Box sx={{ minHeight: 0, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        {!auditOnly && !detail.agent.archived && tab === "chat" ? <PineconeWelcome agentId={agentId} title={detail.agent.title} empty={visibleChatMessages.length === 0} /> : null}
+        <Box sx={{ flex: 1, minHeight: 0 }}>
       <AgentDetailPanels
         tab={auditOnly&&['subagents','triggers','settings'].includes(tab)?'chat':tab}
         detail={detail}
@@ -1233,6 +1237,8 @@ export function AgentDetail({
         onOpenTechnical={openTechnicalDetails}
         onOpenArtifact={onOpenArtifact}
       />
+        </Box>
+      </Box>
 
       {auditOnly||detail.agent.archived ? <Alert severity="info" sx={{m:1}}>This Agent is archived. Its conversation and work history are available for inspection.</Alert> : <AgentDetailComposer
         visible={tab === "chat"}

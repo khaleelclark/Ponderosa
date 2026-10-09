@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   TERMINAL_REQUEST_STATES,
+  PONDEROSA_CREATE_MANAGED_AGENT_TOOL,
   canonicalizeProviderText,
   unicodeCodePointLength,
   type AgentDto,
@@ -26,6 +27,7 @@ import { runtimeSelectionError } from "../runtime-selection.js";
 import { derivedRunActionKey } from "../security.js";
 import { reconcileCommittedAgentCreation } from "../agent-creation-recovery.js";
 import { leaseConversationDelivery } from "../delivery-leases.js";
+import { activeChatResourceOwner, resourceInProduct, requestProduct, type ProductScope } from "../product-scope.js";
 import { ProviderDisabledError } from "../provider-admission.js";
 
 interface AgentCoordinationRoutesContext {
@@ -45,6 +47,7 @@ interface AgentCoordinationRoutesContext {
     capability: AgentMessageCapability,
     run: ActiveRun | undefined,
   ): boolean;
+  managedAgentCreationRestricted(agentId: string, runId: string): boolean;
   recordCommunication(event: CommunicationEvent): CommunicationEvent;
   projectCommunicationToAgentAudit(
     agentId: string,
@@ -76,6 +79,31 @@ interface AgentCoordinationRoutesContext {
     communicationEventId?: string;
     allowQuarantinedAgentIds?: ReadonlySet<string>;
   }): Promise<number>;
+}
+
+/** Creation requires a live mutable owner even when retained Run access remains. */
+export function agentCreationScopeError(store: AgentStore, agentId: string,
+  conversationId: string | undefined, deleting: {
+    deletingAgentIds: ReadonlySet<string>; deletingProjectIds: ReadonlySet<string>;
+    deletingConversationIds: ReadonlySet<string>;
+  }, product: ProductScope): { statusCode: 404 | 409; error: string } | undefined {
+  const agent = store.getAgent(agentId);
+  const chat = conversationId ? store.getConversation(conversationId) : undefined;
+  if (!agent || agent.archived || !chat || chat.archived ||
+      agent.conversationId !== chat.id || agent.projectId !== chat.projectId ||
+      !store.getProject(agent.projectId) || !activeChatResourceOwner(store, "agent", agent.id) ||
+      !resourceInProduct(store, "agent", agent.id, product)) {
+    return { statusCode: 404, error: "managed creation owner is unavailable in this scope" };
+  }
+  if (store.agentCreationPending(agent.id) || deleting.deletingAgentIds.has(agent.id) ||
+      deleting.deletingProjectIds.has(agent.projectId) || deleting.deletingConversationIds.has(chat.id) ||
+      store.sqlite.prepare("SELECT 1 FROM agent_deletion_pending WHERE agent_id=?").get(agent.id) ||
+      store.sqlite.prepare("SELECT 1 FROM project_deletion_pending WHERE project_id=?").get(agent.projectId) ||
+      store.getProjectDeletionReceipt(agent.projectId) || store.getConversationDeletionReceipt(chat.id) ||
+      store.sqlite.prepare(`SELECT 1 FROM branch_installation_plans WHERE branch_id=?
+        AND state IN ('applying','canceling')`).get(chat.branchId ?? null)) {
+    return { statusCode: 409, error: "managed creation owner is pending creation, deletion or installation" };
+  }
 }
 
 export function registerAgentCoordinationRoutes(
@@ -114,6 +142,20 @@ export function registerAgentCoordinationRoutes(
     const manager = capability ? store.getAgent(capability.agentId) : undefined;
     if (!capability || !capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token || !manager) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
+    }
+    if (!Array.isArray(capability.availableToolNames) ||
+        !capability.availableToolNames.includes(PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name)) {
+      return reply.code(401).send({ error: "managed creation tool was not admitted for this Run" });
+    }
+    const scopeError = agentCreationScopeError(store, manager.id, capability.conversationId,
+      context, requestProduct(request));
+    if (scopeError) return reply.code(scopeError.statusCode).send({ error: scopeError.error });
+    try {
+      if (context.managedAgentCreationRestricted(manager.id, capability.runId)) {
+        return reply.code(403).send({ error: "managed Agent creation is restricted for this Run" });
+      }
+    } catch {
+      return reply.code(403).send({ error: "managed Agent creation policy is unavailable" });
     }
     const body = request.body as unknown;
     if (!body || typeof body !== "object" || Array.isArray(body)) {

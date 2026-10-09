@@ -286,6 +286,8 @@ export const TEAM_DIRECTORY_LIMITS = {
 
 /** POST /api/projects/:id/agents body. */
 export interface CreateAgentRequest {
+  /** Operator-only empty Pinecone creation in a live Dev Chat. */
+  experience?: "pinecone";
   title: string;
   engine: EngineId;
   /** Every live Agent belongs to exactly one Chat. */

@@ -278,6 +278,7 @@ export class AgentDeletionAuthority {
         // selected Agent authority fence commit or roll back as one unit.
         for (const agent of current.affectedAgents) beforeProjectionDelete?.(agent.id);
         for (const agent of current.affectedAgents) {
+          this.client.prepare("DELETE FROM pinecone_profiles WHERE agent_id = ?").run(agent.id);
           tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, agent.id)).run();
           tx.update(agents).set({
             conversationId: null,

@@ -34,6 +34,8 @@ import { displayProjectPath } from "../project-path-display.js";
 import type { ServerContext } from "../server-context.js";
 import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js";
 import { registerAgentAuditRoutes } from "./agent-audit.js";
+import { registerAgentCapabilityRoutes } from "./agent-capabilities.js";
+import { registerPineconeRoutes } from "./pinecone.js";
 import { registerAgentCreationRoutes } from "./agent-creation.js";
 import { registerAgentMaintenanceRoutes } from "./agent-maintenance.js";
 import { registerAgentOrganizationRoutes } from "./agent-organization.js";
@@ -524,6 +526,9 @@ registerAgentPresetRoutes(app, {
     );
   },
 });
+
+registerPineconeRoutes(app, { store, deletingAgentIds, deletingProjectIds, deletingConversationIds });
+registerAgentCapabilityRoutes(app, { store, agentMessageCapabilities, deletingAgentIds, deletingProjectIds, deletingConversationIds });
 
 registerAgentCreationRoutes(app, {
   dataDir: opts.dataDir,

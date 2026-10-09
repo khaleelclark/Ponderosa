@@ -7,6 +7,7 @@ import type {
 
 /** User-facing options when spawning an agent from the UI. */
 export interface CreateAgentOptions {
+  experience?: "pinecone";
   title: string;
   engine: string;
   model?: string;

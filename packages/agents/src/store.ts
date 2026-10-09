@@ -80,6 +80,7 @@ import type {
   AgentWorkspaceCatalogAuthority,
   WorkspaceCreationIdentity,
 } from "./store-workspace-catalog-authority.js";
+import { PineconeProfileStore } from "./pinecone-profile-store.js";
 import type { AgentCatalogAuthority } from "./store-agent-catalog-authority.js";
 import type { AgentCommunicationJournalAuthority } from "./store-communication-journal-authority.js";
 import type { AgentManagementAuthority } from "./store-agent-management-authority.js";
@@ -1238,6 +1239,10 @@ export class AgentStore extends AgentEventSessionFacade {
     id: string,
   ): ConversationMessageDto | undefined {
     return this.conversationProjection.getMessageById(conversationId, channel, id);
+  }
+
+  getPineconeProfile(agentId: string) {
+    return new PineconeProfileStore(this.client).get(agentId);
   }
 
   // ─── Agents ───────────────────────────────────────────────────────────────

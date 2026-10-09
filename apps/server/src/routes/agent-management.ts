@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { canonicalizeProviderText, type CommitAgentDeletionResponse, type ModelOption } from "@ponderosa/core";
+import { PONDEROSA_MANAGE_TOOL, PONDEROSA_CREATE_MANAGED_AGENT_TOOL, canonicalizeProviderText, type CommitAgentDeletionResponse, type ModelOption } from "@ponderosa/core";
 import { stableJson, type AgentManagementAuthorization, type AgentStore, type CoordinationV3Store, type WorkspaceStore } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type { ActiveRun, AgentMessageCapability, EngineRegistration, ManagementOperation, ManagementPlan } from "../app-contracts.js";
+import { requestProduct } from "../product-scope.js";
+import { agentCreationScopeError } from "./agent-coordination.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
 
 interface AgentManagementRoutesContext {
@@ -14,9 +16,11 @@ interface AgentManagementRoutesContext {
   activeRuns: ReadonlyMap<string, ActiveRun>;
   agentMessageCapabilities: ReadonlyMap<string, AgentMessageCapability>;
   deletingAgentIds: Set<string>;
+  deletingProjectIds: ReadonlySet<string>;
+  deletingConversationIds: ReadonlySet<string>;
   cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
   capabilityOwnsAuthoritativeRun(capability: AgentMessageCapability, run: ActiveRun | undefined): boolean;
-  managedAgentCreationRestricted?(agentId: string, runId: string): boolean;
+  managedAgentCreationRestricted(agentId: string, runId: string): boolean;
   publicManagementOperations(operations: ManagementOperation[]): ManagementOperation[];
   commitAgentDeletion(rootAgentIds: string[], previewHash: string, authorization?: AgentManagementAuthorization): Promise<CommitAgentDeletionResponse>;
   appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): unknown;
@@ -95,7 +99,7 @@ function parseOperations(value: unknown, injectionIds: readonly string[]): { ope
 export function registerAgentManagementRoutes(app: FastifyInstance, context: AgentManagementRoutesContext): void {
   const { store, coordinationV3, workspace, engines, managementPlans, activeRuns,
     agentMessageCapabilities, deletingAgentIds, cachedModelOptions,
-    capabilityOwnsAuthoritativeRun, managedAgentCreationRestricted = () => false,
+    capabilityOwnsAuthoritativeRun, managedAgentCreationRestricted,
     publicManagementOperations, commitAgentDeletion,
     appendWorkspace, publishWorkspaceSince, notifyScheduler, authToken } = context;
   const durableStore = store as AgentStore & Partial<Pick<AgentStore,
@@ -129,6 +133,10 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
     if (!capability || !active || !owner || !capabilityOwnsAuthoritativeRun(capability, active) || active.messageCapability !== token) {
       return reply.code(401).send({ error: "management capability is not authorized for an active Run" });
     }
+    if (!Array.isArray(capability.availableToolNames) ||
+        !capability.availableToolNames.includes(PONDEROSA_MANAGE_TOOL.name)) {
+      return reply.code(401).send({ error: "management tool was not admitted for this Run" });
+    }
     if (deletingAgentIds.has(owner.id)) return reply.code(409).send({ error: "Agent deletion is already in progress" });
     if (!capability.conversationId || owner.conversationId !== capability.conversationId) {
       return reply.code(409).send({ error: "organization management requires an active Team Chat scope" });
@@ -140,7 +148,27 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
     }
     const action = body.action as keyof typeof ACTION_FIELDS;
     if (!hasOnlyFields(body, ACTION_FIELDS[action])) return reply.code(400).send({ error: `${action} request contains an unknown field` });
-    const creationRestricted = managedAgentCreationRestricted(owner.id, active.runId);
+    const creationError = (): { statusCode: 401 | 403 | 404 | 409; error: string } | undefined => {
+      if (activeRuns.get(owner.id) !== active || agentMessageCapabilities.get(token!) !== capability ||
+          active.messageCapability !== token || !capabilityOwnsAuthoritativeRun(capability, active)) {
+        return { statusCode: 401, error: "management capability is no longer authorized for this Run" };
+      }
+      if (!Array.isArray(capability.availableToolNames) ||
+          !capability.availableToolNames.includes(PONDEROSA_MANAGE_TOOL.name) ||
+          !capability.availableToolNames.includes(PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name)) {
+        return { statusCode: 403, error: "managed creation tool was not admitted for this Run" };
+      }
+      const scopeError = agentCreationScopeError(store, owner.id, capability.conversationId,
+        context, requestProduct(request));
+      if (scopeError) return scopeError;
+      try {
+        if (managedAgentCreationRestricted(owner.id, capability.runId)) {
+          return { statusCode: 403, error: "managed Agent creation is restricted for this Run" };
+        }
+      } catch {
+        return { statusCode: 403, error: "managed Agent creation policy is unavailable" };
+      }
+    };
 
     if (action === "describe") {
       const descendants = store.listAgentSubtree(owner.id).slice(1);
@@ -149,7 +177,7 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
         descendants: descendants.map((agent) => ({ agentId: agent.id, title: agent.title,
           managerAgentId: agent.managerAgentId, engine: agent.activeEngine, state: agent.state })),
         permissions: {
-          autonomous: [...(!creationRestricted ? ["create_agent"] : []), "rename_agent", "stop_agent",
+          autonomous: [...(!creationError() ? ["create_agent"] : []), "rename_agent", "stop_agent",
             ...(owner.managementPermissions.allowAutomaticDescendantDeletion ? ["delete_agent"] : []),
             ...(owner.managementPermissions.allowAutomaticDescendantReorganization ? ["set_manager"] : [])],
           requiresApprovalDecision: [
@@ -165,13 +193,17 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
       const planId = requiredText(body.planId);
       if (!planId || planId.length > 200) return reply.code(400).send({ error: "apply requires string planId" });
       const loadedPlan = loadPlan(planId);
-      if (!loadedPlan || loadedPlan.agentId !== owner.id || loadedPlan.conversationId !== capability.conversationId) {
+      if (!loadedPlan || loadedPlan.agentId !== owner.id || loadedPlan.conversationId !== capability.conversationId || loadedPlan.projectId !== owner.projectId) {
         return reply.code(404).send({ error: "management plan is absent or does not belong to this Agent" });
       }
       let plan: ManagementPlan = loadedPlan;
       if (plan.status === "completed" || plan.appliedAt) return { planId: plan.id, replayed: true, result: plan.result };
-      if (creationRestricted && plan.operations.some((operation) => operation.kind === "create_agent")) {
-        return reply.code(403).send({ error: "managed Agent creation is restricted for this Run" });
+      if (plan.operations.some((operation) => operation.kind === "create_agent")) {
+        if (plan.runId !== capability.runId) {
+          return reply.code(409).send({ error: "creation plan belongs to a different Run" });
+        }
+        const denied = creationError();
+        if (denied) return reply.code(denied.statusCode).send({ error: denied.error });
       }
       if (plan.approvalRequired && !plan.approvalDecisionId) {
         return reply.code(409).send({ error: "this exact management plan still requires the user's approval" });
@@ -253,6 +285,10 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
             continue;
           }
           if (operation.kind === "create_agent") {
+            // An earlier stop can await external teardown. Revalidate before
+            // the next uncommitted create, preserving prior operation receipts.
+            const denied = creationError();
+            if (denied) throw Object.assign(new Error(denied.error), { statusCode: denied.statusCode });
             const operationKey = `${plan.id}:${index}`;
             const actorScope = `agent:${owner.id}:run:${plan.runId}`;
             const prior = store.findAgentCreationOperation({ projectId: plan.projectId, actorScope, kind: "managed", idempotencyKey: operationKey });
@@ -324,7 +360,9 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
         publishChange(owner.projectId);
         return { planId: plan.id, replayed: false, result: plan.result };
       } catch (error) {
-        return reply.code(409).send({ error: error instanceof Error ? error.message : "management plan failed", partialChangesPossible: !plan.deletionPreview });
+        const statusCode = error instanceof Error && "statusCode" in error &&
+          typeof error.statusCode === "number" ? error.statusCode : 409;
+        return reply.code(statusCode).send({ error: error instanceof Error ? error.message : "management plan failed", partialChangesPossible: !plan.deletionPreview });
       }
     }
 
@@ -335,8 +373,9 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
     const parsed = parseOperations(body.operations, coordinationV3.steeringInjectionIds(capability.runId));
     if (!parsed.operations) return reply.code(400).send({ error: parsed.error });
     const operations = parsed.operations;
-    if (creationRestricted && operations.some((operation) => operation.kind === "create_agent")) {
-      return reply.code(403).send({ error: "managed Agent creation is restricted for this Run" });
+    if (operations.some((operation) => operation.kind === "create_agent")) {
+      const denied = creationError();
+      if (denied) return reply.code(denied.statusCode).send({ error: denied.error });
     }
     const requestHash = createHash("sha256").update(stableJson({ operations })).digest("hex");
     const ensureApproval = (candidate: ManagementPlan): ManagementPlan => {
