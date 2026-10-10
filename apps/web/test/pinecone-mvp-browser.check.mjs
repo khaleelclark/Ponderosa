@@ -310,7 +310,8 @@ try {
   await keyboard(page.getByRole('button', { name: 'Create Pinecone', exact: true }));
   await page.getByLabel('Name', { exact: true }).fill('Vertical Pinecone');
   await keyboard(page.getByRole('button', { name: 'Create Pinecone', exact: true }));
-  await page.getByText('Vertical Pinecone · Private Agent chat', { exact: true }).waitFor();
+  await page.locator('[contenteditable="true"]').waitFor();
+  assert.equal(await page.getByText('Vertical Pinecone · Private Agent chat', { exact: true }).count(), 0);
   cone = store.listAgents(project.id)[0]; assert.ok(cone);
   const profile = store.getPineconeProfile(cone.id); assert.ok(profile);
   assert.equal(cone.projectId, project.id); assert.equal(cone.conversationId, chat.id);
@@ -319,6 +320,7 @@ try {
   stages.initialProfile = profile;
   assert.equal(invocations.length, 0); assert.equal(rows('runtime_communications').length, 0);
   const beforeAllow = counts();
+  await keyboard(page.getByRole('tab', { name: 'Settings', exact: true }));
   await keyboard(page.getByRole('button', { name: 'Helper settings', exact: true }));
   const helperDialog = page.getByRole('dialog', { name: 'Managed helpers', exact: true }); await helperDialog.waitFor();
   const allow = helperDialog.getByRole('checkbox', { name: 'Allow', exact: true }); await allow.focus(); await allow.press('Space');
@@ -326,6 +328,8 @@ try {
   await keyboard(helperDialog.getByRole('button', { name: 'Save capabilities', exact: true })); assert.equal((await policySaved).status(), 200);
   assert.deepEqual(counts(), beforeAllow); assert.equal(invocations.length, 0);
   await keyboard(helperDialog.getByRole('button', { name: 'Close', exact: true })); await helperDialog.waitFor({ state: 'hidden' });
+  await keyboard(page.getByRole('tab', { name: 'Chat', exact: true }));
+  await page.locator('[contenteditable="true"]').waitFor();
   stages.setup = { beforeAllow, afterAllow: counts(), providerModelStarts: 0 };
   stages.initialText = (`PINECONE VERTICAL PRIVATE SOURCE ASSIGNMENT. Read only ${sourcePath}, SHA256 ${stages.sourceSha256}. You may share these exact bounded source facts with the disposable fixture manager and exactly two ordinary managed children. The fixture manager will establish the original correlated parent route; preserve it while coordinating, accept my private follow-up, ask one fixture-only Decision, then synthesize the two managed result references. ` + sourceBody.replaceAll('\n', ' | ').repeat(140)).trim();
   assert.ok(stages.initialText.length > 10_000);

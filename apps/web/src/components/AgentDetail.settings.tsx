@@ -39,6 +39,7 @@ import { useRef, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { HostPathPresentation } from "./HostPathPresentation";
+import { PineconeHelperSettings } from "./pinecone/PineconeHelperSettings";
 import { ResourceNotificationSettings } from "./ResourceNotificationSettings";
 import { useMutationNotification } from "./MutationNotifications";
 
@@ -409,6 +410,7 @@ export function AgentSettingsPane({
           )}
         </Typography>
         <Stack spacing={1}>
+          <PineconeHelperSettings agentId={agent.id} />
           <FormControlLabel
             control={
               <Switch

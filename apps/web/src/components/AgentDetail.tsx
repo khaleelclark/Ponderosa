@@ -1,5 +1,4 @@
 import { PineconePanel } from "./pinecone/PineconePanel";
-import { PineconeWelcome } from "./pinecone/PineconeWelcome";
 import { useWorkspaceDirectory } from "../hooks/useWorkspaceDirectory";
 import {
   Alert,
@@ -1200,7 +1199,6 @@ export function AgentDetail({
       ) : null}
 
       <Box sx={{ minHeight: 0, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        {!auditOnly && !detail.agent.archived && tab === "chat" ? <PineconeWelcome agentId={agentId} title={detail.agent.title} empty={visibleChatMessages.length === 0} /> : null}
         {!auditOnly && !detail.agent.archived && detail.agent.id === agentId ? <PineconePanel key={agentId}
           agent={detail.agent} visible={tab === "chat"} decisions={detail.decisionEvents ?? []}
           onOpenWork={openTechnicalDetails} onOpenAutomations={() => setTab("triggers")}
