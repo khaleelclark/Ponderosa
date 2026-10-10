@@ -34,6 +34,7 @@ export function useDictation(
   onSettlingChange: (settling: boolean) => void,
   surfaceRef: RefObject<HTMLElement | null>,
   continuous = true,
+  endOnSpeechEnd: boolean | (() => boolean) = false,
 ): DictationController {
   const unavailableReason = dictationUnavailableReason();
   const [status, setStatus] = useState<DictationStatus>("ready");
@@ -89,6 +90,7 @@ export function useDictation(
       }
       try {
         recognition.onend = null;
+        recognition.onspeechend = null;
       } catch {
         // Continue fencing even if a browser implementation rejects cleanup.
       }
@@ -240,6 +242,17 @@ export function useDictation(
           transcriptHandlerRef.current(finalTranscripts.join(" "));
         }
       };
+      // Calls finish on a browser speech boundary, then await final results/onend.
+      // Ordinary dictation retains its existing continuous/manual behavior.
+      activeRecognition.onspeechend = (typeof endOnSpeechEnd === "function" ? endOnSpeechEnd() : endOnSpeechEnd) ? () => {
+        if (generationRef.current !== generation || requestedEndRef.current) return;
+        requestedEndRef.current = "stop";
+        setStatus("stopping");
+        scheduleSettleTimeout(activeRecognition, generation);
+        try { activeRecognition.stop(); } catch {
+          abandonGeneration(activeRecognition, generation, "Voice dictation could not finish this turn.");
+        }
+      } : null;
       activeRecognition.onerror = event => {
         if (generationRef.current !== generation) return;
         if (event.error === "aborted" && requestedEndRef.current) return;
@@ -293,6 +306,8 @@ export function useDictation(
     abandonForSurfaceLoss,
     clearSettleTimer,
     continuous,
+    endOnSpeechEnd,
+    scheduleSettleTimeout,
     releaseRecognition,
     surfaceRef,
     unavailableReason,

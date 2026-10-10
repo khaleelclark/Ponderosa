@@ -14,6 +14,7 @@ const serverRequire = createRequire(new URL("../../server/package.json", import.
 let browser; let server;
 try {
   output = await mkdtemp(path.join(tmpdir(), "ponderosa-speech-browser-"));
+  console.log("OWN ROOT", output);
   const playwrightModule = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? pathToFileURL(serverRequire.resolve("playwright-core")).href);
   const chromium = playwrightModule.chromium ?? playwrightModule.default.chromium;
   const build = await createRsbuild({ cwd: root, rsbuildConfig: { plugins: [pluginReact()],
@@ -31,6 +32,7 @@ try {
     } catch { response.writeHead(404).end(); }
   }).listen(0, "127.0.0.1");
   await new Promise(resolve => server.once("listening", resolve));
+  console.log("OWN HTTP ADDRESS", JSON.stringify(server.address()));
   browser = await chromium.launch({ headless: true, executablePath: process.env.PONDEROSA_CHROMIUM_PATH, args: process.env.PONDEROSA_BROWSER_DISABLE_SANDBOX === "1" ? ["--no-sandbox"] : [] });
   const url = `http://127.0.0.1:${server.address().port}`;
   let cases = 0;
@@ -49,6 +51,7 @@ try {
     const resources=await page.evaluate(()=>window.voiceTest.resources());
     assert.equal(resources.recognition,0,`${name}: no recognition handlers`);
     assert.equal(resources.synthesis,0,`${name}: no synthesis handlers`);
+    assert.equal(resources.intervals,0,`${name}: query fallback interval release`);
     assert.equal(resources.monitors,0,`${name}: observer release`);
     // Ordinary dictation's transient stopped notice is allowed until its documented 3s expiry.
     if(resources.timers) await page.waitForTimeout(3100);
@@ -57,6 +60,126 @@ try {
     assert.deepEqual(errors,[],`${name}: browser errors`);
     cases++; console.log(`PASS ${cases}: ${name}`); await page.close();
   }
+  const startAutomatic = async p => { await p.getByRole("button",{name:"Start hands-free call",exact:true}).click(); await p.getByText("Listening…",{exact:true}).waitFor(); };
+  await scenario("explicit consent enables two automatic turns; final duplicates once; settled playback re-arms",async(p,{open})=>{
+    await open(); assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),0);
+    await p.getByText(/send each finalized spoken turn automatically/).waitFor();
+    await startAutomatic(p);
+    await p.evaluate(()=>{window.voiceTest.interim("Never send partial");window.voiceTest.final("First final turn");window.voiceTest.final("First final turn");});
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),0);
+    await p.evaluate(()=>window.voiceTest.speechEnd());
+    await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),1);
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends[0].text),"First final turn");
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),1);
+    assert.equal((await p.evaluate(()=>window.voiceTest.resources())).recognition,0);
+    const first=await p.getByLabel("Call timing").innerText(); assert.match(first,/settled → accepted \d+ ms.*canonical reply \d+ ms.*speech started \d+ ms/);console.log("SYNTHETIC MONOTONIC SEGMENTS",first);
+    await p.evaluate(()=>window.voiceTest.complete()); await p.waitForFunction(()=>window.voiceTest.stats.starts===2);
+    await p.evaluate(()=>window.voiceTest.recognized("Second automatic turn"));await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===2);
+    const sends=await p.evaluate(()=>window.voiceTest.stats.sends);assert.equal(sends.length,2);assert.notEqual(sends[0].idempotencyKey,sends[1].idempotencyKey);assert.equal(sends[1].text,"Second automatic turn");
+    assert.ok(sends.every(s=>s.activeRunDelivery==="queue"&&s.recipients.length===1&&s.recipients[0].agentId==="agent"));
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.echoCapture),0);
+  });
+  await scenario("speechend waits for late final settlement; no partial automatic submission",async(p,{open})=>{
+    await open();await startAutomatic(p);await p.evaluate(()=>{window.voiceTest.stats.finalOnStop=true;window.voiceTest.interim("Pending partial");window.voiceTest.speechEnd();});
+    await p.waitForFunction(()=>window.voiceTest.stats.sends.length===1);assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends[0].text),"Final words on finish");
+  });
+  for(const mode of ["empty","interim","no-speech"])await scenario(`automatic ${mode} pauses without send or restart loop`,async(p,{open})=>{
+    await open();await startAutomatic(p);await p.evaluate(mode=>{if(mode==="interim")window.voiceTest.interim("Unfinished");if(mode==="no-speech")window.voiceTest.failRecognition("no-speech");else window.voiceTest.emptyEnd();},mode);
+    await p.getByRole("button",{name:"Resume call",exact:true}).waitFor();assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),0);assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),1);
+  });
+  await scenario("Interrupt / Talk now fences old playback and captures next finalized turn",async(p,{open})=>{
+    await open();await startAutomatic(p);await p.evaluate(()=>window.voiceTest.recognized("First interrupt turn"));await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    await p.evaluate(()=>{window.oldSpeech=window.voiceTest.staleSpeech();});await p.getByRole("button",{name:"Interrupt / Talk now",exact:true}).click();await p.waitForFunction(()=>window.voiceTest.stats.starts===2);
+    await p.evaluate(()=>window.oldSpeech());assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),2);assert.equal((await p.evaluate(()=>window.voiceTest.resources())).synthesis,0);
+    await p.evaluate(()=>window.voiceTest.recognized("Interrupted second turn"));await p.waitForFunction(()=>window.voiceTest.stats.sends.length===2);assert.equal(await p.evaluate(()=>window.voiceTest.stats.echoCapture),0);
+  });
+  for(const boundary of ["Mute","End","pagehide","background","popstate","deleteAgent","switchChat"])await scenario(`automatic playback never re-arms after ${boundary}`,async(p,{open})=>{
+    await open();await startAutomatic(p);await p.evaluate(()=>window.voiceTest.recognized("Lifecycle automatic turn"));await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);await p.evaluate(()=>{window.oldSpeech=window.voiceTest.staleSpeech();});
+    if(boundary==="Mute"||boundary==="End")await p.getByRole("button",{name:boundary==="Mute"?"Mute microphone":"End call",exact:true}).click();
+    else await p.evaluate(boundary=>{if(["deleteAgent","switchChat"].includes(boundary))window.voiceTest[boundary]();else if(boundary==="background"){Object.defineProperty(document,"visibilityState",{value:"hidden",configurable:true});document.dispatchEvent(new Event("visibilitychange"));}else window.dispatchEvent(new Event(boundary));},boundary);
+    await p.evaluate(()=>window.oldSpeech());assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),1);assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),1);
+    if(boundary==="Mute"){await p.getByRole("button",{name:"Unmute microphone",exact:true}).click();assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),1);}
+  });
+  for(const mode of ["not-allowed","failSpeech","hangSpeech","cancelThrows"])await scenario(`automatic ${mode} disables loop with readable/manual recovery`,async(p,{open})=>{
+    await open();await startAutomatic(p);
+    if(mode==="not-allowed")await p.evaluate(()=>window.voiceTest.failRecognition("not-allowed"));
+    else {await p.evaluate(mode=>{window.voiceTest.stats[mode]=true;window.voiceTest.recognized("Failure turn");},mode);if(mode==="cancelThrows"){await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);await p.evaluate(()=>window.voiceTest.complete());}}
+    await p.getByRole("alert").filter({hasText:mode==="not-allowed"?/permission was denied/:mode==="cancelThrows"?/cleanup could not be confirmed/:/could not read/}).waitFor({timeout:5000});
+    assert.equal(await p.getByText("Hands-free call active · automatic finalized turns",{exact:true}).count(),0);assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),1);
+    await p.evaluate(()=>{window.voiceTest.stats.cancelThrows=false;});
+  });
+  await scenario("unknown auto-send acknowledgment blocks new capture; deliberate retry retains same body/key",async(p,{open})=>{
+    await open();await startAutomatic(p);await p.evaluate(()=>{window.voiceTest.stats.fail=true;window.voiceTest.recognized("Unknown automatic turn");});await p.getByRole("button",{name:"Retry same turn",exact:true}).waitFor();
+    assert.equal(await p.getByRole("button",{name:"Start hands-free call",exact:true}).isEnabled(),false);assert.equal(await p.getByText("Hands-free call active · automatic finalized turns",{exact:true}).count(),0);
+    await p.evaluate(()=>{window.voiceTest.stats.fail=false;});await p.getByRole("button",{name:"Retry same turn",exact:true}).click();await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    const sends=await p.evaluate(()=>window.voiceTest.stats.sends);assert.equal(sends.length,2);assert.deepEqual(sends[0],sends[1]);await p.evaluate(()=>window.voiceTest.complete());assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),1);
+    assert.ok((await p.evaluate(()=>[...Object.values(sessionStorage),...Object.values(localStorage)])).every(s=>!s.includes("Unknown automatic turn")));
+  });
+  await scenario("existing query invalidation wakes canonical reply before fallback; unrelated scope does not read",async(p,{open})=>{
+    await open();await startAutomatic(p);await p.evaluate(()=>{window.voiceTest.stats.waiting=true;window.voiceTest.recognized("Event wake turn");});await p.getByText(/Agent working/).waitFor();
+    const before=await p.evaluate(()=>window.voiceTest.stats.reads);await p.evaluate(()=>window.voiceTest.wakeOther());assert.equal(await p.evaluate(()=>window.voiceTest.stats.reads),before);
+    const start=await p.evaluate(()=>performance.now());await p.evaluate(()=>{window.voiceTest.stats.waiting=false;return window.voiceTest.wake();});await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    const elapsed=await p.evaluate(start=>performance.now()-start,start);assert.ok(elapsed<1500,`synthetic wake ${elapsed}ms avoids old 1500ms polling`);console.log("SYNTHETIC QUERY WAKE MS",elapsed);
+  });
+  await scenario("bounded fallback reads canonical reply when stream wake missing",async(p,{open})=>{
+    await open();await startAutomatic(p);await p.evaluate(()=>{window.voiceTest.stats.waiting=true;window.voiceTest.recognized("Fallback turn");});await p.getByText(/Agent working/).waitFor();await p.evaluate(()=>{window.voiceTest.stats.waiting=false;});await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1,{timeout:6500});
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),1);
+  });
+  await scenario("Review / type instead pauses automatic capture preserving final words for manual Send",async(p,{open,send})=>{
+    await open();await startAutomatic(p);await p.evaluate(()=>window.voiceTest.final("Review these final words"));await p.getByRole("button",{name:"Review / type instead",exact:true}).click();
+    assert.equal(await p.getByLabel("Your next turn").inputValue(),"Review these final words");assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),0);await send();await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);await p.evaluate(()=>window.voiceTest.complete());assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),1);
+  });
+  for(const boundary of ["Mute","End","pagehide","background","popstate","deleteAgent","switchChat"])await scenario(`automatic capture final/end callbacks fenced after ${boundary}`,async(p,{open})=>{
+    await open();await startAutomatic(p);await p.evaluate(()=>{window.oldResult=window.voiceTest.staleResult();window.oldEnd=window.voiceTest.staleEnd();});
+    if(boundary==="Mute"||boundary==="End")await p.getByRole("button",{name:boundary==="Mute"?"Mute microphone":"End call",exact:true}).click();
+    else await p.evaluate(boundary=>{if(["deleteAgent","switchChat"].includes(boundary))window.voiceTest[boundary]();else if(boundary==="background"){Object.defineProperty(document,"visibilityState",{value:"hidden",configurable:true});document.dispatchEvent(new Event("visibilitychange"));}else window.dispatchEvent(new Event(boundary));},boundary);
+    await p.evaluate(()=>{window.oldResult({results:[{isFinal:true,0:{transcript:"Forbidden automatic stale turn"}}]});window.oldEnd();});assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),0);assert.equal((await p.evaluate(()=>window.voiceTest.resources())).recognition,0);
+  });
+  await scenario("automatic unknown marker after reload forbids capture and replacement send",async(p,{open})=>{
+    await open();await startAutomatic(p);await p.evaluate(()=>{window.voiceTest.stats.fail=true;window.voiceTest.recognized("Unknown before reload");});await p.getByRole("button",{name:"Retry same turn",exact:true}).waitFor();await p.reload();await open();await p.getByRole("alert").filter({hasText:/requires Chat review/}).waitFor();
+    assert.equal(await p.getByRole("button",{name:"Start hands-free call",exact:true}).isEnabled(),false);assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),0);assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),0);
+  });
+  await scenario("fresh deliberate call after synthesis failure can capture; never automatic",async(p,{open})=>{
+    await open();await startAutomatic(p);await p.evaluate(()=>{window.voiceTest.stats.failSpeech=true;window.voiceTest.recognized("Speech error recovery turn");});await p.getByRole("button",{name:"Play reply",exact:true}).waitFor();assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),1);
+    await p.evaluate(()=>{window.voiceTest.stats.failSpeech=false;});await startAutomatic(p);assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),2);
+  });
+  await scenario("playback end before onset fails closed; stale end cannot capture; recovery is deliberate",async(p,{open})=>{
+    await open();await startAutomatic(p);
+    await p.evaluate(()=>{window.voiceTest.stats.hangSpeech=true;window.voiceTest.recognized("Terminal before playback onset");});
+    await p.getByText("Loading speech…",{exact:true}).waitFor();
+    await p.evaluate(()=>{window.oldSpeech=window.voiceTest.staleSpeech();window.voiceTest.complete();});
+    await p.getByRole("alert").filter({hasText:/could not read.*Use Play reply or read the transcript/}).waitFor();
+    assert.equal(await p.getByText("Hands-free call active · automatic finalized turns",{exact:true}).count(),0);
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),1);
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),1);
+    assert.equal((await p.evaluate(()=>window.voiceTest.resources())).recognition,0);
+    assert.equal((await p.evaluate(()=>window.voiceTest.resources())).synthesis,0);
+    assert.equal((await p.evaluate(()=>window.voiceTest.resources())).timers,0);
+    assert.doesNotMatch(await p.getByLabel("Call timing").innerText(),/speech started/);
+    await p.evaluate(()=>window.oldSpeech());
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),1);
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),1);
+    await p.evaluate(()=>{window.voiceTest.stats.hangSpeech=false;});
+    await p.getByRole("button",{name:"Play reply",exact:true}).click();
+    await p.getByText("Speaking…",{exact:true}).waitFor();
+    await p.evaluate(()=>window.voiceTest.complete());
+    await p.getByRole("button",{name:"Start hands-free call",exact:true}).waitFor();
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),1,"deliberate replay does not restore automatic consent");
+    await startAutomatic(p);assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),2);
+  });
+  await scenario("manual Listen preserves typed draft; hands-free never silently sends preexisting draft",async(p,{open,type})=>{
+    await open();await type("Existing typed draft");assert.equal(await p.getByRole("button",{name:"Start hands-free call",exact:true}).isEnabled(),false);
+    await p.getByRole("button",{name:"Listen",exact:true}).click();await p.evaluate(()=>window.voiceTest.recognized("Additional final words"));
+    await p.waitForFunction(draft=>!draft.disabled&&draft.value==="Existing typed draft Additional final words",await p.getByLabel("Your next turn").elementHandle());
+    assert.equal(await p.getByLabel("Your next turn").inputValue(),"Existing typed draft Additional final words");assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),0);
+  });
+  await scenario("burst query wakeups share one nonabortable canonical HTTP read",async(p,{open})=>{
+    await open();await startAutomatic(p);await p.evaluate(()=>{window.voiceTest.stats.waiting=true;window.voiceTest.recognized("Read serialization turn");});await p.getByText(/Agent working/).waitFor();
+    const before=await p.evaluate(()=>window.voiceTest.stats.reads);await p.evaluate(()=>{window.voiceTest.stats.holdRead=true;void window.voiceTest.wake();});await p.waitForFunction(before=>window.voiceTest.stats.reads>before,before);
+    await p.evaluate(()=>{void window.voiceTest.wake();void window.voiceTest.wake();void window.voiceTest.wake();});assert.equal(await p.evaluate(()=>window.voiceTest.stats.reads),before+1);
+    await p.evaluate(()=>{window.voiceTest.stats.waiting=false;window.voiceTest.releaseRead();});await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),1);
+  });
   await scenario("pinned call opening never captures; typed canonical transcript and explicit next Listen",async(p,{open,type,send})=>{
     await open(); assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),0);
     assert.equal(await p.getByLabel("Call Agent").isEnabled(),false);
@@ -239,5 +362,7 @@ try {
 
 } finally {
   await browser?.close(); await new Promise(resolve => server ? server.close(resolve) : resolve());
+  console.log("OWN HTTP LISTENER CLOSED", server?.listening === false);
   if (output) await rm(output, { recursive: true, force: true });
+  console.log("RELEASED ROOT", output);
 }

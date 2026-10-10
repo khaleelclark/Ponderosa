@@ -22,18 +22,24 @@ for (const [target,label] of [[window,"window"],[document,"document"]] as const)
     listeners.get(label+":"+type)?.delete(listener);remove(type,listener,options);
   }) as typeof target.removeEventListener;
 }
-const stats = { sends: [] as any[], spoken: [] as string[], starts: 0, stops: 0, fail: false, waiting: false, finalOnStop: false, hangStop: false, hangStart: false, hangSpeech: false, failSpeech: false, holdSend: false, holdRead: false, noWindow: false, ambiguous: false, artifact: false, wrongReply: false, blocked: false, fastDeadline: false, storageDenied: false, echoCapture: 0, failureStatus: undefined as number | undefined };
+const stats = { sends: [] as any[], spoken: [] as string[], starts: 0, stops: 0, fail: false, waiting: false, finalOnStop: false, hangStop: false, hangStart: false, hangSpeech: false, failSpeech: false, holdSend: false, holdRead: false, noWindow: false, ambiguous: false, artifact: false, wrongReply: false, blocked: false, fastDeadline: false, storageDenied: false, echoCapture: 0, reads: 0, cancelThrows: false, failureStatus: undefined as number | undefined };
 let recognition: any; let utterance: any; const recognitions: any[] = []; const utterances: any[] = [];
 let sendResolve: (() => void) | undefined; let readResolve: (() => void) | undefined;
 const timers = new Set<number>();
 const setTimer = window.setTimeout.bind(window), clearTimer = window.clearTimeout.bind(window);
 window.setTimeout = ((fn: () => void, ms: number, ...args: any[]) => {
-  const track = [120000,1500,3000,200].includes(ms);
+  const track = [120000,1500,5000,3000,200].includes(ms);
   let id: number;
   id = setTimer(() => { timers.delete(id); fn(...args); }, ms === 120000 && stats.fastDeadline ? 100 : ms);
   if (track) timers.add(id); return id;
 }) as any;
 window.clearTimeout = ((id: number) => { timers.delete(id); clearTimer(id); }) as any;
+const intervals = new Set<number>();
+const setIntervalNative = window.setInterval.bind(window), clearIntervalNative = window.clearInterval.bind(window);
+window.setInterval = ((fn: TimerHandler, ms?: number, ...args: any[]) => {
+  const id = setIntervalNative(fn, ms, ...args); if (ms === 5000) intervals.add(id); return id;
+}) as any;
+window.clearInterval = ((id: number) => { intervals.delete(id); clearIntervalNative(id); }) as any;
 const monitors = new Set<object>();
 for (const name of ["MutationObserver", "ResizeObserver"] as const) {
   const Native = window[name];
@@ -56,7 +62,7 @@ class Recognition {
 Object.defineProperty(window, "SpeechRecognition", { value: Recognition, configurable: true });
 Object.defineProperty(window, "SpeechSynthesisUtterance", { value: class { constructor(public text: string) { utterances.push(this); } }, configurable: true });
 Object.defineProperty(window, "speechSynthesis", { value: {
-  speak(item: any) { utterance = item; stats.spoken.push(item.text); if (recognitions.some(r => r.onresult)) stats.echoCapture++; if (stats.failSpeech) item.onerror?.(); else if (!stats.hangSpeech) item.onstart?.(); }, cancel() {}, pause() {}, resume() {},
+  speak(item: any) { utterance = item; stats.spoken.push(item.text); if (recognitions.some(r => r.onresult)) stats.echoCapture++; if (stats.failSpeech) item.onerror?.(); else if (!stats.hangSpeech) item.onstart?.(); }, cancel() { if (stats.cancelThrows) throw Error("Synthetic audio cleanup failure"); }, pause() {}, resume() {},
 }, configurable: true });
 const storageGet = Storage.prototype.getItem, storageSet = Storage.prototype.setItem;
 Storage.prototype.getItem = function(k) { if (stats.storageDenied) throw Error("denied"); return storageGet.call(this,k); };
@@ -76,6 +82,7 @@ api.sendMultiAgentDirectMessage = async (_id, request) => {
   return { messageId: currentMessageId, message: sent(), replayed: false, recipients: [{ agentId: "agent", queued: stats.waiting }] } as any;
 };
 api.getConversation = async () => {
+  stats.reads++;
   if (stats.holdRead) await new Promise<void>(resolve => { readResolve = resolve; });
   const reply = { id: `reply-${currentMessageId}`, conversationId: context.conversationId, role: "assistant", authorAgentId: stats.wrongReply ? "other" : "agent", communicationIntent: "user_dm", executionId: "run", text: "Your exact reply.", ...(stats.artifact ? {document: {artifactId:"artifact"}} : {}) };
   return { conversation: { id: context.conversationId, projectId: context.projectId, archived: stats.blocked }, agents: context.agents, messages: [...(stats.noWindow ? [] : [sent()]),reply,...(stats.ambiguous ? [{...reply,id:"second"}] : [])] } as any;
@@ -91,7 +98,10 @@ Object.assign(window, { voiceTest: { stats,
   final(text: string) { recognition.onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: text } }] }); },
   interim(text: string) { recognition.onresult?.({ resultIndex: 0, results: [{ isFinal: false, 0: { transcript: text } }] }); },
   recognized(text: string) { this.final(text); recognition.onend?.(); },
-  complete() { utterance.onend?.(); },
+  speechEnd() { recognition.onspeechend?.(); }, emptyEnd() { recognition.onend?.(); },
+  complete() { utterance.onend?.(); }, failPlayback() { utterance.onerror?.(); },
+  wake() { return client.invalidateQueries({queryKey:queryKeys.conversations.detailPrefix(context.conversationId)}); },
+  wakeOther() { return client.invalidateQueries({queryKey:queryKeys.conversations.detailPrefix("unrelated")}); },
   staleResult() { return recognition.onresult; }, staleEnd() { return recognition.onend; },
   staleSpeech() { return utterance.onend; }, startCallback() { return recognition.onstart; },
   failRecognition(error: string) { recognition.onerror?.({error}); },
@@ -105,7 +115,7 @@ Object.assign(window, { voiceTest: { stats,
   fallbackMarker() { const route={origin:location.origin,product:"/api/conversations",projectId:"project",conversationId:"chat",agentId:"agent"}; return readBrowserStorage("sessionStorage",`ponderosa.voice.pending.v1:${JSON.stringify(route)}`); },
   remount() { app=createRoot(document.getElementById("root")!);app.render(<React.StrictMode><Fixture /></React.StrictMode>); },
   listenerCounts() {return Object.fromEntries([...listeners].map(([key,set])=>[key,set.size]));},
-  resources() { return {recognition:recognitions.filter(r=>r.onresult || r.onend || r.onstart || r.onerror).length,synthesis:utterances.filter(u=>u.onend || u.onstart || u.onerror).length,timers:timers.size,monitors:monitors.size}; },
+  resources() { return {recognition:recognitions.filter(r=>r.onresult || r.onend || r.onstart || r.onerror || r.onspeechend).length,synthesis:utterances.filter(u=>u.onend || u.onstart || u.onerror).length,timers:timers.size,intervals:intervals.size,monitors:monitors.size}; },
   readAloud() { startSpeech("fixture-read", "Ordinary read aloud", DEFAULT_SPEECH_PREFERENCES, () => document.getElementById("read")); }, stopRead() {stopSpeech("fixture-read");},
   deleteAgent() { update({...context,agents:[]}); }, switchChat() { update({...context,conversationId:"other-chat",agents:context.agents.map(a=>({...a,conversationId:"other-chat"}))}); },
   unmount() { if (document.getElementById("root")?.childNodes.length) app.unmount(); }, noSTT() { Object.defineProperty(window,"SpeechRecognition",{value:undefined,configurable:true}); },

@@ -30,11 +30,12 @@ function release(owner: Owner): boolean {
   }
   return failed;
 }
-export function stopSpeech(ownerId?: string): void {
-  if (!active || (ownerId && active.id !== ownerId)) return;
+export function stopSpeech(ownerId?: string): boolean {
+  if (!active || (ownerId && active.id !== ownerId)) return true;
   const owner = active;
   const failed = release(owner);
   publish({ ownerId: owner.id, status: "stopped", ...(failed ? { error: "Browser audio cleanup could not be confirmed. Check browser audio controls." } : {}) });
+  return !failed;
 }
 export function releaseSpeechSurface(ownerId: string): void {
   if (active?.id === ownerId) stopSpeech(ownerId);
@@ -60,7 +61,7 @@ function fail(owner: Owner): void {
   if (active !== owner) return;
   try { release(owner); } finally { publish({ ownerId: owner.id, status: "error", error: "The browser could not read this message aloud." }); }
 }
-export function startSpeech(id: string, text: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void): void {
+export function startSpeech(id: string, text: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void, onStart?: () => void): void {
   abandonPageCapture();
   stopSpeech();
   const owner: Owner = { id };
@@ -72,8 +73,13 @@ export function startSpeech(id: string, text: string, preferences: SpeechPrefere
     const utterance = new SpeechSynthesisUtterance(text); owner.utterance = utterance;
     utterance.lang = navigator.language || "en-US";
     utterance.rate = preferences.speed;
-    utterance.onstart = () => { owner.started = true; clearTimeout(owner.startTimer); if (active === owner) publish({ ownerId: id, status: "speaking" }); };
-    utterance.onend = () => { if (active === owner) { stopSpeech(id); onComplete?.(); } };
+    utterance.onstart = () => { if (active !== owner) return; owner.started = true; clearTimeout(owner.startTimer); publish({ ownerId: id, status: "speaking" }); onStart?.(); };
+    utterance.onend = () => {
+      if (active !== owner) return;
+      if (!owner.started) { fail(owner); return; }
+      const settled = stopSpeech(id);
+      if (settled) onComplete?.();
+    };
     utterance.onerror = () => fail(owner);
     owner.startTimer = setTimeout(() => fail(owner), 3_000);
     window.speechSynthesis.speak(utterance);
