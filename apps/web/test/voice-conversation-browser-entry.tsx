@@ -1,4 +1,7 @@
 import React, { useState } from "react";
+import { ThemeProvider, CssBaseline } from "@mui/material";
+import { createPonderosaTheme } from "../src/theme";
+const theme = createPonderosaTheme("dark");
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -91,7 +94,7 @@ document.body.innerHTML = '<div id="root"></div><div id="read" style="width:100p
 let update: (value: typeof context) => void;
 function Fixture() {
   const [current,setCurrent] = useState(context); update = next => { context=next; flushSync(() => setCurrent(next)); };
-  return <QueryClientProvider client={client}><DictationControls disabled={false} onFinalTranscript={text => { document.getElementById("draft")!.textContent += text; }} onSettlingChange={() => {}} talkContext={current} /><div id="draft" /></QueryClientProvider>;
+  return <ThemeProvider theme={theme}><CssBaseline /><QueryClientProvider client={client}><DictationControls disabled={false} onFinalTranscript={text => { document.getElementById("draft")!.textContent += text; }} onSettlingChange={() => {}} talkContext={current} /><div id="draft" /></QueryClientProvider></ThemeProvider>;
 }
 let app = createRoot(document.getElementById("root")!); app.render(<React.StrictMode><Fixture /></React.StrictMode>);
 Object.assign(window, { voiceTest: { stats,
@@ -117,6 +120,7 @@ Object.assign(window, { voiceTest: { stats,
   listenerCounts() {return Object.fromEntries([...listeners].map(([key,set])=>[key,set.size]));},
   resources() { return {recognition:recognitions.filter(r=>r.onresult || r.onend || r.onstart || r.onerror || r.onspeechend).length,synthesis:utterances.filter(u=>u.onend || u.onstart || u.onerror).length,timers:timers.size,intervals:intervals.size,monitors:monitors.size}; },
   readAloud() { startSpeech("fixture-read", "Ordinary read aloud", DEFAULT_SPEECH_PREFERENCES, () => document.getElementById("read")); }, stopRead() {stopSpeech("fixture-read");},
+  sharedAgents(single = false) { update({...context,selectedAgentId:undefined,lockAgent:false,agents:[context.agents[0],...(!single ? [{...context.agents[0],id:"other",title:"Other Agent"}] : []),{...context.agents[0],id:"archived",archived:true}]} as any); },
   deleteAgent() { update({...context,agents:[]}); }, switchChat() { update({...context,conversationId:"other-chat",agents:context.agents.map(a=>({...a,conversationId:"other-chat"}))}); },
   unmount() { if (document.getElementById("root")?.childNodes.length) app.unmount(); }, noSTT() { Object.defineProperty(window,"SpeechRecognition",{value:undefined,configurable:true}); },
   insecure() { Object.defineProperty(window,"isSecureContext",{value:false,configurable:true}); },

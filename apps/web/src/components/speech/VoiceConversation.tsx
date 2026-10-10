@@ -1,4 +1,8 @@
-import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, MenuItem, Stack, TextField, Typography } from "@mui/material";
+import PhoneIcon from "@mui/icons-material/Phone";
+import CallEndIcon from "@mui/icons-material/CallEnd";
+import MicOffIcon from "@mui/icons-material/MicOff";
+import MicNoneIcon from "@mui/icons-material/MicNone";
+import { Alert, Box, Button, Dialog, DialogContent, DialogTitle, Stack, TextField, Typography } from "@mui/material";
 import { DEFAULT_SPEECH_PREFERENCES, type AgentDto, type ConversationDetailDto, type ConversationMessageDto } from "@ponderosa/core";
 import { QueryObserver, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
@@ -27,10 +31,14 @@ export function VoiceConversation(props: VoiceConversationContext & { open: bool
 }
 function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lockAgent, onClose, product }: VoiceConversationContext & { onClose(): void; product: string }): JSX.Element {
   const ownerId = useId();
-  const root = useRef<HTMLDivElement>(null);
+  const root = useRef<HTMLDivElement | null>(null);
   const generation = useRef(0);
   const alive = useRef(true);
-  const [agentId, setAgentId] = useState(selectedAgentId ?? (agents.length === 1 ? agents[0]!.id : ""));
+  const [agentId, setAgentId] = useState(() => {
+    const eligible = agents.filter(a => member(a, projectId, conversationId));
+    return selectedAgentId ?? (eligible.length === 1 ? eligible[0]!.id : "");
+  });
+  const [expanded, setExpanded] = useState(false);
   const [phase, setPhase] = useState<Phase>("ready");
   const phaseRef = useRef(phase);
   const changePhase = useCallback((next: Phase) => { phaseRef.current = next; setPhase(next); }, []);
@@ -53,6 +61,10 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   const [muted, setMuted] = useState(false);
   const [locked, setLocked] = useState(Boolean(lockAgent));
   const [surfaceEpoch, setSurfaceEpoch] = useState(0);
+  const mountSurface = useCallback((node: HTMLDivElement | null) => {
+    root.current = node;
+    if (node) setSurfaceEpoch(value => value + 1);
+  }, []);
   const [checked, setChecked] = useState(false);
   const [recovering, setRecovering] = useState(true);
   const [retryable, setRetryable] = useState(false);
@@ -92,11 +104,12 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       (product.startsWith("/api/branches/") ? Boolean(chat.branchId) : !chat.branchId) &&
       detail.agents.some(a => a.id === agentId && member(a, projectId, conversationId));
   };
-  // Read-only eligibility refresh. Capture still requires a separate visible Listen gesture.
+  // Read-only eligibility refresh. Capture still requires a separate visible Start call or Listen gesture.
   useEffect(() => {
     let cancelled = false;
     setChecked(false); setRecovering(true); setBlocked(false); setRetryable(false);
     attempt.current = undefined;
+    if (!agentId) { setRecovering(false); return; }
     void restoreVoiceCallAttempt(route).then(restored => {
       if (cancelled) return;
       if (restored.notice) setLocked(true);
@@ -114,6 +127,9 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   }, [routeKey]);
   useEffect(() => { if (agentId && !live) { suspend(); setError("This Agent is no longer an available member of this Chat."); } }, [live, agentId, suspend]);
   useEffect(() => {
+    // Dialog content mounts through a portal after the session’s first effect.
+    // Arm the foreground guard when its actual surface exists.
+    if (!root.current) return;
     const cleanup = monitorSpeechSurfaceAccessibility(() => root.current, suspend);
     const navigate = () => suspend();
     window.addEventListener("popstate", navigate); window.addEventListener("hashchange", navigate);
@@ -150,7 +166,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   };
   const play = (spoken: string, current = generation.current) => {
     if (!alive.current || !liveRef.current || current !== generation.current || phaseRef.current === "capture") return;
-    if (ttsUnavailable) { stopAutomatic(); changePhase("ready"); setNotice("Read the reply, then Listen or Start hands-free call deliberately."); return; }
+    if (ttsUnavailable) { stopAutomatic(); changePhase("ready"); setNotice("Read the reply in Chat, then start the call deliberately."); return; }
     changePhase("loading");
     startSpeech(ownerId, spoken, preferencesRef.current, () => root.current, () => {
       if (alive.current && current === generation.current) {
@@ -220,7 +236,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   useEffect(() => {
     if (!handsFreeRef.current || phaseRef.current !== "capture" || dictation.status !== "stopped") return;
     if (!textRef.current.trim()) {
-      stopAutomatic(); changePhase("paused"); setNotice("No finalized speech. Start hands-free call or type deliberately."); return;
+      stopAutomatic(); changePhase("paused"); setNotice("No finalized speech. Resume the call or type deliberately."); return;
     }
     timing.current = { settled: performance.now() };
     changePhase("review"); void send();
@@ -277,44 +293,57 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   const recording = ["starting", "listening", "pausing", "stopping"].includes(dictation.status);
   const inFlight = ["sending", "queued", "waiting", "loading", "speaking"].includes(phase);
   const status = phase === "capture" ? dictation.status === "starting" ? "Starting microphone…" : dictation.status === "stopping" ? "Finishing transcript…" : "Listening…"
-    : phase === "queued" ? "Queued for the Agent…" : phase === "waiting" ? "Waiting for the Agent… Agent working" : phase === "loading" ? "Loading speech…" : phase === "speaking" ? "Speaking…" : phase === "sending" ? "Sending…" : muted ? "Microphone muted" : "Microphone off";
-  return <Dialog open fullWidth maxWidth="sm" disableEscapeKeyDown onClose={() => {}}>
-    <DialogTitle>Agent call · Preview</DialogTitle>
-    <DialogContent ref={root}><Stack spacing={2} sx={{ pt: 1 }}>
-      <Typography variant="body2">Private direct message. Start hands-free call to send each finalized spoken turn automatically to the selected Agent. The Agent stays locked for this call. Or Listen, finish, review, then Send turn manually. Browser speech may use the browser vendor’s remote processing. You can type instead.</Typography>
-      <TextField select label="Call Agent" value={agentId} disabled={locked || recording || inFlight || Boolean(attempt.current)} onChange={e => setAgentId(e.target.value)}>
-        {agents.filter(a => member(a, projectId, conversationId)).map(a => <MenuItem key={a.id} value={a.id}>{a.title}</MenuItem>)}
-      </TextField>
-      {sttUnavailable && <Alert severity="info">{sttUnavailable} Type your turn below.</Alert>}
-      {ttsUnavailable && <Alert severity="info">{ttsUnavailable} Replies remain readable.</Alert>}
+    : phase === "queued" ? "Queued for the Agent…" : phase === "waiting" ? "Waiting for the Agent… Agent working" : phase === "loading" ? "Loading speech…" : phase === "speaking" ? "Speaking…" : phase === "sending" ? "Sending…" : muted ? "Microphone muted" : phase === "paused" ? "Call paused" : "Microphone off";
+  const availableAgents = agents.filter(a => member(a, projectId, conversationId));
+  const agentName = availableAgents.find(a => a.id === agentId)?.title ?? "Choose an Agent";
+  const cannotStart = !live || !checked || muted || Boolean(sttUnavailable) || recording || inFlight || recovering || Boolean(attempt.current) || blocked || Boolean(text.trim());
+  return <Dialog open fullWidth maxWidth="xs" aria-labelledby={`${ownerId}-title`} onClose={end}
+    PaperProps={{ sx: { m: { xs: 1, sm: 4 }, width: { xs: "calc(100% - 16px)", sm: "100%" }, borderRadius: 3, maxHeight: "calc(100% - 32px)" } }}
+    sx={{ "& .MuiDialog-container": { alignItems: { xs: "flex-end", sm: "center" } } }}>
+    <DialogTitle id={`${ownerId}-title`} sx={{ textAlign: "center", pb: 0 }}>{agentName}</DialogTitle>
+    <DialogContent ref={mountSurface}><Stack spacing={2} sx={{ pt: 2 }}>
+      {!locked && availableAgents.length > 1 && <TextField select SelectProps={{ native: true }} label="Call Agent" value={agentId} disabled={recording || inFlight || Boolean(attempt.current)} onChange={e => setAgentId(e.target.value)}>
+        <option value="" disabled>Choose an Agent</option>
+        {availableAgents.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}
+      </TextField>}
+      <Box role="status" aria-live="polite" sx={{ textAlign: "center", py: 2 }}>
+        <Box aria-hidden sx={{ width: 56, height: 56, borderRadius: "50%", bgcolor: recording || phase === "speaking" ? "primary.main" : "action.hover", color: recording || phase === "speaking" ? "primary.contrastText" : "text.secondary", display: "grid", placeItems: "center", mx: "auto", mb: 1.5 }}><PhoneIcon /></Box>
+        <Typography>{phase === "ready" && !muted ? "Ready to call" : status}</Typography>
+        {handsFree && <Typography variant="caption" color="text.secondary">Hands-free call active · automatic finalized turns</Typography>}
+      </Box>
+      {(phase === "ready" || phase === "paused") && !handsFree && <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>Start call sends each finalized spoken turn automatically as a private message. Browser speech may use the browser vendor’s remote processing.</Typography>}
+      {sttUnavailable && <Alert severity="info">{sttUnavailable} Use Chat or expand Transcript &amp; typing.</Alert>}
+      {ttsUnavailable && <Alert severity="info">{ttsUnavailable} Read replies in Chat.</Alert>}
       {notice && <Alert severity="info">{notice}</Alert>}
       {error && <Alert severity="warning">{error}</Alert>}
-      <Box role="status" aria-live="polite">{status}</Box>
-      {handsFree && <Typography variant="body2">Hands-free call active · automatic finalized turns</Typography>}
-      {latency && <Typography aria-label="Call timing" variant="caption">{latency} Recognition finalization and provider time vary; these are this turn’s observed intervals.</Typography>}
-      <Box aria-label="Call transcript">{transcript.map(message => <Box key={message.id} sx={{ mb: 1 }}><Typography variant="caption">{message.role === "user" ? "You" : "Agent"}</Typography><Typography sx={{ whiteSpace: "pre-wrap" }}>{message.document ? "Full message available in Chat." : message.text}</Typography></Box>)}</Box>
-      <TextField label="Your next turn" multiline minRows={3} value={text} disabled={recording || inFlight || recovering || Boolean(attempt.current) || blocked} onChange={e => setText(e.target.value)} />
-      {text.trim() && !recording && !inFlight && <Typography variant="caption">Send or clear your draft before starting hands-free.</Typography>}
-      <Typography variant="caption">Hands-free alternates listening and spoken replies in this foreground session. The microphone is off during playback; use Interrupt / Talk now to speak. Automatic acoustic interruption is not supported. Replies wait for the full canonical authored response. Manual Listen / review / Send remains available. End stops browser audio and discards unsent words; accepted work continues. An unconfirmed send keeps its full private words only in this mounted call for deliberate retry. This tab stores only an identity marker. End, reopening or reload drops the call’s retry payload and requires Chat review; markers cannot reconstruct words. Retry expires after 24 hours, without promising physical browser or network memory erasure. Calls require a visible foreground page.</Typography>
-    </Stack></DialogContent>
-    <DialogActions sx={{ flexWrap: "wrap" }}>
-      <Button onClick={end}>End call</Button><Button onClick={end}>Open Chat</Button>
-      <Button onClick={() => { if (!muted) { stopAutomatic(); abandon(); changePhase("paused"); setNotice("Microphone muted. Unfinished words were discarded."); } setMuted(!muted); }}>{muted ? "Unmute microphone" : "Mute microphone"}</Button>
-      {(phase === "loading" || phase === "speaking") && <>
-        <Button variant="contained" disabled={muted || Boolean(sttUnavailable)} onClick={() => {
+      <Stack direction="row" spacing={1} justifyContent="center" sx={{ flexWrap: "wrap", gap: 1, "& button": { minHeight: 48 } }}>
+        {(phase === "loading" || phase === "speaking") ? <Button variant="contained" disabled={muted || Boolean(sttUnavailable)} onClick={() => {
           generation.current++;
           if (!stopSpeech(ownerId)) { stopAutomatic(); changePhase("paused"); setError(speechSnapshot().error); return; }
           changePhase("ready"); listenRef.current();
-        }}>Interrupt / Talk now</Button>
-        <Button onClick={() => { stopAutomatic(); generation.current++; stopSpeech(ownerId); changePhase("ready"); }}>Stop speaking</Button>
-      </>}
-      {phase === "paused" && <Button onClick={() => { void resume(); }}>Resume call</Button>}
-      {playText && !inFlight && !recording && !ttsUnavailable && <Button onClick={() => play(playText)}>Play reply</Button>}
-      {recording && <Button disabled={dictation.status === "stopping"} onClick={dictation.stop}>Finish turn</Button>}
-      {handsFree && recording && <Button onClick={() => { stopAutomatic(); dictation.abandon(); changePhase("review"); }}>Review / type instead</Button>}
-      <Button variant="contained" disabled={!live || !checked || muted || Boolean(sttUnavailable) || recording || inFlight || recovering || Boolean(attempt.current) || blocked || Boolean(text.trim())} onClick={startCall}>Start hands-free call</Button>
-      <Button disabled={!live || !checked || muted || Boolean(sttUnavailable) || recording || inFlight || recovering || Boolean(attempt.current) || blocked} onClick={() => { stopAutomatic(); listen(); }}>Listen</Button>
-      <Button disabled={!live || !checked || !text.trim() || recording || inFlight || recovering || blocked || Boolean(attempt.current && !retryable)} onClick={() => { void send(); }}>{attempt.current ? "Retry same turn" : "Send turn"}</Button>
-    </DialogActions>
+        }}>Talk now</Button> : phase === "paused" ? <Button variant="contained" disabled={recovering || blocked || Boolean(attempt.current)} onClick={() => { void resume(); }}>Resume call</Button>
+          : !recording && !inFlight && <Button variant="contained" disabled={cannotStart} onClick={startCall}>Start call</Button>}
+        <Button aria-pressed={muted} startIcon={muted ? <MicOffIcon /> : <MicNoneIcon />} onClick={() => { if (!muted) { stopAutomatic(); abandon(); changePhase("paused"); setNotice("Microphone muted. Unfinished words were discarded."); } setMuted(!muted); }}>{muted ? "Unmute microphone" : "Mute microphone"}</Button>
+        <Button color="error" startIcon={<CallEndIcon />} onClick={end}>End call</Button>
+      </Stack>
+      {attempt.current && <Button disabled={!live || !checked || recording || inFlight || recovering || blocked || !retryable} onClick={() => { void send(); }}>Retry same turn</Button>}
+      {playText && error && !inFlight && !recording && !ttsUnavailable && !expanded && <Button onClick={() => play(playText)}>Play reply</Button>}
+      <Button size="small" sx={{ minHeight: 44 }} aria-expanded={expanded} aria-controls={`${ownerId}-details`} onClick={() => setExpanded(value => !value)}>Transcript &amp; typing</Button>
+      {expanded && <Stack id={`${ownerId}-details`} spacing={2}>
+        {latency && <Typography aria-label="Call timing" variant="caption">{latency} Recognition finalization and provider time vary; these are this turn’s observed intervals.</Typography>}
+        <Box aria-label="Call transcript">{transcript.map(message => <Box key={message.id} sx={{ mb: 1 }}><Typography variant="caption">{message.role === "user" ? "You" : "Agent"}</Typography><Typography sx={{ whiteSpace: "pre-wrap" }}>{message.document ? "Full message available in Chat." : message.text}</Typography></Box>)}</Box>
+        <TextField label="Your next turn" multiline minRows={2} value={text} disabled={recording || inFlight || recovering || Boolean(attempt.current) || blocked} onChange={e => setText(e.target.value)} />
+        {text.trim() && !recording && !inFlight && <Typography variant="caption">Send or clear your draft before starting a call.</Typography>}
+        <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", gap: 1, "& button": { minHeight: 48 } }}>
+          {(phase === "loading" || phase === "speaking") && <Button onClick={() => { stopAutomatic(); generation.current++; stopSpeech(ownerId); changePhase("ready"); }}>Stop speaking</Button>}
+          {playText && !inFlight && !recording && !ttsUnavailable && <Button onClick={() => play(playText)}>Play reply</Button>}
+          {recording && <Button disabled={dictation.status === "stopping"} onClick={dictation.stop}>Finish turn</Button>}
+          {handsFree && recording && <Button onClick={() => { stopAutomatic(); dictation.abandon(); changePhase("review"); }}>Review / type instead</Button>}
+          <Button disabled={!live || !checked || muted || Boolean(sttUnavailable) || recording || inFlight || recovering || Boolean(attempt.current) || blocked} onClick={() => { stopAutomatic(); listen(); }}>Listen</Button>
+          <Button disabled={!live || !checked || !text.trim() || recording || inFlight || recovering || blocked || Boolean(attempt.current)} onClick={() => { void send(); }}>Send turn</Button>
+        </Stack>
+        <Typography variant="caption" color="text.secondary">Read and type in Chat anytime. Calls require a visible foreground page. End stops browser audio and discards unsent words; accepted work continues. An unconfirmed send keeps its full private words only in this mounted call for deliberate retry. This tab stores only an identity marker. End, reopening or reload drops the call’s retry payload and requires Chat review; markers cannot reconstruct words. Retry expires after 24 hours, without promising physical browser or network memory erasure.</Typography>
+      </Stack>}
+    </Stack></DialogContent>
   </Dialog>;
 }

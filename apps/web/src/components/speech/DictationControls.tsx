@@ -1,7 +1,8 @@
 import MicNoneIcon from "@mui/icons-material/MicNone";
+import PhoneIcon from "@mui/icons-material/Phone";
 import PauseIcon from "@mui/icons-material/Pause";
 import StopIcon from "@mui/icons-material/Stop";
-import { Box, ClickAwayListener, IconButton, MenuItem, MenuList, Paper, Popper, Tooltip, Typography } from "@mui/material";
+import { Box, IconButton, Tooltip, Typography } from "@mui/material";
 import { useEffect, useRef, useState } from "react";
 import { VoiceConversation, type VoiceConversationContext } from "./VoiceConversation";
 import {
@@ -25,11 +26,10 @@ export function DictationControls({
   talkContext?: VoiceConversationContext;
 }): JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [talkOpenFor, setTalkOpenFor] = useState<string>();
   const talkKey = talkContext && JSON.stringify([talkContext.projectId, talkContext.conversationId, talkContext.selectedAgentId]);
   const talkOpen = Boolean(talkKey && talkOpenFor === talkKey);
-  useEffect(() => { setMenuAnchor(null); setTalkOpenFor(undefined); }, [talkKey]);
+  useEffect(() => { setTalkOpenFor(undefined); }, [talkKey]);
   const dictation = useDictation(
     onFinalTranscript,
     onSettlingChange,
@@ -40,8 +40,8 @@ export function DictationControls({
   );
   const paused = dictation.status === "paused";
   useEffect(() => {
-    onActiveChange?.(active || paused || Boolean(menuAnchor) || talkOpen);
-  }, [active, paused, menuAnchor, talkOpen, onActiveChange]);
+    onActiveChange?.(active || paused || talkOpen);
+  }, [active, paused, talkOpen, onActiveChange]);
   const busy = dictation.status === "pausing" || dictation.status === "stopping";
   const canStopForDisabled =
     dictation.status === "starting" ||
@@ -54,8 +54,7 @@ export function DictationControls({
 
   const unavailable = dictation.unavailableReason;
   const callAvailable = talkContext?.agents.some(agent => !agent.archived && agent.projectId === talkContext.projectId && agent.conversationId === talkContext.conversationId && (!talkContext.selectedAgentId || agent.id === talkContext.selectedAgentId));
-  const chooseMode = Boolean(talkContext) && !active && !paused;
-  const primaryLabel = chooseMode ? "Voice input" : unavailable
+  const primaryLabel = unavailable
     ? unavailable
     : dictation.status === "listening" || dictation.status === "starting"
       ? "Pause voice dictation"
@@ -93,11 +92,8 @@ export function DictationControls({
             color={dictation.status === "listening" ? "primary" : "inherit"}
             aria-label={primaryLabel}
             aria-pressed={dictation.status === "listening"}
-            aria-haspopup={chooseMode ? "menu" : undefined}
-            aria-expanded={chooseMode ? Boolean(menuAnchor) : undefined}
-            disabled={disabled || (!chooseMode && Boolean(unavailable)) || busy}
-            onClick={event => {
-              if (chooseMode) { setMenuAnchor(event.currentTarget); return; }
+            disabled={disabled || Boolean(unavailable) || busy}
+            onClick={() => {
               if (dictation.status === "listening" || dictation.status === "starting") {
                 dictation.pause();
               } else if (paused) {
@@ -115,18 +111,12 @@ export function DictationControls({
           </IconButton>
         </span>
       </Tooltip>
-      <Popper anchorEl={menuAnchor} open={Boolean(menuAnchor)} placement="top-end" sx={{ zIndex: 1400 }}>
-      <ClickAwayListener onClickAway={() => setMenuAnchor(null)}>
-      <Paper elevation={5} sx={{ mb: 0.5, minWidth: 160 }}>
-      <MenuList autoFocusItem aria-label="Voice input modes" onKeyDown={event => {
-        if (event.key === "Escape" || event.key === "Tab") { if(event.key === "Escape")event.preventDefault(); menuAnchor?.focus({ preventScroll: true }); setMenuAnchor(null); }
-      }}>
-        <MenuItem disabled={disabled || Boolean(unavailable)} onClick={() => { setMenuAnchor(null); dictation.start(); }}>Dictate</MenuItem>
-        <MenuItem disabled={disabled || !callAvailable} onClick={() => { setMenuAnchor(null); setTalkOpenFor(talkKey); }}>Call Agent</MenuItem>
-      </MenuList>
-      </Paper>
-      </ClickAwayListener>
-      </Popper>
+      {talkContext && <Tooltip title="Call Agent"><span>
+        <IconButton aria-label="Call Agent" aria-haspopup="dialog" disabled={disabled || !callAvailable || active || paused}
+          onClick={() => setTalkOpenFor(talkKey)} sx={{ minWidth: 44, minHeight: 44 }}>
+          <PhoneIcon />
+        </IconButton>
+      </span></Tooltip>}
       {talkContext && <VoiceConversation {...talkContext} open={talkOpen} onClose={() => setTalkOpenFor(undefined)} />}
       {active || paused ? (
         <Tooltip title="Stop voice dictation">
