@@ -278,5 +278,10 @@ test('Branch trigger read and pause responses remain in Branches without a Dev A
  app.patch('/api/triggers/:id',async request=>({ ...f.coordination.getTriggerDefinition(request.params.id),enabled:request.body.enabled }));
  const read=await app.inject('/api/branches/engine/triggers');assert.equal(read.statusCode,200);assert.equal(read.json()[0].id,trigger.id);
  const pause=await app.inject({method:'PATCH',url:`/api/branches/engine/triggers/${trigger.id}`,payload:{enabled:false}});assert.equal(pause.statusCode,200,pause.body);assert.equal(pause.json().enabled,false);
+ const reviewedDefinition={...trigger,targetAgentId:null,branchId:f.branch.id,runBudget:null};
+ const guarded=await app.inject({method:'PATCH',url:`/api/branches/engine/triggers/${trigger.id}`,payload:{enabled:false,reviewedDefinition}});assert.equal(guarded.statusCode,200,guarded.body);
+ const foreign=await app.inject({method:'PATCH',url:`/api/branches/engine/triggers/${trigger.id}`,payload:{enabled:false,reviewedDefinition:{...reviewedDefinition,projectId:f.project.id}}});assert.equal(foreign.statusCode,404,'an invented nonempty owner cannot bypass product scope');
+ const wrongBranch=await app.inject({method:'PATCH',url:`/api/branches/engine/triggers/${trigger.id}`,payload:{enabled:false,reviewedDefinition:{...reviewedDefinition,branchId:'foreign'}}});assert.equal(wrongBranch.statusCode,404);
+ const devGuarded=await app.inject({method:'PATCH',url:`/api/triggers/${trigger.id}`,payload:{enabled:false,reviewedDefinition}});assert.equal(devGuarded.statusCode,404);
  const dev=await app.inject('/api/triggers');assert.deepEqual(dev.json(),[]);
 });

@@ -313,6 +313,16 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
       if(!value||typeof value!=='object')return true;
       return Object.entries(value).every(([key,v])=>{
         if(agentDeletionRoute&&key==='rootAgentIds')return true;
+        // Native Branch schedules have no Project/Chat owner. A reviewed snapshot
+        // retains those empty fields for the trigger route's exact-value check.
+        if(key==='reviewedDefinition'&&v&&typeof v==='object'&&
+            request.routeOptions.url?.startsWith('/api/triggers/:id')){
+          const reviewed=v as Record<string,unknown>;
+          const native=store.sqlite.prepare('SELECT id,branch_id,project_id,conversation_id FROM trigger_definitions WHERE id=?').get((request.params as {id:string}).id) as {id:string;branch_id:string|null;project_id:string;conversation_id:string}|undefined;
+          if(native?.branch_id&&native.project_id===''&&native.conversation_id===''&&
+              reviewed.id===native.id&&reviewed.branchId===native.branch_id&&reviewed.projectId===''&&reviewed.conversationId==='')
+            return inspect({...reviewed,projectId:undefined,conversationId:undefined},depth+1);
+        }
         if(scopeKinds[key]&&typeof v==='string')return resourceMutable(v)&&belongs(v,scopeKinds[key]!,product);
         if(key.endsWith('Ids')&&Array.isArray(v)&&scopeKinds[key.slice(0,-1)]){
           if(v.some(id=>typeof id!=='string'||!id||id.length>200))return true;
