@@ -11,7 +11,7 @@ import {
   CAPABILITY_IDS,
   TERMINAL_REQUEST_STATES, type BranchConfiguration, type BranchRuntimeOutcome, type BranchDefinition, type BranchBindings, type BranchDto,
   type BranchExecutionDto, type BranchExecutionDetailDto, type BranchResult, type BranchVersionDto,
-  type DeployBranchRequest, type RuntimeProcessIdentity,
+  type DeployBranchRequest, type RuntimeProcessIdentity, type CommunicationEvent,
   type BranchDeploymentPreviewDto, type AgentPortablePackageDto, type ImportAgentPackageResponse, type TriggerSourceConfig, type CoordinationRequestState, type WorkspaceEvent, type BranchGateResolution, type BranchIntervention,
 } from "@ponderosa/core";
 import { CoordinationV3Store } from "./coordination-v3-store.js";
@@ -39,7 +39,8 @@ export class BranchStore {
   private provisionCursor = 0;
   private cleanupCursor = 0;
   private cleanupCeiling = 0;
-  constructor(readonly sqlite: Database.Database, private readonly coordination: CoordinationV3Store) {
+  constructor(readonly sqlite: Database.Database, private readonly coordination: CoordinationV3Store,
+    private readonly communicationEvent?: (projectId:string,eventId:string)=>CommunicationEvent|undefined) {
     this.executionBudgets = new BranchExecutionBudgetAuthority(sqlite);
     this.capabilityPolicies = new CapabilityPolicyStore(sqlite);
     coordination.setBranchTriggerIntake(input => {
@@ -703,7 +704,7 @@ export class BranchStore {
             this.run("UPDATE branch_paths SET state = 'active' WHERE id = ?", attempt.path_id);
             this.checkpoint(execution.id, `request:${attempt.id}`, "request_bound", { requestId: result.requestIds[0], attemptId: attempt.id }, now);
           } else if (attempt.request_id) {
-            const request = this.row("SELECT state FROM coordination_requests WHERE id = ?", attempt.request_id);
+            const request = this.row("SELECT state,project_id,conversation_id,recipient_agent_id FROM coordination_requests WHERE id = ?", attempt.request_id);
             if (!request || request.state === "outcome_unknown" || request.state === "superseded") {
               this.run("UPDATE branch_paths SET state = 'waiting' WHERE id = ?", attempt.path_id);
               this.run("UPDATE branch_attempts SET error = ? WHERE id = ?", `Request ${request?.state ?? "unavailable"}; explicit reconciliation required`, attempt.id); continue;
@@ -711,6 +712,20 @@ export class BranchStore {
             if (!TERMINAL_REQUEST_STATES.has(request.state as CoordinationRequestState)) continue;
             const update = this.row("SELECT payload_json FROM coordination_request_updates WHERE request_id = ? AND resulting_state = ? ORDER BY resulting_version DESC LIMIT 1", attempt.request_id, request.state);
             const payload = update ? JSON.parse(update.payload_json) : null;
+            if(request.state==='completed'&&step.kind==='agent'&&step.requireUserCommunication){
+              const id=payload?.communicationEventId;
+              const event=typeof id==='string'&&id.length<=256?this.communicationEvent?.(request.project_id,id):undefined;
+              const authored=event?.sender.kind==='agent'&&event.sender.agentId===request.recipient_agent_id&&
+                event.conversationId===request.conversation_id&&event.intent==='user_dm'&&
+                (event.audience.kind==='user'||event.audience.kind==='user_agent'&&event.audience.agentId===request.recipient_agent_id)&&
+                Boolean(event.sender.executionId&&this.row(`SELECT 1 FROM activation_sources source
+                  JOIN scheduler_run_activations attached ON attached.activation_id=source.activation_id
+                  JOIN provider_inputs submitted ON submitted.scheduler_run_id=attached.run_id
+                  WHERE source.source_kind='request' AND source.source_id=? AND submitted.execution_id=? AND submitted.agent_id=?`,
+                  attempt.request_id,event.sender.executionId,request.recipient_agent_id));
+              if(!authored){this.run("UPDATE branch_attempts SET error='Required user Communication is missing or belongs to another Request Run' WHERE id=?",attempt.id);this.finish(attempt.id,{failed:true},now);continue;}
+              this.checkpoint(execution.id,`communication:${attempt.id}`,'user_communication_verified',{attemptId:attempt.id,requestId:attempt.request_id,communicationEventId:event!.eventId},now);
+            }
             let output: string | undefined;
             try { output = typeof payload?.text === "string" ? branchText(payload.text) : undefined; }
             catch { this.run("UPDATE branch_paths SET state = 'waiting' WHERE id = ?", attempt.path_id); this.run("UPDATE branch_attempts SET error = 'Request output exceeds inline contract; explicit artifact reference required' WHERE id = ?", attempt.id); continue; }

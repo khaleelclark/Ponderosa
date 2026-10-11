@@ -18,6 +18,8 @@ test('new package enables ten-minute discovery with workers independent of the s
   assert.equal(pkg.definition.steps.find(step=>step.id==='research').target.ref,'scout');
   assert.equal(pkg.definition.steps.find(step=>step.id==='review').target.ref,'reviewer');
   assert.equal(pkg.definition.steps.find(step=>step.id==='speak').target.ref,'spokesperson');
+  assert.equal(pkg.definition.steps.find(step=>step.id==='speak').requireUserCommunication,true);
+  assert.equal(pkg.definition.steps.some(step=>step.kind==='action'&&step.action==='notify'),false,'authored DM publication already creates a notification');
   assert.equal(pkg.definition.controls[0].otherwise,'quiet');
   assert.equal(pkg.chats[0].agents.filter(agent=>!agent.managerRef).length,1);
 });
@@ -35,7 +37,7 @@ test('distinct finding passes and duplicate claim is quiet only after delivery r
 });
 test('unsupported and malformed model output fails rather than generating a notification',t=>{
   const root=workspace(t);
-  for(const value of [{notify:true}, {...candidate,sources:[]}, {...candidate,message:''}, {...candidate,question:''}, {...candidate,sources:['file:///private']}])assert.notEqual(run(root,discoveryGateSource,value).status,0);
+  for(const value of [{notify:true}, {...candidate,sources:[]}, {...candidate,message:''}, {...candidate,question:''}, {...candidate,sources:['file:///private']}, {...candidate,sources:['https://']}, {...candidate,sources:['https://name:password@example.com']}])assert.notEqual(run(root,discoveryGateSource,value).status,0);
   const malformed=spawnSync(process.execPath,['--input-type=module','--eval',discoveryGateSource],{cwd:root,input:'```json\n{}\n```',encoding:'utf8'});assert.notEqual(malformed.status,0);
 });
 test('corrupt or redirected ledger refuses intact',t=>{

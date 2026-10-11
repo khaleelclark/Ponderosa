@@ -17,8 +17,10 @@ The Branch runs one discovery execution at a time. Each check is bounded to four
 external searches and six narrow context reads. Useful, nonurgent opportunities
 are eligible. Quiet checks retain their question and reason in a bounded local
 coverage artifact. Verified findings pass through a distinct-claim gate, a short
-spokesperson delivery, and the existing canonical notify Action. Announcement
-receipts are written after that Action succeeds. Failed delivery is not silently
+spokesperson delivery, and the existing canonical Communication notification.
+The speaking step requires an authored user DM from the bound Agent’s exact
+Request Run; its event ID is verified in the append-only communication journal
+before the delivery receipt can run. No second notify Action is emitted. Failed delivery is not silently
 marked announced. Malformed result JSON fails the execution visibly.
 
 Texting uses the existing Agent communication endpoint and live SSE projection.
@@ -38,6 +40,9 @@ become worker context.
 
 This is a thin UI and portable preset: no new scheduler, provider integration,
 communication store, database schema or Pinecone-profile ownership exception.
+Agent steps may opt into `requireUserCommunication`; a completed Request alone
+does not satisfy that contract. The terminal payload must carry `communicationEventId`.
+
 Source work is on `codex/pinecone-branch-overlay-20261011`, based on the researched
 Branches/Pinecone preview `191111a`. That preview's dependencies must be reviewed
 and integrated independently before this stack can merge into master. Existing

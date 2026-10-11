@@ -8,7 +8,7 @@ const script=id=>({id,kind:'script',runtime:'node',source:'console.log("ok")',cw
 const edge=(id,from,to,on='success')=>({id,from,to,on});
 function fixture(t,graph,{accept=true,maxTraversals}={}) {
  const dir=mkdtempSync(join(tmpdir(),'branch-graph-'));let store,coordination,branches;
- const open=()=>{store=new AgentStore(dir);coordination=new CoordinationV3Store(store.sqlite);branches=new BranchStore(store.sqlite,coordination)};open();
+ const open=()=>{store=new AgentStore(dir);coordination=new CoordinationV3Store(store.sqlite);branches=new BranchStore(store.sqlite,coordination,(projectId,eventId)=>store.getCommunicationEvent(projectId,eventId))};open();
  const project=store.createProject({label:'Graph',hostPath:dir,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Workflows'});
  const agent=store.createAgent(project.id,{title:'Worker',engine:'codex',conversationId:chat.id});
  const definition={schema:'ponderosa.branch.v1',name:'Graph',trigger:{kind:'manual'},entry:'a',steps:[script('a')],controls:[],edges:[],policy:{maxConcurrentExecutions:8,failure:{action:'stop'}},...graph};
@@ -237,6 +237,21 @@ test('failed Agent Request reason is visible in execution evidence, not workflow
  f.branches.advance();const detail=f.branches.detail(f.execution.id);
  assert.equal(detail.execution.state,'failed');assert.equal(detail.attempts[0].error,'Provider working folder changed');
  assert.equal(detail.attempts[0].result.output,undefined);
+});
+
+for(const variant of ['valid','missing','invented','wrong-agent','wrong-chat','collaboration','wrong-run'])test(`required spokesperson publication checks canonical Communication and exact Request Run: ${variant}`,t=>{
+ const f=fixture(t,{steps:[{id:'a',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Send a DM',requireUserCommunication:true},script('receipt')],edges:[edge('delivered','a','receipt')]});
+ f.branches.advance();const attempt=f.branches.detail(f.execution.id).attempts[0];
+ const lease=f.coordination.leaseNextRun({workerId:'publication-test'});assert.ok(lease);f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+ f.coordination.recordProviderInput({executionId:'publication-run',schedulerRunId:lease.runId,fencingToken:lease.fencingToken,agentId:f.agent.id,projectId:f.agent.projectId,prompt:'Send a DM',sourceManifest:{schemaVersion:1,historyMessageCount:0,activationIds:lease.activationIds,communicationEventIds:[],artifactIds:[],conversationId:f.chat.id,providerSessionDisposition:'fresh_task',sources:[]}});
+ const otherChat=variant==='wrong-chat'?f.store.createConversation(f.agent.projectId,{title:'Other Chat'}):f.chat;
+ const other=f.store.createAgent(f.agent.projectId,{title:'Other Agent',engine:'codex',conversationId:otherChat.id});
+ const author=['wrong-agent','wrong-chat'].includes(variant)?other:f.agent;
+ if(!['missing','invented'].includes(variant))f.store.appendCommunicationEvent({eventId:'published',schemaVersion:2,projectId:f.agent.projectId,conversationId:otherChat.id,sender:{kind:'agent',agentId:author.id,executionId:variant==='wrong-run'?'other-run':'publication-run'},intent:variant==='collaboration'?'collaboration':'user_dm',audience:variant==='collaboration'?{kind:'agents',agentIds:[other.id]}:{kind:'user_agent',userId:'local-operator',agentId:author.id},text:'Actual authored finding',createdAt:new Date().toISOString()});
+ f.coordination.updateRequest({requestId:attempt.requestId,updateId:'complete',kind:'completed',actor:{kind:'agent',id:f.agent.id},payload:{text:'Claims delivered',...(variant!=='missing'?{communicationEventId:'published'}:{})}});
+ f.branches.advance();const receipt=f.branches.claimScript('receipt-test');
+ if(variant==='valid'){assert.ok(receipt);f.branches.settleScript(receipt,{failed:false,output:'receipt stored'});assert.equal(f.branches.execution(f.execution.id).state,'completed');assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_checkpoints WHERE transition_key=?").get(`communication:${attempt.id}`).n,1);}
+ else{assert.equal(receipt,undefined);assert.equal(f.branches.execution(f.execution.id).state,'failed');assert.match(f.branches.detail(f.execution.id).attempts[0].error,/Required user Communication/);}
 });
 
 test('a canceled Agent Request does not advertise an impossible manual retry',t=>{

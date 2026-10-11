@@ -46,7 +46,7 @@ export interface BranchConfiguration { parameters: Record<string, string | numbe
 export interface BranchRuntimeOutcome { kind: "child_canceled" | "limit_exhausted"; limit?: keyof BranchLimits; configured?: number; observed?: number }
 interface StepBase { id: string; label?: string; failure?: BranchFailurePolicy }
 export type BranchStep =
-  | (StepBase & { kind: "agent"; target: BranchTarget; instructions: string })
+  | (StepBase & { kind: "agent"; target: BranchTarget; instructions: string; requireUserCommunication?: boolean })
   | (StepBase & { kind: "branch_call"; branchRef: string; canceled?: "retry" | "ask_human" | "terminate" })
   | (StepBase & { kind: "script"; runtime: "node"; source: string; cwdRef: string; timeoutMs: number })
   | (StepBase & { kind: "human_gate"; prompt: string; editable: boolean; choices?: string[] })

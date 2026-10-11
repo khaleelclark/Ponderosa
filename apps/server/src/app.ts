@@ -866,7 +866,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     workingCopies,
     assets,
   });
-  const branches = new BranchStore(store.sqlite, coordinationV3);
+  const branches = new BranchStore(store.sqlite, coordinationV3,(projectId,eventId)=>store.getCommunicationEvent(projectId,eventId));
   const branchResources = new BranchResourceService(branches, store, async agentIds => {
     if (agentIds.some(id => activeRuns.has(id) || (agentDeliveryLeases.get(id) ?? 0) > 0)) throw new Error("Ephemeral Agent activity is still draining");
     await drainProviderRuntimeAuthority("Branch resource archival", new Set(agentIds));

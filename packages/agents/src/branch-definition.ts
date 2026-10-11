@@ -78,7 +78,8 @@ function validateDefinition(value: unknown): BranchDefinition {
     try {
     if (step.failure !== undefined) failurePolicy(step.failure);
     if (step.kind === "agent") {
-      keys(step, ["id", "label", "kind", "target", "instructions", "failure"]);
+      keys(step, ["id", "label", "kind", "target", "instructions", "failure", "requireUserCommunication"]);
+      if(step.requireUserCommunication!==undefined&&typeof step.requireUserCommunication!=='boolean')throw Error('requireUserCommunication must be boolean');
       const target = record(step.target);
       if (target.kind === "persistent_agent" || target.kind === "persistent_organization") { keys(target, ["kind", "ref"]); branchKey(target.ref); }
       else if (target.kind === "ephemeral_agent" || target.kind === "ephemeral_organization") {
