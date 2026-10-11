@@ -408,7 +408,11 @@ export function registerRequestSecurityHooks(
     const originHostname = normalizedHostname(parsedOrigin.hostname);
     const loopbackOriginAllowed = allowedHostnames.has(originHostname) &&
       ["localhost", "127.0.0.1", "::1"].includes(originHostname);
-    if ((!exactOriginAllowed && !loopbackOriginAllowed) || !requestHost ||
+    const directListenerOriginAllowed = opts.networkSecurity?.mode !== "reverse_proxy" &&
+      opts.networkSecurity?.bindHost !== undefined &&
+      originHostname === normalizedHostname(opts.networkSecurity.bindHost) &&
+      parsedOrigin.protocol === `${request.protocol}:`;
+    if ((!exactOriginAllowed && !loopbackOriginAllowed && !directListenerOriginAllowed) || !requestHost ||
         parsedOrigin.host.toLowerCase() !== requestHost) {
       return reply.code(403).send({ error: "cross-origin mutation forbidden" });
     }

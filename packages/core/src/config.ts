@@ -69,6 +69,14 @@ export function isTailscaleAddress(host: string): boolean {
   return prefix.length === 3 && prefix[0] === "fd7a" && prefix[1] === "115c" && prefix[2] === "a1e0";
 }
 
+/** Only an exact RFC1918 IPv4 listener may opt into passwordless LAN access. */
+function isPrivateLanAddress(host: string): boolean {
+  if (isIP(host) !== 4) return false;
+  const [first, second] = host.split(".").map(Number);
+  return first === 10 || (first === 172 && second! >= 16 && second! <= 31) ||
+    (first === 192 && second === 168);
+}
+
 function strictBoolean(name: string, value: string | undefined): boolean {
   if (value === undefined || value.trim() === "") return false;
   if (value.trim().toLowerCase() === "true") return true;
@@ -119,6 +127,7 @@ export function resolveNetworkSecurity(env: NodeJS.ProcessEnv = process.env): {
   const host = env.PONDEROSA_HOST?.trim() || "127.0.0.1";
   const authToken = env.PONDEROSA_AUTH_TOKEN?.trim() || undefined;
   const trustedTailnet = strictBoolean("PONDEROSA_TRUSTED_TAILNET", env.PONDEROSA_TRUSTED_TAILNET);
+  const trustedLan = strictBoolean("PONDEROSA_TRUSTED_LAN", env.PONDEROSA_TRUSTED_LAN);
   const operatorOrigins = configuredOperatorOrigins(env.PONDEROSA_OPERATOR_ORIGINS, env);
   const operatorIdentities = configuredOperatorIdentities(env.PONDEROSA_OPERATOR_IDENTITIES);
   const trustedReverseProxy = strictBoolean(
@@ -142,6 +151,9 @@ export function resolveNetworkSecurity(env: NodeJS.ProcessEnv = process.env): {
   }
   if (trustedTailnet && !isTailscaleAddress(host)) {
     throw new Error("PONDEROSA_TRUSTED_TAILNET requires PONDEROSA_HOST to be a literal Tailscale IPv4 (100.64.0.0/10) or IPv6 (fd7a:115c:a1e0::/48) address");
+  }
+  if (trustedLan && !isPrivateLanAddress(host)) {
+    throw new Error("PONDEROSA_TRUSTED_LAN requires PONDEROSA_HOST to be one literal RFC1918 private IPv4 address");
   }
   if (isLoopbackHost(host)) {
     if (operatorOrigins.length > 0) {
@@ -201,7 +213,21 @@ export function resolveNetworkSecurity(env: NodeJS.ProcessEnv = process.env): {
       },
     };
   }
-  throw new Error("Non-loopback PONDEROSA_HOST requires PONDEROSA_AUTH_TOKEN or PONDEROSA_TRUSTED_TAILNET=true with a literal Tailscale address");
+  if (trustedLan) {
+    return {
+      host,
+      operatorOrigins,
+      operatorIdentities,
+      posture: {
+        mode: "trusted_lan",
+        bindHost: host,
+        authenticationRequired: false,
+        detail: "Passwordless operator access is explicitly enabled on this private LAN address.",
+        warning: "Peers allowed to reach this address have full operator access to Ponderosa and its host-authority Agents.",
+      },
+    };
+  }
+  throw new Error("Non-loopback PONDEROSA_HOST requires PONDEROSA_AUTH_TOKEN, PONDEROSA_TRUSTED_TAILNET=true with a literal Tailscale address, or PONDEROSA_TRUSTED_LAN=true with a literal private IPv4 address");
 }
 
 /** Load configuration from the environment, applying defaults. */

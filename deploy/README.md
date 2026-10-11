@@ -47,6 +47,13 @@ unless one of these protections is configured:
   including the ability to start host-authority Agents. Enforce Tailscale ACLs
   accordingly.
 
+- For an intentionally passwordless private LAN, set `PONDEROSA_TRUSTED_LAN=true`
+  and bind `PONDEROSA_HOST` to one literal RFC1918 IPv4 address, such as
+  `192.168.1.147`. Wildcard, DNS, public, loopback, and IPv6 addresses are rejected
+  in this mode. Peers that can reach this address have full operator access;
+  the operator is responsible for restricting access through their network.
+  An explicit `PONDEROSA_AUTH_TOKEN` still takes precedence if configured.
+
 `GET /api/ready` reports the active `networkSecurity` posture without exposing
 credentials. The provider-status dialog shows the same posture and highlights
 the trusted-tailnet operator-access warning.

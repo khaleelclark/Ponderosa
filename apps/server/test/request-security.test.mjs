@@ -56,6 +56,33 @@ test("loopback mode rejects a DNS-rebinding Host before reading operator data", 
   assert.equal(response.statusCode, 421);
 });
 
+test("direct private LAN browsers can read and mutate without a sign-in when explicitly trusted", async t => {
+  const app = await fixture({ networkSecurity: { mode: "trusted_lan", bindHost: "192.168.1.147", authenticationRequired: false, detail: "test" } });
+  t.after(() => app.close());
+  const host = "192.168.1.147:18793";
+  assert.equal((await app.inject({ method: "GET", url: "/api/projects", headers: { host } })).statusCode, 200);
+  assert.equal((await app.inject({ method: "POST", url: "/api/projects", headers: { host, origin: `http://${host}`, "sec-fetch-site": "same-origin" } })).statusCode, 200);
+  for (const origin of ["http://192.168.1.148:18793", "http://192.168.1.147:18794", "https://192.168.1.147:18793", "http://malicious.example"]) {
+    assert.equal((await app.inject({ method: "POST", url: "/api/projects", headers: { host, origin } })).statusCode, 403);
+  }
+  assert.equal((await app.inject({ method: "GET", url: "/api/projects", headers: { host: "malicious.example" } })).statusCode, 421);
+  assert.equal((await app.inject({ method: "POST", url: "/api/projects", headers: { host, origin: `http://${host}`, "sec-fetch-site": "cross-site" } })).statusCode, 403);
+});
+
+test("direct authenticated LAN browser mutations still require authentication", async t => {
+  const app = await fixture({ authToken: "secret", networkSecurity: { mode: "authenticated", bindHost: "192.168.1.147", authenticationRequired: true, detail: "test" } });
+  t.after(() => app.close());
+  const headers = { host: "192.168.1.147:18793", origin: "http://192.168.1.147:18793" };
+  assert.equal((await app.inject({ method: "POST", url: "/api/projects", headers })).statusCode, 401);
+  assert.equal((await app.inject({ method: "POST", url: "/api/projects", headers: { ...headers, authorization: "Bearer secret" } })).statusCode, 200);
+});
+
+test("reverse proxies cannot use the direct listener origin admission", async t => {
+  const app = await fixture({ networkSecurity: { mode: "reverse_proxy", bindHost: "192.168.1.147", authenticationRequired: true, detail: "test" }, operatorOrigins: ["https://ponderosa.example"] });
+  t.after(() => app.close());
+  assert.equal((await app.inject({ method: "POST", url: "/api/projects", headers: { host: "192.168.1.147:18793", origin: "http://192.168.1.147:18793" } })).statusCode, 403);
+});
+
 test("authenticated API and Agent exports are not retained by intermediary caches", async t => {
   const app = await fixture();
   t.after(() => app.close());
