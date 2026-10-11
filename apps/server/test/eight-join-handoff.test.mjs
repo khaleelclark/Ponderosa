@@ -79,6 +79,8 @@ test("eight oversized terminal Joins reach one manager continuation and settle i
     assert.equal(continuation.activations.length, 8);
     assert.ok(continuation.activations.every(activation => activation.kind === "coordination_join_satisfied"));
     const compiled = compileActivationPrompt(continuation, { maxUtf8Bytes: 256 * 1024 });
+    assert.match(compiled.prompt, /top-level tool argument steeringInjectionId/);
+    assert.match(compiled.prompt, /never append the field name or value to the human-facing text argument/);
     assert.ok(Buffer.byteLength(compiled.prompt, "utf8") > 65_536);
     assert.ok(Buffer.byteLength(compiled.prompt, "utf8") <= 256 * 1024);
     for (let index = 0; index < 8; index++) assert.match(compiled.prompt, new RegExp(`join-${index}`));

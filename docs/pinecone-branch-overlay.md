@@ -15,8 +15,13 @@ Pinecone is the sole human-facing spokesperson. Scout researches a narrow questi
 even without changed inputs; Findings Reviewer verifies evidence and relevance.
 The Branch runs one discovery execution at a time. Each check is bounded to four
 external searches and six narrow context reads. Useful, nonurgent opportunities
-are eligible. Quiet checks retain their question and reason in a bounded local
-coverage artifact. Verified findings pass through a distinct-claim gate, a short
+are eligible when the actual project workflow or explicit goal establishes applicability.
+Unknown SDK adoption, exposure or provider API support stays internal; the user is
+not assigned a speculative inventory. Discovery continues every ten minutes, while
+automatic findings are limited to one per two hours and one per user-need topic
+per day. Direct replies and user-requested work are unaffected. This is a prototype
+interruption budget; urgent escalation through ordinary Requests remains separate. Quiet checks retain their question and reason in a bounded local
+coverage artifact, bounded by both record count and 32 KiB of UTF-8 bytes. Verified findings pass through a distinct-claim gate, a short
 spokesperson delivery, and the existing canonical Communication notification.
 The speaking step requires an authored user DM from the bound Agent’s exact
 Request Run; its event ID is verified in the append-only communication journal
@@ -47,3 +52,9 @@ Source work is on `codex/pinecone-branch-overlay-20261011`, based on the researc
 Branches/Pinecone preview `191111a`. That preview's dependencies must be reviewed
 and integrated independently before this stack can merge into master. Existing
 held Pine services are not modified by this implementation.
+
+The organization uses an explicit shared brief and subscription-backed architecture
+constraints. The Reviewer drafts at most 70 words with one next step and up to two
+links; the spokesperson publishes that short message. Each eligible result carries
+a concrete relevance reference and observation plus a stable user-need topic. These
+fields expose the Reviewer’s judgment rather than independently proving its truth.
