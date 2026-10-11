@@ -9,7 +9,7 @@ import {pineconeMessages,pineconeDraftKey} from '../src/components/pinecone/bran
 import {parseBranchRoute,branchRoutePath} from '../src/branchesRouting.js';
 
 function workspace(t){const root=mkdtempSync(join(tmpdir(),'pinecone-discovery-'));t.after(()=>rmSync(root,{recursive:true,force:true}));return root}
-const candidate={question:'Can the stated slow chat path avoid full-history hydration?',notify:true,claimKey:'chat-read-lightweight-existence-verified',topicKey:'chat-latency',relevance:{reference:'apps/server/src/routes/conversations.ts',observation:'The inspected chat read path hydrates history before the lightweight existence check.'},message:'Use a lightweight existence check for the reported path. https://example.com/evidence',sources:['https://example.com/evidence'],reason:'Matches the explicit latency problem and suggests a concrete next step.'};
+const candidate={question:'Can the stated slow chat path avoid full-history hydration?',notify:true,claimKey:'chat-read-lightweight-existence-verified',topicKey:'chat-latency',relevance:{kind:'research',reference:'apps/server/src/routes/conversations.ts',observation:'The inspected chat read path hydrates history before the lightweight existence check.'},message:'Use a lightweight existence check for the reported path.',sources:['https://example.com/evidence'],reason:'Matches the explicit latency problem and suggests a concrete next step.'};
 function run(root,source,input){return spawnSync(process.execPath,['--input-type=module','--eval',source],{cwd:root,input:JSON.stringify(input),encoding:'utf8',timeout:5000})}
 test('new package enables ten-minute discovery with workers independent of the spokesperson',()=>{
   const pkg=pineconeBranchPackage('2026-10-11T00:00:00Z');
@@ -40,8 +40,22 @@ test('delivery receipt suppresses repeat claims and prevents notification on eve
 });
 test('unsupported and malformed model output fails rather than generating a notification',t=>{
   const root=workspace(t);
-  for(const value of [{notify:true}, {...candidate,sources:[]}, {...candidate,relevance:undefined}, {...candidate,relevance:{reference:'',observation:'unknown'}}, {...candidate,topicKey:''}, {...candidate,message:'word '.repeat(71)}, {...candidate,sources:['https://one.example','https://two.example','https://three.example']}, {...candidate,message:''}, {...candidate,question:''}, {...candidate,sources:['file:///private']}, {...candidate,sources:['https://']}, {...candidate,sources:['https://name:password@example.com']}])assert.notEqual(run(root,discoveryGateSource,value).status,0);
+  for(const value of [{notify:true}, {...candidate,sources:[]}, {...candidate,relevance:undefined}, {...candidate,relevance:{kind:'research',reference:'',observation:'unknown'}}, {...candidate,topicKey:''}, {...candidate,message:'word '.repeat(71)}, {...candidate,sources:['https://one.example','https://two.example','https://three.example']}, {...candidate,message:''}, {...candidate,question:''}, {...candidate,sources:['file:///private']}, {...candidate,sources:['https://']}, {...candidate,sources:['https://name:password@example.com']}])assert.notEqual(run(root,discoveryGateSource,value).status,0);
   const malformed=spawnSync(process.execPath,['--input-type=module','--eval',discoveryGateSource],{cwd:root,input:'```json\n{}\n```',encoding:'utf8'});assert.notEqual(malformed.status,0);
+});
+test('published links are derived only from bounded verified sources, including private evidence',t=>{
+  const root=workspace(t);
+  assert.notEqual(run(root,discoveryGateSource,{...candidate,message:'Three links https://one.example https://two.example https://three.example',sources:['https://one.example','https://two.example']}).status,0);
+  assert.notEqual(run(root,discoveryGateSource,{...candidate,message:'Unverified link https://other.example'}).status,0);
+  assert.notEqual(run(root,discoveryGateSource,{...candidate,message:'word '.repeat(69)}).status,0,'the final links count toward the 70-word budget');
+  assert.equal(run(root,discoveryGateSource,candidate).stdout,'notify');
+  let finding=JSON.parse(readFileSync(join(root,'pinecone-finding.json')));
+  assert.equal(finding.message,candidate.message+'\n\n[Source 1](https://example.com/evidence)');
+  assert.equal(run(root,discoveryGateSource,{...candidate,sources:['https://example.com/a) [extra](https://other.example']}).stdout,'notify');
+  finding=JSON.parse(readFileSync(join(root,'pinecone-finding.json')));assert.ok(finding.message.includes('%29%20[extra]%28https://other.example'),'source URL cannot close its Markdown link');
+  const privateEvidence={...candidate,relevance:{kind:'memory',reference:'Chunking exact chunk and modified date',observation:'Verified current user request and preference'},sources:[],message:'A useful next step grounded in your current relocation plan.'};
+  assert.equal(run(root,discoveryGateSource,privateEvidence).stdout,'notify','private evidence needs no fabricated public URL');
+  finding=JSON.parse(readFileSync(join(root,'pinecone-finding.json')));assert.equal(finding.message,privateEvidence.message);
 });
 test('corrupt or redirected ledger refuses intact',t=>{
   const root=workspace(t),outside=join(root,'outside.json');writeFileSync(outside,'{"secret":"unchanged"}');symlinkSync(outside,join(root,'pinecone-ledger.json'));

@@ -11,22 +11,33 @@ Ponderosa to remain online; browser push additionally requires the user's existi
 notification permission and supported deployment. The canonical inbox still
 records notifications when browser push is unavailable.
 
-Pinecone is the sole human-facing spokesperson. Scout researches a narrow question
-even without changed inputs; Findings Reviewer verifies evidence and relevance.
-The Branch runs one discovery execution at a time. Each check is bounded to four
-external searches and six narrow context reads. Useful, nonurgent opportunities
-are eligible when the actual project workflow or explicit goal establishes applicability.
-Unknown SDK adoption, exposure or provider API support stays internal; the user is
-not assigned a speculative inventory. Discovery continues every ten minutes, while
-automatic findings are limited to one per two hours and one per user-need topic
-per day. Direct replies and user-requested work are unaffected. This is a prototype
-interruption budget; urgent escalation through ordinary Requests remains separate. Quiet checks retain their question and reason in a bounded local
-coverage artifact, bounded by both record count and 32 KiB of UTF-8 bytes. Verified findings pass through a distinct-claim gate, a short
-spokesperson delivery, and the existing canonical Communication notification.
-The speaking step requires an authored user DM from the bound Agent’s exact
-Request Run; its event ID is verified in the append-only communication journal
-before the delivery receipt can run. No second notify Action is emitted. Failed delivery is not silently
-marked announced. Malformed result JSON fails the execution visibly.
+Pinecone is the sole human-facing spokesperson. Every ten minutes, Scout checks
+existing authorized email and Chunking for new actionable information first.
+When there is nothing useful there, it researches relocation or another known
+ongoing issue. Read-only mail access never implies permission to send or change
+mail. Missing connector access is reported as an access gap, not a quiet inbox.
+The explicit shared brief holds current priorities and dated facts; workers use
+newer memory and supersession instead of reviving old city rankings. Listings,
+prices and lease terms require fresh source verification.
+
+Findings Reviewer verifies evidence and personal relevance independently. Each
+check is bounded to four external searches and six narrow context reads. Useful,
+nonurgent opportunities are eligible without a defect, while generic summaries,
+invented plans and repetitive intake stay internal. The Branch runs one discovery
+execution at a time. Automatic ordinary findings are limited to one per two hours
+and one per user-need topic per day; direct replies and user-requested work remain
+immediate. This is a prototype interruption budget; urgent escalation through
+ordinary Requests remains separate. Quiet checks retain the actual question and
+reason in a local coverage artifact bounded by count and 32 KiB of UTF-8 bytes.
+
+Verified findings pass through a distinct-claim gate, a short spokesperson delivery,
+and canonical Communication notification. The gate constructs links from at most
+two validated source URLs and enforces a 70-word final message. Public research
+requires a source URL; private email/memory evidence may use exact internal references
+without a fabricated public link. The speaking step requires an authored user DM
+from the bound Agent's exact Request Run; its event ID is verified in the append-only
+journal before the receipt can run. No second notify Action is emitted. Failed
+delivery is not marked announced; malformed JSON fails the execution visibly.
 
 Texting uses the existing Agent communication endpoint and live SSE projection.
 Only human DMs and spokesperson-authored human communications appear as bubbles;
@@ -53,8 +64,8 @@ Branches/Pinecone preview `191111a`. That preview's dependencies must be reviewe
 and integrated independently before this stack can merge into master. Existing
 held Pine services are not modified by this implementation.
 
-The organization uses an explicit shared brief and subscription-backed architecture
-constraints. The Reviewer drafts at most 70 words with one next step and up to two
-links; the spokesperson publishes that short message. Each eligible result carries
+The organization uses an explicit shared brief and personal priorities. The Reviewer drafts short prose with one next step and a
+separate bounded source list; the gate adds validated links and the spokesperson
+publishes that message. Each eligible result carries
 a concrete relevance reference and observation plus a stable user-need topic. These
 fields expose the Reviewer’s judgment rather than independently proving its truth.
