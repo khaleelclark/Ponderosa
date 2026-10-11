@@ -173,6 +173,7 @@ export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
         description: "Use completed for the recipient's result/reply. Use question only for a recipient's blocking follow-up; use answer only for the original requester's correlated response.",
       },
       text: { type: "string", description: `Canonical report text. UTF-8 content above 10,000 Unicode code points is stored as a durable artifact; maximum ${LONG_TEXT_MAX_UTF8_BYTES} bytes.` },
+      communicationEventId: {type:"string",minLength:1,maxLength:256,description:"For a completed Request requiring a user-facing publication, copy the exact communication event ID returned by ponderosa_message. It must be authored by this Agent in this Run. Never put this ID only inside text."},
       question: { type: "string", minLength: 1, description: `Common blocking follow-up to the original requester. Long UTF-8 content is artifact-backed; maximum ${LONG_TEXT_MAX_UTF8_BYTES} bytes.` },
       inReplyToUpdateId: { type: "string", minLength: 1, maxLength: 200, description: "Required for kind answer. Copy the exact inReplyToUpdateId from the coordination_question Activation." },
     },

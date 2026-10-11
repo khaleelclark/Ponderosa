@@ -88,7 +88,7 @@ export function registerAgentRequestCommandRoutes(
   } = context;
 
   app.post<{
-    Body: { requestId?: string; updateId?: string; kind?: CoordinationRequestUpdateKind; text?: string; question?: string; inReplyToUpdateId?: string };
+    Body: { requestId?: string; updateId?: string; kind?: CoordinationRequestUpdateKind; text?: string; question?: string; inReplyToUpdateId?: string; communicationEventId?:string };
   }>("/api/agent-request-updates", async (request, reply) => {
     if (!coordinationV3) return reply.code(404).send({ error: "Communication V3 is not enabled" });
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
@@ -103,11 +103,11 @@ export function registerAgentRequestCommandRoutes(
     }
     const candidate = body as Record<string, unknown>;
     const unknownFields = Object.keys(candidate).filter((key) =>
-      !["requestId", "updateId", "kind", "text", "question", "inReplyToUpdateId"].includes(key));
+      !["requestId", "updateId", "kind", "text", "question", "inReplyToUpdateId", "communicationEventId"].includes(key));
     if (unknownFields.length) {
       return reply.code(400).send({ error: `unknown request update field(s): ${unknownFields.join(", ")}` });
     }
-    for (const key of ["requestId", "updateId", "text", "question", "inReplyToUpdateId"] as const) {
+    for (const key of ["requestId", "updateId", "text", "question", "inReplyToUpdateId", "communicationEventId"] as const) {
       if (candidate[key] !== undefined && typeof candidate[key] !== "string") {
         return reply.code(400).send({ error: `${key} must be a string` });
       }
@@ -162,11 +162,19 @@ export function registerAgentRequestCommandRoutes(
     });
     const currentRequest = coordinationV3.getRequest(requestId);
     if (!currentRequest) return reply.code(409).send({ error: "request not found" });
+    const communicationEventId=request.body.communicationEventId;
+    if(communicationEventId!==undefined){
+      if(kind!=='completed'||!communicationEventId.trim()||communicationEventId.length>256)return reply.code(400).send({error:'communicationEventId must be a bounded exact event ID on a completed update'});
+      const event=store.getCommunicationEvent(currentRequest.projectId,communicationEventId);
+      if(event?.sender.kind!=='agent'||event.sender.agentId!==capability.agentId||event.sender.executionId!==capability.runId||event.conversationId!==currentRequest.conversationId||event.intent!=='user_dm')
+        return reply.code(409).send({error:'Communication must be an authored user DM from this exact Run and Chat'});
+    }
     const updateId = request.body?.updateId?.trim() || derivedRunActionKey(capability.runId, "report", {
       requestId,
       kind,
       text: handoffText,
       inReplyToUpdateId: request.body.inReplyToUpdateId?.trim() || null,
+      ...(communicationEventId?{communicationEventId}:{}),
     });
     const artifactIdentity = shouldBackTextWithArtifact(handoffText)
       ? communicationArtifactIdentity({
@@ -196,6 +204,7 @@ export function registerAgentRequestCommandRoutes(
           resultRef: `ponderosa://artifact/${backingArtifact.id}`,
         } : {}),
         executionId: capability.runId,
+        ...(communicationEventId?{communicationEventId}:{}),
         canonicalHandoff: (["completed", "blocked", "failed"] as CoordinationRequestUpdateKind[]).includes(kind),
       },
       ...(backingArtifact ? { artifacts: [runtimeArtifactMetadata(backingArtifact)] } : {}),
