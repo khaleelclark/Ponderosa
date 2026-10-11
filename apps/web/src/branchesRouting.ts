@@ -1,7 +1,7 @@
 import { parseRoute, type Route } from './routing.js';
 import { routeToPath, type ProjectRoute } from './routeRegistry.js';
 
-export const branchTabs = ['workflow', 'executions', 'settings', 'chats', 'parameters'] as const;
+export const branchTabs = ['workflow', 'executions', 'settings', 'chats', 'parameters', 'pinecone'] as const;
 export type BranchTab = typeof branchTabs[number];
 export type BranchGlobalView = 'general' | 'providers' | 'notifications' | 'activity' | 'profile' | 'usage' | 'status';
 export interface BranchRoute {
