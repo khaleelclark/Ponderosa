@@ -239,6 +239,7 @@ export function parseReviewedTriggerDefinition(value: unknown): ReviewedTriggerD
   exactTriggerFields(body, fields, "reviewedDefinition");
   if (fields.some(key => !Object.hasOwn(body, key))) throw new Error("reviewedDefinition must contain every authority field");
   for (const key of ["id", "projectId", "conversationId", "name"]) {
+    if((key==='projectId'||key==='conversationId')&&body[key]===''&&body.projectId===''&&body.conversationId===''&&typeof body.branchId==='string'&&body.branchId.trim()&&body.targetAgentId===null)continue;
     if (typeof body[key] !== "string" || !String(body[key]).trim()) throw new Error(`reviewedDefinition ${key} must be a nonempty string`);
   }
   if (typeof body.instructions !== "string" || !body.instructions.trim() || body.instructions.length > 20_000 || String(body.name).length > 120) throw new Error("invalid reviewedDefinition name or instructions");

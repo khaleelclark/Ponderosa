@@ -23,6 +23,18 @@ async function fixture(t,kind='webhook',sourceConfig={replayWindowSeconds:300}){
  return {dir,store,coordination,branches,sources,app,project,chat,input,branch,deploy};
 }
 
+test('native Branch schedule pauses and resumes with a complete reviewed guard and rejects stale review',async t=>{
+ const f=await fixture(t,'schedule',{scheduleKind:'interval',everyMs:600000,startsAt:'2099-01-01T00:00:00Z'});
+ const current=f.coordination.getTriggerDefinition(f.branch.triggerId);
+ assert.equal(current.projectId,'');assert.equal(current.conversationId,'');
+ const guard={id:current.id,projectId:'',conversationId:'',targetAgentId:null,branchId:f.branch.id,name:current.name,instructions:current.instructions,sourceKind:current.sourceKind,sourceConfig:current.sourceConfig,enabled:true,fullAccess:true,runBudget:null};
+ const patch=payload=>f.app.inject({method:'PATCH',url:`/api/triggers/${current.id}`,payload});
+ const paused=await patch({enabled:false,reviewedDefinition:guard});assert.equal(paused.statusCode,200,paused.body);assert.equal(f.coordination.getTriggerDefinition(current.id).enabled,false);
+ const stale=await patch({enabled:true,reviewedDefinition:guard});assert.equal(stale.statusCode,409,stale.body);assert.equal(f.coordination.getTriggerDefinition(current.id).enabled,false);
+ const resumed=await patch({enabled:true,reviewedDefinition:{...guard,enabled:false}});assert.equal(resumed.statusCode,200,resumed.body);assert.equal(f.coordination.getTriggerDefinition(current.id).enabled,true);
+ const malformed=await patch({enabled:false,reviewedDefinition:{...guard,branchId:null,targetAgentId:'invented-agent'}});assert.equal(malformed.statusCode,400,malformed.body);
+});
+
 test('signed webhook atomically accepts a version-pinned Branch execution and replays without Agent activation',async t=>{
  const f=await fixture(t),secret={secret:f.branch.webhookSecret};assert.ok(secret.secret);
  assert.equal((await f.deploy(f.input)).webhookSecret,undefined);
