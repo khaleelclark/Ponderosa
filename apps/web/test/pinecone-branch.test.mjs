@@ -53,6 +53,11 @@ test('published links are derived only from bounded verified sources, including 
   assert.equal(finding.message,candidate.message+'\n\n[Source 1](https://example.com/evidence)');
   assert.equal(run(root,discoveryGateSource,{...candidate,sources:['https://example.com/a) [extra](https://other.example']}).stdout,'notify');
   finding=JSON.parse(readFileSync(join(root,'pinecone-finding.json')));assert.ok(finding.message.includes('%29%20[extra]%28https://other.example'),'source URL cannot close its Markdown link');
+  for(const message of ['[extra](//example.com)','<a href="https:&#47;&#47;other.example">extra</a>','&#91;extra&#93;(//example.com)']){
+    const result=run(root,discoveryGateSource,{...candidate,message});assert.equal(result.status,0,result.stderr);
+    const escaped=JSON.parse(readFileSync(join(root,'pinecone-finding.json'))).message;
+    assert.ok(escaped.startsWith(message.replace(/[\\\[\]<>&]/gu,'\\$&')),'model prose is escaped before source links are appended');
+  }
   const privateEvidence={...candidate,relevance:{kind:'memory',reference:'Chunking exact chunk and modified date',observation:'Verified current user request and preference'},sources:[],message:'A useful next step grounded in your current relocation plan.'};
   assert.equal(run(root,discoveryGateSource,privateEvidence).stdout,'notify','private evidence needs no fabricated public URL');
   finding=JSON.parse(readFileSync(join(root,'pinecone-finding.json')));assert.equal(finding.message,privateEvidence.message);
