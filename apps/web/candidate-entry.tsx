@@ -1,0 +1,10 @@
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
+import {ThemeProvider,CssBaseline} from '@mui/material';
+import {BranchPinecone} from './src/components/pinecone/BranchPinecone';
+import {createPonderosaTheme} from './src/theme';
+import './src/global.css';
+const client=new QueryClient({defaultOptions:{queries:{retry:false,refetchOnWindowFocus:false}}});
+const branchId=new URLSearchParams(location.search).get('branch')??undefined;
+createRoot(document.getElementById('root')!).render(<ThemeProvider theme={createPonderosaTheme('light')}><CssBaseline/><QueryClientProvider client={client}><BranchPinecone route={{branchId,tab:'pinecone'}} onNavigate={route=>{location.href='http://192.168.1.147:18793/branches?'+new URLSearchParams(Object.entries({branch:route.branchId??'',tab:route.tab??'workflow',chat:route.chatId??''}));return true}}/></QueryClientProvider></ThemeProvider>);

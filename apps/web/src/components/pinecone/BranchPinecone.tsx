@@ -4,7 +4,7 @@ import {useMutation,useQuery} from '@tanstack/react-query';
 import {Alert,Avatar,Box,Button,Chip,CircularProgress,IconButton,Stack,TextField,Tooltip,Typography} from '@mui/material';
 import ArrowUpwardRoundedIcon from '@mui/icons-material/ArrowUpwardRounded';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
-import type {BranchBindings,BranchContextDto,BranchDto,InstalledBranchPackage,TriggerDefinitionDto} from '@ponderosa/core';
+import type {BranchBindings,BranchContextDto,BranchDto,BranchExecutionDto,InstalledBranchPackage,TriggerDefinitionDto} from '@ponderosa/core';
 import type {BranchRoute} from '../../branchesRouting';
 import {realApi,requestJson} from '../../api/real';
 import {useWorkspaceStream} from '../../hooks/useWorkspaceStream';
@@ -46,6 +46,12 @@ export function BranchPinecone({route,onNavigate}:{route:BranchRoute;onNavigate(
 function PineconeConversation({branchId,onNavigate}:{branchId:string;onNavigate(route:BranchRoute):boolean}):JSX.Element {
   const branch=useQuery({queryKey:['branch',branchId],queryFn:()=>requestJson<BranchDto>(`/api/branches/${branchId}`),refetchInterval:5000});
   const bindings=useQuery({queryKey:['pinecone-bindings',branchId,branch.data?.bindingRevisionId],queryFn:()=>requestJson<BranchBindings>(`/api/branches/${branchId}/configuration`),enabled:Boolean(branch.data),retry:false});
+  const shadow=branch.data?.name?.endsWith('(shadow)')??false;
+  const qualification=useQuery({queryKey:['pinecone-model-qualification',branchId],queryFn:()=>requestJson<{model:string;effort:string;supported:boolean;error?:string}>(`/api/pinecone-candidate/${branchId}/runtime`),enabled:shadow,retry:false});
+  const evaluations=useQuery({queryKey:['pinecone-evaluations',branchId],queryFn:()=>requestJson<BranchExecutionDto[]>(`/api/branches/${branchId}/executions`),enabled:shadow,refetchInterval:5000});
+  const latest=evaluations.data?.[0];
+  const finding=useQuery({queryKey:['pinecone-shadow-result',latest?.id,latest?.state],queryFn:()=>requestJson<{output:string|null}>(`/api/branch-executions/${latest!.id}/result`),enabled:shadow&&latest?.state==='completed'});
+  let shadowFinding:{message?:string;delivered?:boolean}|undefined;try{shadowFinding=JSON.parse(finding.data?.output??'null')}catch{}
   const id=bindings.data?.agents.spokesperson;
   const owner=useQuery({queryKey:['pinecone-owner',id],queryFn:async()=>{const detail=await realApi.getAgent(id!,1);const chat=await requestJson<BranchContextDto>(`/api/branches/contexts/${detail.agent.conversationId}`);if(chat.branchId!==branchId||chat.executionId||detail.agent.archived)throw Error('Spokesperson is not an active persistent member of this Branch');return detail.agent},enabled:Boolean(id),retry:false});
   const trigger=useQuery({queryKey:['branch-trigger',branchId],queryFn:()=>requestJson<TriggerDefinitionDto>(`/api/branches/${branchId}/trigger`),enabled:Boolean(branch.data?.triggerId),refetchInterval:5000,retry:false});
@@ -66,22 +72,24 @@ function PineconeConversation({branchId,onNavigate}:{branchId:string;onNavigate(
   return <Stack sx={{flex:1,minHeight:0}}>
     <Stack direction="row" alignItems="center" gap={1.5} sx={{px:{xs:2,sm:4},py:2,borderBottom:1,borderColor:'divider'}}>
       <Tooltip title="Branches"><IconButton aria-label="Back to Branches" onClick={()=>onNavigate({tab:'workflow'})}><ArrowBackRoundedIcon/></IconButton></Tooltip>
-      <PineconeMark sx={{fontSize:36}}/><Box sx={{flex:1}}><Typography variant="h6" fontWeight={750}>Pinecone</Typography><Typography variant="caption" color="text.secondary">Your assistant, with a little help behind the scenes</Typography></Box>
-      <BranchNotifications onNavigate={onNavigate}/><Button onClick={()=>advanced()}>Details</Button>
+      <PineconeMark sx={{fontSize:36}}/><Box sx={{flex:1}}><Typography variant="h6" fontWeight={750}>{shadow?branch.data?.name:'Pinecone'}</Typography><Typography variant="caption" color="text.secondary">Useful discoveries. Space to think. A conversation when you need it.</Typography></Box>
+      {!shadow&&<BranchNotifications onNavigate={onNavigate}/>}<Button onClick={()=>advanced()}>More</Button>
     </Stack>
     <Stack direction="row" gap={1} useFlexGap flexWrap="wrap" alignItems="center" sx={{px:{xs:2,sm:4},py:1.5}}>
       <Chip size="small" variant="outlined" label={trigger.error?'Discovery unavailable':!branch.data||trigger.isPending?'Loading discovery…':branch.data.enabled===false?'Branch paused':!branch.data.triggerId?'No discovery schedule':trigger.data?.enabled?'Discovery on':'Discovery paused'}/>
-      <Button size="small" disabled={!owner.data||!trigger.data||branch.data?.enabled===false||controls.isPending||controlBlocked||(branch.data?.activeExecutions??0)>0} onClick={()=>controls.mutate('check')}>Check now</Button>
-      <Button size="small" disabled={!trigger.data||controls.isPending||controlBlocked} onClick={()=>controls.mutate('toggle')}>{trigger.data?.enabled?'Pause discovery':'Resume discovery'}</Button>
-      <Button size="small" onClick={()=>advanced('executions')}>Activity</Button>
+      <Button size="small" disabled={shadow||!owner.data||!trigger.data||branch.data?.enabled===false||controls.isPending||controlBlocked||(branch.data?.activeExecutions??0)>0} onClick={()=>controls.mutate('check')}>Check now</Button>
+      <Button size="small" disabled={shadow||!trigger.data||controls.isPending||controlBlocked} onClick={()=>controls.mutate('toggle')}>{trigger.data?.enabled?'Pause discovery':'Resume discovery'}</Button>
+      <Button size="small" onClick={()=>advanced('executions')}>Research history</Button>
     </Stack>
+    {shadow&&qualification.data?.supported===false&&<Alert severity="warning" sx={{mx:{xs:2,sm:4},mb:2}}><Typography fontWeight={700}>This preview needs a supported model</Typography><Typography variant="body2">Your current Codex subscription rejected {qualification.data.model}. This candidate stays paused until you choose how to proceed. No substitute model will run.</Typography></Alert>}
+    {shadow&&<Box component="section" aria-label="Proactive research" sx={{mx:{xs:2,sm:4},mb:2,p:2,border:1,borderColor:'divider',borderRadius:3,bgcolor:'background.paper'}}><Stack direction={{xs:'column',sm:'row'}} gap={2} justifyContent="space-between"><Box><Typography fontWeight={700}>Proactive research</Typography><Typography variant="body2" color="text.secondary">{latest?.state==='running'||latest?.state==='waiting'?'Investigating and checking evidence…':latest?.state==='canceled'?'The last test stopped before verification finished. Open research history for the reason.':latest?.state==='failed'?'The last check could not finish. Open research history for the reason.':latest?.state==='completed'?(shadowFinding?.message?'A finding is ready for your review.':'Latest check finished quietly. Open research history for the evidence.'):'Waiting for the bounded test check.'}</Typography></Box><Chip size="small" label="Shadow preview · no notifications"/></Stack>{shadowFinding?.message&&<Box sx={{mt:2,pt:2,borderTop:1,borderColor:'divider'}}><Typography variant="overline">Finding for review · undelivered</Typography><ChatMessageBody text={shadowFinding.message} compactMarkdown/></Box>}<Typography variant="caption" color="text.secondary" sx={{display:'block',mt:1}}>Research can finish quietly. Activation and cadence need your choice.</Typography></Box>}
     {controlError&&<Alert severity="warning" action={<Button onClick={async()=>{const result=await trigger.refetch();if(!result.error){setControlBlocked(false);setControlError('')}}}>Reload</Button>}>{controlError}</Alert>}
     {notice&&<Alert severity="info" onClose={()=>setNotice('')}>{notice}</Alert>}
-    {issue?<Alert severity="error">{issue.message} <Button onClick={()=>{refresh();void bindings.refetch();void owner.refetch()}}>Retry</Button><Button onClick={()=>advanced('workflow')}>Open workflow</Button></Alert>:!id&&bindings.isSuccess?<Alert severity="info">This Branch has no Pinecone spokesperson binding. Create a new Pinecone installation or configure its organization in Branches.</Alert>:!owner.data?<Box sx={{p:3}}><CircularProgress size={22}/> Loading Pinecone…</Box>:<TextingChat key={id} branchId={branchId} agentId={id!} onAdvanced={()=>advanced()}/>}
+    {issue?<Alert severity="error">{issue.message} <Button onClick={()=>{refresh();void bindings.refetch();void owner.refetch()}}>Retry</Button><Button onClick={()=>advanced('workflow')}>Open workflow</Button></Alert>:!id&&bindings.isSuccess?<Alert severity="info">This Branch has no Pinecone spokesperson binding. Create a new Pinecone installation or configure its organization in Branches.</Alert>:!owner.data?<Box sx={{p:3}}><CircularProgress size={22}/> Loading Pinecone…</Box>:<TextingChat key={id} branchId={branchId} agentId={id!} shadow={shadow} onAdvanced={()=>advanced()}/>}
   </Stack>;
 }
 
-function TextingChat({branchId,agentId,onAdvanced}:{branchId:string;agentId:string;onAdvanced():void}):JSX.Element {
+function TextingChat({branchId,agentId,shadow=false,onAdvanced}:{branchId:string;agentId:string;shadow?:boolean;onAdvanced():void}):JSX.Element {
   const key=pineconeDraftKey(branchId,agentId);
   const [draft,setDraft]=useState(()=>{try{return localStorage.getItem(key)??''}catch{return ''}});
   const attempt=useRef<{text:string;key:string}>(undefined);
@@ -109,7 +117,7 @@ function TextingChat({branchId,agentId,onAdvanced}:{branchId:string;agentId:stri
       <Stack spacing={2} sx={{maxWidth:780,mx:'auto',pt:2}}>
         {detail.error&&<Alert severity="warning">Conversation could not refresh. <Button onClick={()=>void detail.refetch()}>Retry</Button></Alert>}
         {detail.data?.history?.hasMore&&<Button onClick={onAdvanced}>Read older conversation</Button>}
-        {detail.isSuccess&&!messages.length&&<Box sx={{py:6,textAlign:'center'}}><Avatar sx={{mx:'auto',mb:2,width:56,height:56,bgcolor:'primary.main'}}>P</Avatar><Typography variant="h5">What’s on your mind?</Typography><Typography color="text.secondary" sx={{mt:1}}>Tell me what you’re working on, or what you’d like me to keep an eye out for.</Typography></Box>}
+        {detail.isSuccess&&!messages.length&&<Box sx={{py:6,textAlign:'center'}}><Avatar sx={{mx:'auto',mb:2,width:56,height:56,bgcolor:'primary.main'}}>P</Avatar><Typography variant="h5">A little room to think.</Typography><Typography color="text.secondary" sx={{mt:1}}>Your conversation stays here. Proactive findings appear above when research uncovers something useful.</Typography></Box>}
         {messages.map(message=><Box component="article" aria-label={message.role==='user'?'Your message':'Pinecone message'} key={message.id} sx={{alignSelf:message.role==='user'?'flex-end':'flex-start',maxWidth:'90%',px:2.25,py:1.5,borderRadius:3,borderBottomRightRadius:message.role==='user'?6:24,borderBottomLeftRadius:message.role==='assistant'?6:24,bgcolor:message.role==='user'?'primary.main':'action.hover',color:message.role==='user'?'primary.contrastText':'text.primary',overflowWrap:'anywhere'}}>
           {message.document?<CommunicationDocumentCard document={message.document}/>:<ChatMessageBody text={message.text} citations={message.citations} agentMentions={message.agentMentions} compactMarkdown/>}
           {!!message.attachments?.length&&<Button color="inherit" size="small" onClick={onAdvanced}>View {message.attachments.length} attachments</Button>}
@@ -125,10 +133,10 @@ function TextingChat({branchId,agentId,onAdvanced}:{branchId:string;agentId:stri
         {sendError&&<Alert severity="warning" action={<Button disabled={send.isPending} onClick={submit}>Retry same message</Button>}>{sendError}</Alert>}
         {accepted&&<Typography variant="caption" role="status" color="text.secondary">{accepted}</Typography>}
         <Stack direction="row" alignItems="flex-end" gap={1} sx={{border:1,borderColor:'divider',borderRadius:4,p:1,bgcolor:'background.paper'}}>
-          <TextField autoComplete="off" multiline maxRows={6} placeholder="Text Pinecone…" aria-label="Message Pinecone" value={draft} disabled={send.isPending||Boolean(sendError&&attempt.current)} onChange={e=>{setDraft(e.target.value);setAccepted('')}} variant="standard" fullWidth InputProps={{disableUnderline:true}} sx={{px:1,py:.5}} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();submit()}}}/>
-          <IconButton type="submit" aria-label="Send message to Pinecone" disabled={!draft.trim()||send.isPending||Boolean(sendError)} sx={{bgcolor:'primary.main',color:'primary.contrastText','&:hover':{bgcolor:'primary.dark'}}}>{send.isPending?<CircularProgress size={20}/>:<ArrowUpwardRoundedIcon/>}</IconButton>
+          <TextField autoComplete="off" multiline maxRows={6} placeholder={shadow?'Conversation opens when you activate this candidate':'Text Pinecone…'} aria-label="Message Pinecone" value={draft} disabled={shadow||send.isPending||Boolean(sendError&&attempt.current)} onChange={e=>{setDraft(e.target.value);setAccepted('')}} variant="standard" fullWidth InputProps={{disableUnderline:true}} sx={{px:1,py:.5}} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();submit()}}}/>
+          <IconButton type="submit" aria-label="Send message to Pinecone" disabled={shadow||!draft.trim()||send.isPending||Boolean(sendError)} sx={{bgcolor:'primary.main',color:'primary.contrastText','&:hover':{bgcolor:'primary.dark'}}}>{send.isPending?<CircularProgress size={20}/>:<ArrowUpwardRoundedIcon/>}</IconButton>
         </Stack>
-        <Typography variant="caption" color="text.secondary" textAlign="center">Discovery continues in the background. <Button size="small" onClick={onAdvanced}>Files, team & more</Button></Typography>
+        <Typography variant="caption" color="text.secondary" textAlign="center">{shadow?'Preview mode keeps outbound delivery off.':'Discovery continues in the background.'} <Button size="small" onClick={onAdvanced}>Files, team & more</Button></Typography>
       </Stack>
     </Box>
   </>;

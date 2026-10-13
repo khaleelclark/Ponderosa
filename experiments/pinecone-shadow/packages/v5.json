@@ -1,0 +1,287 @@
+{
+  "schema": "ponderosa.branch-installation.v1",
+  "packageId": "ponderosa.pinecone.v5.shadow.20261013",
+  "mode": "template",
+  "exportedAt": "2026-10-13T11:31:34.245Z",
+  "definition": {
+    "controls": [
+      {
+        "id": "worth_telling",
+        "kind": "condition",
+        "otherwise": "quiet",
+        "predicate": {
+          "equals": "notify",
+          "source": "input"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "model_guard_entry",
+        "from": "model_guard",
+        "to": "research",
+        "on": "success"
+      },
+      {
+        "from": "research",
+        "id": "research_review",
+        "on": "success",
+        "to": "review"
+      },
+      {
+        "from": "review",
+        "id": "review_gate",
+        "on": "success",
+        "to": "gate"
+      },
+      {
+        "from": "gate",
+        "id": "gate_choice",
+        "on": "success",
+        "to": "worth_telling"
+      },
+      {
+        "from": "worth_telling",
+        "id": "useful_path",
+        "on": "selected",
+        "to": "speak"
+      },
+      {
+        "from": "worth_telling",
+        "id": "quiet_path",
+        "on": "failure",
+        "to": "quiet"
+      },
+      {
+        "from": "speak",
+        "id": "speak_receipt",
+        "on": "success",
+        "to": "receipt"
+      }
+    ],
+    "entry": "model_guard",
+    "name": "Pinecone V5 (shadow)",
+    "parameters": {
+      "focus": {
+        "default": "Find concrete improvements in proactive assistant relevance, responsiveness and efficient bounded research for Ponderosa 0.2.0 exploration. Preserve release 0.1.0. No personal housing, location, tenancy, employment or financial assumptions are supplied.",
+        "label": "Discovery focus",
+        "type": "text"
+      },
+      "requiredModel": {
+        "type": "text",
+        "label": "Required runtime model",
+        "default": "gpt-6.1-sol"
+      },
+      "requiredEffort": {
+        "type": "text",
+        "label": "Required reasoning",
+        "default": "high"
+      }
+    },
+    "policy": {
+      "failure": {
+        "action": "stop"
+      },
+      "maxConcurrentExecutions": 1,
+      "maxEphemeralAgents": 1,
+      "maxPathInstances": 2,
+      "maxStepInvocations": 8
+    },
+    "schema": "ponderosa.branch.v1",
+    "steps": [
+      {
+        "id": "model_guard",
+        "label": "Verify exact runtime before research",
+        "kind": "script",
+        "runtime": "node",
+        "cwdRef": "workspace",
+        "timeoutMs": 5000,
+        "source": "import {lstat,readFile} from 'node:fs/promises';\nconst p=JSON.parse(process.env.PONDEROSA_PARAMETERS??'{}');\nconst name='pinecone-runtime-capability.json',s=await lstat(name);\nif(!s.isFile()||s.isSymbolicLink()||s.size>8192)throw Error('Invalid runtime qualification evidence');\nconst q=JSON.parse(await readFile(name,'utf8'));\nif(q.schema!==1||q.model!==p.requiredModel||q.effort!==p.requiredEffort||!Number.isFinite(Date.parse(q.verifiedAt))||Date.now()-Date.parse(q.verifiedAt)>86400000||Date.parse(q.verifiedAt)>Date.now()+60000)throw Error('Fresh qualification of the exact requested model and reasoning is required; no fallback permitted');\nif(q.supported!==true)throw Error('Requested runtime unavailable; no fallback permitted. '+String(q.error??'Model access has not been verified').slice(0,1000));\nlet input='';for await(const c of process.stdin){input+=c;if(Buffer.byteLength(input)>262144)throw Error('Input too large');}process.stdout.write(input);\n"
+      },
+      {
+        "id": "research",
+        "instructions": "SHADOW EXPERIMENT: perform read-only research and complete only your correlated Request. Never call ponderosa_message, send email, author user_dm, notify, mutate connectors, create agents, or contact anyone. No outgoing messages are authorized. Do not read denied paths, sessions, credentials, private histories, or unrelated files. Read only the explicit candidate brief/ledger and narrow available authorized context. Missing access is an internal gap. Do not copy credentials or export personal memory. Public primary-source research is allowed. Do not edit the candidate files; scripts own the ledgers.\nRead pinecone-context.md and coverage ledger. Form up to three grounded questions, choose one by benefit, novelty, coverage and cost, and actually research it even without incoming events. Rotate supported needs, opportunities and exploration. At most four public searches and six narrow context reads. Return at most 6 KiB evidence, dates, known facts, applicability, uncertainties, sources and one next step. Missing access does not prove absence.\nFocus: {{parameter:focus}}",
+        "kind": "agent",
+        "label": "Look for something useful",
+        "target": {
+          "kind": "persistent_agent",
+          "ref": "scout"
+        }
+      },
+      {
+        "id": "review",
+        "instructions": "SHADOW EXPERIMENT: perform read-only research and complete only your correlated Request. Never call ponderosa_message, send email, author user_dm, notify, mutate connectors, create agents, or contact anyone. No outgoing messages are authorized. Do not read denied paths, sessions, credentials, private histories, or unrelated files. Read only the explicit candidate brief/ledger and narrow available authorized context. Missing access is an internal gap. Do not copy credentials or export personal memory. Public primary-source research is allowed. Do not edit the candidate files; scripts own the ledgers.\nYou are Pinecone's independent findings Reviewer. Read the shared brief and ledger, then verify the Scout's actual source evidence, accuracy, freshness, user relevance, practical benefit and semantic repetition. A new email is not inherently actionable; read the relevant thread. A memory is dated context, not fresh market availability. Check current relocation facts and supersession before using city rankings, rents, lease terms or preferences. A quiet inbox does not end research; a useful nonurgent opportunity can qualify without a defect. Reject generic summaries, recycled listings, invented plans, unnecessary intake/inventory assignments and irrelevant technical news. Use at most two narrow verification reads for a missing fact; if still unknown return notify=false. Never contact the user.\nReturn ONLY valid JSON, without Markdown fences: {\"question\":\"short researched question\",\"notify\":false,\"claimKey\":\"stable narrow identity\",\"topicKey\":\"stable user need, not an article or renamed subfeature\",\"relevance\":{\"kind\":\"research|email|memory\",\"reference\":\"exact source, thread, memory or explicit goal reference\",\"observation\":\"specific verified fact establishing relevance\"},\"message\":\"natural plain prose, no URLs, one useful next step\",\"sources\":[\"https://...\"],\"reason\":\"why useful or why quiet\"}. notify=true requires independently verified relevance. For public research include 1-2 verified URLs in sources; for email/memory 0-2 useful exact links are allowed, with concrete internal references. Never fabricate public links for private evidence. Keep the message short enough that the final prose plus source links is at most 70 words. The gate constructs the final message from these validated fields. A quiet no-find records the question and reason without filling finding fields. Do not begin an unsolicited message with \"Yes\". At most 8 KiB output. \nFor every potential finding, separately establish freshness, novelty, personal applicability, active versus settled state, and blocking uncertainty. Unknown residence, jurisdiction, tenancy, ownership or prior choice cannot become an assumed obligation. Distinguish explicit facts from hypotheses. Known facts, unchanged dismissals and resolved decisions stay quiet. A material change needs dated evidence and a specific change explanation. Research can start without an event. Review independently; do not merely accept Scout labels. Return the baseline JSON fields plus assessment:{novelty:\"new|material_change|known|unknown\",state:\"active|dismissed|resolved|unknown\",applicability:\"verified|unknown|not_applicable\",checkedAt:\"ISO UTC timestamp of source verification\",blockingUncertainty:boolean,fingerprint:\"stable evidence version\",changeExplanation:\"specific change or empty\"}. notify=true needs verified applicability, active state, new or explained changed evidence, and no blocking uncertainty. In this shadow experiment notify means WOULD BE ELIGIBLE if delivery were enabled. Decide eligibility independently of shadow mode; never return false merely because actual sending is forbidden. Delivery remains structurally disabled.",
+        "kind": "agent",
+        "label": "Verify relevance and evidence",
+        "target": {
+          "kind": "persistent_agent",
+          "ref": "reviewer"
+        }
+      },
+      {
+        "cwdRef": "workspace",
+        "id": "gate",
+        "kind": "script",
+        "label": "Record coverage and suppress duplicate claims",
+        "runtime": "node",
+        "source": "\nimport {readFile,writeFile,rename,lstat} from 'node:fs/promises';\nimport {createHash} from 'node:crypto';\nlet raw='';for await(const chunk of process.stdin){raw+=chunk;if(Buffer.byteLength(raw)>8192)throw Error('Finding exceeds 8 KiB');}\nconst report=JSON.parse(raw);\nif(!report||typeof report!=='object'||Array.isArray(report)||typeof report.notify!=='boolean'||typeof report.question!=='string'||!report.question.trim()||report.question.length>500||typeof report.reason!=='string'||report.reason.length>1000)throw Error('Invalid discovery result');\nif(report.notify&&(typeof report.claimKey!=='string'||!report.claimKey.trim()||report.claimKey.length>240||typeof report.topicKey!=='string'||!report.topicKey.trim()||report.topicKey.length>80||!report.relevance||!['research','email','memory'].includes(report.relevance.kind)||typeof report.relevance.reference!=='string'||!report.relevance.reference.trim()||report.relevance.reference.length>500||typeof report.relevance.observation!=='string'||!report.relevance.observation.trim()||report.relevance.observation.length>800||typeof report.message!=='string'||!report.message.trim()||report.message.length>1800||report.message.trim().split(/\\s+/u).length>70||!Array.isArray(report.sources)||(report.relevance.kind==='research'&&!report.sources.length)||report.sources.length>2||report.sources.some(s=>{if(typeof s!=='string'||s.length>2000)return true;try{const url=new URL(s);return !['http:','https:'].includes(url.protocol)||!url.hostname||Boolean(url.username||url.password);}catch{return true;}})))throw Error('Finding needs bounded claim, message and sources');\nif(report.notify){\n if(/https?:\\/\\/|www\\.|@/iu.test(report.message))throw Error('Put links in sources, not message');\n report.message=report.message.trim().replace(/[\\x21-\\x2f\\x3a-\\x40\\x5b-\\x60\\x7b-\\x7e]/gu,'\\\\$&')+(report.sources.length?'\\n\\n'+report.sources.map((url,index)=>'[Source '+(index+1)+']('+new URL(url).href.replace(/\\(/g,'%28').replace(/\\)/g,'%29')+')').join(' \u00b7 '):'');\n if(report.message.split(/\\s+/u).length>70||report.message.length>6000)throw Error('Published finding exceeds message budget');\n}\nasync function readLedger(){try{const stat=await lstat('pinecone-ledger.json');if(!stat.isFile()||stat.isSymbolicLink()||stat.size>32768)throw Error('Invalid coverage ledger');const ledger=JSON.parse(await readFile('pinecone-ledger.json','utf8'));if(ledger.schema!==1||!Array.isArray(ledger.checks)||ledger.checks.length>48||!Array.isArray(ledger.announced)||ledger.announced.length>100)throw Error('Invalid coverage ledger');return ledger;}catch(error){if(error.code==='ENOENT')return {schema:1,checks:[],announced:[]};throw error;}}\nfunction boundLedger(ledger){while(Buffer.byteLength(JSON.stringify(ledger))>32768){if(ledger.checks.length>1)ledger.checks.shift();else if(ledger.shadowed.length)ledger.shadowed.shift();else if(ledger.announced.length)ledger.announced.shift();else throw Error('Coverage record exceeds byte budget');}return ledger;}\nasync function save(name,value){try{const stat=await lstat(name);if(!stat.isFile()||stat.isSymbolicLink())throw Error('Invalid discovery file');}catch(error){if(error.code!=='ENOENT')throw error;}const temp=name+'.'+process.pid+'.tmp';await writeFile(temp,JSON.stringify(value),{flag:'wx',mode:0o600});await rename(temp,name);}\nconst ledger=await readLedger(),now=new Date().toISOString();\nledger.shadowed??=[];\nconst feedbackStat=await lstat('pinecone-feedback.json');if(!feedbackStat.isFile()||feedbackStat.isSymbolicLink()||feedbackStat.size>32768)throw Error('Invalid feedback file');\nconst feedback=JSON.parse(await readFile('pinecone-feedback.json','utf8'));\nconst normalized=value=>typeof value==='string'?value.trim().toLowerCase():'';\nif(feedback.schema!==1||!Array.isArray(feedback.items)||feedback.items.length>100)throw Error('Invalid explicit feedback');\nlet eligible=report.notify;\nif(eligible){const a=report.assessment;if(!a||!['new','material_change'].includes(a.novelty)||a.state!=='active'||a.applicability!=='verified'||a.blockingUncertainty!==false||typeof a.fingerprint!=='string'||!a.fingerprint.trim()||a.fingerprint.length>240||!Number.isFinite(Date.parse(a.checkedAt))||Date.now()-Date.parse(a.checkedAt)>86400000||Date.parse(a.checkedAt)>Date.now()+60000||(a.novelty==='material_change'&&(!a.changeExplanation||a.changeExplanation.length>1000))){eligible=false;report.reason='Quiet: novelty, freshness, applicability, active state or uncertainty unverified';}else{const f=feedback.items.find(i=>normalized(i.claimKey)===normalized(report.claimKey)||(i.topicKey&&normalized(i.topicKey)===normalized(report.topicKey)));if(f&&!(a.novelty==='material_change'&&a.fingerprint!==f.fingerprint&&a.changeExplanation)){eligible=false;report.reason='Quiet: explicit known, dismissed or resolved feedback';}}}\n\nledger.checks=[...ledger.checks,{at:now,question:report.question,reason:report.reason,mode:'shadow',delivered:false}].slice(-48);\nconst key=report.notify?createHash('sha256').update(report.claimKey.trim().toLowerCase()).digest('hex'):undefined;\nconst topic=report.notify?createHash('sha256').update(report.topicKey.trim().toLowerCase()).digest('hex'):undefined;\nconst recent=[...ledger.announced,...ledger.shadowed].some(item=>Number.isFinite(Date.parse(item.at))&&Date.now()-Date.parse(item.at)<2*60*60*1000);\nconst repeatedTopic=[...ledger.announced,...ledger.shadowed].some(item=>item.topic===topic&&Number.isFinite(Date.parse(item.at))&&Date.now()-Date.parse(item.at)<24*60*60*1000);\nconst notify=eligible&&!recent&&!repeatedTopic&&![...ledger.announced,...ledger.shadowed].some(item=>item.key===key);\nif(eligible&&!notify)ledger.checks[ledger.checks.length-1].reason='Held internally: '+(recent?'recent discovery already delivered':repeatedTopic?'same user need already covered':'claim already delivered');\nawait save('pinecone-ledger.json',boundLedger(ledger));\nif(notify)await save('pinecone-finding.json',{...report,key,topic,createdAt:now});\nprocess.stdout.write(notify?'notify':'quiet');\n",
+        "timeoutMs": 5000
+      },
+      {
+        "id": "speak",
+        "instructions": "SHADOW EXPERIMENT: perform read-only research and complete only your correlated Request. Never call ponderosa_message, send email, author user_dm, notify, mutate connectors, create agents, or contact anyone. No outgoing messages are authorized. Do not read denied paths, sessions, credentials, private histories, or unrelated files. Read only the explicit candidate brief/ledger and narrow available authorized context. Missing access is an internal gap. Do not copy credentials or export personal memory. Public primary-source research is allowed. Do not edit the candidate files; scripts own the ledgers. Read pinecone-finding.json and return its concise message as Request result only. Explicitly label it an UNDELIVERED SHADOW DRAFT. Do not claim a sent or delivered message.",
+        "kind": "agent",
+        "label": "Draft finding for shadow comparison",
+        "target": {
+          "kind": "persistent_agent",
+          "ref": "spokesperson"
+        }
+      },
+      {
+        "cwdRef": "workspace",
+        "id": "receipt",
+        "kind": "script",
+        "label": "Record undelivered shadow finding",
+        "runtime": "node",
+        "source": "import {readFile,writeFile,rename} from 'node:fs/promises';\nconst ledger=JSON.parse(await readFile('pinecone-ledger.json','utf8')),f=JSON.parse(await readFile('pinecone-finding.json','utf8'));\nif(!/^[a-f0-9]{64}$/.test(f.key)||!Array.isArray(ledger.announced))throw Error('Invalid shadow receipt');\nledger.shadowed=[...(ledger.shadowed??[]).filter(i=>i.key!==f.key),{key:f.key,topic:f.topic,at:new Date().toISOString(),delivered:false}].slice(-48);\nconst draft={mode:'shadow',delivered:false,communicationEventId:null,question:f.question,message:f.message,reason:f.reason};\nawait writeFile('pinecone-shadow-result.json',JSON.stringify(draft),{mode:0o600});\nconst temp='pinecone-ledger.json.'+process.pid+'.tmp';await writeFile(temp,JSON.stringify(ledger),{flag:'wx',mode:0o600});await rename(temp,'pinecone-ledger.json');process.stdout.write(JSON.stringify(draft));",
+        "timeoutMs": 5000
+      },
+      {
+        "cwdRef": "workspace",
+        "id": "quiet",
+        "kind": "script",
+        "label": "Quiet check complete",
+        "runtime": "node",
+        "source": "process.stdout.write('Quiet check complete; coverage retained')",
+        "timeoutMs": 5000
+      }
+    ],
+    "trigger": {
+      "configRef": "discovery",
+      "kind": "schedule"
+    }
+  },
+  "chats": [
+    {
+      "ref": "assistant",
+      "title": "Pinecone V5 (shadow)",
+      "instructions": "SHADOW EXPERIMENT: perform read-only research and complete only your correlated Request. Never call ponderosa_message, send email, author user_dm, notify, mutate connectors, create agents, or contact anyone. No outgoing messages are authorized. Do not read denied paths, sessions, credentials, private histories, or unrelated files. Read only the explicit candidate brief/ledger and narrow available authorized context. Missing access is an internal gap. Do not copy credentials or export personal memory. Public primary-source research is allowed. Do not edit the candidate files; scripts own the ledgers.",
+      "agents": [
+        {
+          "ref": "reviewer",
+          "managerRef": "spokesperson",
+          "definition": {
+            "schema": "ponderosa.agent-package.v1",
+            "mode": "template",
+            "kind": "agent",
+            "exportedAt": "2026-10-13T11:31:34.244Z",
+            "sourceLabel": "Pinecone / Findings Reviewer",
+            "rootRef": "reviewer",
+            "agents": [
+              {
+                "ref": "reviewer",
+                "title": "Findings Reviewer",
+                "engine": "codex",
+                "model": "gpt-6.1-sol",
+                "managementPermissions": {
+                  "allowAutomaticDescendantDeletion": false,
+                  "allowAutomaticDescendantReorganization": false
+                },
+                "effort": "high",
+                "initialInstructions": "SHADOW EXPERIMENT: perform read-only research and complete only your correlated Request. Never call ponderosa_message, send email, author user_dm, notify, mutate connectors, create agents, or contact anyone. No outgoing messages are authorized. Do not read denied paths, sessions, credentials, private histories, or unrelated files. Read only the explicit candidate brief/ledger and narrow available authorized context. Missing access is an internal gap. Do not copy credentials or export personal memory. Public primary-source research is allowed. Do not edit the candidate files; scripts own the ledgers."
+              }
+            ]
+          }
+        },
+        {
+          "ref": "scout",
+          "managerRef": "spokesperson",
+          "definition": {
+            "schema": "ponderosa.agent-package.v1",
+            "mode": "template",
+            "kind": "agent",
+            "exportedAt": "2026-10-13T11:31:34.244Z",
+            "sourceLabel": "Pinecone / Scout",
+            "rootRef": "scout",
+            "agents": [
+              {
+                "ref": "scout",
+                "title": "Scout",
+                "engine": "codex",
+                "model": "gpt-6.1-sol",
+                "managementPermissions": {
+                  "allowAutomaticDescendantDeletion": false,
+                  "allowAutomaticDescendantReorganization": false
+                },
+                "effort": "high",
+                "initialInstructions": "SHADOW EXPERIMENT: perform read-only research and complete only your correlated Request. Never call ponderosa_message, send email, author user_dm, notify, mutate connectors, create agents, or contact anyone. No outgoing messages are authorized. Do not read denied paths, sessions, credentials, private histories, or unrelated files. Read only the explicit candidate brief/ledger and narrow available authorized context. Missing access is an internal gap. Do not copy credentials or export personal memory. Public primary-source research is allowed. Do not edit the candidate files; scripts own the ledgers."
+              }
+            ]
+          }
+        },
+        {
+          "ref": "spokesperson",
+          "definition": {
+            "schema": "ponderosa.agent-package.v1",
+            "mode": "template",
+            "kind": "agent",
+            "exportedAt": "2026-10-13T11:31:34.245Z",
+            "sourceLabel": "Pinecone / Pinecone",
+            "rootRef": "spokesperson",
+            "agents": [
+              {
+                "ref": "spokesperson",
+                "title": "Pinecone",
+                "engine": "codex",
+                "model": "gpt-6.1-sol",
+                "effort": "high",
+                "managementPermissions": {
+                  "allowAutomaticDescendantDeletion": false,
+                  "allowAutomaticDescendantReorganization": false
+                },
+                "initialInstructions": "SHADOW EXPERIMENT: perform read-only research and complete only your correlated Request. Never call ponderosa_message, send email, author user_dm, notify, mutate connectors, create agents, or contact anyone. No outgoing messages are authorized. Do not read denied paths, sessions, credentials, private histories, or unrelated files. Read only the explicit candidate brief/ledger and narrow available authorized context. Missing access is an internal gap. Do not copy credentials or export personal memory. Public primary-source research is allowed. Do not edit the candidate files; scripts own the ledgers."
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "agentBindings": {
+    "reviewer": {
+      "chatRef": "assistant",
+      "agentRef": "reviewer"
+    },
+    "scout": {
+      "chatRef": "assistant",
+      "agentRef": "scout"
+    },
+    "spokesperson": {
+      "chatRef": "assistant",
+      "agentRef": "spokesperson"
+    }
+  },
+  "limits": {
+    "maxCallDepth": 2,
+    "maxLoopIterations": 1,
+    "maxTraversals": 20
+  },
+  "triggers": {
+    "discovery": {
+      "enabled": false,
+      "sourceConfig": {
+        "everyMs": 600000,
+        "scheduleKind": "interval",
+        "startsAt": "2026-10-11T09:13:43.935Z"
+      }
+    }
+  },
+  "engines": {
+    "default": "codex"
+  },
+  "parameters": {
+    "focus": "Find concrete improvements in proactive assistant relevance, responsiveness and efficient bounded research for Ponderosa 0.2.0 exploration. Preserve release 0.1.0. No personal housing, location, tenancy, employment or financial assumptions are supplied.",
+    "requiredModel": "gpt-6.1-sol",
+    "requiredEffort": "high"
+  }
+}
