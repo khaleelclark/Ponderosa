@@ -1,3 +1,4 @@
+import {createClientId} from '../clientId';
 import { Box, ButtonBase, Menu, MenuItem, Stack, Tooltip } from "@mui/material";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
@@ -31,7 +32,7 @@ export function ProjectFolderRail({ projects, folders, onChange, currentProjectI
     const folder = folderFor(destination);
     if (folder) {
       if (folderFor(source)?.id !== folder.id) move(source, folder.id);
-    } else onChange([...remove(source), { id: crypto.randomUUID(), name: "Project folder", projectIds: [destination, source], expanded: true }]);
+    } else onChange([...remove(source), { id: createClientId(), name: "Project folder", projectIds: [destination, source], expanded: true }]);
   };
   const finish = () => { setDragged(undefined); setTarget(undefined); setTimeout(() => { suppressClick.current = false; }, 0); };
   const zone = (event: DragEvent<HTMLElement>) => {
@@ -119,7 +120,7 @@ export function ProjectFolderRail({ projects, folders, onChange, currentProjectI
         ...(folderFor(menu.project.id) ? [<MenuItem key="remove" onClick={() => action(() => move(menu.project!.id))}>Remove from Folder</MenuItem>] : []),
         ...folders.filter(f => !f.projectIds.includes(menu.project!.id)).map(f => <MenuItem key={f.id} onClick={() => action(() => move(menu.project!.id, f.id))}>Move to {f.name}</MenuItem>),
         <MenuItem key="create" onClick={() => action(() => {
-          const folder = { id: crypto.randomUUID(), name: "Project folder", projectIds: [menu.project!.id], expanded: true };
+          const folder = { id: createClientId(), name: "Project folder", projectIds: [menu.project!.id], expanded: true };
           onChange([...remove(menu.project!.id), folder]); setRenaming(folder);
         })}>Create Folder</MenuItem>,
       ] : null}

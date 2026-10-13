@@ -1,3 +1,4 @@
+import {createClientId} from '../../clientId';
 import PhoneIcon from "@mui/icons-material/Phone";
 import CallEndIcon from "@mui/icons-material/CallEnd";
 import MicOffIcon from "@mui/icons-material/MicOff";
@@ -200,7 +201,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         const restored = await restoreVoiceCallAttempt(route);
         if (!alive.current || current !== generation.current) return;
         if (restored.notice) { stopAutomatic(); setBlocked(true); setText(""); setNotice(restored.notice); changePhase("paused"); return; }
-        pending = await prepareVoiceCallAttempt(route, textRef.current.trim(), () => crypto.randomUUID());
+        pending = await prepareVoiceCallAttempt(route, textRef.current.trim(), () => createClientId());
         if (!alive.current || current !== generation.current) return;
         const stored = retainVoiceCallAttempt(pending);
         attempt.current = pending; setRetryable(true);

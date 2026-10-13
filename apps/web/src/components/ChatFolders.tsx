@@ -1,3 +1,4 @@
+import {createClientId} from '../clientId';
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, List, ListItemButton, ListItemText, Menu, MenuItem, Paper, Popper, Stack, TextField, Typography, useMediaQuery } from "@mui/material";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
@@ -87,7 +88,7 @@ export function ChatFolders({ items, openItems = [], folders, sort, starredIds, 
     if (source === destination) return;
     const existing = folderFor(destination);
     if (existing) move(source, existing.id);
-    else onChange([...remove(source), { id: crypto.randomUUID(), name: "New folder", expanded: true, conversationIds: [destination, source] }]);
+    else onChange([...remove(source), { id: createClientId(), name: "New folder", expanded: true, conversationIds: [destination, source] }]);
   };
   const toggleFolderStar = (id: string) =>
     onChange(folders.map(folder => folder.id === id ? { ...folder, starred: !folder.starred } : folder));
@@ -225,7 +226,7 @@ export function ChatFolders({ items, openItems = [], folders, sort, starredIds, 
     <Menu open={Boolean(menu)} anchorEl={menu?.anchor} onClose={closeMenu} disableEnforceFocus={Boolean(moveAnchor)}>
       {menu?.item ? [
         <MenuItem key="rename" onClick={() => action(() => onRename(menu.item!.conversation))}>Rename</MenuItem>,
-        <MenuItem key="create" onClick={() => action(() => onChange([...remove(menu.item!.conversation.id), { id: crypto.randomUUID(), name: "New folder", expanded: true, conversationIds: [menu.item!.conversation.id] }]))}>Create Folder</MenuItem>,
+        <MenuItem key="create" onClick={() => action(() => onChange([...remove(menu.item!.conversation.id), { id: createClientId(), name: "New folder", expanded: true, conversationIds: [menu.item!.conversation.id] }]))}>Create Folder</MenuItem>,
         <MenuItem key="move" aria-haspopup="dialog" aria-expanded={Boolean(moving)}
           onMouseEnter={event => { if (!desktopHover) return; stopTimer(); const anchor = event.currentTarget; hoverTimer.current = setTimeout(() => openPicker(anchor), 180); }}
           onMouseLeave={() => { if (desktopHover) leavePicker(); }}

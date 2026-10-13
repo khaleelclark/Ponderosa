@@ -1,3 +1,4 @@
+import {createClientId} from '../../clientId';
 import {useEffect,useRef,useState} from 'react';
 import {useMutation,useQuery} from '@tanstack/react-query';
 import {Alert,Avatar,Box,Button,Chip,CircularProgress,IconButton,Stack,TextField,Tooltip,Typography} from '@mui/material';
@@ -55,7 +56,7 @@ function PineconeConversation({branchId,onNavigate}:{branchId:string;onNavigate(
     if(actionLock.current||!branch.data||!trigger.data)throw Error('Discovery state is unavailable');
     actionLock.current=true;
     try{
-      if(action==='check'){checkKey.current??=crypto.randomUUID();await requestJson(`/api/branches/${branchId}/executions`,{method:'POST',body:JSON.stringify({occurrenceKey:checkKey.current,input:'User requested a proactive check now.'})});checkKey.current=undefined;return 'Discovery check accepted.';}
+      if(action==='check'){checkKey.current??=createClientId();await requestJson(`/api/branches/${branchId}/executions`,{method:'POST',body:JSON.stringify({occurrenceKey:checkKey.current,input:'User requested a proactive check now.'})});checkKey.current=undefined;return 'Discovery check accepted.';}
       await realApi.updateTrigger(trigger.data.id,{enabled:!trigger.data.enabled,reviewedDefinition:reviewedDefinition(trigger.data)});
       return trigger.data.enabled?'Discovery paused. Already accepted work may finish. You can still text Pinecone.':'Discovery resumed.';
     }finally{actionLock.current=false;}
@@ -95,9 +96,11 @@ function TextingChat({branchId,agentId,onAdvanced}:{branchId:string;agentId:stri
   useEffect(()=>{bottom.current?.scrollIntoView({block:'end'})},[messages.at(-1)?.id]);
   const send=useMutation({retry:false,mutationFn:async()=>{
     if(busy.current)throw Error('A message is already being sent');busy.current=true;
-    const prepared=attempt.current??{text:draft.trim(),key:crypto.randomUUID()};attempt.current=prepared;
-    try{localStorage.setItem(key+':pending',JSON.stringify(prepared))}catch{}
-    try{return await realApi.sendMessage(agentId,{text:prepared.text,idempotencyKey:prepared.key,activeRunDelivery:'queue'})}finally{busy.current=false;}
+    try{
+      const prepared=attempt.current??{text:draft.trim(),key:createClientId()};attempt.current=prepared;
+      try{localStorage.setItem(key+':pending',JSON.stringify(prepared))}catch{}
+      return await realApi.sendMessage(agentId,{text:prepared.text,idempotencyKey:prepared.key,activeRunDelivery:'queue'});
+    }finally{busy.current=false;}
   },onSuccess:result=>{try{localStorage.removeItem(key+':pending')}catch{}if(!live.current)return;attempt.current=undefined;setDraft('');setSendError('');setAccepted(result.queued?'Message queued for Pinecone.':'Message delivered to Pinecone.');void detail.refetch()},onError:error=>{const definitive=error instanceof ApiRequestError&&definitiveSubmissionStatus(error.status,error.message);if(definitive){attempt.current=undefined;try{localStorage.removeItem(key+':pending')}catch{}}if(live.current)setSendError(`${error.message} Your draft is retained.${definitive?' Correct the draft or retry.':' Retry sends the exact same message with the same delivery identity.'}`)}});
   const working=stream.running||(detail.data?.runs.some(run=>run.status==='running')??false);
   const submit=()=>{if((draft.trim()||attempt.current)&&!send.isPending)send.mutate()};

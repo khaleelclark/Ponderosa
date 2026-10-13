@@ -1,3 +1,4 @@
+import {createClientId} from '../../clientId';
 import {useEffect,useRef,useState} from 'react';
 import {useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
 import {Alert,Button,Dialog,DialogActions,DialogContent,DialogTitle,FormControlLabel,MenuItem,Paper,Stack,Switch,TextField,Typography} from '@mui/material';
@@ -18,11 +19,11 @@ export function BranchExecutionBudget({branchId,settings=false}:{branchId:string
  useEffect(()=>{if(query.data&&!dirty&&!policyAttempt.current&&(!base||query.data.revision>=base.revision)){setBase(query.data);setDraft(query.data.policy)}},[query.data,dirty,base]);
  const refresh=()=>{void client.invalidateQueries({queryKey});void client.invalidateQueries({queryKey:['branch-executions',branchId]});void client.invalidateQueries({queryKey:['branch-execution']})};
  const save=useMutation({mutationFn:()=>{
-   if(!policyAttempt.current){if(!base||draft===undefined)throw new Error('Load the current budget first');policyAttempt.current={commandKey:crypto.randomUUID(),expectedRevision:base.revision,expectedPeriodId:base.periodId,policy:draft,acknowledgeNewPeriod:true}}
+   if(!policyAttempt.current){if(!base||draft===undefined)throw new Error('Load the current budget first');policyAttempt.current={commandKey:createClientId(),expectedRevision:base.revision,expectedPeriodId:base.periodId,policy:draft,acknowledgeNewPeriod:true}}
    return requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget`,{method:'PUT',body:JSON.stringify(policyAttempt.current)});
  },onSuccess:result=>{policyAttempt.current=undefined;setDraft(result.policy);setBase(result);refresh()},onError:error=>{if(error instanceof ApiRequestError&&error.status>=400&&error.status<500){policyAttempt.current=undefined;refresh()}}});
  const grant=useMutation({mutationFn:()=>{
-   if(!grantAttempt.current){const current=query.data;if(!current?.periodId)throw new Error('Load the current budget first');grantResultLimit.current=current.policy!.limit+current.allowance+Number(additional);grantAttempt.current={commandKey:crypto.randomUUID(),expectedRevision:current.revision,expectedPeriodId:current.periodId,additional:Number(additional)}}
+   if(!grantAttempt.current){const current=query.data;if(!current?.periodId)throw new Error('Load the current budget first');grantResultLimit.current=current.policy!.limit+current.allowance+Number(additional);grantAttempt.current={commandKey:createClientId(),expectedRevision:current.revision,expectedPeriodId:current.periodId,additional:Number(additional)}}
    return requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget/allow`,{method:'POST',body:JSON.stringify(grantAttempt.current)});
  },onSuccess:()=>{grantAttempt.current=undefined;grantResultLimit.current=undefined;setGrantOpen(false);setAdditional('1');refresh()},onError:error=>{if(error instanceof ApiRequestError&&error.status>=400&&error.status<500){grantAttempt.current=undefined;grantResultLimit.current=undefined;refresh()}}});
  const presentation=budgetPresentation(query),unavailable=!query.data||Boolean(query.error)||query.isFetching;
