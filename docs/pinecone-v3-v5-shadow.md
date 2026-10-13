@@ -1,3 +1,5 @@
+Current direction: the user rejected the candidate UI and redirected work to the original v4 texting experience. See [the v4 refinement handoff](pinecone-v4-texting.md) for actual send/reply verification, the recovered saved-session failure and the current coherent v4 URL. Prior candidate evidence below is retained as historical experiment evidence, not proof that continuing chat was working.
+
 ## Latest UI update — 2026-10-13 23:00 UTC
 
 The shared v3/v5 candidate mobile layout is fixed and served at the same URLs on port 18795. At 390×844 CSS pixels, conversation height increased from 237px to 665px (28% to 79% of the viewport), and composer height fell from 158px to 78px. Mobile and short screens now use a 56px header and one 44px expandable discovery/status row. Research controls, history and evidence remain discoverable in that row; secondary footer text is desktop-only. Expanded research details scroll within a bounded panel. Messages scroll independently, preserve the reader's position when new messages arrive, and follow new messages when the reader is already at the bottom.

@@ -4,6 +4,7 @@ import path from 'node:path';
 import {candidateMutationAllowed} from './preview-policy.mjs';
 const root=new URL('./candidate-web-dist/',import.meta.url).pathname;
 const candidates=new Map([['49005cab-f4d3-4b38-a468-bf153624e4f4','v5'],['592f4798-cd48-445a-91f2-9f9a86b1c135','v3']]);
+const v4Texting={branchId:'0356095a-8d73-4249-b39d-883b978ae119',spokespersonId:'f1e52ee0-6966-471c-bfe4-c9d04233a39a',triggerId:'31ecb11b-7afd-4e2b-a6f3-ee18f46f8f49',deliveryMode:'user-ui',supported:true};
 const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,'http://localhost');
  const qualification=url.pathname.match(/^\/api\/(?:branches\/engine\/)?pinecone-candidate\/([^/]+)\/runtime$/);
@@ -16,10 +17,10 @@ const server=http.createServer(async(req,res)=>{
   if(req.method!=='GET'){
    if(req.headers.origin&&req.headers.origin!==('http://'+req.headers.host)){res.writeHead(403);res.end('Cross-origin candidate mutation forbidden');return;}
    let raw='';for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>9*1024*1024){res.writeHead(413);res.end('Message too large');return;}}
-   let body,installations=[];try{body=JSON.parse(raw);for(const [id,v]of candidates){const q=JSON.parse(await readFile(new URL('../candidates/'+v+'/pinecone-runtime-capability.json',import.meta.url),'utf8'));installations.push({...q,branchId:id});}}catch{}
+   let body,installations=[v4Texting];try{body=JSON.parse(raw);for(const [id,v]of candidates){const q=JSON.parse(await readFile(new URL('../candidates/'+v+'/pinecone-runtime-capability.json',import.meta.url),'utf8'));installations.push({...q,branchId:id});}}catch{}
    if(!candidateMutationAllowed(req.method,url.pathname,body,installations)){res.writeHead(403,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'Only the activated candidate spokesperson, Check now, and schedule pause controls are available.'}));return;}
    const ownSpeaker=installations.find(i=>i.deliveryMode==='user-ui'&&i.supported===true&&url.pathname.endsWith('/agents/'+i.spokespersonId+'/messages'));
-   prepared=ownSpeaker?JSON.stringify({...body,model:ownSpeaker.model,effort:ownSpeaker.effort}):raw;
+   prepared=ownSpeaker?.model&&ownSpeaker?.effort?JSON.stringify({...body,model:ownSpeaker.model,effort:ownSpeaker.effort}):raw;
   }
   const headers={...req.headers,host:req.headers.host??'192.168.1.147:18793'};if(prepared!==undefined){delete headers['transfer-encoding'];headers['content-length']=String(Buffer.byteLength(prepared));}
   const upstream=http.request({hostname:'192.168.1.147',port:18793,path:req.url,method:req.method,headers},response=>{res.writeHead(response.statusCode,response.headers);response.pipe(res)});

@@ -20,3 +20,12 @@ test('Check now and pause are bound to this candidate only',()=>{
  assert.equal(allowed('PATCH','/api/branches/engine/agents/speaker',{model:'other'},[c]),false);
  assert.equal(allowed('POST','/api/agent-messages',message,[c]),false);
 });
+
+test('v4 texting routes retain exact ownership and reject routing or model overrides',()=>{
+ const own={branchId:'v4',spokespersonId:'v4-speaker',triggerId:'v4-trigger',deliveryMode:'user-ui',supported:true};
+ const body={text:'Harmless fixture',idempotencyKey:'test',activeRunDelivery:'queue'};
+ assert.equal(allowed('POST','/api/branches/engine/agents/v4-speaker/messages',body,[own]),true);
+ assert.equal(allowed('POST','/api/branches/engine/agents/other/messages',body,[own]),false);
+ assert.equal(allowed('POST','/api/branches/engine/agents/v4-speaker/messages',{...body,sourceConversationId:'other'},[own]),false);
+ assert.equal(allowed('POST','/api/branches/engine/agents/v4-speaker/messages',{...body,model:'different'},[own]),false);
+});
