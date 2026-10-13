@@ -1,6 +1,6 @@
 # Pinecone v3/v5 experiment handoff — 2026-10-13
 
-Outcome: two isolated candidates are installed, with real scheduler admission evidence, deterministic gate checks, and a separate candidate UI. They are **held and not ready for activation**. A direct ephemeral inference probe verified HTTP 400: “The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.” A new candidate-only guard now stops before any AI Request rather than allowing silent fallback. This is a verified provider/account blocker, not evidence against either design.
+Outcome: the existing v5 candidate now uses **GPT-5.6 Sol/high**, explicitly approved by Patrick on 2026-10-13. One manual non-delivering validation completed through Scout, independent Reviewer and spokesperson; each actual provider Run was correlated to its exact validation Request and confirmed GPT-5.6 Sol/high. Both candidates remain paused, with recurring schedules disabled and outbound delivery disabled. V3 remains GPT-6.1 Sol/low and unchanged; its prior unsupported-model qualification remains held. The earlier GPT-6.1 blocker and fallback evidence are preserved below.
 
 ## Exact candidates
 
@@ -8,11 +8,11 @@ Outcome: two isolated candidates are installed, with real scheduler admission ev
 |---|---|---|
 | UI | http://192.168.1.147:18795/branches?branch=592f4798-cd48-445a-91f2-9f9a86b1c135&tab=pinecone | http://192.168.1.147:18795/branches?branch=49005cab-f4d3-4b38-a468-bf153624e4f4&tab=pinecone |
 | Branch | 592f4798-cd48-445a-91f2-9f9a86b1c135 | 49005cab-f4d3-4b38-a468-bf153624e4f4 |
-| Configured AI stages | GPT-6.1 Sol / low, preserving original v3 settings | GPT-6.1 Sol / high for Scout, independent Reviewer and spokesperson/draft |
+| Configured AI stages | GPT-6.1 Sol / low, preserving original v3 settings | GPT-5.6 Sol / high for Scout, independent Reviewer and spokesperson/draft; explicitly user-approved |
 | Final schedule | 12-hour interval configured, disabled | 10-minute interval configured, disabled |
 | Admission | Branch disabled; all Agents observed idle | Branch disabled; all Agents observed idle |
 | Delivery | Shadow only; no publication/Notify node | Shadow only; no publication/Notify node |
-| Budget | 2 lifetime limit + 1 guard-only grant; 3 used | 2 lifetime limit + 1 guard-only grant; 3 used |
+| Budget | 2 lifetime limit + 1 guard-only grant; 3 used | 2 lifetime limit + 2 one-execution grants; 3 charged automatic admissions; 1 unused allowance; manual validation separate |
 
 The underlying Branch views are available at the same paths on port 18793. Port 18795 serves a built candidate frontend and a read-only proxy. All non-GET API requests receive 403 before forwarding, including messages and activation changes. The composer and discovery controls are disabled. This is an explicit preview restriction, not evidence that live conversation/delivery has been qualified.
 
@@ -55,7 +55,7 @@ The isolated repair is an installed `model_guard` entry script in both candidate
 
 The candidate UI serves read-only qualification metadata and explains that the subscription rejected the selected model. The updated build/typecheck and HTTP 200 checks pass. Final native browser automation stalled despite its requested timeout (one operation took about 8.6 minutes and another 19.9 minutes); further UI automation was stopped. A subsequent read-only check found that product scoping requested `/api/branches/engine/pinecone-candidate/:id/runtime` while the proxy handled only the unprefixed route. The candidate-only proxy now supports both paths. Three integration regression checks pass (both candidate IDs plus blocked writes), and the web build/typecheck pass. Safari accessibility verification after reload confirms the warning “This preview needs a supported model,” the selected-model subscription rejection, the promise that no substitute model runs, and disabled discovery/message controls. Pixel/mobile visual qualification remains limited as noted above.
 
-Smallest user decision: explicitly permit a comparison using the supported GPT-5.6 Sol/high model, or keep these candidates held until an authorized subscription-backed runtime supports GPT-6.1. No API-key integration, new sign-in, connector installation or credential copying was attempted.
+Patrick resolved the v5 model choice by explicitly requesting GPT-5.6 Sol. Only v5 was changed; v3 still requires its own model/access decision before additional validation. No API-key integration, new sign-in, connector installation or credential copying was attempted.
 
 Approval review also rejected a v4 export with `includeValues=true` because it could copy credentials. A credential-free template export without values succeeded; fresh explicit candidate parameters were supplied. No secret-bearing export was performed.
 
@@ -71,4 +71,25 @@ Rollback is already a safe hold: both candidate Branches and triggers are disabl
 
 Supporting records are in sibling `evidence/`, particularly `*-final-state.json`, `*-evaluated-detail.json`, `*-second-detail.json`, `final-audit.json`, `runtime-readonly-probe.json`, `deterministic-tests.log`, `web-typecheck.log`, `web-build.log` and `proxy-outbound-check.json`. Current manifests are in sibling `candidates/`; the generator refuses to overwrite existing installed manifests/feedback.
 
-Next work depends on Patrick’s model/access choice. Under the existing account, GPT-6.1 inference is unsupported. After that choice, qualify the exact chosen model, complete v3 independent review and equal-budget v3/v5 comparison. After that, Patrick still chooses activation, delivery and cadence. The original two-execution budgets received one explicit guard-only grant each and are now exhausted at three admissions each. Further tests need a deliberate bounded extension after the model choice. No live activation or cadence choice has been inferred.
+V5 model qualification is complete for the user-approved GPT-5.6 Sol/high choice. Broader usefulness/comparison evaluation and live activation remain separate decisions. V3 is still held under its unchanged GPT-6.1 selection; completing its independent review needs a separate supported-runtime choice. After that, Patrick still chooses activation, delivery and cadence. V3 remains at its exhausted three-automatic-admission budget. V5 has three charged automatic admissions and one separate manual model validation; the additional allowance granted for that validation was not charged by the manual path, so one automatic allowance remains unused while admission and recurrence are disabled. Further work still requires an explicit bounded scope and activation decision. No live activation or cadence choice has been inferred.
+
+
+## Approved v5 GPT-5.6/high update — 2026-10-13 21:17 UTC
+
+The same Branch, Chat, Agents, workspace and URL were retained. Supported Agent PATCH endpoints changed only v5's Scout, Reviewer and spokesperson to `gpt-5.6-sol` / `high`. The portable v5 manifest, Branch `requiredModel`/`requiredEffort` settings and exact-model qualification artifact were updated consistently. The guard source still rejects unsupported, mismatched or stale evidence; no silent model normalization was enabled.
+
+A single explicit manual validation execution, `366bf2db-cd48-41d4-81cd-cfc26809dc0e`, used an immutable temporary validation definition with the exact-model guard and three non-delivering Agent stages. Its input and instructions prohibited research, browsing, email, filesystem changes, messages, notifications and delegation; each stage completed only its correlated Request. The regular v5 shadow definition was restored immediately after admission, and admission was held again while accepted work finished. The ten-minute trigger remained disabled throughout. One additional execution allowance was granted before validation. The application records the explicit manual validation separately and did not charge its automatic-admission budget: that counter remains 3, with policy limit 2 plus 2 supplemental allowances, leaving one unused automatic allowance. Admission and recurrence remain disabled; that allowance does not activate any work. Four total executions exist, including the one manual validation.
+
+| Stage | Exact actual provider Run | Verified model/reasoning |
+|---|---|---|
+| Scout | d761ef51-919c-46c6-8a6e-edc044ad60a5 | gpt-5.6-sol / high, completed |
+| Independent Reviewer | e1568398-115a-469a-95c6-eb719268e25e | gpt-5.6-sol / high, completed |
+| Spokesperson/draft | f74a5a30-3a23-4bfe-80bb-57d279412572 | gpt-5.6-sol / high, completed |
+
+The final receipt explicitly records `delivered:false`, `communicationEventId:null` and `outboundAuthorized:false`. Canonical tool-call/results correlate these Runs to the three exact validation Requests. The qualification artifact's timestamp is the actual final completed Run time, `2026-10-13T21:17:39.934Z`, rather than a fabricated current observation. All v5 Agents were observed idle afterward, with zero assistant user DMs and no announced claims.
+
+Relevant guard checks pass, including refusal of unsupported models, model/effort mismatches and stale evidence, plus preservation of input for an exactly qualified model. The candidate suite reports 23 passing test methods, including its aggregate original-v3 suite. Three scoped-route integration checks pass; web build and TypeScript pass. This bounded test validates actual runtime selection and non-delivery, not research usefulness or a live delivery path.
+
+Before/after API evidence and hashes confirm all v3 candidate files and model settings were unchanged. V4 retained its exact version, binding revision and enabled trigger. Existing v1/v2 and original v3 were never targeted. Credentials and security/capability policies were not changed.
+
+Evidence: sibling `evidence/v5-gpt56-verified-receipts.json`, `v5-gpt56-validation-detail.json`, `v5-approved-model-change.json`, `v5-gpt56-final-preservation.json`, `v5-gpt56-guard-tests.log`, `v5-gpt56-route-tests.log`, `v5-gpt56-web-build.log` and `v5-gpt56-web-typecheck.log`. The preview URL is unchanged. Live recurrence, user messaging/delivery and broader prospective evaluation remain disabled.

@@ -70,7 +70,7 @@
       "requiredModel": {
         "type": "text",
         "label": "Required runtime model",
-        "default": "gpt-6.1-sol"
+        "default": "gpt-5.6-sol"
       },
       "requiredEffort": {
         "type": "text",
@@ -182,7 +182,7 @@
                 "ref": "reviewer",
                 "title": "Findings Reviewer",
                 "engine": "codex",
-                "model": "gpt-6.1-sol",
+                "model": "gpt-5.6-sol",
                 "managementPermissions": {
                   "allowAutomaticDescendantDeletion": false,
                   "allowAutomaticDescendantReorganization": false
@@ -208,7 +208,7 @@
                 "ref": "scout",
                 "title": "Scout",
                 "engine": "codex",
-                "model": "gpt-6.1-sol",
+                "model": "gpt-5.6-sol",
                 "managementPermissions": {
                   "allowAutomaticDescendantDeletion": false,
                   "allowAutomaticDescendantReorganization": false
@@ -233,7 +233,7 @@
                 "ref": "spokesperson",
                 "title": "Pinecone",
                 "engine": "codex",
-                "model": "gpt-6.1-sol",
+                "model": "gpt-5.6-sol",
                 "effort": "high",
                 "managementPermissions": {
                   "allowAutomaticDescendantDeletion": false,
@@ -281,7 +281,7 @@
   },
   "parameters": {
     "focus": "Find concrete improvements in proactive assistant relevance, responsiveness and efficient bounded research for Ponderosa 0.2.0 exploration. Preserve release 0.1.0. No personal housing, location, tenancy, employment or financial assumptions are supplied.",
-    "requiredModel": "gpt-6.1-sol",
+    "requiredModel": "gpt-5.6-sol",
     "requiredEffort": "high"
   }
 }
