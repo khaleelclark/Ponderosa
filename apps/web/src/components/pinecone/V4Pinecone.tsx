@@ -8,6 +8,7 @@ import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import {MessageDeliveryStatus} from '../MessageDeliveryStatus';
 import type {BranchBindings,BranchContextDto,BranchDto,TriggerDefinitionDto} from '@ponderosa/core';
 import type {BranchRoute} from '../../branchesRouting';
+import type {ColorMode} from '../../theme';
 import {realApi,requestJson} from '../../api/real';
 import {useWorkspaceStream} from '../../hooks/useWorkspaceStream';
 import {useAgentStream} from '../../hooks/useAgentStream';
@@ -23,15 +24,15 @@ import {pineconeDraftKey,pineconeMessages} from './branchPineconeModel';
 import {reviewedDefinition} from './responsibilities';
 
 /** V4's original communication surface, refined without changing its Branch or Agents. */
-export function V4Pinecone({route,onNavigate}:{route:BranchRoute;onNavigate(route:BranchRoute,replace?:boolean):boolean}):JSX.Element {
+export function V4Pinecone({route,onNavigate,colorMode,onToggleColorMode}:{route:BranchRoute;onNavigate(route:BranchRoute,replace?:boolean):boolean;colorMode:ColorMode;onToggleColorMode():void}):JSX.Element {
   const connection=useWorkspaceStream();
   return <WorkspaceConnectionProvider value={connection}><Box sx={{height:'var(--ponderosa-app-viewport-block-size, 100dvh)',minHeight:0,overflow:'hidden',display:'flex',flexDirection:'column',bgcolor:'background.default',pt:'env(safe-area-inset-top)',pl:'env(safe-area-inset-left)',pr:'env(safe-area-inset-right)'}}>
     <WorkspaceConnectionNotice connection={connection}/>
-    {route.branchId&&<PineconeConversation key={route.branchId} branchId={route.branchId} onNavigate={onNavigate}/>}
+    {route.branchId&&<PineconeConversation key={route.branchId} branchId={route.branchId} onNavigate={onNavigate} colorMode={colorMode} onToggleColorMode={onToggleColorMode}/>}
   </Box></WorkspaceConnectionProvider>;
 }
 
-function PineconeConversation({branchId,onNavigate}:{branchId:string;onNavigate(route:BranchRoute):boolean}):JSX.Element {
+function PineconeConversation({branchId,onNavigate,colorMode,onToggleColorMode}:{branchId:string;onNavigate(route:BranchRoute):boolean;colorMode:ColorMode;onToggleColorMode():void}):JSX.Element {
   const [menuAnchor,setMenuAnchor]=useState<HTMLElement|null>(null);
   const closeMenu=()=>setMenuAnchor(null);
   const branch=useQuery({queryKey:['branch',branchId],queryFn:()=>requestJson<BranchDto>(`/api/branches/${branchId}`),refetchInterval:5000});
@@ -62,6 +63,7 @@ function PineconeConversation({branchId,onNavigate}:{branchId:string;onNavigate(
         <MenuItem onClick={()=>{closeMenu();advanced()}}>Files &amp; team</MenuItem>
         <MenuItem onClick={()=>{closeMenu();advanced('executions')}}>Research history</MenuItem>
         <MenuItem onClick={()=>{closeMenu();onNavigate({branchId,tab:'chats',global:'notifications'})}}>Notifications</MenuItem>
+        <MenuItem onClick={()=>{closeMenu();onToggleColorMode()}}>{colorMode==='dark'?'Use light mode':'Use dark mode'}</MenuItem>
         <MenuItem disabled>{trigger.error?'Discovery unavailable':trigger.isPending?'Loading discovery…':trigger.data?.enabled?'Discovery on':'Discovery paused'}</MenuItem>
         <MenuItem disabled={!owner.data||!trigger.data||branch.data?.enabled===false||controls.isPending||controlBlocked||(branch.data?.activeExecutions??0)>0} onClick={()=>{closeMenu();controls.mutate('check')}}>Check now</MenuItem>
         <MenuItem disabled={!trigger.data||controls.isPending||controlBlocked} onClick={()=>{closeMenu();controls.mutate('toggle')}}>{trigger.data?.enabled?'Pause discovery':'Resume discovery'}</MenuItem>
