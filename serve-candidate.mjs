@@ -5,7 +5,7 @@ const root=new URL('./candidate-web-dist/',import.meta.url).pathname;
 const candidates=new Map([['49005cab-f4d3-4b38-a468-bf153624e4f4','v5'],['592f4798-cd48-445a-91f2-9f9a86b1c135','v3']]);
 const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,'http://localhost');
- const qualification=url.pathname.match(/^\/api\/pinecone-candidate\/([^/]+)\/runtime$/);
+ const qualification=url.pathname.match(/^\/api\/(?:branches\/engine\/)?pinecone-candidate\/([^/]+)\/runtime$/);
  if(req.method==='GET'&&qualification&&candidates.has(qualification[1])){
   try{const file=new URL('../candidates/'+candidates.get(qualification[1])+'/pinecone-runtime-capability.json',import.meta.url);const s=await stat(file);if(s.size>8192)throw Error();const q=JSON.parse(await readFile(file,'utf8'));res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify({model:q.model,effort:q.effort,supported:q.supported,verifiedAt:q.verifiedAt,error:q.error}));}catch{res.writeHead(503);res.end('Model qualification evidence unavailable')}
   return;
