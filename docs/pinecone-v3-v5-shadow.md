@@ -1,3 +1,55 @@
+# Pinecone v3/v5 experiment handoff — current activation, 2026-10-13
+
+Patrick explicitly approved activating the existing candidates for normal updates in each candidate's own UI, pausing original v1/v2, and selecting GPT-5.6 Sol/low for v3 and GPT-5.6 Sol/high for v5. Both candidates are enabled and their first scheduled pipelines completed, including verified canonical user delivery. V4 remains enabled and unchanged. No email, Slack, third-party channel, synthetic outgoing test message, product release publication or merge was performed.
+
+## Current state
+
+| Version | State | Model/reasoning | Schedule and delivery |
+|---|---|---|---|
+| Original v1 | Disabled (already disabled) | Unchanged | Ten-minute definition retained; history preserved |
+| Original v2 | Disabled | Unchanged | Ten-minute definition retained; history preserved |
+| Candidate v3 | Enabled | gpt-5.6-sol / low for all three AI stages | Every 12 hours; normal updates only in its own UI |
+| Candidate v5 | Enabled | gpt-5.6-sol / high for all three AI stages | Every 10 minutes; normal updates only in its own UI |
+| Baseline v4 | Enabled, unchanged | Original low Scout/Reviewer and high spokesperson | Existing ten-minute schedule; awaits Patrick's separate decision |
+
+- V3 UI: http://192.168.1.147:18795/branches?branch=592f4798-cd48-445a-91f2-9f9a86b1c135&tab=pinecone
+- V5 UI: http://192.168.1.147:18795/branches?branch=49005cab-f4d3-4b38-a468-bf153624e4f4&tab=pinecone
+
+Both interval schedules started at 2026-10-13 21:42:04 UTC. At the final snapshot, v3's next check is 2026-10-14 09:42:04 UTC; v5's is 2026-10-13 22:02:04 UTC after its second scheduled check completed. No cadence was changed. Rolling day admission budgets are 2 for v3 and 144 for v5; concurrency remains one execution per candidate. Earlier bounded test epochs and all histories remain available.
+
+## Implemented behavior and evidence
+
+V3 researches autonomously without requiring a new incoming event and separates discovery from notification eligibility. Its planner now uses nominal scheduler provenance for the twelve-hour interval, avoiding a processing-delay bug that could skip the next check. V5 retains v4's Branch topology, quiet path, independent review, claim/topic deduplication, interruption budgets and canonical delivery receipts, with stronger instructions and deterministic gates for freshness, known facts, dismissed/resolved choices, applicability and uncertainty. No household-specific circumstances were hardcoded or imported. Current briefs record the already implemented guards and receipts as known facts.
+
+The exact-model guard remains active before admission work and before the notification gate. It checks bounded, nonsymlink qualification evidence, configured Agent models/reasoning, and recent actual provider receipts. It rejects any completed mismatched model/reasoning and refreshes qualification only from matching completed receipts after the approved model choice. It fails closed if evidence becomes unsupported or more than 24 hours old. This avoids the backend's observed silent fallback; no provider API-key integration was added.
+
+Delivery uses the existing verified v4 publication contract: the sole bound spokesperson must author a canonical user DM in its own installed conversation and return its Communication event ID. Runtime validation verifies exact Run, Agent, conversation and user scope before the receipt writes an announced claim. There is no separate Notify step. Scout and Reviewer cannot publish user updates. Delivery budget remains one ordinary finding per two hours and one per need-topic per day.
+
+| Candidate | First automatic execution | Actual provider verification | Canonical user communication |
+|---|---|---|---|
+| V3 | 6e5674e7-f31a-4edd-9f4c-756cc73f0a91 — completed | All Scout/Reviewer/spokesperson Runs completed gpt-5.6-sol / low | 63269e31-842e-4d43-929c-f53c5ea03db0; announced receipt verified |
+| V5 | ba03c245-0f48-4ffe-a31e-746c7cc6368c — completed | All Scout/Reviewer/spokesperson Runs completed gpt-5.6-sol / high | 5ef8ff11-bfa7-4a57-9a7b-8971f720f78d; announced receipt verified |
+
+V5's second automatic execution, a2210ad7-73a3-48f4-8b06-b21f084eb57f, fired at 21:52:04 UTC and completed with `Quiet check complete; coverage retained`; the gate selected the quiet path and did not invoke spokesperson delivery. These are actual scheduled completions, not configured-only schedules. First alerts concerned bounded evidence-sufficiency research for Ponderosa 0.2.0; their usefulness relative to v4 is not yet established. V3's first authored update contains excess punctuation escaping; it was preserved unchanged as canonical evidence.
+
+The candidate UI enables conversation, Check now and Pause only under explicit supported `user-ui` mode. Its proxy permits only each candidate's own spokesperson message route, Check now execution route, and reviewed enable/pause change for its own trigger. It rejects other writes and foreign Origins, preserves Host/Origin for the backend's existing CSRF validation, and pins conversation requests to the candidate's exact model/reasoning. No credential or capability policy was relaxed. UI metadata confirms supported 5.6/low and 5.6/high and active user-ui delivery mode. Build and TypeScript checks pass. Final native browser inspection found Safari on another page; no synthetic message or extra manual execution was used to test the controls. Earlier Safari accessibility and mobile compositor limitations are recorded below.
+
+Validation: 25 current candidate test methods pass (including the aggregate original 22-test v3 suite), covering quiet/dedup/known/resolved/stale/uncertain findings, model mismatch/staleness, actual-receipt refresh and nominal scheduler timing. Seven canonical publication contract tests, two scoped write-policy tests and three scoped-route integration checks pass. No test sends real messages. The real scheduled announcements above were the expressly authorized normal candidate updates.
+
+Current supporting records in sibling `evidence/`: `activation-final-state.json`, `activation-first-successful-provider-receipts.json`, `activation-first-scheduled-details.json`, `activation-v1-v2-disabled.json`, `activation-v1-v2-no-new-admissions.json`, `activation-installed-updates.json`, and `activation-*-tests.log`. The no-new-admissions check verified v1/v2 last-fired timestamps did not advance after more than two former ten-minute periods.
+
+## Isolation and rollback
+
+Existing Branch, Chat, Agent, trigger and workspace identities were retained. Activation used supported tracked package update, configuration, budget and trigger APIs; no database mutations occurred. V4 still uses definition 927d643b-3c97-46c7-89e8-d3092bbfc9ef and binding a98e04d8-197c-45da-a373-e3e73732e4eb; source, data and schedule were preserved. Original v3 prototype is untouched. No private memory export, unrelated import, persistent credential copy or new connector occurred.
+
+Rollback candidates independently using the supported Pause control or trigger enabled=false and Branch availability=false, preserving accepted execution/history records. Candidate pre-activation packages, qualification, planner and brief records are retained as `activation-*-before.*`. The tracked package installer can restore earlier candidate definitions after accepted work drains. Do not stop or delete baseline versions. The candidate-only UI has no boot service; its exact process is recorded in sibling `evidence/candidate-ui.pid` and can be stopped after checking its command contains this clone's serve-candidate.mjs. Do not target the v4 daemon.
+
+Source is isolated at `candidate-source`, branch `codex/pinecone-v3-v5-shadow-20261013`, base 81a49b911ba22f2a40ca622fa62f9d752fa2e253. Exact current commit is in sibling `evidence/git-checkpoint.json`. No push, PR, release publication or merge was performed; a reviewed PR remains required before product integration. Remaining decisions: whether to keep v4 active, and later whether comparison evidence warrants changing candidate cadence or product integration. No additional approval is needed for the activation already completed.
+
+## Historical shadow and model qualification record — superseded states
+
+The following retained record describes earlier paused/shadow stages. Its statements about disabled candidates, GPT-6.1 selections and absent user DMs are historical, superseded by the current activation above.
+
 # Pinecone v3/v5 experiment handoff — 2026-10-13
 
 Outcome: the existing v5 candidate now uses **GPT-5.6 Sol/high**, explicitly approved by Patrick on 2026-10-13. One manual non-delivering validation completed through Scout, independent Reviewer and spokesperson; each actual provider Run was correlated to its exact validation Request and confirmed GPT-5.6 Sol/high. Both candidates remain paused, with recurring schedules disabled and outbound delivery disabled. V3 remains GPT-6.1 Sol/low and unchanged; its prior unsupported-model qualification remains held. The earlier GPT-6.1 blocker and fallback evidence are preserved below.

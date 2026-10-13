@@ -24,14 +24,14 @@ import {pineconeDraftKey,pineconeMessages} from './branchPineconeModel';
 import {reviewedDefinition} from './responsibilities';
 
 /** A standalone assistant surface on the existing Branch engine and communication APIs. */
-export function BranchPinecone({route,onNavigate}:{route:BranchRoute;onNavigate(route:BranchRoute,replace?:boolean):boolean}):JSX.Element {
+export function BranchPinecone({route,onNavigate,candidatePreview=false}:{route:BranchRoute;onNavigate(route:BranchRoute,replace?:boolean):boolean;candidatePreview?:boolean}):JSX.Element {
   const connection=useWorkspaceStream();
   const engines=useQuery({queryKey:['engines'],queryFn:()=>realApi.listEngines()});
   const [installation,setInstallation]=useState<InstalledBranchPackage>();
   const newInstallation=()=>setInstallation(pineconeBranchPackage());
   return <WorkspaceConnectionProvider value={connection}><Box sx={{height:'100dvh',display:'flex',flexDirection:'column',bgcolor:'background.default'}}>
     <WorkspaceConnectionNotice connection={connection}/>
-    {route.branchId?<PineconeConversation key={route.branchId} branchId={route.branchId} onNavigate={onNavigate}/>:<Stack spacing={3} alignItems="center" justifyContent="center" sx={{flex:1,p:3,textAlign:'center'}}>
+    {route.branchId?<PineconeConversation key={route.branchId} branchId={route.branchId} onNavigate={onNavigate} candidatePreview={candidatePreview}/>:<Stack spacing={3} alignItems="center" justifyContent="center" sx={{flex:1,p:3,textAlign:'center'}}>
       <PineconeMark sx={{fontSize:72}}/><Typography variant="h3" fontWeight={700}>Meet Pinecone.</Typography>
       <Typography color="text.secondary" sx={{maxWidth:480}}>Text your assistant. Behind the conversation, a small research team looks for things that could help you.</Typography>
       <Button variant="contained" size="large" disabled={!engines.data?.length} onClick={newInstallation}>Create a new Pinecone</Button>
@@ -43,14 +43,14 @@ export function BranchPinecone({route,onNavigate}:{route:BranchRoute;onNavigate(
   </Box></WorkspaceConnectionProvider>;
 }
 
-function PineconeConversation({branchId,onNavigate}:{branchId:string;onNavigate(route:BranchRoute):boolean}):JSX.Element {
+function PineconeConversation({branchId,onNavigate,candidatePreview=false}:{branchId:string;onNavigate(route:BranchRoute):boolean;candidatePreview?:boolean}):JSX.Element {
   const branch=useQuery({queryKey:['branch',branchId],queryFn:()=>requestJson<BranchDto>(`/api/branches/${branchId}`),refetchInterval:5000});
   const bindings=useQuery({queryKey:['pinecone-bindings',branchId,branch.data?.bindingRevisionId],queryFn:()=>requestJson<BranchBindings>(`/api/branches/${branchId}/configuration`),enabled:Boolean(branch.data),retry:false});
-  const shadow=branch.data?.name?.endsWith('(shadow)')??false;
-  const qualification=useQuery({queryKey:['pinecone-model-qualification',branchId],queryFn:()=>requestJson<{model:string;effort:string;supported:boolean;error?:string}>(`/api/pinecone-candidate/${branchId}/runtime`),enabled:shadow,retry:false});
-  const evaluations=useQuery({queryKey:['pinecone-evaluations',branchId],queryFn:()=>requestJson<BranchExecutionDto[]>(`/api/branches/${branchId}/executions`),enabled:shadow,refetchInterval:5000});
+  const qualification=useQuery({queryKey:['pinecone-model-qualification',branchId],queryFn:()=>requestJson<{model:string;effort:string;supported:boolean;error?:string;deliveryMode?:string}>(`/api/pinecone-candidate/${branchId}/runtime`),enabled:candidatePreview,retry:false});
+  const shadow=candidatePreview&&(!qualification.isSuccess||qualification.data?.deliveryMode!=='user-ui'||qualification.data?.supported!==true);
+  const evaluations=useQuery({queryKey:['pinecone-evaluations',branchId],queryFn:()=>requestJson<BranchExecutionDto[]>(`/api/branches/${branchId}/executions`),enabled:candidatePreview,refetchInterval:5000});
   const latest=evaluations.data?.[0];
-  const finding=useQuery({queryKey:['pinecone-shadow-result',latest?.id,latest?.state],queryFn:()=>requestJson<{output:string|null}>(`/api/branch-executions/${latest!.id}/result`),enabled:shadow&&latest?.state==='completed'});
+  const finding=useQuery({queryKey:['pinecone-shadow-result',latest?.id,latest?.state],queryFn:()=>requestJson<{output:string|null}>(`/api/branch-executions/${latest!.id}/result`),enabled:candidatePreview&&latest?.state==='completed'});
   let shadowFinding:{message?:string;delivered?:boolean}|undefined;try{shadowFinding=JSON.parse(finding.data?.output??'null')}catch{}
   const id=bindings.data?.agents.spokesperson;
   const owner=useQuery({queryKey:['pinecone-owner',id],queryFn:async()=>{const detail=await realApi.getAgent(id!,1);const chat=await requestJson<BranchContextDto>(`/api/branches/contexts/${detail.agent.conversationId}`);if(chat.branchId!==branchId||chat.executionId||detail.agent.archived)throw Error('Spokesperson is not an active persistent member of this Branch');return detail.agent},enabled:Boolean(id),retry:false});
@@ -72,8 +72,8 @@ function PineconeConversation({branchId,onNavigate}:{branchId:string;onNavigate(
   return <Stack sx={{flex:1,minHeight:0}}>
     <Stack direction="row" alignItems="center" gap={1.5} sx={{px:{xs:2,sm:4},py:2,borderBottom:1,borderColor:'divider'}}>
       <Tooltip title="Branches"><IconButton aria-label="Back to Branches" onClick={()=>onNavigate({tab:'workflow'})}><ArrowBackRoundedIcon/></IconButton></Tooltip>
-      <PineconeMark sx={{fontSize:36}}/><Box sx={{flex:1}}><Typography variant="h6" fontWeight={750}>{shadow?branch.data?.name:'Pinecone'}</Typography><Typography variant="caption" color="text.secondary">Useful discoveries. Space to think. A conversation when you need it.</Typography></Box>
-      {!shadow&&<BranchNotifications onNavigate={onNavigate}/>}<Button onClick={()=>advanced()}>More</Button>
+      <PineconeMark sx={{fontSize:36}}/><Box sx={{flex:1}}><Typography variant="h6" fontWeight={750}>{candidatePreview?branch.data?.name:'Pinecone'}</Typography><Typography variant="caption" color="text.secondary">Useful discoveries. Space to think. A conversation when you need it.</Typography></Box>
+      {!candidatePreview&&<BranchNotifications onNavigate={onNavigate}/>}<Button onClick={()=>advanced()}>More</Button>
     </Stack>
     <Stack direction="row" gap={1} useFlexGap flexWrap="wrap" alignItems="center" sx={{px:{xs:2,sm:4},py:1.5}}>
       <Chip size="small" variant="outlined" label={trigger.error?'Discovery unavailable':!branch.data||trigger.isPending?'Loading discovery…':branch.data.enabled===false?'Branch paused':!branch.data.triggerId?'No discovery schedule':trigger.data?.enabled?'Discovery on':'Discovery paused'}/>
@@ -82,7 +82,7 @@ function PineconeConversation({branchId,onNavigate}:{branchId:string;onNavigate(
       <Button size="small" onClick={()=>advanced('executions')}>Research history</Button>
     </Stack>
     {shadow&&qualification.data?.supported===false&&<Alert severity="warning" sx={{mx:{xs:2,sm:4},mb:2}}><Typography fontWeight={700}>This preview needs a supported model</Typography><Typography variant="body2">Your current Codex subscription rejected {qualification.data.model}. This candidate stays paused until you choose how to proceed. No substitute model will run.</Typography></Alert>}
-    {shadow&&<Box component="section" aria-label="Proactive research" sx={{mx:{xs:2,sm:4},mb:2,p:2,border:1,borderColor:'divider',borderRadius:3,bgcolor:'background.paper'}}><Stack direction={{xs:'column',sm:'row'}} gap={2} justifyContent="space-between"><Box><Typography fontWeight={700}>Proactive research</Typography><Typography variant="body2" color="text.secondary">{latest?.state==='running'||latest?.state==='waiting'?'Investigating and checking evidence…':latest?.state==='canceled'?'The last test stopped before verification finished. Open research history for the reason.':latest?.state==='failed'?'The last check could not finish. Open research history for the reason.':latest?.state==='completed'?(shadowFinding?.message?'A finding is ready for your review.':'Latest check finished quietly. Open research history for the evidence.'):'Waiting for the bounded test check.'}</Typography></Box><Chip size="small" label="Shadow preview · no notifications"/></Stack>{shadowFinding?.message&&<Box sx={{mt:2,pt:2,borderTop:1,borderColor:'divider'}}><Typography variant="overline">Finding for review · undelivered</Typography><ChatMessageBody text={shadowFinding.message} compactMarkdown/></Box>}<Typography variant="caption" color="text.secondary" sx={{display:'block',mt:1}}>Research can finish quietly. Activation and cadence need your choice.</Typography></Box>}
+    {candidatePreview&&<Box component="section" aria-label="Proactive research" sx={{mx:{xs:2,sm:4},mb:2,p:2,border:1,borderColor:'divider',borderRadius:3,bgcolor:'background.paper'}}><Stack direction={{xs:'column',sm:'row'}} gap={2} justifyContent="space-between"><Box><Typography fontWeight={700}>Proactive research</Typography><Typography variant="body2" color="text.secondary">{latest?.state==='running'||latest?.state==='waiting'?'Investigating and checking evidence…':latest?.state==='canceled'?'The last test stopped before verification finished. Open research history for the reason.':latest?.state==='failed'?'The last check could not finish. Open research history for the reason.':latest?.state==='completed'?(shadow?(shadowFinding?.message?'A finding is ready for your review.':'Latest check finished quietly. Open research history for the evidence.'):(latest.output?.startsWith('Quiet check complete')?'Latest check finished quietly. Open research history for the evidence.':'Latest check completed. Updates appear in this conversation.')):'Waiting for the bounded test check.'}</Typography></Box><Chip size="small" label={shadow?'Shadow preview · no notifications':'Active · updates in this UI'}/></Stack>{shadow&&shadowFinding?.message&&<Box sx={{mt:2,pt:2,borderTop:1,borderColor:'divider'}}><Typography variant="overline">Finding for review · undelivered</Typography><ChatMessageBody text={shadowFinding.message} compactMarkdown/></Box>}<Typography variant="caption" color="text.secondary" sx={{display:'block',mt:1}}>{shadow?'Research can finish quietly. Activation and cadence need your choice.':'Research can finish quietly. Only fresh, applicable findings appear in this conversation.'}</Typography></Box>}
     {controlError&&<Alert severity="warning" action={<Button onClick={async()=>{const result=await trigger.refetch();if(!result.error){setControlBlocked(false);setControlError('')}}}>Reload</Button>}>{controlError}</Alert>}
     {notice&&<Alert severity="info" onClose={()=>setNotice('')}>{notice}</Alert>}
     {issue?<Alert severity="error">{issue.message} <Button onClick={()=>{refresh();void bindings.refetch();void owner.refetch()}}>Retry</Button><Button onClick={()=>advanced('workflow')}>Open workflow</Button></Alert>:!id&&bindings.isSuccess?<Alert severity="info">This Branch has no Pinecone spokesperson binding. Create a new Pinecone installation or configure its organization in Branches.</Alert>:!owner.data?<Box sx={{p:3}}><CircularProgress size={22}/> Loading Pinecone…</Box>:<TextingChat key={id} branchId={branchId} agentId={id!} shadow={shadow} onAdvanced={()=>advanced()}/>}
@@ -136,7 +136,7 @@ function TextingChat({branchId,agentId,shadow=false,onAdvanced}:{branchId:string
           <TextField autoComplete="off" multiline maxRows={6} placeholder={shadow?'Conversation opens when you activate this candidate':'Text Pinecone…'} aria-label="Message Pinecone" value={draft} disabled={shadow||send.isPending||Boolean(sendError&&attempt.current)} onChange={e=>{setDraft(e.target.value);setAccepted('')}} variant="standard" fullWidth InputProps={{disableUnderline:true}} sx={{px:1,py:.5}} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();submit()}}}/>
           <IconButton type="submit" aria-label="Send message to Pinecone" disabled={shadow||!draft.trim()||send.isPending||Boolean(sendError)} sx={{bgcolor:'primary.main',color:'primary.contrastText','&:hover':{bgcolor:'primary.dark'}}}>{send.isPending?<CircularProgress size={20}/>:<ArrowUpwardRoundedIcon/>}</IconButton>
         </Stack>
-        <Typography variant="caption" color="text.secondary" textAlign="center">{shadow?'Preview mode keeps outbound delivery off.':'Discovery continues in the background.'} <Button size="small" onClick={onAdvanced}>Files, team & more</Button></Typography>
+        <Typography variant="caption" color="text.secondary" textAlign="center">{shadow?'Preview mode keeps outbound delivery off.':'Discovery continues in the background; pause it above whenever you like.'} <Button size="small" onClick={onAdvanced}>Files, team & more</Button></Typography>
       </Stack>
     </Box>
   </>;
