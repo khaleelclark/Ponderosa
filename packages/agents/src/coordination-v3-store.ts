@@ -1,0 +1,1386 @@
+import { requireAdmittedDatabase } from "./state-admission.js";
+import type Database from "better-sqlite3";
+import { runOwnsAwaitedDelegation, taskOriginRunIds } from "./coordination-v3-task-lineage.js";
+import type { RunAuthorizationV3 } from "./coordination-v3-types.js";
+import {
+  type MessageDeliveryReceiptDto,
+  type CommunicationEvent,
+  type RetryMessageDeliveryResponse,
+  type DerivedAgentAvailability,
+  type CoordinationReplyAuthority,
+  type ProviderFailureCategory,
+} from "@ponderosa/core";
+import { CoordinationV3ReadModel } from "./coordination-v3-read-model.js";
+import { CoordinationV3RequestReadModel } from "./coordination-v3-request-read-model.js";
+import { CoordinationV3ActivationReadModel } from "./coordination-v3-activation-read-model.js";
+import { CoordinationV3ActivationCommandAuthority } from "./coordination-v3-activation-command-authority.js";
+import { CoordinationV3RuntimeAttachmentAuthority } from "./coordination-v3-runtime-attachment-authority.js";
+import { CoordinationV3RuntimeArtifactAuthority } from "./coordination-v3-runtime-artifact-authority.js";
+import { CoordinationV3RuntimeCommunicationReadModel } from "./coordination-v3-runtime-communication-read-model.js";
+import { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
+import { CoordinationV3RunContextReadModel } from "./coordination-v3-run-context-read-model.js";
+import { CoordinationV3SchedulerStatusReadModel } from "./coordination-v3-scheduler-status-read-model.js";
+import { CoordinationV3OperationalOutboxAuthority } from "./coordination-v3-operational-outbox-authority.js";
+import {
+  CoordinationV3RuntimeCommunicationAuthority,
+  type CreateActivationV3Input,
+} from "./coordination-v3-runtime-communication-authority.js";
+import { CoordinationV3ActivationFactory } from "./coordination-v3-activation-factory.js";
+import { CoordinationV3ContextRolloverAuthority } from "./coordination-v3-context-rollover-authority.js";
+import { CoordinationV3ActivationLifecycleAuthority } from "./coordination-v3-activation-lifecycle-authority.js";
+import { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
+import { CoordinationV3DeletionAuthority } from "./coordination-v3-deletion-authority.js";
+import { CoordinationV3CoordinateAuthority } from "./coordination-v3-coordinate-authority.js";
+import { CoordinationV3RequestRecoveryAuthority } from "./coordination-v3-request-recovery-authority.js";
+import { CoordinationV3QuestionAuthority } from "./coordination-v3-question-authority.js";
+import { CoordinationV3SteeringAuthority } from "./coordination-v3-steering-authority.js";
+import { CoordinationV3SchedulerLeaseAuthority } from "./coordination-v3-scheduler-lease-authority.js";
+import { CoordinationV3RequestAuthority } from "./coordination-v3-request-authority.js";
+import { CoordinationV3RunLifecycleAuthority } from "./coordination-v3-run-lifecycle-authority.js";
+import {
+  CoordinationV3RequiredReplyAuthority,
+  type RequiredReplyObligation,
+} from "./coordination-v3-required-reply-authority.js";
+import {
+  CommunicationV4NextRunDeliveryAuthority,
+  type CommunicationV4NextRunDelivery,
+  type NextRunDeliveryMaintenanceResult,
+  type OperatorNextRunDeliveryReceipt,
+  type PublishAgentNextRunDeliveryInput,
+  type PublishNextRunDeliveryResult,
+  type PublishOperatorNextRunDeliveryInput,
+  type ReplayAgentNextRunDeliveryInput,
+} from "./communication-v4-next-run-delivery-authority.js";
+import type {
+  CoordinateV3Input,
+  CoordinateV3Result,
+  UpdateRequestV3Input,
+  RequestUpdateV3Result,
+  CoordinationRequestV3View,
+  CoordinationRequestDeliveryView,
+  SchedulerLease,
+  ActivationPromptClass,
+  ActivationTerminalOutcome,
+  RuntimeCommunicationV3Input,
+  RuntimeCommunicationV3Result,
+  RuntimeCommunicationV3View,
+  RuntimeArtifactInputV3,
+  RuntimeArtifactV3,
+  PendingActivationV3View,
+  TerminalActivationV3View,
+  CommunicationAttentionActivationCursor,
+  CommunicationAttentionActivationV3View,
+  CoordinationAttentionCandidateCursor,
+  CoordinationAttentionCandidateV3View,
+  SettleUnavailableActivationResult,
+  CoordinationWaitCycleV3,
+  SteeringLease,
+  CancellationResult,
+  SteeringRecoveryDecisionResult,
+  ProviderOperation,
+  OutboxItem,
+  EnqueueMessageActivationInput,
+  CoordinationV3StoreOptions,
+  ContextRolloverV3,
+} from "./coordination-v3-types.js";
+export type {
+  CommunicationV4NextRunDelivery,
+  NextRunDeliveryMaintenanceResult,
+  OperatorNextRunDeliveryReceipt,
+  PublishAgentNextRunDeliveryInput,
+  PublishNextRunDeliveryResult,
+  PublishOperatorNextRunDeliveryInput,
+  ReplayAgentNextRunDeliveryInput,
+} from "./communication-v4-next-run-delivery-authority.js";
+export type {
+  RunAuthorizationV3,
+  CoordinateV3Input,
+  CoordinateV3Result,
+  UpdateRequestV3Input,
+  RequestUpdateV3Result,
+  CoordinationRequestV3View,
+  CoordinationRequestDeliveryView,
+  SchedulerLease,
+  ActivationDispatchPolicy,
+  ActivationPromptClass,
+  ActivationTerminalOutcome,
+  RuntimeCommunicationV3Input,
+  RuntimeCommunicationV3Result,
+  RuntimeCommunicationV3View,
+  RuntimeArtifactInputV3,
+  RuntimeArtifactV3,
+  RuntimeManagedArtifactAttachmentAuthorizationV3,
+  RuntimeAttachmentAuthorityV3,
+  RuntimeAttachmentAuthorityProviderV3,
+  RuntimeArtifactAuthorityV3,
+  PendingActivationV3View,
+  TerminalActivationV3View,
+  CommunicationAttentionActivationCursor,
+  CommunicationAttentionActivationV3View,
+  CoordinationAttentionCandidateCursor,
+  CoordinationAttentionCandidateKind,
+  CoordinationAttentionCandidateV3View,
+  SettleUnavailableActivationResult,
+  CoordinationWaitCycleV3,
+  SteeringLease,
+  CancellationResult,
+  SteeringRecoveryDecisionResult,
+  ProviderOperation,
+  OutboxItem,
+  EnqueueMessageActivationInput,
+  CoordinationV3StoreOptions,
+  ContextRolloverState,
+  ContextRolloverV3,
+} from "./coordination-v3-types.js";
+
+/** Transactional authority for Communication V3. Runtime telemetry may mirror
+ * these transitions, but scheduler decisions must read this store. */
+export const MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES = 256 * 1024;
+
+export class CoordinationV3Store {
+  private readonly sqlite: Database.Database;
+  private readonly activationReadModel: CoordinationV3ActivationReadModel;
+  private readonly activationCommandAuthority: CoordinationV3ActivationCommandAuthority;
+  private readonly readModel: CoordinationV3ReadModel;
+  private readonly requestReadModel: CoordinationV3RequestReadModel;
+  private readonly runtimeAttachmentAuthority: CoordinationV3RuntimeAttachmentAuthority;
+  private readonly runtimeArtifactAuthority: CoordinationV3RuntimeArtifactAuthority;
+  private readonly runtimeCommunicationReadModel: CoordinationV3RuntimeCommunicationReadModel;
+  private readonly runtimeCommunicationAuthority: CoordinationV3RuntimeCommunicationAuthority;
+  private readonly runtimeScopeAuthority: CoordinationV3RuntimeScopeAuthority;
+  private readonly runContextReadModel: CoordinationV3RunContextReadModel;
+  private readonly schedulerStatusReadModel: CoordinationV3SchedulerStatusReadModel;
+  private readonly operationalOutboxAuthority: CoordinationV3OperationalOutboxAuthority;
+  private readonly activationFactory: CoordinationV3ActivationFactory;
+  private readonly activationLifecycle: CoordinationV3ActivationLifecycleAuthority;
+  private readonly support: CoordinationV3StoreSupport;
+  private readonly deletionAuthority: CoordinationV3DeletionAuthority;
+  private readonly coordinateAuthority: CoordinationV3CoordinateAuthority;
+  private readonly requestRecoveryAuthority: CoordinationV3RequestRecoveryAuthority;
+  private readonly questionAuthority: CoordinationV3QuestionAuthority;
+  private readonly steeringAuthority: CoordinationV3SteeringAuthority;
+  private readonly schedulerLeaseAuthority: CoordinationV3SchedulerLeaseAuthority;
+  private readonly requestAuthority: CoordinationV3RequestAuthority;
+  private readonly runLifecycleAuthority: CoordinationV3RunLifecycleAuthority;
+  private readonly requiredReplyAuthority: CoordinationV3RequiredReplyAuthority;
+  private readonly contextRolloverAuthority: CoordinationV3ContextRolloverAuthority;
+  private readonly communicationV4NextRunDeliveries: CommunicationV4NextRunDeliveryAuthority;
+
+  constructor(
+    sqlite: Database.Database,
+    options: CoordinationV3StoreOptions = {},
+  ) {
+    requireAdmittedDatabase(sqlite);
+    this.sqlite = sqlite;
+    this.activationReadModel = new CoordinationV3ActivationReadModel(sqlite);
+    this.activationFactory = new CoordinationV3ActivationFactory(sqlite, options);
+    this.requiredReplyAuthority = new CoordinationV3RequiredReplyAuthority(
+      sqlite,
+      input => this.createActivation(input),
+      (activationId, now) => this.contextRolloverAuthority.bindWaitingWake(activationId, now),
+      options.canonicalTaskDecisions,
+    );
+    this.contextRolloverAuthority = new CoordinationV3ContextRolloverAuthority(
+      sqlite,
+      input => this.createActivation(input),
+    );
+    this.support = new CoordinationV3StoreSupport(sqlite);
+    this.requestRecoveryAuthority = new CoordinationV3RequestRecoveryAuthority(sqlite);
+    this.communicationV4NextRunDeliveries = new CommunicationV4NextRunDeliveryAuthority(
+      sqlite,
+      (authorization, expectedScopeKey) =>
+        this.support.requireAuthorizedRun(authorization, expectedScopeKey),
+      (authorization, injectionId) =>
+        this.steeringAuthority.requireCurrentPromptInjection(authorization, injectionId),
+    );
+    this.readModel = new CoordinationV3ReadModel(sqlite);
+    this.requestReadModel = new CoordinationV3RequestReadModel(sqlite);
+    this.runtimeAttachmentAuthority = new CoordinationV3RuntimeAttachmentAuthority(sqlite, options);
+    this.runtimeArtifactAuthority = new CoordinationV3RuntimeArtifactAuthority(sqlite, options);
+    this.runtimeScopeAuthority = new CoordinationV3RuntimeScopeAuthority(sqlite);
+    this.activationLifecycle = new CoordinationV3ActivationLifecycleAuthority(
+      sqlite,
+      this.runtimeScopeAuthority,
+      input => this.updateRequest(input),
+      (activationIds, now) =>
+        this.questionAuthority.settleQuestionsForFailedActivations(activationIds, now),
+    );
+    this.activationCommandAuthority = new CoordinationV3ActivationCommandAuthority(
+      sqlite,
+      this.support,
+      this.runtimeScopeAuthority,
+      this.runtimeArtifactAuthority,
+      input => this.createActivation(input),
+      (activationIds, now) =>
+        this.activationLifecycle.settleRequestsForFailedActivations(
+          activationIds,
+          now,
+        ),
+    );
+    this.runContextReadModel = new CoordinationV3RunContextReadModel(sqlite);
+    this.schedulerStatusReadModel = new CoordinationV3SchedulerStatusReadModel(sqlite);
+    this.operationalOutboxAuthority = new CoordinationV3OperationalOutboxAuthority(sqlite, options);
+    this.runtimeCommunicationReadModel = new CoordinationV3RuntimeCommunicationReadModel(
+      sqlite,
+      this.runtimeScopeAuthority,
+    );
+    this.runtimeCommunicationAuthority = new CoordinationV3RuntimeCommunicationAuthority(
+      sqlite,
+      options,
+      this.runtimeAttachmentAuthority,
+      this.runtimeArtifactAuthority,
+      this.runtimeScopeAuthority,
+      (authorization, expectedScopeKey) =>
+        this.support.requireAuthorizedRun(authorization, expectedScopeKey),
+      projectId => this.support.requireProject(projectId),
+      input => this.createActivation(input),
+      input => { this.requiredReplyAuthority.markSatisfied(input); },
+      (authorization, injectionId) =>
+        this.steeringAuthority.requireCurrentPromptInjection(authorization, injectionId),
+    );
+    this.questionAuthority = new CoordinationV3QuestionAuthority(
+      sqlite,
+      this.support,
+      this.runtimeScopeAuthority,
+      (runId, agentId) => this.requestIdsAttachedToRun(runId, agentId),
+      (runId, agentId) =>
+        this.outboundAwaitingQuestionRequestIdsAttachedToRun(
+          runId,
+          agentId,
+        ),
+      input => this.updateRequest(input),
+      input => this.createActivation(input),
+    );
+    this.requestAuthority = new CoordinationV3RequestAuthority(
+      sqlite,
+      this.support,
+      this.runtimeArtifactAuthority,
+      this.runtimeScopeAuthority,
+      this.questionAuthority,
+      (runId, agentId) => this.requestIdsAttachedToRun(runId, agentId),
+      input => this.createActivation(input),
+    );
+    this.runLifecycleAuthority = new CoordinationV3RunLifecycleAuthority(
+      sqlite,
+      this.support,
+      this.questionAuthority,
+      this.activationLifecycle,
+      input => this.updateRequest(input),
+      (runId, now) => { this.requiredReplyAuthority.recoverPending(runId, now); },
+      (runId, now) => { this.requiredReplyAuthority.settleRetried(runId, now); },
+      (runId, now) => { this.requiredReplyAuthority.settleForRun(runId, "cancelled", now); },
+      (runId, now) => { this.requiredReplyAuthority.restoreUninjectedDecisionRoots(runId, now); },
+    );
+    this.deletionAuthority = new CoordinationV3DeletionAuthority(
+      sqlite,
+      this.support,
+      input => this.cancelAgentRun(input),
+      input => this.updateRequest(input),
+    );
+    this.coordinateAuthority = new CoordinationV3CoordinateAuthority(
+      sqlite,
+      this.support,
+      this.runtimeScopeAuthority,
+      this.requestRecoveryAuthority,
+      input => this.createActivation(input),
+      (requestIds, ownerAgentId, dependencyKind, dependencyId, now) =>
+        this.questionAuthority.insertQuestionSuspensions(
+          requestIds,
+          ownerAgentId,
+          dependencyKind,
+          dependencyId,
+          now,
+        ),
+      input => this.updateRequest(input),
+      (requestId, now) => this.requestAuthority.reevaluateRequestJoins(requestId, now),
+      (dependencyKind, dependencyId) =>
+        this.questionAuthority.questionDependencyContinuations(
+          dependencyKind,
+          dependencyId,
+        ),
+      (activationId, dependencyKind, dependencyId, now, resolve) =>
+        this.questionAuthority.attachQuestionDependencyToActivation(
+          activationId,
+          dependencyKind,
+          dependencyId,
+          now,
+          resolve,
+        ),
+    );
+    this.steeringAuthority = new CoordinationV3SteeringAuthority(
+      sqlite,
+      this.support,
+      this.runtimeScopeAuthority,
+      this.activationLifecycle,
+      this.questionAuthority,
+      input => this.createActivation(input),
+      input => this.cancelAgentRun(input),
+    );
+    this.schedulerLeaseAuthority = new CoordinationV3SchedulerLeaseAuthority(
+      sqlite,
+      this.support,
+      this.runtimeScopeAuthority,
+      this.activationLifecycle,
+      (runId, now, reason, eligibleStates, incidentId) =>
+        this.runLifecycleAuthority.markRelatedRequestsOutcomeUnknown(
+          runId,
+          now,
+          reason,
+          eligibleStates,
+          eligibleStates,
+          true,
+          incidentId,
+        ),
+      input => { this.requiredReplyAuthority.registerForRun(input); },
+      (runId, now) => { this.requiredReplyAuthority.recoverPending(runId, now); },
+      (runId, now) => { this.requiredReplyAuthority.settleRetried(runId, now); },
+      (runId, now) => { this.requiredReplyAuthority.restoreUninjectedDecisionRoots(runId, now); },
+    );
+    this.contextRolloverAuthority.reconcileRetainedContinuity(new Date().toISOString());
+  }
+
+  recordRuntimeCommunication(input: RuntimeCommunicationV3Input): RuntimeCommunicationV3Result {
+    return this.runtimeCommunicationAuthority.recordRuntimeCommunication(input);
+  }
+
+  publishAgentNextRunDelivery(
+    input: PublishAgentNextRunDeliveryInput,
+  ): PublishNextRunDeliveryResult {
+    return this.communicationV4NextRunDeliveries.publishAgent(input);
+  }
+
+  replayAgentNextRunDelivery(
+    input: ReplayAgentNextRunDeliveryInput,
+  ): PublishNextRunDeliveryResult | undefined {
+    return this.communicationV4NextRunDeliveries.replayAgent(input);
+  }
+
+  publishOperatorNextRunDelivery(
+    input: PublishOperatorNextRunDeliveryInput,
+  ): PublishNextRunDeliveryResult {
+    return this.communicationV4NextRunDeliveries.publishOperator(input);
+  }
+
+  operatorNextRunDeliveryReceipts(input: {
+    projectId: string;
+    conversationId: string;
+    publisherUserId: string;
+    limit?: number;
+    now?: string;
+  }): OperatorNextRunDeliveryReceipt[] {
+    return this.communicationV4NextRunDeliveries.listOperatorReceipts(input);
+  }
+
+  communicationV4NextRunDelivery(
+    deliveryId: string,
+  ): CommunicationV4NextRunDelivery | undefined {
+    return this.communicationV4NextRunDeliveries.get(deliveryId);
+  }
+
+  pendingCommunicationV4NextRunDeliveries(input: {
+    projectId: string;
+    conversationId: string;
+    agentId: string;
+    limit?: number;
+    now?: string;
+  }): CommunicationV4NextRunDelivery[] {
+    return this.communicationV4NextRunDeliveries.pendingForNextRun(input);
+  }
+
+  markCommunicationV4NextRunDeliveriesDelivered(input: {
+    projectId: string;
+    conversationId: string;
+    agentId: string;
+    runId: string;
+    deliveryIds: string[];
+    now?: string;
+  }): number {
+    return this.communicationV4NextRunDeliveries.markDelivered(input);
+  }
+
+  maintainCommunicationV4NextRunDeliveries(
+    now?: string,
+  ): NextRunDeliveryMaintenanceResult {
+    return this.communicationV4NextRunDeliveries.maintain(now);
+  }
+
+  runtimeCommunications(projectId?: string): RuntimeCommunicationV3View[] {
+    return this.runtimeCommunicationReadModel.runtimeCommunications(projectId);
+  }
+
+  requestCommunicationsNeedingProjection(projectId?: string, communicationEventId?: string): RuntimeCommunicationV3View[] {
+    return this.runtimeCommunicationReadModel.requestCommunicationsNeedingProjection(projectId, communicationEventId);
+  }
+
+  runtimeCommunication(id: string): RuntimeCommunicationV3View | undefined {
+    return this.runtimeCommunicationReadModel.runtimeCommunication(id);
+  }
+
+  runtimeArtifacts(ownerKind?: RuntimeArtifactV3["ownerKind"], ownerId?: string): RuntimeArtifactV3[] {
+    return this.runtimeCommunicationReadModel.runtimeArtifacts(ownerKind, ownerId);
+  }
+
+  runtimeArtifact(id: string): RuntimeArtifactV3 | undefined {
+    return this.runtimeCommunicationReadModel.runtimeArtifact(id);
+  }
+
+  requestForUpdate(updateId: string): CoordinationRequestV3View | undefined {
+    return this.requestReadModel.requestForUpdate(updateId);
+  }
+
+  /** Project immutable authored messages onto mutable, per-recipient delivery
+   * evidence without rewriting the Communication or its chat projection. */
+  deliveryReceiptsForCommunication(projectId: string, communicationEventId: string): MessageDeliveryReceiptDto[] {
+    return this.runtimeCommunicationReadModel.deliveryReceiptsForCommunication(
+      projectId, communicationEventId,
+    );
+  }
+
+  deliveryReceiptsForCommunications(
+    projectId: string,
+    communicationEventIds: readonly string[],
+  ): Map<string, MessageDeliveryReceiptDto[]> {
+    return this.runtimeCommunicationReadModel.deliveryReceiptsForCommunications(
+      projectId, communicationEventIds,
+    );
+  }
+
+  /** Create a new delivery attempt without duplicating the canonical user message. */
+  retryMessageDelivery(input: {
+    projectId: string;
+    activationId: string;
+    idempotencyKey: string;
+    now?: string;
+  }): RetryMessageDeliveryResponse {
+    return this.activationCommandAuthority.retryMessageDelivery(input);
+  }
+
+  replayRetryMessageDelivery(
+    input: Parameters<CoordinationV3ActivationCommandAuthority["replayRetryMessageDelivery"]>[0],
+  ): ReturnType<CoordinationV3ActivationCommandAuthority["replayRetryMessageDelivery"]> {
+    return this.activationCommandAuthority.replayRetryMessageDelivery(input);
+  }
+
+  cancelTerminalMessageDelivery(input: {
+    projectId: string;
+    activationId: string;
+    idempotencyKey: string;
+    now?: string;
+  }): { cancelled: boolean; replayed: boolean; state: "cancelled" | "not_cancellable"; targetAgentId?: string } {
+    return this.activationCommandAuthority.cancelTerminalMessageDelivery(input);
+  }
+
+  pendingActivations(projectId?: string): PendingActivationV3View[] {
+    return this.activationReadModel.pendingActivations(projectId);
+  }
+
+  activation(
+    activationId: string,
+    projectId: string,
+  ): ReturnType<CoordinationV3ActivationReadModel["activation"]> {
+    return this.activationReadModel.activation(activationId, projectId);
+  }
+
+  activationProjectId(activationId: string): string | undefined {
+    return this.activationReadModel.activationProjectId(activationId);
+  }
+
+  terminalActivationDisposition(activationId: string): {
+    id: string;
+    state: TerminalActivationV3View["state"];
+    supersededByRetry: boolean;
+  } | undefined {
+    return this.activationReadModel.terminalActivationDisposition(activationId);
+  }
+
+  terminalActivations(projectId?: string, limit = 100): TerminalActivationV3View[] {
+    return this.activationReadModel.terminalActivations(projectId, limit);
+  }
+
+  communicationAttentionActivations(
+    projectId?: string,
+    limit = 100,
+    cursor?: CommunicationAttentionActivationCursor,
+  ): CommunicationAttentionActivationV3View[] {
+    return this.activationReadModel.communicationAttentionActivations(projectId, limit, cursor);
+  }
+
+  settleUnavailableActivation(input: {
+    activationId: string;
+    projectId: string;
+    idempotencyKey: string;
+    reason?: string;
+    now?: string;
+  }): SettleUnavailableActivationResult {
+    return this.activationCommandAuthority.settleUnavailableActivation(input);
+  }
+
+  reconcileUnavailableActivationRecipients(now = new Date().toISOString()): { settled: number } {
+    return this.activationCommandAuthority.reconcileUnavailableActivationRecipients(now);
+  }
+
+  communicationRecipientAgentIds(projectId: string, communicationId: string): string[] {
+    return this.runtimeCommunicationReadModel.communicationRecipientAgentIds(
+      projectId, communicationId,
+    );
+  }
+
+  cancelPendingActivation(input: {
+    activationId: string;
+    projectId: string;
+    idempotencyKey: string;
+    now?: string;
+  }): { cancelled: boolean; replayed: boolean; status: "cancelled" | "delivery_started" } {
+    return this.activationCommandAuthority.cancelPendingActivation(input);
+  }
+
+  replayCancelPendingActivation(
+    input: Parameters<CoordinationV3ActivationCommandAuthority["replayCancelPendingActivation"]>[0],
+  ): ReturnType<CoordinationV3ActivationCommandAuthority["replayCancelPendingActivation"]> {
+    return this.activationCommandAuthority.replayCancelPendingActivation(input);
+  }
+
+  queuedMessageCancellationChange(
+    activationId: string,
+  ): ReturnType<CoordinationV3ActivationCommandAuthority["queuedMessageCancellationChange"]> {
+    return this.activationCommandAuthority.queuedMessageCancellationChange(activationId);
+  }
+
+  editPendingActivationText(input: {
+    activationId: string;
+    projectId: string;
+    requestText: string;
+    text: string;
+    document?: Record<string, unknown>;
+    artifactId?: string;
+    resultRef?: string;
+    revisionOwnerId: string;
+    artifact?: RuntimeArtifactInputV3;
+    revisionOutboxPayload: unknown;
+    idempotencyKey: string;
+    now?: string;
+  }): { edited: boolean; replayed: boolean; status: "edited" | "delivery_started" } {
+    return this.activationCommandAuthority.editPendingActivationText(input);
+  }
+
+  replayEditPendingActivationText(
+    input: Parameters<CoordinationV3ActivationCommandAuthority["replayEditPendingActivationText"]>[0],
+  ): ReturnType<CoordinationV3ActivationCommandAuthority["replayEditPendingActivationText"]> {
+    return this.activationCommandAuthority.replayEditPendingActivationText(input);
+  }
+
+  steerPendingActivation(input: {
+    activationId: string;
+    projectId: string;
+    idempotencyKey: string;
+    now?: string;
+  }): { steered: boolean; replayed: boolean; status: "steered" | "delivery_started" } {
+    return this.activationCommandAuthority.steerPendingActivation(input);
+  }
+
+  replaySteerPendingActivation(
+    input: Parameters<CoordinationV3ActivationCommandAuthority["replaySteerPendingActivation"]>[0],
+  ): ReturnType<CoordinationV3ActivationCommandAuthority["replaySteerPendingActivation"]> {
+    return this.activationCommandAuthority.replaySteerPendingActivation(input);
+  }
+
+  activationPayloads(agentId: string, activationIds: string[], runId?: string): Array<{
+    id: string; kind: string; promptClass: ActivationPromptClass; payload: unknown;
+  }> {
+    return this.activationReadModel.activationPayloads(agentId, activationIds, runId);
+  }
+
+  activationIdsAttachedToRun(runId: string, agentId: string): string[] {
+    return this.activationReadModel.activationIdsAttachedToRun(runId, agentId);
+  }
+
+  decisionResponseAttachedToRun(decisionId: string, runId: string, agentId: string): boolean {
+    return this.activationReadModel.decisionResponseAttachedToRun(decisionId, runId, agentId);
+  }
+
+  runScopeKey(runId: string, agentId: string): string {
+    return this.runContextReadModel.scopeKey(runId, agentId);
+  }
+
+  requestIdsAttachedToRun(runId: string, agentId: string): string[] {
+    return this.runContextReadModel.requestIdsAttachedToRun(runId, agentId);
+  }
+
+  outboundAwaitingQuestionRequestIdsAttachedToRun(runId: string, agentId: string): string[] {
+    return this.runContextReadModel.outboundAwaitingQuestionRequestIdsAttachedToRun(
+      runId, agentId,
+    );
+  }
+
+  suspendQuestionsForDecision(input: {
+    runId: string;
+    agentId: string;
+    decisionId: string;
+    requestIds?: string[];
+    strict?: boolean;
+    now?: string;
+  }): string[] {
+    return this.questionAuthority.suspendQuestionsForDecision(input);
+  }
+
+  releaseDecisionQuestionSuspensions(decisionId: string, now = new Date().toISOString()): void {
+    this.questionAuthority.releaseDecisionQuestionSuspensions(decisionId, now);
+  }
+
+  /** Ordinary recipient-to-requester messages during correlated work are
+   * audit copies regardless of provider tool order. */
+  requesterIdsForRun(runId: string, agentId: string): string[] {
+    return this.runContextReadModel.requesterIdsForRun(runId, agentId);
+  }
+
+  runStartsNewRecipientRequest(runId: string, agentId: string): boolean {
+    return this.runContextReadModel.runStartsNewRecipientRequest(runId, agentId);
+  }
+
+  runChangesScope(runId: string, agentId: string): boolean {
+    return this.runContextReadModel.runChangesScope(runId, agentId);
+  }
+
+  coordinate(input: CoordinateV3Input, now = new Date().toISOString()): CoordinateV3Result {
+    return this.sqlite.transaction(() => {
+      const result = this.coordinateAuthority.coordinate(input, now);
+      if (!result.replayed && input.runAuthorization && runOwnsAwaitedDelegation(this.sqlite, input.runAuthorization.runId)) {
+        this.requiredReplyAuthority.retainForDelegation(input.runAuthorization.runId, now);
+      }
+      return result;
+    })();
+  }
+
+  replayCoordinate(input: CoordinateV3Input): CoordinateV3Result | undefined {
+    return this.coordinateAuthority.replayCoordinate(input);
+  }
+
+  enqueueMessageActivation(input: EnqueueMessageActivationInput): string {
+    return this.coordinateAuthority.enqueueMessageActivation(input);
+  }
+
+  waitForTaskDecision(input: { runAuthorization: RunAuthorizationV3; decisionId: string; scopeKey: string }, now = new Date().toISOString()): void {
+    this.sqlite.transaction(() => {
+      this.support.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
+      this.requiredReplyAuthority.waitForDecision(input.runAuthorization.runId, input.decisionId, now);
+    })();
+  }
+
+  attachTaskDecisionWake(decisionId: string, activationId: string, now = new Date().toISOString(), canonicalRunId?: string): void {
+    this.sqlite.transaction(() => {
+      if (canonicalRunId && !this.requiredReplyAuthority.repairCanonicalDecisionWait(canonicalRunId, now) &&
+          this.requiredReplyAuthority.holdDecisionWakeForRepair(canonicalRunId, decisionId, activationId)) return;
+      this.requiredReplyAuthority.attachDecisionWake(decisionId, activationId);
+      this.contextRolloverAuthority.bindWaitingWake(activationId, now);
+    })();
+  }
+
+  /** Startup reconciliation from canonical Workspace Decisions only. Never
+   * called with model text or operator-supplied routing/ownership metadata. */
+  reconcileTaskDecision(input: Parameters<CoordinationV3RequiredReplyAuthority['reconcileDecision']>[0], now = new Date().toISOString()): void {
+    this.sqlite.transaction(() => this.requiredReplyAuthority.reconcileDecision(input, now))();
+  }
+
+  repairCanonicalTaskDecisionWait(runId: string, now = new Date().toISOString()): boolean {
+    return this.sqlite.transaction(() => this.requiredReplyAuthority.repairCanonicalDecisionWait(runId, now))();
+  }
+
+  taskDecisionOwnsDelivery(decisionId: string): boolean {
+    return this.requiredReplyAuthority.ownsDecision(decisionId);
+  }
+
+  taskOriginRunIds(runId: string): string[] {
+    return taskOriginRunIds(this.sqlite, runId);
+  }
+
+  isSchedulerRunCancelled(runId: string): boolean {
+    return this.schedulerStatusReadModel.isSchedulerRunCancelled(runId);
+  }
+
+  getAgentAvailability(agentId: string): DerivedAgentAvailability {
+    return this.schedulerStatusReadModel.getAgentAvailability(agentId);
+  }
+
+  activeAgentRun(agentId: string): import("@ponderosa/core").AgentCoordinationV3Dto["activeRun"] {
+    return this.schedulerStatusReadModel.activeAgentRun(agentId);
+  }
+
+  activeWaitDependency(
+    agentId: string,
+    scope: import("@ponderosa/core").AgentHealthProjectionDto["scope"],
+  ): Extract<
+    import("@ponderosa/core").AgentPhaseDto,
+    { kind: "waiting_on_request" | "waiting_on_join" }
+  > | undefined {
+    return this.schedulerStatusReadModel.activeWaitDependency(agentId, scope);
+  }
+
+  providerBlockedState(agentId: string): import("@ponderosa/core").ProviderBlockedWorkDto | undefined {
+    return this.schedulerStatusReadModel.providerBlockedState(agentId);
+  }
+
+  activeRunCount(): number {
+    return this.schedulerStatusReadModel.activeRunCount();
+  }
+
+  ownsRun(runId: string, fencingToken: number, workerId?: string): boolean {
+    return this.schedulerStatusReadModel.ownsRun(runId, fencingToken, workerId);
+  }
+
+  ownsRunForCleanup(runId: string, fencingToken: number, workerId?: string): boolean {
+    return this.schedulerStatusReadModel.ownsRunForCleanup(runId, fencingToken, workerId);
+  }
+
+  ownsOutcomeUnknownRun(runId: string, fencingToken: number, workerId?: string): boolean {
+    return this.schedulerStatusReadModel.ownsOutcomeUnknownRun(runId, fencingToken, workerId);
+  }
+
+  schedulerMetrics(): {
+    pendingActivations: number;
+    activeRuns: number;
+    completedRuns: number;
+    failedRuns: number;
+    outcomeUnknownRuns: number;
+    pendingActivationOutbox: number;
+    deadLetteredActivationOutbox: number;
+    pendingProviderOperations: number;
+    deadLetteredProviderOperations: number;
+    recipientUnavailableActivations: number;
+    permanentFailureActivations: number;
+    retryExhaustedActivations: number;
+  } {
+    return this.readModel.schedulerMetrics();
+  }
+
+  /** Diagnose long-lived indefinite wait cycles without rejecting flexible
+   * organization shapes. Consumers may surface these as operational warnings. */
+  waitGraphCycles(
+    now = new Date().toISOString(),
+    minimumAgeMs = 5 * 60_000,
+  ): CoordinationWaitCycleV3[] {
+    return this.readModel.waitGraphCycles(now, minimumAgeMs);
+  }
+
+  /** Read-only projection of the authoritative coordination graph. Relationships
+   * come from foreign-key/link tables, never from prompt or chat text. */
+  requestSummariesForCommunications(
+    projectId: string,
+    communicationEventIds: string[],
+  ): Map<string, import("@ponderosa/core").CoordinationRequestSummaryDto[]> {
+    return this.readModel.requestSummariesForCommunications(projectId, communicationEventIds);
+  }
+
+  /** Read-only projection of the authoritative coordination graph. Relationships
+   * come from foreign-key/link tables, never from prompt or chat text. */
+  teamOperationalRecords(input: {
+    projectId: string;
+    conversationId: string;
+    limit: number;
+    before?: { createdAt: string; id: string };
+  }): Array<{
+    id: string;
+    kind: "run" | "activation" | "request" | "join";
+    operationGroupId: string;
+    state: string;
+    primaryAgentId: string;
+    secondaryAgentId?: string;
+    subtype?: string;
+    completed?: number;
+    total?: number;
+    requesterAgentId?: string;
+    recipientAgentId?: string;
+    communicationEventId?: string;
+    requestPreview?: string;
+    hasUpdates?: boolean;
+    latestUpdateKind?: import("@ponderosa/core").CoordinationRequestUpdateKind;
+    latestUpdateAt?: string;
+    hasResult?: boolean;
+    createdAt: string;
+    updatedAt: string;
+  }> {
+    return this.readModel.teamOperationalRecords(input);
+  }
+
+  /** Read-only projection of the authoritative coordination graph. Relationships
+   * come from foreign-key/link tables, never from prompt or chat text. */
+  agentWorkItems(input: {
+    projectId: string;
+    conversationId?: string;
+    agentId?: string;
+    focusId?: string;
+    limit?: number;
+  }): { items: import("@ponderosa/core").AgentWorkItemDto[]; truncated: boolean } {
+    return this.readModel.agentWorkItems(input);
+  }
+
+  directoryWork(input: Parameters<CoordinationV3RequestReadModel["directoryWork"]>[0]) {
+    return this.requestReadModel.directoryWork(input);
+  }
+
+  /** Exact canonical records that may still produce an operator-attention
+   * trace, returned in bounded keyset pages. */
+  coordinationAttentionCandidates(
+    limit = 200,
+    cursor?: CoordinationAttentionCandidateCursor,
+  ): CoordinationAttentionCandidateV3View[] {
+    return this.readModel.coordinationAttentionCandidates(limit, cursor);
+  }
+
+  /** Loads one scoped Request and its canonical update history on demand. */
+  requestLifecycleDetails(input: {
+    projectId: string;
+    conversationId?: string;
+    recordId: string;
+  }): import("@ponderosa/core").CoordinationRequestLifecycleDto | undefined {
+    return this.readModel.requestLifecycleDetails(input);
+  }
+
+  /** Loads the technical fields for one canonical inspector record without
+   * materializing payloads for the rest of the graph. */
+  agentWorkItemDetails(input: {
+    projectId: string;
+    conversationId?: string;
+    kind: "request" | "join" | "activation" | "run";
+    recordId: string;
+  }): Array<{ label: string; value: string }> | undefined {
+    return this.readModel.agentWorkItemDetails(input);
+  }
+
+  agentSnapshot(agentId: string): import("@ponderosa/core").AgentCoordinationV3Dto {
+    return this.schedulerStatusReadModel.agentSnapshot(agentId);
+  }
+
+  updateRequest(input: UpdateRequestV3Input): RequestUpdateV3Result {
+    return this.requestAuthority.updateRequest(input);
+  }
+
+  replayRequestUpdate(input: UpdateRequestV3Input): RequestUpdateV3Result | undefined {
+    return this.requestAuthority.replayRequestUpdate(input);
+  }
+
+  getRequest(requestId: string): CoordinationRequestV3View | undefined {
+    return this.requestReadModel.getRequest(requestId);
+  }
+
+  requestDelivery(requestId: string): CoordinationRequestDeliveryView | undefined {
+    return this.requestReadModel.requestDelivery(requestId);
+  }
+
+  requestRetryStatus(requestId: string): {
+    successorRequestId?: string;
+    successorState?: import("@ponderosa/core").CoordinationRequestState;
+  } {
+    return this.requestReadModel.requestRetryStatus(requestId);
+  }
+
+  attachRequestCommunication(requestId: string, communicationEventId: string, projectId: string): void {
+    this.requestAuthority.attachRequestCommunication(requestId, communicationEventId, projectId);
+  }
+
+  expireDue(now = new Date().toISOString()): { requests: number; joins: number } {
+    return this.requestAuthority.expireDue(now);
+  }
+
+  /** On single-host startup every active lease owned by another server process
+   * is orphaned. Pre-submission work is retryable; submitted or acknowledged
+   * injections fail closed until an adapter can prove provider reconciliation. */
+  recoverOrphanedRuns(workerId: string, now = new Date().toISOString()): { retried: number; outcomeUnknown: number } {
+    return this.schedulerLeaseAuthority.recoverOrphanedRuns(workerId, now);
+  }
+
+  /** Fence expired live leases before the daemon applies its concurrency
+   * budget. This is transactional and does not lease replacement work. */
+  recoverExpiredRuns(now = new Date().toISOString()): { retried: number; outcomeUnknown: number } {
+    return this.schedulerLeaseAuthority.recoverExpiredRuns(now);
+  }
+
+  cancelJoin(joinId: string, ownerAgentId: string, now = new Date().toISOString()): boolean {
+    return this.requestAuthority.cancelJoin(joinId, ownerAgentId, now);
+  }
+
+  handleAgentDeletion(agentId: string, now = new Date().toISOString()): void {
+    this.deletionAuthority.handleAgentDeletion(agentId, now);
+  }
+
+  /** Fence and settle a whole project before any provider process is stopped.
+   * The canonical project still exists during this phase, so a crash leaves a
+   * retryable deletion with no live scheduler ownership. */
+  purgeAgentExecutionHistory(agentId: string): void {
+    this.deletionAuthority.purgeAgentExecutionHistory(agentId);
+  }
+
+  prepareProjectDeletion(projectId: string, now = new Date().toISOString()): void {
+    this.deletionAuthority.prepareProjectDeletion(projectId, now);
+  }
+
+  /** Remove every authoritative V3 row for a project. Call from the same
+   * SQLite transaction that deletes the canonical project projections. */
+  purgeProject(projectId: string): void {
+    this.deletionAuthority.purgeProject(projectId);
+  }
+
+  purgeCommunicationV4Conversation(conversationId: string): void {
+    this.deletionAuthority.purgeCommunicationV4Conversation(conversationId);
+  }
+
+  leaseNextRun(input: {
+    workerId: string;
+    now?: string;
+    leaseMs?: number;
+    coalesceLimit?: number;
+    excludedAgentIds?: readonly string[];
+  }): SchedulerLease | undefined {
+    this.sqlite.transaction(() => {
+      const now = input.now ?? new Date().toISOString();
+      for (const runId of this.requiredReplyAuthority.retryDecisionWaitRepairs(now)) {
+        const rollovers = this.sqlite.prepare("SELECT id FROM context_rollovers WHERE source_run_id=? AND state='session_retiring'")
+          .all(runId) as Array<{ id: string }>;
+        for (const rollover of rollovers) this.prepareContextRolloverContinuation({ id: rollover.id, now });
+      }
+    })();
+    return this.schedulerLeaseAuthority.leaseNextRun(input);
+  }
+
+  leaseNextSteering(input: { workerId: string; now?: string; coalesceLimit?: number }): SteeringLease | undefined {
+    return this.steeringAuthority.leaseNextSteering(input);
+  }
+
+  deferSteering(input: {
+    injectionId: string; runId: string; fencingToken: number; retryDelayMs?: number;
+    preserveSteering?: boolean; now?: string;
+    waitReason?: "provider_not_ready" | "provider_unsupported" | "preparation_retry";
+  }): void {
+    this.steeringAuthority.deferSteering(input);
+  }
+
+  markSteeringOutcomeUnknown(input: {
+    injectionId: string; runId: string; fencingToken: number; now?: string;
+    recoveryGraceMs?: number; error?: string;
+  }): void {
+    this.steeringAuthority.markSteeringOutcomeUnknown(input);
+  }
+
+  letCurrentRunFinish(input: {
+    injectionId: string; idempotencyKey: string; now?: string;
+  }): SteeringRecoveryDecisionResult {
+    return this.steeringAuthority.letCurrentRunFinish(input);
+  }
+
+  requireCurrentPromptInjection(authorization: RunAuthorizationV3, injectionId: string | null): void {
+    this.steeringAuthority.requireCurrentPromptInjection(authorization, injectionId);
+  }
+
+  latestAcknowledgedPromptInjection(runId: string): { id: string; kind: "turn" | "steer" } | undefined {
+    return this.steeringAuthority.latestAcknowledgedPromptInjection(runId);
+  }
+
+  latestAcknowledgedSteeringInjection(runId: string): string | undefined {
+    return this.steeringAuthority.latestAcknowledgedSteeringInjection(runId);
+  }
+
+  steeringInjectionIds(runId: string): string[] {
+    return this.steeringAuthority.steeringInjectionIds(runId);
+  }
+
+  processDueSteeringRecoveries(now = new Date().toISOString(), limit = 100): string[] {
+    return this.steeringAuthority.processDueSteeringRecoveries(now, limit);
+  }
+
+  markRunStarted(runId: string, fence: number, now = new Date().toISOString()): void {
+    this.runLifecycleAuthority.markRunStarted(runId, fence, now);
+  }
+
+  deferUninjectedRun(runId: string, fence: number, now = new Date().toISOString()): void {
+    this.runLifecycleAuthority.deferUninjectedRun(runId, fence, now);
+  }
+
+  setRunContextDisposition(
+    runId: string,
+    fence: number,
+    disposition: "fresh_task" | "continued_session" | "reseeded",
+    now = new Date().toISOString(),
+  ): void {
+    this.runLifecycleAuthority.setRunContextDisposition(runId, fence, disposition, now);
+  }
+
+  recordProviderInput(input: {
+    executionId: string;
+    schedulerRunId: string;
+    fencingToken: number;
+    agentId: string;
+    projectId: string;
+    prompt: string;
+    systemPrompt?: string;
+    sourceManifest: import("@ponderosa/core").ProviderInputSourceManifest;
+    now?: string;
+  }): void {
+    this.runLifecycleAuthority.recordProviderInput(input);
+  }
+
+  /** Persist the exact provider packet and bind it to an attached rollover in
+   * one SQLite transaction. Production must use this before starting a
+   * replacement provider session; a non-rollover Run simply records its input. */
+  recordProviderInputAndCommitContextRolloverReplacement(input: {
+    executionId: string;
+    schedulerRunId: string;
+    fencingToken: number;
+    agentId: string;
+    projectId: string;
+    prompt: string;
+    systemPrompt?: string;
+    sourceManifest: import("@ponderosa/core").ProviderInputSourceManifest;
+    now?: string;
+  }): ContextRolloverV3 | undefined {
+    const now = input.now ?? new Date().toISOString();
+    return this.sqlite.transaction(() => {
+      const candidate = this.contextRolloverAuthority.candidateForRun(input.schedulerRunId, input.agentId);
+      if (candidate &&
+          Buffer.byteLength(input.prompt, "utf8") + Buffer.byteLength(input.systemPrompt ?? "", "utf8") >
+            MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES) {
+        throw new Error("context rollover replacement provider input exceeds the aggregate prompt and system-prompt bound");
+      }
+      this.runLifecycleAuthority.recordProviderInput({ ...input, now });
+      const committed = this.contextRolloverAuthority.commitReplacementInputForRun(
+        input.schedulerRunId,
+        input.agentId,
+        now,
+      );
+      if (candidate && !committed) {
+        throw new Error("attached context rollover candidate was not durably bound to its provider input");
+      }
+      return committed;
+    })();
+  }
+
+  failSteeringForActivationCompilation(input: {
+    injectionId: string;
+    runId: string;
+    fencingToken: number;
+    activationId: string;
+    errorCode: string;
+    errorDetail?: string;
+    now?: string;
+  }): void {
+    this.steeringAuthority.failSteeringForActivationCompilation(input);
+  }
+
+  preparePromptInjection(input: {
+    injectionId: string; runId: string; fencingToken: number; prompt: string; now?: string;
+  }): void {
+    this.runLifecycleAuthority.preparePromptInjection(input);
+  }
+
+  activationIdsForInjection(injectionId: string, runId: string): string[] {
+    return this.runLifecycleAuthority.activationIdsForInjection(injectionId, runId);
+  }
+
+  promptInjectionForActivation(runId: string, activationId: string): {
+    id: string;
+    kind: "turn" | "steer";
+    state: string;
+  } | undefined {
+    return this.runLifecycleAuthority.promptInjectionForActivation(runId, activationId);
+  }
+
+  markPromptSubmitted(input: {
+    injectionId: string; runId: string; fencingToken: number; providerSessionId?: string; now?: string;
+  }): void {
+    this.runLifecycleAuthority.markPromptSubmitted(input);
+  }
+
+  acknowledgePromptInjection(input: {
+    injectionId: string; runId: string; fencingToken: number;
+    providerTurnId?: string; providerSessionId?: string; now?: string;
+  }): void {
+    const now = input.now ?? new Date().toISOString();
+    this.sqlite.transaction(() => {
+      this.runLifecycleAuthority.acknowledgePromptInjection({ ...input, now });
+      this.requiredReplyAuthority.acknowledgeDecisionSteering(input.injectionId, input.runId, now);
+      this.requiredReplyAuthority.registerAcknowledgedSteering(input.injectionId, input.runId, now);
+    })();
+  }
+
+  renewLease(runId: string, fence: number, workerId: string, leaseMs = 30_000, now = new Date().toISOString()): string {
+    return this.runLifecycleAuthority.renewLease(runId, fence, workerId, leaseMs, now);
+  }
+
+  completeRun(runId: string, fence: number, now = new Date().toISOString()): void {
+    this.runLifecycleAuthority.completeRun(runId, fence, now);
+  }
+
+  requiredReplyObligationForRun(runId: string): RequiredReplyObligation | undefined {
+    return this.requiredReplyAuthority.unambiguousForRun(runId);
+  }
+
+  requiredReplyObligationsForRun(runId: string): RequiredReplyObligation[] {
+    return this.requiredReplyAuthority.forRun(runId);
+  }
+
+  requiredReplyAuthoritiesForRun(runId: string): CoordinationReplyAuthority[] {
+    return this.requiredReplyAuthority.authoritiesForRun(runId);
+  }
+
+  failRunForActivationCompilation(input: {
+    runId: string;
+    fencingToken: number;
+    workerId: string;
+    activationId: string;
+    errorCode: string;
+    errorDetail?: string;
+    now?: string;
+  }): void {
+    this.runLifecycleAuthority.failRunForActivationCompilation(input);
+  }
+
+  fenceRunSideEffects(runId: string, fencingToken: number, workerId: string): void {
+    this.runLifecycleAuthority.fenceRunSideEffects(runId, fencingToken, workerId);
+  }
+
+  failRun(input: {
+    runId: string;
+    fencingToken: number;
+    workerId: string;
+    sameRunResumable: boolean;
+    now?: string;
+    retryDelayMs?: number;
+    leaseMs?: number;
+    retryable?: boolean;
+    terminalOutcome?: Exclude<ActivationTerminalOutcome, "retry_exhausted">;
+    error?: string;
+    maxDeliveryFailures?: number;
+    confirmedNotExecuted?: boolean;
+    failureKind?: ProviderFailureCategory;
+    internalFailureCode?: import("@ponderosa/core").OutcomeInternalFailureCode;
+    failureDetail?: {
+      phase: string;
+      promptInjectionState: "not_injected" | "injecting" | "injected";
+      exitCode?: number | null;
+      signal?: string | null;
+      stderr?: string;
+      message?: string;
+    };
+  }): "retry" | "terminal" | "resume_same_run" | "outcome_unknown" {
+    return this.runLifecycleAuthority.failRun(input);
+  }
+
+  resumeProviderBlockedAgent(
+    agentId: string,
+    runtimeSelection: {
+      activeEngine: string;
+      model?: string;
+      effort?: string;
+    },
+    now = new Date().toISOString(),
+  ): { activationIds: string[]; resumed: number } {
+    return this.runLifecycleAuthority.resumeProviderBlockedAgent(agentId, runtimeSelection, now);
+  }
+
+  cancelAgentRun(input: { agentId: string; idempotencyKey: string; expectedRunId?: string; now?: string }): CancellationResult {
+    const result = this.runLifecycleAuthority.cancelAgentRun(input);
+    this.contextRolloverAuthority.reconcileRetainedContinuity(input.now ?? new Date().toISOString());
+    return result;
+  }
+
+  cancellationReceipt(agentId: string, idempotencyKey: string): CancellationResult | undefined {
+    return this.runLifecycleAuthority.cancellationReceipt(agentId, idempotencyKey);
+  }
+
+  claimProviderOperations(workerId: string, limit = 20, now = new Date().toISOString(), staleMs = 30_000): ProviderOperation[] {
+    return this.operationalOutboxAuthority.claimProviderOperations(workerId, limit, now, staleMs);
+  }
+
+  completeProviderOperation(id: number, workerId: string, now = new Date().toISOString()): void {
+    this.operationalOutboxAuthority.completeProviderOperation(id, workerId, now);
+  }
+
+  failProviderOperation(id: number, workerId: string, error: string, retryDelayMs = 1_000, now = new Date().toISOString()): void {
+    this.operationalOutboxAuthority.failProviderOperation(id, workerId, error, retryDelayMs, now);
+  }
+
+  deadLetterProviderOperation(id: number, workerId: string, error: string, now = new Date().toISOString()): void {
+    this.operationalOutboxAuthority.deadLetterProviderOperation(id, workerId, error, now);
+  }
+
+  claimOutbox(workerId: string, limit = 50, now = new Date().toISOString(), staleMs = 30_000): OutboxItem[] {
+    return this.operationalOutboxAuthority.claimOutbox(workerId, limit, now, staleMs);
+  }
+
+  completeOutbox(id: number, workerId: string, now = new Date().toISOString()): void {
+    this.operationalOutboxAuthority.completeOutbox(id, workerId, now);
+  }
+
+  failOutbox(id: number, workerId: string, error: string, now?: string): void {
+    this.operationalOutboxAuthority.failOutbox(id, workerId, error, now);
+  }
+
+  deadLetterOutbox(id: number, workerId: string, error: string, now?: string): void {
+    this.operationalOutboxAuthority.deadLetterOutbox(id, workerId, error, now);
+  }
+
+  requeueDeadLetteredRevision(id: number, activationId: string, expectedLastError: string, payload: unknown, canonicalSource: CommunicationEvent, reason: string, now?: string): void {
+    this.operationalOutboxAuthority.requeueDeadLetteredRevision(id, activationId, expectedLastError, payload, canonicalSource, reason, now);
+  }
+
+  pruneSettledOutboxes(retain = 10_000): { activationOutbox: number; providerOperations: number } {
+    return this.operationalOutboxAuthority.pruneSettledOutboxes(retain);
+  }
+
+  requestContextRollover(input: Parameters<CoordinationV3ContextRolloverAuthority["request"]>[0]): ReturnType<CoordinationV3ContextRolloverAuthority["request"]> {
+    return this.contextRolloverAuthority.request(input);
+  }
+
+  contextRollover(id: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.get(id);
+  }
+
+  contextRolloverOwnerForGeneration(
+    agentId: string,
+    providerSessionGeneration: string,
+  ): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.ownerForGeneration(agentId, providerSessionGeneration);
+  }
+
+  contextRolloverOwnerForOldSession(
+    agentId: string,
+    oldProviderSessionId: string,
+  ): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.ownerForOldSession(agentId, oldProviderSessionId);
+  }
+
+  activeContextRollover(agentId: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.activeForAgent(agentId);
+  }
+
+  rolloverOwnsContinuationHandoff(agentId: string, handoffId: string): boolean {
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM context_rollovers
+      WHERE agent_id = ? AND handoff_event_id = ? LIMIT 1`).get(agentId, handoffId));
+  }
+
+  hasViableContextRolloverHandoffActivation(id: string): boolean {
+    return this.contextRolloverAuthority.hasViableHandoffActivation(id);
+  }
+
+  retryContextRolloverHandoff(
+    id: string,
+    validationError: string,
+    now?: string,
+  ): ReturnType<CoordinationV3ContextRolloverAuthority["retryHandoff"]> {
+    return this.contextRolloverAuthority.retryHandoff(id, validationError, now);
+  }
+
+  contextRolloverForReplacementSession(agentId: string, replacementSessionId: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.forReplacementSession(agentId, replacementSessionId);
+  }
+
+  contextRolloverForContinuationRun(runId: string, agentId: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.forContinuationRun(runId, agentId);
+  }
+
+  contextRolloverCandidateForRun(runId: string, agentId: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.candidateForRun(runId, agentId);
+  }
+
+  contextRolloverRecoveryForRun(runId: string, agentId: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.recoveryForRun(runId, agentId);
+  }
+
+  contextRolloverRecoveryForRequest(requestId: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.recoveryForRequest(requestId);
+  }
+
+  activeContextRollovers(projectId?: string): ContextRolloverV3[] {
+    return this.contextRolloverAuthority.active(projectId);
+  }
+
+  cancelledContextRolloverReplacements(): ContextRolloverV3[] {
+    return this.contextRolloverAuthority.cancelledReplacements();
+  }
+
+  contextRolloverCanonicalAcceptanceCandidates(): ContextRolloverV3[] {
+    return this.contextRolloverAuthority.canonicalAcceptanceCandidates();
+  }
+
+  reconcileContextRolloverCanonicalAcceptance(input: Parameters<
+    CoordinationV3ContextRolloverAuthority["reconcileCanonicalAcceptance"]
+  >[0]): ContextRolloverV3 {
+    return this.contextRolloverAuthority.reconcileCanonicalAcceptance(input);
+  }
+
+  failUnidentifiedContextRolloverReplacementAfterRestart(id: string, now?: string): ContextRolloverV3 {
+    return this.contextRolloverAuthority.failUnidentifiedReplacementAfterRestart(id, now);
+  }
+
+  commitContextRolloverHandoff(id: string, handoffEventId: string, now?: string): ContextRolloverV3 {
+    return this.contextRolloverAuthority.commitHandoff(id, handoffEventId, now);
+  }
+
+  beginContextRolloverRetirement(id: string, now?: string): ContextRolloverV3 {
+    return this.contextRolloverAuthority.beginRetiring(id, now);
+  }
+
+  markContextRolloverVisibleResponseCommitted(agentId: string, sourceRunId: string, now?: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.markVisibleResponseCommitted(agentId, sourceRunId, now);
+  }
+
+  prepareContextRolloverContinuation(input: { id: string; now?: string }): ContextRolloverV3 {
+    return this.sqlite.transaction(() => {
+      const current = this.contextRolloverAuthority.get(input.id);
+      if (current?.state === 'session_retiring' &&
+          !this.requiredReplyAuthority.repairCanonicalDecisionWait(current.sourceRunId, input.now ?? new Date().toISOString()) &&
+          this.requiredReplyAuthority.forRun(current.sourceRunId).some(root => root.decisionWaitRepairPending)) {
+        // Do not certify completion or consume a bounded handoff while its
+        // source task accounting is uncertain. Bounded repair maintenance
+        // resumes this exact retirement after the canonical reader recovers.
+        return current;
+      }
+      return this.contextRolloverAuthority.prepareContinuation(input);
+    })();
+  }
+
+  recordContextRolloverReplacementSessionForRun(runId: string, agentId: string, replacementSessionId: string, now?: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.recordReplacementSessionForRun(runId, agentId, replacementSessionId, now);
+  }
+
+  commitContextRolloverReplacementInputForRun(runId: string, agentId: string, now?: string): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.commitReplacementInputForRun(runId, agentId, now);
+  }
+
+  observeContextRolloverReplacementOccupancy(id: string, replacementSessionId: string, usedTokens: number, now?: string): ContextRolloverV3 {
+    return this.contextRolloverAuthority.observeReplacementOccupancy(id, replacementSessionId, usedTokens, now);
+  }
+
+  completeVerifiedContextRolloverReplacement(id: string, replacementSessionId: string, now?: string): ContextRolloverV3 {
+    return this.contextRolloverAuthority.completeVerifiedReplacement(id, replacementSessionId, now);
+  }
+
+  retireContextRolloverAfterHeadroomRecovery(input: Parameters<CoordinationV3ContextRolloverAuthority["retireAfterHeadroomRecovery"]>[0]): ContextRolloverV3 | undefined {
+    return this.contextRolloverAuthority.retireAfterHeadroomRecovery(input);
+  }
+
+  failContextRollover(
+    id: string,
+    state: "failed" | "outcome_unknown",
+    error: string,
+    provenance: ContextRolloverV3["failureProvenance"],
+    now?: string,
+    failureSignal?: ContextRolloverV3["failureSignal"],
+  ): ContextRolloverV3 {
+    return this.contextRolloverAuthority.fail(
+      id,
+      state,
+      error,
+      provenance,
+      now,
+      failureSignal,
+    );
+  }
+
+  private createActivation(input: CreateActivationV3Input): string {
+    const id = this.activationFactory.create(input);
+    if (input.kind.startsWith("coordination_") || input.kind === "required_reply_recovery") {
+      this.contextRolloverAuthority.bindWaitingWake(id, input.now);
+    }
+    return id;
+  }
+
+}

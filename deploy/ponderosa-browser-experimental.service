@@ -1,0 +1,26 @@
+[Unit]
+Description=Ponderosa experimental browser supervisor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=your-user
+WorkingDirectory=/opt/ponderosa-engine/resources/Ponderosa
+Environment=NODE_ENV=production
+Environment=PONDEROSA_DATA_DIR=/home/your-user/.local/share/ponderosa-browser-experimental
+Environment=PONDEROSA_BROWSER_SERVICE_SOCKET=/run/ponderosa-browser-experimental/browser.sock
+Environment=PONDEROSA_BROWSER_EXECUTABLE=/usr/bin/google-chrome-stable
+Environment=PONDEROSA_BROWSER_MULTI_PAGE=1
+Environment=PONDEROSA_BROWSER_FILE_UPLOAD=1
+RuntimeDirectory=ponderosa-browser-experimental
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStart=/opt/ponderosa-engine/resources/Ponderosa/runtime/node app/server/dist/browser-service-main.js
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

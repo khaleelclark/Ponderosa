@@ -1,0 +1,109 @@
+import { Fragment, useEffect, useRef, useState } from "react";
+import { Alert, Divider, IconButton, ListSubheader, Menu, MenuItem, Snackbar, Tooltip, useMediaQuery } from "@mui/material";
+import ViewQuiltIcon from "@mui/icons-material/ViewQuilt";
+import { ProjectBrowserDialog } from "../ProjectBrowserDialog";
+import type { ProjectBrowserRequest } from "../ProjectBrowserContext";
+import { browserDockIsAvailable } from "./browserWindowSizing";
+import { chatBrowserOwnerId, type ProjectDto } from "@ponderosa/core";
+import { useProjectConversations } from "../../hooks/useProjectCollections";
+import { projectDisambiguator } from "../../workspaceNavigation";
+
+type Panel = { key: string; projectId: string; conversationId?: string; agent?: { id: string; runId: string }; request?: ProjectBrowserRequest };
+const keyFor = (projectId: string, agent?: Panel["agent"], conversationId?: string) => `${conversationId ? chatBrowserOwnerId(conversationId) : projectId}:${agent?.id ?? "unassigned"}`;
+
+/** Panels are views of existing chat/Run authorities, never new browser owners. */
+export function BrowserWorkspaceHost({ projectId, conversationId, agent, request, projects, onRequestHandled, onClose, onDockWidth }: {
+  projectId: string;
+  conversationId?: string;
+  agent?: Panel["agent"];
+  request?: ProjectBrowserRequest;
+  projects: Array<Pick<ProjectDto, "id" | "label"> & Partial<ProjectDto>>;
+  onRequestHandled(requestId: number): void;
+  onClose(): void;
+  onDockWidth(width: number): void;
+}) {
+  const [panels, setPanels] = useState<Panel[]>([]);
+  const [docked, setDocked] = useState<string>();
+  const [widths, setWidths] = useState<Record<string, number>>({});
+  const [menu, setMenu] = useState<HTMLElement | null>(null);
+  const [menuProjectId, setMenuProjectId] = useState<string>();
+  const [limitNotice, setLimitNotice] = useState(false);
+  const lastExternal = useRef<{ key: string; requestId?: number; agent?: Panel["agent"] }>();
+  const mobile = useMediaQuery("(max-width: 899px)");
+  const canDock = useMediaQuery("(min-width: 1400px)");
+  // Name only live panel workspaces, not every Project in the directory.
+  const namingIds = new Set([...panels.map(panel => panel.projectId), projectId, ...(menuProjectId ? [menuProjectId] : [])]);
+  const namingProjects = projects.filter(project => namingIds.has(project.id));
+  const chatQueries = useProjectConversations(namingProjects as ProjectDto[]);
+  const workspaceName = (id: string, chatId?: string) => {
+    const index = projects.findIndex(item => item.id === id);
+    const queryIndex = namingProjects.findIndex(project => project.id === id);
+    const chats = (chatQueries[queryIndex]?.data ?? []).filter(chat => !chat.deletedAt);
+    const chat = chats.find(item => item.id === chatId) ?? (chats.length === 1 ? chats[0] : undefined);
+    const title = chat?.title ?? projects[index]?.label ?? "Chat";
+    const duplicate = chat && chatQueries.some((query, other) => query.data?.some(item => item.title === chat.title && (other !== queryIndex || item.id !== chat.id)));
+    const project = projects[index];
+    if (!project) return title;
+    const context = projectDisambiguator({ ...project, hostPath: project.hostPath ?? "Folder unavailable" }, projects as ProjectDto[]);
+    const ambiguous = duplicate || projects.some(other => other.id !== id && other.label === title);
+    if (!ambiguous) return title;
+    const full = title === project.label ? context : `${title} · ${context}`;
+    // Same-named Projects may intentionally share a folder. Only then use an ID.
+    const sameIdentity = projects.some(other => other.id !== id && other.label === project.label && other.hostPath === project.hostPath);
+    return sameIdentity ? `${full} · ${id.slice(0, 8)}` : full;
+  };
+  const label = (panel: Panel) => `${workspaceName(panel.projectId, panel.conversationId)}${panel.agent ? " · Agent" : ""}`;
+  const activate = (key: string) => setPanels(current => current.at(-1)?.key === key ? current : [...current.filter(item => item.key !== key), ...current.filter(item => item.key === key)]);
+  const openPanel = (next: Panel) => {
+    setPanels(current => {
+      current = current.filter(panel => panel.agent || panel.conversationId || panel.projectId !== next.projectId);
+      const found = current.find(item => item.key === next.key);
+      if (!found && current.length >= 4) return current; // Bounded live viewers; tabs remain separately capped at 30.
+      return [...current.filter(item => item.key !== next.key), { ...found, ...next }];
+    });
+  };
+  useEffect(() => {
+    const key = keyFor(projectId, agent, conversationId);
+    if (lastExternal.current?.key === key && lastExternal.current.agent === agent && (!request || lastExternal.current.requestId === request.requestId)) return;
+    lastExternal.current = { key, requestId: request?.requestId, agent };
+    if (panels.length >= 4 && !panels.some(panel => panel.key === key)) { setLimitNotice(true); return; }
+    setPanels(current => {
+      const found = current.find(item => item.key === key);
+      const others = current.filter(item => item.key !== key);
+      return [...others, { ...found, key, projectId, conversationId: conversationId ?? found?.conversationId, agent, request }];
+    });
+    setDocked(browserDockIsAvailable(window.innerWidth) ? key : undefined);
+  }, [projectId, conversationId, agent, request?.requestId]);
+  useEffect(() => {
+    if (!canDock) setDocked(undefined);
+  }, [canDock]);
+  useEffect(() => { onDockWidth(docked ? widths[docked] ?? 0 : 0); }, [docked, widths, onDockWidth]);
+  useEffect(() => () => onDockWidth(0), [onDockWidth]);
+  return <>
+    {panels.map((panel, index) => <Fragment key={panel.key}>
+      <ProjectBrowserDialog projectId={panel.projectId} conversationId={panel.conversationId} agent={panel.agent} workspaceLabel={label(panel)} open={!mobile || index === panels.length - 1}
+        request={panel.request}
+        onRequestHandled={requestId => {
+          setPanels(current => current.map(item => item.key === panel.key && item.request?.requestId === requestId ? { ...item, request: undefined } : item));
+          onRequestHandled(requestId);
+        }}
+        onDockWidth={width => setWidths(current => current[panel.key] === width ? current : { ...current, [panel.key]: width })}
+        windowOptions={{ docked: docked === panel.key, onDock: () => { if (browserDockIsAvailable(window.innerWidth)) setDocked(panel.key); }, onUndock: () => setDocked(current => current === panel.key ? undefined : current), onActivate: () => activate(panel.key), layer: index, offset: index, label: `Browser · ${label(panel)}` }}
+        workspaceControls={<Tooltip title="Browser workspaces"><IconButton size="small" aria-label="Browser workspaces" onClick={event => setMenu(event.currentTarget)}><ViewQuiltIcon /></IconButton></Tooltip>}
+        onClose={() => {
+          setPanels(current => current.filter(item => item.key !== panel.key));
+          if (docked === panel.key) setDocked(undefined);
+          if (panels.length === 1) onClose();
+        }} />
+    </Fragment>)}
+    <Menu anchorEl={menu} open={Boolean(menu)} onClose={() => setMenu(null)} disableRestoreFocus>
+      <ListSubheader>Open workspaces</ListSubheader>
+      {panels.map(panel => <MenuItem key={panel.key} selected={panels.at(-1)?.key === panel.key} onClick={() => { setMenu(null); activate(panel.key); }}>{label(panel)}</MenuItem>)}
+      <Divider />
+      <ListSubheader>{panels.length >= 4 ? "Close a panel to open another" : "Open another chat browser"}</ListSubheader>
+      {projects.filter(project => project.id !== projectId && !panels.some(panel => panel.projectId === project.id) && project.id !== menuProjectId).map(project => <MenuItem key={project.id} disabled={panels.length >= 4} onClick={() => setMenuProjectId(project.id)}>Chats in {project.label}</MenuItem>)}
+      {chatQueries.flatMap(query => query.data ?? []).filter(chat => !chat.deletedAt && !panels.some(panel => panel.key === keyFor(chat.projectId, undefined, chat.id))).map(chat => <MenuItem key={chat.id} disabled={panels.length >= 4} onClick={() => { setMenu(null); openPanel({ key: keyFor(chat.projectId, undefined, chat.id), projectId: chat.projectId, conversationId: chat.id }); }}>{workspaceName(chat.projectId, chat.id)}</MenuItem>)}
+    </Menu>
+    <Snackbar open={limitNotice} onClose={() => setLimitNotice(false)}><Alert severity="info" onClose={() => setLimitNotice(false)}>Four browser panels are already open. Close a panel before opening another; its browser and tabs will keep running.</Alert></Snackbar>
+  </>;
+}

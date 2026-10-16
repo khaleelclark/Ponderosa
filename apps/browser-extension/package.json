@@ -1,0 +1,17 @@
+{
+  "name": "@ponderosa/browser-extension",
+  "version": "0.4.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node package.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@ponderosa/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@ponderosa/server": "workspace:*",
+    "typescript": "^5.7.2"
+  }
+}

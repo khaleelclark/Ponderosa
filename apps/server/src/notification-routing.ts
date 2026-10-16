@@ -1,0 +1,56 @@
+import type {
+  CommunicationEvent,
+  NotificationPreferencesDto,
+  WorkspaceEvent,
+  WorkspaceNotificationDto,
+} from "@ponderosa/core";
+import type { LogEvent } from "@ponderosa/agents";
+
+/**
+ * The workspace stream is a coarse invalidation bus, not a second copy of every
+ * agent's execution stream. High-frequency output stays on the per-agent SSE
+ * channel and in the canonical agent log.
+ */
+export function workspaceAgentEventCategory(event: LogEvent): Extract<WorkspaceEvent, { type: "agent_event" }>["category"] | undefined {
+  switch (event.type) {
+    // Only completed, explicitly public commentary emits a metadata envelope.
+    // Ordinary text/reasoning and token deltas remain off the workspace stream.
+    case "text": return event.presentation === "progress" ? "progress" : undefined;
+    case "agent_lifecycle": return "lifecycle";
+    case "file_change": return "file";
+    case "command":
+    case "tool_call":
+    case "tool_result":
+    case "work_item_update":
+    case "test_result":
+    case "browser_session":
+    case "browser_action":
+    case "browser_console":
+    case "context_rollover_triggered":
+    case "context_rollover_seed_overflow":
+    case "context_rollover_completed": return "task";
+    case "browser_screenshot": return "artifact";
+    case "session":
+    case "session_reset": return "state";
+    case "communication_projection": return "message";
+    default: return undefined;
+  }
+}
+
+export function notificationKindForCommunication(event: CommunicationEvent): WorkspaceNotificationDto["kind"] | undefined {
+  if (event.sender.kind !== "agent") return undefined;
+  if (event.intent === "broadcast") return "broadcasts";
+  if (event.schemaVersion === 2 && event.intent === "user_dm") return "direct_responses";
+  if (event.audienceSelector === "everyone") return "everyone";
+  if (event.intent === "collaboration") return "collaboration";
+  return undefined;
+}
+
+export function notificationPreferenceMatches(
+  preference: NotificationPreferencesDto,
+  kind: WorkspaceNotificationDto["kind"],
+): boolean {
+  if (kind === "direct_responses") return preference.directResponses;
+  if (kind === "broadcasts" || kind === "everyone") return preference.broadcasts;
+  return false;
+}

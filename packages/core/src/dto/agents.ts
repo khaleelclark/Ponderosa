@@ -1,0 +1,532 @@
+import type { EngineId } from "../adapter.js";
+import type { ArtifactKind } from "./artifacts.js";
+import type {
+  AgentLifecycleReason,
+  AgentOperationalReason,
+  AgentOperationalStatus,
+  AgentRunStatus,
+  ProviderBlockedWorkDto,
+} from "./common.js";
+import type { AgentPresetDto } from "./projects.js";
+import type { AgentRunWakeCause } from "./runs.js";
+
+// ─── Agents ─────────────────────────────────────────────────────────────────
+
+/** Derived agent state (current branch/commit), from `state` events (SPEC §2). */
+export interface AgentState {
+  branch?: string;
+  commit?: string;
+}
+
+export interface AgentManagementPermissionsDto {
+  /** May cancel and atomically delete roots inside this Agent's descendant subtree. */
+  allowAutomaticDescendantDeletion: boolean;
+  /** May rearrange reporting lines inside this Agent's subtree, but never detach from it. */
+  allowAutomaticDescendantReorganization: boolean;
+}
+
+export type AgentWorkingCopyMode = "shared" | "separate_git";
+export type AgentWorkingCopyState = "ready" | "unavailable" | "removed";
+
+export interface AgentWorkingCopyBranchCreationReceiptDto {
+  /** Private Git ref created atomically with the owned branch. */
+  ownershipRef: string;
+  /** Exact ref value authorized before the atomic ref transaction. */
+  branchHead: string;
+}
+
+export interface AgentWorkingCopyCleanupReceiptDto {
+  /** Monotonic destructive boundary authorized after exact worktree validation. */
+  phase: "worktree_removal_authorized" | "branch_marker_authorized" | "branch_removal_authorized";
+  /** Exact owned ref value captured before worktree removal began. */
+  branchHead: string;
+  /** Exact creation marker to remove if cleanup began before registration. */
+  creationOwnershipRef?: string;
+  /** Unique Git-side proof consumed atomically with the owned branch. */
+  cleanupOwnershipRef?: string;
+}
+
+/** Durable filesystem identity used by one Agent across Runs and provider sessions. */
+export interface AgentWorkingCopyDto {
+  /** Stable identity; provider sessions and provenance must not cross identities. */
+  id: string;
+  mode: AgentWorkingCopyMode;
+  state: AgentWorkingCopyState;
+  /** Exact authoritative host root. This is not a security sandbox boundary. */
+  rootPath: string;
+  /** Separate Git copies have one stable branch owned by this Agent. */
+  branch?: string;
+  /** Commit used when the Separate Git copy was first created. */
+  baseHead?: string;
+  /** True only after Ponderosa itself successfully created this branch. */
+  branchOwned?: true;
+  /** Durable pre-mutation receipt used to recover a crash during Git creation. */
+  branchCreationIntent?: true;
+  /** Git-side proof created atomically with a new owned branch. */
+  branchCreationReceipt?: AgentWorkingCopyBranchCreationReceiptDto;
+  /** Durable receipt used to finish an interrupted owned-copy cleanup. */
+  cleanupReceipt?: AgentWorkingCopyCleanupReceiptDto;
+  /** Safe operator-facing reason when the requested mode cannot be used. */
+  failure?: string;
+  updatedAt: string;
+}
+
+/** A stable, addressable agent identity. Mirrors the `agents` projection. */
+export interface AgentDto {
+  id: string;
+  projectId: string;
+  /** Server-allocated, Project-scoped structural mention handle. */
+  handle: string;
+  /** The single Project Chat that owns this live Agent and supplies its Chat context. */
+  conversationId: string;
+  title: string;
+  /** The engine currently bound to this agent. */
+  activeEngine: EngineId;
+  /** Durable provider selection used when a turn does not override it. */
+  model?: string;
+  /** Durable reasoning-effort selection used when a turn does not override it. */
+  effort?: string;
+  /** Durable provider processing tier used when a turn does not override it. */
+  speed?: string;
+  state: AgentState;
+  createdAt: string;
+  updatedAt: string;
+  /** Direct manager in the mutable agent organization. Undefined means the agent reports to the user. */
+  managerAgentId?: string;
+  /** Explicit operator-granted authority over this Agent's descendants. */
+  managementPermissions: AgentManagementPermissionsDto;
+  /** Explicit Shared folder or opt-in Separate Git copy contract. */
+  workingCopy: AgentWorkingCopyDto;
+  /** Stable creation provenance for an agent spawned by another agent. */
+  spawnedByAgentId?: string;
+  spawnedByExecutionId?: string;
+  /** Exact optional message supplied by the spawning agent. */
+  spawnPrompt?: string;
+  /** Immutable-at-spawn preset provenance and guidance snapshot. */
+  presetSnapshot?: Pick<AgentPresetDto, "id" | "name" | "description" | "guidance" | "engine" | "model" | "effort">;
+  importedHistoryCount?: number;
+  importedFrom?: string;
+}
+
+export type AgentExportMode = "template" | "context" | "full";
+export interface PortableAgentHistoryMessageDto { role: "user" | "assistant" | "system"; text: string; createdAt?: string }
+export interface PortableArtifactDto {
+  ref: string;
+  kind: ArtifactKind;
+  path: string;
+  summary?: string;
+  createdAt: string;
+  mediaType?: string;
+  visibility?: "project" | "published";
+  pinned?: boolean;
+  sourcePath?: string;
+  dataBase64: string;
+}
+export interface PortableAgentNodeDto {
+  ref: string;
+  title: string;
+  engine: string;
+  model?: string;
+  effort?: string;
+  initialInstructions?: string;
+  managerRef?: string;
+  managementPermissions: AgentManagementPermissionsDto;
+  history?: PortableAgentHistoryMessageDto[];
+  artifacts?: PortableArtifactDto[];
+}
+export interface AgentPortablePackageDto {
+  schema: "ponderosa.agent-package.v1";
+  mode: AgentExportMode;
+  kind: "agent" | "organization";
+  exportedAt: string;
+  sourceLabel: string;
+  /** Full-copy Chat instructions; applying to an existing Chat requires an explicit conflict choice. */
+  sourceProjectInstructions?: string;
+  rootRef: string;
+  agents: PortableAgentNodeDto[];
+}
+export interface AgentImportChatInstructionsResolution {
+  action: "keep_destination" | "use_source";
+  /** Bind the choice to the destination instructions the user reviewed. */
+  expectedDestinationSha256: string;
+}
+export interface ImportAgentPackageRequest {
+  package: AgentPortablePackageDto;
+  conversationId: string;
+  engineMapping: Record<string, string>;
+  chatInstructionsResolution?: AgentImportChatInstructionsResolution;
+  /** Required when any imported Agent receives autonomous destructive authority. */
+  acknowledgeElevatedManagementPermissions?: boolean;
+}
+export interface CopyAgentPackageRequest {
+  sourceAgentId: string;
+  conversationId: string;
+  chatInstructionsResolution?: AgentImportChatInstructionsResolution;
+  /** Optional new name for the copied organization root; descendants retain their names. */
+  rootTitle?: string;
+  /** Template copies omit history and files. Defaults to full. */
+  mode?: "template" | "full";
+  /** Copy the source Agent's complete managed descendant organization. */
+  organization?: boolean;
+  /** Required when any copied Agent receives autonomous destructive authority. */
+  acknowledgeElevatedManagementPermissions?: boolean;
+}
+export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[] }
+export type AgentImportPhase =
+  | "queued"
+  | "creating_records"
+  | "importing_agents"
+  | "importing_history"
+  | "importing_artifacts"
+  | "finalizing"
+  | "completed"
+  | "failed";
+export interface AgentImportOperationDto {
+  id: string;
+  /** Stable client submission identity; exact transport retries reuse one operation. */
+  requestId: string;
+  /** SHA-256 of the exact submitted payload bound to requestId. */
+  payloadHash: string;
+  projectId: string;
+  sourceLabel: string;
+  phase: AgentImportPhase;
+  status: "pending" | "completed" | "failed";
+  createdAt: string;
+  updatedAt: string;
+  result?: ImportAgentPackageResponse;
+  error?: string;
+}
+
+export interface AgentCreationRecoveryDto {
+  committed: true;
+  recovering: true;
+  operationId: string;
+  agentId: string;
+}
+export type CreateAgentResponse = AgentDto | AgentCreationRecoveryDto;
+
+export interface AgentRoleProfile {
+  role: string;
+  description: string;
+}
+
+/**
+ * Present a spawned agent's durable identity as its role instead of silently
+ * calling every agent without a preset a Generalist. Keep the prompt-derived
+ * description compact because this profile is also injected into team discovery.
+ */
+export function agentRoleProfile(
+  agent: Pick<AgentDto, "title" | "spawnPrompt" | "presetSnapshot">,
+): AgentRoleProfile {
+  const prompt = agent.spawnPrompt?.replace(/\s+/g, " ").trim();
+  const compactPrompt = prompt && prompt.length > 160
+    ? `${prompt.slice(0, 160).replace(/\s+\S*$/, "").trimEnd()}…`
+    : prompt;
+  if (agent.presetSnapshot) {
+    return { role: agent.presetSnapshot.name, description: agent.presetSnapshot.description };
+  }
+  if (compactPrompt) {
+    return { role: agent.title, description: compactPrompt };
+  }
+  return { role: "Generalist", description: `General-purpose agent ${agent.title}` };
+}
+
+export interface TeamDirectoryAgentDto {
+  agentId: string;
+  displayName: string;
+  role: string;
+  description: string;
+  status: AgentOperationalStatus;
+  currentActivity?: string;
+  work?: TeamDirectoryWorkDto;
+  /** Fetch this Agent's focused directory entry for omitted bounded details. */
+  workSummaryOmitted?: true;
+  admissionBlocker?: import("./common.js").QueuedAdmissionBlockerDto;
+  managerAgentId?: string;
+  childAgentIds: string[];
+  engine: EngineId;
+  preset?: { id: string; name: string };
+}
+
+export interface TeamDirectoryDto {
+  projectId: string;
+  generatedAt: string;
+  agents: TeamDirectoryAgentDto[];
+  totalAgents?: number;
+  hasMoreAgents?: boolean;
+  agentCursor?: string;
+}
+
+/** Supplied by authenticated server callers, never by directory query parameters. */
+export type TeamDirectoryCaller = { kind: "operator" } | {
+  kind: "agent"; agentId: string; projectId: string; conversationId?: string;
+};
+
+export interface TeamDirectoryWorkDto {
+  assignments: Array<{
+    requestId: string;
+    summary?: string;
+    requesterAgentId?: string;
+    requesterName?: string;
+    requestState: import("../coordination-v3.js").CoordinationRequestState;
+    deliveryState: string;
+    executionState?: string;
+    dependencyState?: "open" | "satisfied" | "impossible" | "expired" | "cancelled";
+    progress?: { text: string; createdAt: string };
+  }>;
+  /** Counts only further authorized items, never restricted assignments. */
+  hasMoreAssignments: boolean;
+  activeAssignmentDetails: "available" | "restricted" | "none";
+}
+
+export const TEAM_DIRECTORY_LIMITS = {
+  agents: 100,
+  assignmentsPerAgent: 3,
+  textCharacters: 240,
+  identityCharacters: 80,
+  responseUtf8Bytes: 256 * 1024,
+} as const;
+
+/** POST /api/projects/:id/agents body. */
+export interface CreateAgentRequest {
+  title: string;
+  engine: EngineId;
+  /** Every live Agent belongs to exactly one Chat. */
+  conversationId: string;
+  model?: string;
+  effort?: string;
+  /** Per-opening-turn processing tier. "standard" clears provider acceleration. */
+  speed?: string;
+  /** Optional first turn, dispatched atomically with agent creation. */
+  initialMessage?: string;
+  /** Conversation-scoped staged assets committed with the optional first turn. */
+  draftAttachmentIds?: string[];
+  /** Browser-private draft owner used to resolve staged first-turn attachments. */
+  draftOwnerId?: string;
+  presetId?: string;
+  /** Optional existing agent this new agent reports to. User-authorized creation only. */
+  managerAgentId?: string;
+  /** Persisted Agent settings. Omitted creation defaults both permissions off. */
+  managementPermissions?: AgentManagementPermissionsDto;
+  /** Stable across transport retries so one requested Agent is created once. */
+  idempotencyKey?: string;
+}
+
+/** PATCH /api/agents/:id body (persistent Agent settings). */
+export interface UpdateAgentRequest {
+  title?: string;
+  /** Provider used when the next Run starts. Does not reconfigure an active Run. */
+  activeEngine?: EngineId;
+  /** Durable next-Run model. Null clears the Agent override. */
+  model?: string | null;
+  /** Durable next-Run reasoning effort. Null clears the Agent override. */
+  effort?: string | null;
+  /** Durable next-Run processing tier. Null clears the Agent override. */
+  speed?: string | null;
+  /** Changes the next-Run filesystem identity. Never falls back to Shared. */
+  workingCopyMode?: AgentWorkingCopyMode;
+  managementPermissions?: AgentManagementPermissionsDto;
+}
+
+export interface AgentDeletionPreviewRequest {
+  rootAgentIds: string[];
+}
+
+export interface AgentDeletionAffectedAgentDto {
+  id: string;
+  title: string;
+  managerAgentId?: string;
+}
+
+export interface AgentDeletionPreviewDto {
+  projectId: string;
+  /** Server-normalized roots; descendants of another selected root are omitted. */
+  rootAgentIds: string[];
+  affectedAgents: AgentDeletionAffectedAgentDto[];
+  /** Hash of the exact confirmed roots, affected IDs, names, and reporting edges. */
+  previewHash: string;
+}
+
+export interface CommitAgentDeletionRequest {
+  rootAgentIds: string[];
+  previewHash: string;
+}
+
+export interface CommitAgentDeletionResponse {
+  deleted: true;
+  deletedAgentIds: string[];
+  deletionReceiptId: string;
+  cleanupPending: boolean;
+  replayed?: boolean;
+}
+
+/** PUT /api/agents/:id/manager body. Null promotes to top level. */
+export interface UpdateAgentOrganizationRequest {
+  managerAgentId: string | null;
+}
+
+/** Canonical append-only record for mutable agent organization. */
+export interface AgentOrganizationEvent {
+  eventId: string;
+  type: "manager_changed";
+  projectId: string;
+  agentId: string;
+  managerAgentId: string | null;
+  createdAt: string;
+}
+
+export type AgentOrganizationScope = "roots" | "children" | "orphaned" | "deleted";
+
+export type AgentOrganizationRelationDto =
+  | { kind: "independent" }
+  | { kind: "managed"; manager: { id: string; title: string } }
+  | { kind: "orphaned"; managerAgentId: string }
+  | { kind: "deleted"; deletedAt: string };
+
+/** The exact live status evidence allowed on the bounded organization surface. */
+export type AgentOrganizationHealthDto = Pick<
+  AgentHealthDto,
+  | "status"
+  | "statusTimestamp"
+  | "reason"
+  | "phase"
+  | "executionId"
+  | "schedulerRunId"
+  | "runtimeOwnership"
+  | "attention"
+>;
+
+export type AgentOrganizationNodeDto =
+  | {
+      id: string;
+      projectId: string;
+      title: string;
+      activeEngine: EngineId;
+      updatedAt: string;
+      relation: Exclude<AgentOrganizationRelationDto, { kind: "deleted" }>;
+      directReportCount: number;
+      health?: AgentOrganizationHealthDto;
+    }
+  | {
+      id: string;
+      title: string;
+      relation: Extract<AgentOrganizationRelationDto, { kind: "deleted" }>;
+      /** A deleted Agent's Separate Git copy remains until explicit cleanup. */
+      retainedWorkingCopy?: AgentWorkingCopyDto;
+    };
+
+export interface AgentOrganizationPageDto {
+  scope: AgentOrganizationScope;
+  items: AgentOrganizationNodeDto[];
+  total: number;
+  limit: number;
+  nextCursor?: string;
+  collectionGeneration: string;
+  specialGroupCounts: {
+    independent: number;
+    orphaned: number;
+    deleted: number;
+  };
+}
+
+export interface AgentHealthRunSummaryDto {
+  runId: string;
+  status: AgentRunStatus;
+  reason: AgentLifecycleReason;
+  wakeCause?: AgentRunWakeCause;
+  updatedAt: string;
+}
+
+export interface AgentHealthAttentionDto {
+  status: Extract<AgentOperationalStatus, "needs_decision" | "blocked" | "stalled" | "interrupted">;
+  reason: AgentOperationalReason;
+  observedAt: string;
+}
+
+export type AgentPhaseKind =
+  | "running_command"
+  | "using_tool"
+  | "waiting_on_request"
+  | "waiting_on_join"
+  | "stopping";
+
+export type AgentPhaseDto =
+  | {
+      kind: "running_command" | "using_tool";
+      observedAt: string;
+      /** Exact current execution and open call identities; no call payload is exposed. */
+      executionId: string;
+      schedulerRunId?: string;
+      callId: string;
+    }
+  | {
+      kind: "waiting_on_request";
+      observedAt: string;
+      requestId: string;
+      /** Total canonical dependencies, including any omitted from the bounded identities. */
+      dependencyCount: number;
+      additionalDependencyCount: number;
+      counterpartyAgentIds: string[];
+    }
+  | {
+      kind: "waiting_on_join";
+      observedAt: string;
+      joinId: string;
+      /** Bounded unresolved Request identities selected from the open Join set. */
+      requestIds: string[];
+      dependencyCount: number;
+      additionalDependencyCount: number;
+      counterpartyAgentIds: string[];
+    }
+  | {
+      kind: "stopping";
+      observedAt: string;
+      executionId?: string;
+      schedulerRunId?: string;
+    };
+
+export interface AgentHealthDto {
+  /** Stable agent identity; titles and mention handles are presentation only. */
+  agentId: string;
+  managerAgentId?: string;
+  childAgentIds: string[];
+  status: AgentOperationalStatus;
+  /** Timestamp of the authoritative observation that selected `status`. */
+  statusTimestamp: string;
+  reason: AgentOperationalReason;
+  admissionBlocker?: import("./common.js").QueuedAdmissionBlockerDto;
+  /** Optional evidence-backed detail decorating the coarse operational status. */
+  phase?: AgentPhaseDto;
+  /** Runtime generation and bounded liveness window, when work is active. */
+  executionId?: string;
+  /** Durable scheduler lease authority, even before a provider process exists. */
+  schedulerRunId?: string;
+  leaseStartedAt?: string;
+  leaseExpiresAt?: string;
+  promptInjectionState?: "not_injected" | "injecting" | "injected";
+  runtimeOwnership?: "running" | "stalled" | "cancelling" | "interrupted";
+  /** Present only while the server canonically owns an active execution. */
+  runtimeActivity?: {
+    state: "responding";
+    executionId: string;
+    startedAt: string;
+    /** Meaningful execution evidence, not a heartbeat or this projection's clock. */
+    lastActivityAt?: string;
+  };
+  /** Most recent execution, regardless of whether it represented assigned work or incidental coordination. */
+  latestRun?: AgentHealthRunSummaryDto;
+  /** Most recent non-incidental assignment outcome. Coordination and collaboration wake-ups never overwrite it. */
+  assignedWorkOutcome?: AgentHealthRunSummaryDto;
+  /** Current actionable issue, separate from current availability and historical Run outcomes. */
+  attention?: AgentHealthAttentionDto;
+  /** A provider process currently owns this Agent's resumable session. */
+  providerSessionLive?: boolean;
+  /** Present while canonical work is retained for provider quota/capacity retry. */
+  providerBlocked?: ProviderBlockedWorkDto;
+}
+
+export interface AgentHealthProjectionDto {
+  scope: { type: "project" | "conversation"; id: string };
+  generatedAt: string;
+  agents: AgentHealthDto[];
+}

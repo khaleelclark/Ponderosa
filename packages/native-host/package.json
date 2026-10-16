@@ -1,0 +1,38 @@
+{
+  "name": "@ponderosa/native-host",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./fs": {
+      "types": "./dist/fs.d.ts",
+      "default": "./dist/fs.js"
+    },
+    "./fs/promises": {
+      "types": "./dist/fs/promises.d.ts",
+      "default": "./dist/fs/promises.js"
+    },
+    "./sqlite-storage": {
+      "types": "./dist/sqlite-storage.d.ts",
+      "default": "./dist/sqlite-storage.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node-gyp rebuild",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "node-gyp": "^12.1.0",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "better-sqlite3": "11.10.0"
+  }
+}

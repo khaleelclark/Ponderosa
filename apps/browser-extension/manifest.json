@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Ponderosa Local Browser — Experimental",
+  "version": "0.4.1",
+  "minimum_chrome_version": "118",
+  "description": "Connect a browser window to Ponderosa, pause for manual sign-in, and resume without pairing again.",
+  "permissions": ["activeTab", "tabs", "debugger", "storage"],
+  "optional_host_permissions": ["https://*/*"],
+  "background": { "service_worker": "worker.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "Connect this window to Ponderosa" }
+}

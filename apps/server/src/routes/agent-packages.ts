@@ -1,0 +1,2154 @@
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, promises as fs } from "@ponderosa/native-host/fs";
+import { setImmediate as yieldToLoop } from "node:timers/promises";
+import {
+  AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_ARTIFACT_MAX_BYTES,
+  AGENT_PACKAGE_STAGING_MAX_BYTES, AGENT_PACKAGE_METADATA_MAX_BYTES,
+  AGENT_PACKAGE_LIMIT_LABEL, AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL,
+} from "@ponderosa/core";
+import path from "node:path";
+import type {
+  AgentImportOperationDto,
+  AgentImportPhase,
+  AgentDto,
+  AgentExportMode,
+  AgentPortablePackageDto,
+  Adapter,
+  CopyAgentPackageRequest,
+  ImportAgentPackageRequest,
+  ImportAgentPackageResponse,
+  ModelOption,
+} from "@ponderosa/core";
+import {
+  publishManagedArtifactContentsAsync,
+  readManagedArtifactContentsAsync,
+  readManagedArtifactContent,
+  removeManagedArtifactContent,
+  stableJson,
+  importedAgentHistoryPath,
+  type AgentStore,
+  type CoordinationV3Store,
+} from "@ponderosa/agents";
+import type { FastifyInstance, FastifyReply } from "fastify";
+import type { createOperationalNotifications } from "../operational-notifications.js";
+import {
+  CANONICAL_ARTIFACT_ID,
+  portableAgentTopologyError,
+  rewritePortableArtifactReferences,
+} from "../artifact-refs.js";
+import {
+  AssetError,
+  type AssetStore,
+  generatedArtifactMetadataIsValid,
+  type RegisteredGeneratedArtifact,
+} from "../assets.js";
+import { runtimeSelectionError } from "../runtime-selection.js";
+import {
+  exactObjectFields,
+  validatedObject,
+} from "../object-validation.js";
+import {
+  decodePortableArtifact,
+  encodePortableArtifact,
+  parsePortablePackageFile,
+  portablePackageJsonChunks,
+  withAgentImportAdmission,
+} from "../agent-package-codec.js";
+
+interface AgentPackageRoutesContext {
+  dataDir: string;
+  store: AgentStore;
+  coordination: CoordinationV3Store;
+  assets: AssetStore;
+  engines: ReadonlyMap<string, { adapter: Adapter }>;
+  deletingProjectIds: ReadonlySet<string>;
+  deletingConversationIds: ReadonlySet<string>;
+  deletingAgentIds: Set<string>;
+  agentCreationConversationLeases: Map<string, number>;
+  cachedModelOptions: (adapter: Adapter, projectId?: string) => ModelOption[];
+  appendWorkspace: (event: {
+    type: "project_changed";
+    projectId: string;
+    action: "updated";
+  } | {
+    type: "conversation_changed";
+    projectId: string;
+    conversationId: string;
+    action: "updated";
+  }) => unknown;
+  agentMessages: (agentId: string) => Array<{
+    role: "user" | "assistant";
+    text: string;
+    createdAt: string;
+  }>;
+  createOperationalNotification: ReturnType<
+    typeof createOperationalNotifications
+  >["createOperationalNotification"];
+}
+
+export function registerAgentPackageRoutes(
+  app: FastifyInstance,
+  context: AgentPackageRoutesContext,
+): void {
+  const {
+    store,
+    coordination: coordinationV3,
+    assets,
+    engines,
+    deletingProjectIds,
+    deletingConversationIds,
+    deletingAgentIds,
+    agentCreationConversationLeases,
+    cachedModelOptions,
+    appendWorkspace,
+    agentMessages,
+    createOperationalNotification,
+  } = context;
+  const blobImportContentType = "application/vnd.ponderosa.agent-import";
+  const importOperationDirectory = path.join(context.dataDir, "agent-import-operations");
+  const operationPath = (id: string) => path.join(importOperationDirectory, `${id}.json`);
+  const payloadPath = (id: string) => path.join(importOperationDirectory, `${id}.payload`);
+  const copySnapshotPath = (id: string) => path.join(importOperationDirectory, `${id}.copy.payload`);
+  const removeCopySnapshot = async (id: string): Promise<void> => {
+    let removed = false;
+    await fs.unlink(copySnapshotPath(id))
+      .then(() => { removed = true; })
+      .catch((error) => {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      });
+    if (removed) {
+      releaseStagedReservation(operationReservations.get(`${id}.copy`));
+      operationReservations.delete(`${id}.copy`);
+    }
+    if (removed && process.platform !== "win32") {
+      const directory = await fs.open(importOperationDirectory, "r");
+      try { await directory.sync(); } finally { await directory.close(); }
+    }
+  };
+  const operationByRequest = new Map<string, string>();
+  const operationCache = new Map<string, AgentImportOperationDto>();
+  const quarantinedOperationIds = new Set<string>();
+  const projectImportTails = new Map<string, Promise<void>>();
+  const activeCopyOperations = new Set<string>();
+  type StagedImportUpload = {
+    pathname: string;
+    sha256: string;
+    size: number;
+    reservationId: string;
+  };
+  const maximumImportBytes = AGENT_PACKAGE_MAX_BYTES + AGENT_PACKAGE_METADATA_MAX_BYTES + 1;
+  const maximumStagedImportBytes = AGENT_PACKAGE_STAGING_MAX_BYTES;
+  let stagedImportBytes = 0;
+  const stagedReservations = new Map<string, number>();
+  const operationReservations = new Map<string, string>();
+  const reserveStagedBytes = (reservationId: string, bytes: number): void => {
+    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error("invalid staging reservation");
+    if (bytes === 0) return;
+    if (stagedImportBytes + bytes > maximumStagedImportBytes) {
+      throw Object.assign(
+        new Error("Agent import staging capacity is currently full"),
+        { statusCode: 503 },
+      );
+    }
+    stagedImportBytes += bytes;
+    stagedReservations.set(
+      reservationId,
+      (stagedReservations.get(reservationId) ?? 0) + bytes,
+    );
+  };
+  const releaseStagedReservation = (reservationId: string | undefined): void => {
+    if (!reservationId) return;
+    const bytes = stagedReservations.get(reservationId);
+    if (bytes === undefined) return;
+    stagedReservations.delete(reservationId);
+    stagedImportBytes = Math.max(0, stagedImportBytes - bytes);
+  };
+  const sha256File = async (pathname: string): Promise<string> => {
+    const hash = createHash("sha256");
+    const handle = await fs.open(pathname, "r");
+    const buffer = Buffer.allocUnsafe(256 * 1024);
+    try {
+      for (let offset = 0;;) {
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+        if (!bytesRead) break;
+        hash.update(buffer.subarray(0, bytesRead));
+        offset += bytesRead;
+      }
+    } finally {
+      await handle.close();
+    }
+    return hash.digest("hex");
+  };
+  const withProjectImportLock = async <T>(projectId: string, work: () => Promise<T>): Promise<T> => {
+    const previous = projectImportTails.get(projectId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.catch(() => undefined).then(() => current);
+    projectImportTails.set(projectId, tail);
+    await previous.catch(() => undefined);
+    try { return await work(); } finally {
+      release();
+      if (projectImportTails.get(projectId) === tail) projectImportTails.delete(projectId);
+    }
+  };
+  const requestOperationKey = (projectId: string, requestId: string) =>
+    `${projectId}:${requestId}`;
+  const validIdempotencyKey = (value: string | undefined): string | undefined => {
+    const key = value?.trim();
+    return key && /^[A-Za-z0-9_-]{8,128}$/u.test(key) ? key : undefined;
+  };
+  const operationIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+  const importPhases = new Set<AgentImportPhase>([
+    "queued", "creating_records", "importing_agents", "importing_history",
+    "importing_artifacts", "finalizing", "completed", "failed",
+  ]);
+  const validatedOperation = (value: unknown, expectedId: string): AgentImportOperationDto => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("operation record must be an object");
+    }
+    const operation = value as Partial<AgentImportOperationDto>;
+    if (operation.id !== expectedId || !operationIdPattern.test(operation.id) ||
+        typeof operation.requestId !== "string" || !validIdempotencyKey(operation.requestId) ||
+        typeof operation.payloadHash !== "string" || !/^[0-9a-f]{64}$/u.test(operation.payloadHash) ||
+        typeof operation.projectId !== "string" || !operation.projectId || operation.projectId.length > 200 ||
+        typeof operation.sourceLabel !== "string" || operation.sourceLabel.length > 240 ||
+        typeof operation.phase !== "string" || !importPhases.has(operation.phase as AgentImportPhase) ||
+        !["pending", "completed", "failed"].includes(operation.status ?? "") ||
+        typeof operation.createdAt !== "string" || operation.createdAt.length > 100 ||
+        typeof operation.updatedAt !== "string" || operation.updatedAt.length > 100 ||
+        (operation.error !== undefined && (typeof operation.error !== "string" || operation.error.length > 1_000)) ||
+        (operation.result !== undefined && (
+          !operation.result || typeof operation.result !== "object" ||
+          typeof operation.result.rootAgentId !== "string" || !operation.result.rootAgentId ||
+          operation.result.rootAgentId.length > 200 ||
+          !Array.isArray(operation.result.agentIds) ||
+          operation.result.agentIds.length > 10_000 ||
+          operation.result.agentIds.some((id) => typeof id !== "string" || !id || id.length > 200)
+        ))) {
+      throw new Error("operation record fields are invalid or do not match its filename");
+    }
+    return operation as AgentImportOperationDto;
+  };
+  const quarantineOperation = async (id: string, error: unknown): Promise<void> => {
+    quarantinedOperationIds.add(id);
+    const source = operationPath(id);
+    let destination = `${source}.corrupt`;
+    try {
+      await fs.access(destination);
+      destination = `${source}.corrupt.${randomUUID()}`;
+    } catch { /* the stable quarantine name is available */ }
+    try {
+      await fs.rename(source, destination);
+      if (process.platform !== "win32") {
+        const directory = await fs.open(importOperationDirectory, "r");
+        try { await directory.sync(); } finally { await directory.close(); }
+      }
+    } catch (renameError) {
+      if ((renameError as NodeJS.ErrnoException).code !== "ENOENT") {
+        error = new AggregateError([error, renameError], "Import journal quarantine failed");
+      }
+    }
+    try {
+      createOperationalNotification({
+        dedupeKey: `agent-import-corrupt:${id}`,
+        category: "system",
+        severity: "urgent",
+        title: "Agent import recovery needs attention",
+        body: `Import operation ${id} was quarantined; its payload was preserved. ${
+          error instanceof Error ? error.message : String(error)
+        }`.slice(0, 1_000),
+      });
+    } catch { /* quarantine and payload preservation remain authoritative */ }
+  };
+  const writeOperation = async (operation: AgentImportOperationDto): Promise<void> => {
+    await fs.mkdir(importOperationDirectory, { recursive: true });
+    const finalPath = operationPath(operation.id);
+    const previous = await fs.readFile(finalPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    const temporary = `${finalPath}.${randomUUID()}.tmp`;
+    let installed = false;
+    try {
+      const handle = await fs.open(temporary, "wx", 0o600);
+      try {
+        await handle.writeFile(JSON.stringify(operation));
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await fs.rename(temporary, finalPath);
+      installed = true;
+      if (process.platform !== "win32") {
+        const directory = await fs.open(importOperationDirectory, "r");
+        try { await directory.sync(); } finally { await directory.close(); }
+      }
+    } catch (error) {
+      await fs.unlink(temporary).catch(() => undefined);
+      if (installed) {
+        try {
+          if (previous) {
+            const rollback = `${finalPath}.${randomUUID()}.tmp`;
+            const handle = await fs.open(rollback, "wx", 0o600);
+            try {
+              await handle.writeFile(previous);
+              await handle.sync();
+            } finally {
+              await handle.close();
+            }
+            await fs.rename(rollback, finalPath);
+          } else {
+            await fs.unlink(finalPath);
+          }
+          if (process.platform !== "win32") {
+            const directory = await fs.open(importOperationDirectory, "r");
+            try { await directory.sync(); } finally { await directory.close(); }
+          }
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], "Import operation durability and rollback both failed");
+        }
+      }
+      throw error;
+    }
+    operationCache.set(operation.id, operation);
+    operationByRequest.set(
+      requestOperationKey(operation.projectId, operation.requestId),
+      operation.id,
+    );
+  };
+  const readOperation = async (id: string): Promise<AgentImportOperationDto | undefined> => {
+    if (!operationIdPattern.test(id)) return undefined;
+    try {
+      return validatedOperation(JSON.parse(await fs.readFile(operationPath(id), "utf8")), id);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      await quarantineOperation(id, error);
+      return undefined;
+    }
+  };
+  const operationHydration = fs.mkdir(importOperationDirectory, { recursive: true })
+    .then(async () => {
+      const names = await fs.readdir(importOperationDirectory);
+      for (const name of names) {
+        const match = /^([0-9a-f-]{36})\.json\.corrupt(?:\..+)?$/u.exec(name);
+        if (match && operationIdPattern.test(match[1]!)) quarantinedOperationIds.add(match[1]!);
+      }
+      for (const name of names.filter((candidate) => candidate.endsWith(".json"))) {
+        const operation = await readOperation(name.slice(0, -5));
+        if (!operation) continue;
+        operationCache.set(operation.id, operation);
+        operationByRequest.set(
+          requestOperationKey(operation.projectId, operation.requestId),
+          operation.id,
+        );
+      }
+      const durableIds = new Set(operationCache.keys());
+      let cleaned = false;
+      for (const name of names) {
+        const payloadMatch = /^([0-9a-f-]{36})\.payload$/u.exec(name);
+        const copyMatch = /^(agent-create-[0-9a-f]{64})\.copy\.payload$/u.exec(name);
+        const temporary = name.endsWith(".tmp");
+        const abandonedUpload = name.startsWith(".incoming-");
+        const liveCopy = copyMatch
+          ? store.getAgentCreationOperation(copyMatch[1]!)
+          : undefined;
+        if (!temporary && !abandonedUpload && (
+          (payloadMatch && (
+            quarantinedOperationIds.has(payloadMatch[1]!) ||
+            (durableIds.has(payloadMatch[1]!) &&
+              operationCache.get(payloadMatch[1]!)?.status === "pending")
+          )) ||
+          (copyMatch && liveCopy && liveCopy.status !== "completed") ||
+          (!payloadMatch && !copyMatch)
+        )) continue;
+        await fs.unlink(path.join(importOperationDirectory, name))
+          .then(() => { cleaned = true; })
+          .catch(() => undefined);
+      }
+      if (cleaned && process.platform !== "win32") {
+        const directory = await fs.open(importOperationDirectory, "r");
+        try { await directory.sync(); } finally { await directory.close(); }
+      }
+      // Pending payloads consume the same bounded staging budget after a
+      // restart. Admission is initialized before new uploads are accepted.
+      for (const name of await fs.readdir(importOperationDirectory)) {
+        if (!name.endsWith(".payload") && !name.endsWith(".tmp") && !name.startsWith(".incoming-")) continue;
+        const stat = await fs.stat(path.join(importOperationDirectory, name)).catch(() => undefined);
+        if (!stat?.isFile()) continue;
+        const id = name.slice(0, -".payload".length);
+        const reservationId = `retained:${id}`;
+        // Retained/quarantined data is never discarded to make space. Existing
+        // bytes above capacity block new admission until recovery releases them.
+        stagedImportBytes += stat.size;
+        stagedReservations.set(reservationId, stat.size);
+        if (name.endsWith(".payload")) operationReservations.set(id, reservationId);
+      }
+    });
+  app.addContentTypeParser(
+    blobImportContentType,
+    (request, payload, done) => {
+      void (async () => {
+        await operationHydration;
+        await fs.mkdir(importOperationDirectory, { recursive: true });
+        const pathname = path.join(importOperationDirectory, `.incoming-${randomUUID()}`);
+        const reservationId = `upload:${randomUUID()}`;
+        const handle = await fs.open(pathname, "wx", 0o600);
+        const hash = createHash("sha256");
+        let size = 0;
+        let metadataBytes: number | undefined;
+        let headerBytes = 0;
+        try {
+          for await (const chunk of payload) {
+            const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            size += bytes.length;
+            if (metadataBytes === undefined) {
+              const separator = bytes.indexOf(0x0a);
+              if (separator >= 0) metadataBytes = headerBytes + separator + 1;
+              else headerBytes += bytes.length;
+              if ((metadataBytes ?? headerBytes) > AGENT_PACKAGE_METADATA_MAX_BYTES + 1) {
+                throw Object.assign(new Error("Agent package upload metadata is invalid"), { statusCode: 400 });
+              }
+            }
+            if (size - (metadataBytes ?? headerBytes) > AGENT_PACKAGE_MAX_BYTES) {
+              throw Object.assign(new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL}`), { statusCode: 413 });
+            }
+            reserveStagedBytes(reservationId, bytes.length);
+            hash.update(bytes);
+            await handle.write(bytes);
+          }
+          await handle.sync();
+          await handle.close();
+          done(null, {
+            pathname,
+            sha256: hash.digest("hex"),
+            size,
+            reservationId,
+          } satisfies StagedImportUpload);
+        } catch (error) {
+          await handle.close().catch(() => undefined);
+          await fs.unlink(pathname).catch(() => undefined);
+          releaseStagedReservation(reservationId);
+          request.log.warn({ err: error }, "Agent package upload was rejected before admission");
+          done(error as Error);
+        }
+      })().catch((error) => done(error as Error));
+    },
+  );
+
+  const buildPortablePackage = async (
+    agentId: string,
+    requestedMode: AgentExportMode,
+    organization: boolean,
+  ): Promise<AgentPortablePackageDto> => {
+    const root = store.getAgent(agentId);
+    if (!root || store.agentCreationPending(agentId)) throw new AssetError(404, "agent not found");
+    // Context packages were an early V3.3 spelling of a full portable Agent.
+    const mode: AgentExportMode = requestedMode === "context" ? "full" : requestedMode;
+    const nodes = organization
+      ? store.listAgentSubtree(root.id)
+      : [root];
+    if (nodes.some((agent) => store.agentCreationPending(agent.id))) {
+      throw new AssetError(409, "Agent creation is still being recovered");
+    }
+    const included = new Set(nodes.map((agent) => agent.id));
+    const chat = store.getConversation(root.conversationId);
+    const project = { ...store.getProject(root.projectId)!, label: chat?.title ?? root.title, instructions: chat?.instructions };
+    let portableArtifactBytes = 0;
+    const canonicalUserDocuments = mode === "template"
+      ? []
+      : store.readCommunicationEvents(root.projectId)
+        .filter((event) =>
+          event.sender.kind === "user" && Boolean(event.document?.artifactId));
+    type ImportedHistory = {
+      messages: NonNullable<AgentPortablePackageDto["agents"][number]["history"]>;
+      initialInstructions?: string;
+    };
+    const importedHistories = new Map<string, ImportedHistory>();
+    for (const agent of nodes) {
+      const pathname = importedAgentHistoryPath(context.dataDir, agent.projectId, agent.id);
+      try {
+        await fs.access(pathname);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      const { portable } = await parsePortablePackageFile(pathname, { packageOnly: true });
+      importedHistories.set(agent.id, portable as unknown as ImportedHistory);
+    }
+    const histories = new Map((mode === "template" ? [] : nodes).map((agent) => {
+      const history = [
+        ...(importedHistories.get(agent.id)?.messages ?? []),
+        ...agentMessages(agent.id).map((message) => ({
+          role: message.role,
+          text: message.text,
+          createdAt: message.createdAt,
+        })),
+      ];
+      for (const event of canonicalUserDocuments) {
+        // Chat location is presentation, never authority to export a private DM.
+        const visible = (!event.conversationId || agent.conversationId === event.conversationId)
+          && (event.intent === "broadcast"
+            ? event.audience.kind === "organization" && event.audience.organizationId === agent.projectId
+            : event.intent === "user_dm"
+              ? (event.audience.kind === "user_agent"
+                  ? event.audience.agentId === agent.id
+                  : event.audience.kind === "user_agents" && event.audience.agentIds.includes(agent.id))
+              : event.intent === "collaboration"
+                && event.audience.kind === "agents" && event.audience.agentIds.includes(agent.id));
+        if (
+          visible
+          && !history.some((message) =>
+            message.text.includes(event.document!.artifactId!))
+        ) {
+          history.push({
+            role: "user" as const,
+            text: event.text,
+            createdAt: event.createdAt,
+          });
+        }
+      }
+      return [agent.id, history] as const;
+    }));
+    const projectArtifacts = mode === "template"
+      ? []
+      : store.getProjectArtifacts(root.projectId);
+    const artifactOwner = new Map<string, string>();
+    if (mode !== "template") {
+      for (const artifact of projectArtifacts) {
+        if (artifact.originAgentId && included.has(artifact.originAgentId)) {
+          artifactOwner.set(artifact.id, artifact.originAgentId);
+          continue;
+        }
+        const referencingAgent = nodes.find((agent) =>
+          (histories.get(agent.id) ?? []).some((message) =>
+            message.text.includes(artifact.id)));
+        if (referencingAgent) artifactOwner.set(artifact.id, referencingAgent.id);
+      }
+    }
+    const agents: AgentPortablePackageDto["agents"] = [];
+    for (const agent of nodes) {
+      const history = histories.get(agent.id) ?? [];
+      const selectedArtifacts = mode === "template"
+        ? []
+        : projectArtifacts.filter((artifact) =>
+          artifactOwner.get(artifact.id) === agent.id);
+      const artifacts: NonNullable<AgentPortablePackageDto["agents"][number]["artifacts"]> = [];
+      const pendingArtifacts: Array<{
+        artifact: typeof selectedArtifacts[number];
+        identity: { size: number; sha256: string };
+      }> = [];
+      let reservedArtifactBytes = portableArtifactBytes;
+      const flushArtifacts = async (): Promise<void> => {
+        if (pendingArtifacts.length === 0) return;
+        const batch = pendingArtifacts.splice(0);
+        const bodies = await readManagedArtifactContentsAsync(
+          context.dataDir,
+          agent.projectId,
+          batch.map(({ artifact, identity }) => ({
+            artifactId: artifact.id,
+            expectedSize: identity.size,
+            expectedSha256: identity.sha256,
+          })),
+        );
+        for (const [index, { artifact }] of batch.entries()) {
+          const data = bodies[index];
+          if (!data) {
+            throw new AssetError(409, `artifact ${artifact.id} content is unavailable or changed`);
+          }
+          artifacts.push({
+            ref: artifact.id,
+            kind: artifact.kind,
+            path: artifact.path,
+            ...(artifact.summary ? { summary: artifact.summary } : {}),
+            createdAt: artifact.createdAt,
+            ...(artifact.mediaType ? { mediaType: artifact.mediaType } : {}),
+            ...(artifact.visibility ? { visibility: artifact.visibility } : {}),
+            ...(artifact.pinned !== undefined ? { pinned: artifact.pinned } : {}),
+            ...(artifact.sourcePath ? { sourcePath: artifact.sourcePath } : {}),
+            dataBase64: await encodePortableArtifact(data),
+          });
+        }
+      };
+      for (const artifact of selectedArtifacts) {
+        const runtimeArtifact = coordinationV3.runtimeArtifact(artifact.id);
+        const runtimeIdentity = runtimeArtifact?.projectId === agent.projectId &&
+          assets.authoritativeRuntimeArtifactMetadata(
+            agent.projectId,
+            runtimeArtifact,
+          )
+          ? {
+              size: runtimeArtifact.byteLength,
+              sha256: runtimeArtifact.blobHash,
+            }
+          : undefined;
+        const generatedIdentity =
+          artifact.kind === "generated_file" &&
+          assets.authoritativeGeneratedArtifactMetadata(
+            agent.projectId,
+            artifact,
+          ) &&
+          artifact.size &&
+          artifact.sha256
+            ? { size: artifact.size, sha256: artifact.sha256 }
+            : undefined;
+        const fallbackIdentity =
+          !runtimeIdentity && !generatedIdentity &&
+          artifact.size && artifact.sha256
+            ? { size: artifact.size, sha256: artifact.sha256 }
+            : undefined;
+        const identity =
+          runtimeIdentity ?? generatedIdentity ?? fallbackIdentity;
+        if (identity && reservedArtifactBytes + identity.size > AGENT_PACKAGE_ARTIFACT_MAX_BYTES) {
+          throw new AssetError(
+            413,
+            `portable Agent package artifacts exceed the ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL} export limit`,
+          );
+        }
+        if (!identity) {
+          throw new AssetError(409, `artifact ${artifact.id} content is unavailable or changed`);
+        }
+        reservedArtifactBytes += identity.size;
+        pendingArtifacts.push({ artifact, identity });
+        if (pendingArtifacts.length >= 128) await flushArtifacts();
+      }
+      await flushArtifacts();
+      portableArtifactBytes = reservedArtifactBytes;
+      const initialInstructions = agent.spawnPrompt ?? agent.presetSnapshot?.guidance
+        ?? importedHistories.get(agent.id)?.initialInstructions;
+      agents.push({
+        ref: agent.id,
+        title: agent.title,
+        engine: agent.activeEngine,
+        ...(agent.model ? { model: agent.model } : {}),
+        ...(agent.effort ? { effort: agent.effort } : {}),
+        managementPermissions: agent.managementPermissions,
+        ...(initialInstructions !== undefined ? { initialInstructions } : {}),
+        ...(agent.managerAgentId && included.has(agent.managerAgentId)
+          ? { managerRef: agent.managerAgentId }
+          : {}),
+        ...(mode !== "template" ? { history } : {}),
+        ...(artifacts.length ? { artifacts } : {}),
+      });
+    }
+    return {
+      schema: "ponderosa.agent-package.v1",
+      mode,
+      kind: nodes.length === 1 ? "agent" : "organization",
+      exportedAt: new Date().toISOString(),
+      sourceLabel: `${project.label} / ${root.title}`,
+      ...(mode === "full" && project.instructions
+        ? { sourceProjectInstructions: project.instructions }
+        : {}),
+      rootRef: root.id,
+      agents,
+    };
+  };
+
+  type PreparedCopySnapshot = {
+    phase: "prepared_copy";
+    snapshotSha256: string;
+  };
+  const preparedCopySnapshot = (result: unknown): PreparedCopySnapshot | undefined =>
+    result && typeof result === "object" &&
+    (result as { phase?: unknown }).phase === "prepared_copy" &&
+    typeof (result as { snapshotSha256?: unknown }).snapshotSha256 === "string"
+      ? result as PreparedCopySnapshot
+      : undefined;
+  const readCopySnapshot = async (
+    operationId: string,
+    expectedSha256?: string,
+  ): Promise<{ portable: AgentPortablePackageDto; sha256: string } | undefined> => {
+    try { await fs.access(copySnapshotPath(operationId)); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    const sha256 = await sha256File(copySnapshotPath(operationId));
+    if (expectedSha256 && sha256 !== expectedSha256) {
+      throw new Error("Agent copy snapshot no longer matches its durable operation");
+    }
+    const { portable } = await parsePortablePackageFile(copySnapshotPath(operationId), { packageOnly: true });
+    return { portable, sha256 };
+  };
+  const installCopySnapshot = async (
+    operationId: string,
+    portable: AgentPortablePackageDto,
+  ): Promise<{ portable: AgentPortablePackageDto; sha256: string }> => {
+    const existing = await readCopySnapshot(operationId);
+    if (existing) return existing;
+    await fs.mkdir(importOperationDirectory, { recursive: true });
+    const finalPath = copySnapshotPath(operationId);
+    const temporary = `${finalPath}.${randomUUID()}.tmp`;
+    try {
+      const handle = await fs.open(temporary, "wx", 0o600);
+      try {
+        for await (const chunk of portablePackageJsonChunks(portable)) {
+          const bytes = Buffer.from(chunk, "utf8");
+          reserveStagedBytes(`copy:${operationId}`, bytes.length);
+          await handle.writeFile(bytes);
+        }
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await fs.rename(temporary, finalPath);
+      if (process.platform !== "win32") {
+        const directory = await fs.open(importOperationDirectory, "r");
+        try { await directory.sync(); } finally { await directory.close(); }
+      }
+    } catch (error) {
+      const removed = await fs.unlink(temporary).then(() => true).catch(() => false);
+      if (removed) releaseStagedReservation(`copy:${operationId}`);
+      throw error;
+    }
+    operationReservations.set(`${operationId}.copy`, `copy:${operationId}`);
+    const installed = await readCopySnapshot(operationId);
+    if (!installed) throw new Error("Agent copy snapshot was not durably installed");
+    return installed;
+  };
+
+  app.get<{
+    Params: { id: string };
+    Querystring: {
+      mode?: AgentExportMode;
+      organization?: string;
+      download?: string;
+    };
+  }>("/api/agents/:id/export", async (request, reply) => withAgentImportAdmission(async () => {
+    const requestedMode: AgentExportMode = ["template", "context", "full"]
+      .includes(request.query.mode ?? "")
+      ? request.query.mode!
+      : "full";
+    const result = await buildPortablePackage(
+      request.params.id,
+      requestedMode,
+      request.query.organization === "true",
+    );
+    if (request.query.download === "1") {
+      const safeTitle = result.sourceLabel
+        .normalize("NFKD")
+        .replace(/[^\p{L}\p{N}]+/gu, "-")
+        .replace(/^-+|-+$/gu, "")
+        .toLocaleLowerCase()
+        .slice(0, 80);
+      reply.header(
+        "content-disposition",
+        `attachment; filename="${safeTitle || "agent"}-${result.mode}.ponderosa.json"`,
+      );
+    }
+    // Serialize to admitted, owned staging before starting the response so an
+    // over-limit export fails honestly; the download then streams with backpressure.
+    await operationHydration;
+    const reservationId = `export:${randomUUID()}`;
+    const pathname = path.join(importOperationDirectory, `.incoming-${randomUUID()}`);
+    const handle = await fs.open(pathname, "wx", 0o600);
+    try {
+      for await (const chunk of portablePackageJsonChunks(result)) {
+        const bytes = Buffer.from(chunk, "utf8");
+        reserveStagedBytes(reservationId, bytes.length);
+        await handle.writeFile(bytes);
+      }
+      await handle.close();
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      const removed = await fs.unlink(pathname).then(() => true).catch(() => false);
+      if (removed) releaseStagedReservation(reservationId);
+      throw error;
+    }
+    const stream = createReadStream(pathname);
+    stream.once("close", () => {
+      void fs.unlink(pathname).then(() => releaseStagedReservation(reservationId)).catch(() => undefined);
+    });
+    reply.raw.once("close", () => stream.destroy());
+    return reply.type("application/json; charset=utf-8").send(stream);
+  }));
+
+  const validChatInstructionsResolution = (value: unknown): boolean => {
+    if (value === undefined) return true;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const record = value as Record<string, unknown>;
+    return Object.keys(record).length === 2 &&
+      (record.action === "keep_destination" || record.action === "use_source") &&
+      typeof record.expectedDestinationSha256 === "string" &&
+      /^[a-f0-9]{64}$/u.test(record.expectedDestinationSha256);
+  };
+
+  const importPackage = async (
+    projectId: string,
+    body: ImportAgentPackageRequest,
+    reply: FastifyReply,
+    onPhase?: (phase: AgentImportPhase) => Promise<void>,
+    creationOperationId?: string,
+    creationRequest?: { idempotencyKey: string; rawPayloadHash?: string },
+  ): Promise<unknown> => withProjectImportLock(projectId, async () => {
+      let importBody: Record<string, unknown>;
+      try {
+        importBody = validatedObject(body, "Agent import request");
+        exactObjectFields(
+          importBody,
+          ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution"],
+          "Agent import request",
+        );
+        if (!validChatInstructionsResolution(importBody.chatInstructionsResolution) ||
+            typeof importBody.conversationId !== "string" ||
+            !importBody.engineMapping || typeof importBody.engineMapping !== "object" ||
+            Array.isArray(importBody.engineMapping) ||
+            Object.values(importBody.engineMapping as Record<string, unknown>)
+              .some((value) => typeof value !== "string") ||
+            (importBody.acknowledgeElevatedManagementPermissions !== undefined &&
+              typeof importBody.acknowledgeElevatedManagementPermissions !== "boolean")) {
+          throw new Error("Agent import request fields are invalid");
+        }
+      } catch (error) {
+        return reply.code(400).send({
+          error: error instanceof Error ? error.message : "invalid Agent import request",
+        });
+      }
+      if (!creationOperationId) {
+        if (!creationRequest) throw new Error("Agent import idempotency identity is required");
+        const normalizedEngineMapping = Object.fromEntries(
+          Object.entries(importBody.engineMapping as Record<string, string>)
+            .map(([source, target]) => [source, target.trim()]),
+        );
+        const payloadHash = creationRequest.rawPayloadHash ?? createHash("sha256").update(stableJson({
+          package: importBody.package,
+          conversationId: importBody.conversationId,
+          engineMapping: normalizedEngineMapping,
+          ...(importBody.chatInstructionsResolution ? { chatInstructionsResolution: importBody.chatInstructionsResolution } : {}),
+          acknowledgeElevatedManagementPermissions:
+            importBody.acknowledgeElevatedManagementPermissions ?? false,
+        })).digest("hex");
+        try {
+          creationOperationId = store.beginAgentCreationOperation({
+            projectId,
+            actorScope: "user:local-operator",
+            kind: "import",
+            idempotencyKey: creationRequest.idempotencyKey,
+            payloadHash,
+          }).operation.id;
+        } catch (error) {
+          return reply.code(409).send({
+            error: error instanceof Error ? error.message : "Agent import replay conflict",
+          });
+        }
+      }
+      const durableOperation = store.getAgentCreationOperation(creationOperationId);
+      if (!durableOperation) throw new Error("Agent import creation operation is unavailable");
+      if (durableOperation.status === "completed" && durableOperation.result) {
+        return reply.code(200).send(durableOperation.result);
+      }
+      if (durableOperation.status === "canonical_committed" || durableOperation.status === "rolling_back") {
+        return reply.code(409).send({
+          error: "A prior import attempt is still being recovered; retry after recovery completes",
+          operationId: durableOperation.id,
+        });
+      }
+      if (durableOperation.agentIds.length > 0) {
+        return reply.code(409).send({
+          error: "A prior import attempt is still being recovered; retry after recovery completes",
+          operationId: durableOperation.id,
+        });
+      }
+      const abandonMutationFreeOperation = (reason: string) => {
+        const current = store.getAgentCreationOperation(durableOperation.id);
+        if (!current || current.agentIds.some((agentId) => store.getAgent(agentId))) return;
+        store.updateAgentCreationOperation(current.id, {
+          status: "rolled_back",
+          lastError: reason,
+        });
+        for (const agentId of current.agentIds) deletingAgentIds.delete(agentId);
+      };
+      const project = store.getProject(projectId);
+      const conversation = body?.conversationId
+        ? store.getConversation(body.conversationId)
+        : undefined;
+      if (!project) {
+        abandonMutationFreeOperation("project not found");
+        return reply.code(404).send({ error: "project not found" });
+      }
+      if (deletingProjectIds.has(project.id)) {
+        abandonMutationFreeOperation("Project deletion is already in progress");
+        return reply.code(409).send({
+          error: "Project deletion is already in progress",
+        });
+      }
+      if (!conversation || conversation.projectId !== project.id ||
+          deletingConversationIds.has(conversation.id)) {
+        abandonMutationFreeOperation("an active destination Project Chat is required");
+        return reply.code(400).send({
+          error: "an active destination Project Chat is required",
+        });
+      }
+      agentCreationConversationLeases.set(
+        conversation.id,
+        (agentCreationConversationLeases.get(conversation.id) ?? 0) + 1,
+      );
+      let creationLeaseReleased = false;
+      const releaseCreationLease = () => {
+        if (creationLeaseReleased) return;
+        creationLeaseReleased = true;
+        const remaining = (agentCreationConversationLeases.get(conversation.id) ?? 1) - 1;
+        if (remaining > 0) agentCreationConversationLeases.set(conversation.id, remaining);
+        else agentCreationConversationLeases.delete(conversation.id);
+      };
+      type PlannedArtifact =
+        NonNullable<AgentPortablePackageDto["agents"][number]["artifacts"]>[number]
+        & {
+          data: Buffer;
+          destinationId: string;
+          managedPath: string;
+          createdAt: string;
+          summary: string;
+          mediaType: string;
+          sha256: string;
+        };
+      type PlannedNode = Omit<
+        AgentPortablePackageDto["agents"][number],
+        "artifacts" | "history"
+      > & {
+        targetEngine: string;
+        model?: string;
+        effort?: string;
+        history: NonNullable<
+          AgentPortablePackageDto["agents"][number]["history"]
+        >;
+        artifacts: PlannedArtifact[];
+      };
+
+      const rollbackAgentIds: string[] = [];
+      let operationAgentIds: string[] = [];
+      let rollbackArtifacts: PlannedArtifact[] = [];
+      let appliedChatInstructions: string | undefined;
+      try {
+      await onPhase?.("creating_records");
+
+      let portablePackage: AgentPortablePackageDto;
+      let importNodes: PlannedNode[];
+      let importSourceLabel: string;
+      const artifactRefMap = new Map<string, string>();
+      try {
+        const packageRecord = validatedObject(body?.package, "Agent package");
+        exactObjectFields(
+          packageRecord,
+          [
+            "schema", "mode", "kind", "exportedAt", "sourceLabel",
+            "sourceProjectInstructions", "rootRef", "agents",
+          ],
+          "Agent package",
+        );
+        if (
+          packageRecord.schema !== "ponderosa.agent-package.v1"
+          || (
+            packageRecord.mode !== "template"
+            && packageRecord.mode !== "full"
+          )
+          || !Array.isArray(packageRecord.agents)
+          || packageRecord.agents.length < 1
+          || packageRecord.agents.length > 100
+        ) {
+          throw new Error("invalid Ponderosa Agent package");
+        }
+        if (
+          typeof packageRecord.exportedAt !== "string"
+          || !Number.isFinite(Date.parse(packageRecord.exportedAt))
+          || typeof packageRecord.sourceLabel !== "string"
+          || (
+            packageRecord.sourceProjectInstructions !== undefined
+            && (typeof packageRecord.sourceProjectInstructions !== "string"
+              || packageRecord.sourceProjectInstructions.length > 100_000)
+          )
+        ) {
+          throw new Error("Agent package metadata is invalid");
+        }
+        if (
+          packageRecord.mode === "template"
+          && packageRecord.sourceProjectInstructions !== undefined
+        ) {
+          throw new Error(
+            "template packages cannot contain full-mode Project context",
+          );
+        }
+        portablePackage = packageRecord as unknown as AgentPortablePackageDto;
+        importSourceLabel = portablePackage.sourceLabel.slice(0, 240);
+        const topologyError = portableAgentTopologyError(portablePackage);
+        if (topologyError) throw new Error(topologyError);
+
+        const elevatedAgentRefs: string[] = [];
+        const sourceEngines = new Set<string>();
+        for (const candidate of portablePackage.agents as unknown[]) {
+          const node = validatedObject(candidate, "Agent package node");
+          exactObjectFields(
+            node,
+            [
+              "ref", "title", "engine", "model", "effort",
+              "initialInstructions", "managerRef", "managementPermissions",
+              "history", "artifacts",
+            ],
+            "Agent package node",
+          );
+          if (
+            typeof node.ref !== "string"
+            || typeof node.title !== "string"
+            || typeof node.engine !== "string"
+            || !node.engine.trim()
+            || (node.model !== undefined && typeof node.model !== "string")
+            || (node.effort !== undefined && typeof node.effort !== "string")
+            || (
+              node.initialInstructions !== undefined
+              && typeof node.initialInstructions !== "string"
+            )
+          ) {
+            throw new Error(
+              "every imported Agent must declare valid identity and runtime fields",
+            );
+          }
+          const permissions = validatedObject(
+            node.managementPermissions,
+            "managementPermissions",
+          );
+          exactObjectFields(
+            permissions,
+            [
+              "allowAutomaticDescendantDeletion",
+              "allowAutomaticDescendantReorganization",
+            ],
+            "managementPermissions",
+          );
+          if (
+            typeof permissions.allowAutomaticDescendantDeletion !== "boolean"
+            || typeof permissions.allowAutomaticDescendantReorganization
+              !== "boolean"
+          ) {
+            throw new Error(
+              "every imported Agent must declare exact boolean management permissions",
+            );
+          }
+          if (
+            permissions.allowAutomaticDescendantDeletion
+            || permissions.allowAutomaticDescendantReorganization
+          ) elevatedAgentRefs.push(node.ref);
+          sourceEngines.add(node.engine);
+          if (
+            portablePackage.mode === "template"
+            && (
+              node.history !== undefined
+              || node.artifacts !== undefined
+            )
+          ) {
+            throw new Error(
+              "template packages cannot contain history or artifacts",
+            );
+          }
+          if (node.history !== undefined && !Array.isArray(node.history)) {
+            throw new Error("Agent history must be an array");
+          }
+          let messagePosition = 0;
+          for (
+            const messageCandidate of
+              (node.history as unknown[] | undefined) ?? []
+          ) {
+            if (messagePosition++ % 128 === 0) await yieldToLoop();
+            const message = validatedObject(
+              messageCandidate,
+              "history message",
+            );
+            exactObjectFields(
+              message,
+              ["role", "text", "createdAt"],
+              "history message",
+            );
+            if (
+              !["user", "assistant", "system"].includes(String(message.role))
+              || typeof message.text !== "string"
+              || (
+                message.createdAt !== undefined
+                && (
+                  typeof message.createdAt !== "string"
+                  || !Number.isFinite(Date.parse(message.createdAt))
+                )
+              )
+            ) {
+              throw new Error("Agent history messages have an invalid shape");
+            }
+          }
+          if (node.artifacts !== undefined && !Array.isArray(node.artifacts)) {
+            throw new Error("Agent artifacts must be an array");
+          }
+        }
+        if (
+          elevatedAgentRefs.length > 0
+          && body.acknowledgeElevatedManagementPermissions !== true
+        ) {
+          abandonMutationFreeOperation("elevated management permissions were not acknowledged");
+          return reply.code(409).send({
+            error:
+              "explicit acknowledgement is required to import autonomous destructive management permissions",
+            elevatedAgentRefs,
+          });
+        }
+        const missingMappings = [...sourceEngines].filter((engine) =>
+          typeof body.engineMapping?.[engine] !== "string"
+          || !body.engineMapping[engine]!.trim());
+        if (missingMappings.length) {
+          abandonMutationFreeOperation("required engine mappings were not supplied");
+          return reply.code(409).send({
+            error: "explicit engine mapping is required",
+            requiredEngines: missingMappings,
+          });
+        }
+        for (const source of sourceEngines) {
+          const target = body.engineMapping[source]!.trim();
+          if (!engines.has(target)) {
+            throw new Error(`mapped engine is not configured: ${target}`);
+          }
+        }
+
+        let artifactBytes = 0;
+        const reservedDestinationIds = new Set<string>();
+        let artifactPosition = 0;
+        const artifactsByNode = new Map<string, PlannedArtifact[]>();
+        for (const node of portablePackage.agents) {
+          const plannedArtifacts: PlannedArtifact[] = [];
+          for (const artifactCandidate of node.artifacts ?? []) {
+            const artifact = validatedObject(
+              artifactCandidate,
+              "portable artifact",
+            );
+            exactObjectFields(
+              artifact,
+              [
+                "ref", "kind", "path", "summary", "createdAt", "mediaType",
+                "visibility", "pinned", "sourcePath", "dataBase64",
+              ],
+              "portable artifact",
+            );
+            if (
+              typeof artifact.ref !== "string"
+              || !CANONICAL_ARTIFACT_ID.test(artifact.ref)
+              || artifactRefMap.has(artifact.ref)
+            ) {
+              throw new Error(
+                "artifact refs must be unique canonical identifiers",
+              );
+            }
+            if (
+              ![
+                "diff", "test_report", "pr_summary", "log", "document",
+                "screenshot", "generated_file",
+              ].includes(String(artifact.kind))
+              || typeof artifact.path !== "string"
+              || !artifact.path
+              || typeof artifact.createdAt !== "string"
+              || !Number.isFinite(Date.parse(artifact.createdAt))
+              || typeof artifact.dataBase64 !== "string"
+              || (
+                artifact.summary !== undefined
+                && typeof artifact.summary !== "string"
+              )
+              || (
+                artifact.mediaType !== undefined
+                && typeof artifact.mediaType !== "string"
+              )
+              || (
+                artifact.visibility !== undefined
+                && artifact.visibility !== "project"
+                && artifact.visibility !== "published"
+              )
+              || (
+                artifact.pinned !== undefined
+                && typeof artifact.pinned !== "boolean"
+              )
+              || (
+                artifact.sourcePath !== undefined
+                && typeof artifact.sourcePath !== "string"
+              )
+            ) {
+              throw new Error(
+                `artifact ${String(artifact.ref)} has an invalid shape`,
+              );
+            }
+            const encodedBytes = Math.floor(artifact.dataBase64.replace(/=+$/u, "").length * 3 / 4);
+            if (artifactBytes + encodedBytes > AGENT_PACKAGE_ARTIFACT_MAX_BYTES) {
+              abandonMutationFreeOperation(`portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}`);
+              return reply.code(413).send({ error: `portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}` });
+            }
+            const { data, sha256 } = await decodePortableArtifact(artifact.dataBase64);
+            artifactBytes += data.length;
+            if (artifactBytes > AGENT_PACKAGE_ARTIFACT_MAX_BYTES) {
+              abandonMutationFreeOperation(`portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}`);
+              return reply.code(413).send({
+                error:
+                  `portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}`,
+              });
+            }
+            const replayDestinationId = durableOperation.artifactIds[artifactPosition];
+            let destinationId = replayDestinationId ?? artifact.ref;
+            if (!replayDestinationId && (
+              store.getProjectArtifact(project.id, destinationId)
+              || reservedDestinationIds.has(destinationId)
+              || (
+                artifact.kind === "generated_file"
+                && !/^[A-Za-z0-9_-]{1,128}$/u.test(destinationId)
+              )
+            )) {
+              do destinationId = randomUUID();
+              while (
+                store.getProjectArtifact(project.id, destinationId)
+                || reservedDestinationIds.has(destinationId)
+              );
+            }
+            const extension = path.extname(artifact.path).toLowerCase()
+              .slice(0, 16);
+            const managedPath = `imported/${destinationId}${extension}`;
+            const createdAt = new Date(artifact.createdAt).toISOString();
+            const summary = artifact.summary?.trim()
+              || path.basename(artifact.path).trim()
+              || "Imported artifact";
+            const mediaType = artifact.mediaType?.trim()
+              || "application/octet-stream";
+            if (
+              artifact.kind === "generated_file"
+              && !generatedArtifactMetadataIsValid({
+                id: destinationId,
+                projectId: project.id,
+                agentId: project.id,
+                originAgentId: project.id,
+                kind: "generated_file",
+                path: managedPath,
+                ...(artifact.sourcePath
+                  ? { sourcePath: artifact.sourcePath }
+                  : {}),
+                summary,
+                createdAt,
+                mediaType,
+                size: data.length,
+                sha256,
+              })
+            ) {
+              throw new Error(
+                `generated artifact ${artifact.ref} has invalid immutable metadata`,
+              );
+            }
+            artifactRefMap.set(artifact.ref, destinationId);
+            reservedDestinationIds.add(destinationId);
+            artifactPosition += 1;
+            plannedArtifacts.push({
+              ...(artifactCandidate as PlannedArtifact),
+              data,
+              destinationId,
+              managedPath,
+              createdAt,
+              summary,
+              mediaType,
+              sha256,
+            });
+          }
+          artifactsByNode.set(node.ref, plannedArtifacts);
+        }
+        if (durableOperation.artifactIds.length > 0 &&
+            durableOperation.artifactIds.length !== artifactPosition) {
+          throw new Error("Agent import artifact recovery plan does not match the package");
+        }
+
+        importNodes = [];
+        for (const node of portablePackage.agents) {
+          const targetEngine = body.engineMapping[node.engine]!.trim();
+          const model = node.model?.trim() || undefined;
+          const effort = node.effort?.trim() || undefined;
+          const importAdapter = engines.get(targetEngine)!.adapter;
+          const selectionError = runtimeSelectionError(
+            importAdapter,
+            model,
+            effort,
+            cachedModelOptions(importAdapter, project.id),
+          );
+          if (selectionError) {
+            throw new Error(`${node.title}: ${selectionError}`);
+          }
+          const initialInstructions = node.initialInstructions === undefined ? undefined
+            : rewritePortableArtifactReferences(node.initialInstructions, artifactRefMap).slice(0, 100_000);
+          const history = [
+            ...(initialInstructions
+              ? [{
+                  role: "system" as const,
+                  text:
+                    `Imported initial instructions:\n${initialInstructions}`,
+                  createdAt: new Date(portablePackage.exportedAt).toISOString(),
+                }]
+              : []),
+            ...(node.history ?? []).map((message) => ({
+              ...message,
+              ...(message.createdAt
+                ? { createdAt: new Date(message.createdAt).toISOString() }
+                : {}),
+            })),
+          ];
+          for (let index = 0; index < history.length; index++) {
+            const message = history[index]!;
+            history[index] = { ...message, text: rewritePortableArtifactReferences(message.text, artifactRefMap).slice(0, 100_000) };
+            if (index % 16 === 0) await yieldToLoop();
+          }
+          importNodes.push({
+            ...node,
+            title: node.title.trim().slice(0, 80) || "Imported Agent",
+            initialInstructions,
+            targetEngine,
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
+            history,
+            artifacts: artifactsByNode.get(node.ref) ?? [],
+          });
+          await yieldToLoop();
+        }
+      } catch (error) {
+        abandonMutationFreeOperation(error instanceof Error ? error.message : "invalid Ponderosa Agent package");
+        return reply.code(400).send({
+          error: error instanceof Error
+            ? error.message
+            : "invalid Ponderosa Agent package",
+        });
+      }
+
+      const activeDestinationConversation = () => {
+        const current = store.getConversation(conversation.id);
+        return current?.projectId === project.id &&
+          !deletingConversationIds.has(current.id)
+          ? current
+          : undefined;
+      };
+      const removeUncataloguedPublications = (
+        artifacts: readonly PlannedArtifact[],
+      ): boolean => {
+        let removed = true;
+        for (const artifact of artifacts) {
+          if (store.getProjectArtifact(project.id, artifact.destinationId)) continue;
+          try {
+            removeManagedArtifactContent(
+              context.dataDir,
+              project.id,
+              artifact.destinationId,
+              artifact.data.length,
+              artifact.sha256,
+            );
+            if (readManagedArtifactContent(
+              context.dataDir,
+              project.id,
+              artifact.destinationId,
+              artifact.data.length,
+              artifact.sha256,
+            )) removed = false;
+          } catch {
+            removed = false;
+          }
+        }
+        return removed;
+      };
+
+      // Every deterministic decision is complete before the first mutation.
+      if (deletingProjectIds.has(project.id)) {
+        throw new Error("Project deletion is already in progress");
+      }
+      if (!activeDestinationConversation()) {
+        abandonMutationFreeOperation("The destination Chat is no longer active");
+        return reply.code(409).send({
+          error: "The destination Chat is no longer active",
+        });
+      }
+      const sourceInstructions = portablePackage.mode === "full"
+        ? portablePackage.sourceProjectInstructions : undefined;
+      const destinationInstructions = conversation.instructions ?? "";
+      const resolution = body.chatInstructionsResolution;
+      const destinationSha256 = createHash("sha256").update(destinationInstructions).digest("hex");
+      if ((resolution && resolution.expectedDestinationSha256 !== destinationSha256) ||
+          (sourceInstructions && destinationInstructions &&
+            sourceInstructions !== destinationInstructions && !resolution)) {
+        abandonMutationFreeOperation("Chat instructions need an explicit conflict choice");
+        return reply.code(409).send({
+          error: resolution ? "Destination Chat instructions changed. Review them and choose again."
+            : "This Chat has different instructions. Choose whether to keep them or use the imported instructions.",
+        });
+      }
+      const importedChatInstructions = sourceInstructions &&
+        sourceInstructions !== destinationInstructions && resolution?.action !== "keep_destination"
+        ? rewritePortableArtifactReferences(sourceInstructions, artifactRefMap) : undefined;
+      if (importedChatInstructions && importedChatInstructions.length > 100_000) {
+        abandonMutationFreeOperation("Imported Chat instructions exceed 100000 characters");
+        return reply.code(400).send({ error: "Imported Chat instructions exceed 100000 characters" });
+      }
+      const plannedArtifacts = importNodes.flatMap((node) => node.artifacts);
+      rollbackArtifacts = plannedArtifacts;
+      if (creationOperationId) {
+        const creationOperation = store.getAgentCreationOperation(creationOperationId);
+        if (!creationOperation) throw new Error("Agent import creation operation is unavailable");
+        if (creationOperation.agentIds.length === 0) {
+          operationAgentIds = importNodes.map(() => randomUUID());
+          operationAgentIds.forEach((agentId, position) => {
+            store.addAgentCreationOperationMember(creationOperationId!, agentId, position);
+            deletingAgentIds.add(agentId);
+          });
+          store.updateAgentCreationOperation(creationOperationId!, {
+            artifactIds: plannedArtifacts.map((artifact) => artifact.destinationId),
+            artifactIdentities: importNodes.flatMap((node, nodeIndex) =>
+              node.artifacts.map((artifact) => ({
+                id: artifact.destinationId,
+                byteLength: artifact.data.length,
+                sha256: artifact.sha256,
+                ...(artifact.kind === "generated_file"
+                  ? {
+                      generated: {
+                        agentId: operationAgentIds[nodeIndex]!,
+                        originAgentId: operationAgentIds[nodeIndex]!,
+                        path: artifact.managedPath,
+                        ...(artifact.sourcePath
+                          ? { sourcePath: artifact.sourcePath }
+                          : {}),
+                        summary: artifact.summary,
+                        createdAt: artifact.createdAt,
+                        mediaType: artifact.mediaType,
+                      },
+                    }
+                  : {}),
+              })),
+            ),
+          });
+        } else {
+          if (creationOperation.agentIds.length !== importNodes.length) {
+            throw new Error("Agent import creation plan does not match the package");
+          }
+          operationAgentIds = creationOperation.agentIds;
+          for (const agentId of operationAgentIds) deletingAgentIds.add(agentId);
+        }
+      }
+      await onPhase?.("importing_artifacts");
+      const publishedArtifacts = await publishManagedArtifactContentsAsync(
+        context.dataDir,
+        project.id,
+        plannedArtifacts.map((artifact) => ({
+          artifactId: artifact.destinationId,
+          input: artifact.data,
+        })),
+      );
+      const publicationById = new Map(
+        plannedArtifacts.map((artifact, index) => [
+          artifact.destinationId,
+          publishedArtifacts[index]!,
+        ]),
+      );
+
+      if (deletingProjectIds.has(project.id) ||
+          !activeDestinationConversation()) {
+        const rollbackComplete = removeUncataloguedPublications(plannedArtifacts);
+        const reason = deletingProjectIds.has(project.id)
+          ? "Project deletion is already in progress"
+          : "The destination Chat is no longer active";
+        if (rollbackComplete) abandonMutationFreeOperation(reason);
+        else store.updateAgentCreationOperation(durableOperation.id, {
+          status: "rolling_back",
+          lastError: `${reason}; published artifact cleanup remains pending`,
+        });
+        return reply.code(409).send({
+          error: reason,
+        });
+      }
+
+      const created = new Map<string, AgentDto>();
+      await onPhase?.("importing_agents");
+      for (const [index, node] of importNodes.entries()) {
+        const agent = store.createAgent(project.id, {
+          title: node.title,
+          engine: node.targetEngine,
+          conversationId: conversation.id,
+          ...(node.model ? { model: node.model } : {}),
+          ...(node.effort ? { effort: node.effort } : {}),
+          managementPermissions: node.managementPermissions,
+        }, undefined, operationAgentIds[index]);
+        created.set(node.ref, agent);
+        rollbackAgentIds.push(agent.id);
+        deletingAgentIds.add(agent.id);
+      }
+
+      const catalogArtifacts: Array<{
+        artifact: Parameters<AgentStore["recordProjectArtifact"]>[0];
+      }> = [];
+      await onPhase?.("importing_history");
+      await onPhase?.("finalizing");
+      for (const node of importNodes) {
+        const agent = created.get(node.ref)!;
+        for (const artifact of node.artifacts) {
+          const catalogArtifact = {
+            id: artifact.destinationId,
+            projectId: project.id,
+            agentId: agent.id,
+            originAgentId: agent.id,
+            kind: artifact.kind,
+            path: artifact.managedPath,
+            summary: artifact.summary,
+            createdAt: artifact.createdAt,
+            mediaType: artifact.mediaType,
+            visibility: artifact.visibility ?? "project",
+            pinned: artifact.pinned ?? false,
+            ...(artifact.sourcePath
+              ? { sourcePath: artifact.sourcePath }
+              : {}),
+            size: artifact.data.length,
+            sha256: artifact.sha256,
+          };
+          catalogArtifacts.push({ artifact: catalogArtifact });
+        }
+      }
+      store.recordProjectArtifacts(catalogArtifacts);
+
+      for (const node of importNodes) {
+        const agent = created.get(node.ref)!;
+        if (node.history.length) {
+          await store.setImportedHistoryAsync(
+            agent.id,
+            importSourceLabel,
+            node.history,
+            node.initialInstructions,
+          );
+        }
+      }
+      for (const node of importNodes) {
+        if (node.managerRef) {
+          store.updateAgentOrganization(
+            created.get(node.ref)!.id,
+            { managerAgentId: created.get(node.managerRef)!.id },
+          );
+        }
+      }
+      for (const { artifact } of catalogArtifacts) {
+        if (artifact.kind !== "generated_file") continue;
+        assets.registerPublishedGeneratedArtifact(
+          artifact as RegisteredGeneratedArtifact,
+          publicationById.get(artifact.id)!,
+        );
+      }
+      try {
+        appendWorkspace({
+          type: "project_changed",
+          projectId: project.id,
+          action: "updated",
+        });
+      } catch {
+        // Clients reconcile the durable import on their next refresh.
+      }
+      const response: ImportAgentPackageResponse = {
+        rootAgentId: created.get(portablePackage.rootRef)!.id,
+        agentIds: [...created.values()].map((agent) => agent.id),
+      };
+      if (creationOperationId) {
+        // Copy snapshots are retry authority only until the canonical import
+        // commits. Remove and fsync them before acknowledging completion so the
+        // caller cannot observe success with stale recovery data.
+        await removeCopySnapshot(creationOperationId);
+        if (importedChatInstructions !== undefined) {
+          appliedChatInstructions = importedChatInstructions;
+          if (!store.updateConversation(conversation.id, { instructions: importedChatInstructions })) {
+            throw new Error("The destination Chat is no longer active");
+          }
+        }
+        store.updateAgentCreationOperation(creationOperationId, {
+          status: "completed",
+          result: response,
+          lastError: null,
+        });
+        for (const agentId of operationAgentIds) deletingAgentIds.delete(agentId);
+      }
+      if (appliedChatInstructions !== undefined) {
+        try {
+          appendWorkspace({ type: "conversation_changed", projectId: project.id,
+            conversationId: conversation.id, action: "updated" });
+        } catch { /* Clients reconcile durable Chat metadata on refresh. */ }
+      }
+      return reply.code(201).send(response);
+      } catch (error) {
+        let rollbackComplete = true;
+        if (appliedChatInstructions !== undefined) {
+          try {
+            if (store.getConversation(conversation.id)?.instructions === appliedChatInstructions) {
+              store.updateConversation(conversation.id, { instructions: conversation.instructions ?? "" });
+            }
+          } catch { rollbackComplete = false; }
+        }
+        const authorityBlockedArtifactIds = new Set<string>();
+        for (const agentId of [...rollbackAgentIds].reverse()) {
+          try {
+            if (!store.deleteAgent(agentId, (id) => coordinationV3.handleAgentDeletion(id)) &&
+                store.getAgent(agentId)) rollbackComplete = false;
+          } catch {
+            rollbackComplete = false;
+            // Preserve the original import failure. Startup deletion recovery
+            // completes any rollback whose durable deletion already committed.
+          }
+        }
+        const operationAgentsRemain = operationAgentIds.some((agentId) => store.getAgent(agentId));
+        if (creationOperationId) {
+          for (const identity of store.getAgentCreationOperation(creationOperationId)!
+            .artifactIdentities) {
+            try {
+              if (operationAgentsRemain ||
+                  !assets.removeCreationGeneratedArtifact(project.id, identity)) {
+                authorityBlockedArtifactIds.add(identity.id);
+                rollbackComplete = false;
+              }
+            } catch {
+              authorityBlockedArtifactIds.add(identity.id);
+              rollbackComplete = false;
+            }
+          }
+        }
+        for (const artifact of rollbackArtifacts) {
+          if (authorityBlockedArtifactIds.has(artifact.destinationId)) continue;
+          try {
+            const catalogued = store.getProjectArtifact(project.id, artifact.destinationId);
+            if (catalogued && (!catalogued.originAgentId ||
+                !operationAgentIds.includes(catalogued.originAgentId))) {
+              continue;
+            }
+            if (catalogued) {
+              store.deleteProjectArtifact(project.id, artifact.destinationId, "Agent import rolled back");
+            }
+            if (store.getProjectArtifact(project.id, artifact.destinationId)) {
+              rollbackComplete = false;
+            } else {
+              removeManagedArtifactContent(
+                context.dataDir,
+                project.id,
+                artifact.destinationId,
+                artifact.data.length,
+                artifact.sha256,
+              );
+              if (readManagedArtifactContent(
+                context.dataDir,
+                project.id,
+                artifact.destinationId,
+                artifact.data.length,
+                artifact.sha256,
+              )) rollbackComplete = false;
+            }
+          } catch {
+            rollbackComplete = false;
+          }
+        }
+        if (operationAgentsRemain) rollbackComplete = false;
+        if (creationOperationId) {
+          store.updateAgentCreationOperation(creationOperationId, {
+            status: rollbackComplete ? "rolled_back" : "rolling_back",
+            lastError: error instanceof Error ? error.message : "Agent import failed",
+          });
+        }
+        throw error;
+      } finally {
+        for (const agentId of operationAgentIds.length ? operationAgentIds : rollbackAgentIds) {
+          if (!store.getAgent(agentId)) deletingAgentIds.delete(agentId);
+        }
+        releaseCreationLease();
+      }
+  });
+
+  app.post<{
+    Params: { id: string };
+    Headers: { "idempotency-key"?: string };
+    Body: ImportAgentPackageRequest;
+  }>(
+    "/api/projects/:id/import-agents",
+    { bodyLimit: 1024 * 1024 },
+    (request, reply) => {
+      const idempotencyKey = validIdempotencyKey(request.headers["idempotency-key"]);
+      if (!idempotencyKey) {
+        return reply.code(400).send({ error: "a valid import idempotency key is required" });
+      }
+      return withAgentImportAdmission(() => importPackage(request.params.id, request.body, reply, undefined, undefined, {
+        idempotencyKey,
+      }));
+    },
+  );
+
+  const runBackgroundImport = async (operationId: string): Promise<void> =>
+    withAgentImportAdmission(async () => {
+    await operationHydration;
+    let operation = await readOperation(operationId);
+    if (!operation || operation.status !== "pending") return;
+    const update = async (patch: Partial<AgentImportOperationDto>) => {
+      operation = { ...operation!, ...patch, updatedAt: new Date().toISOString() };
+      await writeOperation(operation);
+      return operation;
+    };
+    const phase = async (next: AgentImportPhase) => {
+      await update({ phase: next });
+      try {
+        createOperationalNotification({
+          dedupeKey: `agent-import:${operationId}`,
+          category: "system",
+          severity: "info",
+          title: "Agent import in progress",
+          body: next.replaceAll("_", " "),
+          projectId: operation!.projectId,
+          action: { kind: "open_project", targetId: operation!.projectId },
+        });
+      } catch { /* phase state is durable; notification is best effort */ }
+    };
+    let committedResult: ImportAgentPackageResponse | undefined;
+    let retainPayloadForRecovery = false;
+    try {
+      const durablePayloadPath = payloadPath(operationId);
+      if (await sha256File(durablePayloadPath) !== operation.payloadHash) {
+        throw new Error("Import payload no longer matches its durable operation");
+      }
+      const { metadata, portable } = await parsePortablePackageFile(durablePayloadPath);
+      await update({ sourceLabel: portable.sourceLabel.slice(0, 240) });
+      const creationOperation = store.beginAgentCreationOperation({
+        projectId: operation.projectId,
+        actorScope: "user:local-operator",
+        kind: "import",
+        idempotencyKey: operation.requestId,
+        payloadHash: operation.payloadHash,
+      }).operation;
+      if (creationOperation.status === "completed" && creationOperation.result) {
+        const result = creationOperation.result as ImportAgentPackageResponse;
+        committedResult = result;
+        await update({ phase: "completed", status: "completed", result });
+        for (const agentId of creationOperation.agentIds) deletingAgentIds.delete(agentId);
+        return;
+      }
+      if (creationOperation.agentIds.length) {
+        throw new Error("A prior import attempt is still being recovered; retry after startup recovery completes");
+      }
+      let statusCode = 200;
+      let responseBody: unknown;
+      const backgroundReply = {
+        code(code: number) {
+          statusCode = code;
+          return this;
+        },
+        send(value: unknown) {
+          responseBody = value;
+          return value;
+        },
+      } as unknown as FastifyReply;
+      await importPackage(
+        operation.projectId,
+        { ...metadata, package: portable },
+        backgroundReply,
+        phase,
+        creationOperation.id,
+      );
+      if (statusCode >= 400) {
+        const record = responseBody && typeof responseBody === "object"
+          ? responseBody as { error?: unknown }
+          : undefined;
+        throw new Error(typeof record?.error === "string" ? record.error : "Import failed");
+      }
+      const result = responseBody as ImportAgentPackageResponse;
+      committedResult = result;
+      await update({ phase: "completed", status: "completed", result });
+      try {
+        createOperationalNotification({
+          dedupeKey: `agent-import:${operationId}`,
+          category: "system",
+          severity: "info",
+          title: "Import complete",
+          informational: true,
+          body: `${operation.sourceLabel} was imported successfully. Reviewing its preserved history is optional; the Agent is ready to use.`,
+          projectId: operation.projectId,
+          agentId: result.rootAgentId,
+          action: { kind: "open_agent", targetId: result.rootAgentId },
+        });
+      } catch { /* completion remains authoritative */ }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Import failed";
+      if (committedResult) {
+        // The imported Agents are authoritative. If the acknowledgement write
+        // failed, leave the durable operation pending so startup can replay it;
+        // never rewrite a committed import as an ordinary failure.
+        try {
+          await update({ phase: "completed", status: "completed", result: committedResult });
+        } catch {
+          retainPayloadForRecovery = true;
+          // Startup hydration and creation-operation replay recover the acknowledgement.
+        }
+        return;
+      }
+      try {
+        await update({ phase: "failed", status: "failed", error: message.slice(0, 1_000) });
+      } catch {
+        retainPayloadForRecovery = true;
+        return;
+      }
+      try {
+        createOperationalNotification({
+          dedupeKey: `agent-import:${operationId}`,
+          category: "system",
+          severity: "urgent",
+          title: "Agent import failed",
+          body: `${operation.sourceLabel}: ${message}`.slice(0, 1_000),
+          projectId: operation.projectId,
+          action: { kind: "open_project", targetId: operation.projectId },
+        });
+      } catch { /* failure state is durable */ }
+    } finally {
+      if (!retainPayloadForRecovery) {
+        const removed = await fs.unlink(payloadPath(operationId))
+          .then(() => true)
+          .catch(() => false);
+        if (removed) {
+          releaseStagedReservation(operationReservations.get(operationId));
+          operationReservations.delete(operationId);
+        }
+      }
+    }
+  });
+
+  app.post<{
+    Params: { id: string };
+    Headers: { "idempotency-key"?: string };
+    Body: StagedImportUpload;
+  }>(
+    "/api/projects/:id/agent-import-operations",
+    { bodyLimit: maximumImportBytes },
+    async (request, reply) => withProjectImportLock(request.params.id, async () => {
+      const staged = request.body;
+      let transferredReservation = false;
+      try {
+        await operationHydration;
+        const requestId = validIdempotencyKey(request.headers["idempotency-key"]);
+      if (!requestId) {
+        return reply.code(400).send({ error: "a valid import idempotency key is required" });
+      }
+      const requestKey = requestOperationKey(request.params.id, requestId);
+      const requestPayloadHash = staged.sha256;
+      const existingId = operationByRequest.get(requestKey);
+      if (existingId) {
+        const existing = operationCache.get(existingId) ?? await readOperation(existingId);
+        if (existing) {
+          if (existing.payloadHash !== requestPayloadHash) {
+            return reply.code(409).send({
+              error: "Import idempotency key was reused with different input",
+            });
+          }
+          return reply.code(existing.status === "pending" ? 202 : 200).send(existing);
+        }
+        operationByRequest.delete(requestKey);
+      }
+      if (!store.getProject(request.params.id)) {
+        return reply.code(404).send({ error: "project not found" });
+      }
+      if (deletingProjectIds.has(request.params.id)) {
+        return reply.code(409).send({ error: "Project deletion is already in progress" });
+      }
+      const id = randomUUID();
+      const now = new Date().toISOString();
+      const operation: AgentImportOperationDto = {
+        id,
+        requestId,
+        payloadHash: requestPayloadHash,
+        projectId: request.params.id,
+        sourceLabel: "Agent import",
+        phase: "queued",
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+      };
+      try {
+        await fs.mkdir(importOperationDirectory, { recursive: true });
+        await fs.rename(staged.pathname, payloadPath(id));
+        operationReservations.set(id, staged.reservationId);
+        transferredReservation = true;
+        if (process.platform !== "win32") {
+          const directory = await fs.open(importOperationDirectory, "r");
+          try { await directory.sync(); } finally { await directory.close(); }
+        }
+        await writeOperation(operation);
+      } catch (error) {
+        operationByRequest.delete(requestKey);
+        operationCache.delete(id);
+        const removed = await fs.unlink(payloadPath(id))
+          .then(() => true)
+          .catch(() => false);
+        if (removed) {
+          releaseStagedReservation(operationReservations.get(id));
+          operationReservations.delete(id);
+        }
+        throw error;
+      }
+      setImmediate(() => void runBackgroundImport(id));
+      try {
+        createOperationalNotification({
+          dedupeKey: `agent-import:${id}`,
+          category: "system",
+          severity: "info",
+          title: "Agent import queued",
+          body: "The import continues in the background.",
+          projectId: operation.projectId,
+          action: { kind: "open_project", targetId: operation.projectId },
+        });
+      } catch { /* the durable queue and scheduled worker remain authoritative */ }
+      return reply.code(202).send(operation);
+      } finally {
+        const removed = await fs.unlink(staged.pathname)
+          .then(() => true)
+          .catch(() => false);
+        if (removed || !transferredReservation) {
+          releaseStagedReservation(staged.reservationId);
+        }
+      }
+    }),
+  );
+
+  app.get<{ Params: { id: string; operationId: string } }>(
+    "/api/projects/:id/agent-import-operations/:operationId",
+    async (request, reply) => {
+      await operationHydration;
+      const operation = operationCache.get(request.params.operationId)
+        ?? await readOperation(request.params.operationId);
+      if (!operation || operation.projectId !== request.params.id) {
+        return reply.code(404).send({ error: "import operation not found" });
+      }
+      return operation;
+    },
+  );
+
+  void operationHydration.then(() => {
+    for (const operation of operationCache.values()) {
+      if (operation.status === "pending") {
+        setImmediate(() => void app.ready().then(() => runBackgroundImport(operation.id)));
+      }
+    }
+  }).catch(() => undefined);
+
+  app.post<{
+    Params: { id: string };
+    Headers: { "idempotency-key"?: string };
+    Body: StagedImportUpload;
+  }>(
+    "/api/projects/:id/import-agent-package",
+    { bodyLimit: maximumImportBytes },
+    async (request, reply) => {
+      try {
+        const idempotencyKey = validIdempotencyKey(request.headers["idempotency-key"]);
+        if (!idempotencyKey) {
+          return reply.code(400).send({ error: "a valid import idempotency key is required" });
+        }
+        return await withAgentImportAdmission(async () => {
+          const { metadata, portable } = await parsePortablePackageFile(request.body.pathname);
+          return importPackage(
+            request.params.id,
+            { ...metadata, package: portable },
+            reply,
+            undefined,
+            undefined,
+            {
+              idempotencyKey,
+              rawPayloadHash: request.body.sha256,
+            },
+          );
+        });
+      } catch (error) {
+        return reply.code(400).send({
+          error: error instanceof Error
+            ? error.message
+            : "invalid Ponderosa Agent package",
+        });
+      } finally {
+        await fs.unlink(request.body.pathname).catch(() => undefined);
+        releaseStagedReservation(request.body.reservationId);
+      }
+    },
+  );
+
+  app.post<{
+    Params: { id: string };
+    Headers: { "idempotency-key"?: string };
+    Body: CopyAgentPackageRequest;
+  }>(
+    "/api/projects/:id/copy-agent",
+    { bodyLimit: 64 * 1024 },
+    async (request, reply) => withAgentImportAdmission(async () => {
+      await operationHydration;
+      const idempotencyKey = validIdempotencyKey(request.headers["idempotency-key"]);
+      if (!idempotencyKey) {
+        return reply.code(400).send({ error: "a valid import idempotency key is required" });
+      }
+      if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
+          Object.keys(request.body).some((key) => ![
+            "sourceAgentId", "conversationId", "rootTitle", "mode", "organization",
+            "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution",
+          ].includes(key)) ||
+          !validChatInstructionsResolution(request.body.chatInstructionsResolution) ||
+          typeof request.body.sourceAgentId !== "string" ||
+          typeof request.body.conversationId !== "string") {
+        return reply.code(400).send({ error: "copy request fields are invalid" });
+      }
+      const sourceAgentId = request.body.sourceAgentId.trim();
+      const conversationId = request.body.conversationId.trim();
+      const rootTitle = typeof request.body.rootTitle === "string"
+        ? request.body.rootTitle.trim()
+        : undefined;
+      if (
+        !sourceAgentId
+        || !conversationId
+        || (
+          request.body.rootTitle !== undefined
+          && (
+            typeof request.body.rootTitle !== "string"
+            || !rootTitle
+            || rootTitle.length > 80
+          )
+        )
+        || (
+          request.body.mode !== undefined
+          && request.body.mode !== "template"
+          && request.body.mode !== "full"
+        )
+        || (
+          request.body.organization !== undefined
+          && typeof request.body.organization !== "boolean"
+        )
+        || (
+          request.body.acknowledgeElevatedManagementPermissions !== undefined
+          && typeof request.body.acknowledgeElevatedManagementPermissions
+            !== "boolean"
+        )
+      ) {
+        return reply.code(400).send({
+          error: "copy request fields are invalid",
+        });
+      }
+      const payloadHash = createHash("sha256").update(stableJson({
+        sourceAgentId,
+        conversationId,
+        ...(request.body.chatInstructionsResolution ? { chatInstructionsResolution: request.body.chatInstructionsResolution } : {}),
+        ...(rootTitle ? { rootTitle } : {}),
+        mode: request.body.mode ?? "full",
+        organization: request.body.organization ?? false,
+        acknowledgeElevatedManagementPermissions:
+          request.body.acknowledgeElevatedManagementPermissions ?? false,
+      })).digest("hex");
+      let creationOperation;
+      try {
+        creationOperation = store.beginAgentCreationOperation({
+          projectId: request.params.id,
+          actorScope: "user:local-operator",
+          kind: "import",
+          idempotencyKey,
+          payloadHash,
+        }).operation;
+      } catch (error) {
+        return reply.code(409).send({
+          error: error instanceof Error ? error.message : "Agent copy replay conflict",
+        });
+      }
+      if (creationOperation.status === "completed" && creationOperation.result) {
+        return reply.code(200).send(creationOperation.result);
+      }
+      if (creationOperation.status === "canonical_committed" ||
+          creationOperation.status === "rolling_back" ||
+          creationOperation.agentIds.length > 0) {
+        return reply.code(409).send({
+          error: "A prior copy attempt is still being recovered; retry after recovery completes",
+          operationId: creationOperation.id,
+        });
+      }
+      if (activeCopyOperations.has(creationOperation.id)) {
+        return reply.code(409).send({
+          error: "Agent copy is still in progress; retry with the same idempotency key",
+          operationId: creationOperation.id,
+        });
+      }
+      activeCopyOperations.add(creationOperation.id);
+      const abandonMutationFreeCopy = (reason: string): boolean => {
+        const current = store.getAgentCreationOperation(creationOperation.id);
+        if (!current || current.agentIds.length > 0) return false;
+        store.updateAgentCreationOperation(current.id, {
+          status: "rolled_back",
+          lastError: reason,
+        });
+        return true;
+      };
+      let portable: AgentPortablePackageDto;
+      try {
+        const savedSnapshot = preparedCopySnapshot(creationOperation.result);
+        let prepared = await readCopySnapshot(
+          creationOperation.id,
+          savedSnapshot?.snapshotSha256,
+        );
+        if (!prepared) {
+          if (savedSnapshot) {
+            throw new Error("Agent copy snapshot is unavailable");
+          }
+          const source = store.getAgent(sourceAgentId);
+          if (!source) {
+            activeCopyOperations.delete(creationOperation.id);
+            if (!abandonMutationFreeCopy("agent not found")) {
+              return reply.code(409).send({
+                error: "A prior copy attempt is still being recovered; retry after recovery completes",
+                operationId: creationOperation.id,
+              });
+            }
+            return reply.code(404).send({ error: "agent not found" });
+          }
+          prepared = await installCopySnapshot(
+            creationOperation.id,
+            await buildPortablePackage(
+              source.id,
+              request.body.mode ?? "full",
+              request.body.organization === true,
+            ),
+          );
+        }
+        portable = rootTitle
+          ? {
+              ...prepared.portable,
+              agents: prepared.portable.agents.map((node) =>
+                node.ref === prepared.portable.rootRef
+                  ? { ...node, title: rootTitle }
+                  : node),
+            }
+          : prepared.portable;
+        if (!savedSnapshot) {
+          store.updateAgentCreationOperation(creationOperation.id, {
+            result: {
+              phase: "prepared_copy",
+              snapshotSha256: prepared.sha256,
+            } satisfies PreparedCopySnapshot,
+          });
+        }
+      } catch (error) {
+        activeCopyOperations.delete(creationOperation.id);
+        if (!abandonMutationFreeCopy(
+          error instanceof Error ? error.message : "Agent copy could not be prepared",
+        )) {
+          return reply.code(409).send({
+            error: "A prior copy attempt is still being recovered; retry after recovery completes",
+            operationId: creationOperation.id,
+          });
+        }
+        throw error;
+      }
+      const engineMapping = Object.fromEntries(
+        [...new Set(portable.agents.map((node) => node.engine))]
+          .map((engineId) => [engineId, engineId]),
+      );
+      return importPackage(
+        request.params.id,
+        {
+          package: portable,
+          conversationId,
+          engineMapping,
+          ...(request.body.chatInstructionsResolution ? { chatInstructionsResolution: request.body.chatInstructionsResolution } : {}),
+          ...(request.body.acknowledgeElevatedManagementPermissions === true
+            ? { acknowledgeElevatedManagementPermissions: true }
+            : {}),
+        },
+        reply,
+        undefined,
+        creationOperation.id,
+      ).finally(async () => {
+        activeCopyOperations.delete(creationOperation.id);
+        if (store.getAgentCreationOperation(creationOperation.id)?.status === "completed") {
+          await removeCopySnapshot(creationOperation.id);
+        }
+      });
+    }),
+  );
+}

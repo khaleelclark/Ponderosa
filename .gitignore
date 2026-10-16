@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Engine auth token directories (subscription tokens — never commit; SPEC §9, AGENTS.md)
+.codex/
+.claude/
+**/.codex/
+**/.claude/
+
+# Ponderosa data dir (event logs, SQLite projections) if placed inside repo
+.ponderosa/
+data/
+
+# Logs
+*.log
+logs/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

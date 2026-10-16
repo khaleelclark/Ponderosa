@@ -1,0 +1,928 @@
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Learn how Ponderosa coordinates persistent AI teams, runs tasks, preserves work, and handles context and recovery."><title>Understand Ponderosa · Learning</title><link rel="stylesheet" href="assets/guide.css"><script src="assets/guide.js" defer></script></head><body class="pg"><a class="pg-skip" href="#main-content">Skip to content</a>
+<header class="pg-header"><a class="pg-brand" href="https://ponderosa.khaleelclark.com/"><img class="pg-logo" src="assets/logo.png" alt=""><span>Ponderosa<small>Docs · Learning</small></span></a><div class="pg-header-actions"><a class="pg-header-link" href="../../README.md">Start</a><a class="pg-header-link" href="../user-guide.md">Install</a><a class="pg-header-link" href="#understand">Learn</a><a class="pg-header-link" href="#repository">Reference</a><button id="pg-search-open" type="button">Search <kbd>/</kbd></button><button id="pg-theme" type="button" aria-label="Switch to light theme">Light theme</button><button id="pg-menu" type="button" aria-expanded="false" aria-controls="pg-toc">Contents</button></div>
+</header>
+<div class="pg-layout"><aside class="pg-sidebar" id="pg-toc"><nav aria-label="Guide table of contents"><p class="pg-nav-title">Learning Ponderosa</p>
+<div class="pg-nav-group"><p>Start and follow a task</p>
+<a href="#understand">Understand Ponderosa</a><a href="#first-run">First task with Codex or Claude</a><a href="#system-map">How the parts connect</a><a href="#normal-task">A normal task, from upload to reply</a></div>
+<div class="pg-nav-group"><p>Team coordination</p>
+<a href="#messaging">Messages and who can see them</a><a href="#scheduling">How waiting work gets a turn</a><a href="#runs-sessions">Agents, Runs, and provider sessions</a><a href="#delegation-example">Agent delegation and review</a><a href="#requests-joins">Requests, Joins, and results</a><a href="#decisions">Human Decisions and scoped approvals</a></div>
+<div class="pg-nav-group"><p>Execution and saved work</p>
+<a href="#compaction">Compaction and session rollover</a><a href="#tools">Provider tools, MCP, and skills</a><a href="#working-folders">Folders and separate Git copies</a><a href="#files">Inputs, working files, and saved results</a><a href="#storage">Where information lives</a><a href="#restarts">What restarting changes</a><a href="#recovery">Stopping, deleting, and recovering work</a></div>
+<div class="pg-nav-group"><p>Browsers and host tools</p>
+<a href="#browsers">Internal browser</a><a href="#platforms">Launcher, desktop app, and packaging</a></div>
+<div class="pg-nav-group"><p>Reference</p>
+<a href="#repository">Where to look in the repository</a><a href="#setup">Run the server and interface for development</a><a href="#contribution">Maintainer contribution rules</a><a href="#glossary">Glossary</a><a href="#questions">Architecture trade-offs</a><a href="#evidence">Relevant code and reading notes</a></div>
+</nav></aside><main id="main-content" tabindex="-1"><div class="pg-orientation"><span>Docs</span><span>/</span><span>Learning</span><span>/</span><span id="pg-current">Understand Ponderosa</span></div>
+<section class="pg-topic" id="understand" aria-labelledby="heading-understand" data-title="Understand Ponderosa"><p class="pg-kicker">Begin here</p>
+<h1 id="heading-understand">Understand Ponderosa</h1>
+<p class="pg-lead">Ponderosa is a self-hosted workbench for persistent AI teams. It organizes agents so you can give a team a goal, follow its coordination, and direct the work.</p>
+<p>Use Codex or Claude Code through your existing subscription sign-in. Start with one Chat and one task; a team is optional. The <a href="#first-run">first-run walkthrough</a> covers macOS, Linux and Windows.</p>
+<p><strong>Ponderosa 1.0.0-beta.1 public beta.</strong> <a href="https://github.com/khaleelclark/Ponderosa/releases">Download Ponderosa</a> for macOS on Apple Silicon, Windows x64 or Linux x64. Connect Codex or Claude Code through your subscription sign-in and start your first Chat. Internal browsing is included.</p>
+<p>Use a team to divide a research question, develop and review a creative project, act out a simulation, or explore how different roles affect agent interactions. For software work, agents can investigate a codebase, implement a change, and review it. Set the roles, questions and tools to suit the work.</p>
+
+<p>Return to the same team with its roles and working history for each new task. Ponderosa coordinates assignments, messages, human decisions, files and execution, with a visible record of the work.</p>
+
+<p>Teams keep their identities and saved work across sessions. Ponderosa selects relevant context for each turn, and agents retrieve older information as needed.</p>
+
+<p>A <strong><a class="pg-term" href="#term-chat">Chat</a></strong> is the product home for one agent organization, its human conversation, and its instructions. A user can return to that team or open another Chat for different work.</p>
+
+<p>A team uses a working folder on the host for notes and files. Use an ordinary folder or choose the optional Separate Git copy mode for code work. Provider processes run with the host account’s file and shell access, so choose that account and its permissions to suit the work.</p>
+
+<h2 class="pg-subheading">What the main parts do</h2>
+<div class="pg-cards"><article><h3>The interface</h3>
+<p>The web app is the user interface (UI), where a user sends messages, chooses agents, reads replies, opens files, and inspects work. It can also run as an installed progressive web app (PWA).</p>
+</article>
+<article><h3>The server</h3>
+<p>A local service accepts actions from the interface, checks who owns the work, coordinates execution, and sends updates back. Fastify is the TypeScript web-server framework used to implement this service.</p>
+</article>
+<article><h3>The saved records</h3>
+<p>A database and saved files record team identities, communication, assignments, execution, uploads, and results. Different records have different responsibilities.</p>
+</article>
+<article><h3>Provider execution</h3>
+<p>Codex CLI or Claude Code performs the AI work through the host account’s subscription sign-in. Ponderosa’s adapters translate between its shared contracts and each provider’s interface. Models, reasoning options and supported features can differ.</p>
+</article>
+</div>
+
+<p>Inside the server, the <strong>scheduler</strong> chooses which waiting work can run. <strong>Tool handlers</strong> carry out Ponderosa-specific operations requested by an agent, such as assigning work or publishing a result. Both run as components of the local service.</p>
+
+<h2 class="pg-subheading">Three things you see in the product</h2>
+<p><strong>Communication</strong> means an intentionally sent message with an identified sender and audience. <strong>Activity</strong> is evidence of execution, such as a command, tool call, file change, or error. A <strong><a class="pg-term" href="#term-decision">Decision</a></strong> is a recorded question for the user, such as choosing an option or approving a particular action. These are separate because running a command, sending a reply, and receiving approval are different events.</p>
+<nav class="pg-learning-path" aria-label="Start here learning path"><h3>Start here</h3>
+<ol><li><a href="#understand">Overview</a><span>Learn what each part of Ponderosa does.</span></li>
+<li><a href="#first-run">First task with Codex or Claude</a><span>Sign in, choose a model, send a task and find its result.</span></li>
+<li><a href="#normal-task">A normal task</a><span>Follow a file upload through execution to a reply.</span></li>
+<li><a href="#delegation-example">Agent delegation and review</a><span>See how agents assign work and combine results.</span></li>
+<li><a href="#compaction">Compaction and session rollover</a><span>Understand how a team continues with a fresh context.</span></li>
+<li><a href="#storage">Storage</a><span>Learn which records own each fact.</span></li>
+</ol></nav><p>For a noncoding application of those same parts, follow the <a href="#research-team-example">research-team example</a> alongside the file-task walkthrough.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../README.md">Product model</a> <code>README.md</code></li>
+<li><a href="../../AGENTS.md">Repository rules</a> <code>AGENTS.md</code></li>
+<li><a href="../../apps/server/src/app.ts">Server composition</a> <code>apps/server/src/app.ts</code></li>
+<li><a href="../../packages/core/src/adapter.ts">Shared adapter contract</a> <code>packages/core/src/adapter.ts</code></li>
+<li><a href="../../apps/server/src/routes/projects.ts">Chat creation and ordinary working folders</a> <code>apps/server/src/routes/projects.ts</code></li>
+<li><a href="../../apps/server/src/AGENT-WORKING-COPIES.md">Working-copy boundaries</a> <code>apps/server/src/AGENT-WORKING-COPIES.md</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><span></span><a href="#first-run"><small>Next</small>First task with Codex or Claude →</a></nav></section>
+<section class="pg-topic" id="first-run" aria-labelledby="heading-first-run" data-title="First task with Codex or Claude"><p class="pg-kicker">Your first session</p>
+<h2 id="heading-first-run">First task with Codex or Claude</h2>
+<p class="pg-lead">Install the provider on the computer running Engine, open a Chat, and ask for one small result. Start with a single agent and an ordinary working folder.</p>
+<h3>1. Install Ponderosa and a provider</h3>
+<p>Download the <a href="https://github.com/khaleelclark/Ponderosa/releases">package and release notes for your platform</a>. Ponderosa includes its own Node runtime. Install Codex CLI or Claude Code separately and sign in under the account that runs Engine. Agents use that account’s files and shell, so begin with non-sensitive material in a suitable working folder.</p>
+<div class="pg-cards"><article><h3>macOS</h3><p>Use macOS 14+ on Apple Silicon. Open the DMG and copy <strong>Ponderosa Engine.app</strong> to Applications. Set up your provider in Terminal under the account that runs Engine.</p></article>
+<article><h3>Linux</h3><p>Use Ubuntu 24.04 x64. Install the <code>.deb</code> package as described in its release notes, then find <strong>Ponderosa Engine</strong> in the application menu. Set up your provider in a terminal under the same normal user account.</p></article>
+<article><h3>Windows</h3><p>Use Windows 11 x64. Run the installer under your login account and open <strong>Ponderosa Engine</strong> from Start. The default installation folder is <code>%LOCALAPPDATA%\Programs\Ponderosa</code>. Set up your provider in PowerShell or Windows Terminal under the account that runs Engine.</p></article></div>
+<p>Follow the official <a href="https://developers.openai.com/codex/cli">Codex CLI instructions</a> or <a href="https://code.claude.com/docs/en/setup">Claude Code setup instructions</a> for your operating system. Install and sign in on the Engine host even if you view Ponderosa from another device.</p>
+<ul><li><strong>Codex:</strong> run <code>codex login</code> and complete subscription sign-in.</li><li><strong>Claude Code:</strong> run <code>claude</code> and complete subscription sign-in.</li></ul>
+<p>These commands sign in through your provider subscription in the macOS/Linux terminal or Windows PowerShell. Ponderosa supports subscription sign-in only. If it reports an API-key environment variable, remove that conflicting setting from the Engine account’s launch environment and recheck subscription access.</p>
+<h3>2. Open Engine and check provider access</h3>
+<ol><li>Open <strong>Ponderosa Engine</strong>. It starts the service and opens the web app. Use <strong>Open Ponderosa</strong> to reopen the app through Engine’s authenticated entry point.</li>
+<li>Check Engine’s status and <strong>Work intake</strong>. In the web app, open <strong>Provider Settings</strong> and enable the provider you intend to use. <strong>Recheck sign-in</strong> appears when that provider’s state needs it.</li>
+<li>Read <strong>AI provider status</strong>. Sign-in discovery finds your credentials. <strong>Test Access</strong>, when offered, checks them with a small provider request that consumes subscription usage.</li></ol>
+<details class="pg-deeper"><summary>If a provider works in a terminal but Engine cannot find it</summary><p>Engine searches its launch environment’s <code>PATH</code> and known platform locations. Your terminal can have a different PATH. Check the provider executable’s actual location under the same account, then configure an explicit path if discovery misses it.</p><p>Set an absolute <code>providers.codex.executable</code> or <code>providers.claude.executable</code> in the launcher root’s <code>config/launcher.json</code>, preserving other fields. Quit Engine before editing and reopen it afterward. You can also select the executable through <code>PONDEROSA_CODEX_BIN</code> or <code>PONDEROSA_CLAUDE_BIN</code> in Engine’s launch environment. Subscription sign-in remains with the provider CLI.</p></details>
+<h3>3. Choose a model and send a task</h3>
+<ol><li>Choose <strong>New Chat</strong>. Open the composer’s model/reasoning picker. Where available, its <strong>Engine</strong> row selects Codex or Claude Code; this provider choice is distinct from the Engine desktop app.</li>
+<li>Choose an available <strong>Model</strong> and <strong>Reasoning</strong> level. Reasoning controls the model’s effort. Available choices depend on the provider, model and supported capabilities; an existing Agent can have a fixed provider.</li>
+<li>Send: “Write a three-item checklist for planning a picnic. Reply here. Do not browse or change files.”</li>
+<li>Read the reply in the Chat. Open the Agent’s <strong>Technical details</strong> for commands, tool results and execution status.</li>
+<li>Ask: “Make the checklist suitable for rainy weather.” Check that the reply continues the same task.</li></ol>
+<h3>4. Add a file and find a saved result</h3>
+<p>Open the composer’s <strong>Add attachment or capability</strong> menu and choose <strong>Files</strong>. Select a small text file you can share, check its filename, and resolve any upload error with the attachment’s <strong>Retry</strong> control before sending. Ask the agent to summarize that file and save a short result. Confirm the reply refers to the intended contents.</p>
+<p>Read the reply where you sent the task. Follow its result link or open the Agent’s <strong>Files &amp; Results</strong> to inspect and download saved output. Uploads supply input; agents publish selected working files as saved results. Short answers can arrive directly as replies.</p>
+<h3>5. Return to your work</h3>
+<p>Close the web tab and use <strong>Open Ponderosa</strong> to return to the saved Chat. Closing a tab leaves Engine running. <strong>Quit Engine</strong> stops the service and can interrupt active work; save unsent text and review active Agents first. See <a href="#recovery">stopping and recovery</a> and <a href="#platforms">data locations and saved roots</a>.</p>
+<details class="pg-deeper"><summary>Working with Codex and Claude Code</summary><p>Each provider uses its own subscription, available models and reasoning options. Choose the provider and model in the composer, and use Provider Settings to check sign-in and access. Tool availability follows the provider’s capabilities and host configuration.</p><p>A provider request rejected for access, quota or model availability needs attention in that provider’s setup. Check the reported error and select an available model or restore access before retrying.</p></details>
+<details class="pg-evidence"><summary>Relevant code</summary><ul>
+<li><a href="../../apps/launcher/src/providers.ts">Executable discovery</a> <code>apps/launcher/src/providers.ts</code></li>
+<li><a href="../../packages/engines/src/auth.ts">Subscription sign-in and access checks</a> <code>packages/engines/src/auth.ts</code></li>
+<li><a href="../../apps/web/src/components/ComposerRuntimeSelector.tsx">Provider, model and reasoning picker</a> <code>apps/web/src/components/ComposerRuntimeSelector.tsx</code></li>
+<li><a href="../../apps/web/src/components/chat/Composer.controls.tsx">Files and composer controls</a> <code>apps/web/src/components/chat/Composer.controls.tsx</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#understand"><small>Previous</small>Understand Ponderosa</a><a href="#system-map"><small>Next</small>How the parts connect →</a></nav></section>
+<section class="pg-topic" id="system-map" aria-labelledby="heading-system-map" data-title="How the parts connect"><p class="pg-kicker">The big picture</p>
+<h2 id="heading-system-map">How the parts connect</h2>
+<p class="pg-lead">The interface talks to the server. The server coordinates provider execution and saves its records. The browser is a client of that service.</p>
+<p>The interface uses HTTP (Hypertext Transfer Protocol) to talk to the server. REST (Representational State Transfer) describes its ordinary request/response API, or application programming interface. SSE (Server-Sent Events) carries live updates back to the interface.</p>
+<figure class="pg-native-diagram"><div class="pg-diagram-title">The whole system</div>
+<div class="pg-system-map"><article class="pg-process pg-interface"><span class="pg-diagram-tag">Browser application</span><h3>Interface</h3>
+<p>Messages, files, Decisions, and activity displays</p>
+</article>
+
+<div class="pg-map-connections"><span>Interface → server<br><strong>REST requests</strong></span><span>Server → interface<br><strong>REST responses</strong></span><span>Server → interface<br><strong>SSE live updates</strong></span></div>
+
+<article class="pg-process pg-server"><span class="pg-diagram-tag">Local server process</span><h3>Server</h3>
+<p>Accepts actions, checks ownership, stores records, and publishes updates</p>
+<div class="pg-server-parts"><div><strong>Scheduler</strong><span>Chooses and claims waiting work</span></div>
+<div><strong>Runtime and adapters</strong><span>Prepare inputs and consume provider events</span></div>
+<div><strong>Tool handlers</strong><span>Validate and perform scoped operations</span></div>
+</div>
+</article>
+
+<div class="pg-map-bottom"><div><div class="pg-map-exchange"><span><strong>Server → storage</strong>Save events and update stored views</span><span><strong>Storage → server</strong>Read records and file bytes</span></div>
+<article class="pg-process"><span class="pg-diagram-tag">Persistent storage on the host</span><h3>Database and saved files</h3>
+<p>SQLite, message/event journals, uploads, and managed results</p>
+</article>
+</div>
+
+<div><div class="pg-map-exchange"><span><strong>Server → provider</strong>Prepared turn input</span><span><strong>Provider → server</strong>Provider activity events</span><span class="pg-tool-exchange"><strong>Provider → server → provider</strong>Ponderosa tool request → handler → tool result</span></div>
+<article class="pg-process"><span class="pg-diagram-tag">Provider execution</span><h3>Codex CLI or Claude Code</h3>
+<p>Runs on the host and sends model inputs to the provider’s AI service</p>
+</article>
+</div>
+</div>
+</div>
+<figcaption>The large boxes distinguish applications, processes, and storage. The smaller boxes are components inside the server. Browser automation is explained in its own chapter.</figcaption></figure>
+<h3>Requests, responses, and live updates</h3>
+<p>In the <strong>REST</strong> path, the browser asks the server to send a message, and the server returns the result of that request. The browser also requests conversation history and other displays this way.</p>
+
+<p><strong>Server-Sent Events, or SSE,</strong> is a long-lived HTTP connection that lets the server send updates without waiting for the browser to ask for each one. The interface uses those events to update visible activity and refresh the records it displays. SSE updates and REST responses are different paths.</p>
+
+<h3>How a provider event becomes visible</h3>
+<p>The adapter translates provider activity into shared Ponderosa event types. The server checks that the event still belongs to the current execution, then appends the accepted event and updates the stored views derived from it. It publishes applicable Agent and workspace updates over SSE. The interface applies bounded live updates and refreshes its queries.</p>
+
+<p>A <strong>read model</strong> is a view organized for reading, such as an Agent’s current status or a page of conversation history. Server/store code builds it from the saved records, and the server sends changes to the browser.</p>
+
+<h3>What an ownership check checks</h3>
+<p>An <strong><a class="pg-term" href="#term-ownership-check">ownership check</a></strong> compares an action with the resource’s recorded identities and permissions. For an agent tool call, the server checks the current Agent, Run and permitted action. For a managed saved file, it checks the file’s owner and intended audience. Provider filesystem and shell access follows the host account’s permissions.</p>
+
+<h3>Activity events and tool requests are different</h3>
+<p>A command-completed event reports something that happened. A Ponderosa tool call asks the server to perform an operation. The server validates the request, performs the permitted operation, and returns a tool result. Ordinary shell and file tools execute through the provider’s own harness.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../apps/server/src/app.ts">Server composition</a> <code>apps/server/src/app.ts</code></li>
+<li><a href="../../apps/server/src/routes/provider-run-executor.ts">Provider execution</a> <code>apps/server/src/routes/provider-run-executor.ts</code></li>
+<li><a href="../../apps/server/src/runtime-event-authority.ts">Run event authority</a> <code>apps/server/src/runtime-event-authority.ts</code></li>
+<li><a href="../../packages/agents/src/store-event-projection.ts">Stored execution projections</a> <code>packages/agents/src/store-event-projection.ts</code></li>
+<li><a href="../../apps/server/src/agent-event-service.ts">Agent and workspace event publication</a> <code>apps/server/src/agent-event-service.ts</code></li>
+<li><a href="../../apps/server/src/routes/streams.ts">SSE stream routes</a> <code>apps/server/src/routes/streams.ts</code></li>
+<li><a href="../../apps/web/src/hooks/useAgentStream.ts">Live Agent UI projection</a> <code>apps/web/src/hooks/useAgentStream.ts</code></li>
+<li><a href="../../apps/web/src/api/real.ts">Web API client</a> <code>apps/web/src/api/real.ts</code></li>
+<li><a href="../../apps/server/src/routes/provider-dynamic-tool-handler.ts">Dynamic tool routing</a> <code>apps/server/src/routes/provider-dynamic-tool-handler.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#first-run"><small>Previous</small>First task with Codex or Claude</a><a href="#normal-task"><small>Next</small>A normal task, from upload to reply →</a></nav></section>
+<section class="pg-topic" id="normal-task" aria-labelledby="heading-normal-task" data-title="A normal task, from upload to reply"><p class="pg-kicker">Walkthrough</p>
+<h2 id="heading-normal-task">A normal task, from upload to reply</h2>
+<p class="pg-lead">Follow one requesting agent as it reads a specification, uses tools, publishes a report, and replies to the user.</p>
+<nav class="pg-route-links" aria-label="Task examples"><a href="#task-stage-1">File-task walkthrough</a><a href="#research-team-example">Research-team walkthrough</a></nav><figure class="pg-native-diagram"><div class="pg-diagram-title">One task, six steps</div>
+<ol class="pg-flow-list"><li><strong>Attach</strong><span>Capture the input file</span></li>
+<li><strong>Send</strong><span>Record the message and recipient work</span></li>
+<li><strong>Start the Run</strong><span>Prepare input and begin provider execution</span></li>
+<li><strong>Use tools</strong><span>Read the input and write the report</span></li>
+<li><strong>Publish</strong><span>Capture the report in managed storage</span></li>
+<li><strong>Reply</strong><span>Send the explanation and result link</span></li>
+</ol><figcaption>Follow the six steps from uploading the input to receiving the agent’s reply.</figcaption></figure><article class="pg-step" id="task-stage-1"><span class="pg-step-number">01</span><div><h3>Choose the work and attach the file</h3>
+<p>A user asks a requesting agent: “Read specification.pdf, identify unclear requirements, and save a short report.” The user selects that existing agent and attaches the Portable Document Format (PDF) file.</p>
+<p><strong>In the interface:</strong> The composer shows the selected attachment as input for the message.</p>
+<details class="pg-deeper"><summary>What happens inside</summary><p>The interface stages the upload and associates its identity with the send attempt. The server stores the uploaded bytes and metadata before preparing them for the recipient.</p>
+</details></div>
+</article>
+<article class="pg-step" id="task-stage-2"><span class="pg-step-number">02</span><div><h3>Send the message</h3>
+<p>The user clicks Send. The interface submits the text, recipient, attachment references, and settings for that attempt.</p>
+<p><strong>In the interface:</strong> The message appears in the conversation. Recipient delivery badges can show Queued, Preparing, Started, or Delivered as the delivery progresses.</p>
+<details class="pg-deeper"><summary>What happens inside</summary><p>The server validates the message and attachment owners, records communication, and records the work that should reach the recipient. Repeating the same attempt is distinguished from composing a new message.</p>
+</details></div>
+</article>
+<article class="pg-step" id="task-stage-3"><span class="pg-step-number">03</span><div><h3>Start the agent’s turn</h3>
+<p>When execution capacity is available, the scheduler gives the requesting agent a turn.</p>
+<p><strong>In the interface:</strong> The conversation can show that the agent “is working,” with elapsed time. Open the Agent’s Technical details to inspect its execution records.</p>
+<details class="pg-deeper"><summary>What happens inside</summary><p>The turn is a Run. The server prepares the selected instructions, relevant messages, tracked work, and attachment material, records the exact provider input, and starts or continues the provider session.</p>
+</details></div>
+</article>
+<article class="pg-step" id="task-stage-4"><span class="pg-step-number">04</span><div><h3>Read the input and use tools</h3>
+<p>The agent reads the specification using its available tools and writes report.md in its working directory.</p>
+<p><strong>In the interface:</strong> Open the Agent’s Technical details to follow commands, tool results and file changes. During a quiet period, check its status and latest activity. Replies appear in the conversation when the agent sends them.</p>
+<details class="pg-deeper"><summary>What happens inside</summary><p>The provider performs the tool operations. Ponderosa receives and records normalized activity such as tool calls, command results, and file changes. The exact tools depend on the provider and configuration.</p>
+</details></div>
+</article>
+<article class="pg-step" id="task-stage-5"><span class="pg-step-number">05</span><div><h3>Save a managed result</h3>
+<p>The agent intentionally publishes report.md with ponderosa_import_file.</p>
+<p><strong>In the interface:</strong> The user can open a linked managed result or find it in Files & Results. The returned reference gives the agent something precise to include in its reply.</p>
+<details class="pg-deeper"><summary>What happens inside</summary><p>The server checks the current execution and stable file bytes, captures the file into managed storage, and returns an artifact identity. An artifact is a saved result that can be referenced and downloaded independently of the temporary provider process.</p>
+</details></div>
+</article>
+<article class="pg-step" id="task-stage-6"><span class="pg-step-number">06</span><div><h3>Reply to the user</h3>
+<p>The agent calls ponderosa_message with its explanation and the saved result reference.</p>
+<p><strong>In the interface:</strong> The conversation shows the agent’s reply and file link. Delivery of that reply, completion of the Run, and completion of any tracked assignment are separate facts.</p>
+<details class="pg-deeper"><summary>What happens inside</summary><p>The server validates the reply’s audience and current execution, records the authored communication, and updates the displays. The Run is finalized separately when execution ends.</p>
+</details></div>
+</article>
+
+<h3>If the send confirmation is lost</h3>
+<p>If the server saves a message and the connection breaks before confirmation, retrying the same attempt recovers its recorded result. Ponderosa uses an <strong><a class="pg-term" href="#term-idempotency">idempotency key</a></strong> to identify the attempt and a fingerprint to check its content.</p>
+<p>For a shared message, the server derives the communication identity from the Chat and attempt key. A matching retry returns the original result and reconciles its display. Reusing the key with different content is rejected. External actions have their own effects, so inspect their current state before repeating uncertain work.</p>
+
+<p>An HTTP <strong>202 Accepted</strong> response can mean the message is saved while its display is still being recovered. The interface reconciles that attempt using its recorded receipt. Delivery state and the agent’s reply show subsequent progress.</p>
+<details class="pg-check"><summary>Check your understanding: Why is writing report.md not the final reply?</summary><p>The working file, its managed publication, and the authored message are different operations. The agent publishes the intended result and then sends a reply that references it.</p>
+</details><section class="pg-example" id="research-team-example" aria-labelledby="research-team-title"><h3 id="research-team-title">A noncoding example: research, review, and a saved brief</h3>
+
+<p>A user asks an agent: “How could a school library support both quiet study and group work? Compare the evidence, identify trade-offs, and produce a short brief with source links.” The agent can work with other agents to answer this question in an ordinary Ponderosa conversation.</p>
+
+<ol class="pg-story"><li><p><strong>Choose the question and material.</strong> The user can attach a few reports, provide links, or simply state the question. The agent uses that starting material and keeps the team’s notes in a shared folder. The user sees their question and any attachments in the conversation. This gives the team a clear question and a common starting point; uploading a file is optional.</p>
+</li>
+
+<li><p><strong>Divide the question when that helps.</strong> The agent can ask one agent to study the evidence about quiet study and another to study the evidence about group work. It tells each one what to investigate, which sources to use, and what findings to return. The user can leave this division of work to the agent and receive one combined answer. Looking at each need separately helps the team compare them fairly. A small question can stay with one agent.</p>
+</li>
+
+<li><p><strong>Check what the sources support.</strong> Each agent reads the material, assesses source quality, and connects findings to sources. It distinguishes evidence from interpretation and searches for more material when needed using the available tools. The brief includes source links and explains any gaps, so the user can review the reasoning.</p>
+</li>
+
+<li><p><strong>Review and integrate the findings.</strong> The agents return their findings to the agent handling the user’s question. It compares the evidence, explains disagreements, and drafts a combined answer. It can ask another agent to check the draft against the cited sources. The user gets an answer that shows the trade-offs and any unresolved questions, which makes it easier to decide what would suit the library. Another review is optional. The agent asks the user for an answer or approval only when the work needs it.</p>
+</li>
+
+<li><p><strong>Save the result and reply.</strong> The agent writes a research brief, saves it in Ponderosa, and sends the user a message explaining its findings with a link to the document. The user can open the brief from the conversation or find it in Files &amp; Results. Saving the brief makes it available to read and download after the agent finishes. For a short answer, the agent can simply send the findings as a message.</p>
+</li>
+</ol>
+<p>The same approach can organize creative work or experiments in agent collaboration. Set roles and questions for the exercise; tool and file access follows each agent’s configured permissions.</p>
+
+<p>For the technical details, see <a href="#delegation-example">Agent delegation and review</a>, <a href="#tools">Provider tools, MCP, and skills</a>, and <a href="#files">Inputs, working files, and saved results</a>. The file-task walkthrough also explains <a href="#task-stage-5">saving a result</a> and <a href="#task-stage-6">sending the reply</a>.</p>
+</section>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../apps/web/src/components/useConversationMessagingController.ts">Chat messaging controller</a> <code>apps/web/src/components/useConversationMessagingController.ts</code></li>
+<li><a href="../../apps/server/src/routes/conversation-deliveries.ts">Communication intake</a> <code>apps/server/src/routes/conversation-deliveries.ts</code></li>
+<li><a href="../../apps/server/src/assets.ts">Attachment asset store</a> <code>apps/server/src/assets.ts</code></li>
+<li><a href="../../apps/server/src/routes/agent-run-preparation.ts">Run preparation</a> <code>apps/server/src/routes/agent-run-preparation.ts</code></li>
+<li><a href="../../apps/server/src/routes/provider-run-executor.ts">Provider execution</a> <code>apps/server/src/routes/provider-run-executor.ts</code></li>
+<li><a href="../../apps/web/src/components/MessageDeliveryStatus.tsx">Visible delivery labels</a> <code>apps/web/src/components/MessageDeliveryStatus.tsx</code></li>
+<li><a href="../../apps/web/src/components/ConversationComposerStatus.tsx">Visible working indicator</a> <code>apps/web/src/components/ConversationComposerStatus.tsx</code></li>
+<li><a href="../../packages/core/src/managed-tools.ts">Managed tool contracts</a> <code>packages/core/src/managed-tools.ts</code></li>
+<li><a href="../../apps/server/src/file-publication.ts">File publication</a> <code>apps/server/src/file-publication.ts</code></li>
+<li><a href="../../apps/server/src/routes/agent-coordination.ts">Coordination routes</a> <code>apps/server/src/routes/agent-coordination.ts</code></li>
+<li><a href="../../apps/server/src/routes/agent-request-commands.ts">Request commands</a> <code>apps/server/src/routes/agent-request-commands.ts</code></li>
+<li><a href="../../apps/server/src/routes/projects.ts">Chat creation and ordinary working folders</a> <code>apps/server/src/routes/projects.ts</code></li>
+<li><a href="../../apps/web/src/components/AgentWorkInspector.tsx">Agent execution inspection</a> <code>apps/web/src/components/AgentWorkInspector.tsx</code></li>
+<li><a href="../../apps/web/src/components/AgentDetail.header.tsx">Agent navigation</a> <code>apps/web/src/components/AgentDetail.header.tsx</code></li>
+<li><a href="../../apps/web/src/components/AgentDetail.panels.tsx">Agent panels and visible names</a> <code>apps/web/src/components/AgentDetail.panels.tsx</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#system-map"><small>Previous</small>How the parts connect</a><a href="#messaging"><small>Next</small>Messages and who can see them →</a></nav></section>
+<section class="pg-topic" id="messaging" aria-labelledby="heading-messaging" data-title="Messages and who can see them"><p class="pg-kicker">Team communication</p>
+<h2 id="heading-messaging">Messages and who can see them</h2>
+<p class="pg-lead">Use the shared Chat for work the team should know about. Open an Agent’s chat for a focused conversation with that Agent.</p>
+<p>A shared Chat message supplies team context, with one Agent responsible for answering. A direct Agent message goes to its selected recipients. Check the recipient controls before sending. Teammate deliveries appear in the Agent’s timeline with their authors and delivery status; your queued messages appear in the editable queue tray.</p>
+<p>A <strong>Broadcast</strong> is shared knowledge for the Chat’s organization. A <strong>Direct Message</strong> is user communication with explicit agent recipients. <strong>Collaboration</strong> is intentional agent-to-agent communication. These distinctions allow a shared user conversation and private or focused work to coexist.</p>
+
+<p>Agents inherit Broadcasts as organizational context. Direct Messages and Collaboration keep their recorded audiences. Tool output stays in the execution record, while authored replies appear in the appropriate conversation.</p>
+
+<p>The interface distinguishes the human-facing conversation from an Agent’s execution record. A user should be able to read useful replies without every command and tool result filling the shared conversation. Detailed execution remains available in the Agent’s Technical details.</p>
+
+<h3>How recipients are selected</h3>
+<p>The server routes messages using stable Agent identifiers (IDs). Use the recipient controls to choose the audience; names and handles help you recognize each Agent. In Ponderosa, <code>@</code> references working-folder files and folders.</p>
+
+<h3>What goes into the next input</h3>
+<p>The server selects a bounded amount of context for each turn. That selection can include instructions, relevant communication, attached work, and authorized artifact references. A <strong><a class="pg-term" href="#term-manifest">source manifest</a></strong> records what was submitted and what was already retained in a compatible provider session, alongside the exact submitted text and its hash.</p>
+
+<p><strong><a class="pg-term" href="#term-provenance">Provenance</a></strong> records where information came from. For a provider input, it identifies the messages and saved sources used to assemble it. For a published file, it links the result to its originating Agent, Run and captured bytes. Use those links to trace a result and review its sources.</p>
+
+<p>A hash is a compact fingerprint of bytes that Ponderosa uses to detect changes to a packet or file. Agents retrieve older messages as needed, keeping current input focused on the task.</p>
+<details class="pg-check"><summary>Check your understanding: Does a reviewing agent automatically receive another agent’s whole provider context?</summary><p>No. It receives the submitted assignment and the context selected for its own turn. The requester must provide the facts and references required for the review.</p>
+</details><details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../AGENTS.md">Repository rules</a> <code>AGENTS.md</code></li>
+<li><a href="../../apps/server/src/routes/conversation-deliveries.ts">Communication intake</a> <code>apps/server/src/routes/conversation-deliveries.ts</code></li>
+<li><a href="../../apps/server/src/routes/agent-run-preparation.ts">Run preparation</a> <code>apps/server/src/routes/agent-run-preparation.ts</code></li>
+<li><a href="../../packages/core/src/managed-tools.ts">Managed tool contracts</a> <code>packages/core/src/managed-tools.ts</code></li>
+<li><a href="../../apps/web/src/api/real.ts">Web API client</a> <code>apps/web/src/api/real.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#normal-task"><small>Previous</small>A normal task, from upload to reply</a><a href="#scheduling"><small>Next</small>How waiting work gets a turn →</a></nav></section>
+<section class="pg-topic" id="scheduling" aria-labelledby="heading-scheduling" data-title="How waiting work gets a turn"><p class="pg-kicker">Scheduling</p>
+<h2 id="heading-scheduling">How waiting work gets a turn</h2>
+<p class="pg-lead">The scheduler chooses which accepted work can run and coordinates execution without losing track of work that must wait.</p>
+<p>A message waits when its agent is busy, execution capacity is full, or the provider is unavailable. Ponderosa saves a reason for the agent to receive work, called an <strong><a class="pg-term" href="#term-activation">Activation</a></strong>, so the scheduler can return to it when the agent is ready.</p>
+
+<p><strong><a class="pg-term" href="#term-execution-admission">Execution admission</a></strong> is the decision to let waiting work start now. The scheduler checks the work’s permitted scope, existing active work, applicable provider readiness, and configured capacity limits. Concurrency means how many Runs execute at the same time. Host-resource admission is the additional check of whether the host has measured room to start more work.</p>
+
+<p>When an agent can run, the scheduler claims one <strong><a class="pg-term" href="#term-run">Run</a></strong>, which is a tracked execution turn. Waiting work remains recorded until it can receive a turn. Only scheduler authority creates or claims Runs.</p>
+
+<h3>A lease prevents an abandoned worker from owning work forever</h3>
+<p>A <strong><a class="pg-term" href="#term-lease">lease</a></strong> is a time-limited ownership claim. The worker renews it while it is legitimately running. If it disappears, the lease eventually expires so recovery can examine the work.</p>
+<p>A <strong><a class="pg-term" href="#term-fence">fence</a></strong> is an ownership version. Cancellation or replacement advances it. The server rejects output carrying an older version, preventing a previous worker from committing late output after ownership changes.</p>
+
+<h3>Queues and steering</h3>
+<p>While an Agent is responding, use <strong>Queue message</strong> to save your follow-up for after the active response. The <strong>Queued messages</strong> tray shows your pending inputs and their order, with controls to edit, delete or steer them. Teammate deliveries keep their own waiting status in the Agent timeline.</p>
+<p>Use <strong>Steer</strong> to send a correction to active work, such as “Use the revised file instead.” Its delivery state shows progress toward the provider; the next reply shows how the agent handled it. For an unconfirmed submission, use that attempt’s recovery control to reconcile the original message. <strong>Try Delivery Again</strong> retries delivery. <strong>Try Work Again</strong> can repeat work and may require confirmation.</p>
+<details class="pg-deeper"><summary>Delivery policies inside the scheduler</summary><p>Ordinary delegated assignments wait for the next Run. Steering delivers a correction to active work through the provider’s supported path. The editable user queue contains pending next-Run messages authored by the local user; teammate messages and assignments retain their own delivery records.</p></details>
+
+<h3>Why there is an outbox</h3>
+<p>One accepted action can require several effects. For example, coordination can be recorded before its journal placement finishes. An <strong><a class="pg-term" href="#term-outbox">outbox</a></strong> saves the remaining effects so the service can resume them after an interruption. Its handlers recognize effects that have already been applied and keep a single recorded result.</p>
+
+<p>The scheduler distinguishes work that failed before submission from work that may already have reached a provider. The latter needs inspection before retrying. Resource admission checks capacity before starting a Run; memory use can still grow during execution.</p>
+<details class="pg-deeper"><summary>Deeper detail: where host-resource checks apply</summary><p>The host-pressure sampler runs on Linux. It observes available memory and memory/input-output pressure, including relevant operating-system resource groups. If those measurements are missing, stale or unsupported, it reports resource protection as unavailable. Configured concurrency limits continue to control how many Runs can execute.</p>
+</details><details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../apps/server/src/coordination-v3-scheduler.ts">Scheduler loop</a> <code>apps/server/src/coordination-v3-scheduler.ts</code></li>
+<li><a href="../../apps/server/src/coordination-scheduler-service.ts">Scheduler dispatch</a> <code>apps/server/src/coordination-scheduler-service.ts</code></li>
+<li><a href="../../packages/agents/src/coordination-v3-scheduler-lease-authority.ts">Run leasing and orphan recovery</a> <code>packages/agents/src/coordination-v3-scheduler-lease-authority.ts</code></li>
+<li><a href="../../deploy/README.md">Host services and resource admission</a> <code>deploy/README.md</code></li>
+<li><a href="../../apps/server/src/resource-admission.ts">Host resource admission</a> <code>apps/server/src/resource-admission.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#messaging"><small>Previous</small>Messages and who can see them</a><a href="#runs-sessions"><small>Next</small>Agents, Runs, and provider sessions →</a></nav></section>
+<section class="pg-topic" id="runs-sessions" aria-labelledby="heading-runs-sessions" data-title="Agents, Runs, and provider sessions"><p class="pg-kicker">Execution</p>
+<h2 id="heading-runs-sessions">Agents, Runs, and provider sessions</h2>
+<p class="pg-lead">An Agent is the team member. A Run is one tracked turn. A provider session is the context and process used to execute one or more turns.</p>
+<p>The same Agent can perform many tasks over time and use several provider sessions. Its identity, role, settings, and saved history belong to Ponderosa. Its current model context belongs to Codex or Claude.</p>
+
+<p>After a Run ends, the server can keep a provider process warm for a follow-up or close the idle process while retaining session metadata. Process liveness is tracked separately. The same Ponderosa Agent continues across reused and fresh provider sessions.</p>
+
+<h3>Fresh input and continued input</h3>
+<p>A fresh session receives a bounded seed: initial input assembled from the appropriate instructions and saved sources within size limits. A compatible continued session receives the current input and required new context alongside what it already holds. The server records the submitted packet and its sources for inspection.</p>
+
+<p>The <strong><a class="pg-term" href="#term-adapter">Adapter</a></strong> is the shared contract between Ponderosa and a provider. It supports capabilities, model/effort choices, fresh or continued execution, and persistent sessions where supported. Codex’s persistent path uses its app server; Claude’s persistent path uses its streaming interface. Provider-specific events are translated within <code>packages/engines</code>.</p>
+
+<h3>When a session ends unexpectedly</h3>
+<p>The Agent’s saved assignments and communication remain after a provider failure. The service classifies the Run as failed or uncertain, cleans up its processes, and determines whether a continuation can resume the session or needs fresh saved context. Check the provider error for sign-in, access or execution problems.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../packages/core/src/adapter.ts">Shared adapter contract</a> <code>packages/core/src/adapter.ts</code></li>
+<li><a href="../../packages/engines/src/codex.ts">Codex adapter</a> <code>packages/engines/src/codex.ts</code></li>
+<li><a href="../../packages/engines/src/claude.ts">Claude adapter</a> <code>packages/engines/src/claude.ts</code></li>
+<li><a href="../../apps/server/src/runtime-authority.ts">Runtime ownership and cleanup</a> <code>apps/server/src/runtime-authority.ts</code></li>
+<li><a href="../../apps/server/src/routes/provider-run-executor.ts">Provider execution</a> <code>apps/server/src/routes/provider-run-executor.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#scheduling"><small>Previous</small>How waiting work gets a turn</a><a href="#delegation-example"><small>Next</small>Agent delegation and review →</a></nav></section>
+<section class="pg-topic" id="delegation-example" aria-labelledby="heading-delegation-example" data-title="Agent delegation and review"><p class="pg-kicker">Walkthrough</p>
+<h2 id="heading-delegation-example">Agent delegation and review</h2>
+<p class="pg-lead">An AI agent can manage a team’s work while remaining accountable for the answer requested by a human.</p>
+<p>In this example, the <strong>requesting agent</strong> is responsible for the user’s report. It delegates a specific review to a <strong>reviewing agent</strong>. If the reviewer is created under it, the requesting agent is the <strong>manager agent</strong> and the reviewer is its <strong>child agent</strong>.</p>
+
+<p>A manager relationship records accountability. Private messages keep their audiences, and each management action passes the server’s ownership and scope checks.</p>
+<figure class="pg-native-diagram"><div class="pg-diagram-title">Assign, review, integrate</div>
+<ol class="pg-flow-list"><li><strong>Requesting agent</strong><span>Owns the user’s task and defines a review</span></li>
+<li><strong>Reviewing agent</strong><span>Performs the bounded assignment and records its result</span></li>
+<li><strong>Requesting agent continues</strong><span>Integrates the result and answers the user</span></li>
+</ol><figcaption>Each agent has its own execution turns. The assignment and result belong to durable coordination records, so a manager can wait between turns.</figcaption></figure>
+<h3>1. Define a review the other agent can perform</h3>
+<p>The requesting agent asks for something concrete: “Check report.md for requirements that were missed. Return the finding and a reference to any saved review.” For an existing agent, it uses <code>ponderosa_coordinate</code>. To create a managed child with opening work, it uses <code>ponderosa_create_managed_agent</code>.</p>
+
+<h3>2. Record the assignment</h3>
+<p>A <strong><a class="pg-term" href="#term-request">Request</a></strong> records the requester, recipient, assigned work, lifetime and eventual outcome. A <strong><a class="pg-term" href="#term-join">Join</a></strong> groups one or more Requests and defines when their owner should continue.</p>
+
+<h3>3. Wait for the reviewer</h3>
+<p>The requesting agent can end its current Run while its parent assignment stays open. The scheduler starts the reviewer’s own Run when eligible, with its own provider execution.</p>
+
+<h3>4. Return a formal result</h3>
+<p>The reviewing agent records its outcome with <code>ponderosa_update_request</code>, including an artifact reference when useful. That recorded outcome is the formal handoff to the coordination system.</p>
+
+<h3>5. Integrate, then answer</h3>
+<p>The Join or supported callback creates the appropriate continuation for the owner. The requesting agent reads the result, makes any needed changes, and sends the user a reply. If it also owns an inbound parent Request, it records that parent’s outcome after integrating the child work.</p>
+
+<p>A failed, cancelled or unavailable child outcome also releases the wait. The requesting agent handles that outcome, explains what remains unresolved, and decides the next step.</p>
+
+<h3>Delegation and working folders are separate choices</h3>
+<p>Agents use the shared working folder by default for research notes, creative work or code. To separate Git-based work, choose <a href="#working-folders">Separate Git copy in Agent Settings</a>. That choice persists across Runs. Working-folder mode is selected in Settings; managed creation and delegation tools use the Agent’s configured mode.</p>
+<details class="pg-check"><summary>Check your understanding: How does the manager handle a failed review?</summary><p>The failed outcome releases the wait. The manager can report what failed, request another review, or continue with other authorized work while keeping the unresolved review visible.</p>
+</details><details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../packages/core/src/managed-tools.ts">Managed tool contracts</a> <code>packages/core/src/managed-tools.ts</code></li>
+<li><a href="../../apps/server/src/routes/agent-creation.ts">Managed Agent creation</a> <code>apps/server/src/routes/agent-creation.ts</code></li>
+<li><a href="../../apps/server/src/routes/agent-coordination.ts">Coordination routes</a> <code>apps/server/src/routes/agent-coordination.ts</code></li>
+<li><a href="../../apps/server/src/routes/agent-request-commands.ts">Request commands</a> <code>apps/server/src/routes/agent-request-commands.ts</code></li>
+<li><a href="../../packages/agents/src/coordination-v3-task-lineage.ts">Task and delegation lineage</a> <code>packages/agents/src/coordination-v3-task-lineage.ts</code></li>
+<li><a href="../../apps/web/src/components/AgentDetail.settings.tsx">Working Folder settings</a> <code>apps/web/src/components/AgentDetail.settings.tsx</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#runs-sessions"><small>Previous</small>Agents, Runs, and provider sessions</a><a href="#requests-joins"><small>Next</small>Requests, Joins, and results →</a></nav></section>
+<section class="pg-topic" id="requests-joins" aria-labelledby="heading-requests-joins" data-title="Requests, Joins, and results"><p class="pg-kicker">Coordination in detail</p>
+<h2 id="heading-requests-joins">Requests, Joins, and results</h2>
+<p class="pg-lead">Requests name individual assignments. Joins collect their outcomes so one owner can decide what to do next.</p>
+<p>Suppose a requesting agent asks two reviewers to inspect different parts of a report. Each reviewer needs its own Request. One aggregate Join can track the common fan-out and return the collected outcomes to the requesting agent.</p>
+
+<p>The Join’s condition determines when it has enough outcomes: all assigned results, one qualifying result, or a quorum, meaning a specified number of qualifying results. Its <strong>wake policy</strong> determines whether the requesting agent gets a new turn as results arrive or after the final combined outcome. The parent assignment stays open while intermediate progress is reported.</p>
+
+<p>These records live in SQLite coordination state with stable identities, scope and links to the Runs that created or handled them. Request outcomes supply completion signals; follow-up messages remain communication.</p>
+
+<h3>Assignment cancellation and Run cancellation differ</h3>
+<p>Cancelling an exact outbound Request ends that requested work. The recipient may still have other work attached to its Run. Enforceably stopping an active descendant Run is a separate management operation that binds the observed Run and advances its execution fence.</p>
+
+<p>Failure, cancellation, expiry, recipient unavailability and unknown outcome remain distinct states. The owner uses the recorded outcome to decide whether to retry, inspect uncertain work, or report the remaining gap.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../packages/core/src/managed-tools.ts">Managed tool contracts</a> <code>packages/core/src/managed-tools.ts</code></li>
+<li><a href="../../apps/server/src/routes/agent-coordination.ts">Coordination routes</a> <code>apps/server/src/routes/agent-coordination.ts</code></li>
+<li><a href="../../apps/server/src/routes/agent-request-commands.ts">Request commands</a> <code>apps/server/src/routes/agent-request-commands.ts</code></li>
+<li><a href="../../packages/agents/src/coordination-v3-task-lineage.ts">Task and delegation lineage</a> <code>packages/agents/src/coordination-v3-task-lineage.ts</code></li>
+<li><a href="../../packages/agents/src/coordination-v3-run-lifecycle-authority.ts">Run lifecycle authority</a> <code>packages/agents/src/coordination-v3-run-lifecycle-authority.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#delegation-example"><small>Previous</small>Agent delegation and review</a><a href="#decisions"><small>Next</small>Human Decisions and scoped approvals →</a></nav></section>
+<section class="pg-topic" id="decisions" aria-labelledby="heading-decisions" data-title="Human Decisions and scoped approvals"><p class="pg-kicker">Human control</p>
+<h2 id="heading-decisions">Human Decisions and scoped approvals</h2>
+<p class="pg-lead">A Decision records a question and routes its answer back to the work that needs it.</p>
+<p>An agent might ask, “Should this report include an estimate?” or request approval for a specific management operation. The interface displays that question as a Decision with choices or a text response. The record connects the answer to its originating work.</p>
+
+<p>A <strong>blocking Decision</strong> pauses the associated task for your answer. The server saves that wait and links the response back to the work that asked, allowing the agent to continue from that point.</p>
+
+<p>Use <strong>Skip question</strong> to cancel a Decision and decline its live provider request. Skipping leaves approval-dependent work unauthorized. Unanswered questions stay visible until answered or skipped; other notification controls clear alerts separately.</p>
+<h3>Approval is for one recorded scope</h3>
+<p>Some Decisions bind an exact operation, such as a management plan or saved-browser access. Approval authorizes that recorded action under its current owner and identity checks. A changed scope or later operation needs its own authorization.</p>
+
+<h3>Provider prompts have a temporary part</h3>
+<p>A provider can ask for a connection confirmation or form response, called <strong><a class="pg-term" href="#term-elicitation">elicitation</a></strong>. Ponderosa displays a Decision while a live broker holds the callback needed to return your answer. The saved question can remain after that callback expires. An expired request needs a new question from the agent.</p>
+
+<p>The server rejects invalid choices, changed owners, stale approval scopes and expired callbacks. After approval, the action’s execution status shows whether it completed.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../apps/server/src/routes/agent-decisions.ts">Agent Decisions</a> <code>apps/server/src/routes/agent-decisions.ts</code></li>
+<li><a href="../../apps/server/src/routes/application-routes.ts">Decision responses and app routes</a> <code>apps/server/src/routes/application-routes.ts</code></li>
+<li><a href="../../apps/server/src/runtime-elicitation-broker.ts">Live provider elicitation</a> <code>apps/server/src/runtime-elicitation-broker.ts</code></li>
+<li><a href="../../packages/core/src/managed-tools.ts">Managed tool contracts</a> <code>packages/core/src/managed-tools.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#requests-joins"><small>Previous</small>Requests, Joins, and results</a><a href="#compaction"><small>Next</small>Compaction and session rollover →</a></nav></section>
+<section class="pg-topic" id="compaction" aria-labelledby="heading-compaction" data-title="Compaction and session rollover"><p class="pg-kicker">Continuing long work</p>
+<h2 id="heading-compaction">Compaction and session rollover</h2>
+<p class="pg-lead">An agent has been working through a large specification. Its current context is filling up. Ponderosa can prepare a short handoff and a fresh session so the agent can continue the same work.</p>
+<p><strong>Context</strong> is the information the provider currently holds for the conversation. A <strong><a class="pg-term" href="#term-handoff">handoff</a></strong> is a saved continuation note that explains the objective, completed work, unfinished work, blockers, and next action. <strong><a class="pg-term" href="#term-rollover">Session rollover</a></strong> means replacing the current provider session using that handoff and selected saved messages.</p>
+
+<p>The Agent keeps its identity, role, communication history, managed files and tracked assignments. The replacement provider session starts with the handoff and selected saved messages. The handoff belongs to that session’s continuation context.</p>
+
+<h3>Pending questions and delegated work stay pending</h3>
+<p>Blocking Decisions stay open until answered or skipped. A reviewer’s open Request and the Join waiting for it also remain pending until an outcome arrives. Live provider callbacks expire with the process that holds them and may need to be requested again.</p>
+
+<h3>Provider compaction and Ponderosa rollover differ</h3>
+<p>Codex and Claude can manage their own context internally. That <strong>provider-native compaction</strong> is inside the provider’s session machinery. Ponderosa’s rollover is a recorded sequence around a replacement session, with explicit input and acceptance checks.</p>
+
+<p>Automatic Ponderosa rollover is enabled by default for new installations. Change <strong>Proactive context rollover</strong> in the <strong>Provider Session Rollover</strong> settings. Saved choices stay in effect when reopening or updating. Rollover uses the provider’s reported <strong><a class="pg-term" href="#term-context-occupancy">context occupancy</a></strong>: the tokens currently held in the session. The configured <strong><a class="pg-term" href="#term-threshold">threshold</a></strong> triggers handoff preparation. Provider input limits still apply, and lifetime token usage is tracked separately from current occupancy.</p>
+<figure class="pg-native-diagram"><div class="pg-diagram-title">The normal rollover sequence</div>
+<ol class="pg-flow-list"><li><strong>Observe current context pressure</strong><span>Only one handoff is prepared for the current pressure</span></li>
+<li><strong>Record the exact message boundary</strong><span>Identify the exact recent messages and their content hashes</span></li>
+<li><strong>Save the old session’s handoff</strong><span>Validate one bounded continuation note</span></li>
+<li><strong>Prepare a replacement</strong><span>Use the handoff, frozen recent history, and policy</span></li>
+<li><strong>Confirm enough free context</strong><span>Accept the candidate only after the required observation</span></li>
+</ol><figcaption>The replacement becomes active after passing its recorded acceptance checks. Existing assignments keep their current outcomes and pending work.</figcaption></figure>
+<h3>How the successful path protects continuity</h3>
+<p>The server records an exact communication boundary, the cutoff specifying which messages belong to this handoff, and a size-limited selection of recent messages the session being replaced actually received. A content hash is a fingerprint of the saved bytes, so the server can detect a changed message. It then asks the old session before the next Run for a handoff that uses no tools and contains at most 20,000 Unicode characters.</p>
+
+<p>After the handoff instruction is acknowledged and the text is validated, Ponderosa saves the handoff and its rollover linkage. It freezes the selected messages and handoff as the replacement input, keeping later messages for subsequent delivery.</p>
+
+<p>The replacement must report enough <strong>headroom</strong>, unused space in its context. The <strong><a class="pg-term" href="#term-low-water">low-water mark</a></strong> is a lower occupancy target used to confirm that the refreshed context has room to work. On acceptance, one recorded event switches the accepted session snapshot, Ponderosa’s saved identity of the session now in use, and marks the exact handoff as used. Completion and old-session cleanup are tracked separately.</p>
+<details class="pg-deeper"><summary>Deeper detail: the occupancy threshold formula</summary><p>The default token setting is 150,000 and the window fraction is 0.7. The fraction is the proportion of the provider’s context window used to set the trigger. If the window is known, the threshold is the smaller of that token setting and <code>max(75,000, window × fraction)</code>. The low-water mark is 60% of the threshold.</p>
+<p>For example, a reported 200,000-token window gives a trigger of 140,000 and a low-water mark of 84,000. The provider’s reported window determines the calculation for each model.</p>
+</details><details class="pg-deeper"><summary>Deeper detail: fallback and incomplete rollover</summary>
+<h3>Fresh-session fallback after a failed compact</h3>
+<p>During resume, Codex can try to shrink the existing context before generating its next output. A failed <em>pre-sampling compact</em> has a recovery path that applies before provider work is observed, while the Run is outside a frozen handoff session. The adapter attaches a trusted recovery signal to the error so the server can identify this case.</p>
+
+<p>The server clears the failed resume identity and retries once with a separately recorded fresh input built from saved context. It proceeds directly from that saved context. Authentication, quota, network errors and other tool failures keep their own error and recovery handling.</p>
+
+<h3>If rollover cannot finish</h3>
+<p>An unusable handoff receives one corrective retry. If a replacement still has too little free context, Ponderosa records seed overflow and stops automatic rollover. A candidate that ends or is cancelled before confirmation keeps its recovery linked to the exact work and handoff.</p>
+
+<p>If the task ends before the required headroom observation, Ponderosa can discard the unconfirmed context and start the next task from saved context. Failed process cleanup stays recorded and can block replacement. Inspect interrupted external actions before repeating work whose outcome is uncertain.</p>
+</details><details class="pg-check"><summary>Check your understanding: Why does a large lifetime token count not trigger rollover by itself?</summary><p>Lifetime traffic measures past usage. Rollover pressure uses how much context the provider reports holding now. An agent can have spent many tokens while its current context is small.</p>
+</details><details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../apps/server/src/context-rollover-pressure.ts">Rollover pressure calculation</a> <code>apps/server/src/context-rollover-pressure.ts</code></li>
+<li><a href="../../packages/agents/src/workspace-store.ts">Workspace preferences and defaults</a> <code>packages/agents/src/workspace-store.ts</code></li>
+<li><a href="../../packages/agents/src/coordination-v3-context-rollover-authority.ts">Durable rollover authority</a> <code>packages/agents/src/coordination-v3-context-rollover-authority.ts</code></li>
+<li><a href="../../apps/server/src/routes/agent-run-preparation.ts">Run preparation</a> <code>apps/server/src/routes/agent-run-preparation.ts</code></li>
+<li><a href="../../apps/server/src/routes/provider-run-executor.ts">Provider execution</a> <code>apps/server/src/routes/provider-run-executor.ts</code></li>
+<li><a href="../../packages/engines/src/session-recovery.ts">Narrow provider fallback</a> <code>packages/engines/src/session-recovery.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#decisions"><small>Previous</small>Human Decisions and scoped approvals</a><a href="#tools"><small>Next</small>Provider tools, MCP, and skills →</a></nav></section>
+<section class="pg-topic" id="tools" aria-labelledby="heading-tools" data-title="Provider tools, MCP, and skills"><p class="pg-kicker">Capabilities</p>
+<h2 id="heading-tools">Provider tools, MCP, and skills</h2>
+<p class="pg-lead">Providers supply tools and guidance. Ponderosa adds operations for team coordination and validates them against the current work.</p>
+<p>You can think of three layers. The provider’s ordinary tools can run commands or edit files. Installed skills/plugins can guide behavior or expose capabilities. Ponderosa’s managed tools provide messaging, Requests, Decisions, history retrieval, file publication, organization management, and browser actions.</p>
+
+<p>The Model Context Protocol (MCP) is one transport for those capabilities. The Claude adapter’s persistent path can start a local standard-input/standard-output (stdio) MCP bridge: a helper process that exchanges tool requests and responses through process streams. Its authorization token is bound to the current Run. Codex’s app-server path can expose dynamic tools directly. The transport differs, but the server still checks whether the operation is available and authorized for that Run.</p>
+
+<p>A <strong>capability</strong> authorizes an operation for the current work. Cancellation or replacement invalidates its old authority, so subsequent actions must use the current Run’s permissions.</p>
+
+<p>Skills guide how an agent works within the user’s authorization and the server’s permission checks. External MCP servers are available through the provider and host configuration; install and configure the connectors you want to use.</p>
+
+<p>Tool calls and results appear in the Agent’s execution activity. The agent sends replies separately through the communication tools. Provider-specific event formats live in the engine package; shared tool definitions and <strong><a class="pg-term" href="#term-dto">data transfer objects (DTOs)</a></strong> live in core. A DTO defines fields exchanged between components, such as the Agent identity and state returned to the interface. The database or journal holds the underlying record.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../packages/core/src/managed-tools.ts">Managed tool contracts</a> <code>packages/core/src/managed-tools.ts</code></li>
+<li><a href="../../apps/server/src/routes/provider-dynamic-tool-handler.ts">Dynamic tool routing</a> <code>apps/server/src/routes/provider-dynamic-tool-handler.ts</code></li>
+<li><a href="../../packages/engines/src/ponderosa-mcp.ts">Ponderosa MCP bridge</a> <code>packages/engines/src/ponderosa-mcp.ts</code></li>
+<li><a href="../../packages/engines/src/codex-app-server.ts">Codex persistent session</a> <code>packages/engines/src/codex-app-server.ts</code></li>
+<li><a href="../../packages/engines/src/claude-stream-session.ts">Claude persistent session</a> <code>packages/engines/src/claude-stream-session.ts</code></li>
+<li><a href="../../AGENTS.md">Repository rules</a> <code>AGENTS.md</code></li>
+<li><a href="../../packages/core/src/dto.ts">Shared transfer records</a> <code>packages/core/src/dto.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#compaction"><small>Previous</small>Compaction and session rollover</a><a href="#working-folders"><small>Next</small>Folders and separate Git copies →</a></nav></section>
+<section class="pg-topic" id="working-folders" aria-labelledby="heading-working-folders" data-title="Folders and separate Git copies"><p class="pg-kicker">Filesystem organization</p>
+<h2 id="heading-working-folders">Folders and separate Git copies</h2>
+<p class="pg-lead">Sidebar folders organize the interface. Working folders hold project files. An Agent can use the shared working folder or an operator-selected managed Git copy.</p>
+<div class="pg-cards"><article><h3>Sidebar folder</h3>
+<p>A display grouping for Chats. Each Chat keeps its own private context and access permissions.</p>
+</article>
+<article><h3>Shared working folder</h3>
+<p>The validated host filesystem folder supplied for the Chat’s work. Agents use it by default and see each other’s changes there.</p>
+</article>
+<article><h3>Agent working directory</h3>
+<p>The actual folder supplied to that Agent’s provider and file-review operations. It can be the shared folder or a separate managed Git worktree.</p>
+</article>
+<article><h3>Internal storage namespace</h3>
+<p>Ponderosa’s grouping for saved messages, execution records, uploads and artifacts, stored separately from the user’s working files.</p>
+</article>
+</div>
+
+<p>An ordinary shared directory can hold research documents, drafts, or experiment notes without being a Git repository. Git is a version-control system for tracking changes; the following optional mode uses it to separate independent file work.</p>
+
+<h3>Choose Separate Git copy once per Agent</h3>
+<p>The operator opens <strong>Agent Settings → Working Folder → Separate Git copy</strong>. Ponderosa prepares a branch and managed worktree starting from the shared repository’s current HEAD, the commit currently checked out there. A worktree is another working directory attached to the same Git repository, with its own checked-out branch.</p>
+
+<p>The selection persists across Runs and provider sessions. The managed folder becomes that Agent’s execution directory and file-review root. Its edits stay in that copy until you integrate them into Shared. Provider commands retain the host account’s file and shell access.</p>
+
+<h3>Requirements and preparation failure</h3>
+<p>The shared folder must be the root of a Git repository for this mode. If preparation fails, the UI shows the error and a Retry action, and Runs stay paused until preparation succeeds. Changing mode requires the active Run to stop and its provider session to be retired.</p>
+
+<h3>Cleanup preserves unintegrated work</h3>
+<p>Switching back to Shared requests removal of the managed worktree and branch. The service checks ownership and refuses removal while changed, untracked or ignored files, or commits absent from Shared, remain. Save or integrate that work first. If cleanup fails, the separate copy stays selected with its cleanup state recorded.</p>
+
+<p>Choose this mode through Agent Settings. Ponderosa registers and tracks the worktree it prepares there. Worktrees created independently through shell commands remain outside that managed-copy lifecycle.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../apps/web/src/components/AgentDetail.settings.tsx">Working Folder settings</a> <code>apps/web/src/components/AgentDetail.settings.tsx</code></li>
+<li><a href="../../apps/server/src/agent-working-copy-service.ts">Managed working-copy preparation and cleanup</a> <code>apps/server/src/agent-working-copy-service.ts</code></li>
+<li><a href="../../apps/server/src/AGENT-WORKING-COPIES.md">Working-copy boundaries</a> <code>apps/server/src/AGENT-WORKING-COPIES.md</code></li>
+<li><a href="../../apps/server/src/routes/agent-maintenance.ts">Operator settings command</a> <code>apps/server/src/routes/agent-maintenance.ts</code></li>
+<li><a href="../../packages/agents/src/store-agent-catalog-authority.ts">New Agent defaults</a> <code>packages/agents/src/store-agent-catalog-authority.ts</code></li>
+<li><a href="../../packages/core/src/managed-tools.ts">Managed tool contracts</a> <code>packages/core/src/managed-tools.ts</code></li>
+<li><a href="../../apps/server/src/routes/projects.ts">Chat creation and ordinary working folders</a> <code>apps/server/src/routes/projects.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#tools"><small>Previous</small>Provider tools, MCP, and skills</a><a href="#files"><small>Next</small>Inputs, working files, and saved results →</a></nav></section>
+<section class="pg-topic" id="files" aria-labelledby="heading-files" data-title="Inputs, working files, and saved results"><p class="pg-kicker">File custody</p>
+<h2 id="heading-files">Inputs, working files, and saved results</h2>
+<p class="pg-lead">An attachment, a working file, and a managed artifact can contain similar bytes while having different owners and lifetimes.</p>
+<p>An <strong>attachment</strong> is an uploaded input associated with communication and its recipients. A <strong>working file</strong> lives in the shared folder or the Agent’s selected working directory. An <strong><a class="pg-term" href="#term-artifact">artifact</a></strong> is a managed saved result with a stable identity and provenance: a record of the Agent, Run, and captured bytes from which it originated.</p>
+
+<p>The server validates uploaded bytes and their owner before preparing a provider-readable copy. The stored upload remains the source for that copy. Daemon startup cleans stale material left by previous provider processes.</p>
+
+<p><code>ponderosa_import_file</code> validates the current Run and captures a deliverable’s stable bytes in managed storage. It returns a reference the agent can use in a reply or a later input. File publication, execution and communication each use their own operation.</p>
+
+<p>Ponderosa’s file API checks the owner and registered folder. Provider shell commands use the host account’s broader file and shell permissions, so configure that account’s access for the work you intend agents to perform.</p>
+
+<p>Check the filename and upload status in the composer before sending. If an upload fails, use its <strong>Retry</strong> control or remove it. After the agent replies, open its file link or <strong>Files &amp; Results</strong> and download important output.</p>
+<h3>When a file seems missing</h3>
+<p>Check the file’s owner, saved reference and download first. A preview or provider-copy error can occur while the stored file remains intact. Support can use the artifact identity, catalog record and stored bytes to locate the failure.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../apps/server/src/project-file-access.ts">Working-file access</a> <code>apps/server/src/project-file-access.ts</code></li>
+<li><a href="../../apps/server/src/assets.ts">Attachment asset store</a> <code>apps/server/src/assets.ts</code></li>
+<li><a href="../../packages/agents/src/store-artifact-catalog.ts">Artifact catalog</a> <code>packages/agents/src/store-artifact-catalog.ts</code></li>
+<li><a href="../../apps/server/src/runtime-attachments.ts">Temporary runtime attachments</a> <code>apps/server/src/runtime-attachments.ts</code></li>
+<li><a href="../../packages/core/src/managed-tools.ts">Managed tool contracts</a> <code>packages/core/src/managed-tools.ts</code></li>
+<li><a href="../../apps/server/src/file-publication.ts">File publication</a> <code>apps/server/src/file-publication.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#working-folders"><small>Previous</small>Folders and separate Git copies</a><a href="#storage"><small>Next</small>Where information lives →</a></nav></section>
+<section class="pg-topic" id="storage" aria-labelledby="heading-storage" data-title="Where information lives"><p class="pg-kicker">Storage</p>
+<h2 id="heading-storage">Where information lives</h2>
+<p class="pg-lead">Ponderosa saves different facts in different places. Recovery depends on knowing which record is allowed to decide each fact.</p>
+<p><strong>SQLite</strong> is an embedded database. The server reads and writes its database files directly on the host.</p>
+
+<p>The database contains both durable coordination state and views used for reading. Saved files include authored journals, uploads, artifacts, and host configuration. User working folders remain outside this internal record of the application.</p>
+
+<p><strong>Authority</strong> identifies the record that determines a fact. <strong>Canonical</strong> means the authoritative form of that fact. Browser views display those saved records.</p>
+<div class="pg-cards"><article><h3>Authored journals</h3>
+<p>Append-only message/revision and execution-event records own what was communicated and what execution evidence was recorded.</p>
+</article>
+<article><h3>SQLite coordination state</h3>
+<p>Requests, Joins, Activations, Runs, leases, fences, which inputs reached a provider, outcomes, retry identities, and the outbox are durable authority.</p>
+</article>
+<article><h3>Saved file bytes</h3>
+<p>Uploads and managed artifacts retain their content, recorded owners, and provenance, meaning where the bytes came from. User working folders have a separate filesystem history, plus Git history when Git is used.</p>
+</article>
+<article><h3>Temporary runtime state</h3>
+<p>Provider processes, input/output streams, capabilities, browser control and waiting callbacks belong to live execution. Restart recovery checks saved work and establishes the current execution state.</p>
+</article>
+</div>
+
+<h3>What a projection means</h3>
+<p>A <strong><a class="pg-term" href="#term-projection">projection</a></strong> is a derived view made from defined source records. For example, the execution journal can be reduced into the status and activity views an Agent page queries. If a projection becomes stale, it can be repaired from that source under the supported recovery rules.</p>
+
+<p><strong>SQLite also owns coordination state:</strong> pending Requests, execution ownership and terminal outcomes. A complete restore needs that database state together with the corresponding journals, uploads and artifact bytes.</p>
+
+<details class="pg-deeper"><summary>A few useful locations on disk</summary><p>These paths are relative to the configured <code>PONDEROSA_DATA_DIR</code>. Directory names use stable internal owner IDs.</p>
+<ul><li><code>ponderosa.db</code> holds authoritative coordination state and derived query views.</li>
+<li><code>projects/&lt;chat-id&gt;/communication-events.jsonl</code> and <code>communication-revisions.jsonl</code> hold authored communication and its edits. JSON Lines (JSONL) stores one JavaScript Object Notation (JSON) record per line.</li>
+<li><code>projects/&lt;chat-id&gt;/agents/&lt;agent-id&gt;/events.jsonl</code> holds the Agent's append-only execution record.</li>
+<li><code>projects/&lt;chat-id&gt;/artifacts/content/</code> holds managed result bytes; the artifact catalog maps each logical artifact ID to its stored file, owner and provenance.</li>
+<li><code>projects/&lt;chat-id&gt;/agents/&lt;agent-id&gt;/attachments/</code> holds uploaded inputs for that owner, including staged material whose lifetime differs from a published result.</li>
+</ul><p>User working folders and managed Git worktrees have separate locations. Include those files alongside Ponderosa’s saved records in your backup.</p>
+</details>
+<h3>Storage identity matters</h3>
+<p>At startup, data-directory admission checks the saved-state directory’s physical identity, recorded generation and supported database schema. It refuses mismatched or incomplete state. The offline restore tool handles supported historical backup formats before the application opens them.</p>
+
+<p>The internal <code>projects/&lt;id&gt;</code> directories hold Chat-owned records. Access follows the recorded Chat and resource owner.</p>
+<details class="pg-check"><summary>Check your understanding: Where are pending assignments saved?</summary><p>Their Request, Join, Activation and Run records live in SQLite. Preserve the database together with the journals and saved files to restore that work.</p>
+</details><details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../AGENTS.md">Repository rules</a> <code>AGENTS.md</code></li>
+<li><a href="../../packages/agents/src/paths.ts">Storage paths</a> <code>packages/agents/src/paths.ts</code></li>
+<li><a href="../../packages/agents/src/db.ts">Current database baseline</a> <code>packages/agents/src/db.ts</code></li>
+<li><a href="../../packages/agents/src/state-admission.ts">Data-directory admission</a> <code>packages/agents/src/state-admission.ts</code></li>
+<li><a href="../../packages/agents/src/store-component-factory.ts">Store components</a> <code>packages/agents/src/store-component-factory.ts</code></li>
+<li><a href="../../packages/agents/src/store-event-projection.ts">Stored execution projections</a> <code>packages/agents/src/store-event-projection.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#files"><small>Previous</small>Inputs, working files, and saved results</a><a href="#restarts"><small>Next</small>What restarting changes →</a></nav></section>
+<section class="pg-topic" id="restarts" aria-labelledby="heading-restarts" data-title="What restarting changes"><p class="pg-kicker">Continuity</p>
+<h2 id="heading-restarts">What restarting changes</h2>
+<p class="pg-lead">Refreshing the interface, restarting the server, and losing a provider process interrupt different parts of the system.</p>
+<h3>Refreshing or closing the interface</h3>
+<p>The browser reconnects using REST queries and SSE cursors. A cursor records the last update the client has seen, helping the interface reconcile its display with current saved records. Server-owned work continues while the tab is closed.</p>
+
+<h3>Restarting the server</h3>
+<p>Live provider handles, Run capabilities, input/output streams and callbacks end. Startup checks saved state and reconciles abandoned Runs. Work that failed before submission can be retried. Work that may have reached a provider keeps an uncertain outcome for inspection before retry.</p>
+
+<p>A separately configured browser supervisor manages browser processes outside the app process. Open tabs and unsaved forms can still be lost during restart or browser replacement; save important input before either operation.</p>
+
+<h3>A provider process exits</h3>
+<p>The Agent identity and recorded assignments remain. The service classifies the active Run’s outcome and checks process cleanup. A later turn can resume a compatible session or start fresh from saved context, with process liveness checked separately from the saved session ID.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../packages/agents/src/coordination-v3-scheduler-lease-authority.ts">Run leasing and orphan recovery</a> <code>packages/agents/src/coordination-v3-scheduler-lease-authority.ts</code></li>
+<li><a href="../../apps/server/src/main.ts">Server startup</a> <code>apps/server/src/main.ts</code></li>
+<li><a href="../../apps/server/src/runtime-authority.ts">Runtime ownership and cleanup</a> <code>apps/server/src/runtime-authority.ts</code></li>
+<li><a href="../../apps/server/src/runtime-attachments.ts">Temporary runtime attachments</a> <code>apps/server/src/runtime-attachments.ts</code></li>
+<li><a href="../../apps/server/src/browser-service.ts">Browser service</a> <code>apps/server/src/browser-service.ts</code></li>
+<li><a href="../../apps/server/src/local-browser-hub.ts">Ephemeral extension transport</a> <code>apps/server/src/local-browser-hub.ts</code></li>
+<li><a href="../../apps/server/src/routes/streams.ts">SSE stream routes</a> <code>apps/server/src/routes/streams.ts</code></li>
+<li><a href="../../apps/web/src/hooks/useAgentStream.ts">Live Agent UI projection</a> <code>apps/web/src/hooks/useAgentStream.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#storage"><small>Previous</small>Where information lives</a><a href="#recovery"><small>Next</small>Stopping, deleting, and recovering work →</a></nav></section>
+<section class="pg-topic" id="recovery" aria-labelledby="heading-recovery" data-title="Stopping, deleting, and recovering work"><p class="pg-kicker">Lifecycle</p>
+<h2 id="heading-recovery">Stopping, deleting, and recovering work</h2>
+<p class="pg-lead">Stopping an execution, cancelling an assignment, and deleting a Chat are different requests. Each must target the right owner and preserve unfinished cleanup.</p>
+<p>Use <strong>Stop</strong> to cancel the selected Agent’s active work, and wait for its status and cleanup result before starting a replacement. Completed commands, sent messages and written files remain. To return to the app, open it through Engine and preserve the existing Chat and saved data.</p>
+<h3>Stop the observed Run</h3>
+<p>Run cancellation binds the current execution and advances its fence, rejecting late events from the old worker. The service sends the termination request and waits for the owned provider process tree to exit.</p>
+
+<h3>Cancel one assignment</h3>
+<p>A Request cancellation targets that assignment. The receiving agent may have other work in the same Run. The server’s descendant-management plan is the separate mechanism for enforceably stopping an observed descendant execution.</p>
+
+<h3>Delete after cleanup</h3>
+<p>Deletion drains provider and browser authority before removing application-owned state. Failed cleanup stays recorded for retry and blocks unsafe replacement or deletion.</p>
+
+<p>Deleting an Agent permanently removes its private execution history after cleanup; shared Chat messages, shared files and coordination outcomes, and working folders remain. The Chat deletion confirmation lists its Agents and warns that Chat history and in-app artifact views will be unavailable. Files in the Project working folder and Project-level artifacts are not deleted. Pending work is cancelled; stop active Agents before deleting. Read the exact confirmation for your selection: there is no archive or undo workflow.</p>
+<details class="pg-deeper"><summary>Managed Git copies during cleanup</summary><p>Managed-copy cleanup checks ownership and preserves changed files and commits absent from Shared. Retained working files remain on disk after Chat deletion, while the deleted Chat’s history and in-app views become unavailable.</p></details>
+
+<h3>What “outcome unknown” tells you</h3>
+<p>An <strong><a class="pg-term" href="#term-outcome-unknown">unknown outcome</a></strong> means work may have reached the provider, but its completion is unconfirmed. Inspect the current state before retrying, because repeating the work can repeat external actions. A recovery turn can help determine what remains to do.</p>
+
+<p>On Linux and macOS, the service tracks and waits for the owned process group to exit. Windows uses a Job Object to control the owned set of processes. Explicitly configured Linux systemd scopes provide grouping through the host’s service manager. Cleanup targets these recorded process identities.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../apps/server/src/runtime-authority.ts">Runtime ownership and cleanup</a> <code>apps/server/src/runtime-authority.ts</code></li>
+<li><a href="../../packages/engines/src/process-termination.ts">Observed process termination</a> <code>packages/engines/src/process-termination.ts</code></li>
+<li><a href="../../packages/agents/src/coordination-v3-run-lifecycle-authority.ts">Run lifecycle authority</a> <code>packages/agents/src/coordination-v3-run-lifecycle-authority.ts</code></li>
+<li><a href="../../apps/server/src/conversation-deletion-authority.ts">Chat deletion authority</a> <code>apps/server/src/conversation-deletion-authority.ts</code></li>
+<li><a href="../../apps/server/src/shutdown.ts">Graceful shutdown</a> <code>apps/server/src/shutdown.ts</code></li>
+<li><a href="../../apps/server/src/agent-working-copy-service.ts">Managed working-copy preparation and cleanup</a> <code>apps/server/src/agent-working-copy-service.ts</code></li>
+<li><a href="../../packages/core/src/managed-tools.ts">Managed tool contracts</a> <code>packages/core/src/managed-tools.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#restarts"><small>Previous</small>What restarting changes</a><a href="#browsers"><small>Next</small>Internal browser →</a></nav></section>
+<section class="pg-topic" id="browsers" aria-labelledby="heading-browsers" data-title="Internal browser"><p class="pg-kicker">Browser automation</p>
+<h2 id="heading-browsers">Internal browser</h2>
+<p class="pg-lead">Ponderosa opens and manages a browser for a Chat, with controls for viewing pages, granting agent access and taking control yourself.</p>
+<p>Open the Chat’s <strong>Browser</strong> panel and choose <strong>Open browser</strong>. Set <strong>Remember sign-ins in this chat</strong> before opening if you want that profile behavior. Enter a <strong>Website address</strong> to browse yourself; choose <strong>Agent</strong> and the intended Agent to grant control, then <strong>Take control</strong> to interact yourself. The host needs Chrome or Chromium.</p>
+<p>Closing the panel leaves its browser running. <strong>End browser session</strong> closes it. <strong>Reopen browser</strong> replaces a failed session after confirmation. Save important input before replacement, restart or reload: open tabs, unsaved forms and sign-ins can be lost.</p>
+<h3>The built-in managed browser</h3>
+<p>A user can open a browser for the Chat and hand control to an agent under the current grant. The service tracks the browser owner, profile, session, and controlling Run. Watching a page and granting an agent control are different actions.</p>
+
+<p>A <strong><a class="pg-term" href="#term-profile">browser profile</a></strong> holds cookies, sign-ins and site storage. A temporary profile can be discarded with its session; a saved profile retains this data for later use. Access to a shared saved browser requires an explicit grant for that browser.</p>
+
+<p>Browser mechanics sit behind a driver. The server translates supported inspection, navigation, action, and screenshot requests into that driver. Browser events and screenshots become execution evidence with their own authority checks.</p>
+
+<h3>Platform-specific display</h3>
+<p>The native hosted desktop runs on Linux. Xvfb provides its virtual display, x11vnc streams the display using Virtual Network Computing (VNC), and xdotool supplies native input. The noVNC viewer shows it through a WebSocket connection authorized by a viewing ticket. The rest of the application uses REST requests and SSE updates.</p>
+
+<h3>Local browser connections</h3>
+<p>Local browser and extension pairing are unavailable in this beta. Use Ponderosa’s internal browser for agent browsing.</p>
+
+<p>The pairing entry is hidden, and the server rejects new pairing. The retained extension transport connects a consented Chrome/Edge window through HTTP commands and debugger actions; enabling it requires the Chat/profile access boundary to be completed.</p>
+
+<p>Follow the <a href="../user-guide.md#use-the-internal-browser">internal browser instructions</a> to open a session and grant an Agent control.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../apps/web/src/components/ProjectBrowserDialog.tsx">Browser controls</a> <code>apps/web/src/components/ProjectBrowserDialog.tsx</code></li>
+<li><a href="../../apps/server/src/browser-authority.ts">Browser authority</a> <code>apps/server/src/browser-authority.ts</code></li>
+<li><a href="../../apps/server/src/routes/browsers.ts">Browser ownership routes</a> <code>apps/server/src/routes/browsers.ts</code></li>
+<li><a href="../../apps/server/src/browser-session-manager.ts">Browser sessions</a> <code>apps/server/src/browser-session-manager.ts</code></li>
+<li><a href="../../apps/server/src/chrome-cdp-driver.ts">Chrome browser driver</a> <code>apps/server/src/chrome-cdp-driver.ts</code></li>
+<li><a href="../../apps/server/src/browser-service.ts">Browser service</a> <code>apps/server/src/browser-service.ts</code></li>
+<li><a href="../../apps/server/src/native-hosted-browser.ts">Linux hosted desktop</a> <code>apps/server/src/native-hosted-browser.ts</code></li>
+<li><a href="../../apps/server/src/hosted-desktop-access.ts">Ticketed desktop transport</a> <code>apps/server/src/hosted-desktop-access.ts</code></li>
+<li><a href="../../apps/server/src/routes/local-browsers.ts">Local browser routes</a> <code>apps/server/src/routes/local-browsers.ts</code></li>
+<li><a href="../../apps/server/src/local-browser-hub.ts">Ephemeral extension transport</a> <code>apps/server/src/local-browser-hub.ts</code></li>
+<li><a href="../../apps/browser-extension/README.md">Extension setup and limits</a> <code>apps/browser-extension/README.md</code></li>
+<li><a href="../../apps/browser-extension/manifest.json">Extension permissions</a> <code>apps/browser-extension/manifest.json</code></li>
+<li><a href="../../apps/browser-extension/src/worker.ts">Extension worker</a> <code>apps/browser-extension/src/worker.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#recovery"><small>Previous</small>Stopping, deleting, and recovering work</a><a href="#platforms"><small>Next</small>Launcher, desktop app, and packaging →</a></nav></section>
+<section class="pg-topic" id="platforms" aria-labelledby="heading-platforms" data-title="Launcher, desktop app, and packaging"><p class="pg-kicker">Running the product</p>
+<h2 id="heading-platforms">Launcher, desktop app, and packaging</h2>
+<p class="pg-lead">The installer supplies the application runtime and host-management tools. Provider CLIs and sign-ins still belong to the host account.</p>
+<h3>Starting the service is different from opening its interface</h3>
+<p>Open the Engine desktop app to manage the local service. For command-line control, invoke the bundled launcher script: <code>start</code> starts the service, and <code>open</code> also opens the interface. Use the <a href="../user-guide.md#launcher-commands">platform-specific script path</a>; a global <code>ponderosa</code> command is not installed on every platform.</p>
+
+<p>The server serves the built web app, so a user can use the interface in a normal browser or PWA. Another device needs separately configured network access to that host. Remote access and its security are operator responsibilities.</p>
+
+<h3>Find the data you are actually using</h3>
+<p>Engine’s <strong>Data</strong> field shows the active application data directory. Record it before changing launch settings or troubleshooting an apparently empty installation. For a default launch it is the <code>data</code> child of the launcher root below; an explicit override can select another root.</p>
+<ul><li><strong>Linux:</strong> <code>$XDG_DATA_HOME/ponderosa</code>, or <code>~/.local/share/ponderosa</code> when unset.</li><li><strong>macOS:</strong> <code>~/Library/Application Support/Ponderosa</code>.</li><li><strong>Windows:</strong> <code>%LOCALAPPDATA%\Ponderosa</code>, with the account’s <code>AppData\Local</code> fallback.</li></ul>
+<p>If you used a custom data location, select that same launcher root when reopening or replacing the application. Selecting a different root opens a separate workspace. Check Engine’s <strong>Data</strong> field if your saved Chats appear missing.</p>
+<details class="pg-deeper"><summary>Open a saved launcher root</summary><p>Record the current Data location, preserve important work and finish or stop active Agents. Quit Engine before switching roots. Select the launcher root containing the <code>data</code> child, and preserve that root and its external working folders.</p>
+<p>The desktop and bundled launcher accept <code>--data-dir</code>. You can also set <code>PONDEROSA_LAUNCHER_DATA_DIR</code> in Engine’s launch environment. These open saved state in place. Startup checks its ownership and supported format and refuses incompatible state. Run one instance per data root.</p>
+<p>These examples select the default launcher root. Replace it with your saved root when using another location:</p>
+<p><strong>macOS Terminal</strong></p><pre><code>"/Applications/Ponderosa Engine.app/Contents/MacOS/Ponderosa Engine" --data-dir "$HOME/Library/Application Support/Ponderosa"</code></pre>
+<p><strong>Linux terminal, default .deb installation</strong></p><pre><code>/opt/ponderosa-engine/ponderosa-engine --data-dir "$HOME/.local/share/ponderosa"</code></pre>
+<p><strong>Windows PowerShell</strong></p><pre><code>&amp; "$env:LOCALAPPDATA\Programs\Ponderosa\Ponderosa Engine.exe" --data-dir "$env:LOCALAPPDATA\Ponderosa"</code></pre>
+<p>Use your actual application and root paths, including any XDG override on Linux. Check Engine’s <strong>Data</strong>, <strong>Version</strong> and <strong>Revision</strong>, then open a saved Chat to confirm the selected workspace.</p></details>
+<h3>Back up, update, restore or uninstall</h3>
+<p>Quit Engine before copying saved state. Keep the whole launcher root and any external Chat working folders together in a separate backup location. To restore, preserve the current folders separately and put the complete copies back at their original locations. Reopen Engine with the same root and check a saved Chat, attachment, result and settings. Do not copy a live database alone.</p>
+<p>Updating replaces the application while retaining its data root. Uninstalling removes the application; keep saved data and working folders if you intend to return. Follow the <a href="../user-guide.md#back-up-and-restore">backup and restore steps</a>, <a href="../user-guide.md#update-ponderosa">update instructions</a> and <a href="../user-guide.md#uninstall-ponderosa">uninstall instructions</a>. Record the running version and revision when checking an update or restore.</p>
+<h3>Use Engine for status and logs</h3>
+<p>Record <strong>Version</strong>, <strong>Revision</strong>, <strong>Work intake</strong>, active <strong>Agent Runs</strong> and <strong>Data</strong> when asking for help. Engine’s live logs provide <strong>Server</strong>, <strong>Errors</strong>, <strong>Refresh</strong> and <strong>Copy</strong>. Review copied text for secrets and private task content before sharing. Startup errors and ongoing service problems appear through Engine’s status and logs.</p>
+<p>The bundled launcher’s <code>status</code>, <code>version</code> and <code>diagnostics --output</code> commands collect status and support metadata. Use the <a href="../user-guide.md#launcher-commands">platform-specific script paths</a>. Back up saved data separately, and preserve locks, databases and browser profiles while troubleshooting.</p>
+<h3>One shared application, platform-specific boundaries</h3>
+<p>Native installers package the same TypeScript application with a bundled Node runtime, production dependencies, web assets, and build identity. Native modules and process control still have to match the target operating system and architecture.</p>
+<div class="pg-cards"><article><h3>Linux</h3>
+<p>Use Ubuntu 24.04 x64. Linux supports the native hosted desktop and explicitly configured systemd workload scopes. On Ubuntu hosts that restrict user namespaces, the AppImage requests one-time administrator approval to set up its sandbox.</p>
+</article>
+<article><h3>macOS</h3>
+<p>Use macOS 14+ on Apple Silicon. Native graphical user interface (GUI) launch, provider discovery and shutdown use the Mac implementation.</p>
+</article>
+<article><h3>Windows</h3>
+<p>Use Windows 11 x64. Job Objects track owned provider processes, and executable discovery includes Windows application locations.</p>
+</article>
+</div>
+
+<p>Use the package for your operating system and architecture. Its release notes describe installation requirements and any package-specific limits.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../apps/launcher/src/cli.ts">Launcher commands</a> <code>apps/launcher/src/cli.ts</code></li>
+<li><a href="../../apps/launcher/src/engine-supervisor.ts">Launcher implementation</a> <code>apps/launcher/src/engine-supervisor.ts</code></li>
+<li><a href="../../apps/engine-desktop/src/main.ts">Engine desktop app</a> <code>apps/engine-desktop/src/main.ts</code></li>
+<li><a href="../../packaging/build-beta-bundle.mjs">Native bundle assembly</a> <code>packaging/build-beta-bundle.mjs</code></li>
+<li><a href="../../.github/workflows/native-beta.yml">Beta build workflow</a> <code>.github/workflows/native-beta.yml</code></li>
+<li><a href="../../packages/native-host/package.json">Native host build</a> <code>packages/native-host/package.json</code></li>
+<li><a href="../../deploy/README.md">Host services and resource admission</a> <code>deploy/README.md</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#browsers"><small>Previous</small>Internal browser</a><a href="#repository"><small>Next</small>Where to look in the repository →</a></nav></section>
+<section class="pg-topic" id="repository" aria-labelledby="heading-repository" data-title="Where to look in the repository"><p class="pg-kicker">Code reference</p>
+<h2 id="heading-repository">Where to look in the repository</h2>
+<p class="pg-lead">Start with the behavior you want to understand, then trace its interface, server operation and saved records.</p>
+<div class="pg-repo-list"><article><h3>Interface and visible behavior</h3>
+<code>apps/web/</code><p>Conversation controllers handle composing and retry identities. MessageDeliveryStatus defines delivery badges; AgentDetail settings expose working folders. Stream hooks update or refresh visible views.</p>
+</article>
+<article><h3>Server operations and runtime</h3>
+<code>apps/server/</code><p>main.ts starts the service, app.ts composes it, route modules accept actions, and runtime authorities supervise current execution. The scheduler and Run preparation/executor connect those actions to providers.</p>
+</article>
+<article><h3>Shared contracts</h3>
+<code>packages/core/</code><p>Data transfer objects (DTOs), the typed shapes exchanged between components, define communication fields and other shared data. AgentEvent, Adapter, and managed tool schemas let components agree on what data and operations mean.</p>
+</article>
+<article><h3>Provider differences</h3>
+<code>packages/engines/</code><p>Codex/Claude transports, capabilities, event normalization, recovery signals, and process containment live here.</p>
+</article>
+<article><h3>Durable work and derived views</h3>
+<code>packages/agents/</code><p>Store components, SQLite coordination authorities, journals, projections, state admission, and managed artifact catalogs own the saved facts.</p>
+</article>
+<article><h3>Host clients and native support</h3>
+<code>apps/launcher/ · apps/engine-desktop/ · packages/native-host/</code><p>These handle service control, desktop management, directory authority, and native process handling. Packaging and deploy directories describe assembled artifacts and host services.</p>
+</article>
+</div>
+
+<p>This map is for navigating Ponderosa’s source. Teams using the installed application can keep research, creative work or code in their own working folders.</p>
+
+<p>For a repair, trace every caller of the shared function or authority. A UI symptom can originate in intake, context preparation, execution ownership, or a stale projection.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../apps/web/src/components/useConversationMessagingController.ts">Chat messaging controller</a> <code>apps/web/src/components/useConversationMessagingController.ts</code></li>
+<li><a href="../../apps/web/src/components/MessageDeliveryStatus.tsx">Visible delivery labels</a> <code>apps/web/src/components/MessageDeliveryStatus.tsx</code></li>
+<li><a href="../../apps/web/src/components/AgentDetail.settings.tsx">Working Folder settings</a> <code>apps/web/src/components/AgentDetail.settings.tsx</code></li>
+<li><a href="../../apps/server/src/main.ts">Server startup</a> <code>apps/server/src/main.ts</code></li>
+<li><a href="../../apps/server/src/app.ts">Server composition</a> <code>apps/server/src/app.ts</code></li>
+<li><a href="../../apps/server/src/coordination-v3-scheduler.ts">Scheduler loop</a> <code>apps/server/src/coordination-v3-scheduler.ts</code></li>
+<li><a href="../../apps/server/src/routes/agent-run-preparation.ts">Run preparation</a> <code>apps/server/src/routes/agent-run-preparation.ts</code></li>
+<li><a href="../../apps/server/src/routes/provider-run-executor.ts">Provider execution</a> <code>apps/server/src/routes/provider-run-executor.ts</code></li>
+<li><a href="../../packages/core/src/managed-tools.ts">Managed tool contracts</a> <code>packages/core/src/managed-tools.ts</code></li>
+<li><a href="../../packages/agents/src/store-component-factory.ts">Store components</a> <code>packages/agents/src/store-component-factory.ts</code></li>
+<li><a href="../../packages/agents/src/state-admission.ts">Data-directory admission</a> <code>packages/agents/src/state-admission.ts</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#platforms"><small>Previous</small>Launcher, desktop app, and packaging</a><a href="#setup"><small>Next</small>Run the server and interface for development →</a></nav></section>
+<section class="pg-topic" id="setup" aria-labelledby="heading-setup" data-title="Run the server and interface for development"><p class="pg-kicker">Maintainer reference</p>
+<h2 id="heading-setup">Run the server and interface for development</h2>
+<p class="pg-lead">To develop Ponderosa, use a dedicated checkout and a fresh development data directory. The server serves the built web app on the same origin: the interface and its API use the same protocol, host and port.</p>
+<h3>1. Install the source toolchain</h3>
+<p>The source requires Node 24 (<code>&gt;=24 &lt;25</code>) and pnpm 11.10.0. Native modules need the host’s compiler and build tools. Install and sign in to a provider CLI under the development account for live provider work.</p>
+<pre><code>pnpm install --frozen-lockfile
+pnpm build</code></pre>
+<p>Use a development terminal with local-only networking and configuration for this instance. Keep production proxy and launcher process-transfer settings in their original installation.</p>
+
+<h3>2. Start the built server with isolated state</h3>
+<p>From the repository root on Linux or macOS, this Bash/zsh shell example creates a new temporary data directory and watches the compiled server files:</p>
+<pre><code>ponderosa_dev_data="$(mktemp -d "${TMPDIR:-/tmp}/ponderosa-dev.XXXXXX")"
+PONDEROSA_DATA_DIR="$ponderosa_dev_data" \
+PONDEROSA_HOST=127.0.0.1 PONDEROSA_PORT=8787 \
+node --watch apps/server/dist/main.js</code></pre><p>Open <code>http://127.0.0.1:8787/</code>. The server’s entry point resolves <code>apps/web/dist</code> and serves that built interface. REST calls and SSE connections use the same origin. Check <code>http://127.0.0.1:8787/api/health</code> to confirm that this server is responding. If the port is already occupied, stop only your own development instance or choose another port.</p>
+
+<details class="pg-deeper"><summary>The equivalent Windows PowerShell launch</summary><pre><code>$ponderosaDevData = Join-Path ([IO.Path]::GetTempPath()) ("ponderosa-dev-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $ponderosaDevData | Out-Null
+$env:PONDEROSA_DATA_DIR = $ponderosaDevData
+$env:PONDEROSA_HOST = "127.0.0.1"
+$env:PONDEROSA_PORT = "8787"
+node --watch apps/server/dist/main.js</code></pre><p>Open the same host and port address. Use a separate PowerShell window for rebuilds.</p>
+</details>
+<h3>3. Rebuild the component you are editing</h3>
+<p>In a second terminal, rebuild the web app after UI changes. Refresh the browser to read the new output. Rebuild the server after server changes; Node’s watch mode restarts it when its compiled files change.</p>
+<pre><code>pnpm --filter @ponderosa/web build
+pnpm --filter @ponderosa/server build</code></pre><p>After changing shared packages, use <code>pnpm build</code> so dependencies are rebuilt in order. Server restart changes live execution, so finish or stop your development work before a disruptive rebuild. Do not point this workflow at production data.</p>
+
+<h3>Why this path uses a built interface</h3>
+<p>The web client sends API requests to the origin serving its page. The workflow above serves both the built interface and API from the backend. The separate web <code>dev</code> command uses port 3000 and requires an API proxy to reach the backend; the checked-in configuration leaves that proxy unconfigured.</p>
+
+<p>Configuration reads the process environment. Set the needed variables in the launch terminal or load them through your chosen environment tool. <code>.env.example</code> documents the available settings. Keep credentials and saved application data outside the repository.</p>
+
+<h3>Checks for an authorized code change</h3>
+<pre><code>pnpm typecheck
+pnpm test</code></pre><p><code>pnpm verify</code> is an alias for <code>pnpm test</code>. The current test command builds, typechecks, and runs the maintained root-level test runner. The <a href="../../tests/shared/run-tests.mjs">test runner</a> defines discovery and opt-in controls. Choose verification proportional to the change and respect any current stop/freeze instruction. Release-tagging and publication commands are separate authorized operations, not development checks.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../package.json">Workspace commands</a> <code>package.json</code></li>
+<li><a href="../../apps/server/src/main.ts">Server startup</a> <code>apps/server/src/main.ts</code></li>
+<li><a href="../../apps/server/src/routes/application-routes.ts">Decision responses and app routes</a> <code>apps/server/src/routes/application-routes.ts</code></li>
+<li><a href="../../apps/server/src/static-content.ts">Built interface serving</a> <code>apps/server/src/static-content.ts</code></li>
+<li><a href="../../packages/core/src/config.ts">Configuration</a> <code>packages/core/src/config.ts</code></li>
+<li><a href="../../apps/server/src/routes/health.ts">Health endpoints</a> <code>apps/server/src/routes/health.ts</code></li>
+<li><a href="../../apps/web/rsbuild.config.ts">Web build configuration</a> <code>apps/web/rsbuild.config.ts</code></li>
+<li><a href="../../packages/native-host/package.json">Native host build</a> <code>packages/native-host/package.json</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#repository"><small>Previous</small>Where to look in the repository</a><a href="#contribution"><small>Next</small>Maintainer contribution rules →</a></nav></section>
+<section class="pg-topic" id="contribution" aria-labelledby="heading-contribution" data-title="Maintainer contribution rules"><p class="pg-kicker">Maintainer reference</p>
+<h2 id="heading-contribution">Maintainer contribution rules</h2>
+<p class="pg-lead">During the agreed beta, external code contributions are not accepted. Authorized maintainer work still needs clear ownership and explicit merge approval.</p>
+<p>Before editing, establish the task, approved base, writer, branch/worktree, and current authorization. One writer owns a writable worktree; reviewers remain read-only. A pause or freeze overrides earlier directions.</p>
+
+<p>Use a dedicated branch for product, configuration, schema, test, or instruction changes and present them through a pull request (PR), the reviewable proposal for merging those changes. Do not commit directly to master. Revalidate against the current base and record the exact head and checks performed.</p>
+
+<p>Preserve unexpected dirty state and other agents’ evidence. Do not reset, clean, stash, overwrite, or force-push another writer’s work to make an uncertain handoff look tidy.</p>
+
+<p>Merge with explicit authorization and passing required checks. Record the objective, writer, branch/worktree, base/head, dirty state, commits/pushes, verification, blockers and next authorized action in the handoff.</p>
+<details class="pg-evidence"><summary>Relevant code</summary><ul><li><a href="../../AGENTS.md">Repository rules</a> <code>AGENTS.md</code></li>
+</ul></details><nav class="pg-pager" aria-label="Topic navigation"><a href="#setup"><small>Previous</small>Run the server and interface for development</a><a href="#glossary"><small>Next</small>Glossary →</a></nav></section>
+<section class="pg-topic" id="glossary" aria-labelledby="heading-glossary" data-title="Glossary"><p class="pg-kicker">Reference</p>
+<h2 id="heading-glossary">Glossary</h2>
+<p class="pg-lead">These definitions are a reference to the concepts taught in the chapters.</p>
+<dl class="pg-glossary"><div id="term-chat"><dt>Chat</dt>
+<dd>The product home for an agent organization and its communication/instructions. It supplies the shared working-folder context while application records have their own storage namespace.</dd>
+</div>
+<div id="term-agent"><dt>Agent</dt>
+<dd>A persistent AI team identity with a role, settings, history, and current execution state.</dd>
+</div>
+<div id="term-run"><dt>Run</dt>
+<dd>One scheduler-owned execution turn for an Agent. Its assignments stay open until their outcomes are recorded.</dd>
+</div>
+<div id="term-provider-session"><dt>Provider session</dt>
+<dd>The Codex/Claude conversation context and runtime used to execute turns. It can be continued or replaced.</dd>
+</div>
+<div id="term-adapter"><dt>Adapter</dt>
+<dd>The shared interface connecting Ponderosa input and event contracts to each provider.</dd>
+</div>
+<div id="term-activation"><dt>Activation</dt>
+<dd>A saved reason for an Agent to receive work, such as a new message or a Join result.</dd>
+</div>
+<div id="term-lease"><dt>Lease</dt>
+<dd>A time-limited claim to execute work, renewed while the worker legitimately owns it.</dd>
+</div>
+<div id="term-fence"><dt>Fence</dt>
+<dd>An ownership version used to reject late output from cancelled or replaced execution.</dd>
+</div>
+<div id="term-canonical-authority"><dt>Canonical authority</dt>
+<dd>The record or component that determines a fact, such as SQLite’s saved coordination outcomes.</dd>
+</div>
+<div id="term-projection"><dt>Projection</dt>
+<dd>A view derived from defined source records for display or querying.</dd>
+</div>
+<div id="term-outbox"><dt>Outbox</dt>
+<dd>Saved follow-up effects waiting to be applied after an accepted operation.</dd>
+</div>
+<div id="term-idempotency"><dt>Idempotency</dt>
+<dd>Retrying the same operation identity recovers its recorded result. Check external actions before repeating uncertain work.</dd>
+</div>
+<div id="term-request"><dt>Request</dt>
+<dd>A durable assignment from a requester to a recipient, with identity, work, lifetime, and outcome.</dd>
+</div>
+<div id="term-join"><dt>Join</dt>
+<dd>A rule collecting Request outcomes and deciding when their owner should continue.</dd>
+</div>
+<div id="term-decision"><dt>Decision</dt>
+<dd>A recorded human question/answer associated with work or an exact approval scope.</dd>
+</div>
+<div id="term-elicitation"><dt>Elicitation</dt>
+<dd>A provider’s live request for information or confirmation; its callback can expire independently of the visible record.</dd>
+</div>
+<div id="term-artifact"><dt>Artifact</dt>
+<dd>Managed saved file bytes with a stable identity and provenance, such as a published report.</dd>
+</div>
+<div id="term-manifest"><dt>Source manifest</dt>
+<dd>A list of the sources submitted or retained for a provider input, stored with exact text/hash evidence.</dd>
+</div>
+<div id="term-rollover"><dt>Rollover</dt>
+<dd>Replacing an active provider session using a bounded saved handoff and selected recent communication.</dd>
+</div>
+<div id="term-handoff"><dt>Continuation handoff</dt>
+<dd>A saved note describing the objective, progress and next steps for a replacement provider session.</dd>
+</div>
+<div id="term-low-water"><dt>Low-water mark</dt>
+<dd>The context occupancy target that demonstrates room to continue in a replacement session.</dd>
+</div>
+<div id="term-outcome-unknown"><dt>Outcome unknown</dt>
+<dd>Work may have reached the provider, but trustworthy completion evidence is missing.</dd>
+</div>
+<div id="term-mcp"><dt>Model Context Protocol (MCP)</dt>
+<dd>The tool/capability protocol used by providers and connectors; server authorization still applies.</dd>
+</div>
+<div id="term-sse"><dt>SSE</dt>
+<dd>Server-Sent Events, the HTTP update stream from the server to the interface.</dd>
+</div>
+<div id="term-profile"><dt>Browser profile</dt>
+<dd>Persistent browser site storage, cookies, and settings with an explicit owner.</dd>
+</div>
+<div id="term-worktree"><dt>Git worktree</dt>
+<dd>Another working directory of the same Git repository, with its own checked-out branch.</dd>
+</div>
+<div id="term-dto"><dt>Data transfer object (DTO)</dt>
+<dd>A typed record defining fields exchanged between components, such as Agent state returned to the interface.</dd>
+</div>
+<div id="term-provenance"><dt>Provenance</dt>
+<dd>The recorded origin of information or bytes, such as a source message or the Run that published a result.</dd>
+</div>
+<div id="term-ownership-check"><dt>Ownership check</dt>
+<dd>Comparing an attempted action with the resource’s recorded owner and permissions.</dd>
+</div>
+<div id="term-execution-admission"><dt>Execution admission</dt>
+<dd>Deciding whether accepted, waiting work may start now under the current scope, readiness, and capacity limits.</dd>
+</div>
+<div id="term-context-occupancy"><dt>Context occupancy</dt>
+<dd>The number of tokens the provider reports holding in its current session.</dd>
+</div>
+<div id="term-threshold"><dt>Occupancy threshold</dt>
+<dd>The configured trigger for requesting a rollover. A lower low-water target confirms room in the replacement context.</dd>
+</div>
+</dl><nav class="pg-pager" aria-label="Topic navigation"><a href="#contribution"><small>Previous</small>Maintainer contribution rules</a><a href="#questions"><small>Next</small>Architecture trade-offs →</a></nav></section>
+<section class="pg-topic" id="questions" aria-labelledby="heading-questions" data-title="Architecture trade-offs"><p class="pg-kicker">Further study</p>
+<h2 id="heading-questions">Architecture trade-offs</h2>
+<p class="pg-lead">Several design choices explain why Ponderosa keeps apparently similar concepts separate.</p>
+<h3>Where do replies and execution details belong?</h3>
+<p>The shared conversation holds intentional communication. Commands, tool results and file changes stay in the Agent’s execution record, where you can inspect the work behind a reply.</p>
+<h3>Why retain coordination separately from text?</h3>
+<p>Coordination records give assignments stable ownership, lifetime and outcomes. Those records let the scheduler recover work after a crash and recognize repeated operations.</p>
+<h3>How does context stay focused?</h3>
+<p>Ponderosa selects relevant context for each turn and keeps older evidence available for retrieval. This gives agents focused input while preserving the team’s saved work.</p>
+<h3>Why is a separate Git copy opt-in?</h3>
+<p>Shared folders give agents immediate access to each other’s changes. Choose a separate Git copy for independent code work, then integrate its changes and clean up the copy when finished.</p>
+<nav class="pg-pager" aria-label="Topic navigation"><a href="#glossary"><small>Previous</small>Glossary</a><a href="#evidence"><small>Next</small>Relevant code and reading notes →</a></nav></section>
+<section class="pg-topic" id="evidence" aria-labelledby="heading-evidence" data-title="Relevant code and reading notes"><p class="pg-kicker">Reference</p>
+<h2 id="heading-evidence">Relevant code and reading notes</h2>
+<p class="pg-lead">Each chapter’s Relevant code panel links to implementation entry points after its explanation.</p>
+<p>Follow the Relevant code links to trace each feature’s implementation. The links are relative to the source repository and stay usable with a complete source copy. Engine’s <strong>Version</strong> and <strong>Revision</strong> identify your installed build.</p>
+<p>For a problem report, include the build identity, operating system, provider and the action that failed. Describe what you expected and what happened, and include the relevant Engine error after removing secrets and private task content.</p>
+<p>The product framing and visual conventions follow <a href="https://ponderosa.khaleelclark.com/">Ponderosa’s website</a>. This beta excludes Wiki, Automations, Branches, Pinecone and local browser/extension pairing.</p>
+<nav class="pg-pager" aria-label="Topic navigation"><a href="#questions"><small>Previous</small>Architecture trade-offs</a><a href="#understand">Back to overview ↑</a></nav></section>
+<footer class="pg-footer"><a href="https://ponderosa.khaleelclark.com/">Ponderosa website</a><span> · </span><a href="../../README.md">README</a><span> · </span><a href="../user-guide.md">User guide</a><span> · </span><a href="../../.github/ISSUE_TEMPLATE/bug_report.md">Report a bug</a><span> · </span><a href="../../SECURITY.md">Security</a><span> · </span><a href="#evidence">Relevant code</a></footer></main></div>
+
+<dialog class="pg-search-dialog" id="pg-search-dialog" aria-labelledby="pg-search-title"><div class="pg-search-heading"><h2 id="pg-search-title">Search this guide</h2>
+<button id="pg-search-close" type="button" aria-label="Close search">Close</button></div>
+<label for="pg-query">Find a topic, concept, or implementation path</label><input id="pg-query" type="search" placeholder="Try delegation, working folder, or rollover" autocomplete="off"><p id="pg-search-count" role="status" aria-live="polite"></p>
+<div id="pg-results"></div>
+<p class="pg-small">Escape closes search. Search stays in this browser.</p>
+</dialog></body></html>

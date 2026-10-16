@@ -1,0 +1,46 @@
+#!/bin/sh
+set -eu
+
+engine="$APPDIR/usr/lib/ponderosa-engine"
+node="$engine/resources/Ponderosa/runtime/node"
+setup="$APPDIR/ponderosa-sandbox/install-sandbox.mjs"
+
+if [ "${1-}" = "--install-sandbox" ]; then
+  if [ "$#" -ne 1 ]; then
+    echo "--install-sandbox accepts no additional arguments." >&2
+    exit 2
+  fi
+  # Never pass user Node preload options into the administrator setup process.
+  unset NODE_OPTIONS NODE_PATH
+  if [ "$(id -u)" = 0 ]; then
+    exec "$node" "$setup"
+  fi
+  if command -v pkexec >/dev/null 2>&1; then
+    exec pkexec "${APPIMAGE:?AppImage executable path is unavailable}" --install-sandbox
+  fi
+  echo "Administrator setup is required. Run this AppImage once with sudo and --install-sandbox." >&2
+  exit 1
+fi
+
+if [ "$(id -u)" = 0 ]; then
+  echo "Open Ponderosa as your normal user. Use --install-sandbox only for administrator setup." >&2
+  exit 1
+fi
+
+# Restricted Ubuntu requires an application-specific userns grant. Leave the
+# global restriction and Electron renderer sandbox enabled.
+if [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] &&
+   [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1 ] &&
+   [ ! -f /etc/apparmor.d/ponderosa-appimage ]; then
+  echo "Ponderosa needs one-time administrator approval to enable its sandbox on this system." >&2
+  if command -v pkexec >/dev/null 2>&1; then
+    # PolicyKit cannot access executables inside another user's private FUSE
+    # mount. Reopen the image as root for setup, then launch Engine as this user.
+    (unset NODE_OPTIONS NODE_PATH; exec pkexec "${APPIMAGE:?AppImage executable path is unavailable}" --install-sandbox)
+  else
+    echo "Run this AppImage once with sudo and --install-sandbox, then open it normally." >&2
+    exit 1
+  fi
+fi
+
+exec "$engine/ponderosa-engine" "$@"

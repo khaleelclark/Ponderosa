@@ -1,0 +1,253 @@
+{
+  "schemaVersion": 1,
+  "selectedOn": "2026-10-14",
+  "status": "unpublished-1.0-metadata-repackage-manual-gui-checked",
+  "sourceRepository": "khaleelclark/Legacy-Ponderosa",
+  "masterAtSelection": "6c214dec74f58ecc51124f396c2c88b56b9fa78d",
+  "scope": {
+    "installations": "fresh",
+    "provider": "Codex",
+    "ClaudeQualification": "deferred",
+    "internalBrowser": "included",
+    "localBrowserConnection": "deferred",
+    "extensionPairing": "deferred",
+    "excluded": [
+      "Wiki",
+      "Automations"
+    ],
+    "AppImageSelected": false
+  },
+  "freeze": {
+    "runtimeSource": true,
+    "tests": true,
+    "releaseMetadataRepackageAuthorized": true,
+    "publicationAuthorized": false,
+    "mergeAuthorized": false,
+    "normalProfileInstallAuthorized": false
+  },
+  "artifacts": [
+    {
+      "platform": "win32",
+      "arch": "x64",
+      "target": "Windows 11 x64",
+      "version": "1.0.0",
+      "filename": "Ponderosa-1.0-Windows-x64.exe",
+      "bytes": 181014805,
+      "sha256": "3e0b275314d7e6098ee4f00eb5c9b4b565b3eaff51ed4845d39800c2085ea195",
+      "sourceCommit": "c32b4f96019da9232f1d7ecde913e6b9692a6b89",
+      "signed": false,
+      "EngineSha256": "9610973fb2d55c5c06ee3ec11881bc2748f3a6edb480774157a164c64d700fe0",
+      "qualificationScope": "retained compiler-input payload byte-matched to the generated package input; no normal-profile installation",
+      "nativeChecks": {
+        "pass": 11,
+        "fail": 0
+      },
+      "lifecycleChecks": {
+        "pass": 20,
+        "fail": 0,
+        "releaseQualified": true,
+        "earlierAttempts": [
+          {
+            "scope": "long compiler-input path",
+            "checksCompleted": 0,
+            "result": "launcher failed before server spawn: specified module not found"
+          },
+          {
+            "scope": "short identical payload while compression running",
+            "pass": 19,
+            "fail": 1,
+            "result": "no qualifying Codex reachability evidence"
+          }
+        ],
+        "finalAttempt": "Same payload and unchanged qualifier after compression; fresh disposable data; 20/20, Codex reachable"
+      },
+      "freshNativeGui": "Running/Ready, 1.0.0 beta visible on cold start and reopen; both graceful quits settled, no forced termination",
+      "normalProfilePreservation": "Original receipts independently imported with byte/SHA256 verification: 54 normal data files, 46 Electron profile files and 8,419 installed Root 2 files unchanged",
+      "packaging": "Initial long and shortened-temp Inno path failures retained; final generated recipe changed one compiler-input source path to identical shorter payload. All other options unchanged.",
+      "freshWebWalkthrough": "Not repeated; historical unavailable/rejected browser lane remains unverified",
+      "existingProfileUpgrade": "not qualified",
+      "receiptTransfer": {
+        "originalFiles": 52,
+        "allBytesAndHashesVerified": true,
+        "capsuleJsonSha256": "fd5926799c793b5f3203c9808e17291075e18d6a34387fa154f4d39e0acdac4e"
+      },
+      "freshNativeGuiChecks": {
+        "pass": 4,
+        "fail": 0,
+        "unverified": 0,
+        "cases": [
+          "cold startup Running/Ready and1.0.0 beta visible",
+          "graceful quit exact owned process-tree exit",
+          "same disposable profile reopen Running/Ready and1.0.0 beta visible",
+          "second graceful quit exact owned process-tree exit"
+        ]
+      }
+    },
+    {
+      "platform": "darwin",
+      "arch": "arm64",
+      "target": "macOS 14+ Apple Silicon",
+      "version": "1.0.0",
+      "filename": "Ponderosa-1.0-macOS-arm64.dmg",
+      "bytes": 297063618,
+      "sha256": "0713bb7ccbb213af1066b15dfd54832386113a491239b4a801e10c8ec66eb77e",
+      "sourceCommit": "07ba58bc8a78b932d3587e307409b2581ccde4d3",
+      "signed": false,
+      "qualificationScope": "actual new package-extracted payload; disposable data",
+      "nativeChecks": {
+        "pass": 12,
+        "fail": 0
+      },
+      "lifecycleChecks": {
+        "pass": 21,
+        "fail": 0,
+        "releaseQualified": true
+      },
+      "priorCodexReadChecks": {
+        "pass": 2,
+        "scope": "historical unchanged compiled runtime; not rerun for metadata overlay"
+      },
+      "notarized": false,
+      "gui": "Manual native GUI cold start and same-profile reopen visibly Running/Ready, 1.0.0 beta; both Quit Engine actions settled with observed processes exited, port closed and state removed",
+      "manualGuiChecks": {
+        "pass": 4,
+        "fail": 0,
+        "scope": "Actual new DMG-extracted app; disposable backend and Electron profiles; no provider requests"
+      },
+      "automatedGuiQualifier": {
+        "status": "fail",
+        "earlierAttempts": "Two pre-consent startup timeouts; diagnostic sample/tccd logs identified Documents-folder privacy request",
+        "postConsentAttempt": "Startup proceeded; external CLI stop at qualifier line 525 failed with data directory already owned by another Ponderosa process",
+        "cleanup": "Qualifier cleanup settled; no owned payload processes remain",
+        "manualPassDoesNotReplaceAutomatedFailure": true,
+        "rootCause": "External-stop ownership race is consistent with existing Engine source comment; exact timing mechanism not proved",
+        "betaDisposition": {
+          "blocking": false,
+          "acceptedBy": "human",
+          "basis": "Human accepted the ownership refusal as non-blocking after normal manual GUI startup, reopen and both quits passed.",
+          "suggestedExplanation": "Human may have had another instance; this cause was not independently established.",
+          "observedFailureRetained": true
+        }
+      },
+      "permission": "Human confirmed OS Documents-folder consent; manual startup and reopen verified afterward"
+    },
+    {
+      "platform": "linux",
+      "arch": "x64",
+      "target": "Ubuntu 24.04 x64",
+      "version": "1.0.0",
+      "filename": "Ponderosa-1.0-Linux-x64.deb",
+      "bytes": 162631986,
+      "sha256": "36567506340cb0a0d2be03d336a6151db44fe103ffe8d91490e793a25fc287e8",
+      "sourceCommit": "07ba58bc8a78b932d3587e307409b2581ccde4d3",
+      "signed": false,
+      "qualificationScope": "actual new package-extracted payload; disposable data",
+      "nativeChecks": {
+        "pass": 11,
+        "fail": 0
+      },
+      "lifecycleChecks": {
+        "pass": 20,
+        "fail": 0,
+        "releaseQualified": false,
+        "reason": "Ubuntu 24.04 target not exercised by Ubuntu 26.04 host"
+      },
+      "priorCodexReadChecks": {
+        "pass": 2,
+        "scope": "historical unchanged compiled runtime; not rerun for metadata overlay"
+      },
+      "observedHost": "Ubuntu 26.04",
+      "gui": "Not rechecked on this host"
+    }
+  ],
+  "documentation": "Accompanying addendum; frozen compiled web/manual assets retain their original bytes. This docs commit is not the compiled runtime source.",
+  "qualificationDetail": "release-candidate.md",
+  "releaseVersion": "1.0.0",
+  "repackage": {
+    "compiledApplicationRebuilt": false,
+    "portableBundleChanges": [
+      "build-manifest.json version/channel",
+      "app/engine-desktop/package.json version"
+    ],
+    "allOtherPortableFilesUnchanged": true,
+    "channel": "beta",
+    "originalArtifactsPreserved": true
+  },
+  "historicalArtifacts": [
+    {
+      "platform": "win32",
+      "arch": "x64",
+      "target": "Windows 11 x64",
+      "version": "0.1.0-private.20261014.win-root1",
+      "filename": "Ponderosa-0.1.0-private.20261014.win-root1-win32-x64.exe",
+      "sourceCommit": "c32b4f96019da9232f1d7ecde913e6b9692a6b89",
+      "bytes": 181021190,
+      "sha256": "74fc7acbabb1b47a8b8644c2eac6fc85fdd84de6d5a2ba6b962f7b45e32ac0e5",
+      "signed": false,
+      "nativeChecks": {
+        "pass": 11,
+        "fail": 0
+      },
+      "lifecycleChecks": {
+        "pass": 20,
+        "fail": 0
+      },
+      "freshNativeGui": "launch-ready-quit-reopen-ready-quit passed on retained unchanged installer-input payload",
+      "freshWebWalkthrough": "unverified: browser automation unavailable/rejected before execution",
+      "existingProfileUpgrade": "not qualified"
+    },
+    {
+      "platform": "darwin",
+      "arch": "arm64",
+      "target": "macOS 14+ Apple Silicon",
+      "version": "0.1.0-private.20261014.final1",
+      "filename": "Ponderosa-0.1.0-private.20261014.final1-darwin-arm64.dmg",
+      "sourceCommit": "07ba58bc8a78b932d3587e307409b2581ccde4d3",
+      "bytes": 297115646,
+      "sha256": "3f1e04e14c01490014f19244dba93f80cc89540fe8093f08ba6e2eeeeddf28ef",
+      "signed": false,
+      "notarized": false,
+      "nativeChecks": {
+        "pass": 12,
+        "fail": 0,
+        "scope": "actual DMG-extracted payload"
+      },
+      "lifecycleChecks": {
+        "pass": 21,
+        "fail": 0
+      },
+      "codexReadChecks": {
+        "pass": 2,
+        "fail": 0
+      },
+      "gui": "4 non-provider cases passed on recheck; 1 provider case manual; initial supervisor-receipt cleanup failure preserved"
+    },
+    {
+      "platform": "linux",
+      "arch": "x64",
+      "target": "Ubuntu 24.04 x64",
+      "observedHost": "Ubuntu 26.04",
+      "version": "0.1.0-private.20261014.final1",
+      "filename": "Ponderosa-0.1.0-private.20261014.final1-linux-x64.deb",
+      "sourceCommit": "07ba58bc8a78b932d3587e307409b2581ccde4d3",
+      "bytes": 162631940,
+      "sha256": "f3ddb9e6dfcb8eb0ec7d3d59491281a47e53b79400a0b396a16fe6cf53a3885d",
+      "signed": false,
+      "nativeChecks": {
+        "pass": 11,
+        "fail": 0,
+        "scope": "actual DEB-extracted payload"
+      },
+      "lifecycleChecks": {
+        "pass": 20,
+        "fail": 0,
+        "releaseQualified": false,
+        "reason": "Ubuntu 24.04 target not exercised by Ubuntu 26.04 host"
+      },
+      "codexReadChecks": {
+        "pass": 2,
+        "fail": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,946 @@
+{
+  "baseline": "d12fcb42d5e92ac4b01668293669ab7bf4650f9c",
+  "tests": [
+    {
+      "oldPath": "apps/server/test/delegation.test.mjs",
+      "path": "tests/agents/delegation.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F11.01",
+        "F11.05",
+        "F13.01",
+        "F13.02",
+        "F13.03",
+        "F13.04",
+        "F14.02"
+      ],
+      "requirements": "Node24, built native server workspaces; owned inert roots in POSIX groups or Windows Jobs; no provider account",
+      "testBodiesSha256": "0079ce3e93efeb6fbe35cb0a90d3ff0a30a3ea0e3e908b42216cdce8f94badb0",
+      "beforeSha256": "9b2362e742421a2e5312a0307d93449fd1977d0539597db6f9743f9817121160",
+      "afterSha256": "502e0c9824a9282ac2e2b8ab51f8f1909b8036a7e55ee711894e6f950a2cc12f"
+    },
+    {
+      "path": "tests/agents/provider-cleanup.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "context-recovery"
+      ],
+      "requirements": "Node24, built native server workspaces; owned inert roots in POSIX groups or Windows Jobs; no provider account",
+      "origin": "Approved checks 39/95: provider cleanup and replacement admission boundary"
+    },
+    {
+      "oldPath": "apps/server/test/real-codex.test.mjs",
+      "path": "tests/agents/real-codex.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F05.03",
+        "F06.01",
+        "F06.03",
+        "F07.01",
+        "F07.02",
+        "F08.01",
+        "F11.01",
+        "F11.05",
+        "F13.01",
+        "F13.02",
+        "F13.03",
+        "F13.04",
+        "F14.01",
+        "F14.02",
+        "F14.03",
+        "F14.04",
+        "F14.05",
+        "F15.04",
+        "F26.06"
+      ],
+      "requirements": "Opt-in PONDEROSA_REGRESSION_REAL_CODEX=1; existing permitted Codex CLI/SDK access; disposable POSIX fixture; default skip and Windows gate unchanged",
+      "testBodiesSha256": "8348abafbbc99b9abbbb703964900f1705e539b7ecad3d19be83477c3a988dbc",
+      "beforeSha256": "07253d0bfe977a724e1b4d90edba6a09ca748422da099eb8b121621027093b8b",
+      "afterSha256": "78365698330dcfcedd3898ef209d459ef1d166214752d0ba8ef36cd55122c792"
+    },
+    {
+      "path": "tests/agents/real-joins.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "chats",
+        "organizations"
+      ],
+      "requirements": "Opt-in PONDEROSA_REGRESSION_REAL_CODEX=1; permitted actual Codex; disposable POSIX fixture; native Windows pending",
+      "origin": "Approved checks 47/48/51/56: staged real any/quorum and each-result collection"
+    },
+    {
+      "oldPath": "apps/server/test/runtime-boundaries.test.mjs",
+      "path": "tests/agents/runtime-boundaries.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F06.04",
+        "F08.04",
+        "F10.02",
+        "F10.03",
+        "F13.05",
+        "F14.03",
+        "F24.01",
+        "F24.05"
+      ],
+      "requirements": "Node24, built native server workspaces; owned inert roots in POSIX groups or Windows Jobs; no provider account",
+      "testBodiesSha256": "ce149be061c385e4e4ae44cd31ac38075dab8bf8892b389353cf03f19260ecb9",
+      "beforeSha256": "45324b120d80f5395c855feaa6e640d69e7529fb84cff06e4ef07d7653c05c4f",
+      "afterSha256": "2e5c73212f864f8d72077166f875ad00e0d00d3218b4b4835aad613a296c0b9e"
+    },
+    {
+      "path": "tests/agents/stop-all.test.mjs",
+      "feature": "agents",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "additionalFeatures": [
+        "organizations"
+      ],
+      "requirements": "React/Query server rendering plus controlled cancellation API spy; no real provider/process/browser",
+      "origin": "Newly authored approved check 37 after consolidation; not a migrated file"
+    },
+    {
+      "path": "tests/agents/windows-job-process.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "packages/engines/package.json",
+      "requirements": "Node24, built engines/native-host; six deterministic authority cases and a Windows-only inert root/descendant Job case; no provider account",
+      "origin": "Regression for drained Windows Job false liveness after close"
+    },
+    {
+      "oldPath": "apps/server/test/browser-control.test.mjs",
+      "path": "tests/browser/browser-control.test.mjs",
+      "feature": "browser",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F10.04",
+        "F21.02",
+        "F28.01"
+      ],
+      "requirements": "Built server; owned Unix broker socket; original Windows transport skip unchanged; controlled browser driver",
+      "testBodiesSha256": "9eb186a253aa13d24cc14c834f77b2d9d4a1c51aecc6d26bc86e26ffc8f891bc",
+      "beforeSha256": "d3a7e0dbb677ce95f292b50f3417346ca7a5f205a06fe5b7c4e9e8bf151f1791",
+      "afterSha256": "e80626e6382ad3ab0ae0ff5694fb1f95a4e1cb7b58ca7ffafecceb448b897091"
+    },
+    {
+      "oldPath": "apps/server/test/local-browser-transport.test.mjs",
+      "path": "tests/browser/local-browser-transport.test.mjs",
+      "feature": "browser",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F28.01",
+        "F28.02",
+        "F28.04"
+      ],
+      "requirements": "Built server; controlled local transport; no extension/profile/account",
+      "testBodiesSha256": "54e0a7ccc199acd09b853f44f4e0a62deb592396c25c04d550bf4371919e5e2e",
+      "beforeSha256": "11652de87de8fb0694934ea976ac7666952f750b841461a5e2cee441ef8b72d0",
+      "afterSha256": "3c7c40458d75118257798d72ac7dd8ceb4d797a7e3b7f5eb8fe83f636f5cbe3f"
+    },
+    {
+      "oldPath": "apps/server/test/native-browser.test.mjs",
+      "path": "tests/browser/native-browser.test.mjs",
+      "feature": "browser",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F17.02",
+        "F28.01",
+        "F28.03"
+      ],
+      "requirements": "Opt-in PONDEROSA_REGRESSION_NATIVE_BROWSER=1; existing host Chrome, fresh owned profile; default skip and Windows gate unchanged",
+      "testBodiesSha256": "3f61a0d45a538caaafb61fb9afc0080047e88a28a689122e626262ef053d9957",
+      "beforeSha256": "f6763a893d368d02760e3c72fef68cad112243136001a470d8fb2553683f5a2b",
+      "afterSha256": "f6d48675aa2e7d7e055233d7b70e6f0ecdd3b9d13fc9b1ac57597b18f203d6a6"
+    },
+    {
+      "oldPath": "apps/web/src/components/chat/attachmentsAndRouting.test.mjs",
+      "path": "tests/chats/attachmentsAndRouting.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "additionalFeatures": [
+        "F05.01",
+        "F05.03",
+        "F06.03",
+        "F07.05",
+        "F08.01",
+        "F08.05",
+        "F09.01",
+        "F20.04"
+      ],
+      "requirements": "Node 24 TypeScript transform and existing web dependencies; no account/browser; Python 3 standard ZIP reader (PYTHON override unchanged)",
+      "testBodiesSha256": "543b01ab0948608dd42a7f16a0a7593d3cf15347dc30b8826d3ca56238bd5c84",
+      "beforeSha256": "efdc4f3b94bdb393e9b8682cf1fd21690e73e5aeefb37dea264695d1062c0ee6",
+      "afterSha256": "779dc22e6b75530a5304064848223713ccf1d0d05f44d43b458cc7c21d4c1769"
+    },
+    {
+      "oldPath": "apps/web/src/components/chat/draftTextRecovery.test.mjs",
+      "path": "tests/chats/draftTextRecovery.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "additionalFeatures": [
+        "F09.01",
+        "F09.02"
+      ],
+      "requirements": "Node 24 TypeScript transform and existing web dependencies; no account/browser",
+      "testBodiesSha256": "a19f7f4df02720c7fcc8fed219845941d3ce41469ae35979ce10c025f870ea98",
+      "beforeSha256": "cfb958d55621ee9932ad303a8f029e153a03d013fdeb1aa73d770a710dd31f25",
+      "afterSha256": "245936b4484919a329ff4793520ba0d59ba9664871d9b550f6058d566bec6ce4"
+    },
+    {
+      "oldPath": "apps/server/test/messaging.test.mjs",
+      "path": "tests/chats/messaging.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F04.01",
+        "F05.02",
+        "F05.03",
+        "F05.04",
+        "F06.01",
+        "F06.02",
+        "F06.03",
+        "F08.01",
+        "F09.03",
+        "F09.04",
+        "F13.01",
+        "F13.02",
+        "F13.03",
+        "F13.04",
+        "F14.02",
+        "F15.01",
+        "F15.04",
+        "F17.01",
+        "F17.03",
+        "F17.04",
+        "F17.05",
+        "F20.03"
+      ],
+      "requirements": "Node24, built native server workspaces; owned inert roots in POSIX groups or Windows Jobs; no provider account",
+      "testBodiesSha256": "be4d4400c66dd284db9300911c9349ff63cefb7f0779c841187f13e5cca93944",
+      "beforeSha256": "32f5d92e146cfe85848bc7af1e3230bc29d3174bbfe2cea7ab8fb0e410ffed48",
+      "afterSha256": "22f027927eb365765a35c280d2a4619a637c40a23e884de3fe4adf8cebe3c5db"
+    },
+    {
+      "oldPath": "apps/web/src/api/uploadRetry.test.mjs",
+      "path": "tests/chats/uploadRetry.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "additionalFeatures": [
+        "F08.05",
+        "F09.01"
+      ],
+      "requirements": "Node 24 TypeScript transform and existing web dependencies; no account/browser",
+      "testBodiesSha256": "79a7f43306d9c333360cc22324cc7eaaa5a92cd01d7fc20cd88efbba8d6177c1",
+      "beforeSha256": "59e9d4c618d51fe6a215f3c52b55fa7f960bf2a50b02fbe6cab4b4f4e26aa2a4",
+      "afterSha256": "3ac48b84ada792016ce4cc854b350b73b18dc532281c3931dced5c0b58fd64c7"
+    },
+    {
+      "oldPath": "apps/server/test/workflows.test.mjs",
+      "path": "tests/chats/workflows.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F04.05",
+        "F05.03",
+        "F07.01",
+        "F07.02",
+        "F08.01",
+        "F08.04",
+        "F08.05",
+        "F09.01",
+        "F09.02",
+        "F10.01",
+        "F10.02",
+        "F10.04",
+        "F13.06",
+        "F15.01",
+        "F20.01",
+        "F20.02",
+        "F20.05",
+        "F20.06",
+        "F24.02",
+        "F24.03",
+        "F24.05",
+        "F26.01",
+        "F26.02",
+        "F26.03",
+        "F26.04",
+        "F26.05"
+      ],
+      "requirements": "Node24, built native server workspaces; owned inert roots in POSIX groups or Windows Jobs; no provider account",
+      "testBodiesSha256": "73fa13a50830ef05cbd2a4cc6cf426e97cb30abd96a8d15f9b53dc1850c3b9c2",
+      "beforeSha256": "3a8d3684f3075ca70e3aebd67706c15f1e416f0d15f10d37ab75d3dc6bc274c1",
+      "afterSha256": "4946e6208afc3ac2351f4fd3741c975253e0599abaf5938bbb10dc7290c8dc4e"
+    },
+    {
+      "oldPath": "apps/server/test/compaction-recovery.test.mjs",
+      "path": "tests/context-recovery/compaction-recovery.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F24.01",
+        "F26.06"
+      ],
+      "requirements": "Node24, built native server workspaces; owned inert roots in POSIX groups or Windows Jobs; no provider account",
+      "testBodiesSha256": "f8039f3cab45567f2e29a4f6f9855c21f08adae2ee36dacc6a9fe7cb117959c4",
+      "beforeSha256": "89e12f571cf38e48ffbedadeb4389692b8223d4d0920e56aebbc2d33ca07b616",
+      "afterSha256": "80db76088044f0b400debf72a75222d5cbc59669fdb7f62bda86f13aa100501a"
+    },
+    {
+      "oldPath": "apps/server/test/compaction.test.mjs",
+      "path": "tests/context-recovery/compaction.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F24.01",
+        "F26.05",
+        "F26.06"
+      ],
+      "requirements": "Built server/engines; controlled events; no provider process/account",
+      "testBodiesSha256": "ac66d212886765304552b477f7e4c01133a1c1a579a82dd9cfe988aab85bf591",
+      "beforeSha256": "3e62da402f712addbd69a13e3bdee79a0d6f12ae6799f5257797eb9afde4332a",
+      "afterSha256": "d78632255511708bef4d6ed20cb849dcec40833445c7591930bc72a68948fad3"
+    },
+    {
+      "oldPath": "apps/server/test/context-pressure.test.mjs",
+      "path": "tests/context-recovery/context-pressure.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F26.05",
+        "F26.06"
+      ],
+      "requirements": "Node24, built native server workspaces; owned inert roots in POSIX groups or Windows Jobs; no provider account",
+      "testBodiesSha256": "7689d6aa3ebf1ca187bfa99db59fbb4948bf46e9e5b8b4c6c4adc243db2d3dbc",
+      "beforeSha256": "9b21473ab10d259c7a358355bb45728f1a2fa40ffe436da0411251e24b2a4e3d",
+      "afterSha256": "e2fe2a0a6feb8a6442a8171c72e72ecee4e48f5ed7c4537ba6a6cec13548e3db"
+    },
+    {
+      "path": "tests/context-recovery/replay-limits.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "agents"
+      ],
+      "requirements": "Node24, built native server workspaces; owned inert roots in POSIX groups or Windows Jobs; no provider account",
+      "origin": "Newly authored approved check 95 after consolidation: bounded repeated compact recovery and quota negative control"
+    },
+    {
+      "oldPath": "apps/server/test/artifact-provider-path.test.mjs",
+      "path": "tests/files-results/artifact-provider-path.test.mjs",
+      "feature": "files-results",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "agents",
+        "providers"
+      ],
+      "requirements": "Built server/core/native-host; native filesystem authority; no provider account",
+      "testBodiesSha256": "597831d1ba4c675535773335698dcb9124edc951889d80268939934a622458a2",
+      "beforeSha256": "ad82891c5603d66ae1a7510b448d1be77e361f1eb5bb3c50610ce2ea6492a626",
+      "afterSha256": "42e757e5d5bdc1f9669247d5f595d791431dcceacab2993e7079fc0e816b4e02"
+    },
+    {
+      "oldPath": "apps/web/src/components/filePreview/artifactDiff.test.mjs",
+      "path": "tests/files-results/artifactDiff.test.mjs",
+      "feature": "files-results",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "additionalFeatures": [
+        "F18.01",
+        "F19.04"
+      ],
+      "requirements": "Node 24 TypeScript transform and existing web dependencies; no account/browser",
+      "testBodiesSha256": "731a718b681e29a8db86445f5d63e4514c7ff12135dad588ae43fa1f2fbe7507",
+      "beforeSha256": "f709d97e59178c8e8dc80e30d2c51371cc636142736c66e9bc34c8c87971e96e",
+      "afterSha256": "f73e5c6e008c4e2561b40bc81c79d3c547e11df2e3ef88f51f4fc1e74a439fd2"
+    },
+    {
+      "oldPath": "apps/server/test/attachment-filename.test.mjs",
+      "path": "tests/files-results/attachment-filename.test.mjs",
+      "feature": "files-results",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "chats"
+      ],
+      "requirements": "Built server/Fastify; synthetic upload requests; no account, browser or native process",
+      "sourceRevision": "65f8dd704cbf5b72930d01d41a2cfc960cba78f5",
+      "testBodiesSha256": "5545ed5c731ab8692b6596c2a383e23467c8458f2f092c18d60ed15af973f1db",
+      "beforeSha256": "a02a4189806d526cb7f3bb3c27ed7d9856895c8011f5c5f3c63025500ba48854",
+      "afterSha256": "ef7ab513ae45e5b3d764f2be2ad2c6663792f2e9f333f9cede53b0f45fdfd670"
+    },
+    {
+      "oldPath": "apps/server/test/files.test.mjs",
+      "path": "tests/files-results/files.test.mjs",
+      "feature": "files-results",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F05.03",
+        "F06.03",
+        "F08.01",
+        "F08.05",
+        "F16.02",
+        "F16.03",
+        "F16.05",
+        "F18.02",
+        "F18.03",
+        "F18.05",
+        "F19.01",
+        "F19.02",
+        "F19.03",
+        "F19.04",
+        "F19.05"
+      ],
+      "requirements": "Node24, built native server workspaces; owned inert roots in POSIX groups or Windows Jobs; no provider account",
+      "testBodiesSha256": "6626a2512ff85b1a892b97f29cfc4eda0d78932f4b94e571f13d504ffcdbd9d2",
+      "beforeSha256": "06cdd96d9dc82b3846d079e01b8f5e8ae1fd35e967165994697e601f14cbcb59",
+      "afterSha256": "a24ee673e873d8f1a2b75564a002f2dcaa6ad24b9662c2adee57bd2abec41ed8"
+    },
+    {
+      "oldPath": "apps/web/src/components/filePreview/readTextPreview.test.mjs",
+      "path": "tests/files-results/readTextPreview.test.mjs",
+      "feature": "files-results",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "additionalFeatures": [
+        "browser"
+      ],
+      "requirements": "Node 24 native TypeScript stripping; synthetic fetch/streams",
+      "testBodiesSha256": "66e9ff05170d5ab003ac96b94f6b4954e4c7dd0bf6641c05e62b8c8f01aed8ff",
+      "beforeSha256": "ed997bba4039affb96e8667991fead773f2295b32fe7e9d84e097ae6df796ac7",
+      "afterSha256": "1e043718dc2c665f814356e5ca30fde2f607233b9c7a215513d78537ddbbdab4"
+    },
+    {
+      "path": "tests/files-results/real-artifact.test.mjs",
+      "feature": "files-results",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "agents",
+        "providers"
+      ],
+      "requirements": "Opt-in PONDEROSA_REGRESSION_REAL_CODEX=1; existing permitted Codex access only; disposable native POSIX roots; Windows qualification pending",
+      "origin": "Newly authored approved captured-text-artifact real-reader check after consolidation"
+    },
+    {
+      "oldPath": "packaging/qualification/chat-deletion-restart.test.mjs",
+      "path": "tests/installation-release/chat-deletion-restart.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "additionalFeatures": [
+        "F21.05",
+        "F30.01"
+      ],
+      "requirements": "Node 24, built server/native SQLite; disposable roots; original platform conditions",
+      "testBodiesSha256": "cb7c74260db961206f6c23a7522b8c942b75a2ff6cfda095f4f9678c408fb93d",
+      "beforeSha256": "473717786f8997566f40f98e0edc330cf84ca3241d1aab5a9f47206674c77538",
+      "afterSha256": "473717786f8997566f40f98e0edc330cf84ca3241d1aab5a9f47206674c77538"
+    },
+    {
+      "oldPath": "packaging/qualification/cli-arguments.test.mjs",
+      "path": "tests/installation-release/cli-arguments.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "additionalFeatures": [],
+      "requirements": "Built launcher and packaging dependencies, Git; malformed CLI inputs, beta version policy and disposable local tag fixtures; no installer execution or publication",
+      "testBodiesSha256": "bb30653957ebe8da9966971b67fdc62bd3a654e2e1620bbba5bc76ff0b0bcfe9",
+      "beforeSha256": "e03240eb87018cb847a26fb54041ca18c2a985b08755615017f12fbe63e2ceb6",
+      "afterSha256": "8422a67bc8525b1a65f669035dd1af8d8673cbd5edc7acb9f3222e58833551e5"
+    },
+    {
+      "path": "tests/installation-release/installed-pwa.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "additionalFeatures": [
+        "browser"
+      ],
+      "requirements": "Opt-in PONDEROSA_REGRESSION_INSTALLED_PWA=1 and explicitly selected disposable native PONDEROSA_REGRESSION_BUNDLE; existing host Chromium; both providers disabled in its fresh data root; Windows qualification pending",
+      "origin": "Newly authored approved check 109 after consolidation; reuses existing shipping PWA helper"
+    },
+    {
+      "oldPath": "packaging/qualification/retire-doctor.test.mjs",
+      "path": "tests/installation-release/retire-doctor.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "additionalFeatures": [
+        "context-recovery"
+      ],
+      "requirements": "Built launcher/server; disposable install/data fixtures; original platform condition preserved",
+      "testBodiesSha256": "4cbd5cdad1c825f3decb4a5247943d00f66a5ff0c042cd757cc97b38c96bbd23",
+      "beforeSha256": "82679a9c34bfae97ca90e5ba1f5bb55339dbf3caaa26d86166cf9cf0e1504518",
+      "afterSha256": "82679a9c34bfae97ca90e5ba1f5bb55339dbf3caaa26d86166cf9cf0e1504518"
+    },
+    {
+      "oldPath": "packaging/qualification/verify-release-action-pins.test.mjs",
+      "path": "tests/installation-release/verify-release-action-pins.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "additionalFeatures": [],
+      "requirements": "Synthetic commit resolver; no GH_TOKEN/network",
+      "testBodiesSha256": "a42e5d18a6b429e7bd36d696ce2e54b5e9e55cda4f1a01de4a20e0f4e7144c12",
+      "beforeSha256": "1d13b785c235ca5f643c7ca2d54d04cd740812802be2047e7b022ab5809dfe83",
+      "afterSha256": "45f5967de43c8f85baf8172550eb689b1f40707786a7700c2ea87e580011d943"
+    },
+    {
+      "oldPath": "apps/server/test/organization.test.mjs",
+      "path": "tests/organizations/organization.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F01.01",
+        "F01.03",
+        "F01.04",
+        "F02.05",
+        "F10.01",
+        "F11.02",
+        "F12.01",
+        "F12.02",
+        "F12.04",
+        "F12.05",
+        "F14.03",
+        "F14.05",
+        "F21.01",
+        "F21.02",
+        "F21.03",
+        "F21.04",
+        "F21.05",
+        "F21.06",
+        "F22.01",
+        "F22.05",
+        "F26.04"
+      ],
+      "requirements": "Node24, built native server workspaces; owned inert roots in POSIX groups or Windows Jobs; no provider account",
+      "testBodiesSha256": "0590ff686789cd49e437541e182e74e1193ace2566759601de02fd37fb07c982",
+      "beforeSha256": "5d2d975bc62a2786f5fa14b1acde817efe0379cce0c7865cf8064678cff4267d",
+      "afterSha256": "f90b2aeca096c8b6886aa1b112f8c0b2ea8c4892d4e50c670d5f7db96445ce92"
+    },
+    {
+      "oldPath": "apps/server/test/capabilities.test.mjs",
+      "path": "tests/providers/capabilities.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F08.03",
+        "F24.05"
+      ],
+      "requirements": "Built engines; controlled MCP input; merged repair passes original check25 and adds discovery/error cases",
+      "testBodiesSha256": "991e2f6fe752bc85f3fa950d272067c159e84d44b025b742c1ca0b16495ec3ef",
+      "beforeSha256": "4e88207bc979425d920e4be3552e2dd30be240b740ec8ca9d2782ad2948c4ef2",
+      "afterSha256": "4e88207bc979425d920e4be3552e2dd30be240b740ec8ca9d2782ad2948c4ef2"
+    },
+    {
+      "oldPath": "apps/server/test/provider-access.test.mjs",
+      "path": "tests/providers/provider-access.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F24.06"
+      ],
+      "requirements": "Node24, built native server workspaces; owned inert roots in POSIX groups or Windows Jobs; no provider account",
+      "testBodiesSha256": "e9f0e70e32d7f0719375a8843082591b673241fa60c267e84c4adead8009d416",
+      "beforeSha256": "9acb02bf49352f3ebee8b698f88100c5fb60d0de6c3fa337adef593c864e7b17",
+      "afterSha256": "75fe07b8acfcfba6f0e998b19e2ac2bf9406abd0bdb1bd1f56b021a16d19619e"
+    },
+    {
+      "oldPath": "apps/web/test/home-refresh.test.mjs",
+      "path": "tests/workspace-navigation/home-refresh.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "additionalFeatures": [
+        "agents"
+      ],
+      "requirements": "Existing React/Query/TypeScript dependencies; synthetic query cache/API",
+      "testBodiesSha256": "1dd43f09b7c37976f7673406d8658831b34a1db741092d06e1da3497ae05a889",
+      "beforeSha256": "66d31ca6b3abc8b006359d68444efabe4be9f047306c9a0a5bab1ee2803eb2fa",
+      "afterSha256": "2b8c4724edeecfd1b21cc086359705787ad3d57502345b9a27e34c1b2c0ae982"
+    },
+    {
+      "oldPath": "apps/web/src/api/resilientEventSource.test.mjs",
+      "path": "tests/workspace-navigation/resilientEventSource.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "additionalFeatures": [
+        "F29.02",
+        "F29.03"
+      ],
+      "requirements": "Node 24 TypeScript transform and existing web dependencies; no account/browser",
+      "testBodiesSha256": "c87aab820f91784b9f5ac566e6166bdafda0b27d8d9326bc28836089117d23c3",
+      "beforeSha256": "0a69f77f1b9345a0207da379a4dbd90b867975144db9a927dfaa750ff1f6711e",
+      "afterSha256": "fd2133db6be3c7300d885c89f590a6d41998f8b8b6a79809285b3834999206ee"
+    },
+    {
+      "oldPath": "apps/server/test/workspace.test.mjs",
+      "path": "tests/workspace-navigation/workspace.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F01.02",
+        "F02.03",
+        "F02.04",
+        "F02.05",
+        "F03.01",
+        "F03.02",
+        "F03.03",
+        "F03.04",
+        "F05.05",
+        "F06.05",
+        "F08.02",
+        "F15.01",
+        "F15.02",
+        "F15.03",
+        "F15.05",
+        "F16.01",
+        "F16.04",
+        "F22.01",
+        "F22.02",
+        "F22.03",
+        "F22.04",
+        "F22.05",
+        "F23.01",
+        "F23.02",
+        "F23.03",
+        "F23.04",
+        "F25.01",
+        "F25.02",
+        "F25.03",
+        "F25.04",
+        "F29.05"
+      ],
+      "requirements": "Node24, built native server workspaces; owned inert roots in POSIX groups or Windows Jobs; no provider account",
+      "testBodiesSha256": "1454a918add452ae53ea5e69f23b2f72d12d94a0954265610376ab1f9f94501c",
+      "beforeSha256": "ea52e67d3dd936652eb875f1a47fa386688f95ded9c909641c3a61574b3a9daa",
+      "afterSha256": "6271175eda4f9a4f29d740b2c6a9080511dd3499e18ff2f071d850bf717554c7"
+    },
+    {
+      "path": "tests/chats/prompt-fences.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "agents",
+        "organizations"
+      ],
+      "requirements": "Built agents/native SQLite; in-memory cases and owned native controlled provider routes; no provider account",
+      "origin": "Current-turn/steering communication identity repair; authoritative publication and replay tests"
+    },
+    {
+      "path": "tests/chats/decision-skip.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "agents",
+        "notifications"
+      ],
+      "requirements": "Built workspaces; disposable canonical visibility test on every host, controlled owned POSIX fixture for route/steering/reopen checks; no provider account",
+      "origin": "Explicit Skip question and hidden pending-Decision repair"
+    },
+    {
+      "path": "tests/files-results/artifact-storage.test.mjs",
+      "feature": "files-results",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built agents/native host; disposable native artifacts and workers; no provider account; Linux/macOS/Windows",
+      "origin": "Portable artifact storage filename repair"
+    },
+    {
+      "path": "tests/installation-release/first-party-notices.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Node built-in test runner; disposable notice files; no provider or network",
+      "origin": "Approved first-party packaging omission correction"
+    },
+    {
+      "path": "tests/chats/mentionPresentation.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built core; real Markdown/React rendering; no provider/browser account",
+      "origin": "URL-fragment corruption regression and durable renamed mentions"
+    },
+    {
+      "path": "tests/installation-release/retained-root-startup.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "additionalFeatures": [
+        "files-results"
+      ],
+      "requirements": "Node24, built launcher/server/native-host; Windows-only disposable retained roots and current-state startup admission; no provider account",
+      "origin": "Windows normal-profile retained-root enumeration error 50 regression: independent cursors, identity/no-follow/read-only/closed authority, nested and transferred handles, existing current-state launcher admission"
+    },
+    {
+      "path": "tests/installation-release/schema-line-endings.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Node24, built agents/native-host; synthetic real SQLite declarations and disposable current-state admission; no provider account",
+      "origin": "Current epoch2 LF/CRLF schema portability: exact literal/identifier/index/trigger semantics, comment boundaries, unchanged stored declarations/generation and changed-index refusal"
+    },
+    {
+      "path": "tests/installation-release/data-directory-backup.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built native agents/state admission; disposable data and external working folders; no provider account",
+      "origin": "Portable external backup binding and native restore regression"
+    },
+    {
+      "path": "tests/installation-release/appimage-sandbox.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Node24; POSIX entry checks on Linux/macOS, no real administrator operation; actual AppImage launch checked separately",
+      "origin": "AppImage scoped administrator setup boundary"
+    },
+    {
+      "path": "tests/installation-release/bundle-privacy.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "requirements": "Node24; disposable files only; no provider requests",
+      "origin": "Public beta packaging: reject build-machine paths and preserve runtime addons while dropping native build intermediates"
+    }
+  ],
+  "retainedReleasePayload": [
+    {
+      "oldPath": "packaging/qualification/canonical-path.mjs",
+      "path": "packaging/qualification/canonical-path.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/enforce-release-policy.mjs",
+      "path": "packaging/qualification/enforce-release-policy.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/http-response.mjs",
+      "path": "packaging/qualification/http-response.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/launcher-safety.mjs",
+      "path": "packaging/qualification/launcher-safety.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/macos-bundle-metadata.mjs",
+      "path": "packaging/qualification/macos-bundle-metadata.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/macos-deployment-target.mjs",
+      "path": "packaging/qualification/macos-deployment-target.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/macos-provider-evidence.mjs",
+      "path": "packaging/qualification/macos-provider-evidence.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/persistent-pwa-upgrade.mjs",
+      "path": "packaging/qualification/persistent-pwa-upgrade.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/process-state.mjs",
+      "path": "packaging/qualification/process-state.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/provider-reachability.mjs",
+      "path": "packaging/qualification/provider-reachability.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/qualify-installer.mjs",
+      "path": "packaging/qualification/qualify-installer.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/qualify-launcher-lifecycle.mjs",
+      "path": "packaging/qualification/qualify-launcher-lifecycle.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/qualify-macos-gui-launch.mjs",
+      "path": "packaging/qualification/qualify-macos-gui-launch.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/symlink-portability.mjs",
+      "path": "packaging/qualification/symlink-portability.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/verify-installed-bundle.mjs",
+      "path": "packaging/qualification/verify-installed-bundle.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    },
+    {
+      "oldPath": "packaging/qualification/verify-release-action-pins.mjs",
+      "path": "packaging/qualification/verify-release-action-pins.mjs",
+      "classification": "shipping-release-entrypoint-or-helper",
+      "runner": "existing packaging/qualification entrypoints; opt-in installed-release qualification",
+      "platformProviderRequirements": "Existing native platform/install-root/browser/provider gates unchanged"
+    }
+  ],
+  "unresolvedConsumers": [
+    {
+      "consumer": ".github/workflows/native-beta.yml:Verify native voice storage recovery",
+      "missingPath": "apps/server/test/gui-qualification-pid.test.mjs",
+      "disposition": "Gate preserved verbatim; no replacement/import/removal"
+    },
+    {
+      "consumer": ".github/workflows/native-beta.yml:Verify native voice storage recovery",
+      "missingPath": "apps/server/test/speech-sandbox.test.mjs",
+      "disposition": "Gate preserved verbatim; no replacement/import/removal"
+    },
+    {
+      "consumer": ".github/workflows/native-beta.yml:Verify native voice storage recovery",
+      "missingPath": "apps/server/test/speech-cleanup-race.test.mjs",
+      "disposition": "Gate preserved verbatim; no replacement/import/removal"
+    },
+    {
+      "consumer": ".github/workflows/native-beta.yml:Verify native voice storage recovery",
+      "missingPath": "apps/server/test/speech-recovery.test.mjs",
+      "disposition": "Gate preserved verbatim; no replacement/import/removal"
+    },
+    {
+      "consumer": ".github/workflows/native-beta.yml:Install native speech sandbox dependencies",
+      "missingPath": ".github/scripts/prepare-linux-speech-tests.sh",
+      "disposition": "Gate preserved verbatim; no replacement/import/removal"
+    },
+    {
+      "consumer": "apps/browser-extension/README.md:Tests",
+      "missingCommand": "pnpm --filter @ponderosa/browser-extension test:built",
+      "disposition": "Existing documentation refers to an absent package script; no suite imported or command invented"
+    },
+    {
+      "consumer": "apps/browser-extension/README.md:Tests",
+      "missingPath": "apps/browser-extension/test/extension-load.check.mjs",
+      "disposition": "Existing documentation preserved; no historical suite imported"
+    }
+  ],
+  "upstreamMaster": "65f8dd704cbf5b72930d01d41a2cfc960cba78f5",
+  "alignedConsolidationHead": "43372a05f211917051f877bce2ed12cea373e03b",
+  "helpers": [
+    {
+      "oldPath": "apps/server/test/fixture.mjs",
+      "path": "tests/shared/fixture.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-fixture-or-loader"
+    },
+    {
+      "oldPath": "apps/server/test/ui-qualification.mjs",
+      "path": "tests/workspace-navigation/ui-qualification.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "oldPath": "apps/web/test/resolve-typescript.mjs",
+      "path": "tests/shared/resolve-typescript.mjs",
+      "moduleBase": "apps/web/package.json",
+      "classification": "shared-fixture-or-loader"
+    },
+    {
+      "path": "tests/shared/real-codex-fixture.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-real-provider-fixture",
+      "origin": "Extracted existing withRealCodex helper; existing assertions/gates retained; exposes owned root for new captured-file isolation"
+    },
+    {
+      "path": "tests/shared/windows-pwa-browser.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-native-Windows-PWA-fixture"
+    }
+  ],
+  "support": [
+    {
+      "path": "tests/shared/run-tests.mjs",
+      "classification": "runner-or-inventory",
+      "origin": "PR #693"
+    },
+    {
+      "path": "tests/shared/workspace-resolution.mjs",
+      "classification": "runner-or-inventory",
+      "origin": "PR #693"
+    },
+    {
+      "path": "tests/shared/inventory.json",
+      "classification": "runner-or-inventory",
+      "origin": "PR #693"
+    },
+    {
+      "path": "tests/shared/web-typescript-loader.mjs",
+      "classification": "runner-or-inventory",
+      "origin": "PR #693"
+    }
+  ],
+  "upstreamSynchronizationHead": "22e99b4165357fc0fd79715880c47f605a5fcbf6"
+}

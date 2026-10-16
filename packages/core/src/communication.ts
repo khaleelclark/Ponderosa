@@ -1,0 +1,381 @@
+/** Canonical communication contracts shared by persistence, routing, and UI. */
+
+import type { AssetDto, CommunicationAttachmentDto } from "./dto.js";
+
+export interface MessageTagToken {
+  /** Authored handle without the leading hash. */
+  handle: string;
+  /** UTF-16 string offset of the leading hash. */
+  start: number;
+  /** Exclusive UTF-16 string offset after the handle. */
+  end: number;
+}
+
+const MESSAGE_TAG_PATTERN = /(^|[^\p{L}\p{N}_-])#([\p{L}\p{N}_-]+)/gu;
+
+/**
+ * Find authored #handles using the same punctuation-aware token boundaries on
+ * every projection and presentation surface.
+ */
+export function messageTagTokens(text: string): MessageTagToken[] {
+  return [...text.matchAll(MESSAGE_TAG_PATTERN)].map(match => {
+    const boundaryLength = (match[1] ?? "").length;
+    const start = (match.index ?? 0) + boundaryLength;
+    return {
+      handle: match[2]!,
+      start,
+      end: start + match[2]!.length + 1,
+    };
+  });
+}
+
+export type CommunicationIntent = "broadcast" | "collaboration" | "user_dm";
+
+export type CommunicationActor =
+  | { kind: "user"; userId: string }
+  | { kind: "agent"; agentId: string; executionId?: string }
+  | { kind: "system"; component: string };
+
+/** Long-form Markdown owned by exactly one immutable communication event. */
+export interface CommunicationDocumentRecord {
+  id: string;
+  title: string;
+  mediaType: "text/markdown";
+  artifactId: string;
+  byteLength: number;
+  authorAgentId?: string;
+  authorUserId?: string;
+  executionId?: string;
+  createdAt: string;
+}
+
+export type CommunicationDocumentReference = CommunicationDocumentRecord & {
+  previewUrl: string;
+  downloadUrl: string;
+};
+
+/** Citation metadata accepted only after server-side URL/title normalization. */
+export interface VerifiedCitationRecord {
+  url: string;
+  title: string;
+  verifiedAt: string;
+}
+
+interface CommunicationEventBase {
+  eventId: string;
+  schemaVersion: 2;
+  projectId: string;
+  /** Workstream of origin; event identity remains project-global. */
+  conversationId?: string;
+  sender: CommunicationActor;
+  text: string;
+  /** Immutable, server-validated artifact references authored with this event. */
+  attachments?: AssetDto[];
+  /** Immutable identities of existing Project-managed artifacts attached by an Agent. */
+  artifactIds?: string[];
+  document?: CommunicationDocumentRecord;
+  citations?: VerifiedCitationRecord[];
+  createdAt: string;
+  correlationId?: string;
+  causationId?: string;
+  idempotencyKey?: string;
+  /** Immutable link from an operator correction to the original communication. */
+  correctionOfEventId?: string;
+  /** Auditable selector used when a collaboration audience was resolved. */
+  audienceSelector?: "mention" | "everyone";
+  /** Durable send-time labels are display fallback only; IDs remain authoritative. */
+  identity?: {
+    senderLabel: string;
+    recipientLabels?: Record<string, string>;
+    /** Immutable send-time handles preserve exact mention presentation after rename/deletion. */
+    recipientHandles?: Record<string, string>;
+    /** Send-time origin title for durable cross-chat provenance. */
+    conversationLabel?: string;
+  };
+}
+
+/** A user-authored DM may address one or more explicit stable agents; an
+ * agent-authored DM remains between that agent and the local user. */
+export type CommunicationEvent = CommunicationEventBase & (
+  | { intent: "broadcast"; audience: { kind: "organization"; organizationId: string } }
+  | { intent: "user_dm"; audience:
+      | { kind: "user"; userId: string }
+      | { kind: "user_agent"; userId: string; agentId: string }
+      | { kind: "user_agents"; userId: string; agentIds: [string, ...string[]] } }
+  | { intent: "collaboration"; audience: { kind: "agents"; agentIds: [string, ...string[]] } }
+);
+export type CommunicationAudience = CommunicationEvent["audience"];
+
+const communicationIntentValues: ReadonlySet<string> = new Set<CommunicationIntent>([
+  "broadcast",
+  "collaboration",
+  "user_dm",
+]);
+
+function communicationRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function nonEmptyStringArray(value: unknown): value is [string, ...string[]] {
+  return Array.isArray(value) && value.length > 0 && value.every(nonEmptyString);
+}
+
+/** Structural runtime guard for the canonical authored-identity union. */
+export function isCommunicationActor(value: unknown): value is CommunicationActor {
+  const actor = communicationRecord(value);
+  if (!actor || !nonEmptyString(actor.kind)) return false;
+  if (actor.kind === "user") return nonEmptyString(actor.userId);
+  if (actor.kind === "agent") {
+    return nonEmptyString(actor.agentId) &&
+      (actor.executionId === undefined || nonEmptyString(actor.executionId));
+  }
+  return actor.kind === "system" && nonEmptyString(actor.component);
+}
+
+/** Structural runtime guard for every canonical audience discriminator. */
+export function isCommunicationAudience(value: unknown): value is CommunicationAudience {
+  const audience = communicationRecord(value);
+  if (!audience || !nonEmptyString(audience.kind)) return false;
+  if (audience.kind === "organization") return nonEmptyString(audience.organizationId);
+  if (audience.kind === "user") return nonEmptyString(audience.userId);
+  if (audience.kind === "agents") return nonEmptyStringArray(audience.agentIds);
+  if (audience.kind === "user_agent") {
+    return nonEmptyString(audience.userId) && nonEmptyString(audience.agentId);
+  }
+  return audience.kind === "user_agents" && nonEmptyString(audience.userId) &&
+    nonEmptyStringArray(audience.agentIds);
+}
+
+/**
+ * Validate the required structural fields and correlated discriminators of one
+ * canonical Communication. Project membership and conversation authority remain
+ * persistence concerns and are checked transactionally by the owning store.
+ */
+export function isCommunicationEvent(value: unknown): value is CommunicationEvent {
+  const event = communicationRecord(value);
+  if (!event || event.schemaVersion !== 2 ||
+      !nonEmptyString(event.eventId) || !nonEmptyString(event.projectId) ||
+      (event.conversationId !== undefined && !nonEmptyString(event.conversationId)) ||
+      !isCommunicationActor(event.sender) || !nonEmptyString(event.intent) ||
+      !communicationIntentValues.has(event.intent) || !isCommunicationAudience(event.audience) ||
+      typeof event.text !== "string" || !nonEmptyString(event.createdAt) ||
+      (event.artifactIds !== undefined && (!Array.isArray(event.artifactIds) ||
+        event.artifactIds.length === 0 || !event.artifactIds.every(nonEmptyString)))) return false;
+
+  const audience = event.audience;
+  return (event.intent === "broadcast" && audience.kind === "organization") ||
+    (event.intent === "user_dm" && (audience.kind === "user" || audience.kind === "user_agent" || audience.kind === "user_agents")) ||
+    (event.intent === "collaboration" && audience.kind === "agents");
+}
+
+/**
+ * Append-only replacement text for one immutable communication. The original
+ * event continues to own scope, audience, attachments, and send provenance.
+ * Revisions are presentation/context projection inputs only: they never create
+ * deliveries or wake a runtime.
+ */
+export interface CommunicationRevisionEvent {
+  eventId: string;
+  schemaVersion: 1;
+  kind: "edit";
+  projectId: string;
+  conversationId: string;
+  targetEventId: string;
+  sender: CommunicationActor;
+  text: string;
+  createdAt: string;
+  idempotencyKey: string;
+}
+
+export type CommunicationProjectionSurface =
+  | "conversation"
+  | "collaboration_view"
+  | "direct_agent_audit"
+  | "agent_inbox"
+  | "user_inbox";
+
+export type CommunicationRecipient =
+  | { kind: "agent"; agentId: string }
+  | { kind: "user"; userId: string };
+
+/**
+ * The complete, deterministic routing result for one canonical communication.
+ *
+ * This is deliberately independent of HTTP routes, rendered tags, and chat
+ * rooms. Every adapter and projection writer must consume this policy instead
+ * of re-interpreting intent locally.
+ */
+export interface CommunicationBehavior {
+  contextPolicy: CommunicationContextPolicy;
+  projectionTargets: Array<{
+    surface: CommunicationProjectionSurface;
+    projectionKey: string;
+  }>;
+  deliveryRecipients: CommunicationRecipient[];
+  /** Agent recipients for which the authored event is actionable. */
+  actionableAgentIds: string[];
+}
+
+function uniqueSorted(values: readonly string[]): string[] {
+  return [...new Set(values)].sort();
+}
+
+function eventAgentIds(event: CommunicationEvent): string[] {
+  if (event.intent === "collaboration") return uniqueSorted(event.audience.agentIds);
+  if (event.intent === "user_dm") {
+    return event.audience.kind === "user"
+      ? []
+      : uniqueSorted(event.audience.kind === "user_agent"
+        ? [event.audience.agentId]
+        : event.audience.agentIds);
+  }
+  return [];
+}
+
+function eventUserId(event: CommunicationEvent): string | undefined {
+  return event.intent === "user_dm" ? event.audience.userId : undefined;
+}
+
+/**
+ * Executable communication behavior matrix. The returned ordering is stable so
+ * projections can be materialized idempotently.
+ */
+export function deriveCommunicationBehavior(event: CommunicationEvent): CommunicationBehavior {
+  const projectionTargets: CommunicationBehavior["projectionTargets"] = [];
+  const agentIds = eventAgentIds(event);
+  const userId = eventUserId(event);
+  const addProjection = (surface: CommunicationProjectionSurface, projectionKey?: string) => {
+    if (projectionKey && !projectionTargets.some((item) => item.surface === surface && item.projectionKey === projectionKey)) {
+      projectionTargets.push({ surface, projectionKey });
+    }
+  };
+
+  if (event.intent === "broadcast") {
+    addProjection("conversation", event.conversationId);
+    if (event.sender.kind === "agent") addProjection("direct_agent_audit", event.sender.agentId);
+  } else if (event.intent === "user_dm") {
+    addProjection("conversation", event.conversationId);
+    for (const agentId of agentIds) {
+      addProjection("direct_agent_audit", agentId);
+      if (event.sender.kind === "user") addProjection("agent_inbox", agentId);
+    }
+    addProjection("user_inbox", userId);
+  } else if (event.intent === "collaboration") {
+    addProjection("collaboration_view", event.conversationId);
+    if (event.sender.kind === "agent") addProjection("direct_agent_audit", event.sender.agentId);
+    for (const agentId of agentIds) {
+      addProjection("direct_agent_audit", agentId);
+      addProjection("agent_inbox", agentId);
+    }
+  }
+
+  const deliveryRecipients: CommunicationRecipient[] = [];
+  const actionableAgentIds: string[] = [];
+  if (event.intent === "collaboration") {
+    for (const agentId of agentIds) {
+      deliveryRecipients.push({ kind: "agent", agentId });
+      actionableAgentIds.push(agentId);
+    }
+  } else if (event.intent === "user_dm") {
+    if (event.sender.kind === "user") {
+      for (const agentId of agentIds) {
+        deliveryRecipients.push({ kind: "agent", agentId });
+        actionableAgentIds.push(agentId);
+      }
+    } else if (userId) {
+      deliveryRecipients.push({ kind: "user", userId });
+    }
+  }
+
+  return {
+    contextPolicy: event.intent === "broadcast" ? "organizational" : "local_only",
+    projectionTargets,
+    deliveryRecipients,
+    actionableAgentIds: uniqueSorted(actionableAgentIds),
+  };
+}
+
+export function communicationHasProjectionTarget(
+  event: CommunicationEvent,
+  surface: CommunicationProjectionSurface,
+  projectionKey: string,
+): boolean {
+  return deriveCommunicationBehavior(event).projectionTargets.some((target) =>
+    target.surface === surface && target.projectionKey === projectionKey);
+}
+
+/** Rebuildable placement; unique by (eventId, surface, projectionKey). */
+export interface CommunicationProjection {
+  eventId: string;
+  surface: CommunicationProjectionSurface;
+  projectionKey: string;
+  projectedAt: string;
+  /** Later append-only revisions may enrich pre-cutover placement-only records. */
+  revision?: number;
+  /** Deterministic materialization metadata; the canonical event still owns text. */
+  message?: {
+    messageId: string;
+    role: "user" | "assistant" | "system";
+    /** Server-rendered text may add display handles without changing event text. */
+    renderedText?: string;
+    createdAt: string;
+    /** Stable per-project materialization order for identical timestamps. */
+    orderKey?: string;
+    /** Direct-audit ordering key from the canonical agent log. */
+    sequence?: number;
+    authorAgentId?: string;
+    attachmentIds?: string[];
+    attachments?: CommunicationAttachmentDto[];
+    artifactIds?: string[];
+  };
+}
+
+export interface ProjectedCommunicationMessage {
+  eventId: string;
+  conversationId?: string;
+  surface: CommunicationProjectionSurface;
+  projectionKey: string;
+  messageId: string;
+  role: "user" | "assistant" | "system";
+  text: string;
+  createdAt: string;
+  orderKey?: string;
+  sequence?: number;
+  authorAgentId?: string;
+  attachmentIds?: string[];
+  attachments?: CommunicationAttachmentDto[];
+  artifactIds?: string[];
+  document?: CommunicationDocumentReference;
+  citations?: VerifiedCitationRecord[];
+  executionId?: string;
+  correctionOfEventId?: string;
+  editedAt?: string;
+  editRevision?: number;
+}
+
+export type CommunicationContextPolicy = "local_only" | "organizational";
+
+/** Integrity report computed entirely from canonical communication records. */
+export interface CommunicationReconciliationReport {
+  projectId: string;
+  canonicalEvents: number;
+  linkedProjections: number;
+  missingProjectionEventIds: string[];
+  duplicateProjectionEventIds: string[];
+  orphanProjectionEventIds: string[];
+  missingProjectionMetadataEventIds: string[];
+  orphanRuntimeCommunicationEventIds: string[];
+  orphanRequestCommunicationEventIds: string[];
+  runtimePayloadConflicts: Array<{
+    eventId: string;
+    canonicalHash: string;
+    runtimeHash: string;
+  }>;
+  ok: boolean;
+}

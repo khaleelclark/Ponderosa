@@ -1,0 +1,1706 @@
+{
+  "base_revision": "6c7266d13a5768564c26069e0be1649315542962",
+  "scope": "Approved dev-based maintained suite. A mapped file supplies evidence for a slice, not blanket completion of the numbered check or platform qualification. Wiki and Automations excluded.",
+  "checks": [
+    {
+      "number": 1,
+      "features": [
+        "F04.01",
+        "F05.02",
+        "F15.01"
+      ],
+      "approved": true,
+      "intended_behavior": "Chat reply stays in Chat, command output stays in the work log, and retrying a send does not duplicate work.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 2,
+      "features": [
+        "F09.01",
+        "F09.02"
+      ],
+      "approved": true,
+      "intended_behavior": "A delayed save response cannot erase newer typing or another tab\u2019s unsent draft.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/draftTextRecovery.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 3,
+      "features": [
+        "F05.03",
+        "F06.03",
+        "F08.01"
+      ],
+      "approved": true,
+      "intended_behavior": "An explicitly attached file is readable on the Agent\u2019s next turn, and another Chat cannot access it.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs",
+        "tests/agents/real-codex.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 4,
+      "features": [
+        "F28.01"
+      ],
+      "approved": true,
+      "intended_behavior": "Taking manual browser control stops Agent actions; resuming automation keeps the same browser session.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/browser/browser-control.test.mjs",
+        "tests/browser/native-browser.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Opt-in actual Chrome navigation, fill/click, selected file bytes, no form submission, PNG capture and owned shutdown. Linux additionally exercises native manual pause/resume with unchanged process/page contents. Mac is headless: native Mac UI/manual control unqualified. Server artifact/grant authorization pipeline and other device cases remain separate."
+    },
+    {
+      "number": 5,
+      "features": [
+        "F05.01"
+      ],
+      "approved": true,
+      "intended_behavior": "A plain Chat request goes to the selected responsible Agent; choosing a new Agent creates the intended recipient.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/attachmentsAndRouting.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Routing helper only; selected-recipient/new-Agent UI remains manual."
+    },
+    {
+      "number": 6,
+      "features": [
+        "F06.02"
+      ],
+      "approved": true,
+      "intended_behavior": "Renaming an Agent does not change who receives messages addressed to its stable identity.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 7,
+      "features": [
+        "F06.01"
+      ],
+      "approved": true,
+      "intended_behavior": "A direct message reaches only its explicitly selected Agent recipients.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs",
+        "tests/agents/real-codex.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 8,
+      "features": [
+        "F06.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Each direct-message recipient receives only the attachments intended for that recipient.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/files-results/files.test.mjs",
+        "tests/chats/attachmentsAndRouting.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 9,
+      "features": [
+        "F06.01",
+        "F06.03"
+      ],
+      "approved": true,
+      "intended_behavior": "A fresh unrelated Agent does not inherit private direct messages or private files.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 10,
+      "features": [
+        "F07.01",
+        "F07.02"
+      ],
+      "approved": true,
+      "intended_behavior": "Team Chat shows collaboration separately from ordinary shared Chat.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs",
+        "tests/agents/real-codex.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 11,
+      "features": [
+        "F06.04"
+      ],
+      "approved": true,
+      "intended_behavior": "An unavailable recipient produces honest delivery feedback; retry does not send the same message twice.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/agents/runtime-boundaries.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 12,
+      "features": [
+        "F05.04",
+        "F06.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Delivery receipts distinguish accepted work from an actual completed reply.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 13,
+      "features": [
+        "F05.05",
+        "F06.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Loading older messages and following a message link finds the correct message without duplicating it.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/workspace-navigation/workspace.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 14,
+      "features": [
+        "F09.01",
+        "F09.02"
+      ],
+      "approved": true,
+      "intended_behavior": "Recovered drafts preserve their text, recipient selections and staged attachments in the correct Chat.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs",
+        "tests/chats/draftTextRecovery.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 15,
+      "features": [
+        "F09.02"
+      ],
+      "approved": true,
+      "intended_behavior": "Restoring or discarding one recovered draft does not alter another Chat\u2019s draft.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs",
+        "tests/chats/draftTextRecovery.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 16,
+      "features": [
+        "F09.03",
+        "F09.04"
+      ],
+      "approved": true,
+      "intended_behavior": "Losing the send response preserves the exact pending submission instead of creating a second request.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 17,
+      "features": [
+        "F05.03",
+        "F08.01"
+      ],
+      "approved": true,
+      "intended_behavior": "A newly started provider session can read an explicitly attached file.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs",
+        "tests/agents/real-codex.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 18,
+      "features": [
+        "F05.03",
+        "F08.01"
+      ],
+      "approved": true,
+      "intended_behavior": "After server close/reopen, explicitly referencing an earlier attachment still supplies its correct bytes.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 19,
+      "features": [
+        "F08.01",
+        "F08.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Photo and folder uploads preserve the submitted contents and respect the existing upload limits.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/files-results/files.test.mjs",
+        "tests/chats/attachmentsAndRouting.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "PNG original bytes plus independently validated folder ZIP and input limits; real camera/folder-picker UI remains manual."
+    },
+    {
+      "number": 20,
+      "features": [
+        "F05.03",
+        "F08.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Long pasted text reaches the intended request without truncation or replacement by the wrong attachment.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/files-results/files.test.mjs",
+        "tests/chats/attachmentsAndRouting.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 21,
+      "features": [
+        "F08.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Removing a staged attachment prevents it from being included in the submitted request.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 22,
+      "features": [
+        "F08.05",
+        "F09.01"
+      ],
+      "approved": true,
+      "intended_behavior": "Retrying a failed upload does not create duplicate attachments or attach it to the wrong draft.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/uploadRetry.test.mjs",
+        "tests/chats/attachmentsAndRouting.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 23,
+      "features": [
+        "F08.02"
+      ],
+      "approved": true,
+      "intended_behavior": "Working-folder file and folder suggestions using @ refer to the correct owner\u2019s files.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/workspace-navigation/workspace.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 24,
+      "features": [
+        "F08.03",
+        "F24.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Capability discovery distinguishes usable, unavailable and disabled tools, skills, plugins and apps.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/providers/capabilities.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 25,
+      "features": [
+        "F24.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Provider error text is shown as an error, rather than being listed as an installed MCP tool.",
+      "status": "known_failing_executable_todo",
+      "test_files": [
+        "tests/providers/capabilities.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 26,
+      "features": [
+        "F08.04",
+        "F24.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Unknown or disabled provider commands are refused without performing the requested action.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs",
+        "tests/agents/runtime-boundaries.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 27,
+      "features": [
+        "F08.04",
+        "F14.03"
+      ],
+      "approved": true,
+      "intended_behavior": "An approved provider command executes only within its granted Agent and Run scope.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/agents/runtime-boundaries.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Selected idle structured runtime invocation and busy/unavailable refusal; real provider commands and privileged approvals remain manual."
+    },
+    {
+      "number": 28,
+      "features": [
+        "F24.01"
+      ],
+      "approved": true,
+      "intended_behavior": "Provider status honestly distinguishes signed in, disabled, unavailable and still checking.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/agents/runtime-boundaries.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Controlled authenticated/disabled observations and intake refusal; real unavailable/checking/authentication failures not qualified."
+    },
+    {
+      "number": 29,
+      "features": [
+        "F04.05",
+        "F24.02",
+        "F24.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Provider/model/reasoning/speed defaults persist and apply to the intended new Chat or Agent.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 30,
+      "features": [
+        "F24.02",
+        "F26.04",
+        "F26.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Invalid settings are rejected without replacing the last valid settings.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 31,
+      "features": [
+        "F24.06"
+      ],
+      "approved": true,
+      "intended_behavior": "Test Access performs its minimal provider request only after the user invokes and confirms it.",
+      "status": "authored_partial_with_manual_failure",
+      "test_files": [
+        "tests/providers/provider-access.test.mjs"
+      ],
+      "mode": "controlled",
+      "remaining_prerequisite": "Manual Test Access confirmation/minimal-request UI qualification with permitted existing provider access.",
+      "coverage_limits": "Status GET does not probe, explicit selected-provider recheck probes once, unknown provider is refused and no Agent task is created. Manual controlled Mac browser opening at dev e0daeb02 automatically called /api/engines/claude/recheck before any Test Access confirmation; App.tsx automatic recheck is the observed caller. Actual provider minimal request and confirmation/cancel remain unqualified."
+    },
+    {
+      "number": 32,
+      "features": [
+        "F10.01"
+      ],
+      "approved": true,
+      "intended_behavior": "Queued messages retain their order and each accepted message executes once.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 33,
+      "features": [
+        "F10.02"
+      ],
+      "approved": true,
+      "intended_behavior": "Editing or deleting a queued message affects the selected queued message only.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 34,
+      "features": [
+        "F10.02",
+        "F10.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Steering changes the intended queued or active work without silently creating duplicate work.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/agents/runtime-boundaries.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 35,
+      "features": [
+        "F10.04"
+      ],
+      "approved": true,
+      "intended_behavior": "Cancel targets the exact active Run, rather than a newer or unrelated Run.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 36,
+      "features": [
+        "F10.04",
+        "F15.01"
+      ],
+      "approved": true,
+      "intended_behavior": "Late output from cancelled or replaced work cannot appear as a new successful reply.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 37,
+      "features": [
+        "F10.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Stop All affects the displayed organization; incomplete scope cannot be mistaken for a complete stop.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/agents/stop-all.test.mjs"
+      ],
+      "mode": "controlled",
+      "remaining_prerequisite": "Giant/paged organization targeting and real-provider drain remain separate; partial-failure/retry UI now observed on native Mac and Linux backends with a Mac in-app client.",
+      "manual_evidence": "private-approved-checks-20261013/evidence/stop-all-manual-audit.json; paired mac/linux stop screenshots and canonical state at continued test revision.",
+      "coverage_limits": "Actual frontend stop helper preserves exact selected Run IDs and replay identities and reports controlled partial refusals. Real component rendering offers Stop All for a complete active roster and hides it for an incomplete roster. Actual failure-banner interaction, large/paged organization targeting and native provider drain remain separate manual checks. Controlled manual UI on native Mac and Linux backends confirms 1-stopped/1-failed feedback, same-child retry, unrelated held Run preserved, and flat/hierarchy retaining all three scoped Agents. Client is the Mac in-app browser; giant/paged roster and real-model cancellation variants remain separate."
+    },
+    {
+      "number": 38,
+      "features": [
+        "F26.04",
+        "F10.01"
+      ],
+      "approved": true,
+      "intended_behavior": "The configured concurrent-Run limit is respected, and queued work proceeds when capacity becomes available.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/organizations/organization.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 39,
+      "features": [
+        "F10.04",
+        "F21.02"
+      ],
+      "approved": true,
+      "intended_behavior": "Failed process cleanup blocks unsafe replacement and remains available for a later safe retry.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/browser/browser-control.test.mjs",
+        "tests/agents/provider-cleanup.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Browser manager with controlled driver cleanup failure/retry; native provider/process teardown faults remain unqualified.",
+      "native_cleanup_slice": "New controlled POSIX case: retained live root on close refusal, exact-root automatic retry, no compact replacement/input replay before observed exit, unrelated root preserved, later explicit task consumes actual accepted turn/steering and replies once. Actual provider teardown faults and daemon-crash durability remain separate."
+    },
+    {
+      "number": 40,
+      "features": [
+        "F11.01",
+        "F11.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Retrying Agent creation creates one Agent with the selected Chat, provider, instructions and initial request.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/agents/delegation.test.mjs",
+        "tests/agents/real-codex.test.mjs"
+      ],
+      "mode": "controlled",
+      "latest_real_mac_findings": "At dev e0daeb02 with installed app CLI 0.162.0-alpha.17.2: 8/10 real cases pass. Approval-decline acknowledgement and managed-creation final integration fail with 409 steering fences; exact rejected IDs are acknowledged turn injections. Failures remain unsuppressed with retained roots; see Remaining_Approved_Checks_Continued.json."
+    },
+    {
+      "number": 41,
+      "features": [
+        "F11.02"
+      ],
+      "approved": true,
+      "intended_behavior": "Creating from a preset preserves the selected setup without changing the original preset.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/organizations/organization.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 42,
+      "features": [
+        "F12.02"
+      ],
+      "approved": true,
+      "intended_behavior": "Renaming or changing an Agent\u2019s reporting line preserves its identity, history and intended relationships.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/organizations/organization.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 43,
+      "features": [
+        "F12.01"
+      ],
+      "approved": true,
+      "intended_behavior": "Chat member search returns matching Agents; a search error is not presented as \u2018no Agents\u2019.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/organizations/organization.test.mjs"
+      ],
+      "mode": "controlled",
+      "manual_ui_qualification_20261013": {
+        "revision": "ebae3246c81440a1df120313c0c8f42f8fbc9f05",
+        "evidence": "private-approved-ui-20261013/HANDOFF.json",
+        "finding": "FAIL on native Linux and Mac backends with the Mac in-app client at ebae3246: searching UI roster 120 sends the actual members request, which returns 400 (ESCAPE expression must be a single character); UI incorrectly says No Agents Yet/Create an Agent. Preserved screenshots, request traces and error bodies. No product repair or passing-case claim."
+      }
+    },
+    {
+      "number": 44,
+      "features": [
+        "F12.01"
+      ],
+      "approved": true,
+      "intended_behavior": "Hierarchy, flat view, filters and pagination show the same underlying Agents without loss or duplication.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/organizations/organization.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Stable backend hierarchy/search/pagination; complete flat/filter UI equivalence remains manual.",
+      "manual_ui_qualification_20261013": {
+        "revision": "ebae3246c81440a1df120313c0c8f42f8fbc9f05",
+        "evidence": "private-approved-ui-20261013/HANDOFF.json",
+        "finding": "Manual slice passed on native Linux/Mac backends, Mac in-app client: all 120 seeded roster identities remain in hierarchy, flat and Idle-filter views; controlled delegated children remain under their manager. Unfiltered collection has 123 members. API cursor requests are observed. Search is separately failing check 43; every filter/device is not qualified."
+      }
+    },
+    {
+      "number": 45,
+      "features": [
+        "F12.04",
+        "F12.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Bulk Agent actions remain within the selected subtree and its granted management permissions.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/organizations/organization.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 46,
+      "features": [
+        "F13.01"
+      ],
+      "approved": true,
+      "intended_behavior": "Delegating to several Agents creates the intended Agents/requests/result group together, without partial or duplicate creation.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs",
+        "tests/agents/real-codex.test.mjs",
+        "tests/agents/delegation.test.mjs"
+      ],
+      "mode": "controlled",
+      "latest_real_mac_findings": "At dev e0daeb02 with installed app CLI 0.162.0-alpha.17.2: 8/10 real cases pass. Approval-decline acknowledgement and managed-creation final integration fail with 409 steering fences; exact rejected IDs are acknowledged turn injections. Failures remain unsuppressed with retained roots; see Remaining_Approved_Checks_Continued.json."
+    },
+    {
+      "number": 47,
+      "features": [
+        "F13.02"
+      ],
+      "approved": true,
+      "intended_behavior": "All, any and quorum result collection follow their selected completion rules.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs",
+        "tests/agents/real-codex.test.mjs",
+        "tests/agents/delegation.test.mjs",
+        "tests/agents/real-joins.test.mjs"
+      ],
+      "mode": "controlled",
+      "real_join_slice": "Actual Codex with test-controlled worker start ordering: native Mac passes any (1/2), quorum (2/3), and each-result progress then final. Native Linux passes any/quorum; each-result first progress reply is rejected with 409 communication fence and remains failing. Worker-only tokens, exact canonical Requests/Join activations, private audiences and observed native shutdown are checked. No real Claude; race/general provider qualification remains partial."
+    },
+    {
+      "number": 48,
+      "features": [
+        "F13.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Per-result versus final-only wake settings resume the manager at the intended point.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs",
+        "tests/agents/real-codex.test.mjs",
+        "tests/agents/delegation.test.mjs",
+        "tests/agents/real-joins.test.mjs"
+      ],
+      "mode": "controlled",
+      "real_join_slice": "Actual Codex with test-controlled worker start ordering: native Mac passes any (1/2), quorum (2/3), and each-result progress then final. Native Linux passes any/quorum; each-result first progress reply is rejected with 409 communication fence and remains failing. Worker-only tokens, exact canonical Requests/Join activations, private audiences and observed native shutdown are checked. No real Claude; race/general provider qualification remains partial."
+    },
+    {
+      "number": 49,
+      "features": [
+        "F13.04",
+        "F14.04"
+      ],
+      "approved": true,
+      "intended_behavior": "A worker question reaches the right recipient, and its answer resumes the correct pending task.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/agents/real-codex.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 50,
+      "features": [
+        "F13.02",
+        "F13.04"
+      ],
+      "approved": true,
+      "intended_behavior": "A manager can report terminal blocked/failed worker outcomes when the accepted result policy permits it.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs",
+        "tests/agents/real-codex.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 51,
+      "features": [
+        "F13.04",
+        "F14.02"
+      ],
+      "approved": true,
+      "intended_behavior": "Unfinished child work or an unanswered blocking Decision prevents a premature final report.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs",
+        "tests/agents/real-codex.test.mjs",
+        "tests/agents/delegation.test.mjs",
+        "tests/agents/real-joins.test.mjs"
+      ],
+      "mode": "controlled",
+      "real_join_slice": "Actual Codex with test-controlled worker start ordering: native Mac passes any (1/2), quorum (2/3), and each-result progress then final. Native Linux passes any/quorum; each-result first progress reply is rejected with 409 communication fence and remains failing. Worker-only tokens, exact canonical Requests/Join activations, private audiences and observed native shutdown are checked. No real Claude; race/general provider qualification remains partial."
+    },
+    {
+      "number": 52,
+      "features": [
+        "F13.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Cancelling or recovering delegated work affects the exact request and preserves its lineage.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/agents/runtime-boundaries.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Exact cancelled Request, idempotent replay and independent sibling; recovery variants remain incomplete."
+    },
+    {
+      "number": 53,
+      "features": [
+        "F13.06"
+      ],
+      "approved": true,
+      "intended_behavior": "Passive information is available on the next eligible Run without creating a new work request.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 54,
+      "features": [
+        "F14.01",
+        "F14.04"
+      ],
+      "approved": true,
+      "intended_behavior": "Decision choices, text and \u2018Something Else\u2019 responses are recorded against the exact pending question.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/agents/real-codex.test.mjs"
+      ],
+      "mode": "controlled",
+      "latest_real_mac_findings": "At dev e0daeb02 with installed app CLI 0.162.0-alpha.17.2: 8/10 real cases pass. Approval-decline acknowledgement and managed-creation final integration fail with 409 steering fences; exact rejected IDs are acknowledged turn injections. Failures remain unsuppressed with retained roots; see Remaining_Approved_Checks_Continued.json."
+    },
+    {
+      "number": 55,
+      "features": [
+        "F14.03",
+        "F14.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Stale, declined or wrong-scope approvals cannot authorize management, provider or saved-browser actions.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/agents/real-codex.test.mjs",
+        "tests/organizations/organization.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Controlled scoped management grant/deny, wrong-owner and changed-descendant enforcement; saved-browser/provider permission variants remain unqualified.",
+      "latest_real_mac_findings": "At dev e0daeb02 with installed app CLI 0.162.0-alpha.17.2: 8/10 real cases pass. Approval-decline acknowledgement and managed-creation final integration fail with 409 steering fences; exact rejected IDs are acknowledged turn injections. Failures remain unsuppressed with retained roots; see Remaining_Approved_Checks_Continued.json."
+    },
+    {
+      "number": 56,
+      "features": [
+        "F15.04"
+      ],
+      "approved": true,
+      "intended_behavior": "The recorded provider input matches the submitted text, hash and source information.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs",
+        "tests/agents/real-codex.test.mjs",
+        "tests/files-results/real-artifact.test.mjs",
+        "tests/agents/real-joins.test.mjs"
+      ],
+      "mode": "controlled",
+      "latest_real_mac_findings": "At dev e0daeb02 with installed app CLI 0.162.0-alpha.17.2: 8/10 real cases pass. Approval-decline acknowledgement and managed-creation final integration fail with 409 steering fences; exact rejected IDs are acknowledged turn injections. Failures remain unsuppressed with retained roots; see Remaining_Approved_Checks_Continued.json.",
+      "real_artifact_coverage": "Opt-in actual Codex: successful tracked import, exact captured bytes/hash/size, explicit native reference to a distinct blind reader after the current working file changes, exact UTF-8 marker in a canonical private reply, no marker in seed/prompt or Broadcast. This slice does not qualify implicit sharing, all formats or UI previews.",
+      "real_join_slice": "Actual Codex with test-controlled worker start ordering: native Mac passes any (1/2), quorum (2/3), and each-result progress then final. Native Linux passes any/quorum; each-result first progress reply is rejected with 409 communication fence and remains failing. Worker-only tokens, exact canonical Requests/Join activations, private audiences and observed native shutdown are checked. No real Claude; race/general provider qualification remains partial."
+    },
+    {
+      "number": 57,
+      "features": [
+        "F15.01",
+        "F15.02",
+        "F15.03",
+        "F15.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Work-log/history links, copied IDs and older pages identify the correct Run and its evidence.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/workspace-navigation/workspace.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 58,
+      "features": [
+        "F01.01",
+        "F01.03",
+        "F01.04"
+      ],
+      "approved": true,
+      "intended_behavior": "Home counts and Working Now/Recent Outcomes links reflect the correct Agents and tasks.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/organizations/organization.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Home data directory totals/current running capacity; all Home navigation/outcome UI remains manual."
+    },
+    {
+      "number": 59,
+      "features": [
+        "F01.02",
+        "F23.01"
+      ],
+      "approved": true,
+      "intended_behavior": "Needs Attention updates when a Decision is answered, without confusing it with ordinary notifications.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/workspace-navigation/workspace.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 60,
+      "features": [
+        "F01.05"
+      ],
+      "approved": true,
+      "intended_behavior": "A failed Home refresh preserves cached data and shows a recoverable failure instead of appearing up to date.",
+      "status": "manual_failed_on_base_repair_verified",
+      "test_files": [],
+      "mode": "controlled",
+      "manual_fixture": "tests/workspace-navigation/ui-qualification.mjs",
+      "manual_evidence": "Independent retained cache/warning/Retry/recovery/draft check passed on repair PR #690 at 8c4bd700. Master 6c7266d1 still excludes Home repair; latest live dev observed 15d0e6ff (pr690-dev1), not newly UI-qualified in this batch."
+    },
+    {
+      "number": 61,
+      "features": [
+        "F03.01",
+        "F03.02"
+      ],
+      "approved": true,
+      "intended_behavior": "Folder creation, rename, moving Chats and ungrouping preserve the intended membership.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/workspace-navigation/workspace.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 62,
+      "features": [
+        "F03.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Chat/folder ordering survives saving and reopening, including conflicting edits.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/workspace-navigation/workspace.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 63,
+      "features": [
+        "F02.03",
+        "F02.04",
+        "F03.04",
+        "F29.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Stars, collapsed branches and remembered resource routes remain attached to the correct resource.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/workspace-navigation/workspace.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Folder collapse/stars and recent-resource stable identity persist; remembered per-view routes/scroll remain manual."
+    },
+    {
+      "number": 64,
+      "features": [
+        "F22.01",
+        "F22.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Search filters show the requested resource type, including genuinely empty results.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/workspace-navigation/workspace.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 65,
+      "features": [
+        "F02.05",
+        "F22.01",
+        "F22.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Paged lists and search results expose remaining matches or clearly show an accepted limit.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/organizations/organization.test.mjs",
+        "tests/workspace-navigation/workspace.test.mjs"
+      ],
+      "mode": "controlled",
+      "manual_ui_qualification_20261013": {
+        "revision": "ebae3246c81440a1df120313c0c8f42f8fbc9f05",
+        "evidence": "private-approved-ui-20261013/HANDOFF.json",
+        "finding": "Manual pagination slice: actual browser and API traces retain the final UI roster 120 among 120 seeded roster entries plus three other members on native Linux/Mac. Search remains blocked by check-43 400; other collections and accepted limits remain separate."
+      }
+    },
+    {
+      "number": 66,
+      "features": [
+        "F22.02",
+        "F22.04",
+        "F22.05"
+      ],
+      "approved": true,
+      "intended_behavior": "A search result opens the exact matching message, Agent or file, with the correct source Chat.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/workspace-navigation/workspace.test.mjs"
+      ],
+      "mode": "controlled",
+      "manual_ui_qualification_20261013": {
+        "revision": "ebae3246c81440a1df120313c0c8f42f8fbc9f05",
+        "evidence": "private-approved-ui-20261013/HANDOFF.json",
+        "finding": "Direct roster navigation (after clearing filters) opens the exact seeded final Agent ID and UI roster 120 heading on both native backends. This is not a passing search-result check: Chat member search returns 400; message/file search navigation remains separate."
+      }
+    },
+    {
+      "number": 67,
+      "features": [
+        "F16.02",
+        "F16.03",
+        "F16.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Files & Results preserves the distinction between changed files and published results, including source-Agent attribution.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/files-results/files.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Captured artifact attribution and current-folder distinction; actual changed-file versus published-results UI remains manual.",
+      "manual_ui_qualification_20261013": {
+        "revision": "ebae3246c81440a1df120313c0c8f42f8fbc9f05",
+        "evidence": "private-approved-ui-20261013/HANDOFF.json",
+        "finding": "Manual controlled UI slice passes on native Linux/Mac backends with Mac in-app client: changed/captured files and synthetic published Test report appear in distinct sections with UI file author attribution; Working folder is separate. The report itself is fixture data, not product qualification output."
+      }
+    },
+    {
+      "number": 68,
+      "features": [
+        "F16.01",
+        "F16.04"
+      ],
+      "approved": true,
+      "intended_behavior": "Working-folder browsing, Up, Refresh and older-result loading stay within the selected Chat or Agent.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/workspace-navigation/workspace.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 69,
+      "features": [
+        "F17.01",
+        "F17.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Importing a host file captures the correct bytes; retry returns the same captured artifact.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs",
+        "tests/files-results/real-artifact.test.mjs"
+      ],
+      "mode": "controlled",
+      "platform_findings": "Historical b29 Mac native path/import failures; complete captured-artifact/import/reopen and fresh/continued attachments independently passed with actual memory readings on e0daeb02, now incorporated in master 6c7266d1.",
+      "real_artifact_coverage": "Opt-in actual Codex: successful tracked import, exact captured bytes/hash/size, explicit native reference to a distinct blind reader after the current working file changes, exact UTF-8 marker in a canonical private reply, no marker in seed/prompt or Broadcast. This slice does not qualify implicit sharing, all formats or UI previews."
+    },
+    {
+      "number": 70,
+      "features": [
+        "F17.04",
+        "F17.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Imported files enter another Agent\u2019s context only through the applicable explicit references, visibility or pins.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs",
+        "tests/files-results/real-artifact.test.mjs"
+      ],
+      "mode": "controlled",
+      "platform_findings": "Historical b29 Mac native path/import failures; complete captured-artifact/import/reopen and fresh/continued attachments independently passed with actual memory readings on e0daeb02, now incorporated in master 6c7266d1.",
+      "real_artifact_coverage": "Opt-in actual Codex: successful tracked import, exact captured bytes/hash/size, explicit native reference to a distinct blind reader after the current working file changes, exact UTF-8 marker in a canonical private reply, no marker in seed/prompt or Broadcast. This slice does not qualify implicit sharing, all formats or UI previews."
+    },
+    {
+      "number": 71,
+      "features": [
+        "F18.01",
+        "F18.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Text/code previews preserve bounded UTF-8 content and use safe download URLs.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/files-results/readTextPreview.test.mjs"
+      ],
+      "mode": "controlled",
+      "manual_ui_qualification_20261013": {
+        "revision": "ebae3246c81440a1df120313c0c8f42f8fbc9f05",
+        "evidence": "private-approved-ui-20261013/HANDOFF.json",
+        "finding": "Manual retained-text slice passes: receipt.txt preview preserves exact UTF-8 caf\u00e9 \u2014 \u8cc7\u6599 after its working-file bytes change. Native Linux/Mac backends, Mac in-app client. Other formats and complete accessibility remain separate."
+      }
+    },
+    {
+      "number": 72,
+      "features": [
+        "F18.05"
+      ],
+      "approved": true,
+      "intended_behavior": "HTML remains downloadable data and does not execute inside the preview.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/files-results/files.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Working-file download disposition, nosniff and byte preservation only. Active preview script execution/sandbox and actual UI remain unverified."
+    },
+    {
+      "number": 73,
+      "features": [
+        "F18.01",
+        "F19.04"
+      ],
+      "approved": true,
+      "intended_behavior": "A supported unified-diff file supplies readable preview content matching the selected file.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/files-results/artifactDiff.test.mjs"
+      ],
+      "mode": "controlled",
+      "manual_ui_qualification_20261013": {
+        "revision": "ebae3246c81440a1df120313c0c8f42f8fbc9f05",
+        "evidence": "private-approved-ui-20261013/HANDOFF.json",
+        "finding": "Manual recorded-diff slice passes on both native backends: selected.txt diff shows its selected headers, context, before/after Unicode lines after current file changes. Separately imported change.patch is application/octet-stream and shows unavailable-preview fallback, not a supported imported-patch preview claim."
+      }
+    },
+    {
+      "number": 74,
+      "features": [
+        "F18.02"
+      ],
+      "approved": true,
+      "intended_behavior": "Retained snapshots and current working-folder files remain distinguishable where both are offered.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/files-results/files.test.mjs",
+        "tests/files-results/real-artifact.test.mjs"
+      ],
+      "mode": "controlled",
+      "real_artifact_coverage": "Opt-in actual Codex: successful tracked import, exact captured bytes/hash/size, explicit native reference to a distinct blind reader after the current working file changes, exact UTF-8 marker in a canonical private reply, no marker in seed/prompt or Broadcast. This slice does not qualify implicit sharing, all formats or UI previews.",
+      "manual_ui_qualification_20261013": {
+        "revision": "ebae3246c81440a1df120313c0c8f42f8fbc9f05",
+        "evidence": "private-approved-ui-20261013/HANDOFF.json",
+        "finding": "Manual controlled UI slice passes on both native backends: retained receipt shows its original text while Working folder shows changed current bytes; retained recorded diff is not replaced by later current-file bytes."
+      }
+    },
+    {
+      "number": 75,
+      "features": [
+        "F18.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Large or unsupported previews retain a working download fallback.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/files-results/files.test.mjs"
+      ],
+      "mode": "controlled",
+      "manual_ui_qualification_20261013": {
+        "revision": "ebae3246c81440a1df120313c0c8f42f8fbc9f05",
+        "evidence": "private-approved-ui-20261013/HANDOFF.json",
+        "finding": "Manual unsupported imported-patch slice passes on both native backends: explicit unavailable-preview message and working Download; downloaded bytes equal the original 129-byte UTF-8 diff, SHA256 59b0c87783e3a899b818420b2aeae9a3fcda80472f0b9d137342663fbfd33fc7. Other unsupported/large formats remain separately scoped."
+      }
+    },
+    {
+      "number": 76,
+      "features": [
+        "F19.01",
+        "F19.02",
+        "F19.03",
+        "F19.04"
+      ],
+      "approved": true,
+      "intended_behavior": "A separate managed Git copy preserves the original source folder and correctly reports its branch and changes.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/files-results/files.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 77,
+      "features": [
+        "F19.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Switching back to Shared refuses to discard dirty/untracked files; after preserving them, the owned copy can be removed.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/files-results/files.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 78,
+      "features": [
+        "F20.02"
+      ],
+      "approved": true,
+      "intended_behavior": "Template export contains setup/instructions but excludes private history and managed artifacts.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 79,
+      "features": [
+        "F20.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Full export/import preserves the included private history, artifacts and Chat instructions after reopening and re-export.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/messaging.test.mjs"
+      ],
+      "mode": "controlled",
+      "platform_findings": "Historical b29 Mac native path/import failures; complete captured-artifact/import/reopen and fresh/continued attachments independently passed with actual memory readings on e0daeb02, now incorporated in master 6c7266d1."
+    },
+    {
+      "number": 80,
+      "features": [
+        "F20.01",
+        "F20.06"
+      ],
+      "approved": true,
+      "intended_behavior": "Import remaps Agent relationships and file references correctly; retry does not create a duplicate organization.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 81,
+      "features": [
+        "F20.06"
+      ],
+      "approved": true,
+      "intended_behavior": "Malformed imports fail without a partially created organization; elevated permissions require the intended confirmation.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 82,
+      "features": [
+        "F20.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Duplicating an Agent/subtree into another Chat preserves the chosen setup with the requested new root name.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 83,
+      "features": [
+        "F07.05",
+        "F20.04"
+      ],
+      "approved": true,
+      "intended_behavior": "Chat and Team Chat transcript exports contain their respective communication, rather than mixing the two.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/attachmentsAndRouting.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Transcript formatter takes each view\u2019s selected communication and discloses loaded-history limits; full UI export gathering remains manual.",
+      "manual_ui_qualification_20261013": {
+        "revision": "ebae3246c81440a1df120313c0c8f42f8fbc9f05",
+        "evidence": "private-approved-ui-20261013/HANDOFF.json",
+        "finding": "Actual UI Chat/Team Chat downloads pass on both native backends with Mac in-app client: each UTF-8 transcript contains only its own unique synthetic communication marker and discloses loaded Chat message history. This does not qualify unloaded older history or attachment-byte embedding."
+      }
+    },
+    {
+      "number": 84,
+      "features": [
+        "F21.01"
+      ],
+      "approved": true,
+      "intended_behavior": "A stale Agent-deletion preview cannot delete a changed subtree.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/organizations/organization.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 85,
+      "features": [
+        "F21.02",
+        "F21.03",
+        "F21.04"
+      ],
+      "approved": true,
+      "intended_behavior": "Deleting disposable Agents waits for cleanup, removes their private history, and preserves shared evidence and user files.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/organizations/organization.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Private Agent audit/event storage removed; authored identity tombstone and canonical Chat communication intentionally survive."
+    },
+    {
+      "number": 86,
+      "features": [
+        "F21.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Deleting a disposable Chat removes its history/Agents while preserving its user working-folder files and retained Project artifacts.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/organizations/organization.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 87,
+      "features": [
+        "F21.05",
+        "F30.01"
+      ],
+      "approved": true,
+      "intended_behavior": "Optional: restore the previously removed deletion/restart regression to prove a deleted Chat stays deleted and surviving Chats reopen.",
+      "status": "restored_automated",
+      "test_files": [
+        "tests/installation-release/chat-deletion-restart.test.mjs"
+      ],
+      "mode": "explicit_opt_in"
+    },
+    {
+      "number": 88,
+      "features": [
+        "F21.06"
+      ],
+      "approved": true,
+      "intended_behavior": "Bulk deletion previews and removes only the selected disposable Chats and reports actual cleanup progress.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/organizations/organization.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "API selection/member fencing, cleanup outcome and survivor isolation; bulk selection/preview/progress UI remains manual."
+    },
+    {
+      "number": 89,
+      "features": [
+        "F23.02",
+        "F23.03",
+        "F23.04"
+      ],
+      "approved": true,
+      "intended_behavior": "Notification read/ack/category-clear actions affect the intended items, with correct inherited Chat/Agent preferences.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/workspace-navigation/workspace.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 90,
+      "features": [
+        "F25.01",
+        "F25.02",
+        "F25.03",
+        "F25.04"
+      ],
+      "approved": true,
+      "intended_behavior": "Usage displays distinguish unavailable/unknown quota from zero and filter token/Run totals correctly.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/workspace-navigation/workspace.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Known token/Run totals, absent metrics and owner/range filters; real provider subscription quota display remains unqualified."
+    },
+    {
+      "number": 91,
+      "features": [
+        "F26.01",
+        "F26.02",
+        "F26.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Profile, appearance and global instruction settings persist and apply at their stated boundaries.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/chats/workflows.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 92,
+      "features": [
+        "F26.06"
+      ],
+      "approved": true,
+      "intended_behavior": "A requested fresh session applies to the next eligible Run and preserves its explicit task context.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/agents/real-codex.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Real human-requested durable refresh and preserved fact; other policy/fresh-session paths remain partial."
+    },
+    {
+      "number": 93,
+      "features": [
+        "F26.05",
+        "F26.06"
+      ],
+      "approved": true,
+      "intended_behavior": "Automatic context-pressure rollover schedules one bounded handoff and avoids duplicate replacement sessions.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/context-recovery/compaction.test.mjs",
+        "tests/context-recovery/context-pressure.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Controlled occupancy events create one cycle; end-to-end automatic handoff uses original context, retires the old root, verifies low occupancy in a distinct replacement, preserves the bounded handoff fact and wakes no unrelated Agent. Does not prove actual LLM automatic handoff or native provider pressure signals."
+    },
+    {
+      "number": 94,
+      "features": [
+        "F26.06"
+      ],
+      "approved": true,
+      "intended_behavior": "A rollover preserves a harmless fact supplied only before rollover, without repeating it in the follow-up question.",
+      "status": "manual_or_prerequisite",
+      "test_files": [
+        "tests/agents/real-codex.test.mjs",
+        "tests/context-recovery/context-pressure.test.mjs"
+      ],
+      "mode": "provider",
+      "coverage_limits": "Real human-requested rollover now passes on Linux (historical) and native Mac current dev e0daeb02, plus controlled automatic full handoff on Linux/Mac. Real LLM automatic-pressure rollover remains unqualified."
+    },
+    {
+      "number": 95,
+      "features": [
+        "F26.06",
+        "F24.01"
+      ],
+      "approved": true,
+      "intended_behavior": "A safe pre-work compaction failure permits one fresh retry; post-work, auth/quota/network or failed-cleanup cases do not replay actions.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/context-recovery/compaction.test.mjs",
+        "tests/context-recovery/compaction-recovery.test.mjs",
+        "tests/context-recovery/replay-limits.test.mjs",
+        "tests/agents/provider-cleanup.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Controlled executor on Linux/Mac: one safe fresh retry after observed original-root exit; repeated pre-work compact failure stops after that single retry with one failed scheduler Run and no extra Agent reply; pre-work quota does not confer compact-retry authority. Post-work compact/auth/network errors fail without fresh replay. Real provider quota recovery and failed native provider teardown remain unqualified.",
+      "native_cleanup_slice": "New controlled POSIX case: retained live root on close refusal, exact-root automatic retry, no compact replacement/input replay before observed exit, unrelated root preserved, later explicit task consumes actual accepted turn/steering and replies once. Actual provider teardown faults and daemon-crash durability remain separate."
+    },
+    {
+      "number": 96,
+      "features": [
+        "F28.01",
+        "F28.02"
+      ],
+      "approved": true,
+      "intended_behavior": "A Chat or Run without the exact browser/profile grant cannot inspect or control another owner\u2019s browser.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/browser/local-browser-transport.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 97,
+      "features": [
+        "F28.01"
+      ],
+      "approved": true,
+      "intended_behavior": "Closing the browser panel keeps its live session; ending the session and reopening creates a new one.",
+      "status": "manual_partial",
+      "test_files": [],
+      "mode": "controlled",
+      "remaining_prerequisite": "Actual panel-close versus session-end behavior needs browser UI qualification.",
+      "manual_evidence": "Private Linux_Mac_Continued_Findings report at dev da353710; Mac in-app client with Pine Linux backend. Does not certify native Mac backend."
+    },
+    {
+      "number": 98,
+      "features": [
+        "F28.01"
+      ],
+      "approved": true,
+      "intended_behavior": "Late cleanup from an older Run cannot close the successor\u2019s browser session.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/browser/browser-control.test.mjs"
+      ],
+      "mode": "controlled",
+      "coverage_limits": "Stale Run cleanup cannot close successor in controlled BrowserSessionManager; native browser/device lifecycle remains unqualified."
+    },
+    {
+      "number": 99,
+      "features": [
+        "F28.04"
+      ],
+      "approved": true,
+      "intended_behavior": "Browser transport rejects wrong tokens, stale results and stale state updates; interrupted actions are never silently replayed.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/browser/local-browser-transport.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 100,
+      "features": [
+        "F28.04"
+      ],
+      "approved": true,
+      "intended_behavior": "After the connection path is settled, new local pairing connects only the explicitly selected window.",
+      "status": "manual_or_prerequisite",
+      "test_files": [],
+      "mode": "held",
+      "remaining_prerequisite": "Held: new local pairing remains disabled with browser_profile_isolation_required; accepted connection/UX path must be settled."
+    },
+    {
+      "number": 101,
+      "features": [
+        "F28.04"
+      ],
+      "approved": true,
+      "intended_behavior": "Local extension control excludes other windows/popups and loses access when a tab leaves the selected window.",
+      "status": "manual_or_prerequisite",
+      "test_files": [],
+      "mode": "manual_held",
+      "remaining_prerequisite": "Held/device: selected local browser/extension window, popup exclusion and tab movement require actual extension qualification."
+    },
+    {
+      "number": 102,
+      "features": [
+        "F28.04"
+      ],
+      "approved": true,
+      "intended_behavior": "Password/OTP or manual pause blocks extension actions until explicit resume; disconnect ends access without closing user tabs.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/browser/local-browser-transport.test.mjs"
+      ],
+      "mode": "manual_held"
+    },
+    {
+      "number": 103,
+      "features": [
+        "F17.02",
+        "F28.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Browser file upload uses only the authorized artifact and selected input; it does not claim the website submission succeeded.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/browser/native-browser.test.mjs"
+      ],
+      "mode": "manual",
+      "coverage_limits": "Opt-in actual Chrome navigation, fill/click, selected file bytes, no form submission, PNG capture and owned shutdown. Linux additionally exercises native manual pause/resume with unchanged process/page contents. Mac is headless: native Mac UI/manual control unqualified. Server artifact/grant authorization pipeline and other device cases remain separate."
+    },
+    {
+      "number": 104,
+      "features": [
+        "F28.01",
+        "F28.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Internal-browser navigation, typing/clicking, screenshots and native manual view/resume work on the actual platform.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/browser/native-browser.test.mjs"
+      ],
+      "mode": "manual",
+      "coverage_limits": "Opt-in actual Chrome navigation, fill/click, selected file bytes, no form submission, PNG capture and owned shutdown. Linux additionally exercises native manual pause/resume with unchanged process/page contents. Mac is headless: native Mac UI/manual control unqualified. Server artifact/grant authorization pipeline and other device cases remain separate."
+    },
+    {
+      "number": 105,
+      "features": [
+        "F29.02",
+        "F29.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Reconnect brings live updates back without duplicate messages; refresh failures retain useful data with honest stale status.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/workspace-navigation/resilientEventSource.test.mjs"
+      ],
+      "mode": "controlled"
+    },
+    {
+      "number": 106,
+      "features": [
+        "F29.04",
+        "F09.01"
+      ],
+      "approved": true,
+      "intended_behavior": "A route-load failure can recover through retry without discarding unsent work.",
+      "status": "manual_partial",
+      "test_files": [],
+      "mode": "controlled",
+      "manual_fixture": "tests/workspace-navigation/ui-qualification.mjs",
+      "manual_evidence": "At da353710 product base on Mac, deliberately failed settings-route assets produce Try Again; restoring assets and retrying loads the view without losing the exact unsent Chat draft. PWA/service-worker cases and other route families remain separate."
+    },
+    {
+      "number": 107,
+      "features": [
+        "F02.01",
+        "F02.02",
+        "F02.03",
+        "F29.01",
+        "F29.05"
+      ],
+      "approved": true,
+      "intended_behavior": "Keyboard/focus, sidebar resize, mobile drawer, links and per-view scroll remain usable on the actual browser/device.",
+      "status": "manual_partial",
+      "test_files": [],
+      "mode": "manual",
+      "remaining_prerequisite": "Actual keyboard/focus/resize/mobile drawer/links/per-view scroll checks.",
+      "manual_evidence": "Private Linux_Mac_Continued_Findings report at dev da353710; Mac in-app client with Pine Linux backend. Does not certify native Mac backend.",
+      "manual_ui_qualification_20261013": {
+        "revision": "ebae3246c81440a1df120313c0c8f42f8fbc9f05",
+        "evidence": "private-approved-ui-20261013/HANDOFF.json",
+        "finding": "Additional manual slice at ebae3246: keyboard End reaches final entries in bounded Chat Agents pane on native Linux/Mac backends with Mac in-app client; direct row navigation opens exact final Agent. Native wheel attempt did not provide usable evidence; native Linux desktop, every view/device and full accessibility remain unqualified."
+      }
+    },
+    {
+      "number": 108,
+      "features": [
+        "F23.05",
+        "F27.01",
+        "F27.02",
+        "F27.03",
+        "F27.04"
+      ],
+      "approved": true,
+      "intended_behavior": "Actual push, dictation and Read Aloud work or show clear permission/unsupported feedback on the selected device.",
+      "status": "manual_partial",
+      "test_files": [],
+      "mode": "manual",
+      "remaining_prerequisite": "Actual push/dictation/Read Aloud with permission/unsupported feedback on a selected device.",
+      "manual_evidence": "Private Linux_Mac_Continued_Findings report at dev da353710; Mac in-app client with Pine Linux backend. Does not certify native Mac backend."
+    },
+    {
+      "number": 109,
+      "features": [
+        "F29.01",
+        "F30.01",
+        "F30.04",
+        "F30.05"
+      ],
+      "approved": true,
+      "intended_behavior": "PWA install/update and Engine/launcher start/status/restart/stop work on isolated Linux, macOS and Windows installations.",
+      "status": "authored_partial_with_native_qualification",
+      "test_files": [
+        "tests/installation-release/installed-pwa.test.mjs"
+      ],
+      "mode": "manual",
+      "remaining_prerequisite": "Actual isolated installer/PWA/Engine/launcher lifecycle on Linux/macOS/Windows. Windows agent handoff requested; no pass claims yet.",
+      "manual_evidence": "Discovered existing native Mac installer/lifecycle/PWA receipt at artifact 7df6c60f5a3b63bbbf79825d8d7e5979e7dc94f5; local DMG SHA256 matches receipt. Provider GUI survival is manual, and current-baseline installation is not qualified by that historical evidence.",
+      "coverage_limits": "Opt-in native Linux/Mac Chromium with a fresh owned profile and installed bundle: legacy worker/cache retired, current fingerprinted assets and authenticated session survive browser restart; both real providers disabled. Existing installed lifecycle qualification separately passes 21 Mac and 20 Linux checks, with Codex-only access and owned shutdown. Pine Ubuntu 26.04 is flagged by the existing qualifier\u2019s Ubuntu 24.04 rule; no new OS release requirement was invented. Windows and GUI installer/engine-supervisor qualification remain pending."
+    },
+    {
+      "number": 110,
+      "features": [
+        "F30.02",
+        "F30.03"
+      ],
+      "approved": true,
+      "intended_behavior": "Support archives omit synthetic credentials/private contents; retired Doctor remains absent and essential startup guards still work.",
+      "status": "authored_partial",
+      "test_files": [
+        "tests/installation-release/retire-doctor.test.mjs"
+      ],
+      "mode": "controlled"
+    }
+  ],
+  "previous_base_revision": "da353710a545af2a7cae5c18a6895a003a939efe",
+  "integration_base_revision": "258135413bfc09b1882ee66246d0011380b807a3",
+  "integration_revision": "6c7266d13a5768564c26069e0be1649315542962",
+  "latest_qualification": {
+    "test_reference": "21cffa95a0aa660919ab7b3384005a9ad485cbed",
+    "product_revision": "e0daeb02bef0960def08cc9cda5b6f9e91c8269a",
+    "method": "Owned native Mac qualification overlays four exact current-dev product files; Linux test branch stays on master b29. No product source changes authored by this test task."
+  },
+  "previous_product_base_revision": "b29d8a44df194908ada0163346f638eb9252541d",
+  "previous_integration_revision": "b29d8a44df194908ada0163346f638eb9252541d",
+  "latest_ui_qualification": {
+    "test_revision": "ebae3246c81440a1df120313c0c8f42f8fbc9f05",
+    "upstream_product_revision": "3dfdf6886c008ab6b4ae58fca6fd82b61f1ec3d1",
+    "live_dev_revision": "b208a31bf967c25ee0b7ac491435ac51458c7d41",
+    "method": "Native Linux and Mac controlled backends, actual built web via Mac in-app browser; no actual provider request. User-approved Claude remains deferred; Windows separate."
+  },
+  "latest_windows_qualification": {
+    "revision": "d01ef03bcff8c97fd8fda31889a9fb8469d8ae58",
+    "tree": "cdf360e9f2ef861a085191849c7ebaf3ac77137d",
+    "platform": "Windows 11 Home 10.0.26300 x64",
+    "command": "pnpm verify",
+    "build_typechecks": "passed",
+    "cases": 132,
+    "files": 35,
+    "pass": 54,
+    "skip": 77,
+    "failing_todo": 1,
+    "skip_breakdown": {
+      "original_platform_fixtures": 61,
+      "original_opt_in": 16
+    },
+    "native_bundle_passes": 10,
+    "launcher_lifecycle_passes": 20,
+    "providers": "Authenticated Codex readiness; Claude disabled and deferred, no actual Claude request",
+    "scope_limit": "Current GUI/PWA/local connection/extension and skipped fixtures remain unqualified; prior 65f8dd70 failures retained separately. No full release acceptance.",
+    "evidence": "private-windows-coordination-20261013/HANDOFF.json",
+    "runner_repair": "Only existing ESM preload filesystem paths converted to file URLs; all test bodies/assertions/identities/gates/timeouts/TODOs and inventory unchanged"
+  }
+}

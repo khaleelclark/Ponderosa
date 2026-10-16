@@ -1,0 +1,49 @@
+import { Box } from "@mui/material";
+import type { AgentHealthDto } from "@ponderosa/core";
+import type { AgentStatus } from "../agents";
+import {
+  agentStatusPresentation,
+  type AgentStatusConnection,
+} from "../agents";
+import {
+  semanticStatusColorToken,
+} from "./SemanticStatus";
+
+interface AgentStatusIndicatorProps {
+  status: AgentStatus;
+  health?: AgentHealthDto;
+  connectionStatus?: AgentStatusConnection;
+  phaseEvidenceFresh?: boolean;
+  agentNameForId?: (agentId: string) => string | undefined;
+}
+
+export function AgentStatusIndicator({
+  status,
+  health,
+  connectionStatus,
+  phaseEvidenceFresh,
+  agentNameForId,
+}: AgentStatusIndicatorProps): JSX.Element {
+  const presentation = agentStatusPresentation(health, {
+    status,
+    connectionStatus,
+    phaseEvidenceFresh,
+    agentNameForId,
+  });
+
+  return (
+    <Box
+      component="span"
+      role="img"
+      title={presentation.detail}
+      aria-label={presentation.accessibleLabel}
+      sx={{
+        width: 9,
+        height: 9,
+        borderRadius: "50%",
+        bgcolor: theme => semanticStatusColorToken(presentation.status, theme.palette.mode),
+        flex: "0 0 auto",
+      }}
+    />
+  );
+}

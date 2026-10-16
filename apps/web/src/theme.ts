@@ -1,0 +1,345 @@
+import { alpha, createTheme } from "@mui/material/styles";
+import type { Theme } from "@mui/material/styles";
+import { readBrowserStorage } from "./browserStorage";
+
+export type ColorMode = "light" | "dark";
+
+export const COLOR_MODE_STORAGE_KEY = "ponderosa-color-mode";
+
+const ponderosaFocusIndicator = {
+  light: "#123126",
+  dark: "#9ED4AA",
+} as const;
+
+/** Shared geometry for navigation and collection surfaces. */
+export const ponderosaLayoutTokens = {
+  sidebarRailWidth: 72,
+  sidebarPanelWidth: 318,
+  contentMaxWidth: 1320,
+  compactControlHeight: 40,
+  touchTarget: 44,
+  collectionRowRadius: 12,
+  panelRadius: 12,
+} as const;
+
+/** Shared translucent workspace chrome with an opaque CSS fallback. */
+export function workspaceHeaderSurfaceSx(
+  theme: Theme,
+) {
+  return {
+    backgroundColor: theme.palette.background.default,
+    "@supports (background-color: rgb(0 0 0 / 50%))": {
+      backgroundColor: alpha(
+        theme.palette.background.default,
+        theme.palette.mode === "dark" ? 0.94 : 0.92,
+      ),
+    },
+  };
+}
+
+const ponderosaColorTokens = {
+  light: {
+    background: "#FBFCFB",
+    rail: "#17221E",
+    topbar: "#1D2A26",
+    railBorder: "#354542",
+    railForeground: "#B2BBB4",
+    railForegroundActive: "#7CBF8A",
+    sidebar: "#E5ECE8",
+    surface: "#F1F5F2",
+    surfaceSecondary: "#E8EFEB",
+    inputSurface: "#FFFFFF",
+    delegatedSurface: "#DFE9E3",
+    delegatedHover: "#D2E0D8",
+    elevated: "#FFFFFF",
+    hover: "#E2EAE5",
+    selected: "#D5E3DB",
+    border: "#C6D1CB",
+    textPrimary: "#10231C",
+    textSecondary: "#455B51",
+    textMuted: "#66796F",
+    brand: "#123126",
+    brandHover: "#1B4536",
+    accent: "#47785D",
+    highlight: "#5E9B6B",
+    activityLabel: "#47785D",
+    star: "#987400",
+    userMessage: "#EFF2F0",
+  },
+  dark: {
+    background: "#101312",
+    rail: "#151A18",
+    topbar: "#181D1B",
+    railBorder: "#343B38",
+    railForeground: "#B5BCB8",
+    railForegroundActive: "#7CBF8A",
+    sidebar: "#171C1A",
+    surface: "#1C211F",
+    surfaceSecondary: "#222725",
+    inputSurface: "#1C211F",
+    delegatedSurface: "#26302B",
+    delegatedHover: "#303D36",
+    elevated: "#292E2C",
+    hover: "#303633",
+    selected: "#263A30",
+    border: "#383F3C",
+    textPrimary: "#E7E9E6",
+    textSecondary: "#B4BAB6",
+    textMuted: "#818A85",
+    brand: "#315C48",
+    brandHover: "#4D8065",
+    accent: "#4D8065",
+    highlight: "#7CBF8A",
+    activityLabel: "#68A97C",
+    star: "#BFA34A",
+    userMessage: "#252B28",
+  },
+} as const;
+
+export function loadColorMode(): ColorMode {
+  if (typeof window === "undefined") {
+    return "light";
+  }
+
+  const savedMode = readBrowserStorage("localStorage", COLOR_MODE_STORAGE_KEY);
+  if (savedMode === "light" || savedMode === "dark") {
+    return savedMode;
+  }
+
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
+}
+
+export function createPonderosaTheme(mode: ColorMode) {
+  const colors = ponderosaColorTokens[mode];
+  const dark = mode === "dark";
+  const focusIndicator = ponderosaFocusIndicator[mode];
+
+  return createTheme({
+    palette: {
+      mode,
+      contrastThreshold: 4.5,
+      primary: {
+        // In dark mode primary.main is used for links and outlined controls, so it
+        // must be a readable foreground rather than the much darker brand surface.
+        main: dark ? colors.highlight : colors.brand,
+        dark: dark ? colors.brand : colors.brandHover,
+        light: dark ? "#9ED4AA" : colors.highlight,
+        contrastText: dark ? "#10231C" : "#F8F6EF",
+      },
+      secondary: {
+        main: dark ? "#91AAB6" : "#607A87",
+        dark: dark ? "#708894" : "#48606C",
+        light: dark ? "#B8C8CF" : "#8FA5AF",
+      },
+      background: {
+        default: colors.background,
+        paper: colors.surface,
+      },
+      divider: colors.border,
+      text: {
+        primary: colors.textPrimary,
+        secondary: colors.textSecondary,
+        disabled: colors.textMuted,
+      },
+      action: {
+        active: colors.textSecondary,
+        hover: colors.hover,
+        selected: colors.selected,
+        disabled: colors.textMuted,
+        disabledBackground: dark
+          ? "rgba(126,139,132,.14)"
+          : "rgba(135,148,142,.14)",
+        focus: dark ? "rgba(124,191,138,.20)" : "rgba(92,138,101,.16)",
+      },
+      success: { main: dark ? "#57C77A" : "#2E8B57" },
+      info: { main: dark ? "#79B8D1" : "#356F8B" },
+      warning: { main: dark ? "#D8B85A" : "#8A6C22" },
+      error: { main: dark ? "#D66A5C" : "#B74D43" },
+    },
+    shape: {
+      borderRadius: 12,
+    },
+    typography: {
+      fontFamily:
+        'var(--ponderosa-font-family, Inter, Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif)',
+      h1: { letterSpacing: "-0.025em" },
+      h2: { letterSpacing: "-0.022em" },
+      h3: { letterSpacing: "-0.02em" },
+      h4: { letterSpacing: "-0.018em" },
+      h5: { letterSpacing: "-0.014em" },
+      h6: { letterSpacing: "-0.01em" },
+      button: { textTransform: "none", fontWeight: 650, letterSpacing: 0 },
+      body1: { fontSize: 14, lineHeight: 1.55 },
+      body2: { fontSize: 13, lineHeight: 1.5 },
+    },
+    components: {
+      MuiCssBaseline: {
+        styleOverrides: {
+          body: {
+            backgroundColor: colors.background,
+            color: colors.textPrimary,
+            "--ponderosa-focus-ring": focusIndicator,
+            "--ponderosa-rail": colors.rail,
+            "--ponderosa-topbar": colors.topbar,
+            "--ponderosa-rail-border": colors.railBorder,
+            "--ponderosa-rail-foreground": colors.railForeground,
+            "--ponderosa-rail-foreground-active": colors.railForegroundActive,
+            "--ponderosa-sidebar": colors.sidebar,
+            "--ponderosa-activity-label": colors.activityLabel,
+            "--ponderosa-star": colors.star,
+            "--ponderosa-surface-secondary": colors.surfaceSecondary,
+            "--ponderosa-input-surface": colors.inputSurface,
+            "--ponderosa-delegated-surface": colors.delegatedSurface,
+            "--ponderosa-delegated-hover": colors.delegatedHover,
+            "--ponderosa-elevated": colors.elevated,
+            "--ponderosa-touch-target": `${ponderosaLayoutTokens.touchTarget}px`,
+          },
+          a: { textDecoration: "none" },
+          "a:hover, a:focus-visible": { textDecoration: "none" },
+          "::selection": {
+            backgroundColor: dark
+              ? "rgba(124,191,138,.28)"
+              : "rgba(92,138,101,.22)",
+          },
+        },
+      },
+      MuiButtonBase: {
+        defaultProps: { disableRipple: true },
+        styleOverrides: {
+          root: {
+            "&.Mui-focusVisible": {
+              outline: `2px solid ${focusIndicator}`,
+              outlineOffset: 2,
+            },
+          },
+        },
+      },
+      MuiLink: {
+        defaultProps: { underline: "none" },
+        styleOverrides: {
+          root: {
+            "&:hover": { color: dark ? colors.highlight : colors.brand },
+          },
+        },
+      },
+      MuiButton: {
+        styleOverrides: {
+          root: { minHeight: 44, borderRadius: 8 },
+          containedPrimary: {
+            backgroundColor: dark ? "#EDE9DD" : colors.brand,
+            color: dark ? "#123126" : "#F8F6EF",
+            boxShadow: "none",
+            "&:hover": {
+              backgroundColor: dark ? "#F8F6EF" : colors.brandHover,
+              boxShadow: "none",
+            },
+          },
+          outlined: {
+            borderColor: colors.border,
+            "&:hover": {
+              borderColor: colors.textMuted,
+              backgroundColor: colors.hover,
+            },
+          },
+        },
+      },
+      MuiPaper: {
+        styleOverrides: {
+          root: { backgroundImage: "none" },
+          elevation1: {
+            boxShadow: dark
+              ? "0 10px 28px rgba(3,8,6,.18)"
+              : "0 10px 30px rgba(33,45,38,.08)",
+          },
+        },
+      },
+      MuiCard: {
+        styleOverrides: {
+          root: {
+            borderColor: colors.border,
+            boxShadow: "none",
+          },
+        },
+      },
+      MuiInputLabel: {
+        styleOverrides: {
+          root: {
+            "&.MuiInputLabel-outlined.MuiInputLabel-shrink": {
+              zIndex: 1,
+              marginLeft: -4,
+              paddingInline: 4,
+              backgroundColor: colors.inputSurface,
+            },
+          },
+        },
+      },
+      MuiOutlinedInput: {
+        styleOverrides: {
+          root: {
+            backgroundColor: colors.inputSurface,
+            borderRadius: 10,
+            "& fieldset": {
+              borderColor: dark ? colors.textMuted : colors.border,
+            },
+            "&:hover fieldset": { borderColor: colors.textMuted },
+            "&.Mui-focused fieldset": {
+              borderColor: colors.accent,
+              borderWidth: 1,
+            },
+            "&.Mui-disabled fieldset": { borderColor: colors.border },
+          },
+        },
+      },
+      MuiIconButton: {
+        styleOverrides: {
+          root: {
+            minWidth: 44,
+            minHeight: 44,
+            borderRadius: 8,
+          },
+        },
+      },
+      MuiTab: {
+        styleOverrides: {
+          root: { minHeight: 48, minWidth: 72 },
+        },
+      },
+      MuiListItemButton: {
+        styleOverrides: {
+          root: {
+            minHeight: 44,
+            borderRadius: 8,
+            "&.Mui-selected": {
+              backgroundColor: colors.selected,
+              color: colors.textPrimary,
+              boxShadow: dark ? "none" : `inset 3px 0 0 ${colors.accent}`,
+              "&:hover": { backgroundColor: colors.hover },
+            },
+          },
+        },
+      },
+      MuiChip: {
+        styleOverrides: {
+          root: { borderRadius: 8 },
+        },
+      },
+      MuiToggleButton: {
+        styleOverrides: {
+          root: {
+            minHeight: 44,
+            borderRadius: 8,
+            ...(!dark ? {
+              "&.Mui-selected": {
+                backgroundColor: colors.selected,
+                color: colors.textPrimary,
+                "&:hover": { backgroundColor: colors.hover },
+              },
+            } : {}),
+          },
+        },
+      },
+    },
+  });
+}

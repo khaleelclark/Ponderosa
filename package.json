@@ -1,0 +1,28 @@
+{
+  "name": "ponderosa",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Self-hosted coding-agent workbench",
+  "packageManager": "pnpm@11.10.0",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm --filter @ponderosa/core build && pnpm --filter @ponderosa/native-host build && pnpm --filter @ponderosa/agents build && pnpm --filter @ponderosa/engines build && pnpm -r typecheck",
+    "test": "pnpm build && pnpm -r typecheck && node tests/shared/run-tests.mjs",
+    "verify": "pnpm test",
+    "clean": "pnpm -r exec rm -rf dist",
+    "start:prod": "NODE_ENV=production node apps/server/dist/main.js",
+    "beta:version": "node packaging/beta-version.mjs",
+    "beta:cut": "node packaging/beta-version.mjs --cut --push",
+    "beta:node": "node packaging/prepare-node-runtime.mjs",
+    "beta:bundle": "pnpm build && node packaging/build-beta-bundle.mjs",
+    "beta:package": "node packaging/package-beta.mjs",
+    "beta:verify": "node packaging/verify-beta-bundle.mjs",
+    "test:tooling": "node tests/shared/run-tests.mjs --lane tooling",
+    "test:feature": "node tests/shared/run-tests.mjs",
+    "test:list": "node tests/shared/run-tests.mjs --list",
+    "test:regressions": "node --import ./tests/shared/workspace-resolution.mjs --test --test-concurrency=1 tests/providers/capabilities.test.mjs tests/chats/prompt-fences.test.mjs"
+  }
+}

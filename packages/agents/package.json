@@ -1,0 +1,31 @@
+{
+  "name": "@ponderosa/agents",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node copy-build-assets.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "data": "node tools/data-directory.mjs",
+    "qualify:startup": "node tools/qualify-startup-scale.mjs"
+  },
+  "dependencies": {
+    "@ponderosa/core": "workspace:*",
+    "@ponderosa/native-host": "workspace:*",
+    "better-sqlite3": "^11.7.0",
+    "drizzle-orm": "^0.45.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^24.13.3",
+    "typescript": "^5.7.2"
+  }
+}

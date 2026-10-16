@@ -1,0 +1,42 @@
+{
+  "dscUrl": "https://deb.debian.org/debian/pool/main/f/fonts-liberation/fonts-liberation_1.07.4-11.dsc",
+  "dscSha256": "c9cb6abc8b8ab1887d78f5fc1aef1fc06a220efbfa3424ca7e8bc379242654ba",
+  "checksumsMatch": true,
+  "signatureVerified": false,
+  "files": [
+    {
+      "url": "https://deb.debian.org/debian/pool/main/f/fonts-liberation/fonts-liberation_1.07.4.orig.tar.gz",
+      "sha256": "ad98b7498dc2992f7f0868f79b65ce4a720a3acdb63ab3f1f1cb6881117a5406",
+      "bytes": 2937949
+    },
+    {
+      "url": "https://deb.debian.org/debian/pool/main/f/fonts-liberation/fonts-liberation_1.07.4-11.debian.tar.xz",
+      "sha256": "45ea32aab7eed82061493edbf5ef621d6fd7f074cb79ae45206014913ca5f313",
+      "bytes": 17248
+    }
+  ],
+  "fontComparison": [
+    {
+      "file": "LiberationSans-Bold.ttf",
+      "sha256": "361c61b82d575c5c35fd9157fda8b0194bcfcd0d88ea8521a4fb5dd53d33dddc",
+      "matchesPdfjs": true
+    },
+    {
+      "file": "LiberationSans-BoldItalic.ttf",
+      "sha256": "a224075ac17495ad0a3af3bc0a419ac0704a8b3fd1095456201fb9b095fc281d",
+      "matchesPdfjs": true
+    },
+    {
+      "file": "LiberationSans-Italic.ttf",
+      "sha256": "832b4406dbef23628800d3aaad21048534ac84d7e3ad955be83b8172ed8ef512",
+      "matchesPdfjs": true
+    },
+    {
+      "file": "LiberationSans-Regular.ttf",
+      "sha256": "f8ace1f892b2bd9dc1792ba7f097fa7588f84fed48321480e04de5390828221f",
+      "matchesPdfjs": true
+    }
+  ],
+  "binaryUrl": "https://deb.debian.org/debian/pool/main/f/fonts-liberation/fonts-liberation_1.07.4-11_all.deb",
+  "binarySha256": "efd381517f958b01969343634ffcbdd60056be7779af84c6f53a005090430204"
+}
