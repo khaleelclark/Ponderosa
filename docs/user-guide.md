@@ -46,6 +46,8 @@ that accompany the actual download.
 | macOS 14+ on Apple Silicon | `.dmg` | Mount the disk image, copy **Ponderosa Engine.app** to Applications, then open it. |
 | Windows 11 x64 | Installer `.exe` | Run the installer under your login account, then open **Ponderosa Engine** from the Start menu. The default destination is `%LOCALAPPDATA%\Programs\Ponderosa`. |
 
+**Windows:** Smart App Control may block this unsigned beta from starting.
+
 On Ubuntu, from the directory containing the download:
 
 ```sh
