@@ -44,6 +44,8 @@ describes the planned packages:
 | macOS 14+ on Apple Silicon | `.dmg` |
 | Windows 11 x64 | Installer `.exe` |
 
+**Windows:** Smart App Control may block this unsigned beta from starting.
+
 The release notes will identify the exact offered packages and their checks.
 An AppImage recipe exists, but no AppImage is currently selected. The platform
 targets do not establish minimum-OS qualification or support for other platforms.
