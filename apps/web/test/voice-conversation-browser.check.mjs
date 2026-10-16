@@ -37,6 +37,7 @@ try {
   const url = `http://127.0.0.1:${server.address().port}`;
   let cases = 0;
   async function scenario(name, run) {
+    if (process.env.VOICE_TEST_FILTER && !name.includes(process.env.VOICE_TEST_FILTER)) return;
     const page = await browser.newPage(); const errors=[]; page.on("pageerror",error=>errors.push(error.message));
     await page.goto(url); await page.waitForFunction(()=>Boolean(window.voiceTest));
 
@@ -162,14 +163,24 @@ try {
     await p.evaluate(()=>window.voiceTest.recover());await p.getByRole("alert").filter({hasText:/another Run/}).waitFor();
     await p.evaluate(()=>window.voiceTest.complete());assert.equal(await p.evaluate(()=>window.voiceTest.stats.spoken.length),1);
   });
-  await scenario("Cancel reply targets the observed Run once and fences all late speech", async(p,{open,type,send})=>{
+  for (const uuid of ["available", "absent"]) await scenario(`Cancel reply targets the observed Run once and fences all late speech (randomUUID ${uuid})`, async(p,{open,type,send})=>{
     await open();await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Cancel this reply");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
     await p.evaluate(()=>{window.voiceTest.stream("First sentence. Queued sentence. ",1);window.savedAudio=window.voiceTest.lateAudio();});await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    if (uuid === "absent") await p.evaluate(() => {
+      Object.defineProperty(crypto, "randomUUID", { configurable: true, value: undefined });
+      if (typeof crypto.getRandomValues !== "function") throw Error("getRandomValues control missing");
+    });
     await p.getByRole("button",{name:"Cancel reply",exact:true}).click();
     assert.equal(await p.evaluate(()=>window.voiceTest.cancelledRuns.length),1);assert.equal(await p.evaluate(()=>window.voiceTest.cancelledRuns[0].targetRunId),"run");
-    assert.ok(await p.evaluate(()=>window.voiceTest.cancelledRuns[0].idempotencyKey));
+    assert.match(await p.evaluate(()=>window.voiceTest.cancelledRuns[0].idempotencyKey), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    assert.equal(await p.evaluate(()=>window.voiceTest.resources().synthesis),0,"local current and queued speech stopped");
+    assert.equal(await p.evaluate(()=>window.voiceTest.streamCount()),0,"exact-turn observer abandoned");
     await p.evaluate(()=>{window.savedAudio.start?.();window.savedAudio.end?.();window.voiceTest.stream("Late reply. ",2);});
+    await p.evaluate(()=>window.voiceTest.canonical("Late canonical reply."));
     assert.equal(await p.evaluate(()=>window.voiceTest.stats.spoken.length),1);assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),0);
+    assert.equal(await p.evaluate(()=>window.voiceTest.cancelledRuns.length),1,"no duplicate cancellation");
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),1,"no replay or new send");
+    console.log("CANCEL RECEIPT", JSON.stringify(await p.evaluate(()=>({randomUUID:typeof crypto.randomUUID,getRandomValues:typeof crypto.getRandomValues,cancelledRuns:window.voiceTest.cancelledRuns,sends:window.voiceTest.stats.sends.length,spoken:window.voiceTest.stats.spoken,starts:window.voiceTest.stats.starts,resources:window.voiceTest.resources()}))));
   });
   await scenario("direct phone launcher opens compact controls; expansion and unknown recovery are conditional", async(p) => {
     assert.equal(await p.getByRole("button", {name:"Voice input",exact:true}).count(), 0);
@@ -522,6 +533,7 @@ try {
     await open();await type("Synthetic unsent replacement");await p.evaluate(()=>window.voiceTest.seedLegacy("Synthetic existing legacy turn"));await send();await p.getByRole("alert").filter({hasText:/requires Chat review/}).waitFor();
     assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),0);assert.equal(await p.getByLabel("Your next turn").inputValue(),"");await noStoredWords(p,"Synthetic existing legacy turn");await noStoredWords(p,"Synthetic unsent replacement");
   });
+  assert.ok(cases > 0, "at least one synthetic call case selected");
   console.log(`PASS ${cases} synthetic call cases. Qualified physical devices: NONE.`);
 
 } finally {

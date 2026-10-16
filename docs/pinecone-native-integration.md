@@ -98,8 +98,11 @@ No service restart/deploy, listener/Serve/certificate change, live database writ
 real provider turn, microphone capture or audio claim accompanies this checkpoint.
 Actual source tests use disposable canonical stores and inert adapters, including authenticated Branch-owned socket SSE replay/reconnect and exact-final receipt checks. Browser
 checks use loopback fixtures and mocked native speech; they cannot qualify a
-physical keyboard or heard audio. Real provider call counts must be reserved by
-the manager, and prior outcome-unknown occurrences must not be replayed.
+physical keyboard or heard audio. The October 16 authorization correction allows
+necessary bounded installed-provider checks under existing configured subscriptions;
+record exact model, Run, inputs and timing. Prior outcome-unknown occurrences must
+not be replayed. Purchases, new credentials/access, public publication/deployment
+and listener/TLS/Serve/security changes remain outside this continuation.
 
 Pinecone launch remains blocked on semantic qualification, source-backed exact
 Decision integration, retained-context rollover qualification, live protected
@@ -117,3 +120,33 @@ A draft PR cannot be published to the configured public origin under the current
 no-public-publication instruction. The supplied master has unrelated ancestry.
 The manager must provide an approved private target/base. Local patch, bundle,
 commit and validation evidence are reviewable while that decision remains open.
+
+## Joint integration continuation after the UI repair
+
+UI repair checkpoint `370ef5db8130e9168176186884622b09c84f76cc` preserves the
+shared-engine checkpoint above. Claude's original CHANGES_REQUIRED verdict and
+QA's frozen-build results remain separate; writer fixture passes do not replace
+independent review of the repaired head.
+
+VOICE-M1 now reuses `createClientId()` for cancellation. The browser regression
+covers both available and absent `randomUUID` with `getRandomValues` present:
+one exact observed-Run cancellation, local current/queued speech stop, and no
+late-callback/canonical re-arm, replay or new send. This is inert API/native-speech
+evidence, pending the existing Voice owner's independent recheck.
+
+Streaming composition is still waiting for the existing Voice owner's immutable
+commit, exact contract/file list and source/build/test bindings. No dirty donor
+files are imported. MEM-STREAM-H1 remains high CHANGES_REQUIRED: foundation memory
+checks do not qualify active-memory invalidation during streaming. Acceptance
+requires exact-turn observation through queued/current speech after model final,
+including canonical-only fallback; irreversible invalidation through reconnect,
+reset and late callbacks; and validation at the actual asynchronous canonical
+commit. A 250ms poll is a nominal backstop, with no maximum notification guarantee.
+Preserve presubmit authority, postterminal exposure validity, historical replies
+and unaffected working full-response calls. The existing Memory owner reviews the
+eventual exact composed head independently.
+
+Patrick's existing working advanced call remains the operational baseline. The
+reported roughly fifteen seconds is not a measured breakdown. This continuation's
+cancellation fixture does not qualify adapter-to-host-to-SSE-to-UI incremental
+text/speech timing, installed-provider behavior, microphone or heard audio.

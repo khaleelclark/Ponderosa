@@ -463,7 +463,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         {replyPending && observedRun.current && <Button onClick={async () => {
           const targetRunId = observedRun.current; if (!targetRunId) return;
           stopAutomatic(); abandon(); changePhase("paused");
-          try { await api.cancelRun(agentId, { targetRunId, idempotencyKey: crypto.randomUUID() }); setNotice("Reply cancelled. Resume deliberately."); }
+          try { await api.cancelRun(agentId, { targetRunId, idempotencyKey: createClientId() }); setNotice("Reply cancelled. Resume deliberately."); }
           catch { setError("Cancellation could not be confirmed. Check Chat; audio is stopped."); }
         }}>Cancel reply</Button>}
         <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", gap: 1, "& button": { minHeight: 48 } }}>
