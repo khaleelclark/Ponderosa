@@ -1,5 +1,7 @@
 # Ponderosa
 
+[Website](https://ponderosa.khaleelclark.com/) · [User guide](https://ponderosa.khaleelclark.com/ponderosa-guide/) · [Download](https://github.com/khaleelclark/Ponderosa/releases/latest)
+
 Ponderosa is a self-hosted workspace for continuing work with AI agents. Use
 one agent or organize a team to research a question, coordinate a project,
 develop a creative brief, or build and review software. Conversations, agent
@@ -24,9 +26,9 @@ reasoning settings and tools depend on the provider and account.
 
 - A computer you administer and a modern web browser.
 - Codex CLI or Claude Code installed and signed in with your subscription under
-  the same OS account that runs Engine. See [provider setup](docs/user-guide.md#provider-setup).
+  the same OS account that runs Engine. See [provider setup](https://ponderosa.khaleelclark.com/ponderosa-guide/#first-run).
 - For internal browsing, Chrome or Chromium installed on the Engine host.
-  [Browser setup](docs/user-guide.md#use-the-internal-browser) explains the platform limits.
+  [Browser setup](https://ponderosa.khaleelclark.com/ponderosa-guide/#browsers) explains the platform limits.
 
 The application packages include their own Node runtime. Node and pnpm are
 needed only to develop or build Ponderosa from source. Agents use the host
@@ -35,7 +37,7 @@ stores Ponderosa’s records locally, while AI requests still go to your provide
 
 ## Install and open
 
-The [installation and user guide](docs/user-guide.md#download-and-install)
+The [installation and user guide](https://ponderosa.khaleelclark.com/ponderosa-guide/#first-run)
 describes the planned packages:
 
 | Beta target | Package format |
@@ -53,7 +55,7 @@ targets do not establish minimum-OS qualification or support for other platforms
 Once the release is published, use its package and instructions for your platform.
 Open **Ponderosa Engine**, then **Open Ponderosa** to enter the web app. Closing a
 web tab leaves the service running. **Quit Engine** stops it and can interrupt work.
-See the [user guide](docs/user-guide.md) for sign-in, recovery, local data and updates.
+See the [user guide](https://ponderosa.khaleelclark.com/ponderosa-guide/) for sign-in, recovery, local data and updates.
 
 ## Try a first task
 
@@ -71,17 +73,16 @@ You can start with an ordinary Chat before creating a team.
 For a larger noncoding task, ask how a school library could support both quiet
 study and group work. Supply reports or links, compare evidence and trade-offs,
 and ask for a brief with sources. An ordinary folder is enough; Git and file
-uploads are optional. The [research-team walkthrough](docs/learning/index.html#research-team-example)
+uploads are optional. The [research-team walkthrough](https://ponderosa.khaleelclark.com/ponderosa-guide/#research-team-example)
 shows how agents can divide, review and combine that work without a coding phase.
 
 ## Learn more
 
-- [Installation and user guide](docs/user-guide.md): setup, everyday use,
+- [Installation and user guide](https://ponderosa.khaleelclark.com/ponderosa-guide/#first-run): setup, everyday use,
   troubleshooting, data and updates.
-- [HTML learning guide](docs/learning/index.html): how Chats, agents, assignments,
-  decisions, files and the internal browser work. Open it locally in a browser
-  for its layout, search and navigation; its assets are included in this repository.
-- [Source development](docs/learning/index.html#setup): Node 24, pnpm 11.10.0 and
+- [Interactive user guide](https://ponderosa.khaleelclark.com/ponderosa-guide/): how Chats, agents, assignments,
+  decisions, files and the internal browser work, with search and navigation.
+- [Source development](https://ponderosa.khaleelclark.com/ponderosa-guide/#setup): Node 24, pnpm 11.10.0 and
   a separate development data directory. Source builds are separate from installation.
 - [Packaging and platform qualification](packaging/README.md): maintainer build
   and release commands.
@@ -98,7 +99,7 @@ screenshots. Report suspected vulnerabilities privately as described in
 For startup or access problems, begin with Engine’s status, **Work intake**,
 **Data**, and **Server**/**Errors** logs. If the web app opens, check **Provider
 Settings** and use **Recheck sign-in** where offered. See the
-[recovery guide](docs/user-guide.md#recover-without-losing-your-work) before changing files or paths.
+[recovery guide](https://ponderosa.khaleelclark.com/ponderosa-guide/#recovery) before changing files or paths.
 
 Beta feedback and documentation corrections are welcome. External implementation
 and test-code contributions are not being accepted during this beta. No response
