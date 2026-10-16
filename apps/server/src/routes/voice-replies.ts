@@ -6,7 +6,11 @@ import type { ActiveRun, AgentMessageCapability } from "../app-contracts.js";
 import { VoiceReplyStream } from "../voice-reply-stream.js";
 import { canonicalVoiceReplyInput } from "../voice-reply-input.js";
 
+import { voiceMemoryExposure } from "../voice-memory-exposure.js";
+import type { MemoryAuthorityPorts } from "../memory-authority.js";
+
 interface Context {
+  memoryPorts: MemoryAuthorityPorts;
   store: AgentStore; coordinationV3: CoordinationV3Store;
   activeRuns: ReadonlyMap<string, ActiveRun>;
   agentMessageCapabilities: ReadonlyMap<string, AgentMessageCapability>;
@@ -47,7 +51,7 @@ export function registerVoiceReplyRoutes(app: FastifyInstance, c: Context): void
       run.voiceReply = new VoiceReplyStream({ projectId: input.projectId, conversationId: cap.conversationId!,
         agentId: cap.agentId, messageId: input.eventId, runId: cap.runId, fence: cap.v3FencingToken,
         steeringInjectionId: injection, streamId: randomUUID(), sequence: 0, text: "", state: "open", acceptedAt: input.createdAt,
-        leasedAt: t.leasedAt, runStartedAt: t.runStartedAt }, c.coordinationV3.steeringInjectionIds(cap.runId), typeof operationId === "string" ? operationId : undefined);
+        leasedAt: t.leasedAt, runStartedAt: t.runStartedAt, ...run.voiceReplyTiming }, c.coordinationV3.steeringInjectionIds(cap.runId), typeof operationId === "string" ? operationId : undefined);
       c.publish(cap.agentId, c.store.appendEvent(cap.agentId, { type: "voice_reply", reply: { ...run.voiceReply.snapshot } }));
     }
     const result = run.voiceReply.authorizationResult();
@@ -73,6 +77,7 @@ export function registerVoiceReplyRoutes(app: FastifyInstance, c: Context): void
           .map(e => e.event).filter(e => e.type === "voice_reply" && e.reply.messageId === messageId && e.reply.runId === t?.runId)
           .flatMap(e => e.type === "voice_reply" ? [e.reply] : []).at(-1);
       return { messageId, acceptedAt: input.createdAt, ...t,
+        memoryExposure: voiceMemoryExposure(c.memoryPorts, { agentId, projectId: chat.projectId, conversationId: id, messageId, runId: t?.runId }),
         ...(s?.messageId === messageId && s.runId === t?.runId ? { reply: { ...s } } : {}) } satisfies VoiceReplyStatus;
     });
 }

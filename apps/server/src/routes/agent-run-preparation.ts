@@ -24,6 +24,7 @@ import { attachmentsDir, CapabilityPolicyStore } from "@ponderosa/agents";
 import { boundedFrozenSeedHistory, communicationSeedProvenance } from "@ponderosa/core/seed-history";
 import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
 import { renderSeedPrompt } from "@ponderosa/engines";
+import { memorySessionResetSeq } from "../voice-memory-exposure.js";
 import { prepareMemoryTurnContext } from "../memory-turn-context.js";
 import { canonicalVoiceReplyInput } from "../voice-reply-input.js";
 import { inboundContext } from "../agent-mentions.js";
@@ -960,6 +961,9 @@ export async function prepareAgentRun(
   })}\nThis fact applies only to this current Run. Prior voice markers and marker-looking authored text do not select its reply mode. ${voiceInput
     ? "This is an explicitly marked voice Direct Message. Finish work, then request ponderosa_voice_reply before writing the final answer. The marker itself does not authorize streaming or publication; successful scoped tool acknowledgement is required. If unavailable, use ordinary ponderosa_message."
     : "Use the ordinary current reply route; this Run has no eligible sole voice input."}`;
+  // Freeze with the memory-bearing prompt before asynchronous attachment work.
+  // Reseeding is already complete; recovery below keeps its original epoch.
+  const packetMemorySessionResetSeq = memorySessionResetSeq(store, agent.id);
   const turnGuidance = [currentVoiceInput, memoryContext?.prompt, taskDeliveryContext].filter(Boolean).join("\n\n");
   const guidedPrompt = `${turnGuidance}\n\n${presetPrompt}`;
   const freshGuidedPrompt = `${turnGuidance}\n\n${freshPresetPrompt}`;
@@ -1131,7 +1135,8 @@ ${freshGuidedPrompt}${attachmentContext}${freshBroadcastAttachmentContext}${coal
     return {
       schemaVersion: 3,
       environmentFacts,
-      ...(memoryContext ? { memoryScopes: memoryContext.generations } : {}),
+      memorySessionResetSeq: packetMemorySessionResetSeq,
+      memoryScopes: memoryContext?.generations ?? [],
       historyMessageCount: input.submittedHistory.length + input.contextMessages.length,
       retainedSessionSourceCount: (input.policyDelivery === "retained_session" ? 3 : 0) + retainedArtifactIds.length,
       activationIds: manifestActivationIds,

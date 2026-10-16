@@ -14,6 +14,7 @@ interface Owner {
   queue?: string[];
   finished?: boolean;
   pump?: () => void;
+  checking?: boolean;
 }
 let active: Owner | undefined;
 let snapshot: Snapshot = { status: "idle" };
@@ -70,13 +71,13 @@ function fail(owner: Owner): void {
 }
 export interface SpeechQueue { append(text: string): boolean; finish(): void; stop(): void }
 /** One owner across all phrases, including gaps; capture never resumes between them. */
-export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void, onStart?: (text: string) => void): SpeechQueue {
+export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void, onStart?: (text: string) => void, beforePhrase?: () => Promise<boolean>): SpeechQueue {
   abandonPageCapture(); stopSpeech();
   const owner: Owner = { id, queue: [], finished: false };
   active = owner; publish({ ownerId: id, status: "loading" });
   let queuedCharacters = 0;
-  const pump = () => {
-    if (active !== owner || owner.utterance) return;
+  const pump = async () => {
+    if (active !== owner || owner.utterance || owner.checking) return;
     const text = owner.queue!.shift();
     if (!text) {
       if (owner.finished) { const settled = stopSpeech(id); if (settled) onComplete?.(); }
@@ -85,6 +86,15 @@ export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, 
     }
     queuedCharacters -= text.length;
     try {
+      if (beforePhrase) {
+        owner.checking = true;
+        let permitted = false;
+        try { permitted = await beforePhrase(); } finally { owner.checking = false; }
+        // A stopped/replaced owner never gains authority from a delayed response.
+        if (active !== owner) return;
+        if (!permitted) { fail(owner); return; }
+      }
+      if (active !== owner) return;
       const utterance = new SpeechSynthesisUtterance(text); owner.utterance = utterance; owner.started = false; owner.audioUsed = true;
       utterance.lang = navigator.language || "en-US"; utterance.rate = preferences.speed;
       const current = () => active === owner && owner.utterance === utterance;
@@ -98,6 +108,7 @@ export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, 
       };
       utterance.onerror = () => { if (current()) fail(owner); };
       owner.startTimer = setTimeout(() => fail(owner), 3_000);
+      if (!current()) return;
       window.speechSynthesis.speak(utterance);
     } catch { fail(owner); }
   };

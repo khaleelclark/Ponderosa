@@ -50,6 +50,8 @@ export interface RuntimeEnvironmentFactsDto {
 export interface ProviderInputSourceManifestV3 {
   schemaVersion: 3;
   environmentFacts?: RuntimeEnvironmentFactsDto;
+  /** Exact prepared packet epoch; 0 explicitly means no canonical reset. Missing is unknown. */
+  memorySessionResetSeq?: number;
   memoryScopes?: Array<{ scope: import("./memory.js").MemoryScope; generation: number }>;
   /** History messages represented in the exact text submitted for this Run. */
   historyMessageCount: number;

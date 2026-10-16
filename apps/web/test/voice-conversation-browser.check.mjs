@@ -13,7 +13,7 @@ let output;
 const serverRequire = createRequire(new URL("../../server/package.json", import.meta.url));
 let browser; let server;
 try {
-  output = await mkdtemp(path.join(tmpdir(), "ponderosa-speech-browser-"));
+  output = await mkdtemp(path.join(process.env.VOICE_FIXTURE_DATA_ROOT ?? tmpdir(), "ponderosa-speech-browser-"));
   console.log("OWN ROOT", output);
   const playwrightModule = await import(process.env.PONDEROSA_PLAYWRIGHT_PATH ?? pathToFileURL(serverRequire.resolve("playwright-core")).href);
   const chromium = playwrightModule.chromium ?? playwrightModule.default.chromium;
@@ -38,6 +38,7 @@ try {
   let cases = 0;
   async function scenario(name, run) {
     if (process.env.VOICE_TEST_FILTER && !name.includes(process.env.VOICE_TEST_FILTER)) return;
+    if (process.env.VOICE_SCENARIO_PATTERN && !new RegExp(process.env.VOICE_SCENARIO_PATTERN).test(name)) return;
     const page = await browser.newPage(); const errors=[]; page.on("pageerror",error=>errors.push(error.message));
     await page.goto(url); await page.waitForFunction(()=>Boolean(window.voiceTest));
 
@@ -181,6 +182,21 @@ try {
     assert.equal(await p.evaluate(()=>window.voiceTest.cancelledRuns.length),1,"no duplicate cancellation");
     assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),1,"no replay or new send");
     console.log("CANCEL RECEIPT", JSON.stringify(await p.evaluate(()=>({randomUUID:typeof crypto.randomUUID,getRandomValues:typeof crypto.getRandomValues,cancelledRuns:window.voiceTest.cancelledRuns,sends:window.voiceTest.stats.sends.length,spoken:window.voiceTest.stats.spoken,starts:window.voiceTest.stats.starts,resources:window.voiceTest.resources()}))));
+  });
+  await scenario("canonical rewrite after early speech pauses instead of speaking changed text",async(p,{open,type,send})=>{
+    await open();await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Mismatch turn");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    await p.evaluate(()=>window.voiceTest.stream("Original sentence. ",1));await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    await p.evaluate(()=>window.voiceTest.canonical("Different canonical answer."));await p.getByRole("alert").filter({hasText:/canonical reply differs/}).waitFor();
+    assert.deepEqual(await p.evaluate(()=>window.voiceTest.stats.spoken),["Original sentence."]);
+  });
+  await scenario("memory context failure clears candidates and permanently blocks queued late and canonical playback",async(p,{open,type,send})=>{
+    await open();await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Memory turn");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    await p.evaluate(()=>{window.voiceTest.stream("Current sentence. Queued sentence. ",1);window.savedAudio=window.voiceTest.lateAudio();});await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    await p.evaluate(()=>window.voiceTest.stream("Current sentence. Queued sentence. ",2,{state:"failed",failureReason:"context_changed"}));await p.getByRole("alert").filter({hasText:/Memory changed/}).waitFor();
+    assert.equal(await p.getByLabel("Streaming reply").count(),0);
+    await p.evaluate(()=>{window.savedAudio.start?.();window.savedAudio.end?.();window.voiceTest.stream("Current sentence. Queued sentence. Late sentence. ",3);window.voiceTest.canonical("Current sentence. Queued sentence. Stale canonical fallback.");});
+    await p.waitForTimeout(100);assert.deepEqual(await p.evaluate(()=>window.voiceTest.stats.spoken),["Current sentence."]);
+    assert.equal((await p.evaluate(()=>window.voiceTest.resources())).synthesis,0);assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),0);
   });
   await scenario("direct phone launcher opens compact controls; expansion and unknown recovery are conditional", async(p) => {
     assert.equal(await p.getByRole("button", {name:"Voice input",exact:true}).count(), 0);

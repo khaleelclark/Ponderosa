@@ -36,6 +36,8 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   const ownerId = useId();
   const root = useRef<HTMLDivElement | null>(null);
   const generation = useRef(0);
+  const observationCleanup = useRef<() => void>();
+  const tombstoned = useRef<number>();
   const alive = useRef(true);
   const [agentId, setAgentId] = useState(() => {
     const eligible = agents.filter(a => member(a, projectId, conversationId));
@@ -100,6 +102,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   const dictationRef = useRef(dictation); dictationRef.current = dictation;
   const abandon = useCallback(() => {
     generation.current++;
+    observationCleanup.current?.();
     setReplyPending(false);
     dictationRef.current.abandon();
     stopSpeech(ownerId);
@@ -156,7 +159,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     if (playback.ownerId !== ownerId) { stopAutomatic(); abandon(); changePhase("ready"); return; }
     if (playback.status === "speaking") changePhase("speaking");
     else if (playback.status === "error" || playback.status === "stopped") {
-      stopAutomatic(); changePhase("ready"); if (playback.error) setError(`${playback.error} Use Play reply or read the transcript.`);
+      stopAutomatic(); abandon(); changePhase("ready"); if (playback.error) setError(`${playback.error} Use Play reply or read the transcript.`);
     }
   }, [playback, ownerId, changePhase, stopAutomatic, abandon]);
   const listen = () => {
@@ -201,7 +204,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     publishTiming();
   };
   const play = (spoken: string, current = generation.current) => {
-    if (!alive.current || !liveRef.current || current !== generation.current || phaseRef.current === "capture") return;
+    if (!alive.current || !liveRef.current || current !== generation.current || tombstoned.current === current || phaseRef.current === "capture") return;
     if (ttsUnavailable) { stopAutomatic(); changePhase("ready"); setNotice("Read the reply in Chat, then start the call deliberately."); return; }
     changePhase("loading");
     startSpeech(ownerId, spoken, preferencesRef.current, () => root.current, () => {
@@ -278,30 +281,50 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     changePhase("review"); void send();
   }, [dictation.status, phase, handsFree]);
   useEffect(() => {
-    if (!replyPending || !messageId) return;
+    if (!replyPendingRef.current || !messageId) return;
     let cancelled = false;
     const current = generation.current;
-    const valid = () => !cancelled && alive.current && liveRef.current && current === generation.current;
-    const fail = (message: string) => { if (valid()) { cancelled = true; setReplyPending(false); stopSpeech(ownerId); stopAutomatic(); changePhase("paused"); setError(message); } };
+    const valid = () => !cancelled && tombstoned.current !== current && alive.current && liveRef.current && current === generation.current;
+    let dispose = () => {};
+    const fail = (message: string) => { if (valid()) {
+      tombstoned.current = current; cancelled = true; setReplyPending(false); stopSpeech(ownerId); stopAutomatic();
+      setProvisionalReply(""); setPlayText(undefined); changePhase("paused"); setError(message); dispose();
+    } };
     const buffer = new VoicePhraseBuffer();
     let queue: SpeechQueue | undefined;
     let streaming = false;
     let streamFailed = false;
-    let statusRead: Promise<unknown> | undefined;
+    let statusRead: Promise<boolean> | undefined;
+    let exposure: import("@ponderosa/core").VoiceReplyStatus["memoryExposure"];
+    let canonicalSeen = false;
+    let validationVersion = 0;
     const append = (phrases: string[]) => {
-      if (!valid() || !phrases.length || ttsUnavailable) return;
+      if (!valid() || !phrases.length) return;
+      if (timing.current) { timing.current.firstSpeakable ??= performance.now(); publishTiming(); }
+      if (ttsUnavailable) return;
       if (!queue) {
         changePhase("loading");
         queue = startSpeechQueue(ownerId, preferencesRef.current, () => root.current, () => {
           if (!alive.current || current !== generation.current) return;
+          dispose();
           changePhase("ready");
           if (handsFreeRef.current) listenRef.current();
         }, () => {
           buffer.started();
           audioStarted(current);
+        }, async () => {
+          if (!valid()) return false;
+          const permitted = await refreshStatus();
+          if (!valid()) return false;
+          if (!permitted) fail("Memory context could not be validated. Start a fresh turn; read historical text in Chat.");
+          return permitted && valid();
         });
       }
-      for (const phrase of phrases) if (!queue.append(phrase)) { fail(speechSnapshot().error ?? "Browser speech paused. Read the reply in Chat."); break; }
+      for (const phrase of phrases) {
+        const queuedAt = performance.now();
+        if (!queue.append(phrase)) { fail(speechSnapshot().error ?? "Browser speech paused. Read the reply in Chat."); break; }
+        if (timing.current) { timing.current.firstQueued ??= queuedAt; publishTiming(); }
+      }
     };
     const accept = (reply: import("@ponderosa/core").VoiceReplySnapshot) => {
       if (!valid() || reply.projectId !== projectId || reply.conversationId !== conversationId ||
@@ -310,11 +333,17 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       observedRun.current = reply.runId;
       if (timing.current) {
         Object.assign(timing.current, { acceptedAt: reply.acceptedAt, leasedAt: reply.leasedAt,
-          runStartedAt: reply.runStartedAt, firstTextAt: reply.firstTextAt ?? timing.current.firstTextAt, completedAt: reply.completedAt ?? timing.current.completedAt });
+          runStartedAt: reply.runStartedAt, submittedAt: reply.submittedAt, firstModelTextAt: reply.firstModelTextAt, firstTextAt: reply.firstTextAt ?? timing.current.firstTextAt, completedAt: reply.completedAt ?? timing.current.completedAt });
         if (reply.text && reply.state !== "failed" && !streamFailed) timing.current.firstReceived ??= performance.now();
         publishTiming();
       }
+      if (reply.failureReason === "context_changed") {
+        setProvisionalReply(""); setRenderReply(undefined); setPlayText(undefined);
+        fail("Memory changed during this reply. Start a fresh turn; read historical text in Chat."); return;
+      }
       if (reply.state === "failed") {
+        // This intentional queue stop still awaits the exact canonical fallback.
+        changePhase("waiting");
         streamFailed = true; queue?.stop(); queue = undefined; buffer.discardQueued(); streaming = false; stopAutomatic();
         setNotice("Streaming stopped. Waiting for the exact canonical reply; read Chat if it changes."); return;
       }
@@ -325,36 +354,62 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       streaming = true;
       try { append(buffer.accept(reply)); } catch (error) { fail((error as Error).message); }
     };
-    const refreshStatus = () => {
-      if (!valid() || statusRead) return;
-      statusRead = api.getVoiceReplyStatus(conversationId, messageId, agentId).then(status => {
-        if (!alive.current || current !== generation.current || status.messageId !== messageId) return;
+    const refreshStatus = (): Promise<boolean> => {
+      if (!valid()) return Promise.resolve(false);
+      if (statusRead) return statusRead;
+      const version = validationVersion;
+      const request = api.getVoiceReplyStatus(conversationId, messageId, agentId).then(status => {
+        if (!valid() || status.messageId !== messageId || version !== validationVersion) return false;
         if (timing.current) {
           Object.assign(timing.current, { acceptedAt: status.acceptedAt, leasedAt: status.leasedAt, runStartedAt: status.runStartedAt,
+            submittedAt: status.reply?.submittedAt ?? timing.current.submittedAt, firstModelTextAt: status.reply?.firstModelTextAt ?? timing.current.firstModelTextAt,
             firstTextAt: status.reply?.firstTextAt ?? timing.current.firstTextAt, completedAt: status.reply?.completedAt ?? timing.current.completedAt });
           publishTiming();
         }
         // A canonical read may settle before this finite status request. Its
         // exact timing can still arrive; it must never reopen playback.
-        if (!valid()) return;
-        if (status.runId && observedRun.current && status.runId !== observedRun.current) { fail("This turn moved to another Run. Continue in Chat."); return; }
+        if (!valid()) return false;
+        if (status.runId && observedRun.current && status.runId !== observedRun.current) { fail("This turn moved to another Run. Continue in Chat."); return false; }
         if (status.runId) observedRun.current = status.runId;
-        if (["failed", "cancelled", "outcome_unknown"].includes(status.runStatus ?? "")) { fail("The reply Run stopped. Continue in Chat."); return; }
-        if (status.reply) accept(status.reply);
-      }).catch(() => { /* Older/unsupported server keeps exact canonical fallback. */ }).finally(() => { statusRead = undefined; });
+        if (["failed", "cancelled", "outcome_unknown"].includes(status.runStatus ?? "")) { fail("The reply Run stopped. Continue in Chat."); return false; }
+        const next = status.memoryExposure;
+        if (!next || next.state === "invalid" || (next.runId && next.runId !== observedRun.current)) {
+          fail("Memory or session changed during this reply. Start a fresh turn; read historical text in Chat."); return false;
+        }
+        if (exposure && ["valid", "disabled"].includes(exposure.state) && (next.state !== exposure.state || next.sessionResetSeq !== exposure.sessionResetSeq || next.projectGeneration !== exposure.projectGeneration || next.globalGeneration !== exposure.globalGeneration)) {
+          fail("Memory context changed during this reply. Start a fresh turn; read historical text in Chat."); return false;
+        }
+        exposure = next;
+        if (status.reply && !canonicalSeen) accept(status.reply);
+        return valid() && ["disabled", "valid"].includes(next.state);
+      }).catch(() => { fail("Memory context validation is unavailable. Start a fresh turn or read Chat."); return false; }).finally(() => { statusRead = undefined; });
+      // A hint arriving during an older HTTP read requires a fresh read. Never
+      // let the older response authorize speech after the hint.
+      statusRead = request.then(permitted => valid() && version !== validationVersion ? refreshStatus() : permitted);
+      return statusRead;
     };
     const stream = api.subscribeAgent(agentId, undefined, {
       onOpen: refreshStatus, onStatus: () => refreshStatus(),
       onEvent: envelope => {
         if (!valid() || envelope.agentId !== agentId) return;
         const event = envelope.event;
-        if (event.type === "voice_reply") accept(event.reply);
+        if (event.type === "memory_changed" && event.projectId === projectId) {
+          const original = event.scope === "project" ? exposure?.projectGeneration : exposure?.globalGeneration;
+          if (original === undefined) { validationVersion++; void refreshStatus(); }
+          else if (event.generation > original) fail("Memory changed during this reply. Start a fresh turn; read historical text in Chat.");
+        } else if (event.type === "session_reset") {
+          if (exposure?.sessionResetSeq !== undefined && envelope.seq > exposure.sessionResetSeq) fail("The session changed during this reply. Start a fresh turn; read historical text in Chat.");
+          else if (exposure?.sessionResetSeq === undefined) { validationVersion++; void refreshStatus(); }
+        }
+        else if (event.type === "voice_reply" && !canonicalSeen) accept(event.reply);
         else if (event.type === "agent_lifecycle" && event.executionId === observedRun.current &&
             ["cancelled", "failed"].includes(event.status)) fail("The reply Run stopped. Continue in Chat.");
       },
     });
     refreshStatus();
     const phraseTimer = setInterval(() => { if (valid() && streaming) { try { append(buffer.flush()); } catch (error) { fail((error as Error).message); } } }, 900);
+    // Nominal backstop only: network/event-loop delay is unbounded; no physical-onset atomicity.
+    const exposureTimer = setInterval(() => { void refreshStatus(); }, 250);
     const deadline = setTimeout(() => fail("The Agent is still working after 120 seconds. Open Chat for its reply."), 120_000);
     // Reuse the existing authenticated workspace/Agent SSE → Query invalidations.
     // An active, product-specific observer wakes on those same Chat prefixes.
@@ -371,7 +426,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       refetchIntervalInBackground: false,
     });
     const observe = (result: ReturnType<typeof observer.getCurrentResult>) => {
-      if (!valid()) return;
+      if (!valid() || canonicalSeen) return;
       if (result.error) { fail(result.error.message); return; }
       // Never speak cached results from before this observer's fresh read.
       if (!result.isSuccess || result.isFetching || !result.isFetchedAfterMount) return;
@@ -393,6 +448,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         setPlayText(spoken || undefined); setProvisionalReply("");
         setRenderReply({ generation: current, inputId: messageId, runId: execution!, text: answer.text, canonicalId: answer.id });
         if (timing.current) { timing.current.completedAt = answer.createdAt; timing.current.firstReceived ??= performance.now(); publishTiming(); }
+        canonicalSeen = true;
         try {
           const tail = buffer.finish(reply.text);
           append(tail);
@@ -403,17 +459,22 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
           }
           setReplyPending(false);
           if (queue) queue.finish();
-          else { stopAutomatic(); changePhase("ready"); setNotice("Read the canonical reply in the transcript or Chat."); }
+          else { dispose(); stopAutomatic(); changePhase("ready"); setNotice("Read the canonical reply in the transcript or Chat."); }
         } catch (error) { fail((error as Error).message); return; }
-        cancelled = true; setReplyPending(false);
+        setReplyPending(false);
         return;
       }
       const sent = detail.messages.find(i => i.id === messageId || i.communicationEventId === messageId);
       if (!queue && sent?.deliveryReceipts?.some(i => i.targetAgentId === agentId && ["started", "delivered", "processed", "recovering", "recovered"].includes(i.state))) changePhase("waiting");
     };
     const unsubscribe = observer.subscribe(observe);
-    return () => { cancelled = true; stream.close(); clearInterval(phraseTimer); unsubscribe(); observer.destroy(); clearTimeout(deadline); };
-  }, [replyPending, messageId, conversationId, agentId, ownerId, product, queryClient, changePhase, suspend, stopAutomatic]);
+    dispose = () => {
+      cancelled = true; stream.close(); clearInterval(phraseTimer); clearInterval(exposureTimer); unsubscribe(); observer.destroy(); clearTimeout(deadline);
+      if (observationCleanup.current === dispose) observationCleanup.current = undefined;
+    };
+    observationCleanup.current = dispose;
+    return dispose;
+  }, [ messageId, conversationId, agentId, ownerId, product, queryClient, changePhase, suspend, stopAutomatic]);
   const recording = ["starting", "listening", "pausing", "stopping"].includes(dictation.status);
   const inFlight = replyPending || ["sending", "queued", "waiting", "loading", "speaking"].includes(phase);
   const status = phase === "capture" ? dictation.status === "starting" ? "Starting microphone…" : dictation.status === "stopping" ? "Finishing transcript…" : "Listening…"

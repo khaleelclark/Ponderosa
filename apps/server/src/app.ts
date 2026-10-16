@@ -1226,6 +1226,8 @@ app.server.on("upgrade", linkPreviewUpgrade);
     store, opts, agentMessageCapabilities, activeRuns, capabilityOwnsAuthoritativeRun,
     unavailable: (projectId, agentId, conversationId) => deletingProjectIds.has(projectId) ||
       !!agentId && deletingAgentIds.has(agentId) || !!conversationId && deletingConversationIds.has(conversationId),
+  }, hint => {
+    for (const agent of store.listAgents(hint.projectId)) if (!agent.archived) publish(agent.id, store.appendEvent(agent.id, hint));
   });
 
   registerApplicationRoutes(app, {

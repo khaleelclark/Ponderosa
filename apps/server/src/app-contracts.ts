@@ -147,6 +147,9 @@ export interface CreateServerOptions {
 export interface ActiveRun {
   voiceReply?: import("./voice-reply-stream.js").VoiceReplyStream;
   voiceReplyStreamSupported?: boolean;
+  voiceReplyTiming?: { submittedAt?: string; firstModelTextAt?: string };
+  /** Synchronous host-only guard, also checked at canonical publication. */
+  validateVoiceReplyContext?: () => boolean;
   runId: string;
   startedAt: string;
   executionId: string;

@@ -41,8 +41,8 @@ export class VoiceReplyStream {
       if (event.phase !== "final_answer") return false;
       this.rawText += event.text;
       s.text = canonicalizeProviderText(this.rawText, this.steeringIds).trimStart();
-      if (event.text && !s.firstTextAt) s.firstTextAt = now;
-      if (s.text.length - this.emittedLength < 80 && !/[.!?;]\s$/u.test(s.text) && this.emittedLength) return false;
+      if (s.text && !s.firstTextAt) s.firstTextAt = now;
+      if (s.text.length - this.emittedLength < 80 && !/[.!?;]["”']?\s*$/u.test(s.text) && this.emittedLength) return false;
       s.state = "streaming";
     } else if (event.kind === "complete") {
       if (utf8ByteLength(event.text) > LONG_TEXT_MAX_UTF8_BYTES || !event.text.trim()) { this.invalidate(); return true; }
@@ -57,7 +57,12 @@ export class VoiceReplyStream {
     this.emittedLength = s.text.length; s.sequence++; return true;
   }
   private failTransport(): void { this.snapshot.state = "failed"; this.snapshot.sequence++; this.rawText = ""; }
-  invalidate(): boolean { if (this.broken) return false; this.broken = true; this.snapshot.state = "failed"; this.snapshot.sequence++; return true; }
+  invalidate(reason?: "context_changed"): boolean {
+    if (this.broken && (!reason || this.snapshot.failureReason === reason)) return false;
+    this.broken = true; this.snapshot.state = "failed";
+    if (reason) this.snapshot.failureReason = reason;
+    this.snapshot.sequence++; return true;
+  }
   finalText(): string | undefined { return this.broken ? undefined : this.completeText?.trim(); }
-  complete(at: string): void { this.snapshot.state = "completed"; this.snapshot.completedAt = at; this.snapshot.sequence++; }
+  complete(at: string): void { if (this.broken) return; this.snapshot.state = "completed"; this.snapshot.completedAt = at; this.snapshot.sequence++; }
 }

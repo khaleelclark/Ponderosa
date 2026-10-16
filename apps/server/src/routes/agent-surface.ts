@@ -256,6 +256,9 @@ registerAgentRequestCommandRoutes(app, {
 
 registerVoiceReplyRoutes(app, { store, coordinationV3, activeRuns, agentMessageCapabilities,
   capabilityOwnsAuthoritativeRun, publish,
+  memoryPorts: { store, opts, activeRuns, agentMessageCapabilities, capabilityOwnsAuthoritativeRun,
+    unavailable: (projectId, agentId, conversationId) => deletingProjectIds.has(projectId) ||
+      !!agentId && deletingAgentIds.has(agentId) || !!conversationId && deletingConversationIds.has(conversationId) },
 });
 registerAgentCommunicationRoutes(app, {
   store,

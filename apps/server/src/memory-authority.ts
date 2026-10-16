@@ -38,6 +38,12 @@ export class MemoryAuthority {
     sqlite.prepare("INSERT OR IGNORE INTO memory_installation_owner VALUES(1,?)").run(randomUUID());
     return (sqlite.prepare("SELECT principal_id FROM memory_installation_owner WHERE singleton=1").get() as { principal_id: string }).principal_id;
   }
+  private existingPrincipal(): string {
+    if (!this.singleProtectedOperator()) throw new MemoryAuthorityError("Memory owner is unavailable");
+    const row = this.ports.store.sqlite.prepare("SELECT principal_id FROM memory_installation_owner WHERE singleton=1").get() as { principal_id: string } | undefined;
+    if (!row?.principal_id) throw new MemoryAuthorityError("Memory owner is unavailable");
+    return row.principal_id;
+  }
   private projectLive(projectId: string, product: ProductScope): boolean {
     const { store } = this.ports;
     return projectInProduct(store, projectId, product) && !this.ports.unavailable(projectId) &&
@@ -103,8 +109,15 @@ export class MemoryAuthority {
         v3FencingToken: scope.fencingToken }, "ponderosa_memory_search", "both");
     });
   }
+  /** Host-only exposure read: no provider, tool, publication or write authority. */
+  forPlayback(scope: { agentId: string; runId: string; fencingToken: number; conversationId: string }): MemoryStore {
+    return new MemoryStore(this.ports.store.sqlite, () => this.agentContext({
+      agentId: scope.agentId, runId: scope.runId, conversationId: scope.conversationId,
+      v3SchedulerRunId: scope.runId, v3FencingToken: scope.fencingToken,
+    }, "ponderosa_memory_search", "both", true));
+  }
   private agentContext(capability: Pick<AgentMessageCapability, "agentId" | "runId" | "conversationId" | "v3SchedulerRunId" | "v3FencingToken">,
-    toolName: string, requestedScope: "project" | "global" | "both"): TrustedMemoryContext {
+    toolName: string, requestedScope: "project" | "global" | "both", playback = false): TrustedMemoryContext {
     const { store } = this.ports;
     const agent = store.getAgent(capability.agentId);
     const chat = agent && store.getConversation(agent.conversationId);
@@ -116,18 +129,20 @@ export class MemoryAuthority {
     // Independently bind the canonical Run to this Agent/Project on the same
     // connection. Cleanup/outcome-unknown authority never admits memory.
     if (!store.sqlite.prepare(`SELECT 1 FROM scheduler_runs WHERE id=? AND agent_id=? AND project_id=?
-      AND fencing_token=? AND status IN ('leased','running') AND side_effects_fenced_at IS NULL AND lease_expires_at>?`).get(
-        capability.v3SchedulerRunId, agent.id, agent.projectId, capability.v3FencingToken, new Date().toISOString())) throw new MemoryAuthorityError("Memory Run is fenced");
+      AND fencing_token=? AND side_effects_fenced_at IS NULL
+      AND ((status IN ('leased','running') AND lease_expires_at>?) OR (?=1 AND status='completed'))`).get(
+        capability.v3SchedulerRunId, agent.id, agent.projectId, capability.v3FencingToken, new Date().toISOString(), playback ? 1 : 0)) throw new MemoryAuthorityError("Memory Run is fenced");
     const restricted = this.policies.resolveForAgent(agent.id, capability.runId).restrictedCapabilityIds;
     const read = !restricted.includes(CAPABILITY_IDS.memoryRead);
-    const writeProject = !restricted.includes(CAPABILITY_IDS.memoryWriteProject) && !this.temporary(agent.projectId);
+    const writeProject = !playback && !restricted.includes(CAPABILITY_IDS.memoryWriteProject) && !this.temporary(agent.projectId);
     if ((toolName.endsWith("_get") || toolName.endsWith("_search")) ? !read : !writeProject) throw new MemoryAuthorityError("Memory operation is restricted");
     const grant = this.grant(agent.projectId, product);
+    const principalId = playback && this.ports.opts.memoryEnabled ? this.existingPrincipal() : undefined;
     return {
       actor: { kind: "agent", id: agent.id, agentId: agent.id, runId: capability.runId },
       ...(requestedScope !== "global" ? { projectId: agent.projectId } : {}),
-      ...(requestedScope !== "project" && grant.enabled && this.singleProtectedOperator() ? { globalPrincipalId: this.principal() } : {}),
-      read, writeProject, writeGlobal: false, ...this.sources(agent.projectId, product, agent.id, chat.id),
+      ...(requestedScope !== "project" && grant.enabled && this.singleProtectedOperator() ? { globalPrincipalId: playback ? (principalId ?? this.existingPrincipal()) : this.principal() } : {}),
+      read: read && (!playback || !!this.ports.opts.memoryEnabled), writeProject, writeGlobal: false, ...this.sources(agent.projectId, product, agent.id, chat.id),
     } satisfies TrustedMemoryContext;
   }
 
@@ -155,6 +170,8 @@ export class MemoryAuthority {
       this.ports.store.sqlite.prepare(`INSERT INTO memory_global_grants VALUES(?,?,?,?,?)
         ON CONFLICT(project_id,product) DO UPDATE SET revision=excluded.revision,enabled=excluded.enabled,updated_at=excluded.updated_at`)
         .run(projectId, product, expectedRevision + 1, enabled ? 1 : 0, new Date().toISOString());
+      if (current.enabled !== enabled) this.ports.store.sqlite.prepare(`INSERT INTO memory_scope_generations VALUES('project',?,1)
+        ON CONFLICT(scope,owner_id) DO UPDATE SET generation=generation+1`).run(projectId);
       return this.grant(projectId, product);
     }).immediate();
   }

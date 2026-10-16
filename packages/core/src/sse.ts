@@ -9,7 +9,7 @@ import type { AgentExecutionDeltaEvent, AgentLifecycleReason, AgentRunStatus, Ag
 import type { VoiceReplyEvent } from "./voice-reply.js";
 
 /** Canonical agent events visible on the live wire, including server-owned records. */
-export type AgentStreamEvent = VoiceReplyEvent | Exclude<AgentEvent, { type: "text" | "reasoning" | "response_text" | "work_start" }>
+export type AgentStreamEvent = import("./voice-reply.js").MemoryChangedEvent | VoiceReplyEvent | Exclude<AgentEvent, { type: "text" | "reasoning" | "response_text" | "work_start" }>
   | AgentExecutionDeltaEvent
   | AgentOutputEvent
   | { type: "user_message"; communicationEventId?: string; text: string; attachments?: AssetDto[] }

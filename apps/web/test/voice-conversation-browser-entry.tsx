@@ -41,7 +41,7 @@ window.clearTimeout = ((id: number) => { timers.delete(id); clearTimer(id); }) a
 const intervals = new Set<number>(); const phraseIntervals = new Set<number>();
 const setIntervalNative = window.setInterval.bind(window), clearIntervalNative = window.clearInterval.bind(window);
 window.setInterval = ((fn: TimerHandler, ms?: number, ...args: any[]) => {
-  const id = setIntervalNative(fn, ms, ...args); if (ms === 5000 || ms === 900) intervals.add(id); if(ms===900)phraseIntervals.add(id); return id;
+  const id = setIntervalNative(fn, ms, ...args); if (ms === 5000 || ms === 900 || ms === 250) intervals.add(id); if(ms===900)phraseIntervals.add(id); return id;
 }) as any;
 window.clearInterval = ((id: number) => { intervals.delete(id); phraseIntervals.delete(id); clearIntervalNative(id); }) as any;
 const monitors = new Set<object>();
@@ -80,7 +80,7 @@ let recovered = false;
 const cancelledRuns: any[] = [];
 api.cancelRun = async (_id, payload) => { cancelledRuns.push(payload); return {} as any; };
 api.subscribeAgent = (_id, _cursor, handlers) => { streamHandlers.add(handlers); return { close() { streamHandlers.delete(handlers); } }; };
-api.getVoiceReplyStatus = async () => ({ messageId: currentMessageId, acceptedAt: "2026-10-10T00:00:00.000Z", runId: "run", runStartedAt: "2026-10-10T00:00:00.050Z" });
+api.getVoiceReplyStatus = async () => ({ messageId: currentMessageId, acceptedAt: "2026-10-10T00:00:00.000Z", runId: "run", runStartedAt: "2026-10-10T00:00:00.050Z", memoryExposure: { state: "disabled", runId: "run", sessionResetSeq: 0 } });
 let canonicalText = "Your exact reply.";
 let currentMessageId = "message"; const messageIds = new Map<string, string>();
 const sent = () => ({ id: currentMessageId, conversationId: context.conversationId, role: "user", text: stats.sends.at(-1)?.text ?? "", communicationIntent: "user_dm", deliveryReceipts: [{ targetAgentId: "agent", state: recovered ? "recovered" : stats.waiting ? "started" : "processed", executionId: "run", ...(recovered ? { recoveryExecutionId: "recovery-run" } : {}) }] });
