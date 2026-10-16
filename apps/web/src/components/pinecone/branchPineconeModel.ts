@@ -33,3 +33,16 @@ export function checkStatus(executions: import('@ponderosa/core').BranchExecutio
 export function safeMessageRetry(receipts: import('@ponderosa/core').MessageDeliveryReceiptDto[] | undefined): boolean {
   return Boolean(receipts?.length && receipts.every(r => r.canRetry && !r.retryMayDuplicate && ['failed','undelivered','retry_exhausted'].includes(r.state)));
 }
+
+/** Human copy over canonical receipts; runtime/policy diagnostics stay advanced. */
+export function pineconeDeliveryLabel(receipts: import('@ponderosa/core').MessageDeliveryReceiptDto[] | undefined): string | undefined {
+  if (!receipts?.length) return undefined;
+  const states = receipts.map(r => r.state);
+  if (states.some(s => ['run_unconfirmed','unconfirmed','waiting_for_run','recovery_queued','recovering'].includes(s))) return 'Outcome needs review';
+  if (states.some(s => ['failed','undelivered','retry_exhausted'].includes(s))) return 'Couldn’t finish';
+  if (states.includes('cancelled')) return 'Cancelled';
+  if (states.every(s => s === 'processed')) return 'Finished';
+  if (states.includes('started')) return 'Working…';
+  if (states.includes('delivered')) return 'Received';
+  return 'Message saved';
+}

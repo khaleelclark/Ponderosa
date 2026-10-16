@@ -105,8 +105,12 @@ Pinecone launch remains blocked on semantic qualification, source-backed exact
 Decision integration, retained-context rollover qualification, live protected
 memory binding/enablement, reviewed runtime proxy deployment, actual provider
 calls, approved secure origin and physical device/microphone/heard-audio checks.
-Recent checks accurately expose old waiting work; diagnosis of those scheduled
-agent dependencies remains with operations. Heads-up identification/feedback and
+The completed read-only schedule diagnosis found three historical canonical
+Requests with unknown outcomes, held without replay; these are not ordinary
+active waits. The narrow source projection now recognizes linked Request unknown
+outcomes in reconciliation waits/counts as well as attempt unknown outcomes.
+Recent checks says unsettled work may need review, and a newer quiet result does
+not close older unresolved checks. No live audit or state mutation is authorized. Heads-up identification/feedback and
 memory chips require canonical provenance, not message-text inference.
 
 A draft PR cannot be published to the configured public origin under the current

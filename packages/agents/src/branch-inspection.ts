@@ -16,7 +16,8 @@ export function inspectBranchExecution(db:Database.Database,e:BranchExecutionDto
    for(const a of attempts){
     const step=d.steps.find(n=>n.id===a.step_id);if(!step)continue;
     const add=(wait:BranchWaitDto)=>waits.push({...wait,stepId:step.id});
-    if(a.state==='outcome_unknown'){add({kind:'reconciliation',message:`“${name(step.id)}” has an unknown outcome. Its external effect may already have happened; a retry can duplicate it. Inspect process evidence and reconcile the effect before choosing a retry or recording the observed result.`});continue;}
+    const request=a.request_id?row('SELECT recipient_agent_id,state FROM coordination_requests WHERE id=?',a.request_id):undefined;
+    if(a.state==='outcome_unknown'||request?.state==='outcome_unknown'){add({kind:'reconciliation',...(a.request_id?{requestId:a.request_id}:{}),message:`“${name(step.id)}” has an unknown outcome. Its external effect may already have happened; a retry can duplicate it. Inspect process evidence and reconcile the effect before choosing a retry or recording the observed result.`});continue;}
     if(a.available_at&&a.available_at>new Date().toISOString()){add({kind:'retry',message:`“${name(step.id)}” is waiting for its retry time.`,availableAt:a.available_at});continue;}
     if(row("SELECT id FROM branch_gates WHERE attempt_id=? AND state='waiting'",a.id)){add({kind:'approval',message:`“${name(step.id)}” is waiting for your decision.`});continue;}
     if(step.kind==='branch_call'&&a.purpose==='step'){
@@ -26,7 +27,6 @@ export function inspectBranchExecution(db:Database.Database,e:BranchExecutionDto
      else if(branch&&!branch.enabled)add({kind:'disabled_branch',message:`Waiting because Branch “${branch.name}” is disabled. This call resumes when it is enabled.`,branchId:branch.id});
      else add({kind:'capacity',message:`“${name(step.id)}” is waiting to start ${branch?.name??'the called Branch'}.`,branchId:target});
     }else if(a.request_id){
-     const request=row('SELECT recipient_agent_id,state FROM coordination_requests WHERE id=?',a.request_id);
      const agent=request?row('SELECT title FROM agents WHERE id=?',request.recipient_agent_id):undefined;
      add({kind:'agent',requestId:a.request_id,message:`“${name(step.id)}” is waiting for ${agent?.title??'its Agent'} to finish the requested work${request?.state==='open'?' (accepted; awaiting Agent execution)':''}.`});
     }else if(step.kind==='agent')add({kind:'capacity',message:`“${name(step.id)}” is waiting for workflow capacity or temporary Agent preparation.`});

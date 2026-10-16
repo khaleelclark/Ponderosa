@@ -432,10 +432,10 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       </TextField>}
       <Box role="status" aria-live="polite" sx={{ textAlign: "center", py: 2 }}>
         <Box aria-hidden sx={{ width: 56, height: 56, borderRadius: "50%", bgcolor: recording || phase === "speaking" ? "primary.main" : "action.hover", color: recording || phase === "speaking" ? "primary.contrastText" : "text.secondary", display: "grid", placeItems: "center", mx: "auto", mb: 1.5 }}><PhoneIcon /></Box>
-        <Typography>{phase === "ready" && !muted ? "Ready to call" : status}</Typography>
+        <Typography>{phase === "ready" && !muted ? sttUnavailable ? "Calling unavailable · typing is available" : "Ready to call" : status}</Typography>
         {handsFree && <Typography variant="caption" color="text.secondary">Hands-free call active · automatic finalized turns</Typography>}
       </Box>
-      {(phase === "ready" || phase === "paused") && !handsFree && <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>Start call sends each finalized spoken turn automatically as a private message. Browser speech may use the browser vendor’s remote processing.</Typography>}
+      {(phase === "ready" || phase === "paused") && !handsFree && !sttUnavailable && <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>{pinecone ? "Start call to talk with Pinecone. Each finished turn is sent automatically." : "Start call sends each finalized spoken turn automatically as a private message."} Browser speech may use the browser vendor’s remote processing.</Typography>}
       {sttUnavailable && <Alert severity="info">{sttUnavailable} {pinecone ? "Type your turn below. Replies use native speech when available." : "Use Chat or expand Transcript & typing."}</Alert>}
       {ttsUnavailable && <Alert severity="info">{ttsUnavailable} Read replies in Chat.</Alert>}
       {notice && <Alert severity="info">{notice}</Alert>}
@@ -448,7 +448,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
           changePhase("ready"); listenRef.current();
         }}>Talk now</Button> : phase === "paused" ? <Button variant="contained" disabled={recovering || blocked || Boolean(attempt.current)} onClick={() => { void resume(); }}>Resume call</Button>
           : !recording && !inFlight && <Button variant="contained" disabled={cannotStart} onClick={startCall}>Start call</Button>}
-        <Button aria-pressed={muted} startIcon={muted ? <MicOffIcon /> : <MicNoneIcon />} onClick={() => { if (!muted) { stopAutomatic(); abandon(); changePhase("paused"); setNotice("Microphone muted. Unfinished words were discarded."); } setMuted(!muted); }}>{muted ? "Unmute microphone" : "Mute microphone"}</Button>
+        <Button disabled={Boolean(sttUnavailable) || (!handsFree && !recording && !muted)} aria-pressed={muted} startIcon={muted ? <MicOffIcon /> : <MicNoneIcon />} onClick={() => { if (!muted) { stopAutomatic(); abandon(); changePhase("paused"); setNotice("Microphone muted. Unfinished words were discarded."); } setMuted(!muted); }}>{muted ? "Unmute microphone" : "Mute microphone"}</Button>
         <Button color="error" startIcon={<CallEndIcon />} onClick={end}>End call</Button>
       </Stack>
       {attempt.current && <Button disabled={!live || !checked || recording || inFlight || recovering || blocked || !retryable} onClick={() => { void send(); }}>Retry same turn</Button>}

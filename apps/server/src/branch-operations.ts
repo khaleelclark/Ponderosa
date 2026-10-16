@@ -37,7 +37,7 @@ export async function branchOperationalSummary(
     "WHERE s.execution_id=? AND g.state='waiting'"
   ).get(execution.id) as Row).count as number;
   const waitingAttempts = ["queued", "running", "waiting"].includes(execution.state)
-    ? attempts.filter(a => a.state === "waiting" && a.request_id)
+    ? attempts.filter(a => a.state === "waiting" && a.request_id && a.request_state !== "outcome_unknown")
     : [];
   const engineIds = [...new Set(waitingAttempts.map(a => a.engine_id).filter((id): id is string => typeof id === "string"))];
   const engines = new Map(await Promise.all(engineIds.map(async id => {
@@ -114,7 +114,7 @@ export async function branchOperationalSummary(
     };
   });
   const count = (state: string) => steps.filter(row => row.state === state).length;
-  const unknown = attempts.filter(a => a.state === "outcome_unknown").length;
+  const unknown = attempts.filter(a => a.state === "outcome_unknown" || a.request_state === "outcome_unknown").length;
   const retrying = attempts.filter(a => a.number > 1 && ["prepared", "leased", "running", "waiting"].includes(a.state)).length;
   const scheduledRetries = attempts.filter(a => a.number > 1 && a.state === "prepared" && a.available_at && a.available_at > now).length;
   const humanRequests = classifiedWaits.filter(a => a.state === "waiting_human").length;

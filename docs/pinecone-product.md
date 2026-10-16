@@ -83,3 +83,44 @@ schedule descriptions are historical: read-only verification on 2026-10-16 found
 V4 enabled at 600,000 ms with the correct shared assistant workspace. This source
 change does not alter V3/V4/V5 schedules, prompts, configuration, or canonical
 data, and does not replay any failed or outcome-unknown work.
+
+## Independent review and bounded repair, 2026-10-16
+
+The independent Claude critique at `4e463d52` (Run `54ab46d4`) is
+**CHANGES_REQUIRED_UI_ONLY**, including reproduced rolling-history loss.
+It remains the canonical old-head verdict. Independent Luna QA recovered its
+own frozen core-first build and reported old-head synthetic passes; those passes
+do not close Claude’s findings. Neither review accepts the later shared-engine
+checkpoint `230fc051` or the repaired source. The existing owners must review
+the exact repaired commit independently.
+
+The repair retains the loaded live page when earlier history is requested and
+merges subsequent canonical updates as the newest-60 window slides. Earlier
+filtered pages are fetched at most five per click, with explicit progress/end
+copy. Pending sends have an immutable, tab-local review row. The enabled editor
+can hold a new draft without an older acknowledgement clearing it; a retry uses
+the saved payload/key. Removing an uncertain attempt is local only, warns that
+it may still arrive, and never resends it. Existing local drafts/pending records
+are read once for migration; active tabs recover their own session drafts.
+
+Desktop Enter sends only for a fine pointer, with both composition guards;
+touch Return inserts a newline. Actual near-bottom scrolling controls follow,
+with an explicit new-message pill while reading. A single compact status row
+below the header combines refresh/reconnection failures. Raw transport/policy
+errors are not rendered. Optional advanced links are grouped and have an
+explicit Back to Pinecone control; attachments are labeled as advanced.
+Terminal-failed retry requires a fresh canonical safe receipt and explicit
+review before a new submission key. Unknown outcomes never receive that action.
+The call surface describes unavailable calling honestly, disables microphone
+controls before capture is available, and keeps typing accessible. Theme colours
+belong to the pre-mount placeholder rather than overriding the body theme.
+
+The rewritten intercepted browser regression follows actual cursor/newest-limit
+semantics and requires 105 retained messages after newest60 + older40 + five new.
+It also checks pending focus/new drafts, touch Return and IME keyCode229,
+scroll/pill behaviour, immutable retry/local removal, two tabs, terminal failures,
+outage, theme, filtered history, empty/loading/errors and call open/end. All
+writes are inert fixture responses; no request reaches a real backend or provider.
+Screenshots, command failures and exact source bindings are retained in the new
+`pinecone-ui-repair-evidence-20261016` directory, separately from frozen reports.
+Physical keyboards, actual IME devices, microphones and heard audio remain open.

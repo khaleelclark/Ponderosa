@@ -42,3 +42,14 @@ test('check-in status keeps old waiting work visible after newer quiet success; 
  assert.equal(safeMessageRetry([{state:'failed',canRetry:true,retryMayDuplicate:true}]),false);
  assert.equal(safeMessageRetry([{state:'failed',canRetry:true}]),true);
 });
+
+
+test('Pinecone receipt copy keeps unknown distinct and hides runtime/policy diagnostics',async()=>{
+ const {pineconeDeliveryLabel}=await import('../../apps/web/src/components/pinecone/branchPineconeModel.ts');
+ const receipt=state=>({state,runtime:{model:'fixture-internal-model'},error:'raw policy error'});
+ assert.equal(pineconeDeliveryLabel([receipt('processed')]),'Finished');
+ assert.equal(pineconeDeliveryLabel([receipt('started')]),'Working…');
+ assert.equal(pineconeDeliveryLabel([receipt('failed')]),'Couldn’t finish');
+ for(const state of ['run_unconfirmed','unconfirmed','waiting_for_run','recovery_queued','recovering'])assert.equal(pineconeDeliveryLabel([receipt(state),receipt('processed')]),'Outcome needs review');
+ assert.equal(pineconeDeliveryLabel(undefined),undefined);
+});
