@@ -7,6 +7,8 @@
     "node": ">=24 <25"
   },
   "scripts": {
+    "build:pinecone": "rsbuild build --config rsbuild.pinecone.config.ts",
+    "test:pinecone": "node --test ../../experiments/pinecone-shadow/standalone.test.mjs && node ../../experiments/pinecone-shadow/standalone-browser.check.mjs",
     "build": "rsbuild build && node tools/check-bundle-budget.mjs",
     "dev": "rsbuild dev",
     "preview": "rsbuild preview",

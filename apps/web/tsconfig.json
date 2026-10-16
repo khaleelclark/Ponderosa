@@ -8,5 +8,5 @@
     "noEmit": true,
     "types": ["@rsbuild/core/types"]
   },
-  "include": ["src", "rsbuild.config.ts"]
+  "include": ["src", "candidate-entry.tsx", "rsbuild.config.ts", "rsbuild.pinecone.config.ts"]
 }

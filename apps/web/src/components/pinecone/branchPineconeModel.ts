@@ -11,3 +11,10 @@ export function pineconeMessages(messages: MessageDto[], spokespersonId: string)
 export function pineconeDraftKey(branchId: string, spokespersonId: string): string {
   return `ponderosa.pinecone.draft:${branchId}:${spokespersonId}`;
 }
+
+/** Merge oldest-to-newest canonical pages; the newest projection owns receipts. */
+export function mergePineconeHistory(pages: MessageDto[][]): MessageDto[] {
+  const messages = new Map<string, MessageDto>();
+  for (const page of pages) for (const message of page) messages.set(message.id, message);
+  return [...messages.values()].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+}
