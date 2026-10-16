@@ -26,7 +26,7 @@ export function voiceReply(
   if (reply.document || !reply.text.trim()) {
     return { error: "The full reply is available in the Chat. Voice conversation is paused." };
   }
-  return { text: reply.text };
+  return { text: reply.authoredText ?? reply.text };
 }
 
 /** A contiguous latest page must still contain the sent turn before claiming uniqueness. */

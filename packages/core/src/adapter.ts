@@ -183,6 +183,8 @@ export interface RuntimeDynamicToolSpec {
 export interface RuntimeDynamicToolCall {
   /** Stable provider request identity, scoped to the current Run. */
   id: string;
+  /** Normalized provider item identity, when distinct from the RPC request ID. */
+  operationId?: string;
   name: string;
   arguments: unknown;
 }
@@ -487,6 +489,8 @@ export interface ProviderUsageSnapshot {
  * Both methods return a live stream of normalized {@link AgentEvent}s.
  */
 export interface Adapter {
+  /** Item-scoped response candidates; explicit host reply authorization remains required. */
+  readonly supportsVoiceReplyStream?: boolean;
   id: EngineId; // "codex" | "claude"
   displayName: string;
   /** Ponderosa-dispatched slash command that opens this adapter's quota reader. */

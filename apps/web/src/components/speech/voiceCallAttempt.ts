@@ -23,7 +23,7 @@ export function voiceServerInstanceHint(): string | null {
 }
 export async function prepareVoiceCallAttempt(route: VoiceRoute, text: string, createId: () => string, now = Date.now()): Promise<VoiceCallAttempt> {
   if (!text.trim() || unicodeCodePointLength(text) > INLINE_TEXT_MAX_CODE_POINTS) throw new Error("Use Chat for turns longer than 10,000 characters.");
-  const request: CreateMultiAgentDirectMessageRequest = { text, idempotencyKey: createId(), recipients: [{ agentId: route.agentId }], activeRunDelivery: "queue" };
+  const request: CreateMultiAgentDirectMessageRequest = { text, voiceReply: true, idempotencyKey: createId(), recipients: [{ agentId: route.agentId }], activeRunDelivery: "queue" };
   Object.freeze(request.recipients![0]); Object.freeze(request.recipients); Object.freeze(request);
   const marker: VoiceCallMarker = Object.freeze({ version: 2, route: Object.freeze({ ...route }), instanceId: voiceServerInstanceHint(), createdAt: now, fingerprint: await durableSubmissionFingerprint(request), idempotencyKey: request.idempotencyKey! });
   return Object.freeze({ marker, request });
@@ -44,7 +44,7 @@ export async function voiceCallAttemptCanRetry(attempt: VoiceCallAttempt, route:
   const { marker, request } = attempt;
   return validIdentity(marker, route, now) && now - marker.createdAt < VOICE_ATTEMPT_TTL &&
     request.idempotencyKey === marker.idempotencyKey &&
-    request.activeRunDelivery === "queue" && JSON.stringify(request.recipients) === JSON.stringify([{ agentId: route.agentId }]) &&
+    request.activeRunDelivery === "queue" && request.voiceReply === true && JSON.stringify(request.recipients) === JSON.stringify([{ agentId: route.agentId }]) &&
     marker.fingerprint === await durableSubmissionFingerprint(request) &&
     marker.instanceId === voiceServerInstanceHint() && readBrowserStorage("sessionStorage", key(route)) === JSON.stringify(marker);
 }

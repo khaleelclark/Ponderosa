@@ -5,6 +5,7 @@ import type { CreateServerOptions } from "../app-contracts.js";
 import type { AssetStore } from "../assets.js";
 import { createAgentEventService } from "../agent-event-service.js";
 import { createCommunicationDocumentAuthority } from "../communication-document-authority.js";
+import { registerVoiceReplyRoutes } from "./voice-replies.js";
 import { registerAgentCommunicationRoutes } from "./agent-communications.js";
 import { registerAgentCoordinationRoutes } from "./agent-coordination.js";
 import { registerAgentDecisionRoutes } from "./agent-decisions.js";
@@ -253,6 +254,9 @@ registerAgentRequestCommandRoutes(app, {
   notifyScheduler: notifyScheduler,
 });
 
+registerVoiceReplyRoutes(app, { store, coordinationV3, activeRuns, agentMessageCapabilities,
+  capabilityOwnsAuthoritativeRun, publish,
+});
 registerAgentCommunicationRoutes(app, {
   store,
   coordinationV3,

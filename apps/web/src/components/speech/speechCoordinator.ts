@@ -10,6 +10,10 @@ interface Owner {
   cleanup?: () => void;
   startTimer?: ReturnType<typeof setTimeout>;
   started?: boolean;
+  audioUsed?: boolean;
+  queue?: string[];
+  finished?: boolean;
+  pump?: () => void;
 }
 let active: Owner | undefined;
 let snapshot: Snapshot = { status: "idle" };
@@ -23,11 +27,14 @@ function release(owner: Owner): boolean {
   const wasActive = active === owner;
   if (wasActive) active = undefined;
   clearTimeout(owner.startTimer);
+  if (owner.queue) owner.queue.length = 0;
+  owner.pump = undefined;
   try { owner.cleanup?.(); } catch { /* Ownership is already fenced. */ }
   if (owner.utterance) {
     owner.utterance.onend = null; owner.utterance.onerror = null; owner.utterance.onstart = null;
-    try { if (wasActive) window.speechSynthesis.cancel(); } catch { failed = true; }
+
   }
+  try { if (wasActive && owner.audioUsed) window.speechSynthesis.cancel(); } catch { failed = true; }
   return failed;
 }
 export function stopSpeech(ownerId?: string): boolean {
@@ -61,27 +68,52 @@ function fail(owner: Owner): void {
   if (active !== owner) return;
   try { release(owner); } finally { publish({ ownerId: owner.id, status: "error", error: "The browser could not read this message aloud." }); }
 }
+export interface SpeechQueue { append(text: string): boolean; finish(): void; stop(): void }
+/** One owner across all phrases, including gaps; capture never resumes between them. */
+export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void, onStart?: (text: string) => void): SpeechQueue {
+  abandonPageCapture(); stopSpeech();
+  const owner: Owner = { id, queue: [], finished: false };
+  active = owner; publish({ ownerId: id, status: "loading" });
+  let queuedCharacters = 0;
+  const pump = () => {
+    if (active !== owner || owner.utterance) return;
+    const text = owner.queue!.shift();
+    if (!text) {
+      if (owner.finished) { const settled = stopSpeech(id); if (settled) onComplete?.(); }
+      else publish({ ownerId: id, status: "loading" });
+      return;
+    }
+    queuedCharacters -= text.length;
+    try {
+      const utterance = new SpeechSynthesisUtterance(text); owner.utterance = utterance; owner.started = false; owner.audioUsed = true;
+      utterance.lang = navigator.language || "en-US"; utterance.rate = preferences.speed;
+      const current = () => active === owner && owner.utterance === utterance;
+      utterance.onstart = () => { if (!current()) return; owner.started = true; clearTimeout(owner.startTimer); publish({ ownerId: id, status: "speaking" }); onStart?.(text); };
+      utterance.onend = () => {
+        if (!current()) return;
+        if (!owner.started) { fail(owner); return; }
+        clearTimeout(owner.startTimer);
+        utterance.onstart = null; utterance.onend = null; utterance.onerror = null;
+        owner.utterance = undefined; pump();
+      };
+      utterance.onerror = () => { if (current()) fail(owner); };
+      owner.startTimer = setTimeout(() => fail(owner), 3_000);
+      window.speechSynthesis.speak(utterance);
+    } catch { fail(owner); }
+  };
+  owner.pump = pump;
+  try { owner.cleanup = monitorSpeechSurfaceAccessibility(surface, () => stopSpeech(id)); } catch { fail(owner); }
+  return {
+    append(text) {
+      if (active !== owner || owner.finished || !text.trim()) return false;
+      if (owner.queue!.length >= 64 || queuedCharacters + text.length > 10_000) { fail(owner); return false; }
+      owner.queue!.push(text); queuedCharacters += text.length; pump(); return active === owner;
+    },
+    finish() { if (active === owner) { owner.finished = true; pump(); } },
+    stop() { if (active === owner) stopSpeech(id); },
+  };
+}
 export function startSpeech(id: string, text: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void, onStart?: () => void): void {
-  abandonPageCapture();
-  stopSpeech();
-  const owner: Owner = { id };
-  active = owner;
-  publish({ ownerId: id, status: "loading" });
-  try {
-    owner.cleanup = monitorSpeechSurfaceAccessibility(surface, () => stopSpeech(id));
-    if (active !== owner) return;
-    const utterance = new SpeechSynthesisUtterance(text); owner.utterance = utterance;
-    utterance.lang = navigator.language || "en-US";
-    utterance.rate = preferences.speed;
-    utterance.onstart = () => { if (active !== owner) return; owner.started = true; clearTimeout(owner.startTimer); publish({ ownerId: id, status: "speaking" }); onStart?.(); };
-    utterance.onend = () => {
-      if (active !== owner) return;
-      if (!owner.started) { fail(owner); return; }
-      const settled = stopSpeech(id);
-      if (settled) onComplete?.();
-    };
-    utterance.onerror = () => fail(owner);
-    owner.startTimer = setTimeout(() => fail(owner), 3_000);
-    window.speechSynthesis.speak(utterance);
-  } catch { fail(owner); }
+  const queue = startSpeechQueue(id, preferences, surface, onComplete, onStart);
+  queue.append(text); queue.finish();
 }

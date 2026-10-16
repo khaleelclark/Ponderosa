@@ -3,6 +3,7 @@
 // pull Node built-ins into the browser bundle.
 
 export * from "./events.js";
+export * from "./voice-reply.js";
 export * from "./adapter.js";
 export * from "./dto.js";
 export type { CollectionPageDto } from "./dto/collections.js";
@@ -22,3 +23,6 @@ export * from "./outcome-cause.js";
 export * from "./markdown-preview.js";
 export * from "./dto/local-browser.js";
 export * from "./collaboration-presentation.js";
+
+export * from "./dto/memory.js";
+export * from "./memory-tools.js";

@@ -75,6 +75,8 @@ const schemaExtensions = [
   "0037_pinecone_profiles.sql",
   "0039_pinecone_admission_hold.sql",
   "0023_lead_task_continuity.sql",
+  "0032_memory_foundation.sql",
+  "0034_memory_host_authority.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";

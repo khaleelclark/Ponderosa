@@ -1,3 +1,4 @@
+import { registerMemoryRoutes } from "./routes/memory.js";
 import {BranchInstallationService} from './branch-installation-service.js';
 import { registerProductScope, rewriteProductUrl } from "./product-scope.js";
 import { BranchResourceService } from "./branch-resource-service.js";
@@ -1221,6 +1222,12 @@ app.server.on("upgrade", linkPreviewUpgrade);
     },
     notify: () => coordinationV3Scheduler.notify(),
   });
+  registerMemoryRoutes(app, {
+    store, opts, agentMessageCapabilities, activeRuns, capabilityOwnsAuthoritativeRun,
+    unavailable: (projectId, agentId, conversationId) => deletingProjectIds.has(projectId) ||
+      !!agentId && deletingAgentIds.has(agentId) || !!conversationId && deletingConversationIds.has(conversationId),
+  });
+
   registerApplicationRoutes(app, {
     branchResources,
     branchInstallations,

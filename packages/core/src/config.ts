@@ -11,6 +11,8 @@ import type { NetworkSecurityPostureDto } from "./dto.js";
 export interface PonderosaConfig {
   /** Root of the on-disk event log + SQLite projections; the backup unit (SPEC §7). */
   dataDir: string;
+  /** Disabled by default; exposes the bounded explicit memory host layer. */
+  memoryEnabled: boolean;
   /** HTTP port for the Fastify daemon. */
   port: number;
   /** Bind host. */
@@ -244,6 +246,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PonderosaConfi
   const network = resolveNetworkSecurity(env);
   return {
     dataDir,
+    memoryEnabled: env.PONDEROSA_MEMORY_ENABLED === "true",
     port,
     host: network.host,
     ...(network.authToken ? { authToken: network.authToken } : {}),

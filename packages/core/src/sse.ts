@@ -6,8 +6,10 @@
 import type { AgentEvent } from "./events.js";
 import type { AgentExecutionDeltaEvent, AgentLifecycleReason, AgentRunStatus, AgentRunWakeCause, AgentOutputEvent, AgentCoordinationV3Dto, AssetDto, ContextRolloverTriggeredEvent } from "./dto.js";
 
+import type { VoiceReplyEvent } from "./voice-reply.js";
+
 /** Canonical agent events visible on the live wire, including server-owned records. */
-export type AgentStreamEvent = Exclude<AgentEvent, { type: "text" | "reasoning" }>
+export type AgentStreamEvent = VoiceReplyEvent | Exclude<AgentEvent, { type: "text" | "reasoning" | "response_text" | "work_start" }>
   | AgentExecutionDeltaEvent
   | AgentOutputEvent
   | { type: "user_message"; communicationEventId?: string; text: string; attachments?: AssetDto[] }

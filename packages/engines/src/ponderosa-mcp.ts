@@ -7,6 +7,7 @@ import { decodeSessionTools } from "./ponderosa-mcp-contract.js";
 
 type RpcRequest = { id?: string | number; method?: string; params?: unknown };
 
+const memoryUrl = process.env.PONDEROSA_AGENT_MEMORY_URL;
 const messageUrl = process.env.PONDEROSA_AGENT_MESSAGE_URL;
 const coordinateUrl = process.env.PONDEROSA_AGENT_COORDINATE_URL;
 const updateRequestUrl = process.env.PONDEROSA_AGENT_UPDATE_REQUEST_URL;
@@ -83,6 +84,8 @@ async function handle(request: RpcRequest): Promise<void> {
       send({ jsonrpc: "2.0", id: request.id, result: { isError: true, content: [{ type: "text", text: "The requested Ponderosa capability is unavailable for this Run." }] } });
       return;
     }
+    const memoryOperation = typeof params?.name === "string" && params.name.startsWith("memory_")
+      ? params.name.slice("memory_".length) : undefined;
     const browserOperation = typeof params?.name === "string" && params.name.startsWith("browser_")
       ? params.name.slice("browser_".length)
       : undefined;
@@ -90,7 +93,7 @@ async function handle(request: RpcRequest): Promise<void> {
     const args = params?.arguments && typeof params.arguments === "object"
       ? params.arguments as { agentId?: unknown }
       : {};
-    const targetUrl = params?.name === "create_managed_agent"
+    const targetUrl = memoryOperation ? memoryUrl : params?.name === "voice_reply" ? messageUrl?.replace(/\/api\/agent-messages$/, "/api/agent-voice-reply") : params?.name === "create_managed_agent"
       ? spawnUrl
       : params?.name === "coordinate"
         ? coordinateUrl
@@ -117,7 +120,9 @@ async function handle(request: RpcRequest): Promise<void> {
       const response = await fetch(targetUrl, {
         method: isDirectory ? "GET" : "POST",
         headers: { authorization: `Bearer ${messageToken}`, "content-type": "application/json" },
-        ...(!isDirectory ? { body: JSON.stringify(browserOperation
+        ...(!isDirectory ? { body: JSON.stringify(memoryOperation
+        ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), operation: memoryOperation }
+        : browserOperation
           ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), operation: browserOperation }
           : params?.name === "import_file"
             ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), toolCallId: String(request.id) }

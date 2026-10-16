@@ -107,6 +107,8 @@ export interface CollaborationRecipientDto {
 
 /** A message in the project-level conversation (a team group chat). */
 export interface ConversationMessageDto {
+  /** Exact bounded authored communication text before display-only scope tags. */
+  authoredText?: string;
   id: string;
   /** Canonical cross-surface event identity, absent only on pre-migration history. */
   communicationEventId?: string;
@@ -558,6 +560,8 @@ export type CreateCollaborationMessageResponse =
   | RecoveringCollaborationMessageResponse;
 
 export interface CreateMultiAgentDirectMessageRequest {
+  /** Explicit call input; only one queued recipient, never inferred from prose. */
+  voiceReply?: true;
   text: string;
   recipients: Array<{ agentId: string; attachmentIds?: string[] }>;
   /** Stable across retries; one user action creates one message and N deliveries. */

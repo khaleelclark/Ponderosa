@@ -204,7 +204,7 @@ export function createServerReadModels(context: ReadModelContext) {
       ].map((candidate) => [candidate.recordId, candidate] as const)).values()];
       return {
         ...message,
-        ...(communication ? { communicationIntent: communication.intent } : {}),
+        ...(communication ? { communicationIntent: communication.intent, authoredText: communication.text } : {}),
         ...(directMessageAgents.length ? { directMessageAgents } : {}),
         ...(collaborationRecipients.length ? { collaborationRecipients } : {}),
         ...(deliveryReceipts.length ? { deliveryReceipts } : {}),

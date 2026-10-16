@@ -50,6 +50,7 @@ export interface RuntimeEnvironmentFactsDto {
 export interface ProviderInputSourceManifestV3 {
   schemaVersion: 3;
   environmentFacts?: RuntimeEnvironmentFactsDto;
+  memoryScopes?: Array<{ scope: import("./memory.js").MemoryScope; generation: number }>;
   /** History messages represented in the exact text submitted for this Run. */
   historyMessageCount: number;
   /** Sources known to remain only in the continued provider session. */
@@ -61,12 +62,15 @@ export interface ProviderInputSourceManifestV3 {
   conversationId?: string;
   providerSessionDisposition: "fresh_task" | "continued_session" | "reseeded";
   sources: Array<{
-    kind: "policy" | "identity" | "history_message" | "activation" | "trigger_occurrence" | "communication" | "artifact" | "team_directory" | "context_reference" | "continuation_handoff" | "environment";
+    kind: "policy" | "identity" | "history_message" | "activation" | "trigger_occurrence" | "communication" | "artifact" | "team_directory" | "context_reference" | "continuation_handoff" | "environment" | "memory";
     ref: string;
     /** Submitted sources contribute to exactPrompt; retained sources do not. */
     delivery: "submitted" | "retained_session";
     hash?: string;
     createdAt?: string;
+    revision?: number;
+    generation?: number;
+    scope?: import("./memory.js").MemoryScope;
     /** Canonical origin retained for cross-chat Agent-private continuity. */
     conversationId?: string;
     conversationTitle?: string;

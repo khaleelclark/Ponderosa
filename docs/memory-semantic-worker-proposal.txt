@@ -1,0 +1,65 @@
+LOCAL MEMORY MCP SEMANTIC ADAPTATION — PINNED DEVELOPMENT PROPOSAL
+Dune | 2026-10-08 | No installation, model provisioning, worker execution or native qualification
+
+Scope
+Original semantic/paraphrase retrieval remains intended. The disabled host layer's FTS results are lexical and do not satisfy it. This proposal specifies an isolated next stage; it neither enables semantic memory nor authorizes a Python exception/install/release by itself.
+
+Upstream source pin and adaptation
+ptobey/local-memory-mcp at efe60974e2762d13ac1e8240b83b6887a85b6df0, MIT. Reuse the embedding candidate search and warm cross-encoder mechanics from src/vector_store.py only. Preserve the upstream copyright/permission notice for copied code. Do not import its full MCP/FastAPI/LLM/reconciliation/canonical write/restore/backup service. Upstream response-count selection is adaptive; Ponderosa must bound it. Chroma is a rebuildable index, not memory identity/permission authority.
+Primary references:
+https://github.com/ptobey/local-memory-mcp/blob/efe60974e2762d13ac1e8240b83b6887a85b6df0/src/vector_store.py
+https://github.com/ptobey/local-memory-mcp/blob/efe60974e2762d13ac1e8240b83b6887a85b6df0/requirements.txt
+https://github.com/ptobey/local-memory-mcp/blob/efe60974e2762d13ac1e8240b83b6887a85b6df0/LICENSE
+https://github.com/chroma-core/chroma/blob/1.4.1/LICENSE
+https://docs.trychroma.com/docs/run-chroma/clients
+
+Minimal Python rationale
+The pinned upstream retrieval machinery and Python PersistentClient share warmed local models without exposing a separate public Chroma server. A JS client alone does not replace the embedding/reranking runtime or native model packaging. Proposed exception is one private supervised Python worker per installation, with TypeScript retaining orchestration, SQLite lifecycle, live authorization and provider integration. It is not one Python process per Agent. A TypeScript-only inference replacement would need a separately qualified model conversion/tokenizer/reranker and would depart from this upstream adaptation; do not quietly substitute it. The next manager task must explicitly authorize the bounded Python/dependency/native stage before provisioning.
+
+Protocol and host lifecycle
+Use a versioned, bounded private framed stdio protocol without public MCP/HTTP tools. Worker may embed explicit authorized text, immutable upsert/remove vectors, search a host-selected collection/index generation and rerank a bounded authorized text batch. Host chooses opaque hashed collection names from installation owner/global or canonical Project, never model input. Worker never opens canonical SQLite, assigns ownership, interprets memory instructions, emits Communication, creates Runs, or restores/forgets canonical records.
+Proposed initial ceilings: 256 KiB frame, 100 candidate IDs, 20 rerank texts/10,000 codepoints each (total frame cap wins), one running CPU job and queue of 32. Final recall count/token budget/quality and latency thresholds require measurement. Oversized response, malformed IDs, wrong version, cancellation, EOF and worker crash fail closed. Host lifecycle owns the process group, readiness, restart backoff, cancellation deadlines and awaited shutdown; reuse existing native-host supervision. No new Agent scheduler/permission service.
+
+Durable index consistency
+Consume the foundation's transactional index intents. Each external vector ID is memoryId:revision:canonicalGeneration:modelIndexGeneration. Hydrate/revalidate live ownership, revision, lifecycle, expiry and tombstone before indexing, returning or reranking. Rerank only current authorized text; revalidate again after asynchronous responses before return/provider submission. Reordered/deleted responses cannot supersede current SQLite. Remove exact immutable IDs, never broad delete-by-memory races. A consumer needs a bounded cursor/lease/ack record and deterministic idempotent upserts; design that only when implementing the worker, without inventing a second event log. Rebuild in a fresh model/index generation and switch only after authoritative validation. Pending/failed semantic index never undoes committed saves; direct get remains immediate. Existing FTS mutation failure remains transactional rollback and must be distinguished from semantic outage after commit.
+Scope cache/session invalidation must combine canonical memory generation, global grant revision, effective restriction changes and source visibility/expiry. No context already submitted to a provider can be retroactively erased. Startup/reseed/recovery/exposure manifests remain a later integration gate.
+
+Pinned candidate artifacts
+Adjacent memory-semantic-artifacts.json records upstream source SHA-256 hashes, exact model repository revisions, Git blob IDs for configuration/tokenizer files, LFS SHA-256 for weights, publisher wheel URLs/SHA-256, dependency metadata and Python source digest. These are immutable proposal inputs from official publisher metadata. Weight/wheel/runtime bytes were NOT downloaded or verified. Small upstream source/license/requirements were read and hashed; metadata was inspected only. No model/config/weights or Python packages were installed. Do not claim a complete resolved environment from this manifest.
+Selected CPU/Linux x86_64 proposal: CPython 3.12.12 source-build candidate; chromadb 1.4.1 and sentence-transformers 5.2.0 match pinned upstream; torch 2.6.0+cpu from the official PyTorch CPU wheel index; transformers 4.57.6, numpy 2.2.6 and onnxruntime 1.23.2 are explicit candidate constraints for qualification. Version constraints are not a tested compatibility claim. Use safetensors and trust_remote_code=false; local explicit model paths and local_files_only=true. Never load publisher PyTorch pickle weights from arbitrary filenames. Full tokenizer/module files are selected at the pinned model revisions.
+Model licenses: all-MiniLM-L6-v2 and cross-encoder/ms-marco-MiniLM-L6-v2 publisher cards declare Apache-2.0. Chroma and sentence-transformers/Transformers Apache-2.0; torch BSD-3-Clause with bundled notices; NumPy BSD-3-Clause with bundled notices; ONNX Runtime MIT; CPython PSF-2.0 with bundled notices. Preserve model cards, license/NOTICE and transitive native notices in the installed bundle. All transitive licensing and actual wheel contents are still uninspected.
+Official metadata references:
+https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2?blobs=true
+https://huggingface.co/api/models/cross-encoder/ms-marco-MiniLM-L6-v2?blobs=true
+https://pypi.org/pypi/chromadb/1.4.1/json
+https://pypi.org/pypi/sentence-transformers/5.2.0/json
+https://download.pytorch.org/whl/cpu/torch/
+https://www.python.org/ftp/python/3.12.12/Python-3.12.12.tgz.sigstore
+
+Native/offline packaging gates
+Build an isolated installation-owned runtime; never use an operator/provider profile/global Python or pip tree. Provision only with explicit authorization, hash-verify all bytes and generate a complete platform-specific transitive resolver lock plus license SBOM. Candidate root pins above are exact; complete transitive lock and runtime executable hashes are NOT complete and block installation-ready status. CUDA/NVIDIA dependency branches are prohibited for the CPU package; inspect the CPU wheel's actual metadata rather than relying on regular PyPI torch dependencies. ONNX Runtime's selected manylinux wheel requires glibc 2.27/2.28 despite Chroma's older wheel tag, so qualify the effective baseline. No macOS/Windows candidate artifact lock/qualification is supplied; those require exact per-platform wheels/runtime/model manifests, native lifetime tests and portable path/locking behavior before support is claimed.
+Set HF_HUB_OFFLINE=1, TRANSFORMERS_OFFLINE=1, HF_DATASETS_OFFLINE=1, HF_HUB_DISABLE_TELEMETRY=1, DO_NOT_TRACK=1 and ANONYMIZED_TELEMETRY=False before imports. Explicitly disable Chroma telemetry; do not rely solely on environment flags. Refuse missing/corrupt model/module/tokenizer artifacts instead of downloading. Use one private installation-specific cache/index folder and host-selected local paths; no trust in Agent-provided collection/path or model code. A local worker is an installation boundary, not isolation from Agents already able to execute arbitrary host shell code.
+
+Reproducible acceptance/independent review before enabling semantic mode
+1. Verify every wheel/runtime/model hash and license against the committed complete lock; rebuild offline from the bundle in a clean Linux x86_64 fixture. Record OS/glibc/CPU/RAM/disk, exact versions, binary/model hashes and bundle size. Repeat separately on each claimed native platform.
+2. Run with network-deny tracing before imports and during load/embed/rerank/search/restart; assert zero outbound connects and no telemetry. Remove a model/tokenizer module and corrupt a weight: no network, bounded unavailable result, normal Runs and direct canonical reads continue. Confirm no cuda libs/GPU requirement.
+3. Exercise supervised startup/EOF/crash/restart/disk-full/queue overflow/malformed frames/timeouts/cancellation and awaited process-group teardown. An uncertain teardown blocks unsafe replacement. Worker cannot open canonical store or public provider tools.
+4. Hold a worker response, revoke a global grant/change policy/forget/expire/delete Project, then release response: no stale/unauthorized text or source metadata returns. Replay/reorder v1/v2/delete index intents across process exit; stale vectors never hydrate. Existing grant/content generations win, not index scores.
+5. Use 20–30 labeled fixtures including exact terms, paraphrases, contradictory current sourced records, unrelated Projects and no-match queries. Measure lexical and semantic recall@5/precision@5 separately, zero unauthorized/stale returns, weak-brief rate, p50/p95 startup/index delay, queue latency, CPU/RAM and actual provider input token cost. Thresholds are not approved or measured yet.
+6. After startup/reseed/UI integration, use separately authorized real subscription-backed Codex and Claude Runs: save, fresh other-provider recall, correct, forget, confirm other Project cannot retrieve. Mocked/transport fixtures in this host stage do not prove that workflow.
+
+Open gates
+Complete transitive hash lock/license SBOM/runtime packaging; authorized Python exception/provisioning; actual semantic worker/intents consumer; recall quality and offline/native performance; exact source declassification/revision/document binding; startup/reseed exposure tracking and UI; old SQLite restore deletion/grant ledger completeness. No installation-ready, semantic-ready or release-ready claim.
+
+SELECTED IMMUTABLE ARTIFACT RECEIPTS (publisher metadata)
+CPython source archive SHA-256: 487c908ddf4097a1b9ba859f25fe46d22ccaabfb335880faac305ac62bffb79b
+sentence-transformers/all-MiniLM-L6-v2 at 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+  model.safetensors SHA-256 53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db size 90868376
+cross-encoder/ms-marco-MiniLM-L6-v2 at 233902d25c440f23af6f7d6e94d2946bac0bee0a
+  model.safetensors SHA-256 821d1aa69520101d6e0737f78a042ae25b19e5cb9160701909d10434f4aeb0ae size 90870598
+chromadb-1.4.1-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl SHA-256 ad50fbb5799dcaef5ae7613be583a06b44b637283db066396490863266f48623
+sentence_transformers-5.2.0-py3-none-any.whl SHA-256 aa57180f053687d29b08206766ae7db549be5074f61849def7b17bf0b8025ca2
+torch-2.6.0+cpu-cp312-cp312-linux_x86_64.whl SHA-256 59e78aa0c690f70734e42670036d6b541930b8eabbaa18d94e090abf14cc4d91
+transformers-4.57.6-py3-none-any.whl SHA-256 4c9e9de11333ddfe5114bc872c9f370509198acf0b87a832a0ab9458e2bd0550
+numpy-2.2.6-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl SHA-256 fd83c01228a688733f1ded5201c678f0c53ecc1006ffbc404db9f7a899ac6249
+onnxruntime-1.23.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl SHA-256 0f9b4ae77f8e3c9bee50c27bc1beede83f786fe1d52e99ac85aa8d65a01e9b77

@@ -25,6 +25,7 @@ interface ThreadResponse { thread: { id: string }; model?: string }
 interface TurnResponse { turn: { id: string } }
 interface SteerResponse { turnId: string }
 interface DynamicToolCallParams {
+  callId?: string;
   tool: string;
   namespace?: string | null;
   arguments: unknown;
@@ -457,6 +458,8 @@ export class ContextUsageObservationGate {
 }
 
 
+import { CodexResponseText } from "./codex-response-text.js";
+
 export class CodexAppServerSession implements RuntimeSession {
   private activeTurnId?: string;
   private readonly usageByTurnId = new Map<string, TokenUsage>();
@@ -534,6 +537,7 @@ export class CodexAppServerSession implements RuntimeSession {
         }
         const result = await opts.handleDynamicToolCall({
           id: String(requestId),
+          ...(typeof call.callId === "string" && call.callId ? { operationId: call.callId } : {}),
           name: call.namespace ? `${call.namespace}.${call.tool}` : call.tool,
           arguments: call.arguments,
         });
@@ -787,7 +791,9 @@ export class CodexAppServerSession implements RuntimeSession {
 
   private async *eventStream(): AsyncIterable<AgentEvent> {
     yield { type: "session", sessionId: this.engineAgentId };
+    const responseText = new CodexResponseText(this.engineAgentId);
     for await (const notification of this.rpc.notifications) {
+      yield* responseText.map(notification.method, notification.params);
       if (notification.method === "thread/tokenUsage/updated") {
         const params = notification.params as { turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown; modelContextWindow?: unknown } } | undefined;
         if (typeof params?.turnId === "string") {
@@ -1009,8 +1015,8 @@ export function mapCodexAppServerNotification(
     return [{ type: "error", message, ...(code ? { code } : {}) }];
   }
   if (notification.method === "item/agentMessage/delta") {
-    // Deltas are transport-only progress. Canonical chat records the completed
-    // item below so one engine answer never becomes dozens of message rows.
+    // These raw deltas have no Chat authority. eventStream separately normalizes
+    // candidate items; completed text below remains execution-scoped Work log.
     return [];
   }
   if (notification.method === "item/reasoning/summaryTextDelta" || notification.method === "item/reasoning/textDelta") {
@@ -1040,15 +1046,18 @@ export function mapCodexAppServerNotification(
     }];
   }
   if (notification.method !== "item/started" && notification.method !== "item/completed") return [];
-  const item = params?.item as Record<string, unknown> | undefined;
-  if (!item || typeof item.type !== "string") return [];
-  if (notification.method === "item/started" && item.type === "commandExecution") {
-    return typeof item.command === "string" ? [{
+  const item = object(params?.item);
+  if (!item || typeof item.type !== "string") return [{ type: "work_start", kind: "native_tool" }];
+  if (notification.method === "item/started" && (item.type === "commandExecution" || item.type === "fileChange")) {
+    const boundary: AgentEvent = { type: "work_start", kind: item.type === "commandExecution" ? "command" : "file_change",
+      ...(typeof item.id === "string" ? { callId: item.id } : {}) };
+    if (item.type === "fileChange" || typeof item.command !== "string") return [boundary];
+    return [boundary, {
       type: "command",
       command: item.command,
       cwd: typeof item.cwd === "string" ? item.cwd : cwd,
       ...(typeof item.id === "string" ? { callId: item.id } : {}),
-    }] : [];
+    }];
   }
   if (notification.method === "item/completed" && item.type === "commandExecution") {
     return [{
@@ -1066,8 +1075,11 @@ export function mapCodexAppServerNotification(
           ...(item.phase === "commentary" ? { presentation: "progress" as const } : {}) }]
       : [];
   }
-  if (notification.method === "item/completed" && item.type === "fileChange" && Array.isArray(item.changes)) {
-    return item.changes.flatMap((change) => {
+  if (notification.method === "item/completed" && item.type === "fileChange") {
+    // Completion-only/reordered edits are work evidence even without a changes payload.
+    return [{ type: "work_start", kind: "file_change",
+      ...(typeof item.id === "string" ? { callId: item.id } : {}) },
+    ...(Array.isArray(item.changes) ? item.changes : []).flatMap((change) => {
       if (!change || typeof change !== "object") return [];
       const value = change as { path?: unknown; kind?: unknown; diff?: unknown };
       return typeof value.path === "string" ? [{
@@ -1077,9 +1089,10 @@ export function mapCodexAppServerNotification(
         ...(typeof value.diff === "string" ? { diff: value.diff } : {}),
         ...(typeof item.id === "string" ? { callId: item.id } : {}),
       }] : [];
-    });
+    })];
   }
   if (notification.method === "item/started" && item.type === "mcpToolCall") {
+    if (item.arguments === undefined) return [{ type: "work_start", kind: "native_tool" }];
     return [{
       type: "tool_call",
       id: typeof item.id === "string" ? item.id : "mcp",
@@ -1096,6 +1109,7 @@ export function mapCodexAppServerNotification(
     )];
   }
   if (notification.method === "item/started" && item.type === "dynamicToolCall") {
+    if (item.arguments === undefined) return [{ type: "work_start", kind: "native_tool" }];
     const namespace = typeof item.namespace === "string" && item.namespace ? `${item.namespace}.` : "";
     return [{
       type: "tool_call",
@@ -1106,11 +1120,29 @@ export function mapCodexAppServerNotification(
   }
   if (notification.method === "item/completed" && item.type === "dynamicToolCall") {
     const isError = item.success === false;
-    return [normalizedToolResult(
+    let voiceReplyStreamId: string | undefined;
+    // Provider-specific content-item parsing stays in the engine. This receipt
+    // alone grants no authority; the host compares its operation and scoped stream.
+    if (item.success === true && item.tool === "ponderosa_voice_reply" &&
+        (item.namespace === undefined || item.namespace === null || item.namespace === "") &&
+        Array.isArray(item.contentItems) && item.contentItems.length === 1) {
+      const content = object(item.contentItems[0]);
+      if (content?.type === "inputText" && typeof content.text === "string") {
+        try {
+          const receipt = object(JSON.parse(content.text));
+          if (receipt?.authorized === true && typeof receipt.streamId === "string" && receipt.streamId.trim() && receipt.streamId.length <= 512) voiceReplyStreamId = receipt.streamId;
+        } catch { /* Prose/invalid receipts cannot acknowledge authorization. */ }
+      }
+    }
+    const normalized = normalizedToolResult(
       typeof item.id === "string" ? item.id : "dynamic-tool",
-      JSON.stringify(item.contentItems ?? []),
-      isError,
-    )];
+      JSON.stringify(item.contentItems ?? []), isError,
+    );
+    return [{ ...normalized, ...(voiceReplyStreamId && normalized.isError !== true ? { voiceReplyStreamId, isError: false } : {}) }];
   }
-  return [];
+  // A small passive/answer allowlist, rather than a finite tool denylist. Native
+  // searches/images/collaboration/review/tool outputs, future and malformed types
+  // fence on either lifecycle edge, without inventing a public tool projection.
+  if (["agentMessage", "reasoning", "plan", "userMessage", "contextCompaction"].includes(item.type)) return [];
+  return [{ type: "work_start", kind: "native_tool" }];
 }

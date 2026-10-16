@@ -194,6 +194,7 @@ export { renderSeedPrompt } from "./seed-history.js";
 
 export class CodexAdapter implements Adapter {
   readonly id = "codex";
+  readonly supportsVoiceReplyStream = true;
   readonly displayName = "Codex";
   readonly providerUsageCommand = {
     name: "status",

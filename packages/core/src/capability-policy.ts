@@ -49,6 +49,8 @@ export interface RuntimeCapabilityRestrictions {
 }
 
 export const CAPABILITY_IDS = {
+  memoryRead: "memory.read",
+  memoryWriteProject: "memory.write_project",
   browserRead: "browser.read",
   browserInteract: "browser.interact",
   managedAgentCreate: "agents.create_managed",
@@ -60,6 +62,12 @@ export const CAPABILITY_IDS = {
 } as const;
 
 export const BUILT_IN_CAPABILITIES: CapabilityDescriptor[] = [
+  { id: CAPABILITY_IDS.memoryRead, categoryId: "files", categoryLabel: "Files", label: "Read explicit memories",
+    description: "Read current Project and explicitly granted global memory when the host feature is enabled.",
+    runtimeToolNames: ["ponderosa_memory_search", "ponderosa_memory_get"] },
+  { id: CAPABILITY_IDS.memoryWriteProject, categoryId: "files", categoryLabel: "Files", label: "Save Project memories",
+    description: "Explicitly save, correct and forget Project memories when the host feature is enabled.",
+    runtimeToolNames: ["ponderosa_memory_save", "ponderosa_memory_update", "ponderosa_memory_forget"] },
   {
     id: CAPABILITY_IDS.browserRead,
     categoryId: "browser",

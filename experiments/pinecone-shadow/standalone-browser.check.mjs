@@ -30,8 +30,8 @@ const origin=`http://127.0.0.1:${server.address().port}`;
 let browser;
 try{
   browser=await chromium.launch({headless:true,executablePath:process.env.PONDEROSA_CHROMIUM_PATH});
-  for(const [width,height] of [[320,740],[390,844],[430,932],[390,360],[844,390],[1440,900]]){
-    const context=await browser.newContext({viewport:{width,height}}),page=await context.newPage();
+  for(const [width,height,touch=false] of [[320,740],[390,844],[430,932],[390,360],[844,390],[1440,900],[390,844,true]]){
+    const context=await browser.newContext({viewport:{width,height},hasTouch:touch,isMobile:touch}),page=await context.newPage();
     let messages=initial.slice(20),failHistory=false,failDetail=false,failOwner=false,failBranch=false,empty=false,unknown=false;
     const submissions=[],accepted=new Map();
     page.on('pageerror',error=>errors.push(error.message));
@@ -41,6 +41,8 @@ try{
       if(p.endsWith('/stream'))return route.fulfill({contentType:'text/event-stream',body:p.includes('/workspace/')?'event: workspace_status\ndata: '+JSON.stringify({instanceId:'fixture',cursor:0,snapshot:true,caughtUp:true})+'\n\n':': fixture\n\n'});
       if(p==='/api/branches/'+branchId)return failBranch?json({error:'Fixture backend offline'},503):json({id:branchId,enabled:true,bindingRevisionId:'binding',versionId:'version',triggerId:'timer'});
       if(p==='/api/branches/'+branchId+'/configuration')return json({agents:{spokesperson:agentId},directories:{workspace:'/synthetic/assistant'}});
+      if(p==='/api/branches/'+branchId+'/executions')return json([{id:'old-wait',admissionSource:'automatic',state:'waiting',createdAt:new Date(Date.now()-3600000).toISOString(),updatedAt:new Date(Date.now()-3600000).toISOString()}]);
+      if(p==='/api/branches/engine/projects/'+projectId+'/memories'&&method==='POST')return json([]);
       if(p==='/api/branches/'+branchId+'/trigger')return json({id:'timer',branchId,enabled:true});
       if(p==='/api/branches/contexts/'+conversationId)return json({branchId});
       if(p==='/api/branches/engine/agents/'+agentId&&method==='GET'){
@@ -67,13 +69,20 @@ try{
     });
     const editor=page.getByRole('textbox',{name:'Message Pinecone',exact:true});
     await page.goto(origin+'/');await editor.waitFor();await page.getByText('Saved message 79',{exact:true}).waitFor();
+    await page.getByText('Check-ins are delayed. Chat still works.',{exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'Back to Branches'}).count(),0);
     const measure=()=>page.evaluate(()=>{
       const box=s=>{const e=document.querySelector(s),r=e.getBoundingClientRect();return {x:r.x,y:r.y,bottom:r.bottom,height:r.height,scrollTop:e.scrollTop,scrollHeight:e.scrollHeight}};
       return {width:innerWidth,height:innerHeight,conversation:box('section[aria-label="Conversation with Pinecone"]'),composer:box('form'),overflow:document.documentElement.scrollWidth>innerWidth};
     });
-    const layout=await measure();assert(!layout.overflow);assert(layout.composer.bottom<=height+1);assert(layout.conversation.bottom<=layout.composer.y+1);assert(layout.conversation.height>height*.5);rows.push(layout);
-    if(width===390&&height===844){
+    const layout=await measure();assert(!layout.overflow);assert(layout.composer.bottom<=height+1);assert(layout.conversation.bottom<=layout.composer.y+1);assert(layout.conversation.height>height*.5);rows.push({...layout,touch});
+    if(evidence){await mkdir(evidence,{recursive:true});await page.screenshot({path:path.join(evidence,`layout-${width}x${height}${touch?'-touch':''}.png`)});}
+    if(touch){
+      await editor.fill('Touch first');await editor.press('Enter');assert.equal(submissions.length,0,'touch Return never sends');
+      assert.equal(await editor.inputValue(),'Touch first\n');
+      await page.getByRole('button',{name:'Send message to Pinecone'}).click();await page.getByText('Fixture reply: Touch first',{exact:false}).waitFor();assert.equal(accepted.size,1);
+    }
+    if(width===390&&height===844&&!touch){
       const conversation=page.getByRole('region',{name:'Conversation with Pinecone'});
       await conversation.evaluate(e=>{e.scrollTop=0});
       messages=[...messages,message(90,'New saved fixture message')];failBranch=true;
@@ -81,6 +90,7 @@ try{
       const stale=page.getByRole('alert').filter({hasText:'Pinecone couldn’t refresh. Showing your last loaded conversation.'});
       await stale.waitFor();assert(await editor.isVisible(),'failed background metadata refresh must retain the loaded conversation');
       assert((await measure()).conversation.scrollTop<2,'incoming messages must not move a reader at earlier history');
+      await page.getByRole('button',{name:'↓ New message',exact:true}).waitFor();
       failBranch=false;await stale.getByRole('button',{name:'Retry',exact:true}).click();
       failHistory=true;
       await page.getByRole('button',{name:'Earlier messages',exact:true}).click();
@@ -105,6 +115,11 @@ try{
       await page.waitForFunction(()=>document.querySelector('form').getBoundingClientRect().bottom<=361);
       assert((await measure()).conversation.height>150);
       await page.reload();await editor.waitFor();assert((await editor.inputValue()).startsWith('Unsent keyboard draft'));
+      await page.getByRole('button',{name:'Conversation options',exact:true}).click();
+      await page.getByRole('menuitem',{name:'What Pinecone remembers',exact:true}).click();
+      await page.getByRole('dialog').getByText('No memories found.',{exact:true}).waitFor();
+      await page.getByRole('button',{name:'Done',exact:true}).click();
+      await page.getByText('Check-ins are delayed. Chat still works.',{exact:true}).waitFor();
       await page.getByRole('button',{name:'Call Pinecone',exact:true}).click();await page.getByRole('dialog').waitFor();
       await page.getByRole('button',{name:'End call',exact:true}).click();assert.equal(accepted.size,3,'opening/ending a call sends no message');
       empty=true;await page.reload();await page.getByText('What’s on your mind?',{exact:true}).waitFor();

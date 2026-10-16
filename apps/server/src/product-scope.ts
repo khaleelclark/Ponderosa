@@ -348,6 +348,10 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
   });
   // Defense in depth for global projections; primary collections filter before pagination.
   app.addHook('preSerialization',async(request,_reply,payload)=>{
+    // Memory handlers already enforce live Project/product/global grants. Author
+    // IDs are provenance: recursively filtering them as resource targets would
+    // corrupt shared Project memory authored in another Chat/product.
+    if(['/api/agent-memory','/api/memories','/api/projects/:id/memories','/api/projects/:id/memory-global-grant'].includes(request.routeOptions.url??''))return payload;
     if(!request.url.startsWith('/api/')||/^\/api\/branch(?:es|\-executions|\-gates)(?:\/|$)/.test(request.url))return payload;
     const product=requestProduct(request);
     const draftOwner=agentDraftOwner(store,request);

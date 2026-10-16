@@ -50,6 +50,8 @@ export interface EngineRegistration {
 
 export interface CreateServerOptions {
   dataDir: string;
+  /** Explicit development gate. No semantic retrieval/startup recall/UI yet. */
+  memoryEnabled?: boolean;
   resourceAdmission?: import("./resource-admission.js").ResourceAdmissionOptions;
   /** Programmatic observation inputs for isolated qualification/embeddings.
    * Never supplied by HTTP or environment configuration. Admission policy,
@@ -143,6 +145,8 @@ export interface CreateServerOptions {
 }
 
 export interface ActiveRun {
+  voiceReply?: import("./voice-reply-stream.js").VoiceReplyStream;
+  voiceReplyStreamSupported?: boolean;
   runId: string;
   startedAt: string;
   executionId: string;

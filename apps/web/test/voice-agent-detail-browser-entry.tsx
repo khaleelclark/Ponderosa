@@ -33,10 +33,10 @@ window.setTimeout = ((fn: () => void, ms: number, ...args: any[]) => {
   if (track) timers.add(id); return id;
 }) as any;
 window.clearTimeout = ((id: number) => { timers.delete(id); clearTimer(id); }) as any;
-const intervals = new Set<number>();
+const intervals = new Set<number>(); const phraseIntervals = new Set<number>();
 const setIntervalNative=window.setInterval.bind(window),clearIntervalNative=window.clearInterval.bind(window);
-window.setInterval=((fn:TimerHandler,ms?:number,...args:any[])=>{const id=setIntervalNative(fn,ms,...args);if(ms===5000)intervals.add(id);return id;}) as any;
-window.clearInterval=((id:number)=>{intervals.delete(id);clearIntervalNative(id);}) as any;
+window.setInterval=((fn:TimerHandler,ms?:number,...args:any[])=>{const id=setIntervalNative(fn,ms,...args);if(ms===5000||ms===900)intervals.add(id);if(ms===900)phraseIntervals.add(id);return id;}) as any;
+window.clearInterval=((id:number)=>{intervals.delete(id);phraseIntervals.delete(id);clearIntervalNative(id);}) as any;
 const monitors = new Set<object>();
 for (const name of ["MutationObserver", "ResizeObserver"] as const) {
   const Native = window[name];
@@ -92,7 +92,7 @@ Object.assign(window, { voiceTest: { stats,
   final(text: string) { recognition.onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: text } }] }); },
   recognized(text: string) { this.final(text); recognition.onend?.(); }, complete() { utterance.onend?.(); },
   listenerCounts() {return Object.fromEntries([...listeners].map(([key,set])=>[key,set.size]));},
-  resources() { return {recognition:recognitions.filter(r=>r.onresult || r.onend || r.onstart || r.onerror || r.onspeechend).length,synthesis:utterances.filter(u=>u.onend || u.onstart || u.onerror).length,timers:timers.size,intervals:intervals.size,monitors:monitors.size}; },
+  resources() { return {recognition:recognitions.filter(r=>r.onresult || r.onend || r.onstart || r.onerror || r.onspeechend).length,synthesis:utterances.filter(u=>u.onend || u.onstart || u.onerror).length,timers:timers.size,intervals:intervals.size,phraseIntervals:phraseIntervals.size,monitors:monitors.size}; },
   // Archive only the owned disposable fixture Agent through the real API;
   // wait for its canonical projection rather than racing a remount/cache patch.
   async archived() { await api.updateAgent(context.selectedAgentId, {archived:true}); await client.invalidateQueries({queryKey:queryKeys.agents.detailPrefix(context.selectedAgentId)}); },

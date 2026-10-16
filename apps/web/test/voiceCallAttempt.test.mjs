@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { prepareVoiceCallAttempt, retainVoiceCallAttempt, restoreVoiceCallAttempt, settleVoiceCallAttempt, voiceCallAttemptCanRetry, VOICE_ATTEMPT_TTL } from '../src/components/speech/voiceCallAttempt.js';
+import { durableSubmissionFingerprint } from '../src/components/idempotentAttempt.js';
 import { readBrowserStorage } from '../src/browserStorage.js';
 const data = new Map();
 globalThis.window = { sessionStorage: { getItem: k => data.get(k) ?? null, setItem: (k,v) => data.set(k,v), removeItem: k => data.delete(k) } };
@@ -9,10 +10,14 @@ const route = name => ({origin:'http://test',product:'/api/conversations',projec
 const prepare = (name, now=100) => prepareVoiceCallAttempt(route(name), words, () => `key-${name}`, now);
 const slot = r => `ponderosa.voice.pending.v1:${JSON.stringify(r)}`;
 const legacy = a => { const {idempotencyKey, ...identity}=a.marker;return {...identity,version:1,request:a.request}; };
+const prepareLegacy = async name => {
+  const a=await prepare(name);const {voiceReply,...request}=a.request;
+  return {request,marker:{...a.marker,fingerprint:await durableSubmissionFingerprint(request)}};
+};
 test('mounted immutable request stays exact; only marker persists and reopening cannot reconstruct words', async () => {
   data.set('ponderosa.workspace.instance.v1','server-one');
   const a=await prepare('one'); assert.equal(retainVoiceCallAttempt(a),true);
-  assert.deepEqual(a.request,{text:words,idempotencyKey:'key-one',recipients:[{agentId:'agent'}],activeRunDelivery:'queue'});
+  assert.deepEqual(a.request,{text:words,voiceReply:true,idempotencyKey:'key-one',recipients:[{agentId:'agent'}],activeRunDelivery:'queue'});
   assert.equal(await voiceCallAttemptCanRetry(a,a.marker.route,101),true);
   assert.throws(()=>{a.request.text='changed';},TypeError);assert.throws(()=>{a.request.recipients[0].agentId='changed';},TypeError);
   const raw=data.get(slot(a.marker.route));assert.equal(raw.includes(words),false);assert.equal(raw.includes('request'),false);assert.equal(raw.includes('recipients'),false);
@@ -46,12 +51,12 @@ test('expiry refuses retry and repeated reopen keeps marker warning against repl
   assert.throws(()=>retainVoiceCallAttempt({...a,marker:{...a.marker,idempotencyKey:'replacement'}}),/unresolved/);settleVoiceCallAttempt(a.marker);
 });
 test('valid legacy request becomes text-free inspection-only marker, never returned payload',async()=>{
-  const a=await prepare('legacy');data.set(slot(a.marker.route),JSON.stringify(legacy(a)));
+  const a=await prepareLegacy('legacy');data.set(slot(a.marker.route),JSON.stringify(legacy(a)));
   const result=await restoreVoiceCallAttempt(a.marker.route,101);assert.deepEqual(result.marker,a.marker);assert.equal(result.attempt,undefined);assert.equal(JSON.stringify(result).includes(words),false);
   assert.equal(data.get(slot(a.marker.route)),JSON.stringify(a.marker));settleVoiceCallAttempt(a.marker);
 });
 test('expired legacy private record is converted without dropping unknown-outcome warning',async()=>{
-  const a=await prepare('oldlegacy');data.set(slot(a.marker.route),JSON.stringify(legacy(a)));
+  const a=await prepareLegacy('oldlegacy');data.set(slot(a.marker.route),JSON.stringify(legacy(a)));
   assert.match((await restoreVoiceCallAttempt(a.marker.route,100+VOICE_ATTEMPT_TTL)).notice,/expired/);
   assert.equal(data.get(slot(a.marker.route)).includes(words),false);assert.match((await restoreVoiceCallAttempt(a.marker.route,100+VOICE_ATTEMPT_TTL+1)).notice,/expired/);settleVoiceCallAttempt(a.marker);
 });

@@ -181,3 +181,5 @@ export { validateBranchDefinition, validateBranchBindings } from './branch-defin
 export {branchDefinitionChanges} from "./branch-definition-diff.js";
 
 export { CapabilityPolicyStore, CapabilityPolicyRevisionConflictError } from "./capability-policy-store.js";
+
+export * from "./memory-store.js";

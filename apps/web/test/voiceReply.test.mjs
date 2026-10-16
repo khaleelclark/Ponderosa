@@ -40,3 +40,7 @@ test('a latest window missing the accepted turn never claims a unique reply', ()
   assert.ok(voiceReplyInWindow('sent', full, 'agent').error);
   assert.deepEqual(voiceReplyInWindow('sent', [sent(), reply()], 'agent'), { text: 'The exact reply.' });
 });
+
+test('canonical authored bytes reconcile provisional text while display routing labels remain in Chat',()=>{
+ assert.deepEqual(voiceReply(sent(),[{...reply(),text:'#user Display label',authoredText:'Authored reply.'}],'agent'),{text:'Authored reply.'});
+});

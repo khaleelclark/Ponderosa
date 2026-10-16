@@ -12,6 +12,8 @@ interface AgentApiRouteClassification {
  * the ordinary operator/session boundary instead.
  */
 export const AGENT_API_ROUTES = [
+  { path: "/api/agent-voice-reply", match: "exact", audience: "agent" },
+  { path: "/api/agent-memory", match: "exact", audience: "agent" },
   { path: "/api/agent-messages", match: "exact", audience: "agent" },
   { path: "/api/agent-coordinate", match: "exact", audience: "agent" },
   { path: "/api/agent-request-updates", match: "exact", audience: "agent" },

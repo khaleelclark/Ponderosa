@@ -30,3 +30,15 @@ test('earlier canonical pages retain chronology, latest receipts and authored au
   assert.equal(merged[1].deliveryReceipts[0].state,'processed');
   assert.equal(overlap.deliveryReceipts[0].state,'queued','canonical input projections must remain untouched');
 });
+
+test('check-in status keeps old waiting work visible after newer quiet success; unknown outcomes never retry',async()=>{
+ const {checkStatus,safeMessageRetry}=await import('../../apps/web/src/components/pinecone/branchPineconeModel.ts');
+ const now=Date.parse('2026-10-16T15:00:00Z');
+ const row=(state,at)=>({id:at,admissionSource:'automatic',state,createdAt:at,updatedAt:at});
+ assert.equal(checkStatus([row('completed','2026-10-16T14:50:00Z'),row('waiting','2026-10-16T13:00:00Z')],true,now),'Check-ins are delayed. Chat still works.');
+ assert.equal(checkStatus([],false,now),'Check-ins paused');
+ assert.equal(checkStatus([row('running','2026-10-16T14:59:00Z')],true,now),'Checking…');
+ for(const state of ['unconfirmed','run_unconfirmed','started','delivered','processed'])assert.equal(safeMessageRetry([{state,canRetry:true}]),false);
+ assert.equal(safeMessageRetry([{state:'failed',canRetry:true,retryMayDuplicate:true}]),false);
+ assert.equal(safeMessageRetry([{state:'failed',canRetry:true}]),true);
+});

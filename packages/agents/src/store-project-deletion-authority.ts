@@ -10,6 +10,7 @@ import { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone
 import type { ProjectDeletionReceipt } from "./store-types.js";
 import { projectDeletionPending, projectDeletionReceipts } from "./schema.js";
 import { projectDir, projectsDir } from "./paths.js";
+import { purgeProjectMemories } from "./memory-store.js";
 
 const PROJECT_DELETION_IDENTITY_FILE = ".ponderosa-project-deletion.json";
 
@@ -315,6 +316,7 @@ export class AgentProjectDeletionAuthority {
           throw new Error("Project deletion cannot commit while Agent deletion cleanup is pending");
         }
         beforeProjectionDelete?.(id);
+        purgeProjectMemories(this.client, id, now);
         this.client.prepare(`DELETE FROM events WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
           .run(id);
         this.client.prepare(`DELETE FROM artifacts WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)

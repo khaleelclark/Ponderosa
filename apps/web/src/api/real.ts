@@ -1,6 +1,9 @@
 import { productApiPath } from "./productScope";
 import type { CollectionPageDto } from "@ponderosa/core";
 import type {
+  MemoryDto,
+  MemoryRevisionDto,
+  MemoryCommandReceipt,
   LocalBrowserConnectionDto,
   ResponseFileReviewDto,
   LocalBrowserPairingDto,
@@ -383,6 +386,43 @@ export const realApi = {
     return requestJson<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, {
       method: "PATCH",
       body: JSON.stringify(patch satisfies UpdateProjectRequest),
+    });
+  },
+  listProjectMemories(projectId: string, signal?: AbortSignal): Promise<MemoryDto[]> {
+    return requestJson(productApiPath(`/api/projects/${encodeURIComponent(projectId)}/memories`), {
+      method: "POST", body: JSON.stringify({ operation: "list", limit: 20 }), signal, cache: "no-store",
+    });
+  },
+  searchProjectMemories(projectId: string, query: string, signal?: AbortSignal): Promise<{ retrieval: "lexical"; memories: MemoryDto[] }> {
+    return requestJson(productApiPath(`/api/projects/${encodeURIComponent(projectId)}/memories`), {
+      method: "POST", body: JSON.stringify({ operation: "search", query, limit: 20 }), signal, cache: "no-store",
+    });
+  },
+  getProjectMemory(projectId: string, memoryId: string, signal?: AbortSignal): Promise<MemoryDto> {
+    return requestJson(productApiPath(`/api/projects/${encodeURIComponent(projectId)}/memories`), {
+      method: "POST", body: JSON.stringify({ operation: "get", memoryId }), signal, cache: "no-store",
+    });
+  },
+  getProjectMemoryHistory(projectId: string, memoryId: string, signal?: AbortSignal): Promise<MemoryRevisionDto[]> {
+    return requestJson(productApiPath(`/api/projects/${encodeURIComponent(projectId)}/memories`), {
+      method: "POST", body: JSON.stringify({ operation: "history", memoryId, limit: 20 }), signal, cache: "no-store",
+    });
+  },
+  saveProjectMemory(projectId: string, text: string, commandKey: string): Promise<MemoryCommandReceipt> {
+    return requestJson(productApiPath(`/api/projects/${encodeURIComponent(projectId)}/memories`), {
+      method: "POST", body: JSON.stringify({ operation: "save", text, classification: "user_statement", commandKey }),
+    });
+  },
+  updateProjectMemory(projectId: string, memoryId: string, expectedRevision: number,
+    input: Pick<MemoryRevisionDto, "text" | "classification" | "expiresAt">, commandKey: string): Promise<MemoryCommandReceipt> {
+    return requestJson(productApiPath(`/api/projects/${encodeURIComponent(projectId)}/memories`), {
+      method: "POST", body: JSON.stringify({ operation: "update", memoryId, expectedRevision,
+        text: input.text, classification: input.classification, ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}), commandKey }),
+    });
+  },
+  forgetProjectMemory(projectId: string, memoryId: string, expectedRevision: number, commandKey: string): Promise<MemoryCommandReceipt> {
+    return requestJson(productApiPath(`/api/projects/${encodeURIComponent(projectId)}/memories`), {
+      method: "POST", body: JSON.stringify({ operation: "forget", memoryId, expectedRevision, commandKey }),
     });
   },
   deleteProject(projectId: string): Promise<ProjectDeletionResponseDto> {
@@ -1277,6 +1317,9 @@ export const realApi = {
     if (response.status === 429) noteBackgroundRateLimit(response.headers.get("retry-after"));
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0), metadata: JSON.parse(response.headers.get("x-ponderosa-browser-frame") ?? "null") ?? undefined };
+  },
+  getVoiceReplyStatus(conversationId: string, messageId: string, agentId: string): Promise<import("@ponderosa/core").VoiceReplyStatus> {
+    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/voice-replies/${encodeURIComponent(messageId)}/${encodeURIComponent(agentId)}`);
   },
   subscribeAgent(agentId: string, lastSeenSeq: number | undefined, handlers: StreamHandlers): StreamSubscription {
     let cursor = lastSeenSeq;

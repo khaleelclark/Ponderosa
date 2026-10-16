@@ -51,7 +51,8 @@ try {
     const resources=await page.evaluate(()=>window.voiceTest.resources());
     assert.equal(resources.recognition,0,`${name}: no recognition handlers`);
     assert.equal(resources.synthesis,0,`${name}: no synthesis handlers`);
-    assert.equal(resources.intervals,0,`${name}: query fallback interval release`);
+    assert.equal(resources.intervals,0,`${name}: observed 5000ms query and 900ms phrase interval release`);
+    assert.equal(resources.phraseIntervals,0,`${name}: actual 900ms phrase interval release`);
     assert.equal(resources.monitors,0,`${name}: observer release`);
     // Ordinary dictation's transient stopped notice is allowed until its documented 3s expiry.
     if(resources.timers) await page.waitForTimeout(3100);
@@ -60,6 +61,116 @@ try {
     assert.deepEqual(errors,[],`${name}: browser errors`);
     cases++; console.log(`PASS ${cases}: ${name}`); await page.close();
   }
+  for (const mode of ["collapsed", "sync-before-commit", "delayed-after-commit", "collapsed-before-delayed-onset"]) await scenario(`stream visible DOM timing ${mode}`,async(p,{open,type,send})=>{
+    await open();await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("DOM timing turn");await send();
+    await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    if(mode==="collapsed")await p.getByRole("button",{name:"Transcript & typing",exact:true}).click();
+    if(mode.includes("delayed")||mode==="delayed-after-commit")await p.evaluate(()=>{window.voiceTest.stats.hangSpeech=true;});
+    await p.evaluate(()=>window.voiceTest.stream("Exact visible reply sentence. ",1));
+    await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    if(mode!=="collapsed")await p.getByLabel("Streaming reply").getByText("Exact visible reply sentence.",{exact:true}).waitFor();
+    if(mode==="collapsed-before-delayed-onset")await p.getByRole("button",{name:"Transcript & typing",exact:true}).click();
+    if(mode.includes("delayed")||mode==="delayed-after-commit")await p.evaluate(()=>window.voiceTest.audioStart());
+    if(mode.startsWith("collapsed"))await p.getByRole("button",{name:"Transcript & typing",exact:true}).click();
+    const timing=await p.getByLabel("Call timing").innerText();
+    assert.match(timing,mode==="delayed-after-commit"?/visible reply DOM commit → browser audio start \d+ ms/:/visible reply DOM commit → browser audio start unavailable/);
+    assert.match(timing,/first reply text receipt → browser audio start \d+ ms/);
+    await p.getByRole("button",{name:"Transcript & typing",exact:true}).click();await p.getByRole("button",{name:"Transcript & typing",exact:true}).click();
+    assert.equal(await p.getByLabel("Call timing").innerText(),timing,'later expansion never invents an earlier render clock');
+    console.log('DOM TIMING ORACLE',mode,timing);
+  });
+  for(const mode of ["collapsed","sync-before-commit","delayed-after-commit"])await scenario(`canonical fallback visible DOM timing ${mode}`,async(p,{open,type,send})=>{
+    await open();await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Fallback DOM turn");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    if(mode==="collapsed")await p.getByRole("button",{name:"Transcript & typing",exact:true}).click();
+    if(mode==="delayed-after-commit")await p.evaluate(()=>{window.voiceTest.stats.hangSpeech=true;});
+    await p.evaluate(()=>window.voiceTest.canonical("Exact canonical visible reply."));await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    if(mode!=="collapsed")await p.getByLabel("Call transcript").getByText("Exact canonical visible reply.",{exact:true}).waitFor();
+    if(mode==="delayed-after-commit")await p.evaluate(()=>window.voiceTest.audioStart());
+    if(mode==="collapsed")await p.getByRole("button",{name:"Transcript & typing",exact:true}).click();
+    assert.match(await p.getByLabel("Call timing").innerText(),mode==="delayed-after-commit"?/visible reply DOM commit → browser audio start \d+ ms/:/visible reply DOM commit → browser audio start unavailable/);
+  });
+  await scenario("failed snapshot cancels current/queued speech and irreversibly rejects late streaming",async(p,{open,type,send})=>{
+    await open();await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Failed work turn");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    await p.evaluate(()=>{window.voiceTest.stream("Current phrase. Queued phrase. ",1);window.savedAudio=window.voiceTest.lateAudio();});await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    assert.equal((await p.evaluate(()=>window.voiceTest.resources())).phraseIntervals,1,'actual 900ms flush interval observed while reply pending');
+    await p.evaluate(()=>window.voiceTest.stream("Current phrase. Queued phrase. ",2,{state:"failed"}));await p.getByRole("alert").filter({hasText:/Streaming stopped/}).waitFor();
+    assert.equal((await p.evaluate(()=>window.voiceTest.resources())).synthesis,0,'failed event removes actual current speech handlers');
+    await p.evaluate(()=>{window.savedAudio.start?.();window.savedAudio.end?.();window.voiceTest.stream("Current phrase. Queued phrase. Late phrase. ",3);});
+    assert.deepEqual(await p.evaluate(()=>window.voiceTest.stats.spoken),["Current phrase."]);
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),0);
+  });
+  await scenario("new turn timing cannot inherit old DOM commit or late onset",async(p,{open,type,send})=>{
+    await open();await p.evaluate(()=>{window.voiceTest.stats.waiting=true;window.voiceTest.stats.hangSpeech=true;});await type("First timing turn");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    await p.evaluate(()=>{window.voiceTest.stream("First committed sentence. ",1);window.savedAudio=window.voiceTest.lateAudio();});await p.getByLabel("Streaming reply").waitFor();await p.evaluate(()=>window.voiceTest.audioStart());
+    assert.match(await p.getByLabel("Call timing").innerText(),/DOM commit → browser audio start \d+ ms/);
+    await p.evaluate(()=>{window.voiceTest.canonical("First committed sentence.");window.voiceTest.complete();});
+    await p.getByLabel("Your next turn").waitFor();await p.waitForFunction(()=>!document.querySelector('textarea')?.disabled);await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Second timing turn");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    await p.evaluate(()=>{window.savedAudio.start?.();window.savedAudio.end?.();});
+    assert.match(await p.getByLabel("Call timing").innerText(),/DOM commit → browser audio start unavailable/);
+    await p.evaluate(()=>window.voiceTest.stream("Second exact reply. ",1));await p.getByLabel("Streaming reply").getByText("Second exact reply.",{exact:true}).waitFor();
+    assert.match(await p.getByLabel("Call timing").innerText(),/DOM commit → browser audio start unavailable/);
+    await p.evaluate(()=>window.voiceTest.audioStart());assert.match(await p.getByLabel("Call timing").innerText(),/DOM commit → browser audio start \d+ ms/);
+  });
+  await scenario("ordered streaming speaks before canonical final, keeps capture off between chunks, then speaks tail once", async(p,{open,type,send}) => {
+    await open(); await p.evaluate(()=>{ window.voiceTest.stats.waiting=true; }); await type("Streaming turn"); await send();
+    await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    await p.evaluate(()=>window.voiceTest.stream("First natural sentence. ",1));
+    await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    assert.deepEqual(await p.evaluate(()=>window.voiceTest.stats.spoken),["First natural sentence."]);
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),0);
+    await p.evaluate(()=>{ window.voiceTest.complete(); window.voiceTest.stream("First natural sentence. ",1); window.voiceTest.stream("First natural sentence. Second natural sentence. Tail",4); });
+    await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===2);
+    assert.deepEqual(await p.evaluate(()=>window.voiceTest.stats.spoken),["First natural sentence.","Second natural sentence."]);
+    await p.evaluate(()=>window.voiceTest.complete());
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),0);
+    await p.evaluate(()=>window.voiceTest.canonical("First natural sentence. Second natural sentence. Tail"));
+    await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===3);
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.spoken[2]),"Tail");
+    await p.evaluate(()=>window.voiceTest.complete());
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.echoCapture),0);
+    console.log("STREAMING SYNTHETIC TIMING",await p.getByLabel("Call timing").innerText());
+  });
+  for (const stop of ["end","mute","talk","hidden"]) await scenario(`stream interruption ${stop} fences queued and late audio`, async(p,{open,type,send}) => {
+    await open(); await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Interruptible turn");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    await p.evaluate(()=>{ window.voiceTest.stream("First sentence. Queued sentence. ",1); window.savedAudio=window.voiceTest.lateAudio(); });
+    await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    if(stop==="end")await p.getByRole("button",{name:"End call",exact:true}).click();
+    if(stop==="mute")await p.getByRole("button",{name:"Mute microphone",exact:true}).click();
+    if(stop==="talk")await p.getByRole("button",{name:"Talk now",exact:true}).click();
+    if(stop==="talk") { await p.getByText("Listening…",{exact:true}).waitFor(); assert.equal(await p.evaluate(()=>window.voiceTest.streamCount()),0); }
+    if(stop==="hidden")await p.evaluate(()=>{Object.defineProperty(document,"visibilityState",{configurable:true,value:"hidden"});document.dispatchEvent(new Event("visibilitychange"));});
+    await p.evaluate(()=>{window.savedAudio.start?.();window.savedAudio.end?.();window.voiceTest.stream("First sentence. Queued sentence. Late sentence. ",2);});
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.spoken.length),1);
+  });
+  await scenario("successor stream fences queued audio and preserves Chat recovery", async(p,{open,type,send}) => {
+    await open();await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Successor turn");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    await p.evaluate(()=>{window.voiceTest.stream("First sentence. Queued sentence. ",1);window.voiceTest.stream("Foreign successor. ",2,{runId:"other-run",fence:2});});
+    await p.getByRole("alert").filter({hasText:/another Run/}).waitFor();
+    await p.evaluate(()=>window.voiceTest.complete());assert.equal(await p.evaluate(()=>window.voiceTest.stats.spoken.length),1);
+  });
+  await scenario("stream failure reconciles only canonical unspoken tail", async(p,{open,type,send}) => {
+    await open();await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Partial fallback turn");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    await p.evaluate(()=>window.voiceTest.stream("First sentence. ",1));await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    await p.evaluate(()=>{window.voiceTest.complete();window.voiceTest.stream("First sentence. ",2,{state:"failed"});});
+    await p.evaluate(()=>window.voiceTest.canonical("First sentence. Final fallback tail."));
+    await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===2);
+    assert.deepEqual(await p.evaluate(()=>window.voiceTest.stats.spoken),["First sentence.","Final fallback tail."]);
+  });
+  await scenario("canonical recovered Run cannot continue speech from its predecessor", async(p,{open,type,send})=>{
+    await open();await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Recovery turn");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    await p.evaluate(()=>window.voiceTest.stream("First sentence. Queued sentence. ",1));await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    await p.evaluate(()=>window.voiceTest.recover());await p.getByRole("alert").filter({hasText:/another Run/}).waitFor();
+    await p.evaluate(()=>window.voiceTest.complete());assert.equal(await p.evaluate(()=>window.voiceTest.stats.spoken.length),1);
+  });
+  await scenario("Cancel reply targets the observed Run once and fences all late speech", async(p,{open,type,send})=>{
+    await open();await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Cancel this reply");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    await p.evaluate(()=>{window.voiceTest.stream("First sentence. Queued sentence. ",1);window.savedAudio=window.voiceTest.lateAudio();});await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    await p.getByRole("button",{name:"Cancel reply",exact:true}).click();
+    assert.equal(await p.evaluate(()=>window.voiceTest.cancelledRuns.length),1);assert.equal(await p.evaluate(()=>window.voiceTest.cancelledRuns[0].targetRunId),"run");
+    assert.ok(await p.evaluate(()=>window.voiceTest.cancelledRuns[0].idempotencyKey));
+    await p.evaluate(()=>{window.savedAudio.start?.();window.savedAudio.end?.();window.voiceTest.stream("Late reply. ",2);});
+    assert.equal(await p.evaluate(()=>window.voiceTest.stats.spoken.length),1);assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),0);
+  });
   await scenario("direct phone launcher opens compact controls; expansion and unknown recovery are conditional", async(p) => {
     assert.equal(await p.getByRole("button", {name:"Voice input",exact:true}).count(), 0);
     assert.equal(await p.getByRole("menu").count(), 0);
@@ -126,7 +237,7 @@ try {
     assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends[0].text),"First final turn");
     assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),1);
     assert.equal((await p.evaluate(()=>window.voiceTest.resources())).recognition,0);
-    const first=await p.getByLabel("Call timing").innerText(); assert.match(first,/settled → accepted \d+ ms.*canonical reply \d+ ms.*speech started \d+ ms/);console.log("SYNTHETIC MONOTONIC SEGMENTS",first);
+    const first=await p.getByLabel("Call timing").innerText(); assert.match(first,/Acceptance → Run start .*first reply text .*browser audio start/);console.log("SYNTHETIC MONOTONIC SEGMENTS",first);
     await p.evaluate(()=>window.voiceTest.complete()); await p.waitForFunction(()=>window.voiceTest.stats.starts===2);
     await p.evaluate(()=>window.voiceTest.recognized("Second automatic turn"));await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===2);
     const sends=await p.evaluate(()=>window.voiceTest.stats.sends);assert.equal(sends.length,2);assert.notEqual(sends[0].idempotencyKey,sends[1].idempotencyKey);assert.equal(sends[1].text,"Second automatic turn");
@@ -209,7 +320,7 @@ try {
     assert.equal((await p.evaluate(()=>window.voiceTest.resources())).recognition,0);
     assert.equal((await p.evaluate(()=>window.voiceTest.resources())).synthesis,0);
     assert.equal((await p.evaluate(()=>window.voiceTest.resources())).timers,0);
-    assert.doesNotMatch(await p.getByLabel("Call timing").innerText(),/speech started/);
+    assert.match(await p.getByLabel("Call timing").innerText(),/browser audio start unavailable/);
     await p.evaluate(()=>window.oldSpeech());
     assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),1);
     assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),1);

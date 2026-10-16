@@ -4,6 +4,7 @@ import {
   PONDEROSA_IMPORT_FILE_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_BROWSER_TOOLS,
+  PONDEROSA_VOICE_REPLY_TOOL,
 } from "@ponderosa/core";
 import Fastify from "fastify";
 import { createProviderDynamicToolHandler } from "../dist/routes/provider-dynamic-tool-handler.js";
@@ -20,13 +21,14 @@ test("provider tools retain their Run capability and special route payloads", as
     authorization: request.headers.authorization,
   }));
   app.post("/api/agent-browser", async (request) => request.body);
+  app.post("/api/agent-voice-reply", async (request) => ({ ...request.body, authorization: request.headers.authorization, operationId: request.headers["x-ponderosa-voice-operation-id"] }));
 
   const browserTool = { name: "ponderosa_browser_navigate", description: "", inputSchema: {} };
   const newTab = PONDEROSA_BROWSER_TOOLS.find(tool => tool.name === "ponderosa_browser_new_page");
   assert.ok(newTab, "new-tab operation must be published to providers");
   const handler = createProviderDynamicToolHandler(
     app,
-    [PONDEROSA_TEAM_DIRECTORY_TOOL, PONDEROSA_IMPORT_FILE_TOOL, browserTool, newTab],
+    [PONDEROSA_TEAM_DIRECTORY_TOOL, PONDEROSA_IMPORT_FILE_TOOL, PONDEROSA_VOICE_REPLY_TOOL, browserTool, newTab],
     "run-capability",
   );
 
@@ -60,4 +62,6 @@ test("provider tools retain their Run capability and special route payloads", as
     text: "Unavailable Ponderosa tool for this Run: ponderosa_message",
   });
   assert.deepEqual(JSON.parse((await handler({ id: "new-tab", name: newTab.name, arguments: {} })).text), { operation: "new_page" });
+  assert.deepEqual(JSON.parse((await handler({ id: "voice-rpc", operationId: "voice", name: "ponderosa_voice_reply", arguments: { steeringInjectionId: "fence" } })).text),
+    { steeringInjectionId: "fence", authorization: "Bearer run-capability", operationId: "voice" });
 });

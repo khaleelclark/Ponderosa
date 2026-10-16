@@ -1,9 +1,9 @@
 import { deflateRawSync, inflateRawSync } from "node:zlib";
-import { PONDEROSA_RUNTIME_TOOLS, PONDEROSA_HISTORY_TOOL, type RuntimeDynamicToolSpec } from "@ponderosa/core";
+import { PONDEROSA_RUNTIME_TOOLS, PONDEROSA_MEMORY_TOOLS, PONDEROSA_HISTORY_TOOL, type RuntimeDynamicToolSpec } from "@ponderosa/core";
 
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_ENCODED_CHARACTERS = 16 * 1024;
-const knownNames = new Set([...PONDEROSA_RUNTIME_TOOLS, PONDEROSA_HISTORY_TOOL].map(tool => tool.name));
+const knownNames = new Set([...PONDEROSA_RUNTIME_TOOLS, ...PONDEROSA_MEMORY_TOOLS, PONDEROSA_HISTORY_TOOL].map(tool => tool.name));
 
 function validTools(value: unknown): value is RuntimeDynamicToolSpec[] {
   if (!Array.isArray(value) || value.length > knownNames.size) return false;

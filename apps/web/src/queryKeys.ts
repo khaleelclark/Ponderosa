@@ -22,6 +22,12 @@ export const queryKeys = {
     all: ["projects"] as const,
     detail: (projectId: string | undefined) => ["project", projectId] as const,
   },
+  projectMemories: {
+    project: (product: "dev" | "branches", projectId: string) => ["project-memories", product, projectId] as const,
+    list: (product: "dev" | "branches", projectId: string, query: string) => ["project-memories", product, projectId, "list", query] as const,
+    detail: (product: "dev" | "branches", projectId: string, memoryId: string) => ["project-memories", product, projectId, "detail", memoryId] as const,
+    history: (product: "dev" | "branches", projectId: string, memoryId: string) => ["project-memories", product, projectId, "history", memoryId] as const,
+  },
   workspaceDirectory: {
     all: ["workspace-directory"] as const,
     kind: (kind: "project" | "conversation" | "agent" | "trigger") =>

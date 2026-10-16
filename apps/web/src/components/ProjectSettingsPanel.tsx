@@ -22,6 +22,7 @@ import {
 } from "../conversationEngine";
 import { queryKeys } from "../queryKeys";
 import { EngineModelEffortFields } from "./ProjectRuntimeFields";
+import { ProjectMemoryPanel } from "./ProjectMemoryPanel";
 import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
 import { useMutationNotification } from "./MutationNotifications";
 
@@ -188,6 +189,7 @@ export function ProjectSettingsPanel({
               Delete Project Permanently
             </Button>
           </Stack>
+          <ProjectMemoryPanel projectId={project.id} projectLabel={project.label} />
         </Stack>
       </Box>
       <ProjectDeletionDialog

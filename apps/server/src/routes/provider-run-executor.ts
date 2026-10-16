@@ -106,6 +106,7 @@ export interface ProviderRunExecutionInput {
   previousCursor: ContextCursor | undefined;
   project: ProjectDto;
   prompt: string;
+  validateMemoryContext?: () => void;
   resumeSessionId: string | undefined;
   reusablePersistentRuntime: PersistentRuntime | undefined;
   roomCanonicalTipId: string | undefined;
@@ -220,6 +221,7 @@ export function startProviderRunExecution(
     project,
     prompt,
     resumeSessionId,
+    validateMemoryContext,
     reusablePersistentRuntime,
     roomCanonicalTipId,
     roomDeltaOmitted,
@@ -238,6 +240,10 @@ export function startProviderRunExecution(
     v3FencingToken,
     v3InjectionId,
   } = input;
+
+  // Capability belongs to the engine selected for this exact Run, which may
+  // differ from the Agent's saved engine preference.
+  activeRun.voiceReplyStreamSupported = engine.adapter.supportsVoiceReplyStream === true;
 
   let terminalLifecycle: ReturnType<typeof store.appendEvent> | undefined;
   let terminalLifecyclePublished = false;
@@ -292,6 +298,7 @@ export function startProviderRunExecution(
         PONDEROSA_AGENT_COORDINATE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-coordinate`,
         PONDEROSA_AGENT_UPDATE_REQUEST_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-request-updates`,
         PONDEROSA_AGENT_BROWSER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-browser`,
+        PONDEROSA_AGENT_MEMORY_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-memory`,
         PONDEROSA_AGENT_IMPORT_FILE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-import-file`,
         PONDEROSA_AGENT_SPAWN_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-spawn`,
         PONDEROSA_AGENT_DECISION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-decisions`,
@@ -769,8 +776,9 @@ export function startProviderRunExecution(
 
       let sessionId = resumeSessionId;
       while (true) {
-        const bufferedSessionEvents: AgentEvent[] = [];
+        const bufferedSessionEvents: Extract<AgentEvent, { type: "session" }>[] = [];
         let retryFresh = false;
+        validateMemoryContext?.();
         if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected) {
           coordinationV3!.markPromptSubmitted({
             injectionId: v3InjectionId!,
@@ -875,6 +883,21 @@ export function startProviderRunExecution(
           for (const buffered of bufferedSessionEvents.splice(0)) {
             await persistRuntimeEvent(agent.id, activeRun, buffered);
           }
+          if (event.type === "response_text") {
+            if (activeRun.voiceReply && coordinationV3.latestAcknowledgedSteeringInjection(runId) !== activeRun.voiceReply.snapshot.steeringInjectionId && activeRun.voiceReply.invalidate()) {
+              await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } });
+            }
+            if (ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && activeRun.voiceReply?.accept(event, new Date().toISOString())) {
+              await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } });
+            }
+            continue;
+          }
+          if (activeRun.voiceReply?.observeWork(event)) {
+            await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } });
+          }
+          // Internal work boundaries fence voice authority; existing command/file events
+          // still project to ordinary Work log/activity without exposing a second event.
+          if (event.type === "work_start") continue;
           const logEvent: LogEvent = event.type === "text" || event.type === "reasoning" || event.type === "work_item_update" || event.type === "turn_done"
             ? { ...event, executionId: runId,
                 ...(event.type === "text" && event.presentation === "progress" && activeRun.v3SchedulerRunId
@@ -1091,6 +1114,24 @@ export function startProviderRunExecution(
           }
         }
         if (!retryFresh) break;
+      }
+      if (activeRun.voiceReply && ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && !runError &&
+          activeRun.observedProviderTerminalStatus === "completed") {
+        const answer = coordinationV3.latestAcknowledgedSteeringInjection(runId) === activeRun.voiceReply.snapshot.steeringInjectionId
+          ? activeRun.voiceReply.finalText() : undefined;
+        if (answer) {
+          const fence = coordinationV3.latestAcknowledgedSteeringInjection(runId);
+          const response = await app.inject({ method: "POST", url: "/api/agent-messages",
+            headers: { authorization: `Bearer ${messageCapability}` },
+            payload: { text: answer, ...(fence ? { steeringInjectionId: fence } : {}) } });
+          const result = response.json() as { eventId?: string; committed?: boolean };
+          if (response.statusCode >= 200 && response.statusCode < 300 && result.eventId) {
+            const canonical = coordinationV3.runtimeCommunication(result.eventId);
+            if (canonical) activeRun.voiceReply.complete(canonical.createdAt);
+            else activeRun.voiceReply.invalidate();
+          } else activeRun.voiceReply.invalidate();
+        } else activeRun.voiceReply.invalidate();
+        await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } });
       }
       if (activeRun.v3SchedulerRunId && !v3PromptInjected && !runError) {
         runError = "provider ended before prompt injection could be confirmed";

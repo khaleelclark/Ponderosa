@@ -6,6 +6,10 @@ export function setStandaloneProductScope(scope: 'branches' | undefined): void {
   standaloneScope = scope;
 }
 
+export function currentProductScope(): 'branches' | 'dev' {
+  return standaloneScope === 'branches' || typeof window !== 'undefined' && window.location.pathname.startsWith('/branches') ? 'branches' : 'dev';
+}
+
 export function productApiPath(path:string):string {
   if((standaloneScope === 'branches' || typeof window !== 'undefined' && window.location.pathname.startsWith('/branches')) && path.startsWith('/api/') && !/^\/api\/branch(?:es|\-executions|\-gates)(?:\/|$)/.test(path)) return '/api/branches/engine/'+path.slice(5);
   return path;
