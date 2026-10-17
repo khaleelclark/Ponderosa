@@ -213,3 +213,50 @@ The task's `private-windows-optins-20261013/QUALIFICATION.json` and `HANDOFF.jso
 ## Beta scope correction: local browser deferred
 
 The human clarified that local browser connection and its extension are deferred until after beta. At `a4d16a9d518c465a16f3337772ca075dc44d8abd`, new pairing is deliberately refused with HTTP409 `browser_profile_isolation_required` in `apps/server/src/routes/local-browsers.ts`; the beta UI has no reachable local setup entrypoint. The earlier disabled menu placeholder/help suggestion was removed by merged `b29d8a44df194908ada0163346f638eb9252541d`. Dormant setup/transport/extension implementation and maintained tests remain. Their pending live qualification is post-beta work, not a current beta blocker. The internal browser stays in beta scope. This corrects the outdated remaining-work classification without changing the accepted110 test behaviors or removing assertions. Roster search is a known nonblocking beta bug; failed check43 stays tracked.
+
+## F01: public filtered collection search and honest roster feedback
+
+Wave 1 uses public `khaleelclark/Ponderosa` master
+`df599529b8296551ca01fb881bab473afcc1407d`. At assignment, that public
+repository has ID `1421556972`; the historical ID `1417919645` now resolves to
+private `Ponderosa-old`. The public base source still contains the three malformed
+SQLite ESCAPE literals.
+
+`tests/chats/filtered-search.test.mjs` reconciles the October 16 proposal's 41
+checks rather than importing its old pass claim. It adds six checks for explicit
+empty-string and Unicode searches, uses the existing controlled fixture through
+Fastify injection without a listener, and retains failed fixture data after
+observed provider-root shutdown. Its 47 route checks cover project team directory,
+project conversations and Chat members: ordinary/case-varied/blank/no-match text,
+literal percent/underscore/backslash and combined literals, wildcard decoys,
+Unicode, owner isolation, and unchanged authored global search. On the unchanged
+public source, 36 filtered checks fail with HTTP 400 / “ESCAPE expression must be
+a single character”; 11 controls pass. With the three literal corrections, all
+47 pass (Node reports 48 including the parent test).
+
+`tests/chats/member-search-feedback.test.mjs` executes the real ConversationView
+query owner and renders its real AgentsTab subtree. Four checks cover an injected
+failed filtered request with error/Retry and no unfiltered fallback or roster
+count; pending versus successful no-match versus empty/unfiltered roster; cached
+refresh/pagination failure feedback; and actual members-query Retry recovery.
+The same four checks fail on the unchanged public UI and pass with this fix.
+These are React server-rendered checks, not native browser/installed UI
+qualification. The existing TypeScript test loader now receives each source
+filename so `.ts` generic arrow functions are parsed as TypeScript rather than
+TSX. No test dependency is added. Both new files are in the maintained inventory.
+
+Verified on macOS arm64, Node 24.22.0 / pnpm 11.10.0: dependency-ordered
+core/native-host, engines, agents, server and production web builds; all workspace
+typechecks; focused search/organization/workspace checks (66 pass, no skips);
+and the web lane (30 pass, one existing opt-in browser skip). No real provider
+request, external listener, installed-profile fixture, deployment or merge is
+part of this evidence. Historical platform/release limits above remain scoped
+to their original revisions.
+
+Reproduce after `pnpm install --frozen-lockfile` and the builds above:
+
+```sh
+node --import ./tests/shared/workspace-resolution.mjs --test --test-concurrency=1 tests/chats/filtered-search.test.mjs tests/organizations/organization.test.mjs tests/workspace-navigation/workspace.test.mjs
+node tests/shared/run-tests.mjs --lane web
+pnpm -r typecheck
+```

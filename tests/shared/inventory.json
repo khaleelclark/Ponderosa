@@ -734,6 +734,22 @@
       "lane": "tooling",
       "requirements": "Node24; disposable files only; no provider requests",
       "origin": "Public beta packaging: reject build-machine paths and preserve runtime addons while dropping native build intermediates"
+    },
+    {
+      "path": "tests/chats/filtered-search.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built workspaces; controlled disposable fixture; no provider account",
+      "origin": "F01 filtered Agent search and honest request feedback"
+    },
+    {
+      "path": "tests/chats/member-search-feedback.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built workspaces; controlled disposable fixture; no provider account",
+      "origin": "F01 filtered Agent search and honest request feedback"
     }
   ],
   "retainedReleasePayload": [

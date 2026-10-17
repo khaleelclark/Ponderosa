@@ -960,17 +960,20 @@ export function AgentsTab({
         {filtered.length === 0 &&
         collectionRequest &&
         (!collectionRequest.hasResolved ||
-          collectionRequest.hasNextPage) ? null : filtered.length === 0 ? (
+          collectionRequest.hasNextPage ||
+          collectionRequest.isInitialError ||
+          collectionRequest.isPaginationError ||
+          collectionRequest.isRefreshError) ? null : filtered.length === 0 ? (
           <CollectionEmptyState
             title={
-              scopedAgents.length === 0
+              scopedAgents.length === 0 && !filtersActive
                 ? organizationRootAgentId
                   ? "No Delegated Agents Yet"
                   : "No Agents Yet"
                 : "No Agents match these filters"
             }
             detail={
-              scopedAgents.length === 0
+              scopedAgents.length === 0 && !filtersActive
                 ? organizationRootAgentId
                   ? "Create a delegated Agent to build this organization."
                   : "Create an Agent to get started."
