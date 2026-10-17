@@ -1266,22 +1266,14 @@ export function registerAgentPackageRoutes(
           }
           const initialInstructions = node.initialInstructions === undefined ? undefined
             : rewritePortableArtifactReferences(node.initialInstructions, artifactRefMap).slice(0, 100_000);
-          const history = [
-            ...(initialInstructions
-              ? [{
-                  role: "system" as const,
-                  text:
-                    `Imported initial instructions:\n${initialInstructions}`,
-                  createdAt: new Date(portablePackage.exportedAt).toISOString(),
-                }]
-              : []),
-            ...(node.history ?? []).map((message) => ({
-              ...message,
-              ...(message.createdAt
-                ? { createdAt: new Date(message.createdAt).toISOString() }
-                : {}),
-            })),
-          ];
+          // Initial guidance has its own portable authority. Its private-context
+          // entry is derived by the store, never added to exportable history.
+          const history = (node.history ?? []).map((message) => ({
+            ...message,
+            ...(message.createdAt
+              ? { createdAt: new Date(message.createdAt).toISOString() }
+              : {}),
+          }));
           for (let index = 0; index < history.length; index++) {
             const message = history[index]!;
             history[index] = { ...message, text: rewritePortableArtifactReferences(message.text, artifactRefMap).slice(0, 100_000) };
@@ -1499,7 +1491,7 @@ export function registerAgentPackageRoutes(
 
       for (const node of importNodes) {
         const agent = created.get(node.ref)!;
-        if (node.history.length) {
+        if (node.history.length || node.initialInstructions !== undefined) {
           await store.setImportedHistoryAsync(
             agent.id,
             importSourceLabel,
