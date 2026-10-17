@@ -87,19 +87,6 @@ export function reduceAllChatSubmissionIntent(
   return { ...state, epoch: state.epoch + 1 };
 }
 
-export function allChatSubmissionSettlementStillCurrent(input: {
-  capturedEpoch: number;
-  currentEpoch: number;
-  capturedSourceKey?: string;
-  currentSourceKey?: string;
-  capturedTargetId?: string;
-  currentTargetId?: string;
-}): boolean {
-  return input.capturedEpoch === input.currentEpoch &&
-    input.capturedSourceKey === input.currentSourceKey &&
-    input.capturedTargetId === input.currentTargetId;
-}
-
 /** Exact runtime scalars that can be emitted by the selected All Messages action. */
 export function allChatRuntimePayloadSnapshot(input: {
   newAgentRequested: boolean;
@@ -135,26 +122,6 @@ export function parseAllChatSourceIdentity(
         typeof value.conversationId === "string" && value.conversationId
       ? value as AllChatSourceIdentity
       : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-export function parseAllChatReplyTarget(
-  raw: string | undefined,
-): AllChatReplyTarget | undefined {
-  if (!raw) return undefined;
-  try {
-    const value = JSON.parse(raw) as Partial<AllChatReplyTarget>;
-    if (
-      typeof value.id !== "string" || !value.id ||
-      typeof value.title !== "string" || !value.title ||
-      typeof value.handle !== "string" || !value.handle ||
-      typeof value.projectId !== "string" || !value.projectId ||
-      (value.conversationId !== undefined &&
-        (typeof value.conversationId !== "string" || !value.conversationId))
-    ) return undefined;
-    return value as AllChatReplyTarget;
   } catch {
     return undefined;
   }

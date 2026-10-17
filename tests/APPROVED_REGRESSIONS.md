@@ -313,3 +313,51 @@ node --import ./tests/shared/workspace-resolution.mjs --test --test-concurrency=
 node tests/shared/run-tests.mjs --lane web
 pnpm -r typecheck
 ```
+
+## October 17: legacy UI and maintained-test audit
+
+This cleanup is stacked on F02 head
+`c3c329979f1358c75d150490896baf747773f308`. All 49 maintained test
+implementations are registered exactly once: 29 server, 10 web and 10 tooling.
+The 110 approved checks retain all 31 referenced test/manual fixture paths;
+none is missing. No maintained test is proved obsolete, so no test, assertion,
+inventory entry, approved check, timeout or platform/opt-in gate is removed.
+
+The UI audit follows static imports, re-exports, literal dynamic imports and
+test-loader paths from the application entry, Rsbuild configuration, ambient
+declarations and tracked test/helper roots. Seven modules have no path from
+those roots: `HostFolderPicker`, `ProjectDeletionDialog`, `ProjectFolderRail`,
+`ProjectSettingsPanel`, `ProviderAvailabilityAlerts`, `dialogs` and
+`conversationLabels`. `ProjectDeletionDialog` is referenced only by the
+unreachable settings panel. Removing the unused `ProjectRailButton` and dead
+folder rail also makes `AgentStatusIndicator` unreachable. These eight modules
+are removed, along with 32 unreferenced declarations, including private helpers,
+in otherwise live UI modules. The final graph reaches all 289 remaining web
+source modules. Repository reference searches and TypeScript identifier/string
+checks support the removals; no computed module-discovery mechanism is present.
+
+Current `ProjectRail`, Agent creation forms, provider status details, profile
+settings, work-receipt grouping and recovery journals remain active and intact.
+The lazy default-export syntax renderer, build-only PWA policy, ambient browser
+types, backend/shared API and schema candidates are retained: a low name count
+does not prove them obsolete. Retirement guards, deferred-browser tests and
+canonical-authority safety checks retain meaningful coverage. The test README's
+stale implementation count and missing packaging README link are corrected.
+
+Native macOS arm64, Node 24.22.0 / pnpm 11.10.0 baseline and final `pnpm verify`
+both pass all builds, workspace typechecks and maintained lanes: server 171 pass
+/ 16 skip, web 30 pass / 1 skip, tooling 35 pass / 4 skip. Totals are 236 pass,
+21 existing platform/opt-in skips, zero failures, cancellations or TODOs.
+All 49 test implementations and both JSON manifests have identical SHA-256
+hashes before and after; test identities, outcomes and skip reasons also match.
+Intermediate cleanup typecheck failures were repaired in source without changing
+tests. No baseline product failure required a bug fix. Actual-provider,
+installed/native UI and Linux/Windows qualification remain outside this local
+audit; existing historical limitations above are not reclassified as passes.
+
+```sh
+env -u PONDEROSA_REGRESSION_REAL_CODEX \
+  -u PONDEROSA_REGRESSION_NATIVE_BROWSER \
+  -u PONDEROSA_REGRESSION_INSTALLED_PWA \
+  -u PONDEROSA_REGRESSION_MENTION_BROWSER pnpm verify
+```
