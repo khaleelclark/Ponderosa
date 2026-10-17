@@ -26,7 +26,6 @@ import { ResponseFileActivity } from "./ResponseFileActivity";
 
 const ACTIVITY_TITLE_COLOR = "var(--ponderosa-activity-label)";
 const ACTIVITY_TITLE_FONT_SIZE = 12.5;
-const RUN_TITLE_FONT_SIZE = 13.5;
 type GroupedActionEntry = Extract<
   ActivityStreamEntry,
   { kind: "command" | "tool" | "file" | "browser" | "notice" }
@@ -77,30 +76,6 @@ function ActivityTimestamp({ value }: { value: string }): JSX.Element {
   </Typography>;
 }
 
-export function ActivityElapsed({
-  startedAt,
-  completedAt,
-}: {
-  startedAt: string;
-  completedAt?: string;
-}): JSX.Element {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (completedAt) return;
-    const timer = globalThis.setInterval(() => setNow(Date.now()), 1_000);
-    return () => globalThis.clearInterval(timer);
-  }, [completedAt]);
-  const milliseconds = Math.max(
-    0,
-    Date.parse(completedAt ?? new Date(now).toISOString()) - Date.parse(startedAt),
-  );
-  const seconds = Math.floor(milliseconds / 1_000);
-  const hours = Math.floor(seconds / 3_600);
-  const minutes = Math.floor((seconds % 3_600) / 60);
-  const remainder = seconds % 60;
-  return <>{hours ? `${hours}:` : ""}{String(minutes).padStart(hours ? 2 : 1, "0")}:{String(remainder).padStart(2, "0")}</>;
-}
-
 function Row({
   entry,
   focusId,
@@ -121,63 +96,6 @@ function Row({
     <Box sx={{ display: "flex", justifyContent: "flex-end", mt: 0.25 }}>
       <ActivityTimestamp value={entry.createdAt} />
     </Box>
-  </Box>;
-}
-
-export function RunHeaderRow({
-  entry,
-}: {
-  entry: Extract<ActivityStreamEntry, { kind: "run_header" }>;
-}): JSX.Element {
-  const sourceCommunicationCount =
-    entry.run?.providerInput?.sourceCommunicationCount
-    ?? entry.run?.providerInput?.sourceManifest?.communicationEventIds.length
-    ?? 0;
-  const isCoordinationContinuation =
-    entry.run?.wakeCause === "coordination" ||
-    (entry.run?.wakeCause === "collaboration" &&
-      !entry.run.communicationEventId &&
-      sourceCommunicationCount === 0);
-  if (entry.prompt) return <Box
-    sx={{ py: 1, borderBottom: 1, borderColor: "divider", minWidth: 0 }}
-  >
-    <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 0.35 }}>
-      <Typography color={ACTIVITY_TITLE_COLOR} sx={{ flex: 1, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 750 }}>
-        Prompt
-      </Typography>
-      <ActivityTimestamp value={entry.prompt.createdAt} />
-    </Stack>
-    <Typography sx={{ fontSize: 13, lineHeight: 1.4, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-      {entry.prompt.text}
-    </Typography>
-    <Stack direction="row" spacing={1} sx={{ alignItems: "center", mt: 0.4 }}>
-      {entry.run ? <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10.5 }}>
-        <ActivityElapsed startedAt={entry.run.startedAt} completedAt={entry.run.completedAt} />
-      </Typography> : null}
-      {entry.active ? <Chip size="small" color="info" label="Working" sx={{ height: 20, fontSize: 10.5 }} /> : null}
-    </Stack>
-  </Box>;
-  return <Box
-    sx={{
-      py: 0.65,
-      borderBottom: 1,
-      borderColor: "divider",
-    }}
-  >
-    <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-      <Typography color="text.secondary" sx={{ flex: 1, fontSize: RUN_TITLE_FONT_SIZE, fontWeight: 650 }}>
-        {isCoordinationContinuation
-          ? "Continued"
-          : entry.executionId
-            ? entry.run?.title ?? `Run ${entry.executionId.slice(0, 8)}`
-            : "Unscoped activity"}
-      </Typography>
-      {entry.run ? <Typography variant="caption" color="text.secondary">
-        <ActivityElapsed startedAt={entry.run.startedAt} completedAt={entry.run.completedAt} />
-      </Typography> : null}
-      {entry.active ? <Chip size="small" color="info" label="Working" sx={{ height: 20, fontSize: 10.5 }} /> : null}
-      <ActivityTimestamp value={entry.createdAt} />
-    </Stack>
   </Box>;
 }
 

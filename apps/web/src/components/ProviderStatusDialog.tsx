@@ -1,46 +1,6 @@
-import { Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, Chip, Stack, Typography } from "@mui/material";
 import type { EngineDto, NetworkSecurityPostureDto } from "@ponderosa/core";
 import { engineCanTestAccess, engineStatusPresentation } from "../conversationEngine";
-
-export function ProviderStatusDialog({
-  open,
-  engines,
-  networkSecurity,
-  networkSecurityLoading = false,
-  networkSecurityError,
-  recheckingEngineId,
-  error,
-  onTestAccess,
-  onOpenSettings,
-  onClose,
-}: {
-  open: boolean;
-  engines: EngineDto[];
-  networkSecurity?: NetworkSecurityPostureDto;
-  networkSecurityLoading?: boolean;
-  networkSecurityError?: string;
-  recheckingEngineId?: string;
-  error?: string;
-  onTestAccess(engine: EngineDto): void;
-  onOpenSettings(): void;
-  onClose(): void;
-}): JSX.Element {
-  return <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
-    <DialogTitle>AI provider status</DialogTitle>
-    <DialogContent>
-      <ProviderStatusDetails
-        engines={engines}
-        networkSecurity={networkSecurity}
-        networkSecurityLoading={networkSecurityLoading}
-        networkSecurityError={networkSecurityError}
-        recheckingEngineId={recheckingEngineId}
-        error={error}
-        onTestAccess={onTestAccess}
-      />
-    </DialogContent>
-    <DialogActions><Button onClick={onOpenSettings}>Provider Settings</Button><Button onClick={onClose}>Close</Button></DialogActions>
-  </Dialog>;
-}
 
 export function ProviderStatusDetails({
   engines,

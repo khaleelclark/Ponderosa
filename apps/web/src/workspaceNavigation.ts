@@ -1,16 +1,4 @@
-import type {
-  AgentDto,
-  AgentHealthDto,
-  ConversationDto,
-  ProjectDto,
-} from "@ponderosa/core";
-
-export interface WorkspaceProjectSnapshot {
-  project: ProjectDto;
-  conversations: ConversationDto[];
-  agents: AgentDto[];
-  health: AgentHealthDto[];
-}
+import type { ProjectDto } from "@ponderosa/core";
 
 export interface UnreadNotificationProjection {
   importantCount: number;
