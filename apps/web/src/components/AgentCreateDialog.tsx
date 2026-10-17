@@ -4,8 +4,6 @@ import UploadFileOutlinedIcon from "@mui/icons-material/UploadFileOutlined";
 import {
   Alert,
   Button,
-  Dialog,
-  DialogContent,
   FormControl,
   InputLabel,
   MenuItem,
@@ -546,25 +544,6 @@ export function AgentCreateForm({
         </Button>
       </Stack>
     </Stack>
-  );
-}
-
-export function AgentCreateDialog({
-  open,
-  ...formProps
-}: AgentCreateSurfaceProps & { open: boolean }): JSX.Element {
-  return (
-    <Dialog
-      open={open}
-      onClose={formProps.onCancel}
-      fullWidth
-      maxWidth="sm"
-      aria-label="Create or import Agent"
-    >
-      <DialogContent sx={{ pt: "24px !important" }}>
-        {open ? <AgentCreateSurface {...formProps} /> : null}
-      </DialogContent>
-    </Dialog>
   );
 }
 

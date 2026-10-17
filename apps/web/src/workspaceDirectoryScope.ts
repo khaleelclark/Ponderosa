@@ -19,11 +19,3 @@ export function phaseQueryMatchesProject(key: readonly unknown[], projectId?: st
   const scope = key[0] === "workspace-directory" ? key[3] : key[1];
   return !projectId || !scope || scope === projectId;
 }
-
-export function projectScopedWorkspaceDirectoryItems<
-  T extends { project: { id: string } },
->(items: readonly T[], projectId: string | undefined): T[] {
-  return projectId
-    ? items.filter(item => item.project.id === projectId)
-    : [];
-}

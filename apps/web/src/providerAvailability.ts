@@ -1,20 +1,9 @@
 import {
   classifyProviderFailure,
   publicProviderFailure,
-  publicProviderFailureSummary,
   type EngineDto,
   type ProviderFailureCategory,
 } from "@ponderosa/core";
-
-/** Provider detail is never rendered; UI diagnostics are finite policy text. */
-export function providerAvailabilityDiagnostic(
-  detail: string | undefined,
-  structuredCategory?: ProviderFailureCategory,
-): string | undefined {
-  if (!detail) return undefined;
-  const withoutServerPrefix = detail.replace(/^provider rejected runtime access:\s*/iu, "").trim();
-  return publicProviderFailureSummary(withoutServerPrefix, structuredCategory);
-}
 
 function providerAvailabilityCategory(
   detail: string | undefined,

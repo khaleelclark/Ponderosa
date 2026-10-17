@@ -246,14 +246,6 @@ export function agentStatusPresentation(
   return { ...coarse, detail: `${coarse.accessibleLabel}; ${detail}` };
 }
 
-/** Provider retry metadata may coexist with a newer active Run. Only the
- * authoritative health reason controls the visible status label. */
-export function isProviderBlockedHealth(
-  health: Pick<AgentHealthDto, "status" | "reason"> | undefined,
-): boolean {
-  return health?.status === "blocked" && health.reason === "provider_capacity_unavailable";
-}
-
 export function relativeTime(iso: string | undefined): string {
   if (!iso) {
     return "";
