@@ -750,6 +750,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24, built workspaces; controlled disposable fixture; no provider account",
       "origin": "F01 filtered Agent search and honest request feedback"
+    },
+    {
+      "path": "tests/organizations/portability.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces; disposable Fastify/SQLite fixture; no provider account",
+      "origin": "F02 organization guidance portability and durable round trips"
     }
   ],
   "retainedReleasePayload": [

@@ -260,3 +260,56 @@ node --import ./tests/shared/workspace-resolution.mjs --test --test-concurrency=
 node tests/shared/run-tests.mjs --lane web
 pnpm -r typecheck
 ```
+
+## F02: organization initial guidance stays separate from portable history
+
+Wave 2 is stacked on Wave 1 head
+`2d78255464832ecc11ba861fbfc2057359a0473a`, rather than merging its draft PR.
+Public master remains `df599529b8296551ca01fb881bab473afcc1407d` at assignment.
+The October 16 `organization-portability.patch`, `REVIEW.txt`, and final
+17-assertion fixture from “Review Ponderosa import exports” were inspected.
+The original fixture now runs with the lockfile dependencies on native Node
+24.22.0: its 16 baseline contract assertions pass and it reproduces guidance
+counts `[1,2]`. Earlier Node 22 results are not runtime acceptance for this work.
+
+The proposed text comparison is replaced by structured authority. Imported
+`initialInstructions` remains setup metadata; the import route no longer
+prepends generated instructions to stored/exported history. Both canonical
+history writers mark newly separated guidance internally, and both normal and
+rebuilt SQLite projections derive one bounded private-context row from it.
+The marker is not part of the portable package schema. Existing unmarked
+current-format files are preserved exactly on rebuild; no message is identified
+or removed by comparing its text. Existing unmarked historical duplicates are
+not cleaned up. Full/template package fields, artifact remapping, engine mapping,
+Chat-instruction choices, creation fences and durable operations retain their
+existing authorities. The external-conversation prompt already emits ordinary
+transcript turns without synthetic guidance and requires no change.
+
+`tests/organizations/portability.test.mjs` reconciles the original fixture into
+eight maintained scenarios. The old raw synthetic-history assertion becomes a
+check of structured guidance plus its private-context projection. Coverage adds:
+three full-copy generations at `[1,1,1]` with fresh IDs/handles; exact managed
+bytes and reference remapping; preservation of identical genuine user, assistant
+and system history; template exclusions and instruction-only imports; engine
+mapping and conflicting replay refusal; completed import/copy replay after
+store/route restart and repeated projection rebuild; current Chat-instruction
+conflict choices; and recovery after a simulated lost background completion
+acknowledgment. It also checks exact preservation of existing unmarked files,
+empty guidance and the 100,000-character bound. The final unchanged Wave 1 source
+fails five scenarios and passes three controls; all eight pass with the fix.
+The earlier three-generation baseline independently reproduced `[1,2,3]`.
+
+The fixture uses real Fastify injection, AgentStore/SQLite and disposable managed
+artifact bytes. It opens no listener and starts no scheduler/provider session.
+Failed fixture roots are retained; successful roots are removed after closure.
+Native Node 24.22.0 / pnpm 11.10.0 dependency-ordered core/native-host, engines,
+agents and server builds, production web build and all workspace typechecks pass.
+Focused server and inherited Wave 1 checks pass 80 tests with no skips; the web
+lane passes 30 with one existing browser opt-in skipped. No installed/native UI, Linux/Windows, actual provider or process-crash
+qualification is claimed by these macOS fixture results.
+
+```sh
+node --import ./tests/shared/workspace-resolution.mjs --test --test-concurrency=1 tests/organizations/portability.test.mjs tests/organizations/organization.test.mjs tests/chats/messaging.test.mjs tests/chats/workflows.test.mjs tests/chats/filtered-search.test.mjs
+node tests/shared/run-tests.mjs --lane web
+pnpm -r typecheck
+```
