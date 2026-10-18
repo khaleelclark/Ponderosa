@@ -4,10 +4,9 @@ import {mkdtempSync,rmSync,writeFileSync,mkdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {execFileSync} from 'node:child_process';
 import {Worker} from 'node:worker_threads';
-import ts from 'typescript';
 import {AgentStore,CoordinationV3Store,openDb,WorkspaceStore} from '../dist/index.js';
+import {openHistoricalDb} from './fixtures/pinecone-legacy/open.mjs';
 const repo=fileURLToPath(new URL('../../../',import.meta.url));
 const snapshot={id:'builtin:pinecone:1',name:'Pinecone',description:'Synthetic',engine:'codex',guidance:'Synthetic bounded instructions'};
 function fixture(t){
@@ -28,13 +27,9 @@ const schedule=(f,name,agent=f.cone)=>f.c.createTriggerDefinition({projectId:f.p
 const scheduled=(f,d,key='tick')=>({triggerId:d.id,occurrenceKey:key,expectedNextFireAt:d.nextFireAt,nextFireAt:'2026-01-01T00:01:00.000Z',lastFiredAt:d.nextFireAt,payload:{missedCount:2,collapsedRecovery:true},provenance:{source:'schedule'}});
 
 test('fresh and populated exact-0e7e upgrade defaults only existing profiles active; reopen preserves hold',async t=>{
- const dir=mkdtempSync(join(tmpdir(),'pinecone-hold-upgrade-')),module=join(repo,'packages/agents/dist',`.hold-base-${process.pid}.js`),base='0e7ee833d5f633e0d681c36c7880191cc7e30b94';
- t.after(()=>{rmSync(module,{force:true});rmSync(dir,{recursive:true,force:true})});mkdirSync(join(dir,'schema'));
- const files=execFileSync('git',['-C',repo,'ls-tree','-r','--name-only',base,'packages/agents/src/schema'],{encoding:'utf8'}).trim().split('\n');
- for(const n of files)writeFileSync(join(dir,'schema',n.split('/').at(-1)),execFileSync('git',['-C',repo,'show',base+':'+n]));
- const source=execFileSync('git',['-C',repo,'show',base+':packages/agents/src/db.ts'],{encoding:'utf8'}),fixed=source.replace('const schemaDir = join(dirname(fileURLToPath(import.meta.url)), "schema");',`const schemaDir = ${JSON.stringify(join(dir,'schema'))};`);assert.notEqual(fixed,source);
- writeFileSync(module,ts.transpileModule(fixed,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
- const old=await import(pathToFileURL(module).href),file=join(dir,'old.sqlite');let {client}=old.openDb(file);
+ const dir=mkdtempSync(join(tmpdir(),'pinecone-hold-upgrade-')),base='0e7ee833d5f633e0d681c36c7880191cc7e30b94';
+ t.after(()=>rmSync(dir,{recursive:true,force:true}));
+ const file=join(dir,'old.sqlite');let {client}=openHistoricalDb(base,file);
  client.exec("INSERT INTO projects(id,label,host_path,created_at,default_engine) VALUES('p','Existing','/tmp/existing','2026-01-01','codex'); INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES('c','p','Existing','2026-01-01','2026-01-01'); INSERT INTO agents(id,project_id,conversation_id,title,handle,active_engine,created_at,updated_at,working_copy_json) VALUES('a','p','c','Pinecone','pinecone','codex','2026-01-01','2026-01-01','{}'),('b','p','c','Ordinary','ordinary','codex','2026-01-01','2026-01-01','{}'); INSERT INTO pinecone_profiles VALUES('a','p','c',1,'2026-01-01');");
  const before=client.prepare('SELECT * FROM agents').all();client.close();({client}=openDb(file));
  assert.deepEqual(client.prepare('SELECT * FROM agents').all(),before);assert.deepEqual(client.prepare('SELECT admission_state,revision,updated_at FROM pinecone_profiles').get(),{admission_state:'active',revision:1,updated_at:'2026-01-01'});assert.equal(client.prepare('SELECT COUNT(*) n FROM pinecone_profiles').get().n,1);client.close();

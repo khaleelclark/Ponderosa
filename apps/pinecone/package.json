@@ -10,7 +10,8 @@
   "scripts": {
     "build": "rsbuild build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "test:built": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",

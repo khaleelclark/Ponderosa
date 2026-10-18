@@ -133,11 +133,23 @@ try {
     console.log("STREAMING SYNTHETIC TIMING",await p.getByLabel("Call timing").innerText());
   });
   for (const stop of ["end","mute","talk","hidden"]) await scenario(`stream interruption ${stop} fences queued and late audio`, async(p,{open,type,send}) => {
-    await open(); await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Interruptible turn");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    await open(); await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});
+    if(stop==="mute"){
+      assert.equal(await p.getByRole("button",{name:"Mute microphone",exact:true}).isDisabled(),true,"typed-only calls have no microphone to mute");
+      await p.getByRole("button",{name:"Start call",exact:true}).click();
+      await p.getByText("Listening…",{exact:true}).waitFor();
+      await p.evaluate(()=>window.voiceTest.recognized("Interruptible turn"));
+    }else{await type("Interruptible turn");await send();}
+    await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
     await p.evaluate(()=>{ window.voiceTest.stream("First sentence. Queued sentence. ",1); window.savedAudio=window.voiceTest.lateAudio(); });
     await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
     if(stop==="end")await p.getByRole("button",{name:"End call",exact:true}).click();
-    if(stop==="mute")await p.getByRole("button",{name:"Mute microphone",exact:true}).click();
+    if(stop==="mute"){
+      assert.equal(await p.evaluate(()=>window.voiceTest.stats.starts),1,"microphone consent precedes this reply");
+      assert.equal(await p.evaluate(()=>window.voiceTest.stats.sends.length),1,"one finalized spoken turn");
+      await p.getByRole("button",{name:"Mute microphone",exact:true}).click();
+      await p.getByText("Microphone muted",{exact:true}).waitFor();
+    }
     if(stop==="talk")await p.getByRole("button",{name:"Talk now",exact:true}).click();
     if(stop==="talk") { await p.getByText("Listening…",{exact:true}).waitFor(); assert.equal(await p.evaluate(()=>window.voiceTest.streamCount()),0); }
     if(stop==="hidden")await p.evaluate(()=>{Object.defineProperty(document,"visibilityState",{configurable:true,value:"hidden"});document.dispatchEvent(new Event("visibilitychange"));});
@@ -146,9 +158,21 @@ try {
   });
   await scenario("successor stream fences queued audio and preserves Chat recovery", async(p,{open,type,send}) => {
     await open();await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Successor turn");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
-    await p.evaluate(()=>{window.voiceTest.stream("First sentence. Queued sentence. ",1);window.voiceTest.stream("Foreign successor. ",2,{runId:"other-run",fence:2});});
+    await p.evaluate(()=>window.voiceTest.stream("First sentence. Queued sentence. ",1));
+    await p.waitForFunction(()=>window.voiceTest.stats.spoken.length===1);
+    await p.evaluate(()=>window.voiceTest.stream("Foreign successor. ",2,{runId:"other-run",fence:2}));
     await p.getByRole("alert").filter({hasText:/another Run/}).waitFor();
     await p.evaluate(()=>window.voiceTest.complete());assert.equal(await p.evaluate(()=>window.voiceTest.stats.spoken.length),1);
+  });
+  await scenario("successor before speech onset prevents all audio",async(p,{open,type,send})=>{
+    await open();await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Early successor turn");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);
+    await p.evaluate(()=>{window.voiceTest.stream("Never start this sentence. ",1);window.voiceTest.stream("Foreign successor. ",2,{runId:"other-run",fence:2});});
+    await p.getByRole("alert").filter({hasText:/another Run/}).waitFor();
+    await p.evaluate(()=>window.voiceTest.canonical("Late predecessor canonical reply."));
+    await p.waitForTimeout(100);
+    assert.deepEqual(await p.evaluate(()=>window.voiceTest.stats.spoken),[]);
+    assert.equal(await p.evaluate(()=>window.voiceTest.resources().synthesis),0);
+    assert.equal(await p.evaluate(()=>window.voiceTest.streamCount()),0);
   });
   await scenario("stream failure reconciles only canonical unspoken tail", async(p,{open,type,send}) => {
     await open();await p.evaluate(()=>{window.voiceTest.stats.waiting=true;});await type("Partial fallback turn");await send();await p.waitForFunction(()=>window.voiceTest.streamCount()===1);

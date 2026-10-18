@@ -4,26 +4,19 @@ import {mkdtempSync,readFileSync,writeFileSync,mkdirSync,rmSync,existsSync,readd
 import {join,dirname} from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {execFileSync,spawnSync} from 'node:child_process';
-import ts from 'typescript';
+import {spawnSync} from 'node:child_process';
 import {AgentStore,openDb} from '../dist/index.js';
+import {openHistoricalDb} from './fixtures/pinecone-legacy/open.mjs';
 const root=fileURLToPath(new URL('../../../',import.meta.url));
 const base='9afdf1f2cbf21effa5372c693af99bf3fd599925';
 const snapshot={id:'builtin:pinecone:1',name:'Pinecone',description:'Synthetic',engine:'codex',guidance:'Synthetic bounded instructions'};
 const create=(store,p,c,key='cone')=>store.createAgent(p,{experience:'pinecone',title:'Pinecone',engine:'codex',conversationId:c,idempotencyKey:key},undefined,undefined,snapshot);
 
 test('fresh schema and a populated exact-9afdf schema upgrade preserve ordinary data without backfill',async()=>{
- const dir=mkdtempSync(join(tmpdir(),'pinecone-upgrade-'));const fixtureModule=join(root,'packages/agents/dist',`.pinecone-base-db-${process.pid}.js`);
+ const dir=mkdtempSync(join(tmpdir(),'pinecone-upgrade-'));
  try {
-  const schemaDir=join(dir,'schema');mkdirSync(schemaDir);
-  const source=execFileSync('git',['-C',root,'show',`${base}:packages/agents/src/db.ts`],{encoding:'utf8'});
-  const schemas=execFileSync('git',['-C',root,'ls-tree','-r','--name-only',base,'packages/agents/src/schema'],{encoding:'utf8'}).trim().split('\n');
-  for(const path of schemas)writeFileSync(join(schemaDir,path.split('/').at(-1)),execFileSync('git',['-C',root,'show',`${base}:${path}`]));
-  const fixtureSource=source.replace('const schemaDir = join(dirname(fileURLToPath(import.meta.url)), "schema");',`const schemaDir = ${JSON.stringify(schemaDir)};`);
-  assert.notEqual(fixtureSource,source,'fixture changes only the fixed-object schema directory');
-  writeFileSync(fixtureModule,ts.transpileModule(fixtureSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
-  const old=await import(pathToFileURL(fixtureModule).href),file=join(dir,'populated.sqlite');
-  let {client}=old.openDb(file);
+  const file=join(dir,'populated.sqlite');
+  let {client}=openHistoricalDb(base,file);
   assert.equal(client.prepare("SELECT 1 FROM sqlite_master WHERE name='pinecone_profiles'").get(),undefined);
   client.prepare("INSERT INTO projects(id,label,host_path,created_at,default_engine) VALUES('p','Existing','/tmp/existing','2026-01-01','codex')").run();
   client.prepare("INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES('c','p','Existing','2026-01-01','2026-01-01')").run();
@@ -32,7 +25,7 @@ test('fresh schema and a populated exact-9afdf schema upgrade preserve ordinary 
   ({client}=openDb(file));assert.deepEqual(client.prepare('SELECT * FROM agents').all(),before);assert.equal(client.prepare('SELECT count(*) n FROM pinecone_profiles').get().n,0);
   assert.ok(client.prepare("SELECT 1 FROM _schema_version WHERE name='0037_pinecone_profiles.sql'").get());assert.deepEqual(client.pragma('foreign_key_check'),[]);client.close();
   const fresh=openDb(join(dir,'fresh.sqlite'));assert.equal(fresh.client.prepare('SELECT count(*) n FROM pinecone_profiles').get().n,0);assert.ok(fresh.client.prepare("SELECT 1 FROM _schema_version WHERE name='0037_pinecone_profiles.sql'").get());fresh.client.close();
- }finally{rmSync(fixtureModule,{force:true});rmSync(dir,{recursive:true,force:true});}
+ }finally{rmSync(dir,{recursive:true,force:true});}
 });
 
 for(const phase of ['before_commit','after_commit'])test(`actual process crash ${phase} recovers owned staging and atomic profile identity`,()=>{
