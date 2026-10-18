@@ -45,11 +45,11 @@ try {
       const request = route.request();
       const url = new URL(request.url());
       const ownerId = url.searchParams.get("ownerId") ?? "browser-test";
-      canonical ??= {
-        conversationId: "conflict-chat", ownerId, text: "", attachmentIds: [],
-        mentionBindings: [], revision: 1, updatedAt: "2026-09-18T00:00:00.000Z", clientId: "remote",
-      };
       if (request.method() === "GET" && url.pathname.endsWith("/draft")) {
+        canonical ??= {
+          conversationId: "conflict-chat", ownerId, text: "", attachmentIds: [],
+          mentionBindings: [], revision: 1, updatedAt: "2026-09-18T00:00:00.000Z", clientId: "remote",
+        };
         initialLoaded = true;
         await route.fulfill({ json: canonical });
         return;
@@ -60,6 +60,7 @@ try {
       }
       if (request.method() === "PUT" && url.pathname.endsWith("/draft")) {
         const body = request.postDataJSON();
+        assert.equal(body.ownerId, canonical.ownerId, "draft fixture preserves the requested owner");
         if (body.expectedRevision !== canonical.revision) {
           conflict ??= {
             id: "draft-conflict-test", current: canonical,
@@ -93,10 +94,19 @@ try {
     if (mode === "discard") await page.getByRole("button", { name: "Discard" }).click();
     else await page.getByRole("button", { name: "Restore" }).click();
     await page.getByText("This draft changed elsewhere.").waitFor({ state: "detached" });
+    assert.equal(await input.innerText(), `send after ${mode}`, "conflict choice preserves the recovered editor text before send");
     await page.getByRole("button", { name: "Send message" }).click();
-    await page.getByRole("status").getByText("Sending message… Your draft remains here until confirmed.").waitFor();
+    const pending = page.getByRole("article", { name: "Sending message", exact: true });
+    await pending.waitFor();
+    await pending.getByRole("status").getByText("Sending…", { exact: true }).waitFor();
+    assert.ok((await pending.innerText()).includes(`send after ${mode}`), "pending bubble retains the submitted message");
     assert.equal(await page.locator("#sent").innerText(), "[]", "pending send is visible without claiming delivery");
-    await page.waitForFunction(expected => document.querySelector("#sent")?.textContent?.includes(expected), `send after ${mode}`);
+    assert.equal((await input.innerText()).trim(), "", "submitted text leaves the visible composer while pending");
+    assert.equal((await page.locator("body").innerText()).includes("Delivered to"), false, "pending feedback cannot claim delivery");
+    await page.getByRole("button", { name: "Release send", exact: true }).click();
+    await page.waitForFunction(expected => document.querySelector("#sent")?.textContent === JSON.stringify([expected]), `send after ${mode}`);
+    await pending.waitFor({ state: "detached" });
+    assert.deepEqual(JSON.parse(await page.locator("#sent").innerText()), [`send after ${mode}`], "conflict resolution submits the original message exactly once");
     assert.ok(acceptedWrites >= 1, `${mode}: conflict resolution advances the saved draft revision`);
     assert.equal((await page.locator("body").innerText()).includes("Message not sent. 409"), false);
     console.log(`PASS ${mode}: conflict choice leaves the message sendable`);

@@ -3065,6 +3065,12 @@ export function Composer({
               draftEditVersion.current = restored.editVersion;
               draftLocallyEdited.current = false;
               draftAttachmentsLocallyEdited.current = false;
+              // Restore Lexical before focus can echo its previous document
+              // over the recovered React text, as with explicit insertions.
+              const editor = inputRef.current;
+              if (editor) editor.replaceCanonicalRange(
+                0, editor.getCanonicalText().length, restored.text, { focus: false },
+              );
               replaceText(restored.text);
               setKnownMentionBindings(restored.mentionBindings);
               replaceSnapshotDraftAttachments(restored.files);
