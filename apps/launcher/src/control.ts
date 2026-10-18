@@ -144,7 +144,7 @@ const OPERATION_LOCK_INITIALIZATION_GRACE_MS = 5_000;
 const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
 const LOG_ARCHIVE_COUNT = 3;
 
-function processAlive(pid: number): boolean {
+export function processAlive(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);

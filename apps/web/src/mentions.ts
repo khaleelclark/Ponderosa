@@ -47,7 +47,7 @@ export function hasEveryoneMention(text: string): boolean {
   return hasMessageTag(text, "everyone");
 }
 
-function hasMessageTag(text: string, handle: string): boolean {
+export function hasMessageTag(text: string, handle: string): boolean {
   const normalized = handle.toLocaleLowerCase();
   return messageTagTokens(text).some(
     token => token.handle.toLocaleLowerCase() === normalized,

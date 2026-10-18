@@ -416,34 +416,25 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
     }).catch((reason) => {
       let reverted = false;
       let deferCountRollback = !retainedPagesCanonical.current;
+      const revertRead = (candidate: WorkspaceNotificationDto) => {
+        if (candidate.id !== item.id) return candidate;
+        if (candidate.readAt && candidate.readAt !== readAt) {
+          deferCountRollback = true;
+          return candidate;
+        }
+        if (candidate.readAt !== readAt) return candidate;
+        reverted = true;
+        const { readAt: _readAt, ...unread } = candidate;
+        return unread;
+      };
       queryClient.setQueryData<WorkspaceNotificationPageDto>(queryKeys.notifications.all, (current) => {
         if (!current) return current;
-        const items = current.items.map((candidate) => {
-          if (candidate.id !== item.id) return candidate;
-          if (candidate.readAt && candidate.readAt !== readAt) {
-            deferCountRollback = true;
-            return candidate;
-          }
-          if (candidate.readAt !== readAt) return candidate;
-          reverted = true;
-          const { readAt: _readAt, ...unread } = candidate;
-          return unread;
-        });
+        const items = current.items.map(revertRead);
         return { ...current, items };
       });
       replaceOlderPages((current) => current.map((page) => ({
         ...page,
-        items: page.items.map((candidate) => {
-          if (candidate.id !== item.id) return candidate;
-          if (candidate.readAt && candidate.readAt !== readAt) {
-            deferCountRollback = true;
-            return candidate;
-          }
-          if (candidate.readAt !== readAt) return candidate;
-          reverted = true;
-          const { readAt: _readAt, ...unread } = candidate;
-          return unread;
-        }),
+        items: page.items.map(revertRead),
       })));
       if (reverted && !deferCountRollback && isUnreadNotificationUpdate(item)) {
         queryClient.setQueryData<WorkspaceNotificationPageDto>(queryKeys.notifications.all, (current) => current ? ({

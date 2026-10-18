@@ -41,6 +41,23 @@ function parseDraftSurfaceIds(value: string | null | undefined): string[] {
   return parsed;
 }
 
+function projectDeletionReceipt(row: typeof projectDeletionReceipts.$inferSelect): ProjectDeletionReceipt {
+  return {
+    projectId: row.projectId,
+    tombstoneName: row.tombstoneName,
+    ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
+    removalStarted: row.removalStarted === 1,
+    storageCleanupCompleted: row.storageCleanupCompleted === 1,
+    draftSurfaceIds: parseDraftSurfaceIds(row.draftSurfacesJson),
+    draftCleanupCompleted: row.draftCleanupCompleted === 1,
+    assetAuthorityCleanupCompleted: row.assetAuthorityCleanupCompleted === 1,
+    ...(row.lastError ? { lastError: row.lastError } : {}),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    ...(row.completedAt ? { completedAt: row.completedAt } : {}),
+  };
+}
+
 export class AgentProjectDeletionAuthority {
   constructor(
     private readonly dataDir: string,
@@ -94,57 +111,18 @@ export class AgentProjectDeletionAuthority {
   getProjectDeletionReceipt(projectId: string): ProjectDeletionReceipt | undefined {
     const row = this.db.select().from(projectDeletionReceipts)
       .where(eq(projectDeletionReceipts.projectId, projectId)).get();
-    return row ? {
-      projectId: row.projectId,
-      tombstoneName: row.tombstoneName,
-      ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
-      removalStarted: row.removalStarted === 1,
-      storageCleanupCompleted: row.storageCleanupCompleted === 1,
-      draftSurfaceIds: parseDraftSurfaceIds(row.draftSurfacesJson),
-      draftCleanupCompleted: row.draftCleanupCompleted === 1,
-      assetAuthorityCleanupCompleted: row.assetAuthorityCleanupCompleted === 1,
-      ...(row.lastError ? { lastError: row.lastError } : {}),
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-      ...(row.completedAt ? { completedAt: row.completedAt } : {}),
-    } : undefined;
+    return row ? projectDeletionReceipt(row) : undefined;
   }
 
   listProjectDeletionReceipts(): ProjectDeletionReceipt[] {
-    return this.db.select().from(projectDeletionReceipts).all().map((row) => ({
-      projectId: row.projectId,
-      tombstoneName: row.tombstoneName,
-      ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
-      removalStarted: row.removalStarted === 1,
-      storageCleanupCompleted: row.storageCleanupCompleted === 1,
-      draftSurfaceIds: parseDraftSurfaceIds(row.draftSurfacesJson),
-      draftCleanupCompleted: row.draftCleanupCompleted === 1,
-      assetAuthorityCleanupCompleted: row.assetAuthorityCleanupCompleted === 1,
-      ...(row.lastError ? { lastError: row.lastError } : {}),
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-      ...(row.completedAt ? { completedAt: row.completedAt } : {}),
-    }));
+    return this.db.select().from(projectDeletionReceipts).all().map(projectDeletionReceipt);
   }
 
   listPendingProjectDeletionReceipts(): ProjectDeletionReceipt[] {
     return this.db.select().from(projectDeletionReceipts).all()
       .filter(row => row.storageCleanupCompleted === 0 || row.draftCleanupCompleted === 0 ||
         row.assetAuthorityCleanupCompleted === 0)
-      .map((row) => ({
-        projectId: row.projectId,
-        tombstoneName: row.tombstoneName,
-        ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
-        removalStarted: row.removalStarted === 1,
-        storageCleanupCompleted: row.storageCleanupCompleted === 1,
-        draftSurfaceIds: parseDraftSurfaceIds(row.draftSurfacesJson),
-        draftCleanupCompleted: row.draftCleanupCompleted === 1,
-        assetAuthorityCleanupCompleted: row.assetAuthorityCleanupCompleted === 1,
-        ...(row.lastError ? { lastError: row.lastError } : {}),
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-        ...(row.completedAt ? { completedAt: row.completedAt } : {}),
-      }));
+      .map(projectDeletionReceipt);
   }
 
   recordProjectDeletionReceiptCleanupError(projectId: string, error: string): void {

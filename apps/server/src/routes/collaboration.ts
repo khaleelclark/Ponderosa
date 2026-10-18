@@ -16,6 +16,7 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
+import { associatedAssetDto } from "../asset-contracts.js";
 import { cleanupUncommittedCommunicationArtifact } from "../communication-artifacts.js";
 import { leaseConversationDelivery, reconcileLeasedCommunicationReplay } from "../delivery-leases.js";
 import {
@@ -286,10 +287,7 @@ export function registerCollaborationRoutes(
       const attached = await Promise.all(ids.map((id) => assetMetadata(intent.targetAgentId, id)));
       if (attached.some((item) => !item || item.agentId !== intent.targetAgentId)) return reply.code(404).send({ error: "collaboration attachment not found" });
       if (attached.reduce((sum, item) => sum + (item?.size ?? 0), 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
-      attachmentsByAgent.set(intent.targetAgentId, (attached as NonNullable<(typeof attached)[number]>[]).map((item) => {
-        const { projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile, associatedAt: _associatedAt, ...publicAsset } = item;
-        return { ...publicAsset, state: "associated" as const };
-      }));
+      attachmentsByAgent.set(intent.targetAgentId, (attached as NonNullable<(typeof attached)[number]>[]).map(associatedAssetDto));
     }
     const canonicalAttachments = routing.intents
       .map((intent) => attachmentsByAgent.get(intent.targetAgentId) ?? [])

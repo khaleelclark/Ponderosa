@@ -36,6 +36,11 @@ export interface StoredAsset extends AssetDto {
   previewFile?: string;
 }
 
+export function associatedAssetDto(asset: StoredAsset): AssetDto {
+  const { projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile, associatedAt: _associatedAt, ...publicAsset } = asset;
+  return { ...publicAsset, state: "associated" };
+}
+
 export interface AuthoritativeRuntimeAttachment {
   attachment: AssetDto & { sha256: string };
   localPath: string;
