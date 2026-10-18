@@ -38,6 +38,24 @@ import {
   importedAgentHistoryPath,
 } from "./paths.js";
 
+/** Guidance is structured setup, not historical communication. Derive one
+ * private-context row without matching or removing any supplied history text. */
+function importedHistoryProjectionMessages(
+  messages: readonly PortableAgentHistoryMessageDto[],
+  initialInstructions: string | undefined,
+  importedAt: string,
+  initialInstructionsSeparated: boolean,
+): PortableAgentHistoryMessageDto[] {
+  return [
+    ...(initialInstructionsSeparated && initialInstructions ? [{
+      role: "system" as const,
+      text: `Imported initial instructions:\n${initialInstructions}`.slice(0, 100_000),
+      createdAt: importedAt,
+    }] : []),
+    ...messages,
+  ];
+}
+
 const MAX_AGENT_TITLE_PROJECTION_IDS = 500;
 const AGENT_CREATION_MARKER = ".ponderosa-agent-creation.json";
 const agentIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -607,7 +625,7 @@ export class AgentCatalogAuthority {
     }));
     const imported = {
       source: source.slice(0, 240), importedAt: new Date().toISOString(), messages: bounded,
-      ...(initialInstructions !== undefined ? { initialInstructions: initialInstructions.slice(0, 100_000) } : {}),
+      ...(initialInstructions !== undefined ? { initialInstructions: initialInstructions.slice(0, 100_000), initialInstructionsSeparated: true } : {}),
     };
     writeJson(importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id), imported);
     this.projectImportedHistory(agent.id, imported);
@@ -638,7 +656,7 @@ export class AgentCatalogAuthority {
         await handle.writeFile((index ? "," : "") + JSON.stringify({ ...message, text: message.text.slice(0, 100_000) }));
       }
       await handle.writeFile("]" + (initialInstructions !== undefined
-        ? ',"initialInstructions":' + JSON.stringify(initialInstructions.slice(0, 100_000)) : "") + "}\n");
+        ? ',"initialInstructions":' + JSON.stringify(initialInstructions.slice(0, 100_000)) + ',"initialInstructionsSeparated":true' : "") + "}\n");
       await handle.sync();
       await handle.close();
       await fs.rename(temporary, pathname);
@@ -651,10 +669,11 @@ export class AgentCatalogAuthority {
       await fs.unlink(temporary).catch(() => undefined);
       throw error;
     }
+    const projectedMessages = importedHistoryProjectionMessages(messages, initialInstructions, importedAt, true);
     this.db.delete(importedHistoryMessages).where(eq(importedHistoryMessages.agentId, agentId)).run();
-    for (let offset = 0; offset < messages.length; offset += 8) {
+    for (let offset = 0; offset < projectedMessages.length; offset += 8) {
       this.db.transaction(tx => {
-        messages.slice(offset, offset + 8).forEach((message, index) => {
+        projectedMessages.slice(offset, offset + 8).forEach((message, index) => {
           const sequence = offset + index;
           tx.insert(importedHistoryMessages).values({
             agentId, messageId: `imported:${agentId}:${String(sequence).padStart(12, "0")}`,
@@ -677,11 +696,12 @@ export class AgentCatalogAuthority {
 
   projectImportedHistory(
     agentId: string,
-    imported: { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[]; initialInstructions?: string },
+    imported: { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[]; initialInstructions?: string; initialInstructionsSeparated?: boolean },
   ): void {
     this.db.transaction((tx) => {
       tx.delete(importedHistoryMessages).where(eq(importedHistoryMessages.agentId, agentId)).run();
-      imported.messages.forEach((message, sequence) => {
+      // Existing unmarked history remains exact; never infer provenance from text.
+      importedHistoryProjectionMessages(imported.messages, imported.initialInstructions, imported.importedAt, imported.initialInstructionsSeparated === true).forEach((message, sequence) => {
         tx.insert(importedHistoryMessages).values({
           agentId,
           messageId: `imported:${agentId}:${String(sequence).padStart(12, "0")}`,
