@@ -44,3 +44,10 @@ export async function servePineconeProduct(req:IncomingMessage,res:ServerRespons
  }catch{res.writeHead(404,headers);res.end('Pinecone asset unavailable')}
  return true;
 }
+
+/** Close upstream event streams before awaiting the frontend server's connections. */
+export async function closePineconeService(front:{close(callback:(error?:Error)=>void):unknown}|undefined,app:{prepareForShutdown():void;close():Promise<unknown>}):Promise<void>{
+ app.prepareForShutdown();
+ if(front)await new Promise<void>((resolve,reject)=>front.close(error=>error?reject(error):resolve()));
+ await app.close();
+}

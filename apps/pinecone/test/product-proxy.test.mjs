@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,writeFile,mkdir,rm} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {v5Identity,pineconeDecisionResponseAllowed,servePineconeProduct} from '../../../experiments/pinecone-shadow/pinecone-product-proxy.ts';
+import {v5Identity,pineconeDecisionResponseAllowed,servePineconeProduct,closePineconeService} from '../../../experiments/pinecone-shadow/pinecone-product-proxy.ts';
 const decision=(extra={})=>({...v5Identity,id:'decision',status:'pending',mode:'choice',allowOther:true,options:[{id:'existing',label:'Existing connection'}],...extra});
 test('only existing speaker ordinary choices/text may pass the preview policy',()=>{
  assert(pineconeDecisionResponseAllowed(decision(),{optionId:'existing'}));
@@ -28,4 +28,10 @@ test('own consumer route and assets preserve V3/V4 routes and existing CSP',asyn
   const asset=await request('/pinecone/static/app.js');assert.equal(asset.status,200);assert.equal(asset.headers['content-security-policy'].includes("connect-src 'self'"),true);
   assert.equal((await request('/pinecone/static/%2e%2e%2f%2e%2e%2fsecret')).status,404);
  }finally{await rm(dir,{recursive:true,force:true})}
+});
+
+test('shutdown releases event streams before waiting for frontend close',async()=>{
+ const order=[];let prepared=false;
+ await closePineconeService({close(done){assert(prepared,'frontend would wait forever on live event streams');order.push('frontend');done()}},{prepareForShutdown(){prepared=true;order.push('prepare')},async close(){order.push('backend')}});
+ assert.deepEqual(order,['prepare','frontend','backend']);
 });

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import {servePineconeProduct,pineconeDecisionResponseAllowed,v5Identity} from './pinecone-product-proxy.ts';
+import {servePineconeProduct,pineconeDecisionResponseAllowed,v5Identity,closePineconeService} from './pinecone-product-proxy.ts';
 import http from 'node:http';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {AgentStore} from './source/packages/agents/dist/index.js';
@@ -19,7 +19,7 @@ const store=new AgentStore(dataDir);
 const engines=defaultEngineRegistrations({...process.env,PONDEROSA_CODEX_BIN:'/usr/local/bin/codex'}).filter(e=>e.adapter.id==='codex');
 const app=createServer({dataDir,store,engines,startDrained:true,logger:true,webDist:new URL('./source/candidate-web-dist/',root).pathname,networkSecurity:config.networkSecurity,agentBaseUrl:internalOrigin,communicationV3:{maxConcurrentRuns:3}});
 let front,stopping=false;
-async function stop(){if(stopping)return;stopping=true;if(front)await new Promise(resolve=>front.close(resolve));app.prepareForShutdown();await app.close();process.exit(0)}
+async function stop(){if(stopping)return;stopping=true;await closePineconeService(front,app);process.exit(0)}
 process.on('SIGTERM',()=>void stop());process.on('SIGINT',()=>void stop());
 async function invoke(method,url,payload){const r=await app.inject({method,url,payload,headers:{host:'127.0.0.1:18793'}});if(r.statusCode>=400)throw Error(method+' '+url+' '+r.statusCode+' '+r.body.slice(0,2000));return r.json();}
 const prepared={at:new Date().toISOString(),actions:[],qualifications:{}};
