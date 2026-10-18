@@ -83,7 +83,8 @@ import {
 } from "./chat/ChatMessages";
 import { ConversationFilesResults } from "./ConversationFilesResults";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
-import { CollectionPagination } from "./CollectionPrimitives";
+import { CollectionStateFeedback } from "./CollectionPrimitives";
+import type { WorkspaceDirectoryRequestState } from "../hooks/useWorkspaceDirectory";
 import { ChatContextSettings } from "./ChatContextSettings";
 
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
@@ -265,6 +266,18 @@ export function ConversationView({
       page.hasMore ? page.cursor : undefined,
     select: normalizeResetPages,
   });
+  const membersRequest: WorkspaceDirectoryRequestState = {
+    hasResolved: Boolean(membersQuery.data),
+    isInitialLoading: !membersQuery.data && membersQuery.isPending,
+    isRefreshing: Boolean(membersQuery.data) && membersQuery.isFetching && !membersQuery.isFetchingNextPage,
+    isInitialError: !membersQuery.data && membersQuery.isError,
+    isPaginationError: Boolean(membersQuery.data) && membersQuery.isFetchNextPageError,
+    isRefreshError: Boolean(membersQuery.data) && membersQuery.isRefetchError && !membersQuery.isFetchNextPageError,
+    isFetchingNextPage: membersQuery.isFetchingNextPage,
+    hasNextPage: Boolean(membersQuery.hasNextPage),
+    retry: () => membersQuery.refetch({ cancelRefetch: false }),
+    fetchNextPage: membersQuery.fetchNextPage,
+  };
   const conversationAgents = useMemo(() => {
     const byId = new Map<string, AgentDto>();
     if (!memberSearch) {
@@ -1277,6 +1290,7 @@ export function ConversationView({
             searchValue={memberSearch}
             onSearchValueChange={setMemberSearch}
             agents={conversationAgents}
+            collectionRequest={membersRequest}
             relationshipAgents={projectAgents}
             projectId={conversation.projectId}
             engines={engines}
@@ -1294,24 +1308,18 @@ export function ConversationView({
             }
             collection={{
               title: `${conversation.title} Agents`,
-              detail: String(membersQuery.data?.pages[0]?.total ?? detailQuery.data?.members?.total ?? conversationAgents.length) + " Agents",
-              totalCount: membersQuery.data?.pages[0]?.total ?? detailQuery.data?.members?.total,
+              detail: membersQuery.data ? String(membersQuery.data.pages[0]?.total ?? conversationAgents.length) + " Agents" : undefined,
+              totalCount: membersQuery.data?.pages[0]?.total,
               variant: "embedded",
             }}
             collectionFooter={(
-              <CollectionPagination
+              <CollectionStateFeedback
                 resourceLabel="Agents"
-                request={{
-                  hasResolved: Boolean(membersQuery.data),
-                  isInitialLoading: membersQuery.isPending,
-                  isRefreshing: membersQuery.isFetching && !membersQuery.isFetchingNextPage,
-                  isInitialError: !membersQuery.data && membersQuery.isError,
-                  isPaginationError: Boolean(membersQuery.data) && membersQuery.isFetchNextPageError,
-                  isFetchingNextPage: membersQuery.isFetchingNextPage,
-                  hasNextPage: Boolean(membersQuery.hasNextPage),
-                  retry: membersQuery.refetch,
-                  fetchNextPage: membersQuery.fetchNextPage,
-                }}
+                request={membersRequest}
+                itemCount={conversationAgents.length}
+                filtersActive={Boolean(memberSearch.trim())}
+                emptyTitle="No Agents Yet"
+                suppressEmpty
               />
             )}
           /></Box>
