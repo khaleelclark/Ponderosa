@@ -25,12 +25,6 @@ export interface ActiveOperationTracker {
 
 export type ActiveOperationAgentPhase = "queued" | "preparing" | "running" | "stalled";
 
-export function activeOperationHeaderLabel(
-  phase: ActiveOperationAgentPhase | "sending" | undefined,
-): string | undefined {
-  return phase === "queued" ? "Queued" : phase === "sending" ? "Sending" : undefined;
-}
-
 export function createDeliveryOperationTracker(
   delivery: "steer" | "queue",
   agentIds: readonly string[],

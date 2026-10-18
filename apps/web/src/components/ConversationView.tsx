@@ -14,6 +14,7 @@ import type {
   ProjectEngineCapabilitiesDto,
   ResponseFileActivityDto,
   AgentDto,
+  ConversationMessageDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -718,53 +719,36 @@ export function ConversationView({
         }
       : undefined;
   }, [routingAgents, messages]);
+  const transcriptMessage = useCallback((message: ConversationMessageDto) => ({
+    author: message.authorAgentId
+      ? agentTitle(message.authorAgentId)
+      : message.role === "system" ? "System" : "You",
+    text: resolveMessageMentionText(message.text, message.agentMentions),
+    createdAt: message.createdAt,
+    attachments: message.attachments,
+    document: message.document,
+  }), [agentTitle]);
   const mainTranscriptMarkdown = useMemo(
     () =>
       conversation
         ? buildMarkdownTranscript(
             conversation.title,
-            messages.map(message => ({
-              author: message.authorAgentId
-                ? agentTitle(message.authorAgentId)
-                : message.role === "system"
-                  ? "System"
-                  : "You",
-              text: resolveMessageMentionText(
-                message.text,
-                message.agentMentions,
-              ),
-              createdAt: message.createdAt,
-              attachments: message.attachments,
-              document: message.document,
-            })),
+            messages.map(transcriptMessage),
             { hasEarlier: mainHistory.hasMore },
           )
         : "",
-    [agentTitle, conversation?.title, messages, mainHistory.hasMore],
+    [transcriptMessage, conversation?.title, messages, mainHistory.hasMore],
   );
   const collaborationTranscriptMarkdown = useMemo(
     () =>
       conversation
         ? buildMarkdownTranscript(
             `${conversation.title} — Team chat`,
-            collaborationMessages.map(message => ({
-              author: message.authorAgentId
-                ? agentTitle(message.authorAgentId)
-                : message.role === "system"
-                  ? "System"
-                  : "You",
-              text: resolveMessageMentionText(
-                message.text,
-                message.agentMentions,
-              ),
-              createdAt: message.createdAt,
-              attachments: message.attachments,
-              document: message.document,
-            })),
+            collaborationMessages.map(transcriptMessage),
             { hasEarlier: collaborationHistory.hasMore },
           )
         : "",
-    [agentTitle, collaborationMessages, conversation?.title, collaborationHistory.hasMore],
+    [transcriptMessage, collaborationMessages, conversation?.title, collaborationHistory.hasMore],
   );
 
   if (detailQuery.isLoading) {

@@ -19,16 +19,12 @@ export function useBrowserSurfaceFocus(active: boolean, focusOnMount = false) {
       setVisible(pageVisible());
       setFocused(pageVisible() && document.hasFocus() && engaged.current);
     };
-    const onFocusIn = (event: FocusEvent) => {
+    const onEngagement = (event: Event) => {
       engaged.current = Boolean(surface()?.contains(event.target as Node));
       syncFocus();
     };
-    const onPointerDown = (event: PointerEvent) => {
-      engaged.current = Boolean(surface()?.contains(event.target as Node));
-      syncFocus();
-    };
-    document.addEventListener("focusin", onFocusIn);
-    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("focusin", onEngagement);
+    document.addEventListener("pointerdown", onEngagement, true);
     document.addEventListener("visibilitychange", syncFocus);
     window.addEventListener("focus", syncFocus);
     window.addEventListener("blur", syncFocus);
@@ -40,8 +36,8 @@ export function useBrowserSurfaceFocus(active: boolean, focusOnMount = false) {
     } else engaged.current = Boolean(surface()?.contains(document.activeElement));
     syncFocus();
     return () => {
-      document.removeEventListener("focusin", onFocusIn);
-      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("focusin", onEngagement);
+      document.removeEventListener("pointerdown", onEngagement, true);
       document.removeEventListener("visibilitychange", syncFocus);
       window.removeEventListener("focus", syncFocus);
       window.removeEventListener("blur", syncFocus);

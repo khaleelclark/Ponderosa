@@ -1,4 +1,7 @@
 import { messageTagTokens } from "@ponderosa/core";
+import { hasMessageTag as hasComposerDestination } from "../../mentions";
+
+export { hasComposerDestination };
 
 export const NEW_AGENT_DESTINATION_HANDLE = "new-agent";
 
@@ -28,16 +31,6 @@ export function activeComposerMention(
 
 export function composerDestinationMention(handle: string): string {
   return `#${handle} `;
-}
-
-export function hasComposerDestination(
-  text: string,
-  handle: string,
-): boolean {
-  const normalized = handle.toLocaleLowerCase();
-  return messageTagTokens(text).some(
-    token => token.handle.toLocaleLowerCase() === normalized,
-  );
 }
 
 function destinationRanges(

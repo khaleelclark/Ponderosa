@@ -1,5 +1,4 @@
 import SearchIcon from "@mui/icons-material/Search";
-import SortIcon from "@mui/icons-material/Sort";
 import {
   Alert,
   Box,
@@ -7,7 +6,6 @@ import {
   FormControl,
   InputAdornment,
   InputLabel,
-  Menu,
   MenuItem,
   Paper,
   Select,
@@ -356,21 +354,6 @@ export function CollectionToolbar({
   </Box>;
 }
 
-export function CollectionSortButton({ sort, onSort }: {
-  sort: ProjectSort;
-  onSort(value: ProjectSort): void;
-}): JSX.Element {
-  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  return <>
-    <Button size="small" color="inherit" startIcon={<SortIcon />} onClick={event => setAnchor(event.currentTarget)} aria-label="Sort collection" aria-haspopup="menu" aria-expanded={Boolean(anchor)} sx={{ minWidth: 44, minHeight: 40, px: 1 }}>
-      Sort
-    </Button>
-    <Menu anchorEl={anchor} open={Boolean(anchor)} onClose={() => setAnchor(null)}>
-      {([["last_used", "Recent Activity"], ["alphabetical", "Alphabetical"], ["custom", "Custom Order"]] as const).map(([value, label]) => <MenuItem key={value} selected={sort === value} onClick={() => { onSort(value); setAnchor(null); }}>{label}</MenuItem>)}
-    </Menu>
-  </>;
-}
-
 export function CollectionDirectoryControls({
   projects,
   projectId,
@@ -452,7 +435,6 @@ export function CollectionEmptyState({
     {action ? <Button size="small" onClick={action.onClick} sx={{ mt: 0.5 }}>{action.label}</Button> : null}
   </Stack>;
 }
-
 
 export function CollectionStateFeedback({
   request,

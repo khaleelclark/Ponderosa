@@ -21,6 +21,7 @@ import type {
 } from "@ponderosa/agents";
 import { stableJson } from "@ponderosa/agents";
 import { ASSET_LIMITS, AssetError, type AssetStore } from "../assets.js";
+import { associatedAssetDto } from "../asset-contracts.js";
 import { cleanupUncommittedCommunicationArtifact } from "../communication-artifacts.js";
 import { leaseConversationDelivery, reconcileLeasedCommunicationReplay } from "../delivery-leases.js";
 import { renderScopedMessage, stripLeadingScopeTag } from "../agent-mentions.js";
@@ -428,8 +429,7 @@ export function registerConversationDeliveryRoutes(
         : owner?.projectId === master.projectId && owner.conversationId === master.id
           ? await assetMetadata(owner.id, requested.id) : undefined;
       if (!stored) return reply.code(404).send({ error: "asset not found" });
-      const { projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile, associatedAt: _associatedAt, ...publicAsset } = stored;
-      validatedAssets.push({ ...publicAsset, state: "associated" });
+      validatedAssets.push(associatedAssetDto(stored));
     }
     if (validatedAssets.reduce((sum, item) => sum + item.size, 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
     const requestedRecipientAttachmentIds = new Map(
@@ -445,16 +445,7 @@ export function registerConversationDeliveryRoutes(
       if (attached.some((item) => !item || item.agentId !== agentId)) {
         return reply.code(404).send({ error: "broadcast recipient attachment not found" });
       }
-      const publicAssets = (attached as NonNullable<(typeof attached)[number]>[]).map((item) => {
-        const {
-          projectId: _projectId,
-          originalFile: _originalFile,
-          previewFile: _previewFile,
-          associatedAt: _associatedAt,
-          ...publicAsset
-        } = item;
-        return { ...publicAsset, state: "associated" as const };
-      }) as AssetDto[];
+      const publicAssets = (attached as NonNullable<(typeof attached)[number]>[]).map(associatedAssetDto);
       if (publicAssets.reduce((sum, item) => sum + item.size, 0) > ASSET_LIMITS.maxMessageBytes) {
         return reply.code(413).send({ error: "broadcast recipient attachment quota exceeded" });
       }
@@ -838,13 +829,7 @@ export function registerConversationDeliveryRoutes(
           if (attached.reduce((sum, item) => sum + (item?.size ?? 0), 0) > ASSET_LIMITS.maxMessageBytes) {
             throw new AssetError(413, "message asset quota exceeded");
           }
-          return (attached as NonNullable<(typeof attached)[number]>[]).map((item) => {
-            const {
-              projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile,
-              associatedAt: _associatedAt, ...publicAsset
-            } = item;
-            return { ...publicAsset, state: "associated" as const };
-          }) as AssetDto[];
+          return (attached as NonNullable<(typeof attached)[number]>[]).map(associatedAssetDto);
         }));
         const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
         prepared = await prepareUserCommunicationText({

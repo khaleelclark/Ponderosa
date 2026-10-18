@@ -127,7 +127,7 @@ export function useActiveOperationController({
 
   useEffect(() => {
     if (!activeOperations.length) return;
-    const reconciled = activeOperations.flatMap(operation => {
+    const reconcile = (current: ActiveOperationTracker[]) => current.flatMap(operation => {
       const next = reconcileActiveOperationTracker(
         operation,
         healthByAgentId,
@@ -135,6 +135,7 @@ export function useActiveOperationController({
       );
       return next ? [next] : [];
     });
+    const reconciled = reconcile(activeOperations);
     if (reconciled.some((operation, index) => operation !== activeOperations[index]) ||
         reconciled.length !== activeOperations.length) {
       setActiveOperations(reconciled);
@@ -147,14 +148,7 @@ export function useActiveOperationController({
     if (nextExpiry === undefined) return;
     const delay = Math.max(0, nextExpiry - Date.now());
     const timeout = window.setTimeout(() => {
-      setActiveOperations(current => current.flatMap(operation => {
-        const next = reconcileActiveOperationTracker(
-          operation,
-          healthByAgentId,
-          receipts,
-        );
-        return next ? [next] : [];
-      }));
+      setActiveOperations(reconcile);
     }, delay + 1);
     return () => window.clearTimeout(timeout);
   }, [activeOperations, healthByAgentId, receipts]);

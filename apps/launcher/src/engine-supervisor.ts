@@ -9,23 +9,13 @@ import {
 import { randomUUID } from "node:crypto";
 import { ensureDataLayout } from "./paths.js";
 import { setTimeout as delay } from "node:timers/promises";
-import { currentPonderosaStatus, stopPonderosa, withLocalLauncherAuthority } from "./control.js";
+import { currentPonderosaStatus, processAlive, stopPonderosa, withLocalLauncherAuthority } from "./control.js";
 import type { LauncherPaths } from "./types.js";
 
 interface EngineSupervisorReceipt {
   pid: number;
   token: string;
   startedAt: string;
-}
-
-function processAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function readReceipt(pathname: string): EngineSupervisorReceipt | undefined {
