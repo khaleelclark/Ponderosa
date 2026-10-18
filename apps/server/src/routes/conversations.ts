@@ -126,7 +126,7 @@ export function registerConversationRoutes(
               WHERE members.agent_id = agents.id
                 AND operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
             )
-            ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE '\\\\'" : ""}
+            ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE '\\'" : ""}
         `,
         params: normalizedSearch
           ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
@@ -153,7 +153,7 @@ export function registerConversationRoutes(
           SELECT id, title, updated_at
           FROM conversations
           WHERE project_id = ?
-            ${normalizedSearch ? "AND lower(title) LIKE ? ESCAPE '\\\\'" : ""}
+            ${normalizedSearch ? "AND lower(title) LIKE ? ESCAPE '\\'" : ""}
         `,
         params: normalizedSearch
           ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
@@ -189,7 +189,7 @@ export function registerConversationRoutes(
                 WHERE creation_members.agent_id = agent.id
                   AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
               )
-              ${normalizedSearch ? "AND lower(agent.title || ' ' || agent.active_engine || ' ' || COALESCE(agent.model, '')) LIKE ? ESCAPE '\\\\'" : ""}
+              ${normalizedSearch ? "AND lower(agent.title || ' ' || agent.active_engine || ' ' || COALESCE(agent.model, '')) LIKE ? ESCAPE '\\'" : ""}
           `,
           params: normalizedSearch
             ? [conversation.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
