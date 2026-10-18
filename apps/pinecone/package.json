@@ -1,0 +1,32 @@
+{
+  "name": "@ponderosa/pinecone",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone Pinecone consumer application using the Branches engine",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "build": "rsbuild build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.0",
+    "@mui/icons-material": "^6.5.0",
+    "@mui/material": "^6.3.0",
+    "@ponderosa/core": "workspace:*",
+    "@tanstack/react-query": "^5.101.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@rsbuild/core": "^1.1.0",
+    "@rsbuild/plugin-react": "^1.1.0",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "typescript": "^5.7.2"
+  }
+}
