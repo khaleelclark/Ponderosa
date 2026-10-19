@@ -2,14 +2,12 @@
 
 ## Supported versions
 
-Ponderosa is preparing its first public beta, `v1.0.0`. It has not yet been
-publicly released. Earlier beta releases in the private repository are not
-public releases.
+`v1.0.0-beta.1`, published on 16 October 2026, is the first public beta.
+Earlier builds in the private repository are historical candidates.
 
 | Version | Security support |
 | --- | --- |
-| Upcoming `v1.0.0` public beta | Planned first public release; not yet available. |
-| Most recent officially released public beta, once available | Target for security fixes. |
+| Most recent officially released public beta | Target for security fixes; currently `v1.0.0-beta.1`. |
 | Earlier betas and private builds | Reports welcome; fixes and backports are not promised. |
 
 Updating to the latest public beta may be necessary. No long-term support
@@ -17,13 +15,12 @@ period is committed.
 
 ## Report a vulnerability privately
 
-On the [Ponderosa release repository](https://github.com/khaleelclark/Ponderosa/security/advisories), once public, open **Security →
+On the [Ponderosa release repository](https://github.com/khaleelclark/Ponderosa/security/advisories), open **Security →
 Advisories → Report a vulnerability** to submit a private report. See
 [GitHub's reporting instructions](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/report-privately).
 
-The release repository is currently private. Private
-vulnerability reporting must be enabled and verified there before launch;
-this policy does not mean it is already enabled.
+The repository is public. GitHub's repository API confirmed private vulnerability
+reporting was enabled on 19 October 2026.
 
 **Do not disclose suspected vulnerabilities, exploit details, credentials, or
 private logs in public issues or discussions.** If the reporting option is

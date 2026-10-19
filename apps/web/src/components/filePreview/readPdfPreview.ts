@@ -4,7 +4,7 @@ import { noteBackgroundRateLimit } from "../../api/backgroundCooldown.js";
 export async function readPdfText(
   stream: ReadableStream<{ items: Array<{ str?: string }> }>,
   signal: AbortSignal,
-): Promise<string> {
+): Promise<{ text: string; truncated: boolean }> {
   const reader = stream.getReader();
   let cancellation: Promise<void> | undefined;
   // PDF.js requires an Error reason; omitting it leaves its worker-side stream
@@ -13,27 +13,34 @@ export async function readPdfText(
     ? signal.reason : new Error("PDF text preview stopped")).catch(() => {});
   const abort = () => { void cancel(); };
   signal.addEventListener("abort", abort, { once: true });
-  let text = "", items = 0;
+  let text = "", items = 0, truncated = false;
   try {
-    while (items < 2048 && text.length < 64_000) {
+    chunks: for (;;) {
       signal.throwIfAborted();
       const chunk = await reader.read();
       signal.throwIfAborted();
       if (chunk.done) break;
       for (const item of chunk.value.items) {
-        if (items >= 2048) break;
+        if (items >= 2048) { truncated = true; break chunks; }
         items++;
         if (typeof item.str === "string") {
-          if (text) text += " ";
-          text += item.str.slice(0, 64_000 - text.length);
+          const remaining = 64_000 - text.length;
+          const separator = text ? " " : "";
+          if (separator.length + item.str.length > remaining) {
+            text += (separator + item.str.slice(0, remaining)).slice(0, remaining);
+            truncated = true; break chunks;
+          }
+          text += separator + item.str;
         }
-        if (text.length >= 64_000) break;
       }
     }
-    return text.replace(/[\uD800-\uDBFF]$/u, "");
+    return { text: text.replace(/[\uD800-\uDBFF]$/u, ""), truncated };
   } finally {
     signal.removeEventListener("abort", abort);
-    await cancel();
+    // PDF.js may omit its transport acknowledgement after closing its sink.
+    // Observe native closure instead, while keeping cancellation errors handled.
+    void cancel();
+    await reader.closed.catch(() => {});
     reader.releaseLock();
   }
 }

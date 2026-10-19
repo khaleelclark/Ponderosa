@@ -2,8 +2,8 @@
 
 Historical candidate record. The versions and hashes below describe the retained
 artifacts as built. New beta packages use `X.Y.Z-beta.N` (starting with
-`1.0.0-beta.1`); see the [current build recipe](../packaging/README.md). This
-record does not establish that new-format installers have been built or qualified.
+`1.0.0-beta.1`); see the [current packaging and qualification index](current-qualification.md).
+The historical results below do not qualify the subsequently published packages.
 
 Prepared October 14, 2026. These unpublished candidates use version **1.0.0**
 inside Engine and short **1.0** download names. Runtime source and tests remain

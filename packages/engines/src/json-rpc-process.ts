@@ -7,6 +7,8 @@ import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer } from "./jso
 import { runtimeEnvironment } from "./runtime-environment.js";
 
 type RpcId = number;
+export class JsonRpcOutputLimitError extends Error {}
+
 type RpcMessage = {
   id?: RpcId;
   method?: string;
@@ -77,6 +79,7 @@ export class JsonRpcProcess {
   private nextId = 1;
   private stderrTail = "";
   private closed = false;
+  private failure?: Error;
   private closePromise?: Promise<void>;
   private readonly nativeAuthority?: NativeProcessTreeAuthority;
   readonly processIdentity;
@@ -115,37 +118,31 @@ export class JsonRpcProcess {
       postExitDrainTimer = undefined;
     };
     this.child.stdout?.once("close", clearPostExitDrain);
-    const failRecord = () => {
+    const fail = (error: unknown) => {
       if (this.closed) return;
       reportRootExit();
       this.child.stdout?.destroy();
-      this.finish(new Error(
-        `${opts.bin} JSONL record exceeded the ${JSONL_MAX_RECORD_BYTES / (1024 * 1024)} MiB limit`,
-      ));
+      this.finish(error instanceof JsonlRecordLimitError
+        ? new Error(`${opts.bin} JSONL record exceeded the ${JSONL_MAX_RECORD_BYTES / (1024 * 1024)} MiB limit`)
+        : error instanceof Error ? error : new Error(String(error)));
       void this.close().catch(() => undefined);
     };
     this.child.stdout?.on("data", (chunk: Buffer | string) => {
       outputBytes += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
       if (opts.maxOutputBytes !== undefined && outputBytes > opts.maxOutputBytes) {
-        if (!this.closed) {
-          reportRootExit();
-          this.child.stdout?.destroy();
-          this.finish(new Error(`${opts.bin} JSON-RPC output exceeded the aggregate limit`));
-          void this.close().catch(() => undefined);
-        }
+        fail(new JsonRpcOutputLimitError(`${opts.bin} JSON-RPC output exceeded the aggregate limit (${opts.maxOutputBytes} bytes)`));
         return;
       }
       try {
         for (const line of lines.push(chunk)) this.receive(line);
-      } catch (error) {
-        if (error instanceof JsonlRecordLimitError) failRecord();
-        else throw error;
-      }
+      } catch (error) { fail(error); }
     });
     this.child.stdout?.once("end", () => {
       if (this.closed) return;
-      const tail = lines.flush();
-      if (tail !== undefined) this.receive(tail);
+      try {
+        const tail = lines.flush();
+        if (tail !== undefined) this.receive(tail);
+      } catch (error) { fail(error); }
     });
     const rootExited = (code?: number | null, signal?: NodeJS.Signals | null) => {
       // Host-initiated rollover, replacement, cancellation, and shutdown are
@@ -176,7 +173,7 @@ export class JsonRpcProcess {
   }
 
   request<T>(method: string, params?: unknown): Promise<T> {
-    if (this.closed) return Promise.reject(new Error("engine RPC process is closed"));
+    if (this.closed) return Promise.reject(this.failure ?? new Error("engine RPC process is closed"));
     const id = this.nextId++;
     const promise = new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: (value) => resolve(value as T), reject });
@@ -187,6 +184,10 @@ export class JsonRpcProcess {
 
   notify(method: string, params?: unknown): void {
     if (!this.closed) this.write({ method, ...(params === undefined ? {} : { params }) });
+  }
+
+  throwIfFailed(): void {
+    if (this.failure) throw this.failure;
   }
 
   isAlive(): boolean {
@@ -211,14 +212,17 @@ export class JsonRpcProcess {
   }
 
   private write(message: RpcMessage): void {
+    if (this.closed) return;
     const stdin = this.child.stdin;
     if (!stdin || stdin.destroyed) throw new Error("engine RPC stdin is unavailable");
     stdin.write(`${JSON.stringify(message)}\n`);
   }
 
   private receive(line: string): void {
+    if (this.closed) return;
     let message: RpcMessage;
     try { message = JSON.parse(line) as RpcMessage; } catch { return; }
+    if (!message || typeof message !== "object" || Array.isArray(message)) return;
     if (message.id !== undefined && ("result" in message || message.error)) {
       const pending = this.pending.get(message.id);
       if (!pending) return;
@@ -227,11 +231,15 @@ export class JsonRpcProcess {
       else pending.resolve(message.result);
       return;
     }
-    if (message.id !== undefined && message.method) {
-      void this.respondToServerRequest(message.id, message.method, message.params);
+    if (message.id !== undefined && typeof message.method === "string" && message.method) {
+      void this.respondToServerRequest(message.id, message.method, message.params).catch(error => {
+        if (this.closed) return;
+        this.finish(error instanceof Error ? error : new Error(String(error)));
+        void this.close().catch(() => undefined);
+      });
       return;
     }
-    if (message.method) {
+    if (typeof message.method === "string" && message.method) {
       const notification = { method: message.method, params: message.params };
       this.opts.onNotification?.(notification);
       this.queue.push(notification);
@@ -258,6 +266,7 @@ export class JsonRpcProcess {
   }
 
   private finish(error?: Error): void {
+    this.failure ??= error;
     this.closed = true;
     for (const pending of this.pending.values()) pending.reject(error ?? new Error("engine RPC process closed"));
     this.pending.clear();
