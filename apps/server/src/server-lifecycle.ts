@@ -50,6 +50,7 @@ type BrowserAuthority = ReturnType<typeof createBrowserAuthority>;
 export async function recoverCanonicalAgentCreations(input: {
   store: AgentStore;
   deletingAgentIds: Set<string>;
+  appendWorkspace(event: { type: "project_changed"; projectId: string; action: "updated" }): unknown;
   reconcileRuntimeCommunicationProjections(filter: {
     projectId: string;
     communicationEventId: string;
@@ -74,6 +75,8 @@ export async function recoverCanonicalAgentCreations(input: {
         lastError: null,
       });
       for (const agentId of operation.agentIds) input.deletingAgentIds.delete(agentId);
+      try { input.appendWorkspace({ type: "project_changed", projectId: operation.projectId, action: "updated" }); }
+      catch { /* Publication failure cannot reopen completed recovery. */ }
       recovered += 1;
     } catch (error) {
       input.store.updateAgentCreationOperation(operation.id, {
@@ -218,6 +221,7 @@ type ServerLifecycleContext =
     drafts: DraftService;
     coordinationV3: CoordinationV3Store;
     workspace: WorkspaceStore;
+    appendWorkspace(event: { type: "project_changed"; projectId: string; action: "updated" }): unknown;
     drainAttachmentUploads(): Promise<void>;
     applyResolvedSavedBrowserApproval(decision: DecisionDto): boolean;
     reconcileCommittedProjectDeletions(): void;
@@ -282,6 +286,7 @@ export function registerServerLifecycle(
     drafts,
     coordinationV3,
     workspace,
+    appendWorkspace,
     applyResolvedSavedBrowserApproval,
     reconcileCommittedProjectDeletions,
     artifactFilesystem,
@@ -434,6 +439,7 @@ export function registerServerLifecycle(
     if (agentCreationRecoveryOperation) return agentCreationRecoveryOperation;
     const operation = recoverCanonicalAgentCreations({
       store,
+      appendWorkspace,
       deletingAgentIds,
       reconcileRuntimeCommunicationProjections,
       limit,

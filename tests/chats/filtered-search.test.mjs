@@ -96,6 +96,13 @@ test('collection searches preserve literal text and scope through real HTTP rout
         } else assert.deepEqual(body.results, []);
       });
     }
+    await check('empty global Agent search excludes recent Chats', async () => {
+      const agents = f.ok(await f.api('GET', '/api/search?kind=agent'));
+      assert.ok(agents.recentChats.every(item => item.chat.kind === 'agent'));
+      const chats = f.ok(await f.api('GET', '/api/search?kind=conversation'));
+      assert.ok(chats.recentChats.length > 0);
+      assert.ok(chats.recentChats.every(item => item.chat.kind === 'conversation'));
+    });
     complete = true;
   } finally {
     const identities = [...f.sessions.values()].map(session => session.processIdentity).filter(Boolean);
@@ -112,3 +119,66 @@ test('collection searches preserve literal text and scope through real HTTP rout
     assert.equal(custody.providerRootsExited, true);
   }
 });
+
+test('F10: committed operator Agent creation and rename publish live directory invalidation', { timeout: 10_000 }, async t => {
+  const f = await fixture(); let passed = false, reader;
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 4_000);
+  try {
+    const chat = await f.createChat('Owned live directory');
+    const response = await fetch(await f.listen() + '/api/workspace/stream', { signal: controller.signal });
+    assert.equal(response.status, 200); reader = response.body.getReader();
+    await reader.read(); // Initial status/heartbeat confirms the subscriber is attached.
+    let buffer = ''; const decoder = new TextDecoder();
+    const change = async () => {
+      for (;;) {
+        const next = await reader.read(); assert.equal(next.done, false);
+        buffer += decoder.decode(next.value, { stream: true });
+        let boundary;
+        while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+          const block = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
+          const data = block.split('\n').find(line => line.startsWith('data: '));
+          if (!data) continue;
+          const envelope = JSON.parse(data.slice(6));
+          if (envelope.event?.type === 'project_changed' && envelope.event.projectId === chat.projectId) return envelope;
+        }
+      }
+    };
+    const agent = await f.createIdleAgent(chat, 'Original directory needle');
+    const created = await change(); assert.equal(created.event.action, 'updated'); assert.ok(!created.replayed);
+    f.ok(await f.api('PATCH', `/api/agents/${agent.id}`, { title: 'Renamed directory needle' }));
+    const renamed = await change(); assert.equal(renamed.event.action, 'updated'); assert.ok(renamed.id > created.id);
+    const directory = f.ok(await f.api('GET', '/api/workspace/directory/agent?search=Renamed%20directory%20needle'));
+    assert.equal(directory.items[0].agent.id, agent.id);
+    assert.equal(directory.items[0].ownerConversation.id, chat.id);
+    passed = true;
+  } finally {
+    clearTimeout(timer); controller.abort(); await reader?.cancel().catch(() => {});
+    if (!passed) t.diagnostic(`Live event fixture retained: ${f.root}`);
+    await f.dispose(passed);
+  }
+});
+
+const { reconcileCommittedAgentCreation } = await import('../../apps/server/dist/agent-creation-recovery.js');
+const { recoverCanonicalAgentCreations } = await import('../../apps/server/dist/server-lifecycle.js');
+for (const background of [false, true]) for (const failure of ['none', 'projection', 'publication']) {
+  test(`F10: ${background ? 'background' : 'retry'} creation recovery publishes only visible completion: ${failure}`, async () => {
+    const operation = { id: 'owned-operation', projectId: 'owned-project', agentIds: ['owned-agent'], communicationEventId: 'owned-opening', status: 'canonical_committed' };
+    const quarantine = new Set(operation.agentIds), observations = [];
+    const store = { listRecoverableAgentCreationOperations: () => [operation], updateAgentCreationOperation(_id, patch) { Object.assign(operation, patch); } };
+    const appendWorkspace = event => {
+      observations.push({ event, status: operation.status, quarantined: quarantine.has('owned-agent') });
+      if (failure === 'publication') throw new Error('Owned publication failure');
+    };
+    const reconcile = async () => { if (failure === 'projection') throw new Error('Owned projection failure'); };
+    const result = background
+      ? (await recoverCanonicalAgentCreations({ store, deletingAgentIds: quarantine, appendWorkspace, reconcileRuntimeCommunicationProjections: reconcile })).recovered === 1
+      : await reconcileCommittedAgentCreation({ store, deletingAgentIds: quarantine, appendWorkspace, operationId: operation.id, projectId: operation.projectId,
+        communicationEventId: operation.communicationEventId, agentIds: operation.agentIds, reconcile });
+    assert.equal(result, failure !== 'projection');
+    if (failure === 'projection') { assert.deepEqual(observations, []); assert.equal(quarantine.has('owned-agent'), true); }
+    else {
+      assert.deepEqual(observations, [{ event: { type: 'project_changed', projectId: 'owned-project', action: 'updated' }, status: 'completed', quarantined: false }]);
+      assert.equal(operation.status, 'completed'); assert.equal(quarantine.size, 0);
+    }
+  });
+}

@@ -225,6 +225,8 @@ export function registerAgentMaintenanceRoutes(
         });
         if (recovery.activationIds.length > 0) notifyScheduler();
       }
+      try { appendWorkspace({ type: "project_changed", projectId: current.projectId, action: "updated" }); }
+      catch { /* Committed metadata remains visible on refresh. */ }
       return agent!;
     },
   );

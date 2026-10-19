@@ -12,6 +12,28 @@ const options = { timeout: 30000 };
 const exec = promisify(execFile);
 const upload = async (f, agent, name, bytes, media = 'text/plain') => f.ok(await f.api('POST', `/api/agents/${agent.id}/attachments`, bytes, { 'content-type': 'application/octet-stream', 'x-ponderosa-filename': name, 'x-ponderosa-media-type': media }));
 
+test('F15: real Agent, Chat and draft uploads retain Unicode and literal percent names through storage and restart', options, t => withFixture(t, async f => {
+  const chat = await f.createChat('Filename round trips'), agent = await f.createIdleAgent(chat, 'Filename reader');
+  const ownerId = 'filename-browser', body = Buffer.from('Exact filename fixture bytes'), uploaded = [];
+  for (const url of [`/api/agents/${agent.id}/attachments`, `/api/conversations/${chat.id}/attachments`, `/api/conversations/${chat.id}/draft-attachments`]) {
+    for (const name of ['plain.txt', 'space in name.txt', '100% ready %20 literal.txt', '普通の資料—résumé📎.txt']) {
+      const asset = f.ok(await f.api('POST', url, body, {
+        'content-type': 'application/x-ponderosa-attachment', 'x-ponderosa-media-type': 'text/plain',
+        'x-ponderosa-filename': encodeURIComponent(name), 'x-ponderosa-draft-owner': ownerId,
+      }));
+      assert.equal(asset.name, name);
+      uploaded.push({ asset, name });
+    }
+  }
+  await f.reopen();
+  for (const { asset, name } of uploaded) {
+    const download = await f.api('GET', asset.downloadUrl);
+    f.ok(download);
+    assert.deepEqual(download.rawBody, body);
+    assert.ok(download.headers['content-disposition'].includes(encodeURIComponent(name)), 'Stored download name changed');
+  }
+}));
+
 test('check 8: multi-recipient DM supplies only each recipient’s explicitly selected attachment bytes', options, t => withFixture(t, async f => {
   const chat = await f.createChat('Recipient files'), a = await f.createIdleAgent(chat, 'Reader A'), b = await f.createIdleAgent(chat, 'Reader B'), unrelated = await f.createIdleAgent(chat, 'Unrelated');
   const contents = [a, b].map(() => `Private file ${randomUUID()}`), assets = [];
@@ -106,6 +128,24 @@ test('checks 76, 77: separate Git copy isolates source edits and refuses dirty/u
   await writeFile(path.join(copy, 'tracked.txt'), 'Original source\n'); await rm(path.join(copy, 'untracked.txt'));
   const shared = f.ok(await f.api('PATCH', `/api/agents/${agent.id}`, { workingCopyMode: 'shared' })); assert.equal(shared.workingCopy.mode, 'shared');
   await assert.rejects(access(copy), { code: 'ENOENT' }); assert.equal(await readFile(path.join(source, 'tracked.txt'), 'utf8'), 'Original source\n');
+}));
+
+test('working-folder diff and patch previews expose safe UTF-8 text with exact downloads and bounded fallback', options, t => withFixture(t, async f => {
+  const chat = await f.createChat('Diff preview MIME');
+  const diff = '--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-before 😀\n+after 東京\n';
+  for (const [name, bytes, readable] of [
+    ['owned.diff', Buffer.from(diff), true], ['owned.PATCH', Buffer.from(diff), true], ['empty.diff', Buffer.alloc(0), true],
+    ['large.diff', Buffer.from('x'.repeat(2 * 1024 * 1024 + 10)), false], ['invalid.patch', Buffer.from([0xff, 0xfe, 0x80]), false],
+  ]) {
+    await writeFile(path.join(chat.workingDirectory, name), bytes);
+    const info = f.ok(await f.api('GET', `/api/projects/${chat.projectId}/workspace-files/view-info?conversationId=${chat.id}&path=${name}`));
+    assert.equal(info.mediaType, 'text/x-diff');
+    assert.equal(info.previewable, false, 'Diff text is rendered as data, not an active document');
+    assert.equal(info.text, readable ? bytes.toString('utf8') : undefined);
+    assert.equal(info.truncated, !readable);
+    assert.ok(info.downloadUrl);
+    assert.deepEqual((await f.api('GET', info.downloadUrl)).rawBody, bytes);
+  }
 }));
 
 const { validMotionVideo, validAvif } = await import('../../apps/server/dist/image-containers.js');

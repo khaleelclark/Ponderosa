@@ -196,6 +196,7 @@ registerAgentDirectoryRoutes(app, {
 
 registerAgentCoordinationRoutes(app, {
   store,
+  appendWorkspace,
   coordinationV3,
   engines,
   providerEnabled: context.providerEnabled,
