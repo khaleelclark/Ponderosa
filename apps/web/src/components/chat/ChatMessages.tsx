@@ -5,11 +5,14 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
-import { messageTagTokens, missingCollaborationRecipients, unicodeCodePointLength } from "@ponderosa/core";
+import { parseRichMessageBlock, messageTagTokens, missingCollaborationRecipients, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CollaborationRecipientDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto, WorkspaceFileOwnerDto } from "@ponderosa/core";
 import { type ReactNode, type ComponentPropsWithoutRef, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { remarkMessageFormatting } from "./messageMarkdown";
+import { RichMessageDisplay } from "./RichMessageDisplay";
+import { ScrollableMessageTable } from "./ScrollableMessageTable";
 import { copyText } from "../../clipboard";
 import { MESSAGE_TAG_PREFIX, messageTagHandle } from "../../mentions";
 import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
@@ -27,13 +30,6 @@ function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
 }
 
-function ScrollableMessageTable({node: _node, ...props}: ComponentPropsWithoutRef<"table"> & {node?: unknown}): JSX.Element {
-  return <div style={{minWidth: 0, maxWidth: "100%"}}>
-    <div role="region" tabIndex={0} aria-label="Scrollable message table" style={{maxWidth: "100%", overflowX: "auto", overscrollBehaviorX: "contain"}}>
-      <table {...props} />
-    </div>
-  </div>;
-}
 
 export function linkPresentation(href: string): { url: URL; hostname: string; destination: string; loopback: boolean } | undefined {
   let url: URL;
@@ -302,7 +298,7 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
   const resetTimer = useRef<ReturnType<typeof setTimeout>>();
   const code = codeBlockText(children).replace(/\n$/, "");
   const language = fencedCodeLanguage(children);
-  const highlighted = !["text", "txt", "plaintext", "none"].includes(language);
+  const highlighted = !["text", "txt", "plaintext", "none", "ponderosa"].includes(language);
 
   useEffect(
     () => () => {
@@ -372,6 +368,17 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
       </Box>
     </Box>
   );
+}
+
+function MessageCodeBlock({ node, children }: { node?: unknown; children?: ReactNode }): JSX.Element {
+  const code = (node as { children?: { properties?: Record<string, unknown> }[] })?.children?.[0];
+  const block = code?.properties?.["data-ponderosa-closed"] === "true"
+    ? parseRichMessageBlock(codeBlockText(children).replace(/\n$/, "")) : undefined;
+  return block ? <RichMessageDisplay block={block} /> : <CopyableCodeBlock>{children}</CopyableCodeBlock>;
+}
+
+function MessageTableHeader({ node: _node, ...props }: ComponentPropsWithoutRef<"th"> & { node?: unknown }): JSX.Element {
+  return <th {...props} scope="col" />;
 }
 
 interface MarkdownAstNode {
@@ -449,7 +456,6 @@ function ChatMarkdown({
   operatorHandle,
   compact = false,
   small = false,
-  preserveWhitespace = false,
 }: {
   children: string;
   collaborationRecipients?: readonly CollaborationRecipientDto[];
@@ -464,7 +470,6 @@ function ChatMarkdown({
   operatorHandle?: string;
   compact?: boolean;
   small?: boolean;
-  preserveWhitespace?: boolean;
 }): JSX.Element {
   const tokens = messageProseTagTokens(children);
   // Insert links at authored source offsets before Markdown decodes entities
@@ -480,17 +485,15 @@ function ChatMarkdown({
         maxWidth: "100%",
         minWidth: 0,
         overflowWrap: "anywhere",
-        // Let Markdown own block separation. Preserving whitespace on the
-        // container also renders the source newlines between paragraphs,
-        // headings, and lists as additional visual rows.
-        whiteSpace: preserveWhitespace ? "pre-wrap" : "normal",
+        // The prose transform preserves authored breaks without exposing parser separators.
+        whiteSpace: "normal",
         "& > :first-of-type": { mt: 0 },
         "& > :last-child": { mb: 0 },
         fontSize: small
           ? { xs: "0.9375rem", md: "0.82rem" }
           : { xs: "0.875rem", sm: "1rem", md: "0.9375rem" },
         lineHeight: small ? 1.42 : { xs: "20px", sm: 1.48 },
-        "& p": { my: compact ? 0.15 : 0.35, maxWidth: "100%", whiteSpace: preserveWhitespace ? "pre-wrap" : "normal", overflowWrap: "anywhere", wordBreak: "break-word" },
+        "& p": { my: compact ? 0.15 : 0.35, maxWidth: "100%", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "break-word" },
         "& h1, & h2, & h3, & h4": { mt: 1.05, mb: 0.4, lineHeight: 1.22 },
         "& h1": { fontSize: { xs: "1.22rem", sm: "1.35rem" } },
         "& h2": { fontSize: { xs: "1.1rem", sm: "1.2rem" } },
@@ -503,19 +506,21 @@ function ChatMarkdown({
         "& :not(pre) > code": { px: 0.5, py: 0.125, borderRadius: 0.75, bgcolor: "action.hover" },
         "& pre": { my: 0.65, p: 1.1, maxWidth: "100%", overflowX: "auto", borderRadius: 1, bgcolor: "action.hover" },
         "& img": { display: "block", maxWidth: "100%", height: "auto", objectFit: "contain" },
-        "& table": { width: "100%", borderCollapse: "collapse" },
-        "& th, & td": { px: 1, py: 0.5, border: 1, borderColor: "divider", minWidth: "7rem", maxWidth: "24rem", verticalAlign: "top", overflowWrap: "break-word", wordBreak: "normal" },
+        "& table": { width: "100%", borderCollapse: "collapse", fontVariantNumeric: "tabular-nums" },
+        "& th, & td": { px: 1.25, py: 0.875, borderBottom: 1, borderColor: "divider", minWidth: "7rem", maxWidth: "24rem", verticalAlign: "top", overflowWrap: "break-word", wordBreak: "normal" },
+        "& th": { textAlign: "left", fontWeight: 700, bgcolor: "action.hover" },
         "& th:first-child, & td:first-child": { minWidth: "3rem" },
         "& td a, & th a": { maxWidth: "16rem" },
         "& a": { maxWidth: "100%", color: "primary.main", textDecoration: "underline", textUnderlineOffset: "0.15em", overflowWrap: "anywhere", wordBreak: "break-word", "&:hover": { textDecorationThickness: "2px" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: 2 } },
       }}
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, [remarkMessageTags, { tokens, recipients: collaborationRecipients, mentions: agentMentions }]]}
+        remarkPlugins={[remarkGfm, remarkMessageFormatting, [remarkMessageTags, { tokens, recipients: collaborationRecipients, mentions: agentMentions }]]}
         urlTransform={chatMarkdownUrlTransform}
         components={{
           table: ScrollableMessageTable,
-          pre: CopyableCodeBlock,
+          th: MessageTableHeader,
+          pre: MessageCodeBlock,
           img: ({ src, alt }) => {
             const projectPreview = projectFileHref(projectId, src, "preview", fileScope);
             if (src && isLocalWorkspaceHref(src) && !projectPreview) return <Box component="span">{alt ?? "Image unavailable"}</Box>;
@@ -621,7 +626,7 @@ export function CommunicationDocumentCard({ document, projectId, fileScope }: { 
   return <ChatDocumentCard document={document} renderMarkdown={(content) => <ChatMarkdown projectId={projectId} fileScope={fileScope}>{content}</ChatMarkdown>} />;
 }
 
-export function ChatMessageBody({ text, citations, collaborationRecipients, agentMentions, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, fileScope, projectId, operatorHandle, compactMarkdown = false, smallText = false, preserveWhitespace = false }: {
+export function ChatMessageBody({ text, citations, collaborationRecipients, agentMentions, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, fileScope, projectId, operatorHandle, compactMarkdown = false, smallText = false }: {
   text: string;
   collaborationRecipients?: readonly CollaborationRecipientDto[];
   agentMentions?: readonly AgentMentionBindingDto[];
@@ -637,7 +642,6 @@ export function ChatMessageBody({ text, citations, collaborationRecipients, agen
   operatorHandle?: string;
   compactMarkdown?: boolean;
   smallText?: boolean;
-  preserveWhitespace?: boolean;
 }): JSX.Element {
   const collaborationMention = (handle: string) => {
     const matches = agentMentions?.filter(mention => mention.handle === handle) ?? [];
@@ -662,7 +666,7 @@ export function ChatMessageBody({ text, citations, collaborationRecipients, agen
           } : {}),
         }}
       >
-        <ChatMarkdown collaborationRecipients={collaborationRecipients} agentMentions={agentMentions} agentIdForHandle={collaborationRecipients ? undefined : agentIdForHandle} agentMentionForHandle={collaborationRecipients ? collaborationMention : agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} fileScope={fileScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} small={smallText} preserveWhitespace={preserveWhitespace}>
+        <ChatMarkdown collaborationRecipients={collaborationRecipients} agentMentions={agentMentions} agentIdForHandle={collaborationRecipients ? undefined : agentIdForHandle} agentMentionForHandle={collaborationRecipients ? collaborationMention : agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} fileScope={fileScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} small={smallText}>
           {collapsible && !expanded ? collapsedLongMessagePreview(text) : text}
         </ChatMarkdown>
       </Box>

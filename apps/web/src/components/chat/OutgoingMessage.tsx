@@ -71,9 +71,9 @@ function OutgoingRow({ message }: { message: OutgoingMessage }) {
     ariaLabel: message.accepted ? "Accepted message" : "Sending message",
     author: { kind: "operator", profile: outgoing.profile },
     createdAt: message.createdAt,
-    body: <Box sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}><ChatMessageBody
+    body: <Box sx={{ overflowWrap: "anywhere" }}><ChatMessageBody
       text={message.text}
-      compactMarkdown preserveWhitespace
+      compactMarkdown
       agentMentionForHandle={handle => agent && handle.toLocaleLowerCase() === "new-agent" ? { agentId: agent.id, label: agent.handle } : undefined}
       onOpenAgent={agent && outgoing.onOpenAgent ? id => outgoing.onOpenAgent?.(id, agent.projectId) : undefined}
     />
