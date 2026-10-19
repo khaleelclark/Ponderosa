@@ -66,7 +66,7 @@ function workerFixture() {
       remove: async id => { calls.push(['remove', id]); },
       onUpdated: event('updated'), onRemoved: event('removed'), onDetached: event('detached') },
     debugger: { onDetach: event('debuggerDetach'), attach: async () => { await wait('attach'); },
-      detach: async () => { if (detachFails) throw new Error('Owned detach failure'); },
+      detach: async () => { await wait('detach'); listeners.debuggerDetach({ tabId: 2 }); if (detachFails) throw new Error('Owned detach failure'); },
       sendCommand: async (target, method, params) => { calls.push([method, target.tabId, params?.url]); const held = await wait('cdp'); return { result: { value: { blocked: Boolean(held && blockedHeldResponse) } } }; } } };
   const context = extension('worker', { './policy.js': policy, './uploads.js': { upload() { throw Error('Unexpected upload'); }, clearUploads() {} } },
     { chrome, Date: { now: () => time }, fetch: async () => ({ ok: true, json: async () => ({}) }) },
@@ -148,3 +148,24 @@ test('F08: a stale authentication response cannot pause the resumed epoch', asyn
   await gate.entered; await f.pause(f.connection); await f.resume(f.connection); gate.release(); await rejected;
   assert.equal(f.connection.paused, false); await f.stop();
 });
+
+for (const transition of ['pause', 'stop']) for (const failure of [false, true]) {
+  test(`F09: ${transition} observes an in-flight detach: failure=${failure}`, { timeout: 5000 }, async () => {
+    const f = workerFixture(); await f.initialized; f.connection.attached = [2]; f.failDetach(failure);
+    const gate = f.hold('detach');
+    const closing = f.execute(f.connection, f.command('closePage', { pageId: '2' }));
+    const closed = assert.rejects(closing, /Owned detach failure|paused|expired/);
+    await gate.entered;
+    let settled = false;
+    const operation = f[transition](f.connection).finally(() => { settled = true; });
+    const result = failure ? assert.rejects(operation, /Owned detach failure|Could not confirm disconnection/) : operation;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false, 'Teardown confirmed before pending detach settled');
+    assert.deepEqual([...f.connection.attached], [2]);
+    gate.release(); await result; await closed;
+    assert.deepEqual([...f.connection.attached], failure ? [2] : []);
+    if (failure && transition === 'pause') await f.stop().catch(() => {});
+    f.failDetach(false); await f.stop();
+    assert.deepEqual([...f.connection.attached], []);
+  });
+}

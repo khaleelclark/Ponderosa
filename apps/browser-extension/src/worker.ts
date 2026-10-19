@@ -7,6 +7,7 @@ let connection: Connection | undefined;
 let stopping: Promise<void> | undefined;
 let connecting = false;
 const attaching = new Map<number, Promise<void>>();
+const detaching = new Map<number, Promise<void>>();
 let pausing: Promise<void> | undefined;
 let resuming: Promise<void> | undefined;
 async function pause(current: Connection): Promise<void> {
@@ -85,12 +86,19 @@ function check(current: Connection, access: Access): void {
 }
 const allowed = (url: string) => url === "about:blank" || Boolean(applicationUrl(url));
 async function detach(current: Connection, tabId: number): Promise<void> {
-  // Remove first so our intentional detach event doesn't revoke the whole window.
-  current.attached = current.attached.filter(id => id !== tabId);
-  try { await chrome.debugger.detach({ tabId }); }
-  catch (error) {
-    if (!(error instanceof Error) || !/not attached|no tab|tab.*closed|target.*closed/i.test(error.message)) { current.attached.push(tabId); throw error; }
-  }
+  const pending = detaching.get(tabId);
+  if (pending) return pending;
+  // Keep ownership until Chrome confirms detachment. Pause/stop must await an
+  // in-flight attempt rather than mistake its tab for an already detached one.
+  const attempt = Promise.resolve().then(async () => {
+    try { await chrome.debugger.detach({ tabId }); }
+    catch (error) {
+      if (!(error instanceof Error) || !/not attached|no tab|tab.*closed|target.*closed/i.test(error.message)) throw error;
+    }
+    current.attached = current.attached.filter(id => id !== tabId);
+  });
+  detaching.set(tabId, attempt);
+  try { await attempt; } finally { detaching.delete(tabId); }
 }
 async function scopedTab(current: Connection, tabId: number, access: Access): Promise<ChromeTab> {
   check(current, access);
@@ -242,6 +250,7 @@ async function execute(current: Connection, command: Command): Promise<unknown> 
       await chrome.tabs.update(tabId, { active: true }); check(current, access); current.tabId = tabId;
     } else {
       const state = await pages(current, access) as { pages: unknown[] };
+      check(current, access);
       if (state.pages.length <= 1) throw new Error("Keep at least one connected tab open");
       if (current.attached.includes(tabId)) await detach(current, tabId);
       await scopedTab(current, tabId, access);
@@ -419,7 +428,7 @@ chrome.tabs.onDetached.addListener((id, info) => { const current = connection; i
 chrome.windows.onRemoved.addListener(id => { if (id === connection?.windowId) revoke(); });
 chrome.debugger.onDetach.addListener(target => {
   const current = connection, tabId = target.tabId;
-  if (!current || tabId === undefined || !current.attached.includes(tabId)) return;
+  if (!current || tabId === undefined || !current.attached.includes(tabId) || detaching.has(tabId)) return;
   void chrome.tabs.get(tabId).then(() => { if (connection === current && current.attached.includes(tabId)) revoke(); }).catch(() => {
     current.attached = current.attached.filter(id => id !== tabId);
   });
