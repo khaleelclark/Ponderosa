@@ -790,6 +790,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24; actual TSX callbacks and shared clipboard helper with controlled browser APIs and real mutation observer; no provider account",
       "origin": "F11 clipboard error handling and support report feedback"
+    },
+    {
+      "path": "tests/chats/delivery-recovery.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, existing TypeScript/React dependencies; controlled browser storage and actual component/hook callbacks; no provider account",
+      "origin": "Q01 lost acknowledgement, durable submission order, partial Stop and truthful receipt recovery qualification"
     }
   ],
   "retainedReleasePayload": [
