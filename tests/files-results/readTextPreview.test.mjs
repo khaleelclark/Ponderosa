@@ -165,3 +165,20 @@ test('PDF page replacement aborts extraction, clears its deadline, and rejects l
   resolve({ text: 'old page text', truncated: true }); await flushPdf();
   assert.equal(f.updates.get(4), undefined);
 });
+for (const aborting of [false, true]) test(`PDF ${aborting ? 'abort' : 'partial text'} waits for native closure without requiring a transport cancellation acknowledgement`, async () => {
+  let cancelled;
+  const stream = new ReadableStream({
+    start(controller) { if (!aborting) controller.enqueue({ items: [{ str: 'x'.repeat(64_001) }] }); },
+    cancel(reason) { cancelled = reason; return new Promise(() => {}); },
+  });
+  const controller = new AbortController(), reason = new Error('Owned extraction abort');
+  const pending = readPdfText(stream, controller.signal).catch(error => ({ error }));
+  if (aborting) controller.abort(reason);
+  let timeout;
+  const result = await Promise.race([pending, new Promise(resolve => { timeout = setTimeout(() => resolve('still pending'), 100); })]);
+  clearTimeout(timeout);
+  if (aborting) assert.equal(result.error, reason);
+  else assert.deepEqual(result, { text: 'x'.repeat(64_000), truncated: true });
+  assert.ok(cancelled instanceof Error);
+  assert.equal(stream.locked, false);
+});

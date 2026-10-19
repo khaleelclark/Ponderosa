@@ -37,7 +37,10 @@ export async function readPdfText(
     return { text: text.replace(/[\uD800-\uDBFF]$/u, ""), truncated };
   } finally {
     signal.removeEventListener("abort", abort);
-    await cancel();
+    // PDF.js may omit its transport acknowledgement after closing its sink.
+    // Observe native closure instead, while keeping cancellation errors handled.
+    void cancel();
+    await reader.closed.catch(() => {});
     reader.releaseLock();
   }
 }
