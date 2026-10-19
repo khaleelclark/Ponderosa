@@ -326,6 +326,7 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
         publishChange(owner.projectId);
         return { planId: plan.id, replayed: false, result: plan.result };
       } catch (error) {
+        if (changed.size) publishChange(owner.projectId);
         return reply.code(409).send({ error: error instanceof Error ? error.message : "management plan failed", partialChangesPossible: !plan.deletionPreview });
       }
     }
