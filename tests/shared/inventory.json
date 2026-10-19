@@ -774,6 +774,14 @@
       "moduleBase": "packages/agents/package.json",
       "requirements": "Node24, built better-sqlite3; owned cache copies only; intentional Linux SIGBUS control in a bounded child with core dumps disabled; no provider account",
       "origin": "F04 native image isolation from writable build cache before packaging and installed verification"
+    },
+    {
+      "path": "tests/context-recovery/claude-history.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server/engine workspaces; actual SQLite/HTTP/MCP bridge; fake Claude executable POSIX whitespace-free Node only; no provider account",
+      "origin": "Q12: Claude history dispatch and frozen canonical scope qualification"
     }
   ],
   "retainedReleasePayload": [

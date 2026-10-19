@@ -284,6 +284,7 @@ export function startProviderRunExecution(
         ? resumeSessionId : undefined;
       const environment = {
         PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
+        PONDEROSA_AGENT_HISTORY_URL: agentMessageUrl.replace(/\/api\/agent-messages$/, "/api/agent-history"),
         PONDEROSA_DOCUMENT_URL: agentMessageUrl.replace(/\/api\/agent-messages$/, "/api/agent-documents"),
         PONDEROSA_AGENT_DIRECTORY_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-directory`,
         PONDEROSA_AGENT_COORDINATE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-coordinate`,
