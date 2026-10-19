@@ -50,15 +50,15 @@ export function AgentArtifactPreview({
     setView(canViewCurrentFile ? "current" : "diff");
   }, [artifact?.id, canViewCurrentFile]);
 
+  const needsContent = Boolean(artifact && !["image", "pdf", "docx"].includes(previewCapability({
+    mediaType: artifact.mediaType,
+    path: artifact.sourcePath ?? artifact.path,
+    artifactKind: artifact.kind,
+  }).kind));
   const contentQuery = useQuery({
     queryKey: queryKeys.projectArtifacts.agentContent(agentId, artifact?.id),
     queryFn: () => api.getArtifact(agentId, artifact!.id),
-    enabled: Boolean(artifact
-      && !["image", "pdf"].includes(previewCapability({
-        mediaType: artifact.mediaType,
-        path: artifact.sourcePath ?? artifact.path,
-        artifactKind: artifact.kind,
-      }).kind)),
+    enabled: needsContent,
   });
   const currentFileQuery = useQuery({
     queryKey: queryKeys.workspaceFileView.detail(
@@ -126,8 +126,8 @@ export function AgentArtifactPreview({
       content={previewContent}
       previewUrl={artifact.previewUrl}
       downloadUrl={content?.downloadUrl ?? artifact.downloadUrl}
-      loading={contentQuery.isLoading}
-      error={contentQuery.isError}
+      loading={needsContent && contentQuery.isLoading}
+      error={needsContent && contentQuery.isError}
       truncated={content?.truncated}
       totalBytes={content?.totalBytes}
       emptyMessage="Artifact content is not available yet."
