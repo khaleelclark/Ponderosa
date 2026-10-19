@@ -1,6 +1,6 @@
 # Third-party source references
 
-Third-party components retain their respective licenses. The notice collection does not license Ponderosa's original code. These private candidate packages are not cleared for public release by the presence of notices alone.
+Third-party components retain their respective licenses. The notice collection does not license Ponderosa's original code. Notices alone do not establish corresponding-source completeness or distribution compliance for the packages actually shipped. The native and WASM questions below still require qualified review.
 
 ## Fonts
 
