@@ -406,7 +406,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         if (resuming) await resuming;
         else { resuming = resume(connection); try { await resuming; } finally { resuming = undefined; } }
       }
-      respond({ connected: Boolean(connection), paused: connection?.paused, revoked: connection?.revoked, error: connection?.revoked ? "Could not confirm disconnection. Close the connected window or retry disconnect." : undefined, site: connection ? `window ${connection.windowId}` : undefined });
+      respond({ connected: Boolean(connection), paused: connection?.paused, revoked: connection?.revoked, error: connection?.revoked ? "Could not confirm disconnection. Close the connected window or retry disconnect." : connection && pausing ? "Pausing browser access. Wait for browser control to detach." : undefined, site: connection ? `window ${connection.windowId}` : undefined });
     } catch (error) { respond({ error: error instanceof Error ? error.message : "Connection failed" }); }
   })();
   return true;

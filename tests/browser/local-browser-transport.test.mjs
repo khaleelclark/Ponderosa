@@ -161,6 +161,9 @@ for (const transition of ['pause', 'stop']) for (const failure of [false, true])
     const result = failure ? assert.rejects(operation, /Owned detach failure|Could not confirm disconnection/) : operation;
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(settled, false, 'Teardown confirmed before pending detach settled');
+    const pending = await new Promise(resolve => f.listeners.message({ action: 'status' }, { id: 'owned', url: 'chrome-extension://owned/popup.html' }, resolve));
+    assert.equal(pending.connected, true);
+    assert.match(pending.error, transition === 'pause' ? /Pausing browser access.*Wait/ : /Could not confirm disconnection/);
     assert.deepEqual([...f.connection.attached], [2]);
     gate.release(); await result; await closed;
     assert.deepEqual([...f.connection.attached], failure ? [2] : []);
