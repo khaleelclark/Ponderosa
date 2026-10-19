@@ -64,7 +64,7 @@ function providerErrorMessage(code: ProviderErrorCode | undefined, detail: strin
     case "authentication_failed":
       return `Claude authentication failed${detail ? `: ${detail}` : ""}`;
     case "rate_limit":
-      return `Claude usage limit was reached${detail ? `: ${detail}` : ""}`;
+      return `Claude limited the request${detail ? `: ${detail}` : ""}`;
     case "capacity":
       return `Claude is at capacity${detail ? `: ${detail}` : ""}`;
     case "context_length":
