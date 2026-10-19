@@ -1,7 +1,8 @@
 import { applicationUrl, serverOrigin, AuthenticationRequired } from "./policy.js";
 import { upload, clearUploads } from "./uploads.js";
 import type { LocalBrowserCommand as Command } from "@ponderosa/core";
-type Connection = { server: string; token: string; id: string; tabId: number; windowId: number; attached: number[]; paused: boolean; epoch: number; commandTabId?: number; revoked?: boolean; deadline?: number };
+type Connection = { server: string; token: string; id: string; tabId: number; windowId: number; attached: number[]; paused: boolean; epoch: number; revoked?: boolean };
+type Access = { readonly epoch: number; readonly deadline?: number; tabId: number };
 let connection: Connection | undefined;
 let stopping: Promise<void> | undefined;
 let connecting = false;
@@ -28,14 +29,16 @@ async function resume(current: Connection): Promise<void> {
   if (pausing) await pausing;
   if (connection !== current || current.revoked) throw new Error("Disconnected");
   // Explicit popup action only. No commands from the paused epoch survive this transition.
-  current.deadline = undefined;
-  current.commandTabId = undefined;
+  current.epoch++;
   current.paused = false;
+  const access: Access = { epoch: current.epoch, tabId: current.tabId };
   try {
-    await pages(current);
-    await guard(current);
-    current.epoch++;
+    await pages(current, access);
+    access.tabId = current.tabId;
+    await guard(current, access);
+    check(current, access);
     await api(current, `connections/${current.id}/state`, { paused: false, epoch: current.epoch });
+    check(current, access);
     await chrome.storage.session.set({ connection: current });
     await chrome.action.setBadgeText({ text: "ON" });
   } catch (error) { await pause(current); throw error; }
@@ -74,9 +77,9 @@ const revoke = (expected = connection) => {
   if (!expected || connection !== expected) return;
   void stop().catch(() => chrome.action.setBadgeText({ text: "!" }).catch(() => {}));
 };
-function check(current: Connection): void {
+function check(current: Connection, access: Access): void {
   if (current.paused) throw new AuthenticationRequired("Browser access is paused. Resume in the extension.");
-  if (current.revoked || (current.deadline !== undefined && Date.now() >= current.deadline)) throw new Error("Connection or command expired");
+  if (connection !== current || current.revoked || current.epoch !== access.epoch || (access.deadline !== undefined && Date.now() >= access.deadline)) throw new Error("Connection or command expired");
 }
 const allowed = (url: string) => url === "about:blank" || Boolean(applicationUrl(url));
 async function detach(current: Connection, tabId: number): Promise<void> {
@@ -87,30 +90,32 @@ async function detach(current: Connection, tabId: number): Promise<void> {
     if (!(error instanceof Error) || !/not attached|no tab|tab.*closed|target.*closed/i.test(error.message)) { current.attached.push(tabId); throw error; }
   }
 }
-async function scopedTab(current: Connection, tabId: number): Promise<ChromeTab> {
-  check(current);
+async function scopedTab(current: Connection, tabId: number, access: Access): Promise<ChromeTab> {
+  check(current, access);
   const tab = await chrome.tabs.get(tabId);
-  check(current);
+  check(current, access);
   if (tab.windowId !== current.windowId || !tab.url || !allowed(tab.url)) throw new Error("Tab is outside the connected window or requires manual sign-in.");
   return tab;
 }
-const cdp = async (current: Connection, method: string, params?: Record<string, unknown>) => {
-  const tabId = current.commandTabId ?? current.tabId;
-  await scopedTab(current, tabId);
+const cdp = async (current: Connection, access: Access, method: string, params?: Record<string, unknown>) => {
+  const tabId = access.tabId;
+  await scopedTab(current, tabId, access);
   if (!current.attached.includes(tabId)) {
-    check(current);
+    check(current, access);
     const pending = chrome.debugger.attach({ tabId }, "1.3").then(() => { current.attached.push(tabId); });
     attaching.set(tabId, pending);
     try { await pending; } finally { attaching.delete(tabId); }
-    if (connection === current) await chrome.storage.session.set({ connection: current });
-    await scopedTab(current, tabId);
+    check(current, access);
+    await chrome.storage.session.set({ connection: current });
+    await scopedTab(current, tabId, access);
   }
-  check(current);
+  check(current, access);
   return chrome.debugger.sendCommand({ tabId }, method, params);
 };
-async function pages(current: Connection): Promise<unknown> {
-  check(current);
+async function pages(current: Connection, access: Access): Promise<unknown> {
+  check(current, access);
   const candidates = await chrome.tabs.query({ windowId: current.windowId });
+  check(current, access);
   const tabs = candidates.filter(tab => {
     if (!tab.url || tab.url.startsWith("chrome:") || tab.url.startsWith("edge:")) return false;
     return allowed(tab.url);
@@ -186,23 +191,23 @@ function pageOperation(action: string, args: Record<string, unknown>): unknown {
   }
   throw new Error("Unsupported page operation");
 }
-async function evaluate(current: Connection, action: string, args: Record<string, unknown> = {}): Promise<unknown> {
-  const value = await cdp(current, "Runtime.evaluate", { expression: `(${pageOperation.toString()})(${JSON.stringify(action)},${JSON.stringify(args)})`, returnByValue: true });
+async function evaluate(current: Connection, access: Access, action: string, args: Record<string, unknown> = {}): Promise<unknown> {
+  const value = await cdp(current, access, "Runtime.evaluate", { expression: `(${pageOperation.toString()})(${JSON.stringify(action)},${JSON.stringify(args)})`, returnByValue: true });
   if (value.exceptionDetails) throw new Error("Page operation failed");
   const result = (value.result as { value?: unknown } | undefined)?.value;
   if (result && typeof result === "object" && "blocked" in result && result.blocked === true) throw new AuthenticationRequired("Authentication requires manual control.");
   return result;
 }
-async function guard(current: Connection): Promise<void> {
+async function guard(current: Connection, access: Access): Promise<void> {
   if (connection !== current || current.revoked) throw new Error("Disconnected");
-  await scopedTab(current, current.commandTabId ?? current.tabId);
-  const result = await evaluate(current, "guard") as { blocked?: boolean } | undefined;
+  await scopedTab(current, access.tabId, access);
+  const result = await evaluate(current, access, "guard") as { blocked?: boolean } | undefined;
   if (!result || result.blocked) throw new AuthenticationRequired("Sign-in requires manual control. Browser access is paused.");
 }
-async function showAgentCursor(current: Connection, x: number, y: number): Promise<void> {
+async function showAgentCursor(current: Connection, access: Access, x: number, y: number): Promise<void> {
   // A cosmetic marker must not turn a valid Agent action into a failed tool.
   // Authentication fencing still applies if a sign-in form appeared meanwhile.
-  try { await evaluate(current, "showAgentCursor", { x, y }); }
+  try { await evaluate(current, access, "showAgentCursor", { x, y }); }
   catch (error) { if (error instanceof AuthenticationRequired) throw error; }
 }
 async function clearAgentCursors(current: Connection): Promise<void> {
@@ -210,80 +215,87 @@ async function clearAgentCursors(current: Connection): Promise<void> {
   await Promise.allSettled(current.attached.map(tabId => chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression, returnByValue: true })));
 }
 async function execute(current: Connection, command: Command): Promise<unknown> {
+  // Each command owns its original authority; Resume cannot refresh it.
+  const access: Access = { epoch: command.connectionEpoch, deadline: command.expiresAt, tabId: current.tabId };
   const args = command.args;
-  await pages(current);
-  if (command.action === "pages") return pages(current);
+  await pages(current, access);
+  check(current, access);
+  access.tabId = current.tabId;
+  if (command.action === "pages") return pages(current, access);
   if (command.action === "newPage") {
     const tab = await chrome.tabs.create({ windowId: current.windowId, url: "about:blank", active: true });
+    check(current, access);
     if (tab.id === undefined) throw new Error("Tab could not be created");
     current.tabId = tab.id;
-    return pages(current);
+    return pages(current, access);
   }
   if (command.action === "activatePage" || command.action === "closePage") {
     const tabId = Number(args.pageId);
     if (!Number.isSafeInteger(tabId)) throw new Error("Invalid tab");
-    await scopedTab(current, tabId);
+    await scopedTab(current, tabId, access);
+    check(current, access);
     if (command.action === "activatePage") {
-      await chrome.tabs.update(tabId, { active: true }); current.tabId = tabId;
+      await chrome.tabs.update(tabId, { active: true }); check(current, access); current.tabId = tabId;
     } else {
-      const state = await pages(current) as { pages: unknown[] };
+      const state = await pages(current, access) as { pages: unknown[] };
       if (state.pages.length <= 1) throw new Error("Keep at least one connected tab open");
       if (current.attached.includes(tabId)) await detach(current, tabId);
-      await scopedTab(current, tabId);
+      await scopedTab(current, tabId, access);
+      check(current, access);
       await chrome.tabs.remove(tabId);
     }
-    return pages(current);
+    return pages(current, access);
   }
   if (args.pageId !== undefined) {
     const tabId = Number(args.pageId);
     if (!Number.isSafeInteger(tabId)) throw new Error("Invalid tab");
-    await scopedTab(current, tabId);
-    current.commandTabId = tabId;
+    await scopedTab(current, tabId, access);
+    access.tabId = tabId;
   }
-  await guard(current);
+  await guard(current, access);
   if (command.action === "upload") {
-    const pageId = String(current.commandTabId ?? current.tabId);
-    const input = await upload((method, params) => cdp(current, method, params), pageId, args);
-    await guard(current);
-    return { ...(await evaluate(current, "info") as object), pageId, input };
+    const pageId = String(access.tabId);
+    const input = await upload((method, params) => cdp(current, access, method, params), pageId, args);
+    await guard(current, access);
+    return { ...(await evaluate(current, access, "info") as object), pageId, input };
   }
   if (command.action === "clearUploads") {
-    await clearUploads((method, params) => cdp(current, method, params), String(current.commandTabId ?? current.tabId), typeof args.uploadId === "string" ? args.uploadId : undefined);
+    await clearUploads((method, params) => cdp(current, access, method, params), String(access.tabId), typeof args.uploadId === "string" ? args.uploadId : undefined);
     return null;
   }
-  if (command.action === "info" || command.action === "inspect") return evaluate(current, command.action, args);
+  if (command.action === "info" || command.action === "inspect") return evaluate(current, access, command.action, args);
   if (command.action === "capture") {
-    await evaluate(current, "clearAgentCursor");
-    const result = await cdp(current, "Page.captureScreenshot", { format: "png", fromSurface: true });
-    await guard(current);
+    await evaluate(current, access, "clearAgentCursor");
+    const result = await cdp(current, access, "Page.captureScreenshot", { format: "png", fromSurface: true });
+    await guard(current, access);
     return result.data;
   }
   if (command.action === "navigate") {
     if (typeof args.url !== "string" || !allowed(args.url)) throw new Error("Only application pages can be opened.");
-    await cdp(current, "Page.navigate", { url: args.url }); return null;
+    await cdp(current, access, "Page.navigate", { url: args.url }); return null;
   }
   if (command.action === "click" || command.action === "pointer") {
-    const point = command.action === "click" ? await evaluate(current, "point", args) as { x: number; y: number } : { x: Number(args.x), y: Number(args.y) };
+    const point = command.action === "click" ? await evaluate(current, access, "point", args) as { x: number; y: number } : { x: Number(args.x), y: Number(args.y) };
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x < 0 || point.y < 0) throw new Error("Invalid click");
-    await guard(current);
-    await showAgentCursor(current, point.x, point.y);
-    await cdp(current, "Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
-    await cdp(current, "Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
+    await guard(current, access);
+    await showAgentCursor(current, access, point.x, point.y);
+    await cdp(current, access, "Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
+    await cdp(current, access, "Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
     return null;
   }
   if (command.action === "type" || command.action === "fill") {
     if (typeof args.text !== "string" || args.text.length > 32_000) throw new Error("Text exceeds the local input limit");
     const point = command.action === "fill"
-      ? await evaluate(current, "focus", args) as { x: number; y: number }
-      : await evaluate(current, "activePoint").catch(error => { if (error instanceof AuthenticationRequired) throw error; return undefined; }) as { x: number; y: number } | undefined;
-    await guard(current);
-    if (point) await showAgentCursor(current, point.x, point.y);
-    await cdp(current, "Input.insertText", { text: args.text }); return null;
+      ? await evaluate(current, access, "focus", args) as { x: number; y: number }
+      : await evaluate(current, access, "activePoint").catch(error => { if (error instanceof AuthenticationRequired) throw error; return undefined; }) as { x: number; y: number } | undefined;
+    await guard(current, access);
+    if (point) await showAgentCursor(current, access, point.x, point.y);
+    await cdp(current, access, "Input.insertText", { text: args.text }); return null;
   }
   if (command.action === "scroll") {
     if (![args.deltaX, args.deltaY].every(value => typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 4000)) throw new Error("Invalid scroll");
-    await showAgentCursor(current, 100, 100);
-    await cdp(current, "Input.dispatchMouseEvent", { type: "mouseWheel", x: 100, y: 100, deltaX: args.deltaX, deltaY: args.deltaY }); return null;
+    await showAgentCursor(current, access, 100, 100);
+    await cdp(current, access, "Input.dispatchMouseEvent", { type: "mouseWheel", x: 100, y: 100, deltaX: args.deltaX, deltaY: args.deltaY }); return null;
   }
   if (command.action === "key") {
     const keys: Record<string, number> = { Enter: 13, Tab: 9, Escape: 27, Backspace: 8, Delete: 46, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Home: 36, End: 35 };
@@ -294,20 +306,20 @@ async function execute(current: Connection, command: Command): Promise<unknown> 
       key = key.slice(prefix.length + 1);
     }
     if ((modifiers === 2 || modifiers === 4) && key.toLowerCase() === "a") {
-      await cdp(current, "Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", commands: ["selectAll"] });
-      await cdp(current, "Input.dispatchKeyEvent", { type: "keyUp", key: "a" }); return null;
+      await cdp(current, access, "Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", commands: ["selectAll"] });
+      await cdp(current, access, "Input.dispatchKeyEvent", { type: "keyUp", key: "a" }); return null;
     }
     if (["BrowserBack", "BrowserForward", "BrowserRefresh"].includes(key)) {
-      if (key === "BrowserRefresh") { await cdp(current, "Page.reload"); return null; }
-      const history = await cdp(current, "Page.getNavigationHistory") as { currentIndex: number; entries: { id: number; url: string }[] };
+      if (key === "BrowserRefresh") { await cdp(current, access, "Page.reload"); return null; }
+      const history = await cdp(current, access, "Page.getNavigationHistory") as { currentIndex: number; entries: { id: number; url: string }[] };
       const entry = history.entries[history.currentIndex + (key === "BrowserBack" ? -1 : 1)];
       if (!entry) return null;
       if (!allowed(entry.url)) throw new Error("Return to that site manually.");
-      await cdp(current, "Page.navigateToHistoryEntry", { entryId: entry.id }); return null;
+      await cdp(current, access, "Page.navigateToHistoryEntry", { entryId: entry.id }); return null;
     }
     if (!(key in keys)) throw new Error("Use the local browser for this keyboard shortcut");
-    await cdp(current, "Input.dispatchKeyEvent", { type: "rawKeyDown", key, modifiers, windowsVirtualKeyCode: keys[key] });
-    await cdp(current, "Input.dispatchKeyEvent", { type: "keyUp", key, modifiers, windowsVirtualKeyCode: keys[key] }); return null;
+    await cdp(current, access, "Input.dispatchKeyEvent", { type: "rawKeyDown", key, modifiers, windowsVirtualKeyCode: keys[key] });
+    await cdp(current, access, "Input.dispatchKeyEvent", { type: "keyUp", key, modifiers, windowsVirtualKeyCode: keys[key] }); return null;
   }
   throw new Error("Unsupported command");
 }
@@ -324,7 +336,6 @@ async function loop(current: Connection): Promise<void> {
       let expiry: ReturnType<typeof setTimeout> | undefined;
       try {
         if (!Number.isFinite(command.expiresAt) || command.expiresAt <= Date.now()) throw new Error("Command expired");
-        current.deadline = command.expiresAt;
         expiry = setTimeout(() => { if (!current.paused && current.epoch === epoch) revoke(current); }, Math.min(15_000, command.expiresAt - Date.now()));
         value = await execute(current, command);
       }
@@ -332,7 +343,7 @@ async function loop(current: Connection): Promise<void> {
         if (error instanceof AuthenticationRequired || current.paused) { if (!current.paused) await pause(current); }
         else failed = true;
       }
-      finally { clearTimeout(expiry); current.commandTabId = undefined; }
+      finally { clearTimeout(expiry); }
       if (connection !== current || current.revoked) break;
       if (current.paused || current.epoch !== epoch) continue;
       try { await api(current, `connections/${current.id}/result`, { id: command.id, value, failed }); }
@@ -382,7 +393,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         if (resuming) await resuming;
         else { resuming = resume(connection); try { await resuming; } finally { resuming = undefined; } }
       }
-      respond({ connected: Boolean(connection), paused: connection?.paused, site: connection ? `window ${connection.windowId}` : undefined });
+      respond({ connected: Boolean(connection), paused: connection?.paused, revoked: connection?.revoked, error: connection?.revoked ? "Could not confirm disconnection. Close the connected window or retry disconnect." : undefined, site: connection ? `window ${connection.windowId}` : undefined });
     } catch (error) { respond({ error: error instanceof Error ? error.message : "Connection failed" }); }
   })();
   return true;
