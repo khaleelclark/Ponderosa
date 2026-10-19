@@ -1,5 +1,5 @@
 import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTask } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { readPdfPreview, readPdfText } from "./readPdfPreview";
 
@@ -11,7 +11,8 @@ export default function PdfPreview({ url, title }: { url: string; title: string 
   const [pageNumber, setPageNumber] = useState(1);
   const [error, setError] = useState<string>();
   const [rendering, setRendering] = useState(true);
-  const [text, setText] = useState("");
+  const [text, setText] = useState<Awaited<ReturnType<typeof readPdfText>> | "unavailable">();
+  const textId = useId();
   const [attempt, setAttempt] = useState(0);
   const canvas = useRef<HTMLCanvasElement>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -39,7 +40,7 @@ export default function PdfPreview({ url, title }: { url: string; title: string 
       abort.abort(); void task?.destroy().catch(() => {});
       if (!disposed) { setRendering(false); setError("PDF preview took too long to load. Try again, or use Open or Download."); }
     }, 30_000);
-    setDocument(undefined); setPageNumber(1); setError(undefined); setRendering(true); setText("");
+    setDocument(undefined); setPageNumber(1); setError(undefined); setRendering(true); setText(undefined);
     void readPdfPreview(url, abort.signal).then(bytes => {
       if (abort.signal.aborted) return;
       task = getDocument({ data: bytes, enableXfa: false, maxImageSize: 4_000_000, stopAtErrors: true,
@@ -65,8 +66,9 @@ export default function PdfPreview({ url, title }: { url: string; title: string 
     const timeout = setTimeout(() => {
       cancelled = true; task?.cancel(); extraction.abort();
       if (!painted) { setRendering(false); setError("This PDF page took too long to process. Try again, or use Open or Download."); }
+      else setText("unavailable");
     }, Math.max(0, budget.current.expires - Date.now()));
-    setRendering(true); setText("");
+    setRendering(true); setText(undefined);
     void document.getPage(pageNumber).then(async page => {
       if (cancelled) return;
       const natural = page.getViewport({ scale: 1 });
@@ -82,8 +84,12 @@ export default function PdfPreview({ url, title }: { url: string; title: string 
       if (cancelled) return;
       painted = true; budget.current.pending = false;
       setRendering(false);
-      const content = await readPdfText(page.streamTextContent(), extraction.signal).catch(() => undefined);
-      if (!cancelled && content !== undefined) setText(content);
+      try {
+        const content = await readPdfText(page.streamTextContent(), extraction.signal);
+        if (!cancelled) setText(content);
+      } catch {
+        if (!cancelled) setText("unavailable");
+      }
     }).catch(error => { if (!cancelled && error?.name !== "RenderingCancelledException") { setRendering(false); setError("This PDF page could not be displayed. Use Open or Download to inspect it."); } })
       .finally(() => clearTimeout(timeout));
     // Retain the canvas footprint while replacing a render. Removing it toggles
@@ -107,8 +113,13 @@ export default function PdfPreview({ url, title }: { url: string; title: string 
     </Stack> : null}
     <Box sx={{ position: "relative", minHeight: error ? 0 : 120 }}>
       {!error && rendering ? <Stack role="status" direction="row" spacing={1} sx={{ position: "absolute", inset: 0, alignItems: "center", justifyContent: "center", p: 2 }}><CircularProgress size={20}/><Typography>Loading PDF…</Typography></Stack> : null}
-      <Box component="canvas" ref={canvas} role="img" aria-label={`${title}, page ${pageNumber}`} sx={{ display: error ? "none" : "block", visibility: rendering ? "hidden" : "visible", maxWidth: "100%", mx: "auto", bgcolor: "white" }}/>
+      <Box component="canvas" ref={canvas} role="img" aria-label={`${title}, page ${pageNumber}`} aria-describedby={textId} sx={{ display: error ? "none" : "block", visibility: rendering ? "hidden" : "visible", maxWidth: "100%", mx: "auto", bgcolor: "white" }}/>
     </Box>
-    <Box sx={{ position: "absolute", width: "1px", height: "1px", overflow: "hidden", clipPath: "inset(50%)" }}>{text}</Box>
+    <Box id={textId}>
+      {text === "unavailable" ? <Alert severity="warning">Text for this PDF page could not be extracted. Use Open or Download to read it in another viewer.</Alert>
+        : text?.truncated ? <Alert severity="info">This PDF page's text preview is incomplete. Use Open or Download for the complete document.</Alert>
+        : text && !text.text ? <Alert severity="info">No text was found on this PDF page. Use Open or Download to inspect the original document.</Alert> : null}
+      <Box sx={{ position: "absolute", width: "1px", height: "1px", overflow: "hidden", clipPath: "inset(50%)" }}>{text && text !== "unavailable" ? text.text : ""}</Box>
+    </Box>
   </Box>;
 }
