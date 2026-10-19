@@ -5,6 +5,7 @@ import { decodeSessionTools } from "./ponderosa-mcp-contract.js";
 type RpcRequest = { id?: string | number; method?: string; params?: unknown };
 
 const messageUrl = process.env.PONDEROSA_AGENT_MESSAGE_URL;
+const historyUrl = process.env.PONDEROSA_AGENT_HISTORY_URL;
 const coordinateUrl = process.env.PONDEROSA_AGENT_COORDINATE_URL;
 const updateRequestUrl = process.env.PONDEROSA_AGENT_UPDATE_REQUEST_URL;
 const browserUrl = process.env.PONDEROSA_AGENT_BROWSER_URL;
@@ -85,6 +86,7 @@ async function handle(request: RpcRequest): Promise<void> {
         ? coordinateUrl
         : params?.name === "update_request"
           ? updateRequestUrl
+          : params?.name === "history" ? historyUrl
           : params?.name === "message"
             ? messageUrl
             : params?.name === "import_file"

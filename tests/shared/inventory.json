@@ -814,6 +814,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built server workspaces and installed TypeScript; controlled recovery stores and verified artifact boundary; no provider account",
       "origin": "Q08/Q09: bounded recovery scans and deferred correlated-result text allocation"
+    },
+    {
+      "path": "tests/context-recovery/claude-history.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server/engine workspaces; actual SQLite/HTTP/MCP bridge; fake Claude executable POSIX whitespace-free Node only; no provider account",
+      "origin": "Q12: Claude history dispatch and frozen canonical scope qualification"
     }
   ],
   "retainedReleasePayload": [
