@@ -38,21 +38,23 @@ stores Ponderosa’s records locally, while AI requests still go to your provide
 ## Install and open
 
 The [installation and user guide](https://ponderosa.khaleelclark.com/ponderosa-guide/#first-run)
-describes the planned packages:
+describes the packages published with [v1.0.0-beta.1](https://github.com/khaleelclark/Ponderosa/releases/tag/v1.0.0-beta.1):
 
 | Beta target | Package format |
 | --- | --- |
 | Ubuntu 24.04 x64 | `.deb` |
+| Linux x64 | `.AppImage` |
 | macOS 14+ on Apple Silicon | `.dmg` |
 | Windows 11 x64 | Installer `.exe` |
 
 **Windows:** Smart App Control may block this unsigned beta from starting.
 
-The release notes will identify the exact offered packages and their checks.
-An AppImage recipe exists, but no AppImage is currently selected. The platform
-targets do not establish minimum-OS qualification or support for other platforms.
+The release includes an offline user guide and `SHA256SUMS.txt`. Consult the
+release notes and [qualification record](docs/current-qualification.md) for the
+exact packages and tested environments. Platform targets do not establish
+minimum-OS qualification or support for other platforms.
 
-Once the release is published, use its package and instructions for your platform.
+Use the release package and instructions for your platform.
 Open **Ponderosa Engine**, then **Open Ponderosa** to enter the web app. Closing a
 web tab leaves the service running. **Quit Engine** stops it and can interrupt work.
 See the [user guide](https://ponderosa.khaleelclark.com/ponderosa-guide/) for sign-in, recovery, local data and updates.
@@ -84,13 +86,13 @@ shows how agents can divide, review and combine that work without a coding phase
   decisions, files and the internal browser work, with search and navigation.
 - [Source development](https://ponderosa.khaleelclark.com/ponderosa-guide/#setup): Node 24, pnpm 11.10.0 and
   a separate development data directory. Source builds are separate from installation.
-- [Packaging and platform qualification](packaging/README.md): maintainer build
-  and release commands.
+- [Packaging and platform qualification](docs/current-qualification.md): current
+  build entry points, qualification evidence and remaining platform gaps.
 - [Linux service deployment](deploy/README.md): advanced host and network setup.
 
 ## Help and feedback
 
-Use this repository’s bug-report template once public reporting is available.
+Use this repository’s bug-report template for public bug reports.
 [Bug-report guidance](.github/ISSUE_TEMPLATE/bug_report.md) lists the useful details.
 Remove credentials, personal information and private task content from logs and
 screenshots. Report suspected vulnerabilities privately as described in
