@@ -1,7 +1,9 @@
+import CancelIcon from "@mui/icons-material/Cancel";
 import CloseIcon from "@mui/icons-material/Close";
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import { Box, Typography } from "@mui/material";
 import {
+  $addUpdateTag,
   $createLineBreakNode,
   $createParagraphNode,
   $createRangeSelection,
@@ -597,26 +599,27 @@ function ComposerMentionToken({
           : `Unavailable Agent mention ${title}`}
       sx={{
         display: "inline-flex",
-        alignItems: "baseline",
-        maxWidth: "min(70vw, 320px)",
+        alignItems: "center",
+        maxWidth: "min(70vw, 320px, 100%)",
         mx: "1px",
-        pl: 0.75,
+        pl: 0,
         pr: 0,
-        py: "1px",
-        borderRadius: 1.25,
+        py: 0,
+        height: 26,
+        borderRadius: "8px",
         bgcolor: valid ? "action.selected" : "error.dark",
         color: valid ? "primary.main" : "error.contrastText",
         boxShadow: valid
           ? "inset 0 0 0 1px rgba(127, 196, 142, .18)"
           : undefined,
-        fontSize: "1em",
+        fontSize: 16,
         fontWeight: 700,
-        lineHeight: "1.35em",
+        lineHeight: "22px",
         verticalAlign: "baseline",
         whiteSpace: "nowrap",
       }}
     >
-      <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+      <Box component="span" sx={{ px: 0.75, overflow: "hidden", textOverflow: "ellipsis" }}>
         #{handle}
       </Box>
       <Box
@@ -635,14 +638,15 @@ function ComposerMentionToken({
           alignItems: "center",
           justifyContent: "center",
           alignSelf: "center",
-          ml: 0.5,
+          ml: -0.25,
+          mr: 0.5,
           p: 0,
           border: 0,
           bgcolor: "transparent",
           color: "inherit",
           cursor: "pointer",
           lineHeight: 0,
-          minWidth: 24,
+          minWidth: 18,
           minHeight: 24,
           position: "relative",
           zIndex: 1,
@@ -652,12 +656,12 @@ function ComposerMentionToken({
               position: "absolute",
               // Keep the 44px touch target inside the chip's trailing edge,
               // leaving the adjacent editor text unobstructed.
-              inset: "-10px 0 -10px -20px",
+              inset: "-10px 0 -10px -26px",
             },
           },
         }}
       >
-        <CloseIcon sx={{ fontSize: "1.05em" }} />
+        <CancelIcon sx={{ fontSize: 18 }} />
       </Box>
     </Box>
   );
@@ -1156,6 +1160,7 @@ function EditorBridge({
       const structuralNodes = mentionNodes.filter(node => node.isStructural());
       const selectionBeforeStructuralSync = $selectionOffsets();
       let structuralChanged = false;
+      let structuralMetadataChanged = false;
       if (structuralDestination) {
         const existing = structuralNodes[0];
         if (existing) {
@@ -1170,7 +1175,9 @@ function EditorBridge({
               ...structuralDestination,
               structural: true,
             });
-            structuralChanged = true;
+            if (current.agentId === structuralDestination.agentId && current.kind === structuralDestination.kind) {
+              structuralMetadataChanged = true;
+            } else structuralChanged = true;
           }
         } else {
           const paragraph = $getRoot().getFirstChild();
@@ -1202,6 +1209,10 @@ function EditorBridge({
         );
         return;
       }
+      if (structuralMetadataChanged) {
+        $addUpdateTag(SKIP_DOM_SELECTION_TAG);
+        return;
+      }
       const authoredMentionNodes = mentionNodes.filter(
         node => !node.isStructural(),
       );
@@ -1229,7 +1240,11 @@ function EditorBridge({
           lifecycleChanged = true;
         }
       }
-      if (lifecycleChanged) return;
+      if (lifecycleChanged) {
+        // Presentation refreshes can race native input before Lexical imports its selection.
+        $addUpdateTag(SKIP_DOM_SELECTION_TAG);
+        return;
+      }
       if (authoredMentionNodes.length !== desired.length) {
         const selection = $selectionOffsets();
         $resetCanonicalDocument(
@@ -1240,6 +1255,8 @@ function EditorBridge({
         );
         return;
       }
+      let metadataChanged = false;
+      let contentChanged = false;
       for (let index = 0; index < authoredMentionNodes.length; index += 1) {
         const node = authoredMentionNodes[index]!;
         const descriptor = desired[index]!;
@@ -1252,8 +1269,11 @@ function EditorBridge({
           current.kind !== descriptor.kind
         ) {
           node.reconcile(descriptor);
+          if (current.handle === descriptor.handle) metadataChanged = true;
+          else contentChanged = true;
         }
       }
+      if (metadataChanged && !contentChanged) $addUpdateTag(SKIP_DOM_SELECTION_TAG);
     });
   }, [editor, mentionBindings, mentionDescriptors, structuralDestination]);
 
@@ -1567,6 +1587,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
     >
     <LexicalComposer initialConfig={initialConfig}>
       <Box
+        onKeyDownCapture={event => {
+          // Tag buttons retain native activation instead of triggering editor Send/Backspace.
+          if (["Enter", " ", "Backspace", "Delete"].includes(event.key) &&
+              (event.target as Element).closest("button")) event.stopPropagation();
+        }}
         sx={{
           position: "relative",
           minWidth: 0,
