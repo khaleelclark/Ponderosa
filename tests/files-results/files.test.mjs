@@ -12,6 +12,28 @@ const options = { timeout: 30000 };
 const exec = promisify(execFile);
 const upload = async (f, agent, name, bytes, media = 'text/plain') => f.ok(await f.api('POST', `/api/agents/${agent.id}/attachments`, bytes, { 'content-type': 'application/octet-stream', 'x-ponderosa-filename': name, 'x-ponderosa-media-type': media }));
 
+test('F15: real Agent, Chat and draft uploads retain Unicode and literal percent names through storage and restart', options, t => withFixture(t, async f => {
+  const chat = await f.createChat('Filename round trips'), agent = await f.createIdleAgent(chat, 'Filename reader');
+  const ownerId = 'filename-browser', body = Buffer.from('Exact filename fixture bytes'), uploaded = [];
+  for (const url of [`/api/agents/${agent.id}/attachments`, `/api/conversations/${chat.id}/attachments`, `/api/conversations/${chat.id}/draft-attachments`]) {
+    for (const name of ['plain.txt', 'space in name.txt', '100% ready %20 literal.txt', '普通の資料—résumé📎.txt']) {
+      const asset = f.ok(await f.api('POST', url, body, {
+        'content-type': 'application/x-ponderosa-attachment', 'x-ponderosa-media-type': 'text/plain',
+        'x-ponderosa-filename': encodeURIComponent(name), 'x-ponderosa-draft-owner': ownerId,
+      }));
+      assert.equal(asset.name, name);
+      uploaded.push({ asset, name });
+    }
+  }
+  await f.reopen();
+  for (const { asset, name } of uploaded) {
+    const download = await f.api('GET', asset.downloadUrl);
+    f.ok(download);
+    assert.deepEqual(download.rawBody, body);
+    assert.ok(download.headers['content-disposition'].includes(encodeURIComponent(name)), 'Stored download name changed');
+  }
+}));
+
 test('check 8: multi-recipient DM supplies only each recipient’s explicitly selected attachment bytes', options, t => withFixture(t, async f => {
   const chat = await f.createChat('Recipient files'), a = await f.createIdleAgent(chat, 'Reader A'), b = await f.createIdleAgent(chat, 'Reader B'), unrelated = await f.createIdleAgent(chat, 'Unrelated');
   const contents = [a, b].map(() => `Private file ${randomUUID()}`), assets = [];
