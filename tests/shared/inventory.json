@@ -774,6 +774,14 @@
       "moduleBase": "packages/agents/package.json",
       "requirements": "Node24, built better-sqlite3; owned cache copies only; intentional Linux SIGBUS control in a bounded child with core dumps disabled; no provider account",
       "origin": "F04 native image isolation from writable build cache before packaging and installed verification"
+    },
+    {
+      "path": "tests/providers/rpc-boundaries.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "packages/engines/package.json",
+      "requirements": "Node24, built engines/native-host; owned fake Node children only; no provider account",
+      "origin": "F06 malformed and late RPC containment; F07 bounded discovery output with explicit overflow and runtime controls"
     }
   ],
   "retainedReleasePayload": [
