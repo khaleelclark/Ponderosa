@@ -33,7 +33,7 @@ export function ChatLiveBanner({ children }: { children?: ReactNode }): JSX.Elem
         variant="caption"
         component="span"
         color="text.secondary"
-        sx={{ fontWeight: 700, lineHeight: 1.35, textAlign: "center" }}
+        sx={{ minWidth: 0, overflowWrap: "anywhere", fontWeight: 700, lineHeight: 1.35, textAlign: "center" }}
       >
         {children}
       </Typography>

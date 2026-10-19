@@ -5,7 +5,7 @@ import { ScrollableMessageTable } from "./ScrollableMessageTable";
 
 const tones = { neutral: "default", positive: "success", caution: "warning", negative: "error" } as const;
 const axisLabel = (value: number) => String(value).length > 7 ? value.toExponential(1) : String(value);
-const shortLabel = (value: string) => [...value].slice(0, 20).join("") + ([...value].length > 20 ? "…" : "");
+const shortLabel = (value: string) => [...value].slice(0, 12).join("") + ([...value].length > 12 ? "…" : "");
 
 export function RichMessageDisplay({ block }: { block: RichMessageBlock }): JSX.Element {
   let content: ReactNode;
@@ -52,16 +52,16 @@ export function RichMessageDisplay({ block }: { block: RichMessageBlock }): JSX.
             <Box sx={{ height: "100%", width: `${max === 0 ? 0 : point.value / max * 100}%`, bgcolor: "primary.main" }} />
           </Box>
         </Box>)}
-      </Stack> : <Box sx={{ color: "primary.main" }}>
-        <svg viewBox="0 0 480 180" role="img" aria-label={`${block.title} (${block.unit}); values follow the table order`} style={{ display: "block", width: "100%", height: "auto" }}>
+      </Stack> : <Box role="region" tabIndex={0} aria-label={`${block.title} chart`} sx={{ color: "primary.main", overflowX: "auto", overscrollBehaviorX: "contain" }}>
+        <svg viewBox="0 0 480 180" role="img" aria-label={`${block.title} (${block.unit}); values follow the table order`} style={{ display: "block", width: "100%", minWidth: 480, height: "auto" }}>
           <title>{`${block.title} (${block.unit})`}</title>
           <path d="M72 16V144H464" stroke="currentColor" opacity="0.3" fill="none" />
-          <text x="0" y="24" fill="currentColor" fontSize="11">{axisLabel(max)}</text>
-          {span > 0 ? <text x="0" y="144" fill="currentColor" fontSize="11">{axisLabel(min)}</text> : null}
+          <text x="0" y="24" fill="currentColor" fontSize="12">{axisLabel(max)}</text>
+          {span > 0 ? <text x="0" y="144" fill="currentColor" fontSize="12">{axisLabel(min)}</text> : null}
           <polyline points={coordinates.map(point => `${point.x},${point.y}`).join(" ")} fill="none" stroke="currentColor" strokeWidth="2" />
           {coordinates.map((point, index) => <circle key={index} cx={point.x} cy={point.y} r="3" fill="currentColor" />)}
-          <text x="72" y="172" fill="currentColor" fontSize="11">{shortLabel(points[0]!.label)}</text>
-          {points.length > 1 ? <text x="464" y="172" textAnchor="end" fill="currentColor" fontSize="11">{shortLabel(points.at(-1)!.label)}</text> : null}
+          <text x="72" y="172" fill="currentColor" fontSize="12">{shortLabel(points[0]!.label)}</text>
+          {points.length > 1 ? <text x="464" y="172" textAnchor="end" fill="currentColor" fontSize="12">{shortLabel(points.at(-1)!.label)}</text> : null}
         </svg>
       </Box>}
       {block.type === "line" ? <ScrollableMessageTable aria-label={`${block.title} data`}><thead><tr><th scope="col">Label</th><th scope="col" style={{ textAlign: "right" }}>Value ({block.unit})</th></tr></thead>
