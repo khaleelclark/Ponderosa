@@ -822,6 +822,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native server/engine workspaces; actual SQLite/HTTP/MCP bridge; fake Claude executable POSIX whitespace-free Node only; no provider account",
       "origin": "Q12: Claude history dispatch and frozen canonical scope qualification"
+    },
+    {
+      "path": "tests/chats/receipt-batching.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; admitted in-memory SQLite and built agents; no provider account",
+      "origin": "UI004/UI008 bounded injection membership and exact receipt equivalence"
     }
   ],
   "retainedReleasePayload": [

@@ -19,6 +19,7 @@ import {
   mergeOperationalEvents,
   type MainTimelineEntry,
 } from "./ConversationView.helpers";
+import { useMessageDeliveryReceipts } from "./useMessageDeliveryReceipts";
 import type { ConversationActiveView } from "./useConversationActiveView";
 
 interface OlderMainHistory {
@@ -59,7 +60,7 @@ export function useConversationHistory(
 
   // Live query updates can briefly leave sparse entries in cached collections.
   // Compact at the page boundary so historical chats remain renderable.
-  const messages = useMemo(
+  const retainedMessages = useMemo(
     () =>
       mergeConversationMessages(
         olderMain?.messages ?? [],
@@ -67,6 +68,7 @@ export function useConversationHistory(
       ),
     [detailQuery.data?.messages, olderMain?.messages],
   );
+  const messages = useMessageDeliveryReceipts(retainedMessages, conversationId, activeView === "main");
   const agents = useMemo(
     () => compactDefined(detailQuery.data?.agents ?? []),
     [detailQuery.data?.agents],
@@ -117,7 +119,7 @@ export function useConversationHistory(
         left.at.localeCompare(right.at),
     );
   }, [decisionEvents, messages]);
-  const collaborationMessages = useMemo(
+  const retainedCollaborationMessages = useMemo(
     () =>
       mergeConversationMessages(
         olderCollaboration?.messages ?? [],
@@ -125,6 +127,7 @@ export function useConversationHistory(
       ),
     [collaborationQuery.data?.messages, olderCollaboration?.messages],
   );
+  const collaborationMessages = useMessageDeliveryReceipts(retainedCollaborationMessages, conversationId, activeView === "collaboration");
   const operationalEvents = useMemo(
     () =>
       mergeOperationalEvents(

@@ -627,9 +627,11 @@ export const realApi = {
   activeMessageDeliveryReceipts(
     conversationId: string,
     request: ActiveMessageDeliveryReceiptsRequest,
+    signal?: AbortSignal,
   ): Promise<ActiveMessageDeliveryReceiptsDto> {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/message-delivery-receipts`, {
       method: "POST",
+      signal,
       body: JSON.stringify(request),
     });
   },

@@ -817,6 +817,7 @@ export function startProviderRunExecution(
                 : undefined),
             });
             v3PromptInjected = true;
+            publishMessageDeliveryChanged(agent.id);
             if (continuationHandoff && !continuationHandoffConsumed && !replacementCandidate) {
               continuationHandoffConsumed = store.consumeContinuationHandoff(
                 agent.id,

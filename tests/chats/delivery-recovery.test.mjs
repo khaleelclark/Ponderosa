@@ -6,6 +6,8 @@ import vm from 'node:vm';
 import '../shared/web-typescript-loader.mjs';
 import { runQueuedMessageCommand } from '../../apps/web/src/components/queuedMessageCommandAttempts.ts';
 import * as chatState from '../../apps/web/src/chatState.ts';
+import { messageDeliveryPhase } from '../../apps/web/src/components/messageDeliveryPhase.ts';
+import { projectMessageDeliveryReceipts } from '../../apps/web/src/components/messageDeliveryReceipts.ts';
 import * as tracker from '../../apps/web/src/components/activeOperationTracker.ts';
 import { ApiRequestError } from '../../apps/web/src/api/types.ts';
 import { queryKeys } from '../../apps/web/src/queryKeys.ts';
@@ -19,6 +21,7 @@ function load(relative, imports = {}, globals = {}) {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
   }).outputText, { exports, Error, Event, ...globals, require: name => {
     if (name in imports) return imports[name];
+    if (name === './messageDeliveryPhase') return { messageDeliveryPhase };
     if (name === '@mui/material') return mui;
     if (name === '@mui/material/styles') return { alpha: value => value };
     if (name.startsWith('@mui/icons-material/')) return { __esModule: true, default: widget('Icon') };
@@ -126,4 +129,96 @@ test('Q01 mounted queue-edit retries retain their exact key and a stale completi
   const newer = requests.at(-1).idempotencyKey; release(); await old;
   await runQueuedMessageCommand(registry, edit('Newer edit'), () => 'edit-' + ++id, async body => requests.push(body));
   assert.equal(requests.at(-1).idempotencyKey, newer); assert.equal(registry.size, 0);
+});
+
+test('UI004 exact receipts replace retry lineages, clear authorized empties and preserve unchanged rows', () => {
+  const old = { activationId: 'old', targetAgentId: 'a', state: 'failed' };
+  const fresh = { ...old, activationId: 'retry', state: 'queued' };
+  const sources = [
+    { communicationEventId: 'retained', text: 'unchanged authored text', deliveryReceipts: [old] },
+    { communicationEventId: 'empty', deliveryReceipts: [old] },
+    { communicationEventId: 'not-returned', deliveryReceipts: [old] },
+    { communicationEventId: 'same', deliveryReceipts: [fresh] },
+  ];
+  const result = projectMessageDeliveryReceipts(sources, [
+    { communicationEventId: 'retained', deliveryReceipts: [fresh] },
+    { communicationEventId: 'empty', deliveryReceipts: [] },
+    { communicationEventId: 'same', deliveryReceipts: [{ ...fresh }] },
+  ]);
+  assert.deepEqual(result[0].deliveryReceipts, [fresh]);
+  assert.equal(result[0].text, sources[0].text);
+  assert.deepEqual(result[1].deliveryReceipts, []);
+  assert.equal(result[2], sources[2]); assert.equal(result[3], sources[3]);
+  assert.deepEqual(sources[0].deliveryReceipts, [old], 'Canonical paginated data is not mutated');
+});
+test('UI004 routine phases require this exact acknowledged turn, preserving terminal uncertainty', () => {
+  for (const state of ['queued', 'retrying', 'steering']) assert.equal(messageDeliveryPhase({ state }), 'Waiting');
+  for (const state of ['preparing', 'started']) assert.equal(messageDeliveryPhase({ state }), 'Starting');
+  const acknowledged = { state: 'delivered', injectionKind: 'turn', providerAcknowledged: true, injectionId: 'i', executionId: 'e' };
+  assert.equal(messageDeliveryPhase(acknowledged), 'Working');
+  for (const field of ['providerAcknowledged', 'injectionId', 'executionId']) assert.equal(messageDeliveryPhase({ ...acknowledged, [field]: undefined }), undefined);
+  assert.equal(messageDeliveryPhase({ ...acknowledged, injectionKind: 'steer' }), undefined);
+  for (const state of ['processed', 'cancelled', 'run_unconfirmed', 'recovered', 'failed', 'unconfirmed']) assert.equal(messageDeliveryPhase({ ...acknowledged, state }), undefined);
+});
+test('UI004 footer never borrows an earlier busy Run for a later queued message', () => {
+  const h = hooks(), module = load('components/ConversationComposerStatus.tsx', {
+    react: h.react, '../time': { formatExecutionElapsed: () => '0:01' },
+    './chat/ChatLiveBanner': { ChatLiveBanner: mui.Box },
+  });
+  const props = { agents: [{ id: 'a', title: 'Reader' }], healthByAgentId: new Map([['a', { runtimeActivity: { executionId: 'earlier', startedAt: '2026-10-19T00:00:00Z' } }]]) };
+  const message = deliveryReceipts => ({ role: 'user', deliveryReceipts });
+  const active = { activationId: 'old', targetAgentId: 'a', state: 'delivered', injectionKind: 'turn', providerAcknowledged: true, injectionId: 'i', executionId: 'earlier' };
+  const render = messages => h.render(() => module.MasterRespondingIndicator({ ...props, messages }));
+  assert.match(text(render([message([active])])), /Working/u);
+  assert.match(text(render([message([active]), message([{ ...active, activationId: 'later', state: 'queued', executionId: undefined }])])), /Waiting/u);
+  assert.doesNotMatch(text(render([message([active]), message([{ ...active, activationId: 'later', state: 'queued', executionId: undefined }])])), /Working/u);
+  assert.equal(render([message([{ ...active, executionId: 'different' }])]), null);
+  assert.equal(render([message([{ ...active, state: 'processed' }])]), null);
+});
+
+test('UI004 another receipt changing cannot rerender an unchanged retained row or roll back newer history', () => {
+  const receipt = (activationId, state, updatedAt) => ({ activationId, targetAgentId: 'a', state, updatedAt });
+  const sources = ['a', 'b'].map(id => ({ communicationEventId: id, text: id, deliveryReceipts: [receipt(id, 'queued', '2026-10-19T00:00:00Z')] }));
+  const item = (id, state, at) => ({ communicationEventId: id, deliveryReceipts: [receipt(id, state, at)] });
+  const first = projectMessageDeliveryReceipts(sources, [item('a', 'delivered', '2026-10-19T00:00:01Z'), item('b', 'queued', '2026-10-19T00:00:00Z')]);
+  const next = projectMessageDeliveryReceipts(sources, [item('a', 'delivered', '2026-10-19T00:00:01Z'), item('b', 'delivered', '2026-10-19T00:00:02Z')], first);
+  assert.equal(next[0], first[0]); assert.notEqual(next[1], first[1]);
+  const newer = { ...sources[0], deliveryReceipts: [receipt('a', 'processed', '2026-10-19T00:00:03Z')] };
+  assert.equal(projectMessageDeliveryReceipts([newer], [item('a', 'delivered', '2026-10-19T00:00:01Z')])[0], newer);
+});
+
+test('UI004 exact freshness is per recipient, not the latest timestamp across the message', () => {
+  const receipt = (targetAgentId, state, second) => ({ activationId: targetAgentId, targetAgentId, state, updatedAt: `2026-10-19T00:00:${second}Z` });
+  const source = { communicationEventId: 'mixed', deliveryReceipts: [receipt('a', 'processed', '30'), receipt('b', 'delivered', '40')] };
+  const result = projectMessageDeliveryReceipts([source], [{ communicationEventId: 'mixed', deliveryReceipts: [receipt('a', 'queued', '10'), receipt('b', 'delivered', '40')] }]);
+  assert.equal(result[0], source);
+});
+
+test('UI004 exact reads keep historical scopes, bound batches, poll stopping, and release aborted reads', async () => {
+  const h = hooks(); let queries = [], calls = 0;
+  const module = load('components/useMessageDeliveryReceipts.ts', {
+    react: h.react, '@tanstack/react-query': { useQueries: options => { queries = options.queries; return []; } },
+    './messageDeliveryReceipts': { projectMessageDeliveryReceipts }, '../queryKeys': { queryKeys },
+    '../api': { api: { activeMessageDeliveryReceipts: (_id, _body, signal) => {
+      if (++calls > 1) return Promise.resolve({ items: [] });
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    } } },
+  }, { AbortSignal });
+  const sources = Array.from({ length: 1001 }, (_, i) => ({ conversationId: 'historical', communicationEventId: String(i) }));
+  sources.push({ source: { conversationId: 'global-source' }, communicationEventId: 'global' });
+  h.render(() => module.useMessageDeliveryReceipts(sources, 'current-owner', false));
+  assert.equal(queries.length, 3); assert.ok(queries.every(query => query.enabled === false));
+  assert.deepEqual(Array.from(queries, query => query.queryKey[1]), ['historical', 'historical', 'global-source']);
+  assert.ok(queries.every(query => query.queryKey[2].split('\0').length <= 1000));
+  const interval = receipts => queries[0].refetchInterval({ state: { data: { items: [{ deliveryReceipts: receipts }] } } });
+  assert.equal(interval([{ state: 'processed' }]), false);
+  assert.equal(interval([{ state: 'cancelled', runStopState: 'stopping' }]), 5000);
+  assert.equal(interval([{ state: 'queued' }]), 5000);
+  const controller = new AbortController(), next = new AbortController();
+  const first = queries[0].queryFn({ signal: controller.signal });
+  await new Promise(setImmediate);
+  const second = queries[1].queryFn({ signal: next.signal });
+  assert.equal(calls, 1);
+  const rejected = assert.rejects(first, { name: 'AbortError' }); controller.abort(); await rejected;
+  await second; assert.equal(calls, 2);
 });

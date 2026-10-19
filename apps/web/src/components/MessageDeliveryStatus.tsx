@@ -11,6 +11,8 @@ import { api } from "../api";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
 
+import { messageDeliveryPhase } from "./messageDeliveryPhase";
+
 function runtimeLabel(receipt: MessageDeliveryReceiptDto): string | undefined {
   const runtime = receipt.runtime;
   if (!runtime) return undefined;
@@ -65,6 +67,8 @@ function deliveryLabel(
 }
 
 function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto): string {
+  const phase = messageDeliveryPhase(receipt);
+  if (phase) return phase;
   const waiting = steeringWaitLabel(receipt);
   if (waiting) return waiting.compact;
   switch (receipt.state) {
@@ -104,6 +108,7 @@ function steeringWaitLabel(receipt: MessageDeliveryReceiptDto): { compact: strin
 }
 
 function severity(receipt: MessageDeliveryReceiptDto): "success" | "info" | "warning" | "error" {
+  if (messageDeliveryPhase(receipt) === "Working") return "info";
   if (receipt.state === "delivered" || receipt.state === "processed" || receipt.state === "recovered") return "success";
   if (receipt.state === "retrying" || receipt.state === "run_unconfirmed" || receipt.state === "unconfirmed" || receipt.state === "waiting_for_run" || receipt.state === "recovery_queued" || receipt.state === "recovering" || (receipt.state === "cancelled" && receipt.providerAcknowledged)) return "warning";
   if (receipt.state === "undelivered" || receipt.state === "retry_exhausted" || receipt.state === "failed") return "error";

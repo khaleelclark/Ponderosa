@@ -536,41 +536,39 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         recipientCurrentlyAuthorized,
       });
     }
-    for (const [communicationEventId, latestByRecipient] of latestByCommunication) {
-      const receipts = [...latestByRecipient.values()].map(({
-        activation,
-        attemptCount,
-        latestAttemptAt,
-        requiredReplyExhausted,
-        recipientCurrentlyAuthorized,
-      }) => {
-        const injection = this.sqlite.prepare(`
-          SELECT injection.id, injection.run_id, injection.kind, injection.state, injection.updated_at, injection.acknowledged_at,
-            (SELECT operation.state FROM provider_operation_outbox operation
-              WHERE operation.run_id = injection.run_id AND operation.operation = 'interrupt'
-                AND operation.idempotency_key LIKE 'cancel:%'
-              ORDER BY operation.id DESC LIMIT 1) AS run_stop_operation_state,
-            (
-              SELECT provider.execution_id
-              FROM provider_inputs provider
-              WHERE provider.scheduler_run_id = injection.run_id
-              ORDER BY provider.created_at DESC, provider.execution_id DESC
-              LIMIT 1
-            ) AS execution_id
+    // One membership scan per batch; enrich only the latest injection for each activation.
+    const latestInjections = (ids: string[]) => {
+      const rows = ids.length ? this.sqlite.prepare(`
+        WITH matches AS MATERIALIZED (
+          SELECT member.value AS activation_id, injection.id, injection.run_id, injection.kind,
+            injection.state, injection.updated_at, injection.acknowledged_at,
+            ROW_NUMBER() OVER (PARTITION BY member.value
+              ORDER BY injection.created_at DESC, injection.sequence DESC) AS receipt_rank
           FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
-          WHERE member.value = ?
-          ORDER BY injection.created_at DESC, injection.sequence DESC LIMIT 1
-        `).get(activation.id) as {
-          id: string;
-          run_id: string;
-          acknowledged_at: string | null;
-          kind: "turn" | "steer";
-          state: string;
-          updated_at: string;
-          execution_id: string | null;
-          run_stop_operation_state: string | null;
-        } | undefined;
-        const recovery = injection
+          WHERE member.value IN (SELECT value FROM json_each(?))
+        )
+        SELECT activation_id, id, run_id, kind, state, updated_at, acknowledged_at,
+          (SELECT operation.state FROM provider_operation_outbox operation
+            WHERE operation.run_id = matches.run_id AND operation.operation = 'interrupt'
+              AND operation.idempotency_key LIKE 'cancel:%'
+            ORDER BY operation.id DESC LIMIT 1) AS run_stop_operation_state,
+          (SELECT provider.execution_id FROM provider_inputs provider
+            WHERE provider.scheduler_run_id = matches.run_id
+            ORDER BY provider.created_at DESC, provider.execution_id DESC LIMIT 1) AS execution_id
+        FROM matches WHERE receipt_rank = 1
+      `).all(JSON.stringify(ids)) as Array<{
+        activation_id: string; id: string; run_id: string; kind: "turn" | "steer";
+        state: string; updated_at: string; acknowledged_at: string | null;
+        execution_id: string | null; run_stop_operation_state: string | null;
+      }> : [];
+      return new Map(rows.map(row => [row.activation_id, row]));
+    };
+    const selected = [...latestByCommunication.values()].flatMap(recipients =>
+      [...recipients.values()].map(({ activation }) => activation));
+    const injections = latestInjections(selected.map(activation => activation.id));
+    const recoveries = new Map(selected.map(activation => {
+      const injection = injections.get(activation.id);
+      const recovery = injection
           ? this.sqlite.prepare(`
             SELECT recovery.state, recovery.recover_at, recovery.updated_at,
               mapping.recovery_activation_id, recovery_activation.state AS recovery_activation_state
@@ -588,25 +586,22 @@ export class CoordinationV3RuntimeCommunicationReadModel {
             recovery_activation_state: string | null;
           } | undefined
           : undefined;
+      return [activation.id, recovery] as const;
+    }));
+    const recoveryInjections = latestInjections([...recoveries.values()].flatMap(recovery =>
+      recovery?.recovery_activation_id ? [recovery.recovery_activation_id] : []));
+    for (const [communicationEventId, latestByRecipient] of latestByCommunication) {
+      const receipts = [...latestByRecipient.values()].map(({
+        activation,
+        attemptCount,
+        latestAttemptAt,
+        requiredReplyExhausted,
+        recipientCurrentlyAuthorized,
+      }) => {
+        const injection = injections.get(activation.id);
+        const recovery = recoveries.get(activation.id);
         const recoveryInjection = recovery?.recovery_activation_id
-          ? this.sqlite.prepare(`
-            SELECT injection.updated_at,
-              (
-                SELECT provider.execution_id
-                FROM provider_inputs provider
-                WHERE provider.scheduler_run_id = injection.run_id
-                ORDER BY provider.created_at DESC, provider.execution_id DESC
-                LIMIT 1
-              ) AS execution_id
-            FROM scheduler_prompt_injections injection,
-              json_each(injection.activation_ids_json) member
-            WHERE member.value = ?
-            ORDER BY injection.created_at DESC, injection.sequence DESC LIMIT 1
-          `).get(recovery.recovery_activation_id) as {
-            updated_at: string;
-            execution_id: string | null;
-          } | undefined
-          : undefined;
+          ? recoveryInjections.get(recovery.recovery_activation_id) : undefined;
         let state: MessageDeliveryReceiptDto["state"];
         if (requiredReplyExhausted) state = "retry_exhausted";
         else if (activation.state === "outcome_unknown") {
