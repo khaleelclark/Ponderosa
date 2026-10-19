@@ -605,7 +605,7 @@ function ComposerMentionToken({
         pl: 0,
         pr: 0,
         py: 0,
-        height: 26,
+        height: 22,
         borderRadius: "8px",
         bgcolor: valid ? "action.selected" : "error.dark",
         color: valid ? "primary.main" : "error.contrastText",
@@ -615,7 +615,7 @@ function ComposerMentionToken({
         fontSize: 16,
         fontWeight: 700,
         lineHeight: "22px",
-        verticalAlign: "baseline",
+        verticalAlign: "top",
         whiteSpace: "nowrap",
       }}
     >
@@ -647,16 +647,16 @@ function ComposerMentionToken({
           cursor: "pointer",
           lineHeight: 0,
           minWidth: 18,
-          minHeight: 24,
+          minHeight: 22,
           position: "relative",
           zIndex: 1,
           "@media (pointer: coarse)": {
             "&::before": {
               content: '""',
               position: "absolute",
-              // Keep the 44px touch target inside the chip's trailing edge,
-              // leaving the adjacent editor text unobstructed.
-              inset: "-10px 0 -10px -26px",
+              // Keep a 44×24px target behind the trailing label without
+              // intercepting the visible remove icon on adjacent wrapped lines.
+              inset: "-1px 0 -1px -26px",
             },
           },
         }}
@@ -1596,7 +1596,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
           position: "relative",
           minWidth: 0,
           "& .composer-editor-input": {
-            minHeight: leadingAgentChip ? { xs: 44, sm: 22 } : 22,
+            minHeight: 22,
             maxHeight: 110,
             overflowY: "auto",
             px: 0.25,

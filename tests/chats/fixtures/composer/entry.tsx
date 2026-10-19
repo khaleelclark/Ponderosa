@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { CssBaseline, ThemeProvider, createTheme } from "@mui/material";
+import { CssBaseline, ThemeProvider } from "@mui/material";
 import { ComposerEditor, type ComposerEditorHandle } from "../../../../apps/web/src/components/chat/ComposerEditor";
+import { createPonderosaTheme } from "../../../../apps/web/src/theme";
 
 // Native-input regression: type t, then hanks. Metadata must overlap the first
 // input without moving its caret; output must end in thanks. Also check a native
@@ -9,7 +10,7 @@ import { ComposerEditor, type ComposerEditorHandle } from "../../../../apps/web/
 const params = new URLSearchParams(location.search), mode = params.get("mode") ?? "authored";
 const structural = mode !== "authored", handle = "Bryce-Canyon", agentId = "fixture-agent";
 const handles = params.has("multiple") ? [handle, "Long-Agent-Name-For-Narrow-Composer-Ellipsis"] : [handle];
-const initial = structural ? "" : handles.map(handle => `#${handle} `).join("");
+const initial = params.get("text") ?? (structural ? "" : handles.map(handle => `#${handle} `).join(""));
 function App() {
   const [text, setText] = useState(initial), [metadata, setMetadata] = useState(0), [removed, setRemoved] = useState(false);
   const [output, setOutput] = useState(""), editor = useRef<ComposerEditorHandle>(null), sends = useRef(0);
@@ -24,7 +25,7 @@ function App() {
     document.addEventListener("input", refresh, true);
     return () => document.removeEventListener("input", refresh, true);
   }, []);
-  return <ThemeProvider theme={createTheme({ palette: { mode: params.get("theme") === "light" ? "light" : "dark" } })}>
+  return <ThemeProvider theme={createPonderosaTheme(params.get("theme") === "light" ? "light" : "dark")}>
     <CssBaseline /><div style={{ width: params.has("narrow") ? 320 : undefined }}>
     <p>Type t, then hanks. The recipient metadata changes during the first native input.</p>
     <input aria-label="Other focus target" />
@@ -44,6 +45,8 @@ function App() {
     <button onMouseDown={event => event.preventDefault()} onClick={() => setOutput(JSON.stringify({
       text: editor.current?.getCanonicalText(), sends: sends.current, selection: editor.current?.getSelectionOffsets(), metadata,
       dom: document.querySelector('[contenteditable="true"]')?.textContent,
+      geometry: [document.querySelector('[contenteditable="true"]'), document.querySelector('[contenteditable="true"] p'),
+        ...document.querySelectorAll('[data-composer-mention="true"]')].map(element => element?.getBoundingClientRect().toJSON()),
       activeElement: document.activeElement?.getAttribute("aria-label"),
     }))}>Inspect</button>
     <output aria-label="Regression result">{output}</output>
