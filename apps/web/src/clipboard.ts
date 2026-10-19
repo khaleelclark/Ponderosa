@@ -16,10 +16,12 @@ export async function copyText(text: string): Promise<void> {
   textarea.style.opacity = "0";
   textarea.style.pointerEvents = "none";
   document.body.appendChild(textarea);
-  textarea.select();
-  const copied = document.execCommand("copy");
-  textarea.remove();
-  if (!copied) throw new Error("Copy is unavailable in this browser");
+  try {
+    textarea.select();
+    if (!document.execCommand("copy")) throw new Error("Copy is unavailable in this browser");
+  } finally {
+    textarea.remove();
+  }
 }
 
 /**

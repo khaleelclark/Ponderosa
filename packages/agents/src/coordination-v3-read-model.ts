@@ -1295,7 +1295,7 @@ export class CoordinationV3ReadModel {
           WHERE COALESCE(activity.execution_id, json_extract(event.payload_json, '$.executionId')) = ?
           ORDER BY event.seq DESC
         `).all(row.agent_id, row.execution_id) as Array<{ type: string; created_at: string; status: string | null; reason: string | null }> : [];
-        const progressTypes = new Set(["session", "text", "reasoning", "command", "file_change", "test_result", "tool_call", "tool_result", "context_usage", "error", "browser_action", "browser_console", "browser_screenshot"]);
+        const progressTypes = new Set(["session", "text", "reasoning", "command", "file_change", "test_result", "tool_call", "tool_result", "context_usage", "error"]);
         const lastProgress = evidence.find(event => progressTypes.has(event.type));
         const terminal = evidence.find(event => event.type === "agent_lifecycle" &&
           ["completed", "failed", "cancelled", "interrupted"].includes(event.status ?? ""));
@@ -1319,8 +1319,9 @@ export class CoordinationV3ReadModel {
           ["Fence", row.fencing_token], ["Prompt injection", row.prompt_injection_state],
           ["Provider context", row.context_disposition], ["Prompt hash", row.prompt_hash],
           ["Provider session ID", row.provider_session_id],
-          ["Reply publication", publication?.created_at ?? "Not found in this bounded evidence window"],
-          ["Reply and Run state", publication && ["running", "leased"].includes(row.status)
+          ["User-facing reply publication", publication?.created_at ?? "Not found in this bounded evidence window"],
+          ["User-facing reply scope", "Broadcasts and Direct Messages to the user. Request handoffs are shown in Request lifecycle."],
+          ["User-facing reply and Run state", publication && ["running", "leased"].includes(row.status)
             ? "A reply was sent, but the Agent's Run is still active. Sending a reply does not confirm that all work has finished."
             : undefined],
           ["Last recorded provider progress", lastProgress ? `${lastProgress.created_at} (${lastProgress.type})` : "Not found in this bounded evidence window"],

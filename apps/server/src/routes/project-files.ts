@@ -198,6 +198,8 @@ export class ProjectFileAuthority {
         ".yaml": "text/yaml",
         ".yml": "text/yaml",
         ".log": "text/plain",
+        ".diff": "text/x-diff",
+        ".patch": "text/x-diff",
       } as Record<string, string>
     )[extension] ?? contentTypeForStatic(file.toLowerCase()).split(";", 1)[0]!;
   }
