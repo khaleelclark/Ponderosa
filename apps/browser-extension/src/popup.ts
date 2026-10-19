@@ -5,12 +5,13 @@ const disconnect = document.querySelector<HTMLButtonElement>("#disconnect")!;
 const pause = document.querySelector<HTMLButtonElement>("#pause")!;
 const resume = document.querySelector<HTMLButtonElement>("#resume")!;
 async function refresh() {
-  const result = await chrome.runtime.sendMessage({ action: "status" }) as { connected?: boolean; paused?: boolean; site?: string; error?: string };
+  const result = await chrome.runtime.sendMessage({ action: "status" }) as { connected?: boolean; paused?: boolean; revoked?: boolean; site?: string; error?: string };
   status.textContent = result.error ?? (result.connected ? result.paused ? `Paired with ${result.site}. Browser control is detached. Sign in or browse normally, then choose Resume browser access.` : `Connected to ${result.site}. Pause for manual control whenever you need it.` : "Connect this window whenever you want, including before signing in.");
   connect.disabled = Boolean(result.connected);
   disconnect.hidden = !result.connected;
-  pause.hidden = !result.connected || Boolean(result.paused);
-  resume.hidden = !result.connected || !result.paused;
+  disconnect.textContent = result.revoked ? "Retry disconnect" : "Disconnect";
+  pause.hidden = !result.connected || Boolean(result.paused) || Boolean(result.revoked);
+  resume.hidden = !result.connected || !result.paused || Boolean(result.revoked);
 }
 connect.addEventListener("click", async () => {
   try {
@@ -26,13 +27,13 @@ connect.addEventListener("click", async () => {
     await refresh();
   } catch (error) { status.textContent = error instanceof Error ? error.message : "Connection failed"; connect.disabled = false; }
 });
-disconnect.addEventListener("click", async () => { await chrome.runtime.sendMessage({ action: "disconnect" }); await refresh(); });
-for (const [button, action] of [[pause, "pause"], [resume, "resume"]] as const) button.addEventListener("click", async () => {
+for (const [button, action] of [[pause, "pause"], [resume, "resume"], [disconnect, "disconnect"]] as const) button.addEventListener("click", async () => {
   button.disabled = true;
   try {
     const result = await chrome.runtime.sendMessage({ action }) as { error?: string };
     await refresh();
     if (result.error) status.textContent = result.error;
-  } finally { button.disabled = false; }
+  } catch (error) { status.textContent = error instanceof Error ? error.message : "Connection failed"; }
+  finally { button.disabled = false; }
 });
 void refresh();
