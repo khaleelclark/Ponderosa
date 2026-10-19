@@ -1735,7 +1735,7 @@ export function AllChatView({
                               intent: item.communicationIntent,
                               fromAgent: !fromUser,
                               agentMentions: item.agentMentions,
-                            }));
+                            })).then(() => setNotice("Message copied."), () => setNotice("Message could not be copied. Check your browser clipboard permissions and try again."));
                           }}
                         >
                           <ContentCopyOutlinedIcon fontSize="inherit" />

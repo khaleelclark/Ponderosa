@@ -123,7 +123,9 @@ export function validMotionVideo(body: Buffer): boolean {
       if (depth === 0) {
         if (type === "ftyp" && offset !== 0) return false;
         if (offset === 0) {
-          if (type !== "ftyp" || size < header + 8 || (size - header) % 4 !== 0) return false;
+          // ponytail: match AVIF's 64 compatible-brand ceiling; qualify larger tables before widening.
+          const brandBytes = size - header - 8;
+          if (type !== "ftyp" || brandBytes < 0 || brandBytes > 64 * 4 || brandBytes % 4 !== 0) return false;
           for (let index = content; index + 4 <= offset + size; index += 4) {
             if (index === content + 4) continue; // minor version, not a brand
             if (["isom", "iso2", "mp41", "mp42", "avc1", "qt  "].includes(body.subarray(index, index + 4).toString("latin1"))) brand = true;

@@ -1,5 +1,6 @@
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import { Box, IconButton, Tooltip, Typography } from "@mui/material";
+import { copyText } from "../clipboard";
 import { useMutationNotification } from "./MutationNotifications";
 
 export function compactHostPath(path: string): string {
@@ -62,7 +63,7 @@ export function HostPathPresentation({
             size="small"
             aria-label={`Copy ${label.toLocaleLowerCase()}`}
             onClick={() => {
-              void navigator.clipboard.writeText(path).then(
+              void copyText(path).then(
                 () => notify({ key: `copy-path:${path}`, message: `${label} copied.` }),
                 () => notify({
                   key: `copy-path-error:${path}`,

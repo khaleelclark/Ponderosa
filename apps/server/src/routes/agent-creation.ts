@@ -50,6 +50,7 @@ interface AgentCreationRoutesContext {
   runtimeArtifactMetadata: CommunicationArtifactAuthority["runtimeArtifactMetadata"];
   projectCommunicationArtifact: CommunicationArtifactAuthority["projectCommunicationArtifact"];
   communicationArtifactAccess: CommunicationArtifactAuthority["communicationArtifactAccess"];
+  appendWorkspace(event: { type: "project_changed"; projectId: string; action: "updated" }): unknown;
   publish(agentId: string, stored: StoredLogEvent): void;
   publishMessageDeliveryChanged(agentId: string): void;
   notifyScheduler(): void;
@@ -66,6 +67,7 @@ export function registerAgentCreationRoutes(
 ): void {
   const {
     store,
+    appendWorkspace,
     coordinationV3,
     workspace,
     assets,
@@ -201,6 +203,7 @@ export function registerAgentCreationRoutes(
         }
         const recovered = await reconcileCommittedAgentCreation({
           store,
+          appendWorkspace,
           deletingAgentIds,
           operationId: creationOperation.id,
           projectId: request.params.id,
@@ -687,7 +690,13 @@ export function registerAgentCreationRoutes(
         });
       } finally {
         releaseAgentDelivery();
-        if (creationSettled) deletingAgentIds.delete(agent.id);
+        if (creationSettled) {
+          deletingAgentIds.delete(agent.id);
+          if (openingCommitted) {
+            try { appendWorkspace({ type: "project_changed", projectId: agent.projectId, action: "updated" }); }
+            catch { /* Committed metadata remains visible on refresh. */ }
+          }
+        }
       }
       } catch (error) {
         const current = store.getAgentCreationOperation(creationOperation.id);

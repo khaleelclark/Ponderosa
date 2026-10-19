@@ -12,6 +12,28 @@ const options = { timeout: 30000 };
 const exec = promisify(execFile);
 const upload = async (f, agent, name, bytes, media = 'text/plain') => f.ok(await f.api('POST', `/api/agents/${agent.id}/attachments`, bytes, { 'content-type': 'application/octet-stream', 'x-ponderosa-filename': name, 'x-ponderosa-media-type': media }));
 
+test('F15: real Agent, Chat and draft uploads retain Unicode and literal percent names through storage and restart', options, t => withFixture(t, async f => {
+  const chat = await f.createChat('Filename round trips'), agent = await f.createIdleAgent(chat, 'Filename reader');
+  const ownerId = 'filename-browser', body = Buffer.from('Exact filename fixture bytes'), uploaded = [];
+  for (const url of [`/api/agents/${agent.id}/attachments`, `/api/conversations/${chat.id}/attachments`, `/api/conversations/${chat.id}/draft-attachments`]) {
+    for (const name of ['plain.txt', 'space in name.txt', '100% ready %20 literal.txt', '普通の資料—résumé📎.txt']) {
+      const asset = f.ok(await f.api('POST', url, body, {
+        'content-type': 'application/x-ponderosa-attachment', 'x-ponderosa-media-type': 'text/plain',
+        'x-ponderosa-filename': encodeURIComponent(name), 'x-ponderosa-draft-owner': ownerId,
+      }));
+      assert.equal(asset.name, name);
+      uploaded.push({ asset, name });
+    }
+  }
+  await f.reopen();
+  for (const { asset, name } of uploaded) {
+    const download = await f.api('GET', asset.downloadUrl);
+    f.ok(download);
+    assert.deepEqual(download.rawBody, body);
+    assert.ok(download.headers['content-disposition'].includes(encodeURIComponent(name)), 'Stored download name changed');
+  }
+}));
+
 test('check 8: multi-recipient DM supplies only each recipient’s explicitly selected attachment bytes', options, t => withFixture(t, async f => {
   const chat = await f.createChat('Recipient files'), a = await f.createIdleAgent(chat, 'Reader A'), b = await f.createIdleAgent(chat, 'Reader B'), unrelated = await f.createIdleAgent(chat, 'Unrelated');
   const contents = [a, b].map(() => `Private file ${randomUUID()}`), assets = [];
@@ -106,4 +128,78 @@ test('checks 76, 77: separate Git copy isolates source edits and refuses dirty/u
   await writeFile(path.join(copy, 'tracked.txt'), 'Original source\n'); await rm(path.join(copy, 'untracked.txt'));
   const shared = f.ok(await f.api('PATCH', `/api/agents/${agent.id}`, { workingCopyMode: 'shared' })); assert.equal(shared.workingCopy.mode, 'shared');
   await assert.rejects(access(copy), { code: 'ENOENT' }); assert.equal(await readFile(path.join(source, 'tracked.txt'), 'utf8'), 'Original source\n');
+}));
+
+test('working-folder diff and patch previews expose safe UTF-8 text with exact downloads and bounded fallback', options, t => withFixture(t, async f => {
+  const chat = await f.createChat('Diff preview MIME');
+  const diff = '--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-before 😀\n+after 東京\n';
+  for (const [name, bytes, readable] of [
+    ['owned.diff', Buffer.from(diff), true], ['owned.PATCH', Buffer.from(diff), true], ['empty.diff', Buffer.alloc(0), true],
+    ['large.diff', Buffer.from('x'.repeat(2 * 1024 * 1024 + 10)), false], ['invalid.patch', Buffer.from([0xff, 0xfe, 0x80]), false],
+  ]) {
+    await writeFile(path.join(chat.workingDirectory, name), bytes);
+    const info = f.ok(await f.api('GET', `/api/projects/${chat.projectId}/workspace-files/view-info?conversationId=${chat.id}&path=${name}`));
+    assert.equal(info.mediaType, 'text/x-diff');
+    assert.equal(info.previewable, false, 'Diff text is rendered as data, not an active document');
+    assert.equal(info.text, readable ? bytes.toString('utf8') : undefined);
+    assert.equal(info.truncated, !readable);
+    assert.ok(info.downloadUrl);
+    assert.deepEqual((await f.api('GET', info.downloadUrl)).rawBody, bytes);
+  }
+}));
+
+const { validMotionVideo, validAvif } = await import('../../apps/server/dist/image-containers.js');
+const box = (type, content, wide = false) => {
+  const header = Buffer.alloc(wide ? 16 : 8); header.writeUInt32BE(wide ? 1 : header.length + content.length); header.write(type, 4, 'latin1');
+  if (wide) header.writeBigUInt64BE(BigInt(header.length + content.length), 8);
+  return Buffer.concat([header, content]);
+};
+function motionVideo(count, { wide = false, major = 'isom', last = 'isom' } = {}) {
+  const brands = Buffer.alloc(8 + count * 4, 'zzzz'); brands.write(major, 0, 'latin1'); brands.writeUInt32BE(0, 4);
+  if (count) brands.write(last, brands.length - 4, 'latin1');
+  const handler = Buffer.alloc(24); handler.write('vide', 8);
+  return Buffer.concat([box('ftyp', brands, wide), box('moov', box('trak', box('mdia', box('hdlr', handler)))), box('mdat', Buffer.from([1]))]);
+}
+function motionPhoto(jpeg, video) {
+  const xml = `<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:GCamera="http://ns.google.com/photos/1.0/camera/" GCamera:MicroVideo="1" GCamera:MicroVideoVersion="1" GCamera:MicroVideoOffset="${video.length}"/></rdf:RDF></x:xmpmeta>`;
+  const payload = Buffer.from('http://ns.adobe.com/xap/1.0/\0' + xml), segment = Buffer.alloc(4);
+  segment.writeUInt16BE(0xffe1); segment.writeUInt16BE(payload.length + 2, 2);
+  return Buffer.concat([jpeg.subarray(0, 2), segment, payload, jpeg.subarray(2), video]);
+}
+test('Motion Photo brand budget accepts ordinary, near and exact boundaries including extended headers', () => {
+  for (const wide of [false, true]) for (const count of [0, 1, 63, 64]) {
+    const body = motionVideo(count, { wide }), slice = body.subarray.bind(body); let brandReads = 0;
+    body.subarray = (start, end) => { if (start >= (wide ? 16 : 8) && start < (wide ? 16 : 8) + 8 + count * 4 && end - start === 4) brandReads++; return slice(start, end); };
+    assert.equal(validMotionVideo(body), true); assert.equal(brandReads, count + 1);
+    if (count) assert.equal(validMotionVideo(motionVideo(count, { wide, major: 'zzzz', last: 'qt  ' })), true);
+  }
+  assert.equal(validMotionVideo(motionVideo(64, { major: 'zzzz', last: 'zzzz' })), false);
+  const minorOnly = motionVideo(0, { major: 'zzzz' }); minorOnly.write('isom', 12);
+  assert.equal(validMotionVideo(minorOnly), false, 'Minor version cannot authorize a video brand');
+  const avif = Buffer.concat([box('ftyp', Buffer.from('avif\0\0\0\0avif', 'latin1')), box('meta', Buffer.alloc(4)), box('mdat', Buffer.from([1]))]);
+  assert.equal(validAvif(avif, 4096), true);
+});
+test('Motion Photo rejects excessive brands before scanning and retains malformed-container checks', () => {
+  for (const wide of [false, true]) for (const count of [65, 250_000]) {
+    const body = motionVideo(count, { wide }), slice = body.subarray.bind(body); let brandReads = 0;
+    body.subarray = (start, end) => { if (start >= (wide ? 16 : 8) && start < (wide ? 16 : 8) + 8 + count * 4 && end - start === 4) brandReads++; return slice(start, end); };
+    assert.equal(validMotionVideo(body), false); assert.equal(brandReads, 0, 'Oversized region was scanned before rejection');
+  }
+  const valid = motionVideo(64);
+  for (const malformed of [valid.subarray(0, -1), Buffer.concat([valid, Buffer.from([0])]), box('ftyp', Buffer.alloc(9)), box('ftyp', Buffer.alloc(4)), Buffer.concat([valid.subarray(0, 272), valid])]) {
+    assert.equal(validMotionVideo(malformed), false);
+  }
+  const tooLarge = Buffer.from(valid); tooLarge.writeUInt32BE(valid.length + 1); assert.equal(validMotionVideo(tooLarge), false);
+});
+test('Motion Photo upload retains accepted exact bytes and refuses an oversized brand table without harming prior uploads', options, t => withFixture(t, async f => {
+  const chat = await f.createChat('Motion brand boundary'), agent = await f.createIdleAgent(chat, 'Photo reader');
+  const jpeg = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#aabbcc' } }).jpeg().toBuffer();
+  const accepted = [];
+  for (const [name, body] of [['ordinary.jpg', jpeg], ['motion.jpg', motionPhoto(jpeg, motionVideo(64))]]) {
+    const asset = await upload(f, agent, name, body, 'image/jpeg');
+    assert.equal(asset.sha256, createHash('sha256').update(body).digest('hex')); accepted.push([asset, body]);
+  }
+  const refused = await f.api('POST', `/api/agents/${agent.id}/attachments`, motionPhoto(jpeg, motionVideo(65)), { 'content-type': 'application/octet-stream', 'x-ponderosa-filename': 'over-budget.jpg', 'x-ponderosa-media-type': 'image/jpeg' });
+  assert.equal(refused.status, 415);
+  for (const [asset, body] of accepted) assert.deepEqual((await f.api('GET', asset.downloadUrl)).rawBody, body);
 }));

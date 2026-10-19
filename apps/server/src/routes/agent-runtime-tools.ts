@@ -149,7 +149,10 @@ export function registerAgentRuntimeToolRoutes(
   } = context;
   // Keep the browser selected by a Run even after a shared control grant is revoked.
   const savedBrowserUsedByRun = new WeakSet<ActiveRun>();
-  const projectImportReceipt = (receipt: GeneratedArtifactImportReceipt) => {
+  const projectImportReceipt = (
+    receipt: GeneratedArtifactImportReceipt,
+    recoveryArtifactIds?: Map<string, Set<string>>,
+  ) => {
     const artifact = receipt.artifact;
     const project = store.getProject(artifact.projectId);
     const agent = store.getAgent(artifact.agentId);
@@ -162,10 +165,14 @@ export function registerAgentRuntimeToolRoutes(
       visibility: "project" as const,
       pinned: false,
     };
-    const existing = store.readEvents(agent.id).find((stored) =>
-      stored.event.type === "generated_artifact" &&
-      stored.event.artifactId === artifact.id
-    );
+    let artifactIds = recoveryArtifactIds?.get(agent.id);
+    if (recoveryArtifactIds && !artifactIds) {
+      artifactIds = new Set(store.readEvents(agent.id).flatMap(({ event }) =>
+        event.type === "generated_artifact" ? [event.artifactId] : []));
+      recoveryArtifactIds.set(agent.id, artifactIds);
+    }
+    const existing = artifactIds?.has(artifact.id) ?? store.readEvents(agent.id).some(({ event }) =>
+      event.type === "generated_artifact" && event.artifactId === artifact.id);
     let captured: StoredLogEvent | undefined;
     if (!existing) {
       captured = store.appendEvent(agent.id, {
@@ -181,14 +188,19 @@ export function registerAgentRuntimeToolRoutes(
         visibility: "project",
       }, artifact.createdAt);
     }
+    artifactIds?.add(artifact.id);
     store.recordProjectArtifact(catalogArtifact);
     assets.markGeneratedArtifactImportProjected(receipt);
     if (captured) publish(agent.id, captured);
     return catalogArtifact;
   };
 
-  for (const receipt of assets.pendingGeneratedArtifactImports()) {
-    projectImportReceipt(receipt);
+  // This synchronous recovery batch shares scans; later requests read current history.
+  {
+    const recoveryArtifactIds = new Map<string, Set<string>>();
+    for (const receipt of assets.pendingGeneratedArtifactImports()) {
+      projectImportReceipt(receipt, recoveryArtifactIds);
+    }
   }
 
 

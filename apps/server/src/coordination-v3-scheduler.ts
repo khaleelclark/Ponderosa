@@ -694,10 +694,13 @@ export function compileActivationPrompt(
     checkDeadline();
     return prompt;
   };
-  const inlinePrompt = renderPrompt(true);
   const hardLimit = options.maxUtf8Bytes ?? Number.POSITIVE_INFINITY;
+  // ponytail: verified buffers remain owned by preparation; avoid decoding/joining
+  // results that alone exceed the envelope. Streaming verification is a separate boundary.
+  const resultBytes = [...resultMaterials.values()].reduce((sum, material) => sum + material.byteLength, 0);
+  const inlinePrompt = resultBytes <= hardLimit ? renderPrompt(true) : undefined;
   checkDeadline();
-  if (Buffer.byteLength(inlinePrompt, "utf8") <= hardLimit) return { prompt: inlinePrompt };
+  if (inlinePrompt !== undefined && Buffer.byteLength(inlinePrompt, "utf8") <= hardLimit) return { prompt: inlinePrompt };
   if (!resultMaterials.size) {
     throw new ActivationPromptCompilationError({
       code: "activation_payload_too_large",
