@@ -39,6 +39,7 @@ type DirectoryQuery = {
   active?: string;
   outcomes?: string;
   summary?: string;
+  folders?: string;
 };
 
 type DirectorySort = ProjectSort;
@@ -59,6 +60,7 @@ type ResourceRow = {
   id: string;
   title: string;
   updated_at: string;
+  created_at?: string;
   project_id: string;
   agent_id: string | null;
   conversation_id: string | null;
@@ -318,7 +320,7 @@ function baseDirectoryQuery(
     }
     return {
       sql: `
-        SELECT c.id, c.title, c.updated_at, c.project_id,
+        SELECT c.id, c.title, c.created_at, c.updated_at, c.project_id,
           NULL AS agent_id, c.id AS conversation_id,
           NULL AS conversation_count, NULL AS recent_conversation_id,
           NULL AS recent_conversation_title,
@@ -624,7 +626,7 @@ export function registerWorkspaceDirectoryRoutes(
         .concat([...new Set(ids)].filter(id => !knownChats.has(id)).map(() => undefined)), confirmedAt,
     );
     return {
-      conversations: Object.fromEntries(body.conversationIds.map(id => [id, summarize([id])])),
+      conversations: Object.fromEntries(chatIds.map(id => [id, summarize([id])])),
       chatFolders: Object.fromEntries(body.chatFolders.map(folder => [folder.id, summarize(folder.conversationIds)])),
     } satisfies WorkspaceActivityProjectionDto;
   });
@@ -712,6 +714,10 @@ export function registerWorkspaceDirectoryRoutes(
     const workingAgentIds = health?.workingIds ?? [];
     const outcomeAgentIds = health?.outcomeIds ?? [];
 
+    const includeFolders = kind === "conversation" && request.query.folders === "true";
+    const folderIds = includeFolders
+      ? [...new Set((preferences.chatFolders ?? []).flatMap(folder => folder.conversationIds))].sort()
+      : [];
     const directorySettingsHash = createHash("sha256")
       .update(JSON.stringify({
         order: canonicalAgentView ? [] : order,
@@ -730,6 +736,7 @@ export function registerWorkspaceDirectoryRoutes(
       active: request.query.active ?? "",
       outcomes: request.query.outcomes ?? "",
       directorySettingsHash,
+      folders: includeFolders,
     });
 
     const base = baseDirectoryQuery(
@@ -764,7 +771,9 @@ export function registerWorkspaceDirectoryRoutes(
     const collection = sqliteCollectionRevision(sqlite, base.sql, base.params, generationKeys);
     const revision = kind === "agent"
       ? `${collection.revision}:health=${health?.revision ?? ""}`
-      : collection.revision;
+      : includeFolders
+        ? `${collection.revision}:folders=${createHash("sha256").update(JSON.stringify(folderIds)).digest("base64url")}`
+        : collection.revision;
     const total = collection.total;
 
     if (request.query.summary === "true") {
@@ -803,6 +812,15 @@ export function registerWorkspaceDirectoryRoutes(
           (rank.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
           (rank.get(right.id) ?? Number.MAX_SAFE_INTEGER),
       );
+    }
+
+    const folderRows: ResourceRow[] = [];
+    if (!request.query.cursor) {
+      for (let start = 0; start < folderIds.length; start += 200) {
+        const ids = folderIds.slice(start, start + 200);
+        folderRows.push(...sqlite.prepare(`SELECT * FROM (${base.sql}) resources
+          WHERE id IN (${placeholders(ids.length)})`).all(...base.params, ...ids) as ResourceRow[]);
+      }
     }
 
     const ordering = orderingSql(sort, order);
@@ -883,7 +901,7 @@ export function registerWorkspaceDirectoryRoutes(
       }
     }
 
-    const hydrate = (row: ResourceRow): WorkspaceDirectoryItemDto | undefined => {
+    const hydrate = (row: ResourceRow, folderSummary = false): WorkspaceDirectoryItemDto | undefined => {
       const project = getProject(row.project_id);
       if (!project) return undefined;
       if (kind === "project") {
@@ -907,7 +925,10 @@ export function registerWorkspaceDirectoryRoutes(
         } satisfies WorkspaceProjectDirectoryItemDto;
       }
       if (kind === "conversation") {
-        const conversation = context.store.getConversation(row.id);
+        const conversation = folderSummary ? {
+          id: row.id, projectId: row.project_id, title: row.title,
+          createdAt: row.created_at!, updatedAt: row.updated_at,
+        } : context.store.getConversation(row.id);
         if (!conversation) return undefined;
         return {
           kind: "conversation",
@@ -943,16 +964,19 @@ export function registerWorkspaceDirectoryRoutes(
     };
 
     const starredItems = starredRows
-      .map(hydrate)
+      .map(row => hydrate(row))
       .filter((item): item is WorkspaceDirectoryItemDto => Boolean(item));
     const items = pageRows
-      .map(hydrate)
+      .map(row => hydrate(row))
       .filter((item): item is WorkspaceDirectoryItemDto => Boolean(item));
     const lastRow = pageRows[pageRows.length - 1];
 
     return {
       kind,
       starredItems,
+      ...(includeFolders && !request.query.cursor ? {
+        folderItems: folderRows.map(row => hydrate(row, true)).filter((item): item is WorkspaceDirectoryItemDto => Boolean(item)),
+      } : {}),
       items,
       total,
       ...(health

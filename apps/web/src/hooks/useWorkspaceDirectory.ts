@@ -46,6 +46,8 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     enabled?: boolean;
     retainPreviousData?: boolean;
     summary?: boolean;
+    /** Sidebar-only complete saved folder metadata; general lists remain bounded. */
+    folders?: boolean;
     /** Isolate a bounded picker window from complete management collections. */
     maxPages?: number;
   },
@@ -70,7 +72,8 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     options.active,
     options.recentOutcomes,
     options.summary,
-  ), ...(options.maxPages === undefined ? [] : [options.maxPages])] as const;
+  ), ...(options.folders || options.maxPages !== undefined ? [options.maxPages] : []),
+    ...(options.folders ? ["folders"] : [])] as const;
   const query = useInfiniteQuery({
     queryKey,
     queryFn: ({ pageParam }) =>
@@ -85,6 +88,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
         active: options.active,
         outcomes: options.recentOutcomes,
         summary: options.summary,
+        folders: options.folders,
       }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (
