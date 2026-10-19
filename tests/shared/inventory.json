@@ -838,6 +838,22 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24, built core; actual Markdown/React renderer; no provider or browser account",
       "origin": "UI005/UI006 authored whitespace, bounded rich display contract and inert fallback regressions"
+    },
+    {
+      "path": "tests/workspace-navigation/folder-directory.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/core and native SQLite; in-memory directory route with no provider or listener",
+      "origin": "UI001 complete saved-folder projection, scoped filtering and membership cursor reset"
+    },
+    {
+      "path": "tests/workspace-navigation/folder-presentation.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built core; actual folder component and sidebar projection; no provider/browser account",
+      "origin": "UI001 sidebar-only completeness, freshness, ordering and preferences invalidation"
     }
   ],
   "retainedReleasePayload": [

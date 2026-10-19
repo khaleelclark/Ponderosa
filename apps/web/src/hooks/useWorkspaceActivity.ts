@@ -6,9 +6,11 @@ import { requestJson } from "../api/real";
 /** Scope changes cannot reuse a previous folder's counts. SSE directory
  * invalidation and a visible-only fallback refresh share this query identity. */
 export function useWorkspaceActivity(conversationIds: string[], folders: ChatFolderDto[], enabled: boolean) {
-  const ids = [...new Set(conversationIds)].sort();
   const groups = folders.map(folder => ({ id: folder.id, conversationIds: [...new Set(folder.conversationIds)].sort() }))
     .sort((a, b) => a.id.localeCompare(b.id));
+  // Folder health already traverses its members; reuse those per-Chat summaries.
+  const grouped = new Set(groups.flatMap(folder => folder.conversationIds));
+  const ids = [...new Set(conversationIds)].filter(id => !grouped.has(id)).sort();
   return useQuery({
     queryKey: [...queryKeys.workspaceDirectory.list("agent", "", undefined, JSON.stringify(ids), JSON.stringify(groups), undefined, undefined, undefined, true), "activity"],
     enabled,

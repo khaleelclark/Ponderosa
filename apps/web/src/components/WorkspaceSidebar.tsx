@@ -41,6 +41,7 @@ import { routeProjectId, type Route } from "../routing";
 import { useAgent, useConversation, useNotificationProjection } from "../hooks/queries";
 import {
   customOrderSeed,
+  sidebarChatItems,
   reorderStableIds,
   resourcePreferenceKey,
   sortWorkspaceResources,
@@ -199,6 +200,7 @@ export function WorkspaceSidebar({
   const chatDirectoryQuery =
     useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
       search: directorySearch,
+      folders: true,
       projectId: undefined,
       enabled: projectContext && showingChats && sidebarVisible,
     });
@@ -244,10 +246,10 @@ export function WorkspaceSidebar({
     : projectFallbackItems;
   const chatSort = workspaceResourceSort(preferences, "chat");
   const agentSort = workspaceResourceSort(preferences, "agent");
-  const chatItems = [
+  const chatItems = sidebarChatItems([
     ...sortWorkspaceResources(chatDirectory.starredItems, chatSort, preferences.chatOrder, item => item.conversation.id, item => item.conversation.title, item => item.conversation.updatedAt),
     ...chatDirectory.items,
-  ];
+  ], chatDirectoryQuery.data?.pages[0]?.folderItems ?? [], preferences.chatFolders ?? []);
   const agentItems = [
     ...sortWorkspaceResources(agentDirectory.starredItems, agentSort, preferences.agentOrder, item => item.agent.id, item => item.agent.title, item => item.agent.updatedAt),
     ...agentDirectory.items,
@@ -734,7 +736,8 @@ export function WorkspaceSidebar({
         minHeight: 0,
         minWidth: 0,
         borderRight: 1,
-        borderColor: "divider",
+        borderColor: resizing ? "primary.main" : "divider",
+        "&:has(> [role=separator]:hover), &:has(> [role=separator]:focus-visible)": { borderColor: "primary.main" },
         display: "grid",
         gridTemplateColumns: "minmax(0, 1fr)",
         gridTemplateRows: "auto auto minmax(0, 1fr) auto",
@@ -773,17 +776,6 @@ export function WorkspaceSidebar({
             width: 12,
             cursor: "col-resize",
             touchAction: "none",
-            "&::after": {
-              content: '""',
-              position: "absolute",
-              insetBlock: 0,
-              left: 5,
-              width: 2,
-              bgcolor: "transparent",
-            },
-            "&:hover::after, &:focus-visible::after": {
-              bgcolor: "primary.main",
-            },
           }}
         />
       ) : null}

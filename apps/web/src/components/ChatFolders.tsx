@@ -207,7 +207,6 @@ export function ChatFolders({ items, openItems = [], folders, sort, starredIds, 
       </Stack>
       {expanded ? <Box sx={{ pl: 1.5, borderLeft: 1, borderColor: "divider", ml: 1.5 }}>
         {members.map(row)}
-        {!filtering && members.length < folder.conversationIds.length ? <Typography sx={{ p: 1 }} variant="caption" color="text.secondary">More chats in this folder may appear as you load the list.</Typography> : null}
       </Box> : null}
     </Box>;
   };

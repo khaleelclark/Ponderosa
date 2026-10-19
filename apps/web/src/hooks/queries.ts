@@ -98,9 +98,10 @@ export function useNotificationProjection(
   enabled = true,
 ) {
   const normalizedProjectIds = [...new Set(projectIds)].sort();
-  const normalizedConversationIds = [...new Set(conversationIds)].sort();
   const normalizedFolders = chatFolders.map(folder => ({ id: folder.id, conversationIds: [...new Set(folder.conversationIds)].sort() }))
     .sort((a, b) => a.id.localeCompare(b.id));
+  const grouped = new Set(normalizedFolders.flatMap(folder => folder.conversationIds));
+  const normalizedConversationIds = [...new Set(conversationIds)].filter(id => !grouped.has(id)).sort();
   return useQuery({
     enabled,
     queryKey: queryKeys.notifications.projection(

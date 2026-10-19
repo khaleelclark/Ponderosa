@@ -166,6 +166,8 @@ export interface WorkspaceDirectoryPageDto<
   reset?: boolean;
   /** Starred matches are returned independently and never consume the page limit. */
   starredItems: T[];
+  /** Initial Chat page supplement: matching saved folder members, independent of pagination. */
+  folderItems?: T[];
   items: T[];
   /** Total matching resources, including starred resources. */
   total: number;

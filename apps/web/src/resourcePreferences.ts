@@ -40,6 +40,24 @@ function sameSequence(
     leftItems.every((item, index) => item === rightItems[index]);
 }
 
+export function chatFolderMemberIds(folders: readonly ChatFolderDto[] = []): string[] {
+  return [...new Set(folders.flatMap(folder => folder.conversationIds))].sort();
+}
+
+/** Only saved folder members bypass sidebar pagination; current page rows win. */
+export function sidebarChatItems(
+  items: WorkspaceConversationDirectoryItemDto[],
+  folderItems: WorkspaceConversationDirectoryItemDto[],
+  folders: ChatFolderDto[],
+): WorkspaceConversationDirectoryItemDto[] {
+  const grouped = new Set(chatFolderMemberIds(folders));
+  const byId = new Map(items.map(item => [item.conversation.id, item]));
+  for (const item of folderItems) {
+    if (grouped.has(item.conversation.id) && !byId.has(item.conversation.id)) byId.set(item.conversation.id, item);
+  }
+  return [...byId.values()];
+}
+
 /** Directory projections affected by one canonical preference change. */
 export function changedWorkspaceDirectoryKinds(
   previous: WorkspacePreferencesDto | undefined,
@@ -53,7 +71,8 @@ export function changedWorkspaceDirectoryKinds(
   ) changed.add("project");
   if (
     previous.chatSort !== next.chatSort ||
-    !sameSequence(previous.chatOrder, next.chatOrder)
+    !sameSequence(previous.chatOrder, next.chatOrder) ||
+    !sameSequence(chatFolderMemberIds(previous.chatFolders), chatFolderMemberIds(next.chatFolders))
   ) changed.add("conversation");
   if (
     previous.agentSort !== next.agentSort ||

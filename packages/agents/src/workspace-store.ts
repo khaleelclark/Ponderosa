@@ -1640,6 +1640,7 @@ export class WorkspaceStore {
     for (const folder of input.chatFolders ?? []) {
       chatFolders.set(folder.id, emptyNotificationProjectionAccumulator());
       for (const conversationId of folder.conversationIds) {
+        requestedConversationIds.add(conversationId);
         const ids = folderIdsByConversation.get(conversationId) ?? new Set<string>();
         ids.add(folder.id);
         folderIdsByConversation.set(conversationId, ids);
