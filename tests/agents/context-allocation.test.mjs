@@ -125,3 +125,13 @@ for (const [label, artifact] of [['foreign project', { ...runtimeArtifact, proje
 test('unavailable verified bytes reject even if an oversized file fallback would fit', async () => {
   await assert.rejects(resolveCoordinationResultArtifacts({ activation: resultActivation, projectId: 'project', runtimeArtifact: () => runtimeArtifact, authoritative: async () => undefined }), /correlated_artifact_unavailable/);
 });
+test('large first result cannot bypass verification of a later correlated result', async () => {
+  const activation = { ...resultActivation, payload: { updateId: 'update', update: { results: [{ resultArtifactId: 'ponderosa://artifact/result' }, { resultArtifactId: 'ponderosa://artifact/second' }] } } };
+  const reads = [], body = Buffer.alloc(300000, 'x');
+  const input = { activation, projectId: 'project', runtimeArtifact: id => ({ ...runtimeArtifact, id }), authoritative: async artifact => {
+    reads.push(artifact.id);
+    return artifact.id === 'result' ? { body, byteLength: body.length, contentHash: 'a'.repeat(64), localPath: process.execPath } : undefined;
+  } };
+  await assert.rejects(resolveCoordinationResultArtifacts(input), /correlated_artifact_unavailable/);
+  assert.deepEqual(reads, ['result', 'second']);
+});
