@@ -830,6 +830,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24; admitted in-memory SQLite and built agents; no provider account",
       "origin": "UI004/UI008 bounded injection membership and exact receipt equivalence"
+    },
+    {
+      "path": "tests/chats/message-formatting.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built core; actual Markdown/React renderer; no provider or browser account",
+      "origin": "UI005/UI006 authored whitespace, bounded rich display contract and inert fallback regressions"
     }
   ],
   "retainedReleasePayload": [

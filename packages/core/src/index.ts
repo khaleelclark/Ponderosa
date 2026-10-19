@@ -22,3 +22,4 @@ export * from "./dto/local-browser.js";
 export * from "./collaboration-presentation.js";
 export * from "./workspace-activity.js";
 export * from "./agent-package-limits.js";
+export * from "./rich-message.js";

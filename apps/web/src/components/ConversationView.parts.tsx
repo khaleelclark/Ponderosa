@@ -144,7 +144,6 @@ function ConversationMessageComponent({
             collaborationRecipients={message.communicationIntent === "collaboration" ? message.collaborationRecipients ?? [] : undefined}
             agentMentions={message.agentMentions}
             compactMarkdown
-            preserveWhitespace={message.role === "user"}
             citations={message.citations}
             agentIdForHandle={agentIdForHandle}
             agentMentionForHandle={handle =>

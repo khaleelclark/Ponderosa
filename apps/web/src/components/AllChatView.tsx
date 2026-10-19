@@ -1655,7 +1655,6 @@ export function AllChatView({
                       })}
                       collapseLongMessage
                       compactMarkdown
-                      preserveWhitespace={fromUser}
                       projectId={item.project.id}
                       fileScope={fileOwnerForMessage({ authorAgentId: item.author.agentId, conversationId: item.source.conversationId }, item.source.kind === "agent" ? item.source.agentId : undefined)}
                       operatorHandle={workspacePreferences.data?.profile.handle}

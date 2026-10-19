@@ -1,0 +1,93 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import '../shared/web-typescript-loader.mjs';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { parseRichMessageBlock, RICH_MESSAGE_FORMAT_INSTRUCTIONS } from '@ponderosa/core';
+const { ChatMessageBody, collapsedLongMessagePreview } = await import('../../apps/web/src/components/chat/ChatMessages.tsx');
+const render = (text, props = {}) => renderToStaticMarkup(React.createElement(ChatMessageBody, { text, collapseLongMessage: false, ...props }));
+const metric = { version: 1, type: 'metrics', items: [{ label: 'Physical RAM', value: '16', unit: 'GB' }] };
+const fence = (block, closer = '```') => '```ponderosa\n' + JSON.stringify(block) + '\n' + closer;
+const richCount = html => [...html.matchAll(/data-ponderosa-rich=/g)].length;
+
+test('all five provider contract examples are accepted without rewriting values', () => {
+  const examples = [...RICH_MESSAGE_FORMAT_INSTRUCTIONS.matchAll(/```ponderosa\n([^]*?)\n```/g)];
+  assert.equal(examples.length, 5);
+  for (const [, source] of examples) {
+    assert.deepEqual(parseRichMessageBlock(source), JSON.parse(source));
+    assert.equal(richCount(render('```ponderosa\n' + source + '\n```')), 1);
+  }
+});
+
+test('bounded decoder rejects malformed, unsupported, hostile and dishonest displays', () => {
+  const meter = { version: 1, type: 'meters', items: [{ label: 'Readiness', value: 18, min: 0, max: 25, unit: 'checks' }] };
+  const line = { version: 1, type: 'line', title: 'Trend', unit: 'checks', points: [{ label: 'Mon', value: -2 }, { label: 'Tue', value: 4 }] };
+  const invalid = [null, [], {}, { ...metric, version: 2 }, { ...metric, html: '<script/>' },
+    { ...metric, items: [] }, { ...metric, items: Array(13).fill(metric.items[0]) },
+    { ...metric, items: [{ ...metric.items[0], value: 16 }] },
+    { ...metric, items: [{ ...metric.items[0], label: 'x'.repeat(161) }] },
+    { ...metric, items: [{ ...metric.items[0], url: 'https://example.com' }] },
+    { ...meter, items: [{ ...meter.items[0], value: 26 }] },
+    { ...meter, items: [{ ...meter.items[0], max: 0 }] },
+    { ...meter, items: [{ ...meter.items[0], min: -1e308, max: 1e308 }] },
+    { ...line, type: 'bar' }, { ...line, points: Array(49).fill(line.points[0]) },
+    { ...line, points: [{ label: 'A', value: -1e308 }, { label: 'B', value: 1e308 }] },
+    { version: 1, type: 'statuses', items: [{ label: 'Pressure', value: 'Low', tone: { toString: 'positive' } }] }];
+  for (const block of invalid) assert.equal(parseRichMessageBlock(JSON.stringify(block)), undefined, JSON.stringify(block));
+  assert.deepEqual(parseRichMessageBlock(JSON.stringify(metric).padEnd(32768, ' ')), metric);
+  for (const source of ['{', JSON.stringify(metric).padEnd(32769, ' '), JSON.stringify(line).replace('-2', '1e999')]) assert.equal(parseRichMessageBlock(source), undefined);
+  assert.deepEqual(parseRichMessageBlock(JSON.stringify(meter)), meter);
+  assert.deepEqual(parseRichMessageBlock(JSON.stringify(line)), line);
+  assert.deepEqual(parseRichMessageBlock(JSON.stringify({ ...line, points: [{ label: 'A', value: 0 }] })).points, [{ label: 'A', value: 0 }]);
+});
+
+test('rich rendering requires a complete matching fence; fallback remains copyable source', () => {
+  for (const newline of ['\n', '\r\n', '\r']) assert.equal(richCount(render(fence(metric).replaceAll('\n', newline))), 1);
+  for (const source of [fence(metric, ''), fence(metric, '~~'), fence(metric).replace('```ponderosa', '````ponderosa'),
+    fence({ ...metric, version: 2 }), fence(metric).replace('ponderosa', 'ponderosa extra'), '```ponderosa\n{\n```']) {
+    const html = render(source);
+    assert.equal(richCount(html), 0, source);
+    assert.match(html, /Copy code/);
+  }
+  assert.equal(richCount(render(Array(9).fill(fence(metric)).join('\n\n'))), 8);
+  assert.match(render(Array(9).fill(fence(metric)).join('\n\n')), /Copy code/);
+  assert.equal(richCount(render('> ' + fence(metric).replaceAll('\n', '\n> '))), 1);
+});
+
+test('authored prose breaks survive without turning parser separators into blank rows', () => {
+  const html = render('First line\nSecond line\n\nNew paragraph\n\n\n\nAfter three blank lines.\n\nTail');
+  assert.equal([...html.matchAll(/<br\s*\/?\s*>/g)].length, 1);
+  assert.equal([...html.matchAll(/data-authored-blank-lines="2"/g)].length, 1);
+  assert.ok(!render('Alpha\n\nBeta').includes('data-authored-blank-lines'));
+  assert.equal([...render('Alpha  \nBeta\\\nGamma').matchAll(/<br\s*\/?\s*>/g)].length, 2);
+  const opaque = render('`one\ntwo`\n\n```text\ncode\n\n\n\nkeeps\n```');
+  assert.ok(!opaque.includes('data-authored-blank-lines'));
+  assert.ok(opaque.includes('code\n\n\n\nkeeps'));
+  const reference = render('Alpha\n\n[ref]: https://example.com\n\n[Link][ref]');
+  assert.ok(!reference.includes('data-authored-blank-lines'));
+  assert.match(reference, /href="https:\/\/example.com"/);
+  const table = render('| Date | Cash |\n| --- | ---: |\n| Now | $3,500 |');
+  assert.match(table, /scope="col"/);
+  assert.match(table, /text-align:right/);
+  assert.match(table, /role="region" tabindex="0"/);
+});
+
+test('rich labels remain inert text and line values have a keyboard-accessible table', () => {
+  const block = { version: 1, type: 'line', title: '<script>Trend</script>', unit: 'checks', points: [{ label: '<img onerror=alert(1)>', value: 0 }] };
+  const html = render(fence(block));
+  assert.equal(richCount(html), 1);
+  assert.ok(!html.includes('<script>') && !html.includes('<img '));
+  assert.match(html, /&lt;script&gt;Trend&lt;\/script&gt;/);
+  assert.match(html, /role="region" tabindex="0"/);
+  assert.match(html, /aria-label="&lt;script&gt;Trend&lt;\/script&gt; data"/);
+  assert.ok(!/\b(?:NaN|Infinity)\b/.test(html));
+});
+
+test('collapsed previews never promote a cut or hidden rich fence', () => {
+  const hidden = 'prose\n'.repeat(73) + fence(metric);
+  assert.equal(richCount(render(hidden, { collapseLongMessage: true })), 0);
+  assert.equal(richCount(render(hidden)), 1);
+  const cut = 'x'.repeat(3150) + '\n\n' + fence({ ...metric, title: 'x'.repeat(100) }) + '\n' + 'tail'.repeat(1000);
+  assert.equal(richCount(render(collapsedLongMessagePreview(cut))), 0);
+  assert.equal(richCount(render(cut)), 1);
+});
