@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { AgentStore } from '@ponderosa/agents';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -65,4 +66,24 @@ test('data-only restore validates included snapshots without publishing an exter
   restoreOfflineDataDirectoryBackup(f.backup, f.restored);
   assert.deepEqual(identity(f.restored), identity(f.data));
   assert.deepEqual(readFileSync(path.join(f.external, 'nested', 'result.txt')), f.bytes);
+});
+
+
+test('busy native SQLite close retains the AgentStore reference and permits exact retry after the query ends', t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'ponderosa-close-retry-')), data = path.join(root, 'data');
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new AgentStore(data), reference = admitDataDirectory(data), sqlite = reference.client;
+  reference.close(); // Leave the Store as the final database/lease owner.
+  const query = sqlite.prepare('SELECT 1 AS value UNION ALL SELECT 2').iterate();
+  try {
+    assert.equal(query.next().value.value, 1);
+    assert.throws(() => store.close(), /busy|query/u);
+    assert.equal(sqlite.open, true);
+    const retained = admitDataDirectory(data);
+    assert.equal(retained.client, sqlite); retained.close();
+    query.return(); store.close();
+    assert.equal(sqlite.open, false);
+    store.close(); // Completed disposal is idempotent.
+    const reopened = new AgentStore(data); reopened.close();
+  } finally { query.return(); store.close(); }
 });

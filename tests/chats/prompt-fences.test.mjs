@@ -40,6 +40,11 @@ function fixture(t) {
   return {sqlite,store,authorization,projectId,conversationId,agentId,otherAgentId,scopeKey,addRun,injection,publish};
 }
 
+test('an acknowledged initial turn permits the default reply without a steering fence', t => {
+  const f = fixture(t); f.injection();
+  assert.equal(f.publish(null).replayed, false);
+});
+
 test('acknowledged current turn publishes once; newer acknowledged steering fences new output but preserves exact replay', t => {
   const f=fixture(t), turn=f.injection(), id=randomUUID();
   const first=f.publish(turn,{id}); assert.equal(first.replayed,false);
