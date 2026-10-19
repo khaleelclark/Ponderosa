@@ -14,7 +14,7 @@ That test also reproduced a stale Agent header: the sidebar received the rename 
 | --- | --- |
 | Desktop caret and metadata | Real native typing/SSE test above; header refresh rechecked after deployment. Long title exercised in the sidebar. |
 | Cached Home refresh | Existing real React Query/SSR regression checks retain cached cards, disclose refresh failure, and recover. |
-| Attachments, routing, draft recovery | Existing 8 maintained checks cover archive bytes, routing, stable file order/fingerprint, and recovery edits. These do not qualify physical mobile file pickers. |
+| Attachments, routing, draft recovery | Existing 8 maintained checks cover archive bytes, routing, transcript export, and recovery edits. These do not qualify physical mobile file pickers. |
 | Narrow layouts | Requested 390×844 and 1440×900 overrides did not produce those CSS dimensions (observed 1422×800 and 1595×1460). Override reset. No 390px/320px acceptance claimed. |
 | Android / IME / Activity scrolling | Physical keyboard composition, mobile selection, installed PWA/offline upgrade, and follow-latest behavior remain unqualified. Source guards alone are insufficient. |
 | Other historical interaction requests | New Chat initialization, imports, all header actions, navigation and slow-send behavior still need a recorded physical desktop/mobile matrix. Prior automated checks are narrower evidence. |
@@ -39,6 +39,6 @@ Installer payloads were not downloaded, independently rehashed, installed or upg
 
 ## Open release decisions
 
-The existing native beta workflow runs on tags/manual dispatch; production packaging requires its release environment and signing configuration. The current hosted-run inventory returned no runs. That is an inventory observation, not a passing CI result. No workflow was dispatched and no signing credentials or release settings were changed.
+The existing native beta workflow runs on tags/manual dispatch; production packaging requires its release environment and signing configuration. The current unfiltered `gh run list --limit 12` inventory returned no runs. That is an inventory observation, not a passing CI result. No workflow was dispatched and no signing credentials or release settings were changed.
 
 Before broader distribution, the release owner must reconcile beta/prerelease classification, exact source and reused-input provenance, signing/notarization policy, and fresh per-platform launch/upgrade/provider/browser receipts for the exact assets. These remain Q06 acceptance work; this PR does not mark them complete or revive superseded account-wide model limitations.
