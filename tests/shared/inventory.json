@@ -774,6 +774,10 @@
       "moduleBase": "packages/agents/package.json",
       "requirements": "Node24, built better-sqlite3; owned cache copies only; intentional Linux SIGBUS control in a bounded child with core dumps disabled; no provider account",
       "origin": "F04 native image isolation from writable build cache before packaging and installed verification"
+    },
+    {
+      "path": "tests/chats/speech-lifecycle.test.mjs",
+      "lane": "web"
     }
   ],
   "retainedReleasePayload": [
