@@ -50,7 +50,7 @@ export function normalizeEngineModelValidationError(
 
 export const PUBLIC_PROVIDER_FAILURE_MESSAGES = {
   authentication: "Provider authentication was rejected.",
-  rate_limit: "Provider usage limit was reached.",
+  rate_limit: "Provider limited the request.",
   capacity: "Provider is temporarily at capacity.",
   context_length: "Provider context limit was reached.",
   invalid_request: "Provider rejected the request.",
@@ -60,7 +60,7 @@ export const PUBLIC_PROVIDER_FAILURE_MESSAGES = {
 
 export const PUBLIC_PROVIDER_FAILURE_REMEDIATIONS = {
   authentication: "Check the provider subscription and sign-in, then retry.",
-  rate_limit: "Wait for the provider usage limit to reset, then retry.",
+  rate_limit: "Wait before retrying; check provider usage information for any reset time.",
   capacity: "Retry when provider capacity is available.",
   context_length: "Start a new provider session or reduce the request context, then retry.",
   invalid_request: "Review the request settings, then retry.",
@@ -188,7 +188,7 @@ function highConfidenceTextCategory(detail: string): ProviderFailureCategory {
   if (/\b(?:subscription (?:expired|inactive)|oauth session expired|failed to authenticate|unauthori[sz]ed|authentication (?:failed|rejected|required)|not authenticated|sign[- ]?in required|invalid credentials?)\b/u.test(value)) {
     return "authentication";
   }
-  if (/\b(?:0 weighted tokens left|rate limit(?:ed)?|too many requests|usage limit reached|quota (?:exhausted|reached)|http 429)\b/u.test(value)) {
+  if (/\b(?:0 weighted tokens left|rate limit(?:ed)?|too many requests|usage limit (?:was )?reached|quota (?:exhausted|reached)|http 429)\b/u.test(value)) {
     return "rate_limit";
   }
   if (/\b(?:selected model is at capacity|provider is at capacity|service overloaded|resource exhausted)\b/u.test(value)) {
