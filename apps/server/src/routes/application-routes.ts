@@ -512,6 +512,7 @@ registerAgentPresetRoutes(app, {
 });
 
 registerAgentCreationRoutes(app, {
+  appendWorkspace,
   dataDir: opts.dataDir,
   store,
   coordinationV3,

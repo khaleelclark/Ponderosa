@@ -99,7 +99,7 @@ export function outcomeCauseExplanation(cause: OutcomeCause): string {
     case "provider_outcome_unknown": {
       const issue = {
         authentication: "The provider rejected its sign-in.",
-        rate_limit: "The provider reached a usage limit.",
+        rate_limit: "The provider limited the request.",
         capacity: "The provider reported that it was at capacity.",
         context_length: "The provider reported that the request exceeded its context limit.",
         invalid_request: "The provider rejected the request.",

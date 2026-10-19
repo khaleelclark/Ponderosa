@@ -776,6 +776,34 @@
       "origin": "F04 native image isolation from writable build cache before packaging and installed verification"
     },
     {
+      "path": "tests/providers/rpc-boundaries.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "packages/engines/package.json",
+      "requirements": "Node24, built engines/native-host; owned fake Node children only; no provider account",
+      "origin": "F06 malformed and late RPC containment; F07 bounded discovery output with explicit overflow and runtime controls"
+    },
+    {
+      "path": "tests/providers/clipboard-feedback.test.mjs",
+      "feature": "providers",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; actual TSX callbacks and shared clipboard helper with controlled browser APIs and real mutation observer; no provider account",
+      "origin": "F11 clipboard error handling and support report feedback"
+    },
+    {
+      "path": "tests/chats/delivery-recovery.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, existing TypeScript/React dependencies; controlled browser storage and actual component/hook callbacks; no provider account",
+      "origin": "Q01 lost acknowledgement, durable submission order, partial Stop and truthful receipt recovery qualification"
+    },
+    {
+      "path": "tests/chats/speech-lifecycle.test.mjs",
+      "lane": "web"
+    },
+    {
       "path": "tests/files-results/asset-resource-cleanup.test.mjs",
       "lane": "server"
     }
