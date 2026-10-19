@@ -806,6 +806,14 @@
     {
       "path": "tests/files-results/asset-resource-cleanup.test.mjs",
       "lane": "server"
+    },
+    {
+      "path": "tests/agents/context-allocation.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces and installed TypeScript; controlled recovery stores and verified artifact boundary; no provider account",
+      "origin": "Q08/Q09: bounded recovery scans and deferred correlated-result text allocation"
     }
   ],
   "retainedReleasePayload": [
