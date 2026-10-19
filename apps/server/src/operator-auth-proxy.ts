@@ -118,6 +118,8 @@ export function createOperatorAuthProxy(options: OperatorAuthProxyOptions): Oper
     incoming.pipe(upstream);
   });
   server.on("upgrade", (incoming, socket, head) => {
+    upgradedSockets.add(socket);
+    socket.once("close", () => upgradedSockets.delete(socket));
     const reject = (status: number) => {
       if (!socket.destroyed) socket.end(`HTTP/1.1 ${status} ${status === 401 ? "Unauthorized" : status === 421 ? "Misdirected Request" : status === 404 ? "Not Found" : "Bad Gateway"}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     };
@@ -137,7 +139,7 @@ export function createOperatorAuthProxy(options: OperatorAuthProxyOptions): Oper
     let upgraded = false;
     const destroy = () => { upstream.destroy(); peer?.destroy(); socket.destroy(); };
     socket.once("error", destroy);
-    socket.once("close", () => { upstream.destroy(); peer?.destroy(); upgradedSockets.delete(socket); });
+    socket.once("close", () => { upstream.destroy(); peer?.destroy(); });
     upstream.setTimeout(10_000, () => upstream.destroy());
     upstream.once("error", () => { if (upgraded) destroy(); else reject(502); });
     upstream.once("response", (response) => {
@@ -148,7 +150,6 @@ export function createOperatorAuthProxy(options: OperatorAuthProxyOptions): Oper
       upgraded = true;
       upstream.setTimeout(0);
       peer = backendSocket;
-      upgradedSockets.add(socket);
       peer.once("error", destroy);
       peer.once("close", () => socket.destroy());
       const lines = ["HTTP/1.1 101 Switching Protocols"];
@@ -211,9 +212,15 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   };
   const server = await listenOperatorAuthProxy(options);
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.once(signal, () => { server.closeUpgrades(); server.close(() => {
-      try { unlinkSync(options.socketPath); } catch { /* Node may already have removed it. */ }
-      process.exit(0);
-    }); });
+    process.once(signal, () => {
+      server.close(() => {
+        try { unlinkSync(options.socketPath); } catch { /* Node may already have removed it. */ }
+        process.exit(0);
+      });
+      server.closeUpgrades();
+      // No HTTP grace period on signal shutdown, matching daemon preClose.
+      // close() stops admission first; force-close SSE and partial uploads too.
+      server.closeAllConnections();
+    });
   }
 }
