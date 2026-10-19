@@ -23,6 +23,7 @@ import { api } from "../api";
 import { copyText } from "../clipboard";
 import { queryKeys } from "../queryKeys";
 import { isChatNearBottom, scrollChatToBottom, ScrollToLatestButton } from "./chat/scroll";
+import { useMutationNotification } from "./MutationNotifications";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 import { RequestLifecycleCard } from "./RequestLifecycleCard";
 
@@ -103,13 +104,14 @@ export function AgentWorkTechnicalDetails({
 }
 
 function CopyRecordId({ id }: { id: string }): JSX.Element {
+  const notify = useMutationNotification();
   const [copied, setCopied] = useState(false);
   return <Tooltip title={copied ? "Copied" : `Copy ID ${id}`}>
     <IconButton size="small" aria-label={`Copy ID ${id}`} onClick={() => {
       void copyText(id).then(() => {
         setCopied(true);
         globalThis.setTimeout(() => setCopied(false), 1_500);
-      });
+      }, () => notify({ key: "copy-record-id", message: "ID could not be copied. Check your browser clipboard permissions and try again.", severity: "error" }));
     }}><ContentCopyIcon fontSize="inherit" /></IconButton>
   </Tooltip>;
 }
@@ -167,6 +169,7 @@ export function AgentWorkInspector({
     enabled: open,
   });
   const [expandedTraceId, setExpandedTraceId] = useState<string>();
+  const notify = useMutationNotification();
   const [logsCopied, setLogsCopied] = useState(false);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const scrollRegionRef = useRef<HTMLDivElement>(null);
@@ -249,7 +252,7 @@ export function AgentWorkInspector({
             void copyText(diagnosticLogBundle(query.data)).then(() => {
               setLogsCopied(true);
               globalThis.setTimeout(() => setLogsCopied(false), 1_500);
-            });
+            }, () => notify({ key: "copy-diagnostic-logs", message: "Logs could not be copied. Check your browser clipboard permissions and try again.", severity: "error" }));
           }}
         >
           {logsCopied ? "Copied" : "Copy Logs"}

@@ -5,6 +5,7 @@ import type { AgentStore } from "@ponderosa/agents";
 export async function reconcileCommittedAgentCreation(input: {
   store: Pick<AgentStore, "updateAgentCreationOperation">;
   deletingAgentIds: Set<string>;
+  appendWorkspace(event: { type: "project_changed"; projectId: string; action: "updated" }): unknown;
   operationId: string;
   projectId: string;
   communicationEventId: string;
@@ -26,6 +27,8 @@ export async function reconcileCommittedAgentCreation(input: {
       lastError: null,
     });
     for (const agentId of input.agentIds) input.deletingAgentIds.delete(agentId);
+    try { input.appendWorkspace({ type: "project_changed", projectId: input.projectId, action: "updated" }); }
+    catch { /* Publication failure cannot reopen completed recovery. */ }
     return true;
   } catch {
     return false;

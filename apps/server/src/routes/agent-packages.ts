@@ -1515,15 +1515,6 @@ export function registerAgentPackageRoutes(
           publicationById.get(artifact.id)!,
         );
       }
-      try {
-        appendWorkspace({
-          type: "project_changed",
-          projectId: project.id,
-          action: "updated",
-        });
-      } catch {
-        // Clients reconcile the durable import on their next refresh.
-      }
       const response: ImportAgentPackageResponse = {
         rootAgentId: created.get(portablePackage.rootRef)!.id,
         agentIds: [...created.values()].map((agent) => agent.id),
@@ -1545,6 +1536,15 @@ export function registerAgentPackageRoutes(
           lastError: null,
         });
         for (const agentId of operationAgentIds) deletingAgentIds.delete(agentId);
+      }
+      try {
+        appendWorkspace({
+          type: "project_changed",
+          projectId: project.id,
+          action: "updated",
+        });
+      } catch {
+        // Clients reconcile the durable import on their next refresh.
       }
       if (appliedChatInstructions !== undefined) {
         try {

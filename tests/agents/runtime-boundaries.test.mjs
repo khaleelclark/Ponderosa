@@ -72,3 +72,83 @@ test('check 34: replaying active steering injects once into the selected Run wit
   assert.equal(f.turns.length, 2);
   assert.equal((await f.detail(a.id)).messages.filter(x => x.role === 'user' && x.text.includes(marker)).length, 1);
 }));
+
+const { createRequire } = await import('node:module');
+const EvidenceDatabase = createRequire(new URL('../../apps/server/package.json', import.meta.url))('better-sqlite3');
+const { CoordinationV3ReadModel } = await import('../../packages/agents/dist/coordination-v3-read-model.js');
+function workEvidence(t) {
+  const db = new EvidenceDatabase(':memory:'); t.after(() => db.close());
+  db.exec(`CREATE TABLE scheduler_runs(id,agent_id,started_at,heartbeat_at,provider_session_id,status,fencing_token,prompt_injection_state,context_disposition,lease_expires_at,terminal_at,provider_failure_json,project_id,scope_key);
+    CREATE TABLE provider_inputs(scheduler_run_id,execution_id,prompt_hash); CREATE TABLE runs(id,agent_id,status,wake_cause,completed_at);
+    CREATE TABLE events(agent_id,seq,type,created_at,payload_json); CREATE TABLE activity_projection(agent_id,seq,execution_id);
+    CREATE TABLE runtime_communications(id,sender_json,intent,created_at,project_id); CREATE TABLE messages(agent_id,communication_event_id,role);
+    INSERT INTO scheduler_runs(id,agent_id,started_at,heartbeat_at,status,fencing_token,project_id,scope_key) VALUES('run','agent','2026-10-19T00:00:00Z','2026-10-19T01:00:00Z','running',1,'project','conversation:chat');
+    INSERT INTO provider_inputs VALUES('run','execution','hash');`);
+  const model = new CoordinationV3ReadModel(db);
+  let seq = 0;
+  return { db, details: (extra = {}) => model.agentWorkItemDetails({ projectId: 'project', conversationId: 'chat', kind: 'run', recordId: 'run', ...extra }),
+    event(type, payload = {}, execution = 'execution') {
+      const n = ++seq, time = `2026-10-19T00:${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}Z`;
+      db.prepare('INSERT INTO events VALUES(?,?,?,?,?)').run('agent', n, type, time, JSON.stringify(payload));
+      db.prepare('INSERT INTO activity_projection VALUES(?,?,?)').run('agent', n, execution);
+      return `${time} (${type})`;
+    } };
+}
+const technical = details => Object.fromEntries(details.map(item => [item.label, item.value]));
+test('work inspector separates provider output from operator/autonomous browser activity and heartbeat', t => {
+  const f = workEvidence(t);
+  for (const [type, payload] of [['browser_action', { actor: 'operator' }], ['browser_action', { actor: 'agent' }], ['browser_console', { text: 'PRIVATE_BROWSER_OUTPUT' }], ['browser_screenshot', {}]]) {
+    f.event(type, payload);
+    assert.equal(technical(f.details())['Last recorded provider progress'], 'Not found in this bounded evidence window');
+  }
+  const text = f.event('text', { text: 'PRIVATE_PROVIDER_OUTPUT' });
+  f.event('browser_console');
+  assert.equal(technical(f.details())['Last recorded provider progress'], text);
+  const tool = f.event('tool_result', { text: 'PRIVATE_TOOL_OUTPUT' });
+  f.event('browser_action', { actor: 'operator' }); f.event('text', {}, 'other-execution');
+  const details = technical(f.details());
+  assert.equal(details['Last recorded provider progress'], tool);
+  assert.equal(details['Scheduler heartbeat (not provider progress)'], '2026-10-19T01:00:00Z');
+  assert.match(details['Recent Run event metadata'], /browser_action/);
+  assert.doesNotMatch(JSON.stringify(details), /PRIVATE_/);
+  assert.deepEqual(f.details({ recordId: 'execution' }), f.details());
+  assert.equal(f.details({ projectId: 'foreign' }), undefined);
+  assert.equal(f.details({ conversationId: 'foreign' }), undefined);
+});
+test('work inspector keeps provider-progress absence bounded and user-facing publication scoped to its exact sender Run', t => {
+  const f = workEvidence(t); f.event('text');
+  for (let i = 0; i < 129; i++) f.event('browser_console');
+  assert.equal(technical(f.details())['Last recorded provider progress'], 'Not found in this bounded evidence window');
+  assert.match(technical(f.details())['Evidence window'], /absence is not proof/);
+  const insert = f.db.prepare('INSERT INTO runtime_communications VALUES(?,?,?,?,?)');
+  for (const [id, intent, execution] of [['handoff-copy', 'collaboration', 'execution'], ['foreign-reply', 'user_dm', 'other-execution']]) {
+    insert.run(id, JSON.stringify({ agentId: 'agent', executionId: execution }), intent, '2026-10-19T00:01:00Z', 'project');
+    f.db.prepare('INSERT INTO messages VALUES(?,?,?)').run('agent', id, 'assistant');
+  }
+  assert.equal(technical(f.details())['User-facing reply publication'], 'Not found in this bounded evidence window');
+  assert.match(technical(f.details())['User-facing reply scope'], /Request lifecycle/);
+  insert.run('reply', JSON.stringify({ agentId: 'agent', executionId: 'execution' }), 'user_dm', '2026-10-19T00:02:00Z', 'project');
+  f.db.prepare('INSERT INTO messages VALUES(?,?,?)').run('agent', 'reply', 'assistant');
+  assert.equal(technical(f.details())['User-facing reply publication'], '2026-10-19T00:02:00Z');
+  assert.match(technical(f.details())['User-facing reply and Run state'], /Run is still active/);
+});
+test('canonical Request handoff remains visible while its worker Run truthfully has no user-facing reply', options, t => withFixture(t, async f => {
+  const chat = await f.createChat('Handoff evidence'), manager = await f.createIdleAgent(chat, 'Manager'), worker = await f.createIdleAgent(chat, 'Worker');
+  const managerSession = await f.hold(manager.id); f.plans.set(worker.id, [{ hold: true }]);
+  const assigned = f.ok(await f.tool(managerSession, 'ponderosa_coordinate', { idempotencyKey: randomUUID(), requests: [
+    { recipientAgentId: worker.id, text: 'Return the canonical handoff', lifetime: { kind: 'indefinite' } },
+  ] }));
+  const session = await until(() => f.sessions.get(worker.id), 'worker runtime');
+  const run = (await f.detail(worker.id)).runs.find(item => item.status === 'running'); assert.ok(run);
+  const marker = 'CANONICAL_HANDOFF_' + randomUUID();
+  f.ok(await f.tool(session, 'ponderosa_update_request', { requestId: assigned.requestIds[0], kind: 'completed', text: marker }));
+  const base = `/api/projects/${chat.projectId}/agent-work/items/`;
+  const request = f.ok(await f.api('GET', base + 'request/' + assigned.requestIds[0] + '?conversationId=' + chat.id));
+  assert.equal(request.requestLifecycle.request.state, 'completed');
+  assert.ok(request.requestLifecycle.updates.some(item => item.kind === 'completed' && item.actorId === worker.id && item.text === marker));
+  const details = technical(f.ok(await f.api('GET', base + 'run/' + run.id + '?conversationId=' + chat.id)).details);
+  assert.equal(details['User-facing reply publication'], 'Not found in this bounded evidence window');
+  assert.match(details['User-facing reply scope'], /Request lifecycle/);
+  const foreign = await f.createChat('Foreign handoff scope');
+  assert.equal((await f.api('GET', base + 'request/' + assigned.requestIds[0] + '?conversationId=' + foreign.id)).status, 404);
+}));

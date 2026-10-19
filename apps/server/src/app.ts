@@ -975,6 +975,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
   });
 
   registerServerLifecycle(app, {
+    appendWorkspace,
     drainAttachmentUploads,
     opts,
     store,
