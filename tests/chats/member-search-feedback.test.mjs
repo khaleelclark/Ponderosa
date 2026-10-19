@@ -128,3 +128,91 @@ test('Chat Retry refetches the failed members request and clears its error', asy
   assert.match(recovered, /Unfiltered reader/);
   assert.doesNotMatch(recovered, /Could not load Agents/);
 });
+
+// Seed only the search/scope hook state for SSR. Query observers, continuation
+// requests, reset handling and the rendered result rows are the real component.
+const vm = await import('node:vm');
+const { createRequire } = await import('node:module');
+const require = createRequire(new URL('../../apps/web/package.json', import.meta.url));
+const ts = require('typescript');
+const ReactQuery = await import('@tanstack/react-query');
+const { normalizeResetPages, uniqueBy } = await import('../../apps/web/src/collections.ts');
+const { routeToPath } = await import('../../apps/web/src/routeRegistry.ts');
+const { phaseQueryMatchesProject } = await import('../../apps/web/src/workspaceDirectoryScope.ts');
+function searchSetup(t) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryOnMount: false, refetchOnMount: false, gcTime: Infinity } } });
+  t.after(() => client.clear());
+  const query = 'needle';
+  const key = queryKeys.workspaceDirectory.list('agent', query, undefined, undefined, undefined, undefined, undefined, undefined);
+  const items = Array.from({ length: 26 }, (_, i) => ({ kind: 'agent',
+    project: { id: 'project', label: 'Project' }, ownerConversation: { id: `chat-${i}`, title: `Owning Chat ${i}` },
+    agent: { id: `agent-${i}`, title: 'Same title', handle: `handle-${i}`, updatedAt: '2026-10-19T00:00:00Z' } }));
+  const page = (rows, cursor) => ({ kind: 'agent', starredItems: [items[0]], items: rows, total: 26,
+    history: { limit: 25, hasMore: Boolean(cursor), ...(cursor ? { cursor } : {}) } });
+  client.setQueryData(queryKeys.globalSearch.results(query, 25, 'agent'), { results: [], recentChats: [] });
+  client.setQueryData(key, { pages: [page(items.slice(0, 25), 'owned-next')], pageParams: [undefined] });
+  const mocks = { react: { ...React, useState: initial => React.useState(initial === '' ? query : initial === 'all' ? 'agents' : initial) },
+    '@tanstack/react-query': ReactQuery, '../api': { api }, '../queryKeys': { queryKeys }, '../collections': { normalizeResetPages, uniqueBy },
+    '../routeRegistry': { routeToPath }, '../nativeNavigation': { isUnmodifiedPrimaryClick: () => true },
+    '../hooks/queries': { useNotifications: () => ({}) }, '../hooks/useWorkspaceFileSearch': { useWorkspaceFileSearch: () => ({ results: [] }) },
+    './chat/ChatMessages': { linkPresentation: () => undefined } };
+  const context = vm.createContext({ exports: {}, console, setTimeout, clearTimeout, require(name) {
+    if (name in mocks) return mocks[name];
+    return require(name);
+  } });
+  vm.runInContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/GlobalChatSearch.tsx', import.meta.url), 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+  }).outputText, context);
+  const selected = [];
+  const render = () => {
+    let tree;
+    function Probe() { tree = context.exports.GlobalChatSearch({ open: true, onClose() {}, onSelect: selection => selected.push(selection) }); return null; }
+    renderToStaticMarkup(React.createElement(QueryClientProvider, { client }, React.createElement(Probe)));
+    return { tree, html: renderToStaticMarkup(React.createElement(React.Fragment, null, tree.props.children)) };
+  };
+  function* walk(node) {
+    if (!React.isValidElement(node)) return;
+    yield node;
+    for (const child of React.Children.toArray(node.props.children)) yield* walk(child);
+  }
+  const loadMore = async () => {
+    const button = [...walk(render().tree)].find(node => node.props.children === 'Load more Agents');
+    assert.ok(button, 'A cursor must offer continuation even without authored message matches');
+    button.props.onClick();
+    await client.getQueryCache().find({ queryKey: key, exact: true }).promise;
+  };
+  return { client, key, items, page, render, loadMore, selected, walk };
+}
+test('F10: Agent titles continue past 25 with owning Chat, handle and stable routing', async t => {
+  const f = searchSetup(t), calls = [], original = api.getWorkspaceDirectory;
+  t.after(() => { api.getWorkspaceDirectory = original; });
+  api.getWorkspaceDirectory = async (kind, options) => { calls.push({ kind, ...options }); return f.page(f.items.slice(25)); };
+  const first = f.render();
+  assert.equal((first.html.match(/role="option"/g) ?? []).length, 25);
+  assert.match(first.html, /Owning Chat 0/); assert.match(first.html, /#handle-0/);
+  await f.loadMore();
+  assert.deepEqual(calls, [{ kind: 'agent', search: 'needle', limit: 25, cursor: 'owned-next' }]);
+  const next = f.render();
+  assert.equal((next.html.match(/role="option"/g) ?? []).length, 26);
+  assert.match(next.html, /Owning Chat 25/); assert.match(next.html, /#handle-25/);
+  assert.doesNotMatch(next.html, /Load more Agents/);
+  const last = [...f.walk(next.tree)].find(node => node.props.result?.chat.id === 'agent-25');
+  last.props.onSelect();
+  assert.equal(f.selected[0].chat.id, 'agent-25'); assert.equal(f.selected[0].projectId, 'project');
+  await f.client.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind('agent'), refetchType: 'none' });
+  assert.equal(f.client.getQueryState(f.key).isInvalidated, true);
+  assert.equal(phaseQueryMatchesProject(f.key, 'any-mutated-project'), true);
+});
+test('F10: failed continuation retains matches and can retry; reset pages drop stale Agent rows', async t => {
+  const f = searchSetup(t), original = api.getWorkspaceDirectory;
+  t.after(() => { api.getWorkspaceDirectory = original; });
+  api.getWorkspaceDirectory = async () => { throw new Error('Owned pagination failure'); };
+  await assert.rejects(f.loadMore(), /Owned pagination failure/);
+  const failed = f.render().html;
+  assert.match(failed, /Some search results could not load/); assert.match(failed, /Owning Chat 24/);
+  api.getWorkspaceDirectory = async () => ({ ...f.page(f.items.slice(25)), starredItems: [], reset: true });
+  await f.loadMore();
+  const recovered = f.render().html;
+  assert.match(recovered, /Owning Chat 25/); assert.doesNotMatch(recovered, /Owning Chat 24|Some search results could not load/);
+  assert.equal((recovered.match(/role="option"/g) ?? []).length, 1);
+});
