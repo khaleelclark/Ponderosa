@@ -140,9 +140,10 @@ async function deadLegacyXvfb(xLock: string): Promise<boolean> {
 async function acquireCleanupClaim(pathname: string): Promise<boolean> {
   try {
     const handle = await fs.open(pathname, "wx", 0o600);
-    await handle.writeFile(JSON.stringify({ pid: process.pid, birthMarker: processBirthMarker(process.pid) }));
-    await handle.close();
-    return true;
+    try {
+      await handle.writeFile(JSON.stringify({ pid: process.pid, birthMarker: processBirthMarker(process.pid) }));
+      return true;
+    } finally { await handle.close(); }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     const stat = await ownedArtifact(pathname, "file");
@@ -290,21 +291,24 @@ export async function reserveHostedDisplay(displayNumber: number): Promise<strin
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
     throw error;
   }
-  const birthMarker = processBirthMarker(process.pid);
+  let birthMarker: string | undefined;
+  try {
+    birthMarker = processBirthMarker(process.pid);
+    if (birthMarker) {
+      const record: HostedDisplayReservationRecord = {
+        schemaVersion: 1,
+        displayNumber,
+        createdAt: new Date().toISOString(),
+        owner: { pid: process.pid, pgid: process.pid, birthMarker },
+      };
+      await handle.writeFile(JSON.stringify(record));
+      await handle.sync();
+    }
+  } finally { await handle.close(); }
   if (!birthMarker) {
-    await handle.close();
     await fs.rm(names.reservation, { force: true });
     throw new Error("host process identity is unavailable for Xvfb ownership");
   }
-  const record: HostedDisplayReservationRecord = {
-    schemaVersion: 1,
-    displayNumber,
-    createdAt: new Date().toISOString(),
-    owner: { pid: process.pid, pgid: process.pid, birthMarker },
-  };
-  await handle.writeFile(JSON.stringify(record));
-  await handle.sync();
-  await handle.close();
   return names.reservation;
 }
 
