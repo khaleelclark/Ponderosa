@@ -53,9 +53,9 @@ function extension(relative, mocks = {}, globals = {}, footer = '') {
 const policy = extension('policy').exports;
 function workerFixture() {
   const listeners = {}, calls = [], tab = { id: 1, windowId: 2, url: 'https://fixture.invalid/', active: true };
-  let gate, time = 1000, detachFails = false;
+  let gate, time = 1000, detachFails = false, blockedHeldResponse = false;
   const event = name => ({ addListener(fn) { listeners[name] = fn; } });
-  const wait = async name => { if (gate?.name === name) { const held = gate; gate = undefined; held.enter(); await held.promise; } };
+  const wait = async name => { if (gate?.name === name) { const held = gate; gate = undefined; held.enter(); await held.promise; return true; } };
   const chrome = { runtime: { id: 'owned', onMessage: event('message') },
     storage: { session: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
     action: { setBadgeText: async () => {} }, windows: { onRemoved: event('windowRemoved') },
@@ -65,9 +65,9 @@ function workerFixture() {
       update: async id => { calls.push(['activate', id]); return { ...tab, id }; },
       remove: async id => { calls.push(['remove', id]); },
       onUpdated: event('updated'), onRemoved: event('removed'), onDetached: event('detached') },
-    debugger: { onDetach: event('debuggerDetach'), attach: async () => {},
+    debugger: { onDetach: event('debuggerDetach'), attach: async () => { await wait('attach'); },
       detach: async () => { if (detachFails) throw new Error('Owned detach failure'); },
-      sendCommand: async (target, method, params) => { calls.push([method, target.tabId, params?.url]); await wait('cdp'); return { result: { value: { blocked: false } } }; } } };
+      sendCommand: async (target, method, params) => { calls.push([method, target.tabId, params?.url]); const held = await wait('cdp'); return { result: { value: { blocked: Boolean(held && blockedHeldResponse) } } }; } } };
   const context = extension('worker', { './policy.js': policy, './uploads.js': { upload() { throw Error('Unexpected upload'); }, clearUploads() {} } },
     { chrome, Date: { now: () => time }, fetch: async () => ({ ok: true, json: async () => ({}) }) },
     'globalThis.probe={setConnection:c=>connection=c,execute,pause,resume,stop,initialized};');
@@ -76,7 +76,7 @@ function workerFixture() {
   context.probe.setConnection(connection);
   return { ...context.probe, connection, calls, listeners,
     hold(name) { let enter, release; const entered = new Promise(r => enter = r), promise = new Promise(r => release = r); gate = { name, enter, promise }; return { entered, release }; },
-    expire() { time = 3000; }, failDetach(value) { detachFails = value; },
+    expire() { time = 3000; }, blockHeldResponse() { blockedHeldResponse = true; }, failDetach(value) { detachFails = value; },
     command(action, args = {}) { return { id: 'owned-command', action, args, connectionEpoch: connection.epoch, expiresAt: time + 1000 }; } };
 }
 for (const [action, hold] of [['navigate', 'get'], ['newPage', 'query'], ['activatePage', 'get'], ['closePage', 'get'], ['pointer', 'cdp'], ['fill', 'cdp'], ['scroll', 'cdp'], ['key', 'cdp'], ['capture', 'cdp']]) {
@@ -130,4 +130,21 @@ test('F09: popup discloses failed disconnect and keeps a usable retry', async ()
   assert.equal(elements.get('disconnect').textContent, 'Retry disconnect'); assert.equal(elements.get('resume').hidden, true);
   failure = false; await elements.get('disconnect').listeners.click();
   assert.equal(elements.get('disconnect').hidden, true); assert.equal(elements.get('connect').disabled, false);
+});
+
+test('F08: a pending debugger attach is detached by Pause before Resume', async () => {
+  const f = workerFixture(); await f.initialized; const gate = f.hold('attach');
+  const operation = f.execute(f.connection, f.command('navigate', { url: 'https://fixture.invalid/stale' }));
+  const rejected = assert.rejects(operation, /paused|expired/);
+  await gate.entered;
+  const pausing = f.pause(f.connection); gate.release(); await pausing; await f.resume(f.connection); await rejected;
+  assert.ok(!f.calls.some(([method]) => method === 'Page.navigate'));
+  await f.stop(); assert.deepEqual([...f.connection.attached], []);
+});
+test('F08: a stale authentication response cannot pause the resumed epoch', async () => {
+  const f = workerFixture(); await f.initialized; const gate = f.hold('cdp'); f.blockHeldResponse();
+  const operation = f.execute(f.connection, f.command('navigate', { url: 'https://fixture.invalid/stale' }));
+  const rejected = assert.rejects(operation, /expired/);
+  await gate.entered; await f.pause(f.connection); await f.resume(f.connection); gate.release(); await rejected;
+  assert.equal(f.connection.paused, false); await f.stop();
 });

@@ -40,7 +40,9 @@ async function resume(current: Connection): Promise<void> {
     await api(current, `connections/${current.id}/state`, { paused: false, epoch: current.epoch });
     check(current, access);
     await chrome.storage.session.set({ connection: current });
+    check(current, access);
     await chrome.action.setBadgeText({ text: "ON" });
+    check(current, access);
   } catch (error) { await pause(current); throw error; }
 }
 const api = async (current: Connection, path: string, body: unknown = {}) => {
@@ -110,7 +112,9 @@ const cdp = async (current: Connection, access: Access, method: string, params?:
     await scopedTab(current, tabId, access);
   }
   check(current, access);
-  return chrome.debugger.sendCommand({ tabId }, method, params);
+  const result = await chrome.debugger.sendCommand({ tabId }, method, params);
+  check(current, access);
+  return result;
 };
 async function pages(current: Connection, access: Access): Promise<unknown> {
   check(current, access);
