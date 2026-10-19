@@ -61,7 +61,7 @@ test('Q05 interrupted outcomes do not claim an account quota or completed work a
     assert.match(explanation, /retry could repeat work/u);
   }
 });
-test('Q05 real Claude validation boundary uses only a local fake executable and honest limited-request wording', { timeout: 30000, skip: process.platform === 'win32' ? 'POSIX executable fixture; normalization checks remain platform-independent' : false }, async t => {
+test('Q05 real Claude validation boundary uses only a local fake executable and honest limited-request wording', { timeout: 30000, skip: process.platform === 'win32' || /\s/u.test(process.execPath) ? 'Fixture requires a POSIX shebang with a whitespace-free Node executable; normalization checks remain portable' : false }, async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-q05-validation-')); let passed = false;
   t.after(async () => { if (passed) await rm(root, { recursive: true, force: true }); else t.diagnostic('Retained owned fixture: ' + root); });
   const bin = path.join(root, 'fake-claude');
@@ -78,5 +78,6 @@ test('Q05 real Claude validation boundary uses only a local fake executable and 
     }
     assert.equal(handles.length, 3);
   } finally { await Promise.all(handles.map(handle => handle.close())); }
+  assert.ok(handles.every(handle => !handle.isAlive()), 'Owned validation process remains alive');
   passed = true;
 });
