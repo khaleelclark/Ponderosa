@@ -774,6 +774,14 @@
       "moduleBase": "packages/agents/package.json",
       "requirements": "Node24, built better-sqlite3; owned cache copies only; intentional Linux SIGBUS control in a bounded child with core dumps disabled; no provider account",
       "origin": "F04 native image isolation from writable build cache before packaging and installed verification"
+    },
+    {
+      "path": "tests/agents/context-allocation.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces and installed TypeScript; controlled recovery stores and verified artifact boundary; no provider account",
+      "origin": "Q08/Q09: bounded recovery scans and deferred correlated-result text allocation"
     }
   ],
   "retainedReleasePayload": [

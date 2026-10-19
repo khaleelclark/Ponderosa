@@ -199,7 +199,7 @@ export async function resolveCoordinationResultArtifacts(input: {
       mediaType: artifact.mediaType,
       byteLength: authoritative.byteLength,
       sha256: authoritative.contentHash,
-      content: authoritative.body.toString("utf8"),
+      get content() { return authoritative.body.toString("utf8"); },
       localPath: runtimeAttachmentProviderPath(authoritative.localPath),
     });
   }
