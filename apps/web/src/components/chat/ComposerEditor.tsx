@@ -612,14 +612,14 @@ function ComposerMentionToken({
         boxShadow: valid
           ? "inset 0 0 0 1px rgba(127, 196, 142, .18)"
           : undefined,
-        fontSize: 16,
+        fontSize: "inherit",
         fontWeight: 700,
         lineHeight: "22px",
         verticalAlign: "top",
         whiteSpace: "nowrap",
       }}
     >
-      <Box component="span" sx={{ px: 0.75, overflow: "hidden", textOverflow: "ellipsis" }}>
+      <Box component="span" sx={{ px: 0.5, overflow: "hidden", textOverflow: "ellipsis" }}>
         #{handle}
       </Box>
       <Box
@@ -639,7 +639,7 @@ function ComposerMentionToken({
           justifyContent: "center",
           alignSelf: "center",
           ml: -0.25,
-          mr: 0.5,
+          mr: 0.375,
           p: 0,
           border: 0,
           bgcolor: "transparent",
@@ -661,7 +661,7 @@ function ComposerMentionToken({
           },
         }}
       >
-        <CancelIcon sx={{ fontSize: 18 }} />
+        <CancelIcon sx={{ fontSize: 14 }} />
       </Box>
     </Box>
   );
