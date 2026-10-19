@@ -27,6 +27,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
+import { copyText } from "../clipboard";
 import {
   loadLatestProviderUsage,
   providerUsageRefreshInterval,
@@ -128,9 +129,9 @@ export function ProviderUsageCard({
   const reading = usageData(state);
   const failure = state.status === "stale" || state.status === "unavailable" ? state.failure : undefined;
   const actions = failure ? failureActions(failure.code) : undefined;
-  const copySupportReport = () => {
-    if (!failure) return;
-    void navigator.clipboard.writeText(JSON.stringify({
+  const reportCopy = useMutation({ mutationKey: ["copy-support-report", state.provider, state.status, failure?.correlationId], mutationFn: async () => {
+    if (!failure) throw new Error("No support report is available.");
+    await copyText(JSON.stringify({
       provider: state.provider,
       status: state.status,
       failure: {
@@ -143,7 +144,7 @@ export function ProviderUsageCard({
         runtimeVersion: failure.runtimeVersion,
       },
     }, null, 2));
-  };
+  } });
   return (
     <Paper
       variant="outlined"
@@ -227,9 +228,11 @@ export function ProviderUsageCard({
               <Button size="small" onClick={() => setDiagnosticsOpen(value => !value)}>View Diagnostics</Button>
             ) : null}
             {actions.support ? (
-              <Button size="small" onClick={copySupportReport}>Copy Support Report</Button>
+              <Button size="small" disabled={reportCopy.isPending} onClick={() => reportCopy.mutate()}>Copy Support Report</Button>
             ) : null}
           </Stack>
+          {actions.support && reportCopy.isSuccess ? <Alert severity="success" sx={{ mt: 1 }}>Support report copied.</Alert> : null}
+          {actions.support && reportCopy.isError ? <Alert severity="error" sx={{ mt: 1 }}>Support report could not be copied. Try again or check your browser clipboard permissions.</Alert> : null}
           <Collapse in={diagnosticsOpen}>
             <Box sx={{ mt: 1, p: 1, borderRadius: 1, bgcolor: "action.hover" }}>
               <Typography variant="caption" component="div">Code: {failure.code}</Typography>
