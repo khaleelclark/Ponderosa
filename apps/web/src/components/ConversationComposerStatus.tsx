@@ -1,6 +1,7 @@
 import type { AgentDto, AgentHealthDto, ConversationMessageDto } from "@ponderosa/core";
-import { Box, Tooltip } from "@mui/material";
-import { useEffect, useState } from "react";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import { Box, ButtonBase, Tooltip } from "@mui/material";
+import { useEffect, useRef, useState } from "react";
 import { formatExecutionElapsed } from "../time";
 import { ChatLiveBanner } from "./chat/ChatLiveBanner";
 import { messageDeliveryPhase } from "./messageDeliveryPhase";
@@ -11,6 +12,9 @@ export function MasterRespondingIndicator({ agents, healthByAgentId, messages }:
   messages: ConversationMessageDto[];
 }): JSX.Element | null {
   const [now, setNow] = useState(Date.now());
+  const [open, setOpen] = useState(false);
+  const detailsRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const latest = new Map<string, NonNullable<ConversationMessageDto["deliveryReceipts"]>[number]>();
   for (const message of messages) {
     if (message.role !== "user") continue;
@@ -19,26 +23,46 @@ export function MasterRespondingIndicator({ agents, healthByAgentId, messages }:
   const pending = [...latest.values()].flatMap(receipt => {
     const phase = messageDeliveryPhase(receipt);
     const activity = healthByAgentId.get(receipt.targetAgentId)?.runtimeActivity;
-    if (!phase || (phase === "Working" && activity?.executionId !== receipt.executionId)) return [];
+    if (phase !== "Working" || !activity || activity.executionId !== receipt.executionId) return [];
     return [{ receipt, phase, name: agents.find(agent => agent.id === receipt.targetAgentId)?.title ?? "Agent",
-      since: phase === "Working" ? activity!.startedAt : receipt.updatedAt }];
+      since: activity.startedAt }];
   });
   const ticking = pending.length > 0;
   useEffect(() => {
-    if (!ticking) return;
+    if (!ticking) { setOpen(false); return; }
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, [ticking]);
-  if (!pending.length) return null;
-  return <ChatLiveBanner>
-    <Tooltip title="Status follows this message’s delivery. Working requires provider acknowledgement on its exact active execution; quiet output is not a failure.">
-      <Box component="span" tabIndex={0} role="status">
-        {pending.map(({ receipt, phase, name, since }) => <Box component="span" key={receipt.activationId} sx={{ mr: 1 }}>
-          <Box component="span" title={name} sx={{ display: "inline-block", maxWidth: "min(20ch, 100%)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", verticalAlign: "bottom" }}>{name}</Box> · {phase} · <Box component="span" sx={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-            {formatExecutionElapsed(since, now)}
-          </Box>
-        </Box>)}
-      </Box>
-    </Tooltip>
-  </ChatLiveBanner>;
+  const summary = pending.length === 1 ? `${pending[0]!.name} is working` : `${pending.length} agents are working`;
+  const announcement = pending.length ? summary : "No agents are working";
+  return <>
+    <Box role="status" aria-live="polite" aria-atomic="true"
+      sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{announcement}</Box>
+    {pending.length ? <Box sx={{ containerType: "inline-size" }}>
+      <ChatLiveBanner singleLine>
+        <Tooltip describeChild open={open} onOpen={() => setOpen(true)} onClose={() => setOpen(false)} disableTouchListener
+          slotProps={{ tooltip: { sx: { maxWidth: "min(360px, calc(100vw - 32px))", p: 1 } } }}
+          title={<Box ref={detailsRef} tabIndex={0} onKeyDown={event => { if (event.key === "Escape") triggerRef.current?.focus(); }}
+            sx={{ maxHeight: "min(320px, 50vh)", overflowY: "auto", overflowWrap: "anywhere" }}>
+            {pending.map(({ receipt, phase, name, since }) => <Box key={receipt.targetAgentId} sx={{ display: "flex", alignItems: "baseline", gap: 0.5, py: 0.25 }}>
+              <InfoOutlinedIcon color="info" sx={{ fontSize: 14, flexShrink: 0, alignSelf: "flex-start", mt: 0.25 }} />
+              <Box component="span" sx={{ minWidth: 0 }}>{name} — {phase} · {formatExecutionElapsed(since, now)}</Box>
+            </Box>)}
+          </Box>}>
+          <ButtonBase ref={triggerRef} aria-label={summary} aria-expanded={open} onClick={() => setOpen(true)}
+            onKeyDown={event => { if (event.key === "ArrowDown") { event.preventDefault(); detailsRef.current?.focus(); } }}
+            sx={{ minWidth: 0, maxWidth: "100%", gap: 0.75, color: "inherit", font: "inherit", pointerEvents: "auto", borderRadius: 1,
+              "&.Mui-focusVisible": { outline: "2px solid", outlineColor: "info.main", outlineOffset: 2 } }}>
+            {pending.length === 1 ? <>
+              <Box component="span" sx={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pending[0]!.name}</Box>
+              <Box component="span" sx={{ flexShrink: 0 }}>is working</Box>
+            </> : <Box component="span" sx={{ whiteSpace: "nowrap" }}>{summary}</Box>}
+            <Box component="span" aria-hidden="true" sx={{ flexShrink: 0, fontVariantNumeric: "tabular-nums", "@container (max-width: 260px)": { display: "none" } }}>
+              · {formatExecutionElapsed(pending.reduce((first, row) => row.since < first ? row.since : first, pending[0]!.since), now)}
+            </Box>
+          </ButtonBase>
+        </Tooltip>
+      </ChatLiveBanner>
+    </Box> : null}
+  </>;
 }

@@ -169,11 +169,43 @@ test('UI004 footer never borrows an earlier busy Run for a later queued message'
   const message = deliveryReceipts => ({ role: 'user', deliveryReceipts });
   const active = { activationId: 'old', targetAgentId: 'a', state: 'delivered', injectionKind: 'turn', providerAcknowledged: true, injectionId: 'i', executionId: 'earlier' };
   const render = messages => h.render(() => module.MasterRespondingIndicator({ ...props, messages }));
-  assert.match(text(render([message([active])])), /Working/u);
-  assert.match(text(render([message([active]), message([{ ...active, activationId: 'later', state: 'queued', executionId: undefined }])])), /Waiting/u);
-  assert.doesNotMatch(text(render([message([active]), message([{ ...active, activationId: 'later', state: 'queued', executionId: undefined }])])), /Working/u);
-  assert.equal(render([message([{ ...active, executionId: 'different' }])]), null);
-  assert.equal(render([message([{ ...active, state: 'processed' }])]), null);
+  assert.match(text(render([message([active])])), /Reader is working/u);
+  for (const messages of [[message([active]), message([{ ...active, activationId: 'later', state: 'queued', executionId: undefined }])],
+    [message([{ ...active, executionId: 'different' }])], [message([{ ...active, state: 'processed' }])]]) {
+    const nodes = [...walk(render(messages))];
+    assert.ok(!nodes.some(node => node.type === mui.Tooltip), 'Only current acknowledged Working agents have a footer banner; Waiting remains on message delivery');
+    assert.equal(text(nodes.find(node => node.props.role === 'status')), 'No agents are working');
+  }
+});
+
+test('working summary deduplicates stable IDs and shares exact rows, phases and timer-free announcements', () => {
+  const h = hooks(), module = load('components/ConversationComposerStatus.tsx', {
+    react: h.react, '../time': { formatExecutionElapsed: () => '0:01' }, './chat/ChatLiveBanner': { ChatLiveBanner: mui.Box },
+  });
+  const agents = ['a', 'b', 'c', 'd'].map(id => ({ id, title: id === 'a' ? 'Boston' : 'Same long name '.repeat(30) }));
+  const active = agents.map(agent => ({ activationId: 'turn-' + agent.id, targetAgentId: agent.id, state: 'delivered', injectionKind: 'turn', providerAcknowledged: true, injectionId: 'i-' + agent.id, executionId: 'run-' + agent.id }));
+  const healthByAgentId = new Map(agents.map(agent => [agent.id, { runtimeActivity: { executionId: 'run-' + agent.id, startedAt: '2026-10-19T00:00:00Z' } }]));
+  const render = (receipts, role = 'user') => [...walk(h.render(() => module.MasterRespondingIndicator({ agents, healthByAgentId, messages: [{ role, deliveryReceipts: receipts }] })))];
+  for (const count of [1, 2, 4]) {
+    const nodes = render([...active.slice(0, count), ...active.slice(0, count)]);
+    const trigger = nodes.find(node => node.type === mui.ButtonBase), tooltip = nodes.find(node => node.type === mui.Tooltip);
+    assert.equal(trigger.props['aria-label'], count === 1 ? 'Boston is working' : `${count} agents are working`);
+    assert.equal(tooltip.props.describeChild, true);
+    const rows = React.Children.toArray(tooltip.props.title.props.children);
+    assert.deepEqual(rows.map(row => row.key.replace(/^\.\$/, '')), agents.slice(0, count).map(agent => agent.id));
+    for (let i = 0; i < count; i++) assert.match(text(rows[i]), new RegExp(agents[i].title + ' — Working'));
+    const live = nodes.find(node => node.props['aria-live'] === 'polite');
+    assert.ok(!text(live).includes('0:01'), 'Elapsed ticks cannot mutate the live announcement');
+  }
+  for (const receipts of [[{ ...active[0], providerAcknowledged: false }], [{ ...active[0], injectionKind: 'steer' }],
+    [{ ...active[0], state: 'preparing' }], [{ ...active[0], state: 'queued' }], []]) {
+    assert.ok(!render(receipts).some(node => node.type === mui.Tooltip));
+  }
+  assert.ok(!render(active, 'assistant').some(node => node.type === mui.Tooltip));
+  assert.equal(render([active[0], { ...active[0], state: 'processed' }, active[1]]).find(node => node.type === mui.ButtonBase).props['aria-label'], `${agents[1].title} is working`);
+  render(active).find(node => node.type === mui.Tooltip).props.onOpen();
+  render(active).find(node => node.type === mui.ButtonBase).props.onClick();
+  assert.equal(render(active).find(node => node.type === mui.Tooltip).props.open, true, 'Clicking after hover or keyboard focus must not close the details');
 });
 
 test('UI004 another receipt changing cannot rerender an unchanged retained row or roll back newer history', () => {
