@@ -111,15 +111,15 @@ export default function PdfPreview({ url, title }: { url: string; title: string 
         setPageNumber(value => value + 1);
       }}>Next page</Button>
     </Stack> : null}
-    <Box sx={{ position: "relative", minHeight: error ? 0 : 120 }}>
-      {!error && rendering ? <Stack role="status" direction="row" spacing={1} sx={{ position: "absolute", inset: 0, alignItems: "center", justifyContent: "center", p: 2 }}><CircularProgress size={20}/><Typography>Loading PDF…</Typography></Stack> : null}
-      <Box component="canvas" ref={canvas} role="img" aria-label={`${title}, page ${pageNumber}`} aria-describedby={textId} sx={{ display: error ? "none" : "block", visibility: rendering ? "hidden" : "visible", maxWidth: "100%", mx: "auto", bgcolor: "white" }}/>
-    </Box>
     <Box id={textId}>
       {text === "unavailable" ? <Alert severity="warning">Text for this PDF page could not be extracted. Use Open or Download to read it in another viewer.</Alert>
         : text?.truncated ? <Alert severity="info">This PDF page's text preview is incomplete. Use Open or Download for the complete document.</Alert>
         : text && !text.text ? <Alert severity="info">No text was found on this PDF page. Use Open or Download to inspect the original document.</Alert> : null}
       <Box sx={{ position: "absolute", width: "1px", height: "1px", overflow: "hidden", clipPath: "inset(50%)" }}>{text && text !== "unavailable" ? text.text : ""}</Box>
+    </Box>
+    <Box sx={{ position: "relative", minHeight: error ? 0 : 120 }}>
+      {!error && rendering ? <Stack role="status" direction="row" spacing={1} sx={{ position: "absolute", inset: 0, alignItems: "center", justifyContent: "center", p: 2 }}><CircularProgress size={20}/><Typography>Loading PDF…</Typography></Stack> : null}
+      <Box component="canvas" ref={canvas} role="img" aria-label={`${title}, page ${pageNumber}`} aria-describedby={textId} sx={{ display: error ? "none" : "block", visibility: rendering ? "hidden" : "visible", maxWidth: "100%", mx: "auto", bgcolor: "white" }}/>
     </Box>
   </Box>;
 }

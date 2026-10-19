@@ -125,6 +125,7 @@ for (const [text, message] of [
   assert.match(f.html, /id="owned-pdf-text"/);
   assert.match(f.html, /Open or Download/);
   assert.match(f.html, /<canvas/);
+  assert.ok(f.html.indexOf(message) < f.html.indexOf("<canvas"), "Disclosure stays above a tall page canvas");
 });
 test('PDF complete and pending text do not falsely disclose a failure or partial page', () => {
   for (const text of [undefined, { text: 'Complete page text', truncated: false }]) {
