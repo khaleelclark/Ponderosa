@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import { prunePackageManagerMetadata, pruneNativeBuildFiles, assertNoBuildMachinePaths } from "./bundle-privacy.mjs";
 import { assertBuildVersion, resolveBetaVersion } from "./beta-version.mjs";
 import { auditPortableSymlinkTree } from "./qualification/symlink-portability.mjs";
+import { isolateNativeImages } from "./qualification/native-image-isolation.mjs";
 import { writeDependencyNotices } from "./third-party-notices.mjs";
 import { firstPartyNotices, verifyFirstPartyNotices } from "./qualification/first-party-notices.mjs";
 
@@ -312,6 +313,7 @@ function nativeHostIdentity(addon) {
 }
 
 for (const target of [serverTarget, launcherTarget]) {
+  isolateNativeImages(target);
   // Package-manager state and native compiler intermediates are not runtime data.
   prunePackageManagerMetadata(target);
   const require = createRequire(path.join(target, "package.json"));

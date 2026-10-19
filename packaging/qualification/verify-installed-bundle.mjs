@@ -20,6 +20,7 @@ import {
   macosDeploymentTargets,
 } from "./macos-deployment-target.mjs";
 import { auditPortableSymlinkTree } from "./symlink-portability.mjs";
+import { assertIndependentNativeImages } from "./native-image-isolation.mjs";
 import { verifyFirstPartyNotices } from "./first-party-notices.mjs";
 
 const { values } = parseArgs({
@@ -98,6 +99,7 @@ pass(
   "symlink-portability",
   `${installedSymlinks.symlinkCount} relative in-root symlinks passed before dependency loading`,
 );
+pass("native-image-isolation", `${assertIndependentNativeImages(installRoot)} native images have independent inodes`);
 
 const schemaPath = path.join(installRoot, "schema", manifest.databaseSchemaVersion);
 assert(existsSync(schemaPath), "Launch-baseline schema is missing.");
