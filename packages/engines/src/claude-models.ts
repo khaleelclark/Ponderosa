@@ -197,7 +197,7 @@ function validationError(
       case "authentication":
         return "Claude authentication has expired. Sign in with Claude Code, then retry validation.";
       case "rate_limit":
-        return "Claude usage limit was reached. Wait for the limit to reset, then retry validation.";
+        return "Claude limited the request. Wait before retrying validation; check provider usage information for any reset time.";
       case "capacity":
         return "Claude is temporarily at capacity. Retry validation when capacity is available.";
       case "context_length":

@@ -1,0 +1,129 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import vm from 'node:vm';
+import '../shared/web-typescript-loader.mjs';
+import { runQueuedMessageCommand } from '../../apps/web/src/components/queuedMessageCommandAttempts.ts';
+import * as chatState from '../../apps/web/src/chatState.ts';
+import * as tracker from '../../apps/web/src/components/activeOperationTracker.ts';
+import { ApiRequestError } from '../../apps/web/src/api/types.ts';
+import { queryKeys } from '../../apps/web/src/queryKeys.ts';
+const require = createRequire(new URL('../../apps/web/package.json', import.meta.url));
+const ts = require('typescript'), React = require('react');
+const widget = name => Object.assign(() => null, { displayName: name });
+const mui = new Proxy({}, { get: (target, name) => target[name] ??= widget(name) });
+function load(relative, imports = {}, globals = {}) {
+  const exports = {};
+  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/' + relative, import.meta.url), 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+  }).outputText, { exports, Error, Event, ...globals, require: name => {
+    if (name in imports) return imports[name];
+    if (name === '@mui/material') return mui;
+    if (name === '@mui/material/styles') return { alpha: value => value };
+    if (name.startsWith('@mui/icons-material/')) return { __esModule: true, default: widget('Icon') };
+    return require(name);
+  } });
+  return exports;
+}
+function hooks() {
+  const state = []; let index = 0;
+  const useState = initial => { const i = index++; if (!(i in state)) state[i] = typeof initial === 'function' ? initial() : initial; return [state[i], value => { state[i] = typeof value === 'function' ? value(state[i]) : value; }]; };
+  return { react: { ...React, useState, useRef: value => useState(() => ({ current: value }))[0], useEffect() {}, useMemo: fn => fn() }, render(fn) { index = 0; return fn(); } };
+}
+function* walk(node) {
+  if (!React.isValidElement(node)) return;
+  yield node; for (const child of React.Children.toArray(node.props.children)) yield* walk(child);
+}
+const text = node => React.isValidElement(node) ? React.Children.toArray(node.props.children).map(text).join('') : String(node ?? '');
+const client = { invalidateQueries: async () => {} };
+const receipt = extra => ({ activationId: 'delivery-a', targetAgentId: 'agent-a', attemptCount: 6, ...extra });
+function status(extra, api = {}) {
+  const h = hooks(), module = load('components/MessageDeliveryStatus.tsx', {
+    react: h.react, '@tanstack/react-query': { useQueryClient: () => client }, '../api': { api }, '../queryKeys': { queryKeys }, '../clientId': { createClientId: () => 'fixture-id' },
+  });
+  return () => [...walk(h.render(() => module.MessageDeliveryStatus({ projectId: 'project', receipts: [receipt(extra)], recipientName: () => 'Reader' })))];
+}
+for (const [extra, expected, compact] of [
+  [{ state: 'run_unconfirmed', providerAcknowledged: true }, /lost contact before confirming whether the work finished/u, 'Work unconfirmed'],
+  [{ state: 'retry_exhausted', providerAcknowledged: true }, /after 6 attempts; automatic recovery stopped/u, 'Reply exhausted'],
+  [{ state: 'cancelled', providerAcknowledged: false }, /cancelled/u, 'Cancelled'],
+  [{ state: 'cancelled', providerAcknowledged: true, runStopState: 'stopping' }, /termination has not been confirmed/u, 'Delivered · Stopping'],
+  [{ state: 'cancelled', providerAcknowledged: true, runStopState: 'unconfirmed' }, /whether its work stopped is unconfirmed/u, 'Delivered · Stop unconfirmed'],
+]) test(`Q01 actual delivery view distinguishes ${compact}`, () => {
+  const nodes = status(extra)(), announcement = nodes.find(node => node.props.role === 'status');
+  assert.equal(announcement.props['aria-live'], 'polite'); assert.match(text(announcement), expected);
+  assert.ok(nodes.some(node => node.type === mui.Typography && text(node) === compact));
+});
+test('Q01 uncertain-work retry requires explicit confirmation and retains its identity after a lost response', async () => {
+  const calls = []; let fail = true;
+  const render = status({ state: 'retry_exhausted', providerAcknowledged: true, canRetry: true, retryMayDuplicate: true }, { retryMessageDelivery: async (project, activation, body) => { calls.push({ project, activation, ...body }); if (fail) throw Error('Accepted retry response lost'); } });
+  const button = label => render().find(node => node.type === mui.Button && text(node) === label);
+  button('Try Work Again').props.onClick(); assert.equal(calls.length, 0);
+  assert.equal(render().find(node => node.type === mui.Dialog).props.open, true);
+  button('Cancel').props.onClick(); assert.equal(calls.length, 0);
+  button('Try Work Again').props.onClick(); button('Try Again Anyway').props.onClick(); await new Promise(setImmediate);
+  assert.ok(render().some(node => node.type === mui.Alert && text(node).includes('response lost')));
+  fail = false; button('Try Again Anyway').props.onClick(); await new Promise(setImmediate);
+  assert.equal(calls.length, 2); assert.deepEqual(calls[1], calls[0]);
+  assert.equal(calls[0].idempotencyKey, 'operator-delivery-retry:delivery-a');
+  assert.equal(render().find(node => node.type === mui.Dialog).props.open, false);
+});
+test('Q01 partial Stop retries only the unresolved observed Run with its original key, including after replacement', async () => {
+  const h = hooks(), calls = []; let retry = false, id = 0;
+  const health = new Map(['a','b'].map(agentId => [agentId, { runtimeActivity: { executionId: 'old-' + agentId } }]));
+  const module = load('components/useActiveOperationController.ts', {
+    react: h.react, '@tanstack/react-query': { useQueryClient: () => client, useQuery: () => ({}) }, '../api': { api: { cancelRun: async (agentId, body) => {
+      calls.push({ agentId, ...body }); if (agentId === 'b') { if (!retry) throw Error('Cancel acknowledgement lost'); throw new ApiRequestError(409, 'Observed Run is no longer active'); }
+    } } }, '../api/types': { ApiRequestError }, '../api/backgroundCooldown': { backgroundCooldownRemaining: () => 0 }, '../clientId': { createClientId: () => 'stop-key-' + ++id }, '../queryKeys': { queryKeys }, './activeOperationTracker': tracker,
+  });
+  const render = () => h.render(() => module.useActiveOperationController({ activeScopeId: 'chat', healthByAgentId: health, receiptSources: [], agentTitle: id => id, invalidate() {} }));
+  render().setActiveOperation(tracker.createActiveOperationTracker('delivery', ['a','b'], health, Date.now(), 'chat'));
+  await render().stopOperation(); assert.equal(calls.length, 0);
+  await render().cancelOperationTargets(render().stopConfirmation.targets);
+  assert.deepEqual(Array.from(render().stopConfirmation.targets, target => ({ ...target })), [{ agentId: 'b', runId: 'old-b' }]);
+  assert.match(render().cancelOperationError.message, /acknowledgement lost/u);
+  retry = true; health.delete('a'); health.set('b', { runtimeActivity: { executionId: 'replacement-b' } });
+  await render().cancelOperationTargets(render().stopConfirmation.targets);
+  assert.notEqual(calls[0].idempotencyKey, calls[1].idempotencyKey);
+  assert.equal(calls.length, 3); assert.equal(calls[2].agentId, 'b'); assert.equal(calls[2].targetRunId, 'old-b'); assert.equal(calls[2].idempotencyKey, calls[1].idempotencyKey);
+  assert.equal(render().stopConfirmation, undefined); assert.equal(render().cancelOperationError, undefined);
+  await render().stopOperation(); assert.equal(calls.length, 3, 'Replacement work must not become a cancellation target');
+});
+class Storage {
+  values = new Map(); get length() { return this.values.size; } key(i) { return [...this.values.keys()][i] ?? null; }
+  getItem(key) { return this.values.get(key) ?? null; } setItem(key, value) { this.values.set(key, String(value)); } removeItem(key) { this.values.delete(key); }
+}
+test('Q01 captured unknown submissions survive module reload with exact scope/order and fail closed on storage refusal', async t => {
+  const previous = globalThis.window, window = Object.assign(new EventTarget(), { localStorage: new Storage() }); globalThis.window = window;
+  t.after(() => { if (previous === undefined) delete globalThis.window; else globalThis.window = previous; });
+  const open = () => load('components/chat/submissionOutbox.ts', { '../../chatState.js': chatState }, { window });
+  const first = { version: 1, scope: 'chat-a', storageKey: 'draft-a', ownerId: 'owner', clientId: 'tab', createdAt: 1, action: 'send', text: 'Exact first text', editorText: 'Exact first text', attachmentNames: [], mentionedAgents: [], newAgentRequested: false, pending: { fingerprint: 'a'.repeat(64), idempotencyKey: 'first-key' }, status: 'unknown', dispatchStarted: true };
+  const second = { ...first, createdAt: 2, pending: { ...first.pending, idempotencyKey: 'second-key' } };
+  const elsewhere = { ...first, scope: 'chat-b', pending: { ...first.pending, idempotencyKey: 'elsewhere-key' } };
+  const initial = open(); for (const item of [first, second, elsewhere]) initial.saveCapturedSubmission(item);
+  const reloaded = open(); let calls = 0;
+  assert.equal(reloaded.readCapturedSubmissions('chat-a', 'owner').length, 2); assert.equal(reloaded.readCapturedSubmissions('chat-a', 'other-owner').length, 0);
+  await assert.rejects(reloaded.runCapturedSubmission(second, async () => calls++), /earlier captured message/u); assert.equal(calls, 0);
+  await assert.rejects(reloaded.runCapturedSubmission(first, async () => { calls++; throw Error('Accepted response lost'); }), /response lost/u);
+  assert.equal(open().readCapturedSubmissions('chat-a', 'owner')[0].pending.idempotencyKey, 'first-key');
+  assert.equal(open().readCapturedSubmissions('chat-a', 'owner')[0].text, first.text);
+  const final = open(); await final.runCapturedSubmission(first, async () => { final.removeCapturedSubmission(first.pending.idempotencyKey); });
+  await final.runCapturedSubmission(second, async () => { calls++; final.removeCapturedSubmission(second.pending.idempotencyKey); });
+  assert.equal(final.readCapturedSubmissions('chat-a', 'owner').length, 0); assert.equal(final.readCapturedSubmissions('chat-b', 'owner').length, 1);
+  window.localStorage.setItem = () => { throw Error('Quota refused'); };
+  assert.throws(() => final.saveCapturedSubmission(first), /could not be saved for recovery/u);
+});
+test('Q01 mounted queue-edit retries retain their exact key and a stale completion cannot retire a newer intent', async () => {
+  const registry = new Map(), requests = []; let id = 0;
+  const edit = text => ({ command: 'edit', deliveryId: 'delivery', text });
+  await assert.rejects(runQueuedMessageCommand(registry, edit('Exact text'), () => 'edit-' + ++id, async body => { requests.push(body); throw Error('Response lost'); }), /Response lost/u);
+  await runQueuedMessageCommand(registry, edit('Exact text'), () => 'edit-' + ++id, async body => requests.push(body));
+  assert.equal(requests[0].idempotencyKey, requests[1].idempotencyKey); assert.equal(registry.size, 0);
+  let release; const gate = new Promise(resolve => release = resolve);
+  const old = runQueuedMessageCommand(registry, edit('Older edit'), () => 'edit-' + ++id, async () => gate);
+  await assert.rejects(runQueuedMessageCommand(registry, edit('Newer edit'), () => 'edit-' + ++id, async body => { requests.push(body); throw Error('Response lost'); }));
+  const newer = requests.at(-1).idempotencyKey; release(); await old;
+  await runQueuedMessageCommand(registry, edit('Newer edit'), () => 'edit-' + ++id, async body => requests.push(body));
+  assert.equal(requests.at(-1).idempotencyKey, newer); assert.equal(registry.size, 0);
+});

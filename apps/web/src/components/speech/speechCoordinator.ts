@@ -32,9 +32,12 @@ export function releaseSpeechSurface(ownerId: string): void {
   if (active?.id === ownerId) stopSpeech(ownerId);
 }
 export function pauseSpeech(): void {
-  if (!active) return;
-  if (active.utterance) window.speechSynthesis.pause();
-  publish({ ...snapshot, status: "paused" });
+  const owner = active;
+  if (!owner) return;
+  try {
+    if (owner.utterance) window.speechSynthesis.pause();
+    if (active === owner) publish({ ...snapshot, status: "paused" });
+  } catch { fail(owner); }
 }
 export async function resumeSpeech(): Promise<void> {
   const owner = active;
@@ -50,18 +53,23 @@ function fail(owner: Owner): void {
 }
 export function startSpeech(id: string, text: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null): void {
   stopSpeech();
+  if (active) return;
   const owner: Owner = { id };
   active = owner;
   publish({ ownerId: id, status: "loading" });
+  if (active !== owner) return;
   try {
     owner.cleanup = monitorSpeechSurfaceAccessibility(surface, () => stopSpeech(id));
     if (active !== owner) return;
     const utterance = new SpeechSynthesisUtterance(text); owner.utterance = utterance;
     utterance.lang = navigator.language || "en-US";
     utterance.rate = preferences.speed;
-    utterance.onstart = () => { if (active === owner) publish({ ownerId: id, status: "speaking" }); };
+    utterance.onstart = () => { if (active === owner && snapshot.status !== "paused") publish({ ownerId: id, status: "speaking" }); };
     utterance.onend = () => { if (active === owner) stopSpeech(id); };
     utterance.onerror = () => fail(owner);
+    // cancel() removes old utterances but preserves the browser's paused state.
+    if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+    if (active !== owner) return;
     window.speechSynthesis.speak(utterance);
     if (active === owner) publish({ ownerId: id, status: "speaking" });
   } catch { fail(owner); }

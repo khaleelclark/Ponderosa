@@ -58,6 +58,7 @@ interface AgentCoordinationRoutesContext {
     agentId: string,
     options?: { conversationIds?: string[] },
   ): void;
+  appendWorkspace(event: { type: "project_changed"; projectId: string; action: "updated" }): unknown;
   notifyScheduler(): void;
   runAuthorization(capability: AgentMessageCapability): {
     runId: string;
@@ -86,6 +87,7 @@ export function registerAgentCoordinationRoutes(
 ): void {
   const {
     store,
+    appendWorkspace,
     coordinationV3,
     engines,
     deletingAgentIds,
@@ -207,6 +209,7 @@ export function registerAgentCoordinationRoutes(
       }
       const recovered = await reconcileCommittedAgentCreation({
         store,
+        appendWorkspace,
         deletingAgentIds,
         operationId: creationOperation.id,
         projectId: manager.projectId,
@@ -395,6 +398,8 @@ export function registerAgentCoordinationRoutes(
       });
       store.updateAgentCreationOperation(creationOperation.id, { status: "completed", lastError: null });
       deletingAgentIds.delete(child!.id);
+      try { appendWorkspace({ type: "project_changed", projectId: manager.projectId, action: "updated" }); }
+      catch { /* Committed metadata remains visible on refresh. */ }
     } catch (error) {
       store.updateAgentCreationOperation(creationOperation.id, {
         lastError: error instanceof Error ? error.message : "managed Agent projection recovery failed",
