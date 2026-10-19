@@ -129,3 +129,21 @@ test('checks 76, 77: separate Git copy isolates source edits and refuses dirty/u
   const shared = f.ok(await f.api('PATCH', `/api/agents/${agent.id}`, { workingCopyMode: 'shared' })); assert.equal(shared.workingCopy.mode, 'shared');
   await assert.rejects(access(copy), { code: 'ENOENT' }); assert.equal(await readFile(path.join(source, 'tracked.txt'), 'utf8'), 'Original source\n');
 }));
+
+test('working-folder diff and patch previews expose safe UTF-8 text with exact downloads and bounded fallback', options, t => withFixture(t, async f => {
+  const chat = await f.createChat('Diff preview MIME');
+  const diff = '--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-before 😀\n+after 東京\n';
+  for (const [name, bytes, readable] of [
+    ['owned.diff', Buffer.from(diff), true], ['owned.PATCH', Buffer.from(diff), true], ['empty.diff', Buffer.alloc(0), true],
+    ['large.diff', Buffer.from('x'.repeat(2 * 1024 * 1024 + 10)), false], ['invalid.patch', Buffer.from([0xff, 0xfe, 0x80]), false],
+  ]) {
+    await writeFile(path.join(chat.workingDirectory, name), bytes);
+    const info = f.ok(await f.api('GET', `/api/projects/${chat.projectId}/workspace-files/view-info?conversationId=${chat.id}&path=${name}`));
+    assert.equal(info.mediaType, 'text/x-diff');
+    assert.equal(info.previewable, false, 'Diff text is rendered as data, not an active document');
+    assert.equal(info.text, readable ? bytes.toString('utf8') : undefined);
+    assert.equal(info.truncated, !readable);
+    assert.ok(info.downloadUrl);
+    assert.deepEqual((await f.api('GET', info.downloadUrl)).rawBody, bytes);
+  }
+}));
