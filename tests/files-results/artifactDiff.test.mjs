@@ -82,3 +82,17 @@ for (const extension of ['docx', 'pdf', 'png', 'ttf']) test(`canonical recorded 
   assert.match(html, /saved before/); assert.match(html, /saved after/);
   assert.doesNotMatch(html, /Loading Word document|Loading PDF viewer|<img /);
 });
+test('DOCX byte reader does not inherit a cached generic binary-text truncation warning', t => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  t.after(() => client.clear());
+  const artifact = { id: 'cached-docx', kind: 'generated_file', path: 'owned.docx', downloadUrl: '/api/owned/download' };
+  client.setQueryData(queryKeys.projectArtifacts.agentContent('agent', artifact.id), {
+    content: '', contentType: 'text', truncated: true, totalBytes: 774,
+  });
+  let preview;
+  function Probe() { preview = findPreview(AgentArtifactPreview({ artifact, agentId: 'agent', agentTitle: 'Author', projectId: 'project' })); return null; }
+  renderToStaticMarkup(React.createElement(QueryClientProvider, { client }, React.createElement(Probe)));
+  assert.equal(preview.props.truncated, undefined);
+  assert.equal(preview.props.totalBytes, undefined);
+  assert.doesNotMatch(renderToStaticMarkup(preview), /Preview is limited to 2 MiB/);
+});

@@ -71,7 +71,7 @@ export function AgentArtifactPreview({
     retry: false,
   });
   if (!artifact) return <Box sx={{ p: 2 }}><Alert severity="info">Select a file or result to inspect its contents.</Alert></Box>;
-  const content: ArtifactContentDto | undefined = contentQuery.data;
+  const content: ArtifactContentDto | undefined = needsContent ? contentQuery.data : undefined;
   const safeArtifactPath = artifactDisplayPath(artifact, projectRoot);
   const previewContent = artifact.kind === "diff" && content
     ? recordedArtifactDiff(artifact, content.content, safeArtifactPath)
