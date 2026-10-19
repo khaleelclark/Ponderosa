@@ -147,3 +147,59 @@ test('working-folder diff and patch previews expose safe UTF-8 text with exact d
     assert.deepEqual((await f.api('GET', info.downloadUrl)).rawBody, bytes);
   }
 }));
+
+const { validMotionVideo, validAvif } = await import('../../apps/server/dist/image-containers.js');
+const box = (type, content, wide = false) => {
+  const header = Buffer.alloc(wide ? 16 : 8); header.writeUInt32BE(wide ? 1 : header.length + content.length); header.write(type, 4, 'latin1');
+  if (wide) header.writeBigUInt64BE(BigInt(header.length + content.length), 8);
+  return Buffer.concat([header, content]);
+};
+function motionVideo(count, { wide = false, major = 'isom', last = 'isom' } = {}) {
+  const brands = Buffer.alloc(8 + count * 4, 'zzzz'); brands.write(major, 0, 'latin1'); brands.writeUInt32BE(0, 4);
+  if (count) brands.write(last, brands.length - 4, 'latin1');
+  const handler = Buffer.alloc(24); handler.write('vide', 8);
+  return Buffer.concat([box('ftyp', brands, wide), box('moov', box('trak', box('mdia', box('hdlr', handler)))), box('mdat', Buffer.from([1]))]);
+}
+function motionPhoto(jpeg, video) {
+  const xml = `<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:GCamera="http://ns.google.com/photos/1.0/camera/" GCamera:MicroVideo="1" GCamera:MicroVideoVersion="1" GCamera:MicroVideoOffset="${video.length}"/></rdf:RDF></x:xmpmeta>`;
+  const payload = Buffer.from('http://ns.adobe.com/xap/1.0/\0' + xml), segment = Buffer.alloc(4);
+  segment.writeUInt16BE(0xffe1); segment.writeUInt16BE(payload.length + 2, 2);
+  return Buffer.concat([jpeg.subarray(0, 2), segment, payload, jpeg.subarray(2), video]);
+}
+test('Motion Photo brand budget accepts ordinary, near and exact boundaries including extended headers', () => {
+  for (const wide of [false, true]) for (const count of [0, 1, 63, 64]) {
+    const body = motionVideo(count, { wide }), slice = body.subarray.bind(body); let brandReads = 0;
+    body.subarray = (start, end) => { if (start >= (wide ? 16 : 8) && start < (wide ? 16 : 8) + 8 + count * 4 && end - start === 4) brandReads++; return slice(start, end); };
+    assert.equal(validMotionVideo(body), true); assert.equal(brandReads, count + 1);
+    if (count) assert.equal(validMotionVideo(motionVideo(count, { wide, major: 'zzzz', last: 'qt  ' })), true);
+  }
+  assert.equal(validMotionVideo(motionVideo(64, { major: 'zzzz', last: 'zzzz' })), false);
+  const minorOnly = motionVideo(0, { major: 'zzzz' }); minorOnly.write('isom', 12);
+  assert.equal(validMotionVideo(minorOnly), false, 'Minor version cannot authorize a video brand');
+  const avif = Buffer.concat([box('ftyp', Buffer.from('avif\0\0\0\0avif', 'latin1')), box('meta', Buffer.alloc(4)), box('mdat', Buffer.from([1]))]);
+  assert.equal(validAvif(avif, 4096), true);
+});
+test('Motion Photo rejects excessive brands before scanning and retains malformed-container checks', () => {
+  for (const wide of [false, true]) for (const count of [65, 250_000]) {
+    const body = motionVideo(count, { wide }), slice = body.subarray.bind(body); let brandReads = 0;
+    body.subarray = (start, end) => { if (start >= (wide ? 16 : 8) && start < (wide ? 16 : 8) + 8 + count * 4 && end - start === 4) brandReads++; return slice(start, end); };
+    assert.equal(validMotionVideo(body), false); assert.equal(brandReads, 0, 'Oversized region was scanned before rejection');
+  }
+  const valid = motionVideo(64);
+  for (const malformed of [valid.subarray(0, -1), Buffer.concat([valid, Buffer.from([0])]), box('ftyp', Buffer.alloc(9)), box('ftyp', Buffer.alloc(4)), Buffer.concat([valid.subarray(0, 272), valid])]) {
+    assert.equal(validMotionVideo(malformed), false);
+  }
+  const tooLarge = Buffer.from(valid); tooLarge.writeUInt32BE(valid.length + 1); assert.equal(validMotionVideo(tooLarge), false);
+});
+test('Motion Photo upload retains accepted exact bytes and refuses an oversized brand table without harming prior uploads', options, t => withFixture(t, async f => {
+  const chat = await f.createChat('Motion brand boundary'), agent = await f.createIdleAgent(chat, 'Photo reader');
+  const jpeg = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#aabbcc' } }).jpeg().toBuffer();
+  const accepted = [];
+  for (const [name, body] of [['ordinary.jpg', jpeg], ['motion.jpg', motionPhoto(jpeg, motionVideo(64))]]) {
+    const asset = await upload(f, agent, name, body, 'image/jpeg');
+    assert.equal(asset.sha256, createHash('sha256').update(body).digest('hex')); accepted.push([asset, body]);
+  }
+  const refused = await f.api('POST', `/api/agents/${agent.id}/attachments`, motionPhoto(jpeg, motionVideo(65)), { 'content-type': 'application/octet-stream', 'x-ponderosa-filename': 'over-budget.jpg', 'x-ponderosa-media-type': 'image/jpeg' });
+  assert.equal(refused.status, 415);
+  for (const [asset, body] of accepted) assert.deepEqual((await f.api('GET', asset.downloadUrl)).rawBody, body);
+}));
