@@ -758,6 +758,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native workspaces; disposable Fastify/SQLite fixture; no provider account",
       "origin": "F02 organization guidance portability and durable round trips"
+    },
+    {
+      "path": "tests/installation-release/operator-proxy-shutdown.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/native-host; owned POSIX proxy child and local backend/socket only; no provider or app data",
+      "origin": "F03 bounded proxy signal shutdown: HTTP, SSE, partial uploads/headers, established/pending/rejected upgrades and authentication controls"
     }
   ],
   "retainedReleasePayload": [
