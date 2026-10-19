@@ -615,9 +615,11 @@ export class AssetStore {
     }
     const handle = await open(directory, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
     const descriptorPath = `/proc/self/fd/${handle.fd}`;
-    const descriptorRealpath = await realpath(descriptorPath);
-    if (descriptorRealpath !== actual) { await handle.close(); throw new AssetError(409, "asset storage is unavailable"); }
-    return { path: descriptorPath, handle };
+    try {
+      const descriptorRealpath = await realpath(descriptorPath);
+      if (descriptorRealpath !== actual) throw new AssetError(409, "asset storage is unavailable");
+      return { path: descriptorPath, handle };
+    } catch (error) { await handle.close(); throw error; }
   }
 
   /**
@@ -1144,48 +1146,49 @@ export class AssetStore {
     const { name, mediaType, width, height, preview } = prepared;
     const now = Date.now();
     const openedDirectory = await this.safeDirectory(projectId, agentId, true);
-    const directory = openedDirectory.path;
-    const existing = new Map<string, number>();
-    for (const entry of await readdir(directory)) {
-      const match = entry.match(/^([a-f0-9-]{36})\.bin$/); if (!match) continue;
-      const target = path.join(directory, entry); const first = await stat(target); const second = await stat(target);
-      if (!first.isFile() || first.dev !== second.dev || first.ino !== second.ino || first.size !== second.size) throw new AssetError(409, "asset filesystem changed during quota reconciliation");
-      existing.set(match[1]!, second.size);
-    }
-    this.authority.syncAgent(projectId, agentId, existing);
-    const id = randomUUID();
-    const reservationId = (() => { try { return this.authority.reserve(projectId, agentId, id, body.length); } catch (error) { void openedDirectory.handle.close(); throw error; } })();
     try {
-      this.authority.recordAudit(path.join(directory, "audit.jsonl"), projectId, agentId, { action: "upload_reserved", agentId, projectId, at: new Date(now).toISOString() });
-
-      const { originalFile, previewFile: canonicalPreview } = canonicalFiles(id);
-      const previewFile = preview ? canonicalPreview : undefined;
-      const createdAt = new Date().toISOString();
-      const asset: StoredAsset = {
-        id, projectId, agentId, ...(input.conversationId ? { conversationId: input.conversationId } : {}), name, mediaType, size: body.length, width, height,
-        sha256: createHash("sha256").update(body).digest("hex"), state: "staged", createdAt,
-        originalFile, previewFile,
-        ...assetUrls(agentId, id, Boolean(previewFile), input.conversationId),
-        ...(!input.conversationId && previewFile ? { url: `/api/agents/${encodeURIComponent(agentId)}/attachments/${id}` } : {}),
-      };
-      await writeAtomic(path.join(directory, originalFile), body);
-      try {
-        if (preview && previewFile) await writeAtomic(path.join(directory, previewFile), preview);
-        await writeAtomic(path.join(directory, `${id}.json`), JSON.stringify(asset));
-        // Persist all staged names (content, optional preview, and metadata)
-        // before quota state can make this asset authoritative.
-        await this.syncDirectory(openedDirectory.handle);
-        this.authority.settle(reservationId);
-      } catch (error) {
-        await Promise.allSettled([unlink(path.join(directory, originalFile)), previewFile ? unlink(path.join(directory, previewFile)) : Promise.resolve(), unlink(path.join(directory, `${id}.json`))]);
-        throw error;
+      const directory = openedDirectory.path;
+      const existing = new Map<string, number>();
+      for (const entry of await readdir(directory)) {
+        const match = entry.match(/^([a-f0-9-]{36})\.bin$/); if (!match) continue;
+        const target = path.join(directory, entry); const first = await stat(target); const second = await stat(target);
+        if (!first.isFile() || first.dev !== second.dev || first.ino !== second.ino || first.size !== second.size) throw new AssetError(409, "asset filesystem changed during quota reconciliation");
+        existing.set(match[1]!, second.size);
       }
-      this.authority.recordAudit(path.join(directory, "audit.jsonl"), projectId, agentId, { action: "staged", id, agentId, projectId, size: body.length, mediaType, at: createdAt });
-      return publicDto(asset);
-    } finally {
-      this.authority.release(reservationId);
-      await openedDirectory.handle.close();
-    }
+      this.authority.syncAgent(projectId, agentId, existing);
+      const id = randomUUID();
+      const reservationId = this.authority.reserve(projectId, agentId, id, body.length);
+      try {
+        this.authority.recordAudit(path.join(directory, "audit.jsonl"), projectId, agentId, { action: "upload_reserved", agentId, projectId, at: new Date(now).toISOString() });
+
+        const { originalFile, previewFile: canonicalPreview } = canonicalFiles(id);
+        const previewFile = preview ? canonicalPreview : undefined;
+        const createdAt = new Date().toISOString();
+        const asset: StoredAsset = {
+          id, projectId, agentId, ...(input.conversationId ? { conversationId: input.conversationId } : {}), name, mediaType, size: body.length, width, height,
+          sha256: createHash("sha256").update(body).digest("hex"), state: "staged", createdAt,
+          originalFile, previewFile,
+          ...assetUrls(agentId, id, Boolean(previewFile), input.conversationId),
+          ...(!input.conversationId && previewFile ? { url: `/api/agents/${encodeURIComponent(agentId)}/attachments/${id}` } : {}),
+        };
+        await writeAtomic(path.join(directory, originalFile), body);
+        try {
+          if (preview && previewFile) await writeAtomic(path.join(directory, previewFile), preview);
+          await writeAtomic(path.join(directory, `${id}.json`), JSON.stringify(asset));
+          // Persist all staged names (content, optional preview, and metadata)
+          // before quota state can make this asset authoritative.
+          await this.syncDirectory(openedDirectory.handle);
+          this.authority.settle(reservationId);
+        } catch (error) {
+          await Promise.allSettled([unlink(path.join(directory, originalFile)), previewFile ? unlink(path.join(directory, previewFile)) : Promise.resolve(), unlink(path.join(directory, `${id}.json`))]);
+          throw error;
+        }
+        this.authority.recordAudit(path.join(directory, "audit.jsonl"), projectId, agentId, { action: "staged", id, agentId, projectId, size: body.length, mediaType, at: createdAt });
+        return publicDto(asset);
+      } finally {
+        this.authority.release(reservationId);
+      }
+    } finally { await openedDirectory.handle.close(); }
   }
 
   private stagePortable(
@@ -1415,52 +1418,53 @@ export class AssetStore {
     if (this.portableFiles) return this.reconcilePortable(projectId, agentId, associatedIds, now, retainedStagedIds);
     const openedDirectory = await this.safeDirectory(projectId, agentId).catch(() => undefined);
     if (!openedDirectory) return 0;
-    const directory = openedDirectory.path;
-    let removed = 0;
-    const reachableIds = new Set([
-      ...associatedIds,
-      ...retainedStagedIds,
-      ...this.authority.runtimeAssociatedAssetIds(projectId, agentId),
-    ]);
-    for (const receipt of this.authority.pendingDeletions(projectId, agentId)) {
-      if (reachableIds.has(receipt.assetId)) continue;
-      await this.completeDeletion(receipt);
-      removed += 1;
-    }
-    const entries = await readdir(directory).catch(() => []);
-    const metadataIds = new Set<string>();
-    for (const entry of entries) {
-      if (!entry.endsWith(".json") || !ID.test(entry.slice(0, -5))) continue;
-      const id = entry.slice(0, -5);
-      if (await this.read(projectId, agentId, id)) metadataIds.add(id);
-    }
-    for (const entry of entries) {
-      const raw = entry.match(/^([a-f0-9-]{36})\.(bin|preview\.png)$/);
-      const temporary = entry.endsWith(".tmp");
-      if ((raw && !metadataIds.has(raw[1]!)) || temporary) {
-        const target = path.join(directory, entry);
-        const old = now - await lstat(target).then((item) => item.mtimeMs).catch(() => now) > STAGED_TTL_MS;
-        if (old && raw?.[1] && !reachableIds.has(raw[1])) {
-          const receipt = this.authority.beginDelete(raw[1], projectId, agentId);
-          await this.completeDeletion(receipt);
-          removed++;
-        } else if (old && temporary) {
-          await rm(target, { force: true });
-          removed++;
-        }
-        continue;
+    try {
+      const directory = openedDirectory.path;
+      let removed = 0;
+      const reachableIds = new Set([
+        ...associatedIds,
+        ...retainedStagedIds,
+        ...this.authority.runtimeAssociatedAssetIds(projectId, agentId),
+      ]);
+      for (const receipt of this.authority.pendingDeletions(projectId, agentId)) {
+        if (reachableIds.has(receipt.assetId)) continue;
+        await this.completeDeletion(receipt);
+        removed += 1;
       }
-      if (!entry.endsWith(".json") || entry === "audit.jsonl") continue;
-      const id = entry.slice(0, -5);
-      const asset = await this.read(projectId, agentId, id);
-      if (!asset) continue;
-      if (associatedIds.has(id) && asset.state !== "associated") {
-        await this.associate(projectId, agentId, [id]).catch(() => undefined);
-      } else if (!reachableIds.has(id) && asset.state === "staged" &&
-          now - Date.parse(asset.createdAt) > STAGED_TTL_MS && await this.remove(projectId, agentId, id)) removed++;
-    }
-    await openedDirectory.handle.close();
-    return removed;
+      const entries = await readdir(directory).catch(() => []);
+      const metadataIds = new Set<string>();
+      for (const entry of entries) {
+        if (!entry.endsWith(".json") || !ID.test(entry.slice(0, -5))) continue;
+        const id = entry.slice(0, -5);
+        if (await this.read(projectId, agentId, id)) metadataIds.add(id);
+      }
+      for (const entry of entries) {
+        const raw = entry.match(/^([a-f0-9-]{36})\.(bin|preview\.png)$/);
+        const temporary = entry.endsWith(".tmp");
+        if ((raw && !metadataIds.has(raw[1]!)) || temporary) {
+          const target = path.join(directory, entry);
+          const old = now - await lstat(target).then((item) => item.mtimeMs).catch(() => now) > STAGED_TTL_MS;
+          if (old && raw?.[1] && !reachableIds.has(raw[1])) {
+            const receipt = this.authority.beginDelete(raw[1], projectId, agentId);
+            await this.completeDeletion(receipt);
+            removed++;
+          } else if (old && temporary) {
+            await rm(target, { force: true });
+            removed++;
+          }
+          continue;
+        }
+        if (!entry.endsWith(".json") || entry === "audit.jsonl") continue;
+        const id = entry.slice(0, -5);
+        const asset = await this.read(projectId, agentId, id);
+        if (!asset) continue;
+        if (associatedIds.has(id) && asset.state !== "associated") {
+          await this.associate(projectId, agentId, [id]).catch(() => undefined);
+        } else if (!reachableIds.has(id) && asset.state === "staged" &&
+            now - Date.parse(asset.createdAt) > STAGED_TTL_MS && await this.remove(projectId, agentId, id)) removed++;
+      }
+      return removed;
+    } finally { await openedDirectory.handle.close(); }
   }
 
   private async reconcilePortable(

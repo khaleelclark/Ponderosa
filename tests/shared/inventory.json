@@ -802,6 +802,10 @@
     {
       "path": "tests/chats/speech-lifecycle.test.mjs",
       "lane": "web"
+    },
+    {
+      "path": "tests/files-results/asset-resource-cleanup.test.mjs",
+      "lane": "server"
     }
   ],
   "retainedReleasePayload": [
