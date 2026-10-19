@@ -774,6 +774,14 @@
       "moduleBase": "packages/agents/package.json",
       "requirements": "Node24, built better-sqlite3; owned cache copies only; intentional Linux SIGBUS control in a bounded child with core dumps disabled; no provider account",
       "origin": "F04 native image isolation from writable build cache before packaging and installed verification"
+    },
+    {
+      "path": "tests/chats/delivery-recovery.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, existing TypeScript/React dependencies; controlled browser storage and actual component/hook callbacks; no provider account",
+      "origin": "Q01 lost acknowledgement, durable submission order, partial Stop and truthful receipt recovery qualification"
     }
   ],
   "retainedReleasePayload": [
