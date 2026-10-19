@@ -16,7 +16,7 @@ import {
 } from "@ponderosa/core";
 import { stripVTControlCharacters } from "node:util";
 import { commandOutcome, mapFileChangeKind, providerErrorCodeFromDetail } from "./events.js";
-import { JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
+import { JsonRpcOutputLimitError, JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeCodexProviderDiscovery } from "./capabilities.js";
 
@@ -78,7 +78,7 @@ interface AppServerSessionOptions extends OpenRuntimeSessionOptions {
 
 async function optionalRequest(rpc: JsonRpcProcess, method: string, params: unknown): Promise<unknown> {
   try { return await rpc.request(method, params); }
-  catch { return undefined; }
+  catch (error) { if (error instanceof JsonRpcOutputLimitError) throw error; return undefined; }
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -207,7 +207,8 @@ async function optionalPaginatedRequest(
       cursor = nextCursor;
     }
     throw new Error(`${method} exceeded pagination limit`);
-  } catch {
+  } catch (error) {
+    if (error instanceof JsonRpcOutputLimitError) throw error;
     return undefined;
   }
 }
@@ -273,6 +274,9 @@ export async function discoverCodexAppServerCapabilities(opts: {
     killGraceMs: opts.killGraceMs,
     onRuntimeSpawned: opts.onRuntimeSpawned,
     onRuntimeRootExit: () => undefined,
+    // Short-lived inventory has no notification consumer. Active Run sessions
+    // retain their normal streaming contract without this aggregate budget.
+    maxOutputBytes: 8 * 1024 * 1024,
   });
   try {
     try {
@@ -293,6 +297,7 @@ export async function discoverCodexAppServerCapabilities(opts: {
       optionalPaginatedRequest(rpc, "mcpServerStatus/list", { detail: "toolsAndAuthOnly" }),
     ]);
     const pluginDetails = await readInstalledPluginDetails(rpc, plugins);
+    rpc.throwIfFailed();
     return normalizeCodexProviderDiscovery({
       cwd: opts.cwd,
       selectedModel: opts.model,

@@ -102,7 +102,7 @@ export class AgentChatSearchReadModel {
         input.chatKind ?? null,
         maxScannedMessages + 1,
       ) as SearchProjectionRow[];
-    const emptyConversationCandidates = !query
+    const emptyConversationCandidates = !query && input.chatKind !== "agent"
       ? this.client
         .prepare(`
           SELECT
