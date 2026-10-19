@@ -53,9 +53,11 @@ function fail(owner: Owner): void {
 }
 export function startSpeech(id: string, text: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null): void {
   stopSpeech();
+  if (active) return;
   const owner: Owner = { id };
   active = owner;
   publish({ ownerId: id, status: "loading" });
+  if (active !== owner) return;
   try {
     owner.cleanup = monitorSpeechSurfaceAccessibility(surface, () => stopSpeech(id));
     if (active !== owner) return;

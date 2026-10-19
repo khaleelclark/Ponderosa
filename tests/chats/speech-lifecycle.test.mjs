@@ -127,3 +127,14 @@ test('Q03 a refused browser reset does not queue a new utterance or retain owner
   const b = playback(); b.start('first'); b.pauseSpeech(); b.window.speechSynthesis.resume = () => { throw Error('Reset refused'); };
   assert.doesNotThrow(() => b.start('next')); assert.equal(b.spoken.length, 1); assert.equal(b.speechSnapshot().status, 'error'); assert.equal(b.intervals.size, 0);
 });
+
+test('Q03 stop from the loading notification cannot register abandoned speech monitors', () => {
+  const b = playback(), unsubscribe = b.subscribeSpeech(() => { if (b.speechSnapshot().status === 'loading') b.stopSpeech('owner'); });
+  b.start('owner'); unsubscribe(); assert.equal(b.speechSnapshot().status, 'stopped'); assert.equal(b.intervals.size, 0); assert.equal(b.spoken.length, 0);
+});
+test('Q03 a newer owner started from Stop feedback cannot be overwritten by the older start', () => {
+  const b = playback(); b.start('first');
+  const unsubscribe = b.subscribeSpeech(() => { if (b.speechSnapshot().status === 'stopped' && b.speechSnapshot().ownerId === 'first') b.start('newest'); });
+  b.start('older'); unsubscribe(); assert.equal(b.speechSnapshot().ownerId, 'newest'); assert.equal(b.spoken.length, 2); assert.equal(b.intervals.size, 1);
+  b.stopSpeech(); assert.equal(b.intervals.size, 0);
+});
