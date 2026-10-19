@@ -10,6 +10,7 @@ import { api } from "../api";
 import { copyText } from "../clipboard";
 import { notificationDecision } from "../decisions";
 import { queryKeys } from "../queryKeys";
+import { useMutationNotification } from "./MutationNotifications";
 import { DecisionCard } from "./decisions/DecisionCard";
 
 export function AttentionSurface({
@@ -26,6 +27,7 @@ export function AttentionSurface({
   onOpen?(item: WorkspaceNotificationDto): void;
 }): JSX.Element | null {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const mobileReview = useMediaQuery(useTheme().breakpoints.down("sm"));
   const [open, setOpen] = useState(false);
   const [expandedIssueId, setExpandedIssueId] = useState<string>();
@@ -154,7 +156,7 @@ export function AttentionSurface({
                         void copyText(attentionSupportReport(item)).then(() => {
                           setCopiedIssueId(item.id);
                           globalThis.setTimeout(() => setCopiedIssueId(undefined), 1_500);
-                        });
+                        }, () => notify({ key: "copy-support-report", message: "Support report could not be copied. Check your browser clipboard permissions and try again.", severity: "error" }));
                       }}
                     >
                       {copiedIssueId === item.id ? "Copied" : "Copy Support Report"}

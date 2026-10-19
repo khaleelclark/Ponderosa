@@ -856,6 +856,7 @@ export function useWorkspaceStream(
         if (event.action !== "used") {
           invalidate(queryKeys.agents.project(event.projectId));
           invalidate(queryKeys.agents.allChat);
+          invalidate(queryKeys.agents.detailAll);
         }
         // Mark collapsed sibling pages stale as ownership may have changed,
         // while refetching only pages that are currently visible.
