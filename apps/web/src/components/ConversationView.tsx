@@ -1319,6 +1319,7 @@ export function ConversationView({
             }}
           >
             <MasterRespondingIndicator
+              messages={messages}
               agents={agents}
               healthByAgentId={healthByAgentId}
             />

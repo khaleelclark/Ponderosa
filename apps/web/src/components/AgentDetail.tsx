@@ -80,6 +80,7 @@ import { AgentDuplicateDialog, AgentPackageExportDialog } from "./AgentPackageDi
 import { useAgentRunCancellation } from "./useAgentRunCancellation";
 import { useAgentProviderCommands } from "./useAgentProviderCommands";
 import { AgentDetailSettingsController } from "./AgentDetailSettingsController";
+import { useMessageDeliveryReceipts } from "./useMessageDeliveryReceipts";
 import { useActiveOperationController } from "./useActiveOperationController";
 import { trackAcceptedAgentMessage } from "./activeOperationTracker";
 import {
@@ -207,13 +208,16 @@ export function AgentDetail({
     writeChatState(chatStateKey("view", `agent.${agentId}`), tab);
   }, [agentId, tab]);
 
-  const detail = useMemo(() => {
+  const retainedDetail = useMemo(() => {
     return mergeAgentDetailProjection(
       agentQuery.data,
       olderMessages,
       olderTelemetry,
     );
   }, [agentQuery.data, olderMessages, olderTelemetry]);
+  const liveMessages = useMessageDeliveryReceipts(retainedDetail?.messages ?? [], retainedDetail?.agent.conversationId, tab === "chat");
+  const detail = useMemo(() => retainedDetail ? { ...retainedDetail, messages: liveMessages } : undefined,
+    [retainedDetail, liveMessages]);
   const runtimeSettingsDirty = Boolean(detail) && (
     settingsEngine !== detail!.agent.activeEngine ||
     settingsModel !== (detail!.agent.model ?? "") ||

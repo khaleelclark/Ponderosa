@@ -27,6 +27,7 @@ import type {
 } from "@ponderosa/core";
 import {
   memo,
+  useCallback,
   type Dispatch,
   type SetStateAction,
 } from "react";
@@ -90,12 +91,14 @@ function ConversationMessageComponent({
   onOpenReview?(agentId: string, executionId?: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onMentionAgent?(agentId: string): void;
-  onVisible?(visible: boolean): void;
+  onVisible?(communicationEventId: string | undefined, visible: boolean): void;
   projectId: string;
   projectRoot?: string;
   activeRunId?: string;
   operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
+  const reportVisibility = useCallback((visible: boolean) =>
+    onVisible?.(message.communicationEventId, visible), [onVisible, message.communicationEventId]);
   const fromManager = !message.authorAgentId;
   const routedText = message.text;
   const copyableText = stripDocumentPrefixText(
@@ -134,7 +137,7 @@ function ConversationMessageComponent({
           ) ? (
             <Chip size="small" variant="outlined" label="Broadcast" />
           ) : undefined,
-        onVisible,
+        onVisible: onVisible ? reportVisibility : undefined,
         body: (
           <ChatMessageBody
             text={visibleText}
@@ -456,8 +459,7 @@ function MainConversationTimeline({
           onOpenReview={onOpenReview}
           onOpenFileActivity={onOpenFileActivity}
           onMentionAgent={mentionAgent}
-          onVisible={(visible) =>
-            markCommunicationVisible(message.communicationEventId, visible)}
+          onVisible={markCommunicationVisible}
         />;
       })}
     </Stack>

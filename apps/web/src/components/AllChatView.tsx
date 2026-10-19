@@ -107,6 +107,7 @@ import {
   createDeliveryOperationTracker,
   createQueuedSteerOperationTracker,
 } from "./activeOperationTracker";
+import { useMessageDeliveryReceipts } from "./useMessageDeliveryReceipts";
 import { useActiveOperationController } from "./useActiveOperationController";
 import { useQueuedConversationMessagesController } from "./useQueuedConversationMessagesController";
 import {
@@ -314,11 +315,12 @@ export function AllChatView({
       : undefined,
     [projectsQuery.data],
   );
-  const items = useMemo(
+  const retainedItems = useMemo(
     () => mergeAllChatItems(older?.items ?? [], query.data?.items ?? [])
       .filter(item => !availableProjectIds || availableProjectIds.has(item.project.id)),
     [availableProjectIds, older?.items, query.data?.items],
   );
+  const items = useMessageDeliveryReceipts(retainedItems);
   useEffect(() => {
     if (!availableProjectIds) return;
     setReplyTarget(current =>
