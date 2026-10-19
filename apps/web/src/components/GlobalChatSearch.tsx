@@ -27,10 +27,11 @@ import type {
   SearchHighlightRangeDto,
   WorkspaceAgentDirectoryItemDto,
 } from "@ponderosa/core";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
+import { normalizeResetPages, uniqueBy } from "../collections";
 import type { Route } from "../routing";
 import { useNotifications } from "../hooks/queries";
 import { useWorkspaceFileSearch } from "../hooks/useWorkspaceFileSearch";
@@ -174,7 +175,7 @@ function GlobalSearchResultItem({ result, query, onSelect, active = false, id, o
     onSelect={onSelect}
     ariaLabel={result.messageId
       ? `Open ${result.chat.title} at message by ${result.author.label}`
-      : `Open Agent ${result.chat.title}`}
+      : `Open Agent ${result.chat.title}, ${result.snippet}`}
     primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
         <Typography fontWeight={700} noWrap sx={{ minWidth: 0 }}>{result.chat.title}</Typography>
         {result.unread ? <Box component="span" aria-label="Unread" sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "primary.main", flexShrink: 0 }} /> : null}
@@ -255,13 +256,16 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
   const filesEnabled = open && (scope === "all" || scope === "files");
   const files = useWorkspaceFileSearch(debouncedQuery, filesEnabled, `global:${scope}`);
   const fileResults = filesEnabled ? files.results : [];
-  const matchingAgents = useQuery({
-    queryKey: ["global-search-agent-titles", debouncedQuery, resultLimit],
-    queryFn: () => api.getWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>(
-      "agent",
-      { search: debouncedQuery, limit: resultLimit },
+  const agentTitleSearchEnabled = open && Boolean(debouncedQuery) && (scope === "all" || scope === "agents");
+  const matchingAgents = useInfiniteQuery({
+    queryKey: queryKeys.workspaceDirectory.list("agent", debouncedQuery, undefined, undefined, undefined, undefined, undefined, undefined),
+    queryFn: ({ pageParam }) => api.getWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>(
+      "agent", { search: debouncedQuery, limit: 25, cursor: pageParam },
     ),
-    enabled: open && Boolean(debouncedQuery) && (scope === "all" || scope === "agents"),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: page => page.history.cursor,
+    select: normalizeResetPages,
+    enabled: agentTitleSearchEnabled,
     staleTime: 5_000,
     refetchOnReconnect: true,
   });
@@ -271,21 +275,17 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
         .filter(result => result.chat.kind === "agent")
         .map(result => result.chat.id),
     );
-    return [
-      ...(matchingAgents.data?.starredItems ?? []),
-      ...(matchingAgents.data?.items ?? []),
-    ].filter(item => !seen.has(item.agent.id)).map(item => ({
+    return uniqueBy((matchingAgents.data?.pages ?? []).flatMap(page => [...page.starredItems, ...page.items]), item => item.agent.id).filter(item => !seen.has(item.agent.id)).map(item => ({
       project: { id: item.project.id, label: item.project.label },
       chat: { kind: "agent" as const, id: item.agent.id, title: item.agent.title },
       messageId: "",
       author: { kind: "agent" as const, label: item.agent.title, agentId: item.agent.id },
       timestamp: item.agent.updatedAt,
-      snippet: "Agent",
+      snippet: `${item.ownerConversation?.title ?? item.project.label} · #${item.agent.handle}`,
       highlights: [],
       unread: false,
     }));
   }, [matchingAgents.data, search.data?.results]);
-  const agentTitleSearchEnabled = open && Boolean(debouncedQuery) && (scope === "all" || scope === "agents");
   const isSearching = (scope !== "files" && search.isFetching) || (filesEnabled && files.isFetching) ||
     (agentTitleSearchEnabled && matchingAgents.isFetching);
   const searchFailed = (scope !== "files" && search.isError) || (filesEnabled && files.isError) || (agentTitleSearchEnabled && matchingAgents.isError);
@@ -443,6 +443,7 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
       </Box> : null}
       </Box>
       {filesEnabled && (files.truncated || files.unavailableRoots) ? <Typography variant="caption" color="text.secondary" component="p">File search covered a limited set of accessible folders. Some files may not be listed. Narrow the search to find more files.</Typography> : null}
+      {agentTitleSearchEnabled && matchingAgents.hasNextPage ? <Button color="inherit" disabled={matchingAgents.isFetching} onClick={() => void matchingAgents.fetchNextPage()}>{matchingAgents.isFetchingNextPage ? "Loading…" : "Load more Agents"}</Button> : null}
       {filesEnabled && files.hasNextPage ? <Button color="inherit" disabled={files.isFetching} onClick={() => void files.fetchNextPage()}>{files.isFetchingNextPage ? "Loading…" : "Load more files"}</Button> : null}
       {scope === "files" && !searchFailed && !debouncedQuery && !isSearching && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 1 }}>No recent files are available. Search files by name or path.</Typography> : null}
       {debouncedQuery && !searchFailed && !isSearching && visibleResults.length === 0 && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{`No ${scope === "all" ? "messages, Agents or files" : scope} match “${debouncedQuery}”.`}</Typography> : null}

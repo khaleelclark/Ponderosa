@@ -96,6 +96,13 @@ test('collection searches preserve literal text and scope through real HTTP rout
         } else assert.deepEqual(body.results, []);
       });
     }
+    await check('empty global Agent search excludes recent Chats', async () => {
+      const agents = f.ok(await f.api('GET', '/api/search?kind=agent'));
+      assert.ok(agents.recentChats.every(item => item.chat.kind === 'agent'));
+      const chats = f.ok(await f.api('GET', '/api/search?kind=conversation'));
+      assert.ok(chats.recentChats.length > 0);
+      assert.ok(chats.recentChats.every(item => item.chat.kind === 'conversation'));
+    });
     complete = true;
   } finally {
     const identities = [...f.sessions.values()].map(session => session.processIdentity).filter(Boolean);
