@@ -296,7 +296,7 @@ export function MessageDeliveryStatus({
         : receipt.state === "cancelled" && receipt.providerAcknowledged
         ? `Delivered · ${compactDeliveryLabel(receipt)}`
         : compactDeliveryLabel(receipt);
-      return <Stack key={receipt.activationId} direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ justifyContent: "flex-end", maxWidth: "100%", "& > .MuiButton-root": { minWidth: 0, px: { xs: 0.5, sm: 1 }, whiteSpace: "nowrap", fontSize: { xs: 11, sm: 13 } } }}>
+      return <Stack key={receipt.activationId} direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ justifyContent: "flex-end", maxWidth: "100%", "& > .MuiButton-root": { minWidth: 0, px: { xs: 0.5, sm: 1 }, whiteSpace: "nowrap", fontSize: { xs: 11, sm: 13 }, "@media (pointer: coarse)": { minHeight: 44 } } }}>
         <Tooltip title={detailedLabel}>
           <Box component="span" sx={{ display: "inline-flex", minWidth: 0, maxWidth: "100%" }}>
             <ButtonBase

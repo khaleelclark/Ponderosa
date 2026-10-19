@@ -34,7 +34,7 @@ export function MasterRespondingIndicator({ agents, healthByAgentId, messages }:
     <Tooltip title="Status follows this message’s delivery. Working requires provider acknowledgement on its exact active execution; quiet output is not a failure.">
       <Box component="span" tabIndex={0} role="status">
         {pending.map(({ receipt, phase, name, since }) => <Box component="span" key={receipt.activationId} sx={{ mr: 1 }}>
-          {name} · {phase} · <Box component="span" sx={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+          <Box component="span" title={name} sx={{ display: "inline-block", maxWidth: "min(20ch, 100%)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", verticalAlign: "bottom" }}>{name}</Box> · {phase} · <Box component="span" sx={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
             {formatExecutionElapsed(since, now)}
           </Box>
         </Box>)}
