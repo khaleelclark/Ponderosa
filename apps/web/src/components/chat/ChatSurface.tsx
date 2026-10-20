@@ -53,6 +53,7 @@ export function ChatSurface({
         tabIndex={0}
         onScroll={scroll.onScroll}
         sx={{
+          position: "relative",
           px: padding,
           py: { xs: 1, sm: 1.5 },
           pb: 3,

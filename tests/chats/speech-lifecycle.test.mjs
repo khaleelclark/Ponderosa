@@ -138,3 +138,14 @@ test('Q03 a newer owner started from Stop feedback cannot be overwritten by the 
   b.start('older'); unsubscribe(); assert.equal(b.speechSnapshot().ownerId, 'newest'); assert.equal(b.spoken.length, 2); assert.equal(b.intervals.size, 1);
   b.stopSpeech(); assert.equal(b.intervals.size, 0);
 });
+
+
+test('screen-reader speech status resolves to one pixel rather than a full-size scroll overflow box', () => {
+  const { visuallyHiddenSpeechStatusSx } = browser().load('speechStyles');
+  const css = require('@mui/material/styles').createTheme().unstable_sx(visuallyHiddenSpeechStatusSx);
+  assert.equal(css.width, '1px');
+  assert.equal(css.height, '1px');
+  assert.equal(css.margin, '-1px');
+  assert.equal(css.position, 'absolute');
+  assert.equal(css.clip, 'rect(0 0 0 0)', 'Keep live status announcements available without showing them');
+});
