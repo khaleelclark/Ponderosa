@@ -82,6 +82,28 @@ test('Q05 real Claude validation boundary uses only a local fake executable and 
   passed = true;
 });
 
+test('Claude model test ignores custom MCP workflows without spending extra turns', { skip: process.platform === 'win32' || /\s/u.test(process.execPath) }, async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-model-probe-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, 'fake-claude'), handles = [];
+  await writeFile(bin, '#!' + process.execPath + '\n' + `
+    const args=process.argv.slice(2), prompt=args[args.indexOf('-p')+1];
+    const safe=args.includes('--safe-mode') && prompt.includes('PONDEROSA_MODEL_READY') && prompt.includes('Do not use tools');
+    if(args[args.indexOf('--model')+1]!=='sonnet' || args[args.indexOf('--tools')+1]!=='')process.exit(1);
+    console.log(JSON.stringify({type:'system',subtype:'init',model:'claude-sonnet-fixture'}));
+    if(!safe)console.log(JSON.stringify({type:'assistant',message:{content:[{type:'tool_use',name:'mcp__chunking__get_recent'}]}}));
+    console.log(JSON.stringify(safe?{type:'result',subtype:'success',is_error:false,result:'PONDEROSA_MODEL_READY'}:
+      {type:'result',subtype:'error_max_turns',is_error:true,errors:['Reached maximum number of turns (1)']}));
+  `);
+  await chmod(bin, 0o700);
+  const result = await new ClaudeModelCatalogProbe({ bin, killGraceMs: 100 }).validate(root, 'sonnet', {
+    signal: new AbortController().signal, onRuntimeSpawned: handle => handles.push(handle),
+  });
+  assert.equal(result.valid, true);
+  assert.equal(result.model.id, 'sonnet');
+  assert.ok(handles.length && handles.every(handle => !handle.isAlive()), 'Probe must observe process exit');
+});
+
 import { defaultEngineRegistrations } from '@ponderosa/engines';
 import { createRequire } from 'node:module';
 import { createEngineControlPlane } from '../../apps/server/dist/engine-control-plane.js';
