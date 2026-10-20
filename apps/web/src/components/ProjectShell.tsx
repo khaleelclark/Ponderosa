@@ -1,6 +1,7 @@
 import { useEngineModelCatalogs } from "../hooks/useEngineModelCatalogs";
 import { Alert, Box, Button, LinearProgress, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
+import { useEventCallback } from "@mui/material/utils";
 import type {
   AgentHealthDto,
   ConversationDto,
@@ -156,11 +157,16 @@ export function ProjectShell({
     });
   };
 
-  const openAgentReview = (agentId: string, executionId?: string) => {
-    navigate({ kind: "review", projectId, agentId, ...(executionId ? { executionId } : {}), returnTo: routeToPath(route) });
-  };
+  // Stable handlers let memoized messages survive health/notification refreshes.
+  const openAgent = useEventCallback((agentId: string, view?: "technical" | "settings", technicalFocusId?: string) => view
+    ? navigate({ kind: "agent", projectId, agentId, view, ...(technicalFocusId ? { technicalFocusId } : {}) })
+    : navigate({ kind: "agent", projectId, agentId }));
 
-  const openAgentFileActivity = (agentId: string, file: ResponseFileActivityDto) => {
+  const openAgentReview = useEventCallback((agentId: string, executionId?: string) => {
+    navigate({ kind: "review", projectId, agentId, ...(executionId ? { executionId } : {}), returnTo: routeToPath(route) });
+  });
+
+  const openAgentFileActivity = useEventCallback((agentId: string, file: ResponseFileActivityDto) => {
     if (file.executionId) {
       navigate({ kind: "review", projectId, agentId, path: file.path, executionId: file.executionId, returnTo: routeToPath(route) });
     } else if (file.artifactId) {
@@ -168,7 +174,7 @@ export function ProjectShell({
     } else {
       navigate({ kind: "review", projectId, agentId, path: file.path, executionId: file.executionId, returnTo: routeToPath(route) });
     }
-  };
+  });
 
   const openProjectArtifact = (agentId: string, artifactId: string) => {
     navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: artifactId } });
@@ -264,9 +270,7 @@ export function ProjectShell({
         projectAgents={agents}
         onOpenProject={() => navigate({ kind: "home" })}
         onOpenProjectBrowser={() => projectBrowser.open()}
-        onOpenAgent={(agentId, view, technicalFocusId) => view
-          ? navigate({ kind: "agent", projectId, agentId, view, ...(technicalFocusId ? { technicalFocusId } : {}) })
-          : navigate({ kind: "agent", projectId, agentId })}
+        onOpenAgent={openAgent}
         onAgentsDeleted={(agentIds) =>
           agentIds.forEach(agentId =>
             onResourceDeleted?.({ kind: "agent", projectId, agentId }),
@@ -313,7 +317,7 @@ export function ProjectShell({
         agents={agents}
         conversations={conversations}
         onOpenProject={() => navigate({ kind: "home" })}
-        onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
+        onOpenAgent={openAgent}
         onOpenAgentSettings={(agentId) =>
           navigate({ kind: "agent", projectId, agentId, view: "settings" })}
         onOpenCommunicationSource={(conversationId, communicationEventId, channel) => navigate({
