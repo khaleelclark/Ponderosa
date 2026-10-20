@@ -157,6 +157,11 @@ export function ProjectRail({
           </Tooltip>
         ) : null}
         {drawer ? <Box aria-hidden sx={{ flex: 1 }} /> : null}
+        <Tooltip title="Search">
+          <IconButton aria-label="Search" onClick={onOpenSearch} sx={{ width: 36, height: 36, flex: "0 0 36px" }}>
+            <SearchIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
         <Tooltip title="Notifications">
           <IconButton
             aria-label={notificationBadge ? `Notifications, ${notificationBadge} unread` : "Notifications"}
@@ -173,11 +178,6 @@ export function ProjectRail({
             >
               <NotificationsOutlinedIcon fontSize="small" />
             </Badge>
-          </IconButton>
-        </Tooltip>
-        <Tooltip title="Search">
-          <IconButton aria-label="Search" onClick={onOpenSearch} sx={{ width: 36, height: 36, flex: "0 0 36px" }}>
-            <SearchIcon fontSize="small" />
           </IconButton>
         </Tooltip>
         {!drawer && onCollapse ? (
