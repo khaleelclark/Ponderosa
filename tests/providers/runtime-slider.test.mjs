@@ -165,6 +165,7 @@ test('effort casing is presentation only and ordinary model rows omit subtext', 
   const slider = p.find('Reasoning effort'); assert.equal(slider.props.getAriaValueText(0), 'Low'); assert.equal(slider.props.getAriaValueText(1), 'Extra High');
   p.find('Model: Live label').props.onClick();
   assert.ok(!p.render().some(node => node.props.children === 'Latest · stores live-id'));
+  p.find('Back to runtime settings').props.onClick();
   p.find('Reasoning effort').props.onChangeCommitted({}, 0); assert.deepEqual(p.callbacks, [['effort', 'low']]);
 });
 
@@ -203,4 +204,26 @@ test('inherited reset uses the real resolver, including a provider Fast default'
   assert.deepEqual({ ...inherited }, { model: 'provider-default', effort: 'low', speed: 'cli-fast-id' });
   const project = exports.resolveRuntimeSelection(engine, {}, { defaultEngine: 'fixture', defaultModel: 'project-model' });
   assert.deepEqual({ ...project }, { model: 'project-model', effort: 'deep', speed: '' });
+});
+
+test('model selection is a separate compact list; Back restores runtime controls without saving', t => {
+  const p = picker(); t.after(p.close);
+  p.find('Model: Live label').props.onClick();
+  for (const label of ['Reasoning effort', 'Engine: Engine', 'Reset to default', 'Engine Fast mode off. Live CLI description']) assert.equal(p.find(label), undefined);
+  assert.ok(p.find('model options')); assert.ok(p.find('Back to runtime settings'));
+  p.find('Back to runtime settings').props.onClick();
+  assert.ok(p.find('Reasoning effort')); assert.ok(p.find('Model: Live label'));
+  assert.deepEqual(p.callbacks, []); assert.equal(p.render().find(node => node.type === p.mui.Popper).props.open, true);
+});
+test('selecting a model returns to the runtime view and saves the exact advertised ID once', t => {
+  const p = picker({ models: [{ id: 'live-id', label: 'Live label' }, { id: 'another-exact-id', label: 'Another' }] }); t.after(p.close);
+  p.find('Model: Live label').props.onClick();
+  p.render().find(node => node.type === p.mui.MenuItem && node.props.selected === false).props.onClick();
+  assert.deepEqual(p.callbacks, [['model', 'another-exact-id']]); assert.ok(p.find('Reasoning effort')); assert.equal(p.find('Back to runtime settings'), undefined);
+});
+test('entering and leaving the model view fences an unfinished drag', t => {
+  const p = picker(); t.after(p.close);
+  p.find('Reasoning effort').props.onPointerDownCapture(); p.find('Reasoning effort').props.onChange({ type: 'mousemove' }, 2);
+  p.find('Model: Live label').props.onClick(); p.find('Back to runtime settings').props.onClick();
+  p.find('Reasoning effort').props.onChangeCommitted({ type: 'mouseup' }, 2); assert.deepEqual(p.callbacks, []);
 });

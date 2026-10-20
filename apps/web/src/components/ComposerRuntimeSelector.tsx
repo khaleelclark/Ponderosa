@@ -1,3 +1,4 @@
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import CheckIcon from "@mui/icons-material/Check";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
@@ -6,6 +7,7 @@ import {
   Box,
   ButtonBase,
   ClickAwayListener,
+  Divider,
   IconButton,
   ListSubheader,
   MenuItem,
@@ -104,11 +106,12 @@ export function ComposerRuntimeSelector({
   const [preview, setPreview] = useState<{ key: string; index: number } | null>(null);
   const [pageVisible, setPageVisible] = useState(true);
   const theme = useTheme();
-  const catalogKey = JSON.stringify([selectionKey, engine, model, efforts, effort, disabled, loading, Boolean(anchor)]);
+  const catalogKey = JSON.stringify([selectionKey, engine, model, efforts, effort, disabled, loading, Boolean(anchor), section === "model"]);
   const interaction = useRef({ key: catalogKey, revision: 0 });
   if (interaction.current.key !== catalogKey) interaction.current = { key: catalogKey, revision: interaction.current.revision + 1 };
   const interactionRevision = interaction.current.revision;
   const gestureRevision = useRef<number | null>(null);
+  const returnToModel = useRef(false);
   const selectedIndex = efforts.findIndex(option => option.id === effort);
   const index = preview?.key === catalogKey ? preview.index : selectedIndex;
   const presentation = effortPresentation(index, efforts.length, theme.palette.mode === "dark");
@@ -180,9 +183,13 @@ export function ComposerRuntimeSelector({
   const selectedSpeed = speeds.find(option => option.id === speed);
   const selectedModelLabel = loading ? "Loading model…" : selectedModel?.label ?? (models.length ? "Choose model" : "Choose a provider");
   const selectedEffortLabel = loading ? "Loading reasoning…" : effortLabel(selectedEffort) ?? (efforts.length ? "Choose reasoning" : "Reasoning follows model");
+  const returnToRuntime = useCallback(() => {
+    returnToModel.current = true;
+    setPreview(null); setSection(null);
+  }, []);
   const close = useCallback(() => {
     if (!preserveEditorFocus.current && document.getElementById(menuId)?.contains(document.activeElement)) anchor?.focus();
-    setAnchor(null); setSection(null); setPreview(null); resumeFocus.current = null;
+    setAnchor(null); setSection(null); setPreview(null); resumeFocus.current = null; returnToModel.current = false;
   }, [anchor, menuId]);
   useEffect(() => {
     if (!anchor) return;
@@ -191,13 +198,14 @@ export function ComposerRuntimeSelector({
     const dismiss = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault(); event.stopPropagation();
-      if (section) { setSection(null); if (!preserveEditorFocus.current) (section === "engine" ? engineButton : modelButton).current?.focus(); }
+      if (section === "model") returnToRuntime();
+      else if (section) { setSection(null); if (!preserveEditorFocus.current) (section === "engine" ? engineButton : modelButton).current?.focus(); }
       else close();
     };
     const document = anchor.ownerDocument;
     document.addEventListener("keydown", dismiss, true);
     return () => document.removeEventListener("keydown", dismiss, true);
-  }, [anchor, close, section]);
+  }, [anchor, close, section, returnToRuntime]);
   useEffect(() => {
     if (disabled) setPreview(null);
     else if (resumeFocus.current) {
@@ -208,6 +216,13 @@ export function ComposerRuntimeSelector({
   const canSwitchEngine = !engineLocked && Boolean(onEngineChange) && engines.length > 1;
   const modelButton = useRef<HTMLButtonElement>(null);
   const engineButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (section === "model" || !returnToModel.current || !modelButton.current) return;
+    returnToModel.current = false;
+    if (preserveEditorFocus.current) return;
+    if (disabled) resumeFocus.current = modelButton.current;
+    else modelButton.current.focus({ preventScroll: true });
+  }, [section, disabled]);
   const activeOptions = section === "engine" ? engines : section === "speed" ? speeds : models;
   const activeValue = section === "engine" ? engine : section === "speed" ? speed : model;
   const fast = Boolean(selectedSpeed && selectedSpeed.id !== "standard");
@@ -232,11 +247,14 @@ export function ComposerRuntimeSelector({
       else if (section === "speed") onSpeedChange?.(id);
       else onModelChange(id);
     }
-    setPreview(null); setSection(null);
-    if (!preserveEditorFocus.current) (section === "engine" ? engineButton : modelButton).current?.focus();
+    if (section === "model") returnToRuntime();
+    else {
+      setPreview(null); setSection(null);
+      if (!preserveEditorFocus.current) (section === "engine" ? engineButton : modelButton).current?.focus();
+    }
   };
 
-  const optionList = section ? <MenuList autoFocusItem={!preserveEditorFocus.current} disablePadding aria-label={`${section} options`} sx={{ maxHeight: 240, overflowY: "auto", scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" }, bgcolor: "action.hover", borderRadius: 1.5 }}>
+  const optionList = section ? <MenuList autoFocusItem={!preserveEditorFocus.current} disablePadding aria-label={`${section} options`} sx={{ maxHeight: section === "model" ? "min(360px, calc(var(--ponderosa-app-viewport-block-size, 100dvh) - 180px))" : 240, overflowY: "auto", scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" }, bgcolor: "action.hover", borderRadius: 1.5 }}>
             {activeOptions.flatMap((option, optionIndex) => [
               ...(option.group && option.group !== activeOptions[optionIndex - 1]?.group ? [<ListSubheader key={option.group} disableSticky sx={{ bgcolor: "transparent", lineHeight: "30px" }}>{option.group}</ListSubheader>] : []),
               <MenuItem key={option.id} selected={option.id === activeValue} disabled={disabled || loading || option.disabled} onClick={() => choose(option.id)} sx={{ minHeight: 44, whiteSpace: "normal", gap: 1 }}>
@@ -331,11 +349,19 @@ export function ComposerRuntimeSelector({
           }}
         >
           {scopeLabel ? <Tooltip title={scopeLabel} enterTouchDelay={0}>
-            <Stack direction="row" justifyContent="center" aria-label={scopeLabel} sx={{ minWidth: 0, px: 1, pb: 0.25, fontWeight: 700, fontSize: 13 }}>
+            <Stack direction="row" justifyContent="center" aria-label={scopeLabel} sx={{ minWidth: 0, px: 1, pb: 1, fontWeight: 700, fontSize: 13 }}>
               <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{scopeLabel.replace(/ Next Run$/, "")}</Box>
               <Box component="span" sx={{ whiteSpace: "nowrap", flexShrink: 0 }}> Next Run</Box>
             </Stack>
           </Tooltip> : null}
+          {section === "model" ? <>
+            <ButtonBase aria-label="Back to runtime settings" onClick={returnToRuntime}
+              sx={{ display: "flex", alignItems: "center", width: "100%", minHeight: 44, px: 1.25, gap: 1, borderRadius: 1.5, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
+              <ArrowBackIcon fontSize="small" /><Typography variant="body2" sx={{ fontWeight: 700 }}>Model</Typography>
+            </ButtonBase>
+            <Divider sx={{ my: 0.75 }} />
+            {optionList}
+          </> : <>
           <ButtonBase ref={engineButton}
             disabled={disabled || !canSwitchEngine || loading}
             aria-label={`Engine: ${selectedEngine?.label ?? engine}`}
@@ -392,8 +418,8 @@ export function ComposerRuntimeSelector({
                   else { rememberPickerFocus(); const next = speeds.find(option => option.id !== selectedSpeed?.id); if (next && !next.disabled) onSpeedChange(next.id); }
                 }} sx={{ gridColumn: 1, width: 44, height: 44, color: fast ? "primary.main" : "text.secondary", bgcolor: fast ? "action.selected" : "transparent" }}><SpeedOutlinedIcon fontSize="small" /></IconButton>
             </Tooltip> : null}
-            <ButtonBase ref={modelButton} aria-label={`Model: ${selectedModelLabel}`} aria-expanded={section === "model"} disabled={disabled || loading || !models.length}
-              onClick={() => setSection(section === "model" ? null : "model")}
+            <ButtonBase ref={modelButton} aria-label={`Model: ${selectedModelLabel}`} aria-expanded={false} disabled={disabled || loading || !models.length}
+              onClick={() => setSection("model")}
               sx={{ gridColumn: 2, gridRow: 1, minWidth: 0, width: "100%", minHeight: 64, pt: 1.25, pb: 1, display: "flex", flexDirection: "column", borderRadius: 1.25, "&:hover": { bgcolor: "action.hover" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
               <Typography noWrap sx={{ maxWidth: "100%", color: presentation.color, fontWeight: presentation.ultra ? 800 : 600, textShadow: presentation.ultra && theme.palette.mode === "dark" ? "0 0 13px #22e58a38" : "none" }}>{preview?.key === catalogKey ? effortLabel(efforts[index]) : selectedEffortLabel}</Typography>
               <Stack direction="row" alignItems="center" sx={{ maxWidth: "100%", minWidth: 0, color: "text.secondary" }}><Typography variant="body2" noWrap>{selectedModelLabel}</Typography><KeyboardArrowDownIcon sx={{ fontSize: 16, flexShrink: 0 }} /></Stack>
@@ -401,6 +427,7 @@ export function ComposerRuntimeSelector({
             <Tooltip title="Reset to default" enterTouchDelay={0}><IconButton aria-label="Reset to default" disabled={disabled || loading || !models.length} onClick={() => { rememberPickerFocus(); setPreview(null); setSection(null); onReset(); }} sx={{ gridColumn: 3, gridRow: 1, width: 44, height: 44 }}><RestartAltIcon fontSize="small" /></IconButton></Tooltip>
           </Box>
           {section !== "engine" ? optionList : null}
+          </>}
         </Paper>
       </ClickAwayListener>
     </Popper>
