@@ -24,7 +24,7 @@ export function MasterRespondingIndicator({ agents, healthByAgentId, messages }:
     const phase = messageDeliveryPhase(receipt);
     const activity = healthByAgentId.get(receipt.targetAgentId)?.runtimeActivity;
     if (phase !== "Working" || !activity || activity.executionId !== receipt.executionId) return [];
-    return [{ receipt, phase, name: agents.find(agent => agent.id === receipt.targetAgentId)?.title ?? "Agent",
+    return [{ receipt, phase, name: agents.find(agent => agent.id === receipt.targetAgentId)?.title.trim() || "Agent",
       since: activity.startedAt }];
   });
   const ticking = pending.length > 0;
@@ -51,13 +51,13 @@ export function MasterRespondingIndicator({ agents, healthByAgentId, messages }:
           </Box>}>
           <ButtonBase ref={triggerRef} aria-label={summary} aria-expanded={open} onClick={() => setOpen(true)}
             onKeyDown={event => { if (event.key === "ArrowDown") { event.preventDefault(); detailsRef.current?.focus(); } }}
-            sx={{ minWidth: 0, maxWidth: "100%", gap: 0.75, color: "inherit", font: "inherit", pointerEvents: "auto", borderRadius: 1,
+            sx={{ minWidth: 0, maxWidth: "100%", color: "inherit", font: "inherit", pointerEvents: "auto", borderRadius: 1,
               "&.Mui-focusVisible": { outline: "2px solid", outlineColor: "info.main", outlineOffset: 2 } }}>
             {pending.length === 1 ? <>
               <Box component="span" sx={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pending[0]!.name}</Box>
-              <Box component="span" sx={{ flexShrink: 0 }}>is working</Box>
+              <Box component="span" sx={{ flexShrink: 0, whiteSpace: "pre" }}>{" is working"}</Box>
             </> : <Box component="span" sx={{ whiteSpace: "nowrap" }}>{summary}</Box>}
-            <Box component="span" aria-hidden="true" sx={{ flexShrink: 0, fontVariantNumeric: "tabular-nums", "@container (max-width: 260px)": { display: "none" } }}>
+            <Box component="span" aria-hidden="true" sx={{ ml: 0.75, flexShrink: 0, fontVariantNumeric: "tabular-nums", "@container (max-width: 260px)": { display: "none" } }}>
               · {formatExecutionElapsed(pending.reduce((first, row) => row.since < first ? row.since : first, pending[0]!.since), now)}
             </Box>
           </ButtonBase>

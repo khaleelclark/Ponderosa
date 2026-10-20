@@ -193,7 +193,7 @@ test('working summary deduplicates stable IDs and shares exact rows, phases and 
     assert.equal(tooltip.props.describeChild, true);
     const rows = React.Children.toArray(tooltip.props.title.props.children);
     assert.deepEqual(rows.map(row => row.key.replace(/^\.\$/, '')), agents.slice(0, count).map(agent => agent.id));
-    for (let i = 0; i < count; i++) assert.match(text(rows[i]), new RegExp(agents[i].title + ' — Working'));
+    for (let i = 0; i < count; i++) assert.match(text(rows[i]), new RegExp(agents[i].title.trim() + ' — Working'));
     const live = nodes.find(node => node.props['aria-live'] === 'polite');
     assert.ok(!text(live).includes('0:01'), 'Elapsed ticks cannot mutate the live announcement');
   }
@@ -202,10 +202,17 @@ test('working summary deduplicates stable IDs and shares exact rows, phases and 
     assert.ok(!render(receipts).some(node => node.type === mui.Tooltip));
   }
   assert.ok(!render(active, 'assistant').some(node => node.type === mui.Tooltip));
-  assert.equal(render([active[0], { ...active[0], state: 'processed' }, active[1]]).find(node => node.type === mui.ButtonBase).props['aria-label'], `${agents[1].title} is working`);
+  assert.equal(render([active[0], { ...active[0], state: 'processed' }, active[1]]).find(node => node.type === mui.ButtonBase).props['aria-label'], `${agents[1].title.trim()} is working`);
   render(active).find(node => node.type === mui.Tooltip).props.onOpen();
   render(active).find(node => node.type === mui.ButtonBase).props.onClick();
   assert.equal(render(active).find(node => node.type === mui.Tooltip).props.open, true, 'Clicking after hover or keyboard focus must not close the details');
+  for (const name of ['Arroyo', '  South Arroyo  ', 'South  Arroyo']) {
+    agents[0].title = name;
+    const trigger = render([active[0]]).find(node => node.type === mui.ButtonBase);
+    assert.equal(trigger.props['aria-label'], `${name.trim()} is working`);
+    assert.ok(text(trigger).startsWith(`${name.trim()} is working`));
+    assert.equal(agents[0].title, name, 'Presentation must not change the stored name');
+  }
 });
 
 test('UI004 another receipt changing cannot rerender an unchanged retained row or roll back newer history', () => {

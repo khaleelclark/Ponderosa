@@ -336,9 +336,9 @@ export function WorkspaceSidebar({
     });
   };
 
-  const selectSidebar = (section: typeof projectSection | "settings") => {
-    setSidebarSection(section === "settings" ? "settings" : "home");
-    if (section !== "settings") setProjectSection(section);
+  const selectSidebar = (section: typeof projectSection) => {
+    setSidebarSection("home");
+    setProjectSection(section);
     setFilter("");
     if (collapsed) onCollapsedChange?.(false);
   };
@@ -359,7 +359,7 @@ export function WorkspaceSidebar({
       )}
       onOpenSearch={() => onSearch?.()}
       onOpenNotifications={() => onOpenNotifications?.()}
-      onOpenSettings={() => selectSidebar("settings")}
+      onOpenSettings={() => onNavigate({ kind: "settings", section: "general" })}
       onCollapse={!drawer && onCollapsedChange ? () => {
         onCollapsedChange(true);
         window.requestAnimationFrame(() => {
