@@ -297,7 +297,7 @@ function model(
   requireCatalogMetadata = true,
 ): ModelOption | EngineModelOption {
   const record = dataRecord(value, [
-    "id", "label", "efforts", "defaultEffort", "serviceTiers", "defaultServiceTier",
+    "id", "label", "isDefault", "efforts", "defaultEffort", "serviceTiers", "defaultServiceTier",
     "resolvedModel", "description", "kind", "supportedEffortLevels", "source",
     "validatedAt", "availability", "unavailableReason",
   ], boundary, budget, depth);
@@ -321,6 +321,7 @@ function model(
         return entry;
       })
     : undefined;
+  const isDefault = optionalBoolean(record, "isDefault", boundary, budget, depth + 1);
   const description = optionalString(record, "description", MAX_DESCRIPTION_CHARACTERS, boundary, budget, depth + 1);
   const defaultEffort = optionalString(record, "defaultEffort", MAX_IDENTIFIER_CHARACTERS, boundary, budget, depth + 1);
   const defaultServiceTier = optionalString(record, "defaultServiceTier", MAX_IDENTIFIER_CHARACTERS, boundary, budget, depth + 1);
@@ -340,6 +341,7 @@ function model(
     ...(kind === undefined ? {} : { kind }),
     ...(source === undefined ? {} : { source }),
     ...(efforts ? { efforts } : {}),
+    ...(isDefault === undefined ? {} : { isDefault }),
     ...(defaultEffort === undefined ? {} : { defaultEffort }),
     ...(serviceTiers ? { serviceTiers } : {}),
     ...(defaultServiceTier === undefined ? {} : { defaultServiceTier }),
@@ -504,6 +506,7 @@ export function projectProviderModelValidation(value: unknown): EngineModelValid
   return {
     valid: false,
     errorCode: enumString(discriminator, "errorCode", [
+      "client_upgrade_required", "invalid_request",
       "invalid_model", "model_not_found", "authentication", "rate_limit", "capacity",
       "context_length", "organization_policy", "plan_entitlement", "network", "provider_error",
     ] as const, "validation", budget, 1),

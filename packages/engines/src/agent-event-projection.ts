@@ -16,6 +16,7 @@ const UNSAFE_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:@/+\-]*$/u;
 
 const ERROR_CODES = [
+  "client_upgrade_required", "invalid_request",
   "invalid_model", "model_not_found", "authentication_failed", "rate_limit", "capacity",
   "context_length", "organization_policy", "plan_entitlement", "network", "provider_error",
 ] as const satisfies readonly ProviderErrorCode[];
@@ -277,7 +278,7 @@ export function projectAgentEvent(value: unknown): AgentEvent {
     "output", "isError", "failureCategory", "retryable", "command", "cwd", "callId", "path", "kind", "diff", "passed", "summary", "status",
     "controlOwner", "controlEpoch", "url", "title", "reason", "actor", "action", "level", "text", "artifactId",
     "width", "height", "size", "sha256", "workItemId", "usage", "providerRequestUsage", "message", "code",
-    "category", "remediation", "presentation", "exitCode", "signal", "retryAfterMs", "terminalStatus",
+    "category", "remediation", "presentation", "exitCode", "signal", "retryAfterMs", "terminalStatus", "httpStatusCode",
   ])], budget, 0);
   const type = enumeration(envelope, "type", [
     "session", "context_usage", "context_rollover_seed_overflow", "context_rollover_completed", "text", "reasoning",
@@ -424,12 +425,16 @@ export function projectAgentEvent(value: unknown): AgentEvent {
       return { type, ...(projectedUsage === undefined ? {} : { usage: projectedUsage }), ...(requests === undefined ? {} : { providerRequestUsage: requests }) };
     }
     case "error": {
-      const row = exact(value, ["message", "code", "category", "remediation", "terminalStatus"], budget);
+      const row = exact(value, ["message", "code", "category", "remediation", "terminalStatus", "httpStatusCode", "retryAfterMs"], budget);
       const terminalStatus = optionalEnumeration(row, "terminalStatus", ["failed", "interrupted", "unknown"] as const, budget, 2);
       const code = optionalEnumeration(row, "code", ERROR_CODES, budget, 2);
       const category = optionalEnumeration(row, "category", FAILURE_CATEGORIES, budget, 2);
       const remediation = optionalString(row, "remediation", budget, 2);
-      return { type, message: string(row, "message", budget, 2), ...(code === undefined ? {} : { code }), ...(category === undefined ? {} : { category }), ...(remediation === undefined ? {} : { remediation }), ...(terminalStatus === undefined ? {} : { terminalStatus }) };
+      const httpStatusCode = optionalInteger(row, "httpStatusCode", budget, 2);
+      const retryAfterMs = optionalInteger(row, "retryAfterMs", budget, 2);
+      if (httpStatusCode !== undefined && (httpStatusCode < 100 || httpStatusCode > 599) ||
+          retryAfterMs !== undefined && retryAfterMs > 86_400_000) reject();
+      return { type, message: string(row, "message", budget, 2), ...(code === undefined ? {} : { code }), ...(category === undefined ? {} : { category }), ...(remediation === undefined ? {} : { remediation }), ...(terminalStatus === undefined ? {} : { terminalStatus }), ...(httpStatusCode === undefined ? {} : { httpStatusCode }), ...(retryAfterMs === undefined ? {} : { retryAfterMs }) };
     }
   }
 }

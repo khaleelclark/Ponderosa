@@ -78,7 +78,7 @@ interface ProviderCommandRoutesContext {
   cachedModelOptions(
     adapter: EngineRegistration["adapter"],
     projectId?: string,
-  ): ModelOption[];
+  ): ModelOption[] | undefined;
   closeCapabilityDiscoveryAuthority(authority: CapabilityDiscoveryAuthority): Promise<void>;
   closeCapabilityDiscoveryProcess(state: CapabilityDiscoveryProcess): Promise<void>;
   providerUsageState(

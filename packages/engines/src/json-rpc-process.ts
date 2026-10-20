@@ -164,12 +164,13 @@ export class JsonRpcProcess {
     if (opts.signal.aborted) abort();
   }
 
-  async initialize(): Promise<void> {
-    await this.request("initialize", {
+  async initialize(): Promise<unknown> {
+    const result = await this.request("initialize", {
       clientInfo: { name: "ponderosa", title: "Ponderosa", version: "1.0.0" },
       capabilities: { experimentalApi: true, requestAttestation: false },
     });
     this.notify("initialized");
+    return result;
   }
 
   request<T>(method: string, params?: unknown): Promise<T> {

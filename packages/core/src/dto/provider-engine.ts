@@ -233,6 +233,11 @@ export interface EngineDto {
   defaultEffort?: string;
   /** False when provider model metadata is temporarily unavailable. */
   modelCatalogKnown?: boolean;
+  /** Exact inventory process provenance; a catalog is not an inference test. */
+  cliVersion?: string;
+  modelCatalogFetchedAt?: string;
+  modelDiscovery?: boolean;
+  modelValidation?: boolean;
   /** The adapter is configured on this Ponderosa host. */
   configured: true;
   /** Host CLI presence, independent of sign-in and the operator switch. */

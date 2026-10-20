@@ -1,3 +1,4 @@
+import { useEngineModelCatalogs } from "../hooks/useEngineModelCatalogs";
 import { Alert, Box, Button, LinearProgress, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import type {
@@ -18,7 +19,7 @@ import { useAgent, useAgentHealth, useConversations, useAgents } from "../hooks/
 import { queryKeys } from "../queryKeys";
 import { retainedDataFailure } from "../retainedData";
 import { workspaceFileReturnFallback } from "../workspaceFileReturn";
-import { enginesWithModelCatalog, engineCanDiscover } from "../conversationEngine";
+import { enginesWithModelCatalog } from "../conversationEngine";
 import { assertNeverRoute, nestedProjectRouteResources, routeToPath, type ProjectRoute } from "../routeRegistry";
 import { routeReturnTarget, routeReturnLabel, type Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
@@ -87,16 +88,10 @@ export function ProjectShell({
   const conversations = conversationsQuery.data ?? [];
   const agents = agentsQuery.data ?? [];
   const projectedHealth = healthQuery.data?.agents ?? [];
-  const claudeEngine = engines.find((engine) => engine.id === "claude");
-  const modelCatalogQuery = useQuery({
-    queryKey: queryKeys.engines.models(projectId, "claude"),
-    queryFn: () => api.getEngineModels(projectId, "claude"),
-    enabled: engineCanDiscover(claudeEngine),
-    staleTime: 5 * 60_000,
-  });
+  const modelCatalogQuery = useEngineModelCatalogs(projectId, engines);
   const projectEngines = useMemo(
-    () => enginesWithModelCatalog(engines, modelCatalogQuery.data),
-    [engines, modelCatalogQuery.data],
+    () => enginesWithModelCatalog(engines, modelCatalogQuery.catalogs),
+    [engines, modelCatalogQuery.catalogs],
   );
   const routedAgent = route.kind === "agent"
     ? agents.find((agent) => agent.id === route.agentId)

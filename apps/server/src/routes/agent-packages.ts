@@ -65,7 +65,7 @@ interface AgentPackageRoutesContext {
   deletingConversationIds: ReadonlySet<string>;
   deletingAgentIds: Set<string>;
   agentCreationConversationLeases: Map<string, number>;
-  cachedModelOptions: (adapter: Adapter, projectId?: string) => ModelOption[];
+  cachedModelOptions: (adapter: Adapter, projectId?: string) => ModelOption[] | undefined;
   appendWorkspace: (event: {
     type: "project_changed";
     projectId: string;

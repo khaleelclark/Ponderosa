@@ -16,6 +16,7 @@ import {
 import { spawnContainedCli } from "./contained-spawn.js";
 import { runtimeProcessHandle } from "./process-termination.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
+import { mapCodexEvent } from "./events.js";
 
 type AuthCommandRunner = (
   bin: string,
@@ -28,6 +29,7 @@ async function containedAuthCommand(
   args: string[],
   options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number; cwd?: string } & import("@ponderosa/core").EngineProbeOptions,
 ): Promise<{ stdout: string; stderr: string }> {
+  options.signal?.throwIfAborted();
   const spawned = spawnContainedCli({
     bin,
     args,
@@ -54,6 +56,7 @@ async function containedAuthCommand(
       if (finished) return;
       finished = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       try {
         // close() is an observed no-op after natural exit and exact tree
         // teardown after timeout, output overflow, or spawn failure.
@@ -91,6 +94,9 @@ async function containedAuthCommand(
         `provider authentication probe exited with ${signal ? `signal ${signal}` : `code ${code ?? "unknown"}`}`,
       ), { probeExitCode: code }));
     });
+    const abort = (): void => { void finish(Object.assign(new Error("Provider check was cancelled"), { probeReason: "probe_failed" }), true); };
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
   });
 }
 
@@ -143,7 +149,7 @@ export async function codexAvailabilityStatus(
   env: NodeJS.ProcessEnv = process.env,
   run: AuthCommandRunner = containedAuthCommand,
   readAuth: () => Promise<EngineAuthStatus> = () => codexAuthStatus(env),
-  options: import("@ponderosa/core").EngineProbeOptions = {},
+  options: import("@ponderosa/core").EngineProbeOptions & { model?: string } = {},
 ): Promise<EngineAvailabilityStatus> {
   const auth = await readAuth();
   if (auth.status === "unknown") return { available: false, failureCategory: "unavailable", detail: "Provider authentication could not be checked." };
@@ -157,6 +163,7 @@ export async function codexAvailabilityStatus(
     const { stdout } = await run(bin, [
       "exec", "--json", "--ephemeral", "--sandbox", "read-only",
       "--ignore-user-config", "--skip-git-repo-check",
+      ...(options.model ? ["--model", options.model] : []),
       `Reply exactly ${marker}. Do not use tools or inspect the environment.`,
     ], {
       env: runtimeEnvironment(env),
@@ -185,7 +192,7 @@ export async function codexAvailabilityStatus(
           item?.type === "agent_message" && typeof item.text === "string") answer = item.text;
       if ((event as { type?: unknown }).type === "turn.completed") completed = true;
       if ((event as { type?: unknown }).type === "turn.failed") {
-        return { available: false, failureCategory: "unavailable", detail: "Codex did not complete the test request" };
+        return codexProbeFailure(stdout) ?? { available: false, failureCategory: "unavailable", detail: "Codex did not complete the test request" };
       }
     }
     return completed && answer?.trim() === marker
@@ -193,6 +200,10 @@ export async function codexAvailabilityStatus(
       : { available: false, failureCategory: "unavailable", detail: "Codex did not return the test marker" };
   } catch (error) {
     const failure = error as Error & { stderr?: string; stdout?: string; probeReason?: string };
+    if (!failure.probeReason && failure.stdout) {
+      const providerFailure = codexProbeFailure(failure.stdout);
+      if (providerFailure) return providerFailure;
+    }
     const detail = failure.stderr?.trim() || failure.stdout?.trim() || failure.message || String(error);
     return {
       available: false,
@@ -201,6 +212,18 @@ export async function codexAvailabilityStatus(
     };
   } finally {
     rmSync(cwd, { recursive: true, force: true });
+  }
+}
+
+function codexProbeFailure(stdout: string): EngineAvailabilityStatus | undefined {
+  if (stdout.length > 2 * 1024 * 1024) return;
+  for (const line of stdout.split("\n")) {
+    try {
+      const failure = mapCodexEvent(JSON.parse(line)).find(event => event.type === "error");
+      if (failure?.type !== "error") continue;
+      const projected = publicProviderFailure({ detail: failure.message, code: failure.code, category: failure.category });
+      return { available: false, failureCategory: projected.category, detail: projected.summary };
+    } catch { /* Unknown/malformed records do not establish a provider cause. */ }
   }
 }
 

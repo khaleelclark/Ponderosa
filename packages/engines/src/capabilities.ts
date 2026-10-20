@@ -177,6 +177,7 @@ const CLAUDE_HEADLESS_BUILT_IN_COMMANDS = new Set([
 
 export interface CodexProviderDiscovery {
   cwd: string;
+  cliVersion?: string;
   selectedModel?: string;
   sessionId?: string;
   skills?: unknown;
@@ -252,9 +253,36 @@ export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): 
 
   const models = array(record(input.models)?.data).flatMap((candidate) => {
     const model = record(candidate);
-    const id = string(model?.id) ?? string(model?.model);
+    const id = string(model?.model) ?? string(model?.id);
     return id && model?.hidden !== true ? [{ id, isDefault: model?.isDefault === true }] : [];
   });
+  const catalog = new Map<string, import("@ponderosa/core").EngineModelOption>();
+  const rawModels = record(input.models)?.data;
+  const catalogKnown = Array.isArray(rawModels) && rawModels.every(row => {
+    const model = record(row);
+    return Boolean(model && (string(model.model) ?? string(model.id)));
+  });
+  if (catalogKnown) for (const row of rawModels as unknown[]) {
+    const model = record(row)!;
+    const id = string(model.model) ?? string(model.id)!;
+    if (model.hidden === true || catalog.has(id)) continue;
+    const efforts = array(model.supportedReasoningEfforts).flatMap(row => {
+      const effort = string(record(row)?.reasoningEffort);
+      return effort ? [{ id: effort, label: effort }] : [];
+    });
+    const serviceTiers = array(model.serviceTiers ?? model.additionalSpeedTiers).flatMap(row => {
+      const tier = record(row), id = typeof row === "string" ? string(row) : string(tier?.id);
+      return id ? [{ id, label: string(tier?.displayName) ?? string(tier?.name) ?? id,
+        ...(string(tier?.description) ? { description: string(tier?.description)! } : {}) }] : [];
+    });
+    catalog.set(id, { id, ...(model.isDefault === true ? { isDefault: true } : {}), label: string(model.displayName) ?? id, kind: "alias", source: "provider-probe",
+      ...(string(model.description) ? { description: string(model.description)! } : {}),
+      ...(Array.isArray(model.supportedReasoningEfforts) ? { efforts, supportedEffortLevels: efforts.map(e => e.id) } : {}),
+      ...(efforts.some(e => e.id === model.defaultReasoningEffort) ? { defaultEffort: String(model.defaultReasoningEffort) } : {}),
+      ...(serviceTiers.length ? { serviceTiers } : {}),
+      ...(serviceTiers.some(t => t.id === model.defaultServiceTier) ? { defaultServiceTier: String(model.defaultServiceTier) } : {}),
+    });
+  }
   const selectedModel = input.selectedModel || models.find((model) => model.isDefault)?.id;
   const modelAvailable = Boolean(selectedModel && models.some((model) => model.id === selectedModel));
   const compactUnavailable = !input.sessionId
@@ -324,6 +352,9 @@ export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): 
     persistentSessions: true,
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
     ...(selectedModel ? { model: selectedModel } : {}),
+    ...(catalogKnown ? { modelCatalog: { models: [...catalog.values()].sort((a, b) =>
+      Number(models.some(m => m.id === b.id && m.isDefault)) - Number(models.some(m => m.id === a.id && m.isDefault))),
+      cliVersion: input.cliVersion ?? "unknown", configurationKey: "live" } } : {}),
     commands: commandList,
     mcpServers,
     composerCapabilities: composerCapabilities(commandList, plugins, mcpServers, "$"),

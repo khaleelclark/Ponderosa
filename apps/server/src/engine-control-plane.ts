@@ -248,7 +248,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
             : { availabilityDetail: "provider intake is enabled; reachability has not yet been verified by real work" }),
     };
   };
-  const engineDto = async (registration: EngineRegistration): Promise<EngineDto> => {
+  const engineDto = async (registration: EngineRegistration, refreshModels = false): Promise<EngineDto> => {
     const { adapter } = registration;
     let status: Awaited<ReturnType<typeof runtimeStatus>>;
     try {
@@ -265,14 +265,18 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         availabilityCategory: "unavailable",
       };
     }
+    let catalog: ProjectEngineModelCatalogDto | undefined;
+    try { catalog = await prepareEngineModels(adapter, refreshModels); }
+    catch { catalog = await prepareEngineModels(adapter).catch(() => undefined); }
     try {
       const models = projectProviderModelOptions(
-        providerAdapterCall(adapter, "list models", () => adapter.listModels()),
+        catalog?.models ?? providerAdapterCall(adapter, "list models", () => adapter.listModels()),
       );
-      const defaultModel = projectProviderModelIdentifier(adapter.defaultModel?.())
-        ?? models.find((model) => model.id)?.id;
-      const defaultEffort = projectProviderModelIdentifier(adapter.defaultEffort?.(defaultModel))
-        ?? models.find((model) => model.id === defaultModel)?.defaultEffort
+      const defaultModel = models.find(model => model.isDefault)?.id
+        ?? models.find(model => model.id === adapter.defaultModel?.())?.id
+        ?? models.find(model => model.id)?.id;
+      const defaultEffort = models.find((model) => model.id === defaultModel)?.defaultEffort
+        ?? projectProviderModelIdentifier(adapter.defaultEffort?.(defaultModel))
         ?? projectProviderEffortOptions(adapter.listEfforts(defaultModel))[0]?.id;
       return {
         id: adapter.id,
@@ -292,7 +296,10 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         efforts: projectProviderEffortOptions(adapter.listEfforts()),
         ...(defaultModel ? { defaultModel } : {}),
         ...(defaultEffort ? { defaultEffort } : {}),
-        modelCatalogKnown: !adapter.modelSpecificEfforts || models.some((model) => Boolean(model.id)),
+        ...(catalog ? { cliVersion: catalog.cliVersion, modelCatalogFetchedAt: catalog.fetchedAt } : {}),
+        modelDiscovery: Boolean(adapter.discoverModelCatalog),
+        modelValidation: Boolean(adapter.validateModel),
+        modelCatalogKnown: Boolean(catalog) || !adapter.modelSpecificEfforts || models.some((model) => Boolean(model.id)),
         enabled: providerEnabled(adapter.id),
         servingBuildRevision: engineAvailability.servingBuildRevision,
         servingInstanceId: engineAvailability.servingInstanceId,
@@ -643,6 +650,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
   }>();
   const latestEngineModelCatalogKeys = new Map<string, string>();
   const engineModelCatalogDiscoveries = new Map<string, ModelCatalogDiscoveryAuthority>();
+  const engineModelCatalogFailures = new Map<string, { error: unknown; retryAt: number }>();
   const engineModelCatalogDiscoveryAuthorities = new Set<ModelCatalogDiscoveryAuthority>();
   const engineModelCatalogKey = (
     projectId: string,
@@ -747,6 +755,10 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       }
       return running.operation as Promise<ProjectEngineModelCatalogDto>;
     }
+    const failure = engineModelCatalogFailures.get(key);
+    if (!forceRefresh && failure && failure.retryAt > Date.now()) {
+      return cached ? Promise.resolve(cached.value) : Promise.reject(failure.error);
+    }
     if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
       return Promise.resolve(cached.value);
     }
@@ -766,7 +778,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       authority.processes.add(state);
       providerProcessAuthority.register(handle, {
         purpose: `${adapter.id} model catalog discovery`,
-        projectId: project.id,
+        ...(project.id ? { projectId: project.id } : {}),
       });
       if (isClosed() || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
         void closeCapabilityDiscoveryProcess(state).catch((error) => {
@@ -780,7 +792,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     };
     const operation = Promise.resolve()
       .then(async () => {
-        const live = await liveProjectModelCatalog(project.id, adapter);
+        const live = project.id && !forceRefresh ? await liveProjectModelCatalog(project.id, adapter) : undefined;
         const rawCatalog = live
           ? {
               models: live.models,
@@ -824,6 +836,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
           value,
         });
         latestEngineModelCatalogKeys.set(key, versionedKey);
+        engineModelCatalogFailures.delete(key);
         return value;
       })
       .then(async (value) => {
@@ -831,6 +844,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         await closeModelCatalogDiscoveryAuthority(authority);
         return value;
       }, async (error: unknown) => {
+        engineModelCatalogFailures.set(key, { error, retryAt: Date.now() + 30_000 });
         authority.settled = true;
         try {
           await closeModelCatalogDiscoveryAuthority(authority);
@@ -971,27 +985,33 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
   const cachedModelOptions = (
     adapter: Adapter,
     projectId?: string,
-  ): ModelOption[] => {
-    const byId = new Map<string, ModelOption>();
-    for (const key of new Set(latestEngineModelCatalogKeys.values())) {
-      const entry = engineModelCatalogCache.get(key);
-      if (!entry) continue;
-      if (entry.engineId !== adapter.id || (projectId && entry.projectId !== projectId)) continue;
-      for (const model of entry.value.models) {
-        byId.set(model.id, {
-          id: model.id,
-          label: model.label,
-          ...(model.supportedEffortLevels
-            ? { efforts: model.supportedEffortLevels.map((effort) => ({ id: effort, label: effort })) }
-            : {}),
-        });
-      }
+  ): ModelOption[] | undefined => {
+    for (const id of projectId ? [projectId, ""] : [""]) {
+      const hostPath = id ? store.getProject(id)?.hostPath : process.cwd();
+      if (!hostPath) continue;
+      const key = latestEngineModelCatalogKeys.get(engineModelCatalogKey(id, hostPath, adapter));
+      const catalog = key ? engineModelCatalogCache.get(key)?.value : undefined;
+      if (catalog) return catalog.models.map(model => ({ ...model,
+        ...(model.efforts === undefined && model.supportedEffortLevels
+          ? { efforts: model.supportedEffortLevels.map(id => ({ id, label: id })) } : {}),
+      }));
     }
-    return [...byId.values()];
+  };
+
+  const prepareEngineModels = async (adapter: Adapter, force = false): Promise<ProjectEngineModelCatalogDto | undefined> => {
+    // Host inventory bootstraps the first Chat. The empty scope is cache-only;
+    // it never creates a Project or assigns processes to an invented owner.
+    if (!adapter.discoverModelCatalog || adapter.listModels().some(model => model.id) ||
+        !providerDiscoveryEnabled(adapter.id) || context.resourceAdmission?.snapshot().state === "held") return;
+    const registration = engines.get(adapter.id)!;
+    const auth = registration.authStatus ? await engineAuthStatuses.read(adapter.id, registration.authStatus) : { authenticated: true };
+    if (!auth.authenticated) return;
+    return discoverEngineModelCatalog({ id: "", hostPath: process.cwd() }, adapter, force);
   };
 
   return {
     cachedModelOptions,
+    prepareEngineModels,
     closeCapabilityDiscoveryAuthority,
     closeCapabilityDiscoveryProcess,
     discoverEngineCapabilities,

@@ -26,6 +26,8 @@ export interface CreateActivationV3Input {
   sourceKind: string;
   sourceId: string;
   now: string;
+  /** Scheduler due time; creation/audit timestamps remain the actual time. */
+  availableAt?: string;
   externalIntake?: boolean;
 }
 

@@ -862,6 +862,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24; real TypeScript provider projections and query retry policy; no provider account",
       "origin": "Optional Codex/Claude installation admission and presentation regression"
+    },
+    {
+      "path": "tests/providers/provider-recovery.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces; admitted in-memory SQLite and inert fixtures; no provider account",
+      "origin": "Codex-only provider failure investigation: typed errors, bounded recovery, executing-client catalogs and legacy usage"
     }
   ],
   "retainedReleasePayload": [

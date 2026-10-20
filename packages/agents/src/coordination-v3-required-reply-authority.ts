@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { MAX_PROVIDER_RECOVERY_ATTEMPTS, normalizeProviderFailureCategory, providerRecoveryDelay, publicProviderFailureSummary } from "@ponderosa/core";
 import type {
   CommunicationAudience,
   CommunicationIntent,
@@ -9,8 +10,9 @@ import { PRIORITY } from "./coordination-v3-activation.js";
 import { stableJson } from "./coordination-v3-canonical-json.js";
 import { delegationOriginsForActivation, hasOutstandingDelegation, taskOriginRunIds } from "./coordination-v3-task-lineage.js";
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
+import { providerRecoveryAttempts } from "./coordination-v3-provider-recovery.js";
 
-const MAX_REQUIRED_REPLY_ATTEMPTS = 5;
+const MAX_REQUIRED_REPLY_ATTEMPTS = MAX_PROVIDER_RECOVERY_ATTEMPTS - 1;
 const REQUIRED_REPLY_EXHAUSTED_ERROR =
   `Required Chat reply was not published after ${MAX_REQUIRED_REPLY_ATTEMPTS + 1} provider Runs. Automatic recovery stopped; use Try Delivery Again to start an explicit bounded retry.`;
 
@@ -952,10 +954,21 @@ export class CoordinationV3RequiredReplyAuthority {
 
   recoverPending(runId: string, now: string): RequiredReplyObligation[] {
     if (!this.repairCanonicalDecisionWait(runId, now)) return this.forRun(runId);
+    const run = this.sqlite.prepare('SELECT provider_failure_json FROM scheduler_runs WHERE id=?').get(runId) as { provider_failure_json: string | null } | undefined;
+    let failure: Record<string, unknown> | undefined;
+    try { failure = record(JSON.parse(run?.provider_failure_json ?? 'null')); } catch { /* Unclassified retained failure. */ }
+    const category = failure ? normalizeProviderFailureCategory(failure.category) : undefined;
     for (const obligation of this.forRun(runId)) {
       if (obligation.state !== "pending") continue;
       if (obligation.blockingDecisionId || (obligation.deliveryPhase === "final" && hasOutstandingDelegation(this.sqlite, obligation))) continue;
-      if (obligation.attemptCount >= MAX_REQUIRED_REPLY_ATTEMPTS) {
+      const attempts = Math.max(1, providerRecoveryAttempts(this.sqlite, runId, obligation.sourceActivationId));
+      const delay = providerRecoveryDelay(category, attempts, failure?.retryable !== false,
+        typeof failure?.retryAfterMs === 'number' ? failure.retryAfterMs : 0);
+      if (delay === null) {
+        const exhausted = attempts >= MAX_PROVIDER_RECOVERY_ATTEMPTS;
+        const error = exhausted ? REQUIRED_REPLY_EXHAUSTED_ERROR
+          : publicProviderFailureSummary(typeof failure?.message === 'string' ? failure.message : undefined, category)
+            ?? 'Automatic recovery stopped; review the failed Run before trying delivery again.';
         const sourceActivation = this.sqlite.prepare(`
           WITH RECURSIVE reply_chain(activation_id, depth) AS (
             SELECT ?, 0
@@ -984,14 +997,16 @@ export class CoordinationV3RequiredReplyAuthority {
         if (sourceActivation) this.sqlite.prepare(`
           UPDATE agent_activations
           SET state = 'outcome_unknown',
-            delivery_failures = MAX(delivery_failures, ?),
+            delivery_failures = MAX(delivery_failures, ?), provider_failure_category = ?,
             last_delivery_error = ?,
-            terminal_outcome = 'retry_exhausted',
+            terminal_outcome = ?,
             terminal_at = ?, updated_at = ?
-          WHERE id = ? AND state = 'consumed'
+          WHERE id = ? AND state IN ('consumed', 'outcome_unknown')
         `).run(
-          MAX_REQUIRED_REPLY_ATTEMPTS + 1,
-          REQUIRED_REPLY_EXHAUSTED_ERROR,
+          attempts,
+          category ?? null,
+          error,
+          exhausted ? 'retry_exhausted' : 'permanent_failure',
           now,
           now,
           sourceActivation.id,
@@ -1024,6 +1039,7 @@ export class CoordinationV3RequiredReplyAuthority {
         sourceKind: "required_reply",
         sourceId: `${runId}:${obligation.sourceActivationId}`,
         now,
+        availableAt: new Date(Date.parse(now) + delay).toISOString(),
       });
       this.sqlite.prepare(`
         UPDATE required_reply_obligations

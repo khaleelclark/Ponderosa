@@ -1,3 +1,4 @@
+import { useEngineModelCatalogs } from "../hooks/useEngineModelCatalogs";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import { BrowserVoiceSettings } from "./speech/BrowserVoiceSettings";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
@@ -585,6 +586,30 @@ function ClaudeModelOptionsSettings({
   );
 }
 
+function ProviderModelCheck({ engine, projectId, model }: { engine: EngineDto; projectId?: string; model: string }): JSX.Element {
+  const check = useMutation({
+    mutationFn: ({ projectId: targetProjectId, modelId }: { projectId: string; modelId: string }) => api.validateEngineModel(targetProjectId, engine.id, modelId),
+  });
+  const current = check.variables?.projectId === projectId && check.variables?.modelId === model;
+  return <Stack spacing={1} sx={{ mt: 2 }}>
+    <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+      {engine.cliVersion ? `CLI ${engine.cliVersion}. ` : ""}A model listing does not verify access.
+      {engine.modelCatalogFetchedAt ? ` Models read ${new Date(engine.modelCatalogFetchedAt).toLocaleString()}.` : ""}
+      {" "}Testing sends a small subscription-backed request and keeps existing Agent settings.
+    </Typography>
+    <Button variant="outlined" sx={{ alignSelf: { xs: "stretch", sm: "flex-start" } }}
+      disabled={!projectId || !model || !engineCanDiscover(engine) || check.isPending}
+      onClick={() => check.mutate({ projectId: projectId!, modelId: model })}>
+      {check.isPending ? "Testing model…" : "Test selected model"}
+    </Button>
+    {current && check.data ? <Alert severity={check.data.valid ? "success" : "warning"} sx={{ overflowWrap: "anywhere" }}>
+      {check.data.valid ? `${model} completed the test request.` : check.data.error}
+    </Alert> : null}
+    {current && check.isError ? <Alert severity="error">{check.error.message}</Alert> : null}
+    {!projectId ? <Typography variant="caption">Create a Chat before testing a selected model.</Typography> : null}
+  </Stack>;
+}
+
 function ProviderSettingsSection({
   preferences,
   engines,
@@ -791,6 +816,7 @@ function ProviderSettingsSection({
                 </Select>
               </FormControl>
             </Stack>
+            {engine.modelValidation && engine.installed !== false ? <ProviderModelCheck engine={engine} projectId={validationProjectId} model={resolved.model} /> : null}
             {engine.configuredModels !== undefined ? (
               <>
                 <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
@@ -870,19 +896,14 @@ export function WorkspaceSettingsView({
 }): JSX.Element {
   const queryClient = useQueryClient();
   const validationProject = projects[0];
-  const modelCatalogQuery = useQuery({
-    queryKey: queryKeys.engines.models(validationProject?.id, "claude"),
-    queryFn: () => api.getEngineModels(validationProject!.id, "claude"),
-    enabled: Boolean(validationProject) && engineCanDiscover(engines.find((engine) => engine.id === "claude")),
-    staleTime: 5 * 60_000,
-  });
+  const modelCatalogQuery = useEngineModelCatalogs(validationProject?.id, engines);
   const readinessQuery = useQuery({
     queryKey: queryKeys.readiness.all,
     queryFn: () => api.getReadiness(),
     enabled: section === "activity",
     staleTime: 30_000,
   });
-  const settingsEngines = enginesWithModelCatalog(engines, modelCatalogQuery.data);
+  const settingsEngines = enginesWithModelCatalog(engines, modelCatalogQuery.catalogs);
   const [instructions, setInstructions] = useState(
     preferences.globalInstructions,
   );

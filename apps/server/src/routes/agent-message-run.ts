@@ -630,7 +630,11 @@ export function registerAgentMessageRunRoute(
         const modelError = runtimeSelectionError(engine.adapter, requestedModel, undefined, projectModelOptions);
         if (modelError) return reply.code(400).send({ error: modelError });
       }
-      const effectiveModel = hasModelOverride ? requestedModel : recovered.model;
+      // A saved Agent selection is a pin, even if a newer inventory omits it.
+      // Let the provider explain its rejection; never silently route this work
+      // to another model when discovery refreshes.
+      const effectiveModel = hasModelOverride ? requestedModel
+        : activeRunSnapshot?.model ?? agent.model ?? agent.presetSnapshot?.model ?? recovered.model;
       const hasEffortOverride = !activeRunSnapshot && request.body.effort !== undefined;
       const requestedEffort = request.body.effort?.trim() || undefined;
       if (hasEffortOverride) {
@@ -641,7 +645,11 @@ export function registerAgentMessageRunRoute(
         ? requestedEffort
         : hasModelOverride
           ? concreteRuntimeSelection(engine.adapter, [{ model: effectiveModel }, workspace.getPreferences().engineDefaults?.[runtimeEngineId]], projectModelOptions).effort
-          : normalizedRuntimeSelection(engine.adapter, effectiveModel, recovered.effort, projectModelOptions).effort;
+          : effectiveModel && projectModelOptions && !projectModelOptions.some(model => model.id === effectiveModel)
+            ? activeRunSnapshot?.effort ?? agent.effort ?? agent.presetSnapshot?.effort
+            : normalizedRuntimeSelection(engine.adapter, effectiveModel,
+                activeRunSnapshot?.effort ?? agent.effort ?? agent.presetSnapshot?.effort ?? recovered.effort,
+                projectModelOptions).effort;
       const hasSpeedOverride =
         !activeRunSnapshot && request.body.speed !== undefined;
       const requestedSpeed = request.body.speed?.trim() || undefined;

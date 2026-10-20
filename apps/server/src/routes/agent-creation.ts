@@ -44,7 +44,7 @@ interface AgentCreationRoutesContext {
   deletingConversationIds: ReadonlySet<string>;
   agentCreationConversationLeases: Map<string, number>;
   agentDeliveryLeases: Map<string, number>;
-  cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
+  cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[] | undefined;
   recordCommunication(event: CommunicationEvent): CommunicationEvent;
   prepareUserCommunicationText: CommunicationArtifactAuthority["prepareUserCommunicationText"];
   runtimeArtifactMetadata: CommunicationArtifactAuthority["runtimeArtifactMetadata"];

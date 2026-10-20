@@ -215,21 +215,30 @@ export interface RuntimeControlState extends RuntimeSelection {
 
 export function enginesWithModelCatalog(
   engines: EngineDto[],
-  catalog: ProjectEngineModelCatalogDto | undefined,
+  catalog: ProjectEngineModelCatalogDto | ProjectEngineModelCatalogDto[] | undefined,
 ): EngineDto[] {
   if (!catalog) return engines;
-  return engines.map((engine) => engine.id !== catalog.engineId
-    ? engine
-    : {
-        ...engine,
-        models: catalog.models.map((model) => ({
-          ...model,
-          ...(model.supportedEffortLevels
-            ? { efforts: model.supportedEffortLevels.map((effort) => ({ id: effort, label: effort })) }
-            : {}),
-        })),
-        modelCatalogKnown: true,
-      });
+  if (Array.isArray(catalog)) return catalog.reduce((current, entry) => enginesWithModelCatalog(current, entry), engines);
+  return engines.map(engine => {
+    if (engine.id !== catalog.engineId || (engine.cliVersion && engine.cliVersion !== catalog.cliVersion)) return engine;
+    const defaultModel = catalog.models.find(model => model.isDefault)
+      ?? catalog.models.find(model => model.id === engine.defaultModel)
+      ?? catalog.models.find(model => model.id);
+    return {
+      ...engine,
+      defaultModel: defaultModel?.id,
+      defaultEffort: defaultModel?.defaultEffort ?? engine.defaultEffort,
+      cliVersion: catalog.cliVersion,
+      modelCatalogFetchedAt: catalog.fetchedAt,
+      models: catalog.models.map(model => ({
+        ...model,
+        ...(model.supportedEffortLevels
+          ? { efforts: model.supportedEffortLevels.map(effort => ({ id: effort, label: effort })) }
+          : {}),
+      })),
+      modelCatalogKnown: true,
+    };
+  });
 }
 
 function runtimeModelOption(

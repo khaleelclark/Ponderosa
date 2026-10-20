@@ -36,7 +36,8 @@ interface ProjectRoutesContext {
   activeRuns: ReadonlyMap<string, ActiveRun>;
   scheduledSessionRollovers: Map<string, string>;
   organizationEnvelopeStates: Map<string, { sessionId: string; hash: string }>;
-  cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
+  prepareEngineModels(adapter: EngineRegistration["adapter"]): Promise<unknown>;
+  cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[] | undefined;
   appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): unknown;
   refreshCommunicationReconciliation(projectId: string): void;
   clearAgentResumeSession(agentId: string, reason: string): void;
@@ -802,6 +803,7 @@ export function registerProjectRoutes(
     managedWorkspacesRoot,
     projectFolderPathBoundary,
     cachedModelOptions,
+    prepareEngineModels,
     appendWorkspace,
     refreshCommunicationReconciliation,
     managedProjectCreationFault,
@@ -915,6 +917,7 @@ export function registerProjectRoutes(
     }
     if (!engines.has(defaultEngine)) return reply.code(400).send({ error: "a configured default engine is required" });
     const creationAdapter = engines.get(defaultEngine)!.adapter;
+    await prepareEngineModels(creationAdapter);
     const creationModelOptions = cachedModelOptions(creationAdapter);
     const resolvedCreation = chatCreationRuntimeSelection(creationAdapter, {
       model: request.body.defaultModel,

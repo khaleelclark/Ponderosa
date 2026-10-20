@@ -10,7 +10,10 @@ import type {
 import {
   activationRetryDisposition,
   publicProviderFailureSummary,
+  MAX_PROVIDER_RECOVERY_ATTEMPTS,
+  providerRecoveryDelay,
 } from "@ponderosa/core";
+import { providerRecoveryAttempts } from "./coordination-v3-provider-recovery.js";
 import { stableJson } from "./coordination-v3-canonical-json.js";
 import { CoordinationIdempotencyConflictError } from "./coordination-v3-errors.js";
 import type { CoordinationV3ActivationLifecycleAuthority } from "./coordination-v3-activation-lifecycle-authority.js";
@@ -499,6 +502,8 @@ export class CoordinationV3RunLifecycleAuthority {
       signal?: string | null;
       stderr?: string;
       message?: string;
+      httpStatusCode?: number;
+      retryAfterMs?: number;
     };
   }): "retry" | "terminal" | "resume_same_run" | "outcome_unknown" {
     const now = input.now ?? new Date().toISOString();
@@ -507,18 +512,19 @@ export class CoordinationV3RunLifecycleAuthority {
         input.runId,
         input.fencingToken,
       );
-      if (input.failureDetail) {
+      if (input.failureDetail || input.failureKind !== undefined || input.retryable === false) {
         this.sqlite.prepare(`
           UPDATE scheduler_runs SET provider_failure_json = ?
           WHERE id = ? AND fencing_token = ?
         `).run(
           stableJson({
             ...input.failureDetail,
+            retryable: input.retryable !== false,
             ...(input.failureKind ? { category: input.failureKind } : {}),
-            ...(input.failureDetail.stderr
+            ...(input.failureDetail?.stderr
               ? { stderr: input.failureDetail.stderr.slice(-8_192) }
               : {}),
-            ...(input.failureDetail.message
+            ...(input.failureDetail?.message
               ? {
                 message: input.failureDetail.message.slice(0, 2_000),
               }
@@ -591,10 +597,10 @@ export class CoordinationV3RunLifecycleAuthority {
         LIMIT 1
       `).get(input.runId, run.agent_id, run.project_id) as { id: string } | undefined;
       if (disposition === "retry") {
-        const requestedMaximum = input.maxDeliveryFailures ?? 5;
+        const requestedMaximum = input.maxDeliveryFailures ?? MAX_PROVIDER_RECOVERY_ATTEMPTS;
         const maximum = Number.isFinite(requestedMaximum)
           ? Math.max(1, Math.floor(requestedMaximum))
-          : 5;
+          : MAX_PROVIDER_RECOVERY_ATTEMPTS;
         // Once the exact replacement packet is durably bound, an ordinary
         // Activation retry would create a different Run ID and either loop on
         // the old binding or weaken candidate fencing. Fail this candidate and
@@ -636,75 +642,29 @@ export class CoordinationV3RunLifecycleAuthority {
         const terminalOutcome = input.retryable === false || candidateReplacement || attachedRequestedHandoff
           ? input.terminalOutcome ?? "permanent_failure"
           : undefined;
-        const providerUnavailable = input.failureKind === "capacity" || input.failureKind === "rate_limit";
-        const currentFailures = (this.sqlite.prepare(`
-          SELECT COALESCE(MAX(delivery_failures), 0) AS failures
-          FROM agent_activations
-          WHERE id IN (
-            SELECT activation_id FROM scheduler_run_activations
-            WHERE run_id = ?
-          )
-        `).get(input.runId) as { failures: number }).failures;
-        const capacityBackoff =
-          input.failureKind === "capacity" ||
-          input.failureKind === "rate_limit"
-            ? Math.min(
-              120_000,
-              2_000 * (2 ** Math.min(currentFailures, 6)),
-            )
-            : 1_000;
-        const availableAt = new Date(
-          Date.parse(now) +
-            (input.retryDelayMs ?? capacityBackoff),
-        ).toISOString();
-        this.sqlite.prepare(`
-          UPDATE scheduler_runs
-          SET status = 'failed', updated_at = ?, terminal_at = ?
-          WHERE id = ? AND fencing_token = ?
-        `).run(now, now, input.runId, input.fencingToken);
-        this.sqlite.prepare(`
-          UPDATE agent_activations
-          SET delivery_failures = delivery_failures + 1,
-            last_delivery_error = ?,
-            provider_failure_category = ?,
-            state = CASE
-              WHEN ? IS NOT NULL OR (? = 1 AND delivery_failures + 1 >= ?)
-                THEN 'failed'
-              ELSE 'retry_pending'
-            END,
-            terminal_outcome = CASE
-              WHEN ? IS NOT NULL THEN ?
-              WHEN ? = 1 AND delivery_failures + 1 >= ? THEN 'retry_exhausted'
-              ELSE NULL
-            END,
-            terminal_at = CASE
-              WHEN ? IS NOT NULL OR (? = 1 AND delivery_failures + 1 >= ?)
-                THEN ?
-              ELSE NULL
-            END,
-            available_at = ?, updated_at = ?
-          WHERE id IN (
-            SELECT activation_id FROM scheduler_run_activations
-            WHERE run_id = ?
-          ) AND state = 'attached'
-        `).run(
-          durableError,
-          failureCategory ?? null,
-          terminalOutcome ?? null,
-          providerUnavailable ? 0 : 1,
-          maximum,
-          terminalOutcome ?? null,
-          terminalOutcome ?? null,
-          providerUnavailable ? 0 : 1,
-          maximum,
-          terminalOutcome ?? null,
-          providerUnavailable ? 0 : 1,
-          maximum,
-          now,
-          availableAt,
-          now,
-          input.runId,
-        );
+        this.sqlite.prepare(`UPDATE scheduler_runs SET status='failed', updated_at=?, terminal_at=?
+          WHERE id=? AND fencing_token=?`).run(now, now, input.runId, input.fencingToken);
+        const activations = this.sqlite.prepare(`SELECT activation.id, activation.delivery_failures
+          FROM agent_activations activation JOIN scheduler_run_activations attached
+            ON attached.activation_id=activation.id AND attached.run_id=? WHERE activation.state='attached'`)
+          .all(input.runId) as Array<{ id: string; delivery_failures: number }>;
+        const update = this.sqlite.prepare(`UPDATE agent_activations
+          SET delivery_failures=delivery_failures+1, last_delivery_error=?, provider_failure_category=?,
+            state=?, terminal_outcome=?, terminal_at=?, available_at=?, updated_at=?
+          WHERE id=? AND state='attached'`);
+        for (const activation of activations) {
+          const attempts = Math.max(activation.delivery_failures + 1,
+            providerRecoveryAttempts(this.sqlite, input.runId, activation.id));
+          const delay = providerRecoveryDelay(failureCategory, attempts, input.retryable !== false,
+            input.retryDelayMs ?? input.failureDetail?.retryAfterMs ?? 0);
+          const outcome = terminalOutcome ?? (delay === null || attempts >= maximum
+            ? providerRecoveryDelay(failureCategory, 0, input.retryable !== false) === null
+              ? "permanent_failure" : "retry_exhausted"
+            : undefined);
+          update.run(durableError, failureCategory ?? null, outcome ? 'failed' : 'retry_pending',
+            outcome ?? null, outcome ? now : null, new Date(Date.parse(now) + (delay ?? 0)).toISOString(),
+            now, activation.id);
+        }
         this.sqlite.prepare(`
           UPDATE scheduler_prompt_injections
           SET state = 'cancelled', updated_at = ?, terminal_at = ?

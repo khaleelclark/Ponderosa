@@ -42,7 +42,7 @@ interface EngineRoutesContext {
   engines: ReadonlyMap<string, EngineRegistration>;
   store: Pick<AgentStore, "getAgent" | "getProject">;
   workspace: Pick<WorkspaceStore, "cursor" | "getPreferences" | "updatePreferences">;
-  engineDto(registration: EngineRegistration): Promise<EngineDto>;
+  engineDto(registration: EngineRegistration, refreshModels?: boolean): Promise<EngineDto>;
   resourceAdmissionHeld?(): Promise<boolean>;
   providerUsageCenter(refresh: "none" | "stale"): Promise<ProviderUsageCenterDto>;
   providerUsageState(
@@ -113,7 +113,7 @@ export function registerEngineRoutes(
   const rechecks = new Map<string, Promise<EngineDto>>();
 
   app.get("/api/engines", async (): Promise<EngineDto[]> => {
-    return Promise.all(Array.from(engines.values()).map(engineDto));
+    return Promise.all(Array.from(engines.values()).map(registration => engineDto(registration)));
   });
 
   app.get<{ Querystring: { refresh?: string } }>(
@@ -198,7 +198,7 @@ export function registerEngineRoutes(
       }
       if (!auth.authenticated) return engineDto(registration);
       if (!registration.availabilityProbe) {
-        const refreshed = await engineDto(registration);
+        const refreshed = await engineDto(registration, true);
         if (refreshed.intakeReady) {
           resolveOperationalNotification(`provider:${request.params.id}:unavailable`);
           notifyScheduler();
@@ -240,7 +240,7 @@ export function registerEngineRoutes(
           action: { kind: "open_settings", targetId: request.params.id },
         });
       }
-      return engineDto(registration);
+      return engineDto(registration, true);
       })().finally(() => { if (rechecks.get(request.params.id) === operation) rechecks.delete(request.params.id); });
       rechecks.set(request.params.id, operation);
       return operation;

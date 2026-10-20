@@ -15,10 +15,11 @@ import {
   safeProviderConnectionUrl,
 } from "@ponderosa/core";
 import { stripVTControlCharacters } from "node:util";
-import { commandOutcome, mapFileChangeKind, providerErrorCodeFromDetail } from "./events.js";
+import { commandOutcome, mapFileChangeKind, providerErrorCodeFromDetail, codexErrorEvent } from "./events.js";
 import { JsonRpcOutputLimitError, JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeCodexProviderDiscovery } from "./capabilities.js";
+import { codexRateLimitBuckets } from "./provider-usage.js";
 
 interface ThreadResponse { thread: { id: string }; model?: string }
 interface TurnResponse { turn: { id: string } }
@@ -85,6 +86,13 @@ function object(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+function codexCliVersion(initialization: unknown): string {
+  const agent = object(initialization)?.userAgent;
+  return typeof agent === "string" && agent.length <= 512
+    ? /^codex[_-]cli(?:[_-]rs)?\/([0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?)(?:\s|$)/u.exec(agent)?.[1] ?? "unknown"
+    : "unknown";
 }
 
 const UNSAFE_TERMINAL_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu;
@@ -196,8 +204,9 @@ async function optionalPaginatedRequest(
     let cursor: string | undefined;
     for (let page = 0; page < 100; page += 1) {
       const response = object(await rpc.request(method, { ...params, ...(cursor ? { cursor } : {}) }));
-      if (!response) return undefined;
-      if (Array.isArray(response.data)) data.push(...response.data);
+      if (!response || !Array.isArray(response.data)) return undefined;
+      if (response.nextCursor !== undefined && response.nextCursor !== null && typeof response.nextCursor !== "string") return undefined;
+      data.push(...response.data);
       const nextCursor = typeof response.nextCursor === "string" && response.nextCursor
         ? response.nextCursor
         : undefined;
@@ -278,9 +287,10 @@ export async function discoverCodexAppServerCapabilities(opts: {
     // retain their normal streaming contract without this aggregate budget.
     maxOutputBytes: 8 * 1024 * 1024,
   });
+  let cliVersion = "unknown";
   try {
     try {
-      await rpc.initialize();
+      cliVersion = codexCliVersion(await rpc.initialize());
     } catch (error) {
       if (!timedOut) throw error;
       return normalizeCodexProviderDiscovery({
@@ -300,6 +310,7 @@ export async function discoverCodexAppServerCapabilities(opts: {
     rpc.throwIfFailed();
     return normalizeCodexProviderDiscovery({
       cwd: opts.cwd,
+      cliVersion,
       selectedModel: opts.model,
       skills,
       plugins,
@@ -386,8 +397,7 @@ export function formatCodexStatus(input: {
 
 export function formatCodexRateLimits(rateLimits: unknown): string[] {
   const parts: string[] = [];
-  const response = object(rateLimits);
-  const byId = object(response?.rateLimitsByLimitId);
+  const byId = codexRateLimitBuckets(rateLimits);
   const snapshots = Object.entries(byId ?? {}).flatMap(([id, value]) => {
     const snapshot = object(value);
     return snapshot ? [{ id: id as string | undefined, snapshot }] : [];
@@ -471,6 +481,7 @@ export class CodexAppServerSession implements RuntimeSession {
     private activeModel: string | undefined,
     private readonly configuredMcps: EngineMcpServer[],
     private readonly onCapabilitiesChanged: (() => void) | undefined,
+    private readonly cliVersion: string,
   ) {
     this.processIdentity = rpc.processIdentity;
     if (fresh) this.baselineTotal = zeroUsage();
@@ -524,7 +535,7 @@ export class CodexAppServerSession implements RuntimeSession {
         };
       },
     });
-    await rpc.initialize();
+    const cliVersion = codexCliVersion(await rpc.initialize());
     const response = opts.resumeSessionId
       ? await rpc.request<ThreadResponse>("thread/resume", {
           threadId: opts.resumeSessionId,
@@ -560,6 +571,7 @@ export class CodexAppServerSession implements RuntimeSession {
       typeof response.model === "string" && response.model.trim() ? response.model.trim() : opts.model,
       opts.configuredMcps ?? [],
       opts.onCapabilitiesChanged,
+      cliVersion,
     );
     return session;
   }
@@ -592,6 +604,7 @@ export class CodexAppServerSession implements RuntimeSession {
       const pluginDetails = await readInstalledPluginDetails(this.rpc, plugins);
       const snapshot = normalizeCodexProviderDiscovery({
         cwd: this.cwd,
+        cliVersion: this.cliVersion,
         selectedModel: this.activeModel,
         sessionId: this.engineAgentId,
         skills,
@@ -999,13 +1012,11 @@ export function mapCodexAppServerNotification(
   if (notification.method === "turn/completed") {
     const turn = params?.turn as {
       status?: string;
-      error?: { message?: string; code?: unknown } | null;
+      error?: { message?: string; code?: unknown; codexErrorInfo?: unknown; retryAfterMs?: unknown } | null;
     } | undefined;
     if (turn?.status === "failed") {
       const message = turn.error?.message ?? "Codex turn failed";
-      const rawCode = typeof turn.error?.code === "string" ? turn.error.code : undefined;
-      const code = providerErrorCodeFromDetail(message, rawCode);
-      return [{ type: "error", message, terminalStatus: "failed", ...(code ? { code } : {}) }];
+      return [{ ...codexErrorEvent(turn.error, message), terminalStatus: "failed" }];
     }
     if (turn?.status !== "completed") {
       return [{ type: "error", terminalStatus: turn?.status === "interrupted" ? "interrupted" : "unknown", message: turn?.status === "interrupted"

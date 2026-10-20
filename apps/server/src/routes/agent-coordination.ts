@@ -42,7 +42,7 @@ interface AgentCoordinationRoutesContext {
   agentDeliveryLeases: Map<string, number>;
   agentMessageCapabilities: ReadonlyMap<string, AgentMessageCapability>;
   activeRuns: ReadonlyMap<string, ActiveRun>;
-  cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
+  cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[] | undefined;
   capabilityOwnsAuthoritativeRun(
     capability: AgentMessageCapability,
     run: ActiveRun | undefined,

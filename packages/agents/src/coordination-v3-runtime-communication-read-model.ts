@@ -460,9 +460,12 @@ export class CoordinationV3RuntimeCommunicationReadModel {
               AND child.attempt_count = chain.attempt_count + 1
         )
         SELECT root_activation_id,
-          MAX(attempt_count) + 1 AS attempt_count,
+          MAX(MAX(attempt_count) + 1, COALESCE((SELECT root.delivery_failures FROM agent_activations root
+            WHERE root.id = required_reply_chain.root_activation_id), 0)) AS attempt_count,
           MAX(updated_at) AS latest_attempt_at,
-          MAX(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) AS exhausted
+          MAX(CASE WHEN state = 'failed' AND EXISTS (SELECT 1 FROM agent_activations root
+            WHERE root.id = required_reply_chain.root_activation_id AND root.terminal_outcome = 'retry_exhausted')
+            THEN 1 ELSE 0 END) AS exhausted
         FROM required_reply_chain
         GROUP BY root_activation_id
       `).all(rootBindings) as Array<{
