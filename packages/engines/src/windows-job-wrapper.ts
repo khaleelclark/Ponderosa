@@ -46,6 +46,7 @@ process.once("message", (message: unknown) => {
   } else {
     process.stdin.pipe(child.stdin!);
     child.stdout!.pipe(process.stdout);
+    child.stdout!.once("end", () => process.stdout.end());
   }
   child.once("error", (error) => {
     process.stderr.write(`Ponderosa contained runtime spawn failed: ${error.message}\n`);
