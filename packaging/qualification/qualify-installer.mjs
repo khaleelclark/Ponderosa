@@ -14,11 +14,9 @@ import {
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import {
-  auditPortableSymlinkTree,
-  copyPortableTree,
-} from "./symlink-portability.mjs";
+import { auditPortableSymlinkTree } from "./symlink-portability.mjs";
 import { assertMacosBundleIdentity } from "./macos-bundle-metadata.mjs";
+import { verifyMacosApplication } from "./macos-code-signing.mjs";
 
 const { values } = parseArgs({
   options: {
@@ -117,10 +115,15 @@ try {
     mkdirSync(mounted);
     run("hdiutil", ["attach", "-nobrowse", "-readonly", "-mountpoint", mounted, artifact]);
     const sourceApp = path.join(mounted, "Ponderosa Engine.app");
+    verifyMacosApplication(sourceApp);
     const installedApp = path.join(disposable, "Applications", "Ponderosa Engine.app");
     mkdirSync(path.dirname(installedApp), { recursive: true });
-    copyPortableTree(sourceApp, installedApp, {
-      label: "copied macOS installed application",
+    run("ditto", [sourceApp, installedApp]);
+    verifyMacosApplication(installedApp);
+    installerChecks.push({
+      id: "macos-bundle-signature",
+      status: "pass",
+      detail: "strict deep codesign verification passed on mounted and copied applications; trust/notarization require separate acceptance",
     });
     run("hdiutil", ["detach", mounted]);
     mounted = undefined;

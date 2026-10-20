@@ -776,6 +776,14 @@
       "origin": "F04 native image isolation from writable build cache before packaging and installed verification"
     },
     {
+      "path": "tests/installation-release/macos-code-signing.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "macOS codesign and clang; disposable native app fixture; no signing identity, provider or network",
+      "origin": "0.1.1 invalid Electron resource seal: sign the finished bundle and reject resource tampering"
+    },
+    {
       "path": "tests/providers/rpc-boundaries.test.mjs",
       "feature": "providers",
       "lane": "server",

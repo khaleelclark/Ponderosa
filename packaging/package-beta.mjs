@@ -24,6 +24,7 @@ import {
 } from "./qualification/symlink-portability.mjs";
 import { expectedMacosBundleIdentity } from "./qualification/macos-bundle-metadata.mjs";
 import { assertBuildVersion } from "./beta-version.mjs";
+import { signMacosApplication } from "./qualification/macos-code-signing.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const engineRequire = createRequire(path.join(
@@ -222,28 +223,22 @@ if (format === "dmg") {
       "Production macOS packaging requires both PONDEROSA_MACOS_SIGN_IDENTITY and PONDEROSA_MACOS_NOTARY_PROFILE.",
     );
   }
-  if (signingIdentity) {
-    run("codesign", [
-      "--force",
-      "--deep",
-      "--options", "runtime",
-      "--timestamp",
-      "--sign", signingIdentity,
-      app,
-    ]);
-    run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", app]);
+  if (notaryProfile && !signingIdentity) {
+    throw new Error("Notarization requires PONDEROSA_MACOS_SIGN_IDENTITY.");
   }
+  signMacosApplication(app, signingIdentity);
   const target = path.join(output, `${artifactBase}.dmg`);
   rmSync(target, { force: true });
   run("hdiutil", ["create", "-volname", "Ponderosa Engine", "-srcfolder", stage, "-ov", "-format", "UDZO", target]);
   rmSync(stage, { recursive: true, force: true });
   if (notaryProfile) {
-    if (!signingIdentity) throw new Error("Notarization requires PONDEROSA_MACOS_SIGN_IDENTITY.");
     run("xcrun", ["notarytool", "submit", target, "--keychain-profile", notaryProfile, "--wait"]);
     run("xcrun", ["stapler", "staple", target]);
+    run("xcrun", ["stapler", "validate", target]);
   }
   finalizeArtifact(target, {
     signed: Boolean(signingIdentity),
+    signature: signingIdentity ? "developer-id" : "ad-hoc",
     notarized: Boolean(notaryProfile),
     warning: notaryProfile
       ? null
