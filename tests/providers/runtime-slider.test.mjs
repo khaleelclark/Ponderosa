@@ -194,3 +194,12 @@ test('cancelled pointer cannot save, and later keyboard input remains usable', t
   assert.deepEqual(p.callbacks, [['effort', 'tiny-id']]);
   p.find('Reasoning effort').props.onChangeCommitted({ type: 'mouseup' }, 2); assert.equal(p.callbacks.length, 1);
 });
+
+test('inherited reset uses the real resolver, including a provider Fast default', () => {
+  const exports = {}; vm.runInNewContext(transpile(source('conversationEngine.ts')), { exports });
+  const engine = { id: 'fixture', models: [{ id: 'provider-default', label: 'Default', efforts: [{ id: 'low', label: 'Low' }], defaultEffort: 'low', serviceTiers: [{ id: 'cli-fast-id', label: 'Fast' }], defaultServiceTier: 'cli-fast-id' }, { id: 'project-model', label: 'Project', efforts: [{ id: 'deep', label: 'Deep' }], defaultEffort: 'deep' }], efforts: [], defaultModel: 'provider-default' };
+  const inherited = exports.resolveRuntimeSelection(engine, {}, undefined);
+  assert.deepEqual({ ...inherited }, { model: 'provider-default', effort: 'low', speed: 'cli-fast-id' });
+  const project = exports.resolveRuntimeSelection(engine, {}, { defaultEngine: 'fixture', defaultModel: 'project-model' });
+  assert.deepEqual({ ...project }, { model: 'project-model', effort: 'deep', speed: '' });
+});
