@@ -143,7 +143,7 @@ test('absent or disabled provider discovery/recheck creates no helpers; reinstal
         const recheck = await app.inject({ method: 'POST', url: '/api/engines/claude/recheck' }); assert.equal(recheck.statusCode, 200); assert.equal(recheck.json().intakeReady, false);
       }
     }
-    assert.equal(discoveries, 0); assert.equal(probes, 0);
+    assert.equal(discoveries, 0); assert.equal(probes, 0); assert.equal(authReads, 0, 'Absent and disabled providers must not start authentication helpers');
     installed = false; enabled = true;
     const absent = await plane.engineDto(registration);
     assert.equal(absent.installed, false); assert.equal(absent.intakeReady, false); assert.equal(absent.reachability, 'unverified');

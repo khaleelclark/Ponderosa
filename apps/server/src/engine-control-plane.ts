@@ -192,7 +192,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     let auth: import("@ponderosa/core").EngineAuthStatus;
     try {
       auth = registration.authStatus
-        ? await engineAuthStatuses.read(id, registration.authStatus, context.resourceAdmission?.snapshot().state !== "held")
+        ? await engineAuthStatuses.read(id, registration.authStatus, providerEnabled(id) && context.resourceAdmission?.snapshot().state !== "held")
         : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
     } catch (error) {
       app.log.warn({
