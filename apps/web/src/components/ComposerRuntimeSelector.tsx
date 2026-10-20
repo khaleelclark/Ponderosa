@@ -108,6 +108,7 @@ export function ComposerRuntimeSelector({
   const interaction = useRef({ key: catalogKey, revision: 0 });
   if (interaction.current.key !== catalogKey) interaction.current = { key: catalogKey, revision: interaction.current.revision + 1 };
   const interactionRevision = interaction.current.revision;
+  const gestureRevision = useRef<number | null>(null);
   const selectedIndex = efforts.findIndex(option => option.id === effort);
   const index = preview?.key === catalogKey ? preview.index : selectedIndex;
   const presentation = effortPresentation(index, efforts.length, theme.palette.mode === "dark");
@@ -170,11 +171,9 @@ export function ComposerRuntimeSelector({
     };
   }, [anchor, popper]);
   const menuId = useId();
-  useEffect(() => {
-    if (anchor && !preserveEditorFocus.current) {
-      document.getElementById(menuId)?.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled)")?.focus();
-    }
-  }, [anchor, menuId]);
+  const focusPicker = useCallback((node: HTMLDivElement | null) => {
+    if (node && !preserveEditorFocus.current) node.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled)")?.focus();
+  }, []);
   const selectedEngine = engines.find((option) => option.id === engine);
   const selectedModel = models.find((option) => option.id === model);
   const selectedEffort = efforts.find((option) => option.id === effort);
@@ -217,12 +216,15 @@ export function ComposerRuntimeSelector({
     ? `${selectedEngine?.label ?? ""} ${fastOption?.label ?? "Fast"} mode ${fast ? "on" : "off"}.${fastOption?.detail ? ` ${fastOption.detail}` : ""}`
     : `${selectedSpeed?.label ?? "Speed"}${selectedSpeed?.detail ? `. ${selectedSpeed.detail}` : ""}`;
   const commitEffort = (_event: Event | React.SyntheticEvent, value: number | number[]) => {
-    if (!anchor || interaction.current.revision !== interactionRevision || disabled || loading) return;
+    const startedAt = gestureRevision.current;
+    gestureRevision.current = null;
+    if (!anchor || interaction.current.revision !== interactionRevision || (startedAt !== null && startedAt !== interactionRevision) || disabled || loading) { setPreview(null); return; }
     const next = efforts[Number(value)];
     setPreview(null);
     if (next && !next.disabled && next.id !== effort) { rememberPickerFocus(); onEffortChange(next.id); }
   };
   const choose = (id: string) => {
+    if (disabled || loading) return;
     if (id !== activeValue) {
       if (!preserveEditorFocus.current) resumeFocus.current = (section === "engine" ? engineButton : modelButton).current;
       if (section === "engine") onEngineChange?.(id);
@@ -236,7 +238,7 @@ export function ComposerRuntimeSelector({
   const optionList = section ? <MenuList autoFocusItem={!preserveEditorFocus.current} disablePadding aria-label={`${section} options`} sx={{ maxHeight: 240, overflowY: "auto", scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" }, bgcolor: "action.hover", borderRadius: 1.5 }}>
             {activeOptions.flatMap((option, optionIndex) => [
               ...(option.group && option.group !== activeOptions[optionIndex - 1]?.group ? [<ListSubheader key={option.group} disableSticky sx={{ bgcolor: "transparent", lineHeight: "30px" }}>{option.group}</ListSubheader>] : []),
-              <MenuItem key={option.id} selected={option.id === activeValue} disabled={disabled || option.disabled} onClick={() => choose(option.id)} sx={{ minHeight: 44, whiteSpace: "normal", gap: 1 }}>
+              <MenuItem key={option.id} selected={option.id === activeValue} disabled={disabled || loading || option.disabled} onClick={() => choose(option.id)} sx={{ minHeight: 44, whiteSpace: "normal", gap: 1 }}>
                 <Box sx={{ flex: 1, minWidth: 0 }}><Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{option.label}</Typography>{option.detail && (section !== "model" || option.disabled) ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.35, overflowWrap: "anywhere" }}>{option.detail}</Typography> : null}</Box>
                 {option.id === activeValue ? <CheckIcon fontSize="small" /> : null}
               </MenuItem>,
@@ -289,6 +291,7 @@ export function ComposerRuntimeSelector({
       </Stack>
     </ButtonBase>
     <Popper
+      role="presentation"
       popperRef={setPopper}
       open={Boolean(anchor)}
       anchorEl={anchor}
@@ -304,6 +307,7 @@ export function ComposerRuntimeSelector({
       }}>
         <Paper
           id={menuId}
+          ref={focusPicker}
           role="dialog"
           aria-label={scopeLabel ?? "Runtime settings"}
           onPointerDown={keepKeyboard}
@@ -356,7 +360,11 @@ export function ComposerRuntimeSelector({
               value={Math.max(0, index)} min={0} max={Math.max(1, efforts.length - 1)} step={null}
               marks={efforts.map((_option, value) => ({ value }))}
               disabled={disabled || loading || efforts.length < 2 || index < 0}
-              onChange={(_event, value) => setPreview({ key: catalogKey, index: Number(value) })}
+              onPointerDownCapture={() => { gestureRevision.current = interactionRevision; }}
+              onChange={(_event, value) => {
+                if (gestureRevision.current !== null && gestureRevision.current !== interactionRevision) return;
+                setPreview({ key: catalogKey, index: Number(value) });
+              }}
               onChangeCommitted={commitEffort}
               onPointerCancel={() => setPreview(null)}
               onFocusCapture={() => {

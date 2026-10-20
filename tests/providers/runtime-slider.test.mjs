@@ -166,3 +166,21 @@ test('effort casing is presentation only and ordinary model rows omit subtext', 
   assert.ok(!p.render().some(node => node.props.children === 'Latest · stores live-id'));
   p.find('Reasoning effort').props.onChangeCommitted({}, 0); assert.deepEqual(p.callbacks, [['effort', 'low']]);
 });
+
+for (const boundary of ['owner', 'pending-cycle', 'effort']) test(`MUI latest commit callback rejects an old pointer gesture after ${boundary}`, t => {
+  const p = picker(); t.after(p.close);
+  p.find('Reasoning effort').props.onPointerDownCapture();
+  p.find('Reasoning effort').props.onChange({ type: 'mousemove' }, 2);
+  if (boundary === 'owner') p.props.selectionKey = 'owner-b';
+  else if (boundary === 'effort') p.props.effort = 'tiny-id';
+  else { p.props.disabled = true; p.render(); p.props.disabled = false; }
+  p.render(); p.find('Reasoning effort').props.onChange({ type: 'mousemove' }, 2);
+  p.find('Reasoning effort').props.onChangeCommitted({ type: 'mouseup' }, 2);
+  assert.deepEqual(p.callbacks, []);
+});
+test('inline options remain disabled during catalog loading and retained selection handlers cannot save', t => {
+  const p = picker({ models: [{ id: 'live-id', label: 'Live label' }, { id: 'new', label: 'Other' }] }); t.after(p.close);
+  p.find('Model: Live label').props.onClick(); p.props.loading = true;
+  const item = p.render().find(node => node.type === p.mui.MenuItem && node.props.selected === false);
+  assert.equal(item.props.disabled, true); item.props.onClick(); assert.deepEqual(p.callbacks, []);
+});
