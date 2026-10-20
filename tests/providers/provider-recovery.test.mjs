@@ -170,6 +170,20 @@ import { discoverCodexAppServerCapabilities } from '../../packages/engines/dist/
 const catalog = (id, effort = 'high') => ({ models: [{ id, label: id, kind: 'alias', source: 'provider-probe',
   efforts: [{ id: effort, label: effort }], defaultEffort: effort }], cliVersion: '0.143.0', configurationKey: 'default' });
 
+test('model validation rejects malformed IDs before invoking a provider', t => {
+  const calls = [];
+  return withFixture(t, async f => {
+    const chat = await f.createChat('Model validation input');
+    const url = `/api/projects/${chat.projectId}/engine-models/codex/validate`;
+    for (const modelId of [null, '', '   ', 'x'.repeat(201), 123, false, [], {}]) {
+      assert.equal((await f.api('POST', url, { modelId })).status, 400);
+    }
+    assert.deepEqual(calls, []);
+    assert.equal(f.ok(await f.api('POST', url, { modelId: ' fixture ' })).valid, true);
+    assert.deepEqual(calls, ['fixture']);
+  }, { modelValidator: async (_cwd, modelId) => { calls.push(modelId); return { valid: true, model: catalog(modelId).models[0] }; } });
+});
+
 test('cold first-Chat creation bootstraps inventory; project catalogs replace the host roster without changing a saved tuple', { timeout: 30000 }, t => {
   const calls = [];
   return withFixture(t, async f => {

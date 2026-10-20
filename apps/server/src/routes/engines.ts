@@ -288,7 +288,7 @@ export function registerEngineRoutes(
       if (!registration.adapter.validateModel) {
         return reply.code(404).send({ error: "this engine does not provide model validation" });
       }
-      const modelId = request.body?.modelId?.trim() ?? "";
+      const modelId = typeof request.body?.modelId === "string" ? request.body.modelId.trim() : "";
       if (!modelId || modelId.length > 200) {
         return reply.code(400).send({
           error: "modelId must be a non-empty string of at most 200 characters",
