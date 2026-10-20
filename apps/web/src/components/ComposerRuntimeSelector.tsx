@@ -22,6 +22,7 @@ import {
   Typography,
 } from "@mui/material";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 export interface ComposerRuntimeOption {
   id: string;
@@ -391,7 +392,10 @@ export function ComposerRuntimeSelector({
               onPointerDownCapture={() => { gestureRevision.current = interactionRevision; }}
               onChange={(event, value) => {
                 if (event.type !== "change" && event.type !== "keydown" && gestureRevision.current !== null && gestureRevision.current !== interactionRevision) return;
-                setPreview({ key: catalogKey, index: Number(value) });
+                const update = () => setPreview({ key: catalogKey, index: Number(value) });
+                // Native drag listeners otherwise paint the previous stop for a frame.
+                if (event.type === "mousemove" || event.type === "touchmove") flushSync(update);
+                else update();
               }}
               onChangeCommitted={commitEffort}
               onPointerCancel={() => { gestureRevision.current = -1; setPreview(null); }}
@@ -405,9 +409,10 @@ export function ComposerRuntimeSelector({
               }}
               track={false}
               sx={{ position: "absolute", left: 24, width: "calc(100% - 24px)", height: 24, py: "12px", top: 0,
+                "@media (pointer: coarse)": { padding: "12px 0" },
                 "& .MuiSlider-rail": { opacity: 0 },
                 "& .MuiSlider-mark": { height: 3, width: 3, borderRadius: "50%", bgcolor: "text.secondary", opacity: 0.6 },
-                "& .MuiSlider-thumb": { height: 28, width: 28, bgcolor: "#fff", boxShadow: "0 1px 6px #0003", "&.Mui-focusVisible": { boxShadow: "0 0 0 4px #22e58a66" } },
+                "& .MuiSlider-thumb": { height: 28, width: 28, bgcolor: "#fff", boxShadow: "0 1px 6px #0003", transitionProperty: "box-shadow", "&.Mui-focusVisible": { boxShadow: "0 0 0 4px #22e58a66" } },
               }}
             />
           </Box>

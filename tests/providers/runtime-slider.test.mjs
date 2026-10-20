@@ -27,6 +27,7 @@ function picker(overrides = {}) {
   const exports = {};
   vm.runInNewContext(transpile(source('components/ComposerRuntimeSelector.tsx')), { exports, document, HTMLElement, require: name => {
     if (name === 'react') return react;
+    if (name === 'react-dom') return { flushSync: fn => fn() };
     if (name === 'react/jsx-runtime') return require(name);
     if (name === '@mui/material') return mui;
     if (name.startsWith('@mui/icons-material/')) return { __esModule: true, default: () => null };
