@@ -158,3 +158,11 @@ test('automatic runtime changes are quiet; explicit Settings Save keeps its conf
   assert.equal(notices.length, 1); assert.match(inline.at(-1), /^Saved/);
   runtime.onError(Error('save failed'), {}, context); assert.equal(inline.at(-1), undefined);
 });
+
+test('effort casing is presentation only and ordinary model rows omit subtext', t => {
+  const p = picker({ effort: 'xhigh', efforts: [{ id: 'low', label: 'low' }, { id: 'xhigh', label: 'xhigh' }], models: [{ id: 'live-id', label: 'Live label', detail: 'Latest · stores live-id' }] }); t.after(p.close);
+  const slider = p.find('Reasoning effort'); assert.equal(slider.props.getAriaValueText(0), 'Low'); assert.equal(slider.props.getAriaValueText(1), 'Extra High');
+  p.find('Model: Live label').props.onClick();
+  assert.ok(!p.render().some(node => node.props.children === 'Latest · stores live-id'));
+  p.find('Reasoning effort').props.onChangeCommitted({}, 0); assert.deepEqual(p.callbacks, [['effort', 'low']]);
+});

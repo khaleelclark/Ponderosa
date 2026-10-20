@@ -29,6 +29,10 @@ export interface ComposerRuntimeOption {
   group?: "Latest" | "Pinned";
 }
 
+function effortLabel(option?: ComposerRuntimeOption): string | undefined {
+  return option?.id === "xhigh" ? "Extra High" : option?.label.replace(/\b\p{L}/gu, letter => letter.toLocaleUpperCase());
+}
+
 // The same palette drives the trigger and the open slider label.
 export function effortPresentation(index: number, count: number, dark: boolean) {
   const ratio = count > 1 ? Math.max(0, index) / (count - 1) : 0;
@@ -176,7 +180,7 @@ export function ComposerRuntimeSelector({
   const selectedEffort = efforts.find((option) => option.id === effort);
   const selectedSpeed = speeds.find(option => option.id === speed);
   const selectedModelLabel = loading ? "Loading model…" : selectedModel?.label ?? (models.length ? "Choose model" : "Choose a provider");
-  const selectedEffortLabel = loading ? "Loading reasoning…" : selectedEffort?.label ?? (efforts.length ? "Choose reasoning" : "Reasoning follows model");
+  const selectedEffortLabel = loading ? "Loading reasoning…" : effortLabel(selectedEffort) ?? (efforts.length ? "Choose reasoning" : "Reasoning follows model");
   const close = useCallback(() => {
     if (!preserveEditorFocus.current && document.getElementById(menuId)?.contains(document.activeElement)) anchor?.focus();
     setAnchor(null); setSection(null); setPreview(null); resumeFocus.current = null;
@@ -334,7 +338,7 @@ export function ComposerRuntimeSelector({
             </Box>
             <Slider
               aria-label="Reasoning effort"
-              getAriaValueText={value => efforts[value]?.label ?? "Unavailable"}
+              getAriaValueText={value => effortLabel(efforts[value]) ?? "Unavailable"}
               value={Math.max(0, index)} min={0} max={Math.max(1, efforts.length - 1)} step={null}
               marks={efforts.map((_option, value) => ({ value }))}
               disabled={disabled || loading || efforts.length < 2 || index < 0}
@@ -365,7 +369,7 @@ export function ComposerRuntimeSelector({
                   else { rememberPickerFocus(); const next = speeds.find(option => option.id !== selectedSpeed?.id); if (next && !next.disabled) onSpeedChange(next.id); }
                 }} sx={{ gridColumn: 1, width: 44, height: 44, color: fast ? "primary.main" : "text.secondary", bgcolor: fast ? "action.selected" : "transparent" }}><SpeedOutlinedIcon fontSize="small" /></IconButton>
             </Tooltip> : null}
-            <Typography textAlign="center" sx={{ gridColumn: 2, gridRow: 1, color: presentation.color, fontWeight: presentation.ultra ? 800 : 600, textShadow: presentation.ultra && theme.palette.mode === "dark" ? "0 0 13px #22e58a38" : "none" }}>{preview?.key === catalogKey ? efforts[index]?.label : selectedEffortLabel}</Typography>
+            <Typography textAlign="center" sx={{ gridColumn: 2, gridRow: 1, color: presentation.color, fontWeight: presentation.ultra ? 800 : 600, textShadow: presentation.ultra && theme.palette.mode === "dark" ? "0 0 13px #22e58a38" : "none" }}>{preview?.key === catalogKey ? effortLabel(efforts[index]) : selectedEffortLabel}</Typography>
             <Tooltip title="Reset to default" enterTouchDelay={0}><IconButton aria-label="Reset to default" disabled={disabled || loading || !models.length} onClick={() => { rememberPickerFocus(); setPreview(null); setSection(null); onReset(); }} sx={{ gridColumn: 3, gridRow: 1, width: 44, height: 44 }}><RestartAltIcon fontSize="small" /></IconButton></Tooltip>
           </Box>
           <ButtonBase ref={modelButton} aria-label={`Model: ${selectedModelLabel}`} aria-expanded={section === "model"} disabled={disabled || loading || !models.length}
@@ -377,7 +381,7 @@ export function ComposerRuntimeSelector({
             {activeOptions.flatMap((option, optionIndex) => [
               ...(option.group && option.group !== activeOptions[optionIndex - 1]?.group ? [<ListSubheader key={option.group} disableSticky sx={{ bgcolor: "transparent", lineHeight: "30px" }}>{option.group}</ListSubheader>] : []),
               <MenuItem key={option.id} selected={option.id === activeValue} disabled={disabled || option.disabled} onClick={() => choose(option.id)} sx={{ minHeight: 44, whiteSpace: "normal", gap: 1 }}>
-                <Box sx={{ flex: 1, minWidth: 0 }}><Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{option.label}</Typography>{option.detail ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.35, overflowWrap: "anywhere" }}>{option.detail}</Typography> : null}</Box>
+                <Box sx={{ flex: 1, minWidth: 0 }}><Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{option.label}</Typography>{option.detail && (section !== "model" || option.disabled) ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.35, overflowWrap: "anywhere" }}>{option.detail}</Typography> : null}</Box>
                 {option.id === activeValue ? <CheckIcon fontSize="small" /> : null}
               </MenuItem>,
             ])}
