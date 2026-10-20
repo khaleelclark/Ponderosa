@@ -113,7 +113,7 @@ export function useAgentDetailAdministration({
         effort: settingsEffort || null,
       }),
     onMutate: () => ({ agentId }),
-    onSuccess: (updated, _variables, context) => {
+    onSuccess: (updated, variables, context) => {
       queryClient.setQueriesData<AgentDetailDto>(
         { queryKey: queryKeys.agents.detailPrefix(updated.id) },
         current => (current ? { ...current, agent: updated } : current),
@@ -129,10 +129,10 @@ export function useAgentDetailAdministration({
       );
       if (currentAgentId.current === context.agentId) {
         onRuntimeSettingsNotice(
-          "Saved. These runtime settings apply when the next Run starts.",
+          variables === undefined ? "Saved. These runtime settings apply when the next Run starts." : undefined,
         );
       }
-      notify({ key: `agent-runtime:${updated.id}`, message: "Agent defaults saved." });
+      if (variables === undefined) notify({ key: `agent-runtime:${updated.id}`, message: "Agent defaults saved." });
     },
     onError: (_error, _variables, context) => {
       if (currentAgentId.current === context?.agentId) {

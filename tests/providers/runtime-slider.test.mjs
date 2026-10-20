@@ -16,7 +16,8 @@ function picker(overrides = {}) {
     removeEventListener(type, fn) { listeners.get(type)?.delete(fn); },
     dispatchEvent(event) { for (const fn of [...(listeners.get(event.type) ?? [])]) fn(event); },
   };
-  Object.assign(document, { visibilityState: 'visible', activeElement: null, getElementById: () => null });
+  Object.assign(document, { visibilityState: 'visible', activeElement: null, body: {}, getSelection: () => ({ rangeCount: 0 }), getElementById: () => null });
+  class HTMLElement {}
   const cell = initial => { const i = cursor++; if (!(i in cells)) cells[i] = typeof initial === 'function' ? initial() : initial; return [cells[i], value => { cells[i] = typeof value === 'function' ? value(cells[i]) : value; }]; };
   const react = { useState: cell, useRef: initial => cell(() => ({ current: initial }))[0], useCallback: fn => fn, useId: () => 'picker', useEffect(fn, deps) {
     const i = cursor++, previous = cells[i];
@@ -24,7 +25,7 @@ function picker(overrides = {}) {
   } };
   const mui = new Proxy({ useTheme: () => ({ palette: { mode: 'dark' } }) }, { get: (object, name) => object[name] ??= () => null });
   const exports = {};
-  vm.runInNewContext(transpile(source('components/ComposerRuntimeSelector.tsx')), { exports, document, require: name => {
+  vm.runInNewContext(transpile(source('components/ComposerRuntimeSelector.tsx')), { exports, document, HTMLElement, require: name => {
     if (name === 'react') return react;
     if (name === 'react/jsx-runtime') return require(name);
     if (name === '@mui/material') return mui;
@@ -39,7 +40,7 @@ function picker(overrides = {}) {
   render();
   const anchor = { ownerDocument: document, focus() {} };
   find('Choose engine, model, reasoning, and speed').props.onClick({ detail: 0, currentTarget: anchor }); render();
-  return { props, callbacks, render, find, document, mui, exports, close() { for (const value of cells) value?.cleanup?.(); } };
+  return { props, callbacks, render, find, document, mui, exports, HTMLElement, close() { for (const value of cells) value?.cleanup?.(); } };
 }
 
 test('slider maps advertised stops and accessible labels to exact IDs; preview does not save', t => {
@@ -90,6 +91,35 @@ test('Escape closes inline choices before the popover and stops editor propagati
   escape(); assert.equal(p.render().find(node => node.type === p.mui.Popper).props.open, false);
 });
 
+
+test('keyboard slider focus resumes after its pending save without stealing a new focus target', t => {
+  const p = picker(); t.after(p.close); let focused = 0;
+  const input = { isConnected: true, focus() { focused++; } };
+  p.document.getElementById = () => ({ contains: element => element === input });
+  p.document.activeElement = input;
+  p.find('Reasoning effort').props.onChangeCommitted({}, 2);
+  p.props.disabled = true; p.render(); p.document.activeElement = p.document.body;
+  p.props.disabled = false; p.render(); assert.equal(focused, 1);
+  p.document.activeElement = input; p.find('Reasoning effort').props.onChangeCommitted({}, 0);
+  p.props.disabled = true; p.render(); p.document.activeElement = {};
+  p.props.disabled = false; p.render(); assert.equal(focused, 1);
+});
+test('MUI thumb focus during touch restores the editor and exact saved caret without cancelling drag', t => {
+  const p = picker(); t.after(p.close);
+  const trigger = 'Choose engine, model, reasoning, and speed';
+  p.find(trigger).props.onClick({ detail: 0, currentTarget: {} }); p.render();
+  let focused = 0, restored;
+  const editor = new p.HTMLElement(); Object.assign(editor, { isConnected: true, closest: () => editor, focus() { focused++; } });
+  const range = {}; p.document.getSelection = () => ({ rangeCount: 1, getRangeAt: () => ({ cloneRange: () => range }), removeAllRanges() {}, addRange(value) { restored = value; } });
+  p.document.activeElement = editor;
+  p.find(trigger).props.onPointerDown({ pointerType: 'touch' });
+  p.find(trigger).props.onClick({ detail: 1, currentTarget: { ownerDocument: p.document } });
+  const slider = p.find('Reasoning effort'); slider.props.onFocusCapture();
+  assert.equal(focused, 1); assert.equal(restored, range);
+  slider.props.onChange({}, 2); p.find('Reasoning effort').props.onChangeCommitted({}, 2);
+  assert.deepEqual(p.callbacks, [['effort', 'deep-id']]);
+});
+
 test('reset owners resolve without overrides, save one complete tuple, reuse rollback and skip unchanged saves', () => {
   for (const name of ['ConversationView.tsx', 'AgentDetail.tsx', 'AllChatView.tsx']) {
     const text = source('components/' + name);
@@ -108,4 +138,23 @@ test('reset owners resolve without overrides, save one complete tuple, reuse rol
     Object.assign(context, resolved); saved.length = 0;
     vm.runInContext('resetOrChangeEngine("fixture")', context); assert.equal(saved.length, 0, name + ': unchanged');
   }
+});
+
+test('automatic runtime changes are quiet; explicit Settings Save keeps its confirmation', () => {
+  const mutations = [], notices = [], inline = [], exports = {};
+  const imports = {
+    react: { useRef: value => ({ current: value }) },
+    '@tanstack/react-query': { useMutation: options => { mutations.push(options); return options; }, useQueryClient: () => ({ setQueriesData() {} }) },
+    '../api': {}, '../conversationAgentCache': {},
+    '../queryKeys': { queryKeys: { agents: { detailPrefix: () => [], all: [] }, conversations: { detailAll: [] } } },
+    './MutationNotifications': { useMutationNotification: () => notice => notices.push(notice) },
+  };
+  vm.runInNewContext(transpile(source('components/useAgentDetailAdministration.ts')), { exports, require: name => imports[name] });
+  exports.useAgentDetailAdministration({ agentId: 'a', onRuntimeSettingsNotice: value => inline.push(value) });
+  const runtime = mutations.at(-1), updated = { id: 'a' }, context = { agentId: 'a' };
+  runtime.onSuccess(updated, { activeEngine: 'codex' }, context);
+  assert.deepEqual(notices, []); assert.deepEqual(inline, [undefined]);
+  runtime.onSuccess(updated, undefined, context);
+  assert.equal(notices.length, 1); assert.match(inline.at(-1), /^Saved/);
+  runtime.onError(Error('save failed'), {}, context); assert.equal(inline.at(-1), undefined);
 });

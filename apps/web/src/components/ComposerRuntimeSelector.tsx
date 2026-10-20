@@ -114,6 +114,13 @@ export function ComposerRuntimeSelector({
     return () => document.removeEventListener("visibilitychange", update);
   }, []);
   const preserveEditorFocus = useRef(false);
+  const editorFocus = useRef<{ element: HTMLElement; range: Range | null } | null>(null);
+  const resumeFocus = useRef<HTMLElement | null>(null);
+  const rememberPickerFocus = () => {
+    if (!preserveEditorFocus.current && document.getElementById(menuId)?.contains(document.activeElement)) {
+      resumeFocus.current = document.activeElement as HTMLElement;
+    }
+  };
   const keepKeyboard = (event: React.PointerEvent<HTMLElement>) => {
     if (event.pointerType === "mouse") {
       if (!anchor) preserveEditorFocus.current = false;
@@ -122,6 +129,10 @@ export function ComposerRuntimeSelector({
     if (!anchor) preserveEditorFocus.current = Boolean(
       document.activeElement?.closest('[contenteditable="true"], textarea, input'),
     );
+    if (preserveEditorFocus.current && document.activeElement instanceof HTMLElement && document.activeElement.closest('[contenteditable="true"], textarea, input')) {
+      const selection = document.getSelection();
+      editorFocus.current = { element: document.activeElement, range: selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null };
+    }
     // Prevent the compatibility mouse-down focus below, not pointer-down:
     // cancelling a touch pointer-down also suppresses clicks in WebKit.
   };
@@ -168,7 +179,7 @@ export function ComposerRuntimeSelector({
   const selectedEffortLabel = loading ? "Loading reasoning…" : selectedEffort?.label ?? (efforts.length ? "Choose reasoning" : "Reasoning follows model");
   const close = useCallback(() => {
     if (!preserveEditorFocus.current && document.getElementById(menuId)?.contains(document.activeElement)) anchor?.focus();
-    setAnchor(null); setSection(null); setPreview(null);
+    setAnchor(null); setSection(null); setPreview(null); resumeFocus.current = null;
   }, [anchor, menuId]);
   useEffect(() => {
     if (!anchor) return;
@@ -186,6 +197,10 @@ export function ComposerRuntimeSelector({
   }, [anchor, close, section]);
   useEffect(() => {
     if (disabled) setPreview(null);
+    else if (resumeFocus.current) {
+      if (anchor && resumeFocus.current.isConnected && document.activeElement === document.body) resumeFocus.current.focus({ preventScroll: true });
+      resumeFocus.current = null;
+    }
   }, [disabled]);
   const canSwitchEngine = !engineLocked && Boolean(onEngineChange) && engines.length > 1;
   const modelButton = useRef<HTMLButtonElement>(null);
@@ -200,10 +215,11 @@ export function ComposerRuntimeSelector({
     if (!anchor || interaction.current.revision !== interactionRevision || disabled || loading) return;
     const next = efforts[Number(value)];
     setPreview(null);
-    if (next && !next.disabled && next.id !== effort) onEffortChange(next.id);
+    if (next && !next.disabled && next.id !== effort) { rememberPickerFocus(); onEffortChange(next.id); }
   };
   const choose = (id: string) => {
     if (id !== activeValue) {
+      if (!preserveEditorFocus.current) resumeFocus.current = modelButton.current;
       if (section === "engine") onEngineChange?.(id);
       else if (section === "speed") onSpeedChange?.(id);
       else onModelChange(id);
@@ -325,6 +341,14 @@ export function ComposerRuntimeSelector({
               onChange={(_event, value) => setPreview({ key: catalogKey, index: Number(value) })}
               onChangeCommitted={commitEffort}
               onPointerCancel={() => setPreview(null)}
+              onFocusCapture={() => {
+                // MUI directly focuses the thumb on touch, bypassing mouse-down.
+                // Restore the existing editor selection without cancelling drag.
+                const saved = editorFocus.current;
+                if (!preserveEditorFocus.current || !saved?.element.isConnected) return;
+                saved.element.focus({ preventScroll: true });
+                if (saved.range) { const selection = document.getSelection(); selection?.removeAllRanges(); selection?.addRange(saved.range); }
+              }}
               track={false}
               sx={{ position: "absolute", left: 24, width: "calc(100% - 24px)", height: 24, py: "12px", top: 0,
                 "& .MuiSlider-rail": { opacity: 0 },
@@ -338,11 +362,11 @@ export function ComposerRuntimeSelector({
               <IconButton aria-label={speedTitle} aria-pressed={fast} aria-expanded={speeds.length > 2 ? section === "speed" : undefined} disabled={disabled || loading}
                 onClick={() => {
                   if (speeds.length > 2) setSection(section === "speed" ? null : "speed");
-                  else { const next = speeds.find(option => option.id !== selectedSpeed?.id); if (next && !next.disabled) onSpeedChange(next.id); }
+                  else { rememberPickerFocus(); const next = speeds.find(option => option.id !== selectedSpeed?.id); if (next && !next.disabled) onSpeedChange(next.id); }
                 }} sx={{ gridColumn: 1, width: 44, height: 44, color: fast ? "primary.main" : "text.secondary", bgcolor: fast ? "action.selected" : "transparent" }}><SpeedOutlinedIcon fontSize="small" /></IconButton>
             </Tooltip> : null}
             <Typography textAlign="center" sx={{ gridColumn: 2, gridRow: 1, color: presentation.color, fontWeight: presentation.ultra ? 800 : 600, textShadow: presentation.ultra && theme.palette.mode === "dark" ? "0 0 13px #22e58a38" : "none" }}>{preview?.key === catalogKey ? efforts[index]?.label : selectedEffortLabel}</Typography>
-            <Tooltip title="Reset to default" enterTouchDelay={0}><IconButton aria-label="Reset to default" disabled={disabled || loading || !models.length} onClick={() => { setPreview(null); setSection(null); onReset(); }} sx={{ gridColumn: 3, gridRow: 1, width: 44, height: 44 }}><RestartAltIcon fontSize="small" /></IconButton></Tooltip>
+            <Tooltip title="Reset to default" enterTouchDelay={0}><IconButton aria-label="Reset to default" disabled={disabled || loading || !models.length} onClick={() => { rememberPickerFocus(); setPreview(null); setSection(null); onReset(); }} sx={{ gridColumn: 3, gridRow: 1, width: 44, height: 44 }}><RestartAltIcon fontSize="small" /></IconButton></Tooltip>
           </Box>
           <ButtonBase ref={modelButton} aria-label={`Model: ${selectedModelLabel}`} aria-expanded={section === "model"} disabled={disabled || loading || !models.length}
             onClick={() => setSection(section === "model" ? null : "model")}
