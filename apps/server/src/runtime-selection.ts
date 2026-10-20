@@ -89,20 +89,15 @@ export function providerSessionContractHash(
   })).digest("hex");
 }
 
-function runtimeModelOptions(adapter: Adapter, additionalModels: ModelOption[]): ModelOption[] {
-  const models = projectProviderModelOptions(adapter.listModels());
-  const providerIds = new Set(models.map(option => option.id));
-  for (const option of additionalModels) {
-    if (!providerIds.has(option.id)) models.push(option);
-  }
-  return models;
+function runtimeModelOptions(adapter: Adapter, additionalModels?: ModelOption[]): ModelOption[] {
+  return projectProviderModelOptions(additionalModels ?? adapter.listModels());
 }
 
 function runtimeSelectionError(
   adapter: Adapter,
   model?: string,
   effort?: string,
-  additionalModels: ModelOption[] = [],
+  additionalModels?: ModelOption[],
 ): string | undefined {
   const selectedModel = model?.trim() || undefined;
   const selectedEffort = effort?.trim() || undefined;
@@ -111,7 +106,7 @@ function runtimeSelectionError(
   const matchedModel = selectedModel ? concreteModels.find((option) => option.id === selectedModel) : undefined;
   // A missing/unreadable provider cache is unknown availability, not evidence
   // that an already-configured model disappeared.
-  if (selectedModel && concreteModels.length > 0 && !matchedModel) return "model is not available for engine";
+  if (selectedModel && (additionalModels !== undefined || concreteModels.length > 0) && !matchedModel) return "model is not available for engine";
   const knownEfforts = selectedModel
     ? matchedModel?.efforts ?? (adapter.modelSpecificEfforts
       ? undefined
@@ -126,7 +121,7 @@ function runtimeSpeedSelectionError(
   adapter: Adapter,
   model?: string,
   speed?: string,
-  additionalModels: ModelOption[] = [],
+  additionalModels?: ModelOption[],
 ): string | undefined {
   const selectedSpeed = speed?.trim() || undefined;
   if (!selectedSpeed || selectedSpeed === "standard") return;
@@ -148,13 +143,13 @@ export function chatCreationRuntimeSelection(
   adapter: Adapter,
   requested: { model?: string; effort?: string; speed?: string },
   defaults: { model?: string; effort?: string } | undefined,
-  additionalModels: ModelOption[] = [],
+  additionalModels?: ModelOption[],
 ): { model?: string; effort?: string; speed: string; error?: string } {
   const modelError = runtimeSelectionError(adapter, requested.model, undefined, additionalModels);
   const selected = concreteRuntimeSelection(adapter, [
     { model: requested.model }, defaults,
   ], additionalModels);
-  const models = [...projectProviderModelOptions(adapter.listModels()), ...additionalModels];
+  const models = runtimeModelOptions(adapter, additionalModels);
   const model = models.find(option => option.id && option.id === selected.model);
   const speed = requested.speed?.trim() || model?.defaultServiceTier || "standard";
   if (modelError) return { speed, error: modelError };
@@ -176,7 +171,7 @@ function normalizedRuntimeSelection(
   adapter: Adapter,
   model?: string,
   effort?: string,
-  additionalModels: ModelOption[] = [],
+  additionalModels?: ModelOption[],
 ): { model?: string; effort?: string } {
   const selectedModel = model?.trim() || undefined;
   const selectedEffort = effort?.trim() || undefined;
@@ -192,11 +187,13 @@ function normalizedRuntimeSelection(
 function concreteRuntimeSelection(
   adapter: Adapter,
   layers: Array<{ model?: string; effort?: string } | undefined>,
-  additionalModels: ModelOption[] = [],
+  additionalModels?: ModelOption[],
 ): { model?: string; effort?: string } {
   const models = runtimeModelOptions(adapter, additionalModels);
   const model = layers.map((layer) => layer?.model?.trim()).find((candidate) => candidate && !runtimeSelectionError(adapter, candidate, undefined, additionalModels))
-    ?? projectProviderModelIdentifier(adapter.defaultModel?.())
+    ?? models.find(option => option.isDefault)?.id
+    ?? [projectProviderModelIdentifier(adapter.defaultModel?.())].find(candidate => candidate &&
+      !runtimeSelectionError(adapter, candidate, undefined, additionalModels))
     ?? models.find((option) => option.id)?.id;
   const modelDefaultEffort = models.find((option) => option.id === model)?.defaultEffort;
   const modelCatalogUnknown = models.length > 0 && !models.some((option) => Boolean(option.id));

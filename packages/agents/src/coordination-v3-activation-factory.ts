@@ -67,7 +67,7 @@ export class CoordinationV3ActivationFactory {
       input.promptClass ?? defaults.promptClass,
       input.dedupeKey,
       stableJson(input.payload),
-      input.now,
+      input.availableAt ?? input.now,
       input.now,
       input.now,
     ).changes;

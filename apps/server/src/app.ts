@@ -780,6 +780,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const serverContext: ServerContext = { opts, limits, agentDetail, store, tokenUsage };
   const {
     cachedModelOptions,
+    prepareEngineModels,
     closeCapabilityDiscoveryAuthority,
     closeCapabilityDiscoveryProcess,
     discoverEngineCapabilities,
@@ -811,7 +812,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     engineAvailability,
     providerUsage,
     providerEnabled,
-    reusableRuntime,
     activeRuns,
     appendWorkspace,
     applyOperatorModelOptions,
@@ -1241,6 +1241,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     teamDirectory,
     serverContext,
     cachedModelOptions,
+    prepareEngineModels,
     closeCapabilityDiscoveryAuthority,
     closeCapabilityDiscoveryProcess,
     discoverEngineCapabilities,

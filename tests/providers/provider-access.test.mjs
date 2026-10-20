@@ -82,9 +82,32 @@ test('Q05 real Claude validation boundary uses only a local fake executable and 
   passed = true;
 });
 
+test('Claude model test ignores custom MCP workflows without spending extra turns', { skip: process.platform === 'win32' || /\s/u.test(process.execPath) }, async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-model-probe-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, 'fake-claude'), handles = [];
+  await writeFile(bin, '#!' + process.execPath + '\n' + `
+    const args=process.argv.slice(2), prompt=args[args.indexOf('-p')+1];
+    const safe=args.includes('--safe-mode') && prompt.includes('PONDEROSA_MODEL_READY') && prompt.includes('Do not use tools');
+    if(args[args.indexOf('--model')+1]!=='sonnet' || args[args.indexOf('--tools')+1]!=='')process.exit(1);
+    console.log(JSON.stringify({type:'system',subtype:'init',model:'claude-sonnet-fixture'}));
+    if(!safe)console.log(JSON.stringify({type:'assistant',message:{content:[{type:'tool_use',name:'mcp__chunking__get_recent'}]}}));
+    console.log(JSON.stringify(safe?{type:'result',subtype:'success',is_error:false,result:'PONDEROSA_MODEL_READY'}:
+      {type:'result',subtype:'error_max_turns',is_error:true,errors:['Reached maximum number of turns (1)']}));
+  `);
+  await chmod(bin, 0o700);
+  const result = await new ClaudeModelCatalogProbe({ bin, killGraceMs: 100 }).validate(root, 'sonnet', {
+    signal: new AbortController().signal, onRuntimeSpawned: handle => handles.push(handle),
+  });
+  assert.equal(result.valid, true);
+  assert.equal(result.model.id, 'sonnet');
+  assert.ok(handles.length && handles.every(handle => !handle.isAlive()), 'Probe must observe process exit');
+});
+
 import { defaultEngineRegistrations } from '@ponderosa/engines';
 import { createRequire } from 'node:module';
 import { createEngineControlPlane } from '../../apps/server/dist/engine-control-plane.js';
+import { runtimeSelectionError } from '../../apps/server/dist/runtime-selection.js';
 import { registerEngineRoutes } from '../../apps/server/dist/routes/engines.js';
 import { EngineAuthStatusCache } from '../../apps/server/dist/engine-auth-cache.js';
 const Fastify = createRequire(new URL('../../apps/server/package.json', import.meta.url))('fastify');
@@ -128,7 +151,7 @@ test('absent or disabled provider discovery/recheck creates no helpers; reinstal
   const availability = { get: () => undefined, denial: () => undefined, record: x => x, servingBuildRevision: 'fixture', servingInstanceId: 'fixture' };
   const workspace = { cursor: () => 0, getPreferences: () => ({ providerAvailability: { claude: enabled } }) };
   const store = { getProject: id => id === project.id ? project : undefined, listAgents: () => [] };
-  const plane = createEngineControlPlane({ engines, store, workspace, engineAuthStatuses: auth, engineAvailability: availability, providerUsage: {}, providerEnabled: () => enabled, reusableRuntime() {}, applyOperatorModelOptions() {}, publishWorkspaceSince() {}, appendWorkspace() {}, activeRuns: new Map(), app, deletingProjectIds: new Set(), isClosed: () => false, providerProcessAuthority: { register() { assert.fail('Unexpected provider process'); } } });
+  const plane = createEngineControlPlane({ engines, store, workspace, engineAuthStatuses: auth, engineAvailability: availability, providerUsage: {}, providerEnabled: () => enabled, applyOperatorModelOptions() {}, publishWorkspaceSince() {}, appendWorkspace() {}, activeRuns: new Map(), app, deletingProjectIds: new Set(), isClosed: () => false, providerProcessAuthority: { register() { assert.fail('Unexpected provider process'); } } });
   registerEngineRoutes(app, { engines, store, workspace, engineDto: plane.engineDto, authStatuses: auth, availability, discoverModelCatalog: plane.discoverEngineModelCatalog, validateModel: plane.validateEngineModel, discoverCapabilities: plane.discoverEngineCapabilities, readCapabilities: plane.readEngineCapabilities, projectDeletionInProgress: () => false, publishWorkspaceSince() {}, notifyScheduler() {}, createOperationalNotification() {}, resolveOperationalNotification() {} });
   try {
     for (const scenario of ['absent', 'disabled']) {
@@ -182,3 +205,32 @@ for (const providers of [[], ['codex'], ['claude'], ['codex', 'claude']]) {
     }
   }, { diagnosticProvider: true, providerInstalled: id => providers.includes(id) }));
 }
+
+
+test('retained session inventory cannot replace a newly installed CLI catalog or its admission choices', async () => {
+  const app = Fastify({ logger: false });
+  let version = '0.143.0', discoveries = 0;
+  const model = id => ({ id, label: id, kind: 'alias', source: 'provider-probe', efforts: [{ id: 'high', label: 'High' }] });
+  const old = { models: [model('old-model')], cliVersion: version, configurationKey: version };
+  const project = { id: 'upgrade-project', hostPath: process.cwd() };
+  const registration = defaultEngineRegistrations().find(r => r.adapter.id === 'codex');
+  registration.isInstalled = () => true;
+  registration.authStatus = async () => ({ authenticated: true });
+  registration.adapter.modelCatalogConfigurationKey = () => version;
+  registration.adapter.discoverModelCatalog = async () => { discoveries++; return { models: [model(version === old.cliVersion ? 'old-model' : 'new-model')], cliVersion: version, configurationKey: version }; };
+  const plane = createEngineControlPlane({ engines: new Map([['codex', registration]]), store: { getProject: () => project, listAgents: () => [{ id: 'pinned-agent', activeEngine: 'codex', model: 'old-model' }] }, workspace: {},
+    engineAuthStatuses: new EngineAuthStatusCache(), engineAvailability: { get() {}, denial() {}, servingBuildRevision: 'fixture', servingInstanceId: 'fixture' }, providerUsage: {}, providerEnabled: () => true,
+    applyOperatorModelOptions() {}, publishWorkspaceSince() {}, appendWorkspace() {}, activeRuns: new Map([['pinned-agent', { runtimeSession: { capabilities: async () => ({ steering: false, persistentSessions: true, commands: [], mcpServers: [], composerCapabilities: [], modelCatalog: old }) } }]]), app, deletingProjectIds: new Set(), isClosed: () => false, providerProcessAuthority: { register() { assert.fail('Controlled inventory must not spawn a process'); } } });
+  try {
+    assert.equal((await plane.engineDto(registration)).models[0].id, 'old-model');
+    version = '0.159.2';
+    assert.equal((await plane.engineDto(registration, true)).models[0].id, 'new-model');
+    const current = await plane.discoverEngineModelCatalog(project, registration.adapter, false);
+    assert.equal(current.cliVersion, version);
+    assert.equal(current.models[0].id, 'new-model');
+    assert.equal(plane.cachedModelOptions(registration.adapter, project.id)[0].id, 'new-model');
+    assert.equal(runtimeSelectionError(registration.adapter, 'new-model', 'high', plane.cachedModelOptions(registration.adapter, project.id)), undefined);
+    assert.equal(discoveries, 3, 'Host refresh and project discovery must use the current adapter inventory');
+    assert.equal(old.models[0].id, 'old-model', 'Refreshing choices must not mutate the retained session');
+  } finally { await plane.drainEngineModelCatalogDiscoveries(); await app.close(); }
+});

@@ -67,7 +67,7 @@ export interface ConversationRouteDependencies {
   store: AgentStore;
   workspace: WorkspaceStore;
   engines: ReadonlyMap<string, EngineRegistration>;
-  cachedModelOptions: (adapter: Adapter, projectId?: string) => ModelOption[];
+  cachedModelOptions: (adapter: Adapter, projectId?: string) => ModelOption[] | undefined;
   appendWorkspace: (event: Parameters<WorkspaceStore["append"]>[0]) => unknown;
   generateConversationTitle: (conversationId: string) => Promise<{ title: string; generated: boolean }>;
   conversationDetail: (

@@ -1154,6 +1154,8 @@ export class CoordinationV3Store {
     failureDetail?: {
       phase: string;
       promptInjectionState: "not_injected" | "injecting" | "injected";
+      httpStatusCode?: number;
+      retryAfterMs?: number;
       exitCode?: number | null;
       signal?: string | null;
       stderr?: string;

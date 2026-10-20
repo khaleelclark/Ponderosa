@@ -34,7 +34,7 @@ interface AgentMaintenanceRoutesContext {
     reason: string,
     projectId?: string,
   ): Promise<void>;
-  cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
+  cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[] | undefined;
   commitAgentDeletion(
     rootAgentIds: string[],
     previewHash: string,

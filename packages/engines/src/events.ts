@@ -156,6 +156,7 @@ export function providerErrorCodeFromDetail(
   if (category === "rate_limit") return "rate_limit";
   if (category === "capacity") return "capacity";
   if (category === "context_length") return "context_length";
+  if (category === "invalid_request") return "invalid_request";
   if (category === "unavailable") return "network";
   return undefined;
 }
@@ -171,9 +172,42 @@ function providerErrorCode(error: RawEvent["error"], detail: string): ProviderEr
   return providerErrorCodeFromDetail(detail, rawCode);
 }
 
-function errorEvent(error: RawEvent["error"], detail: string): Extract<AgentEvent, { type: "error" }> {
-  const code = providerErrorCode(error, detail);
-  return { type: "error", message: detail, ...(code ? { code } : {}) };
+export function codexErrorEvent(error: unknown, detail: string): Extract<AgentEvent, { type: "error" }> {
+  const record = (value: unknown): Record<string, unknown> | undefined =>
+    value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  const value = record(error);
+  const info = value?.codexErrorInfo;
+  const variant = typeof info === "string" ? info : Object.keys(record(info) ?? {})[0];
+  const status = record(record(info)?.[variant ?? ""])?.httpStatusCode;
+  let httpStatusCode = Number.isInteger(status) && Number(status) >= 100 && Number(status) <= 599 ? Number(status) : undefined;
+  const structured: Record<string, ProviderErrorCode> = {
+    contextwindowexceeded: "context_length", usagelimitexceeded: "rate_limit",
+    unauthorized: "authentication_failed", badrequest: "invalid_request",
+  };
+  let code = structured[variant?.toLowerCase() ?? ""] ??
+    (httpStatusCode === 429 ? "rate_limit" : httpStatusCode === 401 ? "authentication_failed"
+      : httpStatusCode !== undefined && httpStatusCode >= 500 ? "network"
+        : httpStatusCode !== undefined && httpStatusCode >= 400 && httpStatusCode < 500 ? "invalid_request" : undefined)
+    ?? providerErrorCode(error as RawEvent["error"], "");
+  // Parse only this bounded, known Codex envelope. Shared public classification
+  // remains opaque to arbitrary JSON and never echoes provider prose.
+  if ((!code || code === "invalid_request") && detail.length <= 2_048) {
+    try {
+      const body = record(JSON.parse(detail));
+      const failure = record(body?.error);
+      if (body?.type === "error" && body.status === 400 && failure?.type === "invalid_request_error" && typeof failure.message === "string") {
+        if (/^The '[a-z0-9][a-z0-9._-]{0,127}' model requires a newer version of Codex\. Please upgrade to the latest app or CLI and try again\.$/u.test(failure.message)) code = "client_upgrade_required";
+        else if (/^The '[a-z0-9][a-z0-9._-]{0,199}' model is not supported when using Codex with a ChatGPT account\.$/u.test(failure.message)) code = "invalid_model";
+        if (code === "client_upgrade_required" || code === "invalid_model") httpStatusCode ??= 400;
+      }
+    } catch { /* Ordinary provider detail is not a JSON envelope. */ }
+  }
+  code ??= providerErrorCode(error as RawEvent["error"], detail);
+  const retryAfterMs = value?.retryAfterMs;
+  return { type: "error", message: detail, category: classifyProviderFailure(detail, code), ...(code ? { code } : {}),
+    ...(httpStatusCode !== undefined ? { httpStatusCode } : {}),
+    ...(Number.isSafeInteger(retryAfterMs) && Number(retryAfterMs) >= 0 && Number(retryAfterMs) <= 86_400_000 ? { retryAfterMs: Number(retryAfterMs) } : {}),
+  };
 }
 
 export function commandOutcome(exitCode: unknown, signal: unknown): Pick<Extract<AgentEvent, { type: "tool_result" }>, "exitCode" | "signal" | "isError"> {
@@ -213,10 +247,10 @@ export function mapCodexEvent(raw: unknown, ctx: CodexMapContext = {}): AgentEve
       return [{ type: "turn_done", usage: mapUsage(ev.usage) }];
 
     case "turn.failed":
-      return [errorEvent(ev.error, errorMessage(ev.error, "turn failed"))];
+      return [codexErrorEvent(ev.error, errorMessage(ev.error, "turn failed"))];
 
     case "error":
-      return [errorEvent(ev.error, ev.message ?? errorMessage(ev.error, "error"))];
+      return [codexErrorEvent(ev.error, ev.message ?? errorMessage(ev.error, "error"))];
 
     case "item.started":
       return mapItemStarted(ev.item, ctx);

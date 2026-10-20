@@ -41,7 +41,7 @@ interface WorkspacePreferenceRoutesContext {
     expiresAt: number;
     value: ProjectEngineModelCatalogDto;
   }>;
-  cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
+  cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[] | undefined;
   applyOperatorModelOptions(): void;
   publishWorkspaceSince(cursor: number): void;
   setMaxConcurrentRuns(maxConcurrentRuns: number): void;

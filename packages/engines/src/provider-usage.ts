@@ -17,6 +17,14 @@ import { runtimeEnvironment } from "./runtime-environment.js";
 
 type UnknownRecord = Record<string, unknown>;
 
+/** Prefer the multi-bucket protocol without duplicating the legacy bucket. */
+export function codexRateLimitBuckets(value: unknown): Record<string, unknown> | undefined {
+  const response = record(value), modern = record(response?.rateLimitsByLimitId);
+  if (modern && Object.keys(modern).length) return modern;
+  const legacy = record(response?.rateLimits);
+  return legacy ? { codex: legacy } : undefined;
+}
+
 function record(value: unknown): UnknownRecord | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as UnknownRecord
@@ -295,7 +303,7 @@ export function normalizeCodexProviderUsage(
   fetchedAt = new Date(),
 ): ProviderUsage {
   const account = record(record(accountResponse)?.account);
-  const byId = record(record(limitsResponse)?.rateLimitsByLimitId);
+  const byId = codexRateLimitBuckets(limitsResponse);
   const snapshots = Object.entries(byId ?? {}).flatMap(([limitId, value]) => {
     const snapshot = record(value);
     return snapshot ? [{ limitId, snapshot }] : [];

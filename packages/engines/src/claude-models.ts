@@ -365,11 +365,12 @@ export class ClaudeModelCatalogProbe {
       bin: this.options.bin,
       args: [
       "-p",
-      ".",
+      "Reply exactly PONDEROSA_MODEL_READY and do nothing else. Do not use tools or inspect the environment.",
       "--output-format", "stream-json",
       "--verbose",
       "--permission-mode", "dontAsk",
       "--tools", "",
+      "--safe-mode",
       "--no-session-persistence",
       "--max-turns", "1",
       "--model", modelId,

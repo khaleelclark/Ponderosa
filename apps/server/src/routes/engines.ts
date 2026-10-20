@@ -13,7 +13,7 @@ import type {
   ProviderUsageStateDto,
   WorkspaceNotificationDto,
 } from "@ponderosa/core";
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { EngineAuthStatusCache } from "../engine-auth-cache.js";
 import type { EngineAvailabilityStore } from "../engine-availability-store.js";
 import {
@@ -42,7 +42,7 @@ interface EngineRoutesContext {
   engines: ReadonlyMap<string, EngineRegistration>;
   store: Pick<AgentStore, "getAgent" | "getProject">;
   workspace: Pick<WorkspaceStore, "cursor" | "getPreferences" | "updatePreferences">;
-  engineDto(registration: EngineRegistration): Promise<EngineDto>;
+  engineDto(registration: EngineRegistration, refreshModels?: boolean): Promise<EngineDto>;
   resourceAdmissionHeld?(): Promise<boolean>;
   providerUsageCenter(refresh: "none" | "stale"): Promise<ProviderUsageCenterDto>;
   providerUsageState(
@@ -111,9 +111,14 @@ export function registerEngineRoutes(
   // A timed-out HTTP response does not release this diagnostic slot. The
   // provider process and cleanup must actually settle before another recheck.
   const rechecks = new Map<string, Promise<EngineDto>>();
+  // CLI discovery/probes can outlast idle sockets; keep the existing whole-
+  // request budget without extending provider or handler deadlines.
+  const allowProviderWait = (request: FastifyRequest) =>
+    request.raw.socket.setTimeout?.(app.server.requestTimeout || 120_000);
 
-  app.get("/api/engines", async (): Promise<EngineDto[]> => {
-    return Promise.all(Array.from(engines.values()).map(engineDto));
+  app.get("/api/engines", async (request): Promise<EngineDto[]> => {
+    allowProviderWait(request);
+    return Promise.all(Array.from(engines.values()).map(registration => engineDto(registration)));
   });
 
   app.get<{ Querystring: { refresh?: string } }>(
@@ -169,6 +174,7 @@ export function registerEngineRoutes(
       });
       publishWorkspaceSince(cursor);
       if (request.body.enabled) notifyScheduler();
+      allowProviderWait(request);
       return engineDto(registration);
     },
   );
@@ -178,10 +184,7 @@ export function registerEngineRoutes(
     async (request, reply) => {
       const registration = engines.get(request.params.id);
       if (!registration) return reply.code(404).send({ error: "unknown engine" });
-      // The bounded probe can outlast ordinary socket inactivity. Use the
-      // existing whole-request budget; Node restores keepalive/next-request
-      // timeouts after this response. Provider and handler deadlines stay put.
-      request.raw.socket.setTimeout?.(app.server.requestTimeout || 120_000);
+      allowProviderWait(request);
       const current = rechecks.get(request.params.id);
       if (current) return current;
       const operationStartedAt = new Date().toISOString();
@@ -198,7 +201,7 @@ export function registerEngineRoutes(
       }
       if (!auth.authenticated) return engineDto(registration);
       if (!registration.availabilityProbe) {
-        const refreshed = await engineDto(registration);
+        const refreshed = await engineDto(registration, true);
         if (refreshed.intakeReady) {
           resolveOperationalNotification(`provider:${request.params.id}:unavailable`);
           notifyScheduler();
@@ -240,7 +243,7 @@ export function registerEngineRoutes(
           action: { kind: "open_settings", targetId: request.params.id },
         });
       }
-      return engineDto(registration);
+      return engineDto(registration, true);
       })().finally(() => { if (rechecks.get(request.params.id) === operation) rechecks.delete(request.params.id); });
       rechecks.set(request.params.id, operation);
       return operation;
@@ -261,6 +264,7 @@ export function registerEngineRoutes(
     if (!registration.adapter.discoverModelCatalog) {
       return reply.code(404).send({ error: "this engine does not provide model discovery" });
     }
+    allowProviderWait(request);
     return discoverModelCatalog(
       project,
       registration.adapter,
@@ -284,12 +288,13 @@ export function registerEngineRoutes(
       if (!registration.adapter.validateModel) {
         return reply.code(404).send({ error: "this engine does not provide model validation" });
       }
-      const modelId = request.body?.modelId?.trim() ?? "";
+      const modelId = typeof request.body?.modelId === "string" ? request.body.modelId.trim() : "";
       if (!modelId || modelId.length > 200) {
         return reply.code(400).send({
           error: "modelId must be a non-empty string of at most 200 characters",
         });
       }
+      allowProviderWait(request);
       return validateModel(project, registration.adapter, modelId);
     },
   );
@@ -314,6 +319,7 @@ export function registerEngineRoutes(
       if (request.query.engineId && !engines.has(request.query.engineId)) {
         return reply.code(400).send({ error: "unknown engine" });
       }
+      allowProviderWait(request);
       const forceRefresh = request.query.refresh === "true" || request.query.refresh === "1";
       const scopedEngineId = request.query.engineId
         ?? scopedAgent?.activeEngine;

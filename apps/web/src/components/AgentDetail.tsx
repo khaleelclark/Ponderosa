@@ -536,7 +536,8 @@ export function AgentDetail({
       setEffort("");
       return;
     }
-    if (engine.modelCatalogKnown === false) return;
+    // Validate the hydrated pair, not the preceding render's model.
+    if (!model || model !== persistedModel || engine.modelCatalogKnown === false) return;
     setModel(current =>
       modelSelectionIsCompatible(engine, current) ? current : "",
     );
@@ -546,7 +547,7 @@ export function AgentDetail({
     setSpeed(current =>
       runtimeControlState(engine, { model, effort, speed: current }).speed,
     );
-  }, [engine, effort, model]);
+  }, [engine, effort, model, persistedModel]);
 
   const runtimeActivity = projectedHealth?.runtimeActivity;
   const running = Boolean(runtimeActivity);

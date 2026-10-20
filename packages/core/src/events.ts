@@ -33,6 +33,8 @@ export type BrowserActionKind =
   | "page_open" | "page_activate" | "page_close" | "page_limit"
   | "upload" | "upload_cancel";
 export type ProviderErrorCode =
+  | "client_upgrade_required"
+  | "invalid_request"
   | "invalid_model"
   | "model_not_found"
   | "authentication_failed"
@@ -158,6 +160,9 @@ export type AgentEvent =
       /** Finite code-owned public summary after the canonical append boundary. */
       message: string;
       code?: ProviderErrorCode;
+      /** Structured provider response metadata, never inferred from prose. */
+      httpStatusCode?: number;
+      retryAfterMs?: number;
       category?: ProviderFailureCategory;
       /** Finite code-owned action paired with category and message. */
       remediation?: string;

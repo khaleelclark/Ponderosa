@@ -82,6 +82,10 @@ function executableFile(candidate: string): boolean {
 }
 
 export function executableAvailable(input: Pick<ContainedSpawnInput, "bin" | "cwd" | "env">): boolean {
+  return executablePath(input) !== undefined;
+}
+
+export function executablePath(input: Pick<ContainedSpawnInput, "bin" | "cwd" | "env">): string | undefined {
   const explicitPath = path.isAbsolute(input.bin) || input.bin.includes("/") ||
     (process.platform === "win32" && input.bin.includes("\\"));
   const bases = explicitPath
@@ -91,15 +95,15 @@ export function executableAvailable(input: Pick<ContainedSpawnInput, "bin" | "cw
       .split(path.delimiter)
       .map((entry) => entry.replace(/^"|"$/gu, ""))
       .map((entry) => path.resolve(input.cwd, entry || ".", input.bin));
-  if (process.platform !== "win32") return bases.some(executableFile);
+  if (process.platform !== "win32") return bases.find(executableFile);
 
   const extensions = (environmentValue(input.env, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
     .split(";")
     .map((extension) => extension.trim())
     .filter(Boolean);
   const hasExtension = path.extname(input.bin) !== "";
-  return bases.some((base) => executableFile(base) ||
-    (!hasExtension && extensions.some((extension) => executableFile(`${base}${extension}`))));
+  return bases.flatMap(base => hasExtension ? [base] : [base, ...extensions.map(extension => `${base}${extension}`)])
+    .find(executableFile);
 }
 
 function missingExecutable(input: ContainedSpawnInput): NodeJS.ErrnoException {

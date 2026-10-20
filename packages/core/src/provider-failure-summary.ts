@@ -26,6 +26,8 @@ export function normalizeProviderFailureCategory(value: unknown): ProviderFailur
 }
 
 const ENGINE_MODEL_VALIDATION_ERRORS = new Set<EngineModelValidationError>([
+  "client_upgrade_required",
+  "invalid_request",
   "invalid_model",
   "model_not_found",
   "authentication",
@@ -70,6 +72,10 @@ export const PUBLIC_PROVIDER_FAILURE_REMEDIATIONS = {
 
 const ORGANIZATION_POLICY_SUMMARY = "Organization policy blocks provider access.";
 const ORGANIZATION_POLICY_REMEDIATION = "Ask your organization administrator to enable provider access, then recheck.";
+const CLIENT_UPGRADE_SUMMARY = "The provider CLI needs an update for the selected model.";
+const CLIENT_UPGRADE_REMEDIATION = "Update the provider CLI on this host, recheck it, then retry.";
+const INVALID_MODEL_SUMMARY = "The selected model is unavailable for this provider. Choose another model, then retry.";
+const INVALID_MODEL_REMEDIATION = "Choose a model supported by the signed-in provider account, then retry.";
 
 function organizationPolicyDetail(detail: string): boolean {
   if (detail.length > MAX_PROVIDER_FAILURE_CLASSIFICATION_CHARACTERS) return false;
@@ -98,6 +104,7 @@ const STRUCTURED_PROVIDER_FAILURE_CODES = new Map<string, ProviderFailureCategor
   ["context_length_exceeded", "context_length"],
   ["context_window_exceeded", "context_length"],
   ["invalid_request", "invalid_request"],
+  ["client_upgrade_required", "invalid_request"],
   ["invalid_model", "invalid_request"],
   ["model_not_found", "invalid_request"],
   ["organization_policy", "invalid_request"],
@@ -114,6 +121,8 @@ export interface PublicProviderFailure {
 }
 
 const PUBLIC_PROVIDER_ERROR_CODES = new Set<ProviderErrorCode>([
+  "client_upgrade_required",
+  "invalid_request",
   "invalid_model",
   "model_not_found",
   "authentication_failed",
@@ -138,6 +147,8 @@ export function publicProviderFailureEvent(event: {
   code?: string;
   category?: ProviderFailureCategory | string;
   terminalStatus?: Extract<AgentEvent, { type: "error" }>["terminalStatus"];
+  httpStatusCode?: number;
+  retryAfterMs?: number;
 }): {
   type: "error";
   message: string;
@@ -145,6 +156,8 @@ export function publicProviderFailureEvent(event: {
   category: ProviderFailureCategory;
   remediation: string;
   terminalStatus?: Extract<AgentEvent, { type: "error" }>["terminalStatus"];
+  httpStatusCode?: number;
+  retryAfterMs?: number;
 } {
   const failure = publicProviderFailure({
     detail: event.message,
@@ -159,6 +172,8 @@ export function publicProviderFailureEvent(event: {
     category: failure.category,
     remediation: failure.remediation,
     ...(event.terminalStatus !== undefined ? { terminalStatus: event.terminalStatus } : {}),
+    ...(Number.isInteger(event.httpStatusCode) && event.httpStatusCode! >= 100 && event.httpStatusCode! <= 599 ? { httpStatusCode: event.httpStatusCode } : {}),
+    ...(Number.isInteger(event.retryAfterMs) && event.retryAfterMs! >= 0 && event.retryAfterMs! <= 86_400_000 ? { retryAfterMs: event.retryAfterMs } : {}),
   };
 }
 
@@ -177,6 +192,7 @@ function highConfidenceTextCategory(detail: string): ProviderFailureCategory {
   if (organizationPolicyDetail(detail)) return "invalid_request";
   if (/[^\x09\x0a\x0d\x20-\x7e]/u.test(detail)) return "unknown";
   const value = detail.trim().toLowerCase();
+  if (value === CLIENT_UPGRADE_SUMMARY.toLowerCase() || value === INVALID_MODEL_SUMMARY.toLowerCase()) return "invalid_request";
   if (!value || /^(?:\{|\[|")|\\u[0-9a-f]{4}|%[0-9a-f]{2}/iu.test(value)) return "unknown";
   if (/^[a-z0-9+/_-]{16,}={0,2}$/iu.test(value)) return "unknown";
 
@@ -228,11 +244,33 @@ export function publicProviderFailure(input: {
     ?? highConfidenceTextCategory(input.detail ?? "");
   return {
     category,
-    ...(category === "invalid_request" && (input.code === "organization_policy"
+    ...(category === "invalid_request" && (input.code === "client_upgrade_required" || input.detail === CLIENT_UPGRADE_SUMMARY)
+      ? { summary: CLIENT_UPGRADE_SUMMARY, remediation: CLIENT_UPGRADE_REMEDIATION }
+      : category === "invalid_request" && (input.code === "invalid_model" || input.code === "model_not_found" || input.detail === INVALID_MODEL_SUMMARY)
+      ? { summary: INVALID_MODEL_SUMMARY, remediation: INVALID_MODEL_REMEDIATION }
+      : category === "invalid_request" && (input.code === "organization_policy"
       || input.category === "organization_policy" || organizationPolicyDetail(input.detail ?? ""))
       ? { summary: ORGANIZATION_POLICY_SUMMARY, remediation: ORGANIZATION_POLICY_REMEDIATION }
       : { summary: PUBLIC_PROVIDER_FAILURE_MESSAGES[category], remediation: PUBLIC_PROVIDER_FAILURE_REMEDIATIONS[category] }),
   };
+}
+
+/** One bounded policy for delivery and required-reply recovery. The count
+ * includes the just-ended attempt; an operator retry starts a new lineage. */
+export const MAX_PROVIDER_RECOVERY_ATTEMPTS = 6;
+export function providerRecoveryDelay(
+  category: ProviderFailureCategory | undefined,
+  attempts: number,
+  retryable = true,
+  retryAfterMs = 0,
+): number | null {
+  if (!Number.isSafeInteger(attempts) || attempts < 0 || !retryable || attempts >= MAX_PROVIDER_RECOVERY_ATTEMPTS ||
+      category === "authentication" || category === "invalid_request" || category === "context_length") return null;
+  const backoff = category === "rate_limit" || category === "capacity" || category === "unavailable"
+    ? Math.min(120_000, 2_000 * 2 ** Math.min(Math.max(0, attempts - 1), 6))
+    : 1_000;
+  const delay = Math.round(backoff * (1 + Math.random() * 0.2));
+  return Math.max(delay, Number.isSafeInteger(retryAfterMs) && retryAfterMs >= 0 ? Math.min(retryAfterMs, 86_400_000) : 0);
 }
 
 /** Returns only a finite, code-owned message; provider prose is never echoed. */

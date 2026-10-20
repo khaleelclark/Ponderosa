@@ -54,6 +54,8 @@ export type EngineModelAvailability = "available" | "unavailable";
 export interface ModelOption {
   id: string;
   label: string;
+  /** Explicit provider default; list order alone is not default evidence. */
+  isDefault?: boolean;
   /** Provider-reported effort levels supported by this exact model. */
   efforts?: EffortOption[];
   /** Provider-reported default effort for this exact model. */
@@ -90,6 +92,8 @@ export interface EngineModelCatalog {
 }
 
 export type EngineModelValidationError =
+  | "client_upgrade_required"
+  | "invalid_request"
   | "invalid_model"
   | "model_not_found"
   | "authentication"
@@ -552,6 +556,7 @@ export interface EngineAuthStatus {
 /** Host-owned diagnostic process registration; never credential authority. */
 export interface EngineProbeOptions {
   onRuntimeSpawned?: (handle: RuntimeProcessHandle) => void;
+  signal?: AbortSignal;
 }
 
 /** Positive provider evidence gathered only after an explicit operator check. */

@@ -53,6 +53,7 @@ export function ProviderStatusDetails({
               <Typography variant="caption">Accepted work stays queued; existing Runs are not cancelled. {engine.resourceAdmission.observedAt ? `Observed ${engine.resourceAdmission.observedAt}. ` : ""}{engine.resourceAdmission.availableBytes !== undefined ? `${Math.floor(engine.resourceAdmission.availableBytes / 1024 / 1024)} MiB available; ${Math.floor(engine.resourceAdmission.reserveBytes! / 1024 / 1024)} MiB reserved. ` : ""}{engine.resourceAdmission.reason}</Typography>
             </Box> : null}
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>Provider/host default: {engine.models.find((model) => model.id === engine.defaultModel)?.label ?? engine.defaultModel ?? "provider default"}{engine.defaultEffort ? ` · ${engine.defaultEffort} effort` : ""}</Typography>
+            {engine.cliVersion ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", overflowWrap: "anywhere" }}>CLI {engine.cliVersion} · model inventory only; individual model access may differ.</Typography> : null}
             {engineCanTestAccess(engine) ? <Button size="small" sx={{ mt: 1 }} disabled={Boolean(recheckingEngineId)} onClick={() => onTestAccess(engine)}>
               {recheckingEngineId === engine.id ? "Testing…" : "Test Access"}
             </Button> : null}

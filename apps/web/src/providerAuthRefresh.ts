@@ -25,9 +25,9 @@ export async function recheckProvider(
     previous?.intakeReady !== updated.intakeReady ||
     previous?.reachability !== updated.reachability;
   await Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["engine-models"] }),
     ...(becameOperational
       ? [
-          queryClient.invalidateQueries({ queryKey: ["engine-models"] }),
           queryClient.invalidateQueries({ queryKey: ["engine-capabilities"] }),
         ]
       : []),

@@ -14,7 +14,7 @@ interface AgentManagementRoutesContext {
   activeRuns: ReadonlyMap<string, ActiveRun>;
   agentMessageCapabilities: ReadonlyMap<string, AgentMessageCapability>;
   deletingAgentIds: Set<string>;
-  cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[];
+  cachedModelOptions(adapter: EngineRegistration["adapter"], projectId?: string): ModelOption[] | undefined;
   capabilityOwnsAuthoritativeRun(capability: AgentMessageCapability, run: ActiveRun | undefined): boolean;
   publicManagementOperations(operations: ManagementOperation[]): ManagementOperation[];
   commitAgentDeletion(rootAgentIds: string[], previewHash: string, authorization?: AgentManagementAuthorization): Promise<CommitAgentDeletionResponse>;

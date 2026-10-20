@@ -8,7 +8,8 @@
 // control over the `resume` flag quirks (no -C/-s on the resume subcommand) and
 // the `-c` config overrides. The `Adapter` interface hides the choice entirely.
 
-import { readFileSync } from "node:fs";
+import { statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import type {
@@ -17,6 +18,9 @@ import type {
   ContinueOptions,
   EngineCapabilities,
   EngineCapabilityDiscoveryOptions,
+  EngineModelDiscoveryOptions,
+  EngineModelCatalog,
+  EngineModelValidationResult,
   EffortOption,
   ModelOption,
   OpenRuntimeSessionOptions,
@@ -29,6 +33,9 @@ import type {
 } from "@ponderosa/core";
 import { mapCodexEvent } from "./events.js";
 import { streamProcess } from "./process.js";
+import { executablePath } from "./contained-spawn.js";
+import { runtimeEnvironment } from "./runtime-environment.js";
+import { codexAuthStatus, codexAvailabilityStatus } from "./auth.js";
 import { discoverCliMcps, parseCodexMcpDiscovery } from "./capabilities.js";
 import { CodexAppServerSession, discoverCodexAppServerCapabilities } from "./codex-app-server.js";
 import { renderSeedPrompt } from "./seed-history.js";
@@ -45,143 +52,11 @@ export interface CodexAdapterOptions {
   sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
   /** ms to wait after SIGTERM before SIGKILL on cancel. Default 3000. */
   killGraceMs?: number;
-  /** Override the CLI model cache path. */
-  modelsCachePath?: string;
 }
 
-// Model availability differs by Codex version, account type, and subscription.
-// The authenticated CLI maintains this cache from its model-list response, so it
-// is a better source than a hardcoded catalog. Keep the default option as a safe
-// fallback when Codex has not populated the cache yet.
+// The shared CLI disk cache can belong to another installed client version.
+// Concrete choices come from the exact executing client's live inventory.
 const DEFAULT_MODELS: ModelOption[] = [{ id: "", label: "Codex default" }];
-
-interface CodexCachedModel {
-  slug?: unknown;
-  display_name?: unknown;
-  visibility?: unknown;
-  default_reasoning_level?: unknown;
-  supported_reasoning_levels?: unknown;
-  additional_speed_tiers?: unknown;
-  service_tiers?: unknown;
-  default_service_tier?: unknown;
-}
-
-interface CodexCachedReasoningLevel {
-  effort?: unknown;
-}
-
-interface CodexCachedServiceTier {
-  id?: unknown;
-  name?: unknown;
-  description?: unknown;
-}
-
-interface CodexModelsCache {
-  models?: unknown;
-}
-
-export function readCodexModels(cachePath: string): ModelOption[] {
-  try {
-    const cache = JSON.parse(readFileSync(cachePath, "utf8")) as CodexModelsCache;
-    if (!Array.isArray(cache.models)) return DEFAULT_MODELS;
-
-    const seen = new Set<string>();
-    const models = (cache.models as CodexCachedModel[]).flatMap((model) => {
-      if (
-        model.visibility !== "list" ||
-        typeof model.slug !== "string" ||
-        model.slug.trim() === "" ||
-        seen.has(model.slug)
-      ) {
-        return [];
-      }
-      seen.add(model.slug);
-      const hasEffortMetadata = Array.isArray(model.supported_reasoning_levels);
-      const efforts = hasEffortMetadata
-        ? (model.supported_reasoning_levels as CodexCachedReasoningLevel[]).reduce<EffortOption[]>((options, level) => {
-            if (typeof level.effort !== "string" || !level.effort.trim() || options.some((option) => option.id === level.effort)) return options;
-            options.push({ id: level.effort, label: effortLabel(level.effort) });
-            return options;
-          }, [])
-        : [];
-      const advertisedServiceTiers = Array.isArray(model.service_tiers)
-        ? (model.service_tiers as CodexCachedServiceTier[]).reduce<NonNullable<ModelOption["serviceTiers"]>>(
-            (options, tier) => {
-              if (
-                typeof tier.id !== "string" ||
-                !tier.id.trim() ||
-                options.some(option => option.id === tier.id)
-              ) {
-                return options;
-              }
-              options.push({
-                id: tier.id,
-                label:
-                  typeof tier.name === "string" && tier.name.trim()
-                    ? tier.name.trim()
-                    : tier.id,
-                ...(typeof tier.description === "string" && tier.description.trim()
-                  ? { description: tier.description.trim() }
-                  : {}),
-              });
-              return options;
-            },
-            [],
-          )
-        : [];
-      const fallbackSpeedTiers =
-        advertisedServiceTiers.length === 0 &&
-        Array.isArray(model.additional_speed_tiers)
-          ? (model.additional_speed_tiers as unknown[]).flatMap(tier =>
-              typeof tier === "string" && tier.trim()
-                ? [{
-                    id: tier.trim(),
-                    label: tier.trim() === "fast" ? "Fast" : effortLabel(tier.trim()),
-                    ...(tier.trim() === "fast"
-                      ? { description: "1.5x speed, increased usage" }
-                      : {}),
-                  }]
-                : [],
-            )
-          : [];
-      const serviceTiers =
-        advertisedServiceTiers.length > 0
-          ? advertisedServiceTiers
-          : fallbackSpeedTiers;
-      return [{
-        id: model.slug,
-        label:
-          typeof model.display_name === "string" && model.display_name.trim() !== ""
-            ? model.display_name
-            : model.slug,
-        ...(hasEffortMetadata ? { efforts } : {}),
-        ...(typeof model.default_reasoning_level === "string" && efforts.some((option) => option.id === model.default_reasoning_level)
-          ? { defaultEffort: model.default_reasoning_level }
-          : {}),
-        ...(serviceTiers.length > 0 ? { serviceTiers } : {}),
-        ...(typeof model.default_service_tier === "string" &&
-          serviceTiers.some(option => option.id === model.default_service_tier)
-          ? { defaultServiceTier: model.default_service_tier }
-          : {}),
-      }];
-    });
-
-    return models.length > 0 ? [...DEFAULT_MODELS, ...models] : DEFAULT_MODELS;
-  } catch {
-    return DEFAULT_MODELS;
-  }
-}
-
-function effortLabel(effort: string): string {
-  if (effort === "xhigh") return "Extra high";
-  return `${effort.charAt(0).toUpperCase()}${effort.slice(1)}`;
-}
-
-const DEFAULT_EFFORTS: EffortOption[] = [
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" },
-];
 
 /**
  * Render an agent's chat history + the current prompt into a single seed prompt.
@@ -204,43 +79,41 @@ export class CodexAdapter implements Adapter {
   private readonly bin: string;
   private readonly sandboxMode: string;
   private readonly killGraceMs: number;
-  private readonly modelsCachePath: string;
 
   constructor(opts: CodexAdapterOptions = {}) {
     this.bin = opts.bin ?? "codex";
     this.sandboxMode =
       opts.sandboxMode ?? process.env.PONDEROSA_CODEX_SANDBOX ?? "workspace-write";
     this.killGraceMs = opts.killGraceMs ?? 3000;
-    const codexHome = process.env.CODEX_HOME ?? path.join(homedir(), ".codex");
-    this.modelsCachePath = opts.modelsCachePath ?? path.join(codexHome, "models_cache.json");
   }
 
-  listModels(): ModelOption[] {
-    return readCodexModels(this.modelsCachePath);
+  listModels(): ModelOption[] { return DEFAULT_MODELS; }
+  listEfforts(): EffortOption[] { return []; }
+
+  modelCatalogConfigurationKey(): string {
+    const executable = executablePath({ bin: this.bin, cwd: process.cwd(), env: runtimeEnvironment() });
+    let identity: unknown;
+    try { const file = statSync(executable!); identity = [file.dev, file.ino, file.size, file.mtimeMs]; } catch { /* Missing executables remain gated by host presence. */ }
+    return createHash("sha256").update(JSON.stringify([executable ?? this.bin, identity,
+      process.env.CODEX_HOME ?? path.join(homedir(), ".codex")])).digest("hex");
   }
 
-  listEfforts(model?: string): EffortOption[] {
-    const models = this.listModels();
-    if (model) return models.find((option) => option.id === model)?.efforts ?? DEFAULT_EFFORTS;
-    const concreteModels = models.filter((option) => option.id);
-    const reportedModels = concreteModels.filter((option) => option.efforts !== undefined);
-    if (reportedModels.length === 0) return DEFAULT_EFFORTS;
-    const candidates = reportedModels.length === concreteModels.length
-      ? reportedModels[0]!.efforts!
-      : DEFAULT_EFFORTS;
-    return candidates.filter((candidate) =>
-      reportedModels.every((option) => option.efforts!.some((effort) => effort.id === candidate.id)),
-    );
+  async discoverModelCatalog(cwd: string, context: EngineModelDiscoveryOptions): Promise<EngineModelCatalog> {
+    const capabilities = await discoverCodexAppServerCapabilities({ bin: this.bin, cwd,
+      sandboxMode: this.sandboxMode, killGraceMs: this.killGraceMs, configuredMcps: [], modelCatalogOnly: true,
+      ...context });
+    if (!capabilities.modelCatalog) throw new Error("Codex model inventory is unavailable");
+    return { ...capabilities.modelCatalog, configurationKey: this.modelCatalogConfigurationKey() };
   }
 
-  defaultModel(): string | undefined {
-    return this.listModels().find((option) => option.id)?.id;
-  }
-
-  defaultEffort(model?: string): string | undefined {
-    const selectedModel = this.listModels().find((option) => option.id === (model ?? this.defaultModel()));
-    const efforts = this.listEfforts(selectedModel?.id);
-    return selectedModel?.defaultEffort ?? efforts.find((option) => option.id === "medium")?.id ?? efforts[0]?.id;
+  async validateModel(_cwd: string, modelId: string, context: EngineModelDiscoveryOptions): Promise<EngineModelValidationResult> {
+    const result = await codexAvailabilityStatus({ ...process.env, PONDEROSA_CODEX_BIN: this.bin },
+      undefined, () => codexAuthStatus({ ...process.env, PONDEROSA_CODEX_BIN: this.bin }, context), { ...context, model: modelId });
+    if (result.available) return { valid: true, model: { id: modelId, label: modelId,
+      kind: "exact", source: "provider-probe", availability: "available", validatedAt: new Date().toISOString() } };
+    const category = result.failureCategory;
+    return { valid: false, errorCode: category === "unavailable" ? "network" : !category || category === "unknown" ? "provider_error" : category,
+      error: result.detail ?? "Codex model test did not complete." };
   }
 
   async capabilities(cwd: string, context: EngineCapabilityDiscoveryOptions): Promise<EngineCapabilities> {
@@ -270,11 +143,9 @@ export class CodexAdapter implements Adapter {
       bin: this.bin,
       sandboxMode: this.sandboxMode,
       killGraceMs: this.killGraceMs,
-      enableFastMode: this.listModels().some(model =>
-        model.serviceTiers?.some(tier =>
-          tier.id === "fast" || tier.label.toLocaleLowerCase() === "fast"
-        ),
-      ),
+      // Enable the CLI feature for later turns on this reused session. Only
+      // turn/start's explicit serviceTier selects Fast; standard sends null.
+      enableFastMode: true,
     });
   }
 

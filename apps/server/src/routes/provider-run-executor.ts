@@ -248,6 +248,8 @@ export function startProviderRunExecution(
     // Consolidate ordinary response deltas into one durable, execution-scoped
     // Work log entry. Communication is created only by explicit intent calls.
     let runError: string | undefined;
+    let providerHttpStatusCode: number | undefined;
+    let providerRetryAfterMs: number | undefined;
     let runFailureClassification:
       | ProviderErrorCode
       | ProviderFailureCategory
@@ -1081,6 +1083,8 @@ export function startProviderRunExecution(
           }
           if (event.type === "error") {
             runError = event.message;
+            providerHttpStatusCode = event.httpStatusCode;
+            providerRetryAfterMs = event.retryAfterMs;
             runFailureClassification = event.category ?? event.code;
             projectedProviderNonExecutionEvidence = !providerWorkObserved &&
               !v3PromptInjected &&
@@ -1540,6 +1544,8 @@ export function startProviderRunExecution(
                 promptInjectionState: coordinationV3!.agentSnapshot(agent.id).activeRun?.promptInjectionState
                   ?? (v3PromptInjected ? "injected" : "not_injected"),
                 message: runError,
+                ...(providerHttpStatusCode !== undefined ? { httpStatusCode: providerHttpStatusCode } : {}),
+                ...(providerRetryAfterMs !== undefined ? { retryAfterMs: providerRetryAfterMs } : {}),
               },
             } : {}),
           });
