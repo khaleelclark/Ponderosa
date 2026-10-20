@@ -15,7 +15,6 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import type {
   AgentDto,
   AgentMentionBindingDto,
-  AgentDetailDto,
   AllChatDecisionEventDto,
   AllChatItemDto,
   AssetDto,
@@ -64,7 +63,7 @@ import { MessageRequestAction } from "./MessageRequestAction";
 import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
 import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
-import { publishCreatedAgent } from "../conversationAgentCache";
+import { publishCreatedAgent, publishUpdatedAgent, refreshAgentRuntime } from "../conversationAgentCache";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
 import { createClientId } from "../clientId";
@@ -89,11 +88,8 @@ import { DecisionCard } from "./decisions/DecisionCard";
 import { DecisionResponseMessage } from "./decisions/DecisionResponseMessage";
 import { AgentRuntimeControls } from "./AgentDetail.parts";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
-import {
-  resolveRuntimeSelection,
-  runtimeControlState,
-} from "../conversationEngine";
-import { useRuntimeControls } from "../hooks/useRuntimeControls";
+import { resolveRuntimeSelection } from "../conversationEngine";
+import { pendingRuntimeSelection, runtimeMutationOptions, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
 import { AUTO_ALLOWED_DECISION_OPTION_ID } from "./ConversationView.helpers";
 import { CompactWorkspaceHeader } from "./WorkspaceFrame";
 import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
@@ -142,8 +138,6 @@ import {
   allChatDeliveryConfirmation,
   allChatAttentionRoute,
   allChatComposerConversationId,
-  allChatRuntimeInitializationKey,
-  allChatRuntimeMutationOwnsSelection,
   allChatSourceIntentKey,
   authoritativeAllChatReplyTarget,
   busyAllChatMentionHandles,
@@ -154,9 +148,6 @@ import {
   eligibleAllChatTargets,
   parseAllChatSourceIdentity,
   reduceAllChatSubmissionIntent,
-  recordRuntimeCanonicalKey,
-  runtimeCanonicalKey,
-  shouldInitializeAllChatRuntime,
   type AllChatReplyTarget,
   type AllChatRuntimePayload,
   type AllChatSourceIdentity,
@@ -280,10 +271,6 @@ export function AllChatView({
   const [effort, setEffort] = useState("");
   const [speed, setSpeed] = useState("");
   const [submissionRuntimeIntent, setSubmissionRuntimeIntent] = useState(0);
-  const runtimeMutationGenerationByAgent = useRef(new Map<string, number>());
-  const runtimeCanonicalKeyByAgent = useRef(new Map<string, string>());
-  const initializedRuntime = useRef<string>();
-  const dirtyRuntimeAgentId = useRef<string>();
   const [runtimeAgentId, setRuntimeAgentId] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [pendingUploadCleanups, setPendingUploadCleanups] = useState(0);
@@ -536,26 +523,14 @@ export function AllChatView({
   }, [decisionEvents, items]);
   const layoutKey = timeline.map((entry) => entry.id).join(":");
   const selectedAgentId = activeReplyTarget?.id;
-  const selectedAgentIdRef = useRef(selectedAgentId);
-  selectedAgentIdRef.current = selectedAgentId;
+  const runtimeSaving = useRuntimeSaving(`agent:${selectedAgentId ?? ""}`);
+  const hydratedRuntimeAgent = useRef<string>();
   const selectedProjectId = activeProjectId;
   const selectedAgent = useQuery({
     queryKey: queryKeys.agents.detail(selectedAgentId),
     queryFn: () => api.getAgent(selectedAgentId!, AGENT_DETAIL_PAGE_SIZE),
     enabled: Boolean(selectedAgentId),
   });
-  const currentRuntimeCanonical = useRef<{ agentId: string; key: string }>();
-  if (selectedAgent.data?.agent) {
-    currentRuntimeCanonical.current = {
-      agentId: selectedAgent.data.agent.id,
-      key: runtimeCanonicalKey({
-        engine: selectedAgent.data.agent.activeEngine,
-        model: selectedAgent.data.agent.model,
-        effort: selectedAgent.data.agent.effort,
-        speed: selectedAgent.data.agent.speed,
-      }),
-    };
-  }
   const conversationsQuery = useConversations(selectedProjectId);
   useEffect(() => {
     setReplyTarget(current => {
@@ -644,18 +619,10 @@ export function AllChatView({
       setModel(next.model);
       setEffort(next.effort);
       setSpeed(next.speed ?? "");
-      if (selectedAgentId) {
-        writeChatState(
-          chatStateKey("runtime", `agent.${selectedAgentId}.speed`),
-          next.speed ?? "",
-        );
-      }
     },
   });
   useEffect(() => {
     if (!selectedAgentId) {
-      initializedRuntime.current = undefined;
-      dirtyRuntimeAgentId.current = undefined;
       setRuntimeEngine("");
       setModel("");
       setEffort("");
@@ -663,64 +630,22 @@ export function AllChatView({
       setRuntimeAgentId(undefined);
       return;
     }
-    if (dirtyRuntimeAgentId.current !== selectedAgentId) {
-      dirtyRuntimeAgentId.current = undefined;
-    }
+    if (runtimeSaving && hydratedRuntimeAgent.current === selectedAgentId) return;
     const agent = selectedAgent.data?.agent;
-    if (!agent) return;
-    const engine = engines.find(item => item.id === agent.activeEngine);
-    const initializationKey = allChatRuntimeInitializationKey({
-      selectedAgentId,
-      agent,
-      engine,
-      project,
-      enginesLoaded: enginesQuery.data !== undefined,
-      preferencesLoaded: workspacePreferences.data !== undefined,
-      preferencesRevision: workspacePreferences.data?.revision,
-      projectsLoaded: projectsQuery.data !== undefined,
+    if (!agent || !enginesQuery.data || !workspacePreferences.data || !projectsQuery.data) return;
+    const selection = { engine: agent.activeEngine, model: agent.model, effort: agent.effort, speed: agent.speed, ...pendingRuntimeSelection(queryClient, `agent:${agent.id}`) };
+    const engine = engines.find(item => item.id === selection.engine);
+    const resolved = resolveRuntimeSelection(engine, workspacePreferences.data, project, {
+      model: selection.model ?? undefined,
+      effort: selection.effort ?? undefined,
+      speed: selection.speed ?? undefined,
     });
-    if (!shouldInitializeAllChatRuntime(
-      initializationKey,
-      initializedRuntime.current,
-      dirtyRuntimeAgentId.current === selectedAgentId,
-    )) return;
-    const canonicalKey = runtimeCanonicalKey({
-      engine: agent.activeEngine,
-      model: agent.model,
-      effort: agent.effort,
-      speed: agent.speed,
-    });
-    recordRuntimeCanonicalKey(
-      runtimeMutationGenerationByAgent.current,
-      runtimeCanonicalKeyByAgent.current,
-      agent.id,
-      canonicalKey,
-    );
-    const resolved = runtimeControlState(engine, {
-      model:
-        agent.model ??
-        resolveRuntimeSelection(
-          engine,
-          workspacePreferences.data,
-          project,
-        ).model,
-      effort:
-        agent.effort ??
-        resolveRuntimeSelection(
-          engine,
-          workspacePreferences.data,
-          project,
-        ).effort,
-      speed: agent.speed ?? readChatState(
-        chatStateKey("runtime", `agent.${agent.id}.speed`),
-      ),
-    });
-    initializedRuntime.current = initializationKey;
+    hydratedRuntimeAgent.current = agent.id;
     setRuntimeAgentId(agent.id);
-    setRuntimeEngine(agent.activeEngine);
+    setRuntimeEngine(selection.engine);
     setModel(resolved.model);
     setEffort(resolved.effort);
-    setSpeed(resolved.speed);
+    setSpeed(resolved.speed ?? "");
   }, [
     engines,
     enginesQuery.data,
@@ -729,8 +654,10 @@ export function AllChatView({
     selectedAgent.data?.agent,
     selectedAgentId,
     workspacePreferences.data,
+    runtimeSaving,
   ]);
   const updateRuntimeEngine = useMutation({
+    ...runtimeMutationOptions(`agent:${selectedAgentId ?? ""}`),
     mutationFn: ({
       agentId,
       activeEngine,
@@ -751,17 +678,12 @@ export function AllChatView({
         speed: nextSpeed,
       }),
     onSuccess: updated => {
-      queryClient.setQueryData<AgentDetailDto>(
-        queryKeys.agents.detail(updated.id),
-        current => current ? { ...current, agent: updated } : current,
-      );
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.agents.detailPrefix(updated.id),
-      });
+      publishUpdatedAgent(queryClient, updated);
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.project(updated.projectId),
       });
     },
+    onSettled: (_updated, _error, variables) => refreshAgentRuntime(queryClient, variables.agentId),
   });
   const selectedCapabilities = useQuery({
     queryKey: queryKeys.engines.capabilitySelection(
@@ -1371,6 +1293,30 @@ export function AllChatView({
       setLoadingOlder(false);
     }
   };
+  const resetOrChangeEngine = (next: string) => {
+    const nextEngine = engines.find(item => item.id === next);
+    if (!nextEngine || !selectedAgentId || !selectedAgent.data) return;
+    setSubmissionRuntimeIntent(value => value + 1);
+    const resolved = resolveRuntimeSelection(
+      nextEngine,
+      workspacePreferences.data,
+      project,
+    );
+    if (next === selectedEngineId && resolved.model === model && resolved.effort === effort && (resolved.speed ?? "") === (speed ?? "")) return;
+    setRuntimeEngine(next);
+    setModel(resolved.model);
+    setEffort(resolved.effort);
+    setSpeed(resolved.speed ?? "");
+    updateRuntimeEngine.mutate(
+      {
+        agentId: selectedAgentId,
+        activeEngine: next as EngineDto["id"],
+        model: resolved.model || null,
+        effort: resolved.effort || null,
+        speed: resolved.speed || null,
+      },
+    );
+  };
   const runtimeControls =
     replyTarget && runtimeSelectionReady && selectedAgent.data && selectedEngine ? (
       <AgentRuntimeControls
@@ -1383,86 +1329,11 @@ export function AllChatView({
         speed={selectedRuntime.speed}
         speeds={selectedRuntime.speeds}
         selectedRuntime={selectedRuntime}
-        disabled={updateRuntimeEngine.isPending}
-        onEngineChange={next => {
-          const nextEngine = engines.find(item => item.id === next);
-          if (!nextEngine || !selectedAgentId) return;
-          dirtyRuntimeAgentId.current = selectedAgentId;
-          setSubmissionRuntimeIntent(value => value + 1);
-          const mutationGeneration =
-            (runtimeMutationGenerationByAgent.current.get(selectedAgentId) ?? 0) + 1;
-          runtimeMutationGenerationByAgent.current.set(
-            selectedAgentId,
-            mutationGeneration,
-          );
-          const capturedCanonicalKey = runtimeCanonicalKeyByAgent.current.get(
-            selectedAgentId,
-          ) ?? runtimeCanonicalKey({
-            engine: selectedAgent.data.agent.activeEngine,
-            model: selectedAgent.data.agent.model,
-            effort: selectedAgent.data.agent.effort,
-            speed: selectedAgent.data.agent.speed,
-          });
-          const speedKey = chatStateKey(
-            "runtime",
-            `agent.${selectedAgentId}.speed`,
-          );
-          const previous = {
-            engine: selectedEngineId ?? "",
-            model,
-            effort,
-            speed,
-            persistedSpeed: readChatState(speedKey),
-          };
-          const resolved = resolveRuntimeSelection(
-            nextEngine,
-            workspacePreferences.data,
-            project,
-          );
-          setRuntimeEngine(next);
-          setModel(resolved.model);
-          setEffort(resolved.effort);
-          setSpeed(resolved.speed ?? "");
-          writeChatState(
-            speedKey,
-            resolved.speed ?? "",
-          );
-          updateRuntimeEngine.mutate(
-            {
-              agentId: selectedAgentId,
-              activeEngine: next as EngineDto["id"],
-              model: resolved.model || null,
-              effort: resolved.effort || null,
-              speed: resolved.speed || null,
-            },
-            {
-              onError: () => {
-                const currentGeneration =
-                  runtimeMutationGenerationByAgent.current.get(selectedAgentId);
-                if (!allChatRuntimeMutationOwnsSelection({
-                  capturedAgentId: selectedAgentId,
-                  currentAgentId: selectedAgentIdRef.current,
-                  capturedGeneration: mutationGeneration,
-                  currentGeneration,
-                  capturedCanonicalKey,
-                  currentCanonicalKey:
-                    currentRuntimeCanonical.current?.agentId === selectedAgentId
-                      ? currentRuntimeCanonical.current.key
-                      : undefined,
-                })) return;
-                if (readChatState(speedKey) === (resolved.speed || undefined)) {
-                  writeChatState(speedKey, previous.persistedSpeed ?? "");
-                }
-                setRuntimeEngine(previous.engine);
-                setModel(previous.model);
-                setEffort(previous.effort);
-                setSpeed(previous.speed);
-              },
-            },
-          );
-        }}
+        scopeLabel={`${selectedAgent.data.agent.title} Next Run`}
+        selectionKey={selectedAgentId ?? ""}
+        onEngineChange={resetOrChangeEngine}
+        onReset={() => { if (selectedEngineId) resetOrChangeEngine(selectedEngineId); }}
         onModelChange={next => {
-          if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
           setSubmissionRuntimeIntent(value => value + 1);
           const resolved = selectedRuntime.selectModel(next);
           if (selectedAgentId && selectedEngineId) updateRuntimeEngine.mutate({
@@ -1474,7 +1345,6 @@ export function AllChatView({
           });
         }}
         onEffortChange={next => {
-          if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
           setSubmissionRuntimeIntent(value => value + 1);
           const resolved = selectedRuntime.selectEffort(next);
           if (selectedAgentId && selectedEngineId) updateRuntimeEngine.mutate({
@@ -1486,7 +1356,6 @@ export function AllChatView({
           });
         }}
         onSpeedChange={next => {
-          if (selectedAgentId) dirtyRuntimeAgentId.current = selectedAgentId;
           setSubmissionRuntimeIntent(value => value + 1);
           const resolved = selectedRuntime.selectSpeed(next);
           if (selectedAgentId && selectedEngineId) updateRuntimeEngine.mutate({
@@ -1932,7 +1801,7 @@ export function AllChatView({
           controls={runtimeControls}
           disabled={false}
           submissionDisabled={
-            updateRuntimeEngine.isPending ||
+            runtimeSaving ||
             Boolean(selectedAgentId && !runtimeSelectionReady)
           }
           running={operationRunning}

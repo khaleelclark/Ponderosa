@@ -8,6 +8,7 @@
 import { AGENT_DETAIL_PAGE_SIZE } from "./agentHistoryPagination.js";
 
 export const queryKeys = {
+  runtimeSelection: (owner: string) => ["runtime-selection", owner] as const,
   health: {
     all: ["health"] as const,
   },
@@ -82,6 +83,7 @@ export const queryKeys = {
     ) => ["engine-capabilities", projectId, agentId, engineId, model] as const,
   },
   conversations: {
+    membersAll: ["conversation-members"] as const,
     all: ["conversations"] as const,
     project: (projectId: string | undefined) => ["conversations", projectId] as const,
     detailAll: ["conversation"] as const,

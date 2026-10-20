@@ -9,7 +9,7 @@ function storage(): Storage | undefined {
 }
 
 export function chatStateKey(
-  kind: "draft" | "view" | "scroll" | "runtime",
+  kind: "draft" | "view" | "scroll",
   scope: string,
 ): string {
   return `${PREFIX}.${kind}.${scope}`;

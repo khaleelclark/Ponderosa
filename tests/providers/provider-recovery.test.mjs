@@ -384,3 +384,13 @@ test('concurrent same-key cold Chat requests share one inventory discovery and s
     assert.equal(first.id, replay.id); assert.equal(calls, 1);
   }, { socketIdleTimeoutMs: 50, modelCatalog: async () => { calls++; await new Promise(resolve => setTimeout(resolve, 150)); return catalog('live'); } });
 });
+
+test('Codex Fast presentation keeps live CLI speed descriptions and exact tier IDs', () => {
+  const catalog = normalizeCodexProviderDiscovery({ cwd: process.cwd(), models: { data: [{ model: 'fixture', serviceTiers: [
+    { id: 'priority', displayName: 'Fast', description: 'Live provider speed description' },
+    { id: 'future-tier', displayName: 'Future', description: 'Unchanged future semantics' },
+  ] }] } }).modelCatalog;
+  assert.equal(catalog.models[0].serviceTiers[0].id, 'priority');
+  assert.equal(catalog.models[0].serviceTiers[0].description, 'Live provider speed description. Purchased credits use 2× the Standard rate.');
+  assert.equal(catalog.models[0].serviceTiers[1].description, 'Unchanged future semantics');
+});
