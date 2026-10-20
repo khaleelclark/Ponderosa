@@ -10,6 +10,7 @@ on:
   push:
     tags:
       - "v*-beta.*"
+      - "v0.*.*"
 
 permissions:
   contents: write
