@@ -8,7 +8,6 @@ import {
 } from "@mui/material";
 import type {
   AgentHealthDto,
-  AgentDetailDto,
   EngineDto,
   ConversationDto,
   ProjectDto,
@@ -89,8 +88,8 @@ import { CollectionStateFeedback } from "./CollectionPrimitives";
 import type { WorkspaceDirectoryRequestState } from "../hooks/useWorkspaceDirectory";
 import { ChatContextSettings } from "./ChatContextSettings";
 
-import { chatStateKey, writeChatState } from "../chatState";
-import { replaceCachedConversationAgent } from "../conversationAgentCache";
+import { chatStateKey } from "../chatState";
+import { publishUpdatedAgent, refreshAgentRuntime } from "../conversationAgentCache";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { pendingRuntimeSelection, runtimeMutationOptions, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
 
@@ -394,22 +393,12 @@ export function ConversationView({
       speed: string | null;
     }) => api.updateAgent(agentId, { activeEngine, model, effort, speed }),
     onSuccess: updated => {
-      queryClient.setQueriesData<AgentDetailDto>(
-        { queryKey: queryKeys.agents.detailPrefix(updated.id) },
-        current => current ? { ...current, agent: updated } : current,
-      );
-      queryClient.setQueriesData<unknown>(
-        { queryKey: queryKeys.conversations.detailAll },
-        (current: unknown) => replaceCachedConversationAgent(current, updated),
-      );
+      publishUpdatedAgent(queryClient, updated);
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.project(updated.projectId),
       });
     },
-    onSettled: (_updated, _error, variables) => Promise.all([
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(variables.agentId) }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
-    ]),
+    onSettled: (_updated, _error, variables) => refreshAgentRuntime(queryClient, variables.agentId),
   });
 
   const hydratedRuntimeOwner = useRef<string>();
@@ -535,15 +524,6 @@ export function ConversationView({
       setModel(next.model);
       setEffort(next.effort);
       setSpeed(next.speed ?? "");
-      writeChatState(
-        chatStateKey(
-          "runtime",
-          commandTargetAgent
-            ? `agent.${commandTargetAgent.id}.speed`
-            : `conversation.${conversationId}.speed`,
-        ),
-        next.speed ?? "",
-      );
     },
   });
   const agentTitle = useCallback(
@@ -773,15 +753,6 @@ export function ConversationView({
     setModel(resolved.model);
     setEffort(resolved.effort);
     setSpeed(resolved.speed ?? "");
-    writeChatState(
-      chatStateKey(
-        "runtime",
-        commandTargetAgent
-          ? `agent.${commandTargetAgent.id}.speed`
-          : `conversation.${conversationId}.speed`,
-      ),
-      resolved.speed ?? "",
-    );
     if (commandTargetAgent) {
       persistTargetRuntime.mutate(
         {

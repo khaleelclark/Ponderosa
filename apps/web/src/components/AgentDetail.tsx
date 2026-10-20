@@ -388,10 +388,6 @@ export function AgentDetail({
       setModel(next.model);
       setEffort(next.effort);
       setSpeed(next.speed ?? "");
-      writeChatState(
-        chatStateKey("runtime", `agent.${agentId}.speed`),
-        next.speed ?? "",
-      );
     },
   });
   const inheritedRuntime = resolveRuntimeSelection(
@@ -762,7 +758,6 @@ export function AgentDetail({
     const nextEngine = engines.find(candidate => candidate.id === next);
     if (!nextEngine || !detail) return;
     setSubmissionRuntimeIntent(value => value + 1);
-    const speedKey = chatStateKey("runtime", `agent.${agentId}.speed`);
     const resolved = resolveRuntimeSelection(
       nextEngine,
       preferencesQuery.data,
@@ -773,7 +768,6 @@ export function AgentDetail({
     setModel(resolved.model);
     setEffort(resolved.effort);
     setSpeed(resolved.speed ?? "");
-    writeChatState(speedKey, resolved.speed ?? "");
     setSettingsEngine(next);
     setSettingsModel(resolved.model);
     setSettingsEffort(resolved.effort);

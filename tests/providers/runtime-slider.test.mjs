@@ -146,7 +146,7 @@ test('automatic runtime changes are quiet; explicit Settings Save keeps its conf
   const imports = {
     react: { useRef: value => ({ current: value }) },
     '@tanstack/react-query': { useMutation: options => { mutations.push(options); return options; }, useQueryClient: () => ({ setQueriesData() {} }) },
-    '../api': {}, '../conversationAgentCache': {}, '../hooks/useRuntimeControls': { runtimeMutationOptions: () => ({}) },
+    '../api': {}, '../conversationAgentCache': { publishUpdatedAgent() {} }, '../hooks/useRuntimeControls': { runtimeMutationOptions: () => ({}) },
     '../queryKeys': { queryKeys: { agents: { detailPrefix: () => [], all: [] }, conversations: { detailAll: [] } } },
     './MutationNotifications': { useMutationNotification: () => notice => notices.push(notice) },
   };
@@ -238,7 +238,7 @@ test('the model panel focuses its enabled Back action even when every model is u
 
 // Real TanStack observers/queues and actual view mutation + hydration callbacks.
 // Only transport and React scheduling are held so failure order is deterministic.
-const { QueryClient, MutationObserver } = require('@tanstack/react-query');
+const { QueryClient, MutationObserver, QueryObserver } = require('@tanstack/react-query');
 function declaration(name, key) {
   const file = ts.createSourceFile(name, source(name), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX); let found;
   const visit = node => { if (ts.isVariableDeclaration(node) && node.name.getText(file) === key) found = node.getText(file); ts.forEachChild(node, visit); }; visit(file);
@@ -254,10 +254,10 @@ function queueHarness() {
   const resolver = moduleExports('conversationEngine.ts', {});
   const cache = moduleExports('conversationAgentCache.ts', { './queryKeys.js': { queryKeys: keys } });
   const calls = [], gates = [], promises = [], refs = [], observers = []; let index = 0, refIndex = 0;
-  const canonical = new Map();
+  const canonical = new Map(), lostResponses = new Set();
   const api = Object.fromEntries(['Agent', 'Conversation'].map(kind => ['update' + kind, async (id, patch) => {
     const gate = Promise.withResolvers(); gates.push(gate); calls.push({ id, patch }); await gate.promise;
-    const updated = { ...canonical.get(id), ...patch }; canonical.set(id, updated); return updated;
+    const updated = { ...canonical.get(id), ...patch }; canonical.set(id, updated); if (lostResponses.has(id)) throw Error('HTTP response lost after commit'); return updated;
   }]));
   const useMutation = options => {
     const slot = index++; const observer = observers[slot] ??= new MutationObserver(client, options); observer.setOptions(options);
@@ -277,17 +277,23 @@ function queueHarness() {
     return context.exports;
   }
   function seed(id) { const value = { id, projectId: 'project', activeEngine: 'fixture', model: 'M0', effort: 'low', speed: 'standard', defaultEngine: 'fixture', defaultModel: 'M0', defaultEffort: 'low', defaultSpeed: 'standard' }; canonical.set(id, value); client.setQueryData(keys.agents.detail(id), { agent: value }); client.setQueryData(keys.conversations.detail(id), { conversation: value, agents: [value] }); }
-  function hydrate(name, id, state, hydrated) {
+  function hydrate(name, id, state, hydrated, engineOverride = {}) {
     const filename = 'components/' + name + '.tsx', text = source(filename), file = ts.createSourceFile(filename, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX); let callback;
     const marker = name === 'ConversationView' ? 'hydratedRuntimeOwner.current =' : 'hydratedRuntimeAgent.current =';
     const visit = node => { if (ts.isCallExpression(node) && node.expression.getText(file) === 'useEffect' && node.arguments[0]?.getText(file).includes(marker)) callback = node.arguments[0].getText(file); ts.forEachChild(node, visit); }; visit(file); assert.ok(callback);
     const current = name === 'ConversationView' ? client.getQueryData(keys.conversations.detail(id))?.agents.find(agent => agent.id === id) : client.getQueryData(keys.agents.detail(id))?.agent;
-    const engine = { id: 'fixture', defaultModel: 'M0', models: ['M0', 'M1', 'M2'].map(id => ({ id, efforts: [{ id: 'low' }, { id: 'high' }], defaultEffort: 'low', serviceTiers: [{ id: 'standard' }, { id: 'fast' }], defaultServiceTier: 'standard' })), efforts: [] };
+    const engine = { id: 'fixture', defaultModel: 'M0', models: ['M0', 'M1', 'M2'].map(id => ({ id, efforts: [{ id: 'low' }, { id: 'high' }], defaultEffort: 'low', serviceTiers: [{ id: 'standard' }, { id: 'fast' }], defaultServiceTier: 'standard' })), efforts: [], ...engineOverride };
     const env = { queryClient: client, ...controls, ...resolver, agentId: id, selectedAgentId: id, runtimeOwner: 'agent:' + id, runtimeSaving: controls.useRuntimeSaving('agent:' + id), hydratedRuntimeAgent: hydrated, hydratedRuntimeOwner: hydrated, detail: current && { agent: current }, selectedAgent: { data: current && { agent: current } }, commandTargetAgent: current, conversation: { id: 'chat', projectId: 'project' }, engines: [engine], enginesQuery: { data: [engine] }, preferencesQuery: { data: {} }, workspacePreferences: { data: {} }, projectsQuery: { data: [] }, project: undefined, resolveConversationEngine: id => id };
     for (const [setter, key] of [['setEngine','engine'], ['setRuntimeEngine','engine'], ['setRuntimeAgentId','owner'], ['setModel','model'], ['setEffort','effort'], ['setSpeed','speed']]) env[setter] = value => state[key] = value;
     vm.runInNewContext(transpile('(' + callback + ')()'), env);
   }
-  return { client, keys, controls, calls, gates, promises, canonical, agent, view, seed, hydrate, close: () => client.clear() };
+  return { client, keys, controls, calls, gates, promises, canonical, lostResponses, ...cache, agent, view, seed, hydrate,
+    projectedTarget(id) {
+      const members = keys.conversations.members(id), target = keys.conversations.members(id, 'target:member');
+      const env = vm.createContext({ useMemo: fn => fn(), memberSearch: '', detailQuery: { data: client.getQueryData(keys.conversations.detail(id)) }, membersQuery: { data: client.getQueryData(members) }, commandTargetMembersQuery: { data: client.getQueryData(target) }, commandTargetHandle: 'member', commandTargetAgentId: id, agents: [] });
+      for (const key of ['conversationAgents','commandTargetAgents','structurallySelectedCommandTarget','commandTargetAgent']) vm.runInContext(transpile('const ' + declaration('components/ConversationView.tsx', key)), env);
+      return vm.runInContext('commandTargetAgent', env);
+    }, close: () => client.clear() };
 }
 async function until(predicate) { for (let i = 0; i < 100 && !predicate(); i++) await new Promise(resolve => setImmediate(resolve)); assert.ok(predicate()); }
 for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) for (const failures of [[true,true], [false,true], [true,false]]) test(`${name}: rapid queued edits stay optimistic, serialize, and reconcile ${failures}`, async t => {
@@ -343,4 +349,64 @@ test('pending manual Settings patch preserves an earlier queued speed when a new
   settings.mutate({ activeEngine: 'fixture', model: 'M2', effort: 'high', speed: 'fast' }); settings.mutate(undefined); await until(() => h.calls.length === 1);
   const state = {}; h.hydrate('AllChatView', 'a', state, {}); assert.equal(state.model, 'M0', 'latest manual model wins'); assert.equal(state.speed, 'fast', 'omitted speed preserves pending explicit choice');
   h.gates[0].resolve(); await until(() => h.calls.length === 2); h.gates[1].resolve(); await Promise.all(h.promises);
+});
+for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) test(`${name}: retired saved effort resolves to an advertised default after catalog changes`, t => {
+  const h = queueHarness(); t.after(h.close); h.seed('a');
+  const key = h.keys.agents.detail('a'), detail = h.client.getQueryData(key);
+  const agent = { ...detail.agent, effort: 'retired-effort' };
+  h.client.setQueryData(key, { ...detail, agent });
+  h.client.setQueryData(h.keys.conversations.detail('a'), { conversation: agent, agents: [agent] });
+  const state = {}; h.hydrate(name, 'a', state, {});
+  assert.equal(state.effort, 'low', 'Do not render or dispatch a reasoning level no longer advertised by this model');
+});
+for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) test(`${name}: reasoning default belongs to the saved model when effort is inherited`, t => {
+  const h = queueHarness(); t.after(h.close); h.seed('a');
+  const agent = { ...h.canonical.get('a'), model: 'M1', effort: null };
+  h.client.setQueryData(h.keys.agents.detail('a'), { agent });
+  h.client.setQueryData(h.keys.conversations.detail('a'), { conversation: agent, agents: [agent] });
+  const state = {}; h.hydrate(name, 'a', state, {}, { models: [
+    { id: 'M0', efforts: [{ id: 'low' }], defaultEffort: 'low' },
+    { id: 'M1', efforts: [{ id: 'high' }], defaultEffort: 'high' },
+  ] });
+  assert.equal(state.model, 'M1'); assert.equal(state.effort, 'high');
+});
+for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) test(`${name}: confirmed saves refresh paged and searched Chat members beyond bounded detail`, async t => {
+  const h = queueHarness(); t.after(h.close); h.seed('a');
+  const agent = { ...h.canonical.get('a'), handle: 'member' }, other = { id: 'other', handle: 'other' };
+  h.canonical.set('a', agent);
+  const page = { items: [agent, other], cursor: 'cursor', hasMore: true, total: 101, limit: 100 };
+  const members = h.keys.conversations.members('a'), target = h.keys.conversations.members('a', 'target:member');
+  h.client.setQueryData(h.keys.conversations.detail('a'), { agents: [] });
+  h.client.setQueryData(members, { pages: [page], pageParams: ['page-1'] }); h.client.setQueryData(target, page);
+  assert.equal(h.projectedTarget('a').model, 'M0');
+  const tuple = { activeEngine: 'fixture', model: 'M1', effort: 'high', speed: 'fast' };
+  if (name === 'AgentDetail') h.agent('a').mutate(tuple);
+  else h.view(name, name === 'ConversationView' ? 'persistTargetRuntime' : 'updateRuntimeEngine', { runtimeTargetAgentId: 'a', selectedAgentId: 'a' }).result.mutate({ agentId: 'a', ...tuple });
+  await until(() => h.calls.length === 1); h.gates[0].resolve(); await Promise.all(h.promises);
+  const confirmed = h.projectedTarget('a'); assert.equal(confirmed.model, 'M1'); assert.equal(confirmed.effort, 'high');
+  const updatedPage = h.client.getQueryData(members); assert.deepEqual(updatedPage.pageParams, ['page-1']);
+  assert.equal(updatedPage.pages[0].cursor, 'cursor'); assert.equal(updatedPage.pages[0].hasMore, true); assert.equal(updatedPage.pages[0].total, 101); assert.equal(updatedPage.pages[0].items[1], other);
+});
+for (const paged of [false, true]) test(`confirmed member publication rejects a late stale ${paged ? 'paged' : 'search'} response`, async t => {
+  const h = queueHarness(); t.after(h.close); h.seed('a');
+  const key = h.keys.conversations.members('a', paged ? '' : 'target:member'), old = h.canonical.get('a');
+  const page = { items: [old], total: 1, limit: 100, hasMore: false }, data = paged ? { pages: [page], pageParams: [undefined] } : page;
+  h.client.setQueryData(key, data); const response = Promise.withResolvers();
+  const reading = h.client.fetchQuery({ queryKey: key, queryFn: () => response.promise }).catch(() => {});
+  const updated = { ...old, model: 'M1' }; h.publishUpdatedAgent(h.client, updated);
+  response.resolve(data); await reading;
+  const current = h.client.getQueryData(key); assert.equal((paged ? current.pages[0] : current).items[0].model, 'M1');
+});
+for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) test(`${name}: reconcile canonical members when a write commits but its response is lost`, async t => {
+  const h = queueHarness(); t.after(h.close); h.seed('a'); h.lostResponses.add('a');
+  const key = h.keys.conversations.members('a', 'target:member');
+  const observer = new QueryObserver(h.client, { queryKey: key, queryFn: async () => ({ items: [h.canonical.get('a')], total: 1, limit: 100, hasMore: false }) });
+  const unsubscribe = observer.subscribe(() => {}); t.after(unsubscribe); await until(() => h.client.getQueryData(key)?.items);
+  assert.equal(h.client.getQueryData(key).items[0].model, 'M0');
+  const tuple = { activeEngine: 'fixture', model: 'M1', effort: 'high', speed: 'fast' };
+  if (name === 'AgentDetail') h.agent('a').mutate(tuple);
+  else h.view(name, name === 'ConversationView' ? 'persistTargetRuntime' : 'updateRuntimeEngine', { runtimeTargetAgentId: 'a', selectedAgentId: 'a' }).result.mutate({ agentId: 'a', ...tuple });
+  await until(() => h.calls.length === 1); h.gates[0].resolve(); await Promise.all(h.promises);
+  assert.equal(h.controls.useRuntimeSaving('agent:a'), false);
+  assert.equal(h.client.getQueryData(key).items[0].model, 'M1', 'HTTP failure cannot make a confirmed server selection look reverted');
 });

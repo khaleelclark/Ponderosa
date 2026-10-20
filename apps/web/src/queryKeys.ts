@@ -83,6 +83,7 @@ export const queryKeys = {
     ) => ["engine-capabilities", projectId, agentId, engineId, model] as const,
   },
   conversations: {
+    membersAll: ["conversation-members"] as const,
     all: ["conversations"] as const,
     project: (projectId: string | undefined) => ["conversations", projectId] as const,
     detailAll: ["conversation"] as const,

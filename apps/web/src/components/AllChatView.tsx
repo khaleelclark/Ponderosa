@@ -15,7 +15,6 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import type {
   AgentDto,
   AgentMentionBindingDto,
-  AgentDetailDto,
   AllChatDecisionEventDto,
   AllChatItemDto,
   AssetDto,
@@ -64,7 +63,7 @@ import { MessageRequestAction } from "./MessageRequestAction";
 import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
 import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
-import { publishCreatedAgent, replaceCachedConversationAgent } from "../conversationAgentCache";
+import { publishCreatedAgent, publishUpdatedAgent, refreshAgentRuntime } from "../conversationAgentCache";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
 import { createClientId } from "../clientId";
@@ -89,10 +88,7 @@ import { DecisionCard } from "./decisions/DecisionCard";
 import { DecisionResponseMessage } from "./decisions/DecisionResponseMessage";
 import { AgentRuntimeControls } from "./AgentDetail.parts";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
-import {
-  resolveRuntimeSelection,
-  runtimeControlState,
-} from "../conversationEngine";
+import { resolveRuntimeSelection } from "../conversationEngine";
 import { pendingRuntimeSelection, runtimeMutationOptions, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
 import { AUTO_ALLOWED_DECISION_OPTION_ID } from "./ConversationView.helpers";
 import { CompactWorkspaceHeader } from "./WorkspaceFrame";
@@ -623,12 +619,6 @@ export function AllChatView({
       setModel(next.model);
       setEffort(next.effort);
       setSpeed(next.speed ?? "");
-      if (selectedAgentId) {
-        writeChatState(
-          chatStateKey("runtime", `agent.${selectedAgentId}.speed`),
-          next.speed ?? "",
-        );
-      }
     },
   });
   useEffect(() => {
@@ -645,29 +635,17 @@ export function AllChatView({
     if (!agent || !enginesQuery.data || !workspacePreferences.data || !projectsQuery.data) return;
     const selection = { engine: agent.activeEngine, model: agent.model, effort: agent.effort, speed: agent.speed, ...pendingRuntimeSelection(queryClient, `agent:${agent.id}`) };
     const engine = engines.find(item => item.id === selection.engine);
-    const resolved = runtimeControlState(engine, {
-      model:
-        selection.model ??
-        resolveRuntimeSelection(
-          engine,
-          workspacePreferences.data,
-          project,
-        ).model,
-      effort:
-        selection.effort ??
-        resolveRuntimeSelection(
-          engine,
-          workspacePreferences.data,
-          project,
-        ).effort,
-      speed: selection.speed ?? resolveRuntimeSelection(engine, workspacePreferences.data, project).speed,
+    const resolved = resolveRuntimeSelection(engine, workspacePreferences.data, project, {
+      model: selection.model ?? undefined,
+      effort: selection.effort ?? undefined,
+      speed: selection.speed ?? undefined,
     });
     hydratedRuntimeAgent.current = agent.id;
     setRuntimeAgentId(agent.id);
     setRuntimeEngine(selection.engine);
     setModel(resolved.model);
     setEffort(resolved.effort);
-    setSpeed(resolved.speed);
+    setSpeed(resolved.speed ?? "");
   }, [
     engines,
     enginesQuery.data,
@@ -700,22 +678,12 @@ export function AllChatView({
         speed: nextSpeed,
       }),
     onSuccess: updated => {
-      queryClient.setQueriesData<AgentDetailDto>(
-        { queryKey: queryKeys.agents.detailPrefix(updated.id) },
-        current => current ? { ...current, agent: updated } : current,
-      );
-      queryClient.setQueriesData<unknown>(
-        { queryKey: queryKeys.conversations.detailAll },
-        (current: unknown) => replaceCachedConversationAgent(current, updated),
-      );
+      publishUpdatedAgent(queryClient, updated);
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.project(updated.projectId),
       });
     },
-    onSettled: (_updated, _error, variables) => Promise.all([
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(variables.agentId) }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
-    ]),
+    onSettled: (_updated, _error, variables) => refreshAgentRuntime(queryClient, variables.agentId),
   });
   const selectedCapabilities = useQuery({
     queryKey: queryKeys.engines.capabilitySelection(
@@ -1329,7 +1297,6 @@ export function AllChatView({
     const nextEngine = engines.find(item => item.id === next);
     if (!nextEngine || !selectedAgentId || !selectedAgent.data) return;
     setSubmissionRuntimeIntent(value => value + 1);
-    const speedKey = chatStateKey("runtime", `agent.${selectedAgentId}.speed`);
     const resolved = resolveRuntimeSelection(
       nextEngine,
       workspacePreferences.data,
@@ -1340,10 +1307,6 @@ export function AllChatView({
     setModel(resolved.model);
     setEffort(resolved.effort);
     setSpeed(resolved.speed ?? "");
-    writeChatState(
-      speedKey,
-      resolved.speed ?? "",
-    );
     updateRuntimeEngine.mutate(
       {
         agentId: selectedAgentId,

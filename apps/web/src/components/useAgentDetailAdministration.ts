@@ -7,7 +7,7 @@ import { useRef } from "react";
 import { runtimeMutationOptions } from "../hooks/useRuntimeControls";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
-import { replaceCachedConversationAgent } from "../conversationAgentCache";
+import { publishUpdatedAgent, refreshAgentRuntime, replaceCachedConversationAgent } from "../conversationAgentCache";
 import { useMutationNotification } from "./MutationNotifications";
 
 interface AgentDetailAdministrationInput {
@@ -111,19 +111,7 @@ export function useAgentDetailAdministration({
     mutationFn: ({ agentId, patch }: { agentId: string; patch: AgentRuntimeSettingsPatch; manual: boolean }) =>
       api.updateAgent(agentId, patch),
     onSuccess: (updated, variables) => {
-      queryClient.setQueriesData<AgentDetailDto>(
-        { queryKey: queryKeys.agents.detailPrefix(updated.id) },
-        current => (current ? { ...current, agent: updated } : current),
-      );
-      queryClient.setQueriesData<AgentDto[]>(
-        { queryKey: queryKeys.agents.all },
-        current =>
-          current?.map(agent => (agent.id === updated.id ? updated : agent)),
-      );
-      queryClient.setQueriesData<unknown>(
-        { queryKey: queryKeys.conversations.detailAll },
-        (current: unknown) => replaceCachedConversationAgent(current, updated),
-      );
+      publishUpdatedAgent(queryClient, updated);
       if (currentAgentId.current === variables.agentId) {
         onRuntimeSettingsNotice(
           variables.manual ? "Saved. These runtime settings apply when the next Run starts." : undefined,
@@ -136,9 +124,7 @@ export function useAgentDetailAdministration({
         onRuntimeSettingsNotice(undefined);
       }
     },
-    onSettled: (_updated, _error, variables) => queryClient.invalidateQueries({
-      queryKey: queryKeys.agents.detailPrefix(variables.agentId),
-    }),
+    onSettled: (_updated, _error, variables) => refreshAgentRuntime(queryClient, variables.agentId),
   });
 
   return {
