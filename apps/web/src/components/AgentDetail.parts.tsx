@@ -47,6 +47,9 @@ function AgentRuntimeControls({
   speed,
   speeds,
   selectedRuntime,
+  scopeLabel,
+  loading,
+  onReset,
   disabled = false,
   onEngineChange,
   onModelChange,
@@ -66,6 +69,9 @@ function AgentRuntimeControls({
     selectEffort(nextEffort: string): void;
     selectSpeed(nextSpeed: string): void;
   };
+  scopeLabel: string;
+  loading?: boolean;
+  onReset(): void;
   disabled?: boolean;
   onEngineChange(nextEngine: string): void;
   onModelChange?(nextModel: string): void;
@@ -94,6 +100,9 @@ function AgentRuntimeControls({
       speed={speed}
       speeds={speeds}
       disabled={disabled}
+      loading={loading}
+      scopeLabel={scopeLabel}
+      onReset={onReset}
       onEngineChange={onEngineChange}
       onModelChange={nextModel => {
         (onModelChange ?? selectedRuntime.selectModel)(nextModel);

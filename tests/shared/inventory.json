@@ -870,6 +870,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native workspaces; admitted in-memory SQLite and inert fixtures; no provider account",
       "origin": "Codex-only provider failure investigation: typed errors, bounded recovery, executing-client catalogs and legacy usage"
+    },
+    {
+      "path": "tests/providers/runtime-slider.test.mjs",
+      "feature": "providers",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; no provider account",
+      "origin": "Runtime slider: exact stop IDs, commit fences, pending state, Escape and atomic inherited reset"
     }
   ],
   "retainedReleasePayload": [

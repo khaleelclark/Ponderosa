@@ -273,7 +273,9 @@ export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): 
     const serviceTiers = array(model.serviceTiers ?? model.additionalSpeedTiers).flatMap(row => {
       const tier = record(row), id = typeof row === "string" ? string(row) : string(tier?.id);
       return id ? [{ id, label: string(tier?.displayName) ?? string(tier?.name) ?? id,
-        ...(string(tier?.description) ? { description: string(tier?.description)! } : {}) }] : [];
+        ...((id === "priority" || id === "fast")
+          ? { description: `${string(tier?.description)?.replace(/[. ]+$/, "") ?? "Faster responses, increased usage"}. Purchased credits use 2× the Standard rate.` }
+          : string(tier?.description) ? { description: string(tier?.description)! } : {}) }] : [];
     });
     catalog.set(id, { id, ...(model.isDefault === true ? { isDefault: true } : {}), label: string(model.displayName) ?? id, kind: "alias", source: "provider-probe",
       ...(string(model.description) ? { description: string(model.description)! } : {}),

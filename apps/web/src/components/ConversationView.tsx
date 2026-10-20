@@ -847,6 +847,54 @@ export function ConversationView({
     .filter(agent => statusByAgentId.get(agent.id) === "running")
     .map(agent => agent.handle);
 
+  const resetOrChangeEngine = (next: string) => {
+    setSubmissionRuntimeIntent(value => value + 1);
+    const nextEngine = engines.find(candidate => candidate.id === next);
+    if (!nextEngine) return;
+    const captured = captureRuntimeMutation();
+    const resolved = resolveRuntimeSelection(
+      nextEngine,
+      preferencesQuery.data,
+      project,
+    );
+    if (next === engine && resolved.model === model && resolved.effort === effort && (resolved.speed ?? "") === (speed ?? "")) return;
+    setEngine(next);
+    setModel(resolved.model);
+    setEffort(resolved.effort);
+    setSpeed(resolved.speed ?? "");
+    rememberOptimisticRuntime(next, resolved);
+    writeChatState(
+      chatStateKey(
+        "runtime",
+        commandTargetAgent
+          ? `agent.${commandTargetAgent.id}.speed`
+          : `conversation.${conversationId}.speed`,
+      ),
+      resolved.speed ?? "",
+    );
+    if (commandTargetAgent) {
+      persistTargetRuntime.mutate(
+        {
+          agentId: commandTargetAgent.id,
+          activeEngine: next as EngineDto["id"],
+          model: resolved.model || null,
+          effort: resolved.effort || null,
+          speed: resolved.speed || null,
+        },
+        { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
+      );
+    } else {
+      persistDefaults.mutate(
+        {
+          defaultEngine: next as EngineDto["id"],
+          defaultModel: resolved.model || null,
+          defaultEffort: resolved.effort || null,
+          defaultSpeed: resolved.speed || null,
+        },
+        { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
+      );
+    }
+  };
   const runtimeControls =
     activeView === "main" ? (
       <ComposerRuntimeSelector
@@ -867,54 +915,10 @@ export function ConversationView({
         efforts={efforts}
         speed={selectedRuntime.speed}
         speeds={speeds}
-        scopeLabel={commandTargetAgent ? `${commandTargetAgent.title} next Run` : "Chat default"}
+        scopeLabel={commandTargetAgent ? `${commandTargetAgent.title} Next Run` : undefined}
         disabled={persistTargetRuntime.isPending || persistDefaults.isPending}
-        onEngineChange={next => {
-          setSubmissionRuntimeIntent(value => value + 1);
-          const nextEngine = engines.find(candidate => candidate.id === next);
-          const captured = captureRuntimeMutation();
-          const resolved = resolveRuntimeSelection(
-            nextEngine,
-            preferencesQuery.data,
-            project,
-          );
-          setEngine(next);
-          setModel(resolved.model);
-          setEffort(resolved.effort);
-          setSpeed(resolved.speed ?? "");
-          rememberOptimisticRuntime(next, resolved);
-          writeChatState(
-            chatStateKey(
-              "runtime",
-              commandTargetAgent
-                ? `agent.${commandTargetAgent.id}.speed`
-                : `conversation.${conversationId}.speed`,
-            ),
-            resolved.speed ?? "",
-          );
-          if (commandTargetAgent) {
-            persistTargetRuntime.mutate(
-              {
-                agentId: commandTargetAgent.id,
-                activeEngine: next as EngineDto["id"],
-                model: resolved.model || null,
-                effort: resolved.effort || null,
-                speed: resolved.speed || null,
-              },
-              { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
-            );
-          } else {
-            persistDefaults.mutate(
-              {
-                defaultEngine: next as EngineDto["id"],
-                defaultModel: resolved.model || null,
-                defaultEffort: resolved.effort || null,
-                defaultSpeed: resolved.speed || null,
-              },
-              { onError: () => rollbackRuntimeMutation(captured, resolved.speed ?? "") },
-            );
-          }
-        }}
+        onEngineChange={resetOrChangeEngine}
+        onReset={() => { if (engine) resetOrChangeEngine(engine); }}
         onModelChange={next => {
           setSubmissionRuntimeIntent(value => value + 1);
           const captured = captureRuntimeMutation();
