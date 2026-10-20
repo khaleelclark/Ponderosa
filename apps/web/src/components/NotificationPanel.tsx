@@ -503,7 +503,6 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       <Tab value="updates" label={`Updates (${unreadUpdateCount})`} sx={{ minHeight: 42 }} />
     </Tabs>
     <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5, overflowX: "hidden", minWidth: 0 }}>
-      {filter === "attention" ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>Dismiss removes only the notice. It does not retry, cancel, or delete work.</Typography> : null}
       {error ? <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert> : null}
       {loadFailed ? <Alert severity="warning" sx={{ mb: 1 }} action={onRetry ? <Button color="inherit" onClick={onRetry}>Retry</Button> : undefined}>{firstPage ? "Notifications could not refresh. Showing the last loaded notifications." : "Notifications could not be loaded. Try again."}</Alert> : !firstPage && loading ? <Typography role="status">Loading notifications…</Typography> : null}
       <Stack spacing={1}>
@@ -576,7 +575,6 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       <Button disabled={clearing || totalForFilter === 0} onClick={() => void clearAll()}>
         {clearing ? "Clearing…" : filter === "attention" ? "Clear alerts" : "Clear updates"}
       </Button>
-      {filter === "attention" ? <Typography variant="caption" color="text.secondary">Clearing alerts keeps unanswered questions.</Typography> : null}
     </DialogActions>
   </Dialog>
   </>;

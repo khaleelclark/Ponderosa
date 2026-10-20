@@ -649,7 +649,7 @@ export default function App({
           }
           setSidebarPresentation(current => ({ ...current, collapsed: false }));
           window.requestAnimationFrame(() => {
-            document.querySelector<HTMLElement>('[aria-label="Collapse workspace navigation"]')?.focus();
+            document.querySelector<HTMLElement>('[aria-label="Collapse sidebar"]')?.focus();
           });
         }}
       >

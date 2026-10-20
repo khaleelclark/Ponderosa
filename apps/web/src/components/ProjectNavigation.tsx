@@ -2,12 +2,10 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import CloseIcon from "@mui/icons-material/Close";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
+import MenuIcon from "@mui/icons-material/Menu";
 import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
 import SearchIcon from "@mui/icons-material/Search";
-import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
-import ViewSidebarOutlinedIcon from "@mui/icons-material/ViewSidebarOutlined";
 import {
   Badge,
   Box,
@@ -67,7 +65,6 @@ export function ProjectRail({
   onCollapse?(): void;
   onClose?(): void;
 }): JSX.Element {
-  const [operatorAnchor, setOperatorAnchor] = useState<HTMLElement>();
   const [sectionMenu, setSectionMenu] = useState<{
     anchor: HTMLElement;
     section: ProjectSidebarSection;
@@ -98,19 +95,6 @@ export function ProjectRail({
     window.addEventListener("contextmenu", switchSectionMenu, true);
     return () => window.removeEventListener("contextmenu", switchSectionMenu, true);
   }, [sectionMenu]);
-  const closeOperatorMenu = () => {
-    const trigger = operatorAnchor;
-    setOperatorAnchor(undefined);
-    window.requestAnimationFrame(() => trigger?.isConnected && trigger.focus());
-  };
-  const runOperatorAction = (action: () => void) => {
-    const trigger = operatorAnchor;
-    setOperatorAnchor(undefined);
-    window.requestAnimationFrame(() => {
-      if (trigger?.isConnected) trigger.focus();
-      action();
-    });
-  };
   const notificationBadge = attentionNotifications ||
     (unreadNotificationUpdates ? unreadNotificationUpdates : undefined);
   return (
@@ -173,18 +157,6 @@ export function ProjectRail({
           </Tooltip>
         ) : null}
         {drawer ? <Box aria-hidden sx={{ flex: 1 }} /> : null}
-        {!drawer && onCollapse ? (
-          <Tooltip title="Collapse sidebar">
-            <IconButton aria-label="Collapse workspace navigation" onClick={onCollapse} sx={{ width: 36, height: 36, flex: "0 0 36px" }}>
-              <ViewSidebarOutlinedIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
-        ) : null}
-        <Tooltip title="Search">
-          <IconButton aria-label="Search" onClick={onOpenSearch} sx={{ width: 36, height: 36, flex: "0 0 36px" }}>
-            <SearchIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
         <Tooltip title="Notifications">
           <IconButton
             aria-label={notificationBadge ? `Notifications, ${notificationBadge} unread` : "Notifications"}
@@ -203,6 +175,18 @@ export function ProjectRail({
             </Badge>
           </IconButton>
         </Tooltip>
+        <Tooltip title="Search">
+          <IconButton aria-label="Search" onClick={onOpenSearch} sx={{ width: 36, height: 36, flex: "0 0 36px" }}>
+            <SearchIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        {!drawer && onCollapse ? (
+          <Tooltip title="Collapse sidebar">
+            <IconButton aria-label="Collapse sidebar" onClick={onCollapse} sx={{ width: 36, height: 36, flex: "0 0 36px" }}>
+              <MenuIcon />
+            </IconButton>
+          </Tooltip>
+        ) : null}
         {drawer && onClose ? (
           <Tooltip title="Close navigation">
             <IconButton aria-label="Close workspace navigation" onClick={onClose} sx={{ width: 36, height: 36, flex: "0 0 36px" }}>
@@ -343,10 +327,8 @@ export function ProjectRail({
         }}
       >
         <ButtonBase
-          aria-label="Open operator menu"
-          aria-haspopup="menu"
-          aria-expanded={Boolean(operatorAnchor)}
-          onClick={event => setOperatorAnchor(event.currentTarget)}
+          aria-label="Open settings"
+          onClick={onOpenSettings}
           sx={{
             width: "100%",
             minWidth: 0,
@@ -370,21 +352,7 @@ export function ProjectRail({
               </Typography>
             ) : null}
           </Box>
-          <MoreVertIcon fontSize="small" sx={{ color: "text.secondary", flex: "0 0 auto" }} />
         </ButtonBase>
-        <Menu
-          anchorEl={operatorAnchor}
-          open={Boolean(operatorAnchor)}
-          onClose={closeOperatorMenu}
-          anchorOrigin={{ vertical: "top", horizontal: "right" }}
-          transformOrigin={{ vertical: "bottom", horizontal: "right" }}
-          slotProps={{ paper: { sx: { minWidth: 230, mb: 0.75 } } }}
-        >
-          <MenuItem onClick={() => runOperatorAction(onOpenSettings)}>
-            <ListItemIcon><SettingsOutlinedIcon /></ListItemIcon>
-            <ListItemText>Settings</ListItemText>
-          </MenuItem>
-        </Menu>
       </Box>
     </>
   );
