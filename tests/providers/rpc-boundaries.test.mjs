@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -98,7 +99,7 @@ for (const flood of ['none', 'large-valid', 'before-initialize', 'after-initiali
     assert.ok(handles.every(h => !h.isAlive()));
   } finally {
     await Promise.all(handles.map(h => h.close()));
-    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -116,7 +117,7 @@ test('ordinary consumed runtime notifications have no discovery lifetime cap', {
 
 for (const trailing of [false, true]) test(`throwing notification observers fail the transport: trailing=${trailing}`, { timeout: 5_000 }, async () => {
   const rpc = new JsonRpcProcess({ bin: process.execPath,
-    args: ['-e', `process.stdout.${trailing ? 'end' : 'write'}(${JSON.stringify(JSON.stringify({ method: 'observer' }) + (trailing ? '' : '\n'))});setInterval(()=>{},1000)`],
+    args: ['-e', `process.stdout.write(${JSON.stringify(JSON.stringify({ method: 'observer' }) + (trailing ? '' : '\n'))}${trailing ? ",()=>require('node:fs').closeSync(1)" : ''});setInterval(()=>{},1000)`],
     cwd: process.cwd(), signal: new AbortController().signal, killGraceMs: 50,
     onRuntimeSpawned() {}, onRuntimeRootExit() {}, onNotification() { throw new Error('Owned observer failure'); } });
   try {

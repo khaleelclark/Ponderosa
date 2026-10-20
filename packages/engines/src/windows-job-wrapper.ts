@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createWriteStream } from "node:fs";
 import { containedWindowsInvocation } from "./windows-command.js";
 
 interface StartMessage {
@@ -45,8 +46,8 @@ process.once("message", (message: unknown) => {
     (child.stdio[4] as NodeJS.ReadableStream).pipe(process.stdout);
   } else {
     process.stdin.pipe(child.stdin!);
-    child.stdout!.pipe(process.stdout);
-    child.stdout!.once("end", () => process.stdout.end());
+    // A normal owned stream forwards EOF; Node deliberately never closes stdout.
+    child.stdout!.pipe(createWriteStream("", { fd: 1 }));
   }
   child.once("error", (error) => {
     process.stderr.write(`Ponderosa contained runtime spawn failed: ${error.message}\n`);
