@@ -16,7 +16,7 @@ const { AgentStore } = require("@ponderosa/agents");
 const Database = require("better-sqlite3");
 
 function fixture() {
-  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ponderosa-deletion-restart-")));
+  const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "ponderosa-deletion-restart-")));
   const dataDir = path.join(root, "data");
   const adapter = {
     id: "codex", displayName: "Controlled deletion fixture", trustedSystemPromptChannel: "developer",
@@ -52,8 +52,8 @@ for(const mode of ["clean shutdown","projection recovery","root relocation"]) {
     try {
       await f.open();
       const removed=await createChat(f,"Deleted owner"), survivor=await createChat(f,"Surviving Chat");
-      const workingDirectory=realpathSync(removed.workingDirectory);
-      assert.equal(workingDirectory.startsWith(f.root+path.sep),true);
+      const workingDirectory=realpathSync.native(removed.workingDirectory);
+      assert.equal(workingDirectory.startsWith(f.root+path.sep),true, `${workingDirectory} must be within ${f.root}`);
       let workingFile=path.join(workingDirectory,"preserved-work.txt");
       writeFileSync(workingFile,"User working output remains");
       let output=path.join(f.dataDir,"projects",removed.projectId,"preserved-output.txt");
@@ -77,7 +77,7 @@ for(const mode of ["clean shutdown","projection recovery","root relocation"]) {
         assert.equal((await request(f.app,"GET",`/api/conversations/${removed.id}`)).status,404);
         const live=await request(f.app,"GET",`/api/conversations/${survivor.id}`);
         assert.equal(live.status,200);assert.equal(live.body.conversation.title,"Surviving Chat");
-        assert.equal(live.body.conversation.workingDirectory.startsWith(f.root+path.sep),true);
+        assert.equal(realpathSync.native(live.body.conversation.workingDirectory).startsWith(f.root+path.sep),true);
         assert.equal(existsSync(chatFile(f,removed)),false);
         assert.equal(digest(projectFile(f,removed)),retainedProjectHash);
         assert.equal(readFileSync(workingFile,"utf8"),"User working output remains");
