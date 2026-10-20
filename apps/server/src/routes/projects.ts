@@ -895,6 +895,7 @@ export function registerProjectRoutes(
       ? undefined
       : { ...creationIdentity, hostPath };
     let releaseCreationClaim: (() => void) | undefined;
+    request.raw.socket.setTimeout?.(app.server.requestTimeout || 120_000);
     try {
       releaseCreationClaim = await claimProjectCreation({ ...creationIdentity, hostPath });
     } catch (error) {

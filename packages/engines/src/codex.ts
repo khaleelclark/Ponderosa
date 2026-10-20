@@ -100,7 +100,7 @@ export class CodexAdapter implements Adapter {
 
   async discoverModelCatalog(cwd: string, context: EngineModelDiscoveryOptions): Promise<EngineModelCatalog> {
     const capabilities = await discoverCodexAppServerCapabilities({ bin: this.bin, cwd,
-      sandboxMode: this.sandboxMode, killGraceMs: this.killGraceMs, configuredMcps: [],
+      sandboxMode: this.sandboxMode, killGraceMs: this.killGraceMs, configuredMcps: [], modelCatalogOnly: true,
       ...context });
     if (!capabilities.modelCatalog) throw new Error("Codex model inventory is unavailable");
     return { ...capabilities.modelCatalog, configurationKey: this.modelCatalogConfigurationKey() };

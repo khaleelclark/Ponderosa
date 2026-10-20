@@ -259,6 +259,7 @@ export async function discoverCodexAppServerCapabilities(opts: {
   signal: AbortSignal;
   onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
   timeoutMs?: number;
+  modelCatalogOnly?: boolean;
 }): Promise<EngineCapabilities> {
   if (opts.signal.aborted) throw new Error("codex app-server capability discovery aborted");
   const controller = new AbortController();
@@ -298,6 +299,11 @@ export async function discoverCodexAppServerCapabilities(opts: {
         selectedModel: opts.model,
         configuredMcps: opts.configuredMcps,
       });
+    }
+    if (opts.modelCatalogOnly) {
+      const models = await optionalPaginatedRequest(rpc, "model/list", { includeHidden: false });
+      rpc.throwIfFailed();
+      return normalizeCodexProviderDiscovery({ cwd: opts.cwd, cliVersion, models });
     }
     const [skills, plugins, models, modelProviderCapabilities, mcpStatuses] = await Promise.all([
       optionalRequest(rpc, "skills/list", { cwds: [opts.cwd], forceReload: true }),

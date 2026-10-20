@@ -13,7 +13,7 @@ import type {
   ProviderUsageStateDto,
   WorkspaceNotificationDto,
 } from "@ponderosa/core";
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { EngineAuthStatusCache } from "../engine-auth-cache.js";
 import type { EngineAvailabilityStore } from "../engine-availability-store.js";
 import {
@@ -111,8 +111,13 @@ export function registerEngineRoutes(
   // A timed-out HTTP response does not release this diagnostic slot. The
   // provider process and cleanup must actually settle before another recheck.
   const rechecks = new Map<string, Promise<EngineDto>>();
+  // CLI discovery/probes can outlast idle sockets; keep the existing whole-
+  // request budget without extending provider or handler deadlines.
+  const allowProviderWait = (request: FastifyRequest) =>
+    request.raw.socket.setTimeout?.(app.server.requestTimeout || 120_000);
 
-  app.get("/api/engines", async (): Promise<EngineDto[]> => {
+  app.get("/api/engines", async (request): Promise<EngineDto[]> => {
+    allowProviderWait(request);
     return Promise.all(Array.from(engines.values()).map(registration => engineDto(registration)));
   });
 
@@ -169,6 +174,7 @@ export function registerEngineRoutes(
       });
       publishWorkspaceSince(cursor);
       if (request.body.enabled) notifyScheduler();
+      allowProviderWait(request);
       return engineDto(registration);
     },
   );
@@ -178,10 +184,7 @@ export function registerEngineRoutes(
     async (request, reply) => {
       const registration = engines.get(request.params.id);
       if (!registration) return reply.code(404).send({ error: "unknown engine" });
-      // The bounded probe can outlast ordinary socket inactivity. Use the
-      // existing whole-request budget; Node restores keepalive/next-request
-      // timeouts after this response. Provider and handler deadlines stay put.
-      request.raw.socket.setTimeout?.(app.server.requestTimeout || 120_000);
+      allowProviderWait(request);
       const current = rechecks.get(request.params.id);
       if (current) return current;
       const operationStartedAt = new Date().toISOString();
@@ -261,6 +264,7 @@ export function registerEngineRoutes(
     if (!registration.adapter.discoverModelCatalog) {
       return reply.code(404).send({ error: "this engine does not provide model discovery" });
     }
+    allowProviderWait(request);
     return discoverModelCatalog(
       project,
       registration.adapter,
@@ -290,6 +294,7 @@ export function registerEngineRoutes(
           error: "modelId must be a non-empty string of at most 200 characters",
         });
       }
+      allowProviderWait(request);
       return validateModel(project, registration.adapter, modelId);
     },
   );
@@ -314,6 +319,7 @@ export function registerEngineRoutes(
       if (request.query.engineId && !engines.has(request.query.engineId)) {
         return reply.code(400).send({ error: "unknown engine" });
       }
+      allowProviderWait(request);
       const forceRefresh = request.query.refresh === "true" || request.query.refresh === "1";
       const scopedEngineId = request.query.engineId
         ?? scopedAgent?.activeEngine;

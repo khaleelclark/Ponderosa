@@ -291,3 +291,54 @@ test('a reused Codex session can select Fast then Standard without changing ordi
   } finally { await session.close(); }
   assert.ok(handles.every(handle => !handle.isAlive()));
 });
+
+
+for (const first of ['engines', 'chats']) test(`bounded provider operations survive socket inactivity without extending operation deadlines: cold ${first}`, { timeout: 15000 }, t => withFixture(t, async f => {
+  const base = await f.listen();
+  const request = async (url, body) => {
+    const response = await fetch(base + url, body ? { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': crypto.randomUUID() }, body: JSON.stringify(body) } : {});
+    assert.ok(response.ok, `HTTP ${response.status}`); return response.json();
+  };
+  if (first === 'engines') assert.equal((await request('/api/engines'))[0].models[0].id, 'live');
+  const chat = await request('/api/chats', { label: 'Bounded provider wait', defaultEngine: 'codex' });
+  const models = await request(`/api/projects/${chat.projectId}/engine-models/codex?refresh=1`);
+  assert.equal(models.models[0].id, 'live');
+  assert.equal((await request(`/api/projects/${chat.projectId}/engine-models/codex/validate`, { modelId: 'live' })).valid, true);
+}, { socketIdleTimeoutMs: 50, modelCatalog: async () => { await new Promise(resolve => setTimeout(resolve, 150)); return catalog('live'); },
+  modelValidator: async () => { await new Promise(resolve => setTimeout(resolve, 150)); return { valid: true, model: catalog('live').models[0] }; } }));
+
+
+test('model inventory reads only initialize and paginated models, without unrelated tool/skill discovery', { timeout: 15000 }, async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-model-only-')); const handles = [];
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, 'app-server'), `
+    const fs=require('node:fs');const methods=[];
+    require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+      const m=JSON.parse(line);if(m.id===undefined)return;methods.push(m.method);fs.writeFileSync('methods.json',JSON.stringify(methods));
+      const result=m.method==='initialize'?{userAgent:'ponderosa/0.143.0 (Ubuntu; x86_64)'}:{data:[{id:'live',isDefault:true}],nextCursor:null};
+      console.log(JSON.stringify({id:m.id,result}));
+    });
+  `);
+  try {
+    const result = await new CodexAdapter({ bin: process.execPath, killGraceMs: 50 }).discoverModelCatalog(root, {
+      signal: new AbortController().signal, onRuntimeSpawned: handle => handles.push(handle) });
+    assert.equal(result.cliVersion, '0.143.0'); assert.equal(result.models[0].id, 'live');
+    assert.deepEqual(JSON.parse(await readFile(path.join(root, 'methods.json'), 'utf8')), ['initialize', 'model/list']);
+    assert.ok(handles.every(handle => !handle.isAlive()));
+  } finally { await Promise.all(handles.map(handle => handle.close())); }
+});
+
+
+test('concurrent same-key cold Chat requests share one inventory discovery and survive the claim wait', { timeout: 15000 }, t => {
+  let calls = 0;
+  return withFixture(t, async f => {
+    const base = await f.listen(), identity = crypto.randomUUID();
+    const create = async () => {
+      const response = await fetch(base + '/api/chats', { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': identity },
+        body: JSON.stringify({ label: 'Concurrent creation', defaultEngine: 'codex' }) });
+      assert.ok(response.ok, `HTTP ${response.status}`); return response.json();
+    };
+    const [first, replay] = await Promise.all([create(), create()]);
+    assert.equal(first.id, replay.id); assert.equal(calls, 1);
+  }, { socketIdleTimeoutMs: 50, modelCatalog: async () => { calls++; await new Promise(resolve => setTimeout(resolve, 150)); return catalog('live'); } });
+});
