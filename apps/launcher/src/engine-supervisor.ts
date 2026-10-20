@@ -97,7 +97,17 @@ async function releasePrepared(paths: LauncherPaths, handle: PreparedSupervisor)
   const issued = prepared.get(handle);
   if (!issued) throw new Error("supervisor requires a locally issued lifecycle");
   // A competing live owner refuses. Unknown bytes are retained for inspection.
-  await withLocalLauncherAuthority(paths, held => issued.release(held.engineSupervisorPath), issued.identity);
+  const deadline = Date.now() + 30_000;
+  while (true) {
+    try {
+      await withLocalLauncherAuthority(paths, held => issued.release(held.engineSupervisorPath), issued.identity);
+      break;
+    } catch (error) {
+      // An external launcher may still hold its short post-shutdown cleanup lease.
+      if ((error as NodeJS.ErrnoException).code !== "DATA_DIRECTORY_OWNED" || Date.now() >= deadline) throw error;
+      await delay(100);
+    }
+  }
   prepared.delete(handle);
 }
 
