@@ -20,7 +20,7 @@ function probe(fault, close = async () => {}) {
   const hit = phase => { if (fault === phase) throw failure; };
   const handle = { fd: 123, async close() { calls.close++; await close(); }, async sync() { hit('sync'); } };
   const info = { isFile: () => true, isDirectory: () => true, isSymbolicLink: () => false, dev: 1, ino: 2, size: 4, mtimeMs: 0 };
-  const context = { Buffer, Date, path, createHash, Error, Set, Map, AssetError: class extends Error { constructor(status, message) { super(message); this.statusCode = status; } },
+  const context = { Buffer, Date, path: path.posix, createHash, Error, Set, Map, AssetError: class extends Error { constructor(status, message) { super(message); this.statusCode = status; } },
     fsConstants: { O_RDONLY: 0, O_DIRECTORY: 0, O_NOFOLLOW: 0 }, randomUUID: () => id, STAGED_TTL_MS: 1000, ID: /^[a-f0-9-]{36}$/u,
     lstat: async () => info, mkdir: async () => {},
     realpath: async name => { if (name.startsWith('/proc/')) { hit('realpath'); return fault === 'mismatch' ? '/replaced' : '/owned/projects/project/agents/agent/attachments'; } return name; },

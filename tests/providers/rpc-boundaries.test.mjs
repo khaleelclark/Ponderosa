@@ -98,7 +98,7 @@ for (const flood of ['none', 'large-valid', 'before-initialize', 'after-initiali
     assert.ok(handles.every(h => !h.isAlive()));
   } finally {
     await Promise.all(handles.map(h => h.close()));
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 

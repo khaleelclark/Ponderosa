@@ -45,6 +45,6 @@ jobs:
         run: >-
           node --import ./tests/shared/workspace-resolution.mjs --test --test-reporter=tap
           --test-concurrency=1 --test-timeout=60000 --test-force-exit
-          --test-name-pattern='template scope|exhausted required-reply|RPC inventory|reused Codex session|discovery bounds|throwing notification|Q07 opened|Q07 staging|Q07 verified'
+          --test-name-pattern='template scope|exhausted required-reply|RPC inventory|reused Codex session|discovery bounds|throwing notification|ordinary consumed|aggregate output|malformed records|Q07'
           tests/chats/workflows.test.mjs tests/files-results/asset-resource-cleanup.test.mjs
-          tests/providers/capabilities.test.mjs tests/providers/rpc-boundaries.test.mjs
+          tests/providers/provider-recovery.test.mjs tests/providers/rpc-boundaries.test.mjs

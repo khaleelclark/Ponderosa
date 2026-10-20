@@ -126,7 +126,7 @@ test('checks 18, 21: attachment references survive close/reopen; removed staged 
   assert.equal((await f.api('POST', `/api/agents/${agent.id}/messages`, { text: 'Cannot read removed file', attachmentIds: [removed.id], idempotencyKey: randomUUID() })).status, 404);
 }));
 
-test('checks 78, 80, 81, 82: template scope, duplicate import replay and malformed package refusal', options, t => withFixture(t, async f => {
+test('checks 78, 80, 81, 82: template scope, duplicate import replay and malformed package refusal', { timeout: process.platform === 'win32' ? 90000 : options.timeout }, t => withFixture(t, async f => {
   const source = await f.createChat('Export source'), target = await f.createChat('Import destination');
   const root = await f.createAgent(source, 'Root'); await f.createAgent(source, 'Child', root.id);
   const pkg = f.ok(await f.api('GET', `/api/agents/${root.id}/export?mode=template&organization=true`));
@@ -211,13 +211,13 @@ test('Q01 accepted pending work and its durable draft identity survive restart w
   assert.equal(retired.text, 'Newer unsent draft'); assert.ok(!retired.pendingSubmissions?.some(item => item.idempotencyKey === key));
 }));
 
-test('Q01 exhausted required-reply recovery stops automatically and same-key explicit retry has one lineage', options, t => withFixture(t, async f => {
+test('Q01 exhausted required-reply recovery stops automatically and same-key explicit retry has one lineage', { timeout: process.platform === 'win32' ? 90000 : options.timeout }, t => withFixture(t, async f => {
   const chat = await f.createChat('Reply exhaustion'), agent = await f.createIdleAgent(chat, 'Silent reader'), marker = `Unanswered ${randomUUID()}`;
   f.plans.set(agent.id, Array.from({ length: 12 }, () => ({ run: async () => {} })));
   await f.send(agent.id, marker);
   const message = (await f.detail(agent.id)).messages.find(item => item.role === 'user' && item.text.includes(marker)); assert.ok(message?.communicationEventId);
   const receipts = async () => f.ok(await f.api('POST', `/api/conversations/${chat.id}/message-delivery-receipts`, { communicationEventIds: [message.communicationEventId], activationIds: [] })).items.flatMap(item => item.deliveryReceipts);
-  const exhausted = await until(async () => (await receipts()).find(item => item.state === 'retry_exhausted'), 'bounded reply recovery exhaustion');
+  const exhausted = await until(async () => (await receipts()).find(item => item.state === 'retry_exhausted'), 'bounded reply recovery exhaustion', process.platform === 'win32' ? 30000 : 10000);
   assert.equal(exhausted.providerAcknowledged, true); assert.equal(exhausted.retryMayDuplicate, true); assert.equal(exhausted.canRetry, true);
   const count = f.turns.filter(turn => turn.agentId === agent.id).length; assert.equal(count, 6);
   await new Promise(resolve => setTimeout(resolve, 100)); assert.equal(f.turns.filter(turn => turn.agentId === agent.id).length, count);

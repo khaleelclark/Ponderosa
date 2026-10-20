@@ -35,7 +35,7 @@ process.once("message", (message: unknown) => {
     env: invocation.env,
     stdio: message.browserPipe
       ? ["ignore", "ignore", "inherit", "pipe", "pipe"]
-      : ["pipe", "inherit", "inherit"],
+      : ["pipe", "pipe", "inherit"],
     windowsHide: true,
   });
   if (message.browserPipe) {
@@ -45,6 +45,7 @@ process.once("message", (message: unknown) => {
     (child.stdio[4] as NodeJS.ReadableStream).pipe(process.stdout);
   } else {
     process.stdin.pipe(child.stdin!);
+    child.stdout!.pipe(process.stdout);
   }
   child.once("error", (error) => {
     process.stderr.write(`Ponderosa contained runtime spawn failed: ${error.message}\n`);
