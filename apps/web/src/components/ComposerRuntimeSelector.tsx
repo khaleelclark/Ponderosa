@@ -192,7 +192,7 @@ export function ComposerRuntimeSelector({
     const dismiss = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault(); event.stopPropagation();
-      if (section) { setSection(null); if (!preserveEditorFocus.current) modelButton.current?.focus(); }
+      if (section) { setSection(null); if (!preserveEditorFocus.current) (section === "engine" ? engineButton : modelButton).current?.focus(); }
       else close();
     };
     const document = anchor.ownerDocument;
@@ -208,6 +208,7 @@ export function ComposerRuntimeSelector({
   }, [disabled]);
   const canSwitchEngine = !engineLocked && Boolean(onEngineChange) && engines.length > 1;
   const modelButton = useRef<HTMLButtonElement>(null);
+  const engineButton = useRef<HTMLButtonElement>(null);
   const activeOptions = section === "engine" ? engines : section === "speed" ? speeds : models;
   const activeValue = section === "engine" ? engine : section === "speed" ? speed : model;
   const fast = Boolean(selectedSpeed && selectedSpeed.id !== "standard");
@@ -223,14 +224,24 @@ export function ComposerRuntimeSelector({
   };
   const choose = (id: string) => {
     if (id !== activeValue) {
-      if (!preserveEditorFocus.current) resumeFocus.current = modelButton.current;
+      if (!preserveEditorFocus.current) resumeFocus.current = (section === "engine" ? engineButton : modelButton).current;
       if (section === "engine") onEngineChange?.(id);
       else if (section === "speed") onSpeedChange?.(id);
       else onModelChange(id);
     }
     setPreview(null); setSection(null);
-    if (!preserveEditorFocus.current) modelButton.current?.focus();
+    if (!preserveEditorFocus.current) (section === "engine" ? engineButton : modelButton).current?.focus();
   };
+
+  const optionList = section ? <MenuList autoFocusItem={!preserveEditorFocus.current} disablePadding aria-label={`${section} options`} sx={{ maxHeight: 240, overflowY: "auto", bgcolor: "action.hover", borderRadius: 1.5 }}>
+            {activeOptions.flatMap((option, optionIndex) => [
+              ...(option.group && option.group !== activeOptions[optionIndex - 1]?.group ? [<ListSubheader key={option.group} disableSticky sx={{ bgcolor: "transparent", lineHeight: "30px" }}>{option.group}</ListSubheader>] : []),
+              <MenuItem key={option.id} selected={option.id === activeValue} disabled={disabled || option.disabled} onClick={() => choose(option.id)} sx={{ minHeight: 44, whiteSpace: "normal", gap: 1 }}>
+                <Box sx={{ flex: 1, minWidth: 0 }}><Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{option.label}</Typography>{option.detail && (section !== "model" || option.disabled) ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.35, overflowWrap: "anywhere" }}>{option.detail}</Typography> : null}</Box>
+                {option.id === activeValue ? <CheckIcon fontSize="small" /> : null}
+              </MenuItem>,
+            ])}
+          </MenuList> : null;
 
   return <>
     <ButtonBase
@@ -318,7 +329,7 @@ export function ComposerRuntimeSelector({
               <Box component="span" sx={{ whiteSpace: "nowrap", flexShrink: 0 }}> Next Run</Box>
             </Stack>
           </Tooltip> : null}
-          <ButtonBase
+          <ButtonBase ref={engineButton}
             disabled={disabled || !canSwitchEngine || loading}
             aria-label={`Engine: ${selectedEngine?.label ?? engine}`}
             aria-expanded={section === "engine"}
@@ -328,6 +339,7 @@ export function ComposerRuntimeSelector({
             <Typography variant="body2">Engine</Typography>
             <Stack direction="row" spacing={0.5} alignItems="center"><Typography variant="body2">{selectedEngine?.label ?? engine}</Typography>{canSwitchEngine ? <KeyboardArrowDownIcon fontSize="small" /> : null}</Stack>
           </ButtonBase>
+          {section === "engine" ? optionList : null}
           <Box sx={{ mx: 2, height: 48, position: "relative" }}>
             <Box aria-hidden sx={{ position: "absolute", inset: "12px 0", borderRadius: 20, bgcolor: "action.disabledBackground", boxShadow: presentation.ultra ? "0 0 18px #22e58a22" : "none" }}>
               {index >= 0 ? <Box className="runtime-effort-fill" sx={{ position: "relative", height: "100%", width: `calc(24px + (100% - 24px) * ${presentation.ratio})`, borderRadius: 20, overflow: "hidden", background: fast ? "linear-gradient(90deg, #2c8060, #0b4835, #02180f)" : presentation.gradient,
@@ -377,15 +389,7 @@ export function ComposerRuntimeSelector({
             </ButtonBase>
             <Tooltip title="Reset to default" enterTouchDelay={0}><IconButton aria-label="Reset to default" disabled={disabled || loading || !models.length} onClick={() => { rememberPickerFocus(); setPreview(null); setSection(null); onReset(); }} sx={{ gridColumn: 3, gridRow: 1, width: 44, height: 44 }}><RestartAltIcon fontSize="small" /></IconButton></Tooltip>
           </Box>
-          {section ? <MenuList autoFocusItem={!preserveEditorFocus.current} disablePadding aria-label={`${section} options`} sx={{ maxHeight: 240, overflowY: "auto", bgcolor: "action.hover", borderRadius: 1.5 }}>
-            {activeOptions.flatMap((option, optionIndex) => [
-              ...(option.group && option.group !== activeOptions[optionIndex - 1]?.group ? [<ListSubheader key={option.group} disableSticky sx={{ bgcolor: "transparent", lineHeight: "30px" }}>{option.group}</ListSubheader>] : []),
-              <MenuItem key={option.id} selected={option.id === activeValue} disabled={disabled || option.disabled} onClick={() => choose(option.id)} sx={{ minHeight: 44, whiteSpace: "normal", gap: 1 }}>
-                <Box sx={{ flex: 1, minWidth: 0 }}><Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{option.label}</Typography>{option.detail && (section !== "model" || option.disabled) ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.35, overflowWrap: "anywhere" }}>{option.detail}</Typography> : null}</Box>
-                {option.id === activeValue ? <CheckIcon fontSize="small" /> : null}
-              </MenuItem>,
-            ])}
-          </MenuList> : null}
+          {section !== "engine" ? optionList : null}
         </Paper>
       </ClickAwayListener>
     </Popper>
