@@ -358,7 +358,7 @@ export function ComposerRuntimeSelector({
             <Slider
               aria-label="Reasoning effort"
               getAriaValueText={value => effortLabel(efforts[value]) ?? "Unavailable"}
-              value={Math.max(0, index)} min={0} max={Math.max(1, efforts.length - 1)} step={null}
+              value={Math.max(0, index)} min={0} max={Math.max(1, efforts.length - 1)} step={1}
               marks={efforts.map((_option, value) => ({ value }))}
               disabled={disabled || loading || efforts.length < 2 || index < 0}
               onPointerDownCapture={() => { gestureRevision.current = interactionRevision; }}

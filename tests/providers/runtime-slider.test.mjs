@@ -47,6 +47,7 @@ test('slider maps advertised stops and accessible labels to exact IDs; preview d
   const p = picker(); t.after(p.close);
   let slider = p.find('Reasoning effort');
   assert.deepEqual(Array.from(slider.props.marks, stop => stop.value), [0, 1, 2]);
+  assert.equal(slider.props.step, 1, 'contiguous indices use integer stepping so MUI Home/End reach endpoints');
   assert.equal(slider.props.getAriaValueText(2), 'Ultra');
   slider.props.onChange({}, 2); p.render(); assert.deepEqual(p.callbacks, []);
   p.find('Reasoning effort').props.onChangeCommitted({}, 2);
