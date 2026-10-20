@@ -252,6 +252,7 @@ function queueHarness() {
   const keys = moduleExports('queryKeys.ts', { './agentHistoryPagination.js': { AGENT_DETAIL_PAGE_SIZE: 50 } }).queryKeys;
   const controls = moduleExports('hooks/useRuntimeControls.ts', { '@tanstack/react-query': { useIsMutating: filter => client.isMutating(filter) }, '../queryKeys': { queryKeys: keys }, '../conversationEngine': {} });
   const resolver = moduleExports('conversationEngine.ts', {});
+  const cache = moduleExports('conversationAgentCache.ts', { './queryKeys.js': { queryKeys: keys } });
   const calls = [], gates = [], promises = [], refs = [], observers = []; let index = 0, refIndex = 0;
   const canonical = new Map();
   const api = Object.fromEntries(['Agent', 'Conversation'].map(kind => ['update' + kind, async (id, patch) => {
@@ -265,22 +266,22 @@ function queueHarness() {
   const admin = moduleExports('components/useAgentDetailAdministration.ts', {
     react: { useRef(value) { return refs[refIndex++] ??= { current: value }; } },
     '@tanstack/react-query': { useMutation, useQueryClient: () => client }, '../api': { api }, '../queryKeys': { queryKeys: keys },
-    '../hooks/useRuntimeControls': controls, '../conversationAgentCache': { replaceCachedConversationAgent: value => value },
+    '../hooks/useRuntimeControls': controls, '../conversationAgentCache': cache,
     './MutationNotifications': { useMutationNotification: () => () => {} },
   });
   function agent(id) { index = 0; refIndex = 0; return admin.useAgentDetailAdministration({ agentId: id, settingsEngine: 'fixture', settingsModel: 'M0', settingsEffort: 'low', onRuntimeSettingsNotice() {} }).updateRuntimeSettings; }
   function view(name, key, extra) {
-    index = 8; const context = vm.createContext({ useMutation, api, queryClient: client, queryKeys: keys, ...controls, ...extra });
+    index = 8; const context = vm.createContext({ useMutation, api, queryClient: client, queryKeys: keys, ...cache, ...controls, ...extra });
     vm.runInContext(transpile('const ' + declaration('components/' + name + '.tsx', key) + '; exports.result = ' + key), Object.assign(context, { exports: {} }));
     if (name === 'ConversationView') vm.runInContext(transpile('const ' + declaration('components/ConversationView.tsx', 'saveRuntimeDefaults') + '; exports.save = saveRuntimeDefaults'), context);
     return context.exports;
   }
-  function seed(id) { const value = { id, projectId: 'project', activeEngine: 'fixture', model: 'M0', effort: 'low', speed: 'standard', defaultEngine: 'fixture', defaultModel: 'M0', defaultEffort: 'low', defaultSpeed: 'standard' }; canonical.set(id, value); client.setQueryData(keys.agents.detail(id), { agent: value }); client.setQueryData(keys.conversations.detail(id), { conversation: value }); }
+  function seed(id) { const value = { id, projectId: 'project', activeEngine: 'fixture', model: 'M0', effort: 'low', speed: 'standard', defaultEngine: 'fixture', defaultModel: 'M0', defaultEffort: 'low', defaultSpeed: 'standard' }; canonical.set(id, value); client.setQueryData(keys.agents.detail(id), { agent: value }); client.setQueryData(keys.conversations.detail(id), { conversation: value, agents: [value] }); }
   function hydrate(name, id, state, hydrated) {
     const filename = 'components/' + name + '.tsx', text = source(filename), file = ts.createSourceFile(filename, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX); let callback;
     const marker = name === 'ConversationView' ? 'hydratedRuntimeOwner.current =' : 'hydratedRuntimeAgent.current =';
     const visit = node => { if (ts.isCallExpression(node) && node.expression.getText(file) === 'useEffect' && node.arguments[0]?.getText(file).includes(marker)) callback = node.arguments[0].getText(file); ts.forEachChild(node, visit); }; visit(file); assert.ok(callback);
-    const current = client.getQueryData(keys.agents.detail(id))?.agent;
+    const current = name === 'ConversationView' ? client.getQueryData(keys.conversations.detail(id))?.agents.find(agent => agent.id === id) : client.getQueryData(keys.agents.detail(id))?.agent;
     const engine = { id: 'fixture', defaultModel: 'M0', models: ['M0', 'M1', 'M2'].map(id => ({ id, efforts: [{ id: 'low' }, { id: 'high' }], defaultEffort: 'low', serviceTiers: [{ id: 'standard' }, { id: 'fast' }], defaultServiceTier: 'standard' })), efforts: [] };
     const env = { queryClient: client, ...controls, ...resolver, agentId: id, selectedAgentId: id, runtimeOwner: 'agent:' + id, runtimeSaving: controls.useRuntimeSaving('agent:' + id), hydratedRuntimeAgent: hydrated, hydratedRuntimeOwner: hydrated, detail: current && { agent: current }, selectedAgent: { data: current && { agent: current } }, commandTargetAgent: current, conversation: { id: 'chat', projectId: 'project' }, engines: [engine], enginesQuery: { data: [engine] }, preferencesQuery: { data: {} }, workspacePreferences: { data: {} }, projectsQuery: { data: [] }, project: undefined, resolveConversationEngine: id => id };
     for (const [setter, key] of [['setEngine','engine'], ['setRuntimeEngine','engine'], ['setRuntimeAgentId','owner'], ['setModel','model'], ['setEffort','effort'], ['setSpeed','speed']]) env[setter] = value => state[key] = value;

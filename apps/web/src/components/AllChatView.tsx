@@ -64,7 +64,7 @@ import { MessageRequestAction } from "./MessageRequestAction";
 import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
 import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
-import { publishCreatedAgent } from "../conversationAgentCache";
+import { publishCreatedAgent, replaceCachedConversationAgent } from "../conversationAgentCache";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
 import { createClientId } from "../clientId";
@@ -704,13 +704,18 @@ export function AllChatView({
         { queryKey: queryKeys.agents.detailPrefix(updated.id) },
         current => current ? { ...current, agent: updated } : current,
       );
+      queryClient.setQueriesData<unknown>(
+        { queryKey: queryKeys.conversations.detailAll },
+        (current: unknown) => replaceCachedConversationAgent(current, updated),
+      );
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.project(updated.projectId),
       });
     },
-    onSettled: (_updated, _error, variables) => queryClient.invalidateQueries({
-      queryKey: queryKeys.agents.detailPrefix(variables.agentId),
-    }),
+    onSettled: (_updated, _error, variables) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(variables.agentId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
+    ]),
   });
   const selectedCapabilities = useQuery({
     queryKey: queryKeys.engines.capabilitySelection(
