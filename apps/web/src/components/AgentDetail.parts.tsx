@@ -48,6 +48,7 @@ function AgentRuntimeControls({
   speeds,
   selectedRuntime,
   scopeLabel,
+  selectionKey,
   loading,
   onReset,
   disabled = false,
@@ -70,6 +71,7 @@ function AgentRuntimeControls({
     selectSpeed(nextSpeed: string): void;
   };
   scopeLabel: string;
+  selectionKey: string;
   loading?: boolean;
   onReset(): void;
   disabled?: boolean;
@@ -102,6 +104,7 @@ function AgentRuntimeControls({
       disabled={disabled}
       loading={loading}
       scopeLabel={scopeLabel}
+      selectionKey={selectionKey}
       onReset={onReset}
       onEngineChange={onEngineChange}
       onModelChange={nextModel => {

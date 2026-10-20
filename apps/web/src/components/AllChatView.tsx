@@ -1406,7 +1406,7 @@ export function AllChatView({
       workspacePreferences.data,
       project,
     );
-        if (next === selectedEngineId && resolved.model === model && resolved.effort === effort && (resolved.speed ?? "") === (speed ?? "")) return;
+    if (next === selectedEngineId && resolved.model === model && resolved.effort === effort && (resolved.speed ?? "") === (speed ?? "")) return;
     setRuntimeEngine(next);
     setModel(resolved.model);
     setEffort(resolved.effort);
@@ -1448,7 +1448,7 @@ export function AllChatView({
         },
       },
     );
-    };
+  };
   const runtimeControls =
     replyTarget && runtimeSelectionReady && selectedAgent.data && selectedEngine ? (
       <AgentRuntimeControls
@@ -1462,6 +1462,7 @@ export function AllChatView({
         speeds={selectedRuntime.speeds}
         selectedRuntime={selectedRuntime}
         scopeLabel={`${selectedAgent.data.agent.title} Next Run`}
+        selectionKey={selectedAgentId ?? ""}
         disabled={updateRuntimeEngine.isPending}
         onEngineChange={resetOrChangeEngine}
         onReset={() => { if (selectedEngineId) resetOrChangeEngine(selectedEngineId); }}

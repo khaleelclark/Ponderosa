@@ -64,6 +64,7 @@ export function ComposerRuntimeSelector({
   speed,
   speeds = [],
   scopeLabel,
+  selectionKey,
   engineLocked = false,
   disabled = false,
   loading = false,
@@ -83,6 +84,8 @@ export function ComposerRuntimeSelector({
   speeds?: ComposerRuntimeOption[];
   /** Owner shown when the selector opens, such as a Chat or Agent. */
   scopeLabel?: string;
+  /** Stable owner identity; display names do not own pending input. */
+  selectionKey: string;
   engineLocked?: boolean;
   disabled?: boolean;
   loading?: boolean;
@@ -97,9 +100,10 @@ export function ComposerRuntimeSelector({
   const [preview, setPreview] = useState<{ key: string; index: number } | null>(null);
   const [pageVisible, setPageVisible] = useState(true);
   const theme = useTheme();
-  const catalogKey = JSON.stringify([engine, model, efforts]);
-  const interaction = useRef({ open: false, catalogKey });
-  interaction.current = { open: Boolean(anchor), catalogKey };
+  const catalogKey = JSON.stringify([selectionKey, engine, model, efforts, effort, disabled, loading, Boolean(anchor)]);
+  const interaction = useRef({ key: catalogKey, revision: 0 });
+  if (interaction.current.key !== catalogKey) interaction.current = { key: catalogKey, revision: interaction.current.revision + 1 };
+  const interactionRevision = interaction.current.revision;
   const selectedIndex = efforts.findIndex(option => option.id === effort);
   const index = preview?.key === catalogKey ? preview.index : selectedIndex;
   const presentation = effortPresentation(index, efforts.length, theme.palette.mode === "dark");
@@ -151,6 +155,11 @@ export function ComposerRuntimeSelector({
     };
   }, [anchor, popper]);
   const menuId = useId();
+  useEffect(() => {
+    if (anchor && !preserveEditorFocus.current) {
+      document.getElementById(menuId)?.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled)")?.focus();
+    }
+  }, [anchor, menuId]);
   const selectedEngine = engines.find((option) => option.id === engine);
   const selectedModel = models.find((option) => option.id === model);
   const selectedEffort = efforts.find((option) => option.id === effort);
@@ -188,7 +197,7 @@ export function ComposerRuntimeSelector({
     ? `${selectedEngine?.label ?? ""} ${fastOption?.label ?? "Fast"} mode ${fast ? "on" : "off"}.${fastOption?.detail ? ` ${fastOption.detail}` : ""}`
     : `${selectedSpeed?.label ?? "Speed"}${selectedSpeed?.detail ? `. ${selectedSpeed.detail}` : ""}`;
   const commitEffort = (_event: Event | React.SyntheticEvent, value: number | number[]) => {
-    if (!interaction.current.open || interaction.current.catalogKey !== catalogKey || disabled) return;
+    if (!anchor || interaction.current.revision !== interactionRevision || disabled || loading) return;
     const next = efforts[Number(value)];
     setPreview(null);
     if (next && !next.disabled && next.id !== effort) onEffortChange(next.id);

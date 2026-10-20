@@ -915,6 +915,7 @@ export function ConversationView({
         efforts={efforts}
         speed={selectedRuntime.speed}
         speeds={speeds}
+        selectionKey={commandTargetAgent?.id ?? conversationId}
         scopeLabel={commandTargetAgent ? `${commandTargetAgent.title} Next Run` : undefined}
         disabled={persistTargetRuntime.isPending || persistDefaults.isPending}
         onEngineChange={resetOrChangeEngine}

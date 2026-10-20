@@ -878,6 +878,7 @@ export function AgentDetail({
     speeds={speeds}
     selectedRuntime={selectedRuntime}
     scopeLabel={`${detail.agent.title} Next Run`}
+    selectionKey={agentId}
     disabled={updateRuntimeSettings.isPending}
     loading={modelCatalogLoading}
     onEngineChange={resetOrChangeEngine}

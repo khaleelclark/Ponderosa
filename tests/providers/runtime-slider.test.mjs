@@ -31,7 +31,7 @@ function picker(overrides = {}) {
     if (name.startsWith('@mui/icons-material/')) return { __esModule: true, default: () => null };
     throw Error(name);
   } });
-  const props = { engine: 'fixture', engines: [{ id: 'fixture', label: 'Engine' }, { id: 'other', label: 'Other' }], model: 'live-id', models: [{ id: 'live-id', label: 'Live label' }], effort: 'balanced-id', efforts: [{ id: 'tiny-id', label: 'Low' }, { id: 'balanced-id', label: 'Medium' }, { id: 'deep-id', label: 'Ultra' }], speed: 'standard', speeds: [{ id: 'standard', label: 'Normal' }, { id: 'advertised-fast-id', label: 'Fast', detail: 'Live CLI description' }], onModelChange: id => callbacks.push(['model', id]), onEffortChange: id => { callbacks.push(['effort', id]); props.effort = id; }, onSpeedChange: id => callbacks.push(['speed', id]), onEngineChange: id => callbacks.push(['engine', id]), onReset: () => callbacks.push(['reset']), ...overrides };
+  const props = { selectionKey: 'owner-a', engine: 'fixture', engines: [{ id: 'fixture', label: 'Engine' }, { id: 'other', label: 'Other' }], model: 'live-id', models: [{ id: 'live-id', label: 'Live label' }], effort: 'balanced-id', efforts: [{ id: 'tiny-id', label: 'Low' }, { id: 'balanced-id', label: 'Medium' }, { id: 'deep-id', label: 'Ultra' }], speed: 'standard', speeds: [{ id: 'standard', label: 'Normal' }, { id: 'advertised-fast-id', label: 'Fast', detail: 'Live CLI description' }], onModelChange: id => callbacks.push(['model', id]), onEffortChange: id => { callbacks.push(['effort', id]); props.effort = id; }, onSpeedChange: id => callbacks.push(['speed', id]), onEngineChange: id => callbacks.push(['engine', id]), onReset: () => callbacks.push(['reset']), ...overrides };
   function* walk(node) { if (!React.isValidElement(node)) return; yield node; for (const child of React.Children.toArray(node.props.children)) yield* walk(child); }
   let nodes;
   const render = () => { cursor = 0; nodes = [...walk(exports.ComposerRuntimeSelector(props))]; for (const effect of effects.splice(0)) effect(); return nodes; };
@@ -54,13 +54,16 @@ test('slider maps advertised stops and accessible labels to exact IDs; preview d
   p.find('Reasoning effort').props.onChangeCommitted({}, 2);
   assert.equal(p.callbacks.length, 1);
 });
-for (const boundary of ['close', 'model', 'catalog']) test(`stale drag cannot save after ${boundary}`, t => {
+for (const boundary of ['close', 'model', 'catalog', 'owner', 'effort', 'pending-cycle']) test(`stale drag cannot save after ${boundary}`, t => {
   const p = picker(); t.after(p.close);
   const late = p.find('Reasoning effort').props.onChangeCommitted;
   p.find('Reasoning effort').props.onChange({}, 2);
   if (boundary === 'close') p.find('Choose engine, model, reasoning, and speed').props.onClick({ detail: 0, currentTarget: {} });
   else if (boundary === 'model') p.props.model = 'replacement';
-  else p.props.efforts = [{ id: 'new', label: 'New' }];
+  else if (boundary === 'catalog') p.props.efforts = [{ id: 'new', label: 'New' }];
+  else if (boundary === 'owner') p.props.selectionKey = 'owner-b';
+  else if (boundary === 'effort') p.props.effort = 'tiny-id';
+  else { p.props.disabled = true; p.render(); p.props.disabled = false; }
   p.render(); late({}, 2); assert.deepEqual(p.callbacks, []);
 });
 for (const efforts of [[], [{ id: 'only', label: 'Only' }]]) test(`reasoning with ${efforts.length} stop(s) is read-only`, t => {
