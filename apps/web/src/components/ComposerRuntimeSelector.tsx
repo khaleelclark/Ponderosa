@@ -361,7 +361,7 @@ export function ComposerRuntimeSelector({
               }}
             />
           </Box>
-          <Box sx={{ display: "grid", gridTemplateColumns: "44px minmax(0, 1fr) 44px", alignItems: "center", px: 0.5 }}>
+          <Box sx={{ display: "grid", gridTemplateColumns: "44px minmax(0, 1fr) 44px", alignItems: "start", px: 0.5 }}>
             {speeds.length > 1 && onSpeedChange ? <Tooltip title={speedTitle} enterTouchDelay={0}>
               <IconButton aria-label={speedTitle} aria-pressed={fast} aria-expanded={speeds.length > 2 ? section === "speed" : undefined} disabled={disabled || loading}
                 onClick={() => {
@@ -369,14 +369,14 @@ export function ComposerRuntimeSelector({
                   else { rememberPickerFocus(); const next = speeds.find(option => option.id !== selectedSpeed?.id); if (next && !next.disabled) onSpeedChange(next.id); }
                 }} sx={{ gridColumn: 1, width: 44, height: 44, color: fast ? "primary.main" : "text.secondary", bgcolor: fast ? "action.selected" : "transparent" }}><SpeedOutlinedIcon fontSize="small" /></IconButton>
             </Tooltip> : null}
-            <Typography textAlign="center" sx={{ gridColumn: 2, gridRow: 1, color: presentation.color, fontWeight: presentation.ultra ? 800 : 600, textShadow: presentation.ultra && theme.palette.mode === "dark" ? "0 0 13px #22e58a38" : "none" }}>{preview?.key === catalogKey ? effortLabel(efforts[index]) : selectedEffortLabel}</Typography>
+            <ButtonBase ref={modelButton} aria-label={`Model: ${selectedModelLabel}`} aria-expanded={section === "model"} disabled={disabled || loading || !models.length}
+              onClick={() => setSection(section === "model" ? null : "model")}
+              sx={{ gridColumn: 2, gridRow: 1, minWidth: 0, width: "100%", minHeight: 64, pt: 1.25, pb: 1, display: "flex", flexDirection: "column", borderRadius: 1.25, "&:hover": { bgcolor: "action.hover" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
+              <Typography noWrap sx={{ maxWidth: "100%", color: presentation.color, fontWeight: presentation.ultra ? 800 : 600, textShadow: presentation.ultra && theme.palette.mode === "dark" ? "0 0 13px #22e58a38" : "none" }}>{preview?.key === catalogKey ? effortLabel(efforts[index]) : selectedEffortLabel}</Typography>
+              <Stack direction="row" alignItems="center" sx={{ maxWidth: "100%", minWidth: 0, color: "text.secondary" }}><Typography variant="body2" noWrap>{selectedModelLabel}</Typography><KeyboardArrowDownIcon sx={{ fontSize: 16, flexShrink: 0 }} /></Stack>
+            </ButtonBase>
             <Tooltip title="Reset to default" enterTouchDelay={0}><IconButton aria-label="Reset to default" disabled={disabled || loading || !models.length} onClick={() => { rememberPickerFocus(); setPreview(null); setSection(null); onReset(); }} sx={{ gridColumn: 3, gridRow: 1, width: 44, height: 44 }}><RestartAltIcon fontSize="small" /></IconButton></Tooltip>
           </Box>
-          <ButtonBase ref={modelButton} aria-label={`Model: ${selectedModelLabel}`} aria-expanded={section === "model"} disabled={disabled || loading || !models.length}
-            onClick={() => setSection(section === "model" ? null : "model")}
-            sx={{ display: "flex", mx: "auto", maxWidth: "100%", minHeight: 44, px: 1, borderRadius: 1, color: "text.secondary", "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
-            <Typography variant="body2" noWrap>{selectedModelLabel}</Typography><KeyboardArrowDownIcon sx={{ fontSize: 16, flexShrink: 0 }} />
-          </ButtonBase>
           {section ? <MenuList autoFocusItem={!preserveEditorFocus.current} disablePadding aria-label={`${section} options`} sx={{ maxHeight: 240, overflowY: "auto", bgcolor: "action.hover", borderRadius: 1.5 }}>
             {activeOptions.flatMap((option, optionIndex) => [
               ...(option.group && option.group !== activeOptions[optionIndex - 1]?.group ? [<ListSubheader key={option.group} disableSticky sx={{ bgcolor: "transparent", lineHeight: "30px" }}>{option.group}</ListSubheader>] : []),
