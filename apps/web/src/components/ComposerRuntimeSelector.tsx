@@ -354,14 +354,14 @@ export function ComposerRuntimeSelector({
               <Box component="span" sx={{ whiteSpace: "nowrap", flexShrink: 0 }}> Next Run</Box>
             </Stack>
           </Tooltip> : null}
-          {section === "model" ? <>
+          {section === "model" ? <Box ref={focusPicker}>
             <ButtonBase aria-label="Back to runtime settings" onClick={returnToRuntime}
               sx={{ display: "flex", alignItems: "center", width: "100%", minHeight: 44, px: 1.25, gap: 1, borderRadius: 1.5, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
               <ArrowBackIcon fontSize="small" /><Typography variant="body2" sx={{ fontWeight: 700 }}>Model</Typography>
             </ButtonBase>
             <Divider sx={{ my: 0.75 }} />
             {optionList}
-          </> : <>
+          </Box> : <>
           <ButtonBase ref={engineButton}
             disabled={disabled || !canSwitchEngine || loading}
             aria-label={`Engine: ${selectedEngine?.label ?? engine}`}

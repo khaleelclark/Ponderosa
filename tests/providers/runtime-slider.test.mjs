@@ -227,3 +227,11 @@ test('entering and leaving the model view fences an unfinished drag', t => {
   p.find('Model: Live label').props.onClick(); p.find('Back to runtime settings').props.onClick();
   p.find('Reasoning effort').props.onChangeCommitted({ type: 'mouseup' }, 2); assert.deepEqual(p.callbacks, []);
 });
+
+test('the model panel focuses its enabled Back action even when every model is unavailable', t => {
+  const p = picker({ models: [{ id: 'live-id', label: 'Unavailable pin', disabled: true }] }); t.after(p.close);
+  p.find('Model: Unavailable pin').props.onClick();
+  const panel = p.render().find(node => node.type === p.mui.Box && typeof node.ref === 'function');
+  let focused = 0; panel.ref({ querySelector: () => ({ focus() { focused++; } }) });
+  assert.equal(focused, 1); assert.ok(p.find('Back to runtime settings'));
+});
