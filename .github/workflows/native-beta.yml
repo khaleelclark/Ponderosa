@@ -1,51 +1,39 @@
 name: Native private-beta artifacts
-
 on:
   workflow_dispatch:
-    inputs:
-      startup_candidate:
-        type: boolean
-        default: false
-
 permissions:
   contents: read
-
 concurrency:
   group: installer-windows-diagnostics-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   diagnose:
-    name: Focused Windows installer diagnostics (no packages)
+    name: Identify native Windows EOF behavior
     runs-on: windows-2025
-    timeout-minutes: 15
-    env:
-      CI: "true"
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
-        with:
-          version: 11.10.0
-          run_install: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24.16.0
-          cache: pnpm
-      - name: Install exact dependencies
+      - name: Observe raw Windows pipe closure
         shell: bash
-        run: pnpm install --frozen-lockfile
-      - name: Build diagnostic test inputs
-        shell: bash
-        run: pnpm build
-      - name: Report focused Windows failures immediately
-        shell: bash
-        run: >-
-          node --import ./tests/shared/workspace-resolution.mjs --test --test-reporter=tap
-          --test-concurrency=1 --test-timeout=60000 --test-force-exit
-          --test-name-pattern='template scope|exhausted required-reply|RPC inventory|reused Codex session|discovery bounds|throwing notification|ordinary consumed|aggregate output|malformed records|Q07|supervisor receipt cleanup'
-          tests/chats/workflows.test.mjs tests/files-results/asset-resource-cleanup.test.mjs
-          tests/providers/provider-recovery.test.mjs tests/providers/rpc-boundaries.test.mjs
-          tests/installation-release/retained-root-startup.test.mjs
+        run: |
+          node --input-type=module <<'NODE'
+          import {spawn} from 'node:child_process';
+          const body='{"method":"observer"}';
+          for(const mode of ['fs','net','exit']) {
+            const source=mode==='fs'?`const fs=require('node:fs');fs.writeSync(1,${JSON.stringify(body)});fs.closeSync(1);process.stderr.write('closed-fd1');setInterval(()=>{},1000)`:
+              mode==='net'?`const {Socket}=require('node:net');new Socket({fd:1,readable:false,writable:true}).end(${JSON.stringify(body)});setInterval(()=>{},1000)`:
+              `process.stdout.write(${JSON.stringify(body)});`;
+            const child=spawn(process.execPath,['-e',source]);
+            let data='',stderr='',eof=false,exit=false;
+            child.stdout.on('data',x=>data+=x);child.stderr.on('data',x=>stderr+=x);
+            child.stdout.on('end',()=>eof=true);child.on('exit',()=>exit=true);
+            await new Promise(r=>setTimeout(r,1500));
+            console.log(JSON.stringify({mode,data,stderr,eof,exit}));
+            if(!exit){child.kill();await new Promise(r=>child.once('close',r));}
+          }
+          NODE
