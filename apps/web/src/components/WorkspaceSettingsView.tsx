@@ -82,7 +82,9 @@ function SettingsHeader({
     <Stack
       direction="row"
       spacing={1.25}
+      useFlexGap
       sx={{
+        flexWrap: { xs: "wrap", sm: "nowrap" },
         alignItems: "center",
         px: { xs: 2, md: 4 },
         py: 2.5,
@@ -91,7 +93,7 @@ function SettingsHeader({
       }}
     >
       <MobileNavigationButton />
-      <Box sx={{ minWidth: 0, flex: 1 }}>
+      <Box sx={{ minWidth: 0, flex: 1, flexBasis: { xs: "calc(100% - 56px)", sm: 0 } }}>
         <IconTitle
           icon={profile ? <PersonOutlineIcon /> : <SettingsOutlinedIcon />}
           title={profile ? "Operator Profile" : "Settings"}
