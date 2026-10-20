@@ -812,7 +812,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     engineAvailability,
     providerUsage,
     providerEnabled,
-    reusableRuntime,
     activeRuns,
     appendWorkspace,
     applyOperatorModelOptions,

@@ -7,7 +7,6 @@ import type {
   Adapter,
   EngineCapabilities,
   EngineDto,
-  EngineModelOption,
   EngineModelValidationDto,
   ModelOption,
   ProjectEngineModelCatalogDto,
@@ -45,7 +44,6 @@ import type {
   EngineRegistration,
   ModelCatalogDiscoveryAuthority,
   ActiveRun,
-  PersistentRuntime,
 } from "./app-contracts.js";
 
 interface EngineControlPlaneContext {
@@ -57,7 +55,6 @@ interface EngineControlPlaneContext {
   engineAvailability: EngineAvailabilityStore;
   providerUsage: ProviderUsageCache;
   providerEnabled(engineId: string): boolean;
-  reusableRuntime(agentId: string): PersistentRuntime | undefined;
   applyOperatorModelOptions(): void;
   publishWorkspaceSince(cursor: number): void;
   appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): unknown;
@@ -95,7 +92,6 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     engineAvailability,
     providerUsage,
     providerEnabled,
-    reusableRuntime,
     applyOperatorModelOptions,
     publishWorkspaceSince,
     appendWorkspace,
@@ -697,42 +693,6 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     }
     throw new Error("Engine model-catalog authority did not reach a fixed point");
   };
-  const liveProjectModelCatalog = async (
-    projectId: string,
-    adapter: Adapter,
-  ): Promise<{ models: EngineModelOption[]; cliVersion: string } | undefined> => {
-    for (const agent of store.listAgents(projectId)) {
-      if (agent.activeEngine !== adapter.id) continue;
-      const session = activeRuns.get(agent.id)?.runtimeSession ?? reusableRuntime(agent.id)?.session;
-      let live: EngineCapabilities | undefined;
-      try {
-        live = session?.capabilities
-          ? projectProviderCapabilities(await session.capabilities())
-          : undefined;
-      } catch (error) {
-        throw new ProviderAdapterBoundaryError(
-          adapter.id,
-          "read live model catalog",
-          error,
-        );
-      }
-      if (!live?.modelCatalog) continue;
-      return {
-        models: adapter.configuredModelCatalog
-          ? providerAdapterCall(
-              adapter,
-              "normalize configured model catalog",
-              () => projectProviderModelCatalog({
-                models: adapter.configuredModelCatalog!(live.modelCatalog!.models),
-                cliVersion: live.modelCatalog!.cliVersion,
-                configurationKey: "live",
-              }).models,
-            )
-          : live.modelCatalog.models,
-        cliVersion: live.modelCatalog.cliVersion,
-      };
-    }
-  };
   const discoverEngineModelCatalog = (
     project: { id: string; hostPath: string },
     adapter: Adapter,
@@ -792,27 +752,14 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     };
     const operation = Promise.resolve()
       .then(async () => {
-        const live = project.id && !forceRefresh ? await liveProjectModelCatalog(project.id, adapter) : undefined;
-        const rawCatalog = live
-          ? {
-              models: live.models,
-              cliVersion: live.cliVersion,
-              configurationKey: providerAdapterCall(
-                adapter,
-                "read model catalog configuration",
-                () => projectProviderModelIdentifier(
-                  adapter.modelCatalogConfigurationKey?.() ?? "default",
-                )!,
-              ),
-            }
-          : await providerAdapterOperation(
-              adapter,
-              "discover model catalog",
-              () => adapter.discoverModelCatalog!(project.hostPath, {
-                signal: authority.controller.signal,
-                onRuntimeSpawned: registerProcess,
-              }),
-            );
+        const rawCatalog = await providerAdapterOperation(
+          adapter,
+          "discover model catalog",
+          () => adapter.discoverModelCatalog!(project.hostPath, {
+            signal: authority.controller.signal,
+            onRuntimeSpawned: registerProcess,
+          }),
+        );
         const catalog = providerAdapterCall(
           adapter,
           "project model catalog",
