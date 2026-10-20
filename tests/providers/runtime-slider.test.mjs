@@ -184,3 +184,13 @@ test('inline options remain disabled during catalog loading and retained selecti
   const item = p.render().find(node => node.type === p.mui.MenuItem && node.props.selected === false);
   assert.equal(item.props.disabled, true); item.props.onClick(); assert.deepEqual(p.callbacks, []);
 });
+
+test('cancelled pointer cannot save, and later keyboard input remains usable', t => {
+  const p = picker(); t.after(p.close);
+  p.find('Reasoning effort').props.onPointerDownCapture(); p.find('Reasoning effort').props.onPointerCancel();
+  p.find('Reasoning effort').props.onChangeCommitted({ type: 'mouseup' }, 2); assert.deepEqual(p.callbacks, []);
+  p.find('Reasoning effort').props.onPointerDownCapture(); p.props.selectionKey = 'owner-b'; p.render();
+  p.find('Reasoning effort').props.onChange({ type: 'change' }, 0); p.find('Reasoning effort').props.onChangeCommitted({ type: 'change' }, 0);
+  assert.deepEqual(p.callbacks, [['effort', 'tiny-id']]);
+  p.find('Reasoning effort').props.onChangeCommitted({ type: 'mouseup' }, 2); assert.equal(p.callbacks.length, 1);
+});

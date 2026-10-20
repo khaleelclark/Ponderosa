@@ -215,9 +215,10 @@ export function ComposerRuntimeSelector({
   const speedTitle = speeds.length === 2
     ? `${selectedEngine?.label ?? ""} ${fastOption?.label ?? "Fast"} mode ${fast ? "on" : "off"}.${fastOption?.detail ? ` ${fastOption.detail}` : ""}`
     : `${selectedSpeed?.label ?? "Speed"}${selectedSpeed?.detail ? `. ${selectedSpeed.detail}` : ""}`;
-  const commitEffort = (_event: Event | React.SyntheticEvent, value: number | number[]) => {
-    const startedAt = gestureRevision.current;
-    gestureRevision.current = null;
+  const commitEffort = (event: Event | React.SyntheticEvent, value: number | number[]) => {
+    const keyboard = event.type === "change" || event.type === "keydown";
+    const startedAt = keyboard ? null : gestureRevision.current;
+    if (!keyboard) gestureRevision.current = null;
     if (!anchor || interaction.current.revision !== interactionRevision || (startedAt !== null && startedAt !== interactionRevision) || disabled || loading) { setPreview(null); return; }
     const next = efforts[Number(value)];
     setPreview(null);
@@ -361,12 +362,12 @@ export function ComposerRuntimeSelector({
               marks={efforts.map((_option, value) => ({ value }))}
               disabled={disabled || loading || efforts.length < 2 || index < 0}
               onPointerDownCapture={() => { gestureRevision.current = interactionRevision; }}
-              onChange={(_event, value) => {
-                if (gestureRevision.current !== null && gestureRevision.current !== interactionRevision) return;
+              onChange={(event, value) => {
+                if (event.type !== "change" && event.type !== "keydown" && gestureRevision.current !== null && gestureRevision.current !== interactionRevision) return;
                 setPreview({ key: catalogKey, index: Number(value) });
               }}
               onChangeCommitted={commitEffort}
-              onPointerCancel={() => setPreview(null)}
+              onPointerCancel={() => { gestureRevision.current = -1; setPreview(null); }}
               onFocusCapture={() => {
                 // MUI directly focuses the thumb on touch, bypassing mouse-down.
                 // Restore the existing editor selection without cancelling drag.
