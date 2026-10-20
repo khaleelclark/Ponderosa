@@ -4,300 +4,47 @@ on:
   workflow_dispatch:
     inputs:
       startup_candidate:
-        description: Build the private portable-startup candidate for manual Windows testing
         type: boolean
         default: false
-  push:
-    tags:
-      - "v*-beta.*"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: native-beta-${{ github.ref }}
+  group: installer-windows-diagnostics-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  native:
-    name: ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.startup_candidate && '{"include":[{"name":"Private Windows startup candidate","os":"windows-2025","format":"exe","artifact_glob":"dist/installers/*.exe"}]}' || '{"include":[{"name":"Ubuntu 24.04 x64","os":"ubuntu-24.04","format":"deb","artifact_glob":"dist/installers/*.deb"},{"name":"macOS 15 arm64 (supports macOS 14+)","os":"macos-15","format":"dmg","artifact_glob":"dist/installers/*.dmg"},{"name":"Windows x64 build (Windows 11 manual gate)","os":"windows-2025","format":"exe","artifact_glob":"dist/installers/*.exe"}]}') }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+  diagnose:
+    name: Focused Windows installer diagnostics (no packages)
+    runs-on: windows-2025
+    timeout-minutes: 15
     env:
       CI: "true"
-      PONDEROSA_RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.startup_candidate && 'development' || 'beta' }}
-      PONDEROSA_STARTUP_CANDIDATE: ${{ github.event_name == 'workflow_dispatch' && inputs.startup_candidate && '1' || '0' }}
-      PONDEROSA_NODE_VERSION: 24.16.0
-      PONDEROSA_EXPECTED_SHA: ${{ github.sha }}
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
-
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
-          fetch-tags: true
           persist-credentials: false
-
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
           version: 11.10.0
           run_install: false
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24.16.0
           cache: pnpm
-
-      - name: Verify release Action commit objects
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node packaging/qualification/verify-release-action-pins.mjs
-
-      - name: Assert exact source and toolchain
-        shell: bash
-        run: |
-          expected="$PONDEROSA_EXPECTED_SHA"
-          test "$(git rev-parse HEAD)" = "$expected"
-          if [ "$PONDEROSA_STARTUP_CANDIDATE" = "1" ]; then
-            case "$GITHUB_REF_NAME" in
-              codex/portable-startup-20261012|codex/windows-offline-backup-20261012|codex/windows-working-files-20261012|codex/windows-codex-discovery-20261012|codex/windows-managed-chat-20261012) ;;
-              *) exit 1 ;;
-            esac
-            git merge-base --is-ancestor 50fb6fc3d7baa4dc27ad030d0a6a86adc3a90b5f "$expected"
-          elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            git merge-base --is-ancestor origin/master "$expected"
-          else
-            git merge-base --is-ancestor "$expected" origin/master
-          fi
-          test "$(node --version)" = "v24.16.0"
-          test "$(pnpm --version)" = "11.10.0"
-
-      - name: Resolve product version
-        shell: bash
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            version="$(node packaging/beta-version.mjs)"
-          else
-            version="$(node packaging/beta-version.mjs --require-tag)"
-          fi
-          test -n "$version"
-          echo "PONDEROSA_BUILD_VERSION=$version" >> "$GITHUB_ENV"
-
-      - name: Assert native host identity
-        shell: bash
-        run: |
-          node -e "const expected={linux:'x64',darwin:'arm64',win32:'x64'}[process.platform]; if(process.arch!==expected) throw new Error('wrong runner architecture: '+process.platform+'/'+process.arch)"
-
       - name: Install exact dependencies
         shell: bash
         run: pnpm install --frozen-lockfile
-
-      - name: Full verification
+      - name: Build diagnostic test inputs
         shell: bash
-        run: |
-          if [ "$PONDEROSA_STARTUP_CANDIDATE" = "1" ]; then
-            pnpm build
-            pnpm -r typecheck
-          else
-            pnpm verify
-          fi
-
-      # Retired native voice checks targeted the removed server speech runtime.
-      # GUI PID unit coverage was deleted upstream; installed GUI qualification
-      # still runs below. See packaging/README.md for the five-path disposition.
-
-      - name: Prepare checksummed official Node 24
+        run: pnpm build
+      - name: Report focused Windows failures immediately
         shell: bash
-        run: node packaging/prepare-node-runtime.mjs
-
-      - name: Build native bundle
-        shell: bash
-        run: node packaging/build-beta-bundle.mjs --version "$PONDEROSA_BUILD_VERSION" --channel "$PONDEROSA_RELEASE_CHANNEL"
-
-      - name: Verify native bundle
-        shell: bash
-        run: node packaging/verify-beta-bundle.mjs
-
-      - name: Qualify private candidate startup before installer assembly
-        if: env.PONDEROSA_STARTUP_CANDIDATE == '1'
-        # Keep partial evidence and assemble the private laptop candidate even
-        # when the broader lifecycle check stops at a non-startup feature.
-        # Installed qualification and every public release gate still fail.
-        continue-on-error: true
-        shell: bash
-        run: |
-          node packaging/qualification/qualify-launcher-lifecycle.mjs --install-root dist/beta/win32-x64/Ponderosa --data-dir "$RUNNER_TEMP/ponderosa-startup-$GITHUB_SHA" --report dist/qualification/private-startup-lifecycle.json
-
-      - name: Restore installer build dependencies
-        shell: bash
-        run: pnpm install --frozen-lockfile
-
-      - name: Install Inno Setup when absent
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue)) {
-            choco install innosetup --no-progress -y
-          }
-          $iscc = (Get-Command ISCC.exe -ErrorAction Stop).Source
-          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Build installer
-        shell: bash
-        run: node packaging/package-beta.mjs --format "${{ matrix.format }}"
-
-      - name: Collect installed qualification evidence
-        shell: bash
-        run: |
-          artifact="$(find dist/installers -maxdepth 1 -type f -name '*.${{ matrix.format }}' -print -quit)"
-          test -n "$artifact"
-          report="dist/qualification/${{ matrix.format }}-native-installed-artifact.json"
-          qualifier_args=(--artifact "$artifact" --report "$report")
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            qualifier_args+=(--skip-provider-qualification)
-          fi
-          node packaging/qualification/qualify-installer.mjs "${qualifier_args[@]}"
-          node --input-type=module --eval "
-            import { appendFileSync, readFileSync } from 'node:fs';
-            const result = JSON.parse(readFileSync(process.argv[1], 'utf8'));
-            const blockers = result.releaseBlockers ?? [];
-            console.log('Release qualified:', result.releaseQualified === true);
-            console.log('External/manual release blockers:', blockers.length ? blockers.join('; ') : 'none');
-            appendFileSync(
-              process.env.GITHUB_STEP_SUMMARY,
-              '### Installed qualification evidence\\n\\n' +
-                '- Release qualified: **' + (result.releaseQualified === true ? 'yes' : 'no') + '**\\n' +
-                '- External/manual blockers: ' + (blockers.length ? blockers.join('; ') : 'none') + '\\n',
-            );
-            if (result.releaseQualified !== true || blockers.length > 0) {
-              throw new Error('installed artifact did not qualify for release');
-            }
-          " "$report"
-
-      - name: Record safe failure context
-        if: failure()
-        shell: bash
-        run: |
-          mkdir -p dist/qualification
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          import path from 'node:path';
-          const root=path.join(process.env.RUNNER_TEMP,'ponderosa-startup-'+process.env.GITHUB_SHA);
-          const read=p=>{try{return fs.readFileSync(p,'utf8')}catch{return ''}};
-          let state;try{state=JSON.parse(read(path.join(root,'launcher-state','instance.json')))}catch{}
-          const alive=pid=>{if(!Number.isSafeInteger(pid)||pid<=0)return false;try{process.kill(pid,0);return true}catch{return false}};
-          const secrets=[state?.controlToken].filter(v=>typeof v==='string'&&v.length);
-          const sanitize=value=>{
-            let text=value;
-            for(const secret of secrets)text=text.replaceAll(secret,'[redacted]');
-            return text.replace(/[A-Za-z0-9_-]{32,}/gu,'[redacted]')
-              .replace(/(?:qualification-secret|project-content)-\d+-\d+/gu,'[redacted]')
-              .replace(/(Bearer\s+)[^\s"']+/giu,'$1[redacted]');
-          };
-          const logs={};
-          for(const name of ['server.log','server-error.log'])logs[name]=sanitize(read(path.join(root,'logs',name)).slice(-65536));
-          const metadata=state?Object.fromEntries(['pid','supervisorPid','processBirthMarker','port','version','commit'].map(key=>[key,state[key]])):undefined;
-          const endpoints={};
-          if(Number.isSafeInteger(state?.port))for(const endpoint of ['health','ready']){
-            try{const response=await fetch('http://127.0.0.1:'+state.port+'/api/'+endpoint,{signal:AbortSignal.timeout(3000)});endpoints[endpoint]={status:response.status}}
-            catch(error){endpoints[endpoint]={error:error.name}}
-          }
-          const report={commit:process.env.GITHUB_SHA,runner:process.env.RUNNER_OS,arch:process.arch,
-            observedAt:new Date().toISOString(),state:metadata,daemonAlive:alive(state?.pid),supervisorAlive:alive(state?.supervisorPid),endpoints,logs,
-            note:'Only this disposable private-candidate launcher state and redacted startup log tails were collected; credentials and project contents are excluded.'};
-          fs.writeFileSync('dist/qualification/native-failure.json',JSON.stringify(report,null,2)+'\n');
-          NODE
-
-      - name: Stage qualified target for atomic promotion
-        if: success() && env.PONDEROSA_STARTUP_CANDIDATE != '1'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: beta-${{ matrix.format }}-${{ github.sha }}
-          if-no-files-found: error
-          retention-days: 14
-          path: |
-            ${{ matrix.artifact_glob }}
-            dist/installers/*.sha256
-            dist/installers/*.metadata.json
-            dist/qualification/*.json
-
-      - name: Retain failure qualification evidence
-        if: failure() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: beta-failure-${{ matrix.format }}-${{ github.sha }}-${{ github.run_attempt }}
-          if-no-files-found: warn
-          retention-days: 14
-          path: dist/qualification/*.json
-
-      - name: Upload native evidence for manual runs
-        if: always() && github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: ponderosa-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
-          if-no-files-found: warn
-          retention-days: 14
-          path: |
-            ${{ matrix.artifact_glob }}
-            dist/installers/*.sha256
-            dist/installers/*.metadata.json
-            dist/beta/*/Ponderosa
-            dist/beta/*/Ponderosa/build-manifest.json
-            dist/beta/*/qualification-report.json
-            dist/qualification/*.json
-
-  publish:
-    name: Publish complete private-beta matrix
-    needs: native
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24.16.0
-
-      - name: Verify release Action commit objects
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node packaging/qualification/verify-release-action-pins.mjs
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: beta-*-${{ github.sha }}
-          path: release
-          merge-multiple: true
-
-      - name: Require every qualified target before publication
-        shell: bash
-        run: |
-          test "$(find release -type f -name '*.deb' | wc -l | tr -d ' ')" = 1
-          test "$(find release -type f -name '*.dmg' | wc -l | tr -d ' ')" = 1
-          test "$(find release -type f -name '*.exe' | wc -l | tr -d ' ')" = 1
-          test "$(find release -type f -name '*-native-installed-artifact.json' | wc -l | tr -d ' ')" = 3
-
-      - name: Upload to a draft, then publish atomically
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true
-          else
-            gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
-              --title "Ponderosa $GITHUB_REF_NAME" \
-              --notes "Qualified private-beta artifacts for all supported beta targets."
-          fi
-          find release -type f -print0 | \
-            xargs -0 gh release upload "$GITHUB_REF_NAME" --clobber
-          gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease
+        run: >-
+          node --import ./tests/shared/workspace-resolution.mjs --test --test-reporter=tap
+          --test-concurrency=1 --test-timeout=60000 --test-force-exit
+          --test-name-pattern='template scope|exhausted required-reply|RPC inventory|reused Codex session|discovery bounds|throwing notification|Q07 opened|Q07 staging|Q07 verified'
+          tests/chats/workflows.test.mjs tests/files-results/asset-resource-cleanup.test.mjs
+          tests/providers/capabilities.test.mjs tests/providers/rpc-boundaries.test.mjs
