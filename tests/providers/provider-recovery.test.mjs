@@ -200,7 +200,7 @@ for (const scenario of ['empty', 'malformed-first', 'malformed-later', 'malforme
     require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
       const m=JSON.parse(line);if(m.id===undefined)return;
       let result={data:[],nextCursor:null};
-      if(m.method==='initialize')result={userAgent:'codex_cli_rs/0.143.0'};
+      if(m.method==='initialize')result={userAgent:'ponderosa/0.143.0 (Ubuntu 26.4.0; x86_64) unknown (ponderosa; 1.0.0)'};
       if(m.method==='model/list'){
         const scenario=${JSON.stringify(scenario)};
         if(scenario==='malformed-first'||(scenario==='malformed-later'&&m.params.cursor))result={};
@@ -276,7 +276,7 @@ test('a reused Codex session can select Fast then Standard without changing ordi
     const fs=require('node:fs');const seen={args:process.argv.slice(2),requests:[]};
     require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
       const m=JSON.parse(line);if(m.id===undefined)return;seen.requests.push(m);fs.writeFileSync('seen.json',JSON.stringify(seen));
-      const result=m.method==='initialize'?{userAgent:'codex_cli_rs/0.143.0'}:m.method==='turn/start'?{turn:{id:'turn'}}:{thread:{id:'thread'},model:'fixture'};
+      const result=m.method==='initialize'?{userAgent:'ponderosa/0.143.0 (Ubuntu 26.4.0; x86_64) unknown (ponderosa; 1.0.0)'}:m.method==='turn/start'?{turn:{id:'turn'}}:{thread:{id:'thread'},model:'fixture'};
       console.log(JSON.stringify({id:m.id,result}));
     });
   `);

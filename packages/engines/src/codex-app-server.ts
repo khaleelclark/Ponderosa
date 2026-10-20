@@ -91,7 +91,7 @@ function object(value: unknown): Record<string, unknown> | undefined {
 function codexCliVersion(initialization: unknown): string {
   const agent = object(initialization)?.userAgent;
   return typeof agent === "string" && agent.length <= 512
-    ? /^codex[_-]cli(?:[_-]rs)?\/([0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?)(?:\s|$)/u.exec(agent)?.[1] ?? "unknown"
+    ? /^ponderosa\/([0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?)(?:\s|$)/u.exec(agent)?.[1] ?? "unknown"
     : "unknown";
 }
 
