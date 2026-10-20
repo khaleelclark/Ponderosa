@@ -2,8 +2,6 @@ import type {
   AgentDto,
   AgentHealthDto,
   AllChatSourceDto,
-  EngineDto,
-  ProjectDto,
   WorkspaceNotificationDto,
 } from "@ponderosa/core";
 import { notificationTechnicalFocusId } from "../technicalFocus.js";
@@ -174,118 +172,6 @@ export function allChatRuntimeSelectionReady(
   initializedAgentId: string | undefined,
 ): boolean {
   return Boolean(selectedAgentId && selectedAgentId === initializedAgentId);
-}
-
-export function allChatRuntimeInitializationKey(input: {
-  selectedAgentId?: string;
-  agent?: Pick<AgentDto, "id" | "activeEngine" | "model" | "effort">;
-  engine?: Pick<EngineDto, "id" | "defaultModel" | "defaultEffort" | "models">;
-  project?: Pick<ProjectDto, "id" | "defaultEngine" | "defaultModel" | "defaultEffort">;
-  enginesLoaded: boolean;
-  preferencesLoaded: boolean;
-  preferencesRevision?: number;
-  projectsLoaded: boolean;
-}): string | undefined {
-  if (
-    !input.selectedAgentId || !input.agent || !input.engine || !input.project ||
-    !input.enginesLoaded || !input.preferencesLoaded || !input.projectsLoaded
-  ) return undefined;
-  return JSON.stringify([
-    input.agent.id,
-    input.agent.activeEngine,
-    input.agent.model ?? "",
-    input.agent.effort ?? "",
-    input.preferencesRevision,
-    input.project.id,
-    input.project.defaultEngine,
-    input.project.defaultModel ?? "",
-    input.project.defaultEffort ?? "",
-    input.engine.id,
-    input.engine.defaultModel,
-    input.engine.defaultEffort,
-    input.engine.models.map(model => [
-      model.id,
-      model.defaultEffort,
-      model.defaultServiceTier,
-      model.availability,
-    ]),
-  ]);
-}
-
-export function shouldInitializeAllChatRuntime(
-  initializationKey: string | undefined,
-  initializedKey: string | undefined,
-  selectionDirty: boolean,
-): initializationKey is string {
-  return Boolean(
-    initializationKey && !selectionDirty && initializationKey !== initializedKey,
-  );
-}
-
-export function allChatRuntimeMutationIsLatest(
-  capturedGeneration: number,
-  currentGeneration: number | undefined,
-): boolean {
-  return capturedGeneration === currentGeneration;
-}
-
-export function allChatRuntimeMutationOwnsSelection(input: {
-  capturedAgentId: string;
-  currentAgentId?: string;
-  capturedGeneration: number;
-  currentGeneration?: number;
-  capturedCanonicalKey?: string;
-  currentCanonicalKey?: string;
-}): boolean {
-  return input.capturedAgentId === input.currentAgentId &&
-    input.capturedCanonicalKey === input.currentCanonicalKey &&
-    allChatRuntimeMutationIsLatest(
-      input.capturedGeneration,
-      input.currentGeneration,
-    );
-}
-
-export function runtimeCanonicalKey(input: {
-  engine?: string;
-  model?: string | null;
-  effort?: string | null;
-  speed?: string | null;
-}): string {
-  return JSON.stringify([
-    input.engine ?? "",
-    input.model ?? "",
-    input.effort ?? "",
-    input.speed ?? "",
-  ]);
-}
-
-export function recordRuntimeCanonicalKey(
-  generationByOwner: Map<string, number>,
-  canonicalKeyByOwner: Map<string, string>,
-  owner: string,
-  canonicalKey: string,
-): void {
-  const previousCanonicalKey = canonicalKeyByOwner.get(owner);
-  if (previousCanonicalKey !== undefined && previousCanonicalKey !== canonicalKey) {
-    generationByOwner.set(owner, (generationByOwner.get(owner) ?? 0) + 1);
-  }
-  canonicalKeyByOwner.set(owner, canonicalKey);
-}
-
-export function runtimeMutationOwnsAuthority(input: {
-  capturedOwner: string;
-  currentOwner?: string;
-  capturedGeneration: number;
-  currentGeneration?: number;
-  capturedCanonicalKey: string;
-  currentCanonicalKey?: string;
-}): boolean {
-  return input.capturedOwner === input.currentOwner &&
-    input.capturedCanonicalKey === input.currentCanonicalKey &&
-    allChatRuntimeMutationIsLatest(
-      input.capturedGeneration,
-      input.currentGeneration,
-    );
 }
 
 export function allChatAttentionRoute(

@@ -72,7 +72,7 @@ for (const efforts of [[], [{ id: 'only', label: 'Only' }]]) test(`reasoning wit
   const p = picker({ efforts, effort: efforts[0]?.id ?? '' }); t.after(p.close);
   assert.equal(p.find('Reasoning effort').props.disabled, true);
 });
-test('pending save keeps picker open while controls are disabled', t => {
+test('an external availability lock keeps the picker open with controls disabled', t => {
   const p = picker(); t.after(p.close); p.props.disabled = true;
   assert.equal(p.find('Reasoning effort').props.disabled, true);
   assert.equal(p.render().find(node => node.type === p.mui.Popper).props.open, true);
@@ -121,7 +121,7 @@ test('MUI thumb focus during touch restores the editor and exact saved caret wit
   assert.deepEqual(p.callbacks, [['effort', 'deep-id']]);
 });
 
-test('reset owners resolve without overrides, save one complete tuple, reuse rollback and skip unchanged saves', () => {
+test('reset owners resolve without overrides, save one complete tuple and skip unchanged saves', () => {
   for (const name of ['ConversationView.tsx', 'AgentDetail.tsx', 'AllChatView.tsx']) {
     const text = source('components/' + name);
     const file = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -129,12 +129,12 @@ test('reset owners resolve without overrides, save one complete tuple, reuse rol
     function visit(node) { if (ts.isVariableDeclaration(node) && node.name.getText(file) === 'resetOrChangeEngine') declaration = node; ts.forEachChild(node, visit); }
     visit(file); assert.ok(declaration, name);
     const saved = [], engine = { id: 'fixture' }, resolved = { model: 'inherited-model', effort: 'inherited-effort', speed: 'inherited-fast' };
-    const globals = { engines: [engine], model: 'other', effort: 'other', speed: 'other', engine: name === 'ConversationView.tsx' ? 'fixture' : engine, selectedEngineId: 'fixture', runtimeEngine: 'fixture', agentId: 'agent', selectedAgentId: 'agent', selectedAgent: { data: { agent: {} } }, detail: { agent: {} }, preferencesQuery: {}, workspacePreferences: {}, project: {}, conversationId: 'chat', commandTargetAgent: null, settingsEngine: '', settingsModel: '', settingsEffort: '', captureRuntimeMutation: () => ({}), rememberOptimisticRuntime() {}, runtimeMutationGenerationByAgent: { current: new Map() }, runtimeCanonicalKeyByAgent: { current: new Map() }, runtimeCanonicalKey: () => 'key', chatStateKey: () => 'speed', readChatState: () => '', writeChatState() {}, dirtyRuntimeAgentId: {}, resolveRuntimeSelection(...args) { assert.equal(args.length, 3, name + ': no explicit override'); return resolved; } };
+    const globals = { engines: [engine], model: 'other', effort: 'other', speed: 'other', engine: name === 'ConversationView.tsx' ? 'fixture' : engine, selectedEngineId: 'fixture', runtimeEngine: 'fixture', agentId: 'agent', selectedAgentId: 'agent', selectedAgent: { data: { agent: {} } }, detail: { agent: {} }, preferencesQuery: {}, workspacePreferences: {}, project: {}, conversationId: 'chat', commandTargetAgent: null, settingsEngine: '', settingsModel: '', settingsEffort: '', chatStateKey: () => 'speed', readChatState: () => '', writeChatState() {}, resolveRuntimeSelection(...args) { assert.equal(args.length, 3, name + ': no explicit override'); return resolved; } };
     for (const setter of ['setSubmissionRuntimeIntent', 'setEngine', 'setRuntimeEngine', 'setModel', 'setEffort', 'setSpeed', 'setSettingsEngine', 'setSettingsModel', 'setSettingsEffort']) globals[setter] = () => {};
     for (const owner of ['persistDefaults', 'persistTargetRuntime', 'updateRuntimeSettings', 'updateRuntimeEngine']) globals[owner] = { mutate: (tuple, callbacks) => saved.push({ tuple, callbacks }) };
+    globals.saveRuntimeDefaults = tuple => saved.push({ tuple });
     const context = vm.createContext(globals); vm.runInContext(transpile('const ' + declaration.getText(file) + '; resetOrChangeEngine("fixture");'), context);
     assert.equal(saved.length, 1, name);
-    assert.equal(typeof saved[0].callbacks.onError, 'function', name + ': existing rollback');
     assert.deepEqual(Object.values(saved[0].tuple).filter(value => value !== 'fixture' && value !== 'agent'), Object.values(resolved));
     Object.assign(context, resolved); saved.length = 0;
     vm.runInContext('resetOrChangeEngine("fixture")', context); assert.equal(saved.length, 0, name + ': unchanged');
@@ -146,18 +146,18 @@ test('automatic runtime changes are quiet; explicit Settings Save keeps its conf
   const imports = {
     react: { useRef: value => ({ current: value }) },
     '@tanstack/react-query': { useMutation: options => { mutations.push(options); return options; }, useQueryClient: () => ({ setQueriesData() {} }) },
-    '../api': {}, '../conversationAgentCache': {},
+    '../api': {}, '../conversationAgentCache': {}, '../hooks/useRuntimeControls': { runtimeMutationOptions: () => ({}) },
     '../queryKeys': { queryKeys: { agents: { detailPrefix: () => [], all: [] }, conversations: { detailAll: [] } } },
     './MutationNotifications': { useMutationNotification: () => notice => notices.push(notice) },
   };
   vm.runInNewContext(transpile(source('components/useAgentDetailAdministration.ts')), { exports, require: name => imports[name] });
   exports.useAgentDetailAdministration({ agentId: 'a', onRuntimeSettingsNotice: value => inline.push(value) });
   const runtime = mutations.at(-1), updated = { id: 'a' }, context = { agentId: 'a' };
-  runtime.onSuccess(updated, { activeEngine: 'codex' }, context);
+  runtime.onSuccess(updated, { agentId: 'a', manual: false }, context);
   assert.deepEqual(notices, []); assert.deepEqual(inline, [undefined]);
-  runtime.onSuccess(updated, undefined, context);
+  runtime.onSuccess(updated, { agentId: 'a', manual: true }, context);
   assert.equal(notices.length, 1); assert.match(inline.at(-1), /^Saved/);
-  runtime.onError(Error('save failed'), {}, context); assert.equal(inline.at(-1), undefined);
+  runtime.onError(Error('save failed'), { agentId: 'a' }, context); assert.equal(inline.at(-1), undefined);
 });
 
 test('effort casing is presentation only and ordinary model rows omit subtext', t => {
@@ -234,4 +234,112 @@ test('the model panel focuses its enabled Back action even when every model is u
   const panel = p.render().find(node => node.type === p.mui.Box && typeof node.ref === 'function');
   let focused = 0; panel.ref({ querySelector: () => ({ focus() { focused++; } }) });
   assert.equal(focused, 1); assert.ok(p.find('Back to runtime settings'));
+});
+
+// Real TanStack observers/queues and actual view mutation + hydration callbacks.
+// Only transport and React scheduling are held so failure order is deterministic.
+const { QueryClient, MutationObserver } = require('@tanstack/react-query');
+function declaration(name, key) {
+  const file = ts.createSourceFile(name, source(name), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX); let found;
+  const visit = node => { if (ts.isVariableDeclaration(node) && node.name.getText(file) === key) found = node.getText(file); ts.forEachChild(node, visit); }; visit(file);
+  assert.ok(found, key); return found;
+}
+function moduleExports(name, imports) {
+  const exports = {}; vm.runInNewContext(transpile(source(name)), { exports, require: key => { assert.ok(key in imports, key); return imports[key]; } }); return exports;
+}
+function queueHarness() {
+  const client = new QueryClient({ defaultOptions: { mutations: { gcTime: Infinity } } });
+  const keys = moduleExports('queryKeys.ts', { './agentHistoryPagination.js': { AGENT_DETAIL_PAGE_SIZE: 50 } }).queryKeys;
+  const controls = moduleExports('hooks/useRuntimeControls.ts', { '@tanstack/react-query': { useIsMutating: filter => client.isMutating(filter) }, '../queryKeys': { queryKeys: keys }, '../conversationEngine': {} });
+  const resolver = moduleExports('conversationEngine.ts', {});
+  const calls = [], gates = [], promises = [], refs = [], observers = []; let index = 0, refIndex = 0;
+  const canonical = new Map();
+  const api = Object.fromEntries(['Agent', 'Conversation'].map(kind => ['update' + kind, async (id, patch) => {
+    const gate = Promise.withResolvers(); gates.push(gate); calls.push({ id, patch }); await gate.promise;
+    const updated = { ...canonical.get(id), ...patch }; canonical.set(id, updated); return updated;
+  }]));
+  const useMutation = options => {
+    const slot = index++; const observer = observers[slot] ??= new MutationObserver(client, options); observer.setOptions(options);
+    return { ...observer.getCurrentResult(), mutate(variables) { const result = observer.mutate(variables).catch(error => error); promises.push(result); } };
+  };
+  const admin = moduleExports('components/useAgentDetailAdministration.ts', {
+    react: { useRef(value) { return refs[refIndex++] ??= { current: value }; } },
+    '@tanstack/react-query': { useMutation, useQueryClient: () => client }, '../api': { api }, '../queryKeys': { queryKeys: keys },
+    '../hooks/useRuntimeControls': controls, '../conversationAgentCache': { replaceCachedConversationAgent: value => value },
+    './MutationNotifications': { useMutationNotification: () => () => {} },
+  });
+  function agent(id) { index = 0; refIndex = 0; return admin.useAgentDetailAdministration({ agentId: id, settingsEngine: 'fixture', settingsModel: 'M0', settingsEffort: 'low', onRuntimeSettingsNotice() {} }).updateRuntimeSettings; }
+  function view(name, key, extra) {
+    index = 8; const context = vm.createContext({ useMutation, api, queryClient: client, queryKeys: keys, ...controls, ...extra });
+    vm.runInContext(transpile('const ' + declaration('components/' + name + '.tsx', key) + '; exports.result = ' + key), Object.assign(context, { exports: {} }));
+    if (name === 'ConversationView') vm.runInContext(transpile('const ' + declaration('components/ConversationView.tsx', 'saveRuntimeDefaults') + '; exports.save = saveRuntimeDefaults'), context);
+    return context.exports;
+  }
+  function seed(id) { const value = { id, projectId: 'project', activeEngine: 'fixture', model: 'M0', effort: 'low', speed: 'standard', defaultEngine: 'fixture', defaultModel: 'M0', defaultEffort: 'low', defaultSpeed: 'standard' }; canonical.set(id, value); client.setQueryData(keys.agents.detail(id), { agent: value }); client.setQueryData(keys.conversations.detail(id), { conversation: value }); }
+  function hydrate(name, id, state, hydrated) {
+    const filename = 'components/' + name + '.tsx', text = source(filename), file = ts.createSourceFile(filename, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX); let callback;
+    const marker = name === 'ConversationView' ? 'hydratedRuntimeOwner.current =' : 'hydratedRuntimeAgent.current =';
+    const visit = node => { if (ts.isCallExpression(node) && node.expression.getText(file) === 'useEffect' && node.arguments[0]?.getText(file).includes(marker)) callback = node.arguments[0].getText(file); ts.forEachChild(node, visit); }; visit(file); assert.ok(callback);
+    const current = client.getQueryData(keys.agents.detail(id))?.agent;
+    const engine = { id: 'fixture', defaultModel: 'M0', models: ['M0', 'M1', 'M2'].map(id => ({ id, efforts: [{ id: 'low' }, { id: 'high' }], defaultEffort: 'low', serviceTiers: [{ id: 'standard' }, { id: 'fast' }], defaultServiceTier: 'standard' })), efforts: [] };
+    const env = { queryClient: client, ...controls, ...resolver, agentId: id, selectedAgentId: id, runtimeOwner: 'agent:' + id, runtimeSaving: controls.useRuntimeSaving('agent:' + id), hydratedRuntimeAgent: hydrated, hydratedRuntimeOwner: hydrated, detail: current && { agent: current }, selectedAgent: { data: current && { agent: current } }, commandTargetAgent: current, conversation: { id: 'chat', projectId: 'project' }, engines: [engine], enginesQuery: { data: [engine] }, preferencesQuery: { data: {} }, workspacePreferences: { data: {} }, projectsQuery: { data: [] }, project: undefined, resolveConversationEngine: id => id };
+    for (const [setter, key] of [['setEngine','engine'], ['setRuntimeEngine','engine'], ['setRuntimeAgentId','owner'], ['setModel','model'], ['setEffort','effort'], ['setSpeed','speed']]) env[setter] = value => state[key] = value;
+    vm.runInNewContext(transpile('(' + callback + ')()'), env);
+  }
+  return { client, keys, controls, calls, gates, promises, canonical, agent, view, seed, hydrate, close: () => client.clear() };
+}
+async function until(predicate) { for (let i = 0; i < 100 && !predicate(); i++) await new Promise(resolve => setImmediate(resolve)); assert.ok(predicate()); }
+for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) for (const failures of [[true,true], [false,true], [true,false]]) test(`${name}: rapid queued edits stay optimistic, serialize, and reconcile ${failures}`, async t => {
+  const h = queueHarness(); t.after(h.close); h.seed('a');
+  const state = {}, hydrated = {}; h.hydrate(name, 'a', state, hydrated);
+  let save;
+  if (name === 'AgentDetail') save = patch => h.agent('a').mutate(patch);
+  else { const key = name === 'ConversationView' ? 'persistTargetRuntime' : 'updateRuntimeEngine'; const result = h.view(name, key, { conversationId: 'chat', runtimeTargetAgentId: 'a', selectedAgentId: 'a' }).result; save = patch => result.mutate({ agentId: 'a', ...patch }); }
+  const tuple = model => ({ activeEngine: 'fixture', model, effort: 'high', speed: 'fast' });
+  save(tuple('M1')); state.model = 'M1'; save(tuple('M2')); state.model = 'M2';
+  await until(() => h.calls.length === 1); assert.equal(h.controls.useRuntimeSaving('agent:a'), true); h.hydrate(name, 'a', state, hydrated); assert.equal(state.model, 'M2');
+  failures[0] ? h.gates[0].reject(Error('first rejected')) : h.gates[0].resolve();
+  await until(() => h.calls.length === 2); h.hydrate(name, 'a', state, hydrated); assert.equal(state.model, 'M2', 'earlier ack must not replace latest choice'); assert.equal(h.controls.useRuntimeSaving('agent:a'), true, 'Send remains guarded for queued edit');
+  failures[1] ? h.gates[1].reject(Error('last rejected')) : h.gates[1].resolve(); await Promise.all(h.promises);
+  assert.equal(h.controls.useRuntimeSaving('agent:a'), false); h.hydrate(name, 'a', state, hydrated);
+  assert.equal(state.model, failures[1] ? failures[0] ? 'M0' : 'M1' : 'M2');
+});
+test('queued Agent saves retain their owner across navigation; the new surface inherits the queued tuple', async t => {
+  const h = queueHarness(); t.after(h.close); h.seed('a'); h.seed('b');
+  const save = h.agent('a'); save.mutate({ activeEngine: 'fixture', model: 'M1', effort: 'high', speed: 'fast' }); save.mutate({ activeEngine: 'fixture', model: 'M2', effort: 'high', speed: 'fast' });
+  await until(() => h.calls.length === 1); h.agent('b');
+  for (const name of ['AgentDetail', 'ConversationView', 'AllChatView']) {
+    const state = { model: 'prior-owner' }; const hydrated = { current: 'b' }; h.hydrate(name, 'a', state, hydrated); assert.equal(state.model, 'M2', name);
+  }
+  h.gates[0].resolve(); await until(() => h.calls.length === 2); assert.deepEqual(h.calls.map(call => call.id), ['a','a']); h.gates[1].resolve(); await Promise.all(h.promises); assert.equal(h.canonical.get('b').model, 'M0');
+});
+test('all surfaces share an Agent queue and a second surface can continue a pending choice', async t => {
+  const h = queueHarness(); t.after(h.close); h.seed('a');
+  h.agent('a').mutate({ activeEngine: 'fixture', model: 'M2', effort: 'high', speed: 'standard' }); await until(() => h.calls.length === 1);
+  const state = {}; h.hydrate('AllChatView', 'a', state, {}); assert.equal(state.model, 'M2');
+  const all = h.view('AllChatView', 'updateRuntimeEngine', { selectedAgentId: 'a' }).result;
+  all.mutate({ agentId: 'a', activeEngine: state.engine, model: state.model, effort: state.effort, speed: 'fast' }); await new Promise(resolve => setImmediate(resolve)); assert.equal(h.calls.length, 1);
+  h.gates[0].reject(Error('first failed')); await until(() => h.calls.length === 2); assert.equal(h.calls[1].patch.model, 'M2'); h.gates[1].resolve(); await Promise.all(h.promises); assert.equal(h.canonical.get('a').model, 'M2'); assert.equal(h.canonical.get('a').speed, 'fast');
+});
+test('queued Chat effort carries pending explicit model/engine overrides without pinning inherited fields', async t => {
+  const h = queueHarness(); t.after(h.close); h.seed('chat');
+  const chat = h.view('ConversationView', 'persistDefaults', { conversationId: 'chat' });
+  chat.save({ defaultModel: 'M2' }); chat.save({ defaultEffort: 'high' }); await until(() => h.calls.length === 1);
+  h.gates[0].reject(Error('model failed')); await until(() => h.calls.length === 2); assert.equal(h.calls[1].patch.defaultModel, 'M2'); assert.ok(!('defaultEngine' in h.calls[1].patch)); h.gates[1].resolve(); await Promise.all(h.promises);
+  chat.save({ defaultSpeed: 'fast' }); await until(() => h.calls.length === 3); assert.deepEqual(Object.keys(h.calls[2].patch), ['defaultSpeed']); h.gates[2].resolve(); await Promise.all(h.promises);
+});
+test('opening a pending Agent before its query loads waits for data, then hydrates the queued engine and defaults', async t => {
+  const h = queueHarness(); t.after(h.close); h.seed('a');
+  h.agent('a').mutate({ activeEngine: 'fixture', model: 'M2', effort: 'high', speed: 'fast' }); await until(() => h.calls.length === 1);
+  const key = h.keys.agents.detail('a'), detail = h.client.getQueryData(key); h.client.removeQueries({ queryKey: key, exact: true });
+  const state = { model: 'prior-owner' }, hydrated = {};
+  h.hydrate('AgentDetail', 'a', state, hydrated); assert.equal(hydrated.current, undefined); assert.equal(state.model, 'prior-owner');
+  h.client.setQueryData(key, detail); h.hydrate('AgentDetail', 'a', state, hydrated); assert.equal(state.model, 'M2'); assert.equal(state.effort, 'high'); assert.equal(state.engine, 'fixture');
+  h.gates[0].resolve(); await Promise.all(h.promises);
+});
+test('pending manual Settings patch preserves an earlier queued speed when a new surface opens', async t => {
+  const h = queueHarness(); t.after(h.close); h.seed('a'); const settings = h.agent('a');
+  settings.mutate({ activeEngine: 'fixture', model: 'M2', effort: 'high', speed: 'fast' }); settings.mutate(undefined); await until(() => h.calls.length === 1);
+  const state = {}; h.hydrate('AllChatView', 'a', state, {}); assert.equal(state.model, 'M0', 'latest manual model wins'); assert.equal(state.speed, 'fast', 'omitted speed preserves pending explicit choice');
+  h.gates[0].resolve(); await until(() => h.calls.length === 2); h.gates[1].resolve(); await Promise.all(h.promises);
 });

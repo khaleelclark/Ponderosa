@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { engineCanDiscover, engineIsAvailable, engineCanTestAccess, engineStatusPresentation, engineAvailabilityPresentation, soleAvailableEngineId, enginesWithModelCatalog, runtimeControlState, modelSelectionIsCompatible, effortSelectionIsCompatible } from '../../apps/web/src/conversationEngine.ts';
+import { engineCanDiscover, engineIsAvailable, engineCanTestAccess, engineStatusPresentation, engineAvailabilityPresentation, soleAvailableEngineId, enginesWithModelCatalog, runtimeControlState, resolveRuntimeSelection, modelSelectionIsCompatible, effortSelectionIsCompatible } from '../../apps/web/src/conversationEngine.ts';
 import { shouldRetryQuery } from '../../apps/web/src/api/queryRetry.ts';
 import { ApiRequestError } from '../../apps/web/src/api/types.ts';
 
@@ -58,7 +58,7 @@ test('Agent hydration keeps saved reasoning until its model is initialized, then
   const effects = [];
   const visit = node => {
     if (ts.isCallExpression(node) && node.expression.getText(source) === 'useEffect' &&
-        /setModel\(persistedModel\)|if \(!engine\)/u.test(node.arguments[0]?.getText(source) ?? '')) effects.push(node.getText(source));
+        /hydratedRuntimeAgent.current =|if \(!engine\)/u.test(node.arguments[0]?.getText(source) ?? '')) effects.push(node.getText(source));
     ts.forEachChild(node, visit);
   };
   visit(source); assert.equal(effects.length, 2);
@@ -66,7 +66,7 @@ test('Agent hydration keeps saved reasoning until its model is initialized, then
   let persistedModel = 'saved', persistedEffort = 'medium';
   const state = { model: '', effort: '', speed: '' };
   const render = codes => {
-    const context = { engine, model: state.model, effort: state.effort, agentId: 'agent', persistedModel, persistedEffort, detail: { agent: { speed: 'standard' } },
+    const context = { engine, model: state.model, effort: state.effort, agentId: 'agent', persistedModel, persistedEffort, detail: { agent: { activeEngine: engine.id, model: persistedModel, effort: persistedEffort, speed: 'standard' } }, engines: [engine], preferencesQuery: { data: {} }, projectsQuery: { data: [] }, project: undefined, runtimeSaving: false, hydratedRuntimeAgent: {}, pendingRuntimeSelection: () => ({}), queryClient: {}, resolveRuntimeSelection, setRuntimeEngine() {},
       setModel: value => { state.model = typeof value === 'function' ? value(state.model) : value; },
       setEffort: value => { state.effort = typeof value === 'function' ? value(state.effort) : value; },
       setSpeed: value => { state.speed = typeof value === 'function' ? value(state.speed) : value; },

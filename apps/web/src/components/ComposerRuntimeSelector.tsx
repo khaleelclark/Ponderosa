@@ -342,6 +342,7 @@ export function ComposerRuntimeSelector({
             "&::-webkit-scrollbar": { display: "none" },
             overscrollBehavior: "contain",
             p: 1,
+            pb: 0.5,
             border: 1,
             borderColor: "divider",
             borderRadius: 2.5,
@@ -349,17 +350,17 @@ export function ComposerRuntimeSelector({
           }}
         >
           {scopeLabel ? <Tooltip title={scopeLabel} enterTouchDelay={0}>
-            <Stack direction="row" justifyContent="center" aria-label={scopeLabel} sx={{ minWidth: 0, px: 1, pb: 1, fontWeight: 700, fontSize: 13 }}>
+            <Stack direction="row" justifyContent="center" aria-label={scopeLabel} sx={{ minWidth: 0, px: 1, pb: section === "model" ? 0.25 : 1, fontWeight: 700, fontSize: 13 }}>
               <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{scopeLabel.replace(/ Next Run$/, "")}</Box>
               <Box component="span" sx={{ whiteSpace: "nowrap", flexShrink: 0 }}> Next Run</Box>
             </Stack>
           </Tooltip> : null}
           {section === "model" ? <Box ref={focusPicker}>
             <ButtonBase aria-label="Back to runtime settings" onClick={returnToRuntime}
-              sx={{ display: "flex", alignItems: "center", width: "100%", minHeight: 44, px: 1.25, gap: 1, borderRadius: 1.5, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
+              sx={{ display: "flex", justifyContent: "flex-start", alignItems: "center", width: "100%", minHeight: { xs: 44, sm: 34 }, "@media (pointer: coarse)": { minHeight: 44 }, px: 1.25, gap: 1, borderRadius: 1.5, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
               <ArrowBackIcon fontSize="small" /><Typography variant="body2" sx={{ fontWeight: 700 }}>Model</Typography>
             </ButtonBase>
-            <Divider sx={{ my: 0.75 }} />
+            <Divider sx={{ my: 0.5 }} />
             {optionList}
           </Box> : <>
           <ButtonBase ref={engineButton}
@@ -420,7 +421,7 @@ export function ComposerRuntimeSelector({
             </Tooltip> : null}
             <ButtonBase ref={modelButton} aria-label={`Model: ${selectedModelLabel}`} aria-expanded={false} disabled={disabled || loading || !models.length}
               onClick={() => setSection("model")}
-              sx={{ gridColumn: 2, gridRow: 1, minWidth: 0, width: "100%", minHeight: 64, pt: 1.25, pb: 1, display: "flex", flexDirection: "column", borderRadius: 1.25, "&:hover": { bgcolor: "action.hover" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
+              sx={{ gridColumn: 2, gridRow: 1, minWidth: 0, width: "100%", minHeight: 56, pt: 1.25, pb: 0.25, display: "flex", flexDirection: "column", borderRadius: 1.25, "&:hover": { bgcolor: "action.hover" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
               <Typography noWrap sx={{ maxWidth: "100%", color: presentation.color, fontWeight: presentation.ultra ? 800 : 600, textShadow: presentation.ultra && theme.palette.mode === "dark" ? "0 0 13px #22e58a38" : "none" }}>{preview?.key === catalogKey ? effortLabel(efforts[index]) : selectedEffortLabel}</Typography>
               <Stack direction="row" alignItems="center" sx={{ maxWidth: "100%", minWidth: 0, color: "text.secondary" }}><Typography variant="body2" noWrap>{selectedModelLabel}</Typography><KeyboardArrowDownIcon sx={{ fontSize: 16, flexShrink: 0 }} /></Stack>
             </ButtonBase>

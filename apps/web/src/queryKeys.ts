@@ -8,6 +8,7 @@
 import { AGENT_DETAIL_PAGE_SIZE } from "./agentHistoryPagination.js";
 
 export const queryKeys = {
+  runtimeSelection: (owner: string) => ["runtime-selection", owner] as const,
   health: {
     all: ["health"] as const,
   },

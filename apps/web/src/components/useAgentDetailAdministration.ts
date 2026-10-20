@@ -4,6 +4,7 @@ import type {
 } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRef } from "react";
+import { runtimeMutationOptions } from "../hooks/useRuntimeControls";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { replaceCachedConversationAgent } from "../conversationAgentCache";
@@ -24,7 +25,7 @@ interface AgentRuntimeSettingsPatch {
   activeEngine: string;
   model: string | null;
   effort: string | null;
-  speed: string | null;
+  speed?: string | null;
 }
 
 export function useAgentDetailAdministration({
@@ -106,14 +107,10 @@ export function useAgentDetailAdministration({
   });
 
   const updateRuntimeSettings = useMutation({
-    mutationFn: (patch?: AgentRuntimeSettingsPatch) =>
-      api.updateAgent(agentId, patch ?? {
-        activeEngine: settingsEngine,
-        model: settingsModel || null,
-        effort: settingsEffort || null,
-      }),
-    onMutate: () => ({ agentId }),
-    onSuccess: (updated, variables, context) => {
+    ...runtimeMutationOptions(`agent:${agentId}`),
+    mutationFn: ({ agentId, patch }: { agentId: string; patch: AgentRuntimeSettingsPatch; manual: boolean }) =>
+      api.updateAgent(agentId, patch),
+    onSuccess: (updated, variables) => {
       queryClient.setQueriesData<AgentDetailDto>(
         { queryKey: queryKeys.agents.detailPrefix(updated.id) },
         current => (current ? { ...current, agent: updated } : current),
@@ -127,24 +124,34 @@ export function useAgentDetailAdministration({
         { queryKey: queryKeys.conversations.detailAll },
         (current: unknown) => replaceCachedConversationAgent(current, updated),
       );
-      if (currentAgentId.current === context.agentId) {
+      if (currentAgentId.current === variables.agentId) {
         onRuntimeSettingsNotice(
-          variables === undefined ? "Saved. These runtime settings apply when the next Run starts." : undefined,
+          variables.manual ? "Saved. These runtime settings apply when the next Run starts." : undefined,
         );
       }
-      if (variables === undefined) notify({ key: `agent-runtime:${updated.id}`, message: "Agent defaults saved." });
+      if (variables.manual) notify({ key: `agent-runtime:${updated.id}`, message: "Agent defaults saved." });
     },
-    onError: (_error, _variables, context) => {
-      if (currentAgentId.current === context?.agentId) {
+    onError: (_error, variables) => {
+      if (currentAgentId.current === variables.agentId) {
         onRuntimeSettingsNotice(undefined);
       }
     },
+    onSettled: (_updated, _error, variables) => queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.detailPrefix(variables.agentId),
+    }),
   });
 
   return {
     rename,
     updateManagementPermissions,
     updateOrganization,
-    updateRuntimeSettings,
+    updateRuntimeSettings: {
+      ...updateRuntimeSettings,
+      mutate: (patch?: AgentRuntimeSettingsPatch) => updateRuntimeSettings.mutate({
+        agentId,
+        patch: patch ?? { activeEngine: settingsEngine, model: settingsModel || null, effort: settingsEffort || null },
+        manual: patch === undefined,
+      }),
+    },
   };
 }
