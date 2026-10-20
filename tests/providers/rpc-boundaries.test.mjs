@@ -117,7 +117,7 @@ test('ordinary consumed runtime notifications have no discovery lifetime cap', {
 
 for (const trailing of [false, true]) test(`throwing notification observers fail the transport: trailing=${trailing}`, { timeout: 5_000 }, async () => {
   const rpc = new JsonRpcProcess({ bin: process.execPath,
-    args: ['-e', `process.stdout.write(${JSON.stringify(JSON.stringify({ method: 'observer' }) + (trailing ? '' : '\n'))}${trailing ? ",()=>require('node:fs').closeSync(1)" : ''});setInterval(()=>{},1000)`],
+    args: ['-e', `const fs=require('node:fs');fs.writeSync(1,${JSON.stringify(JSON.stringify({ method: 'observer' }) + (trailing ? '' : '\n'))});${trailing ? 'fs.closeSync(1);' : ''}setInterval(()=>{},1000)`],
     cwd: process.cwd(), signal: new AbortController().signal, killGraceMs: 50,
     onRuntimeSpawned() {}, onRuntimeRootExit() {}, onNotification() { throw new Error('Owned observer failure'); } });
   try {
