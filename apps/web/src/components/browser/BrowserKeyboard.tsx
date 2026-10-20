@@ -37,7 +37,7 @@ export function BrowserKeyboard({ disabled, onText, onKey, portalTarget }: { dis
         }
       }}
       onBlur={clear}
-      sx={{ position: "absolute", width: 1, height: 1, opacity: .01, pointerEvents: "none", fontSize: 16, p: 0, border: 0 }} />
+      sx={{ position: "absolute", width: "1px", height: "1px", opacity: .01, pointerEvents: "none", fontSize: 16, p: 0, border: 0 }} />
   </>;
   return portalTarget === null ? null : portalTarget ? createPortal(control, portalTarget) : control;
 }

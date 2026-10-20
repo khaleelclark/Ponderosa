@@ -37,7 +37,7 @@ export function MasterRespondingIndicator({ agents, healthByAgentId, messages }:
   const announcement = pending.length ? summary : "No agents are working";
   return <>
     <Box role="status" aria-live="polite" aria-atomic="true"
-      sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{announcement}</Box>
+      sx={{ position: "absolute", width: "1px", height: "1px", p: 0, m: "-1px", overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{announcement}</Box>
     {pending.length ? <Box sx={{ containerType: "inline-size" }}>
       <ChatLiveBanner singleLine>
         <Tooltip describeChild open={open} onOpen={() => setOpen(true)} onClose={() => setOpen(false)} disableTouchListener
