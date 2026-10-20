@@ -1,6 +1,13 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+
+// sharp-libvips 1.3.4 embeds its public upstream /Users/runner build paths.
+// Accept only these exact upstream bytes; edits and dependency upgrades fail closed.
+const upstreamBinaryHashes = new Map([
+  ["app/server/node_modules/@img/sharp-libvips-darwin-arm64/lib/libvips-cpp.8.18.7.dylib", "c1a5b5633b21aeb8a229abf7d062e07e4d778c0b44ed43cd1f93362bda58c322"],
+]);
 
 export function prunePackageManagerMetadata(packageRoot) {
   function visit(directory) {
@@ -63,6 +70,8 @@ export function assertNoBuildMachinePaths(root, prefixes) {
         while ((bytes = readSync(fd, buffer)) > 0) {
           const content = Buffer.concat([tail, buffer.subarray(0, bytes)]);
           if (patterns.some(pattern => content.includes(pattern))) {
+            const upstreamHash = upstreamBinaryHashes.get(path.relative(root, filename).split(path.sep).join("/"));
+            if (upstreamHash && createHash("sha256").update(readFileSync(filename)).digest("hex") === upstreamHash) break;
             throw new Error(`Build-machine path remains in bundle file: ${path.relative(root, filename)}`);
           }
           tail = content.subarray(Math.max(0, content.length - overlap));
