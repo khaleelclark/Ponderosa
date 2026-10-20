@@ -74,6 +74,8 @@ const ORGANIZATION_POLICY_SUMMARY = "Organization policy blocks provider access.
 const ORGANIZATION_POLICY_REMEDIATION = "Ask your organization administrator to enable provider access, then recheck.";
 const CLIENT_UPGRADE_SUMMARY = "The provider CLI needs an update for the selected model.";
 const CLIENT_UPGRADE_REMEDIATION = "Update the provider CLI on this host, recheck it, then retry.";
+const INVALID_MODEL_SUMMARY = "The selected model is unavailable for this provider. Choose another model, then retry.";
+const INVALID_MODEL_REMEDIATION = "Choose a model supported by the signed-in provider account, then retry.";
 
 function organizationPolicyDetail(detail: string): boolean {
   if (detail.length > MAX_PROVIDER_FAILURE_CLASSIFICATION_CHARACTERS) return false;
@@ -190,7 +192,7 @@ function highConfidenceTextCategory(detail: string): ProviderFailureCategory {
   if (organizationPolicyDetail(detail)) return "invalid_request";
   if (/[^\x09\x0a\x0d\x20-\x7e]/u.test(detail)) return "unknown";
   const value = detail.trim().toLowerCase();
-  if (value === CLIENT_UPGRADE_SUMMARY.toLowerCase()) return "invalid_request";
+  if (value === CLIENT_UPGRADE_SUMMARY.toLowerCase() || value === INVALID_MODEL_SUMMARY.toLowerCase()) return "invalid_request";
   if (!value || /^(?:\{|\[|")|\\u[0-9a-f]{4}|%[0-9a-f]{2}/iu.test(value)) return "unknown";
   if (/^[a-z0-9+/_-]{16,}={0,2}$/iu.test(value)) return "unknown";
 
@@ -244,6 +246,8 @@ export function publicProviderFailure(input: {
     category,
     ...(category === "invalid_request" && (input.code === "client_upgrade_required" || input.detail === CLIENT_UPGRADE_SUMMARY)
       ? { summary: CLIENT_UPGRADE_SUMMARY, remediation: CLIENT_UPGRADE_REMEDIATION }
+      : category === "invalid_request" && (input.code === "invalid_model" || input.code === "model_not_found" || input.detail === INVALID_MODEL_SUMMARY)
+      ? { summary: INVALID_MODEL_SUMMARY, remediation: INVALID_MODEL_REMEDIATION }
       : category === "invalid_request" && (input.code === "organization_policy"
       || input.category === "organization_policy" || organizationPolicyDetail(input.detail ?? ""))
       ? { summary: ORGANIZATION_POLICY_SUMMARY, remediation: ORGANIZATION_POLICY_REMEDIATION }

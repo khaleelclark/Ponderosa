@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { engineCanDiscover, engineIsAvailable, engineCanTestAccess, engineStatusPresentation, engineAvailabilityPresentation, soleAvailableEngineId, enginesWithModelCatalog } from '../../apps/web/src/conversationEngine.ts';
+import { engineCanDiscover, engineIsAvailable, engineCanTestAccess, engineStatusPresentation, engineAvailabilityPresentation, soleAvailableEngineId, enginesWithModelCatalog, runtimeControlState, modelSelectionIsCompatible, effortSelectionIsCompatible } from '../../apps/web/src/conversationEngine.ts';
 import { shouldRetryQuery } from '../../apps/web/src/api/queryRetry.ts';
 import { ApiRequestError } from '../../apps/web/src/api/types.ts';
 
@@ -52,6 +52,36 @@ import { createRequire } from 'node:module';
 import vm from 'node:vm';
 const require = createRequire(new URL('../../apps/web/package.json', import.meta.url));
 const ts = require('typescript');
+
+test('Agent hydration keeps saved reasoning until its model is initialized, then still rejects incompatible reasoning', () => {
+  const source = ts.createSourceFile('AgentDetail.tsx', readFileSync(new URL('../../apps/web/src/components/AgentDetail.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const effects = [];
+  const visit = node => {
+    if (ts.isCallExpression(node) && node.expression.getText(source) === 'useEffect' &&
+        /setModel\(persistedModel\)|if \(!engine\)/u.test(node.arguments[0]?.getText(source) ?? '')) effects.push(node.getText(source));
+    ts.forEachChild(node, visit);
+  };
+  visit(source); assert.equal(effects.length, 2);
+  let engine = { ...provider('codex'), models: [{ id: 'saved', label: 'Saved', efforts: [{ id: 'medium', label: 'Medium' }] }], efforts: [], modelCatalogKnown: true };
+  let persistedModel = 'saved', persistedEffort = 'medium';
+  const state = { model: '', effort: '', speed: '' };
+  const render = codes => {
+    const context = { engine, model: state.model, effort: state.effort, agentId: 'agent', persistedModel, persistedEffort, detail: { agent: { speed: 'standard' } },
+      setModel: value => { state.model = typeof value === 'function' ? value(state.model) : value; },
+      setEffort: value => { state.effort = typeof value === 'function' ? value(state.effort) : value; },
+      setSpeed: value => { state.speed = typeof value === 'function' ? value(state.speed) : value; },
+      useEffect: callback => callback(), runtimeControlState, readChatState: () => undefined, chatStateKey: () => '',
+      modelSelectionIsCompatible, effortSelectionIsCompatible };
+    vm.runInNewContext(ts.transpileModule(codes.join(';'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
+  };
+  render(effects); assert.equal(state.model, 'saved'); assert.equal(state.effort, 'medium', 'Do not clear saved effort against the previous empty model');
+  render(effects); assert.equal(state.effort, 'medium');
+  engine = { ...engine, models: [...engine.models, { id: 'inherited', label: 'Inherited', efforts: [{ id: 'high', label: 'High' }] }] };
+  persistedModel = 'inherited'; persistedEffort = 'high';
+  render(effects); assert.equal(state.model, 'inherited'); assert.equal(state.effort, 'high', 'A refreshed default must be checked against its own model, not the previous nonempty model');
+  render(effects); assert.equal(state.effort, 'high');
+  state.effort = 'incompatible'; render(effects.slice(1)); assert.equal(state.effort, '', 'Compatibility checks must still apply once the model is initialized');
+});
 
 test('model hook refreshes late old-client data once, scopes queries, and ignores unrelated status samples after a failed refresh', async () => {
   const invalidations = [], requests = [], cache = new Map();

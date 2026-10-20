@@ -179,7 +179,7 @@ export function codexErrorEvent(error: unknown, detail: string): Extract<AgentEv
   const info = value?.codexErrorInfo;
   const variant = typeof info === "string" ? info : Object.keys(record(info) ?? {})[0];
   const status = record(record(info)?.[variant ?? ""])?.httpStatusCode;
-  const httpStatusCode = Number.isInteger(status) && Number(status) >= 100 && Number(status) <= 599 ? Number(status) : undefined;
+  let httpStatusCode = Number.isInteger(status) && Number(status) >= 100 && Number(status) <= 599 ? Number(status) : undefined;
   const structured: Record<string, ProviderErrorCode> = {
     contextwindowexceeded: "context_length", usagelimitexceeded: "rate_limit",
     unauthorized: "authentication_failed", badrequest: "invalid_request",
@@ -187,21 +187,25 @@ export function codexErrorEvent(error: unknown, detail: string): Extract<AgentEv
   let code = structured[variant?.toLowerCase() ?? ""] ??
     (httpStatusCode === 429 ? "rate_limit" : httpStatusCode === 401 ? "authentication_failed"
       : httpStatusCode !== undefined && httpStatusCode >= 500 ? "network"
-        : httpStatusCode !== undefined && httpStatusCode >= 400 && httpStatusCode < 500 ? "invalid_request" : undefined);
+        : httpStatusCode !== undefined && httpStatusCode >= 400 && httpStatusCode < 500 ? "invalid_request" : undefined)
+    ?? providerErrorCode(error as RawEvent["error"], "");
   // Parse only this bounded, known Codex envelope. Shared public classification
   // remains opaque to arbitrary JSON and never echoes provider prose.
   if ((!code || code === "invalid_request") && detail.length <= 2_048) {
     try {
       const body = record(JSON.parse(detail));
       const failure = record(body?.error);
-      if (body?.status === 400 && failure?.type === "invalid_request_error" &&
-          typeof failure.message === "string" && /^The '[a-z0-9][a-z0-9._-]{0,127}' model requires a newer version of Codex\. Please upgrade to the latest app or CLI and try again\.$/u.test(failure.message)) code = "client_upgrade_required";
+      if (body?.type === "error" && body.status === 400 && failure?.type === "invalid_request_error" && typeof failure.message === "string") {
+        if (/^The '[a-z0-9][a-z0-9._-]{0,127}' model requires a newer version of Codex\. Please upgrade to the latest app or CLI and try again\.$/u.test(failure.message)) code = "client_upgrade_required";
+        else if (/^The '[a-z0-9][a-z0-9._-]{0,199}' model is not supported when using Codex with a ChatGPT account\.$/u.test(failure.message)) code = "invalid_model";
+        if (code === "client_upgrade_required" || code === "invalid_model") httpStatusCode ??= 400;
+      }
     } catch { /* Ordinary provider detail is not a JSON envelope. */ }
   }
   code ??= providerErrorCode(error as RawEvent["error"], detail);
   const retryAfterMs = value?.retryAfterMs;
   return { type: "error", message: detail, category: classifyProviderFailure(detail, code), ...(code ? { code } : {}),
-    ...(httpStatusCode !== undefined ? { httpStatusCode } : code === "client_upgrade_required" ? { httpStatusCode: 400 } : {}),
+    ...(httpStatusCode !== undefined ? { httpStatusCode } : {}),
     ...(Number.isSafeInteger(retryAfterMs) && Number(retryAfterMs) >= 0 && Number(retryAfterMs) <= 86_400_000 ? { retryAfterMs: Number(retryAfterMs) } : {}),
   };
 }

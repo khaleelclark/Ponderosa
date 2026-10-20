@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { publicProviderFailureEvent, providerRecoveryDelay, MAX_PROVIDER_RECOVERY_ATTEMPTS } from '@ponderosa/core';
+import { publicProviderFailure, publicProviderFailureEvent, providerRecoveryDelay, MAX_PROVIDER_RECOVERY_ATTEMPTS } from '@ponderosa/core';
 import { mapCodexAppServerNotification, formatCodexRateLimits } from '../../packages/engines/dist/codex-app-server.js';
 import { normalizeCodexProviderUsage } from '../../packages/engines/dist/provider-usage.js';
 import { normalizeCodexProviderDiscovery } from '../../packages/engines/dist/capabilities.js';
 import { CodexAdapter } from '../../packages/engines/dist/codex.js';
+import { codexAvailabilityStatus } from '../../packages/engines/dist/auth.js';
 import { openCurrentMemoryDatabase } from '../../packages/agents/dist/state-admission.js';
 import { CoordinationV3Store } from '../../packages/agents/dist/coordination-v3-store.js';
 import { CoordinationV3ActivationFactory } from '../../packages/agents/dist/coordination-v3-activation-factory.js';
@@ -13,11 +14,19 @@ import { runtimeSelectionError, chatCreationRuntimeSelection } from '../../apps/
 
 const upgrade = JSON.stringify({ type: 'error', status: 400, error: { type: 'invalid_request_error',
   message: "The 'gpt-5.6-sol' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again." } });
+const unsupported = JSON.stringify({ type: 'error', status: 400, error: { type: 'invalid_request_error',
+  message: "The 'private-fixture-model' model is not supported when using Codex with a ChatGPT account." } });
 
 test('Codex structured errors retain actionable guidance, status and bounded delays without exposing provider prose', () => {
   for (const [error, category, code] of [
     [{ message: upgrade, codexErrorInfo: 'other' }, 'invalid_request', 'client_upgrade_required'],
     [{ message: upgrade, codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 400 } } }, 'invalid_request', 'client_upgrade_required'],
+    [{ message: unsupported, codexErrorInfo: 'other' }, 'invalid_request', 'invalid_model'],
+    [{ message: unsupported, codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 429 } } }, 'rate_limit', 'rate_limit'],
+    [{ message: unsupported, code: 'rate_limit' }, 'rate_limit', 'rate_limit'],
+    [{ message: unsupported, type: 'rate_limit_error' }, 'rate_limit', 'rate_limit'],
+    [{ message: unsupported, type: 'authentication_failed' }, 'authentication', 'authentication_failed'],
+    [{ message: unsupported, code: 'network' }, 'unavailable', 'network'],
     [{ message: 'private-fixture-detail', codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 429 } }, retryAfterMs: 9000 }, 'rate_limit', 'rate_limit'],
     [{ message: 'private-fixture-detail', codexErrorInfo: 'contextWindowExceeded' }, 'context_length', 'context_length'],
     [{ message: 'private-fixture-detail', codexErrorInfo: 'unauthorized' }, 'authentication', 'authentication_failed'],
@@ -28,10 +37,29 @@ test('Codex structured errors retain actionable guidance, status and bounded del
     assert.equal(visible.category, category); assert.equal(visible.code, code); assert.equal(visible.terminalStatus, 'failed');
     assert.doesNotMatch(JSON.stringify(visible), /private-fixture-detail|requires a newer version/u);
     if (code === 'client_upgrade_required') { assert.match(visible.message, /CLI needs an update/u); assert.match(visible.remediation, /Update the provider CLI/u); assert.equal(visible.httpStatusCode, 400); }
+    if (code === 'invalid_model') {
+      assert.match(visible.message, /selected model.*unavailable/iu); assert.match(visible.message, /Choose another model/u);
+      assert.equal(visible.httpStatusCode, 400); assert.doesNotMatch(JSON.stringify(visible), /private-fixture-model|ChatGPT account|usage limit/iu);
+      assert.equal(publicProviderFailureEvent(visible).message, visible.message, 'Repeated public projection must preserve actionable model guidance');
+    }
     if (error.retryAfterMs) { assert.equal(visible.retryAfterMs, 9000); assert.equal(visible.httpStatusCode, 429); }
   }
   const [unknown] = mapCodexAppServerNotification({ method: 'turn/completed', params: { turn: { status: 'failed', error: { message: '{"message":"private-fixture-detail HTTP 429"}' } } } }, process.cwd());
   assert.equal(publicProviderFailureEvent(unknown).category, 'unknown');
+  for (const envelope of [{ type: 'error', status: 503, error: { type: 'invalid_request_error', message: JSON.parse(unsupported).error.message } },
+    { type: 'error', status: 400, error: { type: 'other', message: JSON.parse(unsupported).error.message } },
+    { ...JSON.parse(unsupported), type: 'success' }, { ...JSON.parse(unsupported), type: undefined }]) {
+    const [event] = mapCodexAppServerNotification({ method: 'turn/completed', params: { turn: { status: 'failed', error: { message: JSON.stringify(envelope) } } } }, process.cwd());
+    assert.equal(publicProviderFailureEvent(event).category, 'unknown', 'Unrecognized JSON must remain opaque');
+  }
+});
+
+test('Codex model probe preserves actionable model guidance after the public validation projection', async () => {
+  const result = await codexAvailabilityStatus({}, async () => ({ stdout: JSON.stringify({ type: 'turn.failed', error: { message: unsupported } }), stderr: '' }), async () => ({ authenticated: true }));
+  assert.equal(result.available, false); assert.equal(result.failureCategory, 'invalid_request');
+  const projected = publicProviderFailure({ detail: result.detail, code: result.failureCategory });
+  assert.match(projected.summary, /Choose another model/u);
+  assert.doesNotMatch(JSON.stringify(projected), /private-fixture-model|ChatGPT account|limit/iu);
 });
 
 test('one recovery policy stops permanent failures and bounds temporary recovery with provider delays', () => {
