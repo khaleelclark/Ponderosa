@@ -1,4 +1,5 @@
 // Real shared rendering and native intersection geometry; bounded synthetic scrolling, not a physical trackpad latency measurement.
+import { RefreshProbe } from "./refresh";
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { CssBaseline, ThemeProvider } from '@mui/material';
@@ -22,7 +23,9 @@ const frame = () => new Promise<number>((resolve,reject) => { const timer=setTim
 function App() {
   const [report,setReport]=useState('Run the bounded native scrolling replay. No server, account, or production data.');
   const run = async () => {
-    setReport('Running');
+    setReport('Starting; leave this tab visible until the result appears.');
+    // Let the native accessibility snapshot finish before measuring frames.
+    await new Promise(resolve => setTimeout(resolve, 2000));
     await frame(); await frame();
     const root=document.querySelector<HTMLElement>('.chat-scroll-region')!;
     const end=root.scrollHeight-root.clientHeight;
@@ -31,8 +34,8 @@ function App() {
     for(let i=1;i<=120;i++) { root.scrollTop=end*(1-i/120); const now=await frame(); times.push(now-previous);previous=now; }
     await frame(); await frame();
     const sorted=[...times].sort((a,b)=>a-b);
-    setReport(JSON.stringify({messages:100,frames:120,...counts,p95FrameMs:Number(sorted[Math.floor(sorted.length*.95)].toFixed(2)),maxFrameMs:Number(sorted.at(-1)!.toFixed(2)),over25ms:times.filter(v=>v>25).length},null,2));
+    setReport(JSON.stringify({messages:100,frames:120,...counts,p95FrameMs:Number(sorted[Math.floor(sorted.length*.95)].toFixed(2)),maxFrameMs:Number(sorted.at(-1)!.toFixed(2)),over25ms:times.filter(v=>v>25).length,slowFrames:times.flatMap((ms,index)=>ms>25?[{index,ms:Number(ms.toFixed(2))}]:[])},null,2));
   };
   return <ThemeProvider theme={createPonderosaTheme('dark')}><CssBaseline/><main style={{height:'100dvh',display:'flex',flexDirection:'column'}}><header style={{padding:12}}><button onClick={()=>void run().catch(e=>setReport(String(e)))}>Replay 120 scrolling frames</button><pre role="status" style={{fontSize:13,margin:0}}>{report}</pre></header><div style={{flex:1,minHeight:0}}><ChatSurface layout="project" layoutKey="fixture" follow={{kind:'latest',storageKey:'scroll-fixture-position'}}>{rows}</ChatSurface></div><footer style={{padding:12}}>Synthetic 100-message chat using the real shared surface, message renderer and notification visibility code.</footer></main></ThemeProvider>;
 }
-createRoot(document.getElementById('root')!).render(<App/>);
+createRoot(document.getElementById('root')!).render(new URLSearchParams(location.search).has('refresh')?<RefreshProbe/>:<App/>);

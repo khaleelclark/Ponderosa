@@ -889,6 +889,14 @@
       ],
       "requirements": "Node24; real visibility source with controlled native-observer geometry; no account or network",
       "origin": "Mac Safari/PWA scroll observer churn and read-visibility regression"
+    },
+    {
+      "path": "tests/chats/message-refresh.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; actual ProjectShell event handlers with controlled hook storage; no account or network",
+      "origin": "Safari long-chat refresh stalls: stable memoized message callbacks with fresh navigation state"
     }
   ],
   "retainedReleasePayload": [
