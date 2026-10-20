@@ -10,14 +10,14 @@ import { createPonderosaTheme } from "../../../../apps/web/src/theme";
 const efforts = ["Low", "Medium", "High", "Extra High"].map(label => ({ id: label, label }));
 function App() {
   const [effort, setEffort] = useState("Low"), [report, setReport] = useState("Drag the slider, then inspect the trace.");
-  const commits = useRef(0), traces = useRef<object[]>([]);
+  const commits = useRef(0), traces = useRef<{ samples: { expected: number; actual: number; current: boolean }[]; stale: number }[]>([]);
   useEffect(() => {
     let move: ((event: MouseEvent) => void) | undefined, end: (() => void) | undefined;
     const start = (event: MouseEvent) => {
       const slider = (event.target as Element).closest<HTMLElement>(".MuiSlider-root");
       if (!slider) return;
       const thumb = slider.querySelector<HTMLElement>(".MuiSlider-thumb")!;
-      const samples: object[] = [];
+      const samples: { expected: number; actual: number; current: boolean }[] = [];
       move = event => {
         if (!event.buttons) return;
         const bounds = slider.getBoundingClientRect();
@@ -28,8 +28,8 @@ function App() {
       end = () => {
         document.removeEventListener("mousemove", move!);
         requestAnimationFrame(() => {
-          traces.current.push({ samples, stale: samples.filter((sample: any) => !sample.current).length });
-          setReport(JSON.stringify({ traces: traces.current, commits: commits.current }, null, 2));
+          traces.current.push({ samples, stale: samples.filter(sample => !sample.current).length });
+          setReport(JSON.stringify({ stalePositions: traces.current.reduce((sum, trace) => sum + trace.stale, 0), samples: traces.current.reduce((sum, trace) => sum + trace.samples.length, 0), commits: commits.current, traces: traces.current }, null, 2));
         });
       };
       document.addEventListener("mousemove", move);
