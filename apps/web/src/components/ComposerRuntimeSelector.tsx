@@ -254,10 +254,10 @@ export function ComposerRuntimeSelector({
     }
   };
 
-  const optionList = section ? <MenuList autoFocusItem={!preserveEditorFocus.current} disablePadding aria-label={`${section} options`} sx={{ maxHeight: section === "model" ? "min(360px, calc(var(--ponderosa-app-viewport-block-size, 100dvh) - 180px))" : 240, overflowY: "auto", scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" }, bgcolor: "action.hover", borderRadius: 1.5 }}>
+  const optionList = section ? <MenuList autoFocusItem={!preserveEditorFocus.current} disablePadding aria-label={`${section} options`} sx={{ maxHeight: section === "model" ? "min(360px, calc(var(--ponderosa-app-viewport-block-size, 100dvh) - 180px))" : 240, overflowY: "auto", scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" } }}>
             {activeOptions.flatMap((option, optionIndex) => [
               ...(option.group && option.group !== activeOptions[optionIndex - 1]?.group ? [<ListSubheader key={option.group} disableSticky sx={{ bgcolor: "transparent", lineHeight: "30px" }}>{option.group}</ListSubheader>] : []),
-              <MenuItem key={option.id} selected={option.id === activeValue} disabled={disabled || loading || option.disabled} onClick={() => choose(option.id)} sx={{ minHeight: 44, whiteSpace: "normal", gap: 1 }}>
+              <MenuItem key={option.id} selected={option.id === activeValue} disabled={disabled || loading || option.disabled} onClick={() => choose(option.id)} sx={{ minHeight: 44, whiteSpace: "normal", gap: 1, borderRadius: 1.5 }}>
                 <Box sx={{ flex: 1, minWidth: 0 }}><Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{option.label}</Typography>{option.detail && (section !== "model" || option.disabled) ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.35, overflowWrap: "anywhere" }}>{option.detail}</Typography> : null}</Box>
                 {option.id === activeValue ? <CheckIcon fontSize="small" /> : null}
               </MenuItem>,
