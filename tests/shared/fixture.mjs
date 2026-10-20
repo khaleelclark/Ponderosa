@@ -145,6 +145,8 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
     return opening;
   };
   const options = { dataDir, logger: false, allowedBrowseRoots: [root],
+    // Controlled inert providers use a fixed sample, independent of CI host pressure.
+    resourceAdmissionObservation: { sample: async () => ({ availableBytes: 8 * 1024 ** 3, memoryFullPercent: 0, ioFullPercent: 0, source: 'linux_host' }) },
     engines: [{ adapter, isInstalled: () => providerInstalled?.(adapter.id) !== false, authStatus: async () => ({ authenticated: true, source: 'subscription_presence', detail: 'Controlled fixture; no provider account' }), availabilityProbe: async () => { providerProbes.push({ engineId: adapter.id }); return { available: true }; } },
       ...(diagnosticProvider ? [{ adapter: { ...adapter, id: 'claude', displayName: 'Controlled diagnostic provider' },
         isInstalled: () => providerInstalled?.('claude') !== false,

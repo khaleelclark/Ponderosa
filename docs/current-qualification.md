@@ -1,10 +1,14 @@
-# Public beta and current qualification — 19 October 2026
+# Public beta and current qualification — 20 October 2026
 
-The [published `v1.0.0-beta.1` release](https://github.com/khaleelclark/Ponderosa/releases/tag/v1.0.0-beta.1)
+The [published `v0.1.0` release](https://github.com/khaleelclark/Ponderosa/releases/tag/v0.1.0)
 contains macOS arm64 DMG, Windows x64 EXE, Linux x64 DEB and AppImage, an offline
-guide and checksums. It was published on 16 October 2026. GitHub currently marks
-it `prerelease: false` despite the beta tag; changing that classification remains
-a release-owner decision.
+guide and checksums. It was published on 16 October 2026 as `v1.0.0-beta.1` and
+renamed to `v0.1.0` at the release owner's request on 20 October. Its original
+installer filenames, embedded build identities and hashes remain unchanged.
+The next installer version is **0.1.1**, retaining channel **beta**. For 0.x
+releases, the root package version is the exact installer version; advance it
+before cutting another release. GitHub's existing `prerelease: false`
+classification is unchanged.
 
 ## Build and verification entry points
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -85,5 +86,24 @@ test("native pruning rejects a symlink in place of the runtime addon", { skip: p
     symlinkSync(path.join(root, "outside.node"), path.join(release, "runtime.node"));
     assert.throws(() => pruneNativeBuildFiles(root, "win32"), /ordinary file/);
     assert.equal(readFileSync(path.join(root, "outside.node"), "utf8"), "preserve");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("only the pinned upstream libvips image may retain its public build paths", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ponderosa-upstream-privacy-"));
+  try {
+    const serverRequire = createRequire(new URL("../../apps/server/package.json", import.meta.url));
+    const sharpRequire = createRequire(serverRequire.resolve("sharp"));
+    const upstream = readFileSync(sharpRequire.resolve("@img/sharp-libvips-darwin-arm64/binary"));
+    assert.ok(upstream.includes(Buffer.from("/Users/runner")));
+    const filename = path.join(root, "app/server/node_modules/@img/sharp-libvips-darwin-arm64/lib/libvips-cpp.8.18.7.dylib");
+    mkdirSync(path.dirname(filename), { recursive: true });
+    writeFileSync(filename, upstream);
+    assert.doesNotThrow(() => assertNoBuildMachinePaths(root, ["/Users/runner"]));
+    writeFileSync(filename, Buffer.concat([upstream, Buffer.from("modified")]));
+    assert.throws(() => assertNoBuildMachinePaths(root, ["/Users/runner"]), /Build-machine path remains/);
+    rmSync(filename);
+    writeFileSync(path.join(root, "other.dylib"), upstream);
+    assert.throws(() => assertNoBuildMachinePaths(root, ["/Users/runner"]), /Build-machine path remains/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

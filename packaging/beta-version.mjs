@@ -10,13 +10,14 @@ const releaseBranch = "master";
 const coreVersionPattern = String.raw`(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)`;
 
 export function assertBuildVersion(version, channel = "beta") {
-  const stable = channel === "production";
+  const plain = channel === "production" ||
+    (typeof version === "string" && version.startsWith("0.") && !version.includes("-"));
   const match = typeof version === "string"
-    ? new RegExp(`^${coreVersionPattern}${stable ? "" : String.raw`-beta\.([1-9]\d*)`}$`, "u").exec(version)
+    ? new RegExp(`^${coreVersionPattern}${plain ? "" : String.raw`-beta\.([1-9]\d*)`}$`, "u").exec(version)
     : undefined;
   if (!match || match[0] !== version ||
-      (!stable && !Number.isSafeInteger(Number(match[1])))) {
-    throw new Error(`Build version must be ${stable ? "X.Y.Z" : "X.Y.Z-beta.N (positive integer N)"} for channel ${channel}; found ${version}.`);
+      (!plain && !Number.isSafeInteger(Number(match[1])))) {
+    throw new Error(`Build version must be ${plain ? "X.Y.Z" : "X.Y.Z-beta.N (positive integer N)"} for channel ${channel}; found ${version}.`);
   }
 }
 
@@ -39,6 +40,7 @@ function betaSeries() {
   }
   return {
     base: match[1],
+    prerelease: match[2] !== undefined,
   };
 }
 
@@ -66,7 +68,20 @@ function assertCanonicalAnnotatedTags(tags, base) {
 }
 
 export function resolveBetaVersion() {
-  const { base } = betaSeries();
+  const { base, prerelease } = betaSeries();
+  if (!prerelease && base.startsWith("0.")) {
+    const tag = `v${base}`;
+    const existingTag = git(["tag", "--list", tag]) === tag;
+    if (existingTag) {
+      if (git(["cat-file", "-t", `refs/tags/${tag}`]) !== "tag") {
+        throw new Error(`Beta release tag ${tag} must be an annotated tag.`);
+      }
+      if (git(["rev-list", "-n1", tag]) !== git(["rev-parse", "HEAD"])) {
+        throw new Error(`${tag} already identifies another commit; bump the root package version before building another release.`);
+      }
+    }
+    return { version: base, tag, existingTag };
+  }
   const tagPattern = `v${base}-beta.*`;
   const tags = git(["tag", "--list", tagPattern])
     .split("\n")

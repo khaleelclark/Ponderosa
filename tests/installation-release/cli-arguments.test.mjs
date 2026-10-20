@@ -97,13 +97,13 @@ test("installer boolean parses while missing artifact fails before installation"
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });
 
-test("beta build identity uses canonical beta.N; only production accepts a stable version", () => {
+test("beta build identity accepts canonical 0.x versions and beta.N prereleases", () => {
   for (const channel of ["beta", "development", "private"]) {
-    for (const version of ["1.0.0-beta.1", "1.0.0-beta.2", "1.2.3-beta.19"]) {
+    for (const version of ["0.1.0", "0.1.1", "0.10.12", "1.0.0-beta.1", "1.0.0-beta.2", "1.2.3-beta.19"]) {
       assert.doesNotThrow(() => assertBuildVersion(version, channel));
       assert.equal(expectedMacosBundleIdentity({ version, commit: "fixture" }).exactVersion, version);
     }
-    for (const version of ["1.0.0", "0.1.0-private.startup.abc12345", "1.0.0-private.20261015.pr711-c32.1",
+    for (const version of ["0.01.1", "0.1.01", "0.1.1\n", "0.1.1+private", "1.0.0", "0.1.0-private.startup.abc12345", "1.0.0-private.20261015.pr711-c32.1",
       "1.0.0-beta.0", "1.0.0-beta.01", "01.0.0-beta.1", "1.0.0-beta.1+private", "1.0.0-b1",
       "1.0.0-beta.9007199254740992", "1.0.0-beta.1\n", " 1.0.0-beta.1", null, undefined]) {
       assert.throws(() => assertBuildVersion(version, channel), /Build version must be/);
@@ -136,7 +136,7 @@ test("bundle overrides and retained installer manifests reject non-beta identiti
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });
 
-test("beta version preview starts at beta.1, preserves an annotated release and increments without tagging", () => {
+test("beta version preview preserves annotated prereleases and explicit 0.x release identities", () => {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "ponderosa-beta-preview-"));
   try {
     mkdirSync(path.join(cwd, "packaging"));
@@ -167,5 +167,24 @@ test("beta version preview starts at beta.1, preserves an annotated release and 
     git("tag", "-d", "v1.0.0-beta.2");
     git("tag", "-a", "v1.0.0-beta.02", "-m", "Disposable invalid fixture");
     assert.match(preview().stderr, /Invalid beta tag/);
+    git("tag", "-d", "v1.0.0-beta.02");
+    writeFileSync(path.join(cwd, "package.json"), JSON.stringify({ version: "0.2.0-beta.1", type: "module" }));
+    git("add", "package.json"); git("commit", "-m", "Preserve explicit 0.x prerelease behavior");
+    assert.equal(preview().stdout.trim(), "0.2.0-beta.1");
+    writeFileSync(path.join(cwd, "package.json"), JSON.stringify({ version: "0.1.1", type: "module" }));
+    git("add", "package.json"); git("commit", "-m", "Select explicit 0.x version");
+    assert.equal(preview().stdout.trim(), "0.1.1");
+    assert.notEqual(preview("--require-tag").status, 0);
+    assert.equal(git("tag", "--list", "v0.*"), "");
+    git("tag", "v0.1.1");
+    assert.match(preview().stderr, /must be an annotated tag/);
+    git("tag", "-d", "v0.1.1");
+    git("tag", "-a", "v0.1.1", "-m", "Disposable 0.x release fixture");
+    assert.equal(preview("--require-tag").stdout.trim(), "0.1.1");
+    git("commit", "--allow-empty", "-m", "Do not reuse a released identity");
+    assert.match(preview().stderr, /already identifies another commit/);
+    writeFileSync(path.join(cwd, "package.json"), JSON.stringify({ version: "0.1.2", type: "module" }));
+    git("add", "package.json"); git("commit", "-m", "Advance the 0.x release version");
+    assert.equal(preview().stdout.trim(), "0.1.2");
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });

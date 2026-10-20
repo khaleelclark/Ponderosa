@@ -14,7 +14,7 @@ Saved history helps work continue, but does not mean an agent recalls every deta
 
 ## Public beta
 
-`v1.0.0-beta.1` is the first public beta. The release repository is [khaleelclark/Ponderosa](https://github.com/khaleelclark/Ponderosa), [public releases](https://github.com/khaleelclark/Ponderosa/releases)
+`v0.1.0` is the first public beta, originally labeled `v1.0.0-beta.1`. The release repository is [khaleelclark/Ponderosa](https://github.com/khaleelclark/Ponderosa), [public releases](https://github.com/khaleelclark/Ponderosa/releases)
 
 Linux, macOS and Windows are the beta targets.
 
@@ -38,7 +38,7 @@ stores Ponderosa’s records locally, while AI requests still go to your provide
 ## Install and open
 
 The [installation and user guide](https://ponderosa.khaleelclark.com/ponderosa-guide/#first-run)
-describes the packages published with [v1.0.0-beta.1](https://github.com/khaleelclark/Ponderosa/releases/tag/v1.0.0-beta.1):
+describes the packages published with [v0.1.0](https://github.com/khaleelclark/Ponderosa/releases/tag/v0.1.0):
 
 | Beta target | Package format |
 | --- | --- |

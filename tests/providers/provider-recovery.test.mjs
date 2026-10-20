@@ -237,7 +237,7 @@ test('cold first-Chat creation bootstraps inventory; project catalogs replace th
 
 for (const scenario of ['empty', 'malformed-first', 'malformed-later', 'malformed-cursor', 'repeated']) test(`RPC inventory distinguishes known-empty from incomplete pagination: ${scenario}`, { timeout: 15000 }, async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-model-rpc-'));
-  t.after(() => rm(root, { recursive: true, force: true })); const handles = [];
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })); const handles = [];
   await writeFile(path.join(root, 'app-server'), `
     require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
       const m=JSON.parse(line);if(m.id===undefined)return;
@@ -264,7 +264,7 @@ for (const scenario of ['empty', 'malformed-first', 'malformed-later', 'malforme
 for (const auth of ['subscription', 'api-key', 'unknown']) test(`selected Codex model test enforces subscription auth and exact selection: ${auth}`, { timeout: 15000,
   skip: process.platform === 'win32' || /\s/u.test(process.execPath) ? 'Owned executable fixture requires a POSIX shebang' : false }, async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-model-check-')); const handles = [];
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const bin = path.join(root, 'codex');
   await writeFile(bin, '#!' + process.execPath + '\n' + `
     const fs=require('node:fs');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(path.join(root, 'calls'))},JSON.stringify(args)+'\\n');
@@ -313,7 +313,7 @@ test('transient refresh failure retains cached inventory and cold Chat admission
 
 test('a reused Codex session can select Fast then Standard without changing ordinary-turn billing tier', { timeout: 15000 }, async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-fast-rpc-')); const handles = [];
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   await writeFile(path.join(root, 'app-server'), `
     const fs=require('node:fs');const seen={args:process.argv.slice(2),requests:[]};
     require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
@@ -352,7 +352,7 @@ for (const first of ['engines', 'chats']) test(`bounded provider operations surv
 
 test('model inventory reads only initialize and paginated models, without unrelated tool/skill discovery', { timeout: 15000 }, async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-model-only-')); const handles = [];
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   await writeFile(path.join(root, 'app-server'), `
     const fs=require('node:fs');const methods=[];
     require('node:readline').createInterface({input:process.stdin}).on('line',line=>{

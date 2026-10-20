@@ -23,9 +23,39 @@ const heldFs = await import(fsUrl);
 const { createServer } = await import(pathToFileURL(path.join(server, 'dist/app.js')));
 const { resolveLauncherPaths, hostPlatformAdapter, currentPonderosaStatus, stopPonderosa } = await import(pathToFileURL(path.join(launcher, 'index.js')));
 const { withLocalLauncherAuthority } = await import(pathToFileURL(path.join(launcher, 'control.js')));
+const { prepareEngineSupervision, supervisePonderosaEngine } = await import(pathToFileURL(path.join(launcher, 'engine-supervisor.js')));
 
 const windows = { skip: process.platform !== 'win32' ? 'Windows retained directory reopen regression' : false };
 const normalLocation = process.env.LOCALAPPDATA ?? os.tmpdir();
+
+for (const replaceRoot of [false, true]) test(`supervisor receipt cleanup waits for a local owner without accepting a replacement root: replacement=${replaceRoot}`, async t => {
+  const root = mkdtempSync(path.join(normalLocation, 'ponderosa-supervisor-release-'));
+  const dataDir = path.join(root, 'launcher');
+  const paths = resolveLauncherPaths({ platform: hostPlatformAdapter(), dataDir, installRoot: install ?? repository });
+  paths.serverEntry = path.join(server, 'dist/main.js');
+  let owner, passed = false;
+  try {
+    const handle = await prepareEngineSupervision(paths);
+    owner = new DataDirectoryAuthority(dataDir);
+    const release = delay(200).then(() => {
+      owner.close(); owner = undefined;
+      if (replaceRoot) { renameSync(dataDir, dataDir + '-original'); mkdirSync(dataDir); }
+    });
+    try {
+      if (replaceRoot) await assert.rejects(supervisePonderosaEngine(paths, handle), /held physical roots changed/);
+      else assert.equal(await supervisePonderosaEngine(paths, handle), 'supervised');
+    } finally { await release; }
+    if (replaceRoot) {
+      assert.ok(existsSync(path.join(dataDir + '-original', 'launcher-state/engine-supervisor.json')));
+      assert.deepEqual(heldFs.readdirSync(dataDir), []);
+    } else assert.equal(existsSync(paths.engineSupervisorPath), false);
+    passed = true;
+  } finally {
+    owner?.close();
+    if (passed) rmSync(root, { recursive: true, force: true });
+    else t.diagnostic(`Failed supervisor cleanup fixture preserved: ${root}`);
+  }
+});
 
 test('Windows retained-root listings have independent cursors and never follow a replacement or reparse point', windows, t => {
   const root = mkdtempSync(path.join(normalLocation, 'ponderosa-retained-root-'));
