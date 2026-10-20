@@ -233,7 +233,7 @@ export function ComposerRuntimeSelector({
     if (!preserveEditorFocus.current) (section === "engine" ? engineButton : modelButton).current?.focus();
   };
 
-  const optionList = section ? <MenuList autoFocusItem={!preserveEditorFocus.current} disablePadding aria-label={`${section} options`} sx={{ maxHeight: 240, overflowY: "auto", bgcolor: "action.hover", borderRadius: 1.5 }}>
+  const optionList = section ? <MenuList autoFocusItem={!preserveEditorFocus.current} disablePadding aria-label={`${section} options`} sx={{ maxHeight: 240, overflowY: "auto", scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" }, bgcolor: "action.hover", borderRadius: 1.5 }}>
             {activeOptions.flatMap((option, optionIndex) => [
               ...(option.group && option.group !== activeOptions[optionIndex - 1]?.group ? [<ListSubheader key={option.group} disableSticky sx={{ bgcolor: "transparent", lineHeight: "30px" }}>{option.group}</ListSubheader>] : []),
               <MenuItem key={option.id} selected={option.id === activeValue} disabled={disabled || option.disabled} onClick={() => choose(option.id)} sx={{ minHeight: 44, whiteSpace: "normal", gap: 1 }}>
@@ -315,6 +315,8 @@ export function ComposerRuntimeSelector({
             maxHeight: "min(520px, calc(var(--ponderosa-app-viewport-block-size, 100dvh) - 80px))",
             overflowX: "hidden",
             overflowY: "auto",
+            scrollbarWidth: "none",
+            "&::-webkit-scrollbar": { display: "none" },
             overscrollBehavior: "contain",
             p: 1,
             border: 1,
