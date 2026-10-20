@@ -50,7 +50,7 @@ export function observeNotificationVisibility(
     observer?.disconnect();
     threshold = nextThreshold;
     observer = new IntersectionObserver(entries => {
-      const entry = entries[0];
+      const entry = entries.at(-1);
       intersecting = Boolean(entry?.isIntersecting);
       onVisible(Boolean(entry && notificationIsSufficientlyVisible(entry)));
     }, { root: scrollRoot, threshold: nextThreshold });

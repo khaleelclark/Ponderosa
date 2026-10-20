@@ -68,3 +68,12 @@ test('resizing rebuilds the native threshold; cleanup cancels pending rechecks a
   f.stop(); assert.equal(f.frames.size, 0); assert.equal(f.listeners.size, 0);
   assert.equal(f.observers[1].disconnected, true);
 });
+
+test('queued transitions use the latest entry so entering messages cannot remain offscreen', () => {
+  const f = fixture();
+  const geometry = { boundingClientRect: { width: 400, height: 800 }, intersectionRect: { width: 200, height: 100 }, rootBounds: { width: 400, height: 200 } };
+  f.observers[0].callback([{ ...geometry, isIntersecting: false }, { ...geometry, isIntersecting: true }]);
+  assert.equal(f.visible.at(-1), true);
+  f.scroll(); assert.equal(f.frames.size, 1);
+  f.stop();
+});
