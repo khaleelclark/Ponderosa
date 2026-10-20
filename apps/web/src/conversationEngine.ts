@@ -10,18 +10,23 @@ export function engineIsAuthenticated(engine: Pick<EngineDto, "authentication"> 
   return engine?.authentication === "authenticated";
 }
 
-export function engineIsAvailable(engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled"> | undefined): boolean {
-  return Boolean(engine && engine.enabled !== false && engineIsAuthenticated(engine) && engine.intakeReady);
+export function engineIsAvailable(engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled" | "installed"> | undefined): boolean {
+  return Boolean(engine && engine.enabled !== false && engine.installed !== false && engineIsAuthenticated(engine) && engine.intakeReady);
 }
 
 export function engineUnavailableReason(
-  engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled">,
+  engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled" | "installed">,
 ): string | undefined {
+  if (engine.installed === false) return "Not installed";
   if (engine.enabled === false) return "Disabled";
   if (engine.authentication === "checking") return "Checking availability";
   if (engine.authentication !== "authenticated") return "Sign-in required";
   if (!engine.intakeReady) return "Unavailable";
   return undefined;
+}
+
+export function engineCanDiscover(engine: Pick<EngineDto, "authentication" | "enabled" | "installed"> | undefined): boolean {
+  return Boolean(engine && engine.enabled !== false && engine.installed !== false && engineIsAuthenticated(engine));
 }
 
 /** Shared creation/import default: never choose arbitrarily among providers. */
@@ -31,16 +36,16 @@ export function soleAvailableEngineId(engines: readonly EngineDto[]): string | u
 }
 
 /** An operator-disabled provider is intentionally inactive, not unhealthy. */
-export function engineCanTestAccess(engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled" | "reachability">): boolean {
-  return engine.enabled !== false && engineIsAuthenticated(engine) &&
+export function engineCanTestAccess(engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled" | "installed" | "reachability">): boolean {
+  return engine.enabled !== false && engine.installed !== false && engineIsAuthenticated(engine) &&
     (!engine.intakeReady || engine.reachability !== "reachable");
 }
 
-export function engineStatusPresentation(engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled" | "reachability" | "resourceAdmission">): {
+export function engineStatusPresentation(engine: Pick<EngineDto, "authentication" | "intakeReady" | "enabled" | "installed" | "reachability" | "resourceAdmission">): {
   label: "Checking" | "Reachable" | "Intake ready" | "Needs attention" | "Inactive" | "Host resources";
   color: "success" | "warning" | "default";
 } {
-  if (engine.enabled === false) return { label: "Inactive", color: "default" };
+  if (engine.enabled === false || engine.installed === false) return { label: "Inactive", color: "default" };
   if (engine.resourceAdmission?.state === "held") return { label: "Host resources", color: "warning" };
   if (engine.authentication === "checking" || engine.reachability === "checking") {
     return { label: "Checking", color: "default" };
@@ -67,10 +72,12 @@ export function engineAvailabilityPresentation(engines: EngineDto[]): {
     return { label: "Checking engines", severity: "warning", detail: "Ponderosa is still checking its AI providers." };
   }
 
-  const enabled = engines.filter((engine) => engine.enabled !== false);
+  const enabled = engines.filter((engine) => engine.enabled !== false && engine.installed !== false);
   const available = enabled.filter(engineIsAvailable);
   const unavailable = enabled.filter((engine) => !engineIsAvailable(engine));
   const disabled = engines.filter((engine) => engine.enabled === false);
+  const missing = engines.filter((engine) => engine.installed === false);
+  const missingSummary = missing.length ? `${missing.map(engine => engine.displayName).join(", ")} ${missing.length === 1 ? "is" : "are"} not installed.` : "";
   const availableSummary = available.length
     ? `${available.map((engine) => engine.displayName).join(", ")} ${available.length === 1 ? "is" : "are"} ready.`
     : "No enabled engine can currently run work.";
@@ -91,7 +98,7 @@ export function engineAvailabilityPresentation(engines: EngineDto[]): {
     return {
       label: "Inactive",
       severity: "default",
-      detail: `${disabledSummary || "All configured providers are disabled by the operator."} Enable a provider to run work.`,
+      detail: `${[missingSummary, disabledSummary].filter(Boolean).join(" ")} ${missing.length ? "Install and sign in to Codex or Claude" : "Enable a provider"} to run work.`,
     };
   }
   const detail = [
@@ -99,6 +106,7 @@ export function engineAvailabilityPresentation(engines: EngineDto[]): {
     availableSummary,
     unavailableSummary,
     disabledSummary,
+    missingSummary,
   ].filter(Boolean).join(" ");
 
   if (unavailable.length > 0) return { label: "Needs attention", severity: "warning", detail };

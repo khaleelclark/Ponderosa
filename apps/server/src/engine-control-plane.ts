@@ -132,6 +132,18 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     }
   };
 
+  const providerInstalled = (id: string, registration = engines.get(id)): boolean => {
+    const installed = registration?.isInstalled?.() !== false;
+    if (!installed) engineAuthStatuses.invalidate(id);
+    return installed;
+  };
+  const providerDiscoveryEnabled = (id: string): boolean =>
+    providerEnabled(id) && providerInstalled(id);
+  const providerInactiveError = (): Error => Object.assign(
+    new Error("Provider is not installed or is disabled on this host."),
+    { statusCode: 409, code: "PROVIDER_INACTIVE" },
+  );
+
   const runtimeFailureDetail = (engineId: string): string | undefined => {
     const denial = engineAvailability.denial(engineId);
     return denial
@@ -141,6 +153,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
   const runtimeAdmissionBlocker = (id: string, registration: EngineRegistration): import("@ponderosa/core").QueuedAdmissionBlockerDto | undefined => {
     const providerId = id.slice(0, 128);
     if (!providerEnabled(id)) return { kind: "provider_disabled", providerId };
+    if (!providerInstalled(id, registration)) return { kind: "provider_unavailable", providerId };
     const resources = context.resourceAdmission?.snapshot(activeRuns.size);
     if (resources?.state === "held") return { kind: "host_resource_pressure", providerId, observedAt: resources.observedAt, resourceAdmission: resources };
     const auth = registration.authStatus ? engineAuthStatuses.snapshot(id) : { state: "known" as const, authenticated: true };
@@ -155,6 +168,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     registration: EngineRegistration,
   ): Promise<{
     configured: true;
+    installed?: boolean;
     authentication: "authenticated" | "unauthenticated" | "error";
     intakeReady: boolean;
     reachability: "unverified" | "reachable" | "degraded";
@@ -170,6 +184,11 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     availabilityInstanceId?: string;
     authLastKnown?: { authenticated: boolean; observedAt: string };
   }> => {
+    if (!providerInstalled(id, registration)) return {
+      configured: true, installed: false, authentication: "unauthenticated",
+      intakeReady: false, reachability: "unverified",
+      availabilityDetail: "Provider CLI is not installed on this host. Install it, then recheck sign-in.",
+    };
     let auth: import("@ponderosa/core").EngineAuthStatus;
     try {
       auth = registration.authStatus
@@ -202,6 +221,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     const enabled = providerEnabled(id);
     return {
       configured: true,
+      installed: true,
       authentication: unknown ? "error" : auth.authenticated ? "authenticated" : "unauthenticated",
       intakeReady: enabled && !unknown && auth.authenticated && !denial && context.resourceAdmission?.snapshot(activeRuns.size).state !== "held",
       authObservedAt: engineAuthStatuses.snapshot(id).observedAt,
@@ -285,7 +305,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
   };
   const providerUsageTarget = async (registration: EngineRegistration): Promise<ProviderUsageTarget> => {
     const enabled = providerEnabled(registration.adapter.id);
-    const auth = registration.authStatus
+    const auth = !providerDiscoveryEnabled(registration.adapter.id) ? { authenticated: false } : registration.authStatus
       ? await engineAuthStatuses.get(registration.adapter.id, registration.authStatus)
       : { authenticated: true, detail: "authenticated provider" };
     if (!enabled || !auth.authenticated) {
@@ -457,6 +477,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     if (isClosed() || deletingProjectIds.has(projectId)) {
       return Promise.reject(new Error("Project capability discovery is unavailable during deletion or shutdown"));
     }
+    if (!providerDiscoveryEnabled(adapter.id)) return Promise.resolve(undiscoveredEngineCapabilities);
     if (!adapter.capabilities) {
       return Promise.resolve({
         steering: false,
@@ -568,6 +589,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     discovered: boolean;
     refreshing: boolean;
   } => {
+    if (!providerDiscoveryEnabled(adapter.id)) return { capabilities: undiscoveredEngineCapabilities, discovered: false, refreshing: false };
     if (!adapter.capabilities) {
       return {
         capabilities: undiscoveredEngineCapabilities,
@@ -711,6 +733,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     if (isClosed() || deletingProjectIds.has(project.id)) {
       return Promise.reject(new Error("Project model discovery is unavailable during deletion or shutdown"));
     }
+    if (!providerDiscoveryEnabled(adapter.id)) return Promise.reject(providerInactiveError());
     if (!adapter.discoverModelCatalog) {
       return Promise.reject(new Error("this engine does not provide model discovery"));
     }
@@ -839,6 +862,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     adapter: Adapter,
     modelId: string,
   ): Promise<EngineModelValidationDto> => {
+    if (!providerDiscoveryEnabled(adapter.id)) throw providerInactiveError();
     const authority: ModelCatalogDiscoveryAuthority = {
       projectId: project.id,
       engineId: adapter.id,

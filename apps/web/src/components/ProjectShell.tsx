@@ -18,7 +18,7 @@ import { useAgent, useAgentHealth, useConversations, useAgents } from "../hooks/
 import { queryKeys } from "../queryKeys";
 import { retainedDataFailure } from "../retainedData";
 import { workspaceFileReturnFallback } from "../workspaceFileReturn";
-import { enginesWithModelCatalog } from "../conversationEngine";
+import { enginesWithModelCatalog, engineCanDiscover } from "../conversationEngine";
 import { assertNeverRoute, nestedProjectRouteResources, routeToPath, type ProjectRoute } from "../routeRegistry";
 import { routeReturnTarget, routeReturnLabel, type Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
@@ -91,7 +91,7 @@ export function ProjectShell({
   const modelCatalogQuery = useQuery({
     queryKey: queryKeys.engines.models(projectId, "claude"),
     queryFn: () => api.getEngineModels(projectId, "claude"),
-    enabled: Boolean(claudeEngine),
+    enabled: engineCanDiscover(claudeEngine),
     staleTime: 5 * 60_000,
   });
   const projectEngines = useMemo(

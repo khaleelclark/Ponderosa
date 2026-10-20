@@ -235,6 +235,8 @@ export interface EngineDto {
   modelCatalogKnown?: boolean;
   /** The adapter is configured on this Ponderosa host. */
   configured: true;
+  /** Host CLI presence, independent of sign-in and the operator switch. */
+  installed?: boolean;
   /** Global operator switch. Disabled engines retain queued work but cannot lease it. */
   enabled?: boolean;
   /** Authentication probe truth. `checking` never means signed out, and

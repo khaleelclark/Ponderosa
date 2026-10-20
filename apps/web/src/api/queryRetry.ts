@@ -7,6 +7,7 @@ export function shouldRetryQuery(failureCount: number, error: unknown): boolean 
   // TanStack passes 1 for the first failed attempt. Allow one retry only,
   // after the shared Retry-After window, then surface the limit to the UI.
   if (error instanceof ApiRequestError && error.status === 429) return failureCount <= 1;
+  if (error instanceof ApiRequestError && (error.body as { code?: string } | undefined)?.code === "PROVIDER_INACTIVE") return false;
   if (error instanceof DOMException && error.name === "AbortError") return false;
   return failureCount < 3;
 }

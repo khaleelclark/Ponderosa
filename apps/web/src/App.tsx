@@ -353,7 +353,7 @@ export default function App({
       const now = Date.now();
       for (const engine of providerEngines.current) {
         if (
-          engine.enabled === false ||
+          engine.enabled === false || engine.installed === false ||
           (engine.authentication === "authenticated" && engine.intakeReady && engine.reachability === "reachable") ||
           providerRecheckInFlight.current.has(engine.id) ||
           now - (providerRecheckAt.current.get(engine.id) ?? 0) < 4_000

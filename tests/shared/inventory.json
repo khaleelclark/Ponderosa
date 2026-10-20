@@ -854,6 +854,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24, built core; actual folder component and sidebar projection; no provider/browser account",
       "origin": "UI001 sidebar-only completeness, freshness, ordering and preferences invalidation"
+    },
+    {
+      "path": "tests/providers/optional-provider-ui.test.mjs",
+      "feature": "providers",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; real TypeScript provider projections and query retry policy; no provider account",
+      "origin": "Optional Codex/Claude installation admission and presentation regression"
     }
   ],
   "retainedReleasePayload": [

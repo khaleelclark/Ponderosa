@@ -29,6 +29,7 @@ import {
   effortOptionsForModel,
   engineIsAvailable,
   enginesWithModelCatalog,
+  engineCanDiscover,
   resolveRuntimeSelection,
   runtimeControlState,
 } from "../conversationEngine";
@@ -702,7 +703,7 @@ function ProviderSettingsSection({
                   <Typography fontWeight={800}>{engine.displayName}</Typography>
                   <Typography
                     variant="caption"
-                    color={engine.intakeReady ? "text.secondary" : "warning.main"}
+                    color={engine.intakeReady || engine.installed === false ? "text.secondary" : "warning.main"}
                     sx={{
                       display: "block",
                       maxWidth: "100%",
@@ -711,7 +712,9 @@ function ProviderSettingsSection({
                       wordBreak: "break-word",
                     }}
                   >
-                    {engine.reachability === "reachable"
+                    {engine.installed === false
+                      ? "Not installed on this host"
+                      : engine.reachability === "reachable"
                       ? "Reachable"
                       : engine.intakeReady
                         ? "Intake ready"
@@ -804,7 +807,7 @@ function ProviderSettingsSection({
             ) : null}
             {engine.enabled !== false && !engineIsAvailable(engine) ? (
               <Alert
-                severity="warning"
+                severity={engine.installed === false ? "info" : "warning"}
                 sx={{ mt: 2 }}
                 action={
                   <Button
@@ -819,7 +822,9 @@ function ProviderSettingsSection({
                   </Button>
                 }
               >
-                {engine.authentication === "authenticated"
+                {engine.installed === false
+                  ? "Install this provider’s CLI on the host and sign in, then recheck. You can use Ponderosa with either Codex or Claude."
+                  : engine.authentication === "authenticated"
                   ? "Provider access needs attention before it can start new work."
                   : "Sign in on this host, then return to Ponderosa. Sign-in will be checked automatically."}
               </Alert>
@@ -868,7 +873,7 @@ export function WorkspaceSettingsView({
   const modelCatalogQuery = useQuery({
     queryKey: queryKeys.engines.models(validationProject?.id, "claude"),
     queryFn: () => api.getEngineModels(validationProject!.id, "claude"),
-    enabled: Boolean(validationProject && engines.some((engine) => engine.id === "claude")),
+    enabled: Boolean(validationProject) && engineCanDiscover(engines.find((engine) => engine.id === "claude")),
     staleTime: 5 * 60_000,
   });
   const readinessQuery = useQuery({
