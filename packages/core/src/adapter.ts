@@ -566,6 +566,8 @@ export interface EngineAvailabilityStatus {
 /** One provider registration shared by engine producers and server consumers. */
 export interface EngineRegistration {
   adapter: Adapter;
+  /** Cheap host executable presence check; never starts a provider process. */
+  isInstalled?: () => boolean;
   authStatus?: (options?: EngineProbeOptions) => Promise<EngineAuthStatus>;
   /** Explicit provider entitlement check; never run during polling. */
   availabilityProbe?: (options?: EngineProbeOptions) => Promise<EngineAvailabilityStatus>;

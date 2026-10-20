@@ -43,7 +43,7 @@ export function runtimeAttachmentPaths(value) {
 // The child is real but inert: no shell, network, provider account or user data.
 // Inert Windows roots cannot spawn descendants and are assigned to an exact
 // kill-on-close Job before publication; POSIX roots keep their detached group.
-export async function fixture({ diagnosticProvider = false, beforeRuntimeClose } = {}) {
+export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerInstalled } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
@@ -143,8 +143,9 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose }
     return opening;
   };
   const options = { dataDir, logger: false, allowedBrowseRoots: [root],
-    engines: [{ adapter, authStatus: async () => ({ authenticated: true, source: 'subscription_presence', detail: 'Controlled fixture; no provider account' }), availabilityProbe: async () => { providerProbes.push({ engineId: adapter.id }); return { available: true }; } },
+    engines: [{ adapter, isInstalled: () => providerInstalled?.(adapter.id) !== false, authStatus: async () => ({ authenticated: true, source: 'subscription_presence', detail: 'Controlled fixture; no provider account' }), availabilityProbe: async () => { providerProbes.push({ engineId: adapter.id }); return { available: true }; } },
       ...(diagnosticProvider ? [{ adapter: { ...adapter, id: 'claude', displayName: 'Controlled diagnostic provider' },
+        isInstalled: () => providerInstalled?.('claude') !== false,
         authStatus: async () => ({ authenticated: true, source: 'subscription_presence', detail: 'Controlled diagnostic; no provider account' }),
         availabilityProbe: async () => { providerProbes.push({ engineId: 'claude' }); return { available: true }; },
       }] : [])],

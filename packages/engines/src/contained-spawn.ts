@@ -81,7 +81,7 @@ function executableFile(candidate: string): boolean {
   }
 }
 
-function executableAvailable(input: ContainedSpawnInput): boolean {
+export function executableAvailable(input: Pick<ContainedSpawnInput, "bin" | "cwd" | "env">): boolean {
   const explicitPath = path.isAbsolute(input.bin) || input.bin.includes("/") ||
     (process.platform === "win32" && input.bin.includes("\\"));
   const bases = explicitPath

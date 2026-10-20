@@ -34,6 +34,8 @@ export { composerCapabilities, parseClaudeMcpList, parseCodexMcpList } from "./c
 // Re-export the Adapter contract from core so consumers import engines in one place.
 export type { Adapter, AgentEvent, EngineAuthStatus, EngineAvailabilityStatus, EngineRegistration } from "@ponderosa/core";
 
+import { executableAvailable } from "./contained-spawn.js";
+import { runtimeEnvironment } from "./runtime-environment.js";
 import type { EngineRegistration } from "@ponderosa/core";
 import { claudeAuthStatus, claudeAvailabilityStatus, codexAuthStatus, codexAvailabilityStatus } from "./auth.js";
 import { CodexAdapter } from "./codex.js";
@@ -50,12 +52,16 @@ function configuredProviderBinary(
 export function defaultEngineRegistrations(
   env: NodeJS.ProcessEnv = process.env,
 ): EngineRegistration[] {
+  env = runtimeEnvironment(env);
   const codexBin = configuredProviderBinary(env, "PONDEROSA_CODEX_BIN", "codex");
   const claudeBin = configuredProviderBinary(env, "PONDEROSA_CLAUDE_BIN", "claude");
+  const installed = (bin: string): boolean => executableAvailable({ bin, cwd: process.cwd(), env });
   return [
     {
       adapter: new CodexAdapter({ bin: codexBin }),
-      authStatus: options => codexAuthStatus(env, options),
+      isInstalled: () => installed(codexBin),
+      authStatus: options => installed(codexBin)
+        ? codexAuthStatus(env, options) : Promise.resolve({ authenticated: false }),
       availabilityProbe: options => codexAvailabilityStatus(env, undefined, () => codexAuthStatus(env, options), options),
     },
     {
@@ -63,7 +69,9 @@ export function defaultEngineRegistrations(
         bin: claudeBin,
         modelEnvironment: env,
       }),
-      authStatus: () => claudeAuthStatus(env),
+      isInstalled: () => installed(claudeBin),
+      authStatus: () => installed(claudeBin)
+        ? claudeAuthStatus(env) : Promise.resolve({ authenticated: false }),
       availabilityProbe: options => claudeAvailabilityStatus(env, undefined, undefined, options),
     },
   ];

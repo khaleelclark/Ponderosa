@@ -5,6 +5,7 @@ import type {
   EngineAvailabilityStatus,
   EngineCapabilities,
   EngineDto,
+  EngineRegistration,
   EngineModelValidationDto,
   ProjectEngineCapabilitiesDto,
   ProjectEngineModelCatalogDto,
@@ -22,12 +23,6 @@ import {
 import { restrictedProviderExceptionLogDetail } from "../provider-exception-properties.js";
 import { projectProviderAvailabilityStatus } from "../provider-success-projection.js";
 
-interface EngineRouteRegistration {
-  adapter: Adapter;
-  authStatus?: () => Promise<EngineAuthStatus>;
-  availabilityProbe?: () => Promise<EngineAvailabilityStatus>;
-}
-
 interface OperationalNotificationInput {
   dedupeKey: string;
   category: "communication" | "provider" | "coordination" | "decision" | "system";
@@ -44,14 +39,14 @@ interface OperationalNotificationInput {
 }
 
 interface EngineRoutesContext {
-  engines: ReadonlyMap<string, EngineRouteRegistration>;
+  engines: ReadonlyMap<string, EngineRegistration>;
   store: Pick<AgentStore, "getAgent" | "getProject">;
   workspace: Pick<WorkspaceStore, "cursor" | "getPreferences" | "updatePreferences">;
-  engineDto(registration: EngineRouteRegistration): Promise<EngineDto>;
+  engineDto(registration: EngineRegistration): Promise<EngineDto>;
   resourceAdmissionHeld?(): Promise<boolean>;
   providerUsageCenter(refresh: "none" | "stale"): Promise<ProviderUsageCenterDto>;
   providerUsageState(
-    registration: EngineRouteRegistration,
+    registration: EngineRegistration,
     refresh: "none" | "stale" | "force",
   ): Promise<ProviderUsageStateDto>;
   publishWorkspaceSince(cursor: number): void;
@@ -191,7 +186,7 @@ export function registerEngineRoutes(
       if (current) return current;
       const operationStartedAt = new Date().toISOString();
       const operation = (async (): Promise<EngineDto> => {
-      if (await context.resourceAdmissionHeld?.()) return engineDto(registration);
+      if (workspace.getPreferences().providerAvailability[request.params.id] === false || registration.isInstalled?.() === false || await context.resourceAdmissionHeld?.()) return engineDto(registration);
       authStatuses.invalidate(request.params.id);
       let auth: EngineAuthStatus;
       try {
@@ -325,7 +320,8 @@ export function registerEngineRoutes(
       const registrations = scopedEngineId
         ? [engines.get(scopedEngineId)!]
         : [...engines.values()];
-      return Promise.all(registrations.map(async ({ adapter }) => {
+      return Promise.all(registrations.map(async registration => {
+        const { adapter } = registration;
         const selectedModel = adapter.id === scopedEngineId
           ? request.query.model?.trim()
             || (
@@ -335,7 +331,7 @@ export function registerEngineRoutes(
             )
             || undefined
           : undefined;
-        const snapshot = forceRefresh
+        const snapshot = forceRefresh && registration.isInstalled?.() !== false && workspace.getPreferences().providerAvailability[adapter.id] !== false
           ? {
               capabilities: await discoverCapabilities(
                 project.id,

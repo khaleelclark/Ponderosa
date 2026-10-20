@@ -62,6 +62,7 @@ interface ServerControlRoutesContext {
     registration: EngineRegistration,
   ): Promise<{
     configured: true;
+    installed?: boolean;
     authentication: "authenticated" | "unauthenticated" | "error";
     intakeReady: boolean;
     reachability: "unverified" | "reachable" | "degraded";
@@ -488,6 +489,7 @@ app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
       return {
         id,
         configured: true as const,
+        installed: status.installed,
         authentication: status.authentication,
         intakeReady: status.intakeReady,
         reachability: status.reachability,
@@ -621,6 +623,7 @@ app.get("/api/diagnostics/ready", async (_request, reply): Promise<ReadinessDto>
       return {
         id,
         configured: true as const,
+        installed: status.installed,
         authentication: status.authentication,
         intakeReady: status.intakeReady,
         reachability: status.reachability,
@@ -642,11 +645,12 @@ app.get("/api/diagnostics/ready", async (_request, reply): Promise<ReadinessDto>
   const intakeReady = runtimeStatuses.filter((runtime) => runtime.intakeReady).length;
   const reachable = runtimeStatuses.filter((runtime) => runtime.reachability === "reachable").length;
   const degraded = runtimeStatuses.filter((runtime) => runtime.reachability === "degraded").length;
+  const installedRuntimeCount = runtimeStatuses.filter(runtime => !("installed" in runtime) || runtime.installed !== false).length;
   const runtimes = {
     ok: intakeReady > 0,
     detail: engines.size === 0
       ? "no runtimes are configured"
-      : `${intakeReady} of ${engines.size} configured runtimes intake-ready; ${reachable} reachable, ${degraded} degraded`,
+      : `${intakeReady} of ${installedRuntimeCount} installed runtimes intake-ready; ${reachable} reachable, ${degraded} degraded`,
   };
   const communicationStates = store.listProjects().map((project) => ({
     projectId: project.id,

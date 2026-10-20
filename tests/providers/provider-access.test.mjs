@@ -81,3 +81,104 @@ test('Q05 real Claude validation boundary uses only a local fake executable and 
   assert.ok(handles.every(handle => !handle.isAlive()), 'Owned validation process remains alive');
   passed = true;
 });
+
+import { defaultEngineRegistrations } from '@ponderosa/engines';
+import { createRequire } from 'node:module';
+import { createEngineControlPlane } from '../../apps/server/dist/engine-control-plane.js';
+import { registerEngineRoutes } from '../../apps/server/dist/routes/engines.js';
+import { EngineAuthStatusCache } from '../../apps/server/dist/engine-auth-cache.js';
+const Fastify = createRequire(new URL('../../apps/server/package.json', import.meta.url))('fastify');
+
+test('optional providers: presence checks exact executable paths and PATH, detect install/removal, and never probe an absent CLI', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-provider-presence-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const missing = path.join(root, 'not installed');
+  const registrations = defaultEngineRegistrations({ PONDEROSA_CODEX_BIN: missing, PONDEROSA_CLAUDE_BIN: missing });
+  for (const registration of registrations) {
+    assert.equal(registration.isInstalled(), false);
+    assert.deepEqual(await registration.authStatus({ onRuntimeSpawned() { assert.fail('Absent CLI spawned an auth helper'); } }), { authenticated: false });
+  }
+  await writeFile(missing, 'fixture'); await chmod(missing, 0o700);
+  assert.ok(registrations.every(r => r.isInstalled()), 'Installing at a configured path must be detected without restart');
+  await rm(missing);
+  assert.ok(registrations.every(r => !r.isInstalled()));
+  // Explicit missing configuration must never fall back to a different host binary.
+  const binary = path.join(root, process.platform === 'win32' ? 'claude.EXE' : 'claude');
+  await writeFile(binary, 'fixture'); await chmod(binary, 0o700);
+  assert.equal(defaultEngineRegistrations({ PATH: root, PONDEROSA_CLAUDE_BIN: '' }).find(r => r.adapter.id === 'claude').isInstalled(), true);
+  assert.equal(defaultEngineRegistrations({ PATH: root, PONDEROSA_CLAUDE_BIN: missing }).find(r => r.adapter.id === 'claude').isInstalled(), false);
+  if (process.platform !== 'win32') {
+    await chmod(binary, 0o600);
+    assert.equal(defaultEngineRegistrations({ PATH: root, PONDEROSA_CLAUDE_BIN: '' }).find(r => r.adapter.id === 'claude').isInstalled(), false);
+  }
+});
+
+test('absent or disabled provider discovery/recheck creates no helpers; reinstall recovers without restarting or rerouting', async () => {
+  const app = Fastify({ logger: false });
+  let installed = false, enabled = true, discoveries = 0, probes = 0, authReads = 0;
+  const project = { id: 'presence-project', hostPath: process.cwd() };
+  const registration = defaultEngineRegistrations({ PONDEROSA_CLAUDE_BIN: '/__ponderosa_absent_provider__/claude' }).find(r => r.adapter.id === 'claude');
+  registration.isInstalled = () => installed;
+  registration.authStatus = async () => { authReads++; return { authenticated: true }; }; // stale profile must not override absence
+  registration.availabilityProbe = async () => { probes++; return { available: true }; };
+  registration.adapter.discoverModelCatalog = async () => { discoveries++; return { models: [], cliVersion: 'fixture', configurationKey: 'fixture' }; };
+  registration.adapter.capabilities = async () => { discoveries++; return { steering: false, persistentSessions: false, commands: [], mcpServers: [], composerCapabilities: [] }; };
+  registration.adapter.validateModel = async () => { discoveries++; return { valid: true }; };
+  const engines = new Map([['claude', registration]]), auth = new EngineAuthStatusCache();
+  const availability = { get: () => undefined, denial: () => undefined, record: x => x, servingBuildRevision: 'fixture', servingInstanceId: 'fixture' };
+  const workspace = { cursor: () => 0, getPreferences: () => ({ providerAvailability: { claude: enabled } }) };
+  const store = { getProject: id => id === project.id ? project : undefined, listAgents: () => [] };
+  const plane = createEngineControlPlane({ engines, store, workspace, engineAuthStatuses: auth, engineAvailability: availability, providerUsage: {}, providerEnabled: () => enabled, reusableRuntime() {}, applyOperatorModelOptions() {}, publishWorkspaceSince() {}, appendWorkspace() {}, activeRuns: new Map(), app, deletingProjectIds: new Set(), isClosed: () => false, providerProcessAuthority: { register() { assert.fail('Unexpected provider process'); } } });
+  registerEngineRoutes(app, { engines, store, workspace, engineDto: plane.engineDto, authStatuses: auth, availability, discoverModelCatalog: plane.discoverEngineModelCatalog, validateModel: plane.validateEngineModel, discoverCapabilities: plane.discoverEngineCapabilities, readCapabilities: plane.readEngineCapabilities, projectDeletionInProgress: () => false, publishWorkspaceSince() {}, notifyScheduler() {}, createOperationalNotification() {}, resolveOperationalNotification() {} });
+  try {
+    for (const scenario of ['absent', 'disabled']) {
+      installed = scenario === 'disabled'; enabled = scenario !== 'disabled';
+      for (let repeat = 0; repeat < 3; repeat++) {
+        const result = await app.inject({ method: 'GET', url: '/api/projects/presence-project/engine-models/claude' });
+        assert.equal(result.statusCode, 409); assert.equal(result.json().code, 'PROVIDER_INACTIVE');
+        const capabilities = await app.inject({ method: 'GET', url: '/api/projects/presence-project/engine-capabilities?refresh=1' });
+        assert.equal(capabilities.statusCode, 200); assert.equal(capabilities.json()[0].discovered, false); // no invented successful discovery
+        const validate = await app.inject({ method: 'POST', url: '/api/projects/presence-project/engine-models/claude/validate', payload: { modelId: 'fixture' } });
+        assert.equal(validate.statusCode, 409);
+        const recheck = await app.inject({ method: 'POST', url: '/api/engines/claude/recheck' }); assert.equal(recheck.statusCode, 200); assert.equal(recheck.json().intakeReady, false);
+      }
+    }
+    assert.equal(discoveries, 0); assert.equal(probes, 0); assert.equal(authReads, 0, 'Absent and disabled providers must not start authentication helpers');
+    installed = false; enabled = true;
+    const absent = await plane.engineDto(registration);
+    assert.equal(absent.installed, false); assert.equal(absent.intakeReady, false); assert.equal(absent.reachability, 'unverified');
+    assert.equal(plane.runtimeAdmissionBlocker('claude', registration).kind, 'provider_unavailable');
+    const reads = authReads;
+    await plane.engineDto(registration); assert.equal(authReads, reads, 'Repeated absent-provider status reads must not authenticate');
+    installed = true;
+    const present = await plane.engineDto(registration); assert.equal(present.installed, true); assert.equal(present.intakeReady, true);
+    const catalog = await app.inject({ method: 'GET', url: '/api/projects/presence-project/engine-models/claude' }); assert.equal(catalog.statusCode, 200); assert.equal(discoveries, 1);
+    await app.inject({ method: 'POST', url: '/api/engines/claude/recheck' }); assert.equal(probes, 1);
+    installed = false;
+    assert.equal((await plane.engineDto(registration)).intakeReady, false, 'Cached authentication/catalog must not authorize a removed executable');
+    assert.equal(plane.engineModelCatalogDiscoveryAuthorities.size, 0); assert.equal(plane.engineCapabilityDiscoveryAuthorities.size, 0);
+  } finally { await plane.drainEngineModelCatalogDiscoveries(); await plane.drainEngineCapabilityDiscoveries(); await app.close(); }
+});
+
+for (const providers of [[], ['codex'], ['claude'], ['codex', 'claude']]) {
+  test('fresh server supports installed provider set: ' + (providers.join('+') || 'neither'), { timeout: 30000 }, t => withFixture(t, async f => {
+    const roster = f.ok(await f.api('GET', '/api/engines'));
+    assert.deepEqual(roster.filter(x => x.intakeReady).map(x => x.id).sort(), [...providers].sort());
+    for (const engine of roster) assert.equal(engine.installed, providers.includes(engine.id));
+    const response = await f.api('GET', '/api/diagnostics/ready');
+    assert.equal(response.status, providers.length ? 200 : 503);
+    const ready = response.body;
+    assert.equal(ready.checks.runtimes.ok, providers.length > 0);
+    assert.match(ready.checks.runtimes.detail, new RegExp(`${providers.length} of ${providers.length} installed`));
+    assert.deepEqual(f.providerProbes, []);
+    assert.equal(f.turns.length, 0);
+    if (providers.length) {
+      const engine = providers[0];
+      const chat = f.ok(await f.api('POST', '/api/chats', { label: 'Single-provider install', defaultEngine: engine }, { 'idempotency-key': crypto.randomUUID() }));
+      const agent = f.ok(await f.api('POST', `/api/projects/${chat.projectId}/agents`, { title: 'Installed provider', engine, conversationId: chat.id, initialMessage: 'Controlled task', idempotencyKey: crypto.randomUUID(), awaitResult: true }));
+      await f.settled(agent.id);
+      assert.equal((await f.detail(agent.id)).agent.activeEngine, engine, 'Existing stable provider selection must not be rerouted');
+      assert.ok(f.turns.length > 0, 'Installed provider must execute controlled work');
+    }
+  }, { diagnosticProvider: true, providerInstalled: id => providers.includes(id) }));
+}
