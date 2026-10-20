@@ -878,6 +878,17 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24; no provider account",
       "origin": "Runtime slider: exact stop IDs, commit fences, pending state, Escape and atomic inherited reset"
+    },
+    {
+      "path": "tests/chats/notification-visibility.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "additionalFeatures": [
+        "notifications"
+      ],
+      "requirements": "Node24; real visibility source with controlled native-observer geometry; no account or network",
+      "origin": "Mac Safari/PWA scroll observer churn and read-visibility regression"
     }
   ],
   "retainedReleasePayload": [

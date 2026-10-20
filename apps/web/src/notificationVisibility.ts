@@ -34,6 +34,7 @@ export function observeNotificationVisibility(
 ): () => void {
   let observer: IntersectionObserver | undefined;
   let threshold: number | undefined;
+  let intersecting = false;
   const observe = () => {
     const elementRect = element.getBoundingClientRect();
     const rootRect = scrollRoot?.getBoundingClientRect();
@@ -50,17 +51,18 @@ export function observeNotificationVisibility(
     threshold = nextThreshold;
     observer = new IntersectionObserver(entries => {
       const entry = entries[0];
+      intersecting = Boolean(entry?.isIntersecting);
       onVisible(Boolean(entry && notificationIsSufficientlyVisible(entry)));
     }, { root: scrollRoot, threshold: nextThreshold });
     observer.observe(element);
   };
   observe();
   // Area ratios cannot detect every half-height/half-width transition. Re-arm
-  // once per scrolling frame so native intersection geometry checks the exact
-  // read predicate, including clipping by ancestors.
+  // intersecting messages once per scrolling frame for exact clipping checks.
+  // Native observation still detects offscreen messages entering the viewport.
   let frame: number | undefined;
   const recheck = () => {
-    if (frame !== undefined) return;
+    if (!intersecting || frame !== undefined) return;
     frame = window.requestAnimationFrame(() => {
       frame = undefined;
       observer?.unobserve(element);
