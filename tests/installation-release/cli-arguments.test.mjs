@@ -7,8 +7,49 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { assertBuildVersion } from "../../packaging/beta-version.mjs";
 import { expectedMacosBundleIdentity } from "../../packaging/qualification/macos-bundle-metadata.mjs";
+import { qualifyProviderReachability } from "../../packaging/qualification/provider-reachability.mjs";
 
 const packaging = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../packaging");
+
+test("installed provider qualification awaits pending authentication and skips absent or disabled CLIs", async () => {
+  const now = Date.now();
+  const calls = [];
+  const result = await qualifyProviderReachability({
+    baseUrl: "http://qualification.invalid", cookie: "fixture", expectedRevision: "fixture", now: () => now,
+    fetchImpl: async (url, options) => {
+      calls.push([url, options.method ?? "GET"]);
+      if (url.endsWith("/api/engines")) return Response.json([
+        { id: "codex", installed: true, enabled: true, authentication: "error", authReason: "probe_pending" },
+        { id: "missing", installed: false, enabled: true, authentication: "authenticated" },
+        { id: "disabled", installed: true, enabled: false, authentication: "authenticated" },
+      ]);
+      assert.equal(url, "http://qualification.invalid/api/engines/codex/recheck");
+      return Response.json({
+        id: "codex", authentication: "authenticated", enabled: true, intakeReady: true,
+        reachability: "reachable", availabilitySource: "operator_probe",
+        availabilityObservedAt: new Date(now).toISOString(),
+        availabilityBuildRevision: "fixture", servingBuildRevision: "fixture",
+        availabilityInstanceId: "current", servingInstanceId: "current",
+      });
+    },
+  });
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.evidence.filter(entry => entry.qualified).map(entry => entry.providerKind), ["codex"]);
+  assert.deepEqual(calls.map(([url, method]) => [new URL(url).pathname, method]), [
+    ["/api/engines", "GET"], ["/api/engines/codex/recheck", "POST"],
+  ]);
+});
+
+test("rechecking a pending provider never substitutes login for successful current-build evidence", async () => {
+  const result = await qualifyProviderReachability({
+    baseUrl: "http://qualification.invalid", cookie: "fixture", expectedRevision: "fixture",
+    fetchImpl: async url => Response.json(url.endsWith("/api/engines")
+      ? [{ id: "codex", installed: true, authentication: "error", authReason: "probe_pending" }]
+      : { id: "codex", authentication: "authenticated", intakeReady: true, reachability: "unverified" }),
+  });
+  assert.equal(result.passed, false);
+  assert.equal(result.evidence[0].qualified, false);
+});
 const entries = [
   ["build-beta-bundle.mjs", "output"],
   ["verify-beta-bundle.mjs", "bundle"],

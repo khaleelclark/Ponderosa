@@ -64,8 +64,8 @@ export async function qualifyProviderReachability({ baseUrl, cookie, expectedRev
     const kind = typeof engine?.id === "string" ? engine.id : "unknown";
     let current = engine;
     let probeFailureCategory;
-    if (engine?.authentication === "authenticated" && engine?.enabled !== false &&
-        typeof engine.id === "string") {
+    if (engine?.installed !== false && engine?.enabled !== false &&
+        typeof engine?.id === "string") {
       try {
         const response = await fetchImpl(
           `${baseUrl}/api/engines/${encodeURIComponent(engine.id)}/recheck`,

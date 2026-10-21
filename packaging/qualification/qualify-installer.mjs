@@ -14,6 +14,7 @@ import {
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { auditPortableSymlinkTree } from "./symlink-portability.mjs";
 import { assertMacosBundleIdentity } from "./macos-bundle-metadata.mjs";
 import { verifyMacosApplication } from "./macos-code-signing.mjs";
@@ -199,7 +200,7 @@ try {
   }
   const lifecycleReportPath = path.join(disposable, "launcher-lifecycle-report.json");
   run(path.join(installedRoot, "runtime", nodeName), [
-    path.join(installedRoot, "qualification", "qualify-launcher-lifecycle.mjs"),
+    fileURLToPath(new URL("./qualify-launcher-lifecycle.mjs", import.meta.url)),
     "--install-root", installedRoot,
     "--data-dir", path.join(disposable, "Ponderosa Data"),
     "--report", lifecycleReportPath,
