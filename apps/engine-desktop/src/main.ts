@@ -102,8 +102,6 @@ let engineDetail = "Starting the local Ponderosa service…";
 let allowQuit = false;
 let quitInProgress = false;
 let launchOutput = "";
-let rebootRequired = false;
-let startupGeneration = 0;
 const readyEngines = new WeakSet<ChildProcess>();
 
 function notifyChanged(): void {
@@ -283,22 +281,15 @@ async function openPonderosa(): Promise<void> {
 }
 
 async function startEngine(openBrowser: boolean): Promise<void> {
-  const generation = ++startupGeneration;
   engineState = "starting";
   engineDetail = "Starting the local Ponderosa service…";
   launchOutput = "";
-  rebootRequired = false;
   notifyChanged();
 
   const alreadyRunning = await currentStatus();
   if (!alreadyRunning) {
     const launched = launcher("engine");
     engineProcess = launched;
-    launched.on("message", (message: unknown) => {
-      if (generation === startupGeneration && message && typeof message === "object" && "type" in message && message.type === "ponderosa-engine-reboot-required") {
-        rebootRequired = true;
-      }
-    });
     launched.stdout?.on("data", (chunk: Buffer | string) => {
       launchOutput = `${launchOutput}${String(chunk)}`.slice(-4_000);
     });
@@ -419,10 +410,9 @@ function createWindow(): void {
   window.loadFile(path.join(here, "index.html"));
   window.once("ready-to-show", () => window?.show());
   window.on("closed", () => { window = undefined; });
-  window.on("query-session-end", (event) => {
-    if (allowQuit || rebootRequired) return;
-    event.preventDefault();
-    void requestQuit(false);
+  window.on("session-end", () => {
+    // Windows owns termination here; retained ownership needs real boot proof on relaunch.
+    allowQuit = true;
   });
   window.on("close", (event) => {
     if (allowQuit) return;
@@ -452,12 +442,12 @@ function createTray(): void {
   tray.on("click", showWindow);
 }
 
-async function requestQuit(confirmActiveRuns = true): Promise<boolean> {
+async function requestQuit(): Promise<boolean> {
   if (quitInProgress) return false;
   quitInProgress = true;
   try {
     const running = await currentStatus();
-    if (confirmActiveRuns && running?.status.activeRunCount) {
+    if (running?.status.activeRunCount) {
       const options: MessageBoxOptions = {
         type: "warning",
         buttons: ["Cancel", "Stop Agents and Quit"],

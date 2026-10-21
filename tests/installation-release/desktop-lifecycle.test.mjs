@@ -83,14 +83,26 @@ async function desktop({ activeRuns = 0, stopFails = false, destroyDuringStop = 
   return { app, child, windows, dialogs, handlers, counts: () => ({ stops, quits }) };
 }
 
-test("Windows session ending waits for owned shutdown, including active work, before quitting", async () => {
-  const fixture = await desktop({ activeRuns: 1 });
+test("Windows session ending permits OS termination without starting late cleanup or showing dialogs", async () => {
+  const fixture = await desktop({ activeRuns: 1, stopFails: true });
   let prevented = false;
   fixture.windows[0].emit("query-session-end", { preventDefault() { prevented = true; } });
   await settle();
-  assert.equal(prevented, true);
-  assert.deepEqual(fixture.counts(), { stops: 1, quits: 1 });
+  assert.equal(prevented, false);
+  fixture.windows[0].emit("session-end");
+  fixture.app.quit();
+  await settle();
+  assert.deepEqual(fixture.counts(), { stops: 0, quits: 1 });
   assert.deepEqual(fixture.dialogs, []);
+});
+
+test("a Windows shutdown query canceled before session end retains ordinary Quit guards", async () => {
+  const fixture = await desktop({ activeRuns: 1 });
+  fixture.windows[0].emit("query-session-end", { preventDefault() { assert.fail("shutdown query vetoed"); } });
+  fixture.app.quit();
+  await settle();
+  assert.deepEqual(fixture.counts(), { stops: 0, quits: 0 });
+  assert.equal(fixture.dialogs[0].title, "Quit Ponderosa Engine?");
 });
 
 test("ordinary Quit still lets users cancel active work shutdown", async () => {
@@ -138,9 +150,9 @@ test("late child-exit callbacks tolerate a destroyed desktop window", async () =
   assert.deepEqual(fixture.counts(), { stops: 1, quits: 1 });
 });
 
-test("session shutdown failure keeps cleanup incomplete and does not claim a successful quit", async () => {
+test("ordinary shutdown failure keeps cleanup incomplete and does not claim a successful quit", async () => {
   const fixture = await desktop({ stopFails: true });
-  fixture.windows[0].emit("query-session-end", { preventDefault() {} });
+  assert.equal(await fixture.handlers.get("engine:quit")(), false);
   await settle();
   assert.deepEqual(fixture.counts(), { stops: 1, quits: 0 });
   assert.equal((await fixture.handlers.get("engine:snapshot")()).state, "cleanup_incomplete");
