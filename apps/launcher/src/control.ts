@@ -612,13 +612,19 @@ async function removeDeadState(
   dependencies?: LauncherDependencies,
 ): Promise<void> {
   const reboot = supervisorBootRecovery(paths, state);
+  const blocked = (detail: string) => Object.assign(new Error(detail +
+    (reboot ? " Restart Windows, then retry to verify that the previous Job ended." : "")),
+  { code: reboot ? "WINDOWS_REBOOT_REQUIRED" : "WINDOWS_JOB_DRAIN_UNPROVED" });
   if (reboot?.rebooted) {
     requireLocalLauncherMutation(paths);
     writeJsonAtomic(reboot.pathname, { ...reboot.receipt, status: "drained",
       updatedAt: new Date().toISOString(), detail: "A different Windows kernel boot proves the previous Job ended." });
+  } else if (reboot && reboot.receipt.bootId === undefined && reboot.receipt.recoveryBootId === undefined) {
+    requireLocalLauncherMutation(paths);
+    writeJsonAtomic(reboot.pathname, { ...reboot.receipt, recoveryBootId: reboot.bootId });
   }
   if (!reboot?.rebooted && state.supervisorPid && processAlive(state.supervisorPid)) {
-    throw new Error(
+    throw blocked(
       "Ponderosa's Windows process-tree supervisor is still draining. Retry after it exits; replacement is blocked.",
     );
   }
@@ -628,7 +634,7 @@ async function removeDeadState(
       launcherProcessBirthMarker(state.pid) === state.processBirthMarker,
     );
     if (!exactRetry) {
-      throw new Error(
+      throw blocked(
         "Ponderosa's recorded process is live without exact post-close birth evidence. Replacement remains blocked.",
       );
     }
@@ -636,18 +642,11 @@ async function removeDeadState(
     const deadline = Date.now() + STOP_TIMEOUT_MS;
     while (Date.now() < deadline && processAlive(state.pid)) await delay(200);
     if (processAlive(state.pid)) {
-      throw new Error("The exact Ponderosa process remains live after bounded strict-cleanup retry. Replacement remains blocked.");
+      throw blocked("The exact Ponderosa process remains live after bounded strict-cleanup retry. Replacement remains blocked.");
     }
   }
   if (!supervisorDrained(paths, state)) {
-    if (reboot && reboot.receipt.bootId === undefined && reboot.receipt.recoveryBootId === undefined) {
-      requireLocalLauncherMutation(paths);
-      writeJsonAtomic(reboot.pathname, { ...reboot.receipt, recoveryBootId: reboot.bootId });
-    }
-    throw Object.assign(new Error(
-      "Ponderosa's Windows process-tree supervisor did not prove that its Job drained. Replacement remains blocked." +
-        (reboot ? " Restart Windows, then retry to verify that the previous Job ended." : ""),
-    ), { code: reboot ? "WINDOWS_REBOOT_REQUIRED" : "WINDOWS_JOB_DRAIN_UNPROVED" });
+    throw blocked("Ponderosa's Windows process-tree supervisor did not prove that its Job drained. Replacement remains blocked.");
   }
   if (state.shutdownRequestedAt && readShutdownReceipt(paths, state)?.state !== "clean") {
     if (!dependencies?.recoverShutdown) throw new Error("current shutdown recovery requires an admitted lease transfer");
@@ -915,7 +914,7 @@ export async function stopPonderosa(input: {
     const deadline = Date.now() + STOP_TIMEOUT_MS;
     while (Date.now() < deadline && stillOwned()) await delay(200);
     if (stillOwned()) throw new Error("Ponderosa is still finishing cleanup; exact shutdown remains fenced.");
-  } else if (!supervisorBootRecovery(original, state)?.rebooted &&
+  } else if (!supervisorBootRecovery(original, state) &&
       (processAlive(state.pid) || state.supervisorPid && processAlive(state.supervisorPid))) {
     throw new Error("recorded process is still live without authenticated current authority");
   }
