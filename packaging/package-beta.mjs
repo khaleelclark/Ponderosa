@@ -25,6 +25,7 @@ import {
 import { expectedMacosBundleIdentity } from "./qualification/macos-bundle-metadata.mjs";
 import { assertBuildVersion } from "./beta-version.mjs";
 import { signMacosApplication } from "./qualification/macos-code-signing.mjs";
+import { debianDependencies } from "./qualification/debian-dependencies.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const engineRequire = createRequire(path.join(
@@ -328,6 +329,7 @@ Terminal=false
     "Maintainer: Ponderosa Private Beta",
     "Section: devel",
     "Priority: optional",
+    `Depends: ${debianDependencies(path.join(root, "opt", "ponderosa-engine"))}`,
     "Description: Self-hosted AI Agent orchestration workbench (private beta)",
     "",
   ].join("\n"));

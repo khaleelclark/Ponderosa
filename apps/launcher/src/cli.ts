@@ -208,6 +208,9 @@ async function main(argv: string[]): Promise<void> {
 const direct = isDirectInvocation(process.argv[1], import.meta.url);
 if (direct) {
   main(process.argv.slice(2)).catch((error: unknown) => {
+    if (process.connected && error && typeof error === "object" && "code" in error && error.code === "WINDOWS_REBOOT_REQUIRED") {
+      process.send?.({ type: "ponderosa-engine-reboot-required" }, () => {});
+    }
     process.stderr.write(`Ponderosa launcher error: ${error instanceof Error ? error.message : String(error)}\n`);
     const statePath = (() => {
       try {

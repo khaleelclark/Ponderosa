@@ -1869,6 +1869,30 @@ napi_value Unsupported(napi_env env, napi_callback_info) {
 #endif
 
 
+napi_value WindowsBootIdentity(napi_env env, napi_callback_info) {
+#ifdef _WIN32
+  // Kernel boot GUID: wall-clock adjustments and PID reuse cannot invent a reboot.
+  struct BootEnvironment { GUID id; ULONG firmware; ULONGLONG flags; } boot{};
+  using Query = NTSTATUS (NTAPI *)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+  auto query = reinterpret_cast<Query>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation"));
+  ULONG returned = 0;
+  if (!query || query(static_cast<SYSTEM_INFORMATION_CLASS>(90), &boot, sizeof(boot), &returned) < 0 ||
+      returned < sizeof(GUID)) return Null(env);
+  const GUID empty{};
+  if (std::memcmp(&boot.id, &empty, sizeof(GUID)) == 0) return Null(env);
+  char text[37];
+  std::snprintf(text, sizeof(text), "%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+      static_cast<unsigned long>(boot.id.Data1), boot.id.Data2, boot.id.Data3,
+      boot.id.Data4[0], boot.id.Data4[1], boot.id.Data4[2], boot.id.Data4[3],
+      boot.id.Data4[4], boot.id.Data4[5], boot.id.Data4[6], boot.id.Data4[7]);
+  napi_value result;
+  napi_create_string_utf8(env, text, NAPI_AUTO_LENGTH, &result);
+  return result;
+#else
+  return Null(env);
+#endif
+}
+
 napi_value WindowsProcessBirthMarker(napi_env env, napi_callback_info info) {
 #ifdef _WIN32
   size_t argc=1;napi_value args[1];uint32_t pid=0;
@@ -2396,6 +2420,7 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"windowsJobObjectsSupported", nullptr, WindowsJobObjectsSupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"darwinProcessBirthMarker", nullptr, DarwinProcessBirthMarker, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"windowsProcessBirthMarker", nullptr, WindowsProcessBirthMarker, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"windowsBootIdentity", nullptr, WindowsBootIdentity, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"secureFileAuthoritySupported", nullptr, SecureFileAuthoritySupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"acquirePortableDataDirectory", nullptr, AcquirePortableDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"adoptPortableDataDirectory", nullptr, AdoptPortableDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},

@@ -106,7 +106,7 @@ try {
     if (existsSync(installedApplication)) {
       throw new Error(`${installedApplication} already exists; refusing to replace it.`);
     }
-    run("sudo", ["dpkg", "--install", artifact]);
+    run("sudo", ["apt-get", "install", "--yes", "--no-install-recommends", artifact]);
     uninstall = () => run("sudo", ["dpkg", "--remove", "ponderosa-beta"]);
     installed = true;
   } else if (process.platform === "darwin") {

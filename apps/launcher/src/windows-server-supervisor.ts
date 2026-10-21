@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { WindowsProcessJob, DataDirectoryAuthority, physicalDirectoryIdentity, dataDirectoryAuthoritySupported } from "@ponderosa/native-host";
+import { WindowsProcessJob, DataDirectoryAuthority, physicalDirectoryIdentity, dataDirectoryAuthoritySupported, hostBootIdentity } from "@ponderosa/native-host";
 import type { WindowsDirectoryLeaseTransfer } from "@ponderosa/native-host";
 import { writeJsonAtomic } from "./paths.js";
 
@@ -20,12 +20,15 @@ if (!serverEntry || !installRoot || !statusPath || !generation) {
 }
 const durableStatusPath: string = statusPath;
 const durableGeneration: string = generation;
+const bootId = hostBootIdentity();
+if (!bootId) throw new Error("Windows kernel boot identity is unavailable; safe supervisor recovery cannot be verified.");
 
 function persistStatus(status: "active" | "draining" | "failed" | "drained", detail?: string): void {
   writeJsonAtomic(durableStatusPath, {
     schemaVersion: 1,
     generation: durableGeneration,
     supervisorPid: process.pid,
+    bootId,
     status,
     updatedAt: new Date().toISOString(),
     ...(detail ? { detail } : {}),

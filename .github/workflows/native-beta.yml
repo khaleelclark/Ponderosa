@@ -3,6 +3,10 @@ name: Native private-beta artifacts
 on:
   workflow_dispatch:
     inputs:
+      review_candidate:
+        description: Build an open PR's installers for native manual qualification; never publish
+        type: boolean
+        default: false
       startup_candidate:
         description: Build the private portable-startup candidate for manual Windows testing
         type: boolean
@@ -14,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read
 
 concurrency:
   group: native-beta-${{ github.ref }}
@@ -31,6 +36,7 @@ jobs:
       CI: "true"
       PONDEROSA_RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.startup_candidate && 'development' || 'beta' }}
       PONDEROSA_STARTUP_CANDIDATE: ${{ github.event_name == 'workflow_dispatch' && inputs.startup_candidate && '1' || '0' }}
+      PONDEROSA_REVIEW_CANDIDATE: ${{ github.event_name == 'workflow_dispatch' && inputs.review_candidate && '1' || '0' }}
       PONDEROSA_NODE_VERSION: 24.16.0
       PONDEROSA_EXPECTED_SHA: ${{ github.sha }}
       MACOSX_DEPLOYMENT_TARGET: "14.0"
@@ -59,11 +65,21 @@ jobs:
         run: node packaging/qualification/verify-release-action-pins.mjs
 
       - name: Assert exact source and toolchain
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           expected="$PONDEROSA_EXPECTED_SHA"
           test "$(git rev-parse HEAD)" = "$expected"
-          if [ "$PONDEROSA_STARTUP_CANDIDATE" = "1" ]; then
+          if [ "$PONDEROSA_REVIEW_CANDIDATE" = "1" ]; then
+            test "$PONDEROSA_STARTUP_CANDIDATE" != "1"
+            [[ "$GITHUB_REF" == refs/heads/codex/* ]]
+            pr_head="$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
+              -f state=open -f "head=$GITHUB_REPOSITORY_OWNER:$GITHUB_REF_NAME" \
+              --jq '.[] | select(.base.ref == "master") | .head.sha')"
+            test "$pr_head" = "$expected"
+            git merge-base --is-ancestor origin/master "$expected"
+          elif [ "$PONDEROSA_STARTUP_CANDIDATE" = "1" ]; then
             case "$GITHUB_REF_NAME" in
               codex/portable-startup-20261012|codex/windows-offline-backup-20261012|codex/windows-working-files-20261012|codex/windows-codex-discovery-20261012|codex/windows-managed-chat-20261012) ;;
               *) exit 1 ;;
@@ -80,7 +96,9 @@ jobs:
       - name: Resolve product version
         shell: bash
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+          if [ "$PONDEROSA_REVIEW_CANDIDATE" = "1" ]; then
+            version="$(node -p 'require("./package.json").version')"
+          elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             version="$(node packaging/beta-version.mjs)"
           else
             version="$(node packaging/beta-version.mjs --require-tag)"
@@ -96,6 +114,13 @@ jobs:
       - name: Install exact dependencies
         shell: bash
         run: pnpm install --frozen-lockfile
+
+      - name: Install Debian dependency metadata tooling
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends dpkg-dev
 
       - name: Full verification
         shell: bash
@@ -152,6 +177,7 @@ jobs:
         run: node packaging/package-beta.mjs --format "${{ matrix.format }}"
 
       - name: Collect installed qualification evidence
+        if: env.PONDEROSA_REVIEW_CANDIDATE != '1'
         shell: bash
         run: |
           artifact="$(find dist/installers -maxdepth 1 -type f -name '*.${{ matrix.format }}' -print -quit)"
@@ -214,7 +240,7 @@ jobs:
           NODE
 
       - name: Stage qualified target for atomic promotion
-        if: success() && env.PONDEROSA_STARTUP_CANDIDATE != '1'
+        if: success() && env.PONDEROSA_STARTUP_CANDIDATE != '1' && env.PONDEROSA_REVIEW_CANDIDATE != '1'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: beta-${{ matrix.format }}-${{ github.sha }}
@@ -234,6 +260,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
           path: dist/qualification/*.json
+
+      - name: Record review candidate's remaining native gates
+        if: success() && env.PONDEROSA_REVIEW_CANDIDATE == '1'
+        shell: bash
+        run: |
+          mkdir -p dist/qualification
+          node --input-type=module <<'NODE'
+          import { writeFileSync, appendFileSync } from 'node:fs';
+          const report = { commit: process.env.GITHUB_SHA, version: process.env.PONDEROSA_BUILD_VERSION,
+            platform: process.platform, arch: process.arch, sourceVerificationPassed: true,
+            releaseQualified: false, releaseBlockers: ['Native installed VM and fresh-download acceptance required before manual replacement.'] };
+          writeFileSync('dist/qualification/review-candidate.json', JSON.stringify(report, null, 2) + '\n');
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, 'Review candidate built and source-verified. **Not release qualified:** native acceptance is still required. No publication performed.\n');
+          NODE
 
       - name: Upload native evidence for manual runs
         if: always() && github.event_name == 'workflow_dispatch'

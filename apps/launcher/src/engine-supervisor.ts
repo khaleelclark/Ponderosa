@@ -143,6 +143,7 @@ export async function supervisePonderosaEngine(paths: LauncherPaths, handle?: Pr
     if (message && typeof message === "object" && "type" in message && message.type === "ponderosa-engine-stop") requestQuit();
   };
   process.on("message", requestedByDesktop);
+  if (monitoredParentPid && process.connected) process.send?.({ type: "ponderosa-engine-ready" }, () => {});
 
   try {
     while (true) {

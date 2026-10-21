@@ -776,6 +776,30 @@
       "origin": "F04 native image isolation from writable build cache before packaging and installed verification"
     },
     {
+      "path": "tests/installation-release/desktop-lifecycle.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Node24, built desktop, existing TypeScript; isolated Electron/child-process event fixtures; no native desktop, provider or network",
+      "origin": "Windows session-ending teardown and Linux destroyed-window callback regression"
+    },
+    {
+      "path": "tests/installation-release/launcher-platform.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Node24, built launcher/native-host; disposable executable fixtures; no provider or network",
+      "origin": "Windows native provider discovery outside inherited PATH"
+    },
+    {
+      "path": "tests/installation-release/debian-dependencies.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Linux dpkg-dev and C compiler; disposable ELF fixture; no provider or network",
+      "origin": "DEB native runtime dependencies and xdg-utils are declared for fresh installations"
+    },
+    {
       "path": "tests/installation-release/macos-code-signing.test.mjs",
       "feature": "installation-release",
       "lane": "tooling",

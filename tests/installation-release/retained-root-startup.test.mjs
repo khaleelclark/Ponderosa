@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createServer as createNetServer } from 'node:net';
 import { statSync, existsSync } from 'node:fs';
@@ -18,15 +19,65 @@ const native = install ? path.dirname(createRequire(path.join(server, 'package.j
   : path.join(repository, 'packages/native-host/dist');
 const nativeUrl = pathToFileURL(path.join(native, 'index.js')).href;
 const fsUrl = pathToFileURL(path.join(native, 'fs.js')).href;
-const { DataDirectoryAuthority, DataDirectoryReadReference, physicalDirectoryIdentity } = await import(nativeUrl);
+const { DataDirectoryAuthority, DataDirectoryReadReference, physicalDirectoryIdentity, hostBootIdentity } = await import(nativeUrl);
 const heldFs = await import(fsUrl);
 const { createServer } = await import(pathToFileURL(path.join(server, 'dist/app.js')));
 const { resolveLauncherPaths, hostPlatformAdapter, currentPonderosaStatus, stopPonderosa } = await import(pathToFileURL(path.join(launcher, 'index.js')));
 const { withLocalLauncherAuthority } = await import(pathToFileURL(path.join(launcher, 'control.js')));
+const { ensureDataLayout } = await import(pathToFileURL(path.join(launcher, 'paths.js')));
 const { prepareEngineSupervision, supervisePonderosaEngine } = await import(pathToFileURL(path.join(launcher, 'engine-supervisor.js')));
 
 const windows = { skip: process.platform !== 'win32' ? 'Windows retained directory reopen regression' : false };
 const normalLocation = process.env.LOCALAPPDATA ?? os.tmpdir();
+
+for (const marker of ['absent', 'current', 'previous', 'wrong-generation', 'invalid']) {
+  test(`Windows lost Job receipt recovery requires an exact different kernel boot: ${marker}`, windows, async t => {
+    const bootId = hostBootIdentity();
+    assert.match(bootId, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u);
+    assert.equal(hostBootIdentity(), bootId);
+    const previous = (bootId[0] === '0' ? '1' : '0') + bootId.slice(1);
+    const root = mkdtempSync(path.join(normalLocation, 'ponderosa-job-reboot-'));
+    const paths = resolveLauncherPaths({ platform: hostPlatformAdapter(), dataDir: path.join(root, 'launcher'), installRoot: install ?? repository });
+    paths.serverEntry = path.join(server, 'dist/main.js');
+    const generation = randomUUID();
+    const receiptPath = path.join(paths.runtimeDir, `server-supervisor-${generation}.json`);
+    let passed = false;
+    try {
+      await withLocalLauncherAuthority(paths, (held, identity) => {
+        ensureDataLayout(held);
+        heldFs.writeFileSync(path.join(held.applicationDataDir, 'preserve.txt'), 'preserve application data');
+        heldFs.writeFileSync(held.statePath, JSON.stringify({ schemaVersion: 2, stateEpoch: 2,
+          stateGenerationId: identity.generationId, physicalDataDirectoryIdentity: identity.dataIdentity,
+          physicalLauncherDirectoryIdentity: identity.parentIdentity, generation: randomUUID(), controlToken: 'fixture-only',
+          // A prior boot may reuse the current test PID: it must never be signalled.
+          pid: marker === 'previous' ? process.pid : 2147483647,
+          supervisorPid: marker === 'previous' ? process.pid : 2147483646,
+          supervisorGeneration: generation, port: 9, host: '127.0.0.1', startedAt: new Date().toISOString(),
+          dataDir: paths.applicationDataDir, installRoot: paths.installRoot, version: '0.1.1', commit: 'fixture', channel: 'beta' }));
+        heldFs.writeFileSync(path.join(held.runtimeDir, path.basename(receiptPath)), JSON.stringify({ schemaVersion: 1,
+          generation: marker === 'wrong-generation' ? randomUUID() : generation,
+          supervisorPid: marker === 'previous' ? process.pid : 2147483646, status: 'active',
+          ...(marker === 'absent' ? {} : { bootId: marker === 'invalid' ? 'unknown' : marker === 'previous' ? previous : bootId }) }));
+      });
+      if (marker === 'previous') {
+        assert.equal(await stopPonderosa({ paths }), 'not_running');
+        assert.equal(existsSync(paths.statePath), false);
+        assert.equal(existsSync(receiptPath), false);
+      } else {
+        await assert.rejects(stopPonderosa({ paths }), /did not prove.*Job drained/u);
+        assert.equal(existsSync(paths.statePath), true);
+        const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+        assert.equal(receipt.status, 'active');
+        assert.equal(receipt.recoveryBootId, marker === 'absent' ? bootId : undefined);
+      }
+      assert.equal(readFileSync(path.join(paths.applicationDataDir, 'preserve.txt'), 'utf8'), 'preserve application data');
+      passed = true;
+    } finally {
+      if (passed) rmSync(root, { recursive: true, force: true });
+      else t.diagnostic(`Failed reboot recovery fixture preserved: ${root}`);
+    }
+  });
+}
 
 for (const replaceRoot of [false, true]) test(`supervisor receipt cleanup waits for a local owner without accepting a replacement root: replacement=${replaceRoot}`, async t => {
   const root = mkdtempSync(path.join(normalLocation, 'ponderosa-supervisor-release-'));
