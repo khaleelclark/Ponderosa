@@ -20,14 +20,14 @@ if (!serverEntry || !installRoot || !statusPath || !generation) {
 }
 const durableStatusPath: string = statusPath;
 const durableGeneration: string = generation;
-const bootId = hostBootIdentity();
+const bootSessionId = hostBootIdentity();
 
 function persistStatus(status: "active" | "draining" | "failed" | "drained", detail?: string): void {
   writeJsonAtomic(durableStatusPath, {
     schemaVersion: 1,
     generation: durableGeneration,
     supervisorPid: process.pid,
-    bootId,
+    bootSessionId,
     status,
     updatedAt: new Date().toISOString(),
     ...(detail ? { detail } : {}),

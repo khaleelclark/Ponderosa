@@ -30,12 +30,12 @@ const { prepareEngineSupervision, supervisePonderosaEngine } = await import(path
 const windows = { skip: process.platform !== 'win32' ? 'Windows retained directory reopen regression' : false };
 const normalLocation = process.env.LOCALAPPDATA ?? os.tmpdir();
 
-for (const marker of ['absent', 'absent-live', 'current', 'current-live', 'previous', 'previous-drained', 'recovery-previous', 'wrong-generation', 'invalid']) {
+for (const marker of ['absent', 'absent-live', 'absent-boot-entry', 'current', 'current-live', 'previous', 'previous-drained', 'recovery-previous', 'wrong-generation', 'invalid', 'invalid-overflow']) {
   test(`Windows lost Job receipt recovery requires an exact different kernel boot: ${marker}`, windows, async t => {
     const bootId = hostBootIdentity();
-    assert.match(bootId, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u);
+    assert.match(bootId, /^win32-system:[1-9]\d{0,18}$/u);
     assert.equal(hostBootIdentity(), bootId);
-    const previous = (bootId[0] === '0' ? '1' : '0') + bootId.slice(1);
+    const previous = bootId.replace(/\d+$/u, value => String(BigInt(value) - 1n));
     const rebooted = marker === 'previous' || marker === 'previous-drained' || marker === 'recovery-previous';
     const reusedPid = rebooted || marker.endsWith('-live');
     const root = mkdtempSync(path.join(normalLocation, 'ponderosa-job-reboot-'));
@@ -59,8 +59,10 @@ for (const marker of ['absent', 'absent-live', 'current', 'current-live', 'previ
         heldFs.writeFileSync(path.join(held.runtimeDir, path.basename(receiptPath)), JSON.stringify({ schemaVersion: 1,
           generation: marker === 'wrong-generation' ? randomUUID() : generation,
           supervisorPid: reusedPid ? process.pid : 2147483646, status: marker === 'previous-drained' ? 'drained' : 'active',
-          ...(marker.startsWith('absent') ? {} : marker === 'recovery-previous' ? { recoveryBootId: previous }
-            : { bootId: marker === 'invalid' ? 'unknown' : rebooted ? previous : bootId }) }));
+          ...(marker === 'absent-boot-entry' ? { bootId: randomUUID(), recoveryBootId: randomUUID() }
+            : marker.startsWith('absent') ? {} : marker === 'recovery-previous' ? { recoveryBootSessionId: previous }
+            : { bootSessionId: marker === 'invalid' ? 'unknown' : marker === 'invalid-overflow'
+              ? 'win32-system:9999999999999999999' : rebooted ? previous : bootId }) }));
       });
       if (rebooted) {
         assert.equal(await stopPonderosa({ paths }), 'not_running');
@@ -69,13 +71,13 @@ for (const marker of ['absent', 'absent-live', 'current', 'current-live', 'previ
       } else {
         await assert.rejects(stopPonderosa({ paths }), error => {
           assert.match(error.message, /did not prove.*Job drained|still draining/u);
-          assert.equal(error.code, marker === 'wrong-generation' || marker === 'invalid' ? 'WINDOWS_JOB_DRAIN_UNPROVED' : 'WINDOWS_REBOOT_REQUIRED');
+          assert.equal(error.code, marker === 'wrong-generation' || marker.startsWith('invalid') ? 'WINDOWS_JOB_DRAIN_UNPROVED' : 'WINDOWS_REBOOT_REQUIRED');
           return true;
         });
         assert.equal(existsSync(paths.statePath), true);
         const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
         assert.equal(receipt.status, 'active');
-        assert.equal(receipt.recoveryBootId, marker.startsWith('absent') ? bootId : undefined);
+        assert.equal(receipt.recoveryBootSessionId, marker.startsWith('absent') ? bootId : undefined);
       }
       assert.equal(readFileSync(path.join(paths.applicationDataDir, 'preserve.txt'), 'utf8'), 'preserve application data');
       passed = true;

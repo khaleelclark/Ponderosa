@@ -129,12 +129,12 @@ export function hostProcessBirthMarker(
   return undefined;
 }
 
-/** Kernel identity, independent of wall-clock adjustments and process ID reuse. */
+/** System process creation identity, stable through clock changes and PID reuse. */
 export function hostBootIdentity(platform: NodeJS.Platform = process.platform): string | undefined {
   if (platform !== "win32") return undefined;
   try {
     const value = binding().windowsBootIdentity();
-    return value && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(value) ? value : undefined;
+    return value && /^win32-system:[1-9]\d{0,18}$/u.test(value) ? value : undefined;
   } catch { return undefined; }
 }
 

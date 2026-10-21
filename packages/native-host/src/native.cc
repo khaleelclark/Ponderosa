@@ -1871,23 +1871,35 @@ napi_value Unsupported(napi_env env, napi_callback_info) {
 
 napi_value WindowsBootIdentity(napi_env env, napi_callback_info) {
 #ifdef _WIN32
-  // Kernel boot GUID: wall-clock adjustments and PID reuse cannot invent a reboot.
-  struct BootEnvironment { GUID id; ULONG firmware; ULONGLONG flags; } boot{};
+  // System PID 4 lives for one kernel session. Its immutable creation time,
+  // unlike BootEnvironment's persistent BCD GUID, changes on a real reboot.
+  struct BirthHeader { ULONG next, threads; ULONGLONG private_bytes;
+    ULONG faults, thread_high_water; ULONGLONG cycles; LARGE_INTEGER created; };
+  static_assert(offsetof(BirthHeader, created) == 32);
   using Query = NTSTATUS (NTAPI *)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
   auto query = reinterpret_cast<Query>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation"));
+  if (!query) return Null(env);
+  std::vector<BYTE> bytes(65536);
   ULONG returned = 0;
-  if (!query || query(static_cast<SYSTEM_INFORMATION_CLASS>(90), &boot, sizeof(boot), &returned) < 0 ||
-      returned < sizeof(GUID)) return Null(env);
-  const GUID empty{};
-  if (std::memcmp(&boot.id, &empty, sizeof(GUID)) == 0) return Null(env);
-  char text[37];
-  std::snprintf(text, sizeof(text), "%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-      static_cast<unsigned long>(boot.id.Data1), boot.id.Data2, boot.id.Data3,
-      boot.id.Data4[0], boot.id.Data4[1], boot.id.Data4[2], boot.id.Data4[3],
-      boot.id.Data4[4], boot.id.Data4[5], boot.id.Data4[6], boot.id.Data4[7]);
-  napi_value result;
-  napi_create_string_utf8(env, text, NAPI_AUTO_LENGTH, &result);
-  return result;
+  for (;;) {
+    const NTSTATUS status = query(SystemProcessInformation, bytes.data(), static_cast<ULONG>(bytes.size()), &returned);
+    if (status >= 0) break;
+    if (status != static_cast<NTSTATUS>(0xc0000004L) || bytes.size() >= 16 * 1024 * 1024) return Null(env);
+    bytes.resize(bytes.size() * 2);
+  }
+  if (returned > bytes.size()) return Null(env);
+  for (size_t offset = 0; offset <= returned && returned - offset >= sizeof(SYSTEM_PROCESS_INFORMATION);) {
+    const auto* process = reinterpret_cast<const SYSTEM_PROCESS_INFORMATION*>(bytes.data() + offset);
+    const auto* birth = reinterpret_cast<const BirthHeader*>(bytes.data() + offset);
+    if (reinterpret_cast<uintptr_t>(process->UniqueProcessId) == 4 && birth->created.QuadPart > 0) {
+      const std::string text = "win32-system:" + std::to_string(birth->created.QuadPart);
+      napi_value result; napi_create_string_utf8(env, text.c_str(), NAPI_AUTO_LENGTH, &result); return result;
+    }
+    const ULONG next = process->NextEntryOffset;
+    if (next < sizeof(SYSTEM_PROCESS_INFORMATION) || next > returned - offset) break;
+    offset += next;
+  }
+  return Null(env);
 #else
   return Null(env);
 #endif

@@ -188,12 +188,12 @@ function supervisorBootRecovery(paths: LauncherPaths, state: LauncherState) {
     if (receipt.schemaVersion !== 1 || receipt.generation !== state.supervisorGeneration ||
         receipt.supervisorPid !== state.supervisorPid || typeof receipt.status !== "string" ||
         !["active", "draining", "failed", "drained"].includes(receipt.status)) return undefined;
-    for (const field of ["bootId", "recoveryBootId"]) {
+    for (const field of ["bootSessionId", "recoveryBootSessionId"]) {
       if (receipt[field] !== undefined && (typeof receipt[field] !== "string" ||
-          receipt[field] === "00000000-0000-0000-0000-000000000000" ||
-          !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(receipt[field]))) return undefined;
+          !/^win32-system:[1-9]\d{0,18}$/u.test(receipt[field]) ||
+          BigInt(receipt[field].slice("win32-system:".length)) > 9223372036854775807n)) return undefined;
     }
-    const previous = receipt.bootId ?? receipt.recoveryBootId;
+    const previous = receipt.bootSessionId ?? receipt.recoveryBootSessionId;
     return { pathname, receipt, bootId, rebooted: previous !== undefined && previous !== bootId };
   } catch { return undefined; }
 }
@@ -619,9 +619,9 @@ async function removeDeadState(
     requireLocalLauncherMutation(paths);
     writeJsonAtomic(reboot.pathname, { ...reboot.receipt, status: "drained",
       updatedAt: new Date().toISOString(), detail: "A different Windows kernel boot proves the previous Job ended." });
-  } else if (reboot && reboot.receipt.bootId === undefined && reboot.receipt.recoveryBootId === undefined) {
+  } else if (reboot && reboot.receipt.bootSessionId === undefined && reboot.receipt.recoveryBootSessionId === undefined) {
     requireLocalLauncherMutation(paths);
-    writeJsonAtomic(reboot.pathname, { ...reboot.receipt, recoveryBootId: reboot.bootId });
+    writeJsonAtomic(reboot.pathname, { ...reboot.receipt, recoveryBootSessionId: reboot.bootId });
   }
   if (!reboot?.rebooted && state.supervisorPid && processAlive(state.supervisorPid)) {
     throw blocked(
