@@ -187,7 +187,7 @@ function supervisorBootRecovery(paths: LauncherPaths, state: LauncherState) {
     const receipt = JSON.parse(readFileSync(pathname, "utf8")) as Record<string, unknown>;
     if (receipt.schemaVersion !== 1 || receipt.generation !== state.supervisorGeneration ||
         receipt.supervisorPid !== state.supervisorPid || typeof receipt.status !== "string" ||
-        !["active", "draining", "failed"].includes(receipt.status)) return undefined;
+        !["active", "draining", "failed", "drained"].includes(receipt.status)) return undefined;
     for (const field of ["bootId", "recoveryBootId"]) {
       if (receipt[field] !== undefined && (typeof receipt[field] !== "string" ||
           receipt[field] === "00000000-0000-0000-0000-000000000000" ||

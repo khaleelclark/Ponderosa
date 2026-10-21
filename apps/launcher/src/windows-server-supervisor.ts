@@ -21,7 +21,6 @@ if (!serverEntry || !installRoot || !statusPath || !generation) {
 const durableStatusPath: string = statusPath;
 const durableGeneration: string = generation;
 const bootId = hostBootIdentity();
-if (!bootId) throw new Error("Windows kernel boot identity is unavailable; safe supervisor recovery cannot be verified.");
 
 function persistStatus(status: "active" | "draining" | "failed" | "drained", detail?: string): void {
   writeJsonAtomic(durableStatusPath, {

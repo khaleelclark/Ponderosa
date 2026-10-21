@@ -30,12 +30,13 @@ const { prepareEngineSupervision, supervisePonderosaEngine } = await import(path
 const windows = { skip: process.platform !== 'win32' ? 'Windows retained directory reopen regression' : false };
 const normalLocation = process.env.LOCALAPPDATA ?? os.tmpdir();
 
-for (const marker of ['absent', 'current', 'previous', 'wrong-generation', 'invalid']) {
+for (const marker of ['absent', 'current', 'previous', 'previous-drained', 'wrong-generation', 'invalid']) {
   test(`Windows lost Job receipt recovery requires an exact different kernel boot: ${marker}`, windows, async t => {
     const bootId = hostBootIdentity();
     assert.match(bootId, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u);
     assert.equal(hostBootIdentity(), bootId);
     const previous = (bootId[0] === '0' ? '1' : '0') + bootId.slice(1);
+    const rebooted = marker === 'previous' || marker === 'previous-drained';
     const root = mkdtempSync(path.join(normalLocation, 'ponderosa-job-reboot-'));
     const paths = resolveLauncherPaths({ platform: hostPlatformAdapter(), dataDir: path.join(root, 'launcher'), installRoot: install ?? repository });
     paths.serverEntry = path.join(server, 'dist/main.js');
@@ -50,16 +51,16 @@ for (const marker of ['absent', 'current', 'previous', 'wrong-generation', 'inva
           stateGenerationId: identity.generationId, physicalDataDirectoryIdentity: identity.dataIdentity,
           physicalLauncherDirectoryIdentity: identity.parentIdentity, generation: randomUUID(), controlToken: 'fixture-only',
           // A prior boot may reuse the current test PID: it must never be signalled.
-          pid: marker === 'previous' ? process.pid : 2147483647,
-          supervisorPid: marker === 'previous' ? process.pid : 2147483646,
+          pid: rebooted ? process.pid : 2147483647,
+          supervisorPid: rebooted ? process.pid : 2147483646,
           supervisorGeneration: generation, port: 9, host: '127.0.0.1', startedAt: new Date().toISOString(),
           dataDir: paths.applicationDataDir, installRoot: paths.installRoot, version: '0.1.1', commit: 'fixture', channel: 'beta' }));
         heldFs.writeFileSync(path.join(held.runtimeDir, path.basename(receiptPath)), JSON.stringify({ schemaVersion: 1,
           generation: marker === 'wrong-generation' ? randomUUID() : generation,
-          supervisorPid: marker === 'previous' ? process.pid : 2147483646, status: 'active',
-          ...(marker === 'absent' ? {} : { bootId: marker === 'invalid' ? 'unknown' : marker === 'previous' ? previous : bootId }) }));
+          supervisorPid: rebooted ? process.pid : 2147483646, status: marker === 'previous-drained' ? 'drained' : 'active',
+          ...(marker === 'absent' ? {} : { bootId: marker === 'invalid' ? 'unknown' : rebooted ? previous : bootId }) }));
       });
-      if (marker === 'previous') {
+      if (rebooted) {
         assert.equal(await stopPonderosa({ paths }), 'not_running');
         assert.equal(existsSync(paths.statePath), false);
         assert.equal(existsSync(receiptPath), false);
