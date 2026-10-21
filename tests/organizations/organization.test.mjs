@@ -3,9 +3,8 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { writeFile, readFile, access } from 'node:fs/promises';
 import path from 'node:path';
-import { withFixture, until } from '../shared/fixture.mjs';
+import { withFixture, until, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
-const options = { timeout: 30000 };
 const ended = (f, id) => until(async () => !(await f.detail(id)).runs.some(x => ['preparing', 'running'].includes(x.status)), 'Run ended');
 
 test('check 41: preset creation preserves its selected setup and a frozen guidance snapshot', options, t => withFixture(t, async f => {

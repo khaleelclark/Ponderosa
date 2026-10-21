@@ -4,10 +4,9 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { withFixture, until } from '../shared/fixture.mjs';
+import { withFixture, until, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
 const Database = createRequire(new URL("../../apps/server/package.json", import.meta.url))('better-sqlite3');
-const options = { timeout: 30000 };
 
 test('rollover defaults on for a fresh workspace; saved choices and limits survive reopen', options, t => withFixture(t, async f => {
   const url = '/api/workspace/preferences';

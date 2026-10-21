@@ -1,9 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { withFixture, until } from '../shared/fixture.mjs';
+import { withFixture, until, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
-const options = { timeout: 30000 };
 
 test('check 11: unavailable direct recipient is reported honestly while replay delivers to the available recipient once', options, t => withFixture(t, async f => {
   const chat = await f.createChat('Partial delivery'), recipient = await f.createIdleAgent(chat, 'Available reader'), missing = randomUUID();

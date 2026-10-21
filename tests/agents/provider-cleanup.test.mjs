@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { withFixture, until } from '../shared/fixture.mjs';
+import { withFixture, until, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
 // This file runs in its own Node test process. Retain owned idle sessions so
 // failure injection targets a reusable root rather than normal zero-idle eviction.
 process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS = '4';
-const options = { timeout: 30000 };
 test('checks 39, 95: failed native provider cleanup blocks compact replacement, retries the same owned root and permits later work only after its observed exit', options, async t => {
   let blockedSession, refuse = false, refusedCloses = 0;
   await withFixture(t, async f => {

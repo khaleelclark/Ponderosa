@@ -3,9 +3,8 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { withFixture } from '../shared/fixture.mjs';
+import { withFixture, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
-const options = { timeout: 30000 };
 
 test('checks 61, 62, 63: folder membership, rename, order, stars and collapse persist with conflict fencing', options, t => withFixture(t, async f => {
   const a = await f.createChat('Chat A'), b = await f.createChat('Chat B'), c = await f.createChat('Chat C');

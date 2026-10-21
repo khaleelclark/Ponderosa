@@ -2,9 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { withFixture, until, runtimeAttachmentPaths } from '../shared/fixture.mjs';
+import { withFixture, until, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
-const options = { timeout: 30000 };
 test('checks 14, 15: server drafts use revision fencing, owner isolation and durable recovery', options, t => withFixture(t, async f => {
   const chat = await f.createChat('Drafts'), ownerId = 'browser-a';
   const url = `/api/conversations/${chat.id}/draft`;
