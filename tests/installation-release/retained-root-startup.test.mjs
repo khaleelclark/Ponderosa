@@ -39,6 +39,7 @@ for (const marker of ['legacy-live', 'current', 'previous', 'previous-bookmark',
     const previous = value => value.replace(/\d+$/u, digits => String(BigInt(digits) - 1n));
     const root = mkdtempSync(path.join(normalLocation, 'ponderosa-owner-reuse-'));
     const paths = resolveLauncherPaths({ platform: hostPlatformAdapter(), dataDir: path.join(root, 'launcher'), installRoot: install ?? repository });
+    paths.serverEntry = path.join(server, 'dist/main.js');
     const token = randomUUID();
     let passed = false;
     try {
