@@ -50,7 +50,7 @@ for (const marker of ['absent', 'absent-live', 'current', 'current-live', 'previ
         heldFs.writeFileSync(path.join(held.applicationDataDir, 'preserve.txt'), 'preserve application data');
         heldFs.writeFileSync(held.statePath, JSON.stringify({ schemaVersion: 2, stateEpoch: 2,
           stateGenerationId: identity.generationId, physicalDataDirectoryIdentity: identity.dataIdentity,
-          physicalLauncherDirectoryIdentity: identity.parentIdentity, generation: randomUUID(), controlToken: 'fixture-only',
+          physicalLauncherDirectoryIdentity: identity.parentIdentity, generation: randomUUID(), controlToken: randomUUID(),
           // A prior boot may reuse the current test PID: it must never be signalled.
           pid: reusedPid ? process.pid : 2147483647,
           supervisorPid: reusedPid ? process.pid : 2147483646,
