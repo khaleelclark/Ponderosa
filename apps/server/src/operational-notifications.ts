@@ -8,12 +8,14 @@ import type {
   WorkspaceStore,
 } from "@ponderosa/agents";
 import { AgentWorkProjection } from "./routes/agent-work.js";
+import { setImmediate } from "node:timers/promises";
 
 interface OperationalNotificationsContext {
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   workspace: WorkspaceStore;
   publishWorkspaceSince(cursor: number): void;
+  logError(meta: Record<string, unknown>, message: string): void;
 }
 
 export function createOperationalNotifications(context: OperationalNotificationsContext) {
@@ -152,11 +154,11 @@ export function createOperationalNotifications(context: OperationalNotifications
     });
   };
   const agentWorkProjection = new AgentWorkProjection(store, coordinationV3, workspace);
-  const reconcileCoordinationAttentionNotifications = (): void => {
+  const dirtyCoordinationProjects = new Set<string>();
+  let coordinationNotificationsStopped = false;
+  let coordinationNotificationWork: Promise<void> | undefined;
+  function* coordinationAttentionNotifications(projectId?: string): Generator<void> {
     const retained = new Set<string>();
-    const projects = new Map(
-      store.listProjects().map((project) => [project.id, project]),
-    );
     const pageSize = 200;
     let candidateCursor: Pick<
       CoordinationAttentionCandidateV3View,
@@ -168,7 +170,9 @@ export function createOperationalNotifications(context: OperationalNotifications
         candidateCursor,
       );
       for (const candidate of candidates) {
-        const project = projects.get(candidate.projectId);
+        yield;
+        if (projectId && candidate.projectId !== projectId) continue;
+        const project = store.getProject(candidate.projectId);
         if (!project) continue;
         const focusId = `${candidate.kind}:${candidate.recordId}`;
         const inspector = agentWorkProjection.inspect({
@@ -312,10 +316,50 @@ export function createOperationalNotifications(context: OperationalNotifications
         recordId: last.recordId,
       };
     }
+    // A yielded pass may have observed different revisions. Let its queued
+    // follow-up finish before resolving notices from an incomplete retained set.
+    if (coordinationNotificationsStopped || (projectId && dirtyCoordinationProjects.has(projectId))) return;
     workspace.forEachOpenOperationalNotification("coordination-attention:", (notification) => {
+      if (projectId && notification.projectId !== projectId) return;
       if (!notification.dedupeKey || retained.has(notification.dedupeKey)) return;
       resolveOperationalNotification(notification.dedupeKey);
     });
+  }
+  const reconcileCoordinationAttentionNotifications = (): void => {
+    for (const _ of coordinationAttentionNotifications()) { /* synchronous startup repair */ }
+  };
+  const scheduleCoordinationAttentionNotifications = (projectId: string): Promise<void> => {
+    if (coordinationNotificationsStopped) return Promise.resolve();
+    dirtyCoordinationProjects.add(projectId);
+    if (!coordinationNotificationWork) {
+      coordinationNotificationWork = (async () => {
+        try {
+          await setImmediate();
+          while (!coordinationNotificationsStopped && dirtyCoordinationProjects.size) {
+            const nextProject = dirtyCoordinationProjects.values().next().value!;
+            dirtyCoordinationProjects.delete(nextProject);
+            try {
+              // ponytail: one synchronous inspection per turn. If one inspection
+              // outgrows this ceiling, bound the inspector's graph traversal.
+              for (const _ of coordinationAttentionNotifications(nextProject)) {
+                await setImmediate();
+                if (coordinationNotificationsStopped) break;
+              }
+            } catch (err) {
+              context.logError({ err, projectId: nextProject }, "Workflow notification reconciliation failed");
+            }
+          }
+        } finally {
+          coordinationNotificationWork = undefined;
+        }
+      })();
+    }
+    return coordinationNotificationWork;
+  };
+  const stopCoordinationAttentionNotifications = async (): Promise<void> => {
+    coordinationNotificationsStopped = true;
+    dirtyCoordinationProjects.clear();
+    await coordinationNotificationWork;
   };
   const reconcileContextRolloverFormatNotifications = (): void => {
     // An episode observes this host's retained handles. After a host restart
@@ -396,6 +440,8 @@ export function createOperationalNotifications(context: OperationalNotifications
     reconcileCommunicationFailureNotifications,
     reconcileContextRolloverFormatNotifications,
     reconcileCoordinationAttentionNotifications,
+    scheduleCoordinationAttentionNotifications,
+    stopCoordinationAttentionNotifications,
     reconcileProjectDeletionOperationalNotifications,
     reconcileProjectWorkspace,
     resolveOperationalNotification,

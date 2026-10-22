@@ -208,7 +208,7 @@ type ServerLifecycleContext =
     "linkPreviewWss"> &
   Pick<OperationalNotifications,
     "createOperationalNotification" | "reconcileProjectDeletionOperationalNotifications" |
-    "resolveOperationalNotification"> &
+    "resolveOperationalNotification" | "stopCoordinationAttentionNotifications"> &
   Pick<RuntimeAuthority,
     "drainProviderRuntimeAuthority" | "retireCompletedContextRolloverSession"> &
   Pick<ReadModels, "ensureDecisionResponseActivation"> &
@@ -338,6 +338,7 @@ export function registerServerLifecycle(
     ensureDecisionResponseActivation,
     refreshCommunicationReconciliation,
     stopCommunicationReconciliation,
+    stopCoordinationAttentionNotifications,
     closeRunBrowser,
     providerProcessAuthority,
   } = context;
@@ -1016,6 +1017,7 @@ export function registerServerLifecycle(
     if (conversationDeletionCleanupSweep) clearInterval(conversationDeletionCleanupSweep);
     if (agentCreationRecoverySweep) clearInterval(agentCreationRecoverySweep);
     stopCommunicationReconciliation();
+    void stopCoordinationAttentionNotifications();
     shutdownRunBrowserClosures = [];
     for (const [agentId, run] of activeRuns) {
       shutdownRunBrowserClosures.push(() => closeRunBrowser(agentId, run, "server_shutdown"));
@@ -1041,6 +1043,7 @@ export function registerServerLifecycle(
     const backgroundOperation = Promise.allSettled([
       boundedBackgroundShutdown("web-push delivery", () => webPushDelivery?.stop()),
       boundedBackgroundShutdown("coordination scheduler", () => coordinationV3Scheduler.stop()),
+      boundedBackgroundShutdown("workflow notifications", stopCoordinationAttentionNotifications),
       boundedBackgroundShutdown(
         "runtime communication projection recovery",
         () => startupProjectionRecovery,

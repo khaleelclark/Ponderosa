@@ -415,6 +415,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     reconcileCommunicationFailureNotifications,
     reconcileContextRolloverFormatNotifications,
     reconcileCoordinationAttentionNotifications,
+    scheduleCoordinationAttentionNotifications,
+    stopCoordinationAttentionNotifications,
     reconcileProjectDeletionOperationalNotifications,
     reconcileProjectWorkspace,
     resolveOperationalNotification,
@@ -423,6 +425,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     coordinationV3,
     workspace,
     publishWorkspaceSince,
+    logError: (meta, message) => app.log.error(meta, message),
+  });
+  startupDisposers.push(() => { void stopCoordinationAttentionNotifications(); });
+  workspaceSubscribers.add(({ event }) => {
+    if (((event.type === "notification_changed" && event.decisionId) ||
+         (event.type === "project_changed" && event.action !== "used")) && event.projectId) {
+      void scheduleCoordinationAttentionNotifications(event.projectId);
+    }
   });
   for (const engineId of engines.keys()) {
     const denial = engineAvailability.denial(engineId);
@@ -732,7 +742,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     appendWorkspace,
     publish: (agentId, stored) => publish(agentId, stored),
     reconcileCommunicationNotifications: reconcileCommunicationFailureNotifications,
-    reconcileCoordinationAttentionNotifications,
+    scheduleCoordinationAttentionNotifications,
     isClosed: () => closed,
   });
 
@@ -1036,6 +1046,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     applyResolvedSavedBrowserApproval,
     refreshCommunicationReconciliation,
     stopCommunicationReconciliation,
+    stopCoordinationAttentionNotifications,
     closeRunBrowser: closeRunBrowserAfterRun,
     providerProcessAuthority,
   });
