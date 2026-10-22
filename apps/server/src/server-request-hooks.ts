@@ -136,6 +136,11 @@ export function registerRequestSecurityHooks(
   app.addHook("onRoute", (route) => {
     const handler = route.handler;
     route.handler = async function(request, reply) {
+      // Mutations may still commit after body reception. Keep their reply alive
+      // through processing; read/stream routes retain their own idle policy.
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        request.raw.socket.setTimeout?.(app.server.requestTimeout || 120_000);
+      }
       activeHandlers.add(request.raw);
       try {
         const result = await handler.call(this, request, reply);
@@ -357,6 +362,8 @@ export function registerRequestSecurityHooks(
   });
 
   app.addHook("onSend", async (request, reply, payload) => {
+    // Restore the ordinary outbound idle limit before sending a buffered or streamed reply.
+    request.raw.socket.setTimeout?.(app.server.timeout);
     if (request.url.startsWith("/api/") && !reply.hasHeader("Cache-Control")) {
       reply.header("Cache-Control", "private, no-store");
     }

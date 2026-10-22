@@ -3,6 +3,7 @@ import test from "node:test";
 import Fastify from "fastify";
 import { request as httpRequest } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
+import { Readable } from "node:stream";
 import { registerRequestSecurityHooks } from "../../apps/server/dist/server-request-hooks.js";
 import {
   registerAttachmentUploadLifecycle,
@@ -67,7 +68,7 @@ async function fixture(t, { idle = 50, deadline = 2000 } = {}) {
     v3DispatchKey: 'owned-fixture', agentMessageCapabilities: new Map(), deletingAgentIds: new Set(), validLauncherSession: () => false,
     artifactFilesystemError: () => undefined, isArtifactDependentWorkIntake: () => false, isPublicWebAssetRequest: () => false,
   });
-  for (const route of routes) app.post(route, async (request, reply) => {
+  for (const route of [...routes, '/api/agents/owned/messages']) app.post(route, async (request, reply) => {
     try {
       stages++; const gate = nextGate; entering?.();
       await gate;
@@ -76,6 +77,11 @@ async function fixture(t, { idle = 50, deadline = 2000 } = {}) {
       return reply.code(201).send({ body: request.body.toString('hex') });
     } finally { retireAttachmentUpload(request); }
   });
+  app.post('/api/slow-response', async (_request, reply) => reply.send(Readable.from((async function* () {
+    yield 'first chunk';
+    await delay(200);
+    yield 'last chunk';
+  })())));
   app.get('/api/health', async () => ({ status: 'ok' }));
   const base = await app.listen({ host: '127.0.0.1', port: 0 });
   t.after(async () => {
@@ -121,6 +127,22 @@ for (const route of routes) for (const media of ['application/x-ponderosa-attach
     assert.equal(f.stages, 1); assert.equal(f.completed, 1);
   });
 }
+
+test('ordinary mutation processing also survives the shorter body idle timeout', { timeout: 5000 }, async t => {
+  const f = await fixture(t), gate = f.gate();
+  const pending = f.wire('/api/agents/owned/messages', 'application/octet-stream');
+  await bounded(gate.entered);
+  await delay(200);
+  gate.release();
+  assert.equal((await bounded(pending)).status, 201);
+  assert.equal(f.completed, 1);
+});
+
+test('streamed replies retain their original outbound idle timeout', { timeout: 5000 }, async t => {
+  const f = await fixture(t);
+  const reply = await bounded(f.wire('/api/slow-response', 'application/octet-stream'));
+  assert.equal(reply.error, 'ECONNRESET', JSON.stringify(reply));
+});
 
 test('upload processing preserves handler 504 and admission until actual retirement', { timeout: 5000 }, async t => {
   const f = await fixture(t, { idle: 50, deadline: 120 }), gate = f.gate();
