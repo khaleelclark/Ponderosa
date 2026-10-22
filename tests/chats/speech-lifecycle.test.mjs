@@ -153,3 +153,17 @@ test('screen-reader speech status resolves to one pixel rather than a full-size 
   assert.equal(css.position, 'absolute');
   assert.equal(css.clip, 'rect(0 0 0 0)', 'Keep live status announcements available without showing them');
 });
+
+
+test('ordinary Read Aloud preserves long text and supplementary Unicode without imposing the voice stream limit', () => {
+  for (const text of ['Ordinary message. '.repeat(700), '😀'.repeat(6000)]) {
+    const b = playback();
+    b.startSpeech('owner', text, { speed: 1 }, () => b.surface);
+    assert.equal(b.spoken.length, 1);
+    assert.equal(b.spoken[0].text, text);
+    assert.equal(b.speechSnapshot().status, 'loading');
+    b.spoken[0].onstart(); b.spoken[0].onend();
+    assert.equal(b.speechSnapshot().status, 'stopped');
+    assert.equal(b.intervals.size, 0);
+  }
+});

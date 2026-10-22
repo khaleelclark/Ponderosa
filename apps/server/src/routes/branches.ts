@@ -303,8 +303,8 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
       return branches.preview(request.body);
     }catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid deployment preview'})}
   });
-  app.post<{Body:unknown}>('/api/branches/import-preview',async(request,reply)=>{
-    try{return importBranchPackage(request.body)}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid package'})}
+  app.post<{Body:unknown}>('/api/branches/import-preview',{bodyLimit:AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+1},async(request,reply)=>{
+    try{return request.body&&typeof request.body==='object'&&'schema'in request.body&&request.body.schema==='ponderosa.branch-installation.v1'?context.installations.validate(request.body):importBranchPackage(request.body)}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid package'})}
   });
   app.get<{Params:{id:string};Querystring:{revisionId?:string}}>('/api/branches/:id/configuration',async(request,reply)=>{
     const bindings=request.query.revisionId?branches.bindingRevision(request.params.id,request.query.revisionId):branches.localConfiguration(request.params.id);

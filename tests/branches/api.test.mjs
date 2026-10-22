@@ -98,3 +98,25 @@ test('push destinations retain canonical Branch ownership, nested Chat focus and
  assert.equal(pushPayload(item).url,'/projects/p/chats/c?message=message%23Build-Coordinator');
  const gate=new URL(pushPayload({...item,projectId:undefined,conversationId:undefined,branchId:'b',branchExecutionId:'e'}).url,'https://example.test');assert.equal(gate.searchParams.get('tab'),'executions');assert.equal(gate.searchParams.get('execution'),'e');
 });
+
+
+test('portable installation import is canonically validated before opening a form without creating installation plans', async t => {
+ let store;
+ await withFixture(t, async f => {
+  const pkg={schema:'ponderosa.branch-installation.v1',packageId:randomUUID(),mode:'template',exportedAt:new Date().toISOString(),definition:{schema:'ponderosa.branch.v1',name:'Import validation',trigger:{kind:'manual'},entry:'script',steps:[{id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:5000,source:"process.stdout.write('done')"}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},chats:[],agentBindings:{}};
+  const count=()=>store.sqlite.prepare('SELECT count(*) n FROM branch_installation_plans').get().n;
+  const before=count();
+  assert.equal((await f.api('POST','/api/branches/import-preview',pkg)).status,200);
+  const node={ref:'worker',title:'Worker',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}};
+  const agent={schema:'ponderosa.agent-package.v1',mode:'template',kind:'agent',rootRef:'worker',exportedAt:new Date().toISOString(),sourceLabel:'Worker',agents:[node]};
+  const invalidAgents={...pkg,chats:[{ref:'chat',title:'Chat',agents:[{ref:'worker',definition:{...agent,agents:{length:1,0:node}}}]}]};
+  for(const invalid of [{schema:pkg.schema},{...pkg,definition:undefined},{...pkg,chats:[null]},invalidAgents]) {
+   const response=await f.api('POST','/api/branches/import-preview',invalid);
+   assert.equal(response.status,400,JSON.stringify(response));
+   assert.equal(count(),before);
+  }
+  const valid={...pkg,chats:[{ref:'chat',title:'Chat',agents:[{ref:'worker',definition:agent}]}]};
+  assert.equal((await f.api('POST','/api/branches/import-preview',valid)).status,200);
+  assert.equal(count(),before);
+ }, {storeFactory:dir=>(store=new AgentStore(dir))});
+});

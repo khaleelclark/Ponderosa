@@ -1,4 +1,4 @@
-import {registerLocalMemory} from "./local-memory.js";
+import {registerLocalMemory,localMemoryFor} from "./local-memory.js";
 import {BranchScriptService} from "./branch-script-service.js";
 import {BranchTriggerSourceService} from "./branch-trigger-service.js";
 import {registerBranchRoutes} from './routes/branches.js';
@@ -852,6 +852,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     processAgentDeletionCleanup,
     commitAgentDeletion,
   } = createAgentDeletionAuthority({
+    purgeAgentMemory:receipt=>localMemoryFor(app)?.purgeAgents(receipt)??Promise.resolve(),
     opts,
     store,
     coordinationV3,
@@ -988,6 +989,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
       projectCommunicationToAgentAudit(agentId, event, renderedText, attachments),
   });
   const { processConversationDeletionCleanup } = createConversationDeletionAuthority({
+    purgeChatMemory:id=>localMemoryFor(app)?.purgeChat(id)??Promise.resolve(),
     closeChatBrowsers: async conversationId => {
       await browserSessions.closeChat(conversationId, "chat_deleted", [projectBrowserSessions]);
       const key = chatBrowserOwnerId(conversationId);

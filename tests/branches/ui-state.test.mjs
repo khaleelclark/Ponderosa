@@ -40,7 +40,8 @@ test('native file links preserve Branch context and encoded fragments instead of
   globalThis.window={location:{pathname:'/branches',search:'?branch=b&chat=c&execution=e&settings=profile'}};
   const file='/projects/p/files/view?path=notes%2Fa.md&conversationId=c#section';
   const url=new URL(productWorkspacePath(file),'https://example.test');
-  assert.equal(url.searchParams.get('branch'),'b');assert.equal(url.searchParams.get('execution'),'e');assert.equal(url.searchParams.get('chat'),'c');assert.equal(url.searchParams.get('tab'),'chats');assert.equal(url.searchParams.has('settings'),false);assert.equal(url.searchParams.get('workspace'),file);
+  assert.equal(url.searchParams.get('branch'),'b');assert.equal(url.searchParams.get('execution'),'e');assert.equal(url.searchParams.get('chat'),'c');assert.equal(url.searchParams.get('tab'),'chats');assert.equal(url.searchParams.has('settings'),false);assert.equal(url.searchParams.get('workspace'),file);const parsed=parseBranchRoute(url.search).workspace;assert.equal(parsed.conversationId,'c');assert.equal(parsed.path,'notes/a.md');
+  const pathOnly=new URL(productWorkspacePath('/projects/p/files/view?path=notes%2Fa.md#section'),'https://example.test');assert.equal(parseBranchRoute(pathOnly.search).workspace.path,'notes/a.md');
   window.location.pathname='/';assert.equal(productWorkspacePath(file),file);
  }finally{if(original===undefined)delete globalThis.window;else globalThis.window=original;}
 });
@@ -170,4 +171,21 @@ test('historical failed Scripts show exit diagnostics rather than stdout or a mi
  assert.equal(executionFailures(detail)[0].reason,'Script terminated without an exit code. Inspect Step evidence for error output.');
  detail.attempts[0].scriptEvidence={code:null,error:'Script timeout'};
  assert.equal(executionFailures(detail)[0].reason,'Script timeout');
+});
+
+
+test('provider-attention Settings link stays in Branches and retains its execution return context', async () => {
+ const React=await import('react'),{renderToStaticMarkup}=await import('react-dom/server'),{QueryClient,QueryClientProvider}=await import('@tanstack/react-query');
+ const {ExecutionPanel}=await import('../../apps/web/src/components/branches/ExecutionPanel.tsx');
+ const client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity,gcTime:Infinity}}});
+ try {
+  const execution={id:'execution',branchId:'branch',versionId:'version',state:'waiting',createdAt:new Date().toISOString()};
+  client.setQueryData(['branch-execution-operations',execution.id],{state:'provider_attention',label:'Provider needs attention',observedAt:execution.createdAt,counts:{completed:0,running:0,retrying:0,waitingHuman:0,needsReconciliation:0},agentWaits:[],additionalAgentWaits:0});
+  const detail={execution,steps:[],paths:[],attempts:[],gates:[],decisions:[],waits:[],mapItems:[]};
+  const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ExecutionPanel,{detail,executions:[execution],viewStates:new Map()})));
+  const href=[...html.matchAll(/href="([^"]+)"/g)].map(m=>m[1].replaceAll('&amp;','&')).find(x=>x.includes('providers'));
+  assert.ok(href);
+  const url=new URL(href,'https://example.test');assert.equal(url.pathname,'/branches');
+  assert.deepEqual(parseBranchRoute(url.search),{branchId:'branch',tab:'executions',executionId:'execution',global:'providers'});
+ } finally {client.clear();}
 });

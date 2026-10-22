@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import Database from 'better-sqlite3';
 import {randomUUID,createHash} from 'node:crypto';
 import type {FastifyInstance,FastifyRequest} from 'fastify';
-import {CapabilityPolicyStore,type AgentStore} from '@ponderosa/agents';
+import {CapabilityPolicyStore,type AgentStore,type AgentDeletionReceipt} from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
 import {type Chunk,type Inference} from '@local-memory/mcp-node-private';
 import {HostMemoryRuntime,checkedCollection,type MemoryAuthority} from './local-memory-authority.js';
@@ -134,6 +134,36 @@ export class LocalMemoryService{
     for(const ref of e.refs.values()){const row=await this.core.database.get(ref.id,[ref.scope]);if(!row||this.chunkHash(row)!==ref.hash){this.invalidateSpeech(e,ref.scope==='global'?'global':'chat');throw new MemoryDenied('Speech memory source changed');}}
    });return this.speechCommitValid(runId);
   }catch{this.invalidateSpeech(e);return false;}
+ }
+ private async retire(operation:()=>Promise<void>){
+  this.live();const pending=operation();this.calls.add(pending);try{await pending;}finally{this.calls.delete(pending);}
+ }
+ async purgeChat(chatId:string){
+  return this.retire(async()=>{
+   await this.ready();
+   const guard=async()=>{this.live();const receipt=this.ports.store.getConversationDeletionReceipt(chatId);if(!receipt?.canonicalDeletionCompleted||this.ports.store.getConversation(chatId,{includeDeleting:true}))throw new MemoryDenied('Exact committed Chat deletion required');};
+   await this.core.database.purge('chat:'+chatId,guard);await guard();
+   this.policy.prepare('DELETE FROM local_memory_chat_grants WHERE chat_id=? AND principal_id=?').run(chatId,this.principalId);this.knownScopes.delete('chat:'+chatId);
+  });
+ }
+ async purgeAgents(receipt:AgentDeletionReceipt){
+  return this.retire(async()=>{
+   await this.ready();const store=this.ports.store;
+   const targets=receipt.deletedAgentIds.map(id=>{
+    const row=store.sqlite.prepare('SELECT project_id,conversation_id,ownership_token FROM agent_deletion_tombstones WHERE agent_id=?').get(id) as {project_id:string;conversation_id:string|null;ownership_token:string}|undefined;
+    if(!row?.ownership_token||row.project_id!==receipt.projectId)throw new MemoryDenied('Exact Agent deletion tombstone required');return {id,...row};
+   });
+   const guard=async()=>{this.live();const current=store.getAgentDeletionReceiptByPreviewHash(receipt.previewHash);if(!current?.storageCleanupCompleted||current.id!==receipt.id||JSON.stringify(current.deletedAgentIds)!==JSON.stringify(receipt.deletedAgentIds)||targets.some(t=>store.getAgent(t.id)))throw new MemoryDenied('Exact committed Agent deletion required');};
+   for(const target of targets)if(target.conversation_id)await this.core.database.purge('chat:'+target.conversation_id,guard,target.id);
+  });
+ }
+ async purgeProject(projectId:string){
+  return this.retire(async()=>{
+   await this.ready();const store=this.ports.store;
+   const guard=async()=>{this.live();if(!store.sqlite.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(projectId))throw new MemoryDenied('Exact pending Project deletion required');};
+   await guard();const chats=store.sqlite.prepare('SELECT id FROM conversations WHERE project_id=?').all(projectId) as {id:string}[];
+   for(const {id}of chats){await this.core.database.purge('chat:'+id,guard);await guard();this.policy.prepare('DELETE FROM local_memory_chat_grants WHERE chat_id=? AND principal_id=?').run(id,this.principalId);this.knownScopes.delete('chat:'+id);}
+  });
  }
  private live(){if(this.closed)throw new MemoryDenied('Local memory host is closing');}
  private chat(chatId:string,product?:ProductScope){

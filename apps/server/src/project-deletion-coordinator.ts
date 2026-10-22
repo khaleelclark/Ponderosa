@@ -1,3 +1,4 @@
+import {localMemoryFor} from "./local-memory.js";
 import {requestProduct,resourceInProduct} from "./product-scope.js";
 import type {
   AgentDto,
@@ -448,6 +449,7 @@ export function registerProjectDeletionRoutes(
         throw new Error("Project deletion cannot commit while Chat deletion cleanup is pending");
       }
       browserProfiles.retainedBrowsers.assertClear({ projectId: project.id });
+      await localMemoryFor(app)?.purgeProject(project.id);
       const receipt = store.commitProjectDeletion(project.id, (projectId) => coordinationV3.purgeProject(projectId));
       if (!receipt) throw new Error("Project deletion commit did not produce a receipt");
       communicationReconciliation.delete(project.id);

@@ -20,6 +20,7 @@ export function createConversationDeletionAuthority(context: {
     conversationId: string,
   ): Promise<number>;
   closeChatBrowsers?(conversationId: string): Promise<void>;
+  purgeChatMemory?(conversationId:string):Promise<void>;
   commitAgentDeletion(
     rootAgentIds: string[],
     previewHash: string,
@@ -159,6 +160,8 @@ export function createConversationDeletionAuthority(context: {
     } catch (error) {
       errors.push(error instanceof Error ? error.message : "workspace publication failed");
     }
+    try { await context.purgeChatMemory?.(receipt.conversationId); }
+    catch(error){errors.push(error instanceof Error?error.message:'Chat memory cleanup failed');}
     if (errors.length > 0 || !receipt.storageCleanupCompleted) {
       try {
         context.store.recordConversationDeletionCleanupError(

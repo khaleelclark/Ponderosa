@@ -194,13 +194,6 @@ export function registerAgentOrganizationRoutes(
           WHERE manager.id = a.manager_agent_id
             AND manager.project_id = a.project_id
             AND manager.deleted_at IS NULL AND ${activeAgentProductSql('manager',product)}
-            AND NOT EXISTS (
-              SELECT 1
-              FROM agent_creation_operation_members manager_members
-              JOIN agent_creation_operations manager_operations ON manager_operations.id = manager_members.operation_id
-              WHERE manager_members.agent_id = manager.id
-                AND manager_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
-            )
         )`;
     }
     const searchPredicate = normalizedSearch
@@ -255,13 +248,6 @@ export function registerAgentOrganizationRoutes(
               WHERE manager.id = a.manager_agent_id
                 AND manager.project_id = a.project_id
                 AND manager.deleted_at IS NULL AND ${activeAgentProductSql('manager',product)}
-                AND NOT EXISTS (
-                  SELECT 1
-                  FROM agent_creation_operation_members manager_members
-                  JOIN agent_creation_operations manager_operations ON manager_operations.id = manager_members.operation_id
-                  WHERE manager_members.agent_id = manager.id
-                    AND manager_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
-                )
             ) THEN 1 ELSE 0 END) AS orphaned,
           SUM(CASE WHEN a.deleted_at IS NOT NULL THEN 1 ELSE 0 END) AS deleted
         FROM agents a WHERE a.project_id = ? AND ((a.deleted_at IS NULL AND ${activeAgentProductSql('a',product)}) OR (a.deleted_at IS NOT NULL AND ${artifactAgentProductSql('a',product)}))
@@ -310,26 +296,12 @@ export function registerAgentOrganizationRoutes(
               WHERE child.project_id = a.project_id
                 AND child.manager_agent_id = a.id
                 AND child.deleted_at IS NULL AND ${activeAgentProductSql('child',product)}
-                AND NOT EXISTS (
-                  SELECT 1
-                  FROM agent_creation_operation_members child_members
-                  JOIN agent_creation_operations child_operations ON child_operations.id = child_members.operation_id
-                  WHERE child_members.agent_id = child.id
-                    AND child_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
-                )
             ) AS direct_report_count
           FROM agents a
           LEFT JOIN agents manager
             ON manager.id = a.manager_agent_id
             AND manager.project_id = a.project_id
             AND manager.deleted_at IS NULL AND ${activeAgentProductSql('manager',product)}
-            AND NOT EXISTS (
-              SELECT 1
-              FROM agent_creation_operation_members manager_members
-              JOIN agent_creation_operations manager_operations ON manager_operations.id = manager_members.operation_id
-              WHERE manager_members.agent_id = manager.id
-                AND manager_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
-            )
           WHERE a.project_id = ? AND a.deleted_at IS NULL
             AND a.id IN (${placeholders(idPage.items.length)})
         `).all(projectId, ...idPage.items) as LiveOrganizationRow[];

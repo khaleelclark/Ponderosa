@@ -6,6 +6,7 @@ import {stableJson,validateBranchDefinition,validateBranchConfiguration,interpol
 import type {AgentPortablePackageDto,BranchBindings,ImportAgentPackageResponse,DeployBranchRequest,BranchDto,BranchPackageChat,InstalledBranchPackage,BranchInstallationPreviewDto,BranchInstallationOperationDto} from '@ponderosa/core';
 import {realpathSync,statSync} from 'node:fs';
 import {portableBase64ByteLength} from './agent-package-codec.js';
+import {validatePortableAgentPackage} from './portable-agent-package-validation.js';
 
 type Row=Record<string,any>;
 const PREVIEW_TTL_MS=24*60*60*1000;
@@ -105,7 +106,7 @@ export class BranchInstallationService {
   for(const c of p.chats){
    if(!c.ref||seen.has(c.ref)||typeof c.title!=='string'||!Array.isArray(c.agents))throw new Error('Invalid Chat identity');seen.add(c.ref);
    const agents=new Map(c.agents.map(a=>[a.ref,a]));if(agents.size!==c.agents.length)throw new Error('Duplicate Agent identity');
-   for(const a of c.agents){if(++count>1000||!a.ref||a.definition?.schema!=='ponderosa.agent-package.v1'||a.definition.agents.length!==1||a.definition.agents[0]?.ref!==a.ref||a.definition.rootRef!==a.ref||a.definition.agents[0]?.managerRef)throw new Error('Expected a single portable Agent for each logical identity');
+   for(const a of c.agents){validatePortableAgentPackage(a.definition);if(++count>1000||!a.ref||a.definition?.schema!=='ponderosa.agent-package.v1'||a.definition.agents.length!==1||a.definition.agents[0]?.ref!==a.ref||a.definition.rootRef!==a.ref||a.definition.agents[0]?.managerRef)throw new Error('Expected a single portable Agent for each logical identity');
     if(p.mode==='template'&&a.definition.mode!=='template')throw new Error('Template package cannot contain Agent history');
     const visited=new Set([a.ref]);let parent=a.managerRef;while(parent){if(!agents.has(parent)||visited.has(parent))throw new Error('Invalid organization relationships');visited.add(parent);parent=agents.get(parent)!.managerRef;}
    }

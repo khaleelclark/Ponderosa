@@ -496,8 +496,12 @@ export async function prepareAgentRun(
     })),
   );
   const controller = new AbortController();
+  // Opaque retained tool results cannot be revalidated as this voice Run's memory
+  // exposure. Reuse the existing fresh canonical boundary instead of an exposure journal.
+  const voiceMemoryBoundary=Boolean(opts.localMemory&&internalV3Dispatch&&v3SchedulerRunId&&
+    canonicalVoiceReplyInput(store,coordinationV3,{runId,agentId:agent.id,conversationId:routingConversationId}));
   const requestContextRollover = Boolean(
-    internalV3Dispatch && v3FreshProviderSession,
+    internalV3Dispatch && (v3FreshProviderSession||voiceMemoryBoundary),
   );
   let resumeSessionState = store.resumeSessionState(agent.id);
   const attachedActivationIds = preflightAttachedActivationIds;
@@ -555,7 +559,7 @@ export async function prepareAgentRun(
     // durable coordination records remain intact.
     const staleRuntime = reusableRuntime(agent.id);
     scheduledSessionRollovers.delete(agent.id);
-    clearAgentResumeSession(agent.id, "request_context_rollover");
+    clearAgentResumeSession(agent.id, voiceMemoryBoundary?"voice_memory_context":"request_context_rollover");
     organizationEnvelopeStates.delete(agent.id);
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "request context rollover", project.id);

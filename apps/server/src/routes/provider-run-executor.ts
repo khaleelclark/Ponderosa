@@ -108,7 +108,6 @@ export interface ProviderRunExecutionInput {
   previousCursor: ContextCursor | undefined;
   project: ProjectDto;
   prompt: string;
-  validateMemoryContext?: () => void;
   resumeSessionId: string | undefined;
   reusablePersistentRuntime: PersistentRuntime | undefined;
   roomCanonicalTipId: string | undefined;
@@ -223,7 +222,6 @@ export function startProviderRunExecution(
     project,
     prompt,
     resumeSessionId,
-    validateMemoryContext,
     reusablePersistentRuntime,
     roomCanonicalTipId,
     roomDeltaOmitted,
@@ -291,7 +289,7 @@ export function startProviderRunExecution(
     const validateVoiceReplyContext = (): Promise<boolean> => checkingVoice??=(async()=>{
       if (voiceContextInvalid) return false;
       if (!activeRun.voiceReply) return true;
-      try { validateMemoryContext?.();const memory=localMemoryFor(app);if(memory&&!await memory.validateSpeech(runId))throw Error('Voice memory changed');return true; }
+      try { const memory=localMemoryFor(app);if(memory&&!await memory.validateSpeech(runId))throw Error('Voice memory changed');return true; }
       catch {
         voiceContextInvalid = true;
         if (activeRun.voiceReply.invalidate("context_changed") && ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted) {
@@ -819,7 +817,6 @@ export function startProviderRunExecution(
       while (true) {
         const bufferedSessionEvents: Extract<AgentEvent, { type: "session" }>[] = [];
         let retryFresh = false;
-        validateMemoryContext?.();
         if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected) {
           coordinationV3!.markPromptSubmitted({
             injectionId: v3InjectionId!,

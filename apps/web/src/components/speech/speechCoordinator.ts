@@ -13,7 +13,6 @@ interface Owner {
   audioUsed?: boolean;
   queue?: string[];
   finished?: boolean;
-  pump?: () => void;
   checking?: boolean;
 }
 let active: Owner | undefined;
@@ -29,7 +28,6 @@ function release(owner: Owner): boolean {
   if (wasActive) active = undefined;
   clearTimeout(owner.startTimer);
   if (owner.queue) owner.queue.length = 0;
-  owner.pump = undefined;
   try { owner.cleanup?.(); } catch { /* Ownership is already fenced. */ }
   if (owner.utterance) {
     owner.utterance.onend = null; owner.utterance.onerror = null; owner.utterance.onstart = null;
@@ -79,7 +77,6 @@ export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, 
   if (active) return { append: () => false, finish() {}, stop() {} };
   const owner: Owner = { id, queue: [], finished: false };
   active = owner; publish({ ownerId: id, status: "loading" });
-  let queuedCharacters = 0;
   const pump = async () => {
     if (active !== owner || owner.utterance || owner.checking) return;
     const text = owner.queue!.shift();
@@ -88,7 +85,6 @@ export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, 
       else publish({ ownerId: id, status: "loading" });
       return;
     }
-    queuedCharacters -= text.length;
     try {
       if (beforePhrase) {
         owner.checking = true;
@@ -119,13 +115,12 @@ export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, 
       window.speechSynthesis.speak(utterance);
     } catch { fail(owner); }
   };
-  owner.pump = pump;
   try { if (active === owner) owner.cleanup = monitorSpeechSurfaceAccessibility(surface, () => stopSpeech(id)); } catch { fail(owner); }
   return {
     append(text) {
       if (active !== owner || owner.finished || !text.trim()) return false;
-      if (owner.queue!.length >= 64 || queuedCharacters + text.length > 10_000) { fail(owner); return false; }
-      owner.queue!.push(text); queuedCharacters += text.length; pump(); return active === owner;
+      if (owner.queue!.length >= 64) { fail(owner); return false; }
+      owner.queue!.push(text); pump(); return active === owner;
     },
     finish() { if (active === owner) { owner.finished = true; pump(); } },
     stop() { if (active === owner) stopSpeech(id); },

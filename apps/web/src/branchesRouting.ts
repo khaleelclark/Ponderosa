@@ -29,7 +29,8 @@ export function parseBranchRoute(search: string): BranchRoute {
   const executionId = query.get('execution') || undefined;
   const global = query.get('settings');
   const nested = query.get('workspace');
-  const workspace: Route | undefined = nested?.startsWith('/projects/') ? parseRoute(nested) : undefined;
+  const location = nested?.startsWith('/projects/') ? new URL(nested, 'http://ponderosa.invalid') : undefined;
+  const workspace: Route | undefined = location ? parseRoute(location.pathname, location.search) : undefined;
   return {
     tab: branchTabs.includes(tab as BranchTab) ? tab as BranchTab : executionId ? 'executions' : 'workflow',
     ...(query.get('branch') ? { branchId: query.get('branch')! } : {}),

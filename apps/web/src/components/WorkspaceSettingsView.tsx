@@ -1273,29 +1273,3 @@ function OperatorProfileSettingsSection({
     </Paper>
   );
 }
-
-export function OperatorProfileWorkspace({
-  showHeader=true,
-  preferences,
-  onSavePreferences,
-  onReturn,
-  returnLabel,
-}: {
-  showHeader?:boolean;
-  preferences: WorkspacePreferencesDto;
-  onSavePreferences(patch: Partial<WorkspacePreferencesDto>): Promise<WorkspacePreferencesDto>;
-  onReturn?(): void;
-  returnLabel?: string;
-}): JSX.Element {
-  return (
-    <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflow: "auto" }}>
-      {showHeader&&<SettingsHeader profile onReturn={onReturn} returnLabel={returnLabel} />}
-      <Box sx={{ maxWidth: 720, mx: "auto", p: { xs: 2, md: 4 } }}>
-        <OperatorProfileSettingsSection
-          preferences={preferences}
-          onSavePreferences={onSavePreferences}
-        />
-      </Box>
-    </Box>
-  );
-}

@@ -77,9 +77,9 @@ async function fixture(options={},runCheck){
  const project=store.createProject({label:'Synthetic voice streaming',hostPath:dir,defaultEngine:'fixture',chatOwned:true,branchId:branch.id}),chat=store.getConversation(project.lastConversationId),agent=store.createAgent(project.id,{engine:'fixture',conversationId:chat.id,title:'Voice'});
  const installation={branchId:branch.id,projectId:project.id,conversationId:chat.id,spokespersonId:agent.id,supported:true,deliveryMode:'user-ui',voiceEnabled:true};
  let originalBindChat=PonderosaMemory.prototype.bindChat;
- let app,release,armed,reauthorization,starts=0,submitted=[],completion,reached=false,memoryRecord,memoryHeaders,globalRecord,fallbackResult;const gate=new Promise(r=>release=r);const done=new Promise(r=>completion=r);
- const run=async function*(opts){try{
-  starts++;submitted.push(store.getProviderInput(coord.activeAgentRun(agent.id).id,true));
+ let app,release,armed,reauthorization,starts=0,submitted=[],completion,reached=false,memoryRecord,memoryHeaders,globalRecord,fallbackResult;const modes=[];const gate=new Promise(r=>release=r);const done=new Promise(r=>completion=r);
+ const run=async function*(opts,fresh){try{
+  starts++;modes.push(fresh?'seed':'continue');if(options.retainedMemory)yield {type:'session',sessionId:fresh?randomBytes(16).toString('hex'):opts.resumeSessionId};submitted.push(store.getProviderInput(coord.activeAgentRun(agent.id).id,true));
    memoryHeaders={authorization:'Bearer '+opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN};
    if(options.memory&&options.readMemory!==false&&starts===1){
     memoryHeaders={authorization:'Bearer '+opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN};
@@ -101,7 +101,7 @@ async function fixture(options={},runCheck){
    if(options.noVoiceTool){
     const fence=coord.latestAcknowledgedSteeringInjection(coord.activeAgentRun(agent.id).id);
     reached=true;await gate;
-    const result=await app.inject({method:'POST',url:'/api/agent-messages',headers:memoryHeaders,payload:{text:'Canonical fallback.',...(fence?{steeringInjectionId:fence}:{})}});
+    const result=await app.inject({method:'POST',url:'/api/agent-messages',headers:memoryHeaders,payload:{text:options.retainedMemory&&starts>1?(fresh?'Fresh canonical context.':'Remembered revoked memory.'):'Canonical fallback.',...(fence?{steeringInjectionId:fence}:{})}});
     fallbackResult={statusCode:result.statusCode,body:result.body};
     if(options.cancelled)assert.ok([401,409].includes(result.statusCode),result.body);else assert.equal(result.statusCode,200,result.body);yield {type:'turn_done'};return;
    }
@@ -134,7 +134,7 @@ async function fixture(options={},runCheck){
   }else{await gate;const result=await app.inject({method:'POST',url:'/api/agent-messages',headers:{authorization:`Bearer ${opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN}`},payload:{text:'Canonical fallback.',...(fence?{steeringInjectionId:fence}:{})}});assert.equal(result.statusCode,200,result.body);}
   yield {type:'turn_done'};
  }catch(error){console.log("VOICE FIXTURE ERROR",error.stack);throw error;}finally{completion();}};
- const adapter={id:'fixture',displayName:'Inert',trustedSystemPromptChannel:'developer',supportsVoiceReplyStream:!options.unsupported,listModels:()=>[],listEfforts:()=>[],seed:run,continue:run};
+ const adapter={id:'fixture',displayName:'Inert',trustedSystemPromptChannel:'developer',supportsVoiceReplyStream:!options.unsupported,listModels:()=>[],listEfforts:()=>[],seed:opts=>run(opts,true),continue:opts=>run(opts,false)};
  try{
  app=createServer({dataDir:path.join(dir,'data'),store,authToken:token,engines:[{adapter,authStatus:async()=>({authenticated:true})}],logger:false,...(options.memory?{localMemory:{chromaUrl:await isolatedChroma(),collectionPrefix:'voice_'+branch.id.replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR ?? path.join(tmpdir(),'unconfigured-memory-models'),stateDirectory:path.join(dir,'memory-policy'),provision:true}}:{}),communicationV3:{pollMs:10}});
  app.addHook('onSend',async(request,reply,payload)=>{if(request.url==='/api/agent-voice-reply')armed={statusCode:reply.statusCode,body:typeof payload==='string'?payload:JSON.stringify(payload)};return payload;});
@@ -190,7 +190,7 @@ async function fixture(options={},runCheck){
  await boundedWait(()=>options.noVoiceTool?reached:armed,'provider ready');
  await boundedWait(()=>options.unsupported||options.ordinary||reached,'candidate processed');
  const url=`/api/branches/engine/conversations/${chat.id}/voice-replies/${messageId}/${agent.id}`;
- await runCheck({app,store,coord,agent,chat,project,headers,messageId,url,release,done,installation,get armed(){return armed;},get reauthorization(){return reauthorization;},get fallbackResult(){return fallbackResult;},get starts(){return starts;},memoryRecord,memoryUrl,memoryHeaders,submitted});
+ await runCheck({app,store,coord,agent,chat,project,headers,messageId,url,release,done,installation,get armed(){return armed;},get reauthorization(){return reauthorization;},get fallbackResult(){return fallbackResult;},get modes(){return modes;},get starts(){return starts;},memoryRecord,memoryUrl,memoryHeaders,submitted});
  }finally{PonderosaMemory.prototype.bindChat=originalBindChat;release();if(app){if(starts)await done;app.prepareForShutdown();await app.close();assert.equal(app.server.listening,false);console.log('OWN SERVER CLOSED');}store.close();await rm(dir,{recursive:true,force:true});
   await new Promise(resolve=>setImmediate(resolve));
   console.log('FIXTURE RESOURCE OBSERVATION',JSON.stringify({root:dir,listening:app?.server.listening??false,activeResources:process.getActiveResourcesInfo(),activeHandleTypes:process._getActiveHandles().map(x=>x.constructor.name)}));
@@ -501,3 +501,18 @@ for(const previewFault of ['missing','mismatch','error'])
   assert.ok(f.memoryRecord.chunk_id,'the original memory write succeeded');
   assert.equal((await completeFallback(f)).memoryExposure.state,'invalid');
  }));
+
+
+for(const {memory,voice,streaming}of [{memory:true,voice:true,streaming:true},{memory:true,voice:true,streaming:false},{memory:true,voice:false,streaming:false},{memory:false,voice:true,streaming:false}])
+test('retained-context boundary '+JSON.stringify({memory,voice,streaming}),()=>fixture({memory,readMemory:memory,global:memory,ordinary:true,unsupported:!streaming,noVoiceTool:true,retainedMemory:true},async f=>{
+ f.release();await f.done;await boundedWait(()=>f.coord.activeAgentRun(f.agent.id)===undefined,'first ordinary memory Run released');
+ if(memory){const changed=await f.app.inject({method:'PUT',url:'/api/branches/engine/local-memory/grants/'+f.chat.id,headers:f.headers,payload:{readGlobal:false,expectedRevision:1}});assert.equal(changed.statusCode,200,changed.body);}
+ const second=await f.app.inject({method:'POST',url:'/api/branches/engine/conversations/'+f.chat.id+'/direct-messages',headers:f.headers,payload:{text:'What do you remember?',idempotencyKey:'retained-voice',recipients:[{agentId:f.agent.id}],activeRunDelivery:'queue',...(voice?{voiceReply:true}:{})}});
+ assert.equal(second.statusCode,200,second.body);await boundedWait(()=>f.starts===2&&f.coord.activeAgentRun(f.agent.id)===undefined,'second Run released');
+ if(voice){
+  const messageId=second.json().message.communicationEventId,status=await f.app.inject({method:'GET',url:'/api/branches/engine/conversations/'+f.chat.id+'/voice-replies/'+messageId+'/'+f.agent.id,headers:f.headers});
+  assert.equal(status.statusCode,200,status.body);assert.equal(status.json().memoryExposure.state,memory?'valid':'disabled');
+ }
+ const fresh=memory&&voice;assert.deepEqual(f.modes,fresh?['seed','seed']:['seed','continue'],'opaque retained memory cannot authorize a fresh voice exposure');
+ assert.equal(f.submitted[1].sourceManifest.providerSessionDisposition,fresh?'fresh_task':'continued_session');
+}));
