@@ -945,6 +945,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native server; disposable refused-state fixtures; no listening socket or provider account",
       "origin": "October22 incident: explicit admission refusals exit78 without writes/listener; ordinary startup failures and restart policy remain distinct"
+    },
+    {
+      "path": "tests/agents/notification-reconciliation.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces; private synthetic stores and controlled Codex/Claude adapters; no provider account",
+      "origin": "Workflow notification latency: coalescing, yielded scans, stale-pass safety and pending-agent quarantine"
     }
   ],
   "retainedReleasePayload": [

@@ -319,11 +319,17 @@ export function createOperationalNotifications(context: OperationalNotifications
     // A yielded pass may have observed different revisions. Let its queued
     // follow-up finish before resolving notices from an incomplete retained set.
     if (coordinationNotificationsStopped || (projectId && dirtyCoordinationProjects.has(projectId))) return;
+    const obsolete: string[] = [];
     workspace.forEachOpenOperationalNotification("coordination-attention:", (notification) => {
       if (projectId && notification.projectId !== projectId) return;
       if (!notification.dedupeKey || retained.has(notification.dedupeKey)) return;
-      resolveOperationalNotification(notification.dedupeKey);
+      obsolete.push(notification.dedupeKey);
     });
+    for (const key of obsolete) {
+      yield;
+      if (coordinationNotificationsStopped || (projectId && dirtyCoordinationProjects.has(projectId))) return;
+      resolveOperationalNotification(key);
+    }
   }
   const reconcileCoordinationAttentionNotifications = (): void => {
     for (const _ of coordinationAttentionNotifications()) { /* synchronous startup repair */ }

@@ -255,6 +255,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const workspaceSubscribers = new Set<(event: WorkspaceEventEnvelope) => void>();
   const liveSseClosures = new Set<() => void>();
   const publishWorkspace = (event: WorkspaceEventEnvelope): void => {
+    const change = event.event;
+    if (((change.type === "notification_changed" && change.decisionId) ||
+         (change.type === "project_changed" && change.action !== "used")) && change.projectId) {
+      void scheduleCoordinationAttentionNotifications(change.projectId);
+    }
     publishWorkspaceEvent(workspaceSubscribers, event, error => {
       app.log.warn({ err: error, workspaceEventId: event.id }, "workspace subscriber publication failed");
     });
@@ -428,12 +433,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     logError: (meta, message) => app.log.error(meta, message),
   });
   startupDisposers.push(() => { void stopCoordinationAttentionNotifications(); });
-  workspaceSubscribers.add(({ event }) => {
-    if (((event.type === "notification_changed" && event.decisionId) ||
-         (event.type === "project_changed" && event.action !== "used")) && event.projectId) {
-      void scheduleCoordinationAttentionNotifications(event.projectId);
-    }
-  });
   for (const engineId of engines.keys()) {
     const denial = engineAvailability.denial(engineId);
     if (denial && providerEnabled(engineId)) createOperationalNotification({
