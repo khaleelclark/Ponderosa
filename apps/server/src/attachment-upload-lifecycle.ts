@@ -198,6 +198,8 @@ export function registerAttachmentUploadLifecycle(app: FastifyInstance, maxBytes
     if (!uploadRoute(String(route.method), route.url)) return;
     const handler = route.handler;
     route.handler = async function(request, reply) {
+      // Body reception keeps its idle limit; preparation uses the bounded request budget.
+      request.raw.socket.setTimeout?.(app.server.requestTimeout || 120_000);
       const upload = uploads.get(request.raw);
       if (!upload) return handler.call(this, request, reply);
       if (upload.stopped || reply.sent || reply.raw.destroyed) {

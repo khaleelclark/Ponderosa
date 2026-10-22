@@ -1,6 +1,6 @@
 import type { IncomingMessage } from "node:http";
 import { createHmac, randomBytes } from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { ASSET_LIMITS } from "./assets.js";
 import { registerAttachmentUploadLifecycle, stopAttachmentUpload } from "./attachment-upload-lifecycle.js";
 import {
@@ -154,12 +154,11 @@ export function registerRequestSecurityHooks(
       }
     };
   });
-  app.addHook("onResponse", async (request) => {
-    if (!activeHandlers.has(request.raw)) releaseAdmission(request);
-  });
-  app.addHook("onError", async (request) => {
-    if (!activeHandlers.has(request.raw)) releaseAdmission(request);
-  });
+  for (const hook of ["onResponse", "onError", "onTimeout", "onRequestAbort"] as const) {
+    app.addHook(hook, async (request: FastifyRequest) => {
+      if (!activeHandlers.has(request.raw)) releaseAdmission(request);
+    });
+  }
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
