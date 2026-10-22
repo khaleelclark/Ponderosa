@@ -137,13 +137,18 @@ function validateWorkingCopy(
 }
 
 export class AgentCatalogAuthority {
+  private readonly agentById;
+
   constructor(
     private readonly dataDir: string,
     private readonly db: Db,
     private readonly client: Database.Database,
     private readonly getAgentPreset: (presetId: string) => AgentPresetDto | undefined,
     private readonly getProject: (projectId: string) => ProjectDto | undefined,
-  ) {}
+  ) {
+    this.agentById = db.select().from(agents)
+      .where(and(eq(agents.id, sql.placeholder("agentId")), isNull(agents.deletedAt))).prepare();
+  }
 
   private readCreationReceipt(projectId: string, agentId: string): AgentCreationReceipt | undefined {
     const receiptPath = agentCreationReceiptPath(this.dataDir, projectId, agentId);
@@ -525,7 +530,7 @@ export class AgentCatalogAuthority {
   }
 
   getAgent(id: string): AgentDto | undefined {
-    const row = this.db.select().from(agents).where(and(eq(agents.id, id), isNull(agents.deletedAt))).get();
+    const row = this.agentById.get({ agentId: id });
     return row ? this.agentRowToDto(row) : undefined;
   }
 
