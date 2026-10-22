@@ -190,6 +190,8 @@ export class AgentProjectionRebuilder {
             .values({
               id: m.id,
               projectId: m.projectId,
+              branchId: m.branchId ?? null,
+              executionId: m.executionId ?? null,
               title: m.title,
               defaultEngine: m.defaultEngine ?? null,
               defaultModel: m.defaultModel ?? null,

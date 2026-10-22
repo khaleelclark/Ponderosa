@@ -1,3 +1,4 @@
+import {loadLocalMemoryConfiguration} from "./local-memory-config.js";
 import { AgentStore, admitDataDirectory } from "@ponderosa/agents";
 import { DataDirectoryAuthority } from "@ponderosa/native-host";
 import type { WindowsDirectoryLeaseTransfer } from "@ponderosa/native-host";
@@ -15,6 +16,7 @@ import { installLauncherRunningLogs } from "./launcher-running-logs.js";
 // Installed launcher output is capped per write throughout the daemon's life.
 // Source/systemd launches without a launcher root retain their normal streams.
 const config = loadConfig();
+const localMemory = loadLocalMemoryConfiguration(process.env.PONDEROSA_LOCAL_MEMORY_CONFIG);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webDist = path.resolve(here, "../../web/dist");
 const buildManifest = path.resolve(here, "../../../build-manifest.json");
@@ -101,6 +103,7 @@ if (process.env.PONDEROSA_SHUTDOWN_RECOVERY !== "1") installLauncherRunningLogs(
 let app: ReturnType<typeof createServer>;
 try { app = createServer({
   dataDir: storeRoot,
+  ...(localMemory ? {localMemory} : {}),
   reportedDataDir: process.env.PONDEROSA_REPORTED_DATA_DIR ?? config.dataDir,
   store,
   browserServiceSocket: process.env.PONDEROSA_BROWSER_SERVICE_SOCKET,

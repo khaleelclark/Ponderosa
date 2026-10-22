@@ -75,3 +75,26 @@ for (const failCleanup of [false, true]) test(`check ${failCleanup ? '39' : '98'
   assert.equal(manager.get(scope.agentId).id, second.id); assert.equal(drivers[1].alive, true);
   await manager.closeRun(nextScope, 'fixture_complete'); assert.equal(drivers[1].alive, false); passed = true;
 });
+
+test('a single-tab browser refuses new-tab requests before invoking its driver', async t => {
+  const root=await mkdtemp(path.join(tmpdir(),'ponderosa-browser-single-tab-'));
+  const previous={mode:process.env.NODE_ENV,multi:process.env.PONDEROSA_BROWSER_MULTI_PAGE};
+  process.env.NODE_ENV='production';process.env.PONDEROSA_BROWSER_MULTI_PAGE='0';
+  let alive=true,calls=0,passed=false;
+  const manager=new BrowserSessionManager(root,async()=>({
+    isAlive:()=>alive,close:async()=>{alive=false;},
+    pages:async()=>({activePageId:'existing',pages:[{pageId:'existing',url:'about:blank',title:'Existing tab',active:true,isNew:false,closable:false}]}),
+    newPage:async()=>{calls++;throw new Error('Disabled driver must not be called');},
+  }),()=>{});
+  try {
+    const scope={projectId:randomUUID(),agentId:randomUUID(),runId:randomUUID(),conversationId:randomUUID()};
+    const session=await manager.open(scope,undefined,'operator');assert.equal(session.capabilities.multiPage,false);
+    await assert.rejects(manager.newPage(scope,session.controlEpoch),error=>error instanceof BrowserSessionError&&error.statusCode===409&&/New tabs are unavailable/.test(error.message));
+    assert.equal(calls,0);assert.equal(manager.get(scope.agentId).id,session.id);assert.equal(alive,true);passed=true;
+  }finally{
+    await manager.closeAll('qualification_shutdown');assert.equal(alive,false);
+    if(previous.mode===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=previous.mode;
+    if(previous.multi===undefined)delete process.env.PONDEROSA_BROWSER_MULTI_PAGE;else process.env.PONDEROSA_BROWSER_MULTI_PAGE=previous.multi;
+    if(passed)await rm(root,{recursive:true,force:true});else t.diagnostic(`Failed single-tab fixture retained: ${root}`);
+  }
+});

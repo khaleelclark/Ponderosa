@@ -1,3 +1,5 @@
+import {activeAgentProductSql,activeChatProductSql} from '@ponderosa/agents';
+import {requestProduct} from '../product-scope.js';
 import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type {
@@ -89,10 +91,20 @@ export interface ConversationRouteDependencies {
   ): Promise<boolean>;
 }
 
+export interface ConversationDeletionResult {
+  deleted:boolean;
+  deletionReceiptId:string;
+  cleanupPending:boolean;
+  deletionPending?:boolean;
+  retryable?:boolean;
+  replayed?:boolean;
+}
+export type ConversationDeleter=(conversationId:string,expectedAgentIds?:string[])=>Promise<ConversationDeletionResult>;
+
 export function registerConversationRoutes(
   app: FastifyInstance,
   dependencies: ConversationRouteDependencies,
-): void {
+): {deleteConversation:ConversationDeleter} {
   const {
     store,
     workspace,
@@ -118,7 +130,7 @@ export function registerConversationRoutes(
         baseSql: `
           SELECT id, title, updated_at
           FROM agents
-          WHERE project_id = ? AND deleted_at IS NULL
+          WHERE project_id = ? AND deleted_at IS NULL AND ${activeAgentProductSql('agents',requestProduct(request))}
             AND NOT EXISTS (
               SELECT 1
               FROM agent_creation_operation_members members
@@ -126,13 +138,13 @@ export function registerConversationRoutes(
               WHERE members.agent_id = agents.id
                 AND operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
             )
-            ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE '\\'" : ""}
+            ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE char(92)" : ""}
         `,
         params: normalizedSearch
           ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
           : [request.params.id],
         order: "title",
-        scope: `team-directory:${request.params.id}`,
+        scope: `team-directory:${request.params.id}:${requestProduct(request)}`,
         generationKeys: [collectionGenerationKey("agents", `project:${request.params.id}`)],
         hydrate: id => store.getAgent(id),
       });
@@ -152,14 +164,14 @@ export function registerConversationRoutes(
         baseSql: `
           SELECT id, title, updated_at
           FROM conversations
-          WHERE project_id = ?
-            ${normalizedSearch ? "AND lower(title) LIKE ? ESCAPE '\\'" : ""}
+          WHERE project_id = ? AND ${activeChatProductSql('conversations',requestProduct(request))}
+            ${normalizedSearch ? "AND lower(title) LIKE ? ESCAPE char(92)" : ""}
         `,
         params: normalizedSearch
           ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
           : [request.params.id],
         order: "updated",
-        scope: `project-conversations:${request.params.id}`,
+        scope: `project-conversations:${request.params.id}:${requestProduct(request)}`,
         generationKeys: [collectionGenerationKey("conversations", `project:${request.params.id}`)],
         hydrate: id => store.getConversation(id),
       });
@@ -181,7 +193,7 @@ export function registerConversationRoutes(
           baseSql: `
             SELECT agent.id, agent.title, agent.updated_at
             FROM agents agent
-            WHERE agent.conversation_id = ? AND agent.deleted_at IS NULL
+            WHERE agent.conversation_id = ? AND agent.deleted_at IS NULL AND ${activeAgentProductSql('agent',requestProduct(request))}
               AND NOT EXISTS (
                 SELECT 1
                 FROM agent_creation_operation_members creation_members
@@ -189,13 +201,13 @@ export function registerConversationRoutes(
                 WHERE creation_members.agent_id = agent.id
                   AND creation_operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
               )
-              ${normalizedSearch ? "AND lower(agent.title || ' ' || agent.active_engine || ' ' || COALESCE(agent.model, '')) LIKE ? ESCAPE '\\'" : ""}
+              ${normalizedSearch ? "AND lower(agent.title || ' ' || agent.active_engine || ' ' || COALESCE(agent.model, '')) LIKE ? ESCAPE char(92)" : ""}
           `,
           params: normalizedSearch
             ? [conversation.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
             : [conversation.id],
           order: "title",
-          scope: `conversation-members:${conversation.id}`,
+          scope: `conversation-members:${conversation.id}:${requestProduct(request)}`,
           generationKeys: [
             collectionGenerationKey("agents", `project:${conversation.projectId}`),
             collectionGenerationKey("memberships", `conversation:${conversation.id}`),
@@ -360,6 +372,69 @@ export function registerConversationRoutes(
     return conversation;
   });
 
+  const deleteConversation:ConversationDeleter=async(conversationId,expectedAgentIds)=>{
+    const current = store.getConversation(conversationId);
+    const pending = store.getConversationDeletionReceipt(conversationId);
+    if (projectDeletionInProgress(current?.projectId ?? pending?.projectId ?? "")) {
+      throw Object.assign(new Error("Project deletion is already in progress"),{statusCode:409});
+    }
+    if (!current) {
+      if (!pending) throw Object.assign(new Error("conversation not found"),{statusCode:404});
+      await processConversationDeletionCleanup(pending);
+      const refreshed = store.getConversationDeletionReceipt(pending.conversationId)!;
+      const deleted = refreshed.canonicalDeletionCompleted;
+      return {
+        deleted,
+        deletionReceiptId: refreshed.conversationId,
+        cleanupPending: !deleted ||
+          !(refreshed.storageCleanupCompleted && refreshed.serverCleanupCompleted),
+        ...(!deleted ? { deletionPending: true, retryable: true } : {}),
+        replayed: true,
+      };
+    }
+    if (deletingConversationIds.has(current.id) && !pending) {
+      throw Object.assign(new Error("Chat deletion is already in progress"),{statusCode:409});
+    }
+    if (!pending && (agentCreationConversationLeases.get(current.id) ?? 0) > 0) {
+      throw Object.assign(new Error("Wait for Agent creation to finish before deleting this Chat"),{statusCode:409});
+    }
+    if (!pending && (conversationDeliveryLeases.get(current.id) ?? 0) > 0) {
+      throw Object.assign(new Error("Wait for message delivery to finish before deleting this Chat"),{statusCode:409});
+    }
+    const linkedAgents = pending ? [] : store.listAgents(current.projectId)
+      .filter((agent) => agent.conversationId === current.id);
+    if (!pending && expectedAgentIds) {
+      const actual = linkedAgents.map(agent => agent.id).sort();
+      const expected = [...expectedAgentIds].sort();
+      if (actual.length !== expected.length || actual.some((id, index) => id !== expected[index])) {
+        throw Object.assign(new Error("Assigned Agents changed. Review the current list before deleting this Chat."),{statusCode:409});
+      }
+    }
+    const active = !pending && linkedAgents.some((agent) => hasActiveRun(agent.id));
+    if (active) throw Object.assign(new Error("stop active agents before deleting this Project chat"),{statusCode:409});
+
+    let receipt = pending;
+    if (!receipt) {
+      try {
+        receipt = store.markConversationDeletionPending(current.id);
+      } catch (error) {
+        throw Object.assign(new Error(error instanceof Error ? error.message : "Chat deletion intent could not be persisted"),{statusCode:503,cleanupPending:false,retryable:true});
+      }
+    }
+    if (!receipt) throw new Error("Chat deletion intent was not persisted");
+    deletingConversationIds.add(current.id);
+    await processConversationDeletionCleanup(receipt);
+    const refreshed = store.getConversationDeletionReceipt(receipt.conversationId)!;
+    const deleted = refreshed.canonicalDeletionCompleted;
+    return {
+      deleted,
+      deletionReceiptId: refreshed.conversationId,
+      cleanupPending: !deleted ||
+        !(refreshed.storageCleanupCompleted && refreshed.serverCleanupCompleted),
+      ...(!deleted ? { deletionPending: true, retryable: true } : {}),
+      ...(pending ? { replayed: true } : {}),
+    };
+  };
   app.delete<{ Params: { id: string }; Body: unknown }>("/api/conversations/:id", async (request, reply) => {
     const body = request.body;
     if (body !== undefined && (
@@ -374,77 +449,17 @@ export function registerConversationRoutes(
     const expectedAgentIds = body === undefined
       ? undefined
       : (body as { expectedAgentIds: string[] }).expectedAgentIds;
-    const current = store.getConversation(request.params.id);
-    const pending = store.getConversationDeletionReceipt(request.params.id);
-    if (projectDeletionInProgress(current?.projectId ?? pending?.projectId ?? "")) {
-      return reply.code(409).send({ error: "Project deletion is already in progress" });
+    try {
+      const result=await deleteConversation(request.params.id,expectedAgentIds);
+      return reply.code(result.deleted?200:202).send(result);
+    } catch(error) {
+      const failure=error as Error&{statusCode?:number;cleanupPending?:boolean;retryable?:boolean};
+      if(!failure.statusCode)throw error;
+      return reply.code(failure.statusCode).send({error:failure.message,
+        ...(failure.cleanupPending===undefined?{}:{cleanupPending:failure.cleanupPending}),
+        ...(failure.retryable===undefined?{}:{retryable:failure.retryable})});
     }
-    if (!current) {
-      if (!pending) return reply.code(404).send({ error: "conversation not found" });
-      await processConversationDeletionCleanup(pending);
-      const refreshed = store.getConversationDeletionReceipt(pending.conversationId)!;
-      const deleted = refreshed.canonicalDeletionCompleted;
-      return reply.code(deleted ? 200 : 202).send({
-        deleted,
-        deletionReceiptId: refreshed.conversationId,
-        cleanupPending: !deleted ||
-          !(refreshed.storageCleanupCompleted && refreshed.serverCleanupCompleted),
-        ...(!deleted ? { deletionPending: true, retryable: true } : {}),
-        replayed: true,
-      });
-    }
-    if (deletingConversationIds.has(current.id) && !pending) {
-      return reply.code(409).send({ error: "Chat deletion is already in progress" });
-    }
-    if (!pending && (agentCreationConversationLeases.get(current.id) ?? 0) > 0) {
-      return reply.code(409).send({
-        error: "Wait for Agent creation to finish before deleting this Chat",
-      });
-    }
-    if (!pending && (conversationDeliveryLeases.get(current.id) ?? 0) > 0) {
-      return reply.code(409).send({
-        error: "Wait for message delivery to finish before deleting this Chat",
-      });
-    }
-    const linkedAgents = pending ? [] : store.listAgents(current.projectId)
-      .filter((agent) => agent.conversationId === current.id);
-    if (!pending && expectedAgentIds) {
-      const actual = linkedAgents.map(agent => agent.id).sort();
-      const expected = [...expectedAgentIds].sort();
-      if (actual.length !== expected.length || actual.some((id, index) => id !== expected[index])) {
-        return reply.code(409).send({
-          error: "Assigned Agents changed. Review the current list before deleting this Chat.",
-        });
-      }
-    }
-    const active = !pending && linkedAgents.some((agent) => hasActiveRun(agent.id));
-    if (active) return reply.code(409).send({ error: "stop active agents before deleting this Project chat" });
-
-    let receipt = pending;
-    if (!receipt) {
-      try {
-        receipt = store.markConversationDeletionPending(current.id);
-      } catch (error) {
-        return reply.code(503).send({
-          error: error instanceof Error ? error.message : "Chat deletion intent could not be persisted",
-          cleanupPending: false,
-          retryable: true,
-        });
-      }
-    }
-    if (!receipt) throw new Error("Chat deletion intent was not persisted");
-    deletingConversationIds.add(current.id);
-    await processConversationDeletionCleanup(receipt);
-    const refreshed = store.getConversationDeletionReceipt(receipt.conversationId)!;
-    const deleted = refreshed.canonicalDeletionCompleted;
-    return reply.code(deleted ? 200 : 202).send({
-      deleted,
-      deletionReceiptId: refreshed.conversationId,
-      cleanupPending: !deleted ||
-        !(refreshed.storageCleanupCompleted && refreshed.serverCleanupCompleted),
-      ...(!deleted ? { deletionPending: true, retryable: true } : {}),
-      ...(pending ? { replayed: true } : {}),
-    });
   });
+  return {deleteConversation};
 
 }

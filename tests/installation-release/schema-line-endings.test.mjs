@@ -22,6 +22,13 @@ function signature(sql) {
   try { db.exec(sql); return stateSchemaSignature(db); } finally { db.close(); }
 }
 
+test('schema inspection still refuses oversized declarations and excess objects before unbounded materialization',()=>{
+  assert.throws(()=>signature(`CREATE TABLE oversized (value TEXT DEFAULT '${'a'.repeat(1_100_000)}')`),
+    /bounded state read refused|unsupported bounded state schema metadata/);
+  assert.throws(()=>signature(Array.from({length:513},(_,i)=>`CREATE TABLE t${i} (value TEXT);`).join('\n')),
+    /unsupported bounded state schema metadata/);
+});
+
 const declarations = [
   'CREATE TABLE items (',
   ' /* Comment with unmatched \' " ` [ and --',

@@ -34,6 +34,9 @@ export function createOperationalNotifications(context: OperationalNotifications
   const createOperationalNotification = (input: {
     dedupeKey: string;
     informational?: boolean;
+    push?:boolean;
+    branchId?:string;
+    branchExecutionId?:string;
     category: "communication" | "provider" | "coordination" | "decision" | "system";
     severity: "info" | "attention" | "urgent";
     title: string;
@@ -49,8 +52,8 @@ export function createOperationalNotifications(context: OperationalNotifications
     resolution?: WorkspaceNotificationDto["resolution"];
   }): WorkspaceNotificationDto => {
     const cursor = workspace.cursor();
-    const { informational, ...notificationInput } = input;
-    const notification = workspace.createNotification({ kind: informational ? "information" : "operational", status: "open", ...notificationInput }, input.severity !== "info");
+    const { informational, push, ...notificationInput } = input;
+    const notification = workspace.createNotification({ kind: informational ? "information" : "operational", status: "open", ...notificationInput }, push ?? input.severity !== "info");
     publishWorkspaceSince(cursor);
     return notification;
   };

@@ -2,6 +2,10 @@ import type Database from "better-sqlite3";
 import { STATE_READ_LIMITS as limits, withStateReads } from "./state-read-budget.js";
 
 const fail = (): never => { throw new Error("unsupported bounded state schema metadata"); };
+// Branch workflow tables bring the canonical schema to under 400 KiB serialized and
+// over 1 MiB under the conservative pre-materialization accounting. Keep a fixed
+// 2 MiB schema envelope; ordinary row and statement limits remain unchanged.
+const schemaMetadataBytes = 2 * limits.metadataBytes;
 type ObjectRow = { type: string; name: string; tbl_name: string; sql: string | null };
 export interface IndexOrdinalReceipt { table: string; name: string; seq: number }
 
@@ -49,16 +53,16 @@ function schemaSqlLineEndings(sql: string): string {
  * unique/origin/partial and all other declaration bytes remain exact. */
 export function stateSchemaMetadata(sqlite: Database.Database): { signature: string; indexOrdinals: IndexOrdinalReceipt[] } {
   return withStateReads(sqlite, reads => {
-    reads.budget.allocate(2 * limits.metadataBytes);
+    reads.budget.allocate(2 * schemaMetadataBytes);
     let metadataBytes = 4096;
     const reserve = (bytes: number): void => {
-      if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > limits.metadataBytes - metadataBytes) fail();
+      if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > schemaMetadataBytes - metadataBytes) fail();
       metadataBytes += bytes;
     };
     const n = reads.population("sqlite_master");
     if (n > limits.objects) fail();
     const objects = reads.all<ObjectRow>("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name",
-      ["type", "name", "tbl_name", "sql"], limits.objects, limits.metadataBytes, n, [], reserve).map(row => {
+      ["type", "name", "tbl_name", "sql"], limits.objects, schemaMetadataBytes, n, [], reserve).map(row => {
       if (!row.sql?.includes("\r\n")) return row;
       // Two bounded UTF-8 buffers plus the resulting UTF-16 string. Charge the
       // existing invocation before allocating; no metadata/work ceiling changes.
@@ -69,19 +73,19 @@ export function stateSchemaMetadata(sqlite: Database.Database): { signature: str
     if (listedCount > limits.objects + 2) fail();
     const flags = reads.all<{ schema: string; name: string; type: string; ncol: number; wr: number; strict: number }>(
       "SELECT schema,name,type,ncol,wr,strict FROM pragma_table_list WHERE schema='main' ORDER BY name",
-      ["schema", "name", "type", "ncol", "wr", "strict"], limits.objects + 2, limits.metadataBytes, listedCount, [], reserve);
+      ["schema", "name", "type", "ncol", "wr", "strict"], limits.objects + 2, schemaMetadataBytes, listedCount, [], reserve);
     const indexOrdinals: IndexOrdinalReceipt[] = [];
     const tables = objects.filter(row => row.type === "table").map(row => {
       reserve(256 + 6 * Buffer.byteLength(row.name));
       const columnCount = reads.population(`pragma_table_xinfo('${row.name.replaceAll("'", "''")}')`);
       if (columnCount > limits.columns) fail();
       const columns = reads.all("SELECT cid,name,type,\"notnull\",dflt_value,pk,hidden FROM pragma_table_xinfo(?) ORDER BY cid",
-        ["cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"], limits.columns, limits.metadataBytes, columnCount, [row.name], reserve);
+        ["cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"], limits.columns, schemaMetadataBytes, columnCount, [row.name], reserve);
       const count = reads.population(`pragma_index_list('${row.name.replaceAll("'", "''")}')`);
       if (count > limits.objects) fail();
       const raw = reads.all<{ seq: number; name: string; unique: number; origin: string; partial: number }>(
         'SELECT seq,name,"unique",origin,partial FROM pragma_index_list(?) ORDER BY name',
-        ["seq", "name", "unique", "origin", "partial"], limits.objects, limits.metadataBytes, count, [row.name], reserve);
+        ["seq", "name", "unique", "origin", "partial"], limits.objects, schemaMetadataBytes, count, [row.name], reserve);
       const indexes = raw.map(({ seq, ...index }) => {
         reserve(256 + 6 * (Buffer.byteLength(row.name) + Buffer.byteLength(index.name)));
         indexOrdinals.push({ table: row.name, name: index.name, seq });
@@ -93,7 +97,7 @@ export function stateSchemaMetadata(sqlite: Database.Database): { signature: str
         reserve(128 + 6 * Buffer.byteLength(index.name));
         return { name: index.name, columns: reads.all(
           'SELECT seqno,cid,name,"desc",coll,"key" FROM pragma_index_xinfo(?) ORDER BY seqno',
-          ["seqno", "cid", "name", "desc", "coll", "key"], limits.columns + 1, limits.metadataBytes, count, [index.name], reserve) };
+          ["seqno", "cid", "name", "desc", "coll", "key"], limits.columns + 1, schemaMetadataBytes, count, [index.name], reserve) };
       });
       return { name: row.name, columns, indexes, keys };
     });
@@ -101,14 +105,14 @@ export function stateSchemaMetadata(sqlite: Database.Database): { signature: str
     if (objects.some(row => row.type === "table" && row.name === "_schema_version")) {
       const count = reads.population("_schema_version");
       if (count > limits.objects) fail();
-      versions = reads.all("SELECT name FROM _schema_version ORDER BY name", ["name"], limits.objects, limits.metadataBytes, count, [], reserve);
+      versions = reads.all("SELECT name FROM _schema_version ORDER BY name", ["name"], limits.objects, schemaMetadataBytes, count, [], reserve);
     }
     const engine = reads.all("SELECT sqlite_version() version", ["version"], 1, 1024, 1, [], reserve)[0];
     const userVersion = reads.scalar("SELECT user_version n FROM pragma_user_version", 1).n;
     const applicationId = reads.scalar("SELECT application_id n FROM pragma_application_id", 1).n;
     // Every nested value, array framing and wrapper was reserved before read.
     const signature = JSON.stringify({ engine, userVersion, applicationId, objects, versions, flags, tables });
-    if (Buffer.byteLength(signature) > metadataBytes || Buffer.byteLength(signature) > limits.metadataBytes) fail();
+    if (Buffer.byteLength(signature) > metadataBytes || Buffer.byteLength(signature) > schemaMetadataBytes) fail();
     return { signature, indexOrdinals };
   });
 }

@@ -31,7 +31,7 @@ import {
 } from "react";
 import type { Route } from "../routing";
 import type { ProjectSidebarSection } from "../routeRegistry";
-import { OperatorAvatar } from "./OperatorAvatar";
+import { SidebarOperatorFooter } from "./WorkspaceSidebar.chrome";
 import { SidebarActivityBadge } from "./SidebarActivityBadge";
 
 export function ProjectRail({
@@ -314,46 +314,7 @@ export function ProjectRail({
         </Menu>
       </Box>
 
-      <Box
-        data-workspace-sidebar-profile
-        sx={{
-          gridRow: 4,
-          minWidth: 0,
-          borderTop: 1,
-          borderColor: "divider",
-          px: 1,
-          pt: 0.75,
-          pb: drawer ? "max(6px, env(safe-area-inset-bottom))" : 0.75,
-        }}
-      >
-        <ButtonBase
-          aria-label="Open settings"
-          onClick={onOpenSettings}
-          sx={{
-            width: "100%",
-            minWidth: 0,
-            minHeight: 48,
-            justifyContent: "flex-start",
-            gap: 1,
-            px: 0.75,
-            borderRadius: 1.5,
-            textAlign: "left",
-            "&:hover": { bgcolor: "action.hover" },
-          }}
-        >
-          <OperatorAvatar profile={profile} size={34} />
-          <Box sx={{ minWidth: 0, flex: 1 }}>
-            <Typography noWrap sx={{ fontSize: 14, fontWeight: 700 }}>
-              {profile.displayName || "Operator"}
-            </Typography>
-            {profile.handle ? (
-              <Typography noWrap variant="caption" color="text.secondary">
-                #{profile.handle.replace(/^[@#]/, "")}
-              </Typography>
-            ) : null}
-          </Box>
-        </ButtonBase>
-      </Box>
+      <SidebarOperatorFooter profile={profile} drawer={drawer} onSettings={onOpenSettings} />
     </>
   );
 }

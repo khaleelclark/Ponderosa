@@ -1,3 +1,4 @@
+import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
@@ -184,6 +185,7 @@ export function AgentDetailHeader({
   onDelete,
   onTabChange,
 }: AgentDetailHeaderProps): JSX.Element {
+  const auditOnly=useWorkspaceReadOnly();
   return (
     <TabbedWorkspaceFrame
       compactMobile
@@ -239,7 +241,7 @@ export function AgentDetailHeader({
           startedAt={startedAt}
           agentNameForId={agentNameForId}
         />
-        {running ? <Tooltip title={stopping ? "Cancelling…" : "Stop"}><IconButton color="error" disabled={stopping} onClick={onStop}
+        {running && !auditOnly ? <Tooltip title={stopping ? "Cancelling…" : "Stop"}><IconButton color="error" disabled={stopping} onClick={onStop}
           aria-label={stopping ? "Cancelling…" : "Stop"} sx={{ display: { xs: "inline-flex", md: "none" }, width: 44, height: 44 }}><StopCircleOutlinedIcon /></IconButton></Tooltip> : null}
       </Stack>}
       actions={
@@ -250,7 +252,7 @@ export function AgentDetailHeader({
           flexWrap="wrap"
           sx={{ alignItems: "center" }}
         >
-          {running ? (
+          {running && !auditOnly ? (
             <Button
               size="small"
               color="error"
@@ -320,7 +322,7 @@ export function AgentDetailHeader({
                 destructive: true,
                 onSelect: onDelete,
               },
-            ]}
+            ].filter(action=>!auditOnly||["Technical Details","Copy chat transcript","Download chat transcript"].includes(action.label))}
           />
         </Stack>
       }
@@ -330,7 +332,7 @@ export function AgentDetailHeader({
         value: tab === "technical" ? false : tab,
         onChange: onTabChange,
         items: AGENT_DETAIL_TABS.filter(item =>
-          item.value !== "subagents" || showSubagents
+          (!auditOnly||!["subagents","settings"].includes(item.value)) && (item.value !== "subagents" || showSubagents)
         ),
       }}
     />

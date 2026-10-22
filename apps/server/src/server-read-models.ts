@@ -207,6 +207,7 @@ export function createServerReadModels(context: ReadModelContext) {
         ...message,
         ...(communication ? {
           communicationIntent: communication.intent,
+          authoredText: communication.text,
           communicationSender: communication.sender,
         } : {}),
         ...(directMessageAgents.length ? { directMessageAgents } : {}),

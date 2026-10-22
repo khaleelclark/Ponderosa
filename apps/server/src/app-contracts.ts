@@ -44,6 +44,7 @@ export type { EngineRegistration } from "@ponderosa/core";
 
 export interface CreateServerOptions {
   dataDir: string;
+  localMemory?:{chromaUrl:string;collectionPrefix:string;modelDir:string;stateDirectory:string;provision?:boolean};
   /** Display-only original path; mutable components use the admitted physical root. */
   reportedDataDir?: string;
   resourceAdmission?: import("./resource-admission.js").ResourceAdmissionOptions;
@@ -61,6 +62,7 @@ export interface CreateServerOptions {
   startupMode?: "serve" | "shutdown_recovery";
   /** Qualification instances accept explicit inspection but lease no Runs until resumed. */
   startDrained?: boolean;
+  branches?:{maxConcurrentScripts?:number};
   /** Launcher-owned data root. Runtime state remains under dataDir. */
   launcherDataDir?: string;
   /** Exact installed launcher generation used to fence shutdown receipts. */
@@ -140,6 +142,12 @@ export interface CreateServerOptions {
 }
 
 export interface ActiveRun {
+  voiceReply?: import("./voice-reply-stream.js").VoiceReplyStream;
+  voiceReplyStreamSupported?: boolean;
+  voiceReplyTiming?: { submittedAt?: string; firstModelTextAt?: string };
+  /** Synchronous host-only guard, also checked at canonical publication. */
+  validateVoiceReplyContext?: () => Promise<boolean>;
+  validateVoiceReplyCommit?: () => boolean;
   runId: string;
   startedAt: string;
   executionId: string;

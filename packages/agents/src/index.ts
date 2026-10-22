@@ -101,6 +101,8 @@ export type {
 export type { ManagementOperation, ManagementOperationProgress, ManagementPlan } from "./store-types.js";
 export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
 export { appendFsyncedJsonl, readRepairableJsonl, writeAtomicFsyncedJsonl } from "./append-jsonl.js";
+export {artifactAgentProductSql,managedArtifactProductSql} from './artifact-product-scope.js';
+export {activeChatOwnerSql,activeChatProductSql,chatProductSql,activeAgentOwnerSql,activeAgentProductSql,projectProductSql,type ProductScope} from './product-scope-sql.js';
 export { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone-ownership.js";
 export { openDb } from "./db.js";
 export {
@@ -161,3 +163,16 @@ export type {
 export { admitDataDirectory, shareStateAdmission, requireAdmittedDatabase, readCurrentStateIdentity, StateAdmission } from "./state-admission.js";
 
 export { inspectCurrentState } from "./state-admission.js";
+
+export { BranchStore } from "./branch-store.js";
+export { validateBranchTemplate } from "./branch-template.js";
+export { branchRequirements, exportBranchPackage, importBranchPackage } from "./branch-package.js";
+export * from "./branch-parameters.js";
+export { validateBranchDefinition, validateBranchBindings } from "./branch-definition.js";
+export { branchDefinitionChanges } from "./branch-definition-diff.js";
+export type { BranchResourceProvision, BranchActionLease, BranchGateNotificationEvent, BranchScriptLease } from "./branch-store.js";
+export { BranchTriggerStore } from "./branch-trigger-store.js";
+export type * from "./branch-trigger-types.js";
+export { CapabilityPolicyStore, CapabilityPolicyRevisionConflictError } from "./capability-policy-store.js";
+
+export {REQUEST_SOURCE_LINEAGE_CTE} from "./coordination-v3-request-lineage.js";

@@ -6,6 +6,7 @@ import {
   PONDEROSA_IMPORT_FILE_TOOL,
   PONDEROSA_MANAGE_TOOL,
   PONDEROSA_MESSAGE_TOOL,
+  PONDEROSA_VOICE_REPLY_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
   type RuntimeDynamicToolHandler,
@@ -22,6 +23,7 @@ export function createProviderDynamicToolHandler(
     if (!availableRuntimeTools.some((tool) => tool.name === call.name)) {
       return { success: false, text: `Unavailable Ponderosa tool for this Run: ${call.name}` };
     }
+    const localMemoryOperation=call.name.startsWith("ponderosa_local_memory_")?call.name.slice("ponderosa_local_memory_".length):undefined;
     const browserOperation = call.name.startsWith("ponderosa_browser_")
       ? call.name.slice("ponderosa_browser_".length)
       : undefined;
@@ -29,7 +31,7 @@ export function createProviderDynamicToolHandler(
       ? call.arguments as { agentId?: unknown }
       : {};
     const isDirectory = call.name === PONDEROSA_TEAM_DIRECTORY_TOOL.name;
-    const url = call.name === PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name
+    const url = localMemoryOperation ? "/api/agent-local-memory" : call.name === PONDEROSA_VOICE_REPLY_TOOL.name ? "/api/agent-voice-reply" : call.name === PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name
       ? "/api/agent-spawn"
       : call.name === PONDEROSA_DECISION_TOOL.name
         ? "/api/agent-decisions"
@@ -59,8 +61,9 @@ export function createProviderDynamicToolHandler(
       headers: {
         authorization: `Bearer ${messageCapability}`,
         "content-type": "application/json",
+        ...(call.name === PONDEROSA_VOICE_REPLY_TOOL.name ? {"x-ponderosa-voice-operation-id":call.operationId ?? call.id} : {}),
       },
-      ...(!isDirectory ? { payload: JSON.stringify(browserOperation
+      ...(!isDirectory ? { payload: JSON.stringify(localMemoryOperation ? {...(call.arguments&&typeof call.arguments==="object"?call.arguments:{}),operation:localMemoryOperation} : browserOperation
         ? { ...(call.arguments && typeof call.arguments === "object" ? call.arguments : {}), operation: browserOperation }
         : call.name === PONDEROSA_IMPORT_FILE_TOOL.name
           ? { ...(call.arguments && typeof call.arguments === "object" ? call.arguments : {}), toolCallId: call.id }

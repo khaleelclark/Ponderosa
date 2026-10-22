@@ -1,6 +1,6 @@
 # Regression test consolidation
 
-This reconciles the authorized suite in [PR #676](https://github.com/khaleelclark/Legacy-Ponderosa/pull/676) with the six-file migration in [PR #693](https://github.com/khaleelclark/Legacy-Ponderosa/pull/693). It does not import unrelated unmerged, removed or historical suites. No product behavior or test assertion changes are included.
+This reconciles the authorized suite in [PR #676](https://github.com/khaleelclark/Ponderosa/pull/676) with the six-file migration in [PR #693](https://github.com/khaleelclark/Ponderosa/pull/693). It does not import unrelated unmerged, removed or historical suites. No product behavior or test assertion changes are included.
 
 ## Revisions and preservation
 

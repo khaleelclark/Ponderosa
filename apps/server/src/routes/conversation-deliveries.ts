@@ -645,7 +645,7 @@ export function registerConversationDeliveryRoutes(
     async (request, reply) => {
       if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
           Object.keys(request.body).some((key) => ![
-            "text", "recipients", "idempotencyKey", "activeRunDelivery", "engine", "model", "effort", "speed",
+            "text", "recipients", "idempotencyKey", "activeRunDelivery", "engine", "model", "effort", "speed", "voiceReply",
           ].includes(key))) {
         return reply.code(400).send({ error: "direct message body contains unknown or invalid fields" });
       }
@@ -687,11 +687,16 @@ export function registerConversationDeliveryRoutes(
           return reply.code(400).send({ error: `each recipient supports at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments` });
         }
       }
+      if (request.body.voiceReply !== undefined && (request.body.voiceReply !== true ||
+          recipients.length !== 1 || activeRunDelivery !== "queue")) {
+        return reply.code(400).send({ error: "voiceReply requires one queued recipient" });
+      }
       const receiptKey = `multi-direct:${request.params.id}:${idempotencyKey}`;
       const eventId = `user-dm-${createHash("sha256").update(receiptKey).digest("hex")}`;
       const requestFingerprint = conversationDeliveryRequestFingerprint({
         version: 1,
         kind: "direct",
+        ...(request.body.voiceReply ? { voiceReply: true } : {}),
         conversationId: request.params.id,
         text: rawText,
         recipients: recipients.map((recipient, index) => ({
@@ -865,6 +870,7 @@ export function registerConversationDeliveryRoutes(
               } : {}),
               activeRunDelivery,
               ...runtimeSelection,
+              ...(request.body.voiceReply ? { voiceReply: true } : {}),
               recipients: recipients.map((recipient, index) => ({
                 agentId: recipient.agentId,
                 attachments: (attachmentsByAgent[index] ?? []).map((item) => ({

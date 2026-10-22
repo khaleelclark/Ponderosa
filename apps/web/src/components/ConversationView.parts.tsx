@@ -1,3 +1,4 @@
+import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import AddIcon from "@mui/icons-material/Add";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -291,6 +292,7 @@ function ConversationHeader({
   setDeleteOpen: Dispatch<SetStateAction<boolean>>;
   setActiveView(view: ConversationDetailView): void;
 }): JSX.Element {
+  const auditOnly=useWorkspaceReadOnly();
   return (
     <TabbedWorkspaceFrame
       compactMobile
@@ -302,7 +304,7 @@ function ConversationHeader({
           onOpenProject={onOpenProject}
         />
       }
-      actions={
+      actions={auditOnly?null:
         <>
         <Tooltip title="Open Browser">
             <IconButton
@@ -376,7 +378,7 @@ function ConversationHeader({
             label: "Agents",
             icon: <SmartToyOutlinedIcon fontSize="small" />,
           },
-        ],
+        ].filter(item=>!auditOnly||item.value!=="agents") as Array<{value:ConversationDetailView;label:string;icon:JSX.Element}>,
       }}
     />
   );

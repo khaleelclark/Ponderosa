@@ -1,3 +1,4 @@
+import {requestProduct,resourceInProduct} from "./product-scope.js";
 import type {
   AgentDto,
   AgentHealthProjectionDto,
@@ -558,7 +559,7 @@ export function registerProjectDeletionRoutes(
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
     return agentHealth(
       { type: "project", id: request.params.id },
-      store.listAgents(request.params.id),
+      store.listAgents(request.params.id).filter(agent=>resourceInProduct(store,"agent",agent.id,requestProduct(request))),
     );
   });
 }

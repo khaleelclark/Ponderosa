@@ -1,10 +1,12 @@
+import {isBranchesPath} from "./api/productScope.js";
 import CssBaseline from "@mui/material/CssBaseline";
 import "@fontsource-variable/inter";
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode, useEffect, useMemo, useState } from "react";
+import { StrictMode, Suspense, lazy, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import App from "./App";
+const App=lazy(()=>import('./App'));
+const BranchesView=lazy(()=>import('./components/BranchesView').then(module=>({default:module.BranchesView})));
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { MutationNotificationProvider } from "./components/MutationNotifications";
 import "./global.css";
@@ -14,6 +16,12 @@ import { COLOR_MODE_STORAGE_KEY, createPonderosaTheme, loadColorMode, type Color
 import { writeBrowserStorage } from "./browserStorage";
 
 installServiceWorkerReloadGuard();
+// A product switch needs its own root and QueryClient, including push clicks.
+navigator.serviceWorker?.addEventListener('message',(event:MessageEvent)=>{
+  if(event.data?.type!=='ponderosa:open-route'||typeof event.data.url!=='string')return;
+  const target=new URL(event.data.url,window.location.origin);
+  if(target.origin===window.location.origin&&isBranchesPath(target.pathname)!==isBranchesPath(window.location.pathname))window.location.assign(target.href);
+});
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -41,10 +49,12 @@ function Root(): JSX.Element {
         <CssBaseline />
         <MutationNotificationProvider>
           <WorkspaceErrorBoundary title="Ponderosa could not display the workspace.">
-            <App
+            <Suspense fallback={<div role="status" style={{padding:24}}>Loading Ponderosa…</div>}>
+            {isBranchesPath(window.location.pathname)?<BranchesView colorMode={colorMode} onToggleColorMode={()=>setColorMode(current=>current==='light'?'dark':'light')}/>:<App
               colorMode={colorMode}
               onToggleColorMode={() => setColorMode((current) => (current === "light" ? "dark" : "light"))}
-            />
+            />}
+            </Suspense>
           </WorkspaceErrorBoundary>
         </MutationNotificationProvider>
       </ThemeProvider>

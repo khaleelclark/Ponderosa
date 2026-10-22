@@ -1,3 +1,4 @@
+import {productApiPath} from "../../api/productScope.js";
 import {
   Box,
   Button,
@@ -1352,7 +1353,7 @@ export function Composer({
       ? { ...canonicalDraft, text: pendingText.text, mentionBindings: pendingText.mentionBindings,
           ...(pendingText.attachmentIds ? { attachmentIds: pendingText.attachmentIds, attachments: pendingText.attachments?.filter(asset =>
             asset.conversationId === conversationDraftId && asset.ownerId === draftOwnerId &&
-            asset.downloadUrl === `/api/conversations/${encodeURIComponent(conversationDraftId)}/draft-attachments/${encodeURIComponent(asset.id)}?ownerId=${encodeURIComponent(draftOwnerId)}`
+            asset.downloadUrl === productApiPath(`/api/conversations/${encodeURIComponent(conversationDraftId)}/draft-attachments/${encodeURIComponent(asset.id)}?ownerId=${encodeURIComponent(draftOwnerId)}`)
           ) ?? canonicalDraft.attachments } : {}), pendingSubmission: undefined }
       : canonicalDraft;
     if (

@@ -137,7 +137,7 @@ const require = createRequire(new URL('../../apps/web/package.json', import.meta
 const ts = require('typescript');
 const ReactQuery = await import('@tanstack/react-query');
 const { normalizeResetPages, uniqueBy } = await import('../../apps/web/src/collections.ts');
-const { routeToPath } = await import('../../apps/web/src/routeRegistry.ts');
+const { routeToPath, routeLinkPath } = await import('../../apps/web/src/routeRegistry.ts');
 const { phaseQueryMatchesProject } = await import('../../apps/web/src/workspaceDirectoryScope.ts');
 function searchSetup(t) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryOnMount: false, refetchOnMount: false, gcTime: Infinity } } });
@@ -153,7 +153,7 @@ function searchSetup(t) {
   client.setQueryData(key, { pages: [page(items.slice(0, 25), 'owned-next')], pageParams: [undefined] });
   const mocks = { react: { ...React, useState: initial => React.useState(initial === '' ? query : initial === 'all' ? 'agents' : initial) },
     '@tanstack/react-query': ReactQuery, '../api': { api }, '../queryKeys': { queryKeys }, '../collections': { normalizeResetPages, uniqueBy },
-    '../routeRegistry': { routeToPath }, '../nativeNavigation': { isUnmodifiedPrimaryClick: () => true },
+    '../routeRegistry': { routeToPath, routeLinkPath }, '../nativeNavigation': { isUnmodifiedPrimaryClick: () => true },
     '../hooks/queries': { useNotifications: () => ({}) }, '../hooks/useWorkspaceFileSearch': { useWorkspaceFileSearch: () => ({ results: [] }) },
     './chat/ChatMessages': { linkPresentation: () => undefined } };
   const context = vm.createContext({ exports: {}, console, setTimeout, clearTimeout, require(name) {

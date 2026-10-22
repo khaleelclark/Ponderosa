@@ -29,6 +29,15 @@ export interface ProjectFolderDto {
   expanded: boolean;
 }
 
+/** Presentation only; folder membership never changes Branch ownership. */
+export interface BranchFolderDto {
+  id:string;
+  name:string;
+  branchIds:string[];
+  expanded:boolean;
+  starred?:boolean;
+}
+
 export interface WorkspacePreferencesDto {
   /** Absent Agent entries inherit their Chat's notification mode. */
   notificationScopes?: Record<string, "all" | "attention" | "muted">;
@@ -36,6 +45,9 @@ export interface WorkspacePreferencesDto {
   projectFolders?: ProjectFolderDto[];
   /** Presentation only; membership never changes a conversation's Project. */
   chatFolders?: ChatFolderDto[];
+  branchFolders?:BranchFolderDto[];
+  branchOrder?:string[];
+  branchSort?:ProjectSort;
   /** Absent on pre-local-voice workspaces; resolves to browser speech. */
   speech?: SpeechPreferencesDto;
   /** Canonical monotonic preference mutation sequence. */
@@ -184,6 +196,7 @@ export type WorkspaceResourceKind =
   | "project"
   | "conversation"
   | "agent"
+  | "branch"
  ;
 
 export interface WorkspaceResourceRecencyDto {
@@ -222,6 +235,7 @@ export type UpdateWorkspacePreferencesRequest = Partial<Omit<WorkspacePreference
   /** Required compare-and-swap revision when replacing folder preferences. */
   projectFoldersRevision?: number;
   chatFoldersRevision?: number;
+  branchFoldersRevision?:number;
 };
 
 export interface DraftAttachmentDto {
@@ -476,6 +490,8 @@ export interface GenerateConversationTitleResponse {
 
 export interface WorkspaceNotificationDto {
   id: string;
+  branchId?:string;
+  branchExecutionId?:string;
   /** Authored source for notification policy, independent of navigation target. */
   sourceAgentId?: string;
   projectId?: string;
@@ -497,7 +513,7 @@ export interface WorkspaceNotificationDto {
   status?: "open" | "resolved" | "dismissed";
   /** Stable key used to converge repeated reports of the same operational problem. */
   dedupeKey?: string;
-  action?: { kind: "open_settings" | "open_project" | "open_conversation" | "open_agent" | "open_decision"; targetId?: string };
+  action?: { kind: "open_branch" | "open_settings" | "open_project" | "open_conversation" | "open_agent" | "open_decision"; targetId?: string };
   title: string;
   body: string;
   /** Bounded in-app context; never included in lock-screen push copy. */
@@ -1049,13 +1065,15 @@ export interface ReadinessDto {
     activeRuns: number;
     schedulerRuns: number;
     localRuns: number;
+    /** Supervised Branch processes and active installation/resource operations. */
+    workflowAuthorities:number;
     providerAuthorities: number;
     browserAuthorities: number;
     pendingCleanupOperations: number;
     retainedTeardownFailures: number;
     /** Bounded, credential-free identities for authorities preventing restart. */
     blockers: Array<{
-      kind: "run" | "provider" | "run_browser" | "project_browser" | "browser_residue" | "project_cleanup" | "agent_cleanup";
+      kind: "workflow" | "run" | "provider" | "run_browser" | "project_browser" | "browser_residue" | "project_cleanup" | "agent_cleanup";
       reason: string;
       id?: string;
       projectId?: string;

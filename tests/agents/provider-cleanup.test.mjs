@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {AgentStore,CoordinationV3Store} from '@ponderosa/agents';
 import { withFixture, until } from '../shared/fixture.mjs';
 
 // This file runs in its own Node test process. Retain owned idle sessions so
@@ -67,4 +68,25 @@ test('checks 39, 95: failed native provider cleanup blocks compact replacement, 
   }, { beforeRuntimeClose: ({ sessionId }) => {
     if (refuse && sessionId === blockedSession) { refusedCloses++; throw new Error('Controlled provider close refusal before native termination'); }
   } });
+});
+
+test('coalescing an authored message after another activation preserves every source and its authoritative reply fence',options,async t=>{
+  let store;
+  await withFixture(t,async f=>{
+    const chat=await f.createChat('Coalesced authority'),agent=await f.createIdleAgent(chat,'Bundle owner'),coordination=new CoordinationV3Store(store.sqlite);
+    f.plans.set(agent.id,[{run:async(_session,input)=>{
+      assert.match(input.prompt,/Earlier non-message source must remain visible/);
+      assert.match(input.prompt,/Later authored source must remain visible/);
+      assert.match(input.prompt,/After acknowledging this prompt, include steeringInjectionId:[a-f0-9-]+/);
+      assert.equal(input.prompt.split('Later authored source must remain visible').length-1,1,'The primary source was duplicated');
+    }}]);
+    // Both canonical admissions happen in one synchronous turn before the
+    // scheduler can lease either. The first source has no dispatch snapshot,
+    // matching the recovery-before-human ordering of the Linux failure.
+    const now=new Date().toISOString();
+    coordination.enqueueMessageActivation({projectId:chat.projectId,agentId:agent.id,messageId:'earlier-source',kind:'human',payload:{steeringRecovery:{instruction:'Earlier non-message source must remain visible'}},now});
+    coordination.enqueueMessageActivation({projectId:chat.projectId,agentId:agent.id,messageId:'later-source',kind:'human',payload:{dispatch:{text:'Later authored source must remain visible'}},now});
+    await f.settled(agent.id);
+    assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,1);
+  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });

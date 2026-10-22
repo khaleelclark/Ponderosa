@@ -870,6 +870,7 @@ function ProviderSettingsSection({
 }
 
 export function WorkspaceSettingsView({
+  showHeader=true,
   preferences,
   engines,
   projects,
@@ -882,6 +883,7 @@ export function WorkspaceSettingsView({
   onReturn,
   returnLabel,
 }: {
+  showHeader?:boolean;
   preferences: WorkspacePreferencesDto;
   engines: EngineDto[];
   projects: ProjectDto[];
@@ -1081,7 +1083,7 @@ export function WorkspaceSettingsView({
   };
   return (
     <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflow: "auto" }}>
-      <SettingsHeader onReturn={onReturn} returnLabel={returnLabel} />
+      {showHeader&&<SettingsHeader onReturn={onReturn} returnLabel={returnLabel} />}
       <Box sx={{ maxWidth: 900, mx: "auto", p: { xs: 2, md: 4 } }}>
         {section === "profile" ? (
           <OperatorProfileSettingsSection
@@ -1269,5 +1271,31 @@ function OperatorProfileSettingsSection({
       </Button>
       {save.isError ? <Alert severity="error" sx={{ mt: 1 }}>{save.error instanceof Error ? save.error.message : "Profile could not be saved. Try again."}</Alert> : save.isSuccess && JSON.stringify(save.variables) === JSON.stringify(form.profile) ? <Alert severity="success" role="status" sx={{ mt: 1 }}>Profile saved</Alert> : null}
     </Paper>
+  );
+}
+
+export function OperatorProfileWorkspace({
+  showHeader=true,
+  preferences,
+  onSavePreferences,
+  onReturn,
+  returnLabel,
+}: {
+  showHeader?:boolean;
+  preferences: WorkspacePreferencesDto;
+  onSavePreferences(patch: Partial<WorkspacePreferencesDto>): Promise<WorkspacePreferencesDto>;
+  onReturn?(): void;
+  returnLabel?: string;
+}): JSX.Element {
+  return (
+    <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflow: "auto" }}>
+      {showHeader&&<SettingsHeader profile onReturn={onReturn} returnLabel={returnLabel} />}
+      <Box sx={{ maxWidth: 720, mx: "auto", p: { xs: 2, md: 4 } }}>
+        <OperatorProfileSettingsSection
+          preferences={preferences}
+          onSavePreferences={onSavePreferences}
+        />
+      </Box>
+    </Box>
   );
 }

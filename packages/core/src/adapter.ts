@@ -3,6 +3,7 @@
 // a runtime session. Nothing outside packages/engines may know which engine it is
 // (AGENTS.md invariant 2).
 
+import type {RuntimeCapabilityRestrictions} from "./capability-policy.js";
 import type { AgentEvent } from "./events.js";
 import type { ProviderFailureCategory } from "./provider-failure-summary.js";
 
@@ -186,6 +187,8 @@ export interface RuntimeDynamicToolSpec {
 export interface RuntimeDynamicToolCall {
   /** Stable provider request identity, scoped to the current Run. */
   id: string;
+  /** Normalized provider item identity, when distinct from the RPC request ID. */
+  operationId?: string;
   name: string;
   arguments: unknown;
 }
@@ -310,6 +313,8 @@ export interface OpenRuntimeSessionOptions {
   environment?: Record<string, string>;
   /** Host tools are transported by the adapter, never through the agent shell. */
   dynamicTools?: RuntimeDynamicToolSpec[];
+  /** Resolved restriction-only controls translated by the provider adapter. */
+  capabilityRestrictions?:RuntimeCapabilityRestrictions;
   handleDynamicToolCall?: RuntimeDynamicToolHandler;
   /** User-facing provider requests are handled by the host without exposing
    * engine-specific request methods outside packages/engines. */
@@ -487,6 +492,8 @@ export interface ProviderUsageSnapshot {
  * Both methods return a live stream of normalized {@link AgentEvent}s.
  */
 export interface Adapter {
+  /** Item-scoped response candidates; explicit host reply authorization remains required. */
+  readonly supportsVoiceReplyStream?: boolean;
   id: EngineId; // "codex" | "claude"
   displayName: string;
   /** Ponderosa-dispatched slash command that opens this adapter's quota reader. */

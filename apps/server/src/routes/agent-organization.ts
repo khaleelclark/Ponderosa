@@ -1,3 +1,5 @@
+import {activeAgentProductSql,artifactAgentProductSql} from '@ponderosa/agents';
+import {requestProduct} from '../product-scope.js';
 import type {
   AgentDto,
   AgentHealthProjectionDto,
@@ -134,6 +136,7 @@ export function registerAgentOrganizationRoutes(
     Querystring: OrganizationQuery;
   }>("/api/projects/:projectId/agent-organization", async (request, reply) => {
     const { projectId } = request.params;
+    const product=requestProduct(request);
     if (!context.store.getProject(projectId)) {
       return reply.code(404).send({ error: "project not found" });
     }
@@ -190,7 +193,7 @@ export function registerAgentOrganizationRoutes(
           SELECT 1 FROM agents manager
           WHERE manager.id = a.manager_agent_id
             AND manager.project_id = a.project_id
-            AND manager.deleted_at IS NULL
+            AND manager.deleted_at IS NULL AND ${activeAgentProductSql('manager',product)}
             AND NOT EXISTS (
               SELECT 1
               FROM agent_creation_operation_members manager_members
@@ -207,7 +210,7 @@ export function registerAgentOrganizationRoutes(
     const baseSql = `
       SELECT a.id, a.title, a.updated_at
       FROM agents a
-      WHERE a.project_id = ? AND ${scopePredicate}
+      WHERE a.project_id = ? AND ${scope==='deleted'?artifactAgentProductSql('a',product):activeAgentProductSql('a',product)} AND ${scopePredicate}
       AND NOT EXISTS (
         SELECT 1
         FROM agent_creation_operation_members creation_members
@@ -229,7 +232,7 @@ export function registerAgentOrganizationRoutes(
           baseSql,
           params,
           order: "title",
-          scope: `agent-organization:${projectId}:${scope}:${parentAgentId ?? ""}:${status ?? ""}`,
+          scope: `agent-organization:${projectId}:${product}:${scope}:${parentAgentId ?? ""}:${status ?? ""}`,
           generationKeys: [generationKey],
           defaultLimit: 25,
           maxLimit: 100,
@@ -251,7 +254,7 @@ export function registerAgentOrganizationRoutes(
               SELECT 1 FROM agents manager
               WHERE manager.id = a.manager_agent_id
                 AND manager.project_id = a.project_id
-                AND manager.deleted_at IS NULL
+                AND manager.deleted_at IS NULL AND ${activeAgentProductSql('manager',product)}
                 AND NOT EXISTS (
                   SELECT 1
                   FROM agent_creation_operation_members manager_members
@@ -261,7 +264,7 @@ export function registerAgentOrganizationRoutes(
                 )
             ) THEN 1 ELSE 0 END) AS orphaned,
           SUM(CASE WHEN a.deleted_at IS NOT NULL THEN 1 ELSE 0 END) AS deleted
-        FROM agents a WHERE a.project_id = ?
+        FROM agents a WHERE a.project_id = ? AND ((a.deleted_at IS NULL AND ${activeAgentProductSql('a',product)}) OR (a.deleted_at IS NOT NULL AND ${artifactAgentProductSql('a',product)}))
           AND NOT EXISTS (
             SELECT 1
             FROM agent_creation_operation_members creation_members
@@ -306,7 +309,7 @@ export function registerAgentOrganizationRoutes(
               SELECT COUNT(*) FROM agents child
               WHERE child.project_id = a.project_id
                 AND child.manager_agent_id = a.id
-                AND child.deleted_at IS NULL
+                AND child.deleted_at IS NULL AND ${activeAgentProductSql('child',product)}
                 AND NOT EXISTS (
                   SELECT 1
                   FROM agent_creation_operation_members child_members
@@ -319,7 +322,7 @@ export function registerAgentOrganizationRoutes(
           LEFT JOIN agents manager
             ON manager.id = a.manager_agent_id
             AND manager.project_id = a.project_id
-            AND manager.deleted_at IS NULL
+            AND manager.deleted_at IS NULL AND ${activeAgentProductSql('manager',product)}
             AND NOT EXISTS (
               SELECT 1
               FROM agent_creation_operation_members manager_members

@@ -1,3 +1,4 @@
+import {activeChatProductSql,activeAgentProductSql} from './product-scope-sql.js';
 import type Database from "better-sqlite3";
 import { eq } from "drizzle-orm";
 import type {
@@ -373,10 +374,11 @@ export class AgentChatFeedProjection {
    * text is rematerialized from the canonical Communication ledger so edits are
    * reflected without making SQLite authoritative.
    */
-  getAllChatPage(input: { limit?: number; cursor?: string } = {}): AllChatPageDto {
+  getAllChatPage(input: { limit?: number; cursor?: string;productScope?:'dev'|'branches' } = {}): AllChatPageDto {
     const limit = Math.max(1, Math.min(100, input.limit ?? 50));
+    const cursorScope=input.productScope?`workspace:${input.productScope}`:"workspace";
     const boundary = input.cursor
-      ? this.decodeHistoryCursor(input.cursor, "all-chat", "workspace")
+      ? this.decodeHistoryCursor(input.cursor, "all-chat", cursorScope)
       : undefined;
     type AllChatRow = {
       rowKey: string;
@@ -414,6 +416,7 @@ export class AgentChatFeedProjection {
       LEFT JOIN agents chat_agent ON search.chat_kind = 'agent' AND chat_agent.id = search.chat_id
       LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
       WHERE 1 = 1
+        ${input.productScope?`AND ((conversation.id IS NOT NULL AND ${activeChatProductSql('conversation',input.productScope)}) OR (chat_agent.id IS NOT NULL AND ${activeAgentProductSql('chat_agent',input.productScope)}))`:''}
         AND (
           search.communication_intent IN ('broadcast', 'user_dm')
           OR (search.communication_intent = 'collaboration' AND search.sender_kind = 'user')
@@ -518,7 +521,7 @@ export class AgentChatFeedProjection {
         hasMore,
         ...(hasMore && oldest ? {
           cursor: this.encodeHistoryCursor({
-            stream: "all-chat", scope: "workspace", orderKey: oldest.orderKey, rowKey: oldest.rowKey,
+            stream: "all-chat", scope: cursorScope, orderKey: oldest.orderKey, rowKey: oldest.rowKey,
           }),
         } : {}),
       },

@@ -11,8 +11,12 @@ function fixture(count = 60) {
   // Real SQL execution; minimal empty tables only for unrelated count subqueries.
   sqlite.exec(`
     CREATE TABLE projects (id TEXT PRIMARY KEY, label TEXT, host_path TEXT, created_at TEXT, updated_at TEXT);
-    CREATE TABLE conversations (id TEXT PRIMARY KEY, project_id TEXT, title TEXT, created_at TEXT, updated_at TEXT);
-    CREATE TABLE conversation_deletion_receipts (conversation_id TEXT PRIMARY KEY);
+    CREATE TABLE conversations (id TEXT PRIMARY KEY, project_id TEXT, title TEXT, created_at TEXT, updated_at TEXT, branch_id TEXT);
+    CREATE TABLE conversation_deletion_receipts (conversation_id TEXT PRIMARY KEY, project_id TEXT, branch_id TEXT, canonical_deletion_completed INTEGER);
+    CREATE TABLE project_deletion_pending (project_id TEXT);
+    CREATE TABLE agent_deletion_pending (agent_id TEXT);
+    CREATE TABLE branch_installation_resources (local_id TEXT, state TEXT);
+    CREATE TABLE branches (id TEXT, deleting INTEGER);
     CREATE TABLE collection_generations (name TEXT PRIMARY KEY, generation INTEGER NOT NULL);
     CREATE TABLE agent_conversation_memberships (agent_id TEXT, conversation_id TEXT);
     CREATE TABLE agents (id TEXT, project_id TEXT, conversation_id TEXT, deleted_at TEXT);
@@ -33,12 +37,12 @@ function fixture(count = 60) {
   const chat = (id, owner, title, index) => {
     const value = { id, projectId: owner.id, title, defaultEngine: 'codex', instructions: 's'.repeat(8192), createdAt: '2026-10-19T00:00:00.000Z', updatedAt: new Date(Date.UTC(2026,9,19,0,0,index)).toISOString() };
     conversations.set(id, value);
-    sqlite.prepare('INSERT INTO conversations VALUES (?,?,?,?,?)').run(id, owner.id, title, value.createdAt, value.updatedAt);
+    sqlite.prepare('INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES (?,?,?,?,?)').run(id, owner.id, title, value.createdAt, value.updatedAt);
     return value;
   };
   const rows = Array.from({length:count}, (_,i) => chat('chat-' + String(i).padStart(3,'0'), a, i === 37 ? 'Z Needle 100% under_score café 東京' : 'A Chat ' + String(i).padStart(3,'0'), i));
   const outside = chat('outside-chat', b, 'Z Needle outside', 61);
-  sqlite.prepare('INSERT INTO conversation_deletion_receipts VALUES (?)').run(rows[59].id);
+  sqlite.prepare('INSERT INTO conversation_deletion_receipts(conversation_id) VALUES (?)').run(rows[59].id);
   const folder = { id: 'saved-folder', name: 'Complete folder', expanded: true, starred: true,
     conversationIds: [...rows.slice(30).map(row => row.id), outside.id] };
   let preferences = { projectSort:'last_used', projectOrder:[], starredProjectIds:[], chatSort:'alphabetical', chatOrder:[],

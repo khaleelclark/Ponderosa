@@ -1,3 +1,4 @@
+import {projectProductSql,requestProduct} from '../product-scope.js';
 import { constants as fsConstants, promises as fs } from "@ponderosa/native-host/fs";
 import path from "node:path";
 import type { FastifyReply } from "fastify";
@@ -63,7 +64,7 @@ interface ServerControlRoutesContext {
   ): Promise<{
     configured: true;
     installed?: boolean;
-    authentication: "authenticated" | "unauthenticated" | "error";
+    authentication: "checking" | "authenticated" | "unauthenticated" | "error";
     intakeReady: boolean;
     reachability: "unverified" | "reachable" | "degraded";
     authDetail?: string;
@@ -268,7 +269,7 @@ app.get("/__ponderosa_bootstrap.js", async (_request, reply) => reply
   .send(`(async()=>{
 const status=document.getElementById("status");
 const token=decodeURIComponent(location.hash.slice(1));
-const destination="/";
+const destination=new URLSearchParams(location.search).get("next")==="/branches"?"/branches":"/";
 history.replaceState(null,"","/__ponderosa_bootstrap"+location.search);
 if(!token){location.replace(destination);return}
 try{
@@ -723,14 +724,15 @@ app.get<{ Querystring: CollectionQuery }>("/api/projects", async (request, reply
       baseSql: `
         SELECT id, label AS title, COALESCE(last_used_at, created_at) AS updated_at
         FROM projects
-        ${normalizedSearch ? "WHERE lower(label || ' ' || host_path) LIKE ? ESCAPE '\\\\'" : ""}
+        WHERE ${projectProductSql('projects.id',requestProduct(request))}
+        ${normalizedSearch ? "AND lower(label || ' ' || host_path) LIKE ? ESCAPE char(92)" : ""}
       `,
       params: normalizedSearch
         ? [`%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
         : [],
       order: "updated",
-      scope: "projects",
-      generationKeys: ["projects"],
+      scope: `projects:${requestProduct(request)}`,
+      generationKeys: ["projects","conversations"],
       hydrate: id => store.getProject(id),
     });
     applyCollectionPageHeaders(reply, page);
