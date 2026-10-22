@@ -26,6 +26,7 @@ interface AgentSurfaceContext {
   coordinationV3: AgentEventsInput["coordinationV3"];
   subscribers: AgentEventsInput["subscribers"];
   recordCommunication: AgentEventsInput["recordCommunication"];
+  scheduleCommunicationReconciliation: RequestRoutes["scheduleCommunicationReconciliation"];
   refreshProviderUsageAfterRun: AgentEventsInput["refreshProviderUsageAfterRun"];
   appendWorkspace: AgentEventsInput["appendWorkspace"];
   publishCoordinationV3Changed: AgentEventsInput["publishCoordinationV3Changed"];
@@ -75,6 +76,7 @@ export function registerAgentSurface(
     coordinationV3,
     subscribers,
     recordCommunication,
+    scheduleCommunicationReconciliation,
     refreshProviderUsageAfterRun,
     appendWorkspace,
     publishCoordinationV3Changed,
@@ -238,6 +240,7 @@ registerAgentRequestCommandRoutes(app, {
   removeRuntimeArtifactReservation: (projectId, artifactId) =>
     assets.removeRuntimeArtifactReservation(projectId, artifactId),
   recordCommunication,
+  scheduleCommunicationReconciliation,
   projectCommunicationToAgentAudit,
   publishCoordinationV3Changed,
   notifyScheduler: notifyScheduler,

@@ -75,7 +75,7 @@ import type { AgentRunUsageReadModel } from "./store-run-usage-read-model.js";
 import type { AgentArtifactCatalog } from "./store-artifact-catalog.js";
 import type { AgentEventSessionAuthority } from "./store-event-session-authority.js";
 import type { AgentConversationProjectionReadModel } from "./store-conversation-projection-read-model.js";
-import type { AgentCommunicationProjectionLedger } from "./store-communication-projection-ledger.js";
+import type { AgentCommunicationProjectionLedger, CommunicationProjectionRecoveryFilter } from "./store-communication-projection-ledger.js";
 import type {
   AgentWorkspaceCatalogAuthority,
   WorkspaceCreationIdentity,
@@ -797,8 +797,8 @@ export class AgentStore extends AgentEventSessionFacade {
     );
   }
 
-  private ensureCommunicationProjectionLedger(projectId: string): void {
-    this.communicationProjectionLedger.ensureCommunicationProjectionLedger(projectId);
+  ensureCommunicationProjectionLedger(projectId: string, filter?: CommunicationProjectionRecoveryFilter): void {
+    this.communicationProjectionLedger.ensureCommunicationProjectionLedger(projectId, filter);
   }
 
   reconcileCommunicationEvents(
