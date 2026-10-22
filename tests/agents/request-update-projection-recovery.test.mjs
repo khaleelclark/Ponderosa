@@ -6,6 +6,7 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {AgentStore, CoordinationV3Store} from '@ponderosa/agents';
 import {createAgentEventService} from '../../apps/server/dist/agent-event-service.js';
+import {createCommunicationProjectionReconciler} from '../../apps/server/dist/communication-projection-reconciler.js';
 import {materializeRequestUpdateCommunication, requestUpdateCommunicationEventId} from '../../apps/server/dist/request-update-communication.js';
 import {withFixture, until, fixtureTestOptions as options} from '../shared/fixture.mjs';
 
@@ -244,4 +245,58 @@ test('deleted Agents are never recreated by passive handoff recovery',options,()
   assert.equal(materializeRequestUpdateCommunication(x.context,x.event),2);
   assert.equal(x.store.getAgent(x.worker.id),undefined);
   assert.equal(x.store.getCommunicationProjection(x.project.id,x.event.eventId,'direct_agent_audit',x.worker.id)?.message,undefined);
+}));
+
+
+test('partial Chat metadata rebuild is retried before another passive handoff can append an audit',options,()=>withCanonicalHandoff(async x=>{
+  const nextQuestionId=randomUUID(),nextUpdateId=randomUUID();
+  x.coordinationV3.updateRequest({requestId:x.requestId,updateId:nextQuestionId,kind:'question',
+    actor:{kind:'agent',id:x.worker.id},payload:{text:'Second canonical question'},now:'2026-10-01T00:00:02.000Z'});
+  x.coordinationV3.updateRequest({requestId:x.requestId,updateId:nextUpdateId,kind:'answer',inReplyToUpdateId:nextQuestionId,
+    actor:{kind:'agent',id:x.manager.id},payload:{text:'Second canonical answer'},now:'2026-10-01T00:00:03.000Z'});
+  const second={...x.event,eventId:requestUpdateCommunicationEventId(x.project.id,x.requestId,nextUpdateId),
+    text:'Second canonical answer',createdAt:'2026-10-01T00:00:03.000Z',idempotencyKey:`request-update:${x.requestId}:${nextUpdateId}`};
+  const events=[x.event,second],originalProjection=x.store.appendCommunicationProjection.bind(x.store);
+  for(const event of events){
+    x.store.appendCommunicationEvent(event);
+    x.store.appendCommunicationProjection=(projectId,projection)=>{
+      if(projection.eventId===event.eventId&&projection.surface==='direct_agent_audit'&&projection.projectionKey===x.manager.id&&projection.message)
+        throw Error('Controlled missing metadata after durable author audit');
+      return originalProjection(projectId,projection);
+    };
+    assert.throws(()=>materializeRequestUpdateCommunication(x.context,event),/Controlled missing metadata/);
+  }
+  x.store.appendCommunicationProjection=originalProjection;
+  const rawCounts=()=>events.map(event=>x.store.readEvents(x.manager.id)
+    .filter(row=>row.event.type==='communication_projection'&&row.event.communicationEventId===event.eventId).length);
+  assert.deepEqual(rawCounts(),[1,1]);
+  const originalLedger=x.store.ensureCommunicationProjectionLedger.bind(x.store);let rebuilds=0;
+  x.store.ensureCommunicationProjectionLedger=(projectId,filter)=>{
+    rebuilds++;
+    if(rebuilds===1){
+      // One event's durable metadata is restored, then the Project pass fails.
+      originalLedger(projectId,{...filter,eventIds:new Set([x.event.eventId])});
+      throw Error('Controlled partial Project metadata rebuild');
+    }
+    return originalLedger(projectId,filter);
+  };
+  const unexpected=()=>{throw Error('Passive recovery invoked unrelated authority');};
+  const reconciler=createCommunicationProjectionReconciler({...x.context,assets:{},
+    attachmentDeletionInProgress:()=>false,assetReconciliationInProgress:()=>false,
+    conversationDeliveryLeases:new Map(),agentDeliveryLeases:new Map(),recordCommunication:unexpected,
+    projectCommunicationArtifact:unexpected,communicationArtifactAccess:unexpected,
+    scheduleCommunicationReconciliation(){},logError(){},logInfo(){}});
+  const filter={projectId:x.project.id,conversationId:x.chat.id},before=x.counts();
+  await assert.rejects(reconciler.reconcileRuntimeCommunicationProjections(filter),/recovery is incomplete/);
+  assert.equal(rebuilds,2,'A failed Project rebuild must not suppress the next event recovery');
+  assert.deepEqual(rawCounts(),[1,1],'A later event duplicated an already durable author audit');
+  await reconciler.reconcileRuntimeCommunicationProjections(filter);
+  await reconciler.reconcileRuntimeCommunicationProjections(filter);
+  assert.deepEqual(rawCounts(),[1,1]);assert.deepEqual(x.counts(),before);
+  assert.equal(x.store.reconcileCommunicationEvents(x.project.id).ok,true);
+  for(const event of events){
+    for(const agent of [x.manager,x.worker])assert.equal(x.store.getProjectedAgentMessages(agent.id).filter(row=>row.communicationEventId===event.eventId).length,1);
+    assert.ok(x.store.getProjectedConversationMessageById(x.chat.id,'collaboration',event.eventId));
+    assert.equal(x.store.getProjectedConversationMessageById(x.chat.id,'main',event.eventId),undefined);
+  }
 }));

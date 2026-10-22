@@ -173,7 +173,6 @@ export function createCommunicationProjectionReconciler(
       try {
         const count = materializeRequestUpdateCommunication(context, event, filter ? current => {
           if (rebuiltProjects.has(current.projectId)) return;
-          rebuiltProjects.add(current.projectId);
           const candidates = filter.communicationEventId ? [current] : store.readCommunicationEvents(current.projectId);
           const plans = candidates.flatMap(candidate => {
             if (filter.conversationId && candidate.conversationId !== filter.conversationId) return [];
@@ -185,6 +184,7 @@ export function createCommunicationProjectionReconciler(
             eventIds: new Set(plans.map(plan => plan.event.eventId)),
             agentIds: new Set(plans.flatMap(plan => plan.targets)),
           });
+          rebuiltProjects.add(current.projectId);
         } : undefined);
         repaired += count;
         if (count) repairedProjectIds.add(event.projectId);
