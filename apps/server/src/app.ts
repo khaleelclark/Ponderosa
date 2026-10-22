@@ -255,6 +255,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const workspaceSubscribers = new Set<(event: WorkspaceEventEnvelope) => void>();
   const liveSseClosures = new Set<() => void>();
   const publishWorkspace = (event: WorkspaceEventEnvelope): void => {
+    const change = event.event;
+    if (((change.type === "notification_changed" && change.decisionId) ||
+         (change.type === "project_changed" && change.action !== "used")) && change.projectId) {
+      void scheduleCoordinationAttentionNotifications(change.projectId);
+    }
     publishWorkspaceEvent(workspaceSubscribers, event, error => {
       app.log.warn({ err: error, workspaceEventId: event.id }, "workspace subscriber publication failed");
     });
@@ -415,6 +420,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     reconcileCommunicationFailureNotifications,
     reconcileContextRolloverFormatNotifications,
     reconcileCoordinationAttentionNotifications,
+    scheduleCoordinationAttentionNotifications,
+    stopCoordinationAttentionNotifications,
     reconcileProjectDeletionOperationalNotifications,
     reconcileProjectWorkspace,
     resolveOperationalNotification,
@@ -423,7 +430,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     coordinationV3,
     workspace,
     publishWorkspaceSince,
+    logError: (meta, message) => app.log.error(meta, message),
   });
+  startupDisposers.push(() => { void stopCoordinationAttentionNotifications(); });
   for (const engineId of engines.keys()) {
     const denial = engineAvailability.denial(engineId);
     if (denial && providerEnabled(engineId)) createOperationalNotification({
@@ -732,7 +741,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     appendWorkspace,
     publish: (agentId, stored) => publish(agentId, stored),
     reconcileCommunicationNotifications: reconcileCommunicationFailureNotifications,
-    reconcileCoordinationAttentionNotifications,
+    scheduleCoordinationAttentionNotifications,
     isClosed: () => closed,
   });
 
@@ -1036,6 +1045,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     applyResolvedSavedBrowserApproval,
     refreshCommunicationReconciliation,
     stopCommunicationReconciliation,
+    stopCoordinationAttentionNotifications,
     closeRunBrowser: closeRunBrowserAfterRun,
     providerProcessAuthority,
   });

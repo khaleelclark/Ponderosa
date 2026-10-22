@@ -57,7 +57,7 @@ interface ReadModelContext {
   appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): unknown;
   publish(agentId: string, stored: StoredLogEvent): void;
   reconcileCommunicationNotifications(): void;
-  reconcileCoordinationAttentionNotifications(): void;
+  scheduleCoordinationAttentionNotifications(projectId: string): void;
   isClosed(): boolean;
 }
 
@@ -101,7 +101,7 @@ export function createServerReadModels(context: ReadModelContext) {
     appendWorkspace,
     publish,
     reconcileCommunicationNotifications,
-    reconcileCoordinationAttentionNotifications,
+    scheduleCoordinationAttentionNotifications,
     isClosed,
   } = context;
 
@@ -564,8 +564,8 @@ export function createServerReadModels(context: ReadModelContext) {
         agentId,
         conversationIds: options.conversationIds ?? [agent.conversationId],
       });
-      reconcileCoordinationAttentionNotifications();
     }
+    scheduleCoordinationAttentionNotifications(agent.projectId);
   }
 
   function publishMessageDeliveryChanged(agentId: string): void {

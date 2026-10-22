@@ -15,7 +15,7 @@ export class AgentWorkProjection {
   constructor(
     private readonly store: Pick<
       AgentStore,
-      "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact" | "agentCreationPending"
+      "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact" | "agentCreationPending" | "pendingAgentCreationIds"
     >,
     private readonly coordination: Pick<
       CoordinationV3Store,
@@ -39,8 +39,9 @@ export class AgentWorkProjection {
     const agentName = (id: string | undefined): string =>
       id ? names.get(id) ?? "Deleted Agent" : "You";
     const projection = this.coordination.agentWorkItems(input);
+    const pendingAgents = new Set(this.store.pendingAgentCreationIds());
     const items = projection.items.filter((item) =>
-      !item.agentIds.some((agentId) => this.store.agentCreationPending(agentId)));
+      !item.agentIds.some((agentId) => pendingAgents.has(agentId)));
     for (const item of items) {
       if (item.kind === "request") {
         item.title = `${agentName(item.requesterAgentId)} asked ${agentName(item.recipientAgentId)} to work`;
@@ -117,7 +118,7 @@ export class AgentWorkProjection {
       || orderedDecisions.length > decisionLimit;
     const decisions = orderedDecisions.slice(0, decisionLimit);
     for (const decision of decisions) {
-      if (this.store.agentCreationPending(decision.agentId)) continue;
+      if (pendingAgents.has(decision.agentId)) continue;
       const runItem = items.find((item) =>
         item.kind === "run" && item.referenceIds.includes(decision.runId));
       const responseActivation = items.find((item) =>
