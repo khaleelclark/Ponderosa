@@ -189,6 +189,92 @@ curl -sS -X POST -H "Authorization: Bearer $PONDEROSA_TOKEN" \
 
 Do not leave a healthy old daemon in the drained state after an aborted deploy.
 
+## Recover from a native crash or state-admission refusal
+
+An explicit state-admission refusal exits with status 78. The checked-in daemon units do
+not automatically restart that status; an operator must resolve the refusal
+and explicitly start the service. Other failures still follow `Restart=on-failure`.
+An admission refusal does not, by itself, establish database corruption. A
+successful restart does not establish that a preceding native crash is fixed.
+
+During an incident, stop the service and preserve its full data cohort offline,
+including the DB, WAL, SHM, layout marker, event logs and workspaces. Retain
+checksums and restricted permissions. Do not open original WAL-mode SQLite with
+unrelated SQL tools: even `mode=ro`/`query_only` readers can modify its SHM
+coordination file. Do not delete SHM/WAL, checkpoint the original, bypass guards,
+or restore an older copy over work retained after recovery.
+
+Inspect an expendable copy through the existing offline inspection API; it
+holds the directory lease and opens SQLite only on private snapshots:
+
+```sh
+install_root=/opt/ponderosa-engine/resources/Ponderosa
+runtime="$install_root/runtime/node"
+inspection_copy=/path/to/restricted/expendable-state-copy
+(cd "$install_root/app/server" && "$runtime" --input-type=module -e '
+  import { inspectCurrentState } from "@ponderosa/agents";
+  const inspection = inspectCurrentState(process.argv[1]);
+  try { console.log(JSON.stringify({ generationId: inspection.generationId, verified: true })); }
+  finally { inspection.close(); }
+' "$inspection_copy")
+```
+
+For a deliberately drained recovery, install persistent incident containment
+before starting the service. These are examples for the system unit; adapt the
+unit name and paths together. Keep the dedicated file last among effective
+`EnvironmentFile` entries:
+
+```sh
+sudo install -d /etc/ponderosa /etc/systemd/system/ponderosa.service.d
+sudo install -m 0600 /dev/stdin /etc/ponderosa/incident-drained.env <<'EOF'
+PONDEROSA_START_DRAINED=1
+EOF
+sudo install -m 0644 /dev/stdin /etc/systemd/system/ponderosa.service.d/zzzzzzzz-incident-drained.conf <<'EOF'
+[Service]
+EnvironmentFile=/etc/ponderosa/incident-drained.env
+Restart=no
+EOF
+sudo systemctl daemon-reload
+systemctl cat ponderosa.service
+systemctl show ponderosa.service -p EnvironmentFiles -p Restart
+```
+
+Review every effective drop-in and environment-file path before starting:
+`EnvironmentFile` assignments override `Environment=` assignments, and later
+files override earlier files. `systemctl show Environment` alone does not prove
+the final value. Persistent `/etc` containment survives reboot; a `/run`
+drop-in does not. Do not restart until the effective final file supplies
+`PONDEROSA_START_DRAINED=1` and automatic restart is disabled.
+
+After the explicitly authorized start, confirm `/api/health` responds, then use
+the supported authenticated drain endpoint and readiness API:
+
+```sh
+curl -sS -X POST -H "Authorization: Bearer $PONDEROSA_TOKEN" \
+  http://127.0.0.1:8787/api/deployment/drain
+curl -sS -H "Authorization: Bearer $PONDEROSA_TOKEN" \
+  http://127.0.0.1:8787/api/ready
+```
+
+Require `leasingRuns=false`, `readyForRestart=true`, zero active/scheduler/local
+Runs, zero provider/browser authorities, zero pending cleanup, zero retained
+teardown failures and no blockers. The drain response exposes those fields
+directly; readiness places the drain fields under `deploymentDrain`. Readiness
+may remain 503 while deliberately drained; distinguish that from an absent or
+stalled HTTP response. Check UI/assets separately. These checks do not qualify
+provider execution. Keep containment in place until recovery and resumption are
+explicitly approved; remove only the incident files, reload systemd, and verify
+the resulting configuration before an explicit resume or normal restart.
+
+Native crash capture is an optional, separately approved diagnostic change.
+Core dumps can contain private prompts, credentials and memory, and can be very
+large. Plan restricted storage, available space, quotas and retention first.
+`LimitCORE` alone is insufficient: verify the host's core handler actually
+accepts the bundled Node executable, and validate capture only with a disposable
+test process. Preserve the exact executable/native addons and build identity
+for a usable native stack. JavaScript diagnostic reports do not replace a
+native SIGBUS backtrace; do not automatically enable production core capture.
+
 ## Take and rehearse a pre-migration backup
 
 After the deployment drain reaches `readyForRestart: true`, stop the application

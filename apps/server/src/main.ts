@@ -1,4 +1,4 @@
-import { AgentStore, admitDataDirectory } from "@ponderosa/agents";
+import { AgentStore, admitDataDirectory, StateAdmissionError } from "@ponderosa/agents";
 import { DataDirectoryAuthority } from "@ponderosa/native-host";
 import type { WindowsDirectoryLeaseTransfer } from "@ponderosa/native-host";
 import path from "node:path";
@@ -54,48 +54,55 @@ let launcherRootAuthority: DataDirectoryAuthority | undefined;
 let launcherRecords: LauncherRecordAuthority | undefined;
 let storeRoot = config.dataDir;
 let store: AgentStore;
-if (transferText) {
-  const transfer = JSON.parse(transferText) as { nonce: string; generationId: string; physicalIdentity: string; dataRoot: string; parentRoot: string; dataLease?: WindowsDirectoryLeaseTransfer; parentLease?: WindowsDirectoryLeaseTransfer };
-  if (!process.connected || !process.send || !/^[0-9a-f-]{36}$/u.test(transfer.nonce)) {
-    throw new Error("current state transfer requires the exact launcher IPC channel");
-  }
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => finish(new Error("current state transfer authorization timed out")), 45_000);
-    const finish = (error?: Error): void => {
-      clearTimeout(timer); process.off("message", onMessage); process.off("disconnect", onDisconnect);
-      error ? reject(error) : resolve();
-    };
-    const onDisconnect = (): void => finish(new Error("launcher disappeared before state transfer"));
-    const onMessage = (message: unknown): void => {
-      const input = message as { type?: string; nonce?: string; generationId?: string; physicalIdentity?: string };
-      if (input?.type !== "state-admission-authorize") return;
-      if (input.nonce !== transfer.nonce || input.generationId !== transfer.generationId ||
-          input.physicalIdentity !== transfer.physicalIdentity) finish(new Error("state transfer identity changed"));
-      else finish();
-    };
-    process.on("message", onMessage); process.once("disconnect", onDisconnect);
-    process.send!({ type: "state-admission-request", ...transfer });
-  });
-  launcherRootAuthority = new DataDirectoryAuthority(process.platform === "linux" ? "/proc/self/fd/5" : transfer.parentRoot, 5, transfer.parentLease);
-  validateLauncherRecord(launcherRootAuthority.rootPath, {
-    generation: process.env.PONDEROSA_LAUNCHER_GENERATION ?? "", controlToken: launcherControlToken ?? "",
-    stateGenerationId: transfer.generationId, physicalDataDirectoryIdentity: transfer.physicalIdentity,
-    ...(shutdownRecovery ? { recovery: { pid: shutdownRecoveryPid, birth: shutdownRecoveryBirthMarker, requestedAt: shutdownRecoveryRequestedAt } } : {}),
-  });
-  const inherited = admitDataDirectory(process.platform === "linux" ? "/proc/self/fd/4" : transfer.dataRoot, "ponderosa.db", 4, transfer);
-  try {
-    storeRoot = inherited.dataDir;
-    process.env.PONDEROSA_LAUNCHER_DATA_DIR = launcherRootAuthority.rootPath;
-    launcherRecords = new LauncherRecordAuthority(launcherRootAuthority, inherited,
-      process.env.PONDEROSA_LAUNCHER_GENERATION!, launcherControlToken!, shutdownRecovery);
+try {
+  if (transferText) {
+    const transfer = JSON.parse(transferText) as { nonce: string; generationId: string; physicalIdentity: string; dataRoot: string; parentRoot: string; dataLease?: WindowsDirectoryLeaseTransfer; parentLease?: WindowsDirectoryLeaseTransfer };
+    if (!process.connected || !process.send || !/^[0-9a-f-]{36}$/u.test(transfer.nonce)) {
+      throw new Error("current state transfer requires the exact launcher IPC channel");
+    }
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => finish(new Error("current state transfer authorization timed out")), 45_000);
+      const finish = (error?: Error): void => {
+        clearTimeout(timer); process.off("message", onMessage); process.off("disconnect", onDisconnect);
+        error ? reject(error) : resolve();
+      };
+      const onDisconnect = (): void => finish(new Error("launcher disappeared before state transfer"));
+      const onMessage = (message: unknown): void => {
+        const input = message as { type?: string; nonce?: string; generationId?: string; physicalIdentity?: string };
+        if (input?.type !== "state-admission-authorize") return;
+        if (input.nonce !== transfer.nonce || input.generationId !== transfer.generationId ||
+            input.physicalIdentity !== transfer.physicalIdentity) finish(new Error("state transfer identity changed"));
+        else finish();
+      };
+      process.on("message", onMessage); process.once("disconnect", onDisconnect);
+      process.send!({ type: "state-admission-request", ...transfer });
+    });
+    launcherRootAuthority = new DataDirectoryAuthority(process.platform === "linux" ? "/proc/self/fd/5" : transfer.parentRoot, 5, transfer.parentLease);
+    validateLauncherRecord(launcherRootAuthority.rootPath, {
+      generation: process.env.PONDEROSA_LAUNCHER_GENERATION ?? "", controlToken: launcherControlToken ?? "",
+      stateGenerationId: transfer.generationId, physicalDataDirectoryIdentity: transfer.physicalIdentity,
+      ...(shutdownRecovery ? { recovery: { pid: shutdownRecoveryPid, birth: shutdownRecoveryBirthMarker, requestedAt: shutdownRecoveryRequestedAt } } : {}),
+    });
+    const inherited = admitDataDirectory(process.platform === "linux" ? "/proc/self/fd/4" : transfer.dataRoot, "ponderosa.db", 4, transfer);
+    try {
+      storeRoot = inherited.dataDir;
+      process.env.PONDEROSA_LAUNCHER_DATA_DIR = launcherRootAuthority.rootPath;
+      launcherRecords = new LauncherRecordAuthority(launcherRootAuthority, inherited,
+        process.env.PONDEROSA_LAUNCHER_GENERATION!, launcherControlToken!, shutdownRecovery);
+      store = new AgentStore(storeRoot);
+      process.send!({ type: "state-admission-adopted", ...transfer });
+    } catch (error) { inherited.close(); if (launcherRecords) launcherRecords.close(); else launcherRootAuthority?.close(); throw error; }
+    inherited.close();
+  } else {
+    if (process.env.PONDEROSA_LAUNCHER_DATA_DIR) throw new Error("installed startup requires an exact current state transfer");
     store = new AgentStore(storeRoot);
-    process.send!({ type: "state-admission-adopted", ...transfer });
-  } catch (error) { inherited.close(); if (launcherRecords) launcherRecords.close(); else launcherRootAuthority?.close(); throw error; }
-  inherited.close();
-} else {
-  if (process.env.PONDEROSA_LAUNCHER_DATA_DIR) throw new Error("installed startup requires an exact current state transfer");
-  store = new AgentStore(storeRoot);
+  }
+} catch (error) {
+  if (!(error instanceof StateAdmissionError)) throw error;
+  console.error(error);
+  process.exit(78); // EX_CONFIG: an operator must resolve refused state before restarting.
 }
+
 if (process.env.PONDEROSA_SHUTDOWN_RECOVERY !== "1") installLauncherRunningLogs(process.env.PONDEROSA_LAUNCHER_DATA_DIR);
 
 let app: ReturnType<typeof createServer>;

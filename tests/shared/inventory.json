@@ -929,6 +929,22 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24; actual ProjectShell event handlers with controlled hook storage; no account or network",
       "origin": "Safari long-chat refresh stalls: stable memoized message callbacks with fresh navigation state"
+    },
+    {
+      "path": "tests/installation-release/sqlite-admission-locking.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host and better-sqlite3; Linux and Python3 standard sqlite3/fcntl/resource modules; disposable current-state databases; bounded core-disabled native children; no provider account, live database or service",
+      "origin": "October22 SQLite admission source-descriptor lifetime/SHM race: retain POSIX locks, survive independent read-only SQLite readers, fail closed on cohort/identity/metadata/content/generation changes and release a failed acquisition"
+    },
+    {
+      "path": "tests/installation-release/state-admission-startup.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server; disposable refused-state fixtures; no listening socket or provider account",
+      "origin": "October22 incident: explicit admission refusals exit78 without writes/listener; ordinary startup failures and restart policy remain distinct"
     }
   ],
   "retainedReleasePayload": [
