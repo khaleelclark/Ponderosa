@@ -207,6 +207,30 @@ test('one fresh global pending-agent snapshot preserves quarantine, decisions an
   assert.equal(batches, 5); assert.equal(individual, 0, 'quarantine checks do not query per work item');
 });
 
+test('pending Decisions suppress generic failure, and Skip exposes the unchanged failed assignment', fixtureTestOptions, t =>
+  withFixture(t, async f => {
+    const chat = await f.createChat('Decision invalidation');
+    const manager = await f.createIdleAgent(chat, 'Manager'), worker = await f.createIdleAgent(chat, 'Worker');
+    const session = await f.hold(manager.id);
+    let decision;
+    f.plans.set(worker.id, [{ output: false, run: async s => {
+      decision = f.ok(await f.tool(s, 'ponderosa_decision', { idempotencyKey: randomUUID(),
+        mode: 'text', question: 'Which recovery should I use?', blocking: false }));
+      f.ok(await f.tool(s, 'ponderosa_update_request', { kind: 'failed', text: 'Controlled failed assignment' }));
+    } }]);
+    const result = f.ok(await f.tool(session, 'ponderosa_coordinate', { idempotencyKey: randomUUID(), requests: [
+      { recipientAgentId: worker.id, text: 'Exercise Decision invalidation', lifetime: { kind: 'indefinite' } },
+    ] }));
+    await until(async () => (await f.detail(worker.id)).coordinationV3.requests.some(r => r.id === result.requestIds[0] && r.state === 'failed'), 'failed assignment');
+    const notices = async () => f.ok(await f.api('GET', '/api/notifications')).items;
+    assert.ok((await notices()).some(n => n.decision?.id === decision.id));
+    assert.equal((await notices()).some(n => n.resolution?.requestId === result.requestIds[0]), false);
+    f.ok(await f.api('POST', `/api/decisions/${decision.id}/respond`, { skip: true }));
+    await until(async () => (await notices()).some(n => n.resolution?.requestId === result.requestIds[0]), 'Skip reveals the generic failure');
+    const request = (await f.detail(worker.id)).coordinationV3.requests.find(r => r.id === result.requestIds[0]);
+    assert.equal(request.state, 'failed', 'notification repair does not rewrite the canonical result');
+  }));
+
 for (const engine of ['codex', 'claude']) test(`${engine}: failed assignment notice and canonical result survive reopen`, fixtureTestOptions, t =>
   withFixture(t, async f => {
     const chat = await f.createChat(`Notification ${engine}`);
