@@ -357,7 +357,7 @@ export function registerAgentRequestCommandRoutes(
         existingPassive ? (event, agentIds) => store.ensureCommunicationProjectionLedger(projectId, {
           eventIds: new Set([event.eventId]), agentIds: new Set(agentIds),
         }) : undefined);
-      if (repaired) context.scheduleCommunicationReconciliation(projectId);
+      if (repaired || existingPassive) context.scheduleCommunicationReconciliation(projectId);
       const conversationIds = changedRequest?.conversationId
         ? [changedRequest.conversationId]
         : [];

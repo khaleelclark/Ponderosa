@@ -4,6 +4,7 @@ import {mkdtemp, mkdir, rm, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
+import Database from 'better-sqlite3';
 import {AgentStore, CoordinationV3Store} from '@ponderosa/agents';
 import {createAgentEventService} from '../../apps/server/dist/agent-event-service.js';
 import {createCommunicationProjectionReconciler} from '../../apps/server/dist/communication-projection-reconciler.js';
@@ -120,8 +121,24 @@ test('an exact route replay repairs an answer older than the100-update inspector
     idempotencyKey:randomUUID(),requests:[{recipientAgentId:worker.id,text:'Controlled question',lifetime:{kind:'indefinite'}}],
   })).requestIds[0];
   await until(()=>f.sessions.has(worker.id),'worker Request');
+  const managerRunId=(await f.detail(manager.id)).coordinationV3.activeRun.id;
   const questionId=randomUUID();
   f.ok(await f.tool(f.sessions.get(worker.id),'ponderosa_update_request',{requestId,updateId:questionId,kind:'question',text:'Exact question'}));
+  const sqlite=new Database(path.join(f.dataDir,'ponderosa.db'),{readonly:true});
+  try {
+    const attached=sqlite.prepare(`
+      SELECT 1 FROM scheduler_run_activations attachment
+      JOIN scheduler_runs run ON run.id=attachment.run_id
+      JOIN agent_activations activation ON activation.id=attachment.activation_id
+      JOIN activation_sources source ON source.activation_id=activation.id
+      JOIN coordination_request_updates request_update ON request_update.id=source.source_id
+      WHERE run.id=? AND run.agent_id=? AND run.status='running'
+        AND activation.agent_id=run.agent_id AND source.source_kind='request_update'
+        AND request_update.id=? AND request_update.request_id=?
+    `);
+    await until(()=>attached.get(managerRunId,manager.id,questionId,requestId),
+      'exact question Activation attached to the held manager Run');
+  } finally {sqlite.close();}
   const updateId=randomUUID(),eventId=requestUpdateCommunicationEventId(chat.projectId,requestId,updateId);
   const update={requestId,updateId,kind:'answer',text:'Exact historical answer',inReplyToUpdateId:questionId};
   const original=AgentStore.prototype.appendCommunicationEvent;let injected=false;
@@ -299,4 +316,52 @@ test('partial Chat metadata rebuild is retried before another passive handoff ca
     assert.ok(x.store.getProjectedConversationMessageById(x.chat.id,'collaboration',event.eventId));
     assert.equal(x.store.getProjectedConversationMessageById(x.chat.id,'main',event.eventId),undefined);
   }
+}));
+
+
+test('a no-op passive replay refreshes cached drift after a completed metadata write loses its acknowledgement',options,t=>withFixture(t,async f=>{
+  const chat=await f.createChat('Post-write recovery cache');
+  const manager=await f.createIdleAgent(chat,'Manager'),worker=await f.createIdleAgent(chat,'Worker');
+  const managerSession=await f.hold(manager.id);f.plans.set(worker.id,[{hold:true}]);
+  const requestId=f.ok(await f.tool(managerSession,'ponderosa_coordinate',{
+    idempotencyKey:randomUUID(),requests:[{recipientAgentId:worker.id,text:'Controlled cached recovery',lifetime:{kind:'indefinite'}}],
+  })).requestIds[0];
+  await until(()=>f.sessions.has(worker.id),'worker Request');
+  const updateId=randomUUID(),eventId=requestUpdateCommunicationEventId(chat.projectId,requestId,updateId);
+  const update={requestId,updateId,kind:'completed',text:'Exact cached recovery result'};
+  const originalPlacement=AgentStore.prototype.appendConversationMessage;
+  let ownedStore,canonicalFailure=false;
+  AgentStore.prototype.appendConversationMessage=function(...args){
+    if(args[6]===eventId&&!canonicalFailure){ownedStore=this;canonicalFailure=true;throw Error('Controlled interruption before Team placement');}
+    return originalPlacement.apply(this,args);
+  };
+  let initial;try{initial=f.ok(await f.tool(f.sessions.get(worker.id),'ponderosa_update_request',update));}
+  finally{AgentStore.prototype.appendConversationMessage=originalPlacement;}
+  assert.equal(canonicalFailure,true);assert.equal(initial.recovering,true);
+  const cachedMigration=async()=>(await f.api('GET','/api/ready')).body.checks.communicationMigration;
+  // Observe the existing scheduled verifier's red result, rather than using
+  // the diagnostic GET that would itself mutate the cached evidence.
+  await until(async()=>/projections=drift/.test((await cachedMigration()).detail),'initial cached drift is verified');
+  const originalProjection=AgentStore.prototype.appendCommunicationProjection;
+  let postwriteFailure=false;
+  AgentStore.prototype.appendCommunicationProjection=function(projectId,projection){
+    const result=originalProjection.call(this,projectId,projection);
+    if(!postwriteFailure&&projection.eventId===eventId&&projection.surface==='direct_agent_audit'&&
+      projection.projectionKey===manager.id&&projection.message){
+      postwriteFailure=true;throw Error('Controlled lost acknowledgement after last metadata write');
+    }
+    return result;
+  };
+  let restored;try{restored=f.ok(await f.tool(f.sessions.get(worker.id),'ponderosa_update_request',update));}
+  finally{AgentStore.prototype.appendCommunicationProjection=originalProjection;}
+  assert.equal(postwriteFailure,true);assert.equal(restored.recovering,true);
+  assert.ok(ownedStore.getProjectedConversationMessageById(chat.id,'collaboration',eventId));
+  for(const agent of [manager,worker])assert.notEqual(ownedStore.getCommunicationProjection(chat.projectId,eventId,'direct_agent_audit',agent.id)?.message?.sequence,undefined);
+  assert.match((await cachedMigration()).detail,/projections=drift/,'The post-write failure left verified-red cached evidence');
+  const originalLedger=AgentStore.prototype.ensureCommunicationProjectionLedger;
+  AgentStore.prototype.ensureCommunicationProjectionLedger=()=>{throw Error('A complete metadata replay rebuilt history');};
+  let replay;try{replay=f.ok(await f.tool(f.sessions.get(worker.id),'ponderosa_update_request',update));}
+  finally{AgentStore.prototype.ensureCommunicationProjectionLedger=originalLedger;}
+  assert.equal(replay.replayed,true);assert.equal(replay.recovering,undefined);
+  await until(async()=>(await cachedMigration()).ok,'a true no-op replay refreshes cached drift without a diagnostic GET');
 }));
