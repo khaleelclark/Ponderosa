@@ -224,28 +224,6 @@ CREATE TABLE capability_policies (
   PRIMARY KEY(scope_kind, scope_id)
 );
 
-CREATE TABLE pinecone_admission_receipts (
-  agent_id TEXT NOT NULL REFERENCES pinecone_profiles(agent_id) DEFERRABLE INITIALLY DEFERRED,
-  project_id TEXT NOT NULL REFERENCES projects(id) DEFERRABLE INITIALLY DEFERRED,
-  conversation_id TEXT NOT NULL REFERENCES conversations(id) DEFERRABLE INITIALLY DEFERRED,
-  operation_key TEXT NOT NULL,
-  payload_hash TEXT NOT NULL,
-  result_json TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY(agent_id,operation_key)
-);
-
-CREATE TABLE pinecone_profiles (
-  agent_id TEXT PRIMARY KEY REFERENCES agents(id) DEFERRABLE INITIALLY DEFERRED,
-  project_id TEXT NOT NULL REFERENCES projects(id) DEFERRABLE INITIALLY DEFERRED,
-  conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) DEFERRABLE INITIALLY DEFERRED,
-  guidance_version INTEGER NOT NULL CHECK(guidance_version = 1),
-  admission_state TEXT NOT NULL DEFAULT 'active' CHECK(admission_state IN ('active','paused')),
-  revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
-  updated_at TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
-);
-
 CREATE TABLE "trigger_definitions" (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -357,14 +335,6 @@ CREATE INDEX idx_trigger_occurrences_scope_created
 
 CREATE INDEX idx_trigger_occurrences_scope_updated
   ON trigger_occurrences (project_id, scope_key, updated_at DESC, id DESC);
-
-CREATE INDEX pinecone_admission_receipts_chat ON pinecone_admission_receipts(conversation_id);
-
-CREATE INDEX pinecone_admission_receipts_project ON pinecone_admission_receipts(project_id);
-
-CREATE INDEX pinecone_profiles_admission ON pinecone_profiles(agent_id,admission_state);
-
-CREATE INDEX pinecone_profiles_project ON pinecone_profiles(project_id);
 
 CREATE UNIQUE INDEX trigger_branch_enabled ON trigger_definitions(branch_id) WHERE branch_id IS NOT NULL AND enabled = 1;
 
@@ -493,13 +463,11 @@ CREATE TABLE capability_retired_spawners (
  spawned_by_agent_id TEXT NOT NULL
 );
 
--- Canonical Agent deletion removes private Pinecone state. Restriction records
--- remain authoritative for surviving descendants; they cannot create work.
+-- Restriction records remain authoritative for surviving descendants after
+-- canonical Agent deletion; they cannot create work.
 CREATE TRIGGER branch_agent_private_state_cleanup AFTER UPDATE OF deleted_at ON agents
 WHEN OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL
 BEGIN
- DELETE FROM pinecone_admission_receipts WHERE agent_id=NEW.id;
- DELETE FROM pinecone_profiles WHERE agent_id=NEW.id;
  INSERT INTO capability_retired_spawners(agent_id,spawned_by_agent_id)
  SELECT OLD.id,OLD.spawned_by_agent_id WHERE OLD.spawned_by_agent_id IS NOT NULL;
 END;
