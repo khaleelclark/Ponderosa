@@ -3,9 +3,8 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { withFixture, until, runtimeAttachmentPaths } from '../shared/fixture.mjs';
+import { withFixture, until, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
-const options = { timeout: 30000 };
 const rendered = turn => [JSON.stringify(turn.history), JSON.stringify(turn.input)].join('\n');
 
 test('checks 1, 12, 16: shared request replay emits one explicit reply and keeps execution output separate', options, t => withFixture(t, async f => {

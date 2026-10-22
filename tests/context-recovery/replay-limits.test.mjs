@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { withFixture, until } from '../shared/fixture.mjs';
+import { withFixture, until, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
-const options = { timeout: 30000 };
 const compactError = 'failed to run pre-sampling compact: controlled retry-limit diagnostic';
 async function terminal(f, agentId, before) {
   return until(async () => {

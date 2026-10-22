@@ -776,6 +776,38 @@
       "origin": "F04 native image isolation from writable build cache before packaging and installed verification"
     },
     {
+      "path": "tests/installation-release/desktop-lifecycle.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Node24, built desktop, existing TypeScript; isolated Electron/child-process event fixtures; no native desktop, provider or network",
+      "origin": "Windows session-ending teardown and Linux destroyed-window callback regression"
+    },
+    {
+      "path": "tests/installation-release/launcher-platform.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Node24, built launcher/native-host; disposable executable fixtures; no provider or network",
+      "origin": "Windows native provider discovery outside inherited PATH"
+    },
+    {
+      "path": "tests/installation-release/debian-dependencies.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Linux dpkg-dev and C compiler; disposable ELF fixture; no provider or network",
+      "origin": "DEB native runtime dependencies and xdg-utils are declared for fresh installations"
+    },
+    {
+      "path": "tests/installation-release/macos-code-signing.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "macOS codesign and clang; disposable native app fixture; no signing identity, provider or network",
+      "origin": "0.1.1 invalid Electron resource seal: sign the finished bundle and reject resource tampering"
+    },
+    {
       "path": "tests/providers/rpc-boundaries.test.mjs",
       "feature": "providers",
       "lane": "server",
@@ -897,6 +929,22 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24; actual ProjectShell event handlers with controlled hook storage; no account or network",
       "origin": "Safari long-chat refresh stalls: stable memoized message callbacks with fresh navigation state"
+    },
+    {
+      "path": "tests/installation-release/sqlite-admission-locking.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host and better-sqlite3; Linux and Python3 standard sqlite3/fcntl/resource modules; disposable current-state databases; bounded core-disabled native children; no provider account, live database or service",
+      "origin": "October22 SQLite admission source-descriptor lifetime/SHM race: retain POSIX locks, survive independent read-only SQLite readers, fail closed on cohort/identity/metadata/content/generation changes and release a failed acquisition"
+    },
+    {
+      "path": "tests/installation-release/state-admission-startup.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server; disposable refused-state fixtures; no listening socket or provider account",
+      "origin": "October22 incident: explicit admission refusals exit78 without writes/listener; ordinary startup failures and restart policy remain distinct"
     }
   ],
   "retainedReleasePayload": [

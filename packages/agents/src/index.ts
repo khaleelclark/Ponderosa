@@ -158,6 +158,6 @@ export type {
   EventRow,
 } from "./schema.js";
 
-export { admitDataDirectory, shareStateAdmission, requireAdmittedDatabase, readCurrentStateIdentity, StateAdmission } from "./state-admission.js";
+export { admitDataDirectory, shareStateAdmission, requireAdmittedDatabase, readCurrentStateIdentity, StateAdmission, StateAdmissionError } from "./state-admission.js";
 
 export { inspectCurrentState } from "./state-admission.js";

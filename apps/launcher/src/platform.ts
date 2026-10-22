@@ -146,6 +146,7 @@ class HostPlatformAdapter implements PlatformAdapter {
       const appData = env.APPDATA?.trim() || path.join(homeDir, "AppData", "Roaming");
       const localAppData = env.LOCALAPPDATA?.trim() || path.join(homeDir, "AppData", "Local");
       candidates.push(
+        path.join(homeDir, ".local", "bin", `${provider}.exe`),
         path.join(appData, "npm", `${provider}.cmd`),
         path.join(appData, "npm", `${provider}.exe`),
         path.join(localAppData, "Programs", provider, `${provider}.exe`),

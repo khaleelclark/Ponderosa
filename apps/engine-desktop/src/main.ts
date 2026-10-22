@@ -102,6 +102,13 @@ let engineDetail = "Starting the local Ponderosa service…";
 let allowQuit = false;
 let quitInProgress = false;
 let launchOutput = "";
+const readyEngines = new WeakSet<ChildProcess>();
+
+function notifyChanged(): void {
+  if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) {
+    window.webContents.send("engine:changed");
+  }
+}
 
 async function bundleIdentity(): Promise<BundleIdentity | undefined> {
   try {
@@ -197,7 +204,7 @@ async function waitUntilReachable(timeoutMs = 30_000): Promise<NonNullable<Await
 }
 
 function launcher(command: "engine" | "stop"): ChildProcess {
-  return spawn(nodeExecutable, [
+  const child = spawn(nodeExecutable, [
     launcherEntry,
     command,
     "--install-root",
@@ -215,6 +222,10 @@ function launcher(command: "engine" | "stop"): ChildProcess {
     windowsHide: true,
     stdio: command === "engine" ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"],
   });
+  child.on("message", (message: unknown) => {
+    if (message && typeof message === "object" && "type" in message && message.type === "ponderosa-engine-ready") readyEngines.add(child);
+  });
+  return child;
 }
 
 async function runLauncher(command: "stop"): Promise<void> {
@@ -223,15 +234,22 @@ async function runLauncher(command: "stop"): Promise<void> {
     // One owner performs stop and receipt cleanup. Racing a second launcher
     // against that cleanup can refuse the retained directory lease.
     await new Promise<void>((resolve, reject) => {
+      let requested = false;
       const timer = setTimeout(() => finish(new Error("Ponderosa Engine supervisor did not confirm shutdown.")), 60_000);
-      const exited = (code: number | null) => finish(code === 0 ? undefined : new Error(`Ponderosa Engine supervisor exited with code ${code ?? "unknown"}.`));
+      const exited = (code: number | null) => finish(code === 0 && requested ? undefined : new Error(`Ponderosa Engine supervisor exited before confirming shutdown (code ${code ?? "unknown"}).`));
       const failed = (error: Error) => finish(error);
       function finish(error?: Error): void {
-        clearTimeout(timer); owned!.off("exit", exited); owned!.off("error", failed);
+        clearTimeout(timer); owned!.off("exit", exited); owned!.off("error", failed); owned!.off("message", stopWhenReady);
         if (error) reject(error); else resolve();
       }
+      function stopWhenReady(): void {
+        if (requested || !readyEngines.has(owned!)) return;
+        requested = true;
+        owned!.send({ type: "ponderosa-engine-stop" }, error => { if (error) finish(error); });
+      }
       owned.once("exit", exited); owned.once("error", failed);
-      owned.send({ type: "ponderosa-engine-stop" }, error => { if (error) finish(error); });
+      owned.on("message", stopWhenReady);
+      stopWhenReady();
     });
     return;
   }
@@ -266,7 +284,7 @@ async function startEngine(openBrowser: boolean): Promise<void> {
   engineState = "starting";
   engineDetail = "Starting the local Ponderosa service…";
   launchOutput = "";
-  window?.webContents.send("engine:changed");
+  notifyChanged();
 
   const alreadyRunning = await currentStatus();
   if (!alreadyRunning) {
@@ -284,7 +302,7 @@ async function startEngine(openBrowser: boolean): Promise<void> {
         if (!running && engineState !== "starting" && engineState !== "cleanup_incomplete") {
           engineState = "stopped";
           engineDetail = "The local service is stopped. Restart it when you are ready.";
-          window?.webContents.send("engine:changed");
+          notifyChanged();
         }
       });
     });
@@ -295,12 +313,12 @@ async function startEngine(openBrowser: boolean): Promise<void> {
     const classification = classifyEngineReadiness(observed.readiness);
     engineState = classification.state;
     engineDetail = classification.detail;
-    window?.webContents.send("engine:changed");
+    notifyChanged();
     if (openBrowser) await openPonderosa();
   } catch (error) {
     engineState = "error";
     engineDetail = error instanceof Error ? error.message : "Ponderosa Engine could not start.";
-    window?.webContents.send("engine:changed");
+    notifyChanged();
   }
 }
 
@@ -391,6 +409,11 @@ function createWindow(): void {
   window.removeMenu();
   window.loadFile(path.join(here, "index.html"));
   window.once("ready-to-show", () => window?.show());
+  window.on("closed", () => { window = undefined; });
+  window.on("session-end", () => {
+    // Windows owns termination here; retained ownership needs real boot proof on relaunch.
+    allowQuit = true;
+  });
   window.on("close", (event) => {
     if (allowQuit) return;
     event.preventDefault();
@@ -441,7 +464,7 @@ async function requestQuit(): Promise<boolean> {
     }
     engineState = "stopping";
     engineDetail = "Stopping the local Ponderosa service…";
-    window?.webContents.send("engine:changed");
+    notifyChanged();
     await runLauncher("stop");
     allowQuit = true;
     app.quit();
@@ -449,7 +472,7 @@ async function requestQuit(): Promise<boolean> {
   } catch (error) {
     engineState = "cleanup_incomplete";
     engineDetail = error instanceof Error ? error.message : "Ponderosa Engine could not stop safely.";
-    window?.webContents.send("engine:changed");
+    notifyChanged();
     const options: MessageBoxOptions = {
       type: "error",
       title: "Ponderosa Engine is still running",
@@ -485,18 +508,18 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle("engine:restart", async () => {
     engineState = "stopping";
     engineDetail = "Stopping the local Ponderosa service before restart…";
-    window?.webContents.send("engine:changed");
+    notifyChanged();
     try {
       await runLauncher("stop");
       await startEngine(true);
     } catch (error) {
       engineState = "cleanup_incomplete";
       engineDetail = error instanceof Error ? error.message : "Ponderosa Engine could not stop safely for restart.";
-      window?.webContents.send("engine:changed");
+      notifyChanged();
       throw error;
     }
   });
-  ipcMain.handle("engine:quit", requestQuit);
+  ipcMain.handle("engine:quit", () => requestQuit());
   ipcMain.handle("engine:copy-logs", (_event, text: unknown) => {
     if (typeof text === "string") clipboard.writeText(text.slice(0, 128 * 1024));
   });

@@ -26,6 +26,8 @@ EnvironmentFile=-%h/.config/ponderosa/dev.env
 ExecStartPre=/usr/bin/timeout 15 /bin/sh -c 'until test -S "%t/ponderosa-browser-dev/browser.sock"; do sleep 0.1; done'
 ExecStart=%h/ponderosa-dev/current/dist/node-runtime/linux-x64/node apps/server/dist/main.js
 Restart=on-failure
+# Refused state needs operator attention, not repeated automatic admission.
+RestartPreventExitStatus=78
 RestartSec=3
 # A provider tool may be OOM-killed without taking down the application.
 OOMPolicy=continue

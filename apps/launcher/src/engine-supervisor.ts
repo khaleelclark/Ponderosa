@@ -7,7 +7,8 @@ import {
   writeFileSync,
 } from "@ponderosa/native-host/fs";
 import { randomUUID } from "node:crypto";
-import { ensureDataLayout } from "./paths.js";
+import { hostBootIdentity, hostProcessBirthMarker } from "@ponderosa/native-host";
+import { ensureDataLayout, writeJsonAtomic } from "./paths.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { currentPonderosaStatus, processAlive, stopPonderosa, withLocalLauncherAuthority } from "./control.js";
 import type { LauncherPaths } from "./types.js";
@@ -16,6 +17,9 @@ interface EngineSupervisorReceipt {
   pid: number;
   token: string;
   startedAt: string;
+  bootSessionId?: string;
+  recoveryBootSessionId?: string;
+  processBirthMarker?: string;
 }
 
 function readReceipt(pathname: string): EngineSupervisorReceipt | undefined {
@@ -27,10 +31,28 @@ function readReceipt(pathname: string): EngineSupervisorReceipt | undefined {
       typeof receipt.token !== "string" ||
       typeof receipt.startedAt !== "string"
     ) return undefined;
+    for (const field of ["bootSessionId", "recoveryBootSessionId"] as const) {
+      const value = receipt[field];
+      if (value !== undefined && (typeof value !== "string" ||
+          !/^win32-system:[1-9]\d{0,18}$/u.test(value) ||
+          BigInt(value.slice("win32-system:".length)) > 9223372036854775807n)) return undefined;
+    }
+    if (receipt.processBirthMarker !== undefined && (typeof receipt.processBirthMarker !== "string" ||
+        !/^win32:[1-9]\d{0,19}$/u.test(receipt.processBirthMarker) ||
+        BigInt(receipt.processBirthMarker.slice("win32:".length)) > 18446744073709551615n)) return undefined;
     return receipt as EngineSupervisorReceipt;
   } catch {
     return undefined;
   }
+}
+
+function ownerMayBeAlive(receipt: EngineSupervisorReceipt): boolean {
+  const previousBoot = receipt.bootSessionId ?? receipt.recoveryBootSessionId;
+  const boot = hostBootIdentity();
+  if (previousBoot && boot && previousBoot !== boot) return false;
+  if (!processAlive(receipt.pid)) return false;
+  const birth = receipt.processBirthMarker && hostProcessBirthMarker(receipt.pid);
+  return !birth || birth === receipt.processBirthMarker;
 }
 
 function acquireSupervisorLease(pathname: string): ((heldPathname: string) => void) | undefined {
@@ -41,6 +63,8 @@ function acquireSupervisorLease(pathname: string): ((heldPathname: string) => vo
         pid: process.pid,
         token: randomUUID(),
         startedAt: new Date().toISOString(),
+        bootSessionId: hostBootIdentity(),
+        ...(process.platform === "win32" ? { processBirthMarker: hostProcessBirthMarker(process.pid) } : {}),
       };
       try {
         writeFileSync(descriptor, `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
@@ -56,7 +80,17 @@ function acquireSupervisorLease(pathname: string): ((heldPathname: string) => vo
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const current = readReceipt(pathname);
-      if (current && processAlive(current.pid)) return undefined;
+      if (current && ownerMayBeAlive(current)) {
+        const boot = hostBootIdentity();
+        if (boot && current.bootSessionId === undefined) {
+          if (current.recoveryBootSessionId === undefined) {
+            writeJsonAtomic(pathname, { ...current, recoveryBootSessionId: boot });
+          }
+          throw Object.assign(new Error("Ponderosa's previous supervisor owner cannot be verified. Restart Windows, then retry; the receipt and data are preserved."),
+            { code: "WINDOWS_REBOOT_REQUIRED" });
+        }
+        return undefined;
+      }
       try {
         // Do not unlink another launcher between its exclusive create and
         // receipt write. A genuinely stale or corrupt receipt is recoverable.
@@ -81,7 +115,7 @@ export async function prepareEngineSupervision(paths: LauncherPaths): Promise<Pr
   const running = await currentPonderosaStatus(paths);
   if (running?.healthy) {
     const existing = readReceipt(paths.engineSupervisorPath);
-    if (existing && processAlive(existing.pid)) return undefined;
+    if (existing && ownerMayBeAlive(existing)) return undefined;
     throw new Error("live daemon supervision has no inherited local file authority; use its existing controls");
   }
   return withLocalLauncherAuthority(paths, (held, identity) => {
@@ -121,7 +155,7 @@ export async function supervisePonderosaEngine(paths: LauncherPaths, handle?: Pr
   if (!handle) {
     const current = await currentPonderosaStatus(paths);
     const existing = current?.healthy ? readReceipt(paths.engineSupervisorPath) : undefined;
-    if (existing && processAlive(existing.pid)) return "already_supervised";
+    if (existing && ownerMayBeAlive(existing)) return "already_supervised";
     throw new Error("supervisor lifecycle was not prepared under local current admission");
   }
   if (!prepared.has(handle)) throw new Error("unissued supervisor lifecycle");
@@ -143,6 +177,7 @@ export async function supervisePonderosaEngine(paths: LauncherPaths, handle?: Pr
     if (message && typeof message === "object" && "type" in message && message.type === "ponderosa-engine-stop") requestQuit();
   };
   process.on("message", requestedByDesktop);
+  if (monitoredParentPid && process.connected) process.send?.({ type: "ponderosa-engine-ready" }, () => {});
 
   try {
     while (true) {

@@ -2,9 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { TERMINAL_REQUEST_STATES } from '@ponderosa/core';
-import { withFixture, until } from '../shared/fixture.mjs';
+import { withFixture, until, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
-const options = { timeout: 30000 };
 const rendered = turn => JSON.stringify({ input: turn.input, history: turn.history });
 const joinActivations = detail => detail.coordinationV3.activations.filter(x => x.kind.startsWith('coordination_join_'));
 const ended = (f, id) => until(async () => !(await f.detail(id)).runs.some(x => ['running', 'preparing'].includes(x.status)), 'owned Run ended');

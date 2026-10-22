@@ -27,15 +27,21 @@ const generationDdl = `CREATE TABLE _state_generation (
   schema_contract TEXT NOT NULL
 )`;
 export interface StateIdentity { layoutVersion: 2; stateEpoch: 2; generationId: string }
-function refuse(): never { throw new Error("unsupported or incomplete current state; existing bytes are preserved"); }
+export class StateAdmissionError extends Error {
+  constructor(readonly file?: string, readonly check?: string) {
+    super(`unsupported or incomplete current state; existing bytes are preserved${file ? `; ${file}: ${check}` : ""}`);
+    this.name = "StateAdmissionError";
+  }
+}
+function refuse(file?: string, check?: string): never { throw new StateAdmissionError(file, check); }
+const statFields = ["dev", "ino", "mode", "nlink", "size", "mtimeNs", "ctimeNs"] as const;
 function identity(stat: BigIntStats): string { return `${stat.dev}:${stat.ino}`; }
 function same(a: BigIntStats, b: BigIntStats): boolean {
-  return ["dev", "ino", "mode", "nlink", "size", "mtimeNs", "ctimeNs"]
-    .every(key => a[key as keyof BigIntStats] === b[key as keyof BigIntStats]);
+  return statFields.every(key => a[key] === b[key]);
 }
 function regular(path: string): BigIntStats | undefined {
   const stat = lstatSync(path, { bigint: true, throwIfNoEntry: false });
-  if (stat && (!stat.isFile() || stat.nlink !== 1n)) refuse();
+  if (stat && (!stat.isFile() || stat.nlink !== 1n)) refuse(basename(path), "file type or link count");
   return stat;
 }
 function fsyncPath(path: string): void {
@@ -130,7 +136,8 @@ function databaseNames(primary: string): string[] {
 
 /** SQLite opens only this descriptor-copied private cohort. The held directory
  * lease excludes cooperating writers; each source file remains identity-bound
- * through the writable transition. This is not custody against a hostile host. */
+ * through final verification and closes before live SQLite opens. This is not
+ * custody against a hostile host. */
 function snapshot(root: string, names: readonly string[], budget: StateReadBudget) {
   budget.allocate(16384);
   const directory = mkdtempSync(join(tmpdir(), "ponderosa-state-"));
@@ -151,11 +158,17 @@ function snapshot(root: string, names: readonly string[], budget: StateReadBudge
     return hash.digest("hex");
   };
   const verify = () => {
-    if (JSON.stringify(cohort) !== JSON.stringify(present())) refuse();
+    const current = present();
+    const changed = cohort.find(name => !current.includes(name)) ?? current.find(name => !cohort.includes(name));
+    if (changed) refuse(changed, "cohort membership changed during admission");
     for (const entry of entries) {
-      if (!same(entry.before, fstatSync(entry.fd, { bigint: true })) ||
-          !same(entry.before, regular(entry.path)!) ||
-          hashDescriptor(entry.fd, entry.before.size) !== entry.hash) refuse();
+      const file = basename(entry.path);
+      for (const stat of [fstatSync(entry.fd, { bigint: true }), regular(entry.path)]) {
+        if (!stat) refuse(file, "file disappeared during admission");
+        const field = statFields.find(key => entry.before[key] !== stat[key]);
+        if (field) refuse(file, `${field} changed during admission`);
+      }
+      if (hashDescriptor(entry.fd, entry.before.size) !== entry.hash) refuse(file, "content changed during admission");
     }
   };
   const dispose = () => {
@@ -365,19 +378,20 @@ export function admitDataDirectory(dataDir: string, primary = "ponderosa.db", in
   }
   const authority = new DataDirectoryAuthority(named, inheritedDescriptor, expected?.dataLease);
   let sqlite: Database.Database | undefined;
-  let admittedSnapshot: ReturnType<typeof verifyRoot> | undefined;
   try {
     const root = authority.rootPath;
     const names = databaseNames(primary);
     const empty = readdirSync(root).length === 0;
     if (empty && expected) refuse();
     const marker = empty ? bootstrap(root, names) : readMarker(root);
-    admittedSnapshot = verifyRoot(root, names, marker);
-    if (expected && (marker.generationId !== expected.generationId ||
-        expected.physicalIdentity !== undefined && physicalDirectoryIdentity(root) !== expected.physicalIdentity)) refuse();
-    // verifyRoot checked the full cohort immediately before this first retained
-    // SQLite open; all SQLite recovery before this point happened on scratch.
-    admittedSnapshot.verify();
+    const admittedSnapshot = verifyRoot(root, names, marker);
+    try {
+      if (expected && (marker.generationId !== expected.generationId ||
+          expected.physicalIdentity !== undefined && physicalDirectoryIdentity(root) !== expected.physicalIdentity)) refuse();
+      admittedSnapshot.verify();
+    } finally { admittedSnapshot.dispose(); }
+    // Closing another descriptor for a live SQLite file can drop its POSIX
+    // locks. Close the source cohort first; keep the directory lease throughout.
     sqlite = new Database(storageDatabaseFilename(join(root, primary)), { fileMustExist: true });
     sqlite.pragma("foreign_keys=ON"); sqlite.pragma("journal_mode=WAL");
     sqlite.pragma("synchronous=FULL"); sqlite.pragma("busy_timeout=500");
@@ -391,7 +405,7 @@ export function admitDataDirectory(dataDir: string, primary = "ponderosa.db", in
     return StateAdmission.issue(state);
   } catch (error) {
     if (sqlite?.open) sqlite.close(); authority.close(); throw error;
-  } finally { admittedSnapshot?.dispose(); }
+  }
 }
 
 export function readCurrentStateIdentity(dataDir: string): StateIdentity {

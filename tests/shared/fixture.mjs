@@ -9,6 +9,11 @@ import { createServer } from '../../apps/server/dist/app.js';
 import { processBirthMarker } from '@ponderosa/engines';
 import { WindowsProcessJob } from '@ponderosa/native-host';
 
+// Hosted Windows includes slow fixture setup and cleanup; native qualification keeps 30 seconds.
+export const fixtureTestOptions = {
+  timeout: process.platform === 'win32' && process.env.RUNNER_ENVIRONMENT === 'github-hosted' ? 60_000 : 30_000,
+};
+
 class Events {
   items = []; waiters = []; ended = false;
   push(value) { const resolve = this.waiters.shift(); resolve ? resolve({ value, done: false }) : this.items.push(value); }

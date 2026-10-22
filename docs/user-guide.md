@@ -1,11 +1,11 @@
 # Ponderosa installation and user guide
 
-**Ponderosa v1.0.0-beta.1 public beta.** Public downloads are available here: 
+**Ponderosa v0.1.1 public beta.** [Public downloads](https://github.com/khaleelclark/Ponderosa/releases/tag/v0.1.1).
 Start with the [README](../README.md). The [HTML learning
 guide](learning/index.html) explains how agents, assignments and saved work fit together.
 
 Ponderosa supports continuing work with agents, including research, coordination,
-creative projects and software development. Linux, macOS and Windows are planned
+creative projects and software development. Linux, macOS and Windows are
 beta platforms, and the internal browser is included. Local browser connection
 and extension pairing are deferred beyond beta. Branches and Pinecone are future
 features; Wiki and Automations are excluded.
@@ -34,11 +34,9 @@ requests still go to your selected provider. Begin with non-sensitive material.
 
 Use the release attached to [khaleelclark/Ponderosa](https://github.com/khaleelclark/Ponderosa/releases). Its
 release notes must identify the exact version, filenames, checksums or provenance,
-signing status and platform limits. The repository is currently private and no
-public download is available yet. Beta versions use `X.Y.Z-beta.N`, beginning
-with `1.0.0-beta.1`, followed by `1.0.0-beta.2`. Engine and installer filenames
-show the full beta version. Use the checksums and qualification results
-that accompany the actual download.
+signing status and platform limits. The first public beta, `v0.1.0`, was originally
+labeled `v1.0.0-beta.1`. Engine and installer filenames show the release version.
+Use the checksums and qualification results that accompany the actual download.
 
 | Beta target | Current recipe | Installation path to check on the final package |
 | --- | --- | --- |
@@ -47,27 +45,22 @@ that accompany the actual download.
 | Windows 11 x64 | Installer `.exe` | Run the installer under your login account, then open **Ponderosa Engine** from the Start menu. The default destination is `%LOCALAPPDATA%\Programs\Ponderosa`. |
 
 **Windows:** Smart App Control may block this unsigned beta from starting.
+Edge may also warn that the download is uncommon. Verify its source and checksum
+before deciding whether to keep it. Leave Windows security protections enabled.
+
+**macOS:** This beta has an ad-hoc signature and is not notarized by Apple.
+If blocked, use **System Settings → Privacy & Security → Open Anyway** for this app.
 
 On Ubuntu, from the directory containing the download:
 
 ```sh
-sudo dpkg --install ./Ponderosa-1.0.0-beta.1-linux-x64.deb
+sudo apt install ./Ponderosa-0.1.1-linux-x64.deb
 ```
 
-Example first-beta filenames are `Ponderosa-1.0.0-beta.1-darwin-arm64.dmg`
-and `Ponderosa-1.0.0-beta.1-win32-x64.exe`. A newly built first-beta Engine
-will display `1.0.0-beta.1`; retained `1.0.0` builds keep their original identity.
-Use the exact version and names listed in that release's notes.
-
-The AppImage candidate was built and checked on Ubuntu x64. Its packaged backend
-passed, but opening its desktop window failed at Chromium sandbox initialization.
-The [installation check results](installation-checks.md) record that failure.
-Do not disable the sandbox to make it open. The normal invocation is:
-
-```sh
-chmod +x ./Ponderosa-<version>-linux-x64.AppImage
-./Ponderosa-<version>-linux-x64.AppImage
-```
+APT installs the package's required desktop libraries and browser-opening tools.
+You still need a default web browser. Other current filenames are
+`Ponderosa-0.1.1-darwin-arm64.dmg` and `Ponderosa-0.1.1-win32-x64.exe`.
+This release does not include AppImage or Intel Mac packages.
 
 Testing one OS or architecture does not exclude other platforms from beta scope.
 See the check results for the exact packages and machines exercised.
@@ -83,6 +76,11 @@ See the check results for the exact packages and machines exercised.
 You work in the web app; Engine manages its service. Closing a web tab leaves the
 service running. Closing Engine's window hides it; **Quit Engine** stops it and
 can interrupt work. Files already written are not undone.
+
+If Windows reports that an earlier process Job cannot be confirmed stopped and
+asks for a reboot, save your other work, restart Windows, then open Engine again.
+Ponderosa preserves its data and uses the new kernel boot identity to verify that
+the old Job ended before allowing a replacement service.
 
 If a manually typed address has an authentication problem, open the app through
 Engine. Keep its bootstrap address private. Access from another device requires

@@ -19,7 +19,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LauncherShutdownReceiptDto } from "@ponderosa/core";
-import { DataDirectoryAuthority, DataDirectoryReadReference, physicalDirectoryIdentity, dataDirectoryAuthoritySupported, hostProcessBirthMarker } from "@ponderosa/native-host";
+import { DataDirectoryAuthority, DataDirectoryReadReference, physicalDirectoryIdentity, dataDirectoryAuthoritySupported, hostProcessBirthMarker, hostBootIdentity } from "@ponderosa/native-host";
 import type { WindowsDirectoryLeaseTransfer } from "@ponderosa/native-host";
 import { discoverProviders } from "./providers.js";
 import {
@@ -176,6 +176,26 @@ function supervisorDrained(
   } catch {
     return false;
   }
+}
+
+function supervisorBootRecovery(paths: LauncherPaths, state: LauncherState) {
+  if (!state.supervisorGeneration || !state.supervisorPid) return undefined;
+  const bootId = hostBootIdentity();
+  if (!bootId) return undefined;
+  try {
+    const pathname = supervisorStatusPath(paths, state.supervisorGeneration);
+    const receipt = JSON.parse(readFileSync(pathname, "utf8")) as Record<string, unknown>;
+    if (receipt.schemaVersion !== 1 || receipt.generation !== state.supervisorGeneration ||
+        receipt.supervisorPid !== state.supervisorPid || typeof receipt.status !== "string" ||
+        !["active", "draining", "failed", "drained"].includes(receipt.status)) return undefined;
+    for (const field of ["bootSessionId", "recoveryBootSessionId"]) {
+      if (receipt[field] !== undefined && (typeof receipt[field] !== "string" ||
+          !/^win32-system:[1-9]\d{0,18}$/u.test(receipt[field]) ||
+          BigInt(receipt[field].slice("win32-system:".length)) > 9223372036854775807n)) return undefined;
+    }
+    const previous = receipt.bootSessionId ?? receipt.recoveryBootSessionId;
+    return { pathname, receipt, bootId, rebooted: previous !== undefined && previous !== bootId };
+  } catch { return undefined; }
 }
 
 function removeSupervisorStatus(
@@ -591,18 +611,30 @@ async function removeDeadState(
   state: LauncherState,
   dependencies?: LauncherDependencies,
 ): Promise<void> {
-  if (state.supervisorPid && processAlive(state.supervisorPid)) {
-    throw new Error(
+  const reboot = supervisorBootRecovery(paths, state);
+  const blocked = (detail: string) => Object.assign(new Error(detail +
+    (reboot ? " Restart Windows, then retry to verify that the previous Job ended." : "")),
+  { code: reboot ? "WINDOWS_REBOOT_REQUIRED" : "WINDOWS_JOB_DRAIN_UNPROVED" });
+  if (reboot?.rebooted) {
+    requireLocalLauncherMutation(paths);
+    writeJsonAtomic(reboot.pathname, { ...reboot.receipt, status: "drained",
+      updatedAt: new Date().toISOString(), detail: "A different Windows kernel boot proves the previous Job ended." });
+  } else if (reboot && reboot.receipt.bootSessionId === undefined && reboot.receipt.recoveryBootSessionId === undefined) {
+    requireLocalLauncherMutation(paths);
+    writeJsonAtomic(reboot.pathname, { ...reboot.receipt, recoveryBootSessionId: reboot.bootId });
+  }
+  if (!reboot?.rebooted && state.supervisorPid && processAlive(state.supervisorPid)) {
+    throw blocked(
       "Ponderosa's Windows process-tree supervisor is still draining. Retry after it exits; replacement is blocked.",
     );
   }
-  if (processAlive(state.pid)) {
+  if (!reboot?.rebooted && processAlive(state.pid)) {
     const exactRetry = Boolean(
       state.shutdownRequestedAt && state.processBirthMarker &&
       launcherProcessBirthMarker(state.pid) === state.processBirthMarker,
     );
     if (!exactRetry) {
-      throw new Error(
+      throw blocked(
         "Ponderosa's recorded process is live without exact post-close birth evidence. Replacement remains blocked.",
       );
     }
@@ -610,13 +642,11 @@ async function removeDeadState(
     const deadline = Date.now() + STOP_TIMEOUT_MS;
     while (Date.now() < deadline && processAlive(state.pid)) await delay(200);
     if (processAlive(state.pid)) {
-      throw new Error("The exact Ponderosa process remains live after bounded strict-cleanup retry. Replacement remains blocked.");
+      throw blocked("The exact Ponderosa process remains live after bounded strict-cleanup retry. Replacement remains blocked.");
     }
   }
   if (!supervisorDrained(paths, state)) {
-    throw new Error(
-      "Ponderosa's Windows process-tree supervisor did not prove that its Job drained. Replacement remains blocked.",
-    );
+    throw blocked("Ponderosa's Windows process-tree supervisor did not prove that its Job drained. Replacement remains blocked.");
   }
   if (state.shutdownRequestedAt && readShutdownReceipt(paths, state)?.state !== "clean") {
     if (!dependencies?.recoverShutdown) throw new Error("current shutdown recovery requires an admitted lease transfer");
@@ -884,7 +914,8 @@ export async function stopPonderosa(input: {
     const deadline = Date.now() + STOP_TIMEOUT_MS;
     while (Date.now() < deadline && stillOwned()) await delay(200);
     if (stillOwned()) throw new Error("Ponderosa is still finishing cleanup; exact shutdown remains fenced.");
-  } else if (processAlive(state.pid) || state.supervisorPid && processAlive(state.supervisorPid)) {
+  } else if (!supervisorBootRecovery(original, state) &&
+      (processAlive(state.pid) || state.supervisorPid && processAlive(state.supervisorPid))) {
     throw new Error("recorded process is still live without authenticated current authority");
   }
   // A fresh lease is authority for new local cleanup, never retrospective transfer.

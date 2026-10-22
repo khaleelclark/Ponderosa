@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { withFixture, until } from '../shared/fixture.mjs';
+import { withFixture, until, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
-const options = { timeout: 30000 };
 const compactError = 'failed to run pre-sampling compact: controlled private diagnostic';
 
 test('check 95: pre-work compaction failure retries the same task once in a fresh session after the original root exits', options, t => withFixture(t, async f => {

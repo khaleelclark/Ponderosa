@@ -14,11 +14,11 @@ Saved history helps work continue, but does not mean an agent recalls every deta
 
 ## Public beta
 
-`v0.1.0` is the first public beta, originally labeled `v1.0.0-beta.1`. The release repository is [khaleelclark/Ponderosa](https://github.com/khaleelclark/Ponderosa), [public releases](https://github.com/khaleelclark/Ponderosa/releases)
+[`v0.1.1`](https://github.com/khaleelclark/Ponderosa/releases/tag/v0.1.1) is the current public beta. Downloads and release notes are available in the [public releases](https://github.com/khaleelclark/Ponderosa/releases) for [khaleelclark/Ponderosa](https://github.com/khaleelclark/Ponderosa).
 
 Linux, macOS and Windows are the beta targets.
 
-Codex and Claude Code are both included, using your existing provider
+Codex and Claude Code are both supported, using your existing provider
 subscriptions. Choose either provider, or configure both. Available models,
 reasoning settings and tools depend on the provider and account.
 
@@ -37,20 +37,25 @@ stores Ponderosa’s records locally, while AI requests still go to your provide
 
 ## Install and open
 
-The [installation and user guide](https://ponderosa.khaleelclark.com/ponderosa-guide/#first-run)
-describes the packages published with [v0.1.0](https://github.com/khaleelclark/Ponderosa/releases/tag/v0.1.0):
+Download the packages and follow the installation instructions in the
+[v0.1.1 release](https://github.com/khaleelclark/Ponderosa/releases/tag/v0.1.1):
 
 | Beta target | Package format |
 | --- | --- |
 | Ubuntu 24.04 x64 | `.deb` |
-| Linux x64 | `.AppImage` |
 | macOS 14+ on Apple Silicon | `.dmg` |
 | Windows 11 x64 | Installer `.exe` |
+
+This release does not include AppImage or Intel Mac packages.
+
+**macOS:** The app has an ad-hoc signature and is not notarized by Apple. If
+blocked, use **System Settings → Privacy & Security → Open Anyway** to approve
+this app.
 
 **Windows:** Smart App Control may block this unsigned beta from starting.
 
 The release includes an offline user guide and `SHA256SUMS.txt`. Consult the
-release notes and [qualification record](docs/current-qualification.md) for the
+release notes and [qualification record](https://github.com/khaleelclark/Ponderosa/releases/download/v0.1.1/Ponderosa-0.1.1-qualification.json) for the
 exact packages and tested environments. Platform targets do not establish
 minimum-OS qualification or support for other platforms.
 

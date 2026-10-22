@@ -75,6 +75,8 @@ Environment=PONDEROSA_CODEX_SANDBOX=danger-full-access
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/your-user/.npm-global/bin
 ExecStart=/opt/ponderosa-engine/resources/Ponderosa/runtime/node app/server/dist/main.js
 Restart=on-failure
+# Refused state needs operator attention, not repeated automatic admission.
+RestartPreventExitStatus=78
 RestartSec=3
 # A tool killed under host memory pressure must not stop the daemon too.
 # Full Agent memory isolation additionally requires a systemd user manager;

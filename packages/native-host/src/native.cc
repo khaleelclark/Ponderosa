@@ -1869,6 +1869,42 @@ napi_value Unsupported(napi_env env, napi_callback_info) {
 #endif
 
 
+napi_value WindowsBootIdentity(napi_env env, napi_callback_info) {
+#ifdef _WIN32
+  // System PID 4 lives for one kernel session. Its immutable creation time,
+  // unlike BootEnvironment's persistent BCD GUID, changes on a real reboot.
+  struct BirthHeader { ULONG next, threads; ULONGLONG private_bytes;
+    ULONG faults, thread_high_water; ULONGLONG cycles; LARGE_INTEGER created; };
+  static_assert(offsetof(BirthHeader, created) == 32);
+  using Query = NTSTATUS (NTAPI *)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+  auto query = reinterpret_cast<Query>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation"));
+  if (!query) return Null(env);
+  std::vector<BYTE> bytes(65536);
+  ULONG returned = 0;
+  for (;;) {
+    const NTSTATUS status = query(SystemProcessInformation, bytes.data(), static_cast<ULONG>(bytes.size()), &returned);
+    if (status >= 0) break;
+    if (status != static_cast<NTSTATUS>(0xc0000004L) || bytes.size() >= 16 * 1024 * 1024) return Null(env);
+    bytes.resize(bytes.size() * 2);
+  }
+  if (returned > bytes.size()) return Null(env);
+  for (size_t offset = 0; offset <= returned && returned - offset >= sizeof(SYSTEM_PROCESS_INFORMATION);) {
+    const auto* process = reinterpret_cast<const SYSTEM_PROCESS_INFORMATION*>(bytes.data() + offset);
+    const auto* birth = reinterpret_cast<const BirthHeader*>(bytes.data() + offset);
+    if (reinterpret_cast<uintptr_t>(process->UniqueProcessId) == 4 && birth->created.QuadPart > 0) {
+      const std::string text = "win32-system:" + std::to_string(birth->created.QuadPart);
+      napi_value result; napi_create_string_utf8(env, text.c_str(), NAPI_AUTO_LENGTH, &result); return result;
+    }
+    const ULONG next = process->NextEntryOffset;
+    if (next < sizeof(SYSTEM_PROCESS_INFORMATION) || next > returned - offset) break;
+    offset += next;
+  }
+  return Null(env);
+#else
+  return Null(env);
+#endif
+}
+
 napi_value WindowsProcessBirthMarker(napi_env env, napi_callback_info info) {
 #ifdef _WIN32
   size_t argc=1;napi_value args[1];uint32_t pid=0;
@@ -2396,6 +2432,7 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"windowsJobObjectsSupported", nullptr, WindowsJobObjectsSupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"darwinProcessBirthMarker", nullptr, DarwinProcessBirthMarker, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"windowsProcessBirthMarker", nullptr, WindowsProcessBirthMarker, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"windowsBootIdentity", nullptr, WindowsBootIdentity, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"secureFileAuthoritySupported", nullptr, SecureFileAuthoritySupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"acquirePortableDataDirectory", nullptr, AcquirePortableDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"adoptPortableDataDirectory", nullptr, AdoptPortableDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
