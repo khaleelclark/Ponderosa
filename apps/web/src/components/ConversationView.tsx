@@ -1185,7 +1185,7 @@ export function ConversationView({
               pointerEvents: "none",
             }}
           >
-            <ProviderFailureBanner messages={detailQuery.data.providerFailureMessages ?? messages} hasMore={detailQuery.data.providerFailuresHasMore} onOpenAgent={id => onOpenAgent(id)} agents={agents} projectId={conversation.projectId}>
+            <ProviderFailureBanner messages={detailQuery.data.providerFailureMessages ?? messages} hasMore={detailQuery.data.providerFailuresHasMore} onOpenAgent={id => onOpenAgent(id)} agents={identityAgents} projectId={conversation.projectId}>
             <MasterRespondingIndicator
               messages={messages}
               agents={agents}
