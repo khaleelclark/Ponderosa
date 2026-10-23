@@ -36,3 +36,9 @@ test('UI014 Details use canonical reset/retry state, deduplicate exact work and 
  const stopped=harness([{text:'Stopped',deliveryReceipts:[receipt('rate_limit',{recovery:'stopped'})]}]);assert.match(stopped.render().map(text).join(' '),/Automatic retries stopped/);
  const empty=harness([]);assert.match(empty.render().map(text).join(''),/working fallback/);assert.match(empty.render().map(text).join(''),/No active provider interruptions/);
 });
+
+test('UI014 shared broadcasts count affected deliveries, not duplicated user messages',()=>{
+ const a=receipt('quota_exhausted'),b={...a,activationId:'another-work',targetAgentId:'another-agent'};
+ const h=harness([{text:'One message to two agents',deliveryReceipts:[a,b]}]);
+ const banner=h.render().find(node=>node.type===Banner);assert.match(text(banner),/2 deliveries/);assert.doesNotMatch(text(banner),/2 messages/);
+});

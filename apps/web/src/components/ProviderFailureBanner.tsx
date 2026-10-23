@@ -35,8 +35,8 @@ export function ProviderFailureBanner({ messages, agents, projectId, hasMore, on
   const sameFailure = first && rows.every(({ receipt }) => receipt.providerFailure!.providerId === first.providerId && receipt.providerFailure!.category === first.category);
   const count = hasMore ? "100+" : rows.length;
   const providerNames = providers.map(provider => provider === "codex" ? "Codex" : provider === "claude" ? "Claude" : "Provider");
-  const summary = sameFailure ? providerFailureHeadline(first) + (rows.length > 1 ? ` · ${count} messages` : "")
-    : `${providerNames.join(" + ") || "Provider"} interruptions · ${count} messages`;
+  const summary = sameFailure ? providerFailureHeadline(first) + (rows.length > 1 ? ` · ${count} deliveries` : "")
+    : `${providerNames.join(" + ") || "Provider"} interruptions · ${count} deliveries`;
   const states = [...new Set(rows.map(({ receipt }) => receipt.providerFailure!.recovery))].map(state => ({
     scheduled: "Waiting for a scheduled retry", retrying: "Recovery running", action_required: "User action required", stopped: "Automatic retries stopped",
   })[state]).join(". ");
@@ -65,7 +65,7 @@ export function ProviderFailureBanner({ messages, agents, projectId, hasMore, on
       <DialogTitle>Provider interruptions</DialogTitle>
       <DialogContent dividers sx={{ overflowWrap: "anywhere" }}>
         <Stack spacing={2}>
-          {hasMore ? <Alert severity="warning">Showing the first 100 affected messages. More affected work remains available in Agent activity and All Messages.</Alert> : null}
+          {hasMore ? <Alert severity="warning">Showing up to 100 affected messages. More affected work remains available in Agent activity and All Messages.</Alert> : null}
           {rows.map(({ receipt, text }) => {
             const failure = receipt.providerFailure!;
             return <Box key={receipt.activationId}>
