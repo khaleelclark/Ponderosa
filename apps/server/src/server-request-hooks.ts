@@ -1,6 +1,6 @@
 import type { IncomingMessage } from "node:http";
 import { createHmac, randomBytes } from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { ASSET_LIMITS } from "./assets.js";
 import { registerAttachmentUploadLifecycle, stopAttachmentUpload } from "./attachment-upload-lifecycle.js";
 import {
@@ -136,6 +136,11 @@ export function registerRequestSecurityHooks(
   app.addHook("onRoute", (route) => {
     const handler = route.handler;
     route.handler = async function(request, reply) {
+      // Mutations may still commit after body reception. Keep their reply alive
+      // through processing; read/stream routes retain their own idle policy.
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        request.raw.socket.setTimeout?.(app.server.requestTimeout || 120_000);
+      }
       activeHandlers.add(request.raw);
       try {
         const result = await handler.call(this, request, reply);
@@ -154,12 +159,11 @@ export function registerRequestSecurityHooks(
       }
     };
   });
-  app.addHook("onResponse", async (request) => {
-    if (!activeHandlers.has(request.raw)) releaseAdmission(request);
-  });
-  app.addHook("onError", async (request) => {
-    if (!activeHandlers.has(request.raw)) releaseAdmission(request);
-  });
+  for (const hook of ["onResponse", "onError", "onTimeout", "onRequestAbort"] as const) {
+    app.addHook(hook, async (request: FastifyRequest) => {
+      if (!activeHandlers.has(request.raw)) releaseAdmission(request);
+    });
+  }
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
@@ -358,6 +362,8 @@ export function registerRequestSecurityHooks(
   });
 
   app.addHook("onSend", async (request, reply, payload) => {
+    // Restore the ordinary outbound idle limit before sending a buffered or streamed reply.
+    request.raw.socket.setTimeout?.(app.server.timeout);
     if (request.url.startsWith("/api/") && !reply.hasHeader("Cache-Control")) {
       reply.header("Cache-Control", "private, no-store");
     }
