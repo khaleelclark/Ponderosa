@@ -14,10 +14,10 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a,b) 
 
 // Execute both real hooks with controlled transport, effects and debounce time.
 // No second draft/upload implementation: assertions observe the production hooks.
-function fixture(overrides = {}) {
+function fixture(overrides = {}, fields = {}) {
   let index=0, dirty=true, current, live=true;
   const slots=[], effects=[], timers=new Map(), calls={get:[],put:[],upload:[],remove:[]};
-  const decision={id:'decision-a',agentId:'agent-a'}, scope='agent:agent-a';
+  const decision={id:'decision-a',agentId:'agent-a',...fields}, scope='agent:agent-a';
   let canonical={conversationId:scope,ownerId:decision.id,revision:0,text:'',attachmentIds:[],attachments:[]};
   const react={
     useState(initial) { const i=index++; if(!slots[i]) { const slot={value:typeof initial==='function'?initial():initial};slot.set=value=>{slot.value=typeof value==='function'?value(slot.value):value;dirty=true;};slots[i]=slot;}return [slots[i].value,slots[i].set]; },
@@ -73,4 +73,28 @@ test('Chat and All Messages retain attachment-only answers through their shared 
   const decision={mode:'text',options:[],response:{attachments:[{id:'evidence'}]}};
   assert.equal(decisionChoice(decision),'Attached evidence');assert.equal(decisionResponseChoice(decision),'Attached evidence');assert.equal(decisionResponseVerb(decision),'Answered');
   assert.equal(decisionChoice({...decision,response:{text:'Full answer',attachments:[{id:'evidence'}]}}),'Full answer');
+});
+
+const questions=[{id:'one',question:'First full question',mode:'text',options:[],allowOther:true},{id:'two',question:'Second full question',mode:'choice',options:[{id:'north',label:'North'}],allowOther:true},{id:'three',question:'Third full question',mode:'text',options:[],allowOther:true}];
+test('UI019 uploads stay with their original question across navigation and late completion',async()=>{
+ const first=deferred(),second=deferred();let n=0;
+ const f=fixture({uploadDraftAttachment:async()=>++n===1?first.promise:second.promise},{questions});await f.start();
+ f.value.setAnswer({questionId:'one',status:'answered',text:'First answer'});f.value.addFiles([new File(['a'],'one.txt',{type:'text/plain'})],'one');await f.flush();
+ f.value.setAnswer({questionId:'two',status:'answered',optionId:'north'});f.value.addFiles([new File(['b'],'two.txt',{type:'text/plain'})],'two');await f.flush();
+ first.resolve(f.metadata('first-id',new File(['a'],'one.txt',{type:'text/plain'})));await f.flush();second.resolve(f.metadata('second-id',new File(['b'],'two.txt',{type:'text/plain'})));await f.flush();
+ f.value.setAnswer({questionId:'three',status:'skipped'});await f.debounce();
+ const answers=f.calls.put.at(-1)[1].decisionAnswers;
+ assert.equal(answers[0].text,'First answer');assert.deepEqual([...answers[0].attachmentIds],['first-id']);assert.deepEqual([...answers[1].attachmentIds],['second-id']);assert.equal(answers[1].optionId,undefined,'File evidence is an alternative answer, never an implicit choice');assert.equal(answers[2].status,'skipped');
+ assert.deepEqual([...f.value.attachmentIds],['first-id','second-id']);f.unmount();
+});
+test('UI019 one in-progress answer set restores stable question/file IDs without borrowing the Chat draft',async()=>{
+ const f=fixture({}, {questions});const answers=[{questionId:'one',status:'answered',text:'Retained one',attachmentIds:['file-a']},{questionId:'two',status:'answered',optionId:'north',attachmentIds:[]},{questionId:'three',status:'skipped'}];
+ f.setCanonical({revision:9,decisionAnswers:answers,attachmentIds:['file-a'],attachments:[f.metadata('file-a',new File(['bytes'],'one.txt',{type:'text/plain'}))]});await f.start();
+ assert.equal(f.value.ready,true);assert.deepEqual([...f.value.answers[0].attachmentIds],['file-a']);assert.equal(f.value.answers[1].optionId,'north');assert.equal(f.value.answers[2].status,'skipped');assert.equal(f.value.questionByFile.get(f.value.attachments.files[0]),'one');await f.debounce();assert.equal(f.calls.put.length,0);f.unmount();
+});
+test('UI019 complete answer validation rejects missing/duplicate/foreign IDs, mixed skips and reused files',()=>{
+ const good=[{questionId:'one',status:'answered',text:'One'},{questionId:'two',status:'answered',optionId:'north'},{questionId:'three',status:'skipped'}];
+ assert.equal(core.decisionAnswersError(questions,good),undefined);
+ for(const value of [null,[],good.slice(0,2),[good[0],good[0],good[2]],[{...good[0],questionId:'foreign'},good[1],good[2]],[good[0],{...good[1],text:'Mixed'},good[2]],[good[0],good[1],{...good[2],text:'Not a skip'}],[{...good[0],text:''},good[1],good[2]],[{...good[0],attachmentIds:['file']},{questionId:'two',status:'answered',attachmentIds:['file']},good[2]],[{...good[0],attachmentIds:['file','file']},good[1],good[2]]])assert.ok(core.decisionAnswersError(questions,value));
+ assert.equal(core.decisionAnswersError(questions,[{questionId:'one',status:'answered',text:''}],true),undefined,'Partial draft is not a submitted answer');
 });

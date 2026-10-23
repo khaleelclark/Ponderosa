@@ -36,6 +36,7 @@ export function DecisionActions({
     : response.isError
       ? "The Decision response could not be sent."
       : undefined;
+  const grouped = Boolean(decision.questions || decision.questionCount);
   const skipButton = <Button size="small" color="inherit" disabled={response.isPending}
     onClick={(event) => { event.stopPropagation(); void respond({ skip: true }); }}>
     Skip question
@@ -54,7 +55,7 @@ export function DecisionActions({
   return (
     <>
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-        {decision.options.map((option) => (
+        {!grouped && decision.options.map((option) => (
           <Button
             key={option.id}
             size="small"
@@ -82,7 +83,7 @@ export function DecisionActions({
             {decisionTextActionLabel(decision)}
           </Button>
         ) : null}
-        {skipButton}
+        {!grouped && skipButton}
       </Stack>
       {error ? (
         <Alert severity="error" sx={compact ? { mt: 0.75 } : undefined}>

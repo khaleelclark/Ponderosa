@@ -1329,6 +1329,14 @@
       "lane": "web",
       "moduleBase": "apps/web/package.json",
       "requirements": "Actual Decision draft and upload hooks with controlled transport/effects; no provider account"
+    },
+    {
+      "path": "tests/chats/decision-questions.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Actual Fastify Decision route with controlled authority stubs; no listener or provider",
+      "origin": "UI019 full Unicode questions and bounded structured group validation"
     }
   ],
   "retainedReleasePayload": [

@@ -48,6 +48,7 @@ interface StoredDraftAttachment
 
 const DRAFT_UPDATE_FIELDS = new Set([
   "text",
+  "decisionAnswers",
   "attachmentIds",
   "pastedTextAttachmentId",
   "mentionBindings",
@@ -68,6 +69,7 @@ export function draftUpdateBodyError(
     return "draft update must be an object";
   }
   const body = value as Record<string, unknown>;
+  if (body.decisionAnswers !== undefined && (!Array.isArray(body.decisionAnswers) || body.decisionAnswers.length > 3)) return "Decision drafts accept at most three structured answers";
   const unknownKey = Object.keys(body).find(
     key => !DRAFT_UPDATE_FIELDS.has(key),
   );
@@ -243,7 +245,7 @@ export class DraftService {
       this.enqueueReleasedAttachments(draftId, ownerId, conflict.displaced, empty);
     }
     const current = this.workspace.getDraft(draftId, ownerId);
-    if (!current.text && !current.attachmentIds.length && !current.pastedTextAttachmentId && !current.pendingSubmission && !current.pendingSubmissions?.length) return;
+    if (!current.text && !current.decisionAnswers?.length && !current.attachmentIds.length && !current.pastedTextAttachmentId && !current.pendingSubmission && !current.pendingSubmissions?.length) return;
     const next = this.workspace.putDraft(draftId, { ownerId, text: "", attachmentIds: [], clientId: "decision-response",
       expectedRevision: current.revision });
     this.enqueueReleasedAttachments(draftId, ownerId, current, next);

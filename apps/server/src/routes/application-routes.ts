@@ -1,6 +1,6 @@
 import {activeAgentProductSql} from '@ponderosa/agents';
 import {requestProduct} from '../product-scope.js';
-import { chatBrowserOwnerId } from "@ponderosa/core";
+import { decisionAnswersError, chatBrowserOwnerId } from "@ponderosa/core";
 import { createReadStream, promises as fs } from "@ponderosa/native-host/fs";
 import os from "node:os";
 import path from "node:path";
@@ -727,9 +727,10 @@ const notificationRoutesOptions = {
   publishWorkspaceSince,
 };
 registerNotificationListRoute(app, notificationRoutesOptions);
-app.get<{ Querystring: { projectId?: string; conversationId?: string; agentId?: string; status?: string } }>("/api/decisions", async (request, reply) => {
+app.get<{ Querystring: { id?: string; projectId?: string; conversationId?: string; agentId?: string; status?: string } }>("/api/decisions", async (request, reply) => {
   const status = request.query.status;
   if (status && !["pending", "resolved", "cancelled"].includes(status)) return reply.code(400).send({ error: "invalid Decision status" });
+  if (request.query.id) { const decision = workspace.getDecision(request.query.id); return decision ? [decision] : []; }
   return workspace.listDecisions({
     projectId: request.query.projectId,
     conversationId: request.query.conversationId,
@@ -750,10 +751,17 @@ app.post<{ Params: { id: string }; Body: ResolveDecisionRequest }>("/api/decisio
   if (!current) return reply.code(404).send({ error: "Decision not found" });
   const body = request.body;
   if (!body || typeof body !== "object" || Array.isArray(body) ||
-      Object.keys(body).some(key => !["skip", "text", "optionId", "content", "attachmentIds"].includes(key)) ||
+      Object.keys(body).some(key => !["skip", "text", "optionId", "content", "attachmentIds", "answers"].includes(key)) ||
       (body.text !== undefined && typeof body.text !== "string") ||
       (body.optionId !== undefined && typeof body.optionId !== "string")) return reply.code(400).send({ error: "Invalid Decision response fields" });
-  const attachmentIds = body.attachmentIds === undefined ? [] : body.attachmentIds;
+  let answers = body.answers;
+  if (answers !== undefined) {
+    if (!current.questions || current.runtimeAction || current.approvalScope || [body.skip, body.text, body.optionId, body.content, body.attachmentIds].some(value => value !== undefined)) return reply.code(400).send({ error: "Submit structured answers only for this question set" });
+    const error = decisionAnswersError(current.questions, answers);
+    if (error) return reply.code(400).send({ error });
+    answers = answers.map(answer => ({ ...answer, ...(answer.text !== undefined ? { text: answer.text.trim() } : {}) }));
+  } else if (current.questions && current.status === "pending") return reply.code(400).send({ error: "Answer or explicitly skip each question, then submit the set" });
+  const attachmentIds = answers ? answers.flatMap(answer => answer.attachmentIds ?? []) : body.attachmentIds === undefined ? [] : body.attachmentIds;
   if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE ||
       attachmentIds.some(id => typeof id !== "string" || !RUNTIME_UUID.test(id)) || new Set(attachmentIds).size !== attachmentIds.length)
     return reply.code(400).send({ error: "Decision attachments require unique staged file IDs within the message limit" });
@@ -808,7 +816,7 @@ app.post<{ Params: { id: string }; Body: ResolveDecisionRequest }>("/api/decisio
   if (optionId && text) return reply.code(400).send({ error: "choose an option or enter another response, not both" });
   if (optionId && !current.options.some((option) => option.id === optionId)) return reply.code(400).send({ error: "unknown Decision option" });
   if (attachmentIds.length && (optionId || current.runtimeAction || body.content !== undefined)) return reply.code(400).send({ error: "Attach evidence to an answer, not an approval option or provider form" });
-  if (!optionId && !text && !attachmentIds.length) return reply.code(400).send({ error: "choose an option or enter a response" });
+  if (!answers && !optionId && !text && !attachmentIds.length) return reply.code(400).send({ error: "choose an option or enter a response" });
   if (!optionId && !current.runtimeAction && current.mode !== "text" && !current.allowOther) return reply.code(400).send({ error: "this Decision does not accept another response" });
   const liveRuntimeAction = current.runtimeAction
     ? runtimeElicitations.action(current.id)
@@ -871,10 +879,15 @@ app.post<{ Params: { id: string }; Body: ResolveDecisionRequest }>("/api/decisio
     }
   }
   const complete = async (attachments: AssetDto[]) => {
+    const latest = workspace.getDecision(current.id);
+    if (!latest) throw new AssetError(404, "Decision no longer exists");
+    if (latest.status !== "pending") { ensureDecisionResponseActivation(latest); notifyScheduler(); return latest; }
     const cursor = workspace.cursor();
     let decision: DecisionDto;
     try {
-      decision = workspace.resolveDecision(current.id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}), ...(attachments.length ? { attachments } : {}), respondedAt })!;
+      decision = workspace.resolveDecision(current.id, { ...(answers ? { answers: answers.map(answer => ({ ...answer,
+        ...(answer.attachmentIds?.length ? { attachmentIds: answer.attachmentIds.map(id => attachments[attachmentIds.indexOf(id)]!.id) } : {}) })) } : {}),
+        ...(optionId ? { optionId } : {}), ...(text ? { text } : {}), ...(attachments.length ? { attachments } : {}), respondedAt })!;
     } catch (error) {
       if (current.approvalScope?.kind === "artifact_publication") {
         return reply.code(503).send({ code: "publication_approval_storage_failure", error: "Publication approval was not recorded. Nothing was published. Retry this Decision response." });

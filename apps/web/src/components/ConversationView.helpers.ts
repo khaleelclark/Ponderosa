@@ -98,6 +98,7 @@ function reconcileQueuedProjectMessages(
 }
 
 function decisionChoice(decision: ConversationDecisionEventDto["decision"]): string | undefined {
+  if (decision.response?.answers?.length) return "Submitted question answers";
   if (
     decision.response?.optionId === AUTO_ALLOWED_DECISION_OPTION_ID
   ) {

@@ -615,7 +615,7 @@ export const realApi = {
       body: JSON.stringify(request),
     });
   },
-  listDecisions(filter: { projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] } = {}, signal?: AbortSignal): Promise<DecisionDto[]> { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`, signal ? { signal, cache: "no-store" } : undefined); },
+  listDecisions(filter: { id?: string; projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] } = {}, signal?: AbortSignal): Promise<DecisionDto[]> { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`, signal ? { signal, cache: "no-store" } : undefined); },
   getDecisionAction(decisionId: string): Promise<RuntimeElicitationActionDto> { return requestJson<RuntimeElicitationActionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/action`); },
   respondDecision(decisionId: string, request: ResolveDecisionRequest, signal?: AbortSignal): Promise<DecisionDto> { return requestJson<DecisionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/respond`, { method: "POST", body: JSON.stringify(request satisfies ResolveDecisionRequest), signal }); },
   getWebPushStatus(deviceId?: string): Promise<WebPushStatusDto> { return requestJson(`/api/push/status${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ""}`); },

@@ -2,7 +2,7 @@ import { admitDataDirectory, type StateAdmission } from "./state-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "@ponderosa/native-host/fs";
 import { dirname } from "node:path";
-import { normalizeSpeechPreferences, draftPendingSubmissionError, draftPendingSubmissionRetired, LONG_TEXT_MAX_UTF8_BYTES, utf8ByteLength } from "@ponderosa/core";
+import { decisionAnswersError, normalizeSpeechPreferences, draftPendingSubmissionError, draftPendingSubmissionRetired, LONG_TEXT_MAX_UTF8_BYTES, utf8ByteLength } from "@ponderosa/core";
 import type {
   ConversationDraftDto,
   PutConversationDraftRequest,
@@ -1219,6 +1219,15 @@ export class WorkspaceStore {
   putDraft(conversationId: string, input: PutConversationDraftRequest): ConversationDraftDto {
     const ownerId = input.ownerId ?? "legacy";
     const current = this.getDraft(conversationId, ownerId);
+    if (input.decisionAnswers !== undefined) {
+      const decision = this.getDecision(ownerId);
+      const error = !decision?.questions || decision.status !== "pending" || conversationId !== `agent:${decision.agentId}`
+        ? "Structured answer drafts require their exact pending Decision owner"
+        : decisionAnswersError(decision.questions, input.decisionAnswers, true);
+      if (error) throw Object.assign(new Error(error), { code: "DRAFT_SUBMISSION_INVALID" });
+      const ids = input.decisionAnswers.flatMap(answer => answer.attachmentIds ?? []);
+      if (stableJson([...ids].sort()) !== stableJson([...input.attachmentIds].sort())) throw Object.assign(new Error("Question files must match the staged draft files"), { code: "DRAFT_SUBMISSION_INVALID" });
+    }
     const pendingSubmission = input.pendingSubmission &&
       !(current.retiredPendingSubmissionIds?.some(item => item.idempotencyKey === input.pendingSubmission!.idempotencyKey) ||
         (input.pendingSubmission.captureRevision !== undefined && draftPendingSubmissionRetired(current, input.pendingSubmission)))
@@ -1235,6 +1244,7 @@ export class WorkspaceStore {
       const displaced: ConversationDraftConflictDto["displaced"] = {
         conversationId,
         text: input.text,
+        ...(input.decisionAnswers ? { decisionAnswers: structuredClone(input.decisionAnswers) } : {}),
         attachmentIds,
         ...(input.pastedTextAttachmentId ? { pastedTextAttachmentId: input.pastedTextAttachmentId } : {}),
         mentionBindings,
@@ -1249,6 +1259,7 @@ export class WorkspaceStore {
         currentRevision: current.revision,
         expectedRevision: input.expectedRevision,
         text: displaced.text,
+        decisionAnswers: displaced.decisionAnswers ?? null,
         attachmentIds: displaced.attachmentIds,
         pastedTextAttachmentId: displaced.pastedTextAttachmentId ?? null,
         mentionBindings: displaced.mentionBindings ?? [],
@@ -1282,14 +1293,15 @@ export class WorkspaceStore {
       });
     }
     if (current.text === input.text &&
+        stableJson(current.decisionAnswers ?? []) === stableJson(input.decisionAnswers ?? []) &&
         JSON.stringify(current.attachmentIds) === JSON.stringify(attachmentIds) &&
         current.pastedTextAttachmentId === input.pastedTextAttachmentId &&
         JSON.stringify(current.mentionBindings ?? []) === JSON.stringify(mentionBindings) &&
         JSON.stringify(current.pendingSubmission ?? null) === JSON.stringify(pendingSubmission ?? null) &&
         stableJson(current.pendingSubmissions ?? []) === stableJson(captured.pendingSubmissions ?? []) &&
         stableJson(current.retiredPendingSubmissionIds ?? []) === stableJson(captured.retiredPendingSubmissionIds ?? [])) return current;
-    const draft: ConversationDraftDto = { ...captured, conversationId, ownerId, text: input.text, attachmentIds, ...(input.pastedTextAttachmentId ? { pastedTextAttachmentId: input.pastedTextAttachmentId } : {}), mentionBindings, ...(pendingSubmission ? { pendingSubmission } : {}), revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
-    this.append({ type: "draft_changed", conversationId, revision: draft.revision, cleared: !draft.text && draft.attachmentIds.length === 0 && !draft.pastedTextAttachmentId }, { kind: "draft", draft: structuredClone(draft) });
+    const draft: ConversationDraftDto = { ...captured, conversationId, ownerId, text: input.text, ...(input.decisionAnswers ? { decisionAnswers: structuredClone(input.decisionAnswers) } : {}), attachmentIds, ...(input.pastedTextAttachmentId ? { pastedTextAttachmentId: input.pastedTextAttachmentId } : {}), mentionBindings, ...(pendingSubmission ? { pendingSubmission } : {}), revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
+    this.append({ type: "draft_changed", conversationId, revision: draft.revision, cleared: !draft.text && !draft.decisionAnswers?.length && draft.attachmentIds.length === 0 && !draft.pastedTextAttachmentId }, { kind: "draft", draft: structuredClone(draft) });
     return structuredClone(draft);
   }
 
@@ -1391,6 +1403,8 @@ export class WorkspaceStore {
       conversationId: input.conversationId,
       ownerId: input.ownerId,
       text: conflict.displaced.text,
+      ...(conflict.displaced.decisionAnswers ? { decisionAnswers: conflict.displaced.decisionAnswers.map(answer => ({ ...answer,
+        ...(answer.attachmentIds ? { attachmentIds: answer.attachmentIds.filter(id => !unavailableIds.has(id)).map(id => replacementById.get(id) ?? id) } : {}) })) } : {}),
       attachmentIds: [...(input.attachmentIds ?? conflict.displaced.attachmentIds)],
       ...(pastedTextAttachmentId ? { pastedTextAttachmentId } : {}),
       mentionBindings: [...(conflict.displaced.mentionBindings ?? [])],
@@ -1416,7 +1430,7 @@ export class WorkspaceStore {
         type: "draft_changed",
         conversationId: input.conversationId,
         revision: draft.revision,
-        cleared: !draft.text && draft.attachmentIds.length === 0 &&
+        cleared: !draft.text && !draft.decisionAnswers?.length && draft.attachmentIds.length === 0 &&
           !draft.pastedTextAttachmentId,
       },
       { kind: "draft_conflict_resolved", resolution: structuredClone(resolution) },
@@ -1991,6 +2005,12 @@ export class WorkspaceStore {
   resolveDecision(id: string, response: NonNullable<DecisionDto["response"]>): DecisionDto | undefined {
     const current = this.decisions.get(id);
     if (!current || current.status !== "pending") return current;
+    if (current.questions) {
+      const error = decisionAnswersError(current.questions, response.answers);
+      if (error) throw new Error(error);
+      const ids = response.answers!.flatMap(answer => answer.attachmentIds ?? []);
+      if (stableJson([...ids].sort()) !== stableJson((response.attachments ?? []).map(file => file.id).sort()) || response.optionId !== undefined || response.text !== undefined || response.skipped !== undefined) throw new Error("Question answers must reference exactly their canonical response files");
+    }
     const next: DecisionDto = { ...current, status: "resolved", response, updatedAt: response.respondedAt };
     const key = [...this.decisionIdempotency.entries()].find(([, decisionId]) => decisionId === id)?.[0] ?? `decision:${id}`;
     this.append(
