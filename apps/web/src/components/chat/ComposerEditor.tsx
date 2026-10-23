@@ -1008,6 +1008,9 @@ function EditorBridge({
       if (!editor.getRootElement()?.contains(document.activeElement)) return;
       if (editor.getRootElement()?.ownerDocument.getSelection()?.isCollapsed === false) return;
       editor.update(() => {
+        // Native input may reach the DOM before Lexical imports it. Preserve
+        // that caret instead of selecting the stale chip-only model's end.
+        if (editor.getRootElement()?.textContent !== $getRoot().getTextContent()) return;
         const selection = $getSelection();
         if (selection && (!$isRangeSelection(selection) || !selection.isCollapsed())) return;
         const paragraph = $getRoot().getFirstChild();
