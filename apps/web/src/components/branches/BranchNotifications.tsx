@@ -44,7 +44,7 @@ export function BranchNotifications({onNavigate,presentation='icon'}:{onNavigate
   }catch(e){setError((e as Error).message);setRetry(()=>()=>void navigate(item,work));setOpen(true)}
  };
  return <>
-  {presentation==='icon'?<Tooltip title="Notifications"><IconButton aria-label={`Branches notifications${unseen?`, ${unseen} unread`:''}`} onClick={()=>setOpen(true)}><Badge badgeContent={unseen} color="error" max={99}><NotificationsOutlinedIcon/></Badge></IconButton></Tooltip>:<Button onClick={()=>setOpen(true)}>Notifications ({unseen})</Button>}
+  {presentation==='icon'?<Tooltip title="Notifications"><IconButton aria-label={`Branches notifications${unseen?`, ${unseen} unread`:''}`} onClick={()=>setOpen(true)}><Badge badgeContent={unseen} color="error" max={99}><NotificationsOutlinedIcon fontSize="small"/></Badge></IconButton></Tooltip>:<Button onClick={()=>setOpen(true)}>Notifications ({unseen})</Button>}
   <NotificationPanel open={open} projects={projects.data??[]} firstPage={query.data} firstPageRevision={query.successfulFetchRevision} getFirstPageRevision={query.getSuccessfulFetchRevision} onClose={()=>setOpen(false)} onNavigate={route=>void openWorkspace(route)} onOpenNotification={(item,work)=>void navigate(item,work)} productScoped externalError={error||query.error?.message} onRetryExternal={()=>{if(retry){setOpen(false);retry();}else void client.invalidateQueries({queryKey:queryKeys.notifications.all})}} onOpenSettings={()=>onNavigate({tab:'workflow',global:'notifications'})}/>
  </>;
 }
