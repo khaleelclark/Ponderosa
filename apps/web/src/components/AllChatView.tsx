@@ -55,7 +55,6 @@ import {
 } from "./chat/ChatMessages";
 import { Composer } from "./chat/Composer";
 import { copyText } from "../clipboard";
-import { AttentionSurface } from "./AttentionSurface";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { LiveAgentProgress } from "./chat/LiveAgentProgress";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
@@ -136,7 +135,6 @@ import {
   ALL_CHAT_REPLY_TARGET_KEY,
   ALL_CHAT_SOURCE_KEY,
   allChatDeliveryConfirmation,
-  allChatAttentionRoute,
   allChatComposerConversationId,
   allChatSourceIntentKey,
   authoritativeAllChatReplyTarget,
@@ -1364,7 +1362,7 @@ export function AllChatView({
         minHeight: 0,
         minWidth: 0,
         display: "grid",
-        gridTemplateRows: "auto auto minmax(0, 1fr) auto",
+        gridTemplateRows: "auto minmax(0, 1fr) auto",
         bgcolor: "background.default",
       }}
     >
@@ -1372,16 +1370,6 @@ export function AllChatView({
         icon={<ChatBubbleOutlineIcon fontSize="small" />}
         title="Messages Across Ponderosa"
       />
-      <Box sx={{ minWidth: 0 }}>
-          <AttentionSurface
-            notifications={notifications.filter((item) => item.kind !== "decision")}
-          onOpen={item => {
-            const route = allChatAttentionRoute(item);
-            if (route) onNavigate(route);
-          }}
-        />
-      </Box>
-
       <ChatSurface
         showOutgoingMessage
         canonicalCommunicationIds={items.map(item => item.communicationEventId)}

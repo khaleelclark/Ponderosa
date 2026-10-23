@@ -24,7 +24,6 @@ import {
 } from "../agents";
 import {
   useAgent,
-  useNotifications,
   useProjects,
   useWorkspacePreferences,
 } from "../hooks/queries";
@@ -121,7 +120,6 @@ export function AgentDetail({
   const auditOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
   const agentQuery = useAgent(agentId);
-  const notificationsQuery = useNotifications();
   const browserChatId = agentQuery.data?.agent.conversationId;
   const activeBrowsersQuery = useQuery({
     queryKey: queryKeys.agentBrowsers.agent(browserChatId ? chatBrowserOwnerId(browserChatId) : projectId, agentId),
@@ -1002,7 +1000,6 @@ export function AgentDetail({
         engines={engines}
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
-        notifications={notificationsQuery.data?.items ?? []}
         decisionReviewAction={decisionReviewAction}
         operatorProfile={preferencesQuery.data?.profile}
         agentNameForId={agentNameForId}
@@ -1027,7 +1024,6 @@ export function AgentDetail({
         onOpenFile={openActivityFile}
         onNewSubagent={onNewSubagent}
         onAgentsDeleted={onAgentsDeleted}
-        onOpenTechnical={openTechnicalDetails}
         onOpenArtifact={onOpenArtifact}
       />
 
