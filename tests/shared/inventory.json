@@ -1266,6 +1266,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24 and built server/native workspaces; isolated temporary database; no provider account or installed application",
       "origin": "Separate Ponderosa and Branches launcher destinations: real one-time session exchange, strict redirect allowlist and shared-session restart regression"
+    },
+    {
+      "path": "tests/workspace-navigation/agent-status-tooltip.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built core; actual shared React row/badge render",
+      "origin": "UI 010 concise scoped Agent status and separate tooltip regions"
     }
   ],
   "retainedReleasePayload": [

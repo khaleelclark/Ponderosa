@@ -28,9 +28,9 @@ export function SidebarResourceRow({ id, href, label, title, detail, subtitle, i
         } : {}) })}>
         <ListItemIcon sx={{ minWidth: 30 }}>{icon}</ListItemIcon>
         <ListItemText primary={title} secondary={subtitle} sx={{ my: 0, mr: 1, minWidth: 0, flex: "1 1 0" }} primaryTypographyProps={{ noWrap: true, fontSize: 14, fontWeight: emphasis ? 800 : starred && boldWhenStarred ? 750 : 500 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />
-        <Box sx={{ display: "flex", alignItems: "center", gap: .5 }}>{status}</Box>
       </ListItemButton>
     </Tooltip>
+    {status ? <Box sx={{ display: "flex", alignItems: "center", gap: .5, flexShrink: 0, mx: .5 }}>{status}</Box> : null}
     <IconButton className={starred || selected ? undefined : "sidebar-secondary"} size="small" aria-label={`${starred ? "Unstar" : "Star"} ${title}`} onClick={onStar} sx={control}>
       {starred ? <StarRoundedIcon fontSize="small" sx={{ color: starColor }} /> : <StarBorderRoundedIcon fontSize="small" />}
     </IconButton>
