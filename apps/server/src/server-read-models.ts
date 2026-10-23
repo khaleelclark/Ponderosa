@@ -105,6 +105,32 @@ export function createServerReadModels(context: ReadModelContext) {
     isClosed,
   } = context;
 
+  function deliveryReceiptsForCommunications(projectId: string, communicationEventIds: string[]) {
+    const receipts = coordinationV3.deliveryReceiptsForCommunications(projectId, communicationEventIds);
+    const waiting = (receipt: import("@ponderosa/core").MessageDeliveryReceiptDto) =>
+      (receipt.state === "queued" || receipt.state === "retrying") && !receipt.steeringWaitReason;
+    const ids = new Set([...receipts.values()].flatMap(rows => rows.filter(waiting).map(row => row.targetAgentId)));
+    if (!ids.size) return receipts;
+    const current = new Map([...ids].flatMap(id => {
+      const agent = store.getAgent(id);
+      return agent?.projectId === projectId ? [[id, { agent, run: coordinationV3.activeAgentRun(id), blocked: coordinationV3.providerBlockedState(id) }] as const] : [];
+    }));
+    const admission = new Map<string, ReturnType<NonNullable<ReadModelContext["admissionBlocker"]>>>();
+    for (const [id, rows] of receipts) receipts.set(id, rows.map(receipt => {
+      if (!waiting(receipt)) return receipt;
+      const target = current.get(receipt.targetAgentId);
+      if (!target) return receipt;
+      const engine = receipt.runtime?.engine ?? target.agent.activeEngine, key = receipt.targetAgentId + "\0" + engine;
+      if (!admission.has(key)) admission.set(key, context.admissionBlocker?.({ ...target.agent, activeEngine: engine }));
+      // Reuse exact Run/hold and selected-runtime admission authority. A
+      // different pending question/dependency is not this message's blocker.
+      const queueWaitReason = target.run ? "current_run"
+        : target.blocked?.activationIds.includes(receipt.activationId) ? "provider_retry" : admission.get(key)?.kind;
+      return queueWaitReason ? { ...receipt, queueWaitReason } : receipt;
+    }));
+    return receipts;
+  }
+
   function withMessagePresentation<T extends { communicationEventId?: string; text: string; deliveryReceipts?: import("@ponderosa/core").MessageDeliveryReceiptDto[]; agentMentions?: import("@ponderosa/core").AgentMentionBindingDto[]; coordinationRequests?: import("@ponderosa/core").CoordinationRequestSummaryDto[] }>(projectId: string, messages: T[], displayedConversationId?: string): T[] {
     const projectAgents = store.listAgents(projectId);
     const communicationEventIds = messages.flatMap((message) =>
@@ -117,7 +143,7 @@ export function createServerReadModels(context: ReadModelContext) {
       const link = requestUpdateCommunicationLink(communicationsByEvent.get(eventId));
       return link ? [[eventId, link] as const] : [];
     }));
-    const deliveryReceiptsByEvent = coordinationV3.deliveryReceiptsForCommunications(
+    const deliveryReceiptsByEvent = deliveryReceiptsForCommunications(
       projectId,
       communicationEventIds,
     );
@@ -823,5 +849,6 @@ export function createServerReadModels(context: ReadModelContext) {
     publishMessageDeliveryChanged,
     teamDirectory,
     withMessagePresentation,
+    deliveryReceiptsForCommunications,
   };
 }

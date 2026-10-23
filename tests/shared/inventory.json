@@ -1282,6 +1282,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24, built core; actual hook/API with controlled transport and real QueryClient/MutationObserver",
       "origin": "UI 011 confirmed saves, lost-response reconciliation and approval completion safety"
+    },
+    {
+      "path": "tests/chats/delivery-wait-reasons.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 built server; isolated canonical stores/inert providers; injected host samples only",
+      "origin": "UI 013 batch health/admission projection across Chat/Agent/All Messages/receipt refresh and single admission after recovery"
     }
   ],
   "retainedReleasePayload": [

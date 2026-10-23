@@ -84,6 +84,7 @@ type RuntimeArtifactInput = NonNullable<
 >[number];
 
 export interface QueuedMessageRouteDependencies {
+  deliveryReceiptsForCommunications: CoordinationV3Store["deliveryReceiptsForCommunications"];
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   workspace: WorkspaceStore;
@@ -163,6 +164,7 @@ export function registerQueuedMessageRoutes(
   dependencies: QueuedMessageRouteDependencies,
 ): void {
   const {
+    deliveryReceiptsForCommunications,
     store,
     coordinationV3,
     workspace,
@@ -213,7 +215,7 @@ export function registerQueuedMessageRoutes(
       return runtime?.projectId === conversation.projectId &&
         payload?.communication?.conversationId === conversation.id;
     });
-    const receipts = coordinationV3.deliveryReceiptsForCommunications(
+    const receipts = deliveryReceiptsForCommunications(
       conversation.projectId,
       communicationEventIds,
     );

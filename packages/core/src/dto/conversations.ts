@@ -11,7 +11,7 @@ import type {
 } from "../coordination-v3.js";
 import type { AgentDto } from "./agents.js";
 import type { ArtifactKind, AssetDto, CommunicationAttachmentDto } from "./artifacts.js";
-import type { HistoryWindowDto, ProviderBlockedWorkDto } from "./common.js";
+import type { HistoryWindowDto, ProviderBlockedWorkDto, QueuedAdmissionBlockerDto } from "./common.js";
 import type { ProjectDto } from "./projects.js";
 import type { DecisionDto } from "./workspace.js";
 import type { OutcomeCause } from "../outcome-cause.js";
@@ -197,6 +197,9 @@ export interface MessageDeliveryReceiptDto {
   /** Observed admission barrier, not provider acknowledgement or comprehension. */
   steeringWaitReason?: "context_refresh" | "prior_steering" | "revision_pending" |
     "provider_not_ready" | "provider_unsupported" | "preparation_retry" | "run_starting" | "scheduler_pending";
+  /** Current shared health/admission projection for an unstarted delivery;
+   * never evidence that this message reached an earlier Run. */
+  queueWaitReason?: QueuedAdmissionBlockerDto["kind"] | "current_run" | "provider_retry";
   /** Temporary, bounded public commentary for this exact acknowledged delivery.
    * Not authored Communication, completion, or proof of semantic understanding. */
   liveProgress?: { text: string; createdAt: string; seq: number; truncated?: true; recipientHandle: string;

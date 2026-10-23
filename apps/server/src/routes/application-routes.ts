@@ -257,6 +257,7 @@ export function registerApplicationRoutes(
     collaborationViewDetail,
     conversationDetail,
     withMessagePresentation,
+    deliveryReceiptsForCommunications,
     ensureDecisionResponseActivation,
     applyResolvedSavedBrowserApproval,
     runtimeElicitations,
@@ -422,6 +423,7 @@ registerConversationDeliveryRoutes(app, {
 });
 
 registerQueuedMessageRoutes(app, {
+  deliveryReceiptsForCommunications,
   store,
   coordinationV3,
   workspace,
@@ -634,7 +636,7 @@ registerSearchRoutes(app, {
   store,
   globalChatSearch,
   workspace,
-  coordinationV3,
+  deliveryReceiptsForCommunications,
 });
 
 async function assetMetadata(agentId: string, id: string) {
