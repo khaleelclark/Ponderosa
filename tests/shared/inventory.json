@@ -953,6 +953,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built server workspaces; private synthetic stores and controlled Codex/Claude adapters; no provider account",
       "origin": "Workflow notification latency: coalescing, yielded scans, stale-pass safety and pending-agent quarantine"
+    },
+    {
+      "path": "tests/agents/agent-lookup.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built core/native/agents workspaces; disposable local stores; no listener or provider account",
+      "origin": "Prepared Agent lookup regression: one statement per authority, fresh typed DTOs, deletion/owner guards and database isolation/reopen"
     }
   ],
   "retainedReleasePayload": [
