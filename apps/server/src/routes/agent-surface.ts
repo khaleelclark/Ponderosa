@@ -1,3 +1,5 @@
+import {registerVoiceReplyRoutes} from "./voice-replies.js";
+import {registerRuntimeCapabilityPolicy} from "../runtime-capability-policy.js";
 import type { FastifyInstance } from "fastify";
 import type { CreateServerOptions } from "../app-contracts.js";
 import type { AssetStore } from "../assets.js";
@@ -137,6 +139,8 @@ const {
   publishCoordinationV3Changed,
 });
 
+registerRuntimeCapabilityPolicy(app,store,agentMessageCapabilities);
+
 registerAgentDecisionRoutes(app, {
   store,
   coordinationV3,
@@ -246,6 +250,10 @@ registerAgentRequestCommandRoutes(app, {
   notifyScheduler: notifyScheduler,
 });
 
+registerVoiceReplyRoutes(app, {store, coordinationV3, activeRuns, agentMessageCapabilities, capabilityOwnsAuthoritativeRun, publish,
+  memoryPorts: {store, opts, unavailable: (projectId, agentId, conversationId) => deletingProjectIds.has(projectId) ||
+    !!agentId && deletingAgentIds.has(agentId) || !!conversationId && deletingConversationIds.has(conversationId)},
+});
 registerAgentCommunicationRoutes(app, {
   store,
   coordinationV3,

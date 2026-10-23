@@ -21,6 +21,7 @@ function load(relative, imports = {}, globals = {}) {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
   }).outputText, { exports, Error, Event, ...globals, require: name => {
     if (name in imports) return imports[name];
+    if (name === './WorkspaceReadOnlyContext') return { useWorkspaceReadOnly: () => false };
     if (name === './messageDeliveryPhase') return { messageDeliveryPhase };
     if (name === '@mui/material') return mui;
     if (name === '@mui/material/styles') return { alpha: value => value };

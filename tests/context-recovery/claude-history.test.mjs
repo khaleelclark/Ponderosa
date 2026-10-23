@@ -14,10 +14,11 @@ import vm from 'node:vm';
 import Fastify from 'fastify';
 import { AgentStore } from '@ponderosa/agents';
 import { PONDEROSA_HISTORY_TOOL } from '@ponderosa/core';
-import { encodeSessionTools } from '../../packages/engines/dist/ponderosa-mcp-contract.js';
+import { encodeSessionTools, decodeSessionTools } from '../../packages/engines/dist/ponderosa-mcp-contract.js';
 import { ClaudeStreamSession } from '../../packages/engines/dist/claude-stream-session.js';
 import { createProviderDynamicToolHandler } from '../../apps/server/dist/routes/provider-dynamic-tool-handler.js';
 import { registerAgentRuntimeToolRoutes } from '../../apps/server/dist/routes/agent-runtime-tools.js';
+import { providerDynamicTools } from '../../apps/server/dist/runtime-selection.js';
 const bridge = fileURLToPath(new URL('../../packages/engines/dist/ponderosa-mcp.js', import.meta.url));
 const ts = createRequire(new URL('../../apps/web/package.json', import.meta.url))('typescript');
 const source = ts.createSourceFile('executor.ts', readFileSync(new URL('../../apps/server/src/routes/provider-run-executor.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
@@ -144,3 +145,42 @@ test('Codex direct handler and Claude MCP share canonical history and revoked ca
   assert.equal((await direct({ id: 'revoked', name: PONDEROSA_HISTORY_TOOL.name, arguments: arguments_ })).success, false);
   assert.equal((await f.call(arguments_)).result.isError, true);
 }));
+
+test('Claude MCP accepts the real Local Memory catalog and only its exact selected definitions', () => {
+  const tools = providerDynamicTools(true), memory = tools.filter(tool => tool.name.startsWith('ponderosa_local_memory_'));
+  assert.equal(memory.length, 6);
+  for (const selected of [tools, ...memory.map(tool => [tool])]) {
+    assert.deepEqual(decodeSessionTools(encodeSessionTools(selected)), selected);
+  }
+  for (const invalid of [[...tools, tools[0]], [memory[0], memory[0]], [{...memory[0], name:'ponderosa_local_memory_delete_all'}], [{...memory[0], inputSchema:[]}]] ) {
+    assert.throws(() => encodeSessionTools(invalid), /invalid MCP session tool definitions/);
+  }
+});
+
+test('bundled Claude Local Memory bridge forwards selected search and refuses unselected or revoked calls', {timeout:20000}, async () => {
+  const app = Fastify(), requests = [], selected = providerDynamicTools(true).filter(tool => tool.name === 'ponderosa_local_memory_search');
+  let revoked = false;
+  app.post('/api/agent-local-memory', async (request, reply) => {
+    requests.push({authorization:request.headers.authorization, body:request.body});
+    return revoked ? reply.code(401).send({error:'not authorized'}) : {matches:[]};
+  });
+  const base = await app.listen({host:'127.0.0.1',port:0});
+  const call = async name => {
+    const child = spawn(process.execPath,[bridge],{env:{PATH:process.env.PATH,PONDEROSA_AGENT_MESSAGE_URL:base+'/api/agent-messages',PONDEROSA_AGENT_MESSAGE_TOKEN:'owned-memory-test',PONDEROSA_AGENT_TOOL_DEFINITIONS:encodeSessionTools(selected)},stdio:['pipe','pipe','pipe']});
+    const completion = once(child,'close');let stdout='',stderr='';
+    child.stdout.setEncoding('utf8').on('data',v=>stdout+=v);child.stderr.setEncoding('utf8').on('data',v=>stderr+=v);
+    const timer=setTimeout(()=>child.kill(),10000);
+    try {
+      child.stdin.end([JSON.stringify({id:1,method:'tools/list'}),JSON.stringify({id:2,method:'tools/call',params:{name,arguments:{query:'owned query',source:'chat',top_k:5}}})].join('\n')+'\n');
+      const [code,signal]=await completion;assert.equal(code,0,stderr);assert.equal(signal,null);
+      return Object.fromEntries(stdout.trim().split('\n').map(line=>JSON.parse(line)).map(row=>[row.id,row.result]));
+    } finally {clearTimeout(timer);if(child.exitCode===null&&child.signalCode===null){child.kill();await completion;}}
+  };
+  try {
+    const ok=await call('local_memory_search');
+    assert.deepEqual(ok[1].tools.map(tool=>tool.name),['local_memory_search']);assert.equal(ok[2].isError,false);
+    assert.deepEqual(requests,[{authorization:'Bearer owned-memory-test',body:{query:'owned query',source:'chat',top_k:5,operation:'search'}}]);
+    assert.equal((await call('local_memory_save'))[2].isError,true);assert.equal(requests.length,1);
+    revoked=true;assert.equal((await call('local_memory_search'))[2].isError,true);assert.equal(requests.length,2);
+  } finally {await app.close();}
+});

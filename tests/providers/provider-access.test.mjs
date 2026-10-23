@@ -234,3 +234,39 @@ test('retained session inventory cannot replace a newly installed CLI catalog or
     assert.equal(old.models[0].id, 'old-model', 'Refreshing choices must not mutate the retained session');
   } finally { await plane.drainEngineModelCatalogDiscoveries(); await app.close(); }
 });
+
+test('deferred sign-in checks stay checking during host pressure and recover without authorizing stale credentials', async t => {
+  t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-01-01T00:00:00Z')});
+  const app=Fastify({logger:false}),auth=new EngineAuthStatusCache();
+  let reads=0,answer={authenticated:true},resources={state:'held',protected:true,reason:'host_resource_pressure'};
+  const registration=defaultEngineRegistrations().find(r=>r.adapter.id==='claude');
+  registration.isInstalled=()=>true;registration.authStatus=async()=>{reads++;return answer;};
+  const plane=createEngineControlPlane({engines:new Map([['claude',registration]]),store:{listAgents:()=>[]},workspace:{},engineAuthStatuses:auth,engineAvailability:{get(){},denial(){},servingBuildRevision:'test',servingInstanceId:'test'},providerUsage:{},providerEnabled:()=>true,applyOperatorModelOptions(){},publishWorkspaceSince(){},appendWorkspace(){},activeRuns:new Map(),app,deletingProjectIds:new Set(),isClosed:()=>false,providerProcessAuthority:{register(){assert.fail('Unexpected provider process')}},resourceAdmission:{snapshot:()=>resources}});
+  try {
+    await auth.get('claude',registration.authStatus);t.mock.timers.tick(31000);
+    const held=await plane.runtimeStatus('claude',registration);
+    assert.equal(reads,1);assert.equal(held.authentication,'checking');assert.equal(held.intakeReady,false);
+    assert.equal(held.authLastKnown.authenticated,true);assert.equal(held.resourceAdmission.state,'held');
+    assert.match(held.authDetail,/deferred.*host resources/i);assert.match(held.availabilityDetail,/host resources/i);
+    assert.equal(plane.runtimeAdmissionBlocker('claude',registration).kind,'host_resource_pressure');
+    resources={state:'ready',protected:true,reason:'within_budget'};
+    const recovered=await plane.runtimeStatus('claude',registration);
+    assert.equal(reads,2);assert.equal(recovered.authentication,'authenticated');assert.equal(recovered.intakeReady,true);
+    auth.invalidate('claude');answer={authenticated:false};
+    const signedOut=await plane.runtimeStatus('claude',registration);
+    assert.equal(signedOut.authentication,'unauthenticated');assert.equal(signedOut.intakeReady,false);assert.match(signedOut.authDetail,/required/);
+    auth.invalidate('claude');answer={authenticated:false,status:'unknown',reason:'probe_pending'};
+    const checking=await plane.runtimeStatus('claude',registration);
+    assert.equal(checking.authentication,'checking');assert.match(checking.authDetail,/pending/);assert.equal(checking.intakeReady,false);
+    auth.invalidate('claude');answer={authenticated:false,status:'unknown',reason:'timeout'};
+    assert.equal((await plane.runtimeStatus('claude',registration)).authentication,'error');
+    auth.invalidate('claude');resources={state:'ready',protected:true,reason:'within_budget'};
+    let release,entered;const waiting=new Promise(resolve=>release=resolve),started=new Promise(resolve=>entered=resolve);
+    registration.authStatus=async()=>{entered();await waiting;return {authenticated:true}};
+    const pending=plane.runtimeStatus('claude',registration);await started;
+    resources={state:'held',protected:true,reason:'host_resource_pressure'};release();
+    const changed=await pending;assert.equal(changed.authentication,'authenticated');assert.equal(changed.intakeReady,false);
+    assert.equal(changed.resourceAdmission.state,'held');assert.match(changed.availabilityDetail,/host resources/i);
+
+  } finally {await app.close();}
+});

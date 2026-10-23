@@ -1,3 +1,4 @@
+import {artifactAgentProductSql,managedArtifactProductSql} from './artifact-product-scope.js';
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync } from "@ponderosa/native-host/fs";
@@ -262,7 +263,7 @@ export class AgentArtifactCatalog {
    * the same stable key before the response page is formed. */
   getProjectArtifactPage(
     projectId: string,
-    input: { limit: number; cursor?: string; conversationId?: string; search?: string },
+    input: { limit: number; cursor?: string; conversationId?: string; search?: string;productScope?:'dev'|'branches' },
   ): HistoryPageDto<ArtifactDto> {
     const limit = Math.max(1, Math.min(input.limit, 500));
     const conversationId = input.conversationId?.trim() || undefined;
@@ -272,7 +273,8 @@ export class AgentArtifactCatalog {
     const baseScope = conversationId
       ? `${projectId}:conversation:${conversationId}`
       : projectId;
-    const cursorScope = search ? `${baseScope}:search:${createHash("sha256").update(search).digest("hex")}` : baseScope;
+    const scopedBase=input.productScope?`${baseScope}:product:${input.productScope}`:baseScope;
+    const cursorScope = search ? `${scopedBase}:search:${createHash("sha256").update(search).digest("hex")}` : scopedBase;
     const boundary = input.cursor
       ? this.decodeHistoryCursor(input.cursor, "project:artifacts", cursorScope)
       : undefined;
@@ -283,6 +285,7 @@ export class AgentArtifactCatalog {
       FROM artifacts artifact
       JOIN agents agent ON agent.id = artifact.agent_id
       WHERE agent.project_id = ?
+        ${input.productScope?`AND ${artifactAgentProductSql('agent',input.productScope)}`:''}
         ${conversationId ? `AND (agent.conversation_id = ? OR EXISTS (
           SELECT 1 FROM agent_conversation_memberships membership
           WHERE membership.agent_id = artifact.agent_id
@@ -308,6 +311,7 @@ export class AgentArtifactCatalog {
     const managedRows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
       WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
+        ${input.productScope?`AND ${managedArtifactProductSql('managed_artifact_projection',input.productScope)}`:''}
         ${conversationId ? `AND (EXISTS (
           SELECT 1 FROM agent_conversation_memberships membership
           WHERE membership.agent_id = json_extract(artifact_json, '$.originAgentId')

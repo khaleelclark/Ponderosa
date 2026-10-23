@@ -36,6 +36,12 @@ export interface ActivationPromptCompilation {
   prompt: string;
 }
 
+export interface WorkflowOperations {
+  tick(admit: boolean): Promise<void>;
+  requestStop?(): void;
+  stop(): Promise<void>;
+}
+
 export type ActivationPromptCompilationErrorCode =
   | "exact_artifact_contract_mismatch"
   | "correlated_artifact_unavailable"
@@ -89,6 +95,7 @@ export class CoordinationV3Scheduler {
   private timer?: NodeJS.Timeout;
   private draining = false;
   private readonly dispatchJobs = new Set<Promise<void>>();
+  private workflowJob?: Promise<void>;
   private stopped = false;
   private leasingPaused = false;
   private maintenanceDrains = 0;
@@ -151,6 +158,7 @@ export class CoordinationV3Scheduler {
       onRunLeased?: (lease: SchedulerLease) => void;
       /** Keep durable work queued while its provider is known unavailable. */
       blockedAgentIds?: () => readonly string[] | Promise<readonly string[]>;
+      workflowOperations?: WorkflowOperations;
     },
   ) {
     this.maxConcurrentRuns = options.maxConcurrentRuns ?? 8;
@@ -207,9 +215,11 @@ export class CoordinationV3Scheduler {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
+    this.options.workflowOperations?.requestStop?.();
     if (this.draining || this.dispatchJobs.size) {
       await new Promise<void>((resolve) => this.stopWaiters.add(resolve));
     }
+    await this.options.workflowOperations?.stop();
   }
 
   snapshotMetrics(): CoordinationV3SchedulerMetrics {
@@ -276,6 +286,20 @@ export class CoordinationV3Scheduler {
           const agentId = (operation.payload as { agentId?: unknown } | null)?.agentId;
           if (typeof agentId === "string") this.options.onMessageDeliveryChanged?.(agentId);
         }
+      }
+      if (this.options.workflowOperations && !this.workflowJob) {
+        // One supervised workflow pass may await filesystem/import work. Keep
+        // normal Run admission and exact-Run cancellation polling independent.
+        // Tracking it still makes pause/stop await its observed completion.
+        const operations = this.options.workflowOperations;
+        const job = this.trackDispatch(async () => {
+          try { await operations.tick(this.isLeasingRuns()); }
+          catch (error) {
+            this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
+          }
+        });
+        this.workflowJob = job;
+        void job.then(() => { if (this.workflowJob === job) this.workflowJob = undefined; });
       }
       if (this.isLeasingRuns() && this.options.dispatchSteering) {
         while (this.isLeasingRuns()) {

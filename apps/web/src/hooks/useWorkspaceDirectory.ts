@@ -1,5 +1,6 @@
 import type {
   ProjectSort,
+  WorkspaceDirectoryKind,
   WorkspaceDirectoryItemDto,
   WorkspaceDirectoryPageDto,
   WorkspacePreferencesDto,
@@ -11,7 +12,6 @@ import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { normalizeResetPages } from "../collections";
 import {
-  type WorkspaceResourceKind,
   resourcePreferenceKey,
   starredWorkspaceResources,
 } from "../resourcePreferences";
@@ -34,7 +34,7 @@ export interface WorkspaceDirectoryRequestState {
 }
 
 export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
-  kind: WorkspaceResourceKind,
+  kind: WorkspaceDirectoryKind,
   options: {
     search?: string;
     projectId?: string;

@@ -74,6 +74,7 @@ type AgentDeletionAuthorityContext =
     browserProfiles: BrowserProfileAuthority;
     workingCopies: AgentWorkingCopyService;
     assets: Pick<AssetStore, "purgeAgents">;
+    purgeAgentMemory?(receipt:AgentDeletionReceipt):Promise<void>;
   };
 
 export function createAgentDeletionAuthority(
@@ -258,6 +259,7 @@ export function createAgentDeletionAuthority(
         errors.push(error instanceof Error ? error.message : "asset authority cleanup failed");
       }
     }
+    if(errors.length===0)try{await context.purgeAgentMemory?.(receipt);}catch(error){errors.push(error instanceof Error?error.message:'Private Agent memory cleanup failed');}
     if (errors.length > 0) {
       try { store.recordAgentDeletionCleanupError(receipt.id, errors.join("; ")); }
       catch { /* the durable receipt remains pending for startup reconciliation */ }

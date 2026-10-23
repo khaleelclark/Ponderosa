@@ -1,3 +1,4 @@
+import {localMemoryTools} from "./local-memory-catalog.js";
 import { createHash } from "node:crypto";
 import {
   PONDEROSA_RUNTIME_TOOLS,
@@ -12,8 +13,8 @@ import {
   projectProviderModelOptions,
 } from "./provider-success-projection.js";
 
-export function providerDynamicTools(): RuntimeDynamicToolSpec[] {
-  return [...PONDEROSA_RUNTIME_TOOLS];
+export function providerDynamicTools(localMemoryEnabled=false): RuntimeDynamicToolSpec[] {
+  return [...PONDEROSA_RUNTIME_TOOLS,...(localMemoryEnabled?localMemoryTools:[])];
 }
 
 function communicationV3Prompt(defaultReply?: import("@ponderosa/core").CoordinationReplyAuthority): string[] {
@@ -21,6 +22,7 @@ function communicationV3Prompt(defaultReply?: import("@ponderosa/core").Coordina
     defaultReply
       ? `This Run has one authorized default reply route (data): ${JSON.stringify(defaultReply)}. ponderosa_message({text}) uses it with stable idempotency. This convenience route does not create a reply obligation.`
       : 'This Run has no authorized default reply route. Do not call ponderosa_message({text}) alone. Explicit private user example: ponderosa_message({intent:"direct_to_user",text:"..."}). For an authorized peer use ponderosa_message({intent:"collaboration",recipientAgentIds:["<stable Agent ID>"],text:"..."}).',
+    "For an explicitly marked voice Direct Message, finish work then call ponderosa_voice_reply before writing the final answer. A successful authorization streams and publishes one canonical reply. If unavailable, use ordinary ponderosa_message.",
     "Immediate recipientAgentIds always requires explicit intent collaboration. Correlated results belong on ponderosa_update_request, not a convenience message.",
     "If Ponderosa capabilities require discovery, load the Ponderosa message capability specifically. Never substitute a generic or provider-native SendMessage tool: only ponderosa_message creates the canonical reply.",
     "Common delegation: ponderosa_coordinate({recipientAgentId,text}), or use delegations for fan-out. Ponderosa creates one aggregate Join and wakes you as each new result arrives while preserving the open parent workflow.",

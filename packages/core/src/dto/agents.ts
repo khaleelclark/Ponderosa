@@ -188,6 +188,9 @@ export interface AgentImportOperationDto {
   /** SHA-256 of the exact submitted payload bound to requestId. */
   payloadHash: string;
   projectId: string;
+  /** Immutable destination admitted from the bounded upload header. */
+  conversationId:string;
+  product:'dev'|'branches';
   sourceLabel: string;
   phase: AgentImportPhase;
   status: "pending" | "completed" | "failed";

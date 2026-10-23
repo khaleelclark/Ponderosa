@@ -1,3 +1,5 @@
+import {activeAgentProductSql} from '@ponderosa/agents';
+import {requestProduct} from '../product-scope.js';
 import { chatBrowserOwnerId } from "@ponderosa/core";
 import { createReadStream, promises as fs } from "@ponderosa/native-host/fs";
 import os from "node:os";
@@ -145,7 +147,7 @@ type ApplicationRoutesContext =
 export function registerApplicationRoutes(
   app: PonderosaServer,
   context: ApplicationRoutesContext,
-): void {
+): {createChat: ReturnType<typeof registerProjectRoutes>["createChat"];packageEngine: ReturnType<typeof registerAgentPackageRoutes>["packageEngine"];deleteConversation:ReturnType<typeof registerConversationRoutes>["deleteConversation"]} {
   const {
     opts,
     store,
@@ -375,7 +377,7 @@ registerAgentWorkRoutes(app, { store, projection: agentWorkProjection });
 
 registerUsageRoutes(app, serverContext);
 
-registerConversationRoutes(app, {
+const conversations=registerConversationRoutes(app, {
   store,
   workspace,
   engines,
@@ -471,7 +473,7 @@ app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects
       baseSql: `
         SELECT id, title, updated_at
         FROM agents
-        WHERE project_id = ? AND deleted_at IS NULL
+        WHERE project_id = ? AND deleted_at IS NULL AND ${activeAgentProductSql('agents',requestProduct(request))}
           AND NOT EXISTS (
             SELECT 1
             FROM agent_creation_operation_members members
@@ -479,13 +481,13 @@ app.get<{ Params: { id: string }; Querystring: CollectionQuery }>("/api/projects
             WHERE members.agent_id = agents.id
               AND operations.status IN ('preparing', 'canonical_committed', 'rolling_back')
           )
-          ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE '\\\\'" : ""}
+          ${normalizedSearch ? "AND lower(title || ' ' || active_engine || ' ' || COALESCE(model, '')) LIKE ? ESCAPE char(92)" : ""}
       `,
       params: normalizedSearch
         ? [request.params.id, `%${normalizedSearch.replace(/[\\%_]/g, match => `\\${match}`)}%`]
         : [request.params.id],
       order: "updated",
-      scope: `project-agents:${request.params.id}`,
+      scope: `project-agents:${request.params.id}:${requestProduct(request)}`,
       generationKeys: [collectionGenerationKey("agents", `project:${request.params.id}`)],
       hydrate: id => store.getAgent(id),
     });
@@ -574,7 +576,7 @@ app.get<{ Params: { id: string; seq: string } }>(
   },
 );
 
-registerAgentPackageRoutes(app, {
+const agentPackages=registerAgentPackageRoutes(app, {
   dataDir: opts.dataDir,
   store,
   coordination: coordinationV3,
@@ -606,6 +608,7 @@ const globalChatSearch = (query: {
   limit?: string | number;
   kind?: string;
   distinct?: string;
+  productScope?:'dev'|'branches';
 }): GlobalChatSearchResponseDto => {
   const q = String(query.q ?? "").trim();
   if (q.length > 200) throw new Error("search query must be 200 characters or fewer");
@@ -617,6 +620,7 @@ const globalChatSearch = (query: {
   const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(50, Math.floor(requestedLimit))) : 30;
   return store.searchGlobalChats({
     query: q,
+    productScope:query.productScope,
     limit,
     chatKind,
     distinctChats: query.distinct === "chats",
@@ -1083,4 +1087,5 @@ if (opts.webDist) {
     }
   });
 }
+  return {createChat:managedProjectFolders.createChat,packageEngine:agentPackages.packageEngine,deleteConversation:conversations.deleteConversation};
 }

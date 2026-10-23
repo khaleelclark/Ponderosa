@@ -1,0 +1,7 @@
+{
+  "chromaUrl": "http://127.0.0.1:8000",
+  "collectionPrefix": "private_branches_unique_installation",
+  "modelDir": "/absolute/path/to/pinned-models",
+  "stateDirectory": "/absolute/path/to/fresh-memory-policy",
+  "provision": true
+}

@@ -1,6 +1,6 @@
 import type { WorkspaceNotificationDto } from "@ponderosa/core";
 import { notificationPreviewText } from "@ponderosa/core";
-import type { PushDeliveryRecord, WorkspaceStore } from "@ponderosa/agents";
+import type { AgentStore, PushDeliveryRecord, WorkspaceStore } from "@ponderosa/agents";
 
 export interface PushSendError extends Error {
   statusCode?: number;
@@ -13,6 +13,7 @@ export interface WebPushSender {
 export interface WebPushDeliveryOptions {
   store: WorkspaceStore;
   sender: WebPushSender;
+  owners?: Pick<AgentStore,"getConversation"|"getAgent">;
   onWorkspaceEvents(cursor: number): void;
 }
 
@@ -69,7 +70,7 @@ export class WebPushDeliveryManager {
       if (this.inFlight.has(key)) return;
       this.inFlight.add(key);
       try {
-        await this.options.sender.send(subscription, JSON.stringify(pushPayload(notification)), {
+        await this.options.sender.send(subscription, JSON.stringify(pushPayload(notification,this.options.owners)), {
           TTL: 60 * 60,
           urgency: "normal",
           topic: pushTopic(notification.id),
@@ -123,10 +124,18 @@ export class WebPushDeliveryManager {
   }
 }
 
-export function pushPayload(notification: WorkspaceNotificationDto): Record<string, unknown> {
+export function pushPayload(notification: WorkspaceNotificationDto, owners?: Pick<AgentStore,"getConversation"|"getAgent">): Record<string, unknown> {
+  const chatId=notification.conversationId??(notification.agentId?owners?.getAgent(notification.agentId)?.conversationId:undefined);
+  const chat=chatId?owners?.getConversation(chatId):undefined;
+  const branchId=notification.branchId??chat?.branchId;
+  const executionId=notification.branchExecutionId??chat?.executionId;
   const message = notification.communicationEventId
     ? `?message=${encodeURIComponent(notification.communicationEventId)}`
     : "";
+  const workspace=notification.projectId&&chatId
+    ?`/projects/${encodeURIComponent(notification.projectId)}/chats/${encodeURIComponent(chatId)}${message}`
+    :notification.projectId&&notification.agentId?`/projects/${encodeURIComponent(notification.projectId)}/agents/${encodeURIComponent(notification.agentId)}${message}`:undefined;
+  const branchQuery=branchId?new URLSearchParams({branch:branchId,tab:workspace?'chats':'executions',...(executionId?{execution:executionId}:{}),...(chatId?{chat:chatId}:{}),...(workspace?{workspace}:{})}):undefined;
   return {
     notificationId: notification.id,
     title: notification.title,
@@ -134,7 +143,7 @@ export function pushPayload(notification: WorkspaceNotificationDto): Record<stri
     projectId: notification.projectId,
     conversationId: notification.conversationId,
     agentId: notification.agentId,
-    url: notification.projectId && notification.conversationId
+    url: branchQuery?`/branches?${branchQuery}`:notification.projectId && notification.conversationId
       ? `/projects/${encodeURIComponent(notification.projectId)}/chats/${encodeURIComponent(notification.conversationId)}${message}`
       : notification.projectId && notification.agentId
       ? `/projects/${encodeURIComponent(notification.projectId)}/agents/${encodeURIComponent(notification.agentId)}${message}`

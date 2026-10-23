@@ -701,6 +701,20 @@ export class CoordinationV3Store {
     return this.schedulerStatusReadModel.getAgentAvailability(agentId);
   }
 
+  /** Exact paired server clocks for voice latency; this read grants no authority. */
+  voiceReplyRunTiming(communicationId: string, agentId: string): {
+    runId: string; leasedAt: string; runStartedAt?: string; runStatus: string;
+  } | undefined {
+    const activation = this.runtimeCommunication(communicationId)?.activations?.find(a => a.agentId === agentId);
+    if (!activation) return undefined;
+    const row = this.sqlite.prepare(`SELECT r.id, r.created_at, r.started_at, r.status
+      FROM scheduler_runs r JOIN scheduler_run_activations a ON a.run_id=r.id
+      WHERE a.activation_id=? AND r.agent_id=? ORDER BY r.created_at DESC LIMIT 1`)
+      .get(activation.id, agentId) as { id: string; created_at: string; started_at: string | null; status: string } | undefined;
+    return row ? { runId: row.id, leasedAt: row.created_at,
+      ...(row.started_at ? { runStartedAt: row.started_at } : {}), runStatus: row.status } : undefined;
+  }
+
   activeAgentRun(agentId: string): import("@ponderosa/core").AgentCoordinationV3Dto["activeRun"] {
     return this.schedulerStatusReadModel.activeAgentRun(agentId);
   }

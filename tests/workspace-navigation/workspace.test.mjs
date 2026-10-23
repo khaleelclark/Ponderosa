@@ -128,3 +128,15 @@ test('check 89: Agent notification override and inherited Chat mode persist with
   assert.equal(prefs.notificationScopes[`conversation:${chat.id}`], 'muted'); assert.equal(prefs.notificationScopes[`agent:${agent.id}`], undefined); assert.equal(prefs.notificationScopes[`conversation:${other.id}`], undefined);
   assert.equal((await f.api('PUT', `/api/notification-settings/conversation/${chat.id}`, { mode: 'inherit' })).status, 400);
 }));
+
+
+test('Chat roster and collection searches treat percent, underscore and backslash as literal text',options,t=>withFixture(t,async f=>{
+ const marker='060 %_'+String.fromCharCode(92)+' literal';
+ const chat=await f.createChat('Chat '+marker),target=await f.createIdleAgent(chat,'Agent '+marker);
+ await f.createIdleAgent(chat,'Agent 060 anything literal');
+ for(const url of [`/api/conversations/${chat.id}/members`,`/api/projects/${chat.projectId}/agents`,`/api/projects/${chat.projectId}/conversations`,`/api/projects/${chat.projectId}/team-directory`,'/api/projects']){
+  const result=f.ok(await f.api('GET',`${url}?search=${encodeURIComponent(marker)}&limit=1`));
+  if(url.endsWith('/team-directory'))assert.equal(result.totalAgents,1);
+  else{assert.equal(result.length,1);if(url.endsWith('/agents')||url.endsWith('/members'))assert.equal(result[0].id,target.id);else if(url.endsWith('/conversations'))assert.equal(result[0].id,chat.id);else assert.equal(result[0].id,chat.projectId);}
+ }
+}));

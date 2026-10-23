@@ -17,6 +17,8 @@ interface ContainedSpawnInput {
   cwd: string;
   env: NodeJS.ProcessEnv;
   stdin: "ignore" | "pipe";
+  /** POSIX authorization pipe; never shares the Windows Job startup gate. */
+  controlPipe?: boolean;
 }
 
 /**
@@ -125,6 +127,7 @@ export function spawnContainedCli(
   input: ContainedSpawnInput,
   hostEnvironment: NodeJS.ProcessEnv = process.env,
 ): ContainedSpawn {
+  if (input.controlPipe && process.platform === "win32") throw new Error("Extra control pipes require a POSIX process boundary");
   // Missing providers are an expected host configuration, not a process-level
   // failure. Resolve them before creating ChildProcess helpers whose rejected
   // discovery races could otherwise outlive the public unavailable response.
@@ -141,7 +144,7 @@ export function spawnContainedCli(
     child: nodeSpawn(invocation.bin, invocation.args, {
       cwd: input.cwd,
       env: input.env,
-      stdio: [input.stdin, "pipe", "pipe"],
+      stdio: input.controlPipe ? [input.stdin, "pipe", "pipe", "pipe"] : [input.stdin, "pipe", "pipe"],
       detached: true,
     }),
   };

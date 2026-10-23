@@ -1,3 +1,4 @@
+import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
@@ -132,6 +133,7 @@ export function MessageDeliveryStatus({
   compactSuccess?: boolean;
   compactSuccessTooltip?: boolean;
 }): JSX.Element | null {
+  const readOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
   const [now, setNow] = useState(Date.now());
   const [pendingInjectionId, setPendingInjectionId] = useState<string>();
@@ -332,7 +334,7 @@ export function MessageDeliveryStatus({
             </ButtonBase>
           </Box>
         </Tooltip>
-        {receipt.canLetCurrentRunFinish && receipt.injectionId ? <Button
+        {!readOnly && receipt.canLetCurrentRunFinish && receipt.injectionId ? <Button
           color="warning"
           variant="text"
           size="small"
@@ -340,7 +342,7 @@ export function MessageDeliveryStatus({
           onClick={() => void letRunFinish(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
         >Let Current Run Finish</Button> : null}
-        {receipt.canRetry && projectId ? <Button
+        {!readOnly && receipt.canRetry && projectId ? <Button
           color="error"
           variant="text"
           size="small"
@@ -348,7 +350,7 @@ export function MessageDeliveryStatus({
           onClick={() => receipt.retryMayDuplicate ? setConfirmRetry(receipt) : void retryDelivery(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
         >{pendingRetryId === receipt.activationId ? "Trying Again…" : receipt.providerAcknowledged ? "Try Work Again" : "Try Delivery Again"}</Button> : null}
-        {receipt.canRetry && projectId ? <Button
+        {!readOnly && receipt.canRetry && projectId ? <Button
           color="inherit"
           variant="text"
           size="small"

@@ -1,3 +1,4 @@
+import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import { chatBrowserOwnerId } from "@ponderosa/core";
 import {
   Alert,
@@ -116,6 +117,7 @@ export function AgentDetail({
   onDeleted,
   onAgentsDeleted,
 }: AgentDetailProps): JSX.Element {
+  const auditOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
   const agentQuery = useAgent(agentId);
   const notificationsQuery = useNotifications();
@@ -926,7 +928,7 @@ export function AgentDetail({
         agentNameForId={agentNameForId}
         running={running}
         stopping={cancelRun.isPending}
-        tab={tab}
+        tab={auditOnly&&['subagents','settings'].includes(tab)?'chat':tab}
         showSubagents={showSubagents}
         transcriptMarkdown={transcriptMarkdown}
         transcriptTitle={transcriptTitle}
@@ -990,7 +992,7 @@ export function AgentDetail({
       ) : null}
 
       <AgentDetailPanels
-        tab={tab}
+        tab={auditOnly&&['subagents','settings'].includes(tab)?'chat':tab}
         detail={detail}
         chatMessages={visibleChatMessages}
         agentId={agentId}
@@ -1027,7 +1029,7 @@ export function AgentDetail({
         onOpenArtifact={onOpenArtifact}
       />
 
-      <AgentDetailComposer
+      {auditOnly?<Alert severity="info" sx={{m:1}}>This Agent belongs to a workflow execution. Control its work from the execution view.</Alert>:<AgentDetailComposer
         visible={tab === "chat"}
         queuedMessageNotice={queuedMessageNotice}
         queuedMessageFailure={queuedMessageFailure}
@@ -1101,9 +1103,9 @@ export function AgentDetail({
           onQueue: submitAgentMessage("queue"),
           onCancel: stopActiveRun,
         }}
-      />
+      />}
 
-      <AgentDetailDialogs
+      {!auditOnly&&<AgentDetailDialogs
         recheckEngine={{
           open: recheckEngineOpen,
           pending: recheckEngine.isPending,
@@ -1147,23 +1149,23 @@ export function AgentDetail({
           agents,
           updateOrganization,
         }}
-      />
-      <AgentPackageExportDialog
+      />}
+      {!auditOnly&&<AgentPackageExportDialog
         open={exportOpen}
         source={detail.agent}
         agents={agents}
         onClose={() => setExportOpen(false)}
         onCopy={copyAgentPackage}
         onDownload={downloadAgentPackage}
-      />
-      <AgentDuplicateDialog
+      />}
+      {!auditOnly&&<AgentDuplicateDialog
         open={duplicateOpen}
         source={detail.agent}
         agents={agents}
         conversations={conversations}
         onClose={() => setDuplicateOpen(false)}
         onCreated={onOpenAgent}
-      />
+      />}
     </Box></OutgoingMessageProvider>
   );
 }

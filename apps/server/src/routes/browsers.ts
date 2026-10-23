@@ -1,3 +1,4 @@
+import {browserRouteUsesOwnerHandle} from "../browser-owner-route.js";
 import { browserOwnerId, browserOwnerFromId, chatBrowserOwnerId } from "@ponderosa/core";
 import type {
   CreateBrowserProfileRequest,
@@ -76,7 +77,7 @@ export function registerBrowserRoutes(
   // Agent/Run paths retain their namespace locator and exact Run validation.
   app.addHook("preHandler", async (request, reply) => {
     const route = request.routeOptions.url;
-    if (!/^\/api\/projects\/:projectId\/(?:browser(?:[/-]|$)|local-browser(?:[/-]|$)|saved-browser-access(?:[/-]|$)|agents\/:agentId\/browser-(?:location|preference)$)/u.test(route ?? "")) return;
+    if (!browserRouteUsesOwnerHandle(route)) return;
     const params = request.params as { projectId: string; agentId?: string };
     try {
       const queryChat = (request.query as { conversationId?: string }).conversationId;
