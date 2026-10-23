@@ -19,6 +19,7 @@ import { derivedRunActionKey } from "../security.js";
 import { leaseAgentDelivery, leaseConversationDelivery } from "../delivery-leases.js";
 import {
   isRequestCommunicationHandoffKind,
+  materializeRequestUpdateCommunication,
   requestUpdateCommunicationEventId,
 } from "../request-update-communication.js";
 
@@ -49,6 +50,7 @@ interface AgentRequestCommandRoutesContext {
   stageCommunicationArtifact: CommunicationArtifactAuthority["stageCommunicationArtifact"];
   removeRuntimeArtifactReservation(projectId: string, artifactId: string): void;
   recordCommunication(event: CommunicationEvent): CommunicationEvent;
+  scheduleCommunicationReconciliation(projectId: string): void;
   projectCommunicationToAgentAudit(
     agentId: string,
     event: CommunicationEvent,
@@ -83,7 +85,6 @@ export function registerAgentRequestCommandRoutes(
     stageCommunicationArtifact,
     removeRuntimeArtifactReservation,
     recordCommunication,
-    projectCommunicationToAgentAudit,
     publishCoordinationV3Changed,
     notifyScheduler,
   } = context;
@@ -316,6 +317,8 @@ export function registerAgentRequestCommandRoutes(
         : changedRequest?.requesterAgentId === capability.agentId
           ? changedRequest.recipientAgentId
           : undefined;
+      const passiveEventId = requestUpdateCommunicationEventId(projectId, requestId, updateId);
+      const existingPassive = store.getCommunicationEvent(projectId, passiveEventId);
       if (
         changedRequest?.conversationId
         && canonicalUpdate?.actorKind === "agent"
@@ -328,13 +331,8 @@ export function registerAgentRequestCommandRoutes(
         // The Request update remains the canonical handoff and owns the
         // requester wake-up. This deterministic Communication is its passive,
         // non-delivering audit copy for Team Chat and both Agent timelines.
-        const eventId = requestUpdateCommunicationEventId(
-          projectId,
-          requestId,
-          updateId,
-        );
-        const communication = recordCommunication({
-          eventId,
+        recordCommunication({
+          eventId: passiveEventId,
           schemaVersion: 2,
           projectId,
           conversationId: changedRequest.conversationId,
@@ -352,32 +350,14 @@ export function registerAgentRequestCommandRoutes(
             : {}),
           idempotencyKey: `request-update:${requestId}:${updateId}`,
         });
-        if (!store.getProjectedConversationMessageById(
-          changedRequest.conversationId,
-          "collaboration",
-          communication.eventId,
-        )) {
-          store.appendConversationMessage(
-            changedRequest.conversationId,
-            { role: "assistant", text: passiveText },
-            capability.agentId,
-            "collaboration",
-            undefined,
-            undefined,
-            communication.eventId,
-          );
-        }
-        projectCommunicationToAgentAudit(
-          capability.agentId,
-          communication,
-          passiveText,
-        );
-        projectCommunicationToAgentAudit(
-          peerAgentId,
-          communication,
-          passiveText,
-        );
       }
+      // An older idempotent replay may be outside the inspector's100-update
+      // window, but its existing canonical passive copy still has exact proof.
+      const repaired = materializeRequestUpdateCommunication(context, { projectId, eventId: passiveEventId },
+        existingPassive ? (event, agentIds) => store.ensureCommunicationProjectionLedger(projectId, {
+          eventIds: new Set([event.eventId]), agentIds: new Set(agentIds),
+        }) : undefined);
+      if (repaired || existingPassive) context.scheduleCommunicationReconciliation(projectId);
       const conversationIds = changedRequest?.conversationId
         ? [changedRequest.conversationId]
         : [];
@@ -391,6 +371,8 @@ export function registerAgentRequestCommandRoutes(
       return { ...result, ...(resultArtifactId ? { resultRef: `ponderosa://artifact/${resultArtifactId}` } : {}) };
     } catch (error) {
       if (durableResult) {
+        // The Request is committed. Passive views can be completed by an
+        // exact idempotent replay or startup recovery; no new Run is queued.
         return reply.code(202).send({
           ...durableResult,
           committed: true,

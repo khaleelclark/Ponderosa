@@ -40,6 +40,11 @@ type ProjectionIndex = {
   byTuple: Map<string, CommunicationProjection>;
 };
 
+export interface CommunicationProjectionRecoveryFilter {
+  eventIds: ReadonlySet<string>;
+  agentIds: ReadonlySet<string>;
+}
+
 export class AgentCommunicationProjectionLedger {
   private managedArtifactAttachmentMetadataAuthority?: (
     projectId: string,
@@ -378,11 +383,16 @@ export class AgentCommunicationProjectionLedger {
     };
   }
 
-  ensureCommunicationProjectionLedger(projectId: string): void {
+  ensureCommunicationProjectionLedger(projectId: string, filter?: CommunicationProjectionRecoveryFilter): void {
     this.suppressReplaySearchRefresh = true;
     try {
-      const canonicalEvents = this.readCommunicationEvents(projectId);
-      for (const event of canonicalEvents) this.ensureCommunicationBehaviorProjections(event);
+      const canonicalEvents = filter
+        ? [...filter.eventIds].flatMap(id => {
+            const event = this.communicationIndex(projectId).byId.get(id);
+            return event ? [event] : [];
+          })
+        : this.readCommunicationEvents(projectId);
+      if (!filter) for (const event of canonicalEvents) this.ensureCommunicationBehaviorProjections(event);
       const canonicalIds = new Set(canonicalEvents.map((event) => event.eventId));
       if (canonicalIds.size === 0) return;
       for (const dispatch of this.messageDispatches(projectId)) {
@@ -409,6 +419,7 @@ export class AgentCommunicationProjectionLedger {
         }
       }
       for (const agent of this.listAgents(projectId)) {
+        if (filter && !filter.agentIds.has(agent.id)) continue;
         for (const stored of this.readEvents(agent.id)) {
           const eventId = stored.event.type === "communication_projection" || stored.event.type === "user_message"
             ? stored.event.communicationEventId : undefined;

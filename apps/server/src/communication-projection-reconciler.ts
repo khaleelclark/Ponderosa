@@ -12,6 +12,7 @@ import type { AssetStore, AuthoritativeRuntimeAttachment } from "./assets.js";
 import { agentMentionHandle, renderDirectMessage, renderScopedMessage } from "./agent-mentions.js";
 import type { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
 import { leaseAgentDelivery, leaseConversationDelivery } from "./delivery-leases.js";
+import { materializeRequestUpdateCommunication, requestUpdateCommunicationProjection } from "./request-update-communication.js";
 
 type CommunicationArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
 
@@ -138,6 +139,61 @@ export function createCommunicationProjectionReconciler(
         ...coordinationV3.requestCommunicationsNeedingProjection(filter?.projectId, filter?.communicationEventId),
       ];
     };
+    // Passive Request handoffs have canonical Communication but no runtime
+    // delivery row. Exact retries read one event; only startup and explicit
+    // Chat recovery enumerate history, never ordinary runtime publication.
+    function* passiveRequestUpdates(): Generator<CommunicationEvent> {
+      if (filter?.projectId && filter.communicationEventId) {
+        const event = store.getCommunicationEvent(filter.projectId, filter.communicationEventId);
+        if (event?.eventId.startsWith("request-update-")) yield event;
+        return;
+      }
+      if (filter && !filter.conversationId) return;
+      const projects = filter?.projectId ? [store.getProject(filter.projectId)] : store.listProjects();
+      for (const project of projects) {
+        if (!project) continue;
+        for (const event of store.readCommunicationEvents(project.id)) {
+          if (event.eventId.startsWith("request-update-") &&
+              (!filter?.conversationId || event.conversationId === filter.conversationId)) yield event;
+        }
+      }
+    }
+    const rebuiltProjects = new Set<string>();
+    for (const event of passiveRequestUpdates()) {
+      if (options.shouldContinue && !options.shouldContinue()) break;
+      scanned += 1;
+      if (options.yieldEvery && scanned > 1 && (scanned - 1) % options.yieldEvery === 0) {
+        await yieldToEventLoop();
+        if (options.shouldContinue && !options.shouldContinue()) break;
+      }
+      if (exactScope) {
+        exactCommunicationEventIds.add(event.eventId);
+        exactCanonicalEvents.set(event.eventId, event);
+      }
+      try {
+        const count = materializeRequestUpdateCommunication(context, event, filter ? current => {
+          if (rebuiltProjects.has(current.projectId)) return;
+          const candidates = filter.communicationEventId ? [current] : store.readCommunicationEvents(current.projectId);
+          const plans = candidates.flatMap(candidate => {
+            if (filter.conversationId && candidate.conversationId !== filter.conversationId) return [];
+            const plan = requestUpdateCommunicationProjection(context, candidate);
+            return plan ? [plan] : [];
+          });
+          // Eligibility and this filtered rebuild share one synchronous turn.
+          store.ensureCommunicationProjectionLedger(current.projectId, {
+            eventIds: new Set(plans.map(plan => plan.event.eventId)),
+            agentIds: new Set(plans.flatMap(plan => plan.targets)),
+          });
+          rebuiltProjects.add(current.projectId);
+        } : undefined);
+        repaired += count;
+        if (count) repairedProjectIds.add(event.projectId);
+      } catch (error) {
+        if (exactScope) exactRecoveryError = error;
+        logError({ err: error, communicationEventId: event.eventId }, "passive Request projection recovery failed");
+      }
+    }
+    if (options.shouldContinue && !options.shouldContinue()) return repaired;
     const sources = readSources();
     for (const row of sources) {
       if (filter?.projectId && row.projectId !== filter.projectId) continue;

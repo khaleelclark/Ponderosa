@@ -22,6 +22,14 @@
       "afterSha256": "502e0c9824a9282ac2e2b8ab51f8f1909b8036a7e55ee711894e6f950a2cc12f"
     },
     {
+      "path": "tests/agents/request-update-projection-recovery.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server; controlled providers and fresh private canonical stores only",
+      "origin": "Passive Request update metadata: interrupted projection/replay/restart, historical exact validation and scope fences"
+    },
+    {
       "path": "tests/agents/provider-cleanup.test.mjs",
       "feature": "agents",
       "lane": "server",
