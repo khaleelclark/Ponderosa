@@ -157,9 +157,10 @@ export function DecisionResponseDialog(props: Parameters<typeof DecisionAnswerDi
     queryFn: async () => {
       const result = (await api.listDecisions({ id: props.decision.id }, AbortSignal.timeout(10_000))).find(item => item.id === props.decision.id);
       if (!result) throw new Error("This Decision is no longer available.");
-      return result;
+      // The shared decisions query family stores collections, including exact reads.
+      return [result];
     }, enabled: props.open && props.decision.question === undefined, retry: false });
-  const decision = props.decision.question !== undefined ? props.decision : canonical.data;
+  const decision = props.decision.question !== undefined ? props.decision : canonical.data?.find(item => item.id === props.decision.id);
   if (decision && decision.status !== "pending") return <Dialog onClick={event => event.stopPropagation()} open={props.open} onClose={props.onClose} fullWidth maxWidth="sm" aria-label="Decision completed">
     <DialogTitle>Decision completed</DialogTitle><DialogContent><Alert severity="info">This Decision was answered or closed elsewhere. Your response will not replace it.</Alert></DialogContent>
     <DialogActions><Button onClick={props.onClose}>Close</Button></DialogActions></Dialog>;
