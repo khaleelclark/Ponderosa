@@ -3,7 +3,7 @@ import type { DecisionDto, WorkspaceNotificationDto } from "@ponderosa/core";
 export type DecisionPrompt = Pick<
   DecisionDto,
   "id" | "mode" | "options" | "allowOther" | "status" | "runtimeAction"
-> & {
+> & Partial<Pick<DecisionDto, "projectId" | "conversationId" | "agentId" | "approvalScope">> & {
   question?: string;
   context?: string;
 };
@@ -16,11 +16,14 @@ export interface DecisionResponse {
 }
 
 export function notificationDecision(
-  notification: Pick<WorkspaceNotificationDto, "title" | "body" | "decision">,
+  notification: Pick<WorkspaceNotificationDto, "title" | "body" | "decision" | "projectId" | "conversationId" | "agentId">,
 ): DecisionPrompt | undefined {
   if (!notification.decision) return undefined;
   return {
     ...notification.decision,
+    projectId: notification.projectId,
+    conversationId: notification.conversationId,
+    agentId: notification.agentId,
     question: notification.title,
     context: notification.body,
   };

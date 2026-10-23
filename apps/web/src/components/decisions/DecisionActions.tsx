@@ -21,10 +21,15 @@ export function DecisionActions({
     setTextDialogOpen(false);
     onResolved?.();
   });
-  if (decision.status !== "pending") return null;
+  // A canonical approval record alone cannot confirm that access/form/action
+  // completion succeeded. Keep its existing idempotent retry reachable.
+  const currentAttempt = response.variables?.decision.id === decision.id;
+  const unconfirmedApproval = currentAttempt && response.isError && (decision.mode === "approval" || decision.approvalScope || decision.runtimeAction);
+  if (response.isSuccess && response.data.id === decision.id && response.data.status !== "pending") return null;
+  if (decision.status !== "pending" && !(currentAttempt && response.isPending) && !unconfirmedApproval) return null;
 
   const respond = (value: DecisionResponse) => settleDecisionResponse(() =>
-    response.mutateAsync({ decisionId: decision.id, response: value })
+    response.mutateAsync({ decision, response: value })
   );
   const error = response.error instanceof Error
     ? response.error.message

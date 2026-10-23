@@ -1274,6 +1274,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24, built core; actual shared React row/badge render",
       "origin": "UI 010 concise scoped Agent status and separate tooltip regions"
+    },
+    {
+      "path": "tests/chats/decision-response.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built core; actual hook/API with controlled transport and real QueryClient/MutationObserver",
+      "origin": "UI 011 confirmed saves, lost-response reconciliation and approval completion safety"
     }
   ],
   "retainedReleasePayload": [
