@@ -17,3 +17,15 @@ for(const count of [0,1,2,3,4]) test(`UI019 structured question count ${count}`,
 for(const body of [{questions:[{id:'q',question:'One'},{id:'q',question:'Two'}]},{questions:[{id:'q',question:'Approval',mode:'approval'}]},{question:'Mixed',questions:[{id:'q',question:'One'}]},{questions:[{id:'q',question:'x'.repeat(10001)}]}])test('UI019 rejects ambiguous/oversized/scoped approval groups before creation',async()=>{const {response,created}=await ask(body);assert.equal(response.statusCode,400,response.body);assert.equal(created,undefined);});
 
 test('UI019 managed tool shares the Unicode prompt and question-count boundaries',async()=>{const {PONDEROSA_DECISION_TOOL,DECISION_QUESTION_MAX_CODE_POINTS,DECISION_MAX_QUESTIONS}=await import('@ponderosa/core');const schema=PONDEROSA_DECISION_TOOL.inputSchema;assert.equal(schema.properties.question.maxLength,10000);assert.equal(schema.properties.questions.items.properties.question.maxLength,DECISION_QUESTION_MAX_CODE_POINTS);assert.equal(schema.properties.questions.maxItems,DECISION_MAX_QUESTIONS);});
+
+test('UI019 raw over-limit whitespace input is rejected consistently with the advertised schema',async()=>{const {response,created}=await ask({question:' '.repeat(10000)+'x'});assert.equal(response.statusCode,400);assert.equal(created,undefined);});
+test('UI019 aggregate context fails explicitly before creating work that cannot fit its continuation',async()=>{const {response,created}=await ask({question:'Bounded question',context:'x'.repeat(240000)});assert.equal(response.statusCode,413,response.body);assert.equal(created,undefined);});
+test('UI019 three maximum Unicode prompts reach the existing packet without duplicating question one',async()=>{
+ const {decisionQuestionPayload,decisionPayloadError}=await import('../../apps/server/dist/decision-payload.js');
+ const {compileActivationPrompt}=await import('../../apps/server/dist/coordination-v3-scheduler.js');
+ const questions=[1,2,3].map(i=>({id:'q'+i,mode:'text',question:'😀'.repeat(9999)+i,options:[],allowOther:true}));const decision={question:questions[0].question,questions};
+ const response={answers:questions.map(q=>({questionId:q.id,status:'answered',text:'Answer '+q.id}))};assert.equal(decisionPayloadError(decision,response),undefined);
+ const payload={decision:{id:'decision',...decisionQuestionPayload(decision),response}};assert.equal(payload.decision.question,undefined);
+ const prompt=compileActivationPrompt({runId:'run',injectionId:'injection',activations:[{id:'a',kind:'human',priority:0,promptClass:'human',payload}]},{maxUtf8Bytes:256*1024}).prompt;
+ for(const question of questions)assert.ok(prompt.includes(question.question));assert.ok(Buffer.byteLength(prompt)<256*1024);
+});

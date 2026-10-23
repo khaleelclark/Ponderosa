@@ -1,3 +1,4 @@
+import { decisionQuestionPayload } from "./decision-payload.js";
 import {
   collaborationPresentation,
   TEAM_DIRECTORY_LIMITS,
@@ -684,9 +685,7 @@ export function createServerReadModels(context: ReadModelContext) {
         })) } } : {}),
         decision: {
           id: decision.id,
-          question: decision.question,
-          ...(decision.context ? { context: decision.context } : {}),
-          ...(decision.questions ? { questions: decision.questions } : {}),
+          ...decisionQuestionPayload(decision),
           response: decision.response,
           // Data for this exact continuation, not filesystem or routing authority.
           ...(decision.approvalScope?.kind === "artifact_publication" && decision.response.optionId === "approve"

@@ -219,6 +219,7 @@ for(const engine of ['codex','claude']) test(`UI019 ${engine}: one grouped answe
  for(let i=0;i<2;i++)await download(f,saved.response.attachments[i].downloadUrl,i?document:png);
  const retired=f.ok(await f.api('GET',draftRoute+'?ownerId='+x.decision.id));assert.equal(retired.decisionAnswers,undefined);assert.deepEqual(retired.attachmentIds,[]);
  assert.deepEqual(f.ok(await f.api('GET','/api/decisions?id='+x.decision.id))[0],saved);
+ assert.deepEqual(f.ok(await f.api('GET','/api/branches/engine/decisions?id='+x.decision.id)),[],'Exact reads retain product isolation');
  await f.reopen();assert.deepEqual(f.ok(await f.api('GET','/api/decisions?id='+x.decision.id))[0],saved);assert.equal(f.turns.length,delivered);
 },{diagnosticProvider:true}));
 
@@ -241,3 +242,9 @@ test('UI019 lost grouped response repairs one continuation and preserves canonic
  const turns=f.turns.length;await f.reopen();await until(()=>f.turns.length===turns+1,'one grouped repair continuation');await f.settled(x.agent.id);const delivered=f.turns.length;
  assert.deepEqual(f.ok(await f.api('POST',`/api/decisions/${x.decision.id}/respond`,{answers})),saved);assert.equal(f.turns.length,delivered);await download(f,saved.response.attachments[0].downloadUrl,png);
 },{diagnosticProvider:true}));
+
+test('UI019 oversized aggregate answers are rejected before resolution or provider wake-up',fixtureTestOptions,t=>withFixture(t,async f=>{
+ const questions=[1,2,3].map(i=>({id:'q'+i,question:'😀'.repeat(9999)+i})),x=await ask(f,'codex',{questions}),turns=f.turns.length;
+ const answers=questions.map(q=>({questionId:q.id,status:'answered',text:'😀'.repeat(10000)}));const result=await f.api('POST',`/api/decisions/${x.decision.id}/respond`,{answers});assert.equal(result.status,413,JSON.stringify(result.body));
+ assert.equal(f.ok(await f.api('GET','/api/decisions?id='+x.decision.id))[0].status,'pending');assert.equal(f.turns.length,turns);
+}));

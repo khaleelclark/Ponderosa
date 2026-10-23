@@ -11,6 +11,7 @@ import {
 import type { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import type { ActiveRun, AgentMessageCapability } from "../app-contracts.js";
+import { decisionPayloadError } from "../decision-payload.js";
 import { derivedRunActionKey } from "../security.js";
 
 interface AgentDecisionRoutesContext {
@@ -62,7 +63,7 @@ export function registerAgentDecisionRoutes(
       if (typeof item.question !== "string" || !item.question.trim()) throw new Error("Decision requires question");
       const question = canonicalizeProviderText(item.question, steeringInjectionIds).trim();
       if (!question) throw new Error("Decision requires question");
-      if (unicodeCodePointLength(question) > DECISION_QUESTION_MAX_CODE_POINTS) throw new Error(`Decision question exceeds ${DECISION_QUESTION_MAX_CODE_POINTS} Unicode code points`);
+      if (unicodeCodePointLength(item.question) > DECISION_QUESTION_MAX_CODE_POINTS || unicodeCodePointLength(question) > DECISION_QUESTION_MAX_CODE_POINTS) throw new Error(`Decision question exceeds ${DECISION_QUESTION_MAX_CODE_POINTS} Unicode code points`);
       if (item.context !== undefined && typeof item.context !== "string") throw new Error("Decision context must be text");
       const options = Array.isArray(item.options) ? [...item.options] : [];
       const mode = item.mode === undefined ? (options.length ? "choice" : "text") : item.mode;
@@ -96,6 +97,8 @@ export function registerAgentDecisionRoutes(
       } else normalized = normalizeQuestion(body, false);
     } catch (error) { return reply.code(400).send({ error: (error as Error).message }); }
     const { mode, question, context: decisionContext, options: normalizedOptions } = normalized;
+    const payloadError = decisionPayloadError({ ...normalized, questions });
+    if (payloadError) return reply.code(413).send({ error: payloadError });
     const idempotencyKey = typeof body.idempotencyKey === "string"
       ? body.idempotencyKey.trim()
       : derivedRunActionKey(capability.runId, "ask", {

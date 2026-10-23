@@ -17,6 +17,7 @@ import {
   type BrowserScope,
 } from "../browser-session-manager.js";
 import { BrowserProfileError } from "../browser-profile-authority.js";
+import { decisionPayloadError } from "../decision-payload.js";
 import { withDecisionAttachments } from "../decision-attachments.js";
 import { AssetError } from "../assets.js";
 import { RUNTIME_UUID } from "../asset-contracts.js";
@@ -841,6 +842,9 @@ app.post<{ Params: { id: string }; Body: ResolveDecisionRequest }>("/api/decisio
       }
     }
   }
+  const payloadError = !current.runtimeAction || text
+    ? decisionPayloadError(current, { ...(answers ? { answers } : {}), ...(text ? { text } : {}), ...(optionId ? { optionId } : {}) }) : undefined;
+  if (payloadError) return reply.code(413).send({ error: payloadError });
   const respondedAt = new Date().toISOString();
   if (current.approvalScope?.kind === "artifact_publication" && optionId === "approve") {
     if (!publicationOwnerIsCurrent(store, current) || deletingAgentIds.has(current.agentId) ||
