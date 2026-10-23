@@ -28,7 +28,9 @@ export function useDecisionResponse(onSuccess?: () => void) {
       try {
         // ponytail: bound confirmation to 15s plus one 10s canonical read;
         // retry uses the existing idempotent response route, never a new queue.
-        return await api.respondDecision(decision.id, response, AbortSignal.timeout(15_000));
+        const saved = await api.respondDecision(decision.id, response, AbortSignal.timeout(15_000));
+        if (saved?.id !== decision.id || saved.status === "pending") throw new Error("Decision save returned no confirmed outcome.");
+        return saved;
       } catch (error) {
         const approval = decision.mode === "approval" || decision.approvalScope || decision.runtimeAction;
         if (error instanceof ApiRequestError && (approval || (error.status < 500 && error.status !== 409))) throw error;

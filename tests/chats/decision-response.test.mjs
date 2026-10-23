@@ -73,6 +73,16 @@ test('lost POST response reads the exact scoped canonical decision including res
   assert.equal(calls[1].init.cache, 'no-store'); assert.ok(calls[1].init.signal);
 });
 
+for (const kind of ['empty', 'no-content', 'wrong-decision']) test(`an invalid ${kind} POST success must reconcile before confirming`, async t => {
+  let reads = 0;
+  const f = setup(t, async (path, init) => {
+    if (init?.method === 'POST') return kind === 'empty' ? new Response('') : kind === 'no-content' ? new Response(null, { status: 204 }) : Response.json({ ...answered, id: 'unrelated' });
+    reads++; return Response.json([answered]);
+  });
+  assert.equal((await f.respond()).id, pending.id);
+  assert.equal(reads, 1); assert.equal(f.completed(), 1);
+});
+
 test('failure before save remains retryable; repeated exact submission returns one canonical result', async t => {
   let posts = 0;
   const f = setup(t, async (path, init) => {
