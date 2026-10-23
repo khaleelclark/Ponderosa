@@ -64,10 +64,21 @@ in the restricted operations evidence store; never commit either artifact.
 
 ```bash
 set -euo pipefail
-stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-work="$(mktemp -d)"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+work="$(mktemp -d "${TMPDIR:-/tmp}/ponderosa-rehearsal.XXXXXX")"
 encrypted_tmp=""
-trap 'rm -rf -- "$work"; test -z "$encrypted_tmp" || rm -f -- "$encrypted_tmp"' EXIT
+cleanup() {
+  result=$?
+  if test "$result" -eq 0; then
+    rm -rf -- "$work"
+    test -z "$encrypted_tmp" || rm -f -- "$encrypted_tmp"
+  else
+    printf 'Backup verification failed; retain private diagnostic work=%s encrypted_tmp=%s\n' \
+      "$work" "$encrypted_tmp" >&2
+  fi
+  exit "$result"
+}
+trap cleanup EXIT
 install_root=/opt/ponderosa-engine/resources/Ponderosa
 node="$install_root/runtime/node"
 data_tool="$install_root/app/server/tools/data-directory.mjs"
@@ -90,6 +101,8 @@ age -d -i "$PONDEROSA_BACKUP_AGE_IDENTITY" \
   --data-dir "$work/restored" \
   --restore-external-projects \
   --external-project-root "$work/external-projects"
+sha256sum "$PONDEROSA_BACKUP_EVIDENCE_DIR/ponderosa-$stamp.tar.gz.age" \
+  > "$PONDEROSA_BACKUP_EVIDENCE_DIR/ponderosa-$stamp.sha256"
 elapsed="$(( $(date +%s) - started ))"
 test "$elapsed" -lt 1800
 printf 'revision=%s started=%s elapsed_seconds=%s\n' \
@@ -113,6 +126,39 @@ Use disposable external Project destinations for rehearsals; never overwrite a
 live root. Restore is journaled across the data directory and external roots.
 An interrupted or late-failing multi-root restore removes all roots it
 published before a subsequent attempt proceeds.
+
+### Retention of deployment and rehearsal evidence
+
+Use a private evidence directory (mode 0700). The successful command above
+removes only its own temporary decrypted/rehearsal tree. A failed run retains
+its private tree and incomplete archive for diagnosis; do not classify either
+as an expired restore point. Receipts and checksums are small and stay with the
+operations evidence. Historical archives without these receipts require a new
+verified restore before they count as recovery points.
+
+For routine encrypted restore points, retain the newest three successfully
+verified archives and every archive less than seven days old. Before expiring
+an older archive, verify its exact checksum, and verify that at least three
+newer archives have successful restore receipts and matching checksums. Keep
+any archive explicitly pinned for an incident, active test owner, migration or
+rollback window regardless of age. Never remove the last verified recovery
+point. These are operator-reviewed operations on named archives, not a daemon
+sweep over a data directory.
+
+Deployment raw snapshots have a separate purpose: retain them until the
+rollout is accepted and its documented rollback window closes (at least seven
+days), and a newer encrypted restore point has passed verification. Expanded
+restore rehearsals expire once their test owner has finished successfully;
+keep their receipt rather than three expanded copies indefinitely. Failed or
+active diagnostic/rehearsal trees are protected until their owner releases
+them. Record the exact paths, verification receipts and retirement decision
+before removing any owned intermediate. Do not apply this policy to live
+SQLite/WAL files, provider sessions, user working folders, or managed assets.
+
+Configure a separate-device/host destination for encrypted recovery copies and
+verify the transferred archive's checksum before counting that copy. A copy on
+the same filesystem protects rollback, not host loss. No existing backup or
+live data is pruned merely by deploying this policy.
 
 ## Deploy and rollback
 

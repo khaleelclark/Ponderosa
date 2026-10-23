@@ -6,7 +6,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setImmediate as immediate } from 'node:timers/promises';
 import Database from 'better-sqlite3';
-import { AgentStore, WorkspaceStore } from '@ponderosa/agents';
+import { AgentStore, WorkspaceStore, CoordinationV3Store } from '@ponderosa/agents';
 import { createOperationalNotifications } from '../../apps/server/dist/operational-notifications.js';
 import { createServerReadModels } from '../../apps/server/dist/server-read-models.js';
 import { AgentWorkProjection } from '../../apps/server/dist/routes/agent-work.js';
@@ -59,7 +59,7 @@ function notifications(t) {
   });
 }
 
-test('participant publications coalesce, preserve every event and yield between inspections', async t => {
+test('unchanged publications retain one durable snapshot while invalidations coalesce and yield', async t => {
   const f = notifications(t), canonical = [], published = [];
   for (let i = 0; i < 25; i++) f.add('p', `p-${i.toString().padStart(3, '0')}`);
   f.add('q', 'q-untouched');
@@ -72,7 +72,7 @@ test('participant publications coalesce, preserve every event and yield between 
     reconcileCommunicationNotifications() {}, isClosed: () => false });
   for (let i = 0; i < 100; i++) models.publishCoordinationV3Changed('p-worker');
   models.publishMessageDeliveryChanged('p-worker');
-  assert.equal(canonical.length, 101); assert.equal(published.length, 101);
+  assert.equal(canonical.length, 1, '100 unchanged coordination and one delivery publication need one durable snapshot'); assert.equal(published.length, 101, 'every workspace invalidation is retained');
   assert.equal(f.inspected.length, 0, 'request publication does not perform historical inspection');
   await f.ops.scheduleCoordinationAttentionNotifications('p');
   assert.equal(f.inspected.length, 25); assert.equal(sentinel, 1, 'another I/O turn runs before the next inspection');
@@ -254,3 +254,43 @@ for (const engine of ['codex', 'claude']) test(`${engine}: failed assignment not
     const request = (await f.detail(worker.id)).coordinationV3.requests.find(r => r.id === result.requestIds[0]);
     assert.equal(request.state, 'failed');
   }, { diagnosticProvider: true }));
+
+
+test('duplicate snapshots do not grow durable history; changes, failed writes, scopes and reopen remain exact', t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'ponderosa-coordination-storage-'));
+  let store = new AgentStore(root);
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const project = store.createProject({ label: 'Storage fixture', hostPath: root, defaultEngine: 'codex' });
+  const chat = store.createConversation(project.id, { title: 'Snapshot scope' });
+  const a = store.createAgent(project.id, { title: 'Sender', engine: 'codex', conversationId: chat.id });
+  const b = store.createAgent(project.id, { title: 'Receiver', engine: 'claude', conversationId: chat.id });
+  let coordinationV3 = new CoordinationV3Store(store.sqlite), published = [], workspace = [];
+  const models = () => createServerReadModels({ store, coordinationV3, publish: (id, event) => published.push({ id, event }),
+    appendWorkspace: event => workspace.push(event), scheduleCoordinationAttentionNotifications() {},
+    reconcileCommunicationNotifications() {}, isClosed: () => false });
+  let owner = models();
+  const snapshots = id => store.readEvents(id).filter(x => x.event.type === 'coordination_v3_changed');
+  for (let i = 0; i < 100; i++) owner.publishCoordinationV3Changed(a.id);
+  assert.equal(snapshots(a.id).length, 1); assert.equal(workspace.length, 100);
+  owner.publishCoordinationV3Changed(b.id); assert.equal(snapshots(b.id).length, 1);
+  const requestId = randomUUID(), text = 'Exact authored request 😀 is not disposable snapshot data';
+  coordinationV3.coordinate({ projectId: project.id, conversationId: chat.id, requesterAgentId: a.id,
+    actorScope: 'user:local-operator', idempotencyKey: randomUUID(), requests: [
+      { requestId, recipientAgentId: b.id, lifetime: { kind: 'indefinite' }, payload: { text } },
+    ] });
+  const append = store.appendEvent.bind(store);
+  store.appendEvent = () => { throw Error('Controlled write failure'); };
+  assert.throws(() => owner.publishCoordinationV3Changed(a.id), /Controlled write failure/);
+  store.appendEvent = append;
+  owner.publishCoordinationV3Changed(a.id); owner.publishCoordinationV3Changed(a.id);
+  owner.publishMessageDeliveryChanged(b.id);
+  assert.equal(snapshots(a.id).length, 2, 'failed append did not suppress the retry');
+  assert.equal(snapshots(b.id).length, 2, 'one Agent cannot suppress another Agent change');
+  for (const id of [a.id, b.id]) assert.deepEqual(snapshots(id).at(-1).event.coordination, coordinationV3.agentSnapshot(id));
+  for (const id of [a.id, b.id]) assert.deepEqual(published.filter(x => x.id === id).map(x => x.event.seq), snapshots(id).map(x => x.seq), 'live and replay use the same ordered durable sequence');
+  store.close(); store = new AgentStore(root); coordinationV3 = new CoordinationV3Store(store.sqlite); owner = models();
+  assert.equal(coordinationV3.getRequest(requestId).payload.text, text, 'SQLite request authority survives reopen');
+  for (let i = 0; i < 100; i++) owner.publishCoordinationV3Changed(a.id);
+  assert.equal(snapshots(a.id).length, 3, 'a restart permits one fresh mirror, not another burst');
+  assert.deepEqual(snapshots(a.id).at(-1).event.coordination, coordinationV3.agentSnapshot(a.id));
+});

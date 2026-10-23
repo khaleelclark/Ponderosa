@@ -17,6 +17,7 @@ import type {
   StoredLogEvent,
   WorkspaceStore,
 } from "@ponderosa/agents";
+import { createHash } from "node:crypto";
 import { communicationMentionBindings } from "@ponderosa/agents";
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
 import { sqliteCollectionPage } from "./collection-page.js";
@@ -104,6 +105,9 @@ export function createServerReadModels(context: ReadModelContext) {
     scheduleCoordinationAttentionNotifications,
     isClosed,
   } = context;
+  // ponytail: at most 1,024 Agent fingerprints, never snapshots/history. An
+  // eviction or restart permits one extra mirror; SQLite remains authority.
+  const coordinationFingerprints = new Map<string, string>();
 
   function deliveryReceiptsForCommunications(projectId: string, communicationEventIds: string[]) {
     const receipts = coordinationV3.deliveryReceiptsForCommunications(projectId, communicationEventIds);
@@ -624,11 +628,15 @@ export function createServerReadModels(context: ReadModelContext) {
   ): void {
     const agent = store.getAgent(agentId);
     if (isClosed() || !agent) return;
-    const stored = store.appendEvent(agentId, {
-      type: "coordination_v3_changed",
-      coordination: coordinationV3.agentSnapshot(agentId),
-    });
-    publish(agentId, stored);
+    const coordination = coordinationV3.agentSnapshot(agentId);
+    const fingerprint = createHash("sha256").update(JSON.stringify(coordination)).digest("hex");
+    if (coordinationFingerprints.get(agentId) !== fingerprint) {
+      const stored = store.appendEvent(agentId, { type: "coordination_v3_changed", coordination });
+      coordinationFingerprints.delete(agentId);
+      coordinationFingerprints.set(agentId, fingerprint);
+      if (coordinationFingerprints.size > 1024) coordinationFingerprints.delete(coordinationFingerprints.keys().next().value!);
+      publish(agentId, stored);
+    }
     if (options.publishWorkspaceEvent !== false) {
       appendWorkspace({
         type: "coordination_changed",
