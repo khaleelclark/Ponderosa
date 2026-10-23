@@ -1170,6 +1170,10 @@ export class CoordinationV3Store {
       promptInjectionState: "not_injected" | "injecting" | "injected";
       httpStatusCode?: number;
       retryAfterMs?: number;
+      quotaResetAt?: string;
+      quotaLimit?: import("@ponderosa/core").ProviderQuotaLimit;
+      engineId?: string;
+      model?: string;
       exitCode?: number | null;
       signal?: string | null;
       stderr?: string;

@@ -1290,6 +1290,22 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24 built server; isolated canonical stores/inert providers; injected host samples only",
       "origin": "UI 013 batch health/admission projection across Chat/Agent/All Messages/receipt refresh and single admission after recovery"
+    },
+    {
+      "path": "tests/providers/provider-limit-feedback.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 built server; isolated canonical stores and inert providers; no provider account",
+      "origin": "UI014 exact provider holds across pagination, recheck/restart, successful explicit recovery, unaffected work and indexed lookup"
+    },
+    {
+      "path": "tests/chats/provider-failure-banner.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, existing TypeScript/React; actual component callbacks with controlled canonical props and API",
+      "origin": "UI014 scoped Chat banner, Details, usage/recheck, exact retry controls and truthful recovery announcements"
     }
   ],
   "retainedReleasePayload": [

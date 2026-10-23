@@ -308,8 +308,53 @@ export function createServerReadModels(context: ReadModelContext) {
       scope: `conversation-members:${conversationId}`,
       hydrate: id => store.getAgent(id),
     });
+    // Keep unresolved notices independent of timeline pagination. Seed only
+    // exact failed deliveries on this Chat's indexed projection, then follow
+    // their existing bounded required-reply lineage; never inspect Agent history.
+    const failedMessages = store.sqlite.prepare(`
+      WITH RECURSIVE chain(root, id, event_id) AS (
+        SELECT root.id, root.id, message.communication_event_id
+        FROM chat_search_messages message
+        JOIN runtime_communications communication ON communication.project_id = message.project_id
+          AND communication.id IN (
+            SELECT id FROM runtime_communications WHERE id = message.communication_event_id
+            UNION SELECT id FROM runtime_communications WHERE json_valid(payload_json)
+              AND json_extract(payload_json, '$.communication.eventId') = message.communication_event_id
+          )
+        JOIN activation_sources source ON source.source_kind = 'communication' AND source.source_id = communication.id
+        JOIN agent_activations root ON root.id = source.activation_id
+        WHERE message.project_id = ? AND message.chat_kind = 'conversation' AND message.chat_id = ?
+          AND root.state IN ('failed','outcome_unknown','retry_pending')
+          AND EXISTS (SELECT 1 FROM scheduler_run_activations attached JOIN scheduler_runs run ON run.id = attached.run_id
+            WHERE attached.activation_id = root.id AND json_extract(run.provider_failure_json, '$.category') IN ('quota_exhausted','rate_limit','throttled','capacity'))
+        UNION
+        SELECT chain.root, retry.successor_activation_id, chain.event_id FROM chain
+        JOIN activation_delivery_retry_lineage retry ON retry.predecessor_activation_id = chain.id
+        UNION
+        SELECT chain.root, reply.recovery_activation_id, chain.event_id FROM chain
+        JOIN required_reply_obligations reply ON reply.source_activation_id = chain.id
+        JOIN agent_activations root ON root.id = chain.root
+        WHERE reply.recovery_activation_id IS NOT NULL AND reply.project_id = root.project_id
+          AND reply.agent_id = root.agent_id AND reply.scope_key = root.scope_key
+      ), latest AS (
+        SELECT chain.root, chain.event_id, run.status, run.provider_failure_json,
+          ROW_NUMBER() OVER (PARTITION BY chain.root ORDER BY run.created_at DESC, run.rowid DESC) AS rank
+        FROM chain JOIN scheduler_run_activations attached ON attached.activation_id = chain.id
+        JOIN scheduler_runs run ON run.id = attached.run_id
+      ) SELECT DISTINCT event_id FROM latest WHERE rank = 1 AND status <> 'completed'
+        AND (provider_failure_json IS NULL OR json_extract(provider_failure_json, '$.category') IN ('quota_exhausted','rate_limit','throttled','capacity'))
+      ORDER BY event_id LIMIT 101
+    `).all(conversation.projectId, conversationId) as Array<{event_id:string}>;
+    // ponytail: at most 100 full notices per response; expose overflow honestly.
+    // If this ceiling is reached, add cursor paging to this same read projection.
+    const failureMessages = withMessagePresentation(conversation.projectId, failedMessages.slice(0,100).flatMap(row => {
+      const message = store.getProjectedConversationMessageById(conversationId, "main", row.event_id);
+      return message ? [message] : [];
+    }), conversationId).filter(message => message.deliveryReceipts?.some(receipt => receipt.providerFailure));
     return {
       conversation,
+      providerFailureMessages: failureMessages,
+      ...(failedMessages.length > 100 ? { providerFailuresHasMore: true as const } : {}),
       agents: memberPage.items,
       members: {
         total: memberPage.total,

@@ -79,6 +79,7 @@ import {
 import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
 import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
+import { ProviderFailureBanner } from "./ProviderFailureBanner";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 import {
   resolveMessageMentionText,
@@ -1184,11 +1185,13 @@ export function ConversationView({
               pointerEvents: "none",
             }}
           >
+            <ProviderFailureBanner messages={detailQuery.data.providerFailureMessages ?? messages} hasMore={detailQuery.data.providerFailuresHasMore} onOpenAgent={id => onOpenAgent(id)} agents={agents} projectId={conversation.projectId}>
             <MasterRespondingIndicator
               messages={messages}
               agents={agents}
               healthByAgentId={healthByAgentId}
             />
+            </ProviderFailureBanner>
           </Box>
         ) : null}
       </Box>
