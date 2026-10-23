@@ -44,7 +44,7 @@ export function DecisionResponseMessage({ event, operatorProfile, onOpenAgent }:
         {!automatic ? <Button className="chat-text-navigation" size="small" aria-haspopup="dialog" aria-controls={questionOpen ? questionId : undefined}
           onClick={() => setQuestionOpen(true)} sx={{ mt: .25 }}>View question</Button> : null}
       </Box> }} />
-    <Dialog id={questionId} open={questionOpen} onClose={() => setQuestionOpen(false)} aria-labelledby={titleId}
+    <Dialog onClick={event => event.stopPropagation()} id={questionId} open={questionOpen} onClose={() => setQuestionOpen(false)} aria-labelledby={titleId}
       fullWidth maxWidth="sm" data-decision-id={decision.id}>
       <DialogTitle id={titleId}>Original question</DialogTitle>
       <DialogContent data-decision-id={decision.id} sx={{ overflowWrap: "anywhere" }}>

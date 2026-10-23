@@ -79,7 +79,7 @@ function DecisionAnswerDialog({
   };
 
   return (
-    <Dialog open={open} onClose={pending ? undefined : onClose} fullWidth maxWidth="sm" aria-labelledby={titleId}>
+    <Dialog onClick={event => event.stopPropagation()} open={open} onClose={pending ? undefined : onClose} fullWidth maxWidth="sm" aria-labelledby={titleId}>
       <DialogTitle id={titleId}>{decision.mode === "text" ? "Answer Decision" : "Something Else"}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 0.5 }}>
@@ -160,11 +160,11 @@ export function DecisionResponseDialog(props: Parameters<typeof DecisionAnswerDi
       return result;
     }, enabled: props.open && props.decision.question === undefined, retry: false });
   const decision = props.decision.question !== undefined ? props.decision : canonical.data;
-  if (decision && decision.status !== "pending") return <Dialog open={props.open} onClose={props.onClose} fullWidth maxWidth="sm" aria-label="Decision completed">
+  if (decision && decision.status !== "pending") return <Dialog onClick={event => event.stopPropagation()} open={props.open} onClose={props.onClose} fullWidth maxWidth="sm" aria-label="Decision completed">
     <DialogTitle>Decision completed</DialogTitle><DialogContent><Alert severity="info">This Decision was answered or closed elsewhere. Your response will not replace it.</Alert></DialogContent>
     <DialogActions><Button onClick={props.onClose}>Close</Button></DialogActions></Dialog>;
   if (decision) return <DecisionAnswerDialog {...props} decision={decision} />;
-  return <Dialog open={props.open} onClose={props.onClose} fullWidth maxWidth="sm" aria-label="Load Decision">
+  return <Dialog onClick={event => event.stopPropagation()} open={props.open} onClose={props.onClose} fullWidth maxWidth="sm" aria-label="Load Decision">
     <DialogTitle>Decision</DialogTitle><DialogContent>{canonical.error
       ? <Alert severity="error" action={<Button onClick={() => void canonical.refetch()}>Retry</Button>}>{canonical.error.message}</Alert>
       : <Typography role="status">Loading full question…</Typography>}</DialogContent><DialogActions><Button onClick={props.onClose}>Cancel</Button></DialogActions>

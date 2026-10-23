@@ -98,3 +98,19 @@ test('UI019 complete answer validation rejects missing/duplicate/foreign IDs, mi
  for(const value of [null,[],good.slice(0,2),[good[0],good[0],good[2]],[{...good[0],questionId:'foreign'},good[1],good[2]],[good[0],{...good[1],text:'Mixed'},good[2]],[good[0],good[1],{...good[2],text:'Not a skip'}],[{...good[0],text:''},good[1],good[2]],[{...good[0],attachmentIds:['file']},{questionId:'two',status:'answered',attachmentIds:['file']},good[2]],[{...good[0],attachmentIds:['file','file']},good[1],good[2]]])assert.ok(core.decisionAnswersError(questions,value));
  assert.equal(core.decisionAnswersError(questions,[{questionId:'one',status:'answered',text:''}],true),undefined,'Partial draft is not a submitted answer');
 });
+
+test('UI019 every Decision dialog owns clicks instead of navigating its notification parent',()=>{
+ const React=require('react'),{renderToStaticMarkup}=require('react-dom/server'),roots=[];
+ const react={useId:()=> 'test-dialog',useState:initial=>[typeof initial==='function'?initial():initial,()=>{}],useRef:initial=>({current:initial}),useEffect(){}};
+ const mui=Object.fromEntries(['Alert','Box','Button','DialogActions','DialogContent','DialogTitle','Stack','TextField','Typography'].map(name=>[name,({children})=>React.createElement('div',null,children)]));
+ mui.Dialog=props=>{roots.push(props);return React.createElement('section',null,props.children);};
+ function load(name,imports){const exports={};vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/decisions/'+name,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,require:specifier=>imports[specifier]??require(specifier)});return exports;}
+ const stubDraft={text:'Retained answer',setText(){},attachments:{files:[]},uploads:{uploadStates:new Map()},ready:true,limits:core.DEFAULT_ASSET_LIMITS,attachmentIds:[],uploadsComplete:true,questionByFile:new Map()};
+ const common={react,'@mui/material':mui,'@ponderosa/core':core};
+ const {DecisionResponseDialog}=load('DecisionResponseDialog.tsx',{...common,'@tanstack/react-query':{useQuery:()=>({})},'../../api':{api:{}},'../../queryKeys':{queryKeys:{decisions:{all:[]}}},'../../decisions':{validateDecisionResponse:()=>({text:'answer'})},'./DecisionQuestionContent':{DecisionQuestionContent:()=>null},'../chat/ComposerAttachment':{ComposerAttachment:()=>null},'../chat/composerUtils':utils,'../chat/folderAttachments':{},'./useDecisionAnswerDraft':{useDecisionAnswerDraft:()=>stubDraft},'../../conversationRouting':{fileSelectionFingerprint:()=>[]}});
+ const base={id:'d',mode:'text',question:'Full question',options:[],status:'pending',allowOther:true};
+ const check=element=>{roots.length=0;renderToStaticMarkup(element);assert.equal(roots.length,1);let stopped=false,navigated=0;roots[0].onClick?.({stopPropagation(){stopped=true;}});if(!stopped)navigated++;assert.equal(navigated,0,'A child dialog click must not reach the notification navigation action');};
+ for(const decision of [base,{...base,question:undefined},{...base,status:'resolved'}])check(React.createElement(DecisionResponseDialog,{decision,open:true,onClose(){},onRespond(){}}));
+ const {DecisionResponseMessage}=load('DecisionResponseMessage.tsx',{...common,'../chat/ChatMessageFrame':{ChatMessageFrame:({message})=>message.body},'../chat/ChatMessages':{AgentMention:()=>null},'../chat/ChatAttachments':{ChatAttachments:()=>null},'./DecisionQuestionContent':{DecisionQuestionContent:()=>null},'./decisionResponse':{decisionResponseChoice:()=> 'Answer',decisionResponseSummary:()=> 'Answered',decisionResponseVerb:()=> 'Answered'}});
+ check(React.createElement(DecisionResponseMessage,{event:{id:'e',createdAt:'now',decision:{...base,response:{text:'Answer'}},recipientAgent:null}}));
+});
