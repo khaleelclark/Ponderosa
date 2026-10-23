@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
+import '../shared/web-typescript-loader.mjs';
 import * as core from '@ponderosa/core';
+const { decisionChoice } = await import('../../apps/web/src/components/ConversationView.helpers.ts');
+import { decisionResponseChoice, decisionResponseVerb } from '../../apps/web/src/components/decisions/decisionResponse.ts';
 import * as utils from '../../apps/web/src/components/chat/composerUtils.ts';
 const require = createRequire(new URL('../../apps/web/package.json', import.meta.url));
 const ts = require('typescript');
@@ -64,4 +67,10 @@ test('a different-window conflict retains local text and IDs without guessing a 
 test('failed load and mismatched attachment ownership block editing rather than silently losing evidence',async()=>{
   const f=fixture({getConversationDraft:async()=>{throw Error('offline');}});await f.start();assert.equal(f.value.ready,false);assert.equal(f.value.loadError,'offline');f.unmount();
   const bad=fixture();bad.setCanonical({attachmentIds:['foreign'],attachments:[{id:'foreign',ownerId:'another-decision'}]});await bad.start();assert.equal(bad.value.ready,false);assert.match(bad.value.loadError,/could not be verified/);assert.equal(bad.calls.put.length,0);bad.unmount();
+});
+
+test('Chat and All Messages retain attachment-only answers through their shared timeline choice',()=>{
+  const decision={mode:'text',options:[],response:{attachments:[{id:'evidence'}]}};
+  assert.equal(decisionChoice(decision),'Attached evidence');assert.equal(decisionResponseChoice(decision),'Attached evidence');assert.equal(decisionResponseVerb(decision),'Answered');
+  assert.equal(decisionChoice({...decision,response:{text:'Full answer',attachments:[{id:'evidence'}]}}),'Full answer');
 });

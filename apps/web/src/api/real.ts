@@ -509,8 +509,8 @@ export const realApi = {
       body: file,
     }), shouldRetry);
   },
-  async downloadDraftAttachment(attachment: DraftAttachmentDto): Promise<File> {
-    const response = await fetch(productApiPath(attachment.downloadUrl), { cache: "no-store" });
+  async downloadDraftAttachment(attachment: DraftAttachmentDto, signal?: AbortSignal): Promise<File> {
+    const response = await fetch(productApiPath(attachment.downloadUrl), { cache: "no-store", signal });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return new File([await response.blob()], attachment.name, { type: attachment.mediaType });
   },

@@ -25,13 +25,14 @@ export function useDecisionAnswerDraft(decision: DecisionPrompt, open: boolean) 
   useEffect(() => {
     if (!open || !scope || loaded.current) return;
     let cancelled = false;
+    const signal = AbortSignal.timeout(30_000);
     setLoadError(undefined);
-    void api.getConversationDraft(scope, decision.id, AbortSignal.timeout(10_000)).then(async draft => {
+    void api.getConversationDraft(scope, decision.id, signal).then(async draft => {
       const stored = draft.attachments ?? [];
       if (draft.conversationId !== scope || draft.ownerId !== decision.id ||
           stored.length !== draft.attachmentIds.length || stored.some((file, index) => file.id !== draft.attachmentIds[index] || file.ownerId !== decision.id || file.conversationId !== scope))
         throw new Error("This Decision draft could not be verified.");
-      const restored = await Promise.all(stored.map(async attachment => ({ attachment, file: await api.downloadDraftAttachment(attachment) })));
+      const restored = await Promise.all(stored.map(async attachment => ({ attachment, file: await api.downloadDraftAttachment(attachment, signal) })));
       if (cancelled) return;
       revision.current = draft.revision;
       saved.current = JSON.stringify([draft.text, draft.attachmentIds]);

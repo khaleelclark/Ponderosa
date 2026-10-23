@@ -90,7 +90,7 @@ import { AgentRuntimeControls } from "./AgentDetail.parts";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { resolveRuntimeSelection } from "../conversationEngine";
 import { pendingRuntimeSelection, runtimeMutationOptions, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
-import { AUTO_ALLOWED_DECISION_OPTION_ID } from "./ConversationView.helpers";
+import { decisionChoice } from "./ConversationView.helpers";
 import { CompactWorkspaceHeader } from "./WorkspaceFrame";
 import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
@@ -189,18 +189,6 @@ type AllMessagesTimelineEntry =
   | { kind: "message"; id: string; at: string; item: AllChatItemDto }
   | { kind: "decision"; id: string; at: string; item: AllChatDecisionEventDto }
   | { kind: "decision-response"; id: string; at: string; item: AllChatDecisionEventDto; choice: string };
-
-function allChatDecisionChoice(item: AllChatDecisionEventDto): string | undefined {
-  const { decision } = item;
-  if (
-    decision.response?.optionId === AUTO_ALLOWED_DECISION_OPTION_ID
-  ) {
-    return decision.response.text;
-  }
-  return decision.response?.optionId
-    ? decision.options.find((option) => option.id === decision.response?.optionId)?.label
-    : decision.response?.text;
-}
 
 function sourceLabel(item: AllChatItemDto): string {
   return item.source.title;
@@ -515,7 +503,7 @@ export function AllChatView({
       })),
       ...decisionEvents.flatMap((item): AllMessagesTimelineEntry[] => {
         if (item.kind === "decision") return [{ kind: "decision", id: item.id, at: item.createdAt, item }];
-        const choice = allChatDecisionChoice(item);
+        const choice = decisionChoice(item.decision);
         return choice ? [{ kind: "decision-response", id: item.id, at: item.createdAt, item, choice }] : [];
       }),
     ];

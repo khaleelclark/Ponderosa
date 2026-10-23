@@ -9,14 +9,14 @@ import { validateDecisionResponse } from '../../apps/web/src/decisions.ts';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 const document = Buffer.from('Full decision document content 😀\nFinal sentence retained.');
-async function ask(f, engine = 'codex') {
+async function ask(f, engine = 'codex', prompt = {}) {
   const chat = await f.createChat('Decision attachment ownership');
   const agent = f.ok(await f.api('POST', `/api/projects/${chat.projectId}/agents`, {
     title: 'Question owner', engine, conversationId: chat.id, idempotencyKey: randomUUID(),
   }));
   let decision;
   f.plans.set(agent.id, [{ output: false, run: async session => {
-    decision = f.ok(await f.tool(session, 'ponderosa_decision', { mode: 'text', question: 'Attach the controlled evidence', blocking: true, idempotencyKey: randomUUID() }));
+    decision = f.ok(await f.tool(session, 'ponderosa_decision', { mode: 'text', question: 'Attach the controlled evidence', blocking: true, idempotencyKey: randomUUID(), ...prompt }));
   } }]);
   await f.send(agent.id, 'Ask the controlled attachment question.'); await f.settled(agent.id);
   return { chat, agent, decision, scope: 'agent:'+agent.id };
@@ -49,6 +49,8 @@ for (const engine of ['codex', 'claude']) for (const text of ['', 'Attached evid
     await until(async () => (await f.detail(x.agent.id)).messages.some(m => m.text === marker), 'exact attachment continuation reply');
     await f.settled(x.agent.id);
     await download(f, file.downloadUrl, body);
+    const all = f.ok(await f.api('GET', '/api/all-chat?limit=100'));
+    assert.deepEqual(all.decisions.find(event => event.decision.id === x.decision.id && event.kind === "decision_response")?.decision.response.attachments, result.response.attachments);
     const bindings = store.sqlite.prepare('SELECT * FROM runtime_attachment_associations WHERE communication_id=?').all(`decision:${x.decision.id}:response`);
     assert.equal(bindings.length, 1); assert.equal(bindings[0].asset_id, file.id);
     assert.equal(store.sqlite.prepare('SELECT count(*) n FROM agent_activations WHERE dedupe_key=?').get(`message:decision:${x.decision.id}:response`).n, 1);
@@ -66,6 +68,10 @@ for (const engine of ['codex', 'claude']) for (const text of ['', 'Attached evid
     assert.equal((await f.api('GET', `/api/agents/${x.agent.id}`)).status, 404);
     await download(f, file.downloadUrl, body);
     await f.reopen(); await download(f, file.downloadUrl, body);
+    const retained = f.ok(await f.api('GET', '/api/all-chat?limit=100'));
+    assert.deepEqual(retained.decisions.find(event => event.decision.id === x.decision.id && event.kind === 'decision_response')?.decision.response.attachments, result.response.attachments);
+    assert.equal(f.ok(await f.api('GET', '/api/branches/engine/all-chat?limit=100')).decisions.some(event=>event.decision.id===x.decision.id),false);
+    assert.equal((await f.api('GET',file.downloadUrl.replace('/api/','/api/branches/engine/'))).status,404);
   }, { diagnosticProvider: true, storeFactory: dataDir => (store = new AgentStore(dataDir)) });
 });
 
@@ -157,4 +163,31 @@ test('resolved Decision retirement releases conflict files without clearing the 
   assert.equal(f.ok(await f.api('GET',url+'/draft?ownerId=ordinary-owner')).text,'Ordinary unsent message');
   const restore=await f.api('POST',url+'/draft-conflicts/'+conflicts.conflicts[0].id+'/restore',{ownerId:x.decision.id,clientId:'late',expectedRevision:retired.revision});assert.ok([404,409].includes(restore.status),JSON.stringify(restore));
   await f.reopen();assert.equal(f.ok(await f.api('GET',url+'/draft?ownerId=ordinary-owner')).text,'Ordinary unsent message');
+}));
+
+for(const engine of ['codex','claude']) test(`${engine}: a fresh provider session receives both Decision image and document contents`,fixtureTestOptions,t=>{
+  let store;
+  return withFixture(t,async f=>{
+    const x=await ask(f,engine),previous=f.turns.at(-1).sessionId;
+    assert.equal(store.clearResumeSession(x.agent.id,'provider_root_exit'),true);await f.reopen();
+    const first=await upload(f,x),second=await upload(f,x,document,'complete.txt','text/plain');
+    let inspected=false;
+    f.plans.set(x.agent.id,[{run:async(session,input)=>{
+      assert.notEqual(session.engineAgentId,previous);
+      const bodies=await Promise.all(runtimeAttachmentPaths(input).map(file=>readFile(file)));
+      assert.ok(bodies.some(body=>body.equals(png)));assert.ok(bodies.some(body=>body.equals(document)));inspected=true;
+    }}]);
+    f.ok(await f.api('POST',`/api/decisions/${x.decision.id}/respond`,{attachmentIds:[first.id,second.id]}));
+    await until(()=>inspected,'fresh session inspects both files');await f.settled(x.agent.id);
+  },{diagnosticProvider:true,storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('files never approve a real approval option or provider form',fixtureTestOptions,t=>withFixture(t,async f=>{
+  const x=await ask(f,'codex',{mode:'approval',options:[{id:'approve',label:'Approve'},{id:'deny',label:'Deny'}],allowOther:true}),file=await upload(f,x);
+  for(const response of [{optionId:'approve',attachmentIds:[file.id]},{text:'Evidence',content:{approved:true},attachmentIds:[file.id]}]) {
+    assert.equal((await f.api('POST',`/api/decisions/${x.decision.id}/respond`,response)).status,400);
+    assert.equal(f.ok(await f.api('GET',`/api/decisions?agentId=${x.agent.id}`))[0].status,'pending');
+  }
+  const answer=f.ok(await f.api('POST',`/api/decisions/${x.decision.id}/respond`,{text:'This is evidence, not permission',attachmentIds:[file.id]}));
+  assert.equal(answer.response.optionId,undefined);assert.equal(answer.response.attachments.length,1);await f.settled(x.agent.id);
 }));
