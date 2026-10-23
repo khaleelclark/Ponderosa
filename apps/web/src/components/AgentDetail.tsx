@@ -95,6 +95,7 @@ export function AgentDetail({
   initialView,
   onViewChange,
   onOpenTechnicalDetails,
+  decisionReviewAction,
   engines,
   modelCatalogLoading,
   engineCapabilities,
@@ -1002,6 +1003,7 @@ export function AgentDetail({
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
         notifications={notificationsQuery.data?.items ?? []}
+        decisionReviewAction={decisionReviewAction}
         operatorProfile={preferencesQuery.data?.profile}
         agentNameForId={agentNameForId}
         agentIdForHandle={agentIdForHandle}
