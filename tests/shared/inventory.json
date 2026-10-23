@@ -1306,6 +1306,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24, existing TypeScript/React; actual component callbacks with controlled canonical props and API",
       "origin": "UI014 scoped Chat banner, Details, usage/recheck, exact retry controls and truthful recovery announcements"
+    },
+    {
+      "path": "tests/chats/mobile-enter.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24 and installed web TypeScript; actual shared native/React Enter closures under controlled platform/viewport inputs; no provider account",
+      "origin": "UI016 Android Enter-to-Send baseline and mobile newline/desktop/IME regression"
     }
   ],
   "retainedReleasePayload": [
