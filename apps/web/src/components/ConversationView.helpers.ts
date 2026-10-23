@@ -105,7 +105,7 @@ function decisionChoice(decision: ConversationDecisionEventDto["decision"]): str
   }
   return decision.response?.optionId
     ? decision.options.find((option) => option.id === decision.response?.optionId)?.label
-    : decision.response?.text;
+    : decision.response?.text ?? (decision.response?.attachments?.length ? "Attached evidence" : undefined);
 }
 
 function mergeDecisionEvents(

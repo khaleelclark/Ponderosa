@@ -281,6 +281,7 @@ export class CoordinationV3Store {
       sqlite,
       this.support,
       this.runtimeScopeAuthority,
+      this.runtimeAttachmentAuthority,
       this.requestRecoveryAuthority,
       input => this.createActivation(input),
       (requestIds, ownerAgentId, dependencyKind, dependencyId, now) =>
@@ -657,6 +658,10 @@ export class CoordinationV3Store {
 
   enqueueMessageActivation(input: EnqueueMessageActivationInput): string {
     return this.coordinateAuthority.enqueueMessageActivation(input);
+  }
+
+  protectMessageAttachments(input: Pick<EnqueueMessageActivationInput, "projectId" | "agentId" | "messageId" | "payload">): unknown {
+    return this.coordinateAuthority.protectMessageAttachments(input);
   }
 
   waitForTaskDecision(input: { runAuthorization: RunAuthorizationV3; decisionId: string; scopeKey: string }, now = new Date().toISOString()): void {

@@ -1,4 +1,4 @@
-import type { DecisionDto, WorkspaceNotificationDto } from "@ponderosa/core";
+import type { DecisionDto, ResolveDecisionRequest, WorkspaceNotificationDto } from "@ponderosa/core";
 
 export type DecisionPrompt = Pick<
   DecisionDto,
@@ -8,12 +8,7 @@ export type DecisionPrompt = Pick<
   context?: string;
 };
 
-export interface DecisionResponse {
-  skip?: true;
-  optionId?: string;
-  text?: string;
-  content?: unknown;
-}
+export type DecisionResponse = ResolveDecisionRequest;
 
 export function notificationDecision(
   notification: Pick<WorkspaceNotificationDto, "title" | "body" | "decision" | "projectId" | "conversationId" | "agentId">,
@@ -42,7 +37,10 @@ export function validateDecisionResponse(
   response: DecisionResponse,
 ): DecisionResponse | undefined {
   const text = response.text?.trim();
-  if (text) return { text };
+  const attachmentIds = response.attachmentIds ?? [];
+  if (!Array.isArray(attachmentIds) || attachmentIds.some(id => typeof id !== "string" || !id) || new Set(attachmentIds).size !== attachmentIds.length ||
+      (attachmentIds.length && (decision.runtimeAction || response.optionId))) return undefined;
+  if (text || attachmentIds.length) return { ...(text ? { text } : {}), ...(attachmentIds.length ? { attachmentIds } : {}) };
   if (response.optionId && decision.options.some((option) => option.id === response.optionId)) {
     return { optionId: response.optionId };
   }

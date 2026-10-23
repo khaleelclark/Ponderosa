@@ -6,6 +6,7 @@ import type { BrowserControlOwner, BrowserSessionStatus } from "../events.js";
 import type { AgentMentionBindingDto, ConversationDto } from "./conversations.js";
 import type { HistoryWindowDto } from "./common.js";
 import type { ProjectDto, ProjectSort } from "./projects.js";
+import type { AssetDto } from "./artifacts.js";
 
 /** Durable switches for the two operator-visible communication scopes. */
 export interface NotificationPreferencesDto {
@@ -658,7 +659,7 @@ export interface DecisionDto {
     expiresAt: string;
   };
   status: "pending" | "resolved" | "cancelled";
-  response?: { optionId?: string; text?: string; skipped?: true; respondedAt: string };
+  response?: { optionId?: string; text?: string; attachments?: AssetDto[]; skipped?: true; respondedAt: string };
   createdAt: string;
   updatedAt: string;
 }
@@ -668,6 +669,8 @@ export interface ResolveDecisionRequest {
   skip?: true;
   optionId?: string;
   text?: string;
+  /** Staged files owned by this exact Decision, never client-supplied paths. */
+  attachmentIds?: string[];
   /** Ephemeral provider form content. The server forwards this to the waiting
    * runtime request and deliberately excludes it from the Decision record. */
   content?: unknown;

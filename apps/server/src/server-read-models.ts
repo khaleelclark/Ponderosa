@@ -679,6 +679,9 @@ export function createServerReadModels(context: ReadModelContext) {
       messageId: `decision:${decision.id}:response`,
       kind: "human",
       payload: {
+        ...(decision.response.attachments?.length ? { dispatch: { attachments: decision.response.attachments.map(file => ({
+          id: file.id, name: file.name, mediaType: file.mediaType, size: file.size,
+        })) } } : {}),
         decision: {
           id: decision.id,
           question: decision.question,

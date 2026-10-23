@@ -468,14 +468,14 @@ export const realApi = {
       `/api/conversations/${encodeURIComponent(conversationId)}/next-run-deliveries${toQuery({ limit })}`,
     );
   },
-  getConversationDraft(conversationId: string, ownerId: string): Promise<ConversationDraftDto> {
-    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft?ownerId=${encodeURIComponent(ownerId)}`);
+  getConversationDraft(conversationId: string, ownerId: string, signal?: AbortSignal): Promise<ConversationDraftDto> {
+    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft?ownerId=${encodeURIComponent(ownerId)}`, { signal });
   },
   getConversationDraftConflicts(conversationId: string, ownerId: string): Promise<ConversationDraftConflictListDto> {
     return requestJson<ConversationDraftConflictListDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-conflicts?ownerId=${encodeURIComponent(ownerId)}`);
   },
-  putConversationDraft(conversationId: string, request: PutConversationDraftRequest): Promise<ConversationDraftDto> {
-    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`, { method: "PUT", body: JSON.stringify(request satisfies PutConversationDraftRequest) });
+  putConversationDraft(conversationId: string, request: PutConversationDraftRequest, signal?: AbortSignal): Promise<ConversationDraftDto> {
+    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`, { method: "PUT", body: JSON.stringify(request satisfies PutConversationDraftRequest), signal });
   },
   restoreConversationDraftConflict(
     conversationId: string,

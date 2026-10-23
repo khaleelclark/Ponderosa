@@ -90,6 +90,7 @@ export function DecisionActions({
         </Alert>
       ) : null}
       <DecisionResponseDialog
+        key={decision.id}
         decision={decision}
         open={textDialogOpen}
         pending={response.isPending}

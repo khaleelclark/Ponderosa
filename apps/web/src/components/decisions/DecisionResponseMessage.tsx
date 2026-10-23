@@ -3,6 +3,7 @@ import type { ConversationDecisionEventDto, OperatorProfileDto } from "@ponderos
 import { useId, useState } from "react";
 import { ChatMessageFrame } from "../chat/ChatMessageFrame";
 import { AgentMention } from "../chat/ChatMessages";
+import { ChatAttachments } from "../chat/ChatAttachments";
 import { decisionResponseChoice, decisionResponseSummary, decisionResponseVerb } from "./decisionResponse";
 
 /** Presentation of one canonical answer, shared by every human-facing timeline. */
@@ -30,6 +31,7 @@ export function DecisionResponseMessage({ event, operatorProfile, onOpenAgent }:
             ? <AgentMention agentId={decision.agentId} label={recipient.handle} onOpenAgent={onOpenAgent} />
             : label}: {choice}</>}
         </Typography>
+        {decision.response?.attachments?.length ? <ChatAttachments attachments={decision.response.attachments} /> : null}
         {!automatic ? <Button className="chat-text-navigation" size="small" aria-haspopup="dialog" aria-controls={questionOpen ? questionId : undefined}
           onClick={() => setQuestionOpen(true)} sx={{ mt: .25 }}>View question</Button> : null}
       </Box> }} />

@@ -1,8 +1,6 @@
 import {memorySessionResetSeq} from "../voice-memory-exposure.js";
 import {canonicalVoiceReplyInput} from "../voice-reply-input.js";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "@ponderosa/native-host/fs";
-import { copyFile, mkdir, writeFile } from "@ponderosa/native-host/fs/promises";
 import path from "node:path";
 import {
   ASSET_MEDIA_TYPES,
@@ -20,7 +18,7 @@ import {
   PONDEROSA_HISTORY_TOOL,
   unicodeCodePointLength,
 } from "@ponderosa/core";
-import { attachmentsDir,CapabilityPolicyStore } from "@ponderosa/agents";
+import { CapabilityPolicyStore } from "@ponderosa/agents";
 import { boundedFrozenSeedHistory, communicationSeedProvenance } from "@ponderosa/core/seed-history";
 import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
 import { renderSeedPrompt } from "@ponderosa/engines";
@@ -55,6 +53,7 @@ import {
 } from "../runtime-selection.js";
 import {
   runtimeAttachmentProviderPath,
+  copyRuntimeAttachment,
   runtimeAttachmentDirectoryForRun,
   runtimeAttachmentDirectoryForSession,
 } from "../runtime-attachments.js";
@@ -83,19 +82,6 @@ interface PrepareAgentRunInput {
   pendingTurn: PendingTurn;
   requestedSourceChannel: "main" | undefined;
 }
-
-const RUNTIME_ATTACHMENT_EXTENSIONS: Readonly<Record<string, string>> = {
-  "image/jpeg": ".jpg",
-  "image/png": ".png",
-  "image/gif": ".gif",
-  "image/webp": ".webp",
-  "image/svg+xml": ".svg",
-  "text/plain": ".txt",
-  "text/markdown": ".md",
-  "application/json": ".json",
-  "application/pdf": ".pdf",
-  "application/zip": ".zip",
-};
 
 export const NEXT_RUN_DELIVERY_BATCH_LIMIT = 20;
 export const NEXT_RUN_DELIVERY_INLINE_CHARACTER_LIMIT = 20_000;
@@ -164,24 +150,6 @@ export function compileNextRunDeliveryBatch(
     ...(nextPendingDelivery ? { nextPendingDeliveryId: nextPendingDelivery.id } : {}),
   };
 }
-
-const extensionForMediaType = (mediaType: string): string =>
-  RUNTIME_ATTACHMENT_EXTENSIONS[mediaType] ?? "";
-
-const usesRuntimeImagePreview = (item: Pick<AssetDto, "mediaType" | "width" | "height">): boolean =>
-  ["image/heic", "image/gif", "image/avif"].includes(item.mediaType)
-  || (item.width ?? 0) * (item.height ?? 0) > 64_000_000;
-
-export const runtimeAttachmentName = (item: AssetDto): string => {
-  const base = path.basename(item.name)
-    .replaceAll(/[\\/\u0000-\u001f\u007f]/gu, "_")
-    .trim()
-    .slice(0, 180) || "attachment";
-  const name = usesRuntimeImagePreview(item)
-    ? `${base.replace(/\.(heic|heif|gif|avif|jpg|jpeg)$/iu, "")}.png`
-    : path.extname(base) ? base : `${base}${extensionForMediaType(item.mediaType)}`;
-  return `${item.id}-${name}`;
-};
 
 export async function prepareAgentRun(
   runContext: AgentMessageRunContext,
@@ -460,26 +428,10 @@ export async function prepareAgentRun(
       return Promise.resolve({ localPath: "", available: false });
     }
     runtimeAttachmentBytes += item.size;
-    const operation = (async () => {
-      const source = path.join(attachmentsDir(opts.dataDir, agent.projectId, item.agentId),
-        `${item.id}${usesRuntimeImagePreview(item) ? ".preview.png" : ".bin"}`);
-      if (!existsSync(source)) return { localPath: source, available: false };
-      runtimeAttachmentDirectory ??= runtimeAttachmentsFollowSession
-        ? runtimeAttachmentDirectoryForSession(opts.dataDir, agent.id)
-        : runtimeAttachmentDirectoryForRun(opts.dataDir, runId);
-      await mkdir(runtimeAttachmentDirectory, { recursive: true, mode: 0o700 });
-      const localPath = path.join(runtimeAttachmentDirectory, runtimeAttachmentName(item));
-      if (item.conversationId) {
-        const verified = await assets.content(agent.projectId, item.agentId, item.id, usesRuntimeImagePreview(item));
-        if (!verified || verified.asset.conversationId !== item.conversationId || verified.asset.sha256 !== item.sha256) {
-          return { localPath: "", available: false };
-        }
-        await writeFile(localPath, verified.body, { mode: 0o600 });
-      } else {
-        await copyFile(source, localPath);
-      }
-      return { localPath: runtimeAttachmentProviderPath(localPath), available: true };
-    })();
+    runtimeAttachmentDirectory ??= runtimeAttachmentsFollowSession
+      ? runtimeAttachmentDirectoryForSession(opts.dataDir, agent.id)
+      : runtimeAttachmentDirectoryForRun(opts.dataDir, runId);
+    const operation = copyRuntimeAttachment(opts.dataDir, runtimeAttachmentDirectory, agent.projectId, item, assets);
     runtimeAttachmentCopies.set(item.id, operation);
     return operation;
   };

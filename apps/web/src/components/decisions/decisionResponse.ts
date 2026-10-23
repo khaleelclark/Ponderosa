@@ -12,13 +12,14 @@ import type { DecisionDto } from "@ponderosa/core";
 /** Response wording follows the persisted response kind, never its prose. */
 export function decisionResponseVerb(decision: Pick<DecisionDto, "mode" | "response">): string {
   if (decision.response?.skipped) return "Skipped question from";
-  return decision.response?.text !== undefined ? "Answered" : decision.mode === "approval" ? "Approval response to" : "Chose for";
+  return decision.response?.text !== undefined || decision.response?.attachments?.length ? "Answered" : decision.mode === "approval" ? "Approval response to" : "Chose for";
 }
 
 export function decisionResponseChoice(decision: Pick<DecisionDto, "options" | "response">): string {
   if (decision.response?.skipped) return "No answer supplied";
   if (decision.response?.optionId === "auto_allowed") return decision.response.text ?? "Response unavailable";
-  return decision.options.find(option => option.id === decision.response?.optionId)?.label ?? decision.response?.text ?? "Response unavailable";
+  return decision.options.find(option => option.id === decision.response?.optionId)?.label ?? decision.response?.text ??
+    (decision.response?.attachments?.length ? "Attached evidence" : "Response unavailable");
 }
 
 export function decisionResponseSummary(decision: Pick<DecisionDto, "mode" | "response">, choice: string, recipient: string): string {

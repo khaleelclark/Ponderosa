@@ -1314,6 +1314,21 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24 and installed web TypeScript; actual shared native/React Enter closures under controlled platform/viewport inputs; no provider account",
       "origin": "UI016 Android Enter-to-Send baseline and mobile newline/desktop/IME regression"
+    },
+    {
+      "path": "tests/chats/decision-attachments.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; controlled providers and fresh private stores; no account or listener",
+      "origin": "UI017 Decision image/file answers: scope, canonical references, byte protection, provider input, restart and deletion"
+    },
+    {
+      "path": "tests/chats/decision-answer-draft.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Actual Decision draft and upload hooks with controlled transport/effects; no provider account"
     }
   ],
   "retainedReleasePayload": [
