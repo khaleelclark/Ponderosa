@@ -1,3 +1,4 @@
+import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ReportProblemOutlinedIcon from "@mui/icons-material/ReportProblemOutlined";
@@ -26,6 +27,7 @@ export function AttentionSurface({
   agentId?: string;
   onOpen?(item: WorkspaceNotificationDto): void;
 }): JSX.Element | null {
+  const readOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
   const notify = useMutationNotification();
   const mobileReview = useMediaQuery(useTheme().breakpoints.down("sm"));
@@ -120,7 +122,7 @@ export function AttentionSurface({
               </> : null}
               <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ "& .MuiButton-root": { minHeight: 44 } }}>
                 {onOpen && (item.projectId || item.action?.kind === "open_settings") ? <Button size="small" variant="outlined" onClick={() => { setOpen(false); onOpen(item); }}>{item.action?.kind === "open_settings" ? "Open details" : "Open activity"}</Button> : null}
-                {coordination?.retryAvailable ? <Button size="small" disabled={pending} onClick={() => { retry.reset(); setRetryItem(item); }}>Retry assignment…</Button> : null}
+                {!readOnly && coordination?.retryAvailable ? <Button size="small" disabled={pending} onClick={() => { retry.reset(); setRetryItem(item); }}>Retry assignment…</Button> : null}
                 {item.kind !== "decision" ? <Button size="small" color="inherit" disabled={pending} onClick={() => resolve.mutate(item.id)}>
                   Dismiss
                 </Button> : null}

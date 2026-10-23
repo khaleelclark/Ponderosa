@@ -25,6 +25,7 @@ import {
   compileActivationPrompt,
   CoordinationV3Scheduler,
   PermanentOutboxError,
+  type WorkflowOperations,
 } from "./coordination-v3-scheduler.js";
 import type { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
 import { appendReadableArtifactReferences } from "./communication-artifacts.js";
@@ -249,6 +250,7 @@ interface CoordinationSchedulerContext {
   communicationArtifactAccess: ArtifactAuthority["communicationArtifactAccess"];
   projectCommunicationArtifact: ArtifactAuthority["projectCommunicationArtifact"];
   providerProcessAuthority: ProviderProcessAuthority;
+  workflowOperations?: WorkflowOperations;
 }
 
 export function createCoordinationScheduler(
@@ -351,8 +353,13 @@ return new CoordinationV3Scheduler(
     const attachmentIds = dispatchAttachments
       .map((value) => value && typeof value === "object" && "id" in value ? value.id : undefined)
       .filter((value): value is string => typeof value === "string");
-    const originalDispatchText = typeof dispatch?.text === "string" ? dispatch.text : prompt;
-    const dispatchText = typeof steeringRecovery?.instruction === "string"
+    // A coalesced bundle can start with a recovery/coordination source before
+    // the authored message selected above. Preserve the complete compiled
+    // authority rather than assuming the authored message was Activation 1.
+    const originalDispatchText = lease.activations.length > 1
+      ? prompt
+      : typeof dispatch?.text === "string" ? dispatch.text : prompt;
+    const dispatchText = lease.activations.length === 1 && originalDispatchText !== prompt && typeof steeringRecovery?.instruction === "string"
       ? `${steeringRecovery.instruction}\n\nOriginal user message:\n${originalDispatchText}`
       : originalDispatchText;
     const leaseConversationId = lease.scopeKey.startsWith("conversation:")
@@ -407,6 +414,7 @@ return new CoordinationV3Scheduler(
   },
   {
     workerId: coordinationV3WorkerId,
+    workflowOperations: context.workflowOperations,
     maxConcurrentRuns: opts.communicationV3?.maxConcurrentRuns ?? workspace.getPreferences().maxConcurrentAgentRuns,
     pollMs: opts.communicationV3?.pollMs,
     leaseMs: coordinationV3LeaseMs,

@@ -1,3 +1,4 @@
+import {runtimeCapabilityAllows} from "../runtime-capability-policy.js";
 import { createHash, randomUUID } from "node:crypto";
 import { PONDEROSA_MANAGE_TOOL, canonicalizeProviderText, type CommitAgentDeletionResponse, type ModelOption } from "@ponderosa/core";
 import { stableJson, type AgentManagementAuthorization, type AgentStore, type CoordinationV3Store, type WorkspaceStore } from "@ponderosa/agents";
@@ -143,13 +144,15 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
     if (!hasOnlyFields(body, ACTION_FIELDS[action])) return reply.code(400).send({ error: `${action} request contains an unknown field` });
 
     if (action === "describe") {
+      let creationAllowed=false;
+      try{creationAllowed=runtimeCapabilityAllows(store,capability,'ponderosa_create_managed_agent');}catch{/* An unavailable policy grants no creation authority. */}
       const descendants = store.listAgentSubtree(owner.id).slice(1);
       return {
         owner: { agentId: owner.id, title: owner.title }, conversationId: capability.conversationId,
         descendants: descendants.map((agent) => ({ agentId: agent.id, title: agent.title,
           managerAgentId: agent.managerAgentId, engine: agent.activeEngine, state: agent.state })),
         permissions: {
-          autonomous: ["create_agent", "rename_agent", "stop_agent",
+          autonomous: [...(creationAllowed?["create_agent"]:[]), "rename_agent", "stop_agent",
             ...(owner.managementPermissions.allowAutomaticDescendantDeletion ? ["delete_agent"] : []),
             ...(owner.managementPermissions.allowAutomaticDescendantReorganization ? ["set_manager"] : [])],
           requiresApprovalDecision: [

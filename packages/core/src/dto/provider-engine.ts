@@ -47,6 +47,9 @@ export interface RuntimeEnvironmentFactsDto {
 }
 
 export interface ProviderInputSourceManifestV3 {
+  /** Reviewed voice session boundary; memory integration stays fail-closed until bound. */
+  memorySessionResetSeq?: number;
+  memoryScopes?: [];
   schemaVersion: 3;
   environmentFacts?: RuntimeEnvironmentFactsDto;
   /** History messages represented in the exact text submitted for this Run. */
@@ -99,7 +102,7 @@ export interface ProviderInputDto {
   updatedAt: string;
 }
 
-export type TokenUsageScope = "overall" | "project" | "agent" | "conversation";
+export type TokenUsageScope = "overall" | "project" | "agent" | "conversation" | "branch";
 
 export type TokenUsageMetric = "inputTokens" | "cachedInputTokens" | "cacheWriteInputTokens" | "outputTokens" | "reasoningOutputTokens" | "totalTokens";
 

@@ -1,3 +1,4 @@
+import {productApiPath,productWorkspacePath} from "../../api/productScope.js";
 import CheckIcon from "@mui/icons-material/Check";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
@@ -146,7 +147,7 @@ function projectFileHref(projectId: string | undefined, href: string | undefined
   if (fileScope.agentId) query.set("agentId", fileScope.agentId);
   else if (fileScope.conversationId) query.set("conversationId", fileScope.conversationId);
   else return undefined;
-  return `/api/projects/${encodeURIComponent(projectId)}/workspace-files/${mode}?${query}`;
+  return productApiPath(`/api/projects/${encodeURIComponent(projectId)}/workspace-files/${mode}?${query}`);
 }
 
 function projectFileViewerHref(projectId: string | undefined, href: string | undefined, fileScope?: WorkspaceFileOwnerDto): string | undefined {
@@ -155,7 +156,7 @@ function projectFileViewerHref(projectId: string | undefined, href: string | und
   if (fileScope.agentId) query.set("agentId", fileScope.agentId);
   else if (fileScope.conversationId) query.set("conversationId", fileScope.conversationId);
   else return undefined;
-  return `/projects/${encodeURIComponent(projectId)}/files/view?${query}`;
+  return productWorkspacePath(`/projects/${encodeURIComponent(projectId)}/files/view?${query}`);
 }
 
 /** Working-file ownership survives the Run-specific live-app preview grant. */
@@ -202,7 +203,7 @@ function ChatLink({ href, children, previewScope, projectId, fileScope }: { href
     setOpening(true); setError(undefined);
     try {
       if (!previewScope) throw new Error("This localhost app is not associated with an active run.");
-      const response = await fetch("/api/link-previews", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url: link.url.href, ...previewScope }) });
+      const response = await fetch(productApiPath("/api/link-previews"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url: link.url.href, ...previewScope }) });
       if (!response.ok) throw new Error("Ponderosa could not open this localhost app.");
       const preview = await response.json() as { openUrl: string };
       window.open(preview.openUrl, "_blank", "noopener,noreferrer");

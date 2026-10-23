@@ -13,6 +13,7 @@ import { browserResidueCleanupBlockers, browserResidueCleanupStatus } from "./br
 interface DeploymentControlContext {
   dataDir: string;
   startDrained?: boolean;
+  workflowStatus?():{authorities:number;pendingCleanupOperations:number;retainedTeardownFailures:number;blockers:ReadinessDto['deploymentDrain']['blockers']}|undefined;
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   activeRuns: Map<string, ActiveRun>;
@@ -67,6 +68,7 @@ export function createDeploymentControl(
     app.server.closeIdleConnections();
   };
   const snapshot = (): ReadinessDto["deploymentDrain"] => {
+    const workflow=context.workflowStatus?.()??{authorities:0,pendingCleanupOperations:0,retainedTeardownFailures:0,blockers:[]};
     const schedulerRuns = coordinationV3.activeRunCount();
     const localRuns = activeRuns.size;
     const authorities = [...runtimeAuthorities.values()];
@@ -88,11 +90,11 @@ export function createDeploymentControl(
     const agentCleanup = store.listPendingAgentDeletionReceipts();
     const browserResidue = browserResidueCleanupStatus(dataDir);
     const pendingCleanupOperations = runtimeCleanupOperations + browserCleanupOperations + browserResidue.pending +
-      projectCleanup.length + committedProjectCleanup.length + agentCleanup.length;
+      projectCleanup.length + committedProjectCleanup.length + agentCleanup.length + workflow.pendingCleanupOperations;
     const retainedTeardownFailures = runtimeFailures + browserFailures + browserResidue.failed +
       projectCleanup.filter((entry) => Boolean(entry.lastError)).length +
       committedProjectCleanup.filter((entry) => Boolean(entry.lastError)).length +
-      agentCleanup.filter((entry) => Boolean(entry.lastError)).length;
+      agentCleanup.filter((entry) => Boolean(entry.lastError)).length + workflow.retainedTeardownFailures;
     const activeRunsCount = Math.max(schedulerRuns, localRuns);
     const blockers: ReadinessDto["deploymentDrain"]["blockers"] = [];
     if (schedulerRuns > 0) blockers.push({
@@ -121,6 +123,7 @@ export function createDeploymentControl(
       reason: `${providerUsage.pendingCount()} provider usage request(s) pending`,
     });
     blockers.push(
+      ...workflow.blockers,
       ...browserSessions.authorityBlockers("run_browser"),
       ...projectBrowserSessions.authorityBlockers("project_browser", deploymentDraining),
       ...browserResidueCleanupBlockers(dataDir).map((reason) => ({ kind: "browser_residue" as const, reason })),
@@ -130,11 +133,12 @@ export function createDeploymentControl(
     );
     return {
       state: deploymentDraining ? "draining" as const : "accepting" as const,
-      readyForRestart: deploymentDraining && activeRunsCount === 0 && providerAuthorities === 0 &&
+      readyForRestart: deploymentDraining && activeRunsCount === 0 && workflow.authorities === 0 && providerAuthorities === 0 &&
         browserAuthorities === 0 && pendingCleanupOperations === 0 && retainedTeardownFailures === 0,
       activeRuns: activeRunsCount,
       schedulerRuns,
       localRuns,
+      workflowAuthorities:workflow.authorities,
       providerAuthorities,
       browserAuthorities,
       pendingCleanupOperations,

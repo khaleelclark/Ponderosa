@@ -12,10 +12,14 @@ import {
   speechSurfaceIsAccessible,
 } from "./speechSurfaceAccessibility";
 
+import { claimPageCapture } from "./captureCoordinator";
+import { stopSpeech } from "./speechCoordinator";
+
 type RequestedEnd = "pause" | "stop";
 const DICTATION_SETTLE_TIMEOUT_MS = 3_000;
 
 export interface DictationController {
+  abandon(): void;
   error?: string;
   status: DictationStatus;
   unavailableReason?: string;
@@ -29,6 +33,8 @@ export function useDictation(
   onFinalTranscript: (transcript: string) => void,
   onSettlingChange: (settling: boolean) => void,
   surfaceRef: RefObject<HTMLElement | null>,
+  continuous = true,
+  endOnSpeechEnd: boolean | (() => boolean) = false,
 ): DictationController {
   const unavailableReason = dictationUnavailableReason();
   const [status, setStatus] = useState<DictationStatus>("ready");
@@ -37,6 +43,7 @@ export function useDictation(
   const generationRef = useRef(0);
   const settlingRef = useRef(false);
   const settleTimerRef = useRef<number>();
+  const captureCleanupRef = useRef<() => void>();
   const surfaceCleanupRef = useRef<() => void>();
   const requestedEndRef = useRef<RequestedEnd>();
   const errorRef = useRef(false);
@@ -83,11 +90,14 @@ export function useDictation(
       }
       try {
         recognition.onend = null;
+        recognition.onspeechend = null;
       } catch {
         // Continue fencing even if a browser implementation rejects cleanup.
       }
       if (recognitionRef.current === recognition) {
         recognitionRef.current = undefined;
+        captureCleanupRef.current?.();
+        captureCleanupRef.current = undefined;
         stopSurfaceMonitoring();
       }
     },
@@ -167,6 +177,7 @@ export function useDictation(
       setStatus("error");
       return;
     }
+    stopSpeech();
     clearSettleTimer();
     const existingRecognition = recognitionRef.current;
     if (existingRecognition) releaseRecognition(existingRecognition);
@@ -196,12 +207,9 @@ export function useDictation(
       }
       const activeRecognition = recognition;
       recognitionRef.current = activeRecognition;
-      activeRecognition.continuous = true;
-      // We insert final text only. Android Chromium's continuous recognizer
-      // promotes partial callbacks to final results; requesting unused interim
-      // results can therefore append every growing hypothesis as new speech.
-      // Do not deduplicate phrases: intentional repetition must survive.
-      activeRecognition.interimResults = false;
+      captureCleanupRef.current = claimPageCapture(abandonForSurfaceLoss);
+      activeRecognition.continuous = continuous;
+      activeRecognition.interimResults = Boolean(endOnSpeechEnd);
       activeRecognition.lang = navigator.language || "en-US";
       activeRecognition.maxAlternatives = 1;
       // Newer browsers can infer punctuation from speech without spoken commands.
@@ -213,7 +221,8 @@ export function useDictation(
       let nextFinalResultIndex = 0;
       if (generationRef.current !== generation) return;
       activeRecognition.onstart = () => {
-        if (generationRef.current === generation && mountedRef.current) {
+        if (generationRef.current === generation && mountedRef.current && !requestedEndRef.current) {
+          clearSettleTimer();
           setStatus("listening");
         }
       };
@@ -233,6 +242,17 @@ export function useDictation(
           transcriptHandlerRef.current(finalTranscripts.join(" "));
         }
       };
+      // Calls finish on a browser speech boundary, then await final results/onend.
+      // Ordinary dictation retains its existing continuous/manual behavior.
+      activeRecognition.onspeechend = (typeof endOnSpeechEnd === "function" ? endOnSpeechEnd() : endOnSpeechEnd) ? () => {
+        if (generationRef.current !== generation || requestedEndRef.current) return;
+        requestedEndRef.current = "stop";
+        setStatus("stopping");
+        scheduleSettleTimeout(activeRecognition, generation);
+        try { activeRecognition.stop(); } catch {
+          abandonGeneration(activeRecognition, generation, "Voice dictation could not finish this turn.");
+        }
+      } : null;
       activeRecognition.onerror = event => {
         if (generationRef.current !== generation) return;
         if (event.error === "aborted" && requestedEndRef.current) return;
@@ -264,6 +284,10 @@ export function useDictation(
         return;
       }
       surfaceCleanupRef.current = stopMonitoring;
+      settleTimerRef.current = window.setTimeout(() => {
+        settleTimerRef.current = undefined;
+        abandonGeneration(activeRecognition, generation, "Voice dictation did not start in time.");
+      }, DICTATION_SETTLE_TIMEOUT_MS);
       activeRecognition.start();
     } catch (startError) {
       const detail =
@@ -281,11 +305,30 @@ export function useDictation(
     abandonGeneration,
     abandonForSurfaceLoss,
     clearSettleTimer,
+    continuous,
+    endOnSpeechEnd,
+    scheduleSettleTimeout,
     releaseRecognition,
     surfaceRef,
     unavailableReason,
     updateSettling,
   ]);
+
+  const abandon = useCallback(() => {
+    const recognition = recognitionRef.current;
+    generationRef.current += 1;
+    clearSettleTimer();
+    stopSurfaceMonitoring();
+    if (recognition) releaseRecognition(recognition);
+    requestedEndRef.current = undefined;
+    let failed = false;
+    try { recognition?.abort(); } catch {
+      failed = true;
+      if (mountedRef.current) setError("Browser microphone cleanup could not be confirmed. Check browser microphone controls.");
+    }
+    updateSettling(false);
+    if (mountedRef.current) setStatus(failed ? "error" : "stopped");
+  }, [clearSettleTimer, stopSurfaceMonitoring, releaseRecognition, updateSettling]);
 
   const pause = useCallback(() => {
     const recognition = recognitionRef.current;
@@ -389,6 +432,7 @@ export function useDictation(
   ]);
 
   return {
+    abandon,
     error,
     status,
     unavailableReason,

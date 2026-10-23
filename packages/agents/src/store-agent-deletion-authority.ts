@@ -49,13 +49,14 @@ export class AgentDeletionAuthority {
 
   getAgentDeletionReceiptByPreviewHash(previewHash: string): AgentDeletionReceipt | undefined {
     const row = this.client.prepare(`SELECT * FROM agent_deletion_receipts WHERE preview_hash = ?`).get(previewHash) as {
-      id: string; project_id: string; preview_hash: string; root_agent_ids_json: string;
+      id: string; project_id: string; product_scope:AgentDeletionReceipt['productScope']; preview_hash: string; root_agent_ids_json: string;
       deleted_agent_ids_json: string; storage_cleanup_completed: number; server_cleanup_completed: number;
       last_error: string | null; created_at: string; updated_at: string; completed_at: string | null;
     } | undefined;
     return row ? {
       id: row.id,
       projectId: row.project_id,
+      productScope:row.product_scope,
       previewHash: row.preview_hash,
       rootAgentIds: JSON.parse(row.root_agent_ids_json) as string[],
       deletedAgentIds: JSON.parse(row.deleted_agent_ids_json) as string[],
@@ -230,9 +231,14 @@ export class AgentDeletionAuthority {
         }
         committedPreview = current;
         const receiptId = `agent-deletion-${current.previewHash}`;
+        const scopes=new Set([...stagedDirectories.values()].map(owner=>{
+          const chat=owner.conversationId?this.client.prepare('SELECT branch_id FROM conversations WHERE id=? AND project_id=?').get(owner.conversationId,owner.projectId) as {branch_id:string|null}|undefined:undefined;
+          return !chat?'unknown' as const:chat.branch_id?'branches' as const:'dev' as const;
+        }));
         tx.insert(agentDeletionReceipts).values({
           id: receiptId,
           projectId: current.projectId,
+          productScope:scopes.size>1?'mixed':[...scopes][0]??'unknown',
           previewHash: current.previewHash,
           rootAgentIdsJson: JSON.stringify(current.rootAgentIds),
           deletedAgentIdsJson: JSON.stringify(current.affectedAgents.map((agent) => agent.id)),

@@ -92,6 +92,8 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   chatSort: "last_used",
   agentOrder: [],
   agentSort: "last_used",
+  branchOrder:[],
+  branchSort:'last_used',
   starredResourceIds: [],
   starredProjectIds: [],
   sidebarCollapsed: false,
@@ -418,7 +420,9 @@ export class WorkspaceStore {
         chatSort: preferences.chatSort ?? "last_used",
         agentOrder: preferences.agentOrder ?? [],
         agentSort: preferences.agentSort ?? "last_used",
-        starredResourceIds: (preferences.starredResourceIds ?? []).filter(key => /^(?:project|conversation|agent):/u.test(key)),
+        branchOrder:preferences.branchOrder??[],
+        branchSort:preferences.branchSort??'last_used',
+        starredResourceIds: (preferences.starredResourceIds ?? []).filter(key => /^(?:project|conversation|agent|branch):/u.test(key)),
         starredProjectIds: preferences.starredProjectIds ?? [],
         providerAvailability: preferences.providerAvailability ?? {},
         engineDefaults: preferences.engineDefaults ?? {},
@@ -681,7 +685,7 @@ export class WorkspaceStore {
 
   private projectResourceRecency(record: CanonicalWorkspaceEvent): void {
     const event = record.event;
-    if (event.type === "resource_used" && ["project", "conversation", "agent"].includes(event.kind)) {
+    if (event.type === "resource_used" && ["project", "conversation", "agent", "branch"].includes(event.kind)) {
       this.touchResourceRecency(event.kind, event.resourceId, record.ts);
       return;
     }
@@ -934,7 +938,7 @@ export class WorkspaceStore {
 
   getPreferences(): WorkspacePreferencesDto { return this.preferences; }
 
-  listResourceRecency(limit?: number): WorkspaceResourceRecencyListDto {
+  listResourceRecency(limit?: number, include: (resource: WorkspaceResourceRecencyDto) => boolean = () => true): WorkspaceResourceRecencyListDto {
     const starred = new Set([
       ...(this.preferences.starredResourceIds ?? []),
       ...this.preferences.starredProjectIds.map(id => `project:${id}`),
@@ -943,7 +947,7 @@ export class WorkspaceStore {
     if (limit !== undefined) {
       for (const resourceKey of starred) {
         const resource = this.resourceRecency.get(resourceKey);
-        if (resource) selected.set(resourceKey, resource);
+        if (resource && include(resource)) selected.set(resourceKey, resource);
       }
     }
 
@@ -952,6 +956,10 @@ export class WorkspaceStore {
     let resourceKey = this.newestResourceRecencyKey;
     while (resourceKey) {
       const resource = this.resourceRecency.get(resourceKey)!;
+      if (!include(resource)) {
+        resourceKey = this.resourceRecencyLinks.get(resourceKey)?.older;
+        continue;
+      }
       if (limit === undefined) {
         selected.set(resourceKey, resource);
       } else if (!starred.has(resourceKey)) {
@@ -1004,6 +1012,8 @@ export class WorkspaceStore {
       chatSort: patch.chatSort ?? this.preferences.chatSort,
       agentOrder: patch.agentOrder ?? this.preferences.agentOrder,
       agentSort: patch.agentSort ?? this.preferences.agentSort,
+      branchOrder:patch.branchOrder??this.preferences.branchOrder,
+      branchSort:patch.branchSort??this.preferences.branchSort,
       starredResourceIds: patch.starredResourceIds ?? this.preferences.starredResourceIds,
       starredProjectIds: patch.starredProjectIds ?? this.preferences.starredProjectIds,
       providerAvailability: patch.providerAvailability ?? this.preferences.providerAvailability,
@@ -1566,6 +1576,7 @@ export class WorkspaceStore {
   listNotificationPage(input: {
     limit: number;
     before?: WorkspaceNotificationPageCursor;
+    include?:(notification:WorkspaceNotificationDto)=>boolean;
   }): WorkspaceNotificationPage {
     const limit = Math.max(1, Math.min(100, Math.floor(input.limit)));
     let start = 0;
@@ -1578,6 +1589,18 @@ export class WorkspaceStore {
         else high = middle;
       }
       start = low;
+    }
+    if(input.include){
+      const items:WorkspaceNotificationDto[]=[];
+      let openActionCount=0,unacknowledgedActionCount=0,unreadUpdateCount=0,hasMore=false;
+      for(let index=0;index<this.activeNotifications.length;index++){
+        const item=this.activeNotifications[index]!;if(!input.include(item))continue;
+        if(notificationLiveKind(item)==='attention'){openActionCount++;if(!item.acknowledgedAt)unacknowledgedActionCount++;}else unreadUpdateCount++;
+        if(index<start)continue;
+        if(items.length<limit)items.push(item);else hasMore=true;
+      }
+      const last=items.at(-1);
+      return {items,openActionCount,unacknowledgedActionCount,unreadUpdateCount,...(hasMore&&last?{nextCursor:{createdAt:last.createdAt,id:last.id}}:{})};
     }
     const items = this.activeNotifications.slice(start, start + limit);
     const last = items.at(-1);
@@ -1623,6 +1646,7 @@ export class WorkspaceStore {
     projectIds: readonly string[];
     conversationIds: readonly string[];
     chatFolders?: ReadonlyArray<{ id: string; conversationIds: readonly string[] }>;
+    include?:(notification:WorkspaceNotificationDto)=>boolean;
   }): WorkspaceNotificationProjectionDto {
     const requestedProjectIds = new Set(input.projectIds);
     const requestedConversationIds = new Set(input.conversationIds);
@@ -1660,7 +1684,7 @@ export class WorkspaceStore {
     }
 
     for (const item of this.notifications.values()) {
-      if (!this.notificationAllowed(item)) continue;
+      if (!this.notificationAllowed(item)||(input.include&&!input.include(item))) continue;
       const kind = unreadProjectionKind(item);
       if (!kind) continue;
       const navigationConversationIds = new Set([
@@ -1727,11 +1751,12 @@ export class WorkspaceStore {
 
   /** Resolve unread informational notifications by canonical Communication
    * identity, including notifications older than the bounded live-feed page. */
-  readNotificationsForCommunicationEvents(communicationEventIds: readonly string[]): number {
+  readNotificationsForCommunicationEvents(communicationEventIds: readonly string[],include?:(notification:WorkspaceNotificationDto)=>boolean): number {
     const notificationIds = new Set<string>();
     for (const communicationEventId of new Set(communicationEventIds)) {
       for (const notificationId of this.unreadNotificationIdsByCommunication.get(communicationEventId) ?? []) {
-        notificationIds.add(notificationId);
+        const notification=this.notifications.get(notificationId);
+        if(notification&&(!include||include(notification)))notificationIds.add(notificationId);
       }
     }
     if (!notificationIds.size) return 0;
@@ -1813,9 +1838,9 @@ export class WorkspaceStore {
     return this.notifications.get(notificationId);
   }
 
-  dismissNotifications(kind: "attention" | "updates"): number {
+  dismissNotifications(kind: "attention" | "updates",include?:(notification:WorkspaceNotificationDto)=>boolean): number {
     const ids = this.activeNotifications
-      .filter((item) => notificationLiveKind(item) === (kind === "attention" ? "attention" : "update"))
+      .filter((item) => (!include||include(item))&&notificationLiveKind(item) === (kind === "attention" ? "attention" : "update"))
       .filter((item) => !item.decision || this.decisions.get(item.decision.id)?.status !== "pending")
       .map((item) => item.id);
     if (!ids.length) return 0;
@@ -1908,6 +1933,7 @@ export class WorkspaceStore {
     conversationId?: string;
     agentId?: string;
     limit: number;
+    visible?:(decision:DecisionDto)=>boolean;
     before?: { createdAt: string; id: string };
   }): { events: DecisionEventProjection[]; hasMore: boolean } {
     const limit = Math.max(1, Math.min(input.limit, 500));
@@ -1938,7 +1964,7 @@ export class WorkspaceStore {
     let hasMore = false;
     for (let index = start; index < ids.length; index += 1) {
       const event = this.decisionEventForId(ids[index]!);
-      if (!event ||
+      if (!event || (input.visible&&!input.visible(event.decision)) ||
           (input.projectId && event.decision.projectId !== input.projectId) ||
           (input.agentId && event.decision.agentId !== input.agentId) ||
           (input.conversationId && event.decision.conversationId !== input.conversationId)) continue;

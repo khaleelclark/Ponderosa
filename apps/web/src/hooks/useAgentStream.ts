@@ -1,3 +1,4 @@
+import {productApiPath} from "../api/productScope.js";
 import { unifiedDiffLineTotals } from "@ponderosa/core";
 import type { AgentActivityDto, AgentEvent, AgentRunDto, ArtifactDto, ChangedFileDto, ResponseFileActivityDto, SseEventEnvelope, WorkItemDto, RunOutputDto, AgentDetailDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
@@ -417,7 +418,7 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
     const artifacts = compactDefined(detail.artifacts);
     const id = projectedArtifactId(agentId, seq);
     if (artifacts.some((artifact) => artifact.id === id)) return detail;
-    const root = `/api/projects/${encodeURIComponent(detail.agent.projectId)}/agents/${encodeURIComponent(agentId)}/browser-artifacts/${encodeURIComponent(id)}`;
+    const root = productApiPath(`/api/projects/${encodeURIComponent(detail.agent.projectId)}/agents/${encodeURIComponent(agentId)}/browser-artifacts/${encodeURIComponent(id)}`);
     const artifact: ArtifactDto = {
       id, agentId, executionId: event.executionId, kind: "screenshot", path: event.path,
       summary: `Browser screenshot (${event.width}×${event.height})`, createdAt: ts,

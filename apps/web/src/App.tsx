@@ -1,3 +1,4 @@
+import {isBranchesPath} from "./api/productScope.js";
 import { stopSpeech } from "./components/speech/speechCoordinator";
 import {
   Box,
@@ -603,7 +604,7 @@ export default function App({
       )
         return;
       const target = new URL(event.data.url, window.location.origin);
-      if (target.origin !== window.location.origin) return;
+      if (target.origin !== window.location.origin || isBranchesPath(target.pathname)) return;
       navigateWorkspace(parseRoute(target.pathname, target.search));
     };
     navigator.serviceWorker?.addEventListener("message", openNotificationRoute);

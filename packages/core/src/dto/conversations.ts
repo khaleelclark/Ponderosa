@@ -22,6 +22,10 @@ import type { OutcomeCause } from "../outcome-cause.js";
 export interface ConversationDto {
   id: string;
   projectId: string;
+  /** Present only for a Chat owned by this Branch installation. */
+  branchId?: string;
+  /** Temporary workflow context; absent for persistent Branch Chats. */
+  executionId?: string;
   title: string;
   /** Chat-owned execution context. Legacy projectId only locates stored history. */
   workingDirectory?: string;
@@ -103,6 +107,8 @@ export interface CollaborationRecipientDto {
 
 /** A message in the project-level conversation (a team group chat). */
 export interface ConversationMessageDto {
+  /** Exact bounded authored communication text before display-only scope tags. */
+  authoredText?: string;
   id: string;
   /** Canonical cross-surface event identity, absent only on pre-migration history. */
   communicationEventId?: string;
@@ -558,6 +564,8 @@ export type CreateCollaborationMessageResponse =
   | RecoveringCollaborationMessageResponse;
 
 export interface CreateMultiAgentDirectMessageRequest {
+  /** Explicit call input; only one queued recipient, never inferred from prose. */
+  voiceReply?: true;
   text: string;
   recipients: Array<{ agentId: string; attachmentIds?: string[] }>;
   /** Stable across retries; one user action creates one message and N deliveries. */

@@ -746,6 +746,9 @@ export function registerAgentCommunicationRoutes(
       };
       let intake;
       try {
+        if (active?.voiceReply && (await active.validateVoiceReplyContext?.() === false || active.validateVoiceReplyCommit?.() === false)) {
+          return reply.code(409).send({ error: "Memory changed during the voice reply; start a fresh turn" });
+        }
         intake = coordinationV3.recordRuntimeCommunication({
           id: proposedCommunication.eventId,
           projectId: currentAuthor.projectId,

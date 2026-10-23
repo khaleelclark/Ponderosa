@@ -1,3 +1,5 @@
+import {activeChatProductSql,activeAgentProductSql,projectProductSql,type ProductScope} from '@ponderosa/agents';
+import {requestProduct} from '../product-scope.js';
 import { agentDisplayStatus, summarizeWorkspaceActivity } from "@ponderosa/core";
 import { createHash } from "node:crypto";
 import type {
@@ -154,7 +156,7 @@ function decodeCursor(
 }
 
 /** Shared activity projection for Project and Chat directory indicators. */
-function runningAgentCountSql(scope: "active_agent.project_id = p.id" | "active_agent.conversation_id = c.id"): string {
+function runningAgentCountSql(scope: string): string {
   return `(SELECT COUNT(*) FROM agents active_agent
     WHERE ${scope}
       AND active_agent.deleted_at IS NULL
@@ -174,11 +176,11 @@ function runningAgentCountSql(scope: "active_agent.project_id = p.id" | "active_
       )))`;
 }
 
-function workspaceRunningAgentCount(context: WorkspaceDirectoryRoutesContext, health?: Map<string, AgentHealthDto>): number {
+function workspaceRunningAgentCount(context: WorkspaceDirectoryRoutesContext, product:ProductScope, health?: Map<string, AgentHealthDto>): number {
   const candidates = context.store.sqlite.prepare(`SELECT DISTINCT runs.agent_id
     FROM scheduler_runs runs
     JOIN agents agent ON agent.id = runs.agent_id
-    WHERE runs.status IN ('leased', 'running')
+    WHERE ${activeAgentProductSql('agent',product)} AND runs.status IN ('leased', 'running')
       AND runs.side_effects_fenced_at IS NULL
       AND agent.deleted_at IS NULL
       AND NOT EXISTS (
@@ -243,8 +245,9 @@ function baseDirectoryQuery(
   filteredAgentIds: readonly string[],
   workingAgentIds: readonly string[],
   outcomeAgentIds: readonly string[],
+  product:ProductScope,
 ): { sql: string; params: unknown[] } {
-  const where: string[] = [];
+  const where: string[] = [kind==='project'?projectProductSql('p.id',product):kind==='conversation'?activeChatProductSql('c',product):activeAgentProductSql('a',product)];
   const params: unknown[] = [];
   const pattern = likePattern(normalizedSearch);
 
@@ -258,7 +261,7 @@ function baseDirectoryQuery(
         lower(p.label || ' ' || p.host_path) LIKE ? ESCAPE '\\'
         OR EXISTS (
           SELECT 1 FROM conversations search_conversation
-          WHERE search_conversation.project_id = p.id
+          WHERE search_conversation.project_id = p.id AND ${activeChatProductSql('search_conversation',product)}
             AND NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = search_conversation.id)
             AND lower(search_conversation.title) LIKE ? ESCAPE '\\'
         )
@@ -276,25 +279,25 @@ function baseDirectoryQuery(
           NULL AS conversation_id,
           (
             SELECT COUNT(*) FROM conversations count_conversation
-            WHERE count_conversation.project_id = p.id
+            WHERE count_conversation.project_id = p.id AND ${activeChatProductSql('count_conversation',product)}
               AND NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = count_conversation.id)
           ) AS conversation_count,
           (
             SELECT recent.id FROM conversations recent
-            WHERE recent.project_id = p.id AND NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = recent.id)
+            WHERE recent.project_id = p.id AND ${activeChatProductSql('recent',product)} AND NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = recent.id)
             ORDER BY recent.updated_at DESC, recent.id ASC LIMIT 1
           ) AS recent_conversation_id,
           (
             SELECT recent.title FROM conversations recent
-            WHERE recent.project_id = p.id AND NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = recent.id)
+            WHERE recent.project_id = p.id AND ${activeChatProductSql('recent',product)} AND NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = recent.id)
             ORDER BY recent.updated_at DESC, recent.id ASC LIMIT 1
           ) AS recent_conversation_title,
           (
             SELECT recent.updated_at FROM conversations recent
-            WHERE recent.project_id = p.id AND NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = recent.id)
+            WHERE recent.project_id = p.id AND ${activeChatProductSql('recent',product)} AND NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = recent.id)
             ORDER BY recent.updated_at DESC, recent.id ASC LIMIT 1
           ) AS recent_conversation_updated_at,
-          ${runningAgentCountSql("active_agent.project_id = p.id")} AS running_agent_count
+          ${runningAgentCountSql(`active_agent.project_id = p.id AND ${activeAgentProductSql('active_agent',product)}`)} AS running_agent_count
         FROM projects p
         ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
       `,
@@ -484,6 +487,7 @@ const FINISHED_ASSIGNED_WORK_STATUSES = new Set<AgentRunStatus>([
 
 function workspaceAgentHealth(
   context: WorkspaceDirectoryRoutesContext,
+  product:ProductScope,
   projectId?: string,
   includeRunHistory = true,
 ): {
@@ -496,7 +500,7 @@ function workspaceAgentHealth(
   const rows = context.store.sqlite.prepare(`
     SELECT a.id, a.project_id
     FROM agents a
-    WHERE a.deleted_at IS NULL
+    WHERE ${activeAgentProductSql('a',product)}
       ${projectId ? "AND a.project_id = ?" : ""}
       AND NOT EXISTS (
         SELECT 1
@@ -577,6 +581,7 @@ export function registerWorkspaceDirectoryRoutes(
       || new Set(body.chatFolders.map(folder => folder.id)).size !== body.chatFolders.length) {
       return reply.code(400).send({ error: "invalid bounded activity scopes" });
     }
+    const product=requestProduct(request);
     const chatIds = [...new Set([...body.conversationIds, ...body.chatFolders.flatMap(folder => folder.conversationIds)])];
     const byChat = new Map<string, Set<string>>(chatIds.map(id => [id, new Set()]));
     const knownChats = new Set<string>();
@@ -586,13 +591,13 @@ export function registerWorkspaceDirectoryRoutes(
     for (let start = 0; start < chatIds.length; start += 200) {
       const ids = chatIds.slice(start, start + 200);
       for (const row of context.store.sqlite.prepare(`SELECT c.id FROM conversations c JOIN projects p ON p.id = c.project_id
-        WHERE NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = c.id) AND c.id IN (${placeholders(ids.length)})`).all(...ids) as Array<{ id: string }>) knownChats.add(row.id);
+        WHERE ${activeChatProductSql('c',product)} AND c.id IN (${placeholders(ids.length)})`).all(...ids) as Array<{ id: string }>) knownChats.add(row.id);
       const rows = context.store.sqlite.prepare(`
         SELECT DISTINCT a.id, a.project_id, membership.conversation_id
         FROM agent_conversation_memberships membership
         JOIN conversations c ON c.id = membership.conversation_id AND NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = c.id)
         JOIN agents a ON a.id = membership.agent_id AND a.project_id = c.project_id
-        WHERE membership.conversation_id IN (${placeholders(ids.length)})
+        WHERE ${activeChatProductSql('c',product)} AND ${activeAgentProductSql('a',product)} AND membership.conversation_id IN (${placeholders(ids.length)})
           AND a.deleted_at IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM agent_creation_operation_members member
@@ -675,6 +680,7 @@ export function registerWorkspaceDirectoryRoutes(
       return reply.code(400).send({ error: "invalid directory sort" });
     }
 
+    const product=requestProduct(request);
     const preferences = context.workspace.getPreferences();
     const settings = resourceSettings(preferences, kind);
     const activeAgents = request.query.active === "true";
@@ -695,6 +701,7 @@ export function registerWorkspaceDirectoryRoutes(
     const scopedActiveSummary = activeAgents && request.query.summary === "true";
     const health = canonicalAgentView ? workspaceAgentHealth(
       context,
+      product,
       scopedActiveSummary ? request.query.projectId : undefined,
       !scopedActiveSummary,
     ) : undefined;
@@ -727,6 +734,7 @@ export function registerWorkspaceDirectoryRoutes(
       }))
       .digest("base64url");
     const scope = JSON.stringify({
+      product,
       kind,
       search: normalizedSearch,
       projectId: request.query.projectId ?? "",
@@ -746,6 +754,7 @@ export function registerWorkspaceDirectoryRoutes(
       filteredAgentIds,
       workingAgentIds,
       outcomeAgentIds,
+      product,
     );
     const projectScope = request.query.projectId;
     const scoped = (collection: string): string => projectScope
@@ -782,7 +791,7 @@ export function registerWorkspaceDirectoryRoutes(
         ...(health ? { activity: summarizeWorkspaceActivity([...health.byId.values()], [...health.confirmedById.values()].sort()[0]) } : {}),
         ...(health && !request.query.projectId ? { activeCount: health.workingIds.length } : {}),
         ...(kind === "agent" && !request.query.projectId
-          ? { runningCount: workspaceRunningAgentCount(context, health?.byId) }
+          ? { runningCount: workspaceRunningAgentCount(context, product, health?.byId) }
           : {}),
         history: { limit, hasMore: false },
       } satisfies WorkspaceDirectoryPageDto;
@@ -873,7 +882,7 @@ export function registerWorkspaceDirectoryRoutes(
         if (agents.every(agent => agentHealthById.has(agent.id))) continue;
         // Relationships belong to the visible Project roster, not the page.
         // Read identities only; off-page Agents need no detailed health.
-        const rosterQuery = baseDirectoryQuery("agent", { projectId }, "", [], [], []);
+        const rosterQuery = baseDirectoryQuery("agent", { projectId }, "", [], [], [],product);
         const roster = sqlite.prepare(`
           SELECT a.id, a.manager_agent_id
           FROM (${rosterQuery.sql}) visible JOIN agents a ON a.id = visible.id

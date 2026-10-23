@@ -128,7 +128,7 @@ function notificationSummaryText(openActionCount: number, unacknowledgedActionCo
   return "You’re all caught up";
 }
 
-export function NotificationPanel({ open, projects, firstPage, firstPageRevision, getFirstPageRevision, loading = false, loadFailed = false, onRetry, onClose, onNavigate, onOpenSettings }: {
+export function NotificationPanel({ open, projects, firstPage, firstPageRevision, getFirstPageRevision, loading = false, loadFailed = false, onRetry, onClose, onNavigate, onOpenSettings, onOpenNotification, productScoped=false, externalError, onRetryExternal }: {
   open: boolean;
   projects: ProjectDto[];
   firstPage?: WorkspaceNotificationPageDto;
@@ -140,6 +140,10 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
   onClose(): void;
   onNavigate(route: Route): void;
   onOpenSettings?(): void;
+  onOpenNotification?(notification:WorkspaceNotificationDto,work?:boolean):void;
+  productScoped?:boolean;
+  externalError?:string;
+  onRetryExternal?():void;
 }): JSX.Element {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
@@ -192,9 +196,9 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
         if (!unique.has(notification.id)) unique.set(notification.id, notification);
       }
     }
-    return notificationsForAvailableProjects([...unique.values()], availableProjectIds)
+    return (productScoped?[...unique.values()]:notificationsForAvailableProjects([...unique.values()], availableProjectIds))
       .sort(compareNotificationsNewestFirst);
-  }, [availableProjectIds, firstPage, olderPages]);
+  }, [availableProjectIds, firstPage, olderPages, productScoped]);
   const openActionCount = firstPage?.openActionCount ?? 0;
   const unacknowledgedActionCount = firstPage?.unacknowledgedActionCount ?? 0;
   const unreadUpdateCount = firstPage?.unreadUpdateCount ?? 0;
@@ -454,6 +458,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       onOpenSettings?.();
       return;
     }
+    if(onOpenNotification){onClose();onOpenNotification(item);return;}
     const destination = notificationNavigationRoute(item, availableProjectIds);
     if (!destination) return;
     onClose();
@@ -504,6 +509,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
     </Tabs>
     <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5, overflowX: "hidden", minWidth: 0 }}>
       {error ? <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert> : null}
+      {externalError&&<Alert severity="error" sx={{mb:1}} action={onRetryExternal?<Button onClick={onRetryExternal}>Retry</Button>:undefined}>{externalError}</Alert>}
       {loadFailed ? <Alert severity="warning" sx={{ mb: 1 }} action={onRetry ? <Button color="inherit" onClick={onRetry}>Retry</Button> : undefined}>{firstPage ? "Notifications could not refresh. Showing the last loaded notifications." : "Notifications could not be loaded. Try again."}</Alert> : !firstPage && loading ? <Typography role="status">Loading notifications…</Typography> : null}
       <Stack spacing={1}>
         {groups.map((group) => {
@@ -534,8 +540,9 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
                     <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: .5 }}>
                     {attention ? <Typography variant="caption" color="text.secondary" sx={{ width: "100%" }}>{attention.scopes.join(" · ")} · {attention.reference}</Typography> : null}
                     {attention?.evidenceUnavailable ? <Typography variant="caption" color="text.secondary" sx={{ width: "100%" }}>No additional cause details were retained for this older notice.</Typography> : null}
-                    {item.projectId && (item.kind === "operational" || ["coordination", "decision"].includes(item.category ?? "")) ? <Button size="small" onClick={(event) => {
+                    {(item.projectId||onOpenNotification&&item.branchId) && (item.kind === "operational" || ["coordination", "decision"].includes(item.category ?? "")) ? <Button size="small" onClick={(event) => {
                       event.stopPropagation();
+                      if(onOpenNotification){onClose();onOpenNotification(item,true);return;}
                       const route = notificationWorkRoute(item, availableProjectIds);
                       if (route) {
                         onClose();

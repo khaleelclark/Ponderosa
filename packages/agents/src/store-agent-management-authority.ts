@@ -375,6 +375,40 @@ export class AgentManagementAuthority {
     return this.rowToAgentDto(id);
   }
 
+  /** Restore an Engine-owned before-image without allocating a new mention handle. */
+  restoreAgentConfiguration(id: string, snapshot: Pick<AgentDto, "title" | "handle" | "activeEngine" | "managementPermissions"> & { model: string | null; effort: string | null; speed: string | null }): AgentDto | undefined {
+    const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
+    if (!row || row.deletedAt) return undefined;
+    const title = normalizeAgentTitle(snapshot.title);
+    const reservation = this.client.prepare("SELECT agent_id FROM agent_handle_reservations WHERE project_id=? AND normalized_handle=?").get(row.projectId, snapshot.handle.toLocaleLowerCase()) as { agent_id: string } | undefined;
+    if (reservation?.agent_id !== id) throw new Error("Agent mention handle before-image is no longer owned by this Agent");
+    const now = new Date().toISOString();
+    const json = readJson<AgentJson>(agentJsonPath(this.dataDir, row.projectId, id));
+    writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
+      ...json,
+      title,
+      handle: snapshot.handle,
+      activeEngine: snapshot.activeEngine,
+      model: snapshot.model ?? undefined,
+      effort: snapshot.effort ?? undefined,
+      speed: snapshot.speed ?? undefined,
+      managementPermissions: requireManagementPermissions(snapshot.managementPermissions),
+      updatedAt: now,
+    });
+    this.db.update(agents).set({
+      title,
+      handle: snapshot.handle,
+      activeEngine: snapshot.activeEngine,
+      model: snapshot.model ?? null,
+      effort: snapshot.effort ?? null,
+      speed: snapshot.speed ?? null,
+      allowAutomaticDescendantDeletion: snapshot.managementPermissions.allowAutomaticDescendantDeletion ? 1 : 0,
+      allowAutomaticDescendantReorganization: snapshot.managementPermissions.allowAutomaticDescendantReorganization ? 1 : 0,
+      updatedAt: now,
+    }).where(eq(agents.id, id)).run();
+    return this.rowToAgentDto(id);
+  }
+
   private detachAgentOrganization(projectId: string, agentIds: readonly string[]): void {
     const byId = new Map(this.listAgents(projectId).map((agent) => [agent.id, agent]));
     const createdAt = new Date().toISOString();

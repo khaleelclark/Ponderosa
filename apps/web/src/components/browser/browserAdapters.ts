@@ -1,3 +1,4 @@
+import {productApiPath} from "../../api/productScope.js";
 import type {
   BrowserOperatorInputRequest,
   BrowserSessionDto,
@@ -67,7 +68,7 @@ export function projectBrowserAdapter(projectId: string): BrowserEndpointAdapter
       expectedControlEpoch,
     } as BrowserOperatorInputRequest),
     getFrame: (pageId, signal) => api.getProjectBrowserFrame(projectId, pageId, signal),
-    frameStreamUrl: pageId => `/api/projects/${encodeURIComponent(projectId)}/browser/frame-stream${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`,
+    frameStreamUrl: pageId => productApiPath(`/api/projects/${encodeURIComponent(projectId)}/browser/frame-stream${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`),
     newPage: epoch => api.newBrowserPage(projectId, epoch) as Promise<ProjectBrowserSessionDto>,
     resizeViewport: (pageId, size, epoch) => api.resizeBrowserViewport(projectId, pageId, size, epoch),
   };
@@ -102,7 +103,7 @@ export function agentBrowserAdapter(
       { ...input, expectedControlEpoch } as BrowserOperatorInputRequest,
     ),
     getFrame: (pageId, signal) => api.getBrowserFrame(projectId, agentId, runId, pageId, signal),
-    frameStreamUrl: pageId => `/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/browser/frame-stream${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`,
+    frameStreamUrl: pageId => productApiPath(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/browser/frame-stream${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`),
     newPage: epoch => api.newBrowserPage(projectId, epoch, agentId, runId) as Promise<BrowserSessionDto>,
     resizeViewport: (pageId, size, epoch) => api.resizeBrowserViewport(projectId, pageId, size, epoch, agentId, runId),
   };

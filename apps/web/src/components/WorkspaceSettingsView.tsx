@@ -870,6 +870,7 @@ function ProviderSettingsSection({
 }
 
 export function WorkspaceSettingsView({
+  showHeader=true,
   preferences,
   engines,
   projects,
@@ -882,6 +883,7 @@ export function WorkspaceSettingsView({
   onReturn,
   returnLabel,
 }: {
+  showHeader?:boolean;
   preferences: WorkspacePreferencesDto;
   engines: EngineDto[];
   projects: ProjectDto[];
@@ -1081,7 +1083,7 @@ export function WorkspaceSettingsView({
   };
   return (
     <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflow: "auto" }}>
-      <SettingsHeader onReturn={onReturn} returnLabel={returnLabel} />
+      {showHeader&&<SettingsHeader onReturn={onReturn} returnLabel={returnLabel} />}
       <Box sx={{ maxWidth: 900, mx: "auto", p: { xs: 2, md: 4 } }}>
         {section === "profile" ? (
           <OperatorProfileSettingsSection

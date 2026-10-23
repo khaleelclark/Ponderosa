@@ -1,9 +1,10 @@
+import {notificationInProduct,productPreferences,projectInProduct,decisionInProduct,requestProduct,resourceInProduct,type ProductScope} from '../product-scope.js';
 import type {
   AgentStore,
   StoredLogEvent,
   WorkspaceStore,
 } from "@ponderosa/agents";
-import type { WorkspaceEventEnvelope } from "@ponderosa/core";
+import type { WorkspaceEvent,WorkspaceEventEnvelope } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import { performance } from "node:perf_hooks";
 import { BoundedSseWriter, envelope } from "../sse.js";
@@ -38,9 +39,83 @@ export function sseReplayWithinBudget(
   return true;
 }
 
+export function workspaceEventInProduct(
+  store: StreamRoutesContext["store"],
+  workspace: StreamRoutesContext["workspace"],
+  event: WorkspaceEvent,
+  product: ProductScope,
+): boolean {
+  const conversationsInProduct = (ids: string[]): boolean =>
+    ids.length > 0 && ids.every(id => resourceInProduct(store, "conversation", id, product));
+  const agentsInProduct = (ids: string[]): boolean =>
+    ids.length > 0 && ids.every(id => resourceInProduct(store, "agent", id, product));
+  switch (event.type) {
+    case "branch_execution_budget":
+      return product === "branches" && Boolean(store.sqlite.prepare("SELECT 1 FROM branch_execution_budget_events WHERE id=? AND branch_id=?").get(event.budgetEventId,event.branchId));
+    case "branch_checkpoint":
+      // Branches own their workflow independently. Resolve the canonical
+      // execution and owner instead of trusting the event's optional Chat ID.
+      return product === "branches" && Boolean(store.sqlite.prepare(`SELECT 1 FROM branch_checkpoints c
+        JOIN branch_executions e ON e.id=c.execution_id
+        JOIN branches b ON b.id=e.branch_id
+        WHERE c.id=? AND e.id=? AND b.id=?`).get(event.checkpointId,event.executionId,event.branchId));
+    case "preferences_updated":
+    case "push_subscription_changed":
+    case "provider_status_changed":
+      return true;
+    case "resource_used":
+      return resourceInProduct(store, event.kind, event.resourceId, product);
+    case "project_changed": {
+      if (event.action === "deleted") {
+        const scope=store.getProjectDeletionReceipt(event.projectId)?.productScope;return scope===product||scope==='mixed';
+      }
+      return projectInProduct(store, event.projectId, product);
+    }
+    case "runtime_capabilities_changed":
+      return projectInProduct(store, event.projectId, product);
+    case "conversation_changed": {
+      if (event.action === "deleted") {
+        const receipt = store.getConversationDeletionReceipt(event.conversationId);
+        return Boolean(receipt) && (receipt!.branchId ? product === "branches" : product === "dev");
+      }
+      return resourceInProduct(store, "conversation", event.conversationId, product);
+    }
+    case "draft_changed":
+    case "draft_conflict":
+    case "queued_message_changed":
+      return event.conversationId.startsWith('agent:')?resourceInProduct(store,'agent',event.conversationId.slice(6),product):resourceInProduct(store,'conversation',event.conversationId.replace(/^collaboration:/u,''),product);
+    case "notification_changed": {
+      if (event.notificationId) {
+        const notification = workspace.getNotification(event.notificationId);
+        return Boolean(notification && notificationInProduct(store, notification, product));
+      }
+      if (event.decisionId) {
+        const decision = workspace.getDecision(event.decisionId);
+        return Boolean(decision && decisionInProduct(store, decision, product));
+      }
+      if (event.conversationId) return resourceInProduct(store, "conversation", event.conversationId, product);
+      // Ownerless batch events contain no resource identifiers. Both products
+      // may safely receive the invalidation and refetch their scoped projection.
+      return true;
+    }
+    case "message_delivery_changed":
+    case "coordination_changed":
+    case "usage_changed":
+    case "agent_event":
+      return agentsInProduct([event.agentId]) &&
+        (!(event.conversationIds?.length) || conversationsInProduct(event.conversationIds));
+    case "push_delivery_changed": {
+      const notification = workspace.getNotification(event.notificationId);
+      return Boolean(notification && notificationInProduct(store, notification, product));
+    }
+  }
+  const _exhaustive: never = event;
+  return _exhaustive;
+}
+
 interface StreamRoutesContext {
-  store: Pick<AgentStore, "getAgent" | "lastSeqOf" | "readEventsSince">;
-  workspace: Pick<WorkspaceStore, "cursor" | "instanceId" | "readSince">;
+  store: Pick<AgentStore, "sqlite"|"getConversation"|"getConversationDeletionReceipt"|"getProjectDeletionReceipt"|"getAgent" | "lastSeqOf" | "readEventsSince">;
+  workspace: Pick<WorkspaceStore, "cursor" | "instanceId" | "readSince"|"getNotification"|"getDecision">;
   serverClosed(): boolean;
   maxSubscribersPerStream: number;
   workspaceSubscribers: Set<(event: WorkspaceEventEnvelope) => void>;
@@ -154,10 +229,13 @@ export function registerStreamRoutes(
           }
           return;
         }
+        const product=requestProduct(request);
+        if(!workspaceEventInProduct(store,workspace,event.event,product)){cursor=event.id;return;}
+        const scoped=event.event.type==='preferences_updated'?{...event,event:{...event.event,preferences:productPreferences(store,event.event.preferences,product)}}:event;
         const accepted = writer.write(
           "message",
           event.id,
-          replayed ? { ...event, replayed: true } : event,
+          replayed ? { ...scoped, replayed: true } : scoped,
         );
         cursor = event.id;
         if (!accepted) {
