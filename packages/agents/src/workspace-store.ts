@@ -123,6 +123,12 @@ export function draftRevisionConflicts(
   return current.revision !== input.expectedRevision && !provenSameIncarnation;
 }
 
+/** Coordination traces regroup; the canonical Request/Join owns its notice. */
+function notificationWorkKey(item: Pick<WorkspaceNotificationDto, "category" | "projectId" | "workContext">): string | undefined {
+  return item.category === "coordination" && item.projectId && item.workContext && ["request", "join"].includes(item.workContext.kind)
+    ? JSON.stringify([item.projectId, item.workContext.kind, item.workContext.recordId]) : undefined;
+}
+
 function isOpenAttentionNotification(item: WorkspaceNotificationDto): boolean {
   return (item.status ?? "open") === "open" && (
     item.kind === "decision" ||
@@ -227,6 +233,7 @@ export class WorkspaceStore {
   private readonly supersededDraftConflicts = new Map<string, ConversationDraftConflictDto[]>();
   private readonly notifications = new Map<string, WorkspaceNotificationDto>();
   private readonly notificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
+  private readonly notificationsByWork = new Map<string, WorkspaceNotificationDto>();
   private readonly openOperationalNotificationsByDedupeKey = new Map<string, WorkspaceNotificationDto>();
   private readonly activeNotifications: WorkspaceNotificationDto[] = [];
   private notificationOpenActionCount = 0;
@@ -288,7 +295,10 @@ export class WorkspaceStore {
     return this.notificationAllowed(item) && notificationLiveKind(item) === "update";
   }
 
-  notificationAllowed(item: Pick<WorkspaceNotificationDto, "agentId" | "sourceAgentId" | "conversationId" | "kind" | "severity">): boolean {
+  notificationAllowed(item: Pick<WorkspaceNotificationDto, "agentId" | "sourceAgentId" | "conversationId" | "kind" | "severity" | "category" | "projectId" | "workContext">): boolean {
+    const workKey = notificationWorkKey(item);
+    const owner = workKey ? this.notificationsByWork.get(workKey) : undefined;
+    if (owner && (!("id" in item) || item.id !== owner.id)) return false;
     const scopes = this.preferences.notificationScopes ?? {};
     const agentId = item.sourceAgentId ?? item.agentId;
     const mode = (agentId ? scopes[`agent:${agentId}`] : undefined)
@@ -336,6 +346,16 @@ export class WorkspaceStore {
       }
     }
     this.notifications.set(item.id, item);
+    const workKey = notificationWorkKey(item);
+    if (workKey) {
+      const previous = this.notificationsByWork.get(workKey);
+      // A retained dismissal/closure wins over older regrouped open notices.
+      if (!previous || previous.id === item.id || item.status === "dismissed"
+        || (previous.status !== "dismissed" && (item.status === "resolved" || (previous.status ?? "open") === "open"))) {
+        if (previous && previous.id !== item.id) { this.updateNotificationSearchIndex(previous, false); this.removeActiveNotification(previous); }
+        this.notificationsByWork.set(workKey, item);
+      }
+    }
     if (item.dedupeKey) this.notificationsByDedupeKey.set(item.dedupeKey, item);
     if (item.kind === "operational" && item.dedupeKey && (item.status ?? "open") === "open") {
       this.openOperationalNotificationsByDedupeKey.set(item.dedupeKey, item);
@@ -357,6 +377,8 @@ export class WorkspaceStore {
       }
     }
     this.notifications.delete(id);
+    const workKey = current && notificationWorkKey(current);
+    if (workKey && this.notificationsByWork.get(workKey)?.id === id) this.notificationsByWork.delete(workKey);
   }
 
   private removeActiveNotification(item: WorkspaceNotificationDto): void {
@@ -1511,7 +1533,8 @@ export class WorkspaceStore {
       if (existing) return existing;
     }
     if (input.dedupeKey) {
-      const existing = this.notificationsByDedupeKey.get(input.dedupeKey);
+      const workKey = notificationWorkKey(input);
+      const existing = (workKey ? this.notificationsByWork.get(workKey) : undefined) ?? this.notificationsByDedupeKey.get(input.dedupeKey);
       if (existing) {
         if ((existing.status ?? "open") !== "open") return existing;
         const updated: WorkspaceNotificationDto = {
@@ -1519,6 +1542,7 @@ export class WorkspaceStore {
           ...input,
           id: existing.id,
           createdAt: existing.createdAt,
+          dedupeKey: existing.dedupeKey ?? input.dedupeKey,
           ...(existing.readAt ? { readAt: existing.readAt } : {}),
         };
         if (JSON.stringify(updated) === JSON.stringify(existing)) return existing;
@@ -1571,6 +1595,23 @@ export class WorkspaceStore {
     }
     return undefined;
   }
+
+  /** Keep coordination evidence without presenting an internal repair as a human action. */
+  classifyNotificationAsInternal(id: string): void {
+    const current = this.notifications.get(id);
+    if (!current || current.kind !== "operational" || current.category !== "coordination" || (current.status ?? "open") !== "open") return;
+    const notification = { ...current, kind: "information" as const, severity: "info" as const, readAt: current.createdAt };
+    this.append({ type: "notification_changed", notificationId: id, conversationId: current.conversationId, action: "updated" }, { kind: "notification", notification });
+    for (const delivery of this.pushDeliveries.values()) if (delivery.notificationId === id && delivery.status === "pending") {
+      this.updatePushDelivery({ notificationId: id, deviceId: delivery.deviceId, status: "abandoned", lastError: "Coordination repair is owned by an Agent" });
+    }
+  }
+
+  forEachCoordinationNotification(visitor: (item: WorkspaceNotificationDto) => void): void {
+    for (const [key, item] of this.notificationsByDedupeKey) if (key.startsWith("coordination-attention:") && (item.status ?? "open") === "open") visitor(item);
+  }
+
+  getNotificationByDedupeKey(key: string) { return this.notificationsByDedupeKey.get(key); }
 
   openOperationalNotification(dedupeKey: string): WorkspaceNotificationDto | undefined {
     return this.openOperationalNotificationsByDedupeKey.get(dedupeKey);
@@ -2052,7 +2093,7 @@ export class WorkspaceStore {
       const subscription = this.pushSubscriptions.get(delivery.deviceId);
       // A replaced/rotated subscription must not receive work queued for the
       // old endpoint. Its new subscription begins with the next notification.
-      if (!notification || !this.notificationAllowed(notification) || !subscription || subscription.updatedAt !== delivery.subscriptionUpdatedAt) continue;
+      if (!notification || !notificationLiveKind(notification) || !this.notificationAllowed(notification) || !subscription || subscription.updatedAt !== delivery.subscriptionUpdatedAt) continue;
       result.push({ delivery, notification, subscription });
     }
     return result;

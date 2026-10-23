@@ -1,3 +1,5 @@
+import '../shared/web-typescript-loader.mjs';
+const {ApiRequestError}=await import('../../apps/web/src/api/types.ts');
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -42,7 +44,7 @@ test('canonical question cards share the ordinary ChatSurface timeline, deduplic
 
 // Exercise the production Request card and TanStack mutation. Controlled state
 // replaces browser layout only; retry eligibility and the command stay shared.
-function requestFixture(t,{expanded=true,readOnly=false,retryAvailable=true,state='failed',retryCommand=async()=>({requestIds:['successor']})}={}){
+function requestFixture(t,{expanded=true,readOnly=false,retryAvailable=true,state='failed',retryCommand=async()=>({requestIds:['successor'],retryOfRequestId:'request-a'})}={}){
  const {QueryClient,MutationObserver}=require('@tanstack/react-query');
  const client=new QueryClient({defaultOptions:{mutations:{retry:false,gcTime:Infinity},queries:{retry:false,gcTime:Infinity}}});
  const slots=[],buttons=[],dialogs=[],calls=[],invalidations=[],queries=[];let index=0,observer,unsubscribe;
@@ -53,7 +55,7 @@ function requestFixture(t,{expanded=true,readOnly=false,retryAvailable=true,stat
  mui.Button=p=>{buttons.push(p);return React.createElement('button',{disabled:p.disabled},p.children);};
  mui.Dialog=p=>{dialogs.push(p);return p.open?React.createElement('section',null,p.children):null;};
  const exports={},keys={agentWork:{all:['agent-work'],detail:(...args)=>['agent-work',...args]},notifications:{all:['notifications']}};
- vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/RequestLifecycleCard.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,Error,require:name=>({react,'@mui/material':mui,'@tanstack/react-query':{useQuery:options=>{queries.push(options);return{data:{requestLifecycle:lifecycle}};},useQueryClient:()=>client,useMutation:options=>{if(!observer){observer=new MutationObserver(client,options);unsubscribe=observer.subscribe(()=>{});}else observer.setOptions(options);return observer.getCurrentResult();}},'../api':{api:{retryCoordinationRequest:(...args)=>{calls.push(args);return retryCommand(...args);}}},'../queryKeys':{queryKeys:keys},'./WorkspaceReadOnlyContext':{useWorkspaceReadOnly:()=>readOnly}}[name]??require(name))});
+ vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/RequestLifecycleCard.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,Error,require:name=>({react,'../api/types':{ApiRequestError},'@mui/material':mui,'@tanstack/react-query':{useQuery:options=>{queries.push(options);return{data:{requestLifecycle:lifecycle}};},useQueryClient:()=>client,useMutation:options=>{if(!observer){observer=new MutationObserver(client,options);unsubscribe=observer.subscribe(()=>{});}else observer.setOptions(options);return observer.getCurrentResult();}},'../api':{api:{retryCoordinationRequest:(...args)=>{calls.push(args);return retryCommand(...args);}}},'../queryKeys':{queryKeys:keys},'./WorkspaceReadOnlyContext':{useWorkspaceReadOnly:()=>readOnly}}[name]??require(name))});
  client.invalidateQueries=async({queryKey})=>{invalidations.push([...queryKey]);};
  const render=()=>{index=0;buttons.length=0;dialogs.length=0;const tree=exports.RequestLifecycleCard({projectId:'project-a',conversationId:'chat-a',requestId:'request-a',state,recipientAgentId:'worker',requesterAgentId:'manager',updatedAt:'2026-10-23T00:00:00Z',defaultExpanded:expanded,agentTitle:id=>id??'You'});return renderToStaticMarkup(tree);};
  const button=label=>buttons.find(p=>p.children===label);
@@ -74,12 +76,20 @@ test('Retry requires explicit side-effect confirmation, preserves exact scope an
  f.button('Not now').onClick();f.render();assert.equal(f.dialogs[0].open,false);assert.equal(f.calls.length,0);
  f.button('Retry assignment…').onClick();f.render();const saving=f.button('Retry assignment').onClick();await new Promise(resolve=>setImmediate(resolve));f.render();
  assert.equal(f.button('Starting…').disabled,true);assert.equal(f.button('Not now').disabled,true);assert.equal(f.calls.length,1);assert.equal(f.calls[0][0],'request-a');assert.equal(f.calls[0][1].idempotencyKey,'operator-retry:request-a');
- release({requestIds:['successor']});await saving;f.render();assert.equal(f.dialogs[0].open,false);assert.equal(f.button('Retry assignment…'),undefined,'stale eligible detail must not offer a second retry');assert.deepEqual(f.invalidations.sort(),[['agent-work'],['notifications']]);
+ release({requestIds:['successor'],retryOfRequestId:'request-a'});await saving;f.render();assert.equal(f.dialogs[0].open,false);assert.equal(f.button('Retry assignment…'),undefined,'stale eligible detail must not offer a second retry');assert.deepEqual(f.invalidations.sort(),[['agent-work'],['notifications']]);
 });
 
 test('failed Retry retains the same command identity and error; changed canonical eligibility blocks submission',async t=>{
- let attempt=0;const f=requestFixture(t,{retryCommand:async()=>{if(++attempt===1)throw Error('Connection lost');return{requestIds:['successor']};}});
- f.render();f.button('Retry assignment…').onClick();f.render();await assert.rejects(f.button('Retry assignment').onClick(),/Connection lost/);assert.match(f.render(),/Connection lost/);assert.equal(f.dialogs[0].open,true);
+ let attempt=0;const f=requestFixture(t,{retryCommand:async()=>{if(++attempt===1)throw Error('Connection lost');return{requestIds:['successor'],retryOfRequestId:'request-a'};}});
+ f.render();f.button('Retry assignment…').onClick();f.render();await assert.rejects(f.button('Retry assignment').onClick(),/Could not confirm whether the retry started/);assert.match(f.render(),/Could not confirm whether the retry started/);assert.equal(f.dialogs[0].open,true);
  await f.button('Retry assignment').onClick();f.render();assert.equal(f.calls.length,2);assert.equal(f.calls[0][1].idempotencyKey,f.calls[1][1].idempotencyKey);assert.equal(f.button('Retry assignment…'),undefined);
  const stale=requestFixture(t);stale.render();stale.button('Retry assignment…').onClick();stale.lifecycle.request.retryAvailable=false;stale.render();assert.equal(stale.button('Retry assignment').disabled,true);await assert.rejects(stale.button('Retry assignment').onClick(),/cannot be retried/);assert.equal(stale.calls.length,0);
+});
+
+
+for(const result of [undefined,{requestIds:[]},{requestIds:['next'],retryOfRequestId:'foreign'}])test('unconfirmed Retry success retains confirmation and stable identity',async t=>{
+ const f=requestFixture(t,{retryCommand:async()=>result});f.render();f.button('Retry assignment…').onClick();f.render();await assert.rejects(f.button('Retry assignment').onClick(),/Could not confirm/);f.render();assert.equal(f.dialogs[0].open,true);assert.equal(f.invalidations.length,0);assert.ok(f.button('Retry assignment…'));
+});
+test('definite Retry rejection preserves the actionable server explanation',async t=>{
+ const f=requestFixture(t,{retryCommand:async()=>{throw new ApiRequestError(409,'Request participants are no longer available');}});f.render();f.button('Retry assignment…').onClick();f.render();await assert.rejects(f.button('Retry assignment').onClick(),/participants/);assert.doesNotMatch(f.render(),/Could not confirm/);
 });

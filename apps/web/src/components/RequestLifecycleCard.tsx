@@ -22,6 +22,7 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { ApiRequestError } from "../api/types";
 import { queryKeys } from "../queryKeys";
 import { useWorkspaceReadOnly } from "./WorkspaceReadOnlyContext";
 
@@ -280,9 +281,16 @@ export function RequestLifecycleCard({
   const queryClient = useQueryClient();
   const [confirmRetry, setConfirmRetry] = useState(false);
   const retry = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (readOnly || !lifecycle?.request.retryAvailable) throw new Error("This assignment cannot be retried.");
-      return api.retryCoordinationRequest(requestId, { idempotencyKey: `operator-retry:${requestId}` });
+      try {
+        const result = await api.retryCoordinationRequest(requestId, { idempotencyKey: `operator-retry:${requestId}` });
+        if (result?.retryOfRequestId !== requestId || !result.requestIds?.length) throw new Error("Unconfirmed recovery");
+        return result;
+      } catch (error) {
+        if (error instanceof ApiRequestError && error.status < 500) throw error;
+        throw new Error("Could not confirm whether the retry started. Check activity before trying again; repeating work may duplicate changes.");
+      }
     },
     onSuccess: () => {
       setConfirmRetry(false);
