@@ -1450,6 +1450,10 @@
       "path": "tests/shared/windows-pwa-browser.mjs",
       "moduleBase": "apps/server/package.json",
       "classification": "shared-native-Windows-PWA-fixture"
+    },
+    {
+      "path": "tests/branches/branch-execution-budget-worker.mjs",
+      "moduleBase": "packages/agents/package.json"
     }
   ],
   "support": [
