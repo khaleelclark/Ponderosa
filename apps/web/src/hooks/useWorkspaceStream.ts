@@ -359,8 +359,8 @@ function createDirectoryInvalidator(queryClient: QueryClient) {
   };
 }
 
-/** Coalesces workspace fallbacks for Agent-detail surfaces that do not mount
- * their own Agent stream, such as Project review. */
+/** Coalesces scoped detail refreshes, including coordination invalidations
+ * whose unchanged snapshot needs no additional durable Agent event. */
 function createAgentDetailInvalidator(
   queryClient: Pick<QueryClient, "invalidateQueries">,
   delayMs = 5_000,
@@ -899,6 +899,7 @@ export function useWorkspaceStream(
         agentWorkInvalidator.flush();
       }
       else if (event.type === "coordination_changed") {
+        agentDetailInvalidator.schedule(event.agentId);
         queueAgentRoster(event.projectId);
         agentWorkInvalidator.schedule(event.projectId);
         collaborationChatInvalidator.schedule(event.conversationIds);
