@@ -136,7 +136,9 @@ async function fixture(options={},runCheck){
  }catch(error){console.log("VOICE FIXTURE ERROR",error.stack);throw error;}finally{completion();}};
  const adapter={id:'fixture',displayName:'Inert',trustedSystemPromptChannel:'developer',supportsVoiceReplyStream:!options.unsupported,listModels:()=>[],listEfforts:()=>[],seed:opts=>run(opts,true),continue:opts=>run(opts,false)};
  try{
- app=createServer({dataDir:path.join(dir,'data'),store,authToken:token,engines:[{adapter,authStatus:async()=>({authenticated:true})}],logger:false,...(options.memory?{localMemory:{chromaUrl:await isolatedChroma(),collectionPrefix:'voice_'+branch.id.replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR ?? path.join(tmpdir(),'unconfigured-memory-models'),stateDirectory:path.join(dir,'memory-policy'),provision:true}}:{}),communicationV3:{pollMs:10}});
+ // This inert voice fixture exercises voice authority, not the live CI
+ // host's pressure. Admission holds/recovery are tested with explicit samples.
+ app=createServer({resourceAdmissionObservation:{sample:async()=>({availableBytes:8*1024**3,memoryFullPercent:0,ioFullPercent:0,source:'linux_host'})},dataDir:path.join(dir,'data'),store,authToken:token,engines:[{adapter,authStatus:async()=>({authenticated:true})}],logger:false,...(options.memory?{localMemory:{chromaUrl:await isolatedChroma(),collectionPrefix:'voice_'+branch.id.replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR ?? path.join(tmpdir(),'unconfigured-memory-models'),stateDirectory:path.join(dir,'memory-policy'),provision:true}}:{}),communicationV3:{pollMs:10}});
  app.addHook('onSend',async(request,reply,payload)=>{if(request.url==='/api/agent-voice-reply')armed={statusCode:reply.statusCode,body:typeof payload==='string'?payload:JSON.stringify(payload)};return payload;});
  const memoryUrl='/api/agent-local-memory';
  if(options.publicationAckRace){
