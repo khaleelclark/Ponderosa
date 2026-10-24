@@ -98,6 +98,7 @@ function reconcileQueuedProjectMessages(
 }
 
 function decisionChoice(decision: ConversationDecisionEventDto["decision"]): string | undefined {
+  if (decision.response?.answers?.length) return "Submitted question answers";
   if (
     decision.response?.optionId === AUTO_ALLOWED_DECISION_OPTION_ID
   ) {
@@ -105,7 +106,7 @@ function decisionChoice(decision: ConversationDecisionEventDto["decision"]): str
   }
   return decision.response?.optionId
     ? decision.options.find((option) => option.id === decision.response?.optionId)?.label
-    : decision.response?.text;
+    : decision.response?.text ?? (decision.response?.attachments?.length ? "Attached evidence" : undefined);
 }
 
 function mergeDecisionEvents(

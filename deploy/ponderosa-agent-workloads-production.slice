@@ -1,0 +1,7 @@
+[Unit]
+Description=Ponderosa production Agent provider and tool workloads
+
+[Slice]
+# Child of ponderosa-agent-workloads.slice: retain its aggregate host budget,
+# shared with DEV. Stop exact scopes through their owner, never this slice.
+MemoryAccounting=yes

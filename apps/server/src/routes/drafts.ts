@@ -48,6 +48,7 @@ interface StoredDraftAttachment
 
 const DRAFT_UPDATE_FIELDS = new Set([
   "text",
+  "decisionAnswers",
   "attachmentIds",
   "pastedTextAttachmentId",
   "mentionBindings",
@@ -68,6 +69,7 @@ export function draftUpdateBodyError(
     return "draft update must be an object";
   }
   const body = value as Record<string, unknown>;
+  if (body.decisionAnswers !== undefined && (!Array.isArray(body.decisionAnswers) || body.decisionAnswers.length > 3)) return "Decision drafts accept at most three structured answers";
   const unknownKey = Object.keys(body).find(
     key => !DRAFT_UPDATE_FIELDS.has(key),
   );
@@ -209,7 +211,7 @@ export class DraftService {
     private readonly workspace: Pick<
       WorkspaceStore,
       "cursor" | "deleteDraft" | "draftRecoveryInventory" | "getDraft" |
-      "listDraftConflicts" | "putDraft"
+      "listDraftConflicts" | "discardDraftConflict" | "putDraft" | "getDecision"
     >,
     private readonly cleanupAuthority: Pick<
       AssetStore,
@@ -226,6 +228,27 @@ export class DraftService {
     return typeof value === "string" && this.ownerId.test(value)
       ? value
       : undefined;
+  }
+
+  canEditOwner(draftId: string, ownerId: string): boolean {
+    const decision = this.workspace.getDecision?.(ownerId);
+    return !decision || (decision.status === "pending" && draftId === `agent:${decision.agentId}` &&
+      this.store.getAgent(decision.agentId)?.projectId === decision.projectId);
+  }
+
+  retireDecisionDraft(draftId: string, ownerId: string): void {
+    const decision = this.workspace.getDecision?.(ownerId);
+    if (!decision || decision.status === "pending" || draftId !== `agent:${decision.agentId}`) return;
+    const empty = { attachmentIds: [] };
+    for (const conflict of this.workspace.listDraftConflicts(draftId, ownerId).conflicts) {
+      this.workspace.discardDraftConflict({ conversationId: draftId, ownerId, conflictId: conflict.id });
+      this.enqueueReleasedAttachments(draftId, ownerId, conflict.displaced, empty);
+    }
+    const current = this.workspace.getDraft(draftId, ownerId);
+    if (!current.text && !current.decisionAnswers?.length && !current.attachmentIds.length && !current.pastedTextAttachmentId && !current.pendingSubmission && !current.pendingSubmissions?.length) return;
+    const next = this.workspace.putDraft(draftId, { ownerId, text: "", attachmentIds: [], clientId: "decision-response",
+      expectedRevision: current.revision });
+    this.enqueueReleasedAttachments(draftId, ownerId, current, next);
   }
 
   async withMutationLock<T>(
@@ -423,6 +446,7 @@ export class DraftService {
 
   async reconcileAttachmentCleanup(now = Date.now()): Promise<number> {
     let removed = 0;
+    for (const item of this.workspace.draftRecoveryInventory()) this.retireDecisionDraft(item.draftId, item.ownerId);
     for (const receipt of this.cleanupAuthority.pendingDraftAttachmentCleanups(now)) {
       const releaseMutation = this.acquireMutationLease(receipt.draftId);
       if (!releaseMutation) continue;
@@ -795,6 +819,7 @@ export function registerDraftRoutes(
       const ownerId = service.normalizedOwner(body?.ownerId);
       if (!ownerId) return reply.code(400).send({ error: "invalid draft owner" });
       return await service.withMutationLock(request.params.id, ownerId, async () => {
+        if (!service.canEditOwner(request.params.id, ownerId)) return reply.code(409).send({ error: "The Decision answer draft is no longer editable" });
         const current = workspace.getDraft(request.params.id, ownerId);
         const persist = async () => {
           const cursor = workspace.cursor();
@@ -908,6 +933,7 @@ export function registerDraftRoutes(
       const ownerId = service.normalizedOwner(request.body.ownerId);
       if (!ownerId) return reply.code(400).send({ error: "invalid draft owner" });
       return await service.withMutationLock(request.params.id, ownerId, async () => {
+        if (!service.canEditOwner(request.params.id, ownerId)) return reply.code(409).send({ error: "The Decision answer draft is no longer editable" });
         const prior = workspace.draftConflictResolution(request.params.conflictId);
         const conflict = workspace.listDraftConflicts(request.params.id, ownerId).conflicts
           .find(candidate => candidate.id === request.params.conflictId);
@@ -1122,6 +1148,7 @@ export function registerDraftRoutes(
           if (!ownerId) {
             return reply.code(400).send({ error: "draft owner is required" });
           }
+          if (!service.canEditOwner(request.params.id, ownerId)) return reply.code(409).send({ error: "The Decision answer draft is no longer editable" });
           const suppliedName = String(
             request.headers["x-ponderosa-filename"] ?? "attachment",
           ).replace(/[\u0000-\u001f\u007f]/g, "");
@@ -1169,6 +1196,7 @@ export function registerDraftRoutes(
           } = prepared;
           try {
             const attachment = await service.withMutationLock(request.params.id, ownerId, async () => {
+              if (!service.canEditOwner(request.params.id, ownerId)) throw new AssetError(409, "The Decision answer draft is no longer editable");
               service.enqueueAttachmentCleanup(
                 request.params.id,
                 ownerId,

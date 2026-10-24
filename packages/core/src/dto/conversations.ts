@@ -451,6 +451,8 @@ export interface CoordinationRequestUpdateDto {
 /** Canonical, read-only lifecycle of one scoped coordination Request. */
 export interface CoordinationRequestLifecycleDto {
   request: {
+    /** Current canonical eligibility; the retry route remains authoritative. */
+    retryAvailable?: boolean;
     id: string;
     requesterAgentId?: string;
     recipientAgentId: string;

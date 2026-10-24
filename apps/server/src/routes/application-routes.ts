@@ -1,12 +1,14 @@
 import {activeAgentProductSql} from '@ponderosa/agents';
 import {requestProduct} from '../product-scope.js';
-import { chatBrowserOwnerId } from "@ponderosa/core";
+import { decisionAnswersError, chatBrowserOwnerId } from "@ponderosa/core";
 import { createReadStream, promises as fs } from "@ponderosa/native-host/fs";
 import os from "node:os";
 import path from "node:path";
 import { createBrotliCompress, createGzip } from "node:zlib";
 import type {
   DecisionDto,
+  AssetDto,
+  ResolveDecisionRequest,
   GlobalChatSearchResponseDto,
 } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
@@ -15,6 +17,10 @@ import {
   type BrowserScope,
 } from "../browser-session-manager.js";
 import { BrowserProfileError } from "../browser-profile-authority.js";
+import { decisionPayloadError } from "../decision-payload.js";
+import { withDecisionAttachments } from "../decision-attachments.js";
+import { AssetError } from "../assets.js";
+import { RUNTIME_UUID } from "../asset-contracts.js";
 import { publicationOwnerIsCurrent } from "../file-publication.js";
 import {
   type ActiveRun,
@@ -654,6 +660,7 @@ registerLimitsRoutes(app, serverContext);
 
 registerAttachmentRoutes(app, {
   dataDir: opts.dataDir,
+  workspace,
   agentDeliveryLeases,
   conversationDeliveryLeases,
   conversationDeletionInProgress: conversationId => deletingConversationIds.has(conversationId),
@@ -721,9 +728,10 @@ const notificationRoutesOptions = {
   publishWorkspaceSince,
 };
 registerNotificationListRoute(app, notificationRoutesOptions);
-app.get<{ Querystring: { projectId?: string; conversationId?: string; agentId?: string; status?: string } }>("/api/decisions", async (request, reply) => {
+app.get<{ Querystring: { id?: string; projectId?: string; conversationId?: string; agentId?: string; status?: string } }>("/api/decisions", async (request, reply) => {
   const status = request.query.status;
   if (status && !["pending", "resolved", "cancelled"].includes(status)) return reply.code(400).send({ error: "invalid Decision status" });
+  if (request.query.id) { const decision = workspace.getDecision(request.query.id); return decision ? [decision] : []; }
   return workspace.listDecisions({
     projectId: request.query.projectId,
     conversationId: request.query.conversationId,
@@ -739,12 +747,28 @@ app.get<{ Params: { id: string } }>("/api/decisions/:id/action", async (request,
   if (!action) return reply.code(410).send({ error: "Connection request expired. Ask the Agent to try connecting again." });
   return reply.header("cache-control", "no-store").send(action);
 });
-app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; content?: unknown; skip?: true } }>("/api/decisions/:id/respond", async (request, reply) => {
+app.post<{ Params: { id: string }; Body: ResolveDecisionRequest }>("/api/decisions/:id/respond", async (request, reply) => {
   const current = workspace.getDecision(request.params.id);
   if (!current) return reply.code(404).send({ error: "Decision not found" });
+  const body = request.body;
+  if (!body || typeof body !== "object" || Array.isArray(body) ||
+      Object.keys(body).some(key => !["skip", "text", "optionId", "content", "attachmentIds", "answers"].includes(key)) ||
+      (body.text !== undefined && typeof body.text !== "string") ||
+      (body.optionId !== undefined && typeof body.optionId !== "string")) return reply.code(400).send({ error: "Invalid Decision response fields" });
+  let answers = body.answers;
+  if (answers !== undefined) {
+    if (!current.questions || current.runtimeAction || current.approvalScope || [body.skip, body.text, body.optionId, body.content, body.attachmentIds].some(value => value !== undefined)) return reply.code(400).send({ error: "Submit structured answers only for this question set" });
+    const error = decisionAnswersError(current.questions, answers);
+    if (error) return reply.code(400).send({ error });
+    answers = answers.map(answer => ({ ...answer, ...(answer.text !== undefined ? { text: answer.text.trim() } : {}) }));
+  } else if (current.questions && current.status === "pending") return reply.code(400).send({ error: "Answer or explicitly skip each question, then submit the set" });
+  const attachmentIds = answers ? answers.flatMap(answer => answer.attachmentIds ?? []) : body.attachmentIds === undefined ? [] : body.attachmentIds;
+  if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE ||
+      attachmentIds.some(id => typeof id !== "string" || !RUNTIME_UUID.test(id)) || new Set(attachmentIds).size !== attachmentIds.length)
+    return reply.code(400).send({ error: "Decision attachments require unique staged file IDs within the message limit" });
   if (deletingProjectIds.has(current.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
   if (request.body?.skip !== undefined && (request.body.skip !== true ||
-      request.body.optionId !== undefined || request.body.text !== undefined || request.body.content !== undefined)) {
+      request.body.optionId !== undefined || request.body.text !== undefined || request.body.content !== undefined || request.body.attachmentIds !== undefined)) {
     return reply.code(400).send({ error: "Skip question cannot include an answer, approval or submitted fields" });
   }
   if (request.body?.skip && current.status === "resolved") {
@@ -792,7 +816,8 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
   }
   if (optionId && text) return reply.code(400).send({ error: "choose an option or enter another response, not both" });
   if (optionId && !current.options.some((option) => option.id === optionId)) return reply.code(400).send({ error: "unknown Decision option" });
-  if (!optionId && !text) return reply.code(400).send({ error: "choose an option or enter a response" });
+  if (attachmentIds.length && (optionId || current.runtimeAction || body.content !== undefined)) return reply.code(400).send({ error: "Attach evidence to an answer, not an approval option or provider form" });
+  if (!answers && !optionId && !text && !attachmentIds.length) return reply.code(400).send({ error: "choose an option or enter a response" });
   if (!optionId && !current.runtimeAction && current.mode !== "text" && !current.allowOther) return reply.code(400).send({ error: "this Decision does not accept another response" });
   const liveRuntimeAction = current.runtimeAction
     ? runtimeElicitations.action(current.id)
@@ -817,6 +842,9 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
       }
     }
   }
+  const payloadError = !current.runtimeAction || text
+    ? decisionPayloadError(current, { ...(answers ? { answers } : {}), ...(text ? { text } : {}), ...(optionId ? { optionId } : {}) }) : undefined;
+  if (payloadError) return reply.code(413).send({ error: payloadError });
   const respondedAt = new Date().toISOString();
   if (current.approvalScope?.kind === "artifact_publication" && optionId === "approve") {
     if (!publicationOwnerIsCurrent(store, current) || deletingAgentIds.has(current.agentId) ||
@@ -854,51 +882,67 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
         .send({ error: error instanceof Error ? error.message : "Saved-browser approval could not be prepared." });
     }
   }
-  const cursor = workspace.cursor();
-  let decision: DecisionDto;
-  try {
-    decision = workspace.resolveDecision(current.id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}), respondedAt })!;
-  } catch (error) {
-    if (current.approvalScope?.kind === "artifact_publication") {
-      return reply.code(503).send({ code: "publication_approval_storage_failure", error: "Publication approval was not recorded. Nothing was published. Retry this Decision response." });
+  const complete = async (attachments: AssetDto[]) => {
+    const latest = workspace.getDecision(current.id);
+    if (!latest) throw new AssetError(404, "Decision no longer exists");
+    if (latest.status !== "pending") { ensureDecisionResponseActivation(latest); notifyScheduler(); return latest; }
+    const cursor = workspace.cursor();
+    let decision: DecisionDto;
+    try {
+      decision = workspace.resolveDecision(current.id, { ...(answers ? { answers: answers.map(answer => ({ ...answer,
+        ...(answer.attachmentIds?.length ? { attachmentIds: answer.attachmentIds.map(id => attachments[attachmentIds.indexOf(id)]!.id) } : {}) })) } : {}),
+        ...(optionId ? { optionId } : {}), ...(text ? { text } : {}), ...(attachments.length ? { attachments } : {}), respondedAt })!;
+    } catch (error) {
+      if (current.approvalScope?.kind === "artifact_publication") {
+        return reply.code(503).send({ code: "publication_approval_storage_failure", error: "Publication approval was not recorded. Nothing was published. Retry this Decision response." });
+      }
+      throw error;
     }
+    if (savedBrowserRequest && optionId === "approve") {
+      try {
+        if (!applyResolvedSavedBrowserApproval(decision)) {
+          return reply.code(409).send({ error: "This saved-browser approval was revoked or changed. No access was granted." });
+        }
+      } catch (error) {
+        return reply.code(error instanceof BrowserProfileError ? error.statusCode : 503)
+          .send({ error: "The Decision was recorded, but saved-browser access is not ready. Retry this Decision response." });
+      }
+    }
+    publishWorkspaceSince(cursor);
+    if (current.runtimeAction) {
+      if (text) {
+        // Free-form answers are for the Agent, not fabricated provider form
+        // fields. Decline the live provider request, then resume the Agent with
+        // the canonical Decision response.
+        runtimeElicitations.respond(current.id, { action: "decline" });
+        ensureDecisionResponseActivation(decision);
+        notifyScheduler();
+      } else if (optionId === "allow_run") {
+        runtimeElicitations.rememberForRun(current.runId, liveRuntimeAction!);
+        runtimeElicitations.respond(current.id, { action: "accept", content: {} });
+      } else {
+        runtimeElicitations.respond(current.id, optionId === "decline"
+          ? { action: "decline" }
+          : optionId === "submit"
+            ? { action: "accept", content: request.body.content }
+            : { action: "accept" });
+      }
+    } else {
+      ensureDecisionResponseActivation(decision);
+    }
+    publishMessageDeliveryChanged(decision.agentId);
+    notifyScheduler();
+    return decision;
+  };
+  if (!attachmentIds.length) return complete([]);
+  try {
+    return await withDecisionAttachments({ store, workspace, coordinationV3, drafts, assets,
+      deletingAgentIds, deletingConversationIds, reconcilingAssetAgentIds, agentDeliveryLeases, conversationDeliveryLeases },
+      current, attachmentIds, complete);
+  } catch (error) {
+    if (error instanceof AssetError) return reply.code(error.statusCode).send({ error: error.message });
     throw error;
   }
-  if (savedBrowserRequest && optionId === "approve") {
-    try {
-      if (!applyResolvedSavedBrowserApproval(decision)) {
-        return reply.code(409).send({ error: "This saved-browser approval was revoked or changed. No access was granted." });
-      }
-    } catch (error) {
-      return reply.code(error instanceof BrowserProfileError ? error.statusCode : 503)
-        .send({ error: "The Decision was recorded, but saved-browser access is not ready. Retry this Decision response." });
-    }
-  }
-  publishWorkspaceSince(cursor);
-  if (current.runtimeAction) {
-    if (text) {
-      // Free-form answers are for the Agent, not fabricated provider form
-      // fields. Decline the live provider request, then resume the Agent with
-      // the canonical Decision response.
-      runtimeElicitations.respond(current.id, { action: "decline" });
-      ensureDecisionResponseActivation(decision);
-      notifyScheduler();
-    } else if (optionId === "allow_run") {
-      runtimeElicitations.rememberForRun(current.runId, liveRuntimeAction!);
-      runtimeElicitations.respond(current.id, { action: "accept", content: {} });
-    } else {
-      runtimeElicitations.respond(current.id, optionId === "decline"
-        ? { action: "decline" }
-        : optionId === "submit"
-          ? { action: "accept", content: request.body.content }
-          : { action: "accept" });
-    }
-  } else {
-    ensureDecisionResponseActivation(decision);
-  }
-  publishMessageDeliveryChanged(decision.agentId);
-  notifyScheduler();
-  return decision;
 });
 registerNotificationMutationRoutes(app, notificationRoutesOptions);
 registerPushRoutes(app, {
