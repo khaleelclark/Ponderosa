@@ -161,6 +161,23 @@ test('UI004 routine phases require this exact acknowledged turn, preserving term
   assert.equal(messageDeliveryPhase({ ...acknowledged, injectionKind: 'steer' }), undefined);
   for (const state of ['processed', 'cancelled', 'run_unconfirmed', 'recovered', 'failed', 'unconfirmed']) assert.equal(messageDeliveryPhase({ ...acknowledged, state }), undefined);
 });
+test('UI013 an exact steering wait reason stays visible ahead of generic Waiting', () => {
+  for (const [reason, label] of Object.entries({ context_refresh: 'Waiting for context refresh', prior_steering: 'Waiting for earlier steer', revision_pending: 'Saving message edit', provider_not_ready: 'Waiting for provider', provider_unsupported: 'Provider cannot steer', preparation_retry: 'Retrying steer preparation', run_starting: 'Waiting for Run startup', scheduler_pending: 'Steer pending' })) {
+    for (const state of ['queued', 'retrying']) {
+      const nodes = status({ state, steeringWaitReason: reason })();
+      assert.ok(nodes.some(node => node.type === mui.Typography && text(node) === label), `${state}: ${reason}`);
+    }
+  }
+});
+test('UI013 current queue blockers explain Waiting without borrowing another turn acknowledgement', () => {
+  for (const [reason, label] of Object.entries({ host_resource_pressure: 'Waiting for host resources', provider_disabled: 'Provider disabled', authentication_unknown: 'Checking provider sign-in', authentication_required: 'Provider sign-in required', provider_unavailable: 'Waiting for provider', provider_retry: 'Waiting to retry provider', current_run: 'Waiting for current Run' })) {
+    const nodes = status({ state: 'queued', queueWaitReason: reason })();
+    assert.ok(nodes.some(node => node.type === mui.Typography && text(node) === label), reason);
+    assert.ok(!nodes.some(node => node.type === mui.Typography && text(node) === 'Working'));
+  }
+  const terminal = status({ state: 'processed', queueWaitReason: 'host_resource_pressure', steeringWaitReason: 'provider_not_ready' })();
+  assert.ok(!terminal.some(node => node.type === mui.Typography && /Waiting/.test(text(node))));
+});
 test('UI004 footer never borrows an earlier busy Run for a later queued message', () => {
   const h = hooks(), module = load('components/ConversationComposerStatus.tsx', {
     react: h.react, '../time': { formatExecutionElapsed: () => '0:01' },

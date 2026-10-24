@@ -150,9 +150,29 @@ export class CoordinationV3RequestReadModel {
     };
   }
 
+  requestIsOperatorRecovery(requestId: string): boolean {
+    return Boolean(this.sqlite.prepare(`
+      SELECT 1 FROM coordination_requests current
+      JOIN coordination_idempotency receipt ON receipt.project_id = current.project_id
+        AND receipt.actor_scope = 'user:local-operator' AND receipt.operation = 'coordinate'
+      WHERE current.id = ? AND current.origin_run_id IS NULL AND EXISTS (SELECT 1 FROM coordination_requests predecessor WHERE predecessor.superseded_by_request_id = current.id)
+        AND EXISTS (SELECT 1 FROM json_each(receipt.result_json, '$.requestIds') WHERE value = current.id)
+      LIMIT 1
+    `).get(requestId));
+  }
+
+  getJoin(id: string): { projectId: string; conversationId?: string; ownerAgentId: string; state: string } | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT project_id, conversation_id, owner_agent_id, state FROM coordination_joins WHERE id = ?
+    `).get(id) as { project_id: string; conversation_id: string | null; owner_agent_id: string; state: string } | undefined;
+    return row ? { projectId: row.project_id, ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
+      ownerAgentId: row.owner_agent_id, state: row.state } : undefined;
+  }
+
   requestRetryStatus(requestId: string): {
     successorRequestId?: string;
     successorState?: CoordinationRequestState;
+    recoveryState?: CoordinationRequestState;
   } {
     const row = this.sqlite.prepare(`
       SELECT id, state FROM coordination_requests
@@ -162,7 +182,14 @@ export class CoordinationV3RequestReadModel {
       )
       ORDER BY created_at DESC, id DESC
     `).get(requestId) as { id: string; state: CoordinationRequestState } | undefined;
-    return row ? { successorRequestId: row.id, successorState: row.state } : {};
+    const latest = row ? this.sqlite.prepare(`
+      WITH RECURSIVE lineage(id) AS (
+        SELECT ? UNION SELECT r.superseded_by_request_id FROM coordination_requests r JOIN lineage ON r.id = lineage.id WHERE r.superseded_by_request_id IS NOT NULL
+      ) SELECT r.state FROM coordination_requests r JOIN lineage ON lineage.id = r.id
+      WHERE r.superseded_by_request_id IS NULL LIMIT 1
+    `).get(row.id) as {state:CoordinationRequestState}|undefined : undefined;
+
+    return row ? { successorRequestId: row.id, successorState: row.state, ...(latest ? { recoveryState: latest.state } : {}) } : {};
   }
 
 }

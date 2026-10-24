@@ -51,7 +51,6 @@ import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
 import { buildMarkdownTranscript } from "../chatTranscript";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { AgentWorkInspector } from "./AgentWorkInspector";
-import { AttentionSurface } from "./AttentionSurface";
 import { TargetedNextRunReceipts } from "./TargetedNextRunReceipts";
 import { queryKeys } from "../queryKeys";
 import { AgentsTab } from "./AgentsTab";
@@ -79,6 +78,7 @@ import {
 import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
 import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
+import { ProviderFailureBanner } from "./ProviderFailureBanner";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 import {
   resolveMessageMentionText,
@@ -91,7 +91,6 @@ import { ChatContextSettings } from "./ChatContextSettings";
 
 import { chatStateKey } from "../chatState";
 import { publishUpdatedAgent, refreshAgentRuntime } from "../conversationAgentCache";
-import { notificationTechnicalFocusId } from "../technicalFocus";
 import { pendingRuntimeSelection, runtimeMutationOptions, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
 
 export function ConversationView({
@@ -110,7 +109,6 @@ export function ConversationView({
   onOpenAgent,
   onAgentsDeleted,
   onOpenReview,
-  onOpenAgentWork,
   onOpenBrowser,
   onOpenFileActivity,
   onNewAgent,
@@ -139,7 +137,6 @@ export function ConversationView({
   ): void;
   onAgentsDeleted(agentIds: string[]): void;
   onOpenReview?(agentId: string, executionId?: string): void;
-  onOpenAgentWork(focusId?: string): void;
   onOpenBrowser(agentId: string, runId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onNewAgent(master: ConversationDto, managerAgentId?: string): void;
@@ -960,17 +957,6 @@ export function ConversationView({
                     {olderError}
                   </Alert>
                 ) : null}
-                <AttentionSurface
-                  notifications={(notificationsQuery.data?.items ?? []).filter((item) => item.kind !== "decision")}
-                  projectId={conversation.projectId}
-                  conversationId={conversationId}
-                  onOpen={item => {
-                    const focusId = notificationTechnicalFocusId(item);
-                    if (item.agentId)
-                      onOpenAgent(item.agentId, "technical", focusId);
-                    else onOpenAgentWork(focusId);
-                  }}
-                />
                 {(activeBrowsers.data ?? [])
                   .filter(session => conversationAgents.some(agent => agent.id === session.agentId))
                   .map(session => {
@@ -1184,11 +1170,13 @@ export function ConversationView({
               pointerEvents: "none",
             }}
           >
+            <ProviderFailureBanner messages={detailQuery.data.providerFailureMessages ?? messages} hasMore={detailQuery.data.providerFailuresHasMore} onOpenAgent={id => onOpenAgent(id)} agents={identityAgents} projectId={conversation.projectId}>
             <MasterRespondingIndicator
               messages={messages}
               agents={agents}
               healthByAgentId={healthByAgentId}
             />
+            </ProviderFailureBanner>
           </Box>
         ) : null}
       </Box>

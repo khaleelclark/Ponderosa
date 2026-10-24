@@ -316,15 +316,15 @@ export class ClaudeAdapter implements Adapter {
     return this.run(args, opts.cwd, opts.signal, opts.environment, opts.onRuntimeRootExit, opts.onRuntimeSpawned);
   }
 
-  private run(
+  private async *run(
     args: string[],
     cwd: string,
     signal: AbortSignal,
     environment?: Record<string, string>,
     onRuntimeRootExit?: () => void,
     onRuntimeSpawned?: (handle: RuntimeProcessHandle) => void,
-  ): AsyncIterable<AgentEvent> {
-    return streamProcess({
+  ): AsyncGenerator<AgentEvent> {
+    for await (const event of streamProcess({
       bin: this.bin,
       args,
       cwd,
@@ -335,6 +335,11 @@ export class ClaudeAdapter implements Adapter {
       killGraceMs: this.killGraceMs,
       map: mapClaudeEvent,
       label: "claude",
-    });
+    })) {
+      yield event;
+      // Closing the source awaits observed process-group exit, including a
+      // CLI watchdog that would otherwise retry independently after rejection.
+      if (event.type === "error" && event.code === "quota_exhausted") return;
+    }
   }
 }

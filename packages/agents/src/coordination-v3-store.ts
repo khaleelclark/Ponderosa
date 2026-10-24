@@ -281,6 +281,7 @@ export class CoordinationV3Store {
       sqlite,
       this.support,
       this.runtimeScopeAuthority,
+      this.runtimeAttachmentAuthority,
       this.requestRecoveryAuthority,
       input => this.createActivation(input),
       (requestIds, ownerAgentId, dependencyKind, dependencyId, now) =>
@@ -659,6 +660,10 @@ export class CoordinationV3Store {
     return this.coordinateAuthority.enqueueMessageActivation(input);
   }
 
+  protectMessageAttachments(input: Pick<EnqueueMessageActivationInput, "projectId" | "agentId" | "messageId" | "payload">): unknown {
+    return this.coordinateAuthority.protectMessageAttachments(input);
+  }
+
   waitForTaskDecision(input: { runAuthorization: RunAuthorizationV3; decisionId: string; scopeKey: string }, now = new Date().toISOString()): void {
     this.sqlite.transaction(() => {
       this.support.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
@@ -880,9 +885,14 @@ export class CoordinationV3Store {
     return this.requestReadModel.requestDelivery(requestId);
   }
 
+  requestIsOperatorRecovery(id: string) { return this.requestReadModel.requestIsOperatorRecovery(id); }
+
+  getJoin(id: string) { return this.requestReadModel.getJoin(id); }
+
   requestRetryStatus(requestId: string): {
     successorRequestId?: string;
     successorState?: import("@ponderosa/core").CoordinationRequestState;
+    recoveryState?: import("@ponderosa/core").CoordinationRequestState;
   } {
     return this.requestReadModel.requestRetryStatus(requestId);
   }
@@ -1170,6 +1180,10 @@ export class CoordinationV3Store {
       promptInjectionState: "not_injected" | "injecting" | "injected";
       httpStatusCode?: number;
       retryAfterMs?: number;
+      quotaResetAt?: string;
+      quotaLimit?: import("@ponderosa/core").ProviderQuotaLimit;
+      engineId?: string;
+      model?: string;
       exitCode?: number | null;
       signal?: string | null;
       stderr?: string;

@@ -544,8 +544,13 @@ export function registerServerLifecycle(
     const runtimeArtifacts = coordinationV3.runtimeArtifacts();
     if (artifactFilesystem.ok) {
       resolveOperationalNotification("startup:artifact-filesystem-capability");
-      const recoveredAssociations = await assets.recoverRuntimeCommunicationAssociations((communicationId, projectId) =>
-        coordinationV3.runtimeCommunication(communicationId)?.projectId === projectId);
+      const recoveredAssociations = await assets.recoverRuntimeCommunicationAssociations((communicationId, projectId, binding) => {
+        const decisionId = /^decision:([^:]+):response$/.exec(communicationId)?.[1];
+        if (!decisionId) return coordinationV3.runtimeCommunication(communicationId)?.projectId === projectId;
+        const decision = workspace.getDecision(decisionId);
+        return Boolean(decision?.status === "resolved" && decision.projectId === projectId && decision.agentId === binding.agentId &&
+          decision.response?.attachments?.some(file => file.id === binding.attachmentId && file.sha256 === binding.contentHash && file.size === binding.byteLength));
+      });
       if (recoveredAssociations.unavailable) {
         app.log.error({ recovery: recoveredAssociations }, "runtime Communication attachment recovery found unavailable immutable content");
       }
@@ -954,15 +959,16 @@ export function registerServerLifecycle(
   const closeShutdownStorageIfReady = (): void => {
     if (!providerRuntimeShutdownFinalized || !shutdownBackgroundCleanupSucceeded ||
         !attachmentUploadsDrained || shutdownStorageClosed) return;
+    const startedAt = performance.now();
+    app.log.info("Ponderosa shutdown storage cleanup started");
     assets.close();
     context.browserProfiles.close();
     workspace.close();
-    // Upload, provider and background work has settled, so an orderly shutdown
-    // may replay write-active projections once and mint the clean
-    // checkpoint used by the next startup. Direct store.close() remains the
-    // crash-simulation/fail-closed path used by recovery tooling and tests.
-    store.close({ checkpointWrites: true });
+    // A write-active lifetime leaves recovery to the next startup. Replaying
+    // every projection here can exceed the shutdown deadline on large stores.
+    store.close();
     shutdownStorageClosed = true;
+    app.log.info({ durationMs: Math.round(performance.now() - startedAt) }, "Ponderosa shutdown storage cleanup completed");
   };
   const finalizeProviderRuntimeShutdown = async (): Promise<void> => {
     if (!providerRuntimeShutdownFinalized) {
