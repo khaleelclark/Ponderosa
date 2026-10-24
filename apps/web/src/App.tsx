@@ -328,10 +328,6 @@ export default function App({
     setNotificationPanelOpen(false);
     restoreOverlayTrigger();
   };
-  const openEngineStatus = () => {
-    stopSpeech();
-    navigate({ kind: "settings", section: "activity" });
-  };
   const setMobileNavigationOpen = (open: boolean) => {
     if (open) rememberOverlayTrigger();
     setMobileNavOpen(open);
@@ -614,9 +610,6 @@ export default function App({
     if (!removedCurrent) return;
     navigateWorkspace({ kind: "home" });
   };
-  const handleProjectDeleted = (projectId: string) => {
-    reconcileDeletedProject(projectId);
-  };
   const openSettings = () => {
     navigateWorkspace({ kind: "settings", section: "general" });
   };
@@ -834,9 +827,6 @@ export default function App({
                     onCreate={openCreationForm}
                     onCancelCreate={cancelCreationWorkspace}
                     onOpenInbox={openNotifications}
-                    onProjectDeleted={handleProjectDeleted}
-                    onConversationAction={openSidebarConversationAction}
-                    onOpenEngineStatus={openEngineStatus}
                     onBrowserRequestHandled={requestId =>
                       setProjectBrowserRequest(current =>
                         consumeProjectBrowserRequest(current, requestId),

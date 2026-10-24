@@ -4,12 +4,10 @@ import { useTheme } from "@mui/material/styles";
 import { useEventCallback } from "@mui/material/utils";
 import type {
   AgentHealthDto,
-  ConversationDto,
   EngineDto,
   ProjectDto,
   ProjectEngineCapabilitiesDto,
   ResponseFileActivityDto,
-  WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -57,18 +55,13 @@ export function ProjectShell({
   project: ProjectDto;
   route: ProjectRoute;
   engines: EngineDto[];
-  notifications: WorkspaceNotificationDto[];
   decisionReviewAction?: ReactNode;
   preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
-  onRenameConversation(conversation: ConversationDto): void;
-  onDeleteConversation(conversation: ConversationDto): void;
-  onOpenEngineStatus(): void;
-  navigate(route: Route, options?: { replace?: boolean }): void;
+  navigate(route: Route, options?: { replace?: boolean }): boolean | void;
   browserRequest?: ProjectBrowserRequest;
   onBrowserRequestHandled?(requestId: number): void;
   onResourceDeleted?(route: RemovableWorkspaceResourceRoute): void;
-  onProjectDeleted(projectId: string): void;
   onCreate(
     kind: "chat" | "agent",
     context: {

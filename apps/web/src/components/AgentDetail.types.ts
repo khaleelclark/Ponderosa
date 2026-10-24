@@ -17,8 +17,8 @@ export interface AgentDetailProps {
   focusTelemetry?: AgentTelemetryFocus;
   technicalFocusId?: string;
   initialView?: AgentDetailView;
-  onViewChange?(view: AgentDetailView): void;
-  onOpenTechnicalDetails(focusId?: string): void;
+  onViewChange?(view: AgentDetailView): boolean | void;
+  onOpenTechnicalDetails(focusId?: string): boolean | void;
   decisionReviewAction?: ReactNode;
   engines: EngineDto[];
   modelCatalogLoading?: boolean;
