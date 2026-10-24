@@ -6,7 +6,7 @@ import { realpathSync, statSync } from 'node:fs';
 import {createHash} from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {validatedObject,exactObjectFields} from '../object-validation.js';
-import { CapabilityPolicyRevisionConflictError, CapabilityPolicyStore, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
+import { workspaceRecencyCte, CapabilityPolicyRevisionConflictError, CapabilityPolicyStore, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
 import { AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,BUILT_IN_CAPABILITIES, connectorCapability, parseConnectorCapabilityId, type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type CapabilityDescriptor, type CapabilityPolicyRecord, type CapabilityScopeKind, type DeployBranchRequest, type EffectiveCapabilityPolicy, type WorkspacePreferencesDto } from '@ponderosa/core';
 import {activeChatResourceOwner} from '../branch-resource-owner.js';
 import {previewBranchExecutionDetail} from '../branch-detail-preview.js';
@@ -130,10 +130,13 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
   app.get<{Params:{id:string};Querystring:CollectionQuery&{executionId?:string}}>('/api/branches/:id/chats',async(request,reply)=>{
     if(!branches.getBranch(request.params.id))return reply.code(404).send({error:'Branch not found'});
     try{
+      const search=request.query.search?.trim()??'';
+      if(search.length>200)throw new Error('Chat search must be at most 200 characters');
+      const recency=context.workspace.resourceRecencySnapshot('conversation');
       const page=sqliteCollectionPage(store.sqlite,request.query,{
-        baseSql:`SELECT id,title,updated_at FROM conversations WHERE branch_id=? AND branch_execution_id IS ? AND ${activeChatProductSql('conversations','branches')}`,
-        params:[request.params.id,request.query.executionId??null],order:'updated',scope:`branch-chats:${request.params.id}:${request.query.executionId??'persistent'}`,
-        generationKeys:['conversations','projects'],
+        baseSql:`WITH ${workspaceRecencyCte} SELECT c.id,c.title,max(c.updated_at,COALESCE(recent_use.last_used_at,'')) AS updated_at FROM conversations c LEFT JOIN recent_use ON recent_use.id=c.id WHERE c.branch_id=? AND c.branch_execution_id IS ? AND ${activeChatProductSql('c','branches')} ${search?'AND instr(lower(c.title),lower(?))>0':''}`,
+        params:[recency.json,request.params.id,request.query.executionId??null,...(search?[search]:[])],order:'updated',scope:`branch-chats:${request.params.id}:${request.query.executionId??'persistent'}`,
+        generationKeys:['conversations','projects'],revisionSuffix:recency.revision,
         hydrate:id=>{const chat=store.getConversation(id),owner=store.getChatContext(id);return chat&&owner?{...chat,workingDirectory:owner.hostPath,defaultEngine:owner.defaultEngine}:undefined},
       });
       applyCollectionPageHeaders(reply,page);return page.items;
