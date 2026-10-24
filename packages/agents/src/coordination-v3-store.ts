@@ -885,9 +885,14 @@ export class CoordinationV3Store {
     return this.requestReadModel.requestDelivery(requestId);
   }
 
+  requestIsOperatorRecovery(id: string) { return this.requestReadModel.requestIsOperatorRecovery(id); }
+
+  getJoin(id: string) { return this.requestReadModel.getJoin(id); }
+
   requestRetryStatus(requestId: string): {
     successorRequestId?: string;
     successorState?: import("@ponderosa/core").CoordinationRequestState;
+    recoveryState?: import("@ponderosa/core").CoordinationRequestState;
   } {
     return this.requestReadModel.requestRetryStatus(requestId);
   }

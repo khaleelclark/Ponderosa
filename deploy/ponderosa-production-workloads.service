@@ -1,0 +1,9 @@
+[Unit]
+Description=Ponderosa production workload ownership
+
+[Service]
+# Native lifetime anchor in the SAME user manager as the provider scopes.
+# The system daemon starts/stops this unit through its workload drop-in.
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/true

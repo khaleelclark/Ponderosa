@@ -247,6 +247,7 @@ export function WorkspaceRouteOutlet({
               onDeleteConversation: conversation =>
                 onConversationAction("delete", conversation),
               onOpenEngineStatus,
+              decisionReviewAction: <Button color="inherit" size="small" onClick={onOpenInbox}>View decision</Button>,
               navigate: onNavigate,
               browserRequest: projectBrowserRequest,
               onBrowserRequestHandled,

@@ -41,6 +41,14 @@
       "origin": "Approved checks 39/95: provider cleanup and replacement admission boundary"
     },
     {
+      "path": "tests/agents/workload-boundary.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; private stores and controlled inert provider roots only",
+      "origin": "Per-scope host memory validation and shutdown/restart canonical recovery without optional full replay"
+    },
+    {
       "oldPath": "apps/server/test/real-codex.test.mjs",
       "path": "tests/agents/real-codex.test.mjs",
       "feature": "agents",
@@ -1329,6 +1337,22 @@
       "lane": "web",
       "moduleBase": "apps/web/package.json",
       "requirements": "Actual Decision draft and upload hooks with controlled transport/effects; no provider account"
+    },
+    {
+      "path": "tests/chats/decision-questions.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Actual Fastify Decision route with controlled authority stubs; no listener or provider",
+      "origin": "UI019 full Unicode questions and bounded structured group validation"
+    },
+    {
+      "path": "tests/chats/agent-decision-layout.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; actual panel/timeline rendering with controlled canonical query inputs",
+      "origin": "UI020 single conversation scroll, exact canonical questions and concise Decision notices"
     }
   ],
   "retainedReleasePayload": [

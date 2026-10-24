@@ -13,7 +13,7 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
 import { api } from "../api";
 import { mergeAgentStatuses } from "../agents";
 import { useAgent, useAgentHealth, useConversations, useAgents } from "../hooks/queries";
@@ -49,6 +49,7 @@ export function ProjectShell({
   navigate,
   browserRequest,
   onBrowserRequestHandled,
+  decisionReviewAction,
   onResourceDeleted,
   onCreate,
 }: {
@@ -57,6 +58,7 @@ export function ProjectShell({
   route: ProjectRoute;
   engines: EngineDto[];
   notifications: WorkspaceNotificationDto[];
+  decisionReviewAction?: ReactNode;
   preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onRenameConversation(conversation: ConversationDto): void;
@@ -276,7 +278,6 @@ export function ProjectShell({
             onResourceDeleted?.({ kind: "agent", projectId, agentId }),
           )}
         onOpenReview={openAgentReview}
-        onOpenAgentWork={(focusId) => navigate({ kind: "projectWork", projectId, conversationId: route.conversationId, ...(focusId ? { focusId } : {}) })}
         onOpenBrowser={(agentId, runId) => projectBrowser.openAgent?.(agentId, runId)}
         onOpenFileActivity={openAgentFileActivity}
         onNewAgent={(master, managerAgentId) => onCreate("agent", {
@@ -294,6 +295,7 @@ export function ProjectShell({
   } else if (route.kind === "agent") {
     main = (
       <AgentDetail
+        decisionReviewAction={decisionReviewAction}
         key={route.agentId}
         agentId={route.agentId}
         projectId={projectId}
