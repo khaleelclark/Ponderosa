@@ -1,0 +1,21 @@
+# Render @UID@ as the numeric UID of the system service's existing User=.
+# Install only after the matching user units and systemd 253+ are qualified.
+[Unit]
+Requires=user@@UID@.service
+After=user@@UID@.service
+
+[Service]
+OOMPolicy=continue
+KillMode=mixed
+Environment=XDG_RUNTIME_DIR=/run/user/@UID@
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/@UID@/bus
+Environment=PONDEROSA_AGENT_SCOPE_MODE=systemd
+Environment=PONDEROSA_AGENT_PARENT_UNIT=ponderosa-production-workloads.service
+Environment=PONDEROSA_AGENT_WORKLOAD_SLICE=ponderosa-agent-workloads-production.slice
+# Provisional Pine budget: observed completed scopes peaked at 849 MiB.
+# The 8 GiB hard cap stays below the observed 13–18 GiB runaway workloads.
+Environment=PONDEROSA_AGENT_MEMORY_MAX_MIB=8192
+# Preserve existing start/stop hooks and service identity. No shared slice stop.
+ExecStartPre=/usr/bin/env XDG_RUNTIME_DIR=/run/user/@UID@ DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/@UID@/bus /usr/bin/systemctl --user stop ponderosa-production-workloads.service
+ExecStartPre=/usr/bin/env XDG_RUNTIME_DIR=/run/user/@UID@ DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/@UID@/bus /usr/bin/systemctl --user start ponderosa-production-workloads.service
+ExecStopPost=/usr/bin/env XDG_RUNTIME_DIR=/run/user/@UID@ DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/@UID@/bus /usr/bin/systemctl --user stop ponderosa-production-workloads.service

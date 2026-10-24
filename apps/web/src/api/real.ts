@@ -468,14 +468,14 @@ export const realApi = {
       `/api/conversations/${encodeURIComponent(conversationId)}/next-run-deliveries${toQuery({ limit })}`,
     );
   },
-  getConversationDraft(conversationId: string, ownerId: string): Promise<ConversationDraftDto> {
-    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft?ownerId=${encodeURIComponent(ownerId)}`);
+  getConversationDraft(conversationId: string, ownerId: string, signal?: AbortSignal): Promise<ConversationDraftDto> {
+    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft?ownerId=${encodeURIComponent(ownerId)}`, { signal });
   },
   getConversationDraftConflicts(conversationId: string, ownerId: string): Promise<ConversationDraftConflictListDto> {
     return requestJson<ConversationDraftConflictListDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-conflicts?ownerId=${encodeURIComponent(ownerId)}`);
   },
-  putConversationDraft(conversationId: string, request: PutConversationDraftRequest): Promise<ConversationDraftDto> {
-    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`, { method: "PUT", body: JSON.stringify(request satisfies PutConversationDraftRequest) });
+  putConversationDraft(conversationId: string, request: PutConversationDraftRequest, signal?: AbortSignal): Promise<ConversationDraftDto> {
+    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`, { method: "PUT", body: JSON.stringify(request satisfies PutConversationDraftRequest), signal });
   },
   restoreConversationDraftConflict(
     conversationId: string,
@@ -509,8 +509,8 @@ export const realApi = {
       body: file,
     }), shouldRetry);
   },
-  async downloadDraftAttachment(attachment: DraftAttachmentDto): Promise<File> {
-    const response = await fetch(productApiPath(attachment.downloadUrl), { cache: "no-store" });
+  async downloadDraftAttachment(attachment: DraftAttachmentDto, signal?: AbortSignal): Promise<File> {
+    const response = await fetch(productApiPath(attachment.downloadUrl), { cache: "no-store", signal });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return new File([await response.blob()], attachment.name, { type: attachment.mediaType });
   },
@@ -615,7 +615,7 @@ export const realApi = {
       body: JSON.stringify(request),
     });
   },
-  listDecisions(filter: { projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] } = {}, signal?: AbortSignal): Promise<DecisionDto[]> { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`, signal ? { signal, cache: "no-store" } : undefined); },
+  listDecisions(filter: { id?: string; projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] } = {}, signal?: AbortSignal): Promise<DecisionDto[]> { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`, signal ? { signal, cache: "no-store" } : undefined); },
   getDecisionAction(decisionId: string): Promise<RuntimeElicitationActionDto> { return requestJson<RuntimeElicitationActionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/action`); },
   respondDecision(decisionId: string, request: ResolveDecisionRequest, signal?: AbortSignal): Promise<DecisionDto> { return requestJson<DecisionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/respond`, { method: "POST", body: JSON.stringify(request satisfies ResolveDecisionRequest), signal }); },
   getWebPushStatus(deviceId?: string): Promise<WebPushStatusDto> { return requestJson(`/api/push/status${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ""}`); },

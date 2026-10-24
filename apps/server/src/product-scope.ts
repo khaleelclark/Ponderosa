@@ -374,8 +374,8 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
     const belongs=(id:string,kind:string,scope:ProductScope):boolean=>
       (scope==='branches'&&['agent','conversation','chat','project'].includes(kind)&&retained.has(id))||(kind==='project'&&browserHandleInProduct(store,request,id,scope))||ordinaryBelongs(id,kind,scope);
     if(['/api/workspace/preferences','/api/notification-settings/:kind/:id'].includes(request.routeOptions.url??'')&&payload&&typeof payload==='object'&&'projectOrder' in payload)return productPreferences(store,payload as WorkspacePreferencesDto,product);
-    const filter=(value:unknown):unknown=>{
-      if(Array.isArray(value))return value.map(filter).filter(v=>v!==undefined);
+    const filter=(value:unknown,answer?:DecisionDto):unknown=>{
+      if(Array.isArray(value))return value.map(item=>filter(item,answer)).filter(v=>v!==undefined);
       if(!value||typeof value!=='object'||Buffer.isBuffer(value))return value;
       const object=value as Record<string,unknown>;
       // Branch trigger occurrences can have no Project target. Their immutable
@@ -395,7 +395,11 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
       // Chat attachments use the canonical Chat ID as their storage owner.
       const chatAttachment=typeof object.conversationId==='string'&&object.agentId===object.conversationId
         &&typeof object.downloadUrl==='string'&&belongs(object.conversationId,'conversation',product);
-      if(!scopedArtifact&&!chatAttachment&&typeof object.agentId==='string'&&!belongs(object.agentId,'agent',product)&&
+      // Canonical Decision evidence survives its Agent when the original Chat survives.
+      // Propagate that exact response owner; a matching filename or URL grants nothing.
+      const savedFile=answer?.response?.attachments?.find(file=>file.id===object.id&&file.agentId===object.agentId&&file.sha256===object.sha256&&file.size===object.size);
+      const decisionAttachment=Boolean(savedFile&&answer&&decisionInProduct(store,answer,product));
+      if(!scopedArtifact&&!chatAttachment&&!decisionAttachment&&typeof object.agentId==='string'&&!belongs(object.agentId,'agent',product)&&
         !(typeof object.conversationId==='string'&&decisionInProduct(store,{agentId:object.agentId,conversationId:object.conversationId},product)))return undefined;
       if(!scopedArtifact&&typeof object.originAgentId==='string'&&!belongs(object.originAgentId,'agent',product))return undefined;
       if(typeof object.conversationId==='string'&&!(draftOwner&&object.conversationId===draftOwner.surfaceId
@@ -411,7 +415,7 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
           continue;
         }
         if(key==='lastConversationId'&&typeof v==='string'&&!belongs(v,'conversation',product))continue;
-        const next=product==='branches'&&['url','previewUrl','downloadUrl','thumbnailUrl','contentUrl'].includes(key)&&typeof v==='string'&&v.startsWith('/api/')?'/api/branches/engine/'+v.slice(5):filter(v);
+        const next=product==='branches'&&['url','previewUrl','downloadUrl','thumbnailUrl','contentUrl'].includes(key)&&typeof v==='string'&&v.startsWith('/api/')?'/api/branches/engine/'+v.slice(5):filter(v,key==='response'&&typeof object.id==='string'&&typeof object.mode==='string'?workspace.getDecision(object.id):answer);
         if(next!==undefined)result[key]=next;
       }
       return result;
