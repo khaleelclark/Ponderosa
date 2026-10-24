@@ -5,6 +5,7 @@ import {
   useContext,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -86,6 +87,23 @@ export function PrimaryHeaderActionsProvider({
       />
     </PrimaryHeaderActionsContext.Provider>
   );
+}
+
+/** Observe real nested headers through the existing outlet registration, including lazy/error views. */
+export function PrimaryHeaderActionsScope({onPresenceChange,children}:{onPresenceChange?(present:boolean):void;children:ReactNode}):JSX.Element {
+  const register=useContext(PrimaryHeaderActionsContext);
+  const outlets=useRef(new Set<HTMLElement>());
+  const scopedRegister=useCallback<RegisterHeaderActionOutlet>(element=>{
+    const unregister=register?.(element);
+    outlets.current.add(element);
+    onPresenceChange?.(true);
+    return ()=>{
+      unregister?.();
+      outlets.current.delete(element);
+      onPresenceChange?.(outlets.current.size>0);
+    };
+  },[register,onPresenceChange]);
+  return <PrimaryHeaderActionsContext.Provider value={scopedRegister}>{children}</PrimaryHeaderActionsContext.Provider>;
 }
 
 /** The trailing action destination shared by primary and utility headers. */
