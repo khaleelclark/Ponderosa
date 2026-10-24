@@ -985,6 +985,22 @@
       "moduleBase": "packages/agents/package.json",
       "requirements": "Node24, built agents/native-host; disposable current-state SQLite and canonical logs; no provider account",
       "origin": "Validated clean checkpoint reuse, write-active corruption recovery, canonical source scope, certificate/crash refusal and event sequence/torn append regression"
+    },
+    {
+      "path": "tests/installation-release/projection-progress-proof.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host; disposable current-state SQLite and canonical logs; no provider account",
+      "origin": "Transactional projection receipt, FTS visibility and source/database binding boundaries"
+    },
+    {
+      "path": "tests/installation-release/projection-progress-recovery.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host; disposable current-state SQLite and canonical logs; no provider account",
+      "origin": "Native write-active restart and incomplete history tails; metadata, SQL, V3 and saved-decision preservation"
     }
   ],
   "retainedReleasePayload": [

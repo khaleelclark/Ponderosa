@@ -11,10 +11,16 @@ const CHECKPOINT_FILE = ".projection-clean-shutdown.json";
 // Bump whenever projection semantics change without a schema marker.
 const PROJECTION_CHECKPOINT_VERSION = 4;
 const NON_CANONICAL_ROOTS = new Set([
-  "workspaces", "browser-profiles", "browser-sessions", "diagnostics", "launcher-state",
+  "workspaces", "working-copies", "browser-profiles", "browser-sessions", "diagnostics", "launcher-state",
+  // Separate owners validate/recover these physical bytes and host identity;
+  // none are inputs to the authored-history SQLite projectors.
+  "host-secrets", "draft-attachments", "runtime-attachments", "retained-browser-sessions",
 ]);
 const NON_CANONICAL_FILES = new Set([
   CHECKPOINT_FILE, ".ponderosa-daemon.lock", "ponderosa.db", "ponderosa.db-shm", "ponderosa.db-wal",
+  // These journals are independently replayed by WorkspaceStore/ContextCursorStore;
+  // they never feed AgentStore's SQLite projections.
+  "workspace-events.jsonl", "context-cursors.jsonl", "engine-availability.jsonl",
 ]);
 // V3 coordination/Run authority is deliberately absent: only rebuildable views
 // and canonical visibility changes invalidate unaccounted projection writes.
@@ -236,6 +242,8 @@ export class ProjectionProgress {
     this.dataVersion = this.client.pragma("data_version", { simple: true }) as number;
     this.hashes.clear(); this.invalid = false; this.initialized = true;
   }
+  /** An accepted owner write failed outside its projection transaction. */
+  invalidate(): void { this.invalid = true; }
   run<T>(filenames: string[], work: () => T): T {
     if (!this.initialized) return work();
     const outermost = this.frames.length === 0, generation = this.generation();
@@ -253,6 +261,7 @@ export class ProjectionProgress {
         }
         if (!this.invalid) for (const relative of sources) {
           const current = signature(path.join(this.dataDir, relative)), receipt = this.receipt(relative)!;
+          if (receipt.signature === JSON.stringify(current)) continue;
           let sha256: string | null = null;
           if (TAIL_PATH.test(relative) && current) {
             const prior = JSON.parse(receipt.signature) as Signature | null, cached = this.hashes.get(relative);
@@ -305,10 +314,4 @@ export class ProjectionProgress {
       schemaFingerprint: schemaFingerprint(this.client), canonicalFingerprint: fingerprint(inventory), databaseSignature, tails,
       writtenAt: new Date().toISOString() });
   }
-}
-
-/** Explicit verified full-rebuild callers may establish a fresh baseline. */
-export function writeProjectionCheckpoint(dataDir: string, client: Database.Database): void {
-  const progress = new ProjectionProgress(dataDir, client);
-  progress.initialize(); progress.checkpoint();
 }

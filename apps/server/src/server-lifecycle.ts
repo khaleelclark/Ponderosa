@@ -960,8 +960,8 @@ export function registerServerLifecycle(
     assets.close();
     context.browserProfiles.close();
     workspace.close();
-    // A write-active lifetime leaves recovery to the next startup. Replaying
-    // every projection here can exceed the shutdown deadline on large stores.
+    // Commit verified projection progress without replaying history here.
+    // Incomplete or unsupported work retains the full startup recovery path.
     store.close();
     shutdownStorageClosed = true;
     app.log.info({ durationMs: Math.round(performance.now() - startedAt) }, "Ponderosa shutdown storage cleanup completed");

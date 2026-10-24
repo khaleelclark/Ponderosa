@@ -1,6 +1,6 @@
 import { appendFsyncedJsonl } from "./append-jsonl.js";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "@ponderosa/native-host/fs";
+import { mkdirSync, readFileSync, writeFileSync } from "@ponderosa/native-host/fs";
 import { dirname, join } from "node:path";
 import type Database from "better-sqlite3";
 import { and, eq, isNull, or } from "drizzle-orm";
@@ -12,7 +12,7 @@ import type {
 } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { readArtifactSequenceReservation, reservedArtifactSeq, type ArtifactSequenceReservation } from "./artifact-sequence.js";
-import { EventLog } from "./eventlog.js";
+import { EventLog, readLog } from "./eventlog.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import { publishManagedArtifactContent } from "./managed-artifact-files.js";
 import { agentDir, artifactContentPath, eventsPath } from "./paths.js";
@@ -100,6 +100,9 @@ export class AgentEventProjectionStore {
     const log = this.logFor(agentId, projectId);
     let stored: StoredLogEvent | undefined;
     try {
+      if (this.lastSeq(agentId) !== log.peekNextSeq() - 1) {
+        throw new Error("canonical event prefix is not completely projected; restart before appending");
+      }
       stored = log.append(event, ts);
       const { state: nextState, ops } = projectEvent(agentId, state, stored, this.reservationFor(agentId, projectId));
       this.applyOps(agentId, projectId, ops);
@@ -116,14 +119,29 @@ export class AgentEventProjectionStore {
           : error instanceof Error && error.message === "managed artifact identity collision or unsafe existing leaf"
             ? "managed_artifact_collision" : "event_projection_failed",
       }, error);
-      this.projectionFailures.set(agentId, failure);
-      try {
-        appendFsyncedJsonl(join(agentDir(this.dataDir, projectId, agentId), "event-persistence-failures.jsonl"),
-          [{ ...failure.diagnostic, recordedAt: new Date().toISOString() }]);
-      } catch { /* diagnostics must not replace the original persistence failure */ }
-      throw failure;
+      throw this.retainFailure(agentId, projectId, failure);
     }
     return stored;
+  }
+
+  /** The surrounding progress transaction can fail after append
+   * returned. Its rollback must retain the same refusal fence as applyOps. */
+  fenceAfterAppend(agentId: string, projectId: string, stored: StoredLogEvent, error: unknown): AgentEventPersistenceError {
+    const executionId = "executionId" in stored.event ? stored.event.executionId : undefined;
+    return this.retainFailure(agentId, projectId, new AgentEventPersistenceError({
+      agentId, seq: stored.seq, eventType: stored.event.type,
+      ...(executionId ? { executionId } : {}), code: "event_projection_failed",
+    }, error));
+  }
+
+  private retainFailure(agentId: string, projectId: string, failure: AgentEventPersistenceError): AgentEventPersistenceError {
+    this.states.delete(agentId);
+    this.projectionFailures.set(agentId, failure);
+    try {
+      appendFsyncedJsonl(join(agentDir(this.dataDir, projectId, agentId), "event-persistence-failures.jsonl"),
+        [{ ...failure.diagnostic, recordedAt: new Date().toISOString() }]);
+    } catch { /* diagnostics must not replace the original persistence failure */ }
+    return failure;
   }
 
   readAll(agentId: string, projectId: string): StoredLogEvent[] {
@@ -185,6 +203,36 @@ export class AgentEventProjectionStore {
     activeEngine: string,
   ): void {
     this.applyOps(agentId, projectId, projectAll(agentId, stored, activeEngine, this.reservationFor(agentId, projectId)));
+  }
+
+  /** Resume a certified prefix without deleting or rewriting its projections. */
+  replayTail(agentId: string, projectId: string, offset: number): StoredLogEvent[] {
+    const file = eventsPath(this.dataDir, projectId, agentId);
+    const bytes = readFileSync(file);
+    if (offset > bytes.length || (offset > 0 && bytes[offset - 1] !== 10)) throw new Error("invalid event prefix boundary");
+    const prefix: StoredLogEvent[] = bytes.subarray(0, offset).toString("utf8").split("\n")
+      .filter(line => line.trim()).map(line => JSON.parse(line));
+    // A source hash proves bytes; compare the committed index as well so a
+    // maximum sequence can never conceal a missing or different prefix row.
+    const projected = this.readSince(agentId, 0);
+    if (JSON.stringify(projected) !== JSON.stringify(prefix)) throw new Error("event projection prefix mismatch");
+    const stored = readLog(file);
+    let state = initProjectionState(this.activeEngineOf(agentId));
+    let seq = 0;
+    for (const row of prefix) {
+      if (row.seq !== ++seq) throw new Error("event prefix is not contiguous");
+      state = projectEvent(agentId, state, row, this.reservationFor(agentId, projectId)).state;
+    }
+    const tail = stored.slice(prefix.length);
+    for (const row of tail) {
+      if (row.seq !== ++seq) throw new Error("event suffix is not contiguous");
+      const next = projectEvent(agentId, state, row, this.reservationFor(agentId, projectId));
+      this.applyOps(agentId, projectId, next.ops);
+      state = next.state;
+    }
+    this.states.set(agentId, state);
+    this.logs.delete(agentId);
+    return tail;
   }
 
   forgetAgent(agentId: string): void {

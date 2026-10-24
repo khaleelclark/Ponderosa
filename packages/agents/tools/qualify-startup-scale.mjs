@@ -52,6 +52,19 @@ try {
       });
     }
   }
+  // Fixture creation/import is deliberately conservative. Establish its full
+  // baseline, then measure an ordinary lifetime with new authored writes.
+  store.close({ checkpointWrites: true });
+  store = new AgentStore(root);
+  for (const project of store.listProjects()) {
+    store.appendCommunicationEvent({
+      schemaVersion: 2, eventId: randomUUID(), projectId: project.id,
+      conversationId: project.lastConversationId, sender: { kind: "user", userId: "startup-qualification" },
+      text: "Ordinary write-active restart qualification", intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id }, createdAt: new Date().toISOString(),
+    });
+    store.markProjectUsed(project.id, project.lastConversationId);
+  }
   const closeStarted = performance.now();
   store.close();
   const writeActiveCloseMs = Math.round((performance.now() - closeStarted) * 10) / 10;
@@ -92,7 +105,7 @@ try {
     clean: { wallMs: cleanWallMs, profile: clean, sloMs: cleanSloMs },
   };
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  if (result.status !== "pass" || writeActive.mode !== "recovery" ||
+  if (result.status !== "pass" || writeActive.mode !== "clean" ||
       recovery.mode !== "recovery" || clean.mode !== "clean") {
     throw new Error("startup-scale qualification did not meet its recovery/clean-start contract");
   }

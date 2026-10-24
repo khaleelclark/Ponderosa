@@ -1,3 +1,4 @@
+import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
@@ -98,6 +99,7 @@ export class AgentCommunicationProjectionLedger {
       artifactIds: readonly string[],
       metadataAuthority?: (projectId: string, artifact: ArtifactDto) => boolean,
     ) => CommunicationAttachmentDto[],
+    private readonly progress?: ProjectionProgress,
   ) {}
 
   configureManagedArtifactAttachmentMetadataAuthority(
@@ -151,6 +153,11 @@ export class AgentCommunicationProjectionLedger {
   }
 
   appendCommunicationProjection(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
+    const append = () => this.appendProjectedCommunication(projectId, projection);
+    return this.progress ? this.progress.run([communicationProjectionsPath(this.dataDir, projectId)], append) : append();
+  }
+
+  private appendProjectedCommunication(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
     if (!this.communicationProjectionAllowed(projectId, projection)) {
       throw new Error("communication scope cannot project to requested surface");
     }

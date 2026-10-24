@@ -141,3 +141,31 @@ test('event projection statements stay bounded across agents and replay preserve
     assert.equal(store.lastSeqOf(agents[1].id), 7);
   } finally { Database.prototype.prepare = original; }
 });
+
+
+test('normal write-active restart reuses verified history and preserves new messages, output and metadata', t => {
+  const f = fixture(t), initial = f.open();
+  const project = initial.createProject({ label: 'Healthy lifetime', hostPath: path.join(f.root, 'host'), defaultEngine: 'codex' });
+  const agent = initial.createAgent(project.id, { title: 'Working agent', engine: 'codex', conversationId: project.lastConversationId });
+  f.close({ checkpointWrites: true });
+  const active = f.open();
+  const message = { schemaVersion: 2, eventId: 'healthy-message', projectId: project.id,
+    conversationId: project.lastConversationId, sender: { kind: 'user', userId: 'local' }, text: 'New exact searchable message 😀',
+    intent: 'broadcast', audience: { kind: 'organization', organizationId: project.id }, createdAt: '2026-10-24T12:00:00.000Z' };
+  active.appendCommunicationEvent(message);
+  active.appendConversationMessage(project.lastConversationId, { text: message.text }, undefined, 'main', undefined, undefined, message.eventId);
+  active.appendEvent(agent.id, { type: 'agent_lifecycle', status: 'running', reason: 'active_run', executionId: 'healthy-run', engine: 'codex' });
+  active.appendEvent(agent.id, { type: 'text', delta: 'New exact output 😀', executionId: 'healthy-run' });
+  active.appendEvent(agent.id, { type: 'agent_lifecycle', status: 'completed', reason: 'turn_completed', executionId: 'healthy-run' });
+  active.markProjectUsed(project.id, project.lastConversationId);
+  active.updateAgent(agent.id, { effort: 'high' });
+  const expectedEvents = active.readEventsSince(agent.id, 0);
+  f.close();
+  const restarted = f.open();
+  assert.equal(restarted.startupProfile().mode, 'clean', 'Healthy write activity must reuse committed history without rebuilding it');
+  assert.equal(restarted.startupProfile().phasesMs.projectionReplay, undefined);
+  assert.deepEqual(restarted.readEventsSince(agent.id, 0), expectedEvents);
+  assert.equal(restarted.getAgent(agent.id).effort, 'high');
+  assert.equal(restarted.getConversationMessages(project.lastConversationId)[0].text, message.text);
+  assert.equal(restarted.sqlite.prepare('SELECT text FROM compaction_history_messages WHERE communication_event_id=?').get(message.eventId).text, message.text);
+});

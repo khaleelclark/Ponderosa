@@ -1,3 +1,4 @@
+import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync } from "@ponderosa/native-host/fs";
 import { join } from "node:path";
@@ -113,6 +114,7 @@ export class AgentWorkspaceCatalogAuthority {
       conversationId: string,
       visible: boolean,
     ) => void,
+    private readonly progress?: ProjectionProgress,
   ) {}
 
   private assertProjectMetadataMutable(projectId: string): void {
@@ -135,12 +137,14 @@ export class AgentWorkspaceCatalogAuthority {
     let canonicalCommitted = false;
     let result: T | undefined;
     try {
-      this.db.transaction(() => {
+      const commit = () => this.db.transaction(() => {
         this.assertProjectMetadataMutable(projectId);
         result = writeCanonical();
         canonicalCommitted = true;
         writeProjection();
       });
+      if (this.progress) this.progress.run([projectJsonPath(this.dataDir, projectId)], commit);
+      else commit();
     } catch (error) {
       if (!canonicalCommitted) throw error;
       try { writeProjection(); } catch { /* canonical metadata remains authoritative */ }

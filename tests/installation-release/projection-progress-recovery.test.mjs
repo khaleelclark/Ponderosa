@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { AgentStore, CoordinationV3Store, WorkspaceStore } from '../../packages/agents/dist/index.js';
+import { ContextCursorStore } from '../../apps/server/dist/context-cursors.js';
+import { EngineAvailabilityStore } from '../../apps/server/dist/engine-availability-store.js';
+import { createServer } from '../../apps/server/dist/app.js';
 
 // Every database and canonical file in these checks belongs to a temporary
 // native fixture. Faults hit the real projection transaction, never a provider.
@@ -89,15 +92,17 @@ test('an outer rollback followed by another append cannot certify an earlier can
     throw Error('controlled outer rollback');
   }), /controlled outer rollback/);
   assert.equal(f.store.readEventsSince(f.agent.id, 0).length, 0);
-  f.store.appendEvent(f.agent.id, { type: 'text', delta: 'B after the rolled-back append' });
-  assert.deepEqual(f.store.readEventsSince(f.agent.id, 0).map(row => row.seq), [2]);
+  assert.throws(() => f.store.appendEvent(f.agent.id, { type: 'text', delta: 'B after the rolled-back append' }),
+    /restart|prefix/);
+  assert.equal(f.store.readEventsSince(f.agent.id, 0).length, 0);
   const bytes = f.eventBytes();
   const reopened = f.reopen();
   assert.equal(reopened.startupProfile().mode, 'recovery');
   assert.deepEqual(reopened.readEventsSince(f.agent.id, 0).map(row => [row.seq, row.event.delta]), [
-    [1, 'A survived only in canonical JSONL'], [2, 'B after the rolled-back append'],
+    [1, 'A survived only in canonical JSONL'],
   ]);
   assert.deepEqual(f.eventBytes(), bytes);
+  assert.equal(reopened.appendEvent(f.agent.id, { type: 'text', delta: 'B after recovery' }).seq, 2);
 });
 
 test('a failed revision index transaction and exact retry retain the latest edit and FTS result', t => {
@@ -229,4 +234,101 @@ test('projection recovery preserves full V3 authority rows and an unanswered sav
   finally { workspace.close(); }
   assert.deepEqual(readFileSync(path.join(f.dataDir, 'workspace-events.jsonl')), workspaceBytes);
   assert.equal(reopened.readEventsSince(f.agent.id, 0).at(-1).event.delta, 'Authored telemetry to recover');
+});
+
+
+test('a post-event placement failure preserves primary history for bounded metadata recovery', t => {
+  const f = fixture(t), event = { ...communication(f), intent: 'user_dm',
+    audience: { kind: 'user_agent', userId: 'local', agentId: f.agent.id } };
+  f.store.appendCommunicationEvent(event);
+  f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_audit_search BEFORE INSERT ON main.chat_search_messages
+    WHEN NEW.chat_kind='agent' BEGIN SELECT RAISE(ABORT, 'controlled placement failure'); END;`);
+  assert.throws(() => f.store.appendEvent(f.agent.id, {
+    type: 'user_message', text: event.text, communicationEventId: event.eventId,
+  }), /controlled placement failure/);
+  f.store.sqlite.exec('DROP TRIGGER fail_audit_search');
+  assert.equal(f.store.readEventsSince(f.agent.id, 0).length, 1);
+  f.store.ensureCommunicationProjectionLedger(f.project.id, { eventIds: new Set([event.eventId]), agentIds: new Set([f.agent.id]) });
+  assert.equal(f.store.getMessages(f.agent.id).filter(row => row.communicationEventId === event.eventId).length, 1);
+  const bytes = f.eventBytes(), reopened = f.reopen();
+  assert.equal(reopened.startupProfile().mode, 'recovery', 'A metadata failure must not be certified by an unrelated successful owner');
+  assert.equal(reopened.readEventsSince(f.agent.id, 0).length, 1);
+  assert.equal(reopened.getMessages(f.agent.id).filter(row => row.communicationEventId === event.eventId).length, 1);
+  assert.deepEqual(f.eventBytes(), bytes);
+  assert.equal(reopened.appendEvent(f.agent.id, { type: 'text', delta: 'After recovery' }).seq, 2);
+});
+
+test('drafts, resource activity, saved decisions and accepted context use their own replay during a healthy restart', t => {
+  const f = fixture(t), workspace = new WorkspaceStore(f.dataDir), cursors = new ContextCursorStore(f.dataDir);
+  const draft = workspace.putDraft(f.project.lastConversationId, { text: 'Unsaved exact draft 😀', attachmentIds: [], expectedRevision: 0, clientId: 'restart-browser' });
+  workspace.markResourceUsed('project', f.project.id);
+  const decision = workspace.createDecision({ projectId: f.project.id, conversationId: f.project.lastConversationId,
+    agentId: f.agent.id, runId: 'retained-question', mode: 'text', question: 'Keep this pending', options: [], allowOther: true, blocking: true, idempotencyKey: randomUUID() });
+  const scope = { agentId: f.agent.id, engine: 'codex', model: 'qa', sessionId: 'qa-session', conversationId: f.project.lastConversationId, channel: 'main' };
+  cursors.commit({ ...scope, lastMessageId: 'accepted-message', routingHash: 'accepted-route' });
+  const cursor = cursors.get(scope);
+  f.store.appendCommunicationEvent(communication(f));
+  f.store.appendEvent(f.agent.id, { type: 'text', delta: 'Successful ordinary output' });
+  workspace.close();
+  const reopened = f.reopen();
+  assert.equal(reopened.startupProfile().mode, 'clean');
+  const nextWorkspace = new WorkspaceStore(f.dataDir);
+  try {
+    assert.deepEqual(nextWorkspace.getDraft(f.project.lastConversationId), draft);
+    assert.deepEqual(nextWorkspace.getDecision(decision.id), decision);
+    assert.deepEqual(new ContextCursorStore(f.dataDir).get(scope), cursor);
+  } finally { nextWorkspace.close(); }
+});
+
+
+test('a real server lifetime preserves the host identity and independent journals while reusing healthy history', async t => {
+  const f = fixture(t);
+  let app = createServer({ dataDir: f.dataDir, store: f.store, engines: [], logger: false, allowedBrowseRoots: [f.root] });
+  try {
+    await app.ready();
+    assert.equal((await app.inject({ method: 'GET', url: '/api/health' })).statusCode, 200);
+    const workspace = new WorkspaceStore(f.dataDir);
+    try { workspace.putDraft(f.project.lastConversationId, { text: 'Saved through server lifetime', attachmentIds: [], expectedRevision: 0, clientId: 'server-restart' }); }
+    finally { workspace.close(); }
+    const evidence = new EngineAvailabilityStore(f.dataDir).record({ engineId: 'codex', available: true, source: 'operator_probe' });
+    f.store.appendCommunicationEvent(communication(f));
+    f.store.appendEvent(f.agent.id, { type: 'text', delta: 'Ordinary server output' });
+    await app.close(); app = undefined;
+    const vapid = readFileSync(path.join(f.dataDir, 'host-secrets', 'web-push-vapid.json'));
+    const reopened = f.open();
+    assert.equal(reopened.startupProfile().mode, 'clean');
+    assert.deepEqual(new EngineAvailabilityStore(f.dataDir).get('codex'), evidence);
+    app = createServer({ dataDir: f.dataDir, store: reopened, engines: [], logger: false, allowedBrowseRoots: [f.root] });
+    await app.ready();
+    assert.equal((await app.inject({ method: 'GET', url: '/api/health' })).statusCode, 200);
+    assert.deepEqual(readFileSync(path.join(f.dataDir, 'host-secrets', 'web-push-vapid.json')), vapid);
+    await app.close(); app = undefined;
+    assert.equal(f.open().startupProfile().mode, 'clean');
+  } finally { await app?.close(); }
+});
+
+
+test('a verified suffix cannot route foreign-owner records into another canonical journal', t => {
+  const f = fixture(t);
+  const other = f.store.createProject({ label: 'Other retained owner', hostPath: f.root, defaultEngine: 'codex' });
+  f.store.close({ checkpointWrites: true }); f.open();
+  f.store.appendCommunicationEvent(communication(f));
+  const foreign = { ...communication(f), projectId: other.id, conversationId: other.lastConversationId,
+    audience: { kind: 'organization', organizationId: other.id } };
+  appendFileSync(path.join(f.dataDir, 'projects', f.project.id, 'communication-events.jsonl'), JSON.stringify(foreign) + '\n');
+  f.close();
+  const marker = JSON.parse(readFileSync(path.join(f.dataDir, '.projection-clean-shutdown.json'), 'utf8'));
+  assert.equal(marker.tails.length, 1, 'Fault did not leave the intended verified source prefix');
+  const append = AgentStore.prototype.appendCommunicationEvent;
+  let routed = false;
+  AgentStore.prototype.appendCommunicationEvent = function(record) {
+    if (record.eventId === foreign.eventId) routed = true;
+    return append.call(this, record);
+  };
+  // The original full recovery refuses this corrupt journal; incremental
+  // repair must preserve that refusal instead of making a new foreign append.
+  try { assert.throws(() => f.open(), /communication projection source event not found/); }
+  finally { AgentStore.prototype.appendCommunicationEvent = append; }
+  assert.equal(routed, false, 'Suffix replay followed embedded foreign routing instead of the journal owner');
+  assert.equal(existsSync(path.join(f.dataDir, 'projects', other.id, 'communication-events.jsonl')), false);
 });

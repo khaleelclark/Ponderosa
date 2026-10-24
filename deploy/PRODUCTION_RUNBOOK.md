@@ -258,15 +258,25 @@ aggregate limit; resource admission and exact process-ledger cleanup remain acti
 Never reproduce host-wide OOM on production. Use a uniquely owned, small capped
 fixture to prove a scope-local OOM leaves backend health and unrelated work intact.
 
-Orderly application shutdown uses the existing default storage close. After a
-write-active lifetime it leaves no clean projection checkpoint, preserving full
-canonical recovery and SQLite admission checks at startup. This avoids moving
-an unbounded synchronous replay into shutdown: the isolated retained production
-copy took 196 seconds with the optional replay/checkpoint versus 1 ms without it.
-Cold startup may consequently take longer. Measure the candidate on a private
-copy and use a larger **bounded deployment readiness observation** if needed
-while drained and proxy gated; do not bypass admission, shorten the service's
-180-second stop timeout, mint an unverified checkpoint or resume on health alone.
+Orderly application shutdown records verified projection progress through the
+existing storage close. Known event, Communication, artifact and Project-recency
+writes commit their source receipts with the derived SQLite rows. Healthy
+write-active restarts can reuse those views; verified incomplete append suffixes
+are repaired before ordinary traffic. The consumed checkpoint also binds exact
+source inventory, projection/schema versions and the quiescent database/WAL
+cohort. Independently replayed workspace, context and provider journals, host
+secrets and physical attachment/browser/working-copy bytes are not history
+projection sources; their existing validation and cleanup barriers still run.
+
+Missing/crashed or invalid proof, unknown derived SQL writes, unfinished
+creation/deletion, unsupported metadata changes and imports retain full recovery.
+A successful stop alone is not a projection certificate. Normal shutdown never
+moves full history replay into the stop interval; the explicit full-rebuild
+checkpoint option remains for isolated/offline qualification. Measure total
+stop-through-ready on a private retained copy, including certification time.
+Use a larger **bounded deployment readiness observation** while drained and proxy
+gated if necessary; do not bypass admission, shorten the service's 180-second stop
+timeout, mint an unverified checkpoint or resume on health alone.
 Historical SIGBUS evidence remains a separate investigation.
 
 Rollback restores the backed-up code and exact boundary drop-in while stopped,
