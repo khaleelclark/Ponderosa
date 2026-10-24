@@ -33,8 +33,10 @@ function deliveryLabel(
   recipientName: string,
   now: number,
 ): string {
-  const waiting = steeringWaitLabel(receipt);
-  if (waiting) return `Steer for ${recipientName}: ${waiting.detail} Provider acceptance does not guarantee immediate reconsideration or stop a running tool.`;
+  const waiting = deliveryWaitLabel(receipt);
+  if (waiting) return receipt.steeringWaitReason
+    ? `Steer for ${recipientName}: ${waiting.detail} Provider acceptance does not guarantee immediate reconsideration or stop a running tool.`
+    : `Message for ${recipientName}: ${waiting.detail}`;
   switch (receipt.state) {
     case "queued": return `Queued for ${recipientName}.`;
     case "preparing": return `Preparing a Run for ${recipientName}.`;
@@ -68,10 +70,10 @@ function deliveryLabel(
 }
 
 function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto): string {
+  const waiting = deliveryWaitLabel(receipt);
+  if (waiting) return waiting.compact;
   const phase = messageDeliveryPhase(receipt);
   if (phase) return phase;
-  const waiting = steeringWaitLabel(receipt);
-  if (waiting) return waiting.compact;
   switch (receipt.state) {
     case "queued": return "Queued";
     case "preparing": return "Preparing";
@@ -93,7 +95,7 @@ function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto): string {
   }
 }
 
-function steeringWaitLabel(receipt: MessageDeliveryReceiptDto): { compact: string; detail: string } | undefined {
+function deliveryWaitLabel(receipt: MessageDeliveryReceiptDto): { compact: string; detail: string } | undefined {
   if (receipt.state !== "queued" && receipt.state !== "retrying") return undefined;
   switch (receipt.steeringWaitReason) {
     case "context_refresh": return { compact: "Waiting for context refresh", detail: "waiting for context refresh to finish." };
@@ -104,6 +106,16 @@ function steeringWaitLabel(receipt: MessageDeliveryReceiptDto): { compact: strin
     case "preparation_retry": return { compact: "Retrying steer preparation", detail: "prompt preparation did not finish; another attempt is scheduled." };
     case "run_starting": return { compact: "Waiting for Run startup", detail: "the target Run is still starting." };
     case "scheduler_pending": return { compact: "Steer pending", detail: "awaiting scheduler admission; no provider acknowledgement yet." };
+    default: break;
+  }
+  switch (receipt.queueWaitReason) {
+    case "host_resource_pressure": return { compact: "Waiting for host resources", detail: "host-resource protection is holding new work." };
+    case "provider_disabled": return { compact: "Provider disabled", detail: "the selected provider is disabled; this message has not started." };
+    case "authentication_unknown": return { compact: "Checking provider sign-in", detail: "provider sign-in has not been confirmed." };
+    case "authentication_required": return { compact: "Provider sign-in required", detail: "the selected provider requires sign-in." };
+    case "provider_unavailable": return { compact: "Waiting for provider", detail: "the selected provider is unavailable." };
+    case "current_run": return { compact: "Waiting for current Run", detail: "the recipient's current Run must finish before this delivery starts." };
+    case "provider_retry": return { compact: "Waiting to retry provider", detail: "the existing provider retry hold is retaining this work." };
     default: return undefined;
   }
 }
@@ -124,6 +136,7 @@ export function MessageDeliveryStatus({
   compact = false,
   compactSuccess = false,
   compactSuccessTooltip = true,
+  hideCancelAction = false,
 }: {
   projectId?: string;
   receipts?: MessageDeliveryReceiptDto[];
@@ -132,6 +145,7 @@ export function MessageDeliveryStatus({
   compact?: boolean;
   compactSuccess?: boolean;
   compactSuccessTooltip?: boolean;
+  hideCancelAction?: boolean;
 }): JSX.Element | null {
   const readOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
@@ -350,7 +364,7 @@ export function MessageDeliveryStatus({
           onClick={() => receipt.retryMayDuplicate ? setConfirmRetry(receipt) : void retryDelivery(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
         >{pendingRetryId === receipt.activationId ? "Trying Again…" : receipt.providerAcknowledged ? "Try Work Again" : "Try Delivery Again"}</Button> : null}
-        {!readOnly && receipt.canRetry && projectId ? <Button
+        {!readOnly && !hideCancelAction && receipt.canRetry && projectId ? <Button
           color="inherit"
           variant="text"
           size="small"

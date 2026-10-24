@@ -29,9 +29,7 @@ for (const input of [
   { detail: 'HTTP 429 Too many requests' },
   { code: 'rate_limit_error', detail: 'temporary throttle' },
   { category: 'rate_limit', detail: 'No allowance information' },
-  { code: 'quota_exhausted', detail: 'Quota exhausted' },
-  { detail: 'usage limit was reached' },
-]) test('Q05 rate/quota evidence stays request-limited without asserting an account reset: ' + JSON.stringify(input), () => {
+]) test('Q05 ambiguous limit evidence stays request-limited without asserting an account reset: ' + JSON.stringify(input), () => {
   const result = publicProviderFailure(input);
   assert.equal(result.category, 'rate_limit');
   assert.equal(result.summary, 'Provider limited the request.');
@@ -47,7 +45,7 @@ test('Q05 structured capacity wins over incidental 429 text; unknown and secrets
   }
 });
 test('Q05 Claude mapped errors and public events retain throttle/capacity/unknown distinctions without leaking provider detail', () => {
-  for (const [code, category] of [['rate_limit', 'rate_limit'], ['quota_exhausted', 'rate_limit'], ['overloaded_error', 'capacity'], ['unrecognized_failure', 'unknown']]) {
+  for (const [code, category] of [['rate_limit', 'rate_limit'], ['quota_exhausted', 'quota_exhausted'], ['overloaded_error', 'capacity'], ['unrecognized_failure', 'unknown']]) {
     const mapped = mapClaudeEvent({ type: 'assistant', error: code, message: { content: [{ type: 'text', text: 'secret-fixture-token' }] } })[0];
     assert.equal(mapped.type, 'error');
     const visible = publicProviderFailureEvent(mapped); assert.equal(visible.category, category); assert.doesNotMatch(JSON.stringify(visible), /secret-fixture-token/u);
@@ -72,8 +70,9 @@ test('Q05 real Claude validation boundary uses only a local fake executable and 
   try {
     for (const model of ['throttle', 'quota', 'capacity']) {
       const result = await probe.validate(root, model, context); assert.equal(result.valid, false); assert.equal(handles.at(-1).isAlive(), false, 'Validation returned before owned process exit');
-      assert.equal(result.errorCode, model === 'capacity' ? 'capacity' : 'rate_limit');
+      assert.equal(result.errorCode, model === 'capacity' ? 'capacity' : model === 'quota' ? 'quota_exhausted' : 'rate_limit');
       if (model === 'capacity') assert.match(result.error, /temporarily at capacity/u);
+      else if (model === 'quota') assert.match(result.error, /usage limit reached/u);
       else { assert.match(result.error, /limited the request/u); assert.doesNotMatch(result.error, /usage limit was reached|Wait for the limit to reset/u); }
     }
     assert.equal(handles.length, 3);

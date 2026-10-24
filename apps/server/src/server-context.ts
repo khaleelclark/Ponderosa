@@ -57,8 +57,5 @@ export interface SearchRoutesContext extends ServerContext {
     productScope?:'dev'|'branches';
   }) => GlobalChatSearchResponseDto;
   readonly workspace: Pick<WorkspaceStore, "listDecisionEventPage">;
-  readonly coordinationV3: Pick<
-    CoordinationV3Store,
-    "deliveryReceiptsForCommunications"
-  >;
+  readonly deliveryReceiptsForCommunications: CoordinationV3Store["deliveryReceiptsForCommunications"];
 }

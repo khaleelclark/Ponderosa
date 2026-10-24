@@ -15,11 +15,11 @@ export class AgentWorkProjection {
   constructor(
     private readonly store: Pick<
       AgentStore,
-      "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact" | "agentCreationPending" | "pendingAgentCreationIds"
+      "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact" | "agentCreationPending" | "pendingAgentCreationIds" | "getAgent"
     >,
     private readonly coordination: Pick<
       CoordinationV3Store,
-      "agentWorkItems" | "agentWorkItemDetails" | "requestLifecycleDetails"
+      "agentWorkItems" | "agentWorkItemDetails" | "requestLifecycleDetails" | "requestRetryStatus"
     >,
     private readonly workspace: Pick<
       WorkspaceStore,
@@ -440,6 +440,13 @@ export class AgentWorkProjection {
         if (lifecycle) {
           requestLifecycle = {
             ...lifecycle,
+            request: { ...lifecycle.request, retryAvailable: Boolean(
+              ["blocked", "expired", "outcome_unknown", "failed", "recipient_unavailable"].includes(lifecycle.request.state)
+              && !this.coordination.requestRetryStatus(input.recordId).successorRequestId
+              && lifecycle.request.requesterAgentId
+              && this.store.getAgent(lifecycle.request.requesterAgentId)
+              && this.store.getAgent(lifecycle.request.recipientAgentId)
+            ) },
             updates: lifecycle.updates.map((update) => ({
               ...update,
               artifacts: update.artifacts.map((artifact) => {

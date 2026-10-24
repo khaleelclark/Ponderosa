@@ -64,10 +64,21 @@ in the restricted operations evidence store; never commit either artifact.
 
 ```bash
 set -euo pipefail
-stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-work="$(mktemp -d)"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+work="$(mktemp -d "${TMPDIR:-/tmp}/ponderosa-rehearsal.XXXXXX")"
 encrypted_tmp=""
-trap 'rm -rf -- "$work"; test -z "$encrypted_tmp" || rm -f -- "$encrypted_tmp"' EXIT
+cleanup() {
+  result=$?
+  if test "$result" -eq 0; then
+    rm -rf -- "$work"
+    test -z "$encrypted_tmp" || rm -f -- "$encrypted_tmp"
+  else
+    printf 'Backup verification failed; retain private diagnostic work=%s encrypted_tmp=%s\n' \
+      "$work" "$encrypted_tmp" >&2
+  fi
+  exit "$result"
+}
+trap cleanup EXIT
 install_root=/opt/ponderosa-engine/resources/Ponderosa
 node="$install_root/runtime/node"
 data_tool="$install_root/app/server/tools/data-directory.mjs"
@@ -90,6 +101,8 @@ age -d -i "$PONDEROSA_BACKUP_AGE_IDENTITY" \
   --data-dir "$work/restored" \
   --restore-external-projects \
   --external-project-root "$work/external-projects"
+sha256sum "$PONDEROSA_BACKUP_EVIDENCE_DIR/ponderosa-$stamp.tar.gz.age" \
+  > "$PONDEROSA_BACKUP_EVIDENCE_DIR/ponderosa-$stamp.sha256"
 elapsed="$(( $(date +%s) - started ))"
 test "$elapsed" -lt 1800
 printf 'revision=%s started=%s elapsed_seconds=%s\n' \
@@ -114,6 +127,39 @@ live root. Restore is journaled across the data directory and external roots.
 An interrupted or late-failing multi-root restore removes all roots it
 published before a subsequent attempt proceeds.
 
+### Retention of deployment and rehearsal evidence
+
+Use a private evidence directory (mode 0700). The successful command above
+removes only its own temporary decrypted/rehearsal tree. A failed run retains
+its private tree and incomplete archive for diagnosis; do not classify either
+as an expired restore point. Receipts and checksums are small and stay with the
+operations evidence. Historical archives without these receipts require a new
+verified restore before they count as recovery points.
+
+For routine encrypted restore points, retain the newest three successfully
+verified archives and every archive less than seven days old. Before expiring
+an older archive, verify its exact checksum, and verify that at least three
+newer archives have successful restore receipts and matching checksums. Keep
+any archive explicitly pinned for an incident, active test owner, migration or
+rollback window regardless of age. Never remove the last verified recovery
+point. These are operator-reviewed operations on named archives, not a daemon
+sweep over a data directory.
+
+Deployment raw snapshots have a separate purpose: retain them until the
+rollout is accepted and its documented rollback window closes (at least seven
+days), and a newer encrypted restore point has passed verification. Expanded
+restore rehearsals expire once their test owner has finished successfully;
+keep their receipt rather than three expanded copies indefinitely. Failed or
+active diagnostic/rehearsal trees are protected until their owner releases
+them. Record the exact paths, verification receipts and retirement decision
+before removing any owned intermediate. Do not apply this policy to live
+SQLite/WAL files, provider sessions, user working folders, or managed assets.
+
+Configure a separate-device/host destination for encrypted recovery copies and
+verify the transferred archive's checksum before counting that copy. A copy on
+the same filesystem protects rollback, not host loss. No existing backup or
+live data is pruned merely by deploying this policy.
+
 ## Deploy and rollback
 
 1. Confirm the exact source and signed/attested installed artifact qualification.
@@ -130,6 +176,89 @@ Never point an older binary at a directory migrated by a newer binary. Rollback
 means stopping the new unit, restoring the pre-migration snapshot to a new
 path with the retained installed offline CLI, reinstalling the prior exact
 `.deb`, updating `release.env`, and retaining the failed directory.
+
+## Agent workload boundary
+
+A release code update does not replace a stale installed systemd unit. Before
+resuming a rollout, compare **effective installed settings**, including drop-ins;
+seeing `OOMPolicy=continue` in a source tree is insufficient. Keep the existing
+service `User`, paths, credentials, admission/refusal safeguards and stop timeout.
+
+For a system-managed daemon, first qualify the existing aggregate slice, then
+install the production child slice and oneshot owner in that service user's manager.
+Preserve operator-tuned aggregate settings and drop-ins; do not replace its base
+unit with release defaults during this targeted correction. If not configured,
+install and qualify the aggregate slice using the deployment README first.
+Provider scopes use `PartOf=ponderosa-production-workloads.service`; the system
+service's start/stop hooks control that exact user owner. This also cleans up
+scopes after a daemon crash without stopping DEV or the shared slice. The owner
+is a native systemd lifetime anchor, with no extra process, scheduler or watchdog.
+
+Use the qualified source and preserve any previous boundary drop-in with the
+rollout's configuration backup. After proxy gating, drain confirmation, observed
+stop and a cold canonical backup, perform this step **while the daemon is stopped**:
+
+```bash
+set -euo pipefail
+qualified_source=/path/to/qualified/source
+workload_unit=ponderosa.service
+test "$(systemctl show "$workload_unit" --property=ActiveState --value)" = inactive
+workload_user=$(systemctl show "$workload_unit" --property=User --value)
+test -n "$workload_user" && test "$workload_user" != root
+workload_uid=$(id -u -- "$workload_user")
+workload_home=$(getent passwd "$workload_user" | cut -d: -f6)
+test -d "$workload_home" && test -S "/run/user/$workload_uid/bus"
+test "$(systemd --version | head -1 | awk '{print $2}')" -ge 253
+sudo install -d -o "$workload_user" -m 0755 "$workload_home/.config/systemd/user"
+for unit in ponderosa-agent-workloads-production.slice ponderosa-production-workloads.service; do
+  sudo install -o "$workload_user" -m 0644 "$qualified_source/deploy/$unit" "$workload_home/.config/systemd/user/$unit"
+done
+sudo -u "$workload_user" env XDG_RUNTIME_DIR="/run/user/$workload_uid" \
+  DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$workload_uid/bus" systemctl --user daemon-reload
+sudo install -d -m 0755 "/etc/systemd/system/$workload_unit.d"
+sed "s/@UID@/$workload_uid/g" "$qualified_source/deploy/ponderosa-system-workloads.conf.in" \
+  | sudo install -m 0644 /dev/stdin "/etc/systemd/system/$workload_unit.d/50-workload-isolation.conf"
+sudo systemctl daemon-reload
+test "$(systemctl show "$workload_unit" --property=OOMPolicy --value)" = continue
+test "$(systemctl show "$workload_unit" --property=KillMode --value)" = mixed
+systemctl show "$workload_unit" --property=ExecStartPre --property=ExecStopPost
+```
+
+Compare the effective aggregate `MemoryHigh`/`MemoryMax` before and after; both
+must remain finite and unchanged. Verify the effective hooks contain the exact selected owner and numeric UID;
+retain existing unrelated hooks. Do not use `%U`, `%h` or `%t` as the target
+user's identity in a system-manager unit. Verify the actual daemon environment
+at birth matches the selected scope mode, owner, slice and memory budget without
+printing credentials. `systemd-run --user` must reach this user's manager. A
+rejected scope property must fail the launch; never retry without containment.
+
+Before resume, exercise both providers and inspect each actual scope's
+`MemoryHigh`, `MemoryMax`, `MemorySwapMax`, `OOMPolicy`, `PartOf`, `Slice` and
+`memory.oom.group`. The provisional Pine policy is 8 GiB hard / no swap per scope,
+without an additional per-scope reclaim threshold, beneath the observed 13–18 GiB runaway allocations. The largest
+recorded completed scope was 849 MiB across 340 observations; that is not a
+promise about every build. Qualify heavy builds and concurrent providers before
+changing the host budget. The production child slice inherits the existing
+aggregate limit; resource admission and exact process-ledger cleanup remain active.
+Never reproduce host-wide OOM on production. Use a uniquely owned, small capped
+fixture to prove a scope-local OOM leaves backend health and unrelated work intact.
+
+Orderly application shutdown uses the existing default storage close. After a
+write-active lifetime it leaves no clean projection checkpoint, preserving full
+canonical recovery and SQLite admission checks at startup. This avoids moving
+an unbounded synchronous replay into shutdown: the isolated retained production
+copy took 196 seconds with the optional replay/checkpoint versus 1 ms without it.
+Cold startup may consequently take longer. Measure the candidate on a private
+copy and use a larger **bounded deployment readiness observation** if needed
+while drained and proxy gated; do not bypass admission, shorten the service's
+180-second stop timeout, mint an unverified checkpoint or resume on health alone.
+Historical SIGBUS evidence remains a separate investigation.
+
+Rollback restores the backed-up code and exact boundary drop-in while stopped,
+then reloads both managers and verifies the restored effective settings. Preserve
+newer accepted canonical writes, Decisions and recovery receipts; this change has
+no schema migration. Never restore an older database over accepted work merely
+to undo a configuration change.
 
 ## Failure response
 
