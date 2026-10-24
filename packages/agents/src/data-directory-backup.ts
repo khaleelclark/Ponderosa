@@ -96,7 +96,7 @@ function directoryIdentity(directory: string): string {
 function backupDestination(dataDir: string, output: string): string {
   let parent = path.resolve(output);
   const missing: string[] = [];
-  while (!existsSync(parent)) {
+  while (!lstatSync(parent, { throwIfNoEntry: false })) {
     const next = path.dirname(parent);
     if (next === parent) throw new Error("backup destination has no accessible parent");
     missing.unshift(path.basename(parent)); parent = next;
@@ -105,7 +105,7 @@ function backupDestination(dataDir: string, output: string): string {
   if (!lstatSync(physicalParent).isDirectory()) throw new Error("backup parent is not a directory");
   const destination = path.join(physicalParent, ...missing), root = realpathSync(dataDir);
   if (destination === root || destination.startsWith(`${root}${path.sep}`)) throw new Error("backup output must be outside the Ponderosa data directory");
-  if (existsSync(destination)) throw new Error("backup output already exists");
+  if (lstatSync(destination, { throwIfNoEntry: false })) throw new Error("backup output already exists");
   return destination;
 }
 

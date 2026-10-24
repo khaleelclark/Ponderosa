@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AgentStore } from '@ponderosa/agents';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, cpSync, symlinkSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, cpSync, symlinkSync, realpathSync, readlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -173,6 +173,11 @@ test('scoped web snapshot retains canonical state and managed artifacts while bi
   writeFileSync(path.join(data, 'host-secrets', 'credentials.json'), '{"fixture":"retained"}');
   store.close();
   if (process.platform !== 'win32') {
+    const dangling = path.join(root, 'occupied-output');
+    symlinkSync('missing-caller-owned-target', dangling);
+    assert.throws(() => createOfflineWebDeploymentBackup(data, dangling, artifacts));
+    assert.throws(() => createOfflineDataDirectoryBackup(data, dangling, { externalProjects: 'exclude' }));
+    assert.equal(readlinkSync(dangling), 'missing-caller-owned-target');
     const alias = path.join(root, 'data-alias'); symlinkSync(data, alias);
     const output = path.join(alias, 'new-parent', 'backup');
     assert.throws(() => createOfflineWebDeploymentBackup(data, output, artifacts), /outside the Ponderosa data directory/);
