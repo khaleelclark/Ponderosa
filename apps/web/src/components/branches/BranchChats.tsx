@@ -4,7 +4,7 @@ import {createClientId} from '../../clientId';
 import type {BranchRoute} from '../../branchesRouting';
 import {useBranchDraftGuard,useBranchNavigationGuard} from './BranchNavigation';
 import {AgentOrganizationDialog} from '../AgentDetail.parts';
-import {useEffect,useRef,useState,type ReactNode} from 'react';
+import {useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 'react';
 import {useMutation,useQuery,useQueryClient,useInfiniteQuery} from '@tanstack/react-query';
 import {Alert,Box,Button,Dialog,DialogActions,DialogContent,DialogTitle,Menu,MenuItem,Stack,TextField,Typography} from '@mui/material';
 import type {AgentDto,BranchContextDto,ConversationDto,EngineDto} from '@ponderosa/core';
@@ -15,7 +15,6 @@ import {ProjectShell} from '../ProjectShell';
 import {ProjectBrowserContext,consumeProjectBrowserRequest,type ProjectBrowserRequest} from '../ProjectBrowserContext';
 import {WorkspaceReadOnlyContext} from '../WorkspaceReadOnlyContext';
 import {ApiRequestError} from '../../api/types';
-import {MobileNavigationButton} from '../MobileNavigationContext';
 import {AgentCreateSurface} from '../AgentCreateDialog';
 import {CapabilityPolicyEditor} from '../CapabilityPolicyEditor';
 /** Shared interaction surfaces receive scoped transport and navigation from their product shell. */
@@ -48,14 +47,14 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
  const embeddedHeaderReady=Boolean(chat&&project.data&&preferences.data);
  const workspaceRoute:ProjectRoute|undefined=chat?(route?.projectId===chat.projectId&&(!executionId||['conversation','agent','workspaceFile','review','projectWork'].includes(route.kind))?route:{kind:'conversation',projectId:chat.projectId,conversationId:chat.id}):undefined;
  const embeddedHeaderSuppliesNavigation=Boolean(embeddedHeaderReady&&workspaceRoute&&['conversation','agent','project'].includes(workspaceRoute.kind));
- useEffect(()=>{onHeaderReady?.(embeddedHeaderSuppliesNavigation);return ()=>onHeaderReady?.(false)},[embeddedHeaderSuppliesNavigation,onHeaderReady]);
+ useLayoutEffect(()=>{onHeaderReady?.(embeddedHeaderSuppliesNavigation);return ()=>onHeaderReady?.(false)},[embeddedHeaderSuppliesNavigation,onHeaderReady]);
  const navigate=(next:Route)=>{
    if('projectId' in next && next.projectId===chat?.projectId&&(!executionId||['conversation','agent','workspaceFile','review','projectWork'].includes(next.kind))){setRoute(next as ProjectRoute);return;}
    if(next.kind==='home'){if(chat&&route?.kind==='browser')setRoute({kind:'conversation',projectId:chat.projectId,conversationId:chat.id});else setChatId('');return;}
    setError('This view belongs outside the selected Branch Chat.');
  };
  return <Stack spacing={1} sx={{flex:1,minHeight:0,minWidth:0,overflow:'hidden'}}>
-  <Stack direction="row" gap={1} alignItems="center" sx={{flexShrink:0}}>{!embeddedHeaderSuppliesNavigation&&<MobileNavigationButton/>}<TextField select size="small" label={executionId?'Execution Chat':'Branch Chat'} value={chatId} sx={{flex:1,minWidth:0}} onChange={e=>{const c=chats.data?.find(c=>c.id===e.target.value);if(c)openChat(c.id,c.projectId)}}><MenuItem value="">Choose Chat</MenuItem>{chats.data?.map(c=><MenuItem key={c.id} value={c.id}>{c.title}</MenuItem>)}</TextField>{executionId&&<Button size="small" onClick={()=>onNavigate({...branchRoute,executionId:undefined,chatId:undefined,workspace:undefined})}>Persistent Chats</Button>}{!executionId&&<Button aria-haspopup="menu" aria-expanded={Boolean(actions)} onClick={e=>setActions(e.currentTarget)}>Chat actions</Button>}{notificationAction}</Stack>
+  <Stack direction="row" gap={1} alignItems="center" sx={{flexShrink:0}}><TextField select size="small" label={executionId?'Execution Chat':'Branch Chat'} value={chatId} sx={{flex:1,minWidth:0}} onChange={e=>{const c=chats.data?.find(c=>c.id===e.target.value);if(c)openChat(c.id,c.projectId)}}><MenuItem value="">Choose Chat</MenuItem>{chats.data?.map(c=><MenuItem key={c.id} value={c.id}>{c.title}</MenuItem>)}</TextField>{executionId&&<Button size="small" onClick={()=>onNavigate({...branchRoute,executionId:undefined,chatId:undefined,workspace:undefined})}>Persistent Chats</Button>}{!executionId&&<Button aria-haspopup="menu" aria-expanded={Boolean(actions)} onClick={e=>setActions(e.currentTarget)}>Chat actions</Button>}{notificationAction}</Stack>
   {chatPages.hasNextPage&&<Button disabled={chatPages.isFetchingNextPage} onClick={()=>void chatPages.fetchNextPage()}>Load more Chats</Button>}
   <Menu anchorEl={actions} open={Boolean(actions)} onClose={()=>setActions(undefined)}>
    {!executionId&&<MenuItem onClick={()=>{setActions(undefined);setCreate(true)}}>Create Chat</MenuItem>}
