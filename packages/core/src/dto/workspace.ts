@@ -255,6 +255,8 @@ export interface ConversationDraftDto {
   /** Durable browser-profile owner. Drafts never roam to another browser profile. */
   ownerId: string;
   text: string;
+  /** In-progress structured answers, only on the exact Decision-owned surface. */
+  decisionAnswers?: DecisionAnswerDto[];
   /** Stable staged asset IDs; a draft is never represented as a chat event. */
   attachmentIds: string[];
   /** Metadata for staged files still referenced by this draft. */
@@ -285,7 +287,7 @@ export interface ConversationDraftConflictDto {
   /** Stable identity used to restore or discard exactly this displaced write. */
   id: string;
   current: ConversationDraftDto;
-  displaced: Pick<ConversationDraftDto, "conversationId" | "text" | "attachmentIds" | "pastedTextAttachmentId" | "mentionBindings" | "pendingSubmission" | "pendingSubmissions" | "clientId"> & { capturedAt: string };
+  displaced: Pick<ConversationDraftDto, "conversationId" | "text" | "decisionAnswers" | "attachmentIds" | "pastedTextAttachmentId" | "mentionBindings" | "pendingSubmission" | "pendingSubmissions" | "clientId"> & { capturedAt: string };
 }
 
 export interface DraftPendingSubmissionDto {
@@ -470,6 +472,7 @@ export interface ConversationDraftConflictListDto {
 }
 
 export interface PutConversationDraftRequest {
+  decisionAnswers?: DecisionAnswerDto[];
   /** Append/merge only. Omitting identities never retires them. Maximum 32 live IDs. */
   pendingSubmissions?: DraftPendingSubmissionDto[];
   /** Explicitly retire only these known identities after acceptance or deliberate discard. */
@@ -537,7 +540,7 @@ export interface WorkspaceNotificationDto {
   readAt?: string;
   /** Canonical closure/dismissal time for an action that is no longer open. */
   resolvedAt?: string;
-  decision?: Pick<DecisionDto, "id" | "mode" | "options" | "allowOther" | "status" | "runtimeAction">;
+  decision?: Pick<DecisionDto, "id" | "mode" | "options" | "allowOther" | "status" | "runtimeAction"> & { questionCount?: number };
   /** Human-facing recovery context for one current coordination problem. */
   resolution?: {
     kind: "coordination_request";
@@ -608,6 +611,21 @@ export interface RetryCoordinationRequestResponse {
 
 export type DecisionMode = "approval" | "choice" | "text";
 export interface DecisionOptionDto { id: string; label: string; description?: string }
+export interface DecisionQuestionDto {
+  id: string;
+  mode: "choice" | "text";
+  question: string;
+  context?: string;
+  options: DecisionOptionDto[];
+  allowOther: boolean;
+}
+export interface DecisionAnswerDto {
+  questionId: string;
+  status: "answered" | "skipped";
+  text?: string;
+  optionId?: string;
+  attachmentIds?: string[];
+}
 export interface DecisionDto {
   id: string;
   projectId: string;
@@ -619,6 +637,8 @@ export interface DecisionDto {
   mode: DecisionMode;
   question: string;
   context?: string;
+  /** Structured questions share one completion and continuation. */
+  questions?: DecisionQuestionDto[];
   options: DecisionOptionDto[];
   allowOther: boolean;
   /** Correlated questions intentionally suspended while this blocking Decision
@@ -659,12 +679,13 @@ export interface DecisionDto {
     expiresAt: string;
   };
   status: "pending" | "resolved" | "cancelled";
-  response?: { optionId?: string; text?: string; attachments?: AssetDto[]; skipped?: true; respondedAt: string };
+  response?: { answers?: DecisionAnswerDto[]; optionId?: string; text?: string; attachments?: AssetDto[]; skipped?: true; respondedAt: string };
   createdAt: string;
   updatedAt: string;
 }
 
 export interface ResolveDecisionRequest {
+  answers?: DecisionAnswerDto[];
   /** Explicit operator cancellation; never an answer or approval. */
   skip?: true;
   optionId?: string;

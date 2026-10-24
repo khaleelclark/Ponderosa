@@ -16,7 +16,7 @@ async function ask(f, engine = 'codex', prompt = {}) {
   }));
   let decision;
   f.plans.set(agent.id, [{ output: false, run: async session => {
-    decision = f.ok(await f.tool(session, 'ponderosa_decision', { mode: 'text', question: 'Attach the controlled evidence', blocking: true, idempotencyKey: randomUUID(), ...prompt }));
+    decision = f.ok(await f.tool(session, 'ponderosa_decision', { ...(prompt.questions ? {} : { mode: 'text', question: 'Attach the controlled evidence' }), blocking: true, idempotencyKey: randomUUID(), ...prompt }));
   } }]);
   await f.send(agent.id, 'Ask the controlled attachment question.'); await f.settled(agent.id);
   return { chat, agent, decision, scope: 'agent:'+agent.id };
@@ -190,4 +190,61 @@ test('files never approve a real approval option or provider form',fixtureTestOp
   }
   const answer=f.ok(await f.api('POST',`/api/decisions/${x.decision.id}/respond`,{text:'This is evidence, not permission',attachmentIds:[file.id]}));
   assert.equal(answer.response.optionId,undefined);assert.equal(answer.response.attachments.length,1);await f.settled(x.agent.id);
+}));
+
+for(const engine of ['codex','claude']) test(`UI019 ${engine}: one grouped answer set preserves full questions, per-question files and one continuation`,fixtureTestOptions,t=>withFixture(t,async f=>{
+ const tail='FINAL_QUESTION_SENTENCE_'+randomUUID(),questions=[
+ {id:'evidence',mode:'text',question:'x'.repeat(10000-tail.length)+tail,context:'Complete context retained'},
+ {id:'direction',mode:'choice',question:'Which direction?',options:[{id:'north',label:'North'},{id:'south',label:'South'}]},
+ {id:'optional',mode:'text',question:'Optional information'}];
+ const x=await ask(f,engine,{questions});assert.equal(x.decision.questions[0].question,questions[0].question);
+ const one=await upload(f,x),two=await upload(f,x,document,'complete.txt','text/plain');
+ const answers=[{questionId:'evidence',status:'answered',attachmentIds:[one.id,two.id]},{questionId:'direction',status:'answered',optionId:'north'},{questionId:'optional',status:'skipped'}];
+ const draftRoute=`/api/conversations/${encodeURIComponent(x.scope)}/draft`;
+ const staged=f.ok(await f.api('PUT',draftRoute,{ownerId:x.decision.id,text:'',attachmentIds:[one.id,two.id],decisionAnswers:answers,expectedRevision:0,clientId:'group-tab'}));
+ assert.deepEqual(staged.decisionAnswers,answers);
+ const turns=f.turns.length;await f.reopen();assert.equal(f.turns.length,turns,'Draft navigation/save/reopen never completes the Decision');
+ assert.deepEqual(f.ok(await f.api('GET',draftRoute+'?ownerId='+x.decision.id)).decisionAnswers,answers);
+ let inspected=false;
+ f.plans.set(x.agent.id,[{run:async(session,input)=>{
+   assert.ok(input.prompt.includes(tail),'Provider input contains the final full-question sentence');assert.ok(input.prompt.includes('Complete context retained'));
+   assert.ok(input.prompt.includes('optional'));assert.ok(input.prompt.includes('skipped'));
+   const bodies=await Promise.all(runtimeAttachmentPaths(input).map(file=>readFile(file)));assert.ok(bodies.some(body=>body.equals(png)));assert.ok(bodies.some(body=>body.equals(document)));inspected=true;
+ }}]);
+ const saved=f.ok(await f.api('POST',`/api/decisions/${x.decision.id}/respond`,{answers}));
+ assert.equal(saved.response.answers.length,3);assert.equal(saved.response.answers[1].optionId,'north');assert.equal(saved.response.answers[2].status,'skipped');assert.equal(saved.response.optionId,undefined);
+ assert.deepEqual(saved.response.answers[0].attachmentIds,saved.response.attachments.map(file=>file.id));
+ await until(()=>inspected,'full grouped input/file inspection');await f.settled(x.agent.id);
+ const delivered=f.turns.length;assert.deepEqual(f.ok(await f.api('POST',`/api/decisions/${x.decision.id}/respond`,{answers})),saved);assert.equal(f.turns.length,delivered);
+ for(let i=0;i<2;i++)await download(f,saved.response.attachments[i].downloadUrl,i?document:png);
+ const retired=f.ok(await f.api('GET',draftRoute+'?ownerId='+x.decision.id));assert.equal(retired.decisionAnswers,undefined);assert.deepEqual(retired.attachmentIds,[]);
+ assert.deepEqual(f.ok(await f.api('GET','/api/decisions?id='+x.decision.id))[0],saved);
+ assert.deepEqual(f.ok(await f.api('GET','/api/branches/engine/decisions?id='+x.decision.id)),[],'Exact reads retain product isolation');
+ await f.reopen();assert.deepEqual(f.ok(await f.api('GET','/api/decisions?id='+x.decision.id))[0],saved);assert.equal(f.turns.length,delivered);
+},{diagnosticProvider:true}));
+
+test('UI019 invalid answer/draft sets cannot complete work or borrow another Decision files',fixtureTestOptions,t=>withFixture(t,async f=>{
+ const questions=[{id:'one',question:'One'},{id:'two',question:'Two'}],x=await ask(f,'codex',{questions}),other=await ask(f),foreign=await upload(f,other),own=await upload(f,x);
+ const good=[{questionId:'one',status:'answered',text:'One'},{questionId:'two',status:'skipped'}],route=`/api/decisions/${x.decision.id}/respond`;
+ for(const body of [{text:'Incomplete scalar'},{skip:true},{answers:[]},{answers:[good[0],good[0]]},{answers:[{...good[0],questionId:'foreign'},good[1]]},{answers:[good[0],{...good[1],optionId:'approve'}]},{answers:good,text:'Mixed'},{answers:[{questionId:'one',status:'answered',attachmentIds:[own.id]},{questionId:'two',status:'answered',attachmentIds:[own.id]}]}]){
+  const result=await f.api('POST',route,body);assert.equal(result.status,400,JSON.stringify(result.body));assert.equal(f.ok(await f.api('GET','/api/decisions?id='+x.decision.id))[0].status,'pending');
+ }
+ assert.equal((await f.api('POST',route,{answers:[{questionId:'one',status:'answered',attachmentIds:[foreign.id]},good[1]]})).status,404);
+ const draft={ownerId:x.decision.id,text:'',decisionAnswers:[{questionId:'foreign',status:'answered',text:'Wrong identity'}],attachmentIds:[],expectedRevision:0,clientId:'bad'};
+ assert.equal((await f.api('PUT',`/api/conversations/${encodeURIComponent(x.scope)}/draft`,draft)).status,400);
+ assert.equal((await f.api('PUT',`/api/conversations/${encodeURIComponent(x.scope)}/draft`,{...draft,ownerId:'ordinary-owner',decisionAnswers:good})).status,400);
+ const skipped=f.ok(await f.api('POST',route,{answers:questions.map(q=>({questionId:q.id,status:'skipped'}))}));assert.equal(skipped.status,'resolved');assert.ok(skipped.response.answers.every(a=>a.status==='skipped'));assert.equal(skipped.response.optionId,undefined);await f.settled(x.agent.id);
+}));
+test('UI019 lost grouped response repairs one continuation and preserves canonical question/file bindings',fixtureTestOptions,t=>withFixture(t,async f=>{
+ const x=await ask(f,'codex',{questions:[{id:'one',question:'First'},{id:'two',question:'Second'}]}),file=await upload(f,x);const answers=[{questionId:'one',status:'answered',attachmentIds:[file.id]},{questionId:'two',status:'answered',text:'Full second answer'}];
+ const original=WorkspaceStore.prototype.resolveDecision;let failed=false;t.mock.method(WorkspaceStore.prototype,'resolveDecision',function(id,response){const saved=original.call(this,id,response);if(id===x.decision.id&&!failed){failed=true;throw Error('Controlled grouped response loss after save');}return saved;});
+ assert.equal((await f.api('POST',`/api/decisions/${x.decision.id}/respond`,{answers})).status,500);const saved=f.ok(await f.api('GET','/api/decisions?id='+x.decision.id))[0];assert.equal(saved.response.answers[0].attachmentIds[0],saved.response.attachments[0].id);
+ const turns=f.turns.length;await f.reopen();await until(()=>f.turns.length===turns+1,'one grouped repair continuation');await f.settled(x.agent.id);const delivered=f.turns.length;
+ assert.deepEqual(f.ok(await f.api('POST',`/api/decisions/${x.decision.id}/respond`,{answers})),saved);assert.equal(f.turns.length,delivered);await download(f,saved.response.attachments[0].downloadUrl,png);
+},{diagnosticProvider:true}));
+
+test('UI019 oversized aggregate answers are rejected before resolution or provider wake-up',fixtureTestOptions,t=>withFixture(t,async f=>{
+ const questions=[1,2,3].map(i=>({id:'q'+i,question:'😀'.repeat(9999)+i})),x=await ask(f,'codex',{questions}),turns=f.turns.length;
+ const answers=questions.map(q=>({questionId:q.id,status:'answered',text:'😀'.repeat(10000)}));const result=await f.api('POST',`/api/decisions/${x.decision.id}/respond`,{answers});assert.equal(result.status,413,JSON.stringify(result.body));
+ assert.equal(f.ok(await f.api('GET','/api/decisions?id='+x.decision.id))[0].status,'pending');assert.equal(f.turns.length,turns);
 }));

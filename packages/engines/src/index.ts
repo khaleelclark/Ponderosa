@@ -78,5 +78,6 @@ export function defaultEngineRegistrations(
 }
 
 export { spawnContainedCli } from "./contained-spawn.js";
+export { runtimeEnvironment } from "./runtime-environment.js";
 
 export {CodexResponseText} from "./codex-response-text.js";
