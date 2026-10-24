@@ -1,5 +1,5 @@
 import path from 'node:path';
-import fs from 'node:fs';
+import fs from '@ponderosa/native-host/fs';
 import Database from 'better-sqlite3';
 import {randomUUID,createHash} from 'node:crypto';
 import type {FastifyInstance,FastifyRequest} from 'fastify';

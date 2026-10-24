@@ -3,7 +3,7 @@ import test,{after} from 'node:test';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import net from 'node:net';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdtemp,realpath,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -22,7 +22,7 @@ async function isolatedChroma(){
 }
 after(async()=>{if(chroma){chroma.child.kill('SIGTERM');await chroma.exit;await rm(chroma.root,{recursive:true,force:true});}});
 async function fixture(run){
- const root=await mkdtemp(path.join(tmpdir(),'memory-deletion-')),dataDir=path.join(root,'data'),token=randomUUID(),headers={authorization:'Bearer '+token};
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'memory-deletion-'))),dataDir=path.join(root,'data'),token=randomUUID(),headers={authorization:'Bearer '+token};
  let store=new AgentStore(dataDir),app,passed=false;
  const adapter={id:'fixture',displayName:'Inert',listModels:()=>[],listEfforts:()=>[],async*seed(){throw Error('No provider turn allowed');},async*continue(){throw Error('No provider turn allowed');}};
  const first=store.createProject({label:'Memory cleanup',hostPath:root,defaultEngine:'fixture',chatOwned:true}),chat=store.getConversation(first.lastConversationId);
