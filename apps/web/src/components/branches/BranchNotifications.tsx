@@ -4,7 +4,7 @@ import type {Route} from '../../routing';
 import NotificationsOutlinedIcon from '@mui/icons-material/NotificationsOutlined';
 import {Badge,Button,IconButton,Tooltip} from '@mui/material';
 import {useQuery,useQueryClient} from '@tanstack/react-query';
-import {useState} from 'react';
+import {useState,type ReactNode} from 'react';
 import type {BranchContextDto,WorkspaceNotificationDto} from '@ponderosa/core';
 import {realApi,requestJson} from '../../api/real';
 import {queryKeys} from '../../queryKeys';
@@ -13,7 +13,7 @@ import {NotificationPanel} from '../NotificationPanel';
 import {notificationNavigationRoute} from '../../notificationNavigation';
 
 /** The shared inbox reads the canonical product-scoped notification endpoint. */
-export function BranchNotifications({onNavigate,presentation='icon',label}:{onNavigate(route:BranchRoute):void;presentation?:'button'|'icon';label?:string}):JSX.Element {
+export function BranchNotifications({onNavigate,presentation='icon',label,children}:{onNavigate(route:BranchRoute):void;presentation?:'button'|'icon';label?:string;children?(actions:{openInbox():void;openNotification(item:WorkspaceNotificationDto):void}):ReactNode}):JSX.Element {
  const [open,setOpen]=useState(false),[error,setError]=useState(''),[retry,setRetry]=useState<()=>void>(),client=useQueryClient();
  const query=useNotifications();
  const projects=useQuery({queryKey:['branch-global-projects'],queryFn:()=>realApi.listProjects(),enabled:open});
@@ -33,6 +33,7 @@ export function BranchNotifications({onNavigate,presentation='icon',label}:{onNa
  const unseen=(query.data?.unacknowledgedActionCount??0)+(query.data?.unreadUpdateCount??0);
  const navigate=async(item:WorkspaceNotificationDto,work=false)=>{
   try{setError('');setRetry(undefined);
+   if(item.action?.kind==='open_settings'){onNavigate({tab:'workflow',global:'providers'});return;}
    const agentId=item.agentId??(item.action?.kind==='open_agent'?item.action.targetId:undefined);
    const chatId=item.conversationId??(agentId?(await realApi.getAgent(agentId,1)).agent.conversationId:undefined);
    const context=chatId?await requestJson<BranchContextDto>(`/api/branches/contexts/${encodeURIComponent(chatId)}`):undefined;
@@ -44,7 +45,7 @@ export function BranchNotifications({onNavigate,presentation='icon',label}:{onNa
   }catch(e){setError((e as Error).message);setRetry(()=>()=>void navigate(item,work));setOpen(true)}
  };
  return <>
-  {presentation==='icon'?<Tooltip title="Notifications"><IconButton aria-label={`Branches notifications${unseen?`, ${unseen} unread`:''}`} onClick={()=>setOpen(true)}><Badge badgeContent={unseen} color="error" max={99}><NotificationsOutlinedIcon fontSize="small"/></Badge></IconButton></Tooltip>:<Button onClick={()=>setOpen(true)}>{label??`Notifications (${unseen})`}</Button>}
+  {children?children({openInbox:()=>setOpen(true),openNotification:item=>void navigate(item)}):presentation==='icon'?<Tooltip title="Notifications"><IconButton aria-label={`Branches notifications${unseen?`, ${unseen} unread`:''}`} onClick={()=>setOpen(true)}><Badge badgeContent={unseen} color="error" max={99}><NotificationsOutlinedIcon fontSize="small"/></Badge></IconButton></Tooltip>:<Button onClick={()=>setOpen(true)}>{label??`Notifications (${unseen})`}</Button>}
   <NotificationPanel open={open} projects={projects.data??[]} firstPage={query.data} firstPageRevision={query.successfulFetchRevision} getFirstPageRevision={query.getSuccessfulFetchRevision} onClose={()=>setOpen(false)} onNavigate={route=>void openWorkspace(route)} onOpenNotification={(item,work)=>void navigate(item,work)} productScoped externalError={error||query.error?.message} onRetryExternal={()=>{if(retry){setOpen(false);retry();}else void client.invalidateQueries({queryKey:queryKeys.notifications.all})}} onOpenSettings={()=>onNavigate({tab:'workflow',global:'notifications'})}/>
  </>;
 }

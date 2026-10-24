@@ -1361,6 +1361,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24, installed web dependencies; actual panel/timeline rendering with controlled canonical query inputs",
       "origin": "UI020 single conversation scroll, exact canonical questions and concise Decision notices"
+    },
+    {
+      "path": "tests/branches/home-ui.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, real shared Home React components and QueryClient; no browser or provider account",
+      "origin": "BR002 exact summary, canonical execution outcomes, bounded independent paging and cached refresh recovery"
     }
   ],
   "retainedReleasePayload": [

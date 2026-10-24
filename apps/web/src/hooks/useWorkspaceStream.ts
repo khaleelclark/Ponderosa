@@ -480,8 +480,10 @@ export function useWorkspaceStream(
     const collaborationChatInvalidator = createCollaborationChatInvalidator(queryClient);
     const decisionConversationInvalidator =
       createDecisionConversationInvalidator(queryClient);
-    const notificationRefresh = createRateLimitedRefresh(() =>
-      invalidate(queryKeys.notifications.all), 5_000);
+    const notificationRefresh = createRateLimitedRefresh(() => {
+      invalidate(queryKeys.notifications.all);
+      invalidate(queryKeys.branchesHome.all);
+    }, 5_000);
     const providerUsageRefresh = createRateLimitedRefresh(() =>
       invalidate(queryKeys.providerUsage.all), 5_000);
     const engineStatusRefresh = createRateLimitedRefresh(() =>
@@ -735,6 +737,7 @@ export function useWorkspaceStream(
       invalidate(queryKeys.queuedMessages.agentsAll);
       invalidate(["targeted-next-run"]);
       invalidate(queryKeys.workspaceDirectory.all);
+      invalidate(queryKeys.branchesHome.all);
       invalidate(["engine-capabilities"]);
       invalidate(queryKeys.notifications.all);
       invalidateActiveQueries(queryClient, queryKeys.agents.all);
