@@ -1,3 +1,4 @@
+import {useWorkspaceFont} from "./hooks/useWorkspaceFont";
 import {isBranchesPath} from "./api/productScope.js";
 import { stopSpeech } from "./components/speech/speechCoordinator";
 import {
@@ -509,19 +510,7 @@ export default function App({
   };
   const savePreferencesAndWait = (patch: Partial<typeof preferences>) =>
     preferencesWriter.current!.enqueueAndWait(patch);
-  useEffect(() => {
-    const families = {
-      inter:
-        'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-      system:
-        'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-      sans: "Arial, Helvetica, sans-serif",
-    } as const;
-    document.documentElement.style.setProperty(
-      "--ponderosa-font-family",
-      families[preferences.fontFamily],
-    );
-  }, [preferences.fontFamily]);
+  useWorkspaceFont(preferences.fontFamily);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

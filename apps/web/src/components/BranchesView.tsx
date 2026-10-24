@@ -1,3 +1,4 @@
+import {useWorkspaceFont} from "../hooks/useWorkspaceFont";
 import {BranchHome} from './branches/BranchHome';
 import { BranchFolders } from './branches/BranchFolders';
 import { WorkspacePreferencesWriter } from '../workspacePreferencesWriter';
@@ -96,6 +97,7 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  });
  const connection=useWorkspaceStream({projectPreferences:value=>preferenceWriter.current!.projectCanonical(value)});
  const preferences=useWorkspacePreferences(preferenceWriter.current);
+ useWorkspaceFont(preferences.data?.fontFamily);
  const onGlobal=(global:NonNullable<BranchRoute['global']>)=>{if(navigate({...route,global}))setMobileNavOpen(false)};
  const health=useQuery({queryKey:queryKeys.health.all,queryFn:()=>realApi.getHealth(),enabled:Boolean(route.global),staleTime:60000});
  const theme=useTheme(),mobileWorkspace=useMediaQuery(theme.breakpoints.down('md'));
