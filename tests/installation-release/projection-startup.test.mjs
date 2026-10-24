@@ -3,6 +3,7 @@ import test from 'node:test';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { AgentStore } from '../../packages/agents/dist/index.js';
 import { EventLog } from '../../packages/agents/dist/eventlog.js';
 import { projectionSourceFingerprint } from '../../packages/agents/dist/projection-checkpoint.js';
@@ -98,4 +99,45 @@ test('one history read seeds the next append; torn tails repair and earlier corr
   writeFileSync(file, 'not JSON\n' + bytes);
   assert.throws(() => new EventLog(file).append(event));
   assert.equal(readFileSync(file, 'utf8'), 'not JSON\n' + bytes);
+});
+
+test('event projection statements stay bounded across agents and replay preserves exact output/activity rows', t => {
+  const f = fixture(t), store = f.open();
+  const project = store.createProject({ label: 'Statement reuse', hostPath: f.root, defaultEngine: 'codex' });
+  const agents = ['First', 'Second'].map(title => store.createAgent(project.id,
+    { title, engine: 'codex', conversationId: project.lastConversationId }));
+  const original = Database.prototype.prepare;
+  let headPrepares = 0;
+  Database.prototype.prepare = function (sql, ...args) {
+    if (this === store.sqlite && sql.includes('INSERT INTO agent_event_head_projection')) headPrepares++;
+    return original.call(this, sql, ...args);
+  };
+  const snapshot = () => Object.fromEntries(['events', 'messages', 'runs', 'artifacts', 'agent_event_head_projection',
+    'agent_health_projection', 'run_output_heads', 'run_output_segments', 'activity_projection', 'tool_output_projection',
+    'changed_file_projection', 'changed_file_execution_projection'].map(table => [table,
+      store.sqlite.prepare(`SELECT * FROM ${table}`).all().map(row => JSON.stringify(row)).sort()]));
+  try {
+    for (const agent of agents) {
+      const executionId = `execution-${agent.id}`;
+      const events = [{ type: 'agent_lifecycle', status: 'running', reason: 'active_run', executionId, engine: 'codex' },
+        { type: 'text', delta: 'Exact 😀 ', executionId }, { type: 'text', delta: 'joined output', executionId },
+        { type: 'reasoning', delta: 'Private reasoning', executionId },
+        { type: 'tool_result', id: 'result', output: 'large 😀 output '.repeat(400), executionId },
+        { type: 'file_change', path: 'same-path.ts', kind: 'modified', diff: 'diff content', executionId },
+        { type: 'agent_lifecycle', status: 'completed', reason: 'turn_completed', executionId }];
+      events.forEach((event, index) => store.appendEvent(agent.id, event, new Date(Date.UTC(2026, 9, 24, 0, 0, index)).toISOString()));
+      assert.equal(store.lastSeqOf(agent.id), events.length);
+      assert.equal(store.readEventsSince(agent.id, 0, 2).length, 2);
+      assert.equal(store.readEventsSince(agent.id, 2).length, events.length - 2);
+      assert.equal(store.latestHealthObservation(agent.id).status, 'idle');
+    }
+    assert.equal(headPrepares, 1, 'Preparing the same event-head SQL must not grow with events or agents');
+    const incremental = snapshot();
+    store.rebuildProjections();
+    assert.equal(headPrepares, 2, 'A cleared owner prepares its fixed SQL once for the entire rebuild');
+    assert.deepEqual(snapshot(), incremental);
+    store.appendEvent(agents[0].id, { type: 'text', delta: 'After replay', executionId: 'later-run' }, '2026-10-24T01:00:00.000Z');
+    assert.equal(store.lastSeqOf(agents[0].id), 8);
+    assert.equal(store.lastSeqOf(agents[1].id), 7);
+  } finally { Database.prototype.prepare = original; }
 });

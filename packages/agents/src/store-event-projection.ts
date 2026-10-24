@@ -68,6 +68,14 @@ export class AgentEventPersistenceError extends Error {
  * SQLite projections produced from those logs.
  */
 export class AgentEventProjectionStore {
+  // ponytail: fixed owner SQL only; dynamic or iterator queries must stay uncached.
+  private readonly statements = new Map<string, Database.Statement>();
+  private statement(sql: string): Database.Statement {
+    let statement = this.statements.get(sql);
+    if (!statement) { statement = this.client.prepare(sql); this.statements.set(sql, statement); }
+    return statement;
+  }
+
   private readonly reservations = new Map<string, ArtifactSequenceReservation | undefined>();
   private readonly logs = new Map<string, EventLog>();
   private readonly states = new Map<string, ProjectionState>();
@@ -123,7 +131,7 @@ export class AgentEventProjectionStore {
   }
 
   readSince(agentId: string, sinceSeq: number, limit?: number): StoredLogEvent[] {
-    return (this.client.prepare(`
+    return (this.statement(`
       SELECT seq, created_at, payload_json
       FROM events
       WHERE agent_id = ? AND seq > ?
@@ -141,7 +149,7 @@ export class AgentEventProjectionStore {
   }
 
   lastSeq(agentId: string): number {
-    const row = this.client.prepare(`
+    const row = this.statement(`
       SELECT last_seq FROM agent_event_head_projection WHERE agent_id = ?
     `).get(agentId) as { last_seq: number } | undefined;
     return row?.last_seq ?? 0;
@@ -153,7 +161,7 @@ export class AgentEventProjectionStore {
     reason: AgentLifecycleReason;
     executionId?: string;
   } | undefined {
-    const row = this.client.prepare(`
+    const row = this.statement(`
       SELECT status, status_timestamp, reason, execution_id
       FROM agent_health_projection WHERE agent_id = ?
     `).get(agentId) as {
@@ -187,6 +195,7 @@ export class AgentEventProjectionStore {
   }
 
   clearCaches(): void {
+    this.statements.clear();
     this.reservations.clear();
     this.logs.clear();
     this.states.clear();
@@ -203,7 +212,7 @@ export class AgentEventProjectionStore {
     const executionId = "executionId" in event && typeof event.executionId === "string"
       ? event.executionId
       : null;
-    const head = this.client.prepare(`
+    const head = this.statement(`
       SELECT last_seq, event_type, execution_id, segment_first_seq
       FROM run_output_heads WHERE agent_id = ?
     `).get(agentId) as {
@@ -227,7 +236,7 @@ export class AgentEventProjectionStore {
         && head.execution_id === executionId,
       );
       if (continues) {
-        const segment = this.client.prepare(`
+        const segment = this.statement(`
           SELECT text_preview, preview_utf8_bytes, raw_utf8_bytes,
             canonical_utf8_bytes
           FROM run_output_segments
@@ -250,7 +259,7 @@ export class AgentEventProjectionStore {
         const canonicalUtf8Bytes = trimmedDelta
           ? segment.raw_utf8_bytes + Buffer.byteLength(trimmedDelta, "utf8")
           : segment.canonical_utf8_bytes;
-        const updated = this.client.prepare(`
+        const updated = this.statement(`
           UPDATE run_output_segments SET
             last_seq = ?,
             text_preview = ?,
@@ -273,7 +282,7 @@ export class AgentEventProjectionStore {
         }
         segmentFirstSeq = head!.segment_first_seq;
       } else {
-        this.client.prepare(`
+        this.statement(`
           INSERT INTO run_output_segments(
             agent_id, first_seq, last_seq, event_type, execution_id, created_at,
             text_preview, preview_utf8_bytes, raw_utf8_bytes,
@@ -295,7 +304,7 @@ export class AgentEventProjectionStore {
       }
     }
 
-    this.client.prepare(`
+    this.statement(`
       INSERT INTO run_output_heads(
         agent_id, last_seq, event_type, execution_id, segment_first_seq
       ) VALUES (?, ?, ?, ?, ?)
@@ -358,7 +367,7 @@ export class AgentEventProjectionStore {
             break;
           case "insert_event":
             tx.insert(events).values(op.row).onConflictDoNothing().run();
-            this.client.prepare(`
+            this.statement(`
               INSERT INTO agent_event_head_projection(agent_id, last_seq) VALUES (?, ?)
               ON CONFLICT(agent_id) DO UPDATE SET last_seq = MAX(last_seq, excluded.last_seq)
             `).run(agentId, op.row.seq);
@@ -366,7 +375,7 @@ export class AgentEventProjectionStore {
             {
               const event = JSON.parse(op.row.payloadJson) as LogEvent;
               const observation = healthObservation(event, op.row.createdAt);
-              if (observation) this.client.prepare(`
+              if (observation) this.statement(`
                 INSERT INTO agent_health_projection(
                   agent_id, source_seq, status, status_timestamp, reason, execution_id
                 ) VALUES (?, ?, ?, ?, ?, ?)
@@ -399,13 +408,13 @@ export class AgentEventProjectionStore {
                 totalUtf8Bytes = output.length;
                 outputSha256 = createHash("sha256").update(output).digest("hex");
                 eventJson = JSON.stringify({ ...event, output: preview });
-                this.client.prepare(`
+                this.statement(`
                   INSERT OR IGNORE INTO tool_output_projection
                     (agent_id, seq, output, total_utf8_bytes, sha256)
                   VALUES (?, ?, ?, ?, ?)
                 `).run(agentId, op.row.seq, output, output.length, outputSha256);
               }
-              this.client.prepare(`
+              this.statement(`
                 INSERT OR IGNORE INTO activity_projection(
                   agent_id, seq, event_type, execution_id, event_json, created_at,
                   output_preview_utf8_bytes, output_total_utf8_bytes, output_sha256
@@ -422,26 +431,26 @@ export class AgentEventProjectionStore {
                 outputSha256,
               );
               if (event.type === "file_change") {
-                if (op.executionId) this.client.prepare(`
+                if (op.executionId) this.statement(`
                   INSERT INTO changed_file_execution_projection(agent_id, path, execution_id, last_seq)
                   VALUES (?, ?, ?, ?)
                   ON CONFLICT(agent_id, path, execution_id) DO UPDATE SET last_seq = excluded.last_seq
                 `).run(agentId, event.path, op.executionId, op.row.seq);
-                const executionIds = (this.client.prepare(`
+                const executionIds = (this.statement(`
                   SELECT execution_id AS executionId
                   FROM changed_file_execution_projection
                   WHERE agent_id = ? AND path = ?
                   ORDER BY last_seq DESC, execution_id DESC LIMIT 100
                 `).all(agentId, event.path) as Array<{ executionId: string }>)
                   .map((row) => row.executionId);
-                const executionCount = (this.client.prepare(`
+                const executionCount = (this.statement(`
                   SELECT COUNT(*) AS count FROM changed_file_execution_projection
                   WHERE agent_id = ? AND path = ?
                 `).get(agentId, event.path) as { count: number }).count;
                 const boundedDiff = event.diff
                   ? utf8Prefix(event.diff, ACTIVITY_OUTPUT_PREVIEW_BYTES)
                   : null;
-                this.client.prepare(`
+                this.statement(`
                   INSERT INTO changed_file_projection(
                     agent_id, path, kind, last_seq, last_changed_at, execution_ids_json, execution_count, diff
                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -467,7 +476,7 @@ export class AgentEventProjectionStore {
             if (op.row.type === "artifact_visibility") {
               const visibility = JSON.parse(op.row.payloadJson) as LogEvent;
               if (visibility.type === "artifact_visibility") {
-                this.client.prepare(`
+                this.statement(`
                   UPDATE artifacts SET visibility = ?, pinned = ? WHERE agent_id = ? AND id = ?
                 `).run(
                   visibility.visibility,
