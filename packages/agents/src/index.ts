@@ -105,8 +105,11 @@ export { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone
 export { openDb } from "./db.js";
 export {
   createOfflineDataDirectoryBackup,
+  createOfflineWebDeploymentBackup,
+  assertWebOnlyDeploymentCompatibility,
   restoreOfflineDataDirectoryBackup,
   type DataDirectoryBackupManifest,
+  type WebDeploymentBackupManifest,
 } from "./data-directory-backup.js";
 export { stableJson } from "./coordination-v3-canonical-json.js";
 export {

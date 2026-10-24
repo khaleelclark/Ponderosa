@@ -131,6 +131,67 @@ means stopping the new unit, restoring the pre-migration snapshot to a new
 path with the retained installed offline CLI, reinstalling the prior exact
 `.deb`, updating `release.env`, and retaining the failed directory.
 
+### Bounded fast path for web-only updates
+
+The full procedure above remains mandatory for engine, runtime, schema, storage
+or unknown changes. A qualified web-only artifact can use the existing offline
+backup tool's narrower scope. This is an application-state preservation snapshot,
+**not a portable backup or disaster-recovery restore point**. It retains SQLite
+and its WAL cohort, layout identity, canonical journals, managed artifacts,
+credentials and other application-owned files. Managed and external working
+folders remain at their exact existing physical locations; their identities and
+canonical Project/Chat ownership are recorded. Unknown or inconsistent ownership
+refuses this fast path. Do not delete or relocate the retained working folders.
+
+First build and qualify the complete candidate while the old daemon is available.
+Retain the previous exact installed artifact and environment/systemd configuration.
+Then use the qualified candidate's bundled tool to check both installed artifacts:
+
+```sh
+candidate_root=/path/to/qualified/Ponderosa
+current_root=/path/to/current/Ponderosa
+runtime="$candidate_root/runtime/node"
+data_tool="$candidate_root/app/server/tools/data-directory.mjs"
+"$runtime" "$data_tool" check-web-deployment --data-dir "$PONDEROSA_DATA_DIR" \
+  --current-install "$current_root" --candidate-install "$candidate_root"
+```
+
+Eligibility checks the actual complete server, launcher and optional desktop
+payloads and their dependencies, runtime and schema files, plus the existing
+build manifests. Node and both native host images must match their declared
+hashes and sizes. Only the web payload and release metadata may differ. A changed
+backend tool description also conservatively requires the full path. This first
+rung deliberately avoids inventing a second storage-version authority. The first
+release introducing these tools or changing startup recovery therefore requires
+the full path; later identical-engine web updates can qualify.
+
+Keep the same proxy gate, canonical drain, zero cleanup blockers, observed process
+exit and exact configuration checks as the full procedure. After stop:
+
+```sh
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+"$runtime" "$data_tool" backup-web-deployment --data-dir "$PONDEROSA_DATA_DIR" \
+  --output "$PONDEROSA_BACKUP_EVIDENCE_DIR/web-deployment-$stamp" \
+  --current-install "$current_root" --candidate-install "$candidate_root"
+```
+
+The native offline lease excludes a daemon writer. Creation verifies every copied
+path/checksum and rechecks retained working-folder identities and installed
+payloads before publishing its separate `ponderosa-web-deployment-backup.json`.
+Portable `restore` explicitly refuses this scope. Ordinary full backups retain
+their complete-coverage and absolute/escaping-symlink refusal rules; an absolute
+link inside a preserved working folder is never traversed by the scoped snapshot.
+Do not weaken portable validation to make a same-host snapshot look portable.
+
+Start the exact candidate drained, require full readiness and the normal public
+API/assets/provider smoke, then resume supported intake. If eligibility or any
+creation check fails, do not cut over: use the full path or safely resume the old
+daemon. Rollback of a web-only update restores the previous exact code and
+configuration **against current compatible data**, preserving every subsequently
+accepted write and Decision. Never apply the scoped snapshot over current data.
+Keep full encrypted disaster-recovery backups and restore rehearsals under the
+existing RPO/RTO policy; this optimization does not replace them.
+
 ## Agent workload boundary
 
 A release code update does not replace a stale installed systemd unit. Before

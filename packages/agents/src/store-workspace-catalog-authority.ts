@@ -74,7 +74,7 @@ interface ConversationDeletionIdentity {
   ownershipToken: string;
 }
 
-function creationId(kind: "project" | "conversation", scope: string, key: string): string {
+export function creationId(kind: "project" | "conversation", scope: string, key: string): string {
   const hash = createHash("sha256").update(`${kind}\0${scope}\0${key}`).digest("hex");
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-${
     ((Number.parseInt(hash[16]!, 16) & 3) | 8).toString(16)
