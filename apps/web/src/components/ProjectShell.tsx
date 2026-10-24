@@ -278,7 +278,6 @@ export function ProjectShell({
             onResourceDeleted?.({ kind: "agent", projectId, agentId }),
           )}
         onOpenReview={openAgentReview}
-        onOpenAgentWork={(focusId) => navigate({ kind: "projectWork", projectId, conversationId: route.conversationId, ...(focusId ? { focusId } : {}) })}
         onOpenBrowser={(agentId, runId) => projectBrowser.openAgent?.(agentId, runId)}
         onOpenFileActivity={openAgentFileActivity}
         onNewAgent={(master, managerAgentId) => onCreate("agent", {

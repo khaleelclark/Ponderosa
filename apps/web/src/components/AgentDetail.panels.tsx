@@ -5,7 +5,6 @@ import type {
   AgentHealthDto,
   ConversationDto,
   ResponseFileActivityDto,
-  WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useEffect, useMemo, useState, type ReactNode, type ComponentProps } from "react";
@@ -16,9 +15,7 @@ import { queryKeys } from "../queryKeys";
 import { scrollFocusedMessageIntoView } from "../messageFocus";
 import { chatStateKey, readChatState } from "../chatState";
 import type { AgentTelemetryFocus } from "../routing";
-import { notificationTechnicalFocusId } from "../technicalFocus";
 import { AgentsTab } from "./AgentsTab";
-import { AttentionSurface } from "./AttentionSurface";
 import type { AgentTab } from "./AgentDetail.helpers";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { ChatPane } from "./chat/ChatPane";
@@ -35,7 +32,6 @@ interface AgentDetailPanelsProps {
   engines: ComponentProps<typeof AgentsTab>["engines"];
   statusByAgentId: ReadonlyMap<string, AgentStatus>;
   healthByAgentId: ReadonlyMap<string, AgentHealthDto>;
-  notifications: WorkspaceNotificationDto[];
   decisionReviewAction?: ReactNode;
   operatorProfile?: WorkspacePreferencesDto["profile"];
   agentNameForId: NonNullable<ComponentProps<typeof ChatPane>["agentNameForId"]>;
@@ -61,7 +57,6 @@ interface AgentDetailPanelsProps {
   onOpenFile(file: ResponseFileActivityDto): void;
   onNewSubagent(managerAgentId: string): void;
   onAgentsDeleted(agentIds: string[]): void;
-  onOpenTechnical(focusId?: string): void;
   onOpenArtifact(artifactId: string): void;
   onCloseTechnical(): void;
 }
@@ -76,7 +71,6 @@ export function AgentDetailPanels({
   engines,
   statusByAgentId,
   healthByAgentId,
-  notifications,
   decisionReviewAction,
   operatorProfile,
   agentNameForId,
@@ -100,7 +94,6 @@ export function AgentDetailPanels({
   onOpenFile,
   onNewSubagent,
   onAgentsDeleted,
-  onOpenTechnical,
   onOpenArtifact,
   onCloseTechnical,
 }: AgentDetailPanelsProps): JSX.Element {
@@ -266,12 +259,6 @@ export function AgentDetailPanels({
           {decisions.isError ? <Alert severity="error" action={<Button color="inherit" onClick={() => void decisions.refetch()}>Retry</Button>} sx={{ m: 1 }}>
             Agent decisions could not be refreshed.
           </Alert> : null}
-          <AttentionSurface
-            notifications={notifications.filter(item => item.kind !== "decision")}
-            projectId={detail.agent.projectId}
-            agentId={agentId}
-            onOpen={item => onOpenTechnical(notificationTechnicalFocusId(item))}
-          />
         </Box>
         {panes.chat}
       </Box>
