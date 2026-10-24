@@ -533,3 +533,26 @@ test('a stale Branch panel cannot start creation for a new selection or temporar
   vm.runInNewContext(ts.transpileModule(allowed+'\n'+start.replace('const startChat=','globalThis.startChat='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);scope.startChat();scope.startChat();assert.equal(writes.length,route.branchId==='owner'&&route.tab==='chats'&&!route.global&&!route.executionId?1:0);
  }
 });
+
+test('BR010 compact picker distinguishes unknown and empty counts without restoring the wide dropdown',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),mui=await import('@mui/material'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchChats.tsx',import.meta.url),'utf8');
+ const toolbar=source.split('\n').find(line=>line.includes('aria-haspopup="dialog"'));assert.ok(toolbar);
+ const scope={React,...mui,ChatIcon:()=>null,ArrowDropDownIcon:()=>null,AddIcon:()=>null,MoreHorizIcon:()=>null,executionId:undefined,chatCount:undefined,chatPages:{},creationKey:undefined,chat:undefined,notificationAction:undefined,setSearch(){},setPicker(){},startChat(){}};
+ vm.runInNewContext(ts.transpileModule('globalThis.Toolbar=()=>('+toolbar+');',{fileName:'toolbar.tsx',compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText,scope);
+ for(const total of [undefined,0,103]){scope.chatCount=total;const html=renderToStaticMarkup(React.createElement(scope.Toolbar));assert.ok(html.includes(`Chats (${total??'…'})`));assert.doesNotMatch(html,/Branch Chat<|role="combobox"/);assert.match(html,/aria-label="New Chat"/);}
+ scope.chatPages={error:Error('Unavailable')};scope.chatCount=undefined;assert.ok(renderToStaticMarkup(React.createElement(scope.Toolbar)).includes('Chats (?)'));
+});
+
+test('BR010 picker uses current owner/execution and keeps the chooser open when navigation is refused',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchChats.tsx',import.meta.url),'utf8'),handler=source.split('\n').find(line=>line.trim().startsWith('const chooseChat='));assert.ok(handler);
+ const route={branchId:'owner',tab:'chats'},writes=[],closes=[],scope={branchId:'owner',executionId:undefined,currentRoute:{current:route},openChat:(...args)=>{writes.push(args);return false},setPicker:value=>closes.push(value)};vm.runInNewContext(ts.transpileModule(handler.replace('const chooseChat=','globalThis.chooseChat='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);
+ for(const current of [{...route,branchId:'other'},{...route,executionId:'temporary'},{...route,tab:'workflow'},{...route,global:'providers'}]){scope.currentRoute.current=current;scope.chooseChat({id:'c',projectId:'p'})}assert.equal(writes.length,0);
+ scope.currentRoute.current=route;scope.chooseChat({id:'c',projectId:'p'});assert.equal(writes.length,1);assert.equal(closes.length,0);scope.openChat=()=>true;scope.chooseChat({id:'c',projectId:'p'});assert.deepEqual(closes,[false]);
+});
+
+test('BR010 records only accepted canonical Chat selections, never polling or failed/foreign/temporary routes',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchChats.tsx',import.meta.url),'utf8'),handler=source.split('\n').find(line=>line.trim().startsWith('const recordSelectedChatUse='));assert.ok(handler);
+ const uses=[],refreshes=[],route={branchId:'owner',tab:'chats'},scope={branchId:'owner',chatId:'old-chat',executionId:undefined,ownerMatches:false,usedChat:{current:undefined},currentRoute:{current:route},client:{invalidateQueries:value=>refreshes.push(value)},markWorkspaceResourceUsed:async(_client,kind,id)=>uses.push({kind,id})};
+ vm.runInNewContext(ts.transpileModule(handler.replace('const recordSelectedChatUse=','globalThis.record='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);scope.record();assert.equal(uses.length,0);scope.ownerMatches=true;scope.record();scope.record();await Promise.resolve();assert.deepEqual(uses,[{kind:'conversation',id:'old-chat'}]);assert.equal(refreshes.length,1);
+ for(const current of [{...route,branchId:'other'},{...route,tab:'workflow'},{...route,global:'providers'}]){scope.currentRoute.current=current;scope.record()}assert.equal(uses.length,1);scope.currentRoute.current=route;scope.executionId='temporary';scope.record();assert.equal(uses.length,1);scope.executionId=undefined;scope.chatId='other-chat';scope.record();assert.equal(uses.length,2);
+});

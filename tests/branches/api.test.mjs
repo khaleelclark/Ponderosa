@@ -165,3 +165,18 @@ test('one-click Branch Chats resolve Settings once and replay exact receipts acr
   installed=false;await f.reopen();assert.equal(f.ok(await f.api('POST',url,input,headers)).id,created.id);assert.equal(f.ok(await f.api('GET',`${url}?limit=100`)).length,2);
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),providerInstalled:()=>installed,modelCatalog:async()=>({models:[{id:'first',label:'First',kind:'alias',source:'provider-probe',efforts:[{id:'medium',label:'Medium'}],defaultEffort:'medium',serviceTiers:[{id:'fast',label:'Fast'}],defaultServiceTier:'fast'},{id:'second',label:'Second',kind:'alias',source:'provider-probe',efforts:[{id:'high',label:'High'}],defaultEffort:'high'}],cliVersion:'fixture',configurationKey:'fixture'})});
 });
+
+test('BR010 Chat picker searches before paging, keeps exact ownership and fences Recent cursors after use',async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const owner=await branch(f,'Picker'),other=await branch(f,'Foreign'),rows=[];
+  for(let n=0;n<103;n++){const project=store.createProject({label:n===0?'Oldest target':n<3?'Duplicate':n===3?'Literal %_ title':`Chat ${n}`,chatOwned:true,branchId:owner.id,hostPath:f.root,defaultEngine:'codex'});rows.push(store.getConversation(project.lastConversationId));}
+  store.createProject({label:'Oldest target',chatOwned:true,branchId:other.id,hostPath:f.root,defaultEngine:'codex'});
+  const base=`/api/branches/${owner.id}/chats`,first=await f.api('GET',base+'?limit=100');f.ok(first);assert.equal(first.body.length,100);assert.equal(first.headers['x-total-count'],'103');assert.ok(!first.body.some(chat=>chat.id===rows[0].id));
+  const cursor=first.headers['x-next-cursor'],next=f.ok(await f.api('GET',base+'?limit=100&cursor='+encodeURIComponent(cursor)));assert.equal(next.length,3);assert.equal(new Set([...first.body,...next].map(chat=>chat.id)).size,103);
+  assert.deepEqual(f.ok(await f.api('GET',base+'?search=oldest%20TARGET')).map(chat=>chat.id),[rows[0].id]);assert.equal(f.ok(await f.api('GET',base+'?search=Duplicate')).length,2);assert.deepEqual(f.ok(await f.api('GET',base+'?search=%25_')).map(chat=>chat.id),[rows[3].id]);assert.equal(f.ok(await f.api('GET',base+'?search=no-match')).length,0);
+  assert.equal((await f.api('GET',base+'?search=target&cursor='+encodeURIComponent(cursor))).status,400);assert.equal((await f.api('GET',`/api/branches/${other.id}/chats?cursor=`+encodeURIComponent(cursor))).status,400);assert.equal((await f.api('GET',base+'?search='+('x'.repeat(201)))).status,400);
+  f.ok(await f.api('POST','/api/branches/engine/workspace/recent-resources/use',{kind:'conversation',resourceId:rows[0].id}));assert.equal((await f.api('GET',base+'?cursor='+encodeURIComponent(cursor))).status,409);assert.equal(f.ok(await f.api('GET',base+'?limit=1'))[0].id,rows[0].id);
+  assert.equal(f.ok(await f.api('GET',`/api/branches/contexts/${rows[0].id}`)).branchId,owner.id);await f.reopen();assert.equal(f.ok(await f.api('GET',base+'?limit=1'))[0].id,rows[0].id);assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});

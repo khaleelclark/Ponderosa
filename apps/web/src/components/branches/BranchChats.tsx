@@ -1,3 +1,8 @@
+import ChatIcon from "@mui/icons-material/ChatBubbleOutline";
+import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
+import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
+import {markWorkspaceResourceUsed} from "../../workspaceRecency";
+import {normalizeResetPages,uniqueBy} from "../../collections";
 import AddIcon from "@mui/icons-material/Add";
 import {NewChatComposer} from "../NewChatComposer";
 import {readCreationAttempts, sameCreationOwner} from "../chatCreationAttempts";
@@ -10,7 +15,7 @@ import {useBranchDraftGuard,useBranchNavigationGuard} from './BranchNavigation';
 import {AgentOrganizationDialog} from '../AgentDetail.parts';
 import {useEffect,useRef,useState,type ReactNode} from 'react';
 import {useMutation,useQuery,useQueryClient,useInfiniteQuery} from '@tanstack/react-query';
-import {Alert,Box,Button,Dialog,DialogActions,DialogContent,DialogTitle,Menu,MenuItem,IconButton,Tooltip,Stack,TextField,Typography} from '@mui/material';
+import {Alert,Box,Button,Dialog,DialogActions,DialogContent,DialogTitle,Menu,MenuItem,IconButton,Tooltip,List,ListItem,ListItemButton,ListItemText,Stack,TextField,Typography} from '@mui/material';
 import type {AgentDto,BranchContextDto,EngineDto} from '@ponderosa/core';
 import {realApi,requestJson,requestCollectionPage} from '../../api/real';
 import type {ProjectRoute} from '../../routeRegistry';
@@ -25,6 +30,9 @@ import {CapabilityPolicyEditor} from '../CapabilityPolicyEditor';
 export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate,notificationAction,onHeaderReady,enginesLoaded=true}:{branchId:string;engines:EngineDto[];enginesLoaded?:boolean;executionId?:string;branchRoute:BranchRoute;onNavigate(route:BranchRoute,replace?:boolean):boolean;notificationAction?:ReactNode;onHeaderReady?(ready:boolean):void}):JSX.Element {
  const guard=useBranchNavigationGuard();
  const [actions,setActions]=useState<HTMLElement>();
+ const [picker,setPicker]=useState(false),[search,setSearch]=useState('');
+ const searchText=search.trim();
+ useEffect(()=>{setPicker(false);setSearch('')},[branchId,executionId]);
  const route=branchRoute.workspace;
  const routeAgentId=route&&'agentId'in route?route.agentId:undefined;
  const routedAgent=useQuery({queryKey:['branch-routed-agent-owner',routeAgentId],queryFn:()=>realApi.getAgent(routeAgentId!,1),enabled:Boolean(routeAgentId),retry:false});
@@ -35,8 +43,11 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
  const [organization,setOrganization]=useState(false),[member,setMember]=useState<AgentDto>(),[manager,setManager]=useState(''),[saved,setSaved]=useState(''),[capabilities,setCapabilities]=useState<{kind:'chat'|'agent';id:string;title:string}>(),[capabilityDirty,setCapabilityDirty]=useState(false);
  useBranchDraftGuard('chat-capabilities',capabilityDirty);
  const client=useQueryClient(),[agentCreate,setAgentCreate]=useState<{managerAgentId?:string}>(),[error,setError]=useState('');
- const chatPages=useInfiniteQuery({queryKey:['branch-chats',branchId,executionId,'pages'],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestCollectionPage<BranchContextDto>(`/api/branches/${branchId}/chats?limit=100${executionId?'&executionId='+encodeURIComponent(executionId):''}${pageParam?'&cursor='+encodeURIComponent(pageParam):''}`),getNextPageParam:last=>last.hasMore?last.cursor:undefined,refetchInterval:5000});
- const chats={...chatPages,data:chatPages.data?.pages.flatMap(page=>page.items)};
+ const chatPages=useInfiniteQuery({queryKey:['branch-chats',branchId,executionId,'pages'],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestCollectionPage<BranchContextDto>(`/api/branches/${branchId}/chats?limit=100${executionId?'&executionId='+encodeURIComponent(executionId):''}${pageParam?'&cursor='+encodeURIComponent(pageParam):''}`),getNextPageParam:last=>last.hasMore?last.cursor:undefined,select:normalizeResetPages,refetchInterval:5000});
+ const searches=useInfiniteQuery({queryKey:['branch-chats',branchId,executionId,'search',searchText],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestCollectionPage<BranchContextDto>(`/api/branches/${branchId}/chats?limit=100&search=${encodeURIComponent(searchText)}${executionId?'&executionId='+encodeURIComponent(executionId):''}${pageParam?'&cursor='+encodeURIComponent(pageParam):''}`),getNextPageParam:last=>last.hasMore?last.cursor:undefined,select:normalizeResetPages,enabled:picker&&Boolean(searchText),refetchInterval:picker&&searchText?5000:false});
+ const chats={...chatPages,data:chatPages.data?uniqueBy(chatPages.data.pages.flatMap(page=>page.items),chat=>chat.id):undefined};
+ const choices=searchText?searches:chatPages,choiceRows=uniqueBy(choices.data?.pages.flatMap(page=>page.items)??[],chat=>chat.id);
+ const chatCount=chatPages.data?.pages[0]?.total;
  const [browserRequest,setBrowserRequest]=useState<ProjectBrowserRequest>(),browserRequestSequence=useRef(0);
  const owner=useQuery({queryKey:['branch-chat-owner',chatId],queryFn:()=>requestJson<BranchContextDto>(`/api/branches/contexts/${chatId}`),enabled:Boolean(chatId),retry:false,refetchInterval:5000});
  const listedChat=chats.data?.find(c=>c.id===chatId),ownerMatches=!(owner.error instanceof ApiRequestError&&[404,410].includes(owner.error.status))&&owner.data?.branchId===branchId&&(owner.data.executionId??undefined)===(executionId??undefined),chat=listedChat??(ownerMatches?owner.data:undefined),project=useQuery({queryKey:['project',chat?.projectId],queryFn:()=>realApi.getProject(chat!.projectId),enabled:Boolean(chat)});
@@ -52,6 +63,10 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
  const starting=useRef(false),currentRoute=useRef(branchRoute);currentRoute.current=branchRoute;
  useEffect(()=>{starting.current=false},[creationKey]);
  const startChat=()=>{if(!creationAllowed||creationKey||starting.current)return;starting.current=true;if(!onNavigate({...branchRoute,creationKey:pendingAttempt?.key??createClientId()}))starting.current=false;};
+ const usedChat=useRef<string>();
+ const recordSelectedChatUse=()=>{const current=currentRoute.current,id=current.branchId===branchId&&current.tab==='chats'&&!current.global&&!executionId&&ownerMatches?chatId:undefined;if(usedChat.current===id)return;usedChat.current=id;if(id)void markWorkspaceResourceUsed(client,'conversation',id).then(()=>client.invalidateQueries({queryKey:['branch-chats',branchId]}));};
+ useEffect(recordSelectedChatUse,[branchId,chatId,ownerMatches,branchRoute.tab,branchRoute.global,branchRoute.branchId,executionId]);
+ const chooseChat=(chat:BranchContextDto)=>{const current=currentRoute.current;if(current.branchId===branchId&&current.tab==='chats'&&!current.global&&(current.executionId??undefined)===(executionId??undefined)&&openChat(chat.id,chat.projectId))setPicker(false);};
  const created=(projectId:string,conversationId:string)=>{const current=currentRoute.current;if(current.branchId!==branchId||current.tab!=='chats'||current.global||current.executionId||current.creationKey!==creationKey)return false;return onNavigate({...current,creationKey:undefined,chatId:conversationId,workspace:{kind:'conversation',projectId,conversationId}},true);};
  const workspaceRoute:ProjectRoute|undefined=chat?(route?.projectId===chat.projectId&&(!executionId||['conversation','agent','workspaceFile','review','projectWork'].includes(route.kind))?route:{kind:'conversation',projectId:chat.projectId,conversationId:chat.id}):undefined;
  const navigate=(next:Route)=>{
@@ -60,8 +75,15 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
    setError('This view belongs outside the selected Branch Chat.');
  };
  return <Stack spacing={1} sx={{flex:1,minHeight:0,minWidth:0,overflow:'hidden'}}>
-  <Stack direction="row" gap={1} alignItems="center" sx={{flexShrink:0}}><TextField select size="small" label={executionId?'Execution Chat':'Branch Chat'} value={chatId} sx={{flex:1,minWidth:0}} onChange={e=>{const c=chats.data?.find(c=>c.id===e.target.value);if(c)openChat(c.id,c.projectId)}}><MenuItem value="">Choose Chat</MenuItem>{chats.data?.map(c=><MenuItem key={c.id} value={c.id}>{c.title}</MenuItem>)}</TextField>{executionId&&<Button size="small" onClick={()=>onNavigate({...branchRoute,executionId:undefined,chatId:undefined,workspace:undefined})}>Persistent Chats</Button>}{!executionId&&<Tooltip title="New Chat"><span><IconButton aria-label="New Chat" disabled={Boolean(creationKey)} onClick={startChat}><AddIcon/></IconButton></span></Tooltip>}{!executionId&&<Button aria-haspopup="menu" aria-expanded={Boolean(actions)} onClick={e=>setActions(e.currentTarget)}>Chat actions</Button>}{notificationAction}</Stack>
-  {chatPages.hasNextPage&&<Button disabled={chatPages.isFetchingNextPage} onClick={()=>void chatPages.fetchNextPage()}>Load more Chats</Button>}
+  <Stack direction="row" gap={1} alignItems="center" sx={{flexShrink:0,minWidth:0}}><Button size="small" startIcon={<ChatIcon/>} endIcon={<ArrowDropDownIcon/>} aria-haspopup="dialog" onClick={()=>{setSearch('');setPicker(true)}} sx={{whiteSpace:'nowrap'}}>{executionId?'Execution Chats':'Chats'} ({chatCount??(chatPages.error?'?':'…')})</Button>{executionId&&<Button size="small" onClick={()=>onNavigate({...branchRoute,executionId:undefined,chatId:undefined,workspace:undefined})}>Persistent Chats</Button>}{!executionId&&<Tooltip title="New Chat"><span><IconButton aria-label="New Chat" disabled={Boolean(creationKey)} onClick={startChat}><AddIcon/></IconButton></span></Tooltip>}{!executionId&&chat&&<Tooltip title="Chat actions"><IconButton aria-label="Chat actions" aria-haspopup="menu" aria-expanded={Boolean(actions)} onClick={e=>setActions(e.currentTarget)}><MoreHorizIcon/></IconButton></Tooltip>}{notificationAction}</Stack>
+  <Dialog open={picker} onClose={()=>setPicker(false)} fullWidth maxWidth="sm"><DialogTitle>{executionId?'Execution Chats':'Chats'}</DialogTitle><DialogContent dividers><Stack spacing={1}>
+   <TextField autoFocus size="small" label="Search Chats" value={search} onChange={event=>setSearch(event.target.value)} slotProps={{htmlInput:{maxLength:200}}}/>
+   {choices.isPending&&<Typography role="status">Loading Chats…</Typography>}
+   {choices.error&&<Alert severity="error" action={<Button onClick={()=>void choices.refetch()}>Retry</Button>}>Chats could not be loaded. {choices.error.message}</Alert>}
+   {choices.isSuccess&&!choiceRows.length&&<Typography color="text.secondary">{searchText?'No Chats match this search.':'No Chats in this scope.'}</Typography>}
+   <List disablePadding aria-label="Choose Chat">{choiceRows.map(c=><ListItem key={c.id} disablePadding><ListItemButton component="button" type="button" selected={c.id===chatId} aria-current={c.id===chatId?'true':undefined} onClick={()=>chooseChat(c)} sx={{width:'100%',borderRadius:1}}><ListItemText primary={c.title} secondary={`${c.id.slice(0,8)} · ${new Date(c.updatedAt).toLocaleString()}`} slotProps={{primary:{sx:{overflowWrap:'anywhere'}},secondary:{sx:{overflowWrap:'anywhere'}}}}/></ListItemButton></ListItem>)}</List>
+   {choices.hasNextPage&&<Button disabled={choices.isFetchingNextPage} onClick={()=>void choices.fetchNextPage()}>Load more Chats</Button>}
+  </Stack></DialogContent><DialogActions><Button onClick={()=>setPicker(false)}>Close</Button></DialogActions></Dialog>
   <Menu anchorEl={actions} open={Boolean(actions)} onClose={()=>setActions(undefined)}>
    {chat&&<><MenuItem onClick={()=>{setActions(undefined);setRoute({kind:'conversation',projectId:chat.projectId,conversationId:chat.id})}}>Conversation</MenuItem><MenuItem onClick={()=>{setActions(undefined);setOrganization(true)}}>Agents</MenuItem>{!executionId&&<><MenuItem onClick={()=>{setActions(undefined);setCapabilities({kind:'chat',id:chat.id,title:chat.title})}}>Chat capabilities</MenuItem><MenuItem onClick={()=>{setActions(undefined);setOrganization(true)}}>Manage reporting lines</MenuItem><MenuItem onClick={()=>{setActions(undefined);setAgentCreate({})}}>Create / import Agent</MenuItem></>}</>}
   </Menu>
