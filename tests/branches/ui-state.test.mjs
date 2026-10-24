@@ -321,7 +321,7 @@ async function capabilityActionFixture(immediateSave=true,endpoint='/api/branche
  const policy={revision:4,scopeId:'owner',restrictedCapabilityIds:['connector:hidden','unknown.future']};
  const scope={endpoint,immediateSave,draft:undefined,get dirty(){return capabilityDraftDirty(scope.draft)},writing:{current:false},query:{data:{policy},refetch:async()=>({data:scope.query.data})},
   setDraft:value=>{scope.draft=typeof value==='function'?value(scope.draft):value},client:{setQueryData:(key,value)=>{cache.push({key,value});scope.query.data=value}},
-  readback:async()=>scope.query.data,requestJson:async(url,init)=>{if(!init)return scope.readback();writes.push({url,...JSON.parse(init.body)});return scope.query.data},
+  readback:async()=>scope.query.data,requestJson:async(url,init)=>{if(!init?.body)return scope.readback();writes.push({url,...JSON.parse(init.body)});return scope.query.data},
   useMutation:options=>{scope.options=options;return {isPending:false,mutate:next=>{scope.next=next;scope.accepted=(scope.accepted??0)+1}}}};
  const owner=source.split('\n').filter(line=>['const reloadPolicy=','const save=','const toggle='].some(prefix=>line.trim().startsWith(prefix))).join('\n');
  assert.equal(owner.split('\n').length,3,'Exercise the existing editor owners');
@@ -379,4 +379,15 @@ test('explicit capability readback shares the existing single-flight write bound
  const first=f.scope.reloadPolicy(),duplicate=f.scope.reloadPolicy();await duplicate;f.scope.toggle('memory.read',false);
  assert.equal(reads,1,'Duplicate reloads must not leave an older GET behind a newer write');assert.equal(f.scope.accepted,undefined,'No toggle may enter while readback is unresolved');
  complete({policy:{revision:10,restrictedCapabilityIds:['connector:current']}});await first;f.scope.toggle('memory.read',false);assert.equal(f.scope.accepted,1);assert.equal(f.scope.next.revision,10);
+});
+
+test('capability readback starts a fresh HTTP request instead of joining a pre-write background GET',async()=>{
+ const {requestJson}=await import('../../apps/web/src/api/real.ts'),f=await capabilityActionFixture(true,'/api/branches/readback-isolated/capabilities'),original=globalThis.fetch,calls=[],pending=[];let prior,readback;
+ globalThis.fetch=async(url,init)=>{calls.push({url:String(url),cache:init?.cache});return new Promise(resolve=>pending.push(resolve))};f.scope.requestJson=requestJson;
+ try{
+  prior=requestJson(f.scope.endpoint);await new Promise(resolve=>setImmediate(resolve));f.scope.toggle('memory.read',false);readback=f.scope.options.onError();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(calls.length,2,'Readback cannot borrow a request that began before the uncertain write');assert.equal(calls[1].cache,'no-store');
+  pending[0](new Response(JSON.stringify(f.scope.query.data)));await prior;assert.equal(f.scope.dirty,true);
+  pending[1](new Response(JSON.stringify({policy:{revision:12,restrictedCapabilityIds:['connector:fresh']}})));await readback;assert.equal(f.scope.draft.revision,12);
+ }finally{for(const resolve of pending)resolve(new Response(JSON.stringify({policy:{revision:4,restrictedCapabilityIds:[]}})));await Promise.allSettled([prior,readback]);globalThis.fetch=original}
 });
