@@ -16,7 +16,7 @@ function BranchTriggerSource({kind,config,onChange,onInvalid}:{kind:'schedule'|'
  useEffect(()=>()=>callbacks.current.onInvalid(false),[]);
  return <TriggerSourceFields sourceKind={kind} draft={draft}/>;
 }
-export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDefinition,onBindings,onPendingEdits,agentFilter}:{agentFilter?:ReactNode;onPendingEdits?(pending:boolean):void;definition:BranchDefinition;bindings:BranchBindings;chatId:string;contexts:ConversationDto[];agents:AgentDto[];engines:EngineDto[];existing:boolean;onDefinition(value:BranchDefinition):void;onBindings(value:BranchBindings):void;onChat(id:string):void}):JSX.Element{
+export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDefinition,onBindings,onPendingEdits,agentFilter,availability}:{availability?:ReactNode;agentFilter?:ReactNode;onPendingEdits?(pending:boolean):void;definition:BranchDefinition;bindings:BranchBindings;chatId:string;contexts:ConversationDto[];agents:AgentDto[];engines:EngineDto[];existing:boolean;onDefinition(value:BranchDefinition):void;onBindings(value:BranchBindings):void;onChat(id:string):void}):JSX.Element{
  const applyRequest=useRef(0),currentDefinition=useRef(definition);currentDefinition.current=definition;
  const [triggerInvalid,setTriggerInvalid]=useState(false);
  const [selected,setSelected]=useState(definition.entry),[focusRequest,setFocusRequest]=useState(0),[newKind,setNewKind]=useState<'script'|'agent'|'human_gate'|'action'|'branch_call'|'parallel'|'for_each'>('script'),[advanced,setAdvanced]=useState<string>(),[jsonError,setJsonError]=useState('');
@@ -35,6 +35,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  return <Stack spacing={2.5}>
   <Stack direction={{xs:'column',sm:'row'}} spacing={2}><TextField label="Workflow name" value={definition.name} onChange={e=>onDefinition({...definition,name:e.target.value})} fullWidth/></Stack>
   <Accordion defaultExpanded disableGutters><AccordionSummary expandIcon={<ExpandMoreIcon/>}><Typography fontWeight={600}>Start this workflow</Typography></AccordionSummary><AccordionDetails><Stack spacing={2}>
+   {availability}
    <TextField select label="Trigger" size="small" value={definition.trigger.kind} onChange={e=>setTrigger(e.target.value as BranchDefinition['trigger']['kind'])}><MenuItem value="manual">Run manually</MenuItem><MenuItem value="schedule">On a schedule</MenuItem><MenuItem value="webhook">When a webhook arrives</MenuItem><MenuItem value="filesystem">When files change</MenuItem></TextField>
    {definition.trigger.kind!=='manual'&&sourceConfig&&<BranchTriggerSource key={definition.trigger.kind} kind={definition.trigger.kind} config={sourceConfig} onChange={setSource} onInvalid={setTriggerInvalid}/>}
    {triggerInvalid&&<Alert severity="error">Correct the trigger fields before reviewing deployment.</Alert>}

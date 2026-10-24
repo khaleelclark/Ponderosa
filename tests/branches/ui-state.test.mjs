@@ -234,3 +234,50 @@ test('both products share ordered accessible sidebar controls and preserve norma
   assert.ok(normal.includes('aria-label="Messages across Ponderosa"'));
  }
 });
+
+test('workflow Settings sections load without parameter configuration and keep lifecycle errors fail-closed',async t=>{
+ const {QueryClient,QueryClientProvider}=await import('@tanstack/react-query');
+ const {BranchSettings}=await import('../../apps/web/src/components/branches/BranchSettings.tsx');
+ const branch={id:'settings-owner',name:'Settings owner',versionId:'version'},definition={parameters:{}};
+ const client=new QueryClient({defaultOptions:{queries:{retry:false,retryOnMount:false,gcTime:Infinity}}});t.after(()=>client.clear());
+ client.setQueryData(['branch-dependencies',branch.id],{calls:[],callers:[{id:'billing-workflow',ref:'reports-alias'}]});
+ client.setQueryData(['capability-policy',`/api/branches/${branch.id}/capabilities`],{policy:{scopeId:branch.id,revision:0,restrictedCapabilityIds:[]},effective:{restrictionSources:{}},catalog:[]});
+ const render=parameters=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(BranchSettings,{branch,definition,parameters})));
+ const html=render(false),labels=['Branch capabilities','Dependencies','Delete workflow'];
+ assert.ok(labels.every(label=>html.includes(label)),'All workflow Settings sections must render while configuration is unavailable');
+ assert.ok(labels.every((label,index)=>!index||html.indexOf(label)>html.indexOf(labels[index-1])),'Settings section order must remain capabilities, dependencies, delete');
+ assert.ok(!html.includes('Workflow settings sections')&&!html.includes('Loading configuration'),'No nested navigation or unrelated configuration gate');
+ assert.equal(client.getQueryCache().find({queryKey:['branch-settings',branch.id]}),undefined,'Settings must not subscribe to unrelated configuration');
+ client.setQueryData(['branch-lifecycle-summary',branch.id],{deleting:false,activeExecutions:0,chats:0,callers:[{id:'billing-workflow',name:'Billing workflow'}],updates:[],pendingRemoval:[]});
+ const named=render(false);assert.ok(named.includes('Billing workflow')&&!named.includes('reports-alias'),'Called by must show the calling workflow name, never its alias for this target');
+ const lifecycle=client.getQueryCache().find({queryKey:['branch-lifecycle-summary',branch.id]});lifecycle.setState({status:'error',error:new Error('Controlled lifecycle failure'),fetchStatus:'idle'});
+ const failed=render(false);assert.ok(failed.includes('Deletion is unavailable'),'Unknown lifecycle must not allow deletion');
+ assert.ok(/<button[^>]*disabled=""[^>]*>Delete workflow/.test(failed),'Deletion remains disabled after failed lifecycle loading');
+ assert.ok(render(true).includes('Loading configuration'),'Parameters retain their separate configuration load');
+});
+
+test('shared Provider Activity offers bounded workflow pages only in the Branches opt-in view',async t=>{
+ const {QueryClient,QueryClientProvider}=await import('@tanstack/react-query');
+ const {ProviderActivitySettingsSection}=await import('../../apps/web/src/components/WorkspaceResourceViews.tsx');
+ const client=new QueryClient({defaultOptions:{queries:{retry:false,retryOnMount:false,gcTime:Infinity}}});t.after(()=>client.clear());
+ const key=['branches','activity',''];client.setQueryData(key,{pages:[{items:[{id:'off-sidebar',name:'A workflow outside the sidebar'}],hasMore:true,cursor:'next-workflows'}],pageParams:[undefined]});
+ const render=workflows=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ProviderActivitySettingsSection,{projects:[],workflows})));
+ const ordinary=render(false);assert.ok(!ordinary.includes('Load more workflows')&&!ordinary.includes('All Branches'),'Normal Ponderosa must not consume cached Branches scopes');
+ const branch=render(true);assert.ok(branch.includes('Load more workflows')&&branch.includes('All Branches'),'Branch activity keeps bounded pagination and its product label');
+ const query=client.getQueryCache().find({queryKey:key});assert.equal(query.options.maxPages,1,'Scope search retains a bounded page');
+ const original=globalThis.fetch,urls=[];globalThis.fetch=async url=>{urls.push(String(url));return new Response('[]',{headers:{'content-type':'application/json','x-collection-has-more':'false'}})};t.after(()=>{globalThis.fetch=original});
+ await query.options.queryFn({pageParam:'opaque-cursor'});
+ assert.deepEqual(urls,['/api/branches?search=&cursor=opaque-cursor'],'Workflow scope pagination must use the existing server cursor');
+});
+
+
+test('same-workflow tabs retain only mounted local owners, while workflow/global exits keep their guards',async()=>{
+ const {retainedBranchDrafts}=await import('../../apps/web/src/branchesRouting.ts');
+ for(const from of ['workflow','chats','executions','parameters','settings'])for(const to of ['workflow','chats','executions','parameters','settings']){
+  const retained=retainedBranchDrafts({branchId:'owner',tab:from},{branchId:'owner',tab:to});
+  for(const key of ['branch-settings:owner:parameters','branch-settings:owner:limits','branch-execution-budget:owner','branch-capabilities:owner','branch-availability:owner'])assert.ok(retained.localKeys.includes(key),'Mounted local editors must survive same-workflow tab changes');
+  assert.ok(!retained.localKeys.includes('chat-capabilities'),'Unmounted child dialogs must keep their own navigation guard');
+  assert.ok(!retained.localKeys.includes('branch-settings:foreign:limits'),'Another workflow must not borrow this draft retention');
+ }
+ for(const next of [{branchId:'foreign',tab:'workflow'},{branchId:'owner',tab:'workflow',global:'activity'},{tab:'workflow'}])assert.deepEqual(retainedBranchDrafts({branchId:'owner',tab:'parameters'},next).localKeys,[]);
+});
