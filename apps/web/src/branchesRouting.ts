@@ -19,7 +19,7 @@ export interface BranchRoute {
 /** The model draft stays in BranchesWorkspace; editor-local fields need its panel mounted. */
 export function retainedBranchDrafts(current: BranchRoute, next: BranchRoute): { workflow: boolean; editor: boolean; settings: boolean; localKeys: string[] } {
   const workflow = Boolean(current.branchId && current.branchId === next.branchId);
-  return { workflow, localKeys:workflow&&!current.global&&!next.global?[`branch-settings:${current.branchId}:parameters`,`branch-settings:${current.branchId}:limits`,`branch-execution-budget:${current.branchId}`,`branch-capabilities:${current.branchId}`,`branch-availability:${current.branchId}`]:[], editor: workflow && !next.global, settings:Boolean(current.global&&next.global&&navigationPreservesSettings({kind:'settings',section:branchSettingsSection(current.global)},{kind:'settings',section:branchSettingsSection(next.global)})) };
+  return { workflow, localKeys:workflow&&!current.global&&!next.global?[`branch-settings:${current.branchId}:parameters`,`branch-settings:${current.branchId}:limits`,`branch-execution-budget:${current.branchId}`,`branch-capabilities:${current.branchId}`,`branch-availability:${current.branchId}`,`branch-deletion:${current.branchId}`]:[], editor: workflow && !next.global, settings:Boolean(current.global&&next.global&&navigationPreservesSettings({kind:'settings',section:branchSettingsSection(current.global)},{kind:'settings',section:branchSettingsSection(next.global)})) };
 }
 
 /** Product navigation wraps the existing typed workspace routes, including focus IDs. */
