@@ -101,6 +101,7 @@ import { AgentEventSessionFacade } from "./store-event-session-facade.js";
 import {
   consumeProjectionCheckpoint,
   ProjectionProgress,
+  type ProjectionTail,
 } from "./projection-checkpoint.js";
 import {
   releaseDataDirectoryOwnership,
@@ -1200,8 +1201,7 @@ export class AgentStore extends AgentEventSessionFacade {
       messageDispatchesPath(this.dataDirectory, conversation.projectId),
       communicationProjectionsPath(this.dataDirectory, conversation.projectId),
       path.join(this.dataDirectory, "delivery-order.jsonl"),
-    ], () => {
-      return this.communicationJournal.appendConversationMessage(
+    ], () => this.communicationJournal.appendConversationMessage(
         conversationId,
         input,
         authorAgentId,
@@ -1209,8 +1209,7 @@ export class AgentStore extends AgentEventSessionFacade {
         deliveryIntents,
         messageReceiptKey,
         communicationEventId,
-      );
-    });
+      ));
   }
 
   getConversationDeliveryIntents(conversationId: string, createdAtOrAfter?: string): Array<{
@@ -1845,7 +1844,7 @@ export class AgentStore extends AgentEventSessionFacade {
     this.projectionRebuilder.rebuildProjections();
   }
 
-  private recoverProjectionTails(tails: Array<{ path: string; offset: number; sha256: string }>): void {
+  private recoverProjectionTails(tails: ProjectionTail[]): void {
     this.client.transaction(() => {
       for (const tail of tails) {
         const event = /^projects\/([^/]+)\/agents\/([^/]+)\/events\.jsonl$/u.exec(tail.path);

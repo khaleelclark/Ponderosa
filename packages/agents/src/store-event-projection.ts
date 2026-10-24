@@ -110,7 +110,6 @@ export class AgentEventProjectionStore {
     } catch (error) {
       // The JSONL append is canonical. Do not accept another event against a
       // stale SQLite view; startup replay is the recovery boundary.
-      this.states.delete(agentId);
       const failure = new AgentEventPersistenceError({
         agentId, seq: stored?.seq ?? log.peekNextSeq(), eventType: event.type,
         ...(("executionId" in event && event.executionId) || state.activeExecutionId

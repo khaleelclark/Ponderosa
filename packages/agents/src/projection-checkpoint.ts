@@ -189,7 +189,7 @@ export class ProjectionProgress {
   private invalid = false;
   private dataVersion = 0;
   private readonly hashes = new Map<string, Prefix>();
-  private readonly frames: Array<Map<string, Prefix | undefined>> = [];
+  private readonly frames: Array<Map<string, Prefix>> = [];
   constructor(private readonly dataDir: string, private readonly client: Database.Database) {
     client.exec(`CREATE TEMP TABLE IF NOT EXISTS projection_progress_sources(path TEXT PRIMARY KEY,signature TEXT NOT NULL,offset INTEGER NOT NULL,sha256 TEXT);
       CREATE TEMP TABLE IF NOT EXISTS projection_progress_generation(generation INTEGER NOT NULL,covered_generation INTEGER NOT NULL);
@@ -248,7 +248,7 @@ export class ProjectionProgress {
     if (!this.initialized) return work();
     const outermost = this.frames.length === 0, generation = this.generation();
     if (outermost && generation.generation !== generation.covered_generation) this.invalid = true;
-    const frame = new Map<string, Prefix | undefined>(), sources = [...new Set(filenames.map(filename => this.relative(filename)))];
+    const frame = new Map<string, Prefix>(), sources = [...new Set(filenames.map(filename => this.relative(filename)))];
     this.frames.push(frame);
     try {
       // Prefix evidence is captured before the canonical append, and survives
@@ -281,7 +281,7 @@ export class ProjectionProgress {
       // A parent that catches its child's projection failure cannot certify
       // that child's canonical bytes merely by returning successfully.
       if (!outermost) this.invalid = true;
-      for (const [relative, prior] of frame) { if (prior) this.hashes.set(relative, prior); else this.hashes.delete(relative); }
+      for (const [relative, prior] of frame) this.hashes.set(relative, prior);
       throw error;
     } finally { this.frames.pop(); }
   }
