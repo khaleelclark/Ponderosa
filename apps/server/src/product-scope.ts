@@ -291,7 +291,8 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
     // Installed Branch resources are deleted only by the Branch lifecycle. The
     // direct internal lifecycle helpers own dependency/drain handling; generic
     // operator routes must never bypass those boundaries.
-    if(externalMutation&&request.method==='DELETE'){
+    // Draft attachment cleanup removes no Chat or Agent; its route retains owner/reference checks.
+    if(externalMutation&&request.method==='DELETE'&&request.routeOptions.url!=='/api/conversations/:id/draft-attachments/:attachmentId'){
       const path=/^\/api\/(projects|conversations|chats|agents)\/([^/?]+)/.exec(request.url);
       if(path){
         const kind=path[1],id=decodeURIComponent(path[2]!);
