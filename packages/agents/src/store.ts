@@ -1525,6 +1525,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.auditReadModel.getMessages(agentId);
   }
 
+  getMessageAttachmentIds(agentId: string): Set<string> {
+    return this.auditReadModel.getMessageAttachmentIds(agentId);
+  }
+
   /** Durable response/reasoning segments interleaved by canonical event sequence. */
   getRunOutputs(agentId: string): RunOutputDto[] {
     return this.telemetry.getRunOutputs(agentId);

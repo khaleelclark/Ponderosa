@@ -567,11 +567,6 @@ export function registerServerLifecycle(
           }
         }
       }
-      // Historical projection repair is idempotent and exact live retries
-      // reconcile their own Communication before reporting success. Run the
-      // full backlog after readiness so a large ledger cannot hold the listener
-      // closed, and yield between bounded batches to preserve the event loop.
-      scheduleStartupProjectionRecovery();
       for (const artifact of runtimeArtifacts.filter((candidate) => candidate.ownerKind === "request_update")) {
         const request = coordinationV3.requestForUpdate(artifact.ownerId);
         if (!request || !assets.authoritativeRuntimeArtifact(artifact.projectId, artifact)) continue;
@@ -853,7 +848,7 @@ export function registerServerLifecycle(
           );
           if (!releaseAssetReconciliation) continue;
           try {
-            const associated = new Set(store.getMessages(agent.id).flatMap((message) => message.attachments?.map((item) => item.id) ?? []));
+            const associated = store.getMessageAttachmentIds(agent.id);
             await assets.reconcile(
               project.id,
               agent.id,
@@ -926,6 +921,10 @@ export function registerServerLifecycle(
       phases: lifecyclePhases,
       totalMs: Math.round((performance.now() - lifecycleStartedAt) * 10) / 10,
     }, "server lifecycle readiness completed");
+    // Exact live retries reconcile their own Communication. Schedule the
+    // idempotent historical backlog after every startup barrier so it cannot
+    // interleave with (and delay) the required asset/deletion recovery above.
+    if (artifactFilesystem.ok) scheduleStartupProjectionRecovery();
   });
 
   app.addHook("preClose", async () => {
