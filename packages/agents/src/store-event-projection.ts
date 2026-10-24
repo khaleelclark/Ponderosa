@@ -620,7 +620,7 @@ export class AgentEventProjectionStore {
     if (!state) {
       // Rebuild the in-memory reducer state by folding the existing log.
       state = initProjectionState(this.activeEngineOf(agentId));
-      const existing = new EventLog(eventsPath(this.dataDir, projectId, agentId)).readAll();
+      const existing = this.logFor(agentId, projectId).readAll();
       for (const stored of existing) {
         state = projectEvent(agentId, state, stored, this.reservationFor(agentId, projectId)).state;
       }
