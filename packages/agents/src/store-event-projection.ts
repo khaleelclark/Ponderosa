@@ -1,6 +1,6 @@
 import { appendFsyncedJsonl } from "./append-jsonl.js";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "@ponderosa/native-host/fs";
+import { mkdirSync, readFileSync, writeFileSync } from "@ponderosa/native-host/fs";
 import { dirname, join } from "node:path";
 import type Database from "better-sqlite3";
 import { and, eq, isNull, or } from "drizzle-orm";
@@ -12,7 +12,7 @@ import type {
 } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { readArtifactSequenceReservation, reservedArtifactSeq, type ArtifactSequenceReservation } from "./artifact-sequence.js";
-import { EventLog } from "./eventlog.js";
+import { EventLog, readLog } from "./eventlog.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import { publishManagedArtifactContent } from "./managed-artifact-files.js";
 import { agentDir, artifactContentPath, eventsPath } from "./paths.js";
@@ -68,6 +68,14 @@ export class AgentEventPersistenceError extends Error {
  * SQLite projections produced from those logs.
  */
 export class AgentEventProjectionStore {
+  // ponytail: fixed owner SQL only; dynamic or iterator queries must stay uncached.
+  private readonly statements = new Map<string, Database.Statement>();
+  private statement(sql: string): Database.Statement {
+    let statement = this.statements.get(sql);
+    if (!statement) { statement = this.client.prepare(sql); this.statements.set(sql, statement); }
+    return statement;
+  }
+
   private readonly reservations = new Map<string, ArtifactSequenceReservation | undefined>();
   private readonly logs = new Map<string, EventLog>();
   private readonly states = new Map<string, ProjectionState>();
@@ -92,6 +100,9 @@ export class AgentEventProjectionStore {
     const log = this.logFor(agentId, projectId);
     let stored: StoredLogEvent | undefined;
     try {
+      if (this.lastSeq(agentId) !== log.peekNextSeq() - 1) {
+        throw new Error("canonical event prefix is not completely projected; restart before appending");
+      }
       stored = log.append(event, ts);
       const { state: nextState, ops } = projectEvent(agentId, state, stored, this.reservationFor(agentId, projectId));
       this.applyOps(agentId, projectId, ops);
@@ -99,7 +110,6 @@ export class AgentEventProjectionStore {
     } catch (error) {
       // The JSONL append is canonical. Do not accept another event against a
       // stale SQLite view; startup replay is the recovery boundary.
-      this.states.delete(agentId);
       const failure = new AgentEventPersistenceError({
         agentId, seq: stored?.seq ?? log.peekNextSeq(), eventType: event.type,
         ...(("executionId" in event && event.executionId) || state.activeExecutionId
@@ -108,14 +118,29 @@ export class AgentEventProjectionStore {
           : error instanceof Error && error.message === "managed artifact identity collision or unsafe existing leaf"
             ? "managed_artifact_collision" : "event_projection_failed",
       }, error);
-      this.projectionFailures.set(agentId, failure);
-      try {
-        appendFsyncedJsonl(join(agentDir(this.dataDir, projectId, agentId), "event-persistence-failures.jsonl"),
-          [{ ...failure.diagnostic, recordedAt: new Date().toISOString() }]);
-      } catch { /* diagnostics must not replace the original persistence failure */ }
-      throw failure;
+      throw this.retainFailure(agentId, projectId, failure);
     }
     return stored;
+  }
+
+  /** The surrounding progress transaction can fail after append
+   * returned. Its rollback must retain the same refusal fence as applyOps. */
+  fenceAfterAppend(agentId: string, projectId: string, stored: StoredLogEvent, error: unknown): AgentEventPersistenceError {
+    const executionId = "executionId" in stored.event ? stored.event.executionId : undefined;
+    return this.retainFailure(agentId, projectId, new AgentEventPersistenceError({
+      agentId, seq: stored.seq, eventType: stored.event.type,
+      ...(executionId ? { executionId } : {}), code: "event_projection_failed",
+    }, error));
+  }
+
+  private retainFailure(agentId: string, projectId: string, failure: AgentEventPersistenceError): AgentEventPersistenceError {
+    this.states.delete(agentId);
+    this.projectionFailures.set(agentId, failure);
+    try {
+      appendFsyncedJsonl(join(agentDir(this.dataDir, projectId, agentId), "event-persistence-failures.jsonl"),
+        [{ ...failure.diagnostic, recordedAt: new Date().toISOString() }]);
+    } catch { /* diagnostics must not replace the original persistence failure */ }
+    return failure;
   }
 
   readAll(agentId: string, projectId: string): StoredLogEvent[] {
@@ -123,7 +148,7 @@ export class AgentEventProjectionStore {
   }
 
   readSince(agentId: string, sinceSeq: number, limit?: number): StoredLogEvent[] {
-    return (this.client.prepare(`
+    return (this.statement(`
       SELECT seq, created_at, payload_json
       FROM events
       WHERE agent_id = ? AND seq > ?
@@ -141,7 +166,7 @@ export class AgentEventProjectionStore {
   }
 
   lastSeq(agentId: string): number {
-    const row = this.client.prepare(`
+    const row = this.statement(`
       SELECT last_seq FROM agent_event_head_projection WHERE agent_id = ?
     `).get(agentId) as { last_seq: number } | undefined;
     return row?.last_seq ?? 0;
@@ -153,7 +178,7 @@ export class AgentEventProjectionStore {
     reason: AgentLifecycleReason;
     executionId?: string;
   } | undefined {
-    const row = this.client.prepare(`
+    const row = this.statement(`
       SELECT status, status_timestamp, reason, execution_id
       FROM agent_health_projection WHERE agent_id = ?
     `).get(agentId) as {
@@ -179,6 +204,36 @@ export class AgentEventProjectionStore {
     this.applyOps(agentId, projectId, projectAll(agentId, stored, activeEngine, this.reservationFor(agentId, projectId)));
   }
 
+  /** Resume a certified prefix without deleting or rewriting its projections. */
+  replayTail(agentId: string, projectId: string, offset: number): StoredLogEvent[] {
+    const file = eventsPath(this.dataDir, projectId, agentId);
+    const bytes = readFileSync(file);
+    if (offset > bytes.length || (offset > 0 && bytes[offset - 1] !== 10)) throw new Error("invalid event prefix boundary");
+    const prefix: StoredLogEvent[] = bytes.subarray(0, offset).toString("utf8").split("\n")
+      .filter(line => line.trim()).map(line => JSON.parse(line));
+    // A source hash proves bytes; compare the committed index as well so a
+    // maximum sequence can never conceal a missing or different prefix row.
+    const projected = this.readSince(agentId, 0);
+    if (JSON.stringify(projected) !== JSON.stringify(prefix)) throw new Error("event projection prefix mismatch");
+    const stored = readLog(file);
+    let state = initProjectionState(this.activeEngineOf(agentId));
+    let seq = 0;
+    for (const row of prefix) {
+      if (row.seq !== ++seq) throw new Error("event prefix is not contiguous");
+      state = projectEvent(agentId, state, row, this.reservationFor(agentId, projectId)).state;
+    }
+    const tail = stored.slice(prefix.length);
+    for (const row of tail) {
+      if (row.seq !== ++seq) throw new Error("event suffix is not contiguous");
+      const next = projectEvent(agentId, state, row, this.reservationFor(agentId, projectId));
+      this.applyOps(agentId, projectId, next.ops);
+      state = next.state;
+    }
+    this.states.set(agentId, state);
+    this.logs.delete(agentId);
+    return tail;
+  }
+
   forgetAgent(agentId: string): void {
     this.reservations.delete(agentId);
     this.logs.delete(agentId);
@@ -187,6 +242,7 @@ export class AgentEventProjectionStore {
   }
 
   clearCaches(): void {
+    this.statements.clear();
     this.reservations.clear();
     this.logs.clear();
     this.states.clear();
@@ -203,7 +259,7 @@ export class AgentEventProjectionStore {
     const executionId = "executionId" in event && typeof event.executionId === "string"
       ? event.executionId
       : null;
-    const head = this.client.prepare(`
+    const head = this.statement(`
       SELECT last_seq, event_type, execution_id, segment_first_seq
       FROM run_output_heads WHERE agent_id = ?
     `).get(agentId) as {
@@ -227,7 +283,7 @@ export class AgentEventProjectionStore {
         && head.execution_id === executionId,
       );
       if (continues) {
-        const segment = this.client.prepare(`
+        const segment = this.statement(`
           SELECT text_preview, preview_utf8_bytes, raw_utf8_bytes,
             canonical_utf8_bytes
           FROM run_output_segments
@@ -250,7 +306,7 @@ export class AgentEventProjectionStore {
         const canonicalUtf8Bytes = trimmedDelta
           ? segment.raw_utf8_bytes + Buffer.byteLength(trimmedDelta, "utf8")
           : segment.canonical_utf8_bytes;
-        const updated = this.client.prepare(`
+        const updated = this.statement(`
           UPDATE run_output_segments SET
             last_seq = ?,
             text_preview = ?,
@@ -273,7 +329,7 @@ export class AgentEventProjectionStore {
         }
         segmentFirstSeq = head!.segment_first_seq;
       } else {
-        this.client.prepare(`
+        this.statement(`
           INSERT INTO run_output_segments(
             agent_id, first_seq, last_seq, event_type, execution_id, created_at,
             text_preview, preview_utf8_bytes, raw_utf8_bytes,
@@ -295,7 +351,7 @@ export class AgentEventProjectionStore {
       }
     }
 
-    this.client.prepare(`
+    this.statement(`
       INSERT INTO run_output_heads(
         agent_id, last_seq, event_type, execution_id, segment_first_seq
       ) VALUES (?, ?, ?, ?, ?)
@@ -358,7 +414,7 @@ export class AgentEventProjectionStore {
             break;
           case "insert_event":
             tx.insert(events).values(op.row).onConflictDoNothing().run();
-            this.client.prepare(`
+            this.statement(`
               INSERT INTO agent_event_head_projection(agent_id, last_seq) VALUES (?, ?)
               ON CONFLICT(agent_id) DO UPDATE SET last_seq = MAX(last_seq, excluded.last_seq)
             `).run(agentId, op.row.seq);
@@ -366,7 +422,7 @@ export class AgentEventProjectionStore {
             {
               const event = JSON.parse(op.row.payloadJson) as LogEvent;
               const observation = healthObservation(event, op.row.createdAt);
-              if (observation) this.client.prepare(`
+              if (observation) this.statement(`
                 INSERT INTO agent_health_projection(
                   agent_id, source_seq, status, status_timestamp, reason, execution_id
                 ) VALUES (?, ?, ?, ?, ?, ?)
@@ -399,13 +455,13 @@ export class AgentEventProjectionStore {
                 totalUtf8Bytes = output.length;
                 outputSha256 = createHash("sha256").update(output).digest("hex");
                 eventJson = JSON.stringify({ ...event, output: preview });
-                this.client.prepare(`
+                this.statement(`
                   INSERT OR IGNORE INTO tool_output_projection
                     (agent_id, seq, output, total_utf8_bytes, sha256)
                   VALUES (?, ?, ?, ?, ?)
                 `).run(agentId, op.row.seq, output, output.length, outputSha256);
               }
-              this.client.prepare(`
+              this.statement(`
                 INSERT OR IGNORE INTO activity_projection(
                   agent_id, seq, event_type, execution_id, event_json, created_at,
                   output_preview_utf8_bytes, output_total_utf8_bytes, output_sha256
@@ -422,26 +478,26 @@ export class AgentEventProjectionStore {
                 outputSha256,
               );
               if (event.type === "file_change") {
-                if (op.executionId) this.client.prepare(`
+                if (op.executionId) this.statement(`
                   INSERT INTO changed_file_execution_projection(agent_id, path, execution_id, last_seq)
                   VALUES (?, ?, ?, ?)
                   ON CONFLICT(agent_id, path, execution_id) DO UPDATE SET last_seq = excluded.last_seq
                 `).run(agentId, event.path, op.executionId, op.row.seq);
-                const executionIds = (this.client.prepare(`
+                const executionIds = (this.statement(`
                   SELECT execution_id AS executionId
                   FROM changed_file_execution_projection
                   WHERE agent_id = ? AND path = ?
                   ORDER BY last_seq DESC, execution_id DESC LIMIT 100
                 `).all(agentId, event.path) as Array<{ executionId: string }>)
                   .map((row) => row.executionId);
-                const executionCount = (this.client.prepare(`
+                const executionCount = (this.statement(`
                   SELECT COUNT(*) AS count FROM changed_file_execution_projection
                   WHERE agent_id = ? AND path = ?
                 `).get(agentId, event.path) as { count: number }).count;
                 const boundedDiff = event.diff
                   ? utf8Prefix(event.diff, ACTIVITY_OUTPUT_PREVIEW_BYTES)
                   : null;
-                this.client.prepare(`
+                this.statement(`
                   INSERT INTO changed_file_projection(
                     agent_id, path, kind, last_seq, last_changed_at, execution_ids_json, execution_count, diff
                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -467,7 +523,7 @@ export class AgentEventProjectionStore {
             if (op.row.type === "artifact_visibility") {
               const visibility = JSON.parse(op.row.payloadJson) as LogEvent;
               if (visibility.type === "artifact_visibility") {
-                this.client.prepare(`
+                this.statement(`
                   UPDATE artifacts SET visibility = ?, pinned = ? WHERE agent_id = ? AND id = ?
                 `).run(
                   visibility.visibility,
@@ -620,7 +676,7 @@ export class AgentEventProjectionStore {
     if (!state) {
       // Rebuild the in-memory reducer state by folding the existing log.
       state = initProjectionState(this.activeEngineOf(agentId));
-      const existing = new EventLog(eventsPath(this.dataDir, projectId, agentId)).readAll();
+      const existing = this.logFor(agentId, projectId).readAll();
       for (const stored of existing) {
         state = projectEvent(agentId, state, stored, this.reservationFor(agentId, projectId)).state;
       }

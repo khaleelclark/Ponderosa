@@ -1,3 +1,4 @@
+import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync } from "@ponderosa/native-host/fs";
 import { join } from "node:path";
@@ -74,7 +75,7 @@ interface ConversationDeletionIdentity {
   ownershipToken: string;
 }
 
-function creationId(kind: "project" | "conversation", scope: string, key: string): string {
+export function creationId(kind: "project" | "conversation", scope: string, key: string): string {
   const hash = createHash("sha256").update(`${kind}\0${scope}\0${key}`).digest("hex");
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-${
     ((Number.parseInt(hash[16]!, 16) & 3) | 8).toString(16)
@@ -113,6 +114,7 @@ export class AgentWorkspaceCatalogAuthority {
       conversationId: string,
       visible: boolean,
     ) => void,
+    private readonly progress: ProjectionProgress,
   ) {}
 
   private assertProjectMetadataMutable(projectId: string): void {
@@ -135,12 +137,13 @@ export class AgentWorkspaceCatalogAuthority {
     let canonicalCommitted = false;
     let result: T | undefined;
     try {
-      this.db.transaction(() => {
+      const commit = () => this.db.transaction(() => {
         this.assertProjectMetadataMutable(projectId);
         result = writeCanonical();
         canonicalCommitted = true;
         writeProjection();
       });
+      this.progress.run([projectJsonPath(this.dataDir, projectId)], commit);
     } catch (error) {
       if (!canonicalCommitted) throw error;
       try { writeProjection(); } catch { /* canonical metadata remains authoritative */ }

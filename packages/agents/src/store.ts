@@ -6,6 +6,10 @@
 
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
+import { readFileSync } from "@ponderosa/native-host/fs";
+import path from "node:path";
+import { readRepairableJsonl } from "./append-jsonl.js";
+import { agentJsonPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, conversationJsonPath, messageDispatchesPath } from "./paths.js";
 import type {
   ArtifactDto,
   AgentActivityDto,
@@ -96,8 +100,8 @@ import { AgentStoreSupport } from "./store-support.js";
 import { AgentEventSessionFacade } from "./store-event-session-facade.js";
 import {
   consumeProjectionCheckpoint,
-  projectionSourceFingerprint,
-  writeProjectionCheckpoint,
+  ProjectionProgress,
+  type ProjectionTail,
 } from "./projection-checkpoint.js";
 import {
   releaseDataDirectoryOwnership,
@@ -196,8 +200,7 @@ export class AgentStore extends AgentEventSessionFacade {
   private ownership?: DataDirectoryOwnership;
   private dataDirectory = "";
   private closing = false;
-  private checkpointBaselineChanges?: number;
-  private checkpointBaselineFingerprint?: string;
+  private readonly projectionProgress: ProjectionProgress;
   private compactionHistoryMaterialization = {
     indexedRows: 0,
     relationCandidateRows: 0,
@@ -205,14 +208,15 @@ export class AgentStore extends AgentEventSessionFacade {
     canonicalRevisions: 0,
   };
   private startupProfileData: {
-    mode: "clean" | "recovery";
+    mode: "clean" | "incremental" | "recovery";
     openMs: number;
     componentsMs: number;
     recoveryMs: number;
     totalMs: number;
     projectCount: number;
     recoveryIssues: ReadonlyArray<{ projectId: string; detail: string }>;
-  } = { mode: "recovery", openMs: 0, componentsMs: 0, recoveryMs: 0, totalMs: 0, projectCount: 0, recoveryIssues: [] };
+    phasesMs: Record<string, number>;
+  } = { mode: "recovery", openMs: 0, componentsMs: 0, recoveryMs: 0, totalMs: 0, projectCount: 0, recoveryIssues: [], phasesMs: {} };
 
   constructor(dataDir: string) {
     super();
@@ -225,6 +229,13 @@ export class AgentStore extends AgentEventSessionFacade {
     this.client = opened.client;
     this.ownership = opened.ownership;
     try {
+      this.projectionProgress = new ProjectionProgress(dataDir, this.client);
+      const phasesMs: Record<string, number> = {};
+      const measure = <T>(phase: string, work: () => T): T => {
+        const started = performance.now();
+        try { return work(); }
+        finally { phasesMs[phase] = Math.round(((phasesMs[phase] ?? 0) + performance.now() - started) * 10) / 10; }
+      };
       this.support = new AgentStoreSupport(dataDir);
       const ports: AgentStoreComponentPorts = {
         listAgents: projectId => this.listAgents(projectId),
@@ -274,53 +285,60 @@ export class AgentStore extends AgentEventSessionFacade {
         getArtifacts: agentId => this.getArtifacts(agentId),
         getArtifactPage: (agentId, input) => this.getArtifactPage(agentId, input),
       };
-      const components = createAgentStoreComponents(dataDir, opened, ports);
+      const components = createAgentStoreComponents(dataDir, opened, ports, this.projectionProgress);
       Object.assign(this, components);
       const componentsCreatedAt = performance.now();
-      this.workspaceCatalog.recoverCreationDirectories();
-      this.agentCatalog.recoverCreationDirectories();
-      // Canonical files are written before their SQLite projections. Rebuild
-      // transactionally on every startup so a crash or torn append cannot leave
-      // a partially repaired projection visible to ordinary requests.
-      let cleanProjectionCheckpoint = consumeProjectionCheckpoint(dataDir, this.client);
-      if (!cleanProjectionCheckpoint) this.rebuildProjections();
+      measure("creationRecovery", () => {
+        this.workspaceCatalog.recoverCreationDirectories();
+        this.agentCatalog.recoverCreationDirectories();
+      });
+      // A consumed proof covers committed projections. Apply only verified
+      // unfinished suffixes; an unknown source or missing proof still rebuilds.
+      let checkpoint = measure("checkpointValidation", () => consumeProjectionCheckpoint(dataDir, this.client));
+      let incremental = false;
+      if (checkpoint && checkpoint.tails.length) {
+        try {
+          measure("projectionTails", () => this.recoverProjectionTails(checkpoint ? checkpoint.tails : []));
+          incremental = true;
+        } catch {
+          checkpoint = false;
+        }
+      }
+      if (!checkpoint) measure("projectionReplay", () => this.rebuildProjections());
       // Repair canonical members before creation recovery can release quarantine.
       // Ordinary Agent lists must continue to hide pending creation operations.
-      if (this.workspaceCatalog.migrateManagedWorkingDirectories(
+      if (measure("workingDirectoryMigration", () => this.workspaceCatalog.migrateManagedWorkingDirectories(
         projectId => this.listAgents(projectId, { includePendingCreation: true }),
         (id, copy) => { this.updateAgentWorkingCopy(id, copy); },
-      )) {
-        this.rebuildProjections();
-        cleanProjectionCheckpoint = false;
+      ))) {
+        measure("projectionReplay", () => this.rebuildProjections());
+        checkpoint = false;
+        incremental = false;
       }
-      for (const project of this.listProjects()) {
-        this.ensureCommunicationProjectionLedger(project.id);
-        reconcileCompactionHistoryIndex(
+      if (!checkpoint) for (const project of this.listProjects()) {
+        measure("communicationLedger", () => this.ensureCommunicationProjectionLedger(project.id));
+        measure("compactionHistory", () => reconcileCompactionHistoryIndex(
           this.client,
           project.id,
           this.readCommunicationEvents(project.id),
           this.readCommunicationRevisions(project.id),
-        );
+        ));
+      }
+      if (this.projectionRebuilder.listRecoveryIssues().length === 0) {
+        try { measure("projectionProgress", () => this.projectionProgress.initialize()); }
+        catch { /* Optional proof must not make a quarantined store unavailable. */ }
       }
       const completedAt = performance.now();
       this.startupProfileData = {
-        mode: cleanProjectionCheckpoint ? "clean" : "recovery",
+        mode: checkpoint ? (incremental ? "incremental" : "clean") : "recovery",
         openMs: Math.round((openedAt - startupStartedAt) * 10) / 10,
         componentsMs: Math.round((componentsCreatedAt - openedAt) * 10) / 10,
         recoveryMs: Math.round((completedAt - componentsCreatedAt) * 10) / 10,
         totalMs: Math.round((completedAt - startupStartedAt) * 10) / 10,
         projectCount: this.listProjects().length,
         recoveryIssues: this.projectionRebuilder.listRecoveryIssues(),
+        phasesMs,
       };
-      try {
-        this.checkpointBaselineChanges = (
-          this.client.prepare("SELECT total_changes() value").get() as { value: number }
-        ).value;
-        this.checkpointBaselineFingerprint = projectionSourceFingerprint(dataDir);
-      } catch {
-        this.checkpointBaselineChanges = undefined;
-        this.checkpointBaselineFingerprint = undefined;
-      }
       admittedStores.add(this);
     } catch (error) {
       releaseDataDirectoryOwnership(this.ownership);
@@ -342,19 +360,21 @@ export class AgentStore extends AgentEventSessionFacade {
   }
 
   startupProfile(): Readonly<{
-    mode: "clean" | "recovery";
+    mode: "clean" | "incremental" | "recovery";
     openMs: number;
     componentsMs: number;
     recoveryMs: number;
     totalMs: number;
     projectCount: number;
     recoveryIssues: ReadonlyArray<{ projectId: string; detail: string }>;
+    phasesMs: Record<string, number>;
   }> {
-    return { ...this.startupProfileData };
+    return { ...this.startupProfileData, phasesMs: { ...this.startupProfileData.phasesMs } };
   }
 
   nextDeliveryOrderKey(createdAt = new Date().toISOString()): string {
-    return this.communicationJournal.nextDeliveryOrderKey(createdAt);
+    return this.projectionProgress.run([path.join(this.dataDirectory, "delivery-order.jsonl")],
+      () => this.communicationJournal.nextDeliveryOrderKey(createdAt));
   }
 
   private communicationIndex(projectId: string) {
@@ -384,22 +404,27 @@ export class AgentStore extends AgentEventSessionFacade {
    * making transport retries idempotent while detecting identity collisions.
    */
   appendCommunicationEvent(input: CommunicationEvent): { event: CommunicationEvent; replayed: boolean } {
-    const result = this.communicationJournal.appendCommunicationEvent(input);
-    const ordinal = this.communicationJournal.communicationOrdinal(result.event.projectId, result.event.eventId);
-    if (!ordinal) throw new Error("communication append ordinal is unavailable");
-    // A canonical append may have committed before its derived index
-    // transaction failed. Exact idempotent replay is therefore also the
-    // bounded live repair path; startup reconciliation remains the full repair.
-    indexCompactionHistoryMessage(
-      this.client,
-      result.event,
-      ordinal,
-      this.communicationJournal.latestCommunicationRevision(
-        result.event.projectId,
-        result.event.eventId,
-      ),
-    );
-    return result;
+    return this.projectionProgress.run([
+      communicationEventsPath(this.dataDirectory, input.projectId),
+      communicationProjectionsPath(this.dataDirectory, input.projectId),
+    ], () => {
+      const result = this.communicationJournal.appendCommunicationEvent(input);
+      const ordinal = this.communicationJournal.communicationOrdinal(result.event.projectId, result.event.eventId);
+      if (!ordinal) throw new Error("communication append ordinal is unavailable");
+      // A canonical append may have committed before its derived index
+      // transaction failed. Exact idempotent replay is therefore also the
+      // bounded live repair path; startup reconciliation remains the full repair.
+      indexCompactionHistoryMessage(
+        this.client,
+        result.event,
+        ordinal,
+        this.communicationJournal.latestCommunicationRevision(
+          result.event.projectId,
+          result.event.eventId,
+        ),
+      );
+      return result;
+    });
   }
 
   private ensureCommunicationBehaviorProjections(event: CommunicationEvent): void {
@@ -407,26 +432,16 @@ export class AgentStore extends AgentEventSessionFacade {
   }
 
   appendCommunicationRevision(input: CommunicationRevisionEvent): { revision: CommunicationRevisionEvent; replayed: boolean } {
-    const result = this.communicationJournal.appendCommunicationRevision(input);
-    if (!result.replayed) {
-      const event = this.communicationJournal.getCommunicationEvent(
-        result.revision.projectId,
-        result.revision.targetEventId,
-      );
-      const ordinal = this.communicationJournal.communicationOrdinal(
-        result.revision.projectId,
-        result.revision.targetEventId,
-      );
-      if (event && ordinal) {
-        indexCompactionHistoryMessage(
-          this.client,
-          event,
-          ordinal,
-          result.revision,
-        );
-      }
-    }
-    return result;
+    return this.projectionProgress.run([communicationRevisionsPath(this.dataDirectory, input.projectId)], () => {
+      const result = this.communicationJournal.appendCommunicationRevision(input);
+      const event = this.communicationJournal.getCommunicationEvent(input.projectId, result.revision.targetEventId);
+      const ordinal = this.communicationJournal.communicationOrdinal(input.projectId, result.revision.targetEventId);
+      // An idempotent retry also repairs an accepted edit whose projection
+      // previously failed; replaying an older edit must retain the latest text.
+      if (event && ordinal) indexCompactionHistoryMessage(this.client, event, ordinal,
+        this.communicationJournal.latestCommunicationRevision(input.projectId, event.eventId));
+      return result;
+    });
   }
 
   readCommunicationRevisions(projectId: string): CommunicationRevisionEvent[] {
@@ -1179,15 +1194,22 @@ export class AgentStore extends AgentEventSessionFacade {
     messageReceiptKey?: string,
     communicationEventId?: string,
   ): ConversationMessageDto | undefined {
-    return this.communicationJournal.appendConversationMessage(
-      conversationId,
-      input,
-      authorAgentId,
-      channel,
-      deliveryIntents,
-      messageReceiptKey,
-      communicationEventId,
-    );
+    const conversation = this.getConversation(conversationId);
+    if (!conversation) return undefined;
+    return this.projectionProgress.run([
+      conversationJsonPath(this.dataDirectory, conversation.projectId, conversationId),
+      messageDispatchesPath(this.dataDirectory, conversation.projectId),
+      communicationProjectionsPath(this.dataDirectory, conversation.projectId),
+      path.join(this.dataDirectory, "delivery-order.jsonl"),
+    ], () => this.communicationJournal.appendConversationMessage(
+        conversationId,
+        input,
+        authorAgentId,
+        channel,
+        deliveryIntents,
+        messageReceiptKey,
+        communicationEventId,
+      ));
   }
 
   getConversationDeliveryIntents(conversationId: string, createdAtOrAfter?: string): Array<{
@@ -1442,7 +1464,10 @@ export class AgentStore extends AgentEventSessionFacade {
   }
 
   updateAgent(id: string, patch: UpdateAgentRequest): AgentDto | undefined {
-    return this.agentManagement.updateAgent(id, patch);
+    const agent = this.getAgent(id);
+    if (!agent) return undefined;
+    return this.projectionProgress.run([agentJsonPath(this.dataDirectory, agent.projectId, id)],
+      () => this.agentManagement.updateAgent(id, patch));
   }
 
   updateAgentOrganization(id: string, input: UpdateAgentOrganizationRequest): AgentDto | undefined {
@@ -1512,6 +1537,10 @@ export class AgentStore extends AgentEventSessionFacade {
 
   getMessages(agentId: string): MessageDto[] {
     return this.auditReadModel.getMessages(agentId);
+  }
+
+  getMessageAttachmentIds(agentId: string): Set<string> {
+    return this.auditReadModel.getMessageAttachmentIds(agentId);
   }
 
   /** Durable response/reasoning segments interleaved by canonical event sequence. */
@@ -1815,6 +1844,41 @@ export class AgentStore extends AgentEventSessionFacade {
     this.projectionRebuilder.rebuildProjections();
   }
 
+  private recoverProjectionTails(tails: ProjectionTail[]): void {
+    this.client.transaction(() => {
+      for (const tail of tails) {
+        const event = /^projects\/([^/]+)\/agents\/([^/]+)\/events\.jsonl$/u.exec(tail.path);
+        if (event) {
+          this.eventSession.recoverEventTail(event[2]!, event[1]!, tail.offset);
+          continue;
+        }
+        const communication = /^projects\/([^/]+)\/(communication-events|communication-revisions|communication-projections)\.jsonl$/u.exec(tail.path);
+        if (!communication) throw new Error("unsupported projection suffix");
+        const file = path.join(this.dataDirectory, tail.path);
+        const prefix = readFileSync(file).subarray(0, tail.offset).toString("utf8");
+        if (tail.offset && !prefix.endsWith("\n")) throw new Error("invalid communication prefix boundary");
+        const count = prefix.split("\n").filter(line => line.trim()).length;
+        const suffix = readRepairableJsonl<CommunicationEvent | CommunicationRevisionEvent | CommunicationProjection>(file, "projection recovery", true).slice(count);
+        for (const record of suffix) {
+          if (communication[2] !== "communication-projections" &&
+              (record as CommunicationEvent | CommunicationRevisionEvent).projectId !== communication[1]) {
+            throw new Error("communication recovery owner mismatch");
+          }
+          if (communication[2] === "communication-events") this.appendCommunicationEvent(record as CommunicationEvent);
+          else if (communication[2] === "communication-revisions") this.appendCommunicationRevision(record as CommunicationRevisionEvent);
+          else {
+            const placement = record as CommunicationProjection;
+            const tuple = `${placement.eventId}\u0000${placement.surface}\u0000${placement.projectionKey}`;
+            const current = this.projectionIndex(communication[1]!).byTuple.get(tuple);
+            if (!current || !this.canProjectCommunication(communication[1]!, current)) throw new Error("unrecoverable communication placement");
+            this.chatFeed.upsertGlobalChatSearchProjection(communication[1]!, current);
+          }
+        }
+      }
+    })();
+  }
+
+
   abortStartup(): void {
     if (!this.ownership) return;
     this.closing = true;
@@ -1828,25 +1892,19 @@ export class AgentStore extends AgentEventSessionFacade {
     if (!this.closing) {
       this.closing = true;
       admittedStores.delete(this);
-      // A checkpoint is an optimization, never shutdown authority. Canonical
-      // files are committed before their projections. A write-active lifetime
-      // requires full recovery at the next startup unless the caller explicitly
-      // requests replay before checkpointing. Partial projection writes must
-      // never be certified as clean.
+      // Completion receipts certify successful writes without replaying history
+      // during shutdown. Missing/inconsistent proof leaves full recovery intact.
       try {
-        const currentChanges = (
-          this.client.prepare("SELECT total_changes() value").get() as { value: number }
-        ).value;
-        const unchanged = this.checkpointBaselineChanges !== undefined &&
-          currentChanges === this.checkpointBaselineChanges &&
-          this.checkpointBaselineFingerprint !== undefined &&
-          projectionSourceFingerprint(this.dataDirectory) === this.checkpointBaselineFingerprint;
-        if (!unchanged && options.checkpointWrites) {
+        if (options.checkpointWrites) {
           this.rebuildProjections();
+          for (const project of this.listProjects()) {
+            this.ensureCommunicationProjectionLedger(project.id);
+            reconcileCompactionHistoryIndex(this.client, project.id,
+              this.readCommunicationEvents(project.id), this.readCommunicationRevisions(project.id));
+          }
+          if (this.projectionRebuilder.listRecoveryIssues().length === 0) this.projectionProgress.initialize();
         }
-        if (unchanged || options.checkpointWrites) {
-          writeProjectionCheckpoint(this.dataDirectory, this.client);
-        }
+        if (this.projectionRebuilder.listRecoveryIssues().length === 0) this.projectionProgress.checkpoint();
       }
       catch { /* full projection recovery remains authoritative */ }
     }
