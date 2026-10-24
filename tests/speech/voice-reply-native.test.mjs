@@ -5,7 +5,7 @@ import {once} from 'node:events';
 import net from 'node:net';
 import {CapabilityPolicyStore} from '../../packages/agents/dist/index.js';
 import {CAPABILITY_IDS} from '../../packages/core/dist/index.js';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {createRequire} from 'node:module';
@@ -71,7 +71,7 @@ async function isolatedChroma(){
 }
 after(async()=>{if(chroma){chroma.child.kill('SIGTERM');await chroma.exit;await rm(chroma.root,{recursive:true,force:true});}});
 async function fixture(options={},runCheck){
- const dir=await mkdtemp(path.join(tmpdir(),'voice-stream-canonical-'));console.log('OWN ROOT',dir);
+ const dir=await realpath(await mkdtemp(path.join(tmpdir(),'voice-stream-canonical-')));console.log('OWN ROOT',dir);
  const store=new AgentStore(path.join(dir,'data')),coord=new CoordinationV3Store(store.sqlite),token=randomBytes(32).toString('hex'),headers={authorization:`Bearer ${token}`};
  const branch=new BranchStore(store.sqlite,coord).create('Disposable streaming Branch','fixture');
  const project=store.createProject({label:'Synthetic voice streaming',hostPath:dir,defaultEngine:'fixture',chatOwned:true,branchId:branch.id}),chat=store.getConversation(project.lastConversationId),agent=store.createAgent(project.id,{engine:'fixture',conversationId:chat.id,title:'Voice'});
