@@ -19,7 +19,7 @@ import {MobileNavigationButton} from '../MobileNavigationContext';
 import {AgentCreateSurface} from '../AgentCreateDialog';
 import {CapabilityPolicyEditor} from '../CapabilityPolicyEditor';
 /** Shared interaction surfaces receive scoped transport and navigation from their product shell. */
-export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate,notificationAction}:{branchId:string;engines:EngineDto[];executionId?:string;branchRoute:BranchRoute;onNavigate(route:BranchRoute,replace?:boolean):void;notificationAction?:ReactNode}):JSX.Element {
+export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate,notificationAction,onHeaderReady}:{branchId:string;engines:EngineDto[];executionId?:string;branchRoute:BranchRoute;onNavigate(route:BranchRoute,replace?:boolean):void;notificationAction?:ReactNode;onHeaderReady?(ready:boolean):void}):JSX.Element {
  const guard=useBranchNavigationGuard();
  const [actions,setActions]=useState<HTMLElement>();
  const route=branchRoute.workspace;
@@ -48,6 +48,7 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
  const embeddedHeaderReady=Boolean(chat&&project.data&&preferences.data);
  const workspaceRoute:ProjectRoute|undefined=chat?(route?.projectId===chat.projectId&&(!executionId||['conversation','agent','workspaceFile','review','projectWork'].includes(route.kind))?route:{kind:'conversation',projectId:chat.projectId,conversationId:chat.id}):undefined;
  const embeddedHeaderSuppliesNavigation=Boolean(embeddedHeaderReady&&workspaceRoute&&['conversation','agent','project'].includes(workspaceRoute.kind));
+ useEffect(()=>{onHeaderReady?.(embeddedHeaderSuppliesNavigation);return ()=>onHeaderReady?.(false)},[embeddedHeaderSuppliesNavigation,onHeaderReady]);
  const navigate=(next:Route)=>{
    if('projectId' in next && next.projectId===chat?.projectId&&(!executionId||['conversation','agent','workspaceFile','review','projectWork'].includes(next.kind))){setRoute(next as ProjectRoute);return;}
    if(next.kind==='home'){if(chat&&route?.kind==='browser')setRoute({kind:'conversation',projectId:chat.projectId,conversationId:chat.id});else setChatId('');return;}

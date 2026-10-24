@@ -1,3 +1,4 @@
+import {CompactWorkspaceHeader} from './WorkspaceFrame';
 import {BranchWorkspaceHeader} from './branches/BranchWorkspaceHeader';
 import CloseIcon from '@mui/icons-material/Close';
 import {useWorkspaceFont} from "../hooks/useWorkspaceFont";
@@ -30,7 +31,7 @@ import {BranchSettings} from './branches/BranchSettings';
 import {BranchChats} from './branches/BranchChats';
 import {WorkspaceConnectionProvider} from './WorkspaceConnectionContext';
 import {useWorkspaceStream} from '../hooks/useWorkspaceStream';
-import {useEffect,useRef,useState} from 'react';
+import {useCallback,useEffect,useRef,useState} from 'react';
 import {useInfiniteQuery,useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
 import {Accordion,AccordionSummary,AccordionDetails,Alert,Box,Button,Chip,Dialog,DialogActions,DialogContent,DialogTitle,Divider,IconButton,MenuItem,Paper,Snackbar,Stack,SwipeableDrawer,TextField,Typography,useMediaQuery,useTheme} from '@mui/material';
 import type {BranchBindings,BranchContextDto,BranchDefinition,BranchDeploymentPreviewDto,BranchDto,BranchExecutionDetailDto,BranchExecutionDto,BranchLifecycleDto,BranchVersionDto,BranchVersionSummaryDto,DeployBranchRequest,DeployBranchResponse,TriggerDefinitionDto} from '@ponderosa/core';
@@ -84,6 +85,8 @@ type Appearance={colorMode:ColorMode;onToggleColorMode():void};
 export function BranchesView(props:Appearance):JSX.Element{return <BranchNavigation>{router=><BranchesWorkspace {...router} {...props}/>}</BranchNavigation>}
 function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearance&{route:BranchRoute;navigate(route:BranchRoute,replace?:boolean):boolean}):JSX.Element{
  const guard=useBranchNavigationGuard();
+ const nestedHeaderKey=branchRoutePath(route),[readyNestedHeader,setReadyNestedHeader]=useState<string>();
+ const onEmbeddedHeaderReady=useCallback((ready:boolean)=>setReadyNestedHeader(previous=>ready?nestedHeaderKey:previous===nestedHeaderKey?undefined:previous),[nestedHeaderKey]);
  const tab=branchTabs.indexOf(route.tab),executionId=route.executionId??'';
  const setExecutionId=(executionId:string,replace=false)=>navigate({...route,executionId:executionId||undefined},replace);
  useAppViewport();
@@ -251,7 +254,8 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
   <input ref={workflowImportInput} hidden type="file" accept=".json,application/json" onChange={e=>{if(mobileNavOpen)closeMobileNavigation();void importFile(e.target.files?.[0]);e.target.value=''}}/>
   <Box component="a" href="#main-content" sx={{position:'absolute',left:8,top:-80,zIndex:1500,p:1,bgcolor:'background.paper','&:focus':{top:8}}}>Skip to main content</Box>
   <Box component="main" id="main-content" tabIndex={-1} sx={{minWidth:0,minHeight:0,display:'flex',flexDirection:'column',overflow:'hidden'}}>
-   {!route.global&&draft.branchId&&route.branchId===draft.branchId&&!loading&&!openingLink&&<BranchWorkspaceHeader name={draft.definition.name} tab={route.tab} published={Boolean(current?.versionId)} embeddedChat={route.tab==='chats'&&Boolean(route.chatId||route.workspace)} dirty={dirty} saving={review.isPending||deploy.isPending} saveDisabled={Boolean(current?.versionId&&!dirty)||advancedDirty||review.isPending||deploy.isPending} onTab={next=>setTab(branchTabs.indexOf(next))} onSave={reviewChanges} onExport={exportFile} onUpdate={()=>{packageUpdateSelection.current=selection.current;packageUpdateInput.current?.click()}}/>}
+   {!route.global&&draft.branchId&&route.branchId===draft.branchId&&!loading&&!openingLink&&<BranchWorkspaceHeader name={draft.definition.name} tab={route.tab} published={Boolean(current?.versionId)} embeddedChat={route.tab==='chats'&&readyNestedHeader===nestedHeaderKey} dirty={dirty} saving={review.isPending||deploy.isPending} saveDisabled={Boolean(current?.versionId&&!dirty)||advancedDirty||review.isPending||deploy.isPending} onTab={next=>setTab(branchTabs.indexOf(next))} onSave={reviewChanges} onExport={exportFile} onUpdate={()=>{packageUpdateSelection.current=selection.current;packageUpdateInput.current?.click()}}/>}
+   {!route.global&&!home&&(loading||openingLink||failedOpening||!draft.branchId||route.branchId!==draft.branchId)&&<CompactWorkspaceHeader icon={<AccountTreeOutlinedIcon/>} title={failedOpening?'Workflow unavailable':'Opening workflow…'}/>}
    <input ref={packageUpdateInput} hidden type="file" accept=".json,application/json" onChange={e=>{if(packageUpdateSelection.current===selection.current)void importFile(e.target.files?.[0],true);e.target.value=''}}/>
    <WorkspaceConnectionNotice connection={connection}/>
    {route.global?(preferences.data?<BranchGlobalSettings view={route.global} preferences={preferences.data} engines={engines.data??[]} colorMode={colorMode} onToggleColorMode={onToggleColorMode} onSelect={onGlobal} onClose={()=>navigate({...route,global:undefined})} notificationAction={mobileWorkspace?<BranchNotifications onNavigate={navigate}/>:undefined}/>:<Alert severity={preferences.error?'error':'info'} action={<Button onClick={()=>void preferences.refetch()}>Retry</Button>}>{preferences.error?.message??'Loading Ponderosa settings…'}</Alert>):<Stack spacing={home?0:{xs:1.5,md:2}} sx={{p:home?0:tab===3?1:{xs:1.5,sm:2,md:3},flex:1,minWidth:0,minHeight:0,overflowY:home||tab===3?'hidden':'auto',overflowX:'hidden'}}>
@@ -286,7 +290,7 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
       {detailFresh&&detail.data&&<ExecutionPanel key={detail.data.execution.id} viewStates={executionViewStates.current} detail={detail.data} definition={pinned.data?.definition} executions={executions} projectId={contexts.data?.find(c=>c.id===draft.chatId)?.projectId}/>}
       {current?.triggerId&&<BranchTriggerAudit triggerId={current.triggerId} branchId={current.id} onNavigate={navigate}/>}
      </Stack>}</Box>
-     <Box role="tabpanel" id="branch-chats-panel" aria-labelledby="branch-chats-tab" hidden={tab!==3} sx={{display:tab===3?'flex':'none',flex:1,minHeight:0}}>{tab===3&&draft.branchId&&<BranchChats key={draft.branchId} branchId={draft.branchId} engines={engines.data??[]} executionId={route.executionId} branchRoute={route} onNavigate={navigate} notificationAction={mobileWorkspace?<BranchNotifications onNavigate={navigate}/>:undefined}/>}</Box>
+     <Box role="tabpanel" id="branch-chats-panel" aria-labelledby="branch-chats-tab" hidden={tab!==3} sx={{display:tab===3?'flex':'none',flex:1,minHeight:0}}>{tab===3&&draft.branchId&&<BranchChats key={draft.branchId} onHeaderReady={onEmbeddedHeaderReady} branchId={draft.branchId} engines={engines.data??[]} executionId={route.executionId} branchRoute={route} onNavigate={navigate} notificationAction={mobileWorkspace?<BranchNotifications onNavigate={navigate}/>:undefined}/>}</Box>
      <Box role="tabpanel" id="branch-parameters-panel" aria-labelledby="branch-parameters-tab" hidden={tab!==4}>{tab===4&&current&&<BranchSettings key={`${current.id}:4`} branch={current} definition={draft.definition} parameters onDeleted={()=>{setDraft(emptyDraft());savedDraft.current=undefined;navigate({tab:'workflow'});void client.invalidateQueries({queryKey:['branches']})}}/>}</Box>
      <Box role="tabpanel" id="branch-settings-panel" aria-labelledby="branch-settings-tab" hidden={tab!==2}>{tab===2&&current&&<BranchSettings key={`${current.id}:2`} branch={current} definition={draft.definition} onDeleted={()=>{setDraft(emptyDraft());savedDraft.current=undefined;navigate({tab:'workflow'});void client.invalidateQueries({queryKey:['branches']})}}/>}</Box>
      {tab===2&&<Stack spacing={1}><Typography color="text.secondary">Each deployment is immutable. Restore a definition as a draft, then review and deploy it as a new version.</Typography>{versions.data?.pages.flat().map(version=><Paper variant="outlined" key={version.id} sx={{p:2}}><Stack direction="row" alignItems="center" gap={1} flexWrap="wrap"><Typography sx={{flex:1}}>{new Date(version.createdAt).toLocaleString()}</Typography>{version.id===current?.versionId&&<Chip size="small" label="Deployed"/>}<Button onClick={()=>void versionDefinition(version,false)}>View definition</Button><Button onClick={()=>void versionDefinition(version,true)}>Use as draft</Button></Stack></Paper>)}{versions.hasNextPage&&<Button onClick={()=>void versions.fetchNextPage()}>Load older versions</Button>}</Stack>}
