@@ -26,8 +26,8 @@ export function BranchNavigation({ children }: { children(router: {
   const register = useCallback((key: string, value: boolean) => {
     if (value) dirty.current.add(key); else dirty.current.delete(key);
   }, []);
-  const confirmLeave = useCallback((keepWorkflowDraft = false, keepEditorDraft = false, keepSettingsDraft = false) =>
-    (keepSettingsDraft||confirmUnsavedNavigation())&&((![...dirty.current].some(key => !(keepWorkflowDraft && key === 'workflow') && !(keepEditorDraft && key === 'workflow-editor'))) ||
+  const confirmLeave = useCallback((keepWorkflowDraft = false, keepEditorDraft = false, keepSettingsDraft = false, keepLocalKeys:readonly string[]=[]) =>
+    (keepSettingsDraft||confirmUnsavedNavigation())&&((![...dirty.current].some(key => !(keepWorkflowDraft && key === 'workflow') && !(keepEditorDraft && key === 'workflow-editor') && !keepLocalKeys.includes(key))) ||
     window.confirm('Discard unsaved changes? Parameter values, workflow edits, execution settings, and capability changes that have not been saved will be lost.')), []);
   const guard = useCallback((action: () => void): boolean => {
     if (!confirmLeave()) return false;
@@ -39,7 +39,7 @@ export function BranchNavigation({ children }: { children(router: {
     // Definition edits stay in BranchesWorkspace; editor-local fields survive
     // same-Branch tab and execution inspection while the editor stays mounted.
     const retained = retainedBranchDrafts(current.current, next);
-    if (!confirmLeave(retained.workflow, retained.editor, retained.settings)) return false;
+    if (!confirmLeave(retained.workflow, retained.editor, retained.settings, retained.localKeys)) return false;
     if(!replace)historyIndex.current++;
     window.history[replace ? 'replaceState' : 'pushState']({branchesIndex:historyIndex.current}, '', branchRoutePath(next));
     setRoute(next);
@@ -61,7 +61,7 @@ export function BranchNavigation({ children }: { children(router: {
       const nextIndex=event.state?.branchesIndex;
       const next = parseBranchRoute(window.location.search);
       const retained = retainedBranchDrafts(current.current, next);
-      if(confirmLeave(retained.workflow, retained.editor, retained.settings)){
+      if(confirmLeave(retained.workflow, retained.editor, retained.settings, retained.localKeys)){
         if(Number.isSafeInteger(nextIndex))historyIndex.current=nextIndex;
         setRoute(next);
       }else if(Number.isSafeInteger(nextIndex)&&nextIndex!==historyIndex.current){

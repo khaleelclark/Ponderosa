@@ -880,6 +880,7 @@ export function WorkspaceSettingsView({
   onSavePreferences,
   section = "general",
   activityProjectId,
+  activityWorkflows=false,
   onReturn,
   returnLabel,
 }: {
@@ -895,6 +896,7 @@ export function WorkspaceSettingsView({
   ): Promise<WorkspacePreferencesDto>;
   section?: "profile" | "general" | "providers" | "notifications" | "activity";
   activityProjectId?: string;
+  activityWorkflows?: boolean;
   onReturn?(): void;
   returnLabel?: string;
 }): JSX.Element {
@@ -1216,6 +1218,7 @@ export function WorkspaceSettingsView({
             <ProviderActivitySettingsSection
               projects={projects}
               projectId={activityProjectId}
+              workflows={activityWorkflows}
             />
           </Stack>
         ) : null}
