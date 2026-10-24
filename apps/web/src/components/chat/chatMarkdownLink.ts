@@ -1,4 +1,5 @@
 import { defaultUrlTransform } from "react-markdown";
+import { productApiPath } from "../../api/productScope.js";
 
 export interface ChatProjectFileReference {
   projectId: string;
@@ -35,7 +36,7 @@ export function chatMarkdownUrlTransform(url: string, key: string, projectId?: s
   const artifact = /^ponderosa:\/\/artifact\/([A-Za-z0-9](?:[A-Za-z0-9._:-]{0,254}[A-Za-z0-9])?)$/u.exec(url);
   if (artifact && artifact[0] === url) {
     return key === "href" && projectId
-      ? `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact[1]!)}/download`
+      ? productApiPath(`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact[1]!)}/download`)
       : "";
   }
   return url.startsWith("ponderosa://project-file/")
