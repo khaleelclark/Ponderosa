@@ -138,9 +138,12 @@ function capturedAppInfo(value: Buffer): boolean {
   try {
     const info: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(decoded));
     return typeof info === "object" && info !== null && !Array.isArray(info)
-      && Object.keys(info).length === 1 && "comp" in info
+      && "comp" in info && Object.keys(info).every(key => key === "comp" || key === "capurl")
       && typeof info.comp === "string" && info.comp.length > 0 && info.comp.length <= 1024
-      && !/[\u0000-\u001f\u007f]/u.test(info.comp);
+      && !/[\u0000-\u001f\u007f]/u.test(info.comp)
+      // Optional capture URL is inert metadata; never parse, render or fetch it.
+      && (!("capurl" in info) || typeof info.capurl === "string" && info.capurl.length <= 1024
+        && !/[\u0000-\u001f\u007f]/u.test(info.capurl));
   } catch { return false; }
 }
 
