@@ -44,6 +44,11 @@ export function containedCliInvocation(
   }
   const slice = environmentValue(hostEnvironment, "PONDEROSA_AGENT_WORKLOAD_SLICE") ?? "ponderosa-agent-workloads.slice";
   if (slice.length > 255 || !/^[a-zA-Z0-9_.-]+\.slice$/u.test(slice)) throw new Error("invalid Agent workload slice");
+  const memoryMiB = environmentValue(hostEnvironment, "PONDEROSA_AGENT_MEMORY_MAX_MIB") ?? "8192";
+  if (!/^[1-9]\d*$/u.test(memoryMiB) || Number(memoryMiB) > 1024 ** 2) {
+    throw new Error("PONDEROSA_AGENT_MEMORY_MAX_MIB must be a positive integer no greater than 1048576");
+  }
+  const memoryMax = Number(memoryMiB) * 1024 ** 2;
   return {
     bin: "systemd-run",
     args: [
@@ -54,6 +59,9 @@ export function containedCliInvocation(
       // them as environment substitutions.
       "--expand-environment=no",
       `--slice=${slice}`,
+      `--property=MemoryMax=${memoryMax}`,
+      "--property=MemorySwapMax=0",
+      "--property=OOMPolicy=kill",
       "--property=TimeoutStopSec=2s",
       // A normal app stop/restart must also stop scopes that outlive a crashed
       // provider root. Restart recovery remains responsible for exact process
