@@ -25,7 +25,7 @@ import { workspaceHeaderSurfaceSx } from "../theme";
 import { MobileNavigationButton } from "./MobileNavigationContext";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 
-type WorkspaceTabItem<T extends string> = { value: T; label: string; icon?: ReactElement };
+type WorkspaceTabItem<T extends string> = { value: T; label: string; icon?: ReactElement; disabled?: boolean };
 
 const WORKSPACE_HEADER_COLLAPSED_KEY = "ponderosa.workspace-header.collapsed.v1";
 const workspaceHeaderListeners = new Set<() => void>();
@@ -101,6 +101,8 @@ export interface TabbedWorkspaceFrameProps<T extends string> {
   /** Chat/Agent mobile chrome gives controls priority over title width. */
   compactMobile?: boolean;
   actionsInMobileTabs?: boolean;
+  /** Keep essential authoring controls reachable in the compact desktop header. */
+  retainCollapsedActions?: boolean;
   tabs: {
     idPrefix?: string;
     activeLabel?: string;
@@ -117,7 +119,7 @@ function WorkspaceTabScrollButton(props: TabScrollButtonProps): JSX.Element {
     aria-label={props.direction === "left" ? "Scroll tabs left" : "Scroll tabs right"} />;
 }
 
-function WorkspaceTabBar<T extends string>({ value, items, onChange, label, idPrefix }: {
+export function WorkspaceTabBar<T extends string>({ value, items, onChange, label, idPrefix }: {
   value: T | false;
   items: readonly WorkspaceTabItem<T>[];
   onChange(value: T): void;
@@ -149,6 +151,7 @@ function WorkspaceTabBar<T extends string>({ value, items, onChange, label, idPr
         id={idPrefix ? `${idPrefix}-${item.value}-tab` : undefined}
         aria-controls={idPrefix ? `${idPrefix}-${item.value}-panel` : undefined}
         value={item.value}
+        disabled={item.disabled}
         icon={item.icon}
         iconPosition="start"
         label={item.label}
@@ -256,6 +259,7 @@ export function TabbedWorkspaceFrame<T extends string>({
   actions,
   compactMobile = false,
   actionsInMobileTabs = false,
+  retainCollapsedActions = false,
   tabs,
 }: TabbedWorkspaceFrameProps<T>): JSX.Element {
   const { collapsed, toggleCollapsed } = useWorkspaceHeaderCollapse();
@@ -286,7 +290,7 @@ export function TabbedWorkspaceFrame<T extends string>({
         context={activeLabel}
         action={(
           <>
-          {compact ? <Stack direction="row" spacing={0.25} sx={{ alignItems: "center", flexShrink: 0 }}>{status}{actionsInMobileTabs ? null : actions}</Stack> : null}
+          {compact || retainCollapsedActions ? <Stack direction="row" spacing={0.25} sx={{ alignItems: "center", flexShrink: 0 }}>{status}{actionsInMobileTabs ? null : actions}</Stack> : null}
           <Tooltip title="Expand workspace header">
             <IconButton
               ref={toggleButtonRef}
