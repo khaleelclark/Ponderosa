@@ -212,7 +212,8 @@ export class AgentStore extends AgentEventSessionFacade {
     totalMs: number;
     projectCount: number;
     recoveryIssues: ReadonlyArray<{ projectId: string; detail: string }>;
-  } = { mode: "recovery", openMs: 0, componentsMs: 0, recoveryMs: 0, totalMs: 0, projectCount: 0, recoveryIssues: [] };
+    phasesMs: Record<string, number>;
+  } = { mode: "recovery", openMs: 0, componentsMs: 0, recoveryMs: 0, totalMs: 0, projectCount: 0, recoveryIssues: [], phasesMs: {} };
 
   constructor(dataDir: string) {
     super();
@@ -225,6 +226,12 @@ export class AgentStore extends AgentEventSessionFacade {
     this.client = opened.client;
     this.ownership = opened.ownership;
     try {
+      const phasesMs: Record<string, number> = {};
+      const measure = <T>(phase: string, work: () => T): T => {
+        const started = performance.now();
+        try { return work(); }
+        finally { phasesMs[phase] = Math.round(((phasesMs[phase] ?? 0) + performance.now() - started) * 10) / 10; }
+      };
       this.support = new AgentStoreSupport(dataDir);
       const ports: AgentStoreComponentPorts = {
         listAgents: projectId => this.listAgents(projectId),
@@ -277,30 +284,41 @@ export class AgentStore extends AgentEventSessionFacade {
       const components = createAgentStoreComponents(dataDir, opened, ports);
       Object.assign(this, components);
       const componentsCreatedAt = performance.now();
-      this.workspaceCatalog.recoverCreationDirectories();
-      this.agentCatalog.recoverCreationDirectories();
+      measure("creationRecovery", () => {
+        this.workspaceCatalog.recoverCreationDirectories();
+        this.agentCatalog.recoverCreationDirectories();
+      });
       // Canonical files are written before their SQLite projections. Rebuild
-      // transactionally on every startup so a crash or torn append cannot leave
-      // a partially repaired projection visible to ordinary requests.
-      let cleanProjectionCheckpoint = consumeProjectionCheckpoint(dataDir, this.client);
-      if (!cleanProjectionCheckpoint) this.rebuildProjections();
+      // transactionally unless an unchanged, orderly lifetime certified every
+      // projection. A crash or torn append must repair before ordinary requests.
+      let cleanProjectionCheckpoint = measure("checkpointValidation", () => consumeProjectionCheckpoint(dataDir, this.client));
+      if (!cleanProjectionCheckpoint) measure("projectionReplay", () => this.rebuildProjections());
       // Repair canonical members before creation recovery can release quarantine.
       // Ordinary Agent lists must continue to hide pending creation operations.
-      if (this.workspaceCatalog.migrateManagedWorkingDirectories(
+      if (measure("workingDirectoryMigration", () => this.workspaceCatalog.migrateManagedWorkingDirectories(
         projectId => this.listAgents(projectId, { includePendingCreation: true }),
         (id, copy) => { this.updateAgentWorkingCopy(id, copy); },
-      )) {
-        this.rebuildProjections();
+      ))) {
+        measure("projectionReplay", () => this.rebuildProjections());
         cleanProjectionCheckpoint = false;
       }
-      for (const project of this.listProjects()) {
-        this.ensureCommunicationProjectionLedger(project.id);
-        reconcileCompactionHistoryIndex(
+      if (!cleanProjectionCheckpoint) for (const project of this.listProjects()) {
+        measure("communicationLedger", () => this.ensureCommunicationProjectionLedger(project.id));
+        measure("compactionHistory", () => reconcileCompactionHistoryIndex(
           this.client,
           project.id,
           this.readCommunicationEvents(project.id),
           this.readCommunicationRevisions(project.id),
-        );
+        ));
+      }
+      try {
+        this.checkpointBaselineChanges = (
+          this.client.prepare("SELECT total_changes() value").get() as { value: number }
+        ).value;
+        this.checkpointBaselineFingerprint = measure("sourceFingerprint", () => projectionSourceFingerprint(dataDir));
+      } catch {
+        this.checkpointBaselineChanges = undefined;
+        this.checkpointBaselineFingerprint = undefined;
       }
       const completedAt = performance.now();
       this.startupProfileData = {
@@ -311,16 +329,8 @@ export class AgentStore extends AgentEventSessionFacade {
         totalMs: Math.round((completedAt - startupStartedAt) * 10) / 10,
         projectCount: this.listProjects().length,
         recoveryIssues: this.projectionRebuilder.listRecoveryIssues(),
+        phasesMs,
       };
-      try {
-        this.checkpointBaselineChanges = (
-          this.client.prepare("SELECT total_changes() value").get() as { value: number }
-        ).value;
-        this.checkpointBaselineFingerprint = projectionSourceFingerprint(dataDir);
-      } catch {
-        this.checkpointBaselineChanges = undefined;
-        this.checkpointBaselineFingerprint = undefined;
-      }
       admittedStores.add(this);
     } catch (error) {
       releaseDataDirectoryOwnership(this.ownership);
@@ -349,8 +359,9 @@ export class AgentStore extends AgentEventSessionFacade {
     totalMs: number;
     projectCount: number;
     recoveryIssues: ReadonlyArray<{ projectId: string; detail: string }>;
+    phasesMs: Record<string, number>;
   }> {
-    return { ...this.startupProfileData };
+    return { ...this.startupProfileData, phasesMs: { ...this.startupProfileData.phasesMs } };
   }
 
   nextDeliveryOrderKey(createdAt = new Date().toISOString()): string {
@@ -1843,8 +1854,15 @@ export class AgentStore extends AgentEventSessionFacade {
           projectionSourceFingerprint(this.dataDirectory) === this.checkpointBaselineFingerprint;
         if (!unchanged && options.checkpointWrites) {
           this.rebuildProjections();
+          // The clean marker covers every startup projection, including FTS and
+          // cross-surface communication. Explicit replay must certify them too.
+          for (const project of this.listProjects()) {
+            this.ensureCommunicationProjectionLedger(project.id);
+            reconcileCompactionHistoryIndex(this.client, project.id,
+              this.readCommunicationEvents(project.id), this.readCommunicationRevisions(project.id));
+          }
         }
-        if (unchanged || options.checkpointWrites) {
+        if ((unchanged || options.checkpointWrites) && this.projectionRebuilder.listRecoveryIssues().length === 0) {
           writeProjectionCheckpoint(this.dataDirectory, this.client);
         }
       }

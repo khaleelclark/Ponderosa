@@ -977,6 +977,14 @@
       "moduleBase": "packages/agents/package.json",
       "requirements": "Node24, built core/native/agents workspaces; disposable local stores; no listener or provider account",
       "origin": "Prepared Agent lookup regression: one statement per authority, fresh typed DTOs, deletion/owner guards and database isolation/reopen"
+    },
+    {
+      "path": "tests/installation-release/projection-startup.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host; disposable current-state SQLite and canonical logs; no provider account",
+      "origin": "Validated clean checkpoint reuse, write-active corruption recovery, canonical source scope, certificate/crash refusal and event sequence/torn append regression"
     }
   ],
   "retainedReleasePayload": [

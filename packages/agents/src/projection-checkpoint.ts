@@ -17,8 +17,10 @@ import type Database from "better-sqlite3";
 
 const CHECKPOINT_FILE = ".projection-clean-shutdown.json";
 // Bump whenever projection semantics change without a schema marker.
-const PROJECTION_CHECKPOINT_VERSION = 2;
-const NON_CANONICAL_ROOTS = new Set(["browser-sessions", "diagnostics", "launcher-state"]);
+const PROJECTION_CHECKPOINT_VERSION = 3;
+const NON_CANONICAL_ROOTS = new Set([
+  "workspaces", "browser-profiles", "browser-sessions", "diagnostics", "launcher-state",
+]);
 const NON_CANONICAL_FILES = new Set([
   CHECKPOINT_FILE,
   ".ponderosa-daemon.lock",
@@ -53,6 +55,14 @@ export function projectionSourceFingerprint(dataDir: string): string {
     const pathname = path.join(dataDir, relative);
     const stat = lstatSync(pathname);
     if (stat.isDirectory()) {
+      // Working files and artifact bytes are not projection sources. Prune
+      // their owned roots before traversing dependency trees or uploaded JSON.
+      const parts = relative.split(path.sep);
+      if (parts[0] === "projects" && (
+        (parts.length === 4 && parts[2] === "artifacts" && parts[3] === "content") ||
+        (parts.length === 5 && parts[2] === "agents" &&
+          (parts[4] === "artifacts" || parts[4] === "attachments"))
+      )) return;
       for (const child of readdirSync(pathname).sort()) visit(path.join(relative, child));
       return;
     }

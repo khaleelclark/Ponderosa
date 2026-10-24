@@ -52,12 +52,14 @@ try {
       });
     }
   }
-  store.close({ checkpointWrites: true });
+  const closeStarted = performance.now();
+  store.close();
+  const writeActiveCloseMs = Math.round((performance.now() - closeStarted) * 10) / 10;
 
   const writeActiveCleanStarted = performance.now();
   store = new AgentStore(root);
-  const writeActiveClean = store.startupProfile();
-  const writeActiveCleanWallMs = Math.round((performance.now() - writeActiveCleanStarted) * 10) / 10;
+  const writeActive = store.startupProfile();
+  const writeActiveWallMs = Math.round((performance.now() - writeActiveCleanStarted) * 10) / 10;
   store.close();
   rmSync(path.join(root, ".projection-clean-shutdown.json"), { force: true });
 
@@ -75,7 +77,7 @@ try {
 
   const result = {
     status: recoveryWallMs <= recoverySloMs && cleanWallMs <= cleanSloMs &&
-      writeActiveCleanWallMs <= cleanSloMs ? "pass" : "fail",
+      writeActiveCloseMs + writeActiveWallMs <= recoverySloMs ? "pass" : "fail",
     dataset: {
       projects: projectCount,
       agents: projectCount * agentsPerProject,
@@ -85,11 +87,12 @@ try {
         : 0,
     },
     recovery: { wallMs: recoveryWallMs, profile: recovery, sloMs: recoverySloMs },
-    writeActiveClean: { wallMs: writeActiveCleanWallMs, profile: writeActiveClean, sloMs: cleanSloMs },
+    writeActive: { closeMs: writeActiveCloseMs, startupMs: writeActiveWallMs,
+      stopThroughReadyMs: writeActiveCloseMs + writeActiveWallMs, profile: writeActive, sloMs: recoverySloMs },
     clean: { wallMs: cleanWallMs, profile: clean, sloMs: cleanSloMs },
   };
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  if (result.status !== "pass" || writeActiveClean.mode !== "clean" ||
+  if (result.status !== "pass" || writeActive.mode !== "recovery" ||
       recovery.mode !== "recovery" || clean.mode !== "clean") {
     throw new Error("startup-scale qualification did not meet its recovery/clean-start contract");
   }
