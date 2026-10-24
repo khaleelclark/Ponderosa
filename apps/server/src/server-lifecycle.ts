@@ -359,10 +359,12 @@ export function registerServerLifecycle(
     startupProjectionRecoveryImmediate = setImmediate(() => {
       startupProjectionRecoveryImmediate = undefined;
       if (isClosed()) return;
-      startupProjectionRecovery = reconcileRuntimeCommunicationProjections(undefined, {
-        yieldEvery: 1,
-        shouldContinue: () => !isClosed(),
-      }).then(async (repaired) => {
+      startupProjectionRecovery = Promise.resolve(app.ready()).then(async () => {
+        if (isClosed()) return;
+        const repaired = await reconcileRuntimeCommunicationProjections(undefined, {
+          yieldEvery: 1,
+          shouldContinue: () => !isClosed(),
+        });
         let verifiedProjects = 0;
         for (const project of store.listProjects()) {
           if (isClosed()) break;

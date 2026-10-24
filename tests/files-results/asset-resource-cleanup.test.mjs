@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import vm from 'node:vm';
 import { AssetStore } from '../../apps/server/dist/assets.js';
 import { AgentStore } from '../../packages/agents/dist/index.js';
+import { createServer } from '../../apps/server/dist/app.js';
 import { withFixture, until, fixtureTestOptions } from '../shared/fixture.mjs';
 const require = createRequire(new URL('../../apps/web/package.json', import.meta.url)), ts = require('typescript');
 const source = ts.createSourceFile('assets.ts', readFileSync(new URL('../../apps/server/src/assets.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
@@ -129,28 +130,55 @@ for (const operation of ['claim', 'reserve']) test('Q07 hosted ' + operation + '
 test('historical Communication recovery starts after the required startup asset pass', fixtureTestOptions, t => withFixture(t, async f => {
   const chat = await f.createChat('Startup maintenance order');
   await f.createIdleAgent(chat, 'Retained owner');
-  let reconcilingAssets = false, ready = false, overlappingHistoryReads = 0, readyHistoryReads = 0;
+  let reconcilingAssets = false, assetPasses = 0, overlappingHistoryReads = 0, laterHistoryReads = 0;
   const reconcile = AssetStore.prototype.reconcile, read = AgentStore.prototype.readCommunicationEvents;
   AssetStore.prototype.reconcile = async function (...args) {
     reconcilingAssets = true;
     try { await new Promise(setImmediate); return await reconcile.apply(this, args); }
-    finally { reconcilingAssets = false; }
+    finally { reconcilingAssets = false; assetPasses++; }
   };
   AgentStore.prototype.readCommunicationEvents = function (...args) {
     if (reconcilingAssets) overlappingHistoryReads++;
-    if (ready) readyHistoryReads++;
+    if (assetPasses > 0 && !reconcilingAssets) laterHistoryReads++;
     return read.apply(this, args);
   };
   try {
-    await f.reopen(); ready = true;
+    await f.reopen();
     assert.equal(overlappingHistoryReads, 0, 'Historical recovery must not compete with readiness-required asset work');
     assert.equal((await f.api('GET', '/api/health')).status, 200);
-    await until(() => readyHistoryReads > 0, 'historical recovery after readiness');
+    await until(() => laterHistoryReads > 0, 'historical recovery after startup asset work');
     assert.equal((await f.api('GET', '/api/health')).status, 200);
   } finally {
     AssetStore.prototype.reconcile = reconcile; AgentStore.prototype.readCommunicationEvents = read;
   }
 }));
+
+test('historical recovery waits for later startup hooks before scanning any project', fixtureTestOptions, async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-late-startup-hook-'));
+  const store = new AgentStore(root);
+  store.createProject({ label: 'Later startup owner', hostPath: root, defaultEngine: 'codex' });
+  let app, laterHookCompleted = false, prematureScans = 0, completedScans = 0;
+  const reconcile = AgentStore.prototype.reconcileCommunicationEvents;
+  AgentStore.prototype.reconcileCommunicationEvents = function (...args) {
+    if (!laterHookCompleted) prematureScans++; else completedScans++;
+    return reconcile.apply(this, args);
+  };
+  try {
+    app = createServer({ dataDir: root, store, engines: [], logger: false, allowedBrowseRoots: [root] });
+    app.addHook('onReady', async () => {
+      await new Promise(setImmediate);
+      await new Promise(setImmediate);
+      laterHookCompleted = true;
+    });
+    await app.ready();
+    await until(() => completedScans > 0, 'historical repair after all startup hooks');
+    assert.equal(prematureScans, 0, 'Another startup owner was still inside its readiness barrier');
+  } finally {
+    if (app) { app.prepareForShutdown(); await app.close(); } else store.close();
+    AgentStore.prototype.reconcileCommunicationEvents = reconcile;
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('attachment maintenance reads scoped, deduplicated IDs without hydrating message history', { timeout: 30000 }, async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-attachment-projection-'));
