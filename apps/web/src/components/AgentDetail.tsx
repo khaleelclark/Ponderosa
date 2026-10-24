@@ -1,3 +1,4 @@
+import {ResourceSettingsContext} from "./ResourceSettingsContext";
 import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import { chatBrowserOwnerId } from "@ponderosa/core";
 import {
@@ -14,7 +15,7 @@ import type {
   ResponseFileActivityDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import {
   AGENT_HISTORY_PAGE_SIZE,
@@ -118,6 +119,7 @@ export function AgentDetail({
   onAgentsDeleted,
 }: AgentDetailProps): JSX.Element {
   const auditOnly=useWorkspaceReadOnly();
+  const settingsExtension=useContext(ResourceSettingsContext);
   const queryClient = useQueryClient();
   const agentQuery = useAgent(agentId);
   const browserChatId = agentQuery.data?.agent.conversationId;
@@ -147,6 +149,7 @@ export function AgentDetail({
       ? (saved as AgentTab)
       : "chat";
   });
+  const changeTab=(value:typeof tab)=>{if(onViewChange?.(value)!==false)setTab(value);};
   useEffect(() => setOlderTelemetryError(undefined), [tab]);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
@@ -842,9 +845,9 @@ export function AgentDetail({
   />;
 
   const openTechnicalDetails = (focusId?: string) => {
+    if(onOpenTechnicalDetails(focusId)===false)return;
     setAgentWorkFocus(focusId);
     setTab("technical");
-    onOpenTechnicalDetails(focusId);
   };
 
   const openActivityFile = (file: ResponseFileActivityDto) => {
@@ -853,7 +856,7 @@ export function AgentDetail({
     else onOpenReview(file.path, file.executionId);
   };
   const activeBrowser = activeBrowsersQuery.data?.find(session => session.agentId === agentId);
-  const settingsPane = (
+  const settingsPane = (<>
     <AgentDetailSettingsController
       agent={detail.agent}
       engines={engines}
@@ -894,7 +897,8 @@ export function AgentDetail({
         setOrganizationOpen(true);
       }}
     />
-  );
+    {!auditOnly&&settingsExtension.render?.("agent",detail.agent.id)}
+  </>);
 
   return (
     <OutgoingMessageProvider scope={agentId} profile={preferencesQuery.data?.profile}><Box
@@ -949,10 +953,7 @@ export function AgentDetail({
           setOrganizationOpen(true);
         }}
         onDelete={() => setDeleteOpen(true)}
-        onTabChange={value => {
-          setTab(value);
-          onViewChange?.(value);
-        }}
+        onTabChange={changeTab}
       />
 
       {activeBrowser || detailRefreshFailed ? (
@@ -1013,7 +1014,7 @@ export function AgentDetail({
         focusTelemetry={focusTelemetry}
         projectRoot={project?.hostPath}
         delegatedAgentCount={relationships.delegatedAgentCount}
-        onCloseTechnical={() => { setTab("chat"); onViewChange?.("chat"); }}
+        onCloseTechnical={() => changeTab("chat")}
         agentWorkFocus={agentWorkFocus}
         settingsPane={settingsPane}
         onOpenAgent={onOpenAgent}
