@@ -258,6 +258,14 @@ export class ClaudeStreamSession implements RuntimeSession {
             this.active = false;
             this.contextObservations.endTurn();
           }
+          if (event.type === "error" && event.code === "quota_exhausted") {
+            // A rejected allowance event can arrive while Claude's own retry
+            // watchdog is waiting. Observe exit before handing recovery back
+            // to Ponderosa; never leave two independent retry authorities.
+            await this.close();
+            yield event;
+            return;
+          }
           yield event;
         }
       }

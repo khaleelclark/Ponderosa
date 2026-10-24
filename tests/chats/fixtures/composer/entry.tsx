@@ -14,12 +14,20 @@ const initial = params.get("text") ?? (structural ? "" : handles.map(handle => `
 function App() {
   const [text, setText] = useState(initial), [metadata, setMetadata] = useState(0), [removed, setRemoved] = useState(false);
   const [output, setOutput] = useState(""), editor = useRef<ComposerEditorHandle>(null), sends = useRef(0);
+  const nativeTrace = useRef<unknown[]>([]);
   const title = metadata ? "Bryce Canyon Updated" : "Bryce Canyon", valid = !(metadata && params.get("change") === "validity");
   const bindings = handles.map((handle, index) => ({ projectId: "fixture-project", agentId: index ? "second-fixture-agent" : agentId, handle, currentHandle: handle, currentTitle: index ? "Second Agent" : title }));
   useEffect(() => {
     const refresh = (event: Event) => {
       if (!(event.target as Element).closest('[contenteditable="true"]')) return;
       document.removeEventListener("input", refresh, true);
+      if (params.has("caretRepair")) {
+        const snapshot = () => ({ text: (event.target as Element).textContent, offset: getSelection()?.anchorOffset });
+        nativeTrace.current.push(snapshot());
+        editor.current?.placeCaretAfterLoneMention();
+        nativeTrace.current.push(snapshot());
+        return;
+      }
       queueMicrotask(() => setMetadata(1));
     };
     document.addEventListener("input", refresh, true);
@@ -27,7 +35,7 @@ function App() {
   }, []);
   return <ThemeProvider theme={createPonderosaTheme(params.get("theme") === "light" ? "light" : "dark")}>
     <CssBaseline /><div style={{ width: params.has("narrow") ? 320 : undefined }}>
-    <p>Type t, then hanks. The recipient metadata changes during the first native input.</p>
+    <p>Type t, then hanks. {params.has("caretRepair") ? "Lone-mention focus repair runs during the first native input." : "The recipient metadata changes during the first native input."}</p>
     <input aria-label="Other focus target" />
     <ComposerEditor ref={editor} text={text} onTextChange={setText} disabled={false} locked={false}
       comboboxEnabled={false} menuOpen={false} listId="fixture-list" highlighted={0} attachmentsEnabled={false}
@@ -43,8 +51,9 @@ function App() {
       onClearRequiredRecipient={() => setRemoved(true)} onSend={() => { sends.current++; }} />
     <button onMouseDown={event => event.preventDefault()} onClick={() => setMetadata(value => value + 1)}>Refresh metadata</button>
     <button onMouseDown={event => event.preventDefault()} onClick={() => setOutput(JSON.stringify({
-      text: editor.current?.getCanonicalText(), sends: sends.current, selection: editor.current?.getSelectionOffsets(), metadata,
+      text: editor.current?.getCanonicalText(), sends: sends.current, selection: editor.current?.getSelectionOffsets(), metadata, nativeTrace: nativeTrace.current,
       dom: document.querySelector('[contenteditable="true"]')?.textContent,
+      nativeSelection: { text: getSelection()?.toString(), anchor: getSelection()?.anchorOffset, focus: getSelection()?.focusOffset },
       geometry: [document.querySelector('[contenteditable="true"]'), document.querySelector('[contenteditable="true"] p'),
         ...document.querySelectorAll('[data-composer-mention="true"]')].map(element => element?.getBoundingClientRect().toJSON()),
       activeElement: document.activeElement?.getAttribute("aria-label"),

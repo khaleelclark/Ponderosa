@@ -1,4 +1,4 @@
-import { retainedChatAttachmentContent, type AgentStore } from "@ponderosa/agents";
+import { retainedChatAttachmentContent, type AgentStore, type WorkspaceStore } from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import { retireAttachmentUpload } from "../attachment-upload-lifecycle.js";
 import { AssetError, type AssetStore, contentDisposition } from "../assets.js";
@@ -13,6 +13,7 @@ export interface AttachmentRoutesContext {
   readonly deletingAttachmentKeys: Set<string>;
   readonly reconcilingAssetAgentIds: ReadonlySet<string>;
   readonly dataDir?: string;
+  readonly workspace?: Pick<WorkspaceStore, "getDecision">;
 }
 
 export function attachmentDeletionKey(agentId: string, attachmentId: string): string {
@@ -21,8 +22,29 @@ export function attachmentDeletionKey(agentId: string, attachmentId: string): st
 
 export function registerAttachmentRoutes(
   app: FastifyInstance,
-  { agentDeliveryLeases, conversationDeliveryLeases, conversationDeletionInProgress, agentDeletionInProgress, assets, deletingAttachmentKeys, reconcilingAssetAgentIds, store, dataDir }: AttachmentRoutesContext,
+  { agentDeliveryLeases, conversationDeliveryLeases, conversationDeletionInProgress, agentDeletionInProgress, assets, deletingAttachmentKeys, reconcilingAssetAgentIds, store, dataDir, workspace }: AttachmentRoutesContext,
 ): void {
+  app.get<{ Params: { id: string; assetId: string; action: string } }>("/api/decisions/:id/attachments/:assetId/:action", async (request, reply) => {
+    const decision = workspace?.getDecision(request.params.id);
+    const file = decision?.status === "resolved" ? decision.response?.attachments?.find(item => item.id === request.params.assetId) : undefined;
+    const preview = request.params.action === "preview";
+    if (!decision || !file || file.agentId !== decision.agentId || (!preview && request.params.action !== "download"))
+      return reply.code(404).send({ error: "Decision file unavailable" });
+    const chat = decision.conversationId ? store.getConversation(decision.conversationId) : undefined;
+    if (decision.conversationId && (!chat || chat.projectId !== decision.projectId || conversationDeletionInProgress(chat.id)))
+      return reply.code(404).send({ error: "Decision file unavailable" });
+    if (request.headers.range) return reply.code(416).header("accept-ranges", "none").send({ error: "Range requests are not supported" });
+    const agent = store.getAgent(decision.agentId);
+    const content = agent && agent.projectId === decision.projectId && !agentDeletionInProgress(agent.id)
+      ? await assets.content(decision.projectId, agent.id, file.id, preview)
+      : dataDir && chat ? retainedChatAttachmentContent(dataDir, decision.projectId, chat.id, decision.agentId, file.id, preview) : undefined;
+    if (!content) return reply.code(404).send({ error: "Decision file unavailable" });
+    const verified = "asset" in content ? content.asset : content.record.attachment;
+    if (verified.sha256 !== file.sha256 || verified.size !== file.size) return reply.code(404).send({ error: "Decision file unavailable" });
+    return reply.header("content-type", preview ? "image/png" : "application/octet-stream")
+      .header("content-disposition", preview ? "inline" : contentDisposition(file.name)).header("cache-control", "private, no-store")
+      .header("x-content-type-options", "nosniff").header("content-security-policy", "default-src 'none'; sandbox").send(content.body);
+  });
   app.get<{ Params: { id: string; ownerId: string; assetId: string; action: string } }>(
     "/api/conversations/:id/retained-attachments/:ownerId/:assetId/:action", async (request, reply) => {
       const conversation = store.getConversation(request.params.id);

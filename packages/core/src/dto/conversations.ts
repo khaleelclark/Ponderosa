@@ -11,7 +11,7 @@ import type {
 } from "../coordination-v3.js";
 import type { AgentDto } from "./agents.js";
 import type { ArtifactKind, AssetDto, CommunicationAttachmentDto } from "./artifacts.js";
-import type { HistoryWindowDto, ProviderBlockedWorkDto } from "./common.js";
+import type { HistoryWindowDto, ProviderBlockedWorkDto, QueuedAdmissionBlockerDto } from "./common.js";
 import type { ProjectDto } from "./projects.js";
 import type { DecisionDto } from "./workspace.js";
 import type { OutcomeCause } from "../outcome-cause.js";
@@ -197,6 +197,9 @@ export interface MessageDeliveryReceiptDto {
   /** Observed admission barrier, not provider acknowledgement or comprehension. */
   steeringWaitReason?: "context_refresh" | "prior_steering" | "revision_pending" |
     "provider_not_ready" | "provider_unsupported" | "preparation_retry" | "run_starting" | "scheduler_pending";
+  /** Current shared health/admission projection for an unstarted delivery;
+   * never evidence that this message reached an earlier Run. */
+  queueWaitReason?: QueuedAdmissionBlockerDto["kind"] | "current_run" | "provider_retry";
   /** Temporary, bounded public commentary for this exact acknowledged delivery.
    * Not authored Communication, completion, or proof of semantic understanding. */
   liveProgress?: { text: string; createdAt: string; seq: number; truncated?: true; recipientHandle: string;
@@ -205,6 +208,17 @@ export interface MessageDeliveryReceiptDto {
   recoveryAt?: string;
   canLetCurrentRunFinish?: boolean;
   recoveryActivationId?: string;
+  /** Current failure/recovery of this exact work's Run lineage, never the Agent's current selection. */
+  providerFailure?: {
+    category: "quota_exhausted" | "rate_limit" | "throttled" | "capacity";
+    providerId?: string;
+    model?: string;
+    resetAt?: string;
+    quotaLimit?: import("../provider-failure-summary.js").ProviderQuotaLimit;
+    recovery: "scheduled" | "retrying" | "action_required" | "stopped";
+    nextRetryAt?: string;
+    runId: string;
+  };
   /** Exact runtime selection attached to this delivery. */
   runtime?: {
     engine?: string;
@@ -437,6 +451,8 @@ export interface CoordinationRequestUpdateDto {
 /** Canonical, read-only lifecycle of one scoped coordination Request. */
 export interface CoordinationRequestLifecycleDto {
   request: {
+    /** Current canonical eligibility; the retry route remains authoritative. */
+    retryAvailable?: boolean;
     id: string;
     requesterAgentId?: string;
     recipientAgentId: string;
@@ -467,6 +483,9 @@ export interface ConversationDecisionEventDto {
 }
 
 export interface ConversationDetailDto {
+  /** Unresolved provider failures outside the paginated message window. */
+  providerFailureMessages?: ConversationMessageDto[];
+  providerFailuresHasMore?: true;
   conversation: ConversationDto;
   messages: ConversationMessageDto[];
   /** Bounded initial member page. Use the scoped members endpoint for more. */

@@ -27,3 +27,4 @@ export * from "./rich-message.js";
 export * from "./branches.js";
 export * from "./capability-policy.js";
 export * from "./dto/branch-triggers.js";
+export * from "./decision-questions.js";

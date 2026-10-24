@@ -12,7 +12,7 @@ import {
 
 export function registerSearchRoutes(
   app: FastifyInstance,
-  { globalChatSearch, store, workspace, coordinationV3 }: SearchRoutesContext,
+  { globalChatSearch, store, workspace, deliveryReceiptsForCommunications }: SearchRoutesContext,
 ): void {
   let filesInFlight = 0;
   app.get<{ Querystring: { q?: string; limit?: string; projectId?: string; conversationId?: string; cursor?: string } }>("/api/search/files", async (request, reply) => {
@@ -76,7 +76,7 @@ export function registerSearchRoutes(
         messagePage.items.map(item => item.project.id),
       )].map(projectId => [
         projectId,
-        coordinationV3.deliveryReceiptsForCommunications(
+        deliveryReceiptsForCommunications(
           projectId,
           messagePage.items.flatMap(item =>
             item.project.id === projectId ? [item.communicationEventId] : []

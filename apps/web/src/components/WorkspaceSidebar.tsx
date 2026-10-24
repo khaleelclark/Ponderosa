@@ -56,7 +56,6 @@ import {
 } from "../workspaceNavigation";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import { SidebarActivityBadge } from "./SidebarActivityBadge";
-import { summarizeWorkspaceActivity } from "@ponderosa/core";
 import { useWorkspaceActivity } from "../hooks/useWorkspaceActivity";
 import { isUnmodifiedPrimaryClick } from "../nativeNavigation";
 import { ResourceContextMenu, type ResourceContextMenuAction } from "./ResourceContextMenu";
@@ -501,7 +500,6 @@ export function WorkspaceSidebar({
     project: (typeof agentItems)[number]["project"];
     ownerConversation?: WorkspaceAgentDirectoryItemDto["ownerConversation"];
     health?: WorkspaceAgentDirectoryItemDto["health"];
-    healthConfirmedAt?: string;
     status?: (typeof agentItems)[number]["health"]["status"];
   };
   type AgentSidebarTreeRow = AgentSidebarRow & {
@@ -509,12 +507,11 @@ export function WorkspaceSidebar({
     hasChildren: boolean;
   };
   const allAgentRows: AgentSidebarRow[] = agentItems.map(
-    ({ agent, project, ownerConversation, health, healthConfirmedAt }) => ({
+    ({ agent, project, ownerConversation, health }) => ({
       agent,
       project,
       ownerConversation,
       health,
-      healthConfirmedAt,
       status: health.status,
     }),
   );
@@ -565,7 +562,7 @@ export function WorkspaceSidebar({
     return visible;
   };
   const agentResourceRows = (items: AgentSidebarTreeRow[]) =>
-    items.map(({ agent, project: agentProject, ownerConversation, health, healthConfirmedAt, depth, hasChildren }) => {
+    items.map(({ agent, project: agentProject, ownerConversation, health, depth, hasChildren }) => {
       const starred = starredResourceIds.has(
         resourcePreferenceKey("agent", agent.id),
       );
@@ -645,7 +642,7 @@ export function WorkspaceSidebar({
             starred={starred} nested={Boolean(agent.managerAgentId)} selected={route.kind === "agent" && route.agentId === agent.id}
             onOpen={() => onNavigate({ kind: "agent", projectId: agentProject.id, agentId: agent.id })} onStar={() => toggleStar("agent", agent.id)}
             onContextAction={anchor => openResourceMenu(anchor, { kind: "agent", projectId: agentProject.id, agentId: agent.id })}
-            status={<SidebarActivityBadge activity={health ? summarizeWorkspaceActivity([health], healthConfirmedAt) : undefined} fresh={workspaceConnection.phaseEvidenceFresh} showLabel />} />
+            status={<SidebarActivityBadge agent={{ title: agent.title, health }} fresh={workspaceConnection.phaseEvidenceFresh} showLabel />} />
         </Stack>
       );
     });
