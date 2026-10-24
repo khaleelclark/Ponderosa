@@ -456,3 +456,80 @@ test('declined parent deletion cleanup remains retryable when the current callba
  const f=await deletionActionFixture();f.scope.onDeleted=()=>false;f.scope.lifecycle.error=new f.ApiRequestError(404,'Branch not found');f.scope.checkRemoval();assert.equal(f.scope.finished.current,false);
  f.scope.onDeleted=()=>{f.scope.deleted=(f.scope.deleted??0)+1};f.scope.checkRemoval();assert.equal(f.scope.finished.current,true);assert.equal(f.scope.deleted,1);
 });
+
+const creationJournal=await import('../../apps/web/src/components/chatCreationAttempts.ts');
+const {resolveConversationEngine}=await import('../../apps/web/src/conversationEngine.ts');
+const {ApiRequestError}=await import('../../apps/web/src/api/types.ts');
+const {definitiveSubmissionStatus}=await import('../../apps/web/src/components/idempotentAttempt.ts');
+const {removeBrowserStorage}=await import('../../apps/web/src/browserStorage.ts');
+function creationStorage(){removeBrowserStorage('sessionStorage',creationJournal.chatCreationAttemptsKey);let value='[]',blocked=false;return {get value(){return value},set value(next){value=next},set blocked(next){blocked=next},getItem(){if(blocked)throw Error('Storage denied');return value},setItem(_key,next){if(blocked)throw Error('Storage denied');value=next}};}
+async function creationActionFixture(){
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/NewChatComposer.tsx',import.meta.url),'utf8');
+ const code=source.slice(source.indexOf('  const retire ='),source.indexOf('  useEffect(() => {\n    if (!creationKey')),errors=[],opened=[],invalidated=[],requests=[];
+ const scope={...creationJournal,ApiRequestError,definitiveSubmissionStatus,resolveConversationEngine,owner:{product:'branches',branchId:'owner'},creationKey:'same-intent',locked:{current:false},mounted:{current:true},engines:[{id:'codex',installed:true,enabled:true,authentication:'authenticated',intakeReady:true}],setBusy(){},setError:value=>errors.push(value),queryKeys:{projects:{all:['projects']},workspaceDirectory:{all:['directory']}},queryClient:{invalidateQueries:async value=>invalidated.push(value.queryKey)},onCreated:(projectId,id)=>opened.push({projectId,id}),submitCreationAttempt:async attempt=>{requests.push(attempt);return {id:'created',projectId:'project'}}};
+ vm.runInNewContext(ts.transpileModule(code+'\nglobalThis.create=create;',{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);return {scope,errors,opened,invalidated,requests};
+}
+
+test('creation journal scopes Branch identities, retains ordinary legacy attempts and requires durable storage',()=>{
+ const original=globalThis.window,storage=creationStorage();globalThis.window={sessionStorage:storage};
+ try{const input={label:'New Chat',defaultEngine:'codex'},legacy={key:'ordinary',input},branch={key:'branch',owner:{product:'branches',branchId:'one'},input};
+  storage.value=JSON.stringify([legacy,branch,{...branch,key:'invalid',owner:{product:'other',branchId:'one'}},{...branch,key:'invalid2',owner:{product:'branches'}}]);assert.deepEqual(creationJournal.readCreationAttempts(),[legacy,branch]);assert.equal(creationJournal.sameCreationAttempt(branch,{...branch,owner:undefined}),false);assert.equal(creationJournal.sameCreationOwner(branch.owner,{product:'branches',branchId:'two'}),false);
+  storage.blocked=true;assert.equal(creationJournal.ensureCreationAttemptPersisted(branch),false,'Memory fallback cannot authorize dispatch');storage.blocked=false;assert.equal(creationJournal.ensureCreationAttemptPersisted(branch),true);
+ }finally{globalThis.window=original;}
+});
+
+test('creation transport sends exact payload/key through its persisted Branch or ordinary owner',async()=>{
+ const original=globalThis.window,fetch=globalThis.fetch,calls=[];globalThis.window={location:{pathname:'/branches'}};globalThis.fetch=async(url,init)=>{calls.push({url,...init});return new Response(JSON.stringify({id:'created',projectId:'project'}),{headers:{'content-type':'application/json'}})};
+ try{const input={label:'New Chat',defaultEngine:'codex'};await creationJournal.submitCreationAttempt({key:'branch-intent',input,owner:{product:'branches',branchId:'owner/encoded'}});assert.equal(calls[0].url,'/api/branches/owner%2Fencoded/chats');assert.equal(new Headers(calls[0].headers).get('idempotency-key'),'branch-intent');assert.equal(calls[0].body,JSON.stringify(input));window.location.pathname='/home';await creationJournal.submitCreationAttempt({key:'ordinary-intent',input});assert.equal(calls[1].url,'/api/chats');assert.equal(new Headers(calls[1].headers).get('idempotency-key'),'ordinary-intent');}finally{globalThis.window=original;globalThis.fetch=fetch;}
+});
+
+test('single-flight creation preserves exact retries through response loss, reload and changed engine defaults',async()=>{
+ const original=globalThis.window,storage=creationStorage();globalThis.window={sessionStorage:storage};
+ try{const f=await creationActionFixture();let reject;f.scope.submitCreationAttempt=attempt=>{f.requests.push(attempt);return new Promise((_,fail)=>{reject=fail})};const pending=f.scope.create();await f.scope.create();assert.equal(f.requests.length,1);reject(Error('Response lost'));await pending;assert.match(f.errors.at(-1),/unconfirmed/);const attempt=JSON.parse(storage.value)[0];
+  const retry=await creationActionFixture();retry.scope.engines=[{id:'claude'}];await retry.scope.create();assert.equal(JSON.stringify(retry.requests[0]),JSON.stringify(attempt));assert.equal(retry.opened.length,1);assert.equal(JSON.parse(storage.value)[0].chat.id,'created');
+ }finally{globalThis.window=original;}
+});
+
+test('receipt failure and late completion retain retry and refresh the original owner without stealing navigation',async()=>{
+ const original=globalThis.window,storage=creationStorage();globalThis.window={sessionStorage:storage};
+ try{const f=await creationActionFixture();f.scope.submitCreationAttempt=async()=>{storage.blocked=true;return {id:'created',projectId:'project'}};await f.scope.create();assert.equal(f.opened.length,0);assert.ok(f.invalidated.some(key=>key[0]==='branch-chats'&&key[1]==='owner'));assert.match(f.errors.at(-1),/receipt/);
+  storage.blocked=false;const retry=await creationActionFixture();retry.scope.mounted.current=false;await retry.scope.create();assert.equal(retry.opened.length,0);assert.equal(JSON.parse(storage.value)[0].chat.id,'created');assert.ok(retry.invalidated.some(key=>key[0]==='branch-chats'&&key[1]==='owner'));
+ }finally{globalThis.window=original;}
+});
+
+test('missing provider/storage and definite rejection remain actionable without unsafe dispatch',async()=>{
+ const original=globalThis.window,storage=creationStorage();globalThis.window={sessionStorage:storage};
+ try{const f=await creationActionFixture();f.scope.engines=[];await f.scope.create();assert.equal(f.requests.length,0);assert.match(f.errors.at(-1),/No provider/);f.scope.engines=[{id:'codex'}];storage.blocked=true;await f.scope.create();assert.equal(f.requests.length,0);assert.match(f.errors.at(-1),/storage/);storage.blocked=false;f.scope.submitCreationAttempt=async()=>{throw new ApiRequestError(400,'Provider unavailable')};await f.scope.create();assert.equal(creationJournal.readCreationAttempts().length,0);}finally{globalThis.window=original;}
+});
+
+test('Branch creation URL survives reload and completion refuses another owner, view or intent',async()=>{
+ const route={branchId:'owner',tab:'chats',creationKey:'exact-intent'};assert.deepEqual(parseBranchRoute(new URL(branchRoutePath(route),'https://example.test').search),route);
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchChats.tsx',import.meta.url),'utf8'),handler=source.split('\n').find(line=>line.trim().startsWith('const created='));assert.ok(handler);
+ const writes=[],scope={branchId:'owner',creationKey:'exact-intent',currentRoute:{current:route},onNavigate:next=>{writes.push(next);return true}};vm.runInNewContext(ts.transpileModule(handler.replace('const created=','globalThis.created='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);
+ for(const next of [{...route,branchId:'other'},{...route,tab:'workflow'},{...route,global:'providers'},{...route,creationKey:'new-intent'},{...route,executionId:'temporary'}]){scope.currentRoute.current=next;assert.equal(scope.created('p','c'),false)}assert.equal(writes.length,0);scope.currentRoute.current=route;scope.created('p','c');assert.equal(writes.length,1);assert.equal(writes[0].chatId,'c');assert.equal(writes[0].creationKey,undefined);
+});
+
+test('ordinary recovery excludes Branch attempts instead of using the generic endpoint',async()=>{
+ const original=globalThis.window,storage=creationStorage();globalThis.window={sessionStorage:storage};const {QueryClient,QueryClientProvider}=await import('@tanstack/react-query'),{ChatCreationRecovery}=await import('../../apps/web/src/components/ChatCreationRecovery.tsx'),client=new QueryClient();
+ try{storage.value=JSON.stringify([{key:'branch',owner:{product:'branches',branchId:'owner'},input:{label:'Branch',defaultEngine:'codex'}}]);const render=()=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ChatCreationRecovery,{onCreated(){}})));assert.equal(render(),'');storage.value=JSON.stringify([{key:'legacy',input:{label:'Ordinary',defaultEngine:'codex'}}]);assert.match(render(),/Recover earlier Chat/);}finally{client.clear();globalThis.window=original;}
+});
+
+
+test('invalid raw owner metadata cannot stand in for an ordinary durable creation attempt',()=>{
+ const original=globalThis.window,attempt={key:'ordinary-raw',input:{label:'New Chat',defaultEngine:'codex'}};
+ try{for(const owner of [{},null]){removeBrowserStorage('sessionStorage',creationJournal.chatCreationAttemptsKey);globalThis.window={sessionStorage:{getItem:()=>JSON.stringify([{...attempt,owner}]),setItem(){throw Error('Denied')}}};assert.equal(creationJournal.sameCreationOwner(undefined,owner),false);assert.equal(creationJournal.ensureCreationAttemptPersisted(attempt),false,'Invalid raw owner must be rewritten durably before dispatch');}}finally{removeBrowserStorage('sessionStorage',creationJournal.chatCreationAttemptsKey);globalThis.window=original;}
+});
+
+test('declined navigation retains a completed receipt and an actionable exact retry',async()=>{
+ const original=globalThis.window,storage=creationStorage();globalThis.window={sessionStorage:storage};
+ try{const f=await creationActionFixture();f.scope.onCreated=()=>false;await f.scope.create();assert.equal(JSON.parse(storage.value)[0].chat.id,'created');assert.match(f.errors.at(-1),/Retry to open the same Chat/);}finally{globalThis.window=original;}
+});
+
+test('a stale Branch panel cannot start creation for a new selection or temporary inspection',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchChats.tsx',import.meta.url),'utf8');
+ const allowed=source.split('\n').find(line=>line.trim().startsWith('const creationAllowed=')),start=source.split('\n').find(line=>line.trim().startsWith('const startChat='));assert.ok(allowed&&start);
+ for(const route of [{branchId:'other',tab:'chats'},{branchId:'owner',tab:'workflow'},{branchId:'owner',tab:'chats',global:'providers'},{branchId:'owner',tab:'chats',executionId:'temporary'},{branchId:'owner',tab:'chats'}]){
+  const writes=[],scope={branchRoute:route,branchId:'owner',executionId:route.executionId,creationKey:undefined,pendingAttempt:undefined,starting:{current:false},createClientId:()=> 'intent',onNavigate:next=>{writes.push(next);return true}};
+  vm.runInNewContext(ts.transpileModule(allowed+'\n'+start.replace('const startChat=','globalThis.startChat='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);scope.startChat();scope.startChat();assert.equal(writes.length,route.branchId==='owner'&&route.tab==='chats'&&!route.global&&!route.executionId?1:0);
+ }
+});
