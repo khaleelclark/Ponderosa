@@ -27,6 +27,12 @@ import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import { stableJson } from "./coordination-v3-canonical-json.js";
 import { workspaceEventsPath, workspaceInstancePath } from "./paths.js";
 
+/** A single materialized metadata relation lets SQLite index canonical ID joins. */
+export const workspaceRecencyCte = `recent_use AS MATERIALIZED (
+  SELECT CAST(json_extract(value, '$[0]') AS TEXT) id,
+    CAST(json_extract(value, '$[1]') AS TEXT) last_used_at FROM json_each(?)
+)`;
+
 type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
   mutation?:
     | { kind: "draft"; draft: ConversationDraftDto }
@@ -259,6 +265,7 @@ export class WorkspaceStore {
   private readonly conversationDeletionEvents = new Map<string, WorkspaceEventEnvelope>();
   private readonly queuedMessageChanges = new Set<string>();
   private readonly resourceRecency = new Map<string, WorkspaceResourceRecencyDto>();
+  private readonly resourceRecencySnapshots = new Map<WorkspaceResourceKind, { json: string; revision: string }>();
   private readonly resourceRecencyLinks = new Map<
     string,
     { newer?: string; older?: string }
@@ -757,6 +764,7 @@ export class WorkspaceStore {
     };
     this.deleteResourceRecency(resourceKey);
     this.resourceRecency.set(resourceKey, next);
+    this.resourceRecencySnapshots.delete(kind);
     this.insertResourceRecency(resourceKey);
     return next;
   }
@@ -810,6 +818,8 @@ export class WorkspaceStore {
       else this.oldestResourceRecencyKey = links.newer;
       this.resourceRecencyLinks.delete(resourceKey);
     }
+    const resource = this.resourceRecency.get(resourceKey);
+    if (resource) this.resourceRecencySnapshots.delete(resource.kind);
     this.resourceRecency.delete(resourceKey);
   }
 
@@ -959,6 +969,19 @@ export class WorkspaceStore {
   instanceId(): string { return this.instance; }
 
   getPreferences(): WorkspacePreferencesDto { return this.preferences; }
+
+  /** Complete metadata from the canonical projection, independent of the bounded Recent UI cache. */
+  resourceRecencySnapshot(kind: WorkspaceResourceKind) {
+    let snapshot = this.resourceRecencySnapshots.get(kind);
+    if (!snapshot) {
+      const entries = [...this.resourceRecency.values()].filter(row => row.kind === kind)
+        .map(row => [row.resourceId, row.lastUsedAt] as const).sort(([a], [b]) => a.localeCompare(b));
+      const json = JSON.stringify(entries);
+      snapshot = { json, revision: createHash("sha256").update(json).digest("base64url") };
+      this.resourceRecencySnapshots.set(kind, snapshot);
+    }
+    return snapshot;
+  }
 
   listResourceRecency(limit?: number, include: (resource: WorkspaceResourceRecencyDto) => boolean = () => true): WorkspaceResourceRecencyListDto {
     const starred = new Set([

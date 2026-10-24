@@ -120,3 +120,32 @@ test('portable installation import is canonically validated before opening a for
   assert.equal(count(),before);
  }, {storeFactory:dir=>(store=new AgentStore(dir))});
 });
+
+test('BR004 canonical Workflow use drives complete organized metadata and generation-fenced Recent pages',async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const owners=[];for(let i=0;i<125;i++)owners.push(await branch(f,'Recent '+String(i).padStart(3,'0')));
+  const prefs=f.ok(await f.api('GET','/api/branches/engine/workspace/preferences'));
+  f.ok(await f.api('PATCH','/api/branches/engine/workspace/preferences',{branchSort:'last_used',branchFolders:[{id:randomUUID(),name:'Complete',expanded:false,branchIds:owners.map(row=>row.id)}],branchFoldersRevision:prefs.revision,starredResourceIds:['branch:'+owners[0].id]}));
+  const use=async owner=>f.ok(await f.api('POST','/api/branches/engine/workspace/recent-resources/use',{kind:'branch',resourceId:owner.id}));
+  const exact=f.ok(await f.api('GET','/api/branches?search=Recent%200'));assert.equal(exact.length,100);
+  const exactResponse=await f.api('GET','/api/branches?search=Recent%200');assert.equal(exactResponse.headers['x-collection-has-more'],'false');
+  for(const query of ['search=a&search=b','chatId=a&chatId=b','cursor=a&cursor=b'])assert.equal((await f.api('GET','/api/branches?'+query)).status,400);
+  const used=await use(owners[0]);
+  const read=async cursor=>f.api('GET','/api/branches'+(cursor?'?cursor='+encodeURIComponent(cursor):''));
+  let first=await read();assert.equal(first.status,200);assert.equal(first.body.length,100);assert.equal(first.body[0].id,owners[0].id);assert.equal(first.body[0].lastUsedAt,used.lastUsedAt);assert.equal(Number(first.headers['x-total-count']),125);
+  assert.equal((await f.api('GET','/api/branches?before='+owners[0].id)).status,400,'Obsolete cursors must fail visibly instead of repeating page one');
+  const cursor=first.headers['x-next-cursor'];assert.ok(cursor);
+  const next=await read(cursor);assert.equal(next.status,200);assert.equal(next.body.length,25);assert.equal(new Set([...first.body,...next.body].map(row=>row.id)).size,125);
+  const complete=f.ok(await f.api('GET','/api/branches?section=organized'));assert.equal(complete.length,125);assert.equal(complete.find(row=>row.id===owners[0].id).lastUsedAt,used.lastUsedAt);
+  await use(owners[1]);assert.equal((await read(cursor)).status,409);
+  first=await read();assert.equal(first.body[0].id,owners[1].id);
+  const beforeCreate=first.headers['x-next-cursor'];await branch(f,'New draft');assert.equal((await read(beforeCreate)).status,409);
+  first=await read();store.sqlite.prepare('UPDATE branches SET name=? WHERE id=?').run('Renamed',owners[5].id);assert.equal((await read(first.headers['x-next-cursor'])).status,409);
+  first=await read();store.sqlite.prepare('UPDATE branches SET deleting=1 WHERE id=?').run(owners[6].id);assert.equal((await read(first.headers['x-next-cursor'])).status,409);assert.ok(!f.ok(await f.api('GET','/api/branches?section=organized')).some(row=>row.id===owners[6].id));
+  assert.equal((await f.api('GET','/api/branches?search=not-matching&cursor='+encodeURIComponent(beforeCreate))).status,400);
+  await use(owners[1]);const beforeRestart=(await read()).headers['x-next-cursor'];await f.reopen();assert.equal((await read()).body[0].id,owners[1].id);assert.equal((await read(beforeRestart)).status,409);
+  f.ok(await f.api('PATCH','/api/branches/engine/workspace/preferences',{branchSort:'alphabetical'}));first=await read();await use(owners[3]);assert.equal((await read(first.headers['x-next-cursor'])).status,200);
+  assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,0);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});

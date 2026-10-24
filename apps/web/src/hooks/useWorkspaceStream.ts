@@ -833,6 +833,8 @@ export function useWorkspaceStream(
           workspaceRecencyInvalidator.flush();
         }
       }
+      if (event.type === "resource_used" && event.kind === "conversation") directoryInvalidator.schedule("conversation");
+      if (event.type === "resource_used" && event.kind === "branch") communicationRefresh.schedule(["branches"]);
       if (event.type === "preferences_updated") {
         engineStatusRefresh.schedule();
         for (const kind of preferenceDirectoryKinds) {

@@ -193,10 +193,20 @@ export function sortResourceFolders<Folder extends ResourceFolder>(folders: read
   return sortWorkspaceResources([...folders], sort, undefined, folder => folder.id, folder => folder.name,
     folder => folder.memberIds.reduce((latest, id) => { const value = updatedAt.get(id) ?? ""; return value > latest ? value : latest; }, ""));
 }
+/** All/Recent mixes folder blocks and loose rows; namespaced ties are deterministic. */
+export function recentResourceRows<Item extends FolderResource>(folders: readonly ResourceFolder[], items: readonly Item[], loose: readonly Item[]) {
+  const recency = new Map(items.map(item => [item.id, item.updatedAt]));
+  return [
+    ...folders.map(folder => ({ id: `folder:${folder.id}`, at: folder.memberIds.reduce((latest, id) => {
+      const at = recency.get(id) ?? ""; return at > latest ? at : latest;
+    }, ""), folder, item: undefined as Item | undefined })),
+    ...loose.map(item => ({ id: `resource:${item.id}`, at: item.updatedAt, folder: undefined as ResourceFolder | undefined, item })),
+  ].sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id));
+}
 export function sortChatFolderMembers(folder: ChatFolderDto, items: readonly WorkspaceConversationDirectoryItemDto[], sort: ProjectSort): WorkspaceConversationDirectoryItemDto[] {
-  const members = sortResourceFolderMembers({...folder, memberIds: folder.conversationIds}, items.map(item => ({...item, id: item.conversation.id, title: item.conversation.title, updatedAt: item.conversation.updatedAt, original: item})), sort);
+  const members = sortResourceFolderMembers({...folder, memberIds: folder.conversationIds}, items.map(item => ({...item, id: item.conversation.id, title: item.conversation.title, updatedAt: item.lastUsedAt ?? item.conversation.updatedAt, original: item})), sort);
   return members.map(item => item.original);
 }
 export function sortChatFolders(folders: readonly ChatFolderDto[], items: readonly WorkspaceConversationDirectoryItemDto[], sort: ProjectSort): ChatFolderDto[] {
-  return sortResourceFolders(folders.map(folder => ({...folder, memberIds: folder.conversationIds})), items.map(item => ({id: item.conversation.id, title: item.conversation.title, updatedAt: item.conversation.updatedAt})), sort).map(({memberIds: _, ...folder}) => folder);
+  return sortResourceFolders(folders.map(folder => ({...folder, memberIds: folder.conversationIds})), items.map(item => ({id: item.conversation.id, title: item.conversation.title, updatedAt: item.lastUsedAt ?? item.conversation.updatedAt})), sort).map(({memberIds: _, ...folder}) => folder);
 }
