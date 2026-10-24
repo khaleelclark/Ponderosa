@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {writeFile,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {chatBrowserOwnerId} from '@ponderosa/core';
-import {AgentStore} from '@ponderosa/agents';
+import {AgentStore,BranchStore,CoordinationV3Store} from '@ponderosa/agents';
 import {conversationJsonPath} from '../../packages/agents/dist/paths.js';
 import {withFixture,until} from '../shared/fixture.mjs';
 
@@ -291,4 +291,47 @@ test('Chat attachment metadata and bytes retain their canonical product owner',a
    assert.deepEqual((await f.api('GET',uploaded.body.downloadUrl)).rawBody,bytes);
   }
  });
+});
+
+
+for(const product of ['dev','branches'])test(`${product} draft attachments can be removed without bypassing owner, reference or lifecycle guards`,async t=>withFixture(t,async f=>{
+ const {products}=await setup(f),{chat}=products[product][0],base=prefix(product),foreign=prefix(product==='dev'?'branches':'dev'),ownerId='attachment-browser';
+ const root=`${base}/conversations/${chat.id}`,bytes=Buffer.from('Owned draft attachment');
+ const upload=async()=>f.ok(await f.api('POST',`${root}/draft-attachments`,bytes,{'content-type':'application/x-ponderosa-attachment','x-ponderosa-media-type':'text/plain','x-ponderosa-filename':'draft.txt','x-ponderosa-draft-owner':ownerId}));
+ const asset=await upload();
+ assert.equal((await f.api('DELETE',asset.downloadUrl.replace(base,foreign))).status,404,'The other product cannot remove this draft attachment');
+ assert.equal((await f.api('DELETE',asset.downloadUrl.replace(ownerId,'another-browser'))).status,404,'A foreign draft owner cannot remove the attachment');
+ const draftUrl=`${root}/draft`,initial=f.ok(await f.api('GET',`${draftUrl}?ownerId=${ownerId}`));
+ const saved=f.ok(await f.api('PUT',draftUrl,{ownerId,clientId:'attachment-tab',text:'Unsent draft',attachmentIds:[asset.id],expectedRevision:initial.revision}));
+ assert.equal((await f.api('DELETE',asset.downloadUrl)).status,409,'A referenced attachment must remain readable');
+ assert.deepEqual((await f.api('GET',asset.downloadUrl)).rawBody,bytes);
+ f.ok(await f.api('PUT',draftUrl,{ownerId,clientId:'attachment-tab',text:'Unsent draft',attachmentIds:[],expectedRevision:saved.revision}));
+ await until(async()=>(await f.api('GET',asset.downloadUrl)).status===404,'automatic cleanup after draft reference removal');
+ const staged=await upload();await f.reopen();
+ assert.deepEqual((await f.api('GET',staged.downloadUrl)).rawBody,bytes);
+ assert.equal((await f.api('DELETE',staged.downloadUrl)).status,204,'Removing an unreferenced draft attachment must not require deleting its Branch');
+ assert.equal((await f.api('GET',staged.downloadUrl)).status,404);
+ await f.reopen();assert.equal((await f.api('GET',staged.downloadUrl)).status,404,'Deleted attachment must remain absent after restart');
+ if(product==='branches'){
+  assert.equal((await f.api('DELETE',root)).status,409,'The persistent Branch Chat still requires its lifecycle');
+  assert.equal((await f.api('DELETE',`${base}/projects/${chat.projectId}`)).status,409);
+ }
+ assert.equal(f.ok(await f.api('GET',`${draftUrl}?ownerId=${ownerId}`)).text,'Unsent draft');
+}));
+
+
+test('draft attachment deletion still fences retiring installations and execution-owned temporary Chats',async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const {branch,products}=await setup(f),{chat}=products.branches[0],base=prefix('branches');
+  const route=`${base}/conversations/${chat.id}/draft-attachments/${randomUUID()}?ownerId=scope-browser`;
+  store.sqlite.prepare("INSERT INTO branch_installation_resources(branch_id,package_id,chat_ref,agent_ref,local_id,state) VALUES(?,?,'chat','',?,'retiring')").run(branch.id,'attachment-guard',chat.id);
+  assert.equal((await f.api('DELETE',route)).status,404,'Inactive installation resources cannot be mutated');
+  const branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+  const deployed=branches.deploy({chatId:'',branchId:branch.id,expectedVersionId:'',idempotencyKey:'attachment-execution',definition:{schema:'ponderosa.branch.v1',name:'Temporary attachment boundary',trigger:{kind:'manual'},entry:'review',steps:[{id:'review',kind:'human_gate',prompt:'Review',editable:false}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},bindings:{agents:{},directories:{}}});
+  const execution=branches.accept(deployed.id,'attachment-input','Review');
+  const temporary=store.createProject({label:'Temporary attachment context',chatOwned:true,branchId:branch.id,executionId:execution.id,hostPath:f.root,defaultEngine:'codex'});
+  const denied=await f.api('DELETE',`${base}/conversations/${temporary.lastConversationId}/draft-attachments/${randomUUID()}?ownerId=scope-browser`);
+  assert.equal(denied.status,409);assert.match(denied.body.error,/Execution-owned temporary/);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });
