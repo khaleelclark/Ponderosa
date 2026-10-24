@@ -17,8 +17,9 @@ type ProviderStatus = (engineId: string) => Promise<ProviderIntakeStatus | undef
 /** A bounded operator projection of canonical Branch, Request, Run, and provider intake state. */
 export async function branchOperationalSummary(
   db: Database.Database,
-  execution: BranchExecutionDto,
+  execution: Pick<BranchExecutionDto, "id" | "state" | "budgetWait">,
   providerStatus?: ProviderStatus,
+  includeAgentWaits = true,
 ): Promise<BranchOperationalSummaryDto> {
   const now = new Date().toISOString();
   // Aggregate in SQLite; materialize only the visible page and provider/state groups.
@@ -67,7 +68,9 @@ export async function branchOperationalSummary(
     FROM waits LEFT JOIN agent_activations retry ON retry.id=waits.retry_id
   )`;
   const bindings={executionId:execution.id,activeExecution:Number(activeExecution),now};
-  const waitingAttempts = db.prepare(`${waitCte} SELECT * FROM evidence ORDER BY request_created_at,request_id LIMIT 100`).all(bindings) as Row[];
+  const waitingAttempts = includeAgentWaits
+    ? db.prepare(`${waitCte} SELECT * FROM evidence ORDER BY request_created_at,request_id LIMIT 100`).all(bindings) as Row[]
+    : [];
   const groups = db.prepare(`${waitCte} SELECT engine_id,base_state,COUNT(*) total,
     retry_id IS NOT NULL retry_pending,provider_failure_category FROM evidence
     GROUP BY engine_id,base_state,retry_id IS NOT NULL,provider_failure_category`).all(bindings) as Row[];

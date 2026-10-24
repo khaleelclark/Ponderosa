@@ -5,14 +5,15 @@ import { triggerSourceConfig } from '../branch-trigger-config.js';
 import { realpathSync, statSync } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import {validatedObject,exactObjectFields} from '../object-validation.js';
-import { CapabilityPolicyRevisionConflictError, CapabilityPolicyStore, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore } from '@ponderosa/agents';
-import { AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,BUILT_IN_CAPABILITIES, connectorCapability, parseConnectorCapabilityId, type BranchGateResolution, type BranchIntervention, type CapabilityDescriptor, type CapabilityPolicyRecord, type CapabilityScopeKind, type DeployBranchRequest, type EffectiveCapabilityPolicy, type WorkspacePreferencesDto } from '@ponderosa/core';
+import { CapabilityPolicyRevisionConflictError, CapabilityPolicyStore, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
+import { AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,BUILT_IN_CAPABILITIES, connectorCapability, parseConnectorCapabilityId, type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type CapabilityDescriptor, type CapabilityPolicyRecord, type CapabilityScopeKind, type DeployBranchRequest, type EffectiveCapabilityPolicy, type WorkspacePreferencesDto } from '@ponderosa/core';
 import {activeChatResourceOwner} from '../branch-resource-owner.js';
 import {previewBranchExecutionDetail} from '../branch-detail-preview.js';
 import {branchOperationalSummary, type ProviderIntakeStatus} from '../branch-operations.js';
 import {activeChatProductSql,activeAgentProductSql} from '@ponderosa/agents';
 import {sqliteCollectionPage,applyCollectionPageHeaders,sendCollectionPageError,type CollectionQuery} from '../collection-page.js';
 import {parseTokenUsageRange} from '../token-usage.js';
+import {workspaceNotificationPage} from './notifications.js';
 
 interface BranchCapabilityResponse {
   policy: CapabilityPolicyRecord;
@@ -21,7 +22,7 @@ interface BranchCapabilityResponse {
 }
 class BranchCapabilityOwnerError extends Error{}
 
-export function registerBranchRoutes(app: FastifyInstance, context: { branches: BranchStore; installations:BranchInstallationService; store: AgentStore; sources: BranchTriggerSourceService;createChat:ChatCreator; engineAvailable?(id:string):boolean; providerStatus?(id:string):Promise<ProviderIntakeStatus|undefined>; discoverConnectors?(branchId:string):Promise<Array<{engineId:string;name:string;usable:boolean;detail?:string}>>; preferences?():WorkspacePreferencesDto; notify(): void }): void {
+export function registerBranchRoutes(app: FastifyInstance, context: { branches: BranchStore; installations:BranchInstallationService; store: AgentStore; workspace:WorkspaceStore; sources: BranchTriggerSourceService;createChat:ChatCreator; engineAvailable?(id:string):boolean; providerStatus?(id:string):Promise<ProviderIntakeStatus|undefined>; discoverConnectors?(branchId:string):Promise<Array<{engineId:string;name:string;usable:boolean;detail?:string}>>; preferences?():WorkspacePreferencesDto; notify(): void }): void {
   const { branches, store, sources, notify } = context;
   const capabilityPolicies = new CapabilityPolicyStore(store.sqlite);
   const policyOrDefault=(scopeKind:CapabilityScopeKind,scopeId:string):CapabilityPolicyRecord=>capabilityPolicies.get(scopeKind,scopeId)??{scopeKind,scopeId,revision:0,restrictedCapabilityIds:[],updatedAt:''};
@@ -233,6 +234,38 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
     ])]:undefined;
     try{return branches.listBranches(request.query.chatId,request.query.before,request.query.search,{ids,sort:preferences?.branchSort,order:preferences?.branchOrder})}
     catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid workflow cursor'})}
+  });
+  app.get<{Querystring:{activeCursor?:string;outcomeCursor?:string;attentionCursor?:string}}>('/api/branches/home',async(request,reply)=>{
+    const decode=(value:string|undefined,section:string):{at:string;id:string}|undefined=>{
+      if(value===undefined)return undefined;
+      if(!value||value.length>512)throw new Error('Invalid Home cursor');
+      const cursor=JSON.parse(Buffer.from(value,'base64url').toString('utf8'));
+      if(!cursor||cursor.version!==1||cursor.product!=='branches'||cursor.section!==section||typeof cursor.at!=='string'||!cursor.at||cursor.at.length>64||typeof cursor.id!=='string'||!cursor.id||cursor.id.length>200)throw new Error('Invalid Home cursor');
+      return {at:cursor.at,id:cursor.id};
+    };
+    const encode=(section:string,next:{at:string;id:string}|undefined)=>next?Buffer.from(JSON.stringify({version:1,product:'branches',section,...next})).toString('base64url'):undefined;
+    let activeBefore,outcomeBefore,attentionBefore;
+    try{activeBefore=decode(request.query.activeCursor,'active');outcomeBefore=decode(request.query.outcomeCursor,'outcomes');attentionBefore=decode(request.query.attentionCursor,'attention');}
+    catch{return reply.code(400).send({error:'Invalid Home cursor'});}
+    const executions=branches.homeExecutions({activeBefore,outcomeBefore});
+    const attention=workspaceNotificationPage(context,'branches',{limit:6,kind:'attention',...(attentionBefore?{before:{createdAt:attentionBefore.at,id:attentionBefore.id}}:{})});
+    const providers=new Map<string,Promise<ProviderIntakeStatus|undefined>>();
+    const providerStatus=(id:string)=>{
+      if(!providers.has(id))providers.set(id,Promise.resolve().then(()=>context.providerStatus?.(id)));
+      return providers.get(id)!;
+    };
+    const project=async(items:typeof executions.activeExecutions.items)=>Promise.all(items.map(async({budgetWait,...item})=>{
+      const summary=await branchOperationalSummary(store.sqlite,{id:item.id,state:item.state,...(budgetWait?{budgetWait}:{})},providerStatus,false);
+      return {...item,operational:{state:summary.state,label:summary.label}};
+    }));
+    const branchIds=[...new Set(attention.items.flatMap(item=>item.branchId?[item.branchId]:[]))];
+    const names=store.sqlite.prepare('SELECT id,name FROM branches WHERE id IN (SELECT value FROM json_each(?))').all(JSON.stringify(branchIds)) as Array<{id:string;name:string}>;
+    return {observedAt:new Date().toISOString(),workflowCount:executions.workflowCount,activeExecutionCount:executions.activeExecutionCount,openActionCount:attention.openActionCount,
+      activeExecutions:{items:await project(executions.activeExecutions.items),nextCursor:encode('active',executions.activeExecutions.next)},
+      recentOutcomes:{items:await project(executions.recentOutcomes.items),nextCursor:encode('outcomes',executions.recentOutcomes.next)},
+      attention:{items:attention.items,nextCursor:encode('attention',attention.nextCursor?{at:attention.nextCursor.createdAt,id:attention.nextCursor.id}:undefined)},
+      branchNames:Object.fromEntries(names.map(row=>[row.id,row.name])),
+    } satisfies BranchHomeDto;
   });
   app.get<{Querystring:{search?:string}}>('/api/branches/contexts',async request=>{
     const search=(request.query.search??'').trim().slice(0,200);

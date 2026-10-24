@@ -1,6 +1,7 @@
 import type { ConversationDto } from "./dto/conversations.js";
 import type { AgentPortablePackageDto } from "./dto/agents.js";
 import type { TriggerBudgetPeriod, TriggerSourceConfig } from "./dto/branch-triggers.js";
+import type { WorkspaceNotificationDto } from "./dto/workspace.js";
 /** Branch definitions are desired structure. Runtime records never live in a package. */
 /** Local operational policy; never part of portable definitions or execution snapshots. */
 export interface BranchExecutionBudgetPolicy { limit: number; period: TriggerBudgetPeriod }
@@ -148,6 +149,20 @@ export interface BranchOperationalSummaryDto {
   counts: { completed:number; running:number; retrying:number; failed:number; waitingAgent:number; waitingHuman:number; needsReconciliation:number; mapItems:number; mapSettled:number };
   agentWaits: Array<{requestId:string;agentId:string;agentName:string;engineId?:string;state:"waiting_agent"|"agent_busy"|"agent_running"|"waiting_dependency"|"waiting_human"|"provider_retry"|"retry_pending"|"provider_unavailable"|"provider_attention";label:string;since:string;reason?:string;nextRetryAt?:string}>;
   additionalAgentWaits: number;
+}
+/** Bounded Home metadata; full inputs, outputs and audit history stay in execution inspection. */
+export interface BranchHomeExecutionDto {
+  id: string; branchId: string; branchName: string; parentExecutionId?: string;
+  state: BranchExecutionState; createdAt: string; updatedAt: string;
+  operational: Pick<BranchOperationalSummaryDto, "state" | "label">;
+}
+export interface BranchHomeDto {
+  observedAt: string; workflowCount: number; activeExecutionCount: number; openActionCount: number;
+  activeExecutions: { items: BranchHomeExecutionDto[]; nextCursor?: string };
+  recentOutcomes: { items: BranchHomeExecutionDto[]; nextCursor?: string };
+  attention: { items: WorkspaceNotificationDto[]; nextCursor?: string };
+  /** Names for this bounded attention page, resolved by canonical Branch ID. */
+  branchNames: Record<string, string>;
 }
 export interface BranchDecisionDto { id:string; kind:string; nodeId?:string; failed?:boolean; message:string; at:string }
 export interface DeployBranchRequest {
