@@ -10,7 +10,7 @@ import type { ProjectSort } from "@ponderosa/core";
 import { TextInputDialog } from "./ConfirmationDialogs";
 import { SemanticStatus } from "./SemanticStatus";
 import { starColor } from "./WorkspaceSidebar.helpers";
-import { sortResourceFolderMembers, sortResourceFolders, type ResourceFolder, type FolderResource } from "../resourcePreferences";
+import { sortResourceFolderMembers, sortResourceFolders, recentResourceRows, type ResourceFolder, type FolderResource } from "../resourcePreferences";
 import { SidebarNotificationBadge } from "./SidebarNotificationBadge";
 import type { UnreadNotificationProjection } from "../workspaceNavigation";
 import { readBrowserStorage, writeBrowserStorage } from "../browserStorage";
@@ -22,8 +22,9 @@ const initialStarredExpansion = (kind: string, folder: ResourceFolder): boolean 
 };
 
 /** Shared presentation-only grouping for Chats and Branch workflows. */
-export function ResourceFolders<Item extends FolderResource>({ resourceKind, resourceLabel, items, openItems = [], folders, sort, starredIds, filtering, folderUnread, notificationState, renderFolderStatus, renderRow, onChange, onRename, onDelete, onOpenInNewTab, onReorder, children }: {
+export function ResourceFolders<Item extends FolderResource>({ resourceKind, resourceLabel, items, starredItems = items, openItems = [], folders, sort, starredIds, filtering, folderUnread, notificationState, renderFolderStatus, renderRow, onChange, onRename, onDelete, onOpenInNewTab, onReorder, children }: {
   resourceKind: "conversation" | "branch"; resourceLabel: string;
+  starredItems?: Item[];
   items: Item[]; folders: ResourceFolder[]; sort: ProjectSort; starredIds: ReadonlySet<string>; filtering: boolean;
   openItems?: Item[];
   folderUnread?: Record<string, UnreadNotificationProjection>;
@@ -153,7 +154,7 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
   const visibleFolders = sortResourceFolders(folders.filter(folder => folder.memberIds.length &&
     (!filtering || folder.memberIds.some(id => byId.has(id)))), items, sort);
   const folderRow = (folder: ResourceFolder, section: "starred" | "all") => {
-    const members = sortResourceFolderMembers(folder, items, sort);
+    const members = sortResourceFolderMembers(folder, section === "starred" ? starredItems : items, sort);
     const savedExpanded = section === "starred" ? starredExpanded.get(folder.id) ?? initialStarredExpansion(resourceKind, folder) : folder.expanded;
     const expanded = filtering || savedExpanded;
     const active = members.some(item => (item.runningAgentCount ?? 0) > 0);
@@ -212,7 +213,10 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
       </Box> : null}
     </Box>;
   };
-  const folderRows = visibleFolders.map(folder => folderRow(folder, "all"));
+  const loose = ungrouped.filter(item => !starred(item));
+  const allRows = sort === "last_used"
+    ? recentResourceRows(visibleFolders, items, loose).map(entry => entry.folder ? folderRow(entry.folder, "all") : row(entry.item!))
+    : [...visibleFolders.map(folder => folderRow(folder, "all")), ...loose.map(row)];
   const pickerContent = <>
     <TextField id="move-folder-search" autoFocus={!moveAnchor} fullWidth size="small" label="Search folders" value={folderSearch} onChange={event => setFolderSearch(event.target.value)} sx={{ mt: .5 }} />
     <List sx={{ mt: 1, maxHeight: "min(45dvh, 320px)", overflowY: "auto", overflowX: "hidden" }}>
@@ -223,7 +227,7 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
     </List>
   </>;
   return <>
-    {children({ openRows: openItems.map(row), starredRows: [...visibleFolders.filter(folder => folder.starred).map(folder => folderRow(folder, "starred")), ...items.filter(starred).map(row)], allRows: <>{folderRows}{ungrouped.filter(item => !starred(item)).map(row)}</> })}
+    {children({ openRows: openItems.map(row), starredRows: [...sortResourceFolders(visibleFolders.filter(folder => folder.starred), starredItems, sort).map(folder => folderRow(folder, "starred")), ...starredItems.filter(starred).map(row)], allRows })}
     <Menu open={Boolean(menu)} anchorEl={menu?.anchor} onClose={closeMenu} disableEnforceFocus={Boolean(moveAnchor)}>
       {menu?.item ? [
         ...(onOpenInNewTab ? [<MenuItem key="open-tab" onClick={() => action(() => onOpenInNewTab(menu.item!))}>Open in new tab</MenuItem>] : []),

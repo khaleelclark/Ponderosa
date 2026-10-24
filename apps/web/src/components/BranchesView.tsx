@@ -8,6 +8,8 @@ import { BranchFolders } from './branches/BranchFolders';
 import { WorkspacePreferencesWriter } from '../workspacePreferencesWriter';
 import { useWorkspacePreferences } from '../hooks/queries';
 import { queryKeys } from '../queryKeys';
+import {normalizeResetPages} from '../collections';
+import {markWorkspaceResourceUsed} from '../workspaceRecency';
 import { starredWorkspaceResources, toggleWorkspaceResourceStar, changedWorkspaceDirectoryKinds } from '../resourcePreferences';
 import {createClientId} from '../clientId';
 import {BranchExecutionBudget} from "./branches/BranchExecutionBudget";
@@ -121,11 +123,11 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  const [install,setInstall]=useState<{pkg:InstalledBranchPackage;branchId?:string}>(),[deployedUpdate,setDeployedUpdate]=useState<{branch:BranchDto;reason:'dirty'|'failed'}>();
  const selection=useRef(0),savedDraft=useRef<string>(),versionRequest=useRef(0),[draft,setDraft]=useState<Draft>(emptyDraft),[editorKey,setEditorKey]=useState(0),[error,setError]=useState(''),[loading,setLoading]=useState(false),[search,setSearch]=useState(''),[agentSearch,setAgentSearch]=useState(''),[input,setInput]=useState(''),[occurrenceKey,setOccurrenceKey]=useState(()=>createClientId()),[preview,setPreview]=useState<{draftRevision:string;input:DeployBranchRequest;result:BranchDeploymentPreviewDto;expectsNewWebhookSecret:boolean}>(),[secret,setSecret]=useState<{branchId:string;value:string}>(),[secretRecovery,setSecretRecovery]=useState<string>();
  draftRevision.current=branchDraftRevision(draft);pendingAdvanced.current=advancedDirty;
- const branchPages=useInfiniteQuery({queryKey:['branches',search.trim(),preferences.data?.branchSort,preferences.data?.branchOrder],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<BranchDto[]>('/api/branches?search='+encodeURIComponent(search.trim())+(pageParam?'&before='+encodeURIComponent(pageParam):'')),getNextPageParam:last=>last.length===100?last.at(-1)?.id:undefined,refetchInterval:5000});
+ const branchPages=useInfiniteQuery({queryKey:['branches',search.trim(),preferences.data?.branchSort,preferences.data?.branchOrder],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestCollectionPage<BranchDto>('/api/branches?search='+encodeURIComponent(search.trim())+(pageParam?'&cursor='+encodeURIComponent(pageParam):'')),getNextPageParam:last=>last.hasMore?last.cursor:undefined,select:normalizeResetPages,refetchInterval:5000});
  const organizedIds=[...new Set([...(preferences.data?.starredResourceIds??[]).filter(id=>id.startsWith('branch:')),...(preferences.data?.branchFolders??[]).flatMap(folder=>folder.branchIds.map(id=>`branch:${id}`))])].sort();
  const organizedKey=JSON.stringify([organizedIds,preferences.data?.branchSort,preferences.data?.branchOrder]);
- const organizedPages=useInfiniteQuery({queryKey:['branches','organized',search.trim(),organizedKey],initialPageParam:undefined as string|undefined,enabled:Boolean(preferences.data&&organizedIds.length),queryFn:({pageParam})=>requestJson<BranchDto[]>('/api/branches?section=organized&search='+encodeURIComponent(search.trim())+(pageParam?'&before='+encodeURIComponent(pageParam):'')),getNextPageParam:last=>last.length===100?last.at(-1)?.id:undefined,refetchInterval:5000});
- const branches={...branchPages,data:branchPages.data?Array.from(new Map([...branchPages.data.pages.flat(),...(organizedPages.data?.pages.flat()??[])].map(branch=>[branch.id,branch])).values()):undefined};
+ const organized=useQuery({queryKey:['branches','organized',search.trim(),organizedKey],enabled:Boolean(preferences.data&&organizedIds.length),queryFn:()=>requestJson<BranchDto[]>('/api/branches?section=organized&search='+encodeURIComponent(search.trim())),refetchInterval:5000});
+ const branches={...branchPages,data:branchPages.data?Array.from(new Map([...(organized.data??[]),...branchPages.data.pages.flatMap(page=>page.items)].map(branch=>[branch.id,branch])).values()):undefined};
  const contextList=useQuery({queryKey:['branch-chats',draft.branchId],queryFn:()=>requestJson<Context[]>(`/api/branches/${draft.branchId}/chats`),enabled:Boolean(draft.branchId),refetchInterval:5000});
  const selectedContext=useQuery({queryKey:['branch-context',draft.chatId],queryFn:()=>requestJson<Context>(`/api/branches/contexts/${draft.chatId}`),enabled:Boolean(draft.chatId)});
  const setTab=(tab:number)=>{
@@ -178,7 +180,8 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
    if(route.branchId!==id){navigate({...route,branchId:id},true);return;}
    if(id===draft.branchId){setLoading(false);setOpeningLink(false);return;}
    setDeployedUpdate(undefined);
-   const branch=await requestJson<BranchDto>(`/api/branches/${encodeURIComponent(id)}`);if(!cancelled)await select(branch,true);
+   const branch=await requestJson<BranchDto>(`/api/branches/${encodeURIComponent(id)}`);
+   if(!cancelled&&await select(branch,true)&&!cancelled)markWorkspaceResourceUsed(client,'branch',id);
   }catch(e){if(!cancelled){setLoading(false);setError((e as Error).message);setOpeningLink(false)}}})();
   return()=>{cancelled=true;selection.current++};
  },[route.branchId,route.executionId,openingAttempt]);
@@ -238,10 +241,10 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
       sort={preferences.data?.branchSort??'last_used'}
       onSort={branchSort=>preferenceWriter.current!.enqueue({branchSort})}
       empty={!branches.isPending&&!branches.error&&!branches.data?.length?<Typography variant="body2" color="text.secondary" sx={{px:1,py:2}}>{search.trim()?'No workflows match your search. Try another name.':'Your deployed workflows will appear here.'}</Typography>:undefined}
-      collectionFeedback={branches.error||organizedPages.error?<Alert severity="error" action={<Button onClick={()=>{void branchPages.refetch();void organizedPages.refetch()}}>Retry</Button>}>Workflow list could not be loaded.</Alert>:branches.isPending?<Typography color="text.secondary" sx={{px:1,py:2}}>Loading workflows…</Typography>:undefined}
-      loadMoreLabel={organizedPages.hasNextPage?'Load more organized workflows':branchPages.hasNextPage?'Load more workflows':undefined}
-      onLoadMore={organizedPages.hasNextPage?()=>void organizedPages.fetchNextPage():branchPages.hasNextPage?()=>void branchPages.fetchNextPage():undefined}
-      loadingMore={branchPages.isFetchingNextPage||organizedPages.isFetchingNextPage}
+      collectionFeedback={branches.error||organized.error?<Alert severity="error" action={<Button onClick={()=>{void branchPages.refetch();void organized.refetch()}}>Retry</Button>}>Workflow list could not be loaded.</Alert>:branches.isPending?<Typography color="text.secondary" sx={{px:1,py:2}}>Loading workflows…</Typography>:undefined}
+      loadMoreLabel={branchPages.hasNextPage?'Load more workflows':undefined}
+      onLoadMore={branchPages.hasNextPage?()=>void branchPages.fetchNextPage():undefined}
+      loadingMore={branchPages.isFetchingNextPage}
       topContent={<Box sx={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:.5,mb:1,'& .MuiButton-root':{minWidth:0,minHeight:44,px:.75,fontSize:12,color:'text.secondary'},'& .MuiButton-startIcon':{ml:0,mr:.5},'& .MuiButton-startIcon > *':{fontSize:18}}}>
        <Button color="inherit" startIcon={<AddIcon/>} disabled={creating||loading||openingLink} onClick={()=>{if(drawer)closeMobileNavigation();void createBranch()}}>{creating?'Creating workflow…':'New workflow'}</Button>
        <Button color="inherit" startIcon={<FileUploadOutlinedIcon/>} onClick={()=>workflowImportInput.current?.click()}>Import workflow</Button>

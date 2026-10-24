@@ -152,6 +152,8 @@ export interface WorkspaceConversationDirectoryItemDto {
   kind: "conversation";
   project: Pick<ProjectDto, "id" | "label" | "hostPath">;
   conversation: ConversationDto;
+  /** Newest canonical use/activity; does not change conversation.updatedAt. */
+  lastUsedAt?: string;
   /** Canonical active-work count; omitted by older servers. */
   runningAgentCount?: number;
 }

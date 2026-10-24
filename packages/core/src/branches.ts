@@ -89,6 +89,8 @@ export type BranchAttemptState = "prepared" | "leased" | "running" | "waiting" |
 export interface BranchVersionDto { id: string; branchId: string; hash: string; definition: BranchDefinition; createdAt: string }
 export type BranchVersionSummaryDto = Omit<BranchVersionDto, "definition">;
 export interface BranchDto {
+  /** Canonical last use, supplied by directory reads. Creation is the fallback. */
+  lastUsedAt?: string;
  id: string; chatId: string; enabled?: boolean; name: string; versionId: string; bindingRevisionId: string;
  triggerId?: string; triggerEnabled?: boolean; activeExecutions?: number; createdAt: string;
 }

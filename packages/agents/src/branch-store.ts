@@ -1,3 +1,4 @@
+import {workspaceRecencyCte} from './workspace-store.js';
 import { BranchTriggerStore } from "./branch-trigger-store.js";
 import { BranchExecutionBudgetAuthority } from "./branch-execution-budget.js";
 import {inspectBranchExecution} from "./branch-inspection.js";
@@ -139,28 +140,39 @@ export class BranchStore {
     const row = this.row("SELECT * FROM branch_versions WHERE branch_id = ? AND id = ?", branchId, versionId);
     return row && { id: row.id, branchId, hash: row.content_hash, definition: JSON.parse(row.definition_json), createdAt: row.created_at };
   }
-  listBranches(chatId?: string, beforeId?: string, search='', options: {ids?: string[]; sort?: ProjectSort; order?: string[]} = {}): BranchDto[] {
+  /** Directory changes are independent of execution telemetry and configuration writes. */
+  branchDirectoryRevision(chatId?: string, search='', ids?: string[]): {revision:string;total:number} {
+    const rows=this.rows(`SELECT id,name,created_at FROM branches WHERE deleting=0
+      AND (? IS NULL OR chat_id=?) AND instr(lower(name),lower(?))>0
+      AND (? IS NULL OR id IN (SELECT value FROM json_each(?))) ORDER BY id`,
+      chatId??null,chatId??null,search,ids?JSON.stringify(ids):null,JSON.stringify(ids??[]));
+    return {revision:payloadHash(rows),total:rows.length};
+  }
+  listBranches(chatId?: string, beforeId?: string, search='', options: {ids?: string[]; sort?: ProjectSort; order?: string[]; recency?: string; completeOrganized?: boolean; limit?: number} = {}): BranchDto[] {
     const sort=options.sort??'last_used',ids=options.ids?JSON.stringify(options.ids):null;
-    if(beforeId&&!this.row(`SELECT id FROM branches WHERE id=? AND (? IS NULL OR chat_id=?)
+    if(beforeId&&!this.row(`SELECT id FROM branches WHERE id=? AND deleting=0 AND (? IS NULL OR chat_id=?)
       AND instr(lower(name),lower(?))>0 AND (? IS NULL OR id IN (SELECT value FROM json_each(?)))`,beforeId,chatId??null,chatId??null,search.trim().slice(0,240),ids,ids??'[]'))throw new Error('Invalid workflow cursor');
-    const rows=this.rows(`WITH preferred AS MATERIALIZED (SELECT value id,CAST(key AS INTEGER) rank FROM json_each(?)), ordered AS (
+    const rows=this.rows(`WITH ${workspaceRecencyCte}, preferred AS MATERIALIZED (SELECT value id,CAST(key AS INTEGER) rank FROM json_each(?)), ordered AS (
       SELECT ROW_NUMBER() OVER (ORDER BY
         CASE WHEN ?='custom' THEN COALESCE(preferred.rank,1000000000) END,
         CASE WHEN ? IN ('alphabetical','custom') THEN lower(b.name) END,
-        b.rowid DESC) navigation_rank,b.* FROM branches b LEFT JOIN preferred ON preferred.id=b.id
-      WHERE (? IS NULL OR b.chat_id=?) AND instr(lower(b.name),lower(?))>0
+        CASE WHEN ?='last_used' THEN COALESCE(recent_use.last_used_at,b.created_at) END DESC,
+        CASE WHEN ?='last_used' THEN b.id END ASC,
+        b.rowid DESC) navigation_rank,b.*,recent_use.last_used_at
+      FROM branches b LEFT JOIN preferred ON preferred.id=b.id LEFT JOIN recent_use ON recent_use.id=b.id
+      WHERE b.deleting=0 AND (? IS NULL OR b.chat_id=?) AND instr(lower(b.name),lower(?))>0
         AND (? IS NULL OR b.id IN (SELECT value FROM json_each(?)))
     ), page AS (
       SELECT * FROM ordered WHERE navigation_rank>COALESCE((SELECT navigation_rank FROM ordered WHERE id=?),0)
-      ORDER BY navigation_rank LIMIT 100
+      ORDER BY navigation_rank LIMIT ?
+    ), active AS MATERIALIZED (
+      SELECT branch_id,COUNT(*) n FROM branch_executions WHERE state IN ('queued','running','waiting') GROUP BY branch_id
     )
-      SELECT page.*,t.enabled trigger_enabled,
-        (SELECT COUNT(*) FROM branch_executions e
-          WHERE e.branch_id=page.id AND e.state IN ('queued','running','waiting')) active_executions
-      FROM page LEFT JOIN trigger_definitions t ON t.id=page.trigger_id
-      ORDER BY page.navigation_rank`,JSON.stringify(sort==='custom'?options.order??[]:[]),sort,sort,chatId??null,chatId??null,search.trim().slice(0,240),ids,ids??'[]',beforeId??null);
+      SELECT page.*,t.enabled trigger_enabled,COALESCE(active.n,0) active_executions
+      FROM page LEFT JOIN trigger_definitions t ON t.id=page.trigger_id LEFT JOIN active ON active.branch_id=page.id
+      ORDER BY page.navigation_rank`,options.recency??'[]',JSON.stringify(sort==='custom'?options.order??[]:[]),sort,sort,sort,sort,chatId??null,chatId??null,search.trim().slice(0,240),ids,ids??'[]',beforeId??null,options.completeOrganized&&options.ids?-1:options.limit??100);
     return rows.map(r=>({id:r.id,chatId:r.chat_id,enabled:Boolean(r.enabled),name:r.name,versionId:r.active_version_id,bindingRevisionId:r.binding_revision_id,
-      ...(r.trigger_id?{triggerId:r.trigger_id,triggerEnabled:Boolean(r.trigger_enabled)}:{}),activeExecutions:Number(r.active_executions),createdAt:r.created_at}));
+      ...(r.trigger_id?{triggerId:r.trigger_id,triggerEnabled:Boolean(r.trigger_enabled)}:{}),activeExecutions:Number(r.active_executions),createdAt:r.created_at,...(r.last_used_at?{lastUsedAt:r.last_used_at}:{})}));
   }
   preview(input: DeployBranchRequest): BranchDeploymentPreviewDto {
     const definition=validateBranchDefinition(input.definition),bindings=validateBranchBindings(input.bindings,definition);if(input.chatId)this.chat(input.chatId);

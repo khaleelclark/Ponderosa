@@ -1,5 +1,6 @@
 import {activeChatProductSql,activeAgentProductSql,projectProductSql,type ProductScope} from '@ponderosa/agents';
 import {requestProduct} from '../product-scope.js';
+import {workspaceRecencyCte} from '@ponderosa/agents';
 import { agentDisplayStatus, summarizeWorkspaceActivity } from "@ponderosa/core";
 import { createHash } from "node:crypto";
 import type {
@@ -62,6 +63,7 @@ type ResourceRow = {
   id: string;
   title: string;
   updated_at: string;
+  activity_at?: string;
   created_at?: string;
   project_id: string;
   agent_id: string | null;
@@ -80,7 +82,7 @@ interface WorkspaceDirectoryRoutesContext {
     AgentStore,
     "sqlite" | "getProject" | "getConversation" | "getAgent"
   >;
-  workspace: Pick<WorkspaceStore, "getPreferences">;
+  workspace: Pick<WorkspaceStore, "getPreferences" | "resourceRecencySnapshot">;
   agentHealth(
     scope: AgentHealthProjectionDto["scope"],
     agents: AgentDto[],
@@ -756,6 +758,16 @@ export function registerWorkspaceDirectoryRoutes(
       outcomeAgentIds,
       product,
     );
+    const recency = kind === "conversation" ? context.workspace.resourceRecencySnapshot("conversation") : undefined;
+    if (recency) {
+      base.sql = `WITH ${workspaceRecencyCte} SELECT resources.id,title,created_at,
+        resources.updated_at AS activity_at,
+        max(resources.updated_at, COALESCE(recent_use.last_used_at, '')) AS updated_at,
+        project_id,agent_id,conversation_id,conversation_count,recent_conversation_id,
+        recent_conversation_title,recent_conversation_updated_at,running_agent_count
+        FROM (${base.sql}) resources LEFT JOIN recent_use ON recent_use.id=resources.id`;
+      base.params.unshift(recency.json);
+    }
     const projectScope = request.query.projectId;
     const scoped = (collection: string): string => projectScope
       ? collectionGenerationKey(collection, `project:${projectScope}`)
@@ -783,6 +795,7 @@ export function registerWorkspaceDirectoryRoutes(
       : includeFolders
         ? `${collection.revision}:folders=${createHash("sha256").update(JSON.stringify(folderIds)).digest("base64url")}`
         : collection.revision;
+    const recencyRevision = recency && sort === "last_used" ? `${revision}:use=${recency.revision}` : revision;
     const total = collection.total;
 
     if (request.query.summary === "true") {
@@ -800,7 +813,7 @@ export function registerWorkspaceDirectoryRoutes(
     let cursorPosition: CursorPosition | undefined;
     if (request.query.cursor) {
       try {
-        cursorPosition = decodeCursor(request.query.cursor, scope, sort, revision);
+        cursorPosition = decodeCursor(request.query.cursor, scope, sort, recencyRevision);
       } catch (error) {
         return sendCollectionPageError(reply, error, "invalid directory cursor");
       }
@@ -825,11 +838,8 @@ export function registerWorkspaceDirectoryRoutes(
 
     const folderRows: ResourceRow[] = [];
     if (!request.query.cursor) {
-      for (let start = 0; start < folderIds.length; start += 200) {
-        const ids = folderIds.slice(start, start + 200);
-        folderRows.push(...sqlite.prepare(`SELECT * FROM (${base.sql}) resources
-          WHERE id IN (${placeholders(ids.length)})`).all(...base.params, ...ids) as ResourceRow[]);
-      }
+      if (folderIds.length) folderRows.push(...sqlite.prepare(`SELECT * FROM (${base.sql}) resources
+        WHERE id IN (SELECT value FROM json_each(?))`).all(...base.params, JSON.stringify(folderIds)) as ResourceRow[]);
     }
 
     const ordering = orderingSql(sort, order);
@@ -936,13 +946,14 @@ export function registerWorkspaceDirectoryRoutes(
       if (kind === "conversation") {
         const conversation = folderSummary ? {
           id: row.id, projectId: row.project_id, title: row.title,
-          createdAt: row.created_at!, updatedAt: row.updated_at,
+          createdAt: row.created_at!, updatedAt: row.activity_at!,
         } : context.store.getConversation(row.id);
         if (!conversation) return undefined;
         return {
           kind: "conversation",
           project: projectSummary(project),
           conversation,
+          lastUsedAt: row.updated_at,
           runningAgentCount: row.running_agent_count ?? 0,
         } satisfies WorkspaceConversationDirectoryItemDto;
       }
@@ -999,7 +1010,7 @@ export function registerWorkspaceDirectoryRoutes(
               cursor: encodeCursor(
                 nextCursorPosition(lastRow, sort),
                 scope,
-                revision,
+                recencyRevision,
               ),
             }
           : {}),
