@@ -9,6 +9,52 @@ const render = (text, props = {}) => renderToStaticMarkup(React.createElement(Ch
 const metric = { version: 1, type: 'metrics', items: [{ label: 'Physical RAM', value: '16', unit: 'GB' }] };
 const fence = (block, closer = '```') => '```ponderosa\n' + JSON.stringify(block) + '\n' + closer;
 const richCount = html => [...html.matchAll(/data-ponderosa-rich=/g)].length;
+const { chatMarkdownUrlTransform } = await import('../../apps/web/src/components/chat/chatMarkdownLink.ts');
+
+test('existing artifact Markdown links rerender as project-authorized downloads with their authored labels', () => {
+  for (const id of ['import_2cde92a47c35500d7e7868c7889cc74ac7f59e957f00d70f', 'agent:run:1:0', 'a', 'a'.repeat(256)]) {
+    const url = `/api/projects/current-project/artifacts/${encodeURIComponent(id)}/download`;
+    const text = `[Download **report**](ponderosa://artifact/${id})`;
+    for (let reload = 0; reload < 2; reload++) {
+      const html = render(text, { projectId: 'current-project' });
+      assert.ok(html.includes(`href="${url}"`));
+      assert.match(html, /download=""/);
+      assert.match(html, />Download <strong>report<\/strong><\/a>/);
+      assert.doesNotMatch(html, /href="ponderosa:/);
+    }
+    assert.doesNotMatch(render(text), /<a\b/);
+    assert.equal(chatMarkdownUrlTransform(`ponderosa://artifact/${id}`, 'src', 'current-project'), '');
+  }
+});
+
+test('artifact link support does not admit malformed references or other custom protocols', () => {
+  const invalid = ['ponderosa://artifact/', 'ponderosa://artifact/.', 'ponderosa://artifact/..',
+    'ponderosa://artifact/a/b', 'ponderosa://artifact/a?project=foreign', 'ponderosa://artifact/a#fragment',
+    'ponderosa://user@artifact/a', 'ponderosa://artifact:80/a', 'ponderosa://artifact/%2e%2e',
+    'ponderosa://artifact/a%2fb', 'ponderosa://artifact/a%5cb', 'ponderosa://artifact/a%00',
+    'ponderosa://artifact/a\\b', 'ponderosa://artifact/a\n', 'ponderosa://artifact/' + 'a'.repeat(257),
+    'ponderosa://other/a', 'javascript:alert(1)', 'data:text/html,evil', 'file:///etc/passwd'];
+  for (const href of invalid) assert.equal(chatMarkdownUrlTransform(href, 'href', 'project'), '', JSON.stringify(href));
+  for (const href of invalid.filter(href => !/[\n\\]/u.test(href))) {
+    assert.doesNotMatch(render(`[Keep label](<${href}>)`, { projectId: 'project' }), /<a\b/, href);
+  }
+  assert.doesNotMatch(render('![Image](ponderosa://artifact/image)', { projectId: 'project' }), /(?:src|href)="[^\"]*artifacts\//);
+  assert.doesNotMatch(render('`[literal](ponderosa://artifact/a)`', { projectId: 'project' }), /<a\b/);
+});
+
+test('returned download URLs and existing HTTPS, workspace and project-file links remain intact', () => {
+  const returned = '/api/projects/project/artifacts/import_123/download';
+  const download = render(`[Checksum](${returned})`, { projectId: 'project' });
+  assert.ok(download.includes(`href="${returned}"`));
+  assert.match(download, /download=""/);
+  assert.match(render('[Website](https://example.com/file)'), /href="https:\/\/example.com\/file"/);
+  assert.match(render('[Mail](mailto:operator@example.com)'), /href="mailto:operator@example.com"/);
+  const workspace = render('[Report](report.md)', { projectId: 'project', fileScope: { conversationId: 'chat' } });
+  assert.ok(workspace.includes('/projects/project/files/view?path=report.md&amp;conversationId=chat'));
+  const reference = '[Report](ponderosa://project-file/project/artifact?historical=Report.md)';
+  assert.ok(render(reference, { projectId: 'project' }).includes('/projects/project?view=files&amp;artifact=artifact'));
+  assert.doesNotMatch(render(reference, { projectId: 'foreign' }), /<a\b/);
+});
 
 test('all five provider contract examples are accepted without rewriting values', () => {
   const examples = [...RICH_MESSAGE_FORMAT_INSTRUCTIONS.matchAll(/```ponderosa\n([^]*?)\n```/g)];

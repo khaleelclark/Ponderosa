@@ -29,10 +29,19 @@ export function parseChatProjectFileHref(url: string | undefined): ChatProjectFi
   }
 }
 
-export const chatMarkdownUrlTransform = (url: string): string =>
-  url.startsWith("ponderosa://project-file/")
+export function chatMarkdownUrlTransform(url: string, key: string, projectId?: string): string {
+  // Match the server's bounded canonical reference grammar, without URL
+  // normalization admitting credentials, encoded separators or extra parts.
+  const artifact = /^ponderosa:\/\/artifact\/([A-Za-z0-9](?:[A-Za-z0-9._:-]{0,254}[A-Za-z0-9])?)$/u.exec(url);
+  if (artifact && artifact[0] === url) {
+    return key === "href" && projectId
+      ? `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact[1]!)}/download`
+      : "";
+  }
+  return url.startsWith("ponderosa://project-file/")
     ? (parseChatProjectFileHref(url) ? url : "")
     : defaultUrlTransform(url);
+}
 
 export const renderableChatLinkHref = (
   href: string | undefined,
