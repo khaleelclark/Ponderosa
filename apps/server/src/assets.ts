@@ -34,6 +34,7 @@ import {
   type GeneratedArtifactImportReceipt,
   type RegisteredGeneratedArtifact,
   type RegisteredRuntimeArtifact,
+  type RuntimeAttachmentAssociation,
   type StoredAsset,
 } from "./asset-contracts.js";
 
@@ -1096,15 +1097,15 @@ export class AssetStore {
   }
 
   async recoverRuntimeCommunicationAssociations(
-    communicationExists: (communicationId: string, projectId: string) => boolean,
+    communicationExists: (communicationId: string, projectId: string, binding: RuntimeAttachmentAssociation) => boolean,
   ): Promise<{ associated: number; released: number; unavailable: number }> {
     let associated = 0;
     let released = 0;
     let unavailable = 0;
     const rows = this.authority.runtimeCommunicationAssociations();
     for (const row of rows) {
-      if (!communicationExists(row.communicationId, row.projectId)) {
-        this.authority.removeRuntimeCommunicationAssociations(row.communicationId);
+      if (!communicationExists(row.communicationId, row.projectId, row)) {
+        this.authority.removeRuntimeCommunicationAssociations(row.communicationId, row.attachmentId);
         released += 1;
         continue;
       }

@@ -259,6 +259,8 @@ export function startProviderRunExecution(
     let runError: string | undefined;
     let providerHttpStatusCode: number | undefined;
     let providerRetryAfterMs: number | undefined;
+    let providerQuotaResetAt: string | undefined;
+    let providerQuotaLimit: import("@ponderosa/core").ProviderQuotaLimit | undefined;
     let runFailureClassification:
       | ProviderErrorCode
       | ProviderFailureCategory
@@ -1154,11 +1156,13 @@ export function startProviderRunExecution(
             runError = event.message;
             providerHttpStatusCode = event.httpStatusCode;
             providerRetryAfterMs = event.retryAfterMs;
+            providerQuotaResetAt = event.quotaResetAt;
+            providerQuotaLimit = event.quotaLimit;
             runFailureClassification = event.category ?? event.code;
             projectedProviderNonExecutionEvidence = !providerWorkObserved &&
               !v3PromptInjected &&
               (runFailureClassification === "capacity" ||
-                runFailureClassification === "rate_limit");
+                runFailureClassification === "rate_limit" || runFailureClassification === "quota_exhausted" || runFailureClassification === "throttled");
           }
         }
         if (!retryFresh) break;
@@ -1613,7 +1617,7 @@ export function startProviderRunExecution(
             const confirmedNotExecuted = projectedProviderNonExecutionEvidence &&
               failureKind !== undefined && !providerWorkObserved &&
               !v3PromptInjected &&
-              (failureKind === "capacity" || failureKind === "rate_limit");
+              (failureKind === "capacity" || failureKind === "rate_limit" || failureKind === "quota_exhausted" || failureKind === "throttled");
             coordinationV3!.failRun({
             runId: activeRun.v3SchedulerRunId,
             fencingToken: activeRun.v3FencingToken,
@@ -1634,6 +1638,10 @@ export function startProviderRunExecution(
                 promptInjectionState: coordinationV3!.agentSnapshot(agent.id).activeRun?.promptInjectionState
                   ?? (v3PromptInjected ? "injected" : "not_injected"),
                 message: runError,
+                engineId: runtimeEngineId,
+                model: effectiveModel,
+                ...(providerQuotaResetAt ? { quotaResetAt: providerQuotaResetAt } : {}),
+                ...(providerQuotaLimit ? { quotaLimit: providerQuotaLimit } : {}),
                 ...(providerHttpStatusCode !== undefined ? { httpStatusCode: providerHttpStatusCode } : {}),
                 ...(providerRetryAfterMs !== undefined ? { retryAfterMs: providerRetryAfterMs } : {}),
               },

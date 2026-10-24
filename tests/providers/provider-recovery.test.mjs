@@ -394,3 +394,96 @@ test('Codex Fast presentation keeps live CLI speed descriptions and exact tier I
   assert.equal(catalog.models[0].serviceTiers[0].description, 'Live provider speed description. Purchased credits use 2× the Standard rate.');
   assert.equal(catalog.models[0].serviceTiers[1].description, 'Unchanged future semantics');
 });
+
+// UI014: explicit allowance exhaustion is not an ambiguous 429/backoff hint.
+test('UI014 quota evidence survives normalization and missing/past resets never spend automatic retries', () => {
+  assert.equal(publicProviderFailure({ code: 'quota_exhausted' }).category, 'quota_exhausted');
+  assert.equal(publicProviderFailure({ detail: 'HTTP 429' }).category, 'rate_limit');
+  assert.equal(publicProviderFailure({ detail: 'Quota exhausted' }).category, 'quota_exhausted');
+  assert.equal(providerRecoveryDelay('quota_exhausted', 1), null);
+  const now = Date.parse('2026-10-23T20:00:00Z'), reset = '2026-10-24T01:00:00.000Z';
+  assert.equal(providerRecoveryDelay('quota_exhausted', 1, true, 0, reset, now), 5 * 3600000);
+  assert.equal(providerRecoveryDelay('quota_exhausted', 1, true, 0, new Date(now - 1).toISOString(), now), null);
+  assert.equal(providerRecoveryDelay('quota_exhausted', 6, true, 0, reset, now), null);
+});
+for (const accepted of [false, true]) test(`UI014 quota without reset holds exact work for explicit retry, accepted=${accepted}`, t => {
+  const f = memoryRecovery(t), run = f.lease(f.now);
+  f.fail(run, f.now, accepted, 'quota_exhausted', { failureDetail: { phase: accepted ? 'provider_execution' : 'prompt_submission', promptInjectionState: accepted ? 'injected' : 'not_injected', engineId: 'codex', model: 'fixture-model' } });
+  f.restart();
+  assert.equal(f.lease(new Date(Date.parse(f.now) + 86400000).toISOString()), undefined);
+  const [receipt] = f.store().deliveryReceiptsForCommunication('project', 'communication');
+  assert.equal(receipt.canRetry, true); assert.equal(Boolean(receipt.retryMayDuplicate), accepted);
+  assert.equal(receipt.providerFailure.category, 'quota_exhausted');
+  assert.equal(receipt.providerFailure.providerId, 'codex');
+  assert.equal(receipt.providerFailure.recovery, 'action_required');
+  assert.equal(receipt.providerFailure.resetAt, undefined);
+  const retry = f.store().retryMessageDelivery({ projectId: 'project', activationId: f.root, idempotencyKey: 'quota-operator-retry', now: f.now });
+  assert.equal(retry.accepted, true);
+});
+
+for (const accepted of [false, true]) test(`UI014 reset eligibility preserves exact time and six-attempt lineage across restart, accepted=${accepted}`, t => {
+  const f = memoryRecovery(t); let now = f.now;
+  for (let attempt=1; attempt<=6; attempt++) {
+    const run=f.lease(now); assert.ok(run);
+    const resetAt=new Date(Date.parse(now)+3600000).toISOString();
+    f.fail(run,now,accepted,'quota_exhausted',{failureDetail:{phase:'provider_execution',promptInjectionState:accepted?'injected':'not_injected',engineId:'codex',model:'fixture-model',quotaResetAt:resetAt}});
+    f.restart();
+    const [receipt]=f.store().deliveryReceiptsForCommunication('project','communication');
+    assert.equal(receipt.providerFailure.providerId,'codex'); assert.equal(receipt.providerFailure.resetAt,resetAt);
+    if(attempt===6){assert.equal(receipt.providerFailure.recovery,'stopped');assert.equal(f.lease(resetAt),undefined);break;}
+    assert.equal(receipt.providerFailure.recovery,'scheduled'); assert.equal(receipt.providerFailure.nextRetryAt,resetAt);
+    assert.equal(f.lease(new Date(Date.parse(resetAt)-1).toISOString()),undefined);
+    now=resetAt;
+  }
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,6);
+});
+
+test('UI014 adapter evidence distinguishes explicit quota/reset, ambiguous 429, temporary throttle, and informational usage', async () => {
+  const {mapClaudeEvent}=await import('../../packages/engines/dist/claude-events.js');
+  const reset=Date.parse('2026-10-24T01:00:00Z')/1000;
+  const envelope=JSON.stringify({type:'error',status:429,error:{type:'usage_limit_reached',resets_at:reset,message:'private-fixture-detail'}});
+  const [codex]=mapCodexAppServerNotification({method:'turn/completed',params:{turn:{status:'failed',error:{message:envelope,codexErrorInfo:'usageLimitExceeded'}}}},process.cwd());
+  const visible=publicProviderFailureEvent(codex);
+  assert.equal(visible.category,'quota_exhausted');assert.equal(visible.quotaResetAt,'2026-10-24T01:00:00.000Z');assert.doesNotMatch(JSON.stringify(visible),/private-fixture/u);
+  assert.equal(publicProviderFailure({detail:'temporary throttle'}).category,'throttled');
+  for(const status of ['allowed','allowed_warning']) assert.deepEqual(mapClaudeEvent({type:'rate_limit_event',rate_limit_info:{status,resetsAt:reset,utilization:1}}),[]);
+  assert.deepEqual(mapClaudeEvent({type:'rate_limit_event',rate_limit_info:{status:'rejected',overageStatus:'allowed',resetsAt:reset}}),[]);
+  const [claude]=mapClaudeEvent({type:'rate_limit_event',rate_limit_info:{status:'rejected',rateLimitType:'seven_day_opus',resetsAt:reset}});
+  assert.equal(claude.category,'quota_exhausted');assert.equal(claude.quotaResetAt,visible.quotaResetAt);assert.equal(claude.quotaLimit,'weekly_model');
+  const [extra]=mapClaudeEvent({type:'rate_limit_event',rate_limit_info:{status:'rejected',rateLimitType:'overage',isUsingOverage:true,resetsAt:reset}});
+  assert.equal(extra.quotaResetAt,undefined,'Do not borrow a base-window reset for rejected extra usage');
+  const [legacy]=mapClaudeEvent({type:'assistant',error:'rate_limit',message:{content:[{type:'text',text:'You’ve hit your limit · resets 2am'}]}});
+  assert.equal(publicProviderFailureEvent(legacy).category,'quota_exhausted');assert.equal(legacy.quotaResetAt,undefined);
+});
+
+for (const accepted of [false, true]) test(`UI014 repeated quota with a past reset stops instead of looping, accepted=${accepted}`, t => {
+  const f=memoryRecovery(t),run=f.lease(f.now),resetAt=new Date(Date.parse(f.now)+3600000).toISOString();
+  f.fail(run,f.now,accepted,'quota_exhausted',{failureDetail:{phase:'provider_execution',promptInjectionState:accepted?'injected':'not_injected',engineId:'codex',quotaResetAt:resetAt}});
+  const next=f.lease(resetAt);assert.ok(next);
+  f.fail(next,resetAt,accepted,'quota_exhausted',{failureDetail:{phase:'provider_execution',promptInjectionState:accepted?'injected':'not_injected',engineId:'codex',quotaResetAt:resetAt}});
+  f.restart();assert.equal(f.lease(new Date(Date.parse(resetAt)+86400000).toISOString()),undefined);
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,2);
+  assert.equal(f.store().deliveryReceiptsForCommunication('project','communication')[0].providerFailure.recovery,'action_required');
+});
+
+for(const persistent of [false,true])test(`UI014 Claude ${persistent?'persistent':'one-shot'} rejection ends its owned watchdog before canonical recovery`,{timeout:15000,skip:process.platform==='win32'?'POSIX inert executable transport fixture; mapping/policy checks remain portable':false},async t=>{
+ const {ClaudeStreamSession}=await import('../../packages/engines/dist/claude-stream-session.js');
+ const {ClaudeAdapter}=await import('../../packages/engines/dist/claude.js');
+ const root=await mkdtemp(path.join(tmpdir(),'ponderosa-quota-watchdog-')),bin=path.join(root,'inert-claude'),handles=[];let session,passed=false;
+ t.after(async()=>{await session?.close();for(const handle of handles){await handle.close();assert.equal(handle.isAlive(),false)}if(passed)await rm(root,{recursive:true,force:true});else t.diagnostic('Retained owned watchdog fixture: '+root)});
+ await writeFile(bin,"#!/usr/bin/env node\n"+`const event={type:'rate_limit_event',rate_limit_info:{status:'rejected',rateLimitType:'five_hour',resetsAt:2000000000}};const emit=()=>console.log(JSON.stringify(event));if(process.argv.includes('--input-format'))require('node:readline').createInterface({input:process.stdin}).on('line',line=>{if(JSON.parse(line).type==='user')emit()});else emit();setInterval(()=>{},1000);`,{mode:0o700});
+ const options={bin,cwd:root,history:[],signal:new AbortController().signal,agentId:'quota-fixture',permissionMode:'bypassPermissions',killGraceMs:100,environment:{PATH:path.dirname(process.execPath)+path.delimiter+(process.env.PATH??'')},onRuntimeSpawned:handle=>handles.push(handle)};
+ let events;
+ if(persistent){session=new ClaudeStreamSession(options);await session.startTurn({prompt:'Controlled quota test'});const next=await session.events[Symbol.asyncIterator]().next();events=[next.value];}
+ else events=await Array.fromAsync(new ClaudeAdapter({bin,killGraceMs:100}).seed({...options,prompt:'Controlled quota test'}));
+ assert.equal(events.find(event=>event.type==='error').category,'quota_exhausted');assert.ok(handles.length);assert.equal(handles.every(handle=>!handle.isAlive()),true,'No independent CLI retry watchdog may remain alive');passed=true;
+});
+
+test('UI014 Codex umbrella limit code never invents allowance exhaustion or hides subscription access',()=>{
+ const mapped=message=>publicProviderFailureEvent(mapCodexAppServerNotification({method:'turn/completed',params:{turn:{status:'failed',error:{message,codexErrorInfo:'usageLimitExceeded'}}}},process.cwd())[0]);
+ assert.equal(mapped('Unspecified limit').category,'rate_limit');
+ assert.equal(mapped("You've hit your usage limit. Try later.").category,'quota_exhausted');
+ const access=mapped('To use Codex with your ChatGPT plan, upgrade to Plus: https://chatgpt.com/explore/plus.');
+ assert.equal(access.code,'plan_entitlement');assert.equal(access.category,'authentication');assert.match(access.message,/subscription does not include access/);assert.doesNotMatch(access.message,/usage limit reached/);
+ assert.equal(publicProviderFailureEvent(access).message,access.message);
+});

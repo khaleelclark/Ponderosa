@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type {
   AgentDto,
   AgentHealthDto,
@@ -18,6 +19,7 @@ export interface AgentDetailProps {
   initialView?: AgentDetailView;
   onViewChange?(view: AgentDetailView): void;
   onOpenTechnicalDetails(focusId?: string): void;
+  decisionReviewAction?: ReactNode;
   engines: EngineDto[];
   modelCatalogLoading?: boolean;
   engineCapabilities: ProjectEngineCapabilitiesDto[];

@@ -55,24 +55,6 @@ export function attentionPresentation(item: WorkspaceNotificationDto) {
   };
 }
 
-export function attentionSupportReport(item: WorkspaceNotificationDto): string {
-  const copy = attentionPresentation(item);
-  return ["Ponderosa Support Report", `Issue: ${copy.title}`, ...copy.scopes,
-    `When: ${copy.occurredAt}`, `Task: ${copy.task ?? "Description unavailable"}`,
-    `What happened: ${copy.explanation}`, copy.uncertainty ? `What remains uncertain: ${copy.uncertainty}` : undefined,
-    `Notification ID: ${item.id}`, item.projectId ? `Project ID: ${item.projectId}` : undefined,
-    item.conversationId ? `Chat ID: ${item.conversationId}` : undefined,
-    item.agentId ? `Agent ID: ${item.agentId}` : undefined,
-    item.workContext ? `Work record: ${item.workContext.kind}:${item.workContext.recordId}` : undefined,
-    item.workContext?.state ?? item.resolution?.outcome
-      ? `Recorded outcome: ${item.workContext?.state ?? item.resolution?.outcome}` : undefined,
-    item.resolution ? `Request ID: ${item.resolution.requestId}` : undefined,
-    item.workContext?.traceId ?? item.resolution?.traceId
-      ? `Trace ID: ${item.workContext?.traceId ?? item.resolution?.traceId}` : undefined,
-    copy.evidenceUnavailable ? "Additional historical evidence was not retained." : undefined,
-  ].filter((line): line is string => Boolean(line)).join("\n");
-}
-
 export function isOpenAttention(item: WorkspaceNotificationDto): boolean {
   return (item.status ?? "open") === "open" && (
     item.kind === "decision" || item.kind === "operational" || item.severity === "attention" || item.severity === "urgent"
@@ -122,21 +104,4 @@ export function notificationsForAvailableProjects(
   return notifications.filter(item =>
     !item.projectId || projectIds.has(item.projectId)
   );
-}
-
-export function scopedAttention(notifications: WorkspaceNotificationDto[], scope: {
-  projectId?: string;
-  conversationId?: string;
-  agentId?: string;
-} = {}): WorkspaceNotificationDto[] {
-  return notifications.filter((item) => isOpenAttention(item)
-    && (!scope.projectId || item.projectId === scope.projectId)
-    && (!scope.conversationId
-      || item.conversationId === scope.conversationId
-      || item.conversationIds?.includes(scope.conversationId))
-    && (!scope.agentId
-      || item.agentId === scope.agentId
-      || item.agentIds?.includes(scope.agentId)
-      || (item.action?.kind === "open_agent" && item.action.targetId === scope.agentId)))
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
 }

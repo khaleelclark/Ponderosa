@@ -19,7 +19,7 @@ interface RestoredDraftAttachment {
   file: File;
 }
 
-interface ComposerDraftAttachments {
+export interface ComposerDraftAttachments {
   addFiles(candidates: File[]): void;
   attachmentIds: MutableRefObject<Map<File, string>>;
   metadata: MutableRefObject<Map<string, DraftAttachmentDto>>;
@@ -152,6 +152,7 @@ export function useComposerDraftAttachments({
   }, [conversationDraftId]);
 
   const addFiles = useCallback((candidates: File[]) => {
+    candidates = [...new Set(candidates)].filter(file => !files.includes(file));
     const selection = selectComposerFiles(files, candidates, assetLimits);
     dispatch({ type: "add", candidates, limits: assetLimits });
     for (const file of selection.accepted) {

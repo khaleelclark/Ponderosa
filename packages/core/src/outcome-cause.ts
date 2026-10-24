@@ -100,6 +100,8 @@ export function outcomeCauseExplanation(cause: OutcomeCause): string {
       const issue = {
         authentication: "The provider rejected its sign-in.",
         rate_limit: "The provider limited the request.",
+        throttled: "The provider temporarily throttled the request.",
+        quota_exhausted: "The provider reported that its usage allowance was exhausted.",
         capacity: "The provider reported that it was at capacity.",
         context_length: "The provider reported that the request exceeded its context limit.",
         invalid_request: "The provider rejected the request.",
