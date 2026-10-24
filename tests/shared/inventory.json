@@ -1108,6 +1108,14 @@
       "origin": "Current-master Branch integration: shared import validation and atomic lifecycle binding"
     },
     {
+      "path": "tests/branches/home.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; no provider account",
+      "origin": "BR002 bounded global Home counts, canonical status, action pagination and query plans"
+    },
+    {
       "path": "tests/branches/operations.test.mjs",
       "feature": "branches",
       "lane": "server",
@@ -1353,6 +1361,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24, installed web dependencies; actual panel/timeline rendering with controlled canonical query inputs",
       "origin": "UI020 single conversation scroll, exact canonical questions and concise Decision notices"
+    },
+    {
+      "path": "tests/branches/home-ui.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, real shared Home React components and QueryClient; no browser or provider account",
+      "origin": "BR002 exact summary, canonical execution outcomes, bounded independent paging and cached refresh recovery"
     }
   ],
   "retainedReleasePayload": [

@@ -2,7 +2,7 @@ import {
   notificationInProduct,notificationProductPredicate,
   requestProduct,
 } from "../product-scope.js";
-import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import type { AgentStore, ProductScope, WorkspaceStore } from "@ponderosa/agents";
 import type {
   WebPushSubscriptionDto,
   WorkspaceNotificationPageDto,
@@ -42,6 +42,32 @@ export interface PushRoutesOptions {
   };
 }
 
+/** Shared bounded notification owner for the inbox and product Home previews. */
+export function workspaceNotificationPage(
+  options: Pick<NotificationRoutesOptions, "workspace" | "store">,
+  product: ProductScope,
+  input: Omit<Parameters<WorkspaceStore["listNotificationPage"]>[0], "include">,
+): ReturnType<WorkspaceStore["listNotificationPage"]> {
+  const page = options.workspace.listNotificationPage({...input,include:notificationProductPredicate(options.store,product)});
+  const agentTitles = options.store.getAgentTitleProjection(page.items.flatMap(item=>item.agentId?[item.agentId]:[]));
+  const projectLabels = new Map([...new Set(page.items.flatMap(item=>item.projectId?[item.projectId]:[]))]
+    .map(id=>[id,options.store.getProject(id)?.label]));
+  const chats = new Map([...new Set(page.items.flatMap(item=>item.conversationId?[item.conversationId]:[]))]
+    .map(id=>[id,options.store.getConversation(id)]));
+  const items = page.items.map(notification=>{
+    const chatIds=notification.conversationId?[notification.conversationId]:notification.conversationIds??[];
+    const owners=!notification.branchId&&product==='branches'
+      ?chatIds.map(id=>options.store.sqlite.prepare('SELECT branch_id FROM conversations WHERE id=?').get(id) as {branch_id:string|null}|undefined):[];
+    const branchId=owners.length&&owners.every(owner=>owner?.branch_id&&owner.branch_id===owners[0]?.branch_id)?owners[0]!.branch_id:undefined;
+    const agentTitle=notification.agentId?agentTitles.get(notification.agentId):undefined;
+    const projectLabel=notification.projectId?projectLabels.get(notification.projectId):undefined;
+    const chat=notification.conversationId?chats.get(notification.conversationId):undefined;
+    const conversationTitle=chat?.projectId===notification.projectId?chat?.title:undefined;
+    return {...notification,...(branchId?{branchId}:{}),...(agentTitle?{agentTitle}:{}),...(projectLabel?{projectLabel}:{}),...(conversationTitle?{conversationTitle}:{})};
+  });
+  return {...page,items};
+}
+
 export function registerNotificationListRoute(
   app: FastifyInstance,
   options: NotificationRoutesOptions,
@@ -69,41 +95,12 @@ export function registerNotificationListRoute(
         return reply.code(400).send({ error: "cursor is invalid" });
       }
     }
-    const page = options.workspace.listNotificationPage({
+    const page = workspaceNotificationPage(options,requestProduct(request),{
       limit: requestedLimit,
-      include: notificationProductPredicate(options.store,requestProduct(request)),
       ...(before ? { before } : {}),
     });
-    const agentTitles = options.store.getAgentTitleProjection(
-      page.items.flatMap((notification) => notification.agentId ? [notification.agentId] : []),
-    );
-    // Resolve only this bounded page's distinct scopes; no per-card browser
-    // requests, all-Project collectors or notification-history scan.
-    const projectIds = new Set(page.items.flatMap(item => item.projectId ? [item.projectId] : []));
-    const projectLabels = new Map([...projectIds].map(id => [id, options.store.getProject(id)?.label]));
-    const chats = new Map([...new Set(page.items.flatMap(item => item.conversationId ? [item.conversationId] : []))]
-      .map(id => [id, options.store.getConversation(id)]));
-    const items = page.items.map((notification) => {
-      const chatIds = notification.conversationId ? [notification.conversationId] : notification.conversationIds ?? [];
-      const owners = !notification.branchId && requestProduct(request) === "branches"
-        ? chatIds.map(id => options.store.sqlite.prepare("SELECT branch_id FROM conversations WHERE id=?").get(id) as { branch_id: string | null } | undefined)
-        : [];
-      const branchId = owners.length && owners.every(owner => owner?.branch_id && owner.branch_id === owners[0]?.branch_id)
-        ? owners[0]!.branch_id : undefined;
-      const agentTitle = notification.agentId ? agentTitles.get(notification.agentId) : undefined;
-      const projectLabel = notification.projectId ? projectLabels.get(notification.projectId) : undefined;
-      const chat = notification.conversationId ? chats.get(notification.conversationId) : undefined;
-      const conversationTitle = chat?.projectId === notification.projectId ? chat?.title : undefined;
-      return {
-        ...notification,
-        ...(branchId ? { branchId } : {}),
-        ...(agentTitle ? { agentTitle } : {}),
-        ...(projectLabel ? { projectLabel } : {}),
-        ...(conversationTitle ? { conversationTitle } : {}),
-      };
-    });
     return {
-      items,
+      items:page.items,
       openActionCount: page.openActionCount,
       unacknowledgedActionCount: page.unacknowledgedActionCount,
       unreadUpdateCount: page.unreadUpdateCount,
