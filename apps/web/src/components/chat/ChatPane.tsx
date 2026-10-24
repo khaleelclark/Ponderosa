@@ -1,13 +1,15 @@
-import { Alert, Button, ButtonBase, Chip } from "@mui/material";
+import { Alert, Box, Button, ButtonBase, Chip } from "@mui/material";
 import type {
   AgentActivityDto,
   ConversationDecisionEventDto,
+  DecisionDto,
   AgentRunDto,
   MessageDto,
   OperatorProfileDto,
   ResponseFileActivityDto,
   RunOutputDto,
 } from "@ponderosa/core";
+import { DecisionCard } from "../decisions/DecisionCard";
 import { Fragment, memo, useMemo } from "react";
 import { CopyMessageButton } from "../CopyMessageButton";
 import { MessageDeliveryStatus } from "../MessageDeliveryStatus";
@@ -104,6 +106,7 @@ function visibleAgentMessageText(message: MessageDto): string {
 function ChatPaneComponent({
   messages,
   decisionEvents = [],
+  pendingDecisions = [],
   agentName = "Agent",
   agentNameForId,
   agentIdForHandle,
@@ -130,6 +133,7 @@ function ChatPaneComponent({
 }: {
   messages: MessageDto[];
   decisionEvents?: ConversationDecisionEventDto[];
+  pendingDecisions?: DecisionDto[];
   agentName?: string;
   agentNameForId?(agentId: string): string | undefined;
   agentIdForHandle?(handle: string): string | undefined;
@@ -267,9 +271,16 @@ function ChatPaneComponent({
     chatMessages,
     messageByCommunicationId,
   ]);
+  const decisionCards = useMemo(() => {
+    const byId = new Map(decisionEvents.filter(event => event.kind === "decision").map(event => [event.decision.id, event.decision]));
+    // Pending questions remain reachable even outside the loaded history page.
+    for (const decision of pendingDecisions) if (!byId.has(decision.id)) byId.set(decision.id, decision);
+    return [...byId.values()];
+  }, [decisionEvents, pendingDecisions]);
   const timeline = useMemo(
     () =>
       [
+        ...decisionCards.map(decision => ({ kind: "decision" as const, id: `decision:${decision.id}`, createdAt: decision.createdAt, decision })),
         ...decisionEvents.filter(event => event.kind === "decision_response").map(event => ({
           kind: "decision-response" as const, id: event.id, createdAt: event.createdAt, event,
         })),
@@ -301,7 +312,7 @@ function ChatPaneComponent({
               ? -1
               : 1),
       ),
-    [chatMessages, decisionEvents, runPlacement.standalone, unscopedActivity],
+    [chatMessages, decisionCards, decisionEvents, runPlacement.standalone, unscopedActivity],
   );
   const latestTimelineItem = timeline.at(-1);
   const latestActivity = activityEntries.at(-1);
@@ -347,6 +358,8 @@ function ChatPaneComponent({
       empty="Send a message to this agent to start the conversation."
     >
       {timeline.map(item => {
+        if (item.kind === "decision") return <Box key={item.id} id={item.id} tabIndex={-1}
+          sx={{ minWidth: 0, mb: 1.5, outlineOffset: 2 }}><DecisionCard decision={item.decision} /></Box>;
         if (item.kind === "decision-response") return <DecisionResponseMessage key={item.id}
           event={item.event} operatorProfile={operatorProfile} onOpenAgent={onOpenAgent} />;
         if (item.kind === "run") {

@@ -99,6 +99,8 @@ export type EngineModelValidationError =
   | "model_not_found"
   | "authentication"
   | "rate_limit"
+  | "quota_exhausted"
+  | "throttled"
   | "capacity"
   | "context_length"
   | "organization_policy"

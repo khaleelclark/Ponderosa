@@ -3,6 +3,7 @@ import test from 'node:test';
 import { AgentStore } from '@ponderosa/agents';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import os from 'node:os';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { admitDataDirectory, readCurrentStateIdentity } from '../../packages/agents/dist/state-admission.js';
 import { createOfflineDataDirectoryBackup, restoreOfflineDataDirectoryBackup } from '../../packages/agents/dist/data-directory-backup.js';
@@ -86,4 +87,22 @@ test('busy native SQLite close retains the AgentStore reference and permits exac
     store.close(); // Completed disposal is idempotent.
     const reopened = new AgentStore(data); reopened.close();
   } finally { query.return(); store.close(); }
+});
+
+
+for (const code of [0, 1]) test(`runbook rehearsal exit ${code} ${code ? 'preserves failed diagnostic work' : 'expires only its own successful work'}`, { skip: process.platform === 'win32' }, t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'ponderosa-backup-trap-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const runbook = readFileSync(new URL('../../deploy/PRODUCTION_RUNBOOK.md', import.meta.url), 'utf8');
+  const setup = runbook.match(/```bash\n([\s\S]*?)install_root=/)[1];
+  const pointer = path.join(root, 'owned-work'), unrelated = path.join(root, 'unrelated-evidence');
+  writeFileSync(unrelated, 'Protected evidence');
+  const result = spawnSync('bash', ['-c', setup + '\nprintf "%s" "$work" > "$TEST_WORK_POINTER"\nexit "$TEST_EXIT"\n'], {
+    encoding: 'utf8', env: { ...process.env, TMPDIR: root, TEST_WORK_POINTER: pointer, TEST_EXIT: String(code) },
+  });
+  assert.equal(result.status, code, result.stderr);
+  const work = readFileSync(pointer, 'utf8'); assert.ok(work.startsWith(root + path.sep));
+  assert.equal(existsSync(work), code !== 0, 'only successful rehearsal intermediates expire automatically');
+  assert.equal(readFileSync(unrelated, 'utf8'), 'Protected evidence');
+  if (code) assert.match(result.stderr, /retain private diagnostic work=/);
 });

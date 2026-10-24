@@ -1,3 +1,4 @@
+import {BranchNotifications} from "./BranchNotifications";
 import {useWorkspacePreferences,useWorkspacePreferencesWriter} from '../../hooks/queries';
 import {createClientId} from '../../clientId';
 import type {BranchRoute} from '../../branchesRouting';
@@ -74,6 +75,7 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
     onPreferences={patch=>{void preferenceWriter.enqueueAndWait(patch).catch((e:Error)=>setError(e.message))}}
     onRenameConversation={c=>{if(executionId){setError('Execution Chats are available for inspection only.');return;}const name=window.prompt('Chat name',c.title);if(name)void realApi.updateConversation(c.id,{title:name}).then(()=>client.invalidateQueries({queryKey:['branch-chats',branchId]})).catch(e=>setError(e.message))}}
     onDeleteConversation={()=>setError('Remove Branch-owned Chats through a reviewed Branch update.')}
+    decisionReviewAction={<BranchNotifications onNavigate={onNavigate} presentation="button" label="View decision"/>}
     onOpenEngineStatus={()=>onNavigate({...branchRoute,global:'status'})}
     browserRequest={browserRequest} onBrowserRequestHandled={id=>setBrowserRequest(current=>consumeProjectBrowserRequest(current,id))}
     navigate={navigate} onProjectDeleted={()=>{setChatId('');void chats.refetch()}}
