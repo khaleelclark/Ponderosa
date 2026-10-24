@@ -63,6 +63,19 @@ test('contained Script receives exact stdin and settles one durable result witho
  f.done();
 });
 
+test('contained Script keeps intentional parameters without inheriting host-only environment',options,async t=>{
+ const overrides={PONDEROSA_AGENT_MEMORY_MAX_MIB:'192',PONDEROSA_LAUNCHER_CONTROL_TOKEN:'owned-test-token',NODE_OPTIONS:'--max-old-space-size=128'};
+ const previous=Object.fromEntries(Object.keys(overrides).map(key=>[key,process.env[key]]));
+ try{
+  Object.assign(process.env,overrides);
+  const f=fixture(t,"process.stdout.write(JSON.stringify({parameters:JSON.parse(process.env.PONDEROSA_PARAMETERS),nodeOptions:process.env.NODE_OPTIONS,memory:process.env.PONDEROSA_AGENT_MEMORY_MAX_MIB,token:process.env.PONDEROSA_LAUNCHER_CONTROL_TOKEN}));");
+  await f.service.tick(true);
+  const result=await until(()=>{const e=f.branches.execution(f.execution.id);return e.state==='completed'&&e},'Script environment result');
+  assert.deepEqual(JSON.parse(result.output),{parameters:{}});
+  f.done();
+ }finally{for(const [key,value] of Object.entries(previous))if(value===undefined)delete process.env[key];else process.env[key]=value;}
+});
+
 test('failed process-authority commit closes the waiting child before any Script effect',options,async t=>{
  const f=fixture(t,"import {writeFileSync} from 'node:fs';writeFileSync('should-not-exist','effect');");
  f.branches.authorizeScript=()=>{throw Error('injected authority commit failure')};

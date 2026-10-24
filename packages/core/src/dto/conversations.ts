@@ -208,6 +208,17 @@ export interface MessageDeliveryReceiptDto {
   recoveryAt?: string;
   canLetCurrentRunFinish?: boolean;
   recoveryActivationId?: string;
+  /** Current failure/recovery of this exact work's Run lineage, never the Agent's current selection. */
+  providerFailure?: {
+    category: "quota_exhausted" | "rate_limit" | "throttled" | "capacity";
+    providerId?: string;
+    model?: string;
+    resetAt?: string;
+    quotaLimit?: import("../provider-failure-summary.js").ProviderQuotaLimit;
+    recovery: "scheduled" | "retrying" | "action_required" | "stopped";
+    nextRetryAt?: string;
+    runId: string;
+  };
   /** Exact runtime selection attached to this delivery. */
   runtime?: {
     engine?: string;
@@ -440,6 +451,8 @@ export interface CoordinationRequestUpdateDto {
 /** Canonical, read-only lifecycle of one scoped coordination Request. */
 export interface CoordinationRequestLifecycleDto {
   request: {
+    /** Current canonical eligibility; the retry route remains authoritative. */
+    retryAvailable?: boolean;
     id: string;
     requesterAgentId?: string;
     recipientAgentId: string;
@@ -470,6 +483,9 @@ export interface ConversationDecisionEventDto {
 }
 
 export interface ConversationDetailDto {
+  /** Unresolved provider failures outside the paginated message window. */
+  providerFailureMessages?: ConversationMessageDto[];
+  providerFailuresHasMore?: true;
   conversation: ConversationDto;
   messages: ConversationMessageDto[];
   /** Bounded initial member page. Use the scoped members endpoint for more. */

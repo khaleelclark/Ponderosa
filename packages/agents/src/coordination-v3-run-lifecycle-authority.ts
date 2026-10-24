@@ -504,6 +504,10 @@ export class CoordinationV3RunLifecycleAuthority {
       message?: string;
       httpStatusCode?: number;
       retryAfterMs?: number;
+      quotaResetAt?: string;
+      quotaLimit?: import("@ponderosa/core").ProviderQuotaLimit;
+      engineId?: string;
+      model?: string;
     };
   }): "retry" | "terminal" | "resume_same_run" | "outcome_unknown" {
     const now = input.now ?? new Date().toISOString();
@@ -656,12 +660,14 @@ export class CoordinationV3RunLifecycleAuthority {
           const attempts = Math.max(activation.delivery_failures + 1,
             providerRecoveryAttempts(this.sqlite, input.runId, activation.id));
           const delay = providerRecoveryDelay(failureCategory, attempts, input.retryable !== false,
-            input.retryDelayMs ?? input.failureDetail?.retryAfterMs ?? 0);
+            input.retryDelayMs ?? input.failureDetail?.retryAfterMs ?? 0, input.failureDetail?.quotaResetAt, Date.parse(now));
           const outcome = terminalOutcome ?? (delay === null || attempts >= maximum
-            ? providerRecoveryDelay(failureCategory, 0, input.retryable !== false) === null
+            ? attempts >= maximum ? "retry_exhausted" : providerRecoveryDelay(failureCategory, 0, input.retryable !== false, 0, input.failureDetail?.quotaResetAt, Date.parse(now)) === null
               ? "permanent_failure" : "retry_exhausted"
             : undefined);
-          update.run(durableError, failureCategory ?? null, outcome ? 'failed' : 'retry_pending',
+          // The existing SQLite category is a broad rate-limit bucket; the exact
+          // quota/reset evidence remains in this Run's provider_failure_json.
+          update.run(durableError, (failureCategory === 'quota_exhausted' || failureCategory === 'throttled') ? 'rate_limit' : failureCategory ?? null, outcome ? 'failed' : 'retry_pending',
             outcome ?? null, outcome ? now : null, new Date(Date.parse(now) + (delay ?? 0)).toISOString(),
             now, activation.id);
         }
@@ -1174,7 +1180,7 @@ export class CoordinationV3RunLifecycleAuthority {
       try {
         const failure = JSON.parse(runPhase.provider_failure_json) as { category?: unknown; phase?: unknown };
         const category = failure.category;
-        if (typeof category === "string" && ["authentication", "rate_limit", "capacity", "context_length", "invalid_request", "unavailable"].includes(category)) {
+        if (typeof category === "string" && ["authentication", "rate_limit", "quota_exhausted", "throttled", "capacity", "context_length", "invalid_request", "unavailable"].includes(category)) {
           providerFailureCategory = category as ProviderFailureCategory;
         }
         if (typeof failure.phase === "string" && [

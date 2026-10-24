@@ -136,6 +136,7 @@ export function MessageDeliveryStatus({
   compact = false,
   compactSuccess = false,
   compactSuccessTooltip = true,
+  hideCancelAction = false,
 }: {
   projectId?: string;
   receipts?: MessageDeliveryReceiptDto[];
@@ -144,6 +145,7 @@ export function MessageDeliveryStatus({
   compact?: boolean;
   compactSuccess?: boolean;
   compactSuccessTooltip?: boolean;
+  hideCancelAction?: boolean;
 }): JSX.Element | null {
   const readOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
@@ -362,7 +364,7 @@ export function MessageDeliveryStatus({
           onClick={() => receipt.retryMayDuplicate ? setConfirmRetry(receipt) : void retryDelivery(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
         >{pendingRetryId === receipt.activationId ? "Trying Again…" : receipt.providerAcknowledged ? "Try Work Again" : "Try Delivery Again"}</Button> : null}
-        {!readOnly && receipt.canRetry && projectId ? <Button
+        {!readOnly && !hideCancelAction && receipt.canRetry && projectId ? <Button
           color="inherit"
           variant="text"
           size="small"
