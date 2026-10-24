@@ -352,12 +352,21 @@ systemctl --user enable --now ponderosa-browser-dev.service ponderosa-dev.servic
 Install and reload the Agent slice **before** starting a revision with
 `PONDEROSA_AGENT_SCOPE_MODE=systemd`. The dev unit enables this mode: each
 provider CLI and its shell/tool descendants enter a separate systemd user
-scope under the shared `ponderosa-agent-workloads.slice`. Those scopes have
+scope under the shared `ponderosa-agent-workloads.slice`. Each scope has a default
+8 GiB hard limit, no swap allowance and `OOMPolicy=kill`, so a scope-local OOM terminates the
+whole offending workload. `PONDEROSA_AGENT_MEMORY_MAX_MIB` is a host-only
+positive integer in MiB (at most 1 TiB). Keep reclaim control at the existing
+aggregate slice; an additional per-scope `MemoryHigh` can stall an oversized
+allocation instead of allowing it to reach the hard failure boundary.
+Measure heavy builds and concurrent providers before choosing another limit.
+These opt-in scopes require systemd 253 or newer; a rejected property fails
+launch rather than silently falling back to unbounded execution. Scopes have
 `PartOf=ponderosa-dev.service`, so a unit stop/restart also stops stranded
 work if an Agent's provider root has crashed. The slice's aggregate
 `MemoryHigh=50%` and `MemoryMax=60%` leave memory for the app, browser, and
 other host services. Adjust those values in a slice drop-in after measuring
-the host's normal workload; they are not a per-Agent or security boundary.
+the host's normal workload; the aggregate slice is not a per-Agent or security
+boundary.
 `OOMPolicy=continue` also prevents a killed tool from automatically stopping
 the app service. An Agent Run can still fail if its workload exceeds the
 slice budget, and a host-wide OOM remains possible if unrelated workloads
@@ -369,8 +378,10 @@ must be corrected before enabling it. Other Linux installations, macOS, and
 Windows retain their existing provider process launch and cleanup behavior.
 The checked-in system-level `ponderosa.service` uses `OOMPolicy=continue` but
 does not enable user scopes automatically because a system service running as
-`User=` is not guaranteed to have a usable user manager. Operators who move
-to a user service may install the slice and opt in after qualification.
+`User=` is not guaranteed to have a usable user manager. Use the qualified system-service/user-owner linkage in
+[the production runbook](PRODUCTION_RUNBOOK.md#agent-workload-boundary)
+when enabling scopes from a system service. A user scope cannot directly
+use `PartOf=` to track a system-manager service.
 
 The deploy operation must still drain the currently running revision and wait
 for `deploymentDrain.readyForRestart`. Update the `current` symlink and the
