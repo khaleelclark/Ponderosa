@@ -114,7 +114,7 @@ export class AgentWorkspaceCatalogAuthority {
       conversationId: string,
       visible: boolean,
     ) => void,
-    private readonly progress?: ProjectionProgress,
+    private readonly progress: ProjectionProgress,
   ) {}
 
   private assertProjectMetadataMutable(projectId: string): void {
@@ -143,8 +143,7 @@ export class AgentWorkspaceCatalogAuthority {
         canonicalCommitted = true;
         writeProjection();
       });
-      if (this.progress) this.progress.run([projectJsonPath(this.dataDir, projectId)], commit);
-      else commit();
+      this.progress.run([projectJsonPath(this.dataDir, projectId)], commit);
     } catch (error) {
       if (!canonicalCommitted) throw error;
       try { writeProjection(); } catch { /* canonical metadata remains authoritative */ }

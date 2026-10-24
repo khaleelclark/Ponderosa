@@ -37,7 +37,7 @@ export class AgentArtifactCatalog {
     private readonly agentById: (agentId: string) => ArtifactAgent | undefined,
     private readonly projectExists: (projectId: string) => boolean,
     private readonly readAgentEvents: (agentId: string) => StoredLogEvent[],
-    private readonly progress?: ProjectionProgress,
+    private readonly progress: ProjectionProgress,
   ) {}
 
   retainDeletedAgentArtifactBytes(projectId: string, agentId: string, sourceDirectory: string): void {
@@ -553,9 +553,8 @@ export class AgentArtifactCatalog {
     }>,
   ): void {
     if (entries.length === 0) return;
-    const publish = () => this.writeProjectArtifacts(entries);
-    if (this.progress) this.progress.run([managedArtifactsLogPath(this.dataDir, entries[0]!.artifact.projectId)], publish);
-    else publish();
+    this.progress.run([managedArtifactsLogPath(this.dataDir, entries[0]!.artifact.projectId)],
+      () => this.writeProjectArtifacts(entries));
   }
 
   private writeProjectArtifacts(entries: ReadonlyArray<{

@@ -32,8 +32,8 @@ export class AgentEventSessionAuthority {
       projectId: string,
       projection: CommunicationProjection,
     ) => void,
-    private readonly progress?: ProjectionProgress,
-    private readonly dataDir = "",
+    private readonly progress: ProjectionProgress,
+    private readonly dataDir: string,
   ) {}
 
   recoverInterruptedExecutions(): string[] {
@@ -82,9 +82,9 @@ export class AgentEventSessionAuthority {
     }
     const append = () => { stored = this.eventProjection.append(agentId, projectId, event, ts); return stored; };
     try {
-      stored = this.progress ? this.progress.run([
+      stored = this.progress.run([
         eventsPath(this.dataDir, projectId, agentId), managedArtifactsLogPath(this.dataDir, projectId),
-      ], append) : append();
+      ], append);
     } catch (error) {
       if (stored) throw this.eventProjection.fenceAfterAppend(agentId, projectId, stored, error);
       throw error;
@@ -102,7 +102,7 @@ export class AgentEventSessionAuthority {
           message,
         });
       } catch (error) {
-        this.progress?.invalidate();
+        this.progress.invalidate();
         throw error;
       }
     }

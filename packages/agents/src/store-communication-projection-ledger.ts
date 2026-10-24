@@ -99,7 +99,7 @@ export class AgentCommunicationProjectionLedger {
       artifactIds: readonly string[],
       metadataAuthority?: (projectId: string, artifact: ArtifactDto) => boolean,
     ) => CommunicationAttachmentDto[],
-    private readonly progress?: ProjectionProgress,
+    private readonly progress: ProjectionProgress,
   ) {}
 
   configureManagedArtifactAttachmentMetadataAuthority(
@@ -153,8 +153,8 @@ export class AgentCommunicationProjectionLedger {
   }
 
   appendCommunicationProjection(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
-    const append = () => this.appendProjectedCommunication(projectId, projection);
-    return this.progress ? this.progress.run([communicationProjectionsPath(this.dataDir, projectId)], append) : append();
+    return this.progress.run([communicationProjectionsPath(this.dataDir, projectId)],
+      () => this.appendProjectedCommunication(projectId, projection));
   }
 
   private appendProjectedCommunication(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
