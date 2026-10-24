@@ -1848,10 +1848,10 @@ export class AgentStore extends AgentEventSessionFacade {
       this.closing = true;
       admittedStores.delete(this);
       // A checkpoint is an optimization, never shutdown authority. Canonical
-      // files are committed before their projections. A write-active lifetime is
-      // replayed once during orderly shutdown before minting its checkpoint, so
-      // a failure between canonical and projection writes cannot be certified as
-      // clean. The following startup is fast; a crash still leaves no marker.
+      // files are committed before their projections. A write-active lifetime
+      // requires full recovery at the next startup unless the caller explicitly
+      // requests replay before checkpointing. Partial projection writes must
+      // never be certified as clean.
       try {
         const currentChanges = (
           this.client.prepare("SELECT total_changes() value").get() as { value: number }

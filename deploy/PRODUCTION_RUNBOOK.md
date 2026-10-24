@@ -177,6 +177,89 @@ means stopping the new unit, restoring the pre-migration snapshot to a new
 path with the retained installed offline CLI, reinstalling the prior exact
 `.deb`, updating `release.env`, and retaining the failed directory.
 
+## Agent workload boundary
+
+A release code update does not replace a stale installed systemd unit. Before
+resuming a rollout, compare **effective installed settings**, including drop-ins;
+seeing `OOMPolicy=continue` in a source tree is insufficient. Keep the existing
+service `User`, paths, credentials, admission/refusal safeguards and stop timeout.
+
+For a system-managed daemon, first qualify the existing aggregate slice, then
+install the production child slice and oneshot owner in that service user's manager.
+Preserve operator-tuned aggregate settings and drop-ins; do not replace its base
+unit with release defaults during this targeted correction. If not configured,
+install and qualify the aggregate slice using the deployment README first.
+Provider scopes use `PartOf=ponderosa-production-workloads.service`; the system
+service's start/stop hooks control that exact user owner. This also cleans up
+scopes after a daemon crash without stopping DEV or the shared slice. The owner
+is a native systemd lifetime anchor, with no extra process, scheduler or watchdog.
+
+Use the qualified source and preserve any previous boundary drop-in with the
+rollout's configuration backup. After proxy gating, drain confirmation, observed
+stop and a cold canonical backup, perform this step **while the daemon is stopped**:
+
+```bash
+set -euo pipefail
+qualified_source=/path/to/qualified/source
+workload_unit=ponderosa.service
+test "$(systemctl show "$workload_unit" --property=ActiveState --value)" = inactive
+workload_user=$(systemctl show "$workload_unit" --property=User --value)
+test -n "$workload_user" && test "$workload_user" != root
+workload_uid=$(id -u -- "$workload_user")
+workload_home=$(getent passwd "$workload_user" | cut -d: -f6)
+test -d "$workload_home" && test -S "/run/user/$workload_uid/bus"
+test "$(systemd --version | head -1 | awk '{print $2}')" -ge 253
+sudo install -d -o "$workload_user" -m 0755 "$workload_home/.config/systemd/user"
+for unit in ponderosa-agent-workloads-production.slice ponderosa-production-workloads.service; do
+  sudo install -o "$workload_user" -m 0644 "$qualified_source/deploy/$unit" "$workload_home/.config/systemd/user/$unit"
+done
+sudo -u "$workload_user" env XDG_RUNTIME_DIR="/run/user/$workload_uid" \
+  DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$workload_uid/bus" systemctl --user daemon-reload
+sudo install -d -m 0755 "/etc/systemd/system/$workload_unit.d"
+sed "s/@UID@/$workload_uid/g" "$qualified_source/deploy/ponderosa-system-workloads.conf.in" \
+  | sudo install -m 0644 /dev/stdin "/etc/systemd/system/$workload_unit.d/50-workload-isolation.conf"
+sudo systemctl daemon-reload
+test "$(systemctl show "$workload_unit" --property=OOMPolicy --value)" = continue
+test "$(systemctl show "$workload_unit" --property=KillMode --value)" = mixed
+systemctl show "$workload_unit" --property=ExecStartPre --property=ExecStopPost
+```
+
+Compare the effective aggregate `MemoryHigh`/`MemoryMax` before and after; both
+must remain finite and unchanged. Verify the effective hooks contain the exact selected owner and numeric UID;
+retain existing unrelated hooks. Do not use `%U`, `%h` or `%t` as the target
+user's identity in a system-manager unit. Verify the actual daemon environment
+at birth matches the selected scope mode, owner, slice and memory budget without
+printing credentials. `systemd-run --user` must reach this user's manager. A
+rejected scope property must fail the launch; never retry without containment.
+
+Before resume, exercise both providers and inspect each actual scope's
+`MemoryHigh`, `MemoryMax`, `MemorySwapMax`, `OOMPolicy`, `PartOf`, `Slice` and
+`memory.oom.group`. The provisional Pine policy is 8 GiB hard / no swap per scope,
+without an additional per-scope reclaim threshold, beneath the observed 13–18 GiB runaway allocations. The largest
+recorded completed scope was 849 MiB across 340 observations; that is not a
+promise about every build. Qualify heavy builds and concurrent providers before
+changing the host budget. The production child slice inherits the existing
+aggregate limit; resource admission and exact process-ledger cleanup remain active.
+Never reproduce host-wide OOM on production. Use a uniquely owned, small capped
+fixture to prove a scope-local OOM leaves backend health and unrelated work intact.
+
+Orderly application shutdown uses the existing default storage close. After a
+write-active lifetime it leaves no clean projection checkpoint, preserving full
+canonical recovery and SQLite admission checks at startup. This avoids moving
+an unbounded synchronous replay into shutdown: the isolated retained production
+copy took 196 seconds with the optional replay/checkpoint versus 1 ms without it.
+Cold startup may consequently take longer. Measure the candidate on a private
+copy and use a larger **bounded deployment readiness observation** if needed
+while drained and proxy gated; do not bypass admission, shorten the service's
+180-second stop timeout, mint an unverified checkpoint or resume on health alone.
+Historical SIGBUS evidence remains a separate investigation.
+
+Rollback restores the backed-up code and exact boundary drop-in while stopped,
+then reloads both managers and verifies the restored effective settings. Preserve
+newer accepted canonical writes, Decisions and recovery receipts; this change has
+no schema migration. Never restore an older database over accepted work merely
+to undo a configuration change.
+
 ## Failure response
 
 - **Activation outbox dead letter:** do not mark the row processed or delete its

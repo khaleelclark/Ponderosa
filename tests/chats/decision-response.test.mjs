@@ -190,3 +190,9 @@ test('Decision actions finish from canonical POST data and retain retries for un
   mutation = { isError: true, error: Error('Completion not confirmed'), variables: { decision: { ...pending, mode: 'approval' } } }; render({ ...answered, mode: 'approval' }); assert.ok(tree);
   mutation = { isError: true, variables: { decision: { ...pending, id: 'other', mode: 'approval' } } }; render({ ...answered, mode: 'approval' }); assert.equal(tree, null);
 });
+
+test('UI019 a notification detail collection and ordinary lists update together without failing an accepted save',async t=>{
+ const f=setup(t,async()=>Response.json(answered));const detail=[...queryKeys.decisions.all,'detail',pending.id];
+ f.client.setQueryData(detail,[pending]);f.client.setQueryData(queryKeys.decisions.project(pending.projectId),[pending,{...pending,id:'other'}]);
+ await f.respond();assert.equal(f.completed(),1);assert.equal(f.observer.getCurrentResult().isSuccess,true);assert.equal(f.client.getQueryData(detail)[0].status,'resolved');assert.equal(f.client.getQueryData(queryKeys.decisions.project(pending.projectId))[1].status,'pending');
+});
