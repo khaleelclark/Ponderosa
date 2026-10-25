@@ -126,17 +126,18 @@ export function DictationControls({
         disableScrollLock
       >
         <MenuItem
-          disabled={disabled || active || paused || !voiceContext || !voiceContext.agents.some(agent =>
+          disabled={!anchor || disabled || active || paused || !voiceContext || !voiceContext.agents.some(agent =>
             agent.projectId === voiceContext.projectId && agent.conversationId === voiceContext.conversationId &&
             (!voiceContext.selectedAgentId || agent.id === voiceContext.selectedAgentId))}
-          onClick={() => { setAnchor(null); setOpenedCallOwner(callOwner); }}
+          onClick={() => { if (!anchor) return; setAnchor(null); setOpenedCallOwner(callOwner); }}
         >
           <ListItemIcon><PhoneIcon fontSize="small" /></ListItemIcon>
           <ListItemText primary="Voice call" secondary={active || paused ? "Stop dictation first" : !voiceContext ? "Choose a source Chat and Agent" : undefined} />
         </MenuItem>
         <MenuItem
-          disabled={disabled || Boolean(unavailable) || busy}
+          disabled={!anchor || disabled || Boolean(unavailable) || busy}
           onClick={() => {
+            if (!anchor) return;
             setAnchor(null);
             if (dictation.status === "listening" || dictation.status === "starting") dictation.pause();
             else if (paused) dictation.resume();

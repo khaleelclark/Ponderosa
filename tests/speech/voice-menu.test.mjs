@@ -93,3 +93,7 @@ test('recognition permission failure pauses the call; a foreign canonical Chat n
  const f=callFixture();await f.flush();f.findButton('Start call').props.onClick();f.render();f.dictation.status='error';f.dictation.error='Microphone permission was denied.';f.render();assert.equal(f.all().some(n=>n.type==='Alert'&&n.props.children==='Microphone permission was denied.'),true);assert.equal(f.sent.length,0);f.unmount();
  const foreign=callFixture();foreign.detail.conversation.id='foreign';await foreign.flush();assert.equal(foreign.findButton('Resume call').props.disabled,false);assert.equal(foreign.events.includes('capture'),false);assert.equal(foreign.sent.length,0);foreign.unmount();
 });
+
+test('exiting menu items cannot start dictation or open a call after Escape/close',()=>{
+ const f=menuFixture();f.open();f.find(n=>n.type==='Menu').props.onClose();f.render();assert.equal(f.item('Dictation').props.disabled,true);assert.equal(f.item('Voice call').props.disabled,true);f.item('Dictation').props.onClick();f.item('Voice call').props.onClick();f.render();assert.deepEqual(f.calls,[]);assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.unmount();
+});
