@@ -1,6 +1,7 @@
 import { defineConfig } from "@rsbuild/core";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { browserThemeBootstrap, THEME_BACKGROUNDS } from "./src/browserTheme";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pluginReact } from "@rsbuild/plugin-react";
@@ -24,12 +25,17 @@ const browserNotices = writeDependencyNotices(
   ["@napi-rs/canvas", "rsbuild-plugin-pwa"],
 );
 
+const themeScript = browserThemeBootstrap();
+const themeInitName = `theme-init.${createHash("sha256").update(themeScript).digest("hex").slice(0,12)}.js`;
+const themeInitDirectory = fileURLToPath(new URL("../../node_modules/.cache/ponderosa-theme", import.meta.url));
+mkdirSync(themeInitDirectory, { recursive: true });
+writeFileSync(path.join(themeInitDirectory, themeInitName), themeScript);
+
 export default defineConfig({
   plugins: [
     pluginReact(),
     pluginPWA({
       htmlTags: {
-        themeColor: true,
         icon: [
           { href: "/icons/app-icon.png", type: "image/png", sizes: "512x512" },
           { href: "/icons/maskable-icon.png", type: "image/png", sizes: "512x512" },
@@ -49,8 +55,8 @@ export default defineConfig({
           scope: "/",
           display: "standalone",
           orientation: "any",
-          background_color: "#faf6f3",
-          theme_color: "#20382b",
+          background_color: THEME_BACKGROUNDS.dark,
+          theme_color: THEME_BACKGROUNDS.dark,
           icons: [
             {
               src: "/icons/app-icon.png",
@@ -112,13 +118,14 @@ export default defineConfig({
     },
   },
   output: {
-    // Requested lazily by the renderer, not at app startup. Versioned paths
-    // prevent retained PWAs from mixing PDF library and font/decoder versions.
     copy: [
+      { from: path.join(themeInitDirectory, themeInitName), to: themeInitName },
       { from: browserNotices, to: "notices" },
       { from: fileURLToPath(new URL("../../packaging/notices/font-source", import.meta.url)), to: "notices/sources/liberation" },
       { from: fileURLToPath(new URL("../../packaging/notices/mpl-source", import.meta.url)), to: "notices/sources/mpl" },
       { from: fileURLToPath(new URL("../../packaging/notices/SOURCE-REFERENCES.md", import.meta.url)), to: "notices/SOURCE-REFERENCES.md" },
+      // PDF assets load lazily. Versioned paths prevent retained PWAs from
+      // mixing the library with another font/decoder version.
       { from: path.join(pdfjsRoot, "cmaps"), to: "static/pdfjs/6.3.289/cmaps" },
       { from: path.join(pdfjsRoot, "standard_fonts"), to: "static/pdfjs/6.3.289/standard_fonts" },
       { from: path.join(pdfjsRoot, "wasm", "openjpeg_nowasm_fallback.js"), to: "static/pdfjs/6.3.289/decoders/openjpeg_nowasm_fallback.js" },
@@ -130,6 +137,7 @@ export default defineConfig({
   },
   html: {
     template: "./index.html",
+    templateParameters: { themeBackground: THEME_BACKGROUNDS.dark, themeInitPath: `/${themeInitName}` },
     title: "Ponderosa",
     meta: {
       viewport: "width=device-width, initial-scale=1, viewport-fit=cover",
