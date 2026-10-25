@@ -690,3 +690,14 @@ test('workflow Rename uses the clicked owner, preserves canceled navigation and 
   scope.selection.current=1;scope.routeOwner.current={branchId:'a'};scope.deploy.isPending=false;change();scope.applyRename('Stale');assert.equal(scope.draft.definition.name,'Updated');
  }
 });
+
+
+test('an external publication cannot unmount and erase an open workflow Rename draft',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/BranchesView.tsx',import.meta.url),'utf8');
+ const effect=source.split('\n').find(line=>line.includes('current.versionId===draft.expectedVersionId'));
+ const refreshed=[],updates=[],scope={current:{id:'a',versionId:'new'},draft:{branchId:'a',expectedVersionId:'old'},renameId:'a',dirty:false,deployedUpdate:undefined,draftRevision:{current:'baseline'},useEffect:fn=>fn(),setDeployedUpdate:value=>updates.push(value),select:(...args)=>refreshed.push(args)};
+ const run=()=>vm.runInNewContext(ts.transpile(effect,{target:ts.ScriptTarget.ES2022}),scope);
+ run();assert.equal(refreshed.length,0,'Dialog remains mounted with its local input');assert.equal(updates.length,0);
+ scope.renameId=undefined;run();assert.equal(refreshed.length,1,'Cancel allows canonical refresh');
+ scope.dirty=true;run();assert.equal(refreshed.length,1,'Apply preserves the edited definition');assert.equal(updates.at(-1).reason,'dirty');
+});

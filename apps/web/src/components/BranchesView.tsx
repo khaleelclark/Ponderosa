@@ -174,7 +174,7 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
    return true;
   }catch(e){if(sequence===selection.current){setError((e as Error).message);if(reconcileBaseline!==undefined)setDeployedUpdate({branch,reason:'failed'})}return false}finally{if(sequence===selection.current){setLoading(false);setOpeningLink(false)}}
  }
-  useEffect(()=>{if(!current||current.id!==draft.branchId||current.versionId===draft.expectedVersionId||deployedUpdate?.reason==='failed'&&deployedUpdate.branch.id===current.id)return;if(dirty){setDeployedUpdate({branch:current,reason:'dirty'});return;}setDeployedUpdate(undefined);void select(current,true,draftRevision.current)},[current?.id,current?.versionId,draft.branchId,draft.expectedVersionId,dirty,deployedUpdate?.reason]);
+  useEffect(()=>{if(!current||current.id!==draft.branchId||current.versionId===draft.expectedVersionId||deployedUpdate?.reason==='failed'&&deployedUpdate.branch.id===current.id)return;if(renameId===current.id)return;if(dirty){setDeployedUpdate({branch:current,reason:'dirty'});return;}setDeployedUpdate(undefined);void select(current,true,draftRevision.current)},[current?.id,current?.versionId,draft.branchId,draft.expectedVersionId,dirty,deployedUpdate?.reason,renameId]);
  useEffect(()=>{let cancelled=false;
   if(!route.branchId&&!route.executionId){selection.current++;setDraft(emptyDraft());savedDraft.current=undefined;setAdvancedDirty(false);setLoading(false);setOpeningLink(false);return;}
   setOpeningLink(Boolean(route.executionId&&!draft.branchId)||route.branchId!==draft.branchId);
