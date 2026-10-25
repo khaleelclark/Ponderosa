@@ -889,3 +889,78 @@ test('uncertain variable saves recover the accepted revision without replay and 
  f.scope.readback=async()=>{throw new Error('Controlled recovery failure')};await assert.rejects(f.reload(),/recovery failure/);assert.equal(f.scope.draft.parameters.note,'edited');assert.equal(f.scope.revision,3);
  f.scope.readback=undefined;await f.reload();assert.equal(f.scope.revision,4);assert.equal(f.scope.draft.parameters.note,'edited');assert.equal(f.writes.length,1,'Readback must not repeat the accepted write');
 });
+
+async function discardActionFixture(){
+ const {readFile}=await import('node:fs/promises'),{createRequire}=await import('node:module'),vm=await import('node:vm'),ts=createRequire(new URL('../../apps/web/package.json',import.meta.url))('typescript');
+ const source=await readFile(new URL('../../apps/web/src/components/BranchesView.tsx',import.meta.url),'utf8'),file=ts.createSourceFile('BranchesView.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ const declarations=new Map();function visit(node){if(ts.isVariableStatement(node))for(const d of node.declarationList.declarations)if(ts.isIdentifier(d.name))declarations.set(d.name.text,node.getText(file));if(ts.isFunctionDeclaration(node)&&node.name)declarations.set(node.name.text,node.getText(file));ts.forEachChild(node,visit)}visit(file);
+ const branch={id:'owner',name:'Published workflow',versionId:'v1',bindingRevisionId:'b1',chatId:'chat'},definition={name:branch.name,steps:[],controls:[],edges:[],trigger:{kind:'manual'}},bindings={agents:{},directories:{workspace:'.'}};
+ const {branchDraftRevision}=await import('../../apps/web/src/components/branches/model.ts'),{ApiRequestError}=await import('../../apps/web/src/api/types.ts');
+ const baseline={branchId:branch.id,expectedVersionId:branch.versionId,chatId:branch.chatId,definition,bindings},draft={...baseline,definition:{...definition,name:'Local rename'}},requests=[],resets=[],cache=[];
+ const scope={draft,currentDraft:{current:draft},draftRevision:{current:branchDraftRevision(draft)},pendingAdvanced:{current:true},workflowEdits:{current:3},routeOwner:{current:{branchId:'owner',tab:'workflow'}},selection:{current:7},savedDraft:{current:branchDraftRevision(baseline)},branchDraftRevision,ApiRequestError,
+  serverBranch:branch,serverDefinition:definition,serverBindings:bindings,advancedDirty:true,dirty:true,loading:false,openingLink:false,publicationUnconfirmed:false,discardDisabled:false,discardIntent:undefined,preview:{draftRevision:branchDraftRevision(draft),input:{branchId:'owner',idempotencyKey:'exact-attempt',definition:draft.definition},expectsNewWebhookSecret:false,result:{operations:[]}},
+  input:'keep execution input',runOpen:true,occurrenceKey:'keep accepted intent',notice:'Unrelated success',error:'Unrelated failure',independentSettings:{count:'dirty'},current:branch,
+  review:{isPending:false,reset(){resets.push('review')},mutate(){resets.push('new preview')}},deploy:{isPending:false,isError:false,reset(){resets.push('deploy')}},run:{reset(){resets.push('run')}},
+  actionLocks:{current:new Set()},once(key,action){if(scope.actionLocks.current.has(key))return;scope.actionLocks.current.add(key);action()},
+  newDefinition:()=>({...definition,name:'Untitled workflow'}),updateDraft:next=>{scope.draft=next},setAdvancedDirty:value=>{scope.advancedDirty=value},setDeployedUpdate:value=>{scope.deployedUpdate=value},setEditorKey:update=>{scope.editorKey=update(scope.editorKey??0)},setPreview:value=>{scope.preview=value},setReminderDismissed:value=>{scope.reminderDismissed=value},setDiscardIntent:value=>{scope.discardIntent=value},setError:value=>{scope.error=value},setLoading:value=>{scope.loading=value},setSecret:value=>{scope.secret=value},setSecretRecovery:value=>{scope.secretRecovery=value},setNotice:value=>{scope.notice=value},
+  client:{setQueryData:(key,value)=>cache.push({key,value}),invalidateQueries:async()=>{}},
+  requestJson:async(path,init)=>{requests.push({path,method:init?.method??'GET',cache:init?.cache,body:init?.body});await scope.onRead?.(path,init);if(init?.method==='POST')return scope.serverBranch;if(path.includes('/versions/'))return {id:scope.serverBranch.versionId,branchId:'owner',definition:scope.serverDefinition};if(path.includes('/configuration'))return scope.serverBindings;return {...scope.serverBranch}},
+  useMutation:options=>{const state={options,isPending:false,isError:false,error:null,reset(){state.error=null;state.isError=false},mutate(input){state.pending=state.mutateAsync(input).catch(()=>{})},async mutateAsync(input){state.variables=input;state.isPending=true;state.isError=false;state.error=null;try{await options.onMutate?.(input);const value=await options.mutationFn(input);await options.onSuccess?.(value,input);return value}catch(error){state.isError=true;state.error=error;throw error}finally{state.isPending=false;options.onSettled?.()}}};return state}
+ };
+ vm.createContext(scope);
+ const load=name=>{let statement=declarations.get(name);assert.ok(statement,`Actual owner ${name} exists`);if(statement.startsWith('async function'))statement=statement.replace(`async function ${name}`,`globalThis.${name}=async function`);else statement=statement.replace(`const ${name}=`,`globalThis.${name}=`);vm.runInContext(ts.transpileModule(statement,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope)};
+ for(const name of ['readWorkflowDraft','setDraft','resetWorkflowBaseline','ownsDiscard','discard','requestDiscard','reviewChanges','publishChanges'])load(name);
+ return {scope,requests,resets,cache,baseline,load,source,file,ts,vm};
+}
+
+test('Discard resets the verified workflow only and uses immutable binding revision with fresh reads',async()=>{
+ const f=await discardActionFixture(),s=f.scope;s.requestDiscard();assert.equal(s.discardIntent.branchId,'owner');await s.discard.mutateAsync(s.discardIntent);
+ assert.equal(s.draft.definition.name,'Published workflow');assert.equal(s.savedDraft.current,s.branchDraftRevision(s.draft));assert.equal(s.pendingAdvanced.current,false);assert.equal(s.advancedDirty,false);assert.equal(s.preview,undefined);assert.equal(s.discardIntent,undefined);assert.equal(s.reminderDismissed,false);
+ assert.equal(s.input,'keep execution input');assert.equal(s.runOpen,true);assert.equal(s.occurrenceKey,'keep accepted intent');assert.equal(s.independentSettings.count,'dirty');assert.equal(s.error,'Unrelated failure');assert.equal(s.notice,'Unrelated success');assert.deepEqual(f.resets,['review']);
+ assert.equal(f.requests.length,4);assert.ok(f.requests.every(r=>r.method==='GET'&&r.cache==='no-store'));assert.ok(f.requests.some(r=>r.path.endsWith('/configuration?revisionId=b1')));assert.equal(f.requests[0].path,f.requests.at(-1).path);
+});
+
+test('Discard retains never-published Branch identity and restores its persisted default without a write',async()=>{
+ const f=await discardActionFixture(),s=f.scope;s.serverBranch={...s.serverBranch,versionId:'',bindingRevisionId:'',name:'Never published'};s.requestDiscard();await s.discard.mutateAsync(s.discardIntent);
+ assert.equal(s.draft.branchId,'owner');assert.equal(s.draft.definition.name,'Never published');assert.equal(s.draft.expectedVersionId,'');assert.ok(!f.requests.some(r=>r.path.includes('/versions/')));assert.ok(f.requests.every(r=>r.method==='GET'));
+});
+
+test('failed or incoherent Discard reads retain all edits and an explicit retry can recover',async()=>{
+ for(const failure of ['read','version','bindings']){const f=await discardActionFixture(),s=f.scope,before=s.draft;s.requestDiscard();let gets=0;s.onRead=async path=>{if(failure==='read')throw Error('Offline');if(path==='/api/branches/owner'&&++gets===2)s.serverBranch={...s.serverBranch,...(failure==='version'?{versionId:'v2'}:{bindingRevisionId:'b2'})}};
+  await assert.rejects(s.discard.mutateAsync(s.discardIntent));assert.equal(s.draft,before);assert.equal(s.advancedDirty,true);assert.ok(s.discardIntent);assert.equal(f.resets.length,0);s.onRead=undefined;await s.discard.mutateAsync(s.discardIntent);assert.equal(s.draft.definition.name,'Published workflow');
+ }
+});
+
+test('late Discard cannot erase another owner, same-value newer draft edits, or unapplied advanced edits',async()=>{
+ for(const change of ['owner','selection','revision','edits']){const f=await discardActionFixture(),s=f.scope,before=s.draft;s.requestDiscard();let release,entered;const read=new Promise(resolve=>{entered=resolve});s.onRead=()=>new Promise(resolve=>{release=()=>{s.onRead=undefined;resolve()};entered()});const pending=s.discard.mutateAsync(s.discardIntent);await read;
+  if(change==='owner')s.routeOwner.current={branchId:'other'};else if(change==='selection')s.selection.current++;else if(change==='revision')s.draftRevision.current='newer draft';else s.workflowEdits.current++;
+  release();await assert.rejects(pending,/changed/);assert.equal(s.draft,before);assert.equal(s.advancedDirty,true);assert.equal(f.resets.length,0);
+ }
+});
+
+test('both Discard entry points share pending locks and publication uncertainty cannot silently reset the attempt',async()=>{
+ const f=await discardActionFixture(),s=f.scope;s.requestDiscard();s.once('discard',()=>s.discard.mutate(s.discardIntent));s.once('discard',()=>s.discard.mutate(s.discardIntent));await s.discard.pending;assert.equal(f.requests.length,4);
+ const u=await discardActionFixture(),a=u.scope,attempt=a.preview;a.deploy={...a.deploy,isError:true,variables:attempt,error:Error('Response lost')};u.load('publicationUnconfirmed');u.load('discardDisabled');assert.equal(a.publicationUnconfirmed,true);a.requestDiscard();assert.equal(a.discardIntent,undefined);a.preview=undefined;a.reviewChanges();assert.equal(a.preview,attempt);assert.equal(u.resets.length,0);a.draftRevision.current='new edits';let retried;a.deploy.mutate=value=>{retried=value};a.publishChanges();assert.equal(retried,attempt,'Retry uses the exact old idempotent attempt even if newer edits exist');
+ a.deploy.error=new a.ApiRequestError(400,'Rejected');u.load('publicationUnconfirmed');assert.equal(a.publicationUnconfirmed,false,'A settled rejection can use fresh canonical Discard recovery');
+});
+
+test('reconciled publication keeps newer draft edits instead of resetting them; unrelated owner is not selected',async()=>{
+ for(const owner of ['owner','other']){const f=await discardActionFixture(),s=f.scope,attempt=s.preview;f.load('deploy');s.routeOwner.current={branchId:owner};s.draftRevision.current='newer draft';let selected=0;s.select=async()=>{selected++;return true};await s.deploy.options.onSuccess({...s.serverBranch,versionId:'published-after-retry'},attempt);
+  assert.equal(selected,0);assert.equal(s.draft.definition.name,'Local rename');assert.equal(s.independentSettings.count,'dirty');if(owner==='owner')assert.equal(s.deployedUpdate.reason,'dirty');else assert.equal(s.deployedUpdate,undefined);
+ }
+});
+
+
+test('successful Discard retires late callbacks from the old editor generation',async()=>{
+ const f=await discardActionFixture(),s=f.scope;s.editorGeneration=s.selection.current;
+ const callbacks={};function visit(node){if(f.ts.isJsxAttribute(node)&&['onDefinition','onBindings'].includes(node.name.getText(f.file))&&node.initializer&&f.ts.isJsxExpression(node.initializer)){const text=node.initializer.expression?.getText(f.file);if(text?.includes('editorGeneration===selection.current'))callbacks[node.name.getText(f.file)]=text}f.ts.forEachChild(node,visit)}visit(f.file);
+ s.bindDefinitionDirectories=(_definition,bindings)=>bindings;s.contexts={data:[]};for(const [name,code] of Object.entries(callbacks))f.vm.runInContext(f.ts.transpileModule(`globalThis.old_${name}=${code}`,{compilerOptions:{target:f.ts.ScriptTarget.ES2022}}).outputText,s);
+ assert.equal(Object.keys(callbacks).length,2);s.requestDiscard();await s.discard.mutateAsync(s.discardIntent);const restored=s.draft;
+ s.old_onDefinition({...restored.definition,name:'Late discarded JSON'});s.old_onBindings({agents:{late:'discarded'}});assert.equal(s.draft,restored);assert.equal(s.draft.definition.name,'Published workflow');
+});
+
+
+test('retrying an unconfirmed publication keeps unapplied advanced edits mounted until its outcome is known',async()=>{
+ const f=await discardActionFixture(),s=f.scope,attempt=s.preview;f.load('deploy');let selected=0;s.select=async()=>{selected++;return true};
+ await s.deploy.options.onMutate(attempt);assert.equal(s.loading,false,'Do not unmount the advanced editor just to retry a publication');assert.equal(s.pendingAdvanced.current,true);await s.deploy.options.onSuccess(s.serverBranch,attempt);assert.equal(selected,0);assert.equal(s.advancedDirty,true);assert.equal(s.deployedUpdate.reason,'dirty');
+});
