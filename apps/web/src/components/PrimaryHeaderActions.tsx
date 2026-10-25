@@ -7,12 +7,14 @@ import {
   useMemo,
   useState,
   type ReactNode,
+  type ComponentProps,
 } from "react";
 import { createPortal } from "react-dom";
 import { ProviderQuotaIndicator } from "./ProviderUsageCenter";
 
-type RegisterHeaderActionOutlet = (element: HTMLElement, depth?: number) => () => void;
-type HeaderActionOutlet = { element: HTMLElement; depth: number };
+type HeaderActionTrigger = ComponentProps<typeof ProviderQuotaIndicator>["renderTrigger"];
+type RegisterHeaderActionOutlet = (element: HTMLElement, depth?: number, renderTrigger?: HeaderActionTrigger) => () => void;
+type HeaderActionOutlet = { element: HTMLElement; depth: number; renderTrigger?: HeaderActionTrigger };
 
 const PrimaryHeaderActionsContext = createContext<
   RegisterHeaderActionOutlet | undefined
@@ -28,11 +30,13 @@ export function PrimaryHeaderActionsProvider({
   onOpenProviderSettings,
   children,
   workspaceStatus,
+  notifications,
 }: {
   preferredProvider?: string;
   onOpenProviderSettings(): void;
   children: ReactNode;
   workspaceStatus?: ReactNode;
+  notifications?: ReactNode;
 }): JSX.Element {
   const theme = useTheme();
   const narrow = useMediaQuery(theme.breakpoints.down("sm"));
@@ -40,15 +44,16 @@ export function PrimaryHeaderActionsProvider({
   const mobile = narrow || coarsePointer;
   const [fallbackOutlet, setFallbackOutlet] = useState<HTMLDivElement | null>(null);
   const [outlets, setOutlets] = useState<HeaderActionOutlet[]>([]);
-  const register = useCallback<RegisterHeaderActionOutlet>((element, depth = 0) => {
-    setOutlets(current => [...current.filter(candidate => candidate.element !== element), { element, depth }]);
+  const register = useCallback<RegisterHeaderActionOutlet>((element, depth = 0, renderTrigger) => {
+    setOutlets(current => [...current.filter(candidate => candidate.element !== element), { element, depth, renderTrigger }]);
     return () => {
       setOutlets(current => current.filter(candidate => candidate.element !== element));
     };
   }, []);
   const value = useMemo(() => register, [register]);
   // Scoped Chat/Agent chrome outranks its Branch even when the outer header remounts.
-  const activeOutlet = outlets.reduce<HeaderActionOutlet | undefined>((active, next) => !active || next.depth >= active.depth ? next : active, undefined)?.element;
+  const activeRegistration = outlets.reduce<HeaderActionOutlet | undefined>((active, next) => !active || next.depth >= active.depth ? next : active, undefined);
+  const activeOutlet = activeRegistration?.element;
 
   return (
     <PrimaryHeaderActionsContext.Provider value={value}>
@@ -80,7 +85,9 @@ export function PrimaryHeaderActionsProvider({
         </Box>
       </Box>
       {workspaceStatus && (activeOutlet ?? fallbackOutlet) ? createPortal(workspaceStatus, (activeOutlet ?? fallbackOutlet)!) : null}
+      {notifications && !activeRegistration?.renderTrigger && (activeOutlet ?? fallbackOutlet) ? createPortal(notifications, (activeOutlet ?? fallbackOutlet)!) : null}
       <ProviderQuotaIndicator
+        renderTrigger={activeRegistration?.renderTrigger}
         preferredProvider={preferredProvider}
         mobile={mobile}
         portalTarget={activeOutlet ?? fallbackOutlet}
@@ -93,21 +100,21 @@ export function PrimaryHeaderActionsProvider({
 /** Keep shared usage in the deepest mounted Chat/Agent header, with outer fallback. */
 export function PrimaryHeaderActionsScope({children}:{children:ReactNode}):JSX.Element {
   const register=useContext(PrimaryHeaderActionsContext);
-  const scopedRegister=useCallback<RegisterHeaderActionOutlet>((element,depth=0)=>{
-    const unregister=register?.(element,depth+1);
+  const scopedRegister=useCallback<RegisterHeaderActionOutlet>((element,depth=0,renderTrigger)=>{
+    const unregister=register?.(element,depth+1,renderTrigger);
     return ()=>unregister?.();
   },[register]);
   return <PrimaryHeaderActionsContext.Provider value={scopedRegister}>{children}</PrimaryHeaderActionsContext.Provider>;
 }
 
 /** The trailing action destination shared by primary and utility headers. */
-export function PrimaryHeaderActionsOutlet(): JSX.Element {
+export function PrimaryHeaderActionsOutlet({renderTrigger}: {renderTrigger?: HeaderActionTrigger} = {}): JSX.Element {
   const register = useContext(PrimaryHeaderActionsContext);
   const [element, setElement] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     if (!element || !register) return;
-    return register(element);
-  }, [element, register]);
+    return register(element, 0, renderTrigger);
+  }, [element, register, renderTrigger]);
 
   return (
     <Box

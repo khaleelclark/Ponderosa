@@ -100,6 +100,8 @@ export interface TabbedWorkspaceFrameProps<T extends string> {
   meta?: ReactNode;
   status?: ReactNode;
   actions?: ReactNode;
+  /** A collapsed owner may reuse shared controls through its own action menu. */
+  collapsedActions?: ReactNode;
   /** Chat/Agent mobile chrome gives controls priority over title width. */
   compactMobile?: boolean;
   actionsInMobileTabs?: boolean;
@@ -190,6 +192,7 @@ export function CompactWorkspaceHeader({
   status,
   tabs,
   collapseAction,
+  primaryActions,
 }: {
   icon: ReactElement;
   title: string;
@@ -199,7 +202,9 @@ export function CompactWorkspaceHeader({
   status?: ReactNode;
   tabs?: ReactNode;
   collapseAction?: ReactNode;
+  primaryActions?: ReactNode;
 }): JSX.Element {
+  const primary = primaryActions === undefined ? <PrimaryHeaderActionsOutlet /> : primaryActions;
   return (
     <Box
       sx={theme => ({
@@ -274,10 +279,10 @@ export function CompactWorkspaceHeader({
         </Box>
         {tabs ? <>
           <Box sx={{gridArea:"tabs",minWidth:0}}>{tabs}</Box>
-          <Box sx={{gridArea:"primary",display:"flex"}}><PrimaryHeaderActionsOutlet /></Box>
+          <Box sx={{gridArea:"primary",display:"flex"}}>{primary}</Box>
           <Box sx={{gridArea:"actions",display:"flex",justifyContent:"flex-end"}}>{action}</Box>
           <Box sx={{gridArea:"toggle",justifySelf:"end"}}>{collapseAction}</Box>
-        </> : <><PrimaryHeaderActionsOutlet />{action}</>}
+        </> : <>{primary}{action}</>}
       </Stack>
     </Box>
   );
@@ -295,6 +300,7 @@ export function TabbedWorkspaceFrame<T extends string>({
   meta,
   status,
   actions,
+  collapsedActions,
   compactMobile = false,
   actionsInMobileTabs = false,
   collapsedIconTabs = false,
@@ -330,13 +336,14 @@ export function TabbedWorkspaceFrame<T extends string>({
         <KeyboardArrowDownIcon />
       </IconButton>
     </Tooltip>;
-    const retainedActions = compact || retainCollapsedActions ? <Stack direction="row" spacing={0.25} sx={{alignItems:"center",flexShrink:0}}>
-      {statusBeforePrimaryActions ? null : status}{actionsInMobileTabs ? null : actions}
+    const retainedActions = collapsedActions !== undefined || compact || retainCollapsedActions ? <Stack direction="row" spacing={0.25} sx={{alignItems:"center",flexShrink:0}}>
+      {statusBeforePrimaryActions ? null : status}{actionsInMobileTabs ? null : collapsedActions === undefined ? actions : collapsedActions}
     </Stack> : null;
     return <CompactWorkspaceHeader icon={icon} title={title} hideIcon={compact}
       status={statusBeforePrimaryActions ? status : undefined}
       context={collapsedIconTabs ? undefined : activeLabel}
       tabs={collapsedIconTabs ? <WorkspaceTabBar {...tabs} compact /> : undefined}
+      primaryActions={collapsedActions === undefined ? undefined : null}
       collapseAction={collapsedIconTabs ? toggle : undefined}
       action={collapsedIconTabs ? retainedActions : <>{retainedActions}{toggle}</>}
     />;

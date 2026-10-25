@@ -22,7 +22,7 @@ import { downloadMarkdownTranscript } from "../chatTranscript";
 
 export interface ChatOverflowAction {
   label: string;
-  onSelect(): void;
+  onSelect(anchor: HTMLElement): void;
   icon?: ReactNode;
   disabled?: boolean;
   destructive?: boolean;
@@ -57,9 +57,11 @@ export function ChatOverflowMenu({
   const [exportMenu, setExportMenu] = useState<{ kind: "copy" | "download"; anchor: HTMLElement }>();
   const [notice, setNotice] = useState<string>();
   const close = () => setAnchor(null);
-  const run = (action: () => void) => {
+  const run = (action: ChatOverflowAction["onSelect"]) => {
+    const mainAnchor = anchor;
+    if (!mainAnchor?.isConnected) return;
     close();
-    action();
+    action(mainAnchor);
   };
   return <>
     <Tooltip title={label}>
@@ -129,8 +131,10 @@ export function ChatOverflowMenu({
           sx={menuRowSx}
           disabled={action.disabled}
           onClick={() => {
+            const mainAnchor = exportMenu?.anchor;
+            if (!mainAnchor?.isConnected) return;
             setExportMenu(undefined);
-            action.onSelect();
+            action.onSelect(mainAnchor);
           }}
         >
           {action.icon ? <ListItemIcon>{action.icon}</ListItemIcon> : null}

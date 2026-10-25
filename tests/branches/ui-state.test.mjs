@@ -821,7 +821,7 @@ test('scoped header usage stays with the nested owner across outer remounts and 
  const declaration=name=>provider.body.statements.flatMap(node=>ts.isVariableStatement(node)?[...node.declarationList.declarations]:[]).find(node=>node.name.getText(ast)===name).initializer.getText(ast);
  const scope={useCallback:fn=>fn,outlets:[],setOutlets:update=>{scope.outlets=update(scope.outlets)}};
  const execute=value=>vm.runInNewContext(ts.transpile(value,{target:ts.ScriptTarget.ES2022}),scope);
- const register=execute(declaration('register')),active=()=>execute(declaration('activeOutlet'));
+ const register=execute(declaration('register')),active=()=>{scope.activeRegistration=execute(declaration('activeRegistration'));scope.activeOutlet=execute(declaration('activeOutlet'));return scope.activeOutlet;};
  const outer={},nested={},laterOuter={},peer={},deep={};
  const removeOuter=register(outer);assert.equal(active(),outer);
  const scopedProvider=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='PrimaryHeaderActionsScope'),scopedDeclaration=scopedProvider.body.statements.flatMap(node=>ts.isVariableStatement(node)?[...node.declarationList.declarations]:[]).find(node=>node.name.getText(ast)==='scopedRegister').initializer.getText(ast);scope.register=register;
@@ -830,6 +830,12 @@ test('scoped header usage stays with the nested owner across outer remounts and 
  const removeDeep=register(deep,2);assert.equal(active(),deep);removeDeep();assert.equal(active(),peer);
  removePeer();assert.equal(active(),nested);removeNested();assert.equal(active(),laterOuter,'Nested cleanup restores the latest outer owner');
  removeLater();assert.equal(active(),outer);removeOuter();assert.equal(active(),undefined,'The existing fallback can take over');
+ const compactTrigger=()=>null,removeCompact=scopedRegister(nested,0,compactTrigger);active();assert.equal(scope.activeRegistration.renderTrigger,compactTrigger,'The same scoped registration carries the existing usage renderer');removeCompact();
+ let notification;function findNotification(node){if(ts.isJsxExpression(node)&&node.expression?.getText(ast).includes('createPortal(notifications,'))notification=node.expression.getText(ast);ts.forEachChild(node,findNotification)}findNotification(provider);assert.ok(notification);
+ scope.notifications='Branch notifications';scope.fallbackOutlet=outer;scope.createPortal=(child,target)=>({child,target});active();assert.ok(execute(notification),'Expanded and fallback navigation keep their notification action');
+ const removeMenu=register(nested,1,compactTrigger);active();assert.equal(execute(notification),null,'Only the active compact Chat menu suppresses the header notification bell');
+ let feedback;function findFeedback(node){if(ts.isJsxExpression(node)&&node.expression?.getText(ast).includes('createPortal(workspaceStatus,'))feedback=node.expression.getText(ast);ts.forEachChild(node,findFeedback)}findFeedback(provider);scope.workspaceStatus='Connection/recovery notice';assert.ok(execute(feedback),'Compact presentation retains connection and uncertain-creation recovery notices');removeMenu();active();assert.ok(execute(notification));
+
 });
 
 
@@ -1006,4 +1012,23 @@ test('compact execution count preserves full meaning for zero, active, loading a
   const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...base,...props}));
   assert.ok(html.includes(`role="img" tabindex="0" aria-label="${label}"`));assert.ok(html.includes(`</span>${visible}</span>`),'The narrow status has a visible count or explicit unresolved/error symbol');assert.ok(html.includes(`aria-label="${label}"`));
  }
+});
+
+
+test('Chat menu actions receive the persistent menu button and ignore closed or detached anchors',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/ChatOverflowMenu.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('menu.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ let run;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='run')run=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(run);
+ const button={isConnected:true},calls=[],scope={anchor:button,close:()=>calls.push('closed')};const action=vm.runInNewContext(ts.transpile(run,{target:ts.ScriptTarget.ES2022}),scope);action(anchor=>calls.push(anchor));assert.deepEqual(calls,['closed',button],'Usage opens against the persistent icon button after closing the menu');
+ scope.anchor=null;action(()=>calls.push('unexpected'));scope.anchor={isConnected:false};action(()=>calls.push('unexpected'));assert.equal(calls.length,2,'An exiting/closed or disconnected owner cannot open a control');
+ let exportAction;function findExport(node){if(ts.isJsxAttribute(node)&&node.name.getText(ast)==='onClick'&&node.initializer&&ts.isJsxExpression(node.initializer)&&node.initializer.expression?.getText(ast).includes('const mainAnchor = exportMenu?.anchor'))exportAction=node.initializer.expression.getText(ast);ts.forEachChild(node,findExport)}findExport(ast);assert.ok(exportAction);
+ const exported=[];scope.exportMenu={kind:'copy',anchor:button};scope.setExportMenu=value=>{scope.exportMenu=value;exported.push('closed')};scope.action={onSelect:anchor=>exported.push(anchor)};const selectExport=vm.runInNewContext(ts.transpile(exportAction,{target:ts.ScriptTarget.ES2022}),scope);selectExport();assert.deepEqual(exported,['closed',button],'Export actions capture the same main button before clearing their submenu state');selectExport();scope.exportMenu={anchor:{isConnected:false}};selectExport();assert.equal(exported.length,2);
+
+});
+
+test('collapsed Chat reuses its actions and usage callback while audit-only menus remain read-only',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/ConversationView.parts.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('chat.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ let renderer;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='renderCollapsedMenu')renderer=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(renderer);
+ const calls=[],scope={React,useCallback:fn=>fn,ChatOverflowMenu:()=>null,DataUsageOutlinedIcon:()=>null,LanguageIcon:()=>null,menuLabel:'Chat settings and actions',transcriptMarkdown:'kept transcript',transcriptTitle:'Chat',transcriptFileName:value=>value+'.md',auditOnly:false,chatActions:[{label:'Chat settings',onSelect(){}}],onOpenProjectBrowser:()=>calls.push('browser')};
+ const read=()=>vm.runInNewContext(ts.transpile(renderer,{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope),open=anchor=>calls.push(anchor),button={isConnected:true};let menu=read()(open);assert.deepEqual(Array.from(menu.props.actions,action=>action.label),['Chat settings','Provider usage','Browser']);menu.props.actions[1].onSelect(button);menu.props.actions[2].onSelect(button);assert.deepEqual(calls,[button,'browser']);assert.equal(menu.props.showExports,true);
+ scope.auditOnly=true;menu=read()(open);assert.deepEqual(Array.from(menu.props.actions,action=>action.label),['Provider usage']);assert.equal(menu.props.showExports,false,'Execution inspection exposes neither Browser, mutation nor export actions');
 });

@@ -7,6 +7,7 @@ import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import TagIcon from "@mui/icons-material/Tag";
 import LanguageIcon from "@mui/icons-material/Language";
+import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import {
@@ -29,6 +30,7 @@ import type {
 import {
   memo,
   useCallback,
+  useMemo,
   type Dispatch,
   type SetStateAction,
 } from "react";
@@ -47,7 +49,8 @@ import {
   stripDocumentPrefixText,
 } from "./chat/ChatMessages";
 import { ProjectRelationshipLink } from "./HeaderRelationshipLinks";
-import { ChatOverflowMenu } from "./ChatOverflowMenu";
+import { ChatOverflowMenu, type ChatOverflowAction } from "./ChatOverflowMenu";
+import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { MessageRequestAction } from "./MessageRequestAction";
 import { DecisionCard } from "./decisions/DecisionCard";
@@ -293,9 +296,47 @@ function ConversationHeader({
   setActiveView(view: ConversationDetailView): void;
 }): JSX.Element {
   const auditOnly=useWorkspaceReadOnly();
+  const chatActions = useMemo<ChatOverflowAction[]>(()=>[
+    { label: "Chat settings", onSelect: onChatSettings },
+    {
+      label: "Work",
+      icon: <AccountTreeOutlinedIcon fontSize="small" />,
+      onSelect: () => setAgentWorkOpen(true),
+    },
+    {
+      label: "Rename",
+      icon: <DriveFileRenameOutlineIcon fontSize="small" />,
+      onSelect: () => {
+        setRenameValue(conversation.title);
+        setRenameOpen(true);
+      },
+    },
+    {
+      label: "Add Agents…",
+      icon: <AddIcon fontSize="small" />,
+      onSelect: () => setAddAgentsOpen(true),
+    },
+    {
+      label: "Delete",
+      icon: <DeleteOutlineIcon fontSize="small" />,
+      destructive: true,
+      onSelect: () => setDeleteOpen(true),
+    },
+  ],[onChatSettings,setAgentWorkOpen,setRenameValue,conversation.title,setRenameOpen,setAddAgentsOpen,setDeleteOpen]);
+  const menuLabel = `${activeView === "collaboration" ? "Team Chat" : "Chat"} settings and actions`;
+  const renderCollapsedMenu = useCallback((openUsage:(anchor:HTMLElement)=>void)=><ChatOverflowMenu
+    label={menuLabel} transcriptMarkdown={transcriptMarkdown}
+    transcriptFileName={transcriptFileName(transcriptTitle)} showExports={!auditOnly}
+    actions={[
+      ...(auditOnly ? [] : chatActions),
+      {label:"Provider usage",icon:<DataUsageOutlinedIcon fontSize="small"/>,onSelect:openUsage},
+      ...(!auditOnly ? [{label:"Browser",icon:<LanguageIcon fontSize="small"/>,onSelect:onOpenProjectBrowser}] : []),
+    ]}
+  />,[menuLabel,transcriptMarkdown,transcriptTitle,auditOnly,chatActions,onOpenProjectBrowser]);
   return (
     <TabbedWorkspaceFrame
       collapsedIconTabs
+      collapsedActions={<PrimaryHeaderActionsOutlet renderTrigger={renderCollapsedMenu}/>}
       compactMobile
       icon={<ChatBubbleOutlineIcon />}
       title={conversation.title}
@@ -319,33 +360,7 @@ function ConversationHeader({
             label={`${activeView === "collaboration" ? "Team Chat" : "Chat"} settings and actions`}
             transcriptMarkdown={transcriptMarkdown}
             transcriptFileName={transcriptFileName(transcriptTitle)}
-            actions={[
-              { label: "Chat settings", onSelect: onChatSettings },
-              {
-                label: "Work",
-                icon: <AccountTreeOutlinedIcon fontSize="small" />,
-                onSelect: () => setAgentWorkOpen(true),
-              },
-              {
-                label: "Rename",
-                icon: <DriveFileRenameOutlineIcon fontSize="small" />,
-                onSelect: () => {
-                  setRenameValue(conversation.title);
-                  setRenameOpen(true);
-                },
-              },
-              {
-                label: "Add Agents…",
-                icon: <AddIcon fontSize="small" />,
-                onSelect: () => setAddAgentsOpen(true),
-              },
-              {
-                label: "Delete",
-                icon: <DeleteOutlineIcon fontSize="small" />,
-                destructive: true,
-                onSelect: () => setDeleteOpen(true),
-              },
-            ]}
+            actions={chatActions}
           />
         </>
       }
