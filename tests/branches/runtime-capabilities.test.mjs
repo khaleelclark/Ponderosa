@@ -109,3 +109,11 @@ test('aggregated connected-tool details have one response-wide bound without dro
   assert.ok(connectors.reduce((sum,row)=>sum+Buffer.byteLength(JSON.stringify(row.includedTools)),0)<64*1024);assert.match(result.catalogNotice,/tool details are omitted/);
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),capabilityCatalog:cwd=>({steering:true,persistentSessions:true,commands:[],composerCapabilities:[],mcpServers:[{name:cwd.endsWith('alternate')?'second-service':'first-service',configured:true,initialization:'initialized',usable:true,toolsDiscovered:true,toolCount:100,health:'unknown',tools:Array.from({length:100},(_,i)=>({name:`tool_${i}`,description:'d'.repeat(400)}))}]})});
 });
+
+test('cold permission reads and saves survive the ordinary socket idle limit while provider discovery finishes',{timeout:30000},async t=>{
+ for(const method of ['GET','PUT'])await withFixture(t,async f=>{
+  const chat=await f.createChat('Slow catalog'),agent=await f.createIdleAgent(chat,'Slow discovery'),origin=await f.listen(),url=method==='GET'?'/api/workspace/capabilities':`/api/agents/${agent.id}/capabilities`;
+  const response=await fetch(origin+url,{method,...(method==='PUT'?{headers:{'content-type':'application/json'},body:JSON.stringify({revision:0,restrictedCapabilityIds:[CAPABILITY_IDS.hostFileImport]})}:{})});
+  assert.equal(response.status,200);const result=await response.json();assert.equal(result.policy.revision,method==='PUT'?1:0);if(method==='PUT')assert.ok(result.policy.restrictedCapabilityIds.includes(CAPABILITY_IDS.hostFileImport));
+ },{socketIdleTimeoutMs:50,capabilityCatalog:async()=>{await new Promise(resolve=>setTimeout(resolve,150));return {steering:true,persistentSessions:true,commands:[],mcpServers:[],composerCapabilities:[]}}});
+});

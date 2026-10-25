@@ -73,12 +73,13 @@ export function registerCapabilityRoutes(app:FastifyInstance,context:Context):vo
   if(request.method==='PUT'&&owner.executionId)throw new CapabilityOwnerError('Execution-owned temporary resources are read-only');
   return scope;
  };
+ // Match provider routes: CLI discovery may outlast socket idle, within unchanged request/handler budgets.
  for(const [path,kind,branchRoute] of [
   ['/api/workspace/capabilities','product',false],['/api/conversations/:id/capabilities','chat',false],['/api/agents/:id/capabilities','agent',false],
   ['/api/branches/:id/capabilities','branch',true],['/api/branches/:id/chats/:chatId/capabilities','chat',true],['/api/branches/:id/agents/:agentId/capabilities','agent',true],
  ] as const){
-  app.get(path,async(request,reply)=>{try{return await response(scopeFor(request,kind,branchRoute))}catch(error){if(error instanceof CapabilityOwnerError)return reply.code(404).send({error:error.message});throw error}});
-  app.put(path,async(request,reply)=>{try{
+  app.get(path,async(request,reply)=>{request.raw.socket.setTimeout?.(app.server.requestTimeout||120_000);try{return await response(scopeFor(request,kind,branchRoute))}catch(error){if(error instanceof CapabilityOwnerError)return reply.code(404).send({error:error.message});throw error}});
+  app.put(path,async(request,reply)=>{request.raw.socket.setTimeout?.(app.server.requestTimeout||120_000);try{
    const scope=scopeFor(request,kind,branchRoute),body=request.body as {revision:number;restrictedCapabilityIds:string[]};
    if(!body||!Number.isSafeInteger(body.revision)||body.revision<0||!Array.isArray(body.restrictedCapabilityIds)||!body.restrictedCapabilityIds.every(id=>typeof id==='string'&&(BUILT_IN_CAPABILITIES.some(item=>item.id===id)||parseConnectorCapabilityId(id))))throw new Error('Invalid capability policy');
    policies.put({scopeKind:scope.kind,scopeId:scope.id,expectedRevision:body.revision,restrictedCapabilityIds:body.restrictedCapabilityIds});
