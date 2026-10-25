@@ -1077,6 +1077,13 @@ export function AgentDetail({
             ? engineCapability?.composerCapabilities
             : [],
           enableVoiceDictation: true,
+          voiceContext: tab === "chat" && detail.agent.conversationId ? {
+            projectId: detail.agent.projectId,
+            conversationId: detail.agent.conversationId,
+            agents: [detail.agent],
+            selectedAgentId: detail.agent.id,
+            lockAgent: true,
+          } : undefined,
           onCapabilitiesOpen: () =>
             onRefreshCapabilities({ engineId: engine?.id, model, agentId }),
           projectId: detail.agent.projectId,

@@ -299,6 +299,7 @@ export function Composer({
   attachmentsEnabled = true,
   attachmentsUnavailableReason,
   enableVoiceDictation = false,
+  voiceContext,
   busyMentionHandles,
   allowUnmentionedSend = true,
   sendUnavailableReason,
@@ -3744,6 +3745,8 @@ export function Composer({
             </Box>
           ) : null}
           {enableVoiceDictation ? <DictationControls
+            key={JSON.stringify([projectId, conversationDraftId, voiceContext?.conversationId])}
+            voiceContext={voiceContext}
             disabled={disabled || composerLocked || sending}
             onFinalTranscript={insertDictatedText}
             onSettlingChange={handleDictationSettlingChange}

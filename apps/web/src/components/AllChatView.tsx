@@ -1765,6 +1765,13 @@ export function AllChatView({
             selectedEngineCapabilities?.composerCapabilities ?? []
           }
           enableVoiceDictation
+          voiceContext={activeReplyTarget && composerConversationId ? {
+            projectId: activeReplyTarget.projectId,
+            conversationId: composerConversationId,
+            agents: projectAgentsQuery.data ?? [],
+            selectedAgentId: activeReplyTarget.id,
+            lockAgent: true,
+          } : undefined}
           onCapabilitiesOpen={refreshSelectedCapabilities}
           submissionRuntimeKey={JSON.stringify([
             selectedEngineId ?? "",

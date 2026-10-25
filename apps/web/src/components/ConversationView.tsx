@@ -1253,6 +1253,12 @@ export function ConversationView({
         ) : null}
         <Composer
           enableVoiceDictation
+          voiceContext={activeView === "main" && !agentWorkOpen ? {
+            projectId: conversation.projectId,
+            conversationId,
+            agents: routingAgents,
+            selectedAgentId: commandTargetAgent?.conversationId === conversationId ? commandTargetAgent.id : undefined,
+          } : undefined}
           draftStorageKey={chatStateKey(
             "draft",
             `conversation.${conversationId}.main`,
