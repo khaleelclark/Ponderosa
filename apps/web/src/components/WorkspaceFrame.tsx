@@ -231,6 +231,7 @@ export function CompactWorkspaceHeader({
           >
             {title}
           </Typography>
+          {status}
           {context ? (
             <Typography
               variant="caption"
@@ -242,7 +243,6 @@ export function CompactWorkspaceHeader({
             </Typography>
           ) : null}
         </Box>
-        {status}
         <PrimaryHeaderActionsOutlet />
         {action}
       </Stack>
@@ -276,6 +276,7 @@ export function TabbedWorkspaceFrame<T extends string>({
   const activeLabel =
     tabs.activeLabel ??
     tabs.items.find(item => item.value === tabs.value)?.label;
+  const identity = compact ? <Typography component="h1" variant="body2" fontWeight={800} noWrap title={title}>{title}</Typography> : <IconTitle icon={icon} title={title} component="h1" />;
   const handleToggleCollapsed = () => {
     restoreToggleFocusRef.current =
       document.activeElement === toggleButtonRef.current;
@@ -347,8 +348,7 @@ export function TabbedWorkspaceFrame<T extends string>({
               overflow: "hidden",
             }}
           >
-            {compact ? <Typography component="h1" variant="body2" fontWeight={800} noWrap title={title}>{title}</Typography>
-              : <IconTitle icon={icon} title={title} component="h1" />}
+            {statusBeforePrimaryActions ? <Box sx={{display:"flex",alignItems:"center",gap:1,minWidth:0}}><Box sx={{minWidth:0}}>{identity}</Box>{status}</Box> : identity}
             {context ? <Box sx={{ mt: 0.15, minWidth: 0 }}>{context}</Box> : null}
             {meta ? <Box sx={{ mt: 0.15, minWidth: 0 }}>{meta}</Box> : null}
           </Box>
@@ -366,7 +366,6 @@ export function TabbedWorkspaceFrame<T extends string>({
               maxWidth: "100%",
             }}
           >
-            {statusBeforePrimaryActions ? status : null}
             <PrimaryHeaderActionsOutlet />
             {statusBeforePrimaryActions ? null : status}
             {compact && actionsInMobileTabs ? null : actions}
