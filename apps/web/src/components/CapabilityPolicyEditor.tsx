@@ -50,7 +50,7 @@ function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Capabilities",
     {save.error&&<Alert severity="error">{save.error.message}{immediateSave&&" Reload the current policy, review its state, then reapply your change if needed."} <Button disabled={save.isPending} onClick={()=>void reloadPolicy()}>Reload current policy</Button></Alert>}
     {immediateSave&&save.isPending&&<Typography role="status">Saving…</Typography>}
     {save.isSuccess&&!dirty&&(!immediateSave||savedNotice)&&<Alert severity="success">{savedNotice??"Capability restrictions saved. New Runs use the updated tool contract."}</Alert>}
-    <Box sx={{display:"grid",gridTemplateColumns:"minmax(0,1fr)",gap:2,alignItems:"start","@container capabilities (min-width:1100px)":{gridTemplateColumns:"repeat(2,minmax(0,1fr))"}}}>
+    <Box sx={{display:"grid",gridTemplateColumns:"minmax(0,1fr)",gap:2,alignItems:"start","@container capabilities (min-width:68.75rem)":{gridTemplateColumns:"repeat(2,minmax(0,1fr))"}}}>
     {groups.map(([label,items])=><Paper key={label} variant="outlined" sx={{overflow:"hidden"}}>
       <Typography variant="subtitle2" fontWeight={800} sx={{px:2,py:1.25,bgcolor:"action.hover"}}>{label}</Typography>
       <Divider/>
