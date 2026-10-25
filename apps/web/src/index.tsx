@@ -1,8 +1,9 @@
+import {applyBrowserTheme} from "./browserTheme";
 import CssBaseline from "@mui/material/CssBaseline";
 import "@fontsource-variable/inter";
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode, useEffect, useMemo, useState } from "react";
+import { StrictMode, useLayoutEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
@@ -30,10 +31,10 @@ function Root(): JSX.Element {
   const [colorMode, setColorMode] = useState<ColorMode>(loadColorMode);
   const theme = useMemo(() => createPonderosaTheme(colorMode), [colorMode]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     writeBrowserStorage("localStorage", COLOR_MODE_STORAGE_KEY, colorMode);
-    document.documentElement.style.colorScheme = colorMode;
-  }, [colorMode]);
+    applyBrowserTheme(colorMode, theme.palette.background.default);
+  }, [colorMode, theme]);
 
   return (
     <QueryClientProvider client={queryClient}>

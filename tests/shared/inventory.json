@@ -977,6 +977,14 @@
       "moduleBase": "packages/agents/package.json",
       "requirements": "Node24, built core/native/agents workspaces; disposable local stores; no listener or provider account",
       "origin": "Prepared Agent lookup regression: one statement per authority, fresh typed DTOs, deletion/owner guards and database isolation/reopen"
+    },
+    {
+      "path": "tests/workspace-navigation/browser-theme.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built web assets; generated startup script in VM and existing theme owner, no native Android claim",
+      "origin": "Android PWA browser metadata and prepaint theme consistency"
     }
   ],
   "retainedReleasePayload": [
