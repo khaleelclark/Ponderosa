@@ -83,6 +83,8 @@ export interface ConfirmDialogProps {
   pending?: boolean;
   error?: ReactNode;
   confirmDisabled?: boolean;
+  cancelLabel?: string;
+  maxWidth?: DialogProps["maxWidth"];
   onCancel(): void;
   onConfirm(): void;
 }

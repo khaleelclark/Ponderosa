@@ -214,3 +214,35 @@ test('both products share ordered accessible sidebar controls and preserve norma
   assert.ok(normal.includes('aria-label="Messages across Ponderosa"'));
  }
 });
+
+// Exercise the real intervention fields, mutation and shared dialog shell.
+// Controlled transport keeps this recovery check isolated from live work.
+async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}={}){
+ const {readFileSync}=await import('node:fs'),{createRequire}=await import('node:module'),vm=await import('node:vm');
+ const require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),ts=require('typescript'),React=require('react'),{renderToStaticMarkup}=require('react-dom/server'),{QueryClient,MutationObserver}=require('@tanstack/react-query');
+ const source=readFileSync(new URL('../../apps/web/src/components/branches/ExecutionPanel.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('execution.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);let mutation,dialog;
+ function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='act')mutation=node.initializer.arguments[0].getText(ast);if(ts.isBinaryExpression(node)&&node.left.getText(ast)==='intervention'&&ts.isJsxElement(node.right)&&node.right.openingElement.tagName.getText(ast)==='ConfirmDialog')dialog=node.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(mutation);assert.ok(dialog,'Interventions must use the shared confirmation owner');
+ const buttons=[],fields=[],dialogs=[],calls=[],refreshes=[];
+ const primitive=({children})=>React.createElement('div',null,children),mui=Object.fromEntries(['Alert','DialogActions','DialogContent','DialogTitle','Stack','Typography','MenuItem'].map(name=>[name,primitive]));
+ mui.Dialog=p=>{dialogs.push(p);return p.open?React.createElement('section',null,p.children):null;};mui.Button=p=>{buttons.push(p);return React.createElement('button',{disabled:p.disabled},p.children);};mui.TextField=p=>{fields.push(p);return null;};mui.Switch=p=>{fields.push(p);return null;};mui.FormControlLabel=p=>React.createElement('div',null,p.control);
+ const load=(text,scope={})=>vm.runInNewContext(ts.transpile(text,{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope);
+ const exports={};load(readFileSync(new URL('../../apps/web/src/components/ConfirmationDialogs.tsx',import.meta.url),'utf8'),{exports,React,require:name=>name==='@mui/material'?mui:require(name)});
+ let key=0;const scope={React,...mui,ConfirmDialog:exports.ConfirmDialog,intervention:{action,attemptId:'attempt-a',unknown},reason:'',reconciled:false,result:'',failed:false,target:'',commandKey:'command-0',createClientId:()=>`command-${++key}`,execution:{id:'execution-a',revision:7,parentExecutionId:'parent'},executions:[{id:'target',state:'waiting',createdAt:'2026-10-25T00:00:00Z'}],detail:{attempts:[],steps:[]},refresh:()=>refreshes.push('refresh'),requestJson:async(path,options)=>{calls.push({path,body:JSON.parse(options.body)});return submit();}};
+ for(const name of ['intervention','reason','reconciled','result','failed','target','commandKey'])scope['set'+name[0].toUpperCase()+name.slice(1)]=value=>{scope[name]=value;};
+ const client=new QueryClient({defaultOptions:{mutations:{retry:false,gcTime:Infinity}}}),observer=new MutationObserver(client,load('('+mutation+')',scope)),unsubscribe=observer.subscribe(()=>{});t.after(()=>{unsubscribe();client.clear();});
+ const render=()=>{buttons.length=0;fields.length=0;dialogs.length=0;scope.act=observer.getCurrentResult();return renderToStaticMarkup(load('('+dialog+')',scope));};
+ return{scope,calls,refreshes,render,dialogs,button:label=>buttons.find(p=>p.children===label),field:label=>fields.find(p=>p.label===label),switches:()=>fields.filter(p=>'checked'in p)};
+}
+
+for(const action of ['retry','resolve_script','merge','skip'])test(`shared execution confirmation retains ${action} payload, fields and pending/error ownership`,async t=>{
+ let release;const f=await interventionFixture(t,action,{unknown:['retry','resolve_script'].includes(action),submit:()=>new Promise((resolve,reject)=>{release={resolve,reject};})});
+ f.render();assert.equal(f.dialogs[0].maxWidth,'sm');assert.equal(f.button('Back').disabled,false);assert.equal(f.button('Apply decision').disabled,true);assert.equal(f.button('Apply decision').autoFocus,true);
+ f.field('Reason for this decision').onChange({target:{value:'Verified recovery'}});f.render();if(f.scope.intervention.unknown){assert.equal(f.button('Apply decision').disabled,true);f.switches()[0].onChange(null,true);}
+ if(action==='merge'){assert.equal(f.button('Apply decision').disabled,true);f.field('Keep this execution').onChange({target:{value:'target'}});}
+ if(action==='resolve_script'){f.field('Observed output').onChange({target:{value:'Observed output retained'}});f.switches()[1].onChange(null,true);}
+ f.render();assert.equal(f.button('Apply decision').disabled,false);const key=f.scope.commandKey,saving=f.button('Apply decision').onClick();await new Promise(resolve=>setImmediate(resolve));f.render();assert.equal(f.dialogs[0]['aria-busy'],true);assert.equal(f.button('Applying…').disabled,true);assert.equal(f.button('Back').disabled,true);if(f.scope.intervention.unknown)assert.equal(f.button('Inspect evidence before deciding').disabled,true);
+ for(const why of ['escapeKeyDown','backdropClick'])f.dialogs[0].onClose({},why);f.button('Back').onClick();f.render();assert.equal(f.dialogs[0].open,true);assert.equal(f.calls.length,1,'Pending buttons cannot dispatch another submission');
+ const expected={commandKey:key,expectedRevision:7,action,reason:'Verified recovery',attemptId:'attempt-a',...(f.scope.intervention.unknown?{externalEffectsReconciled:true}:{}),...(action==='resolve_script'?{result:{failed:true,output:'Observed output retained'}}:{}),...(action==='merge'?{mergedInto:'target'}:{})};assert.deepEqual(JSON.parse(JSON.stringify(f.calls[0])),{path:'/api/branch-executions/execution-a/intervene',body:expected});
+ release.reject(Error('Recovery conflict'));await assert.rejects(saving,/Recovery conflict/);assert.match(f.render(),/Recovery conflict/);assert.equal(f.field('Reason for this decision').value,'Verified recovery');if(action==='resolve_script')assert.equal(f.field('Observed output').value,'Observed output retained');assert.equal(f.scope.commandKey,key);assert.equal(f.button('Back').disabled,false);
+ const retry=f.button('Apply decision').onClick();await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(f.calls[1],f.calls[0],'Retry preserves the same intervention identity and fields');release.resolve({});await retry;f.render();assert.equal(f.scope.intervention,undefined);assert.equal(f.refreshes.length,1);
+});
