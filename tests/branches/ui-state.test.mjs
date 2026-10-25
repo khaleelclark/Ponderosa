@@ -739,7 +739,7 @@ test('graph labels keep their full text above all connectors with a theme halo',
  assert.ok(svg.lastIndexOf('<path')<svg.indexOf('<text'),'No connector can overpaint a label');
  assert.equal((svg.match(/paint-order="stroke"/g)??[]).length,5);
  assert.equal((svg.match(/stroke-width="8"/g)??[]).length,5);
- assert.equal((svg.match(/d="M[^"]+ V[^"]+ H[^"]+ V[^"]+ H[^"]+ V/g)??[]).length,2,'Explicit self and back loops use visible side gutters');
+ assert.equal((svg.match(/d="M[^"]+ V[^"]+ H[^"]+ V[^"]+ V[^"]+ H[^"]+ V/g)??[]).length,2,'Explicit self and back loops use visible side gutters');
  assert.ok(html.indexOf('</svg>')<html.indexOf('aria-label="Select First"'),'Cards remain above the connector/label layer');
  assert.ok(html.includes('Workflow text description')&&html.includes('aria-pressed="false"'),'Accessible description and node controls remain');
 });
@@ -770,4 +770,24 @@ test('tall native graph ink gets a clear canvas fallback instead of reusing over
  const {placeGraphLabels}=await import('../../apps/web/src/components/branches/BranchGraph.tsx');
  const placed=placeGraphLabels([{id:'tall',x:90,y:60,width:80,height:100}],[{x:20,y:30}],[143.5]);
  assert.equal(placed[0].height,100);assert.ok(placed[0].y>=30-8+101+8,'Full tall ink is below the card and remains inside the growing canvas');
+});
+
+
+test('graph label wrapping retains complete words and graphemes in native-width rows',async()=>{
+ const {wrapGraphLabel}=await import('../../apps/web/src/components/branches/BranchGraph.tsx');
+ const measure=value=>Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value)).length*10;
+ for(const text of ['W'.repeat(100),'界'.repeat(100),'A long custom choice with words that must remain readable across narrow graph views','👨‍👩‍👧‍👦'.repeat(14)+' é'.repeat(10)]){
+  const lines=wrapGraphLabel(text,measure);assert.equal(lines.join(''),text,'No authored label text is dropped');
+  assert.ok(lines.every(line=>measure(line)<=160),'Every line fits its native-width limit');
+  assert.ok(!lines.some(line=>line.startsWith('\u200d')||line.startsWith('\u0301')),'Grapheme clusters remain intact');
+ }
+});
+
+
+test('loop label gutters stay beyond the final forward labels and node bounds',async()=>{
+ const {placeGraphLabels,wrapGraphLabel}=await import('../../apps/web/src/components/branches/BranchGraph.tsx');
+ const labels=[{id:'a',x:38,y:127,width:168,height:90},{id:'b',x:38,y:127,width:168,height:90},{id:'otherwise',x:94.5,y:162,width:55,height:20},{id:'loop',x:280,y:162,width:41,height:20,loop:true}];
+ const placed=placeGraphLabels(labels,[{x:20,y:30},{x:20,y:229}],[172,371]),loop=placed.find(x=>x.id==='loop');
+ assert.ok(placed.filter(x=>!x.loop).every(x=>loop.x>=x.x+x.width+16),'Loop path and label share a dedicated clear gutter');
+ assert.deepEqual(wrapGraphLabel('',()=>0),[],'An empty authored choice has no stale text');
 });
