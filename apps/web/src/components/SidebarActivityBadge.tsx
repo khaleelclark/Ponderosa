@@ -1,6 +1,6 @@
 import { Box, Tooltip } from "@mui/material";
 import { agentDisplayStatus, AGENT_DISPLAY_STATUS_LABELS, type AgentHealthDto, type WorkspaceActivityCountDto } from "@ponderosa/core";
-import { semanticStatusColorToken } from "./SemanticStatus";
+import { SemanticStatusCircle, semanticStatusColorToken } from "./SemanticStatus";
 
 export function SidebarActivityBadge({ activity, agent, fresh = false, showLabel = false }: { activity?: WorkspaceActivityCountDto; agent?: { title: string; health?: AgentHealthDto }; fresh?: boolean; showLabel?: boolean }) {
   const status = agent ? agent.health ? agentDisplayStatus(agent.health) : "unknown" : activity?.status ?? "unknown";
@@ -13,9 +13,7 @@ export function SidebarActivityBadge({ activity, agent, fresh = false, showLabel
   return <Tooltip title={detail}>
     <Box component="span" role="img" data-sidebar-column="activity" data-agent-status={status} aria-label={detail} tabIndex={0}
       sx={{ display: "inline-flex", alignItems: "center", gap: .5, flexShrink: 0, color: theme => semanticStatusColorToken(status === "unknown" ? "idle" : status, theme.palette.mode), fontSize: 11, fontVariantNumeric: "tabular-nums", lineHeight: "18px" }}>
-      <Box component="svg" viewBox="0 0 8 8" aria-hidden="true" sx={{ width: 8, height: 8, flex: "0 0 8px", display: "block", fill: "currentColor" }}>
-        <circle cx="4" cy="4" r="4" />
-      </Box>
+      <SemanticStatusCircle />
       {showLabel ? label : count > 0 ? count > 99 ? "99+" : count : null}
     </Box>
   </Tooltip>;
