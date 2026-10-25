@@ -23,7 +23,7 @@ import type {
   ProviderUsageWindow,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
@@ -275,6 +275,8 @@ export function ProviderQuotaIndicator({
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [anchor, setAnchor] = useState<HTMLElement>();
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const restoreTriggerFocusRef = useRef(false);
   const [selectedProvider, setSelectedProvider] = useState<string>();
   const query = useQuery({
     queryKey: queryKeys.providerUsage.all,
@@ -346,9 +348,12 @@ export function ProviderQuotaIndicator({
       !anchor.isConnected ||
       (portalTarget !== undefined && !portalTarget?.contains(anchor))
     ) {
-      setAnchor(undefined);
+      // The persistent usage panel follows its header outlet without resetting its selection.
+      const next = triggerRef.current?.querySelector<HTMLElement>('button, [role="button"]');
+      if (next?.isConnected) restoreTriggerFocusRef.current = true;
+      setAnchor(next?.isConnected ? next : undefined);
     }
-  }, [anchor, portalTarget]);
+  }, [anchor, portalTarget, mobile, renderTrigger]);
 
   const trigger = renderTrigger ? renderTrigger(open) : mobile ? (
     <Tooltip title={label}>
@@ -388,13 +393,14 @@ export function ProviderQuotaIndicator({
     />
   );
 
+  const renderedTrigger = <Box ref={triggerRef} sx={{display:"flex",alignItems:"center"}}>{trigger}</Box>;
   return (
     <>
       {portalTarget === null
         ? null
         : portalTarget
-          ? createPortal(trigger, portalTarget)
-          : trigger}
+          ? createPortal(renderedTrigger, portalTarget)
+          : renderedTrigger}
       <Popover
         open={Boolean(anchor)}
         anchorEl={anchor}
@@ -402,6 +408,10 @@ export function ProviderQuotaIndicator({
         anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
         transformOrigin={{ vertical: "top", horizontal: "right" }}
         slotProps={{
+          transition: {onExited: () => {
+            if (restoreTriggerFocusRef.current) triggerRef.current?.querySelector<HTMLElement>('button, [role="button"]')?.focus();
+            restoreTriggerFocusRef.current = false;
+          }},
           paper: {
             sx: {
               width: "min(420px, calc(100vw - 24px))",
@@ -436,7 +446,11 @@ export function ProviderQuotaIndicator({
               state={selected}
               onRefresh={() => refresh(selected.provider)}
               onClose={() => setAnchor(undefined)}
-              onOpenProviderSettings={onOpenProviderSettings}
+              onOpenProviderSettings={onOpenProviderSettings ? () => {
+                restoreTriggerFocusRef.current = false;
+                setAnchor(undefined);
+                onOpenProviderSettings();
+              } : undefined}
               compact
               requestPending={load.isPending || (
                 refreshRequest.isPending &&

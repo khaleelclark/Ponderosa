@@ -100,6 +100,8 @@ export interface TabbedWorkspaceFrameProps<T extends string> {
   meta?: ReactNode;
   status?: ReactNode;
   actions?: ReactNode;
+  /** Reuse the persistent usage owner through an owner-specific action menu. */
+  primaryActions?: ReactNode;
   /** A collapsed owner may reuse shared controls through its own action menu. */
   collapsedActions?: ReactNode;
   /** Chat/Agent mobile chrome gives controls priority over title width. */
@@ -300,6 +302,7 @@ export function TabbedWorkspaceFrame<T extends string>({
   meta,
   status,
   actions,
+  primaryActions,
   collapsedActions,
   compactMobile = false,
   actionsInMobileTabs = false,
@@ -316,7 +319,7 @@ export function TabbedWorkspaceFrame<T extends string>({
   const activeLabel =
     tabs.activeLabel ??
     tabs.items.find(item => item.value === tabs.value)?.label;
-  const identity = compact ? <Typography component="h1" variant="body2" fontWeight={800} noWrap title={title}>{title}</Typography> : <IconTitle icon={icon} title={title} component="h1" />;
+  const identity = compact || statusBeforePrimaryActions ? <Typography component="h1" variant="body2" fontWeight={800} noWrap title={title}>{title}</Typography> : <IconTitle icon={icon} title={title} component="h1" />;
   const handleToggleCollapsed = () => {
     restoreToggleFocusRef.current =
       document.activeElement === toggleButtonRef.current;
@@ -343,7 +346,7 @@ export function TabbedWorkspaceFrame<T extends string>({
       status={statusBeforePrimaryActions ? status : undefined}
       context={collapsedIconTabs ? undefined : activeLabel}
       tabs={collapsedIconTabs ? <WorkspaceTabBar {...tabs} compact /> : undefined}
-      primaryActions={collapsedActions === undefined ? undefined : null}
+      primaryActions={collapsedActions === undefined ? primaryActions : null}
       collapseAction={collapsedIconTabs ? toggle : undefined}
       action={collapsedIconTabs ? retainedActions : <>{retainedActions}{toggle}</>}
     />;
@@ -357,11 +360,11 @@ export function TabbedWorkspaceFrame<T extends string>({
         ...(collapsedIconTabs ? {containerType:"inline-size"} : {}),
       })}
     >
-      <Box sx={{ px: { xs: 1.5, sm: 2, md: 2.5 }, py: { xs: 0.5, md: 1 } }}>
+      <Box sx={{ px: { xs: 1.5, sm: 2, md: 2.5 }, py: { xs: 0.5, md: 1 }, ...(statusBeforePrimaryActions ? {"@container (max-width: 40rem)":{px:1.5,py:.5}} : {}) }}>
         <Box
           sx={{
             display: "grid",
-            gridTemplateColumns: { xs: compact && !statusBeforePrimaryActions ? "auto minmax(0, 1fr) auto auto" : "auto minmax(0, 1fr) auto", md: "auto minmax(0, 1fr) minmax(0, auto) auto" },
+            gridTemplateColumns: { xs: compact || statusBeforePrimaryActions ? "auto minmax(0, 1fr) auto auto" : "auto minmax(0, 1fr) auto", md: "auto minmax(0, 1fr) minmax(0, auto) auto" },
             alignItems: "center",
             columnGap: 1,
             rowGap: 0.25,
@@ -374,7 +377,7 @@ export function TabbedWorkspaceFrame<T extends string>({
               minWidth: 0,
               gridColumn: 2,
               gridRow: 1,
-              overflow: "hidden",
+              overflow: statusBeforePrimaryActions ? "visible" : "hidden",
             }}
           >
             {statusBeforePrimaryActions ? <Box sx={{display:"flex",alignItems:"center",gap:1,minWidth:0}}><Box sx={{minWidth:0}}>{identity}</Box>{status}</Box> : identity}
@@ -388,14 +391,14 @@ export function TabbedWorkspaceFrame<T extends string>({
             sx={{
               alignItems: "center",
               justifyContent: "flex-end",
-              flexWrap: compact ? "nowrap" : "wrap",
-              gridColumn: { xs: compact && !statusBeforePrimaryActions ? 3 : "1 / -1", md: 3 },
-              gridRow: { xs: compact && !statusBeforePrimaryActions ? 1 : 2, md: 1 },
+              flexWrap: compact || statusBeforePrimaryActions ? "nowrap" : "wrap",
+              gridColumn: { xs: compact || statusBeforePrimaryActions ? 3 : "1 / -1", md: 3 },
+              gridRow: { xs: compact || statusBeforePrimaryActions ? 1 : 2, md: 1 },
               minWidth: 0,
               maxWidth: "100%",
             }}
           >
-            <PrimaryHeaderActionsOutlet />
+            {primaryActions === undefined ? <PrimaryHeaderActionsOutlet /> : primaryActions}
             {statusBeforePrimaryActions ? null : status}
             {compact && actionsInMobileTabs ? null : actions}
           </Stack>
@@ -408,7 +411,7 @@ export function TabbedWorkspaceFrame<T extends string>({
               onClick={handleToggleCollapsed}
               sx={{
                 flexShrink: 0,
-                gridColumn: { xs: compact && !statusBeforePrimaryActions ? 4 : 3, md: 4 },
+                gridColumn: { xs: compact || statusBeforePrimaryActions ? 4 : 3, md: 4 },
                 gridRow: 1,
                 width: { xs: 44, sm: 36 },
                 height: { xs: 44, sm: 36 },

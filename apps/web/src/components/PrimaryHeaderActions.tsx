@@ -17,7 +17,7 @@ type RegisterHeaderActionOutlet = (element: HTMLElement, depth?: number, renderT
 type HeaderActionOutlet = { element: HTMLElement; depth: number; renderTrigger?: HeaderActionTrigger };
 
 const PrimaryHeaderActionsContext = createContext<
-  RegisterHeaderActionOutlet | undefined
+  {register: RegisterHeaderActionOutlet; activeOutlet?: HTMLElement} | undefined
 >(undefined);
 
 /**
@@ -30,13 +30,11 @@ export function PrimaryHeaderActionsProvider({
   onOpenProviderSettings,
   children,
   workspaceStatus,
-  notifications,
 }: {
   preferredProvider?: string;
   onOpenProviderSettings(): void;
   children: ReactNode;
   workspaceStatus?: ReactNode;
-  notifications?: ReactNode;
 }): JSX.Element {
   const theme = useTheme();
   const narrow = useMediaQuery(theme.breakpoints.down("sm"));
@@ -50,10 +48,10 @@ export function PrimaryHeaderActionsProvider({
       setOutlets(current => current.filter(candidate => candidate.element !== element));
     };
   }, []);
-  const value = useMemo(() => register, [register]);
   // Scoped Chat/Agent chrome outranks its Branch even when the outer header remounts.
   const activeRegistration = outlets.reduce<HeaderActionOutlet | undefined>((active, next) => !active || next.depth >= active.depth ? next : active, undefined);
   const activeOutlet = activeRegistration?.element;
+  const value = useMemo(() => ({register, activeOutlet}), [register, activeOutlet]);
 
   return (
     <PrimaryHeaderActionsContext.Provider value={value}>
@@ -85,7 +83,6 @@ export function PrimaryHeaderActionsProvider({
         </Box>
       </Box>
       {workspaceStatus && (activeOutlet ?? fallbackOutlet) ? createPortal(workspaceStatus, (activeOutlet ?? fallbackOutlet)!) : null}
-      {notifications && !activeRegistration?.renderTrigger && (activeOutlet ?? fallbackOutlet) ? createPortal(notifications, (activeOutlet ?? fallbackOutlet)!) : null}
       <ProviderQuotaIndicator
         renderTrigger={activeRegistration?.renderTrigger}
         preferredProvider={preferredProvider}
@@ -99,17 +96,20 @@ export function PrimaryHeaderActionsProvider({
 
 /** Keep shared usage in the deepest mounted Chat/Agent header, with outer fallback. */
 export function PrimaryHeaderActionsScope({children}:{children:ReactNode}):JSX.Element {
-  const register=useContext(PrimaryHeaderActionsContext);
+  const owner=useContext(PrimaryHeaderActionsContext);
+  const register=owner?.register;
   const scopedRegister=useCallback<RegisterHeaderActionOutlet>((element,depth=0,renderTrigger)=>{
     const unregister=register?.(element,depth+1,renderTrigger);
     return ()=>unregister?.();
   },[register]);
-  return <PrimaryHeaderActionsContext.Provider value={scopedRegister}>{children}</PrimaryHeaderActionsContext.Provider>;
+  const value=useMemo(()=>({register:scopedRegister,activeOutlet:owner?.activeOutlet}),[scopedRegister,owner?.activeOutlet]);
+  return <PrimaryHeaderActionsContext.Provider value={value}>{children}</PrimaryHeaderActionsContext.Provider>;
 }
 
 /** The trailing action destination shared by primary and utility headers. */
-export function PrimaryHeaderActionsOutlet({renderTrigger}: {renderTrigger?: HeaderActionTrigger} = {}): JSX.Element {
-  const register = useContext(PrimaryHeaderActionsContext);
+export function PrimaryHeaderActionsOutlet({renderTrigger, fallback}: {renderTrigger?: HeaderActionTrigger; fallback?: ReactNode} = {}): JSX.Element {
+  const owner = useContext(PrimaryHeaderActionsContext);
+  const register = owner?.register;
   const [element, setElement] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     if (!element || !register) return;
@@ -127,6 +127,8 @@ export function PrimaryHeaderActionsOutlet({renderTrigger}: {renderTrigger?: Hea
         alignItems: "center",
         justifyContent: "flex-end",
       }}
-    />
+    >
+      {owner?.activeOutlet === element ? null : fallback}
+    </Box>
   );
 }
