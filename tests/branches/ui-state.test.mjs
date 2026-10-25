@@ -1006,11 +1006,22 @@ test('compact shared tabs keep canonical IDs, selection, disabled eligibility an
 });
 
 
-test('compact execution count preserves full meaning for zero, active, loading and unavailable states',()=>{
+test('compact execution count preserves full meaning and uses Ponderosa’s shared circles for every state',async()=>{
+ const {SemanticStatusCircle,semanticStatusColorToken}=await import('../../apps/web/src/components/SemanticStatus.tsx');
+ const {SidebarActivityBadge}=await import('../../apps/web/src/components/SidebarActivityBadge.tsx');
+ const svg=html=>html.match(/<svg[^>]*viewBox="0 0 8 8"[\s\S]*?<\/svg>/)?.[0];
+ const reference=svg(renderToStaticMarkup(React.createElement(SidebarActivityBadge)));assert.ok(reference);
  const base={name:'Workflow',tab:'workflow',published:true,dirty:false,saving:false,saveDisabled:true,onTab(){},onSave(){},onExport(){},onUpdate(){},onRename(){}};
  for(const [props,label,visible] of [[{executionCount:0},'0 active executions','0'],[{executionCount:12},'12 active executions','12'],[{},'Executions loading…','…'],[{executionCount:12,executionsUnavailable:true},'Executions unavailable','!']]){
   const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...base,...props}));
   assert.ok(html.includes(`role="img" tabindex="0" aria-label="${label}"`));assert.ok(html.includes(`</span>${visible}</span>`),'The narrow status has a visible count or explicit unresolved/error symbol');assert.ok(html.includes(`aria-label="${label}"`));
+  const status=BranchWorkspaceHeader({...base,...props,dirty:true}).props.children.props.status;
+  const compact=status.props.children[1].props.children,executionCircle=compact.props.children[0],dirty=status.props.children[2].props.children;
+  assert.equal(executionCircle.props.children.type,SemanticStatusCircle,'Execution status reuses the actual shared renderer');assert.equal(dirty.props.children.type,SemanticStatusCircle,'Unpublished status reuses the actual shared renderer');
+  assert.equal(svg(renderToStaticMarkup(compact)),reference);assert.equal(svg(renderToStaticMarkup(dirty)),reference);
+  const kind=props.executionsUnavailable?'needs_attention':props.executionCount===undefined?'waiting':props.executionCount>0?'running':'idle';
+  for(const mode of ['light','dark'])assert.equal(executionCircle.props.sx({palette:{mode}}).color,semanticStatusColorToken(kind,mode));
+  assert.equal(dirty.props.sx.color,'warning.main');assert.equal(dirty.props.sx.display,'inline-flex');assert.equal(compact.props.tabIndex,0);assert.equal(dirty.props.tabIndex,0);
  }
 });
 
