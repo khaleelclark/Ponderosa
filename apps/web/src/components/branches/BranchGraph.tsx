@@ -1,6 +1,6 @@
 import {useEffect,useId,useLayoutEffect,useMemo,useRef,useState} from 'react';
 import {Box,ButtonBase,Chip,Stack,Typography,useTheme} from '@mui/material';
-import type {BranchDefinition,BranchStepExecutionDto} from '@ponderosa/core';
+import {normalizeCanonicalText,type BranchDefinition,type BranchStepExecutionDto} from '@ponderosa/core';
 import {nodeKind,nodeName,workflowGraphLevels} from './model';
 type LabelRect={id:string;x:number;y:number;width:number;height:number;loop?:boolean};
 const intersects=(a:Omit<LabelRect,'id'>,b:Omit<LabelRect,'id'>)=>a.x<b.x+b.width&&a.x+a.width>b.x&&a.y<b.y+b.height&&a.y+a.height>b.y;
@@ -31,6 +31,8 @@ export function placeGraphLabels(labels:LabelRect[],nodes:Array<{x:number;y:numb
 }
 /** Native widths, grapheme boundaries and existing SVG text; no guessed character sizes. */
 export function wrapGraphLabel(text:string,measure:(value:string)=>number):string[] {
+ // Over-limit authoring drafts retain full native text, with one measurement rather than wrapping work.
+ if(normalizeCanonicalText(text).length>100)return [text];
  const parts=Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(text),part=>part.segment),lines:string[]=[];
  for(let start=0;start<parts.length;){
   let end=start;

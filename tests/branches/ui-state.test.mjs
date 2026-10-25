@@ -776,7 +776,7 @@ test('tall native graph ink gets a clear canvas fallback instead of reusing over
 test('graph label wrapping retains complete words and graphemes in native-width rows',async()=>{
  const {wrapGraphLabel}=await import('../../apps/web/src/components/branches/BranchGraph.tsx');
  const measure=value=>Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value)).length*10;
- for(const text of ['W'.repeat(100),'界'.repeat(100),'A long custom choice with words that must remain readable across narrow graph views','👨‍👩‍👧‍👦'.repeat(14)+' é'.repeat(10)]){
+ for(const text of ['W'.repeat(100),'界'.repeat(100),'A long custom choice with words that must remain readable across narrow graph views','👨‍👩‍👧‍👦'.repeat(6)+' é'.repeat(10)]){
   const lines=wrapGraphLabel(text,measure);assert.equal(lines.join(''),text,'No authored label text is dropped');
   assert.ok(lines.every(line=>measure(line)<=160),'Every line fits its native-width limit');
   assert.ok(!lines.some(line=>line.startsWith('\u200d')||line.startsWith('\u0301')),'Grapheme clusters remain intact');
@@ -790,4 +790,12 @@ test('loop label gutters stay beyond the final forward labels and node bounds',a
  const placed=placeGraphLabels(labels,[{x:20,y:30},{x:20,y:229}],[172,371]),loop=placed.find(x=>x.id==='loop');
  assert.ok(placed.filter(x=>!x.loop).every(x=>loop.x>=x.x+x.width+16),'Loop path and label share a dedicated clear gutter');
  assert.deepEqual(wrapGraphLabel('',()=>0),[],'An empty authored choice has no stale text');
+});
+
+
+test('over-limit authoring labels stay complete without prefix measurement work',async()=>{
+ const {wrapGraphLabel}=await import('../../apps/web/src/components/branches/BranchGraph.tsx');
+ for(const text of ['W'.repeat(101),' '.repeat(101),'W'.repeat(100_000)]){let probes=0;assert.deepEqual(wrapGraphLabel(text,()=>{probes++;return 0}),[text]);assert.equal(probes,0);}
+ const decomposed='e\u0301'.repeat(100),lines=wrapGraphLabel(decomposed,value=>Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value)).length*10);
+ assert.equal(lines.join(''),decomposed);assert.ok(lines.length>1,'NFC-valid decomposed choices keep their normal editing and wrapping behavior');
 });
