@@ -200,6 +200,7 @@ export function CompactWorkspaceHeader({
           px: { xs: 1, sm: 1.5 },
           alignItems: "center",
           minWidth: 0,
+          ...(status ? {"@container (max-width: 27.5rem)":{flexWrap:"wrap",justifyContent:"flex-end",rowGap:0}} : {}),
         }}
       >
         <MobileNavigationButton />
@@ -210,6 +211,7 @@ export function CompactWorkspaceHeader({
             gap: 1,
             minWidth: 0,
             flexGrow: 1,
+            ...(status ? {"@container (max-width: 27.5rem)":{flexBasis:"calc(100% - 52px)"}} : {}),
           }}
         >
           <Box
@@ -332,7 +334,7 @@ export function TabbedWorkspaceFrame<T extends string>({
         <Box
           sx={{
             display: "grid",
-            gridTemplateColumns: { xs: compact ? "auto minmax(0, 1fr) auto auto" : "auto minmax(0, 1fr) auto", md: "auto minmax(0, 1fr) minmax(0, auto) auto" },
+            gridTemplateColumns: { xs: compact && !statusBeforePrimaryActions ? "auto minmax(0, 1fr) auto auto" : "auto minmax(0, 1fr) auto", md: "auto minmax(0, 1fr) minmax(0, auto) auto" },
             alignItems: "center",
             columnGap: 1,
             rowGap: 0.25,
@@ -360,8 +362,8 @@ export function TabbedWorkspaceFrame<T extends string>({
               alignItems: "center",
               justifyContent: "flex-end",
               flexWrap: compact ? "nowrap" : "wrap",
-              gridColumn: { xs: compact ? 3 : "1 / -1", md: 3 },
-              gridRow: { xs: compact ? 1 : 2, md: 1 },
+              gridColumn: { xs: compact && !statusBeforePrimaryActions ? 3 : "1 / -1", md: 3 },
+              gridRow: { xs: compact && !statusBeforePrimaryActions ? 1 : 2, md: 1 },
               minWidth: 0,
               maxWidth: "100%",
             }}
@@ -379,7 +381,7 @@ export function TabbedWorkspaceFrame<T extends string>({
               onClick={handleToggleCollapsed}
               sx={{
                 flexShrink: 0,
-                gridColumn: { xs: compact ? 4 : 3, md: 4 },
+                gridColumn: { xs: compact && !statusBeforePrimaryActions ? 4 : 3, md: 4 },
                 gridRow: 1,
                 width: { xs: 44, sm: 36 },
                 height: { xs: 44, sm: 36 },
