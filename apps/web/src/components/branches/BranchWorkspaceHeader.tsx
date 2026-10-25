@@ -1,4 +1,4 @@
-import {useCallback} from 'react';
+import {useCallback,type ReactNode} from 'react';
 import DataUsageOutlined from '@mui/icons-material/DataUsageOutlined';
 import {PrimaryHeaderActionsOutlet} from '../PrimaryHeaderActions';
 import AccountTreeOutlined from '@mui/icons-material/AccountTreeOutlined';
@@ -33,13 +33,13 @@ export function BranchWorkspaceHeader({name,tab,published,dirty,executionCount,e
 
 /** The existing global usage observer renders into the Branch's own menu. */
 function BranchHeaderActions({onRename,onDiscard,discardDisabled,onExport,onUpdate}:Pick<Parameters<typeof BranchWorkspaceHeader>[0],'onRename'|'onDiscard'|'discardDisabled'|'onExport'|'onUpdate'>):JSX.Element{
- const renderMenu=useCallback((openUsage?: (anchor:HTMLElement)=>void)=><ChatOverflowMenu label="Branch actions" showExports={false} transcriptMarkdown="" transcriptFileName="" actions={[
-  ...(openUsage?[{label:'Provider usage',icon:<DataUsageOutlined fontSize="small"/>,onSelect:openUsage}]:[]),
+ const renderMenu=useCallback((openUsage?: (anchor:HTMLElement)=>void,fullTrigger?:ReactNode)=><Box sx={{display:"flex",alignItems:"center",gap:.5}}>{fullTrigger}<ChatOverflowMenu label="Branch actions" showExports={false} transcriptMarkdown="" transcriptFileName="" actions={[
+  ...(openUsage&&!fullTrigger?[{label:'Provider usage',icon:<DataUsageOutlined fontSize="small"/>,onSelect:openUsage}]:[]),
   {label:'Rename…',onSelect:onRename},
   {label:'Discard changes',onSelect:()=>onDiscard?.(),disabled:discardDisabled},
   {label:'Export template',onSelect:()=>onExport('template')},
   {label:'Export full',onSelect:()=>onExport('full')},
   {label:'Apply package update…',onSelect:onUpdate},
- ]}/>,[onRename,onDiscard,discardDisabled,onExport,onUpdate]);
+ ]}/></Box>,[onRename,onDiscard,discardDisabled,onExport,onUpdate]);
  return <PrimaryHeaderActionsOutlet renderTrigger={renderMenu} fallback={renderMenu()}/>;
 }

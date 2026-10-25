@@ -209,6 +209,7 @@ export function CompactWorkspaceHeader({
   const primary = primaryActions === undefined ? <PrimaryHeaderActionsOutlet /> : primaryActions;
   return (
     <Box
+      data-workspace-header
       sx={theme => ({
         ...workspaceHeaderSurfaceSx(theme),
         minWidth: 0,
@@ -354,6 +355,7 @@ export function TabbedWorkspaceFrame<T extends string>({
 
   return (
     <Box
+      data-workspace-header
       sx={theme => ({
         ...workspaceHeaderSurfaceSx(theme),
         minWidth: 0,

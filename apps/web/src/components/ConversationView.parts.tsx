@@ -31,6 +31,7 @@ import {
   memo,
   useCallback,
   useMemo,
+  type ReactNode,
   type Dispatch,
   type SetStateAction,
 } from "react";
@@ -324,15 +325,24 @@ function ConversationHeader({
     },
   ],[onChatSettings,setAgentWorkOpen,setRenameValue,conversation.title,setRenameOpen,setAddAgentsOpen,setDeleteOpen]);
   const menuLabel = `${activeView === "collaboration" ? "Team Chat" : "Chat"} settings and actions`;
-  const renderCollapsedMenu = useCallback((openUsage:(anchor:HTMLElement)=>void)=><ChatOverflowMenu
-    label={menuLabel} transcriptMarkdown={transcriptMarkdown}
-    transcriptFileName={transcriptFileName(transcriptTitle)} showExports={!auditOnly}
-    actions={[
-      ...(auditOnly ? [] : chatActions),
-      {label:"Provider usage",icon:<DataUsageOutlinedIcon fontSize="small"/>,onSelect:openUsage},
-      ...(!auditOnly ? [{label:"Browser",icon:<LanguageIcon fontSize="small"/>,onSelect:onOpenProjectBrowser}] : []),
-    ]}
-  />,[menuLabel,transcriptMarkdown,transcriptTitle,auditOnly,chatActions,onOpenProjectBrowser]);
+  const browserAction = useMemo(() => <Tooltip title="Open Browser">
+    <IconButton aria-label="Open Browser" onClick={onOpenProjectBrowser}><LanguageIcon /></IconButton>
+  </Tooltip>,[onOpenProjectBrowser]);
+  const renderCollapsedMenu = useCallback((openUsage:(anchor:HTMLElement)=>void,fullTrigger?:ReactNode)=><Stack direction="row" spacing={0.5} sx={{alignItems:"center",flexWrap:"nowrap"}}>
+    {fullTrigger}
+    {fullTrigger && !auditOnly ? browserAction : null}
+    {!auditOnly || !fullTrigger ? <ChatOverflowMenu
+      label={menuLabel} transcriptMarkdown={transcriptMarkdown}
+      transcriptFileName={transcriptFileName(transcriptTitle)} showExports={!auditOnly}
+      actions={[
+        ...(auditOnly ? [] : chatActions),
+        ...(!fullTrigger ? [
+          {label:"Provider usage",icon:<DataUsageOutlinedIcon fontSize="small"/>,onSelect:openUsage},
+          ...(!auditOnly ? [{label:"Browser",icon:<LanguageIcon fontSize="small"/>,onSelect:onOpenProjectBrowser}] : []),
+        ] : []),
+      ]}
+    /> : null}
+  </Stack>,[menuLabel,transcriptMarkdown,transcriptTitle,auditOnly,chatActions,onOpenProjectBrowser,browserAction]);
   return (
     <TabbedWorkspaceFrame
       collapsedIconTabs
@@ -348,14 +358,7 @@ function ConversationHeader({
       }
       actions={auditOnly?null:
         <>
-        <Tooltip title="Open Browser">
-            <IconButton
-            aria-label="Open Browser"
-              onClick={onOpenProjectBrowser}
-            >
-              <LanguageIcon />
-            </IconButton>
-          </Tooltip>
+          {browserAction}
           <ChatOverflowMenu
             label={`${activeView === "collaboration" ? "Team Chat" : "Chat"} settings and actions`}
             transcriptMarkdown={transcriptMarkdown}
