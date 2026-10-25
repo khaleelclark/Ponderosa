@@ -42,7 +42,7 @@ import type {BranchBindings,BranchContextDto,BranchDefinition,BranchDeploymentPr
 import {realApi,requestJson,requestCollectionPage} from '../api/real';
 import {WorkflowEditor} from './branches/WorkflowEditor';
 import {ExecutionPanel,type ExecutionPanelViewState} from './branches/ExecutionPanel';
-import {SemanticStatus,type SemanticStatusKind} from './SemanticStatus';
+import {BranchDirectoryStatus} from './branches/BranchDirectoryStatus';
 import {newDefinition,bindDefinitionDirectories,branchDraftRevision,isCurrentWorkflowResponse} from './branches/model';
 import {SharedSidebarPanel} from './WorkspaceSidebar.parts';
 import {BranchesSidebar} from './branches/BranchesSidebar';
@@ -63,13 +63,6 @@ function mergeHistory(pages:BranchExecutionDetailDto[]|undefined):BranchExecutio
  if(!pages?.length)return undefined;const first=pages[0]!;
  const merge=<T,>(select:(p:BranchExecutionDetailDto)=>T[],id:(row:T)=>string):T[]=>{const rows=new Map<string,T>();for(const page of [...pages].reverse())for(const row of select(page))rows.set(id(row),row);return [...rows.values()]};
  return {...first,steps:merge(p=>p.steps,r=>r.id),attempts:merge(p=>p.attempts,r=>r.id),gates:merge(p=>p.gates,r=>r.id),paths:merge(p=>p.paths,r=>r.id),resources:merge(p=>p.resources,r=>r.stepExecutionId),decisions:merge(p=>p.decisions??[],r=>r.id),sealedResults:merge(p=>p.sealedResults??[],r=>r.id),maps:merge(p=>p.maps??[],r=>r.id),mapItems:merge(p=>p.mapItems??[],r=>r.id)};
-}
-function branchDirectoryStatus(branch:BranchDto):{label:string;kind:SemanticStatusKind}{
- const active=branch.activeExecutions??0;
- if(branch.enabled===false)return {label:active?`Disabled · ${active} active`:'Disabled',kind:'disabled'};
- if(active>0)return {label:`Running · ${active}`,kind:'running'};
- if(branch.triggerId)return branch.triggerEnabled?{label:'Automatic',kind:'enabled'}:{label:'Automatic paused',kind:'waiting'};
- return {label:'Manual',kind:'idle'};
 }
 /** Branches has its own workflow-centered authoring and operations shell. */
 type Appearance={colorMode:ColorMode;onToggleColorMode():void};
@@ -222,9 +215,9 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  useEffect(()=>{const keydown=(event:KeyboardEvent)=>{if(!isGlobalSearchShortcut(event))return;event.preventDefault();openGlobalSearch()};window.addEventListener('keydown',keydown);return()=>window.removeEventListener('keydown',keydown)},[]);
  const workflowPanel=(drawer:boolean)=>preferences.data?<BranchFolders branches={branches.data??[]} preferences={preferences.data} filtering={Boolean(search.trim())}
     onRename={requestRename} onPreferences={patch=>preferenceWriter.current!.enqueue(patch)}
-    renderRow={b=>{const status=branchDirectoryStatus(b);return <SidebarResourceRow href={branchRoutePath({branchId:b.id,tab:'workflow'})} id={b.id} label={`Open Branch ${b.name} · ${status.label}`} title={b.name} detail={status.label} selected={draft.branchId===b.id} icon={<AccountTreeOutlinedIcon fontSize="small"/>} status={<SemanticStatus status={status.kind} label={status.label}/>}
+    renderRow={b=><SidebarResourceRow href={branchRoutePath({branchId:b.id,tab:'workflow'})} id={b.id} label={`Open Branch ${b.name}`} title={b.name} selected={draft.branchId===b.id} icon={<AccountTreeOutlinedIcon fontSize="small"/>} status={<BranchDirectoryStatus branch={b} delayed={Boolean(branches.error||organized.error||connection.prolongedDisconnect)}/>}
       starred={starredWorkspaceResources(preferences.data!).has(`branch:${b.id}`)} onStar={()=>preferenceWriter.current!.enqueue(toggleWorkspaceResourceStar(client.getQueryData(queryKeys.workspacePreferences.all)??preferences.data!,'branch',b.id))}
-      onOpen={()=>{if(loading||openingLink||creating||deploy.isPending)return;if(drawer)closeMobileNavigation();void select(b)}}/>}}>
+      onOpen={()=>{if(loading||openingLink||creating||deploy.isPending)return;if(drawer)closeMobileNavigation();void select(b)}}/>}>
     {({starredRows,allRows})=><SharedSidebarPanel
       icon={<AccountTreeOutlinedIcon/>}
       title="Workflows"
