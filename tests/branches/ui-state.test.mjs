@@ -975,3 +975,12 @@ test('pending actual advanced Apply survives publication retry without a new edi
   assert.equal(s.draft.definition.name,'New advanced edit');assert.equal(s.advanced,undefined,'Raw text clears only because the real parent accepted its validated definition');assert.equal(selected,0);assert.equal(s.jsonError,'');
  }
 });
+
+
+test('unpublished dot has a focusable shared tooltip, distinguishes initial drafts, and disappears at baseline',()=>{
+ const props={name:'Workflow',tab:'workflow',published:true,dirty:true,executionCount:2,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){}};
+ const dirty=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,props));
+ assert.ok(/role="img"[^>]*tabindex="0"[^>]*aria-label="Unpublished changes"/.test(dirty));assert.ok(dirty.includes('Unpublished workflow changes. Use Save to review and publish, or Discard changes.'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Unpublished changes"'));assert.ok(dirty.indexOf('aria-label="Unpublished changes"')<dirty.indexOf('aria-label="Save changes…"'));
+ const clean=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false}));assert.ok(!clean.includes('aria-label="Unpublished changes"'));assert.ok(!clean.includes('role="img"'));
+ const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(initial.includes('aria-label="Unpublished workflow"'));assert.ok(initial.includes('Unpublished workflow — review and publish to run'));assert.ok(!initial.includes('Use Save to review and publish, or Discard changes.'));
+});
