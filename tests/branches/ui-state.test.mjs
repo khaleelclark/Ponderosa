@@ -981,6 +981,24 @@ test('unpublished dot has a focusable shared tooltip and disappears at every cle
  const props={name:'Workflow',tab:'workflow',published:true,dirty:true,executionCount:2,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){}};
  const dirty=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,props));
  assert.ok(/role="img"[^>]*tabindex="0"[^>]*aria-label="Unpublished changes"/.test(dirty));assert.ok(dirty.includes('Unpublished workflow changes. Use Save to review and publish, or Discard changes.'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Unpublished changes"'));assert.ok(dirty.indexOf('aria-label="Unpublished changes"')<dirty.indexOf('aria-label="Save changes…"'));
- const clean=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false}));assert.ok(!clean.includes('aria-label="Unpublished changes"'));assert.ok(!clean.includes('role="img"'));
- const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(!initial.includes('role="img"'));assert.ok(!initial.includes('Unpublished changes'));assert.ok(!initial.includes('Use Save to review and publish, or Discard changes.'));
+ const clean=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false}));assert.ok(!clean.includes('aria-label="Unpublished changes"'));assert.ok(!clean.includes('Unpublished workflow changes.'));
+ const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(!initial.includes('aria-label="Unpublished changes"'));assert.ok(!initial.includes('Unpublished changes'));assert.ok(!initial.includes('Use Save to review and publish, or Discard changes.'));
+});
+
+
+test('compact shared tabs keep canonical IDs, selection, disabled eligibility and names while omitting visible labels',async()=>{
+ const {WorkspaceTabBar}=await import('../../apps/web/src/components/WorkspaceFrame.tsx');const items=[{value:'workflow',label:'Workflow',icon:React.createElement('svg',{'data-icon':'workflow'})},{value:'chats',label:'Chats',icon:React.createElement('svg',{'data-icon':'chats'})},{value:'executions',label:'Executions',disabled:true,icon:React.createElement('svg',{'data-icon':'executions'})},{value:'settings',label:'Settings',icon:React.createElement('svg',{'data-icon':'settings'})}];
+ const render=value=>renderToStaticMarkup(React.createElement(WorkspaceTabBar,{compact:true,idPrefix:'branch',label:'Branch views',items,value,onChange(){}}));
+ const html=render('chats'),tabs=[...html.matchAll(/<button[^>]*role="tab"[^>]*>[\s\S]*?<\/button>/g)].map(m=>m[0]);assert.equal(tabs.length,4);assert.equal((html.match(/role="tablist"/g)??[]).length,1);
+ for(let i=0;i<items.length;i++){const item=items[i];assert.ok(tabs[i].includes(`id="branch-${item.value}-tab"`));assert.ok(tabs[i].includes(`aria-controls="branch-${item.value}-panel"`));assert.ok(tabs[i].includes(`aria-label="${item.label}"`));assert.ok(tabs[i].includes(`aria-selected="${item.value==='chats'}"`));assert.ok(tabs[i].includes(`data-icon="${item.value}"`));assert.ok(!tabs[i].includes(`>${item.label}<`),'Compact labels remain accessible instead of consuming row width')}
+ assert.ok(tabs[2].includes('disabled=""'));assert.ok(html.includes('<span aria-disabled="true"'),'Disabled tab keeps its tooltip event wrapper without becoming another focus stop');assert.equal((render(false).match(/aria-selected="true"/g)??[]).length,0,'Work-open false value must not falsely select Chat');
+});
+
+
+test('compact execution count preserves full meaning for zero, active, loading and unavailable states',()=>{
+ const base={name:'Workflow',tab:'workflow',published:true,dirty:false,saving:false,saveDisabled:true,onTab(){},onSave(){},onExport(){},onUpdate(){},onRename(){}};
+ for(const [props,label,visible] of [[{executionCount:0},'0 active executions','0'],[{executionCount:12},'12 active executions','12'],[{},'Executions loading…','…'],[{executionCount:12,executionsUnavailable:true},'Executions unavailable','!']]){
+  const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...base,...props}));
+  assert.ok(html.includes(`role="img" tabindex="0" aria-label="${label}"`));assert.ok(html.includes(`</span>${visible}</span>`),'The narrow status has a visible count or explicit unresolved/error symbol');assert.ok(html.includes(`aria-label="${label}"`));
+ }
 });

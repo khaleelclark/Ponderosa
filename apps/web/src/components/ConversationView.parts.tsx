@@ -295,6 +295,7 @@ function ConversationHeader({
   const auditOnly=useWorkspaceReadOnly();
   return (
     <TabbedWorkspaceFrame
+      collapsedIconTabs
       compactMobile
       icon={<ChatBubbleOutlineIcon />}
       title={conversation.title}
