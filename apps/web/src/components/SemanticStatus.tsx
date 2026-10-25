@@ -1,5 +1,5 @@
 import { AGENT_DISPLAY_STATUS_LABELS } from "@ponderosa/core";
-import { Chip, type ChipProps } from "@mui/material";
+import { Box, Chip, type ChipProps } from "@mui/material";
 
 export type SemanticStatusKind =
   | "unknown"
@@ -67,6 +67,13 @@ export function semanticAgentStatus(status: string): SemanticStatusKind {
   if (["failed", "cancelled"].includes(status)) return "failed";
   if (status === "completed") return "completed";
   return "idle";
+}
+
+/** Shared fixed-size sidebar circle; semantic color comes from its owner. */
+export function SemanticStatusCircle(): JSX.Element {
+  return <Box component="svg" viewBox="0 0 8 8" aria-hidden="true" sx={{ width: 8, height: 8, flex: "0 0 8px", display: "block", fill: "currentColor" }}>
+    <circle cx="4" cy="4" r="4" />
+  </Box>;
 }
 
 export function SemanticStatus({
