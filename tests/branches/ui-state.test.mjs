@@ -230,7 +230,7 @@ async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}
  let key=0;const scope={React,...mui,ConfirmDialog:exports.ConfirmDialog,intervention:{action,attemptId:'attempt-a',unknown},reason:'',reconciled:false,result:'',failed:false,target:'',commandKey:'command-0',createClientId:()=>`command-${++key}`,execution:{id:'execution-a',revision:7,parentExecutionId:'parent'},executions:[{id:'target',state:'waiting',createdAt:'2026-10-25T00:00:00Z'}],detail:{attempts:[],steps:[]},refresh:()=>refreshes.push('refresh'),requestJson:async(path,options)=>{calls.push({path,body:JSON.parse(options.body)});return submit();}};
  for(const name of ['intervention','reason','reconciled','result','failed','target','commandKey'])scope['set'+name[0].toUpperCase()+name.slice(1)]=value=>{scope[name]=value;};
  const client=new QueryClient({defaultOptions:{mutations:{retry:false,gcTime:Infinity}}}),observer=new MutationObserver(client,load('('+mutation+')',scope)),unsubscribe=observer.subscribe(()=>{});t.after(()=>{unsubscribe();client.clear();});
- const render=()=>{buttons.length=0;fields.length=0;dialogs.length=0;scope.act=observer.getCurrentResult();return renderToStaticMarkup(load('('+dialog+')',scope));};
+ const render=()=>{buttons.length=0;fields.length=0;dialogs.length=0;scope.act={...observer.getCurrentResult(),mutateAsync:observer.mutate.bind(observer)};return renderToStaticMarkup(load('('+dialog+')',scope));};
  return{scope,calls,refreshes,render,dialogs,button:label=>buttons.find(p=>p.children===label),field:label=>fields.find(p=>p.label===label),switches:()=>fields.filter(p=>'checked'in p)};
 }
 
@@ -245,4 +245,24 @@ for(const action of ['retry','resolve_script','merge','skip'])test(`shared execu
  const expected={commandKey:key,expectedRevision:7,action,reason:'Verified recovery',attemptId:'attempt-a',...(f.scope.intervention.unknown?{externalEffectsReconciled:true}:{}),...(action==='resolve_script'?{result:{failed:true,output:'Observed output retained'}}:{}),...(action==='merge'?{mergedInto:'target'}:{})};assert.deepEqual(JSON.parse(JSON.stringify(f.calls[0])),{path:'/api/branch-executions/execution-a/intervene',body:expected});
  release.reject(Error('Recovery conflict'));await assert.rejects(saving,/Recovery conflict/);assert.match(f.render(),/Recovery conflict/);assert.equal(f.field('Reason for this decision').value,'Verified recovery');if(action==='resolve_script')assert.equal(f.field('Observed output').value,'Observed output retained');assert.equal(f.scope.commandKey,key);assert.equal(f.button('Back').disabled,false);
  const retry=f.button('Apply decision').onClick();await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(f.calls[1],f.calls[0],'Retry preserves the same intervention identity and fields');release.resolve({});await retry;f.render();assert.equal(f.scope.intervention,undefined);assert.equal(f.refreshes.length,1);
+});
+
+test('shared confirmation fences async submissions until settlement without trapping synchronous declined actions',async()=>{
+ const {readFileSync}=await import('node:fs'),{createRequire}=await import('node:module'),vm=await import('node:vm');
+ const require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),ts=require('typescript'),React=require('react');
+ const source=readFileSync(new URL('../../apps/web/src/components/ConfirmationDialogs.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('confirm.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);let shell;
+ ts.forEachChild(ast,node=>{if(ts.isFunctionDeclaration(node)&&node.name?.text==='FormDialogShell')shell=node.getText(ast)});assert.ok(shell);
+ const latch={current:false},scope={React,useRef:()=>latch,...Object.fromEntries(['Dialog','DialogTitle','DialogContent','DialogActions','Button','Alert'].map(name=>[name,name]))};
+ const render=vm.runInNewContext(ts.transpile('('+shell+')',{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope);let canceled=0,confirmed=0;
+ const props={open:true,title:'Confirm',children:'Body',confirmLabel:'Apply',onCancel(){canceled++;}};
+ const confirm=tree=>tree.props.children[2].props.children[1].props.onClick;
+ for(const throws of [false,true]){
+  const tree=render({...props,onConfirm(){confirmed++;if(throws)throw Error('Declined');}});
+  if(throws)assert.throws(()=>confirm(tree)(),/Declined/);else confirm(tree)();
+  assert.equal(latch.current,false);tree.props.onClose({},'escapeKeyDown');assert.equal(canceled,throws?2:1,'A synchronous no-op or failure does not trap Cancel/Escape');
+ }
+ let settle;const pending=new Promise((resolve,reject)=>{settle={resolve,reject};}),tree=render({...props,onConfirm(){confirmed++;return pending;}});
+ const saving=confirm(tree)(),before=confirmed;assert.equal(confirm(tree)(),undefined);assert.equal(confirmed,before);tree.props.onClose({},'backdropClick');assert.equal(canceled,2);assert.equal(latch.current,true);
+ settle.reject(Error('Save failed'));await assert.rejects(saving,/Save failed/);assert.equal(latch.current,false);tree.props.onClose({},'escapeKeyDown');assert.equal(canceled,3);
+ const retry=render({...props,onConfirm:()=>Promise.resolve()});await confirm(retry)();assert.equal(latch.current,false);
 });

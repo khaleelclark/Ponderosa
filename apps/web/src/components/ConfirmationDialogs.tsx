@@ -24,7 +24,7 @@ interface FormDialogShellProps {
   cancelLabel?: string;
   maxWidth?: DialogProps["maxWidth"];
   onCancel(): void;
-  onConfirm(): void;
+  onConfirm(): void | Promise<unknown>;
 }
 
 function FormDialogShell({
@@ -44,7 +44,6 @@ function FormDialogShell({
 }: FormDialogShellProps): JSX.Element {
   // Mutation pending arrives on a later render; fence the first click now.
   const confirming = useRef(false);
-  useEffect(() => { if (!pending) confirming.current = false; }, [open, pending, error, confirmDisabled]);
   const close = (): void => {
     if (!pending && !confirming.current) onCancel();
   };
@@ -71,7 +70,17 @@ function FormDialogShell({
           onClick={() => {
             if (pending || confirmDisabled || confirming.current) return;
             confirming.current = true;
-            return onConfirm();
+            try {
+              const submission = onConfirm();
+              if (submission) {
+                // The caller owns error presentation; settlement only releases the click fence.
+                void submission.then(() => { confirming.current = false; }, () => { confirming.current = false; });
+              } else confirming.current = false;
+              return submission;
+            } catch (error) {
+              confirming.current = false;
+              throw error;
+            }
           }}
         >
           {pending ? pendingLabel ?? `${confirmLabel.replace(/\s+$/, "")}…` : confirmLabel}
@@ -93,7 +102,7 @@ export interface ConfirmDialogProps {
   cancelLabel?: string;
   maxWidth?: DialogProps["maxWidth"];
   onCancel(): void;
-  onConfirm(): void;
+  onConfirm(): void | Promise<unknown>;
 }
 
 export function ConfirmDialog({
