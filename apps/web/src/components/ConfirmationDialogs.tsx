@@ -42,8 +42,11 @@ function FormDialogShell({
   onCancel,
   onConfirm,
 }: FormDialogShellProps): JSX.Element {
+  // Mutation pending arrives on a later render; fence the first click now.
+  const confirming = useRef(false);
+  useEffect(() => { if (!pending) confirming.current = false; }, [open, pending, error, confirmDisabled]);
   const close = (): void => {
-    if (!pending) onCancel();
+    if (!pending && !confirming.current) onCancel();
   };
   return (
     <Dialog
@@ -65,7 +68,11 @@ function FormDialogShell({
           color={confirmColor}
           variant="contained"
           disabled={pending || confirmDisabled}
-          onClick={onConfirm}
+          onClick={() => {
+            if (pending || confirmDisabled || confirming.current) return;
+            confirming.current = true;
+            return onConfirm();
+          }}
         >
           {pending ? pendingLabel ?? `${confirmLabel.replace(/\s+$/, "")}…` : confirmLabel}
         </Button>
