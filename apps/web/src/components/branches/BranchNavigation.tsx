@@ -28,7 +28,7 @@ export function BranchNavigation({ children }: { children(router: {
   }, []);
   const confirmLeave = useCallback((keepWorkflowDraft = false, keepEditorDraft = false, keepSettingsDraft = false, keepLocalKeys:readonly string[]=[]) =>
     (keepSettingsDraft||confirmUnsavedNavigation())&&((![...dirty.current].some(key => !(keepWorkflowDraft && key === 'workflow') && !(keepEditorDraft && key === 'workflow-editor') && !keepLocalKeys.includes(key))) ||
-    window.confirm('Discard unsaved changes? Parameter values, workflow edits, execution settings, and capability changes that have not been saved will be lost.')), []);
+    window.confirm('Discard unsaved changes? Workflow variables, workflow edits, execution settings, and capability changes that have not been saved will be lost.')), []);
   const guard = useCallback((action: () => void): boolean => {
     if (!confirmLeave()) return false;
     action();
@@ -45,6 +45,9 @@ export function BranchNavigation({ children }: { children(router: {
     setRoute(next);
     return true;
   }, [confirmLeave]);
+  useEffect(()=>{
+    if(new URLSearchParams(window.location.search).get('tab')==='parameters')window.history.replaceState(window.history.state,'',branchRoutePath(route)+window.location.hash);
+  },[route]);
   useEffect(()=>{
     const open=(event:MessageEvent)=>{
       if(event.data?.type!=='ponderosa:open-route'||typeof event.data.url!=='string')return;

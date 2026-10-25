@@ -1,7 +1,6 @@
 import AccountTreeOutlined from '@mui/icons-material/AccountTreeOutlined';
 import ChatBubbleOutline from '@mui/icons-material/ChatBubbleOutline';
 import PlayCircleOutline from '@mui/icons-material/PlayCircleOutline';
-import TuneOutlined from '@mui/icons-material/TuneOutlined';
 import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
 import SaveOutlined from '@mui/icons-material/SaveOutlined';
 import {Box,IconButton,Tooltip} from '@mui/material';
@@ -19,7 +18,6 @@ export function BranchWorkspaceHeader({name,tab,published,dirty,executionCount,e
   {value:'workflow' as const,label:'Workflow',icon:<AccountTreeOutlined/>},
   {value:'chats' as const,label:'Chats',icon:<ChatBubbleOutline/>},
   {value:'executions' as const,label:'Executions',icon:<PlayCircleOutline/>,disabled:!published},
-  {value:'parameters' as const,label:'Parameters',icon:<TuneOutlined/>,disabled:!published},
   {value:'settings' as const,label:'Settings',icon:<SettingsOutlined/>},
  ]};
  return <Box sx={{flexShrink:0,minWidth:0}}><TabbedWorkspaceFrame icon={<AccountTreeOutlined/>} title={name} compactMobile retainCollapsedActions statusBeforePrimaryActions
