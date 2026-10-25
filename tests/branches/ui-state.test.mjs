@@ -701,3 +701,14 @@ test('an external publication cannot unmount and erase an open workflow Rename d
  scope.renameId=undefined;run();assert.equal(refreshed.length,1,'Cancel allows canonical refresh');
  scope.dirty=true;run();assert.equal(refreshed.length,1,'Apply preserves the edited definition');assert.equal(updates.at(-1).reason,'dirty');
 });
+
+test('Branch execution status distinguishes confirmed zero, active, unresolved and failed cached counts',()=>{
+ const props={name:'Workflow status owner',tab:'workflow',published:true,embeddedChat:false,dirty:true,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){},onRename(){}};
+ const render=extra=>renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,...extra}));
+ for(const [extra,label] of [[{executionCount:0},'0 active executions'],[{executionCount:4},'4 active executions'],[{},'Executions loading…'],[{executionCount:4,executionsUnavailable:true},'Executions unavailable']]){
+  const html=render(extra);assert.ok(html.includes(`aria-label="${label}"`));assert.ok(html.includes('aria-label="Unpublished changes"'),'Execution state and unpublished draft remain independently visible');
+  if(extra.executionsUnavailable)assert.ok(!html.includes('4 active executions'),'A failed query overrides its cached count');
+ }
+ const nested=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,embeddedChat:true,tab:'chats',executionCount:4}));
+ assert.ok(!nested.includes('4 active executions'),'Branch status never leaks into the embedded Chat identity');
+});

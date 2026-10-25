@@ -103,6 +103,8 @@ export interface TabbedWorkspaceFrameProps<T extends string> {
   actionsInMobileTabs?: boolean;
   /** Keep essential authoring controls reachable in the compact desktop header. */
   retainCollapsedActions?: boolean;
+  /** Keep owner status beside identity, ahead of shared usage controls. */
+  statusBeforePrimaryActions?: boolean;
   tabs: {
     idPrefix?: string;
     activeLabel?: string;
@@ -171,12 +173,14 @@ export function CompactWorkspaceHeader({
   context,
   action,
   hideIcon = false,
+  status,
 }: {
   icon: ReactElement;
   title: string;
   context?: ReactNode;
   action?: ReactNode;
   hideIcon?: boolean;
+  status?: ReactNode;
 }): JSX.Element {
   return (
     <Box
@@ -238,6 +242,7 @@ export function CompactWorkspaceHeader({
             </Typography>
           ) : null}
         </Box>
+        {status}
         <PrimaryHeaderActionsOutlet />
         {action}
       </Stack>
@@ -260,6 +265,7 @@ export function TabbedWorkspaceFrame<T extends string>({
   compactMobile = false,
   actionsInMobileTabs = false,
   retainCollapsedActions = false,
+  statusBeforePrimaryActions = false,
   tabs,
 }: TabbedWorkspaceFrameProps<T>): JSX.Element {
   const { collapsed, toggleCollapsed } = useWorkspaceHeaderCollapse();
@@ -287,10 +293,11 @@ export function TabbedWorkspaceFrame<T extends string>({
         icon={icon}
         title={title}
         hideIcon={compact}
+        status={statusBeforePrimaryActions ? status : undefined}
         context={activeLabel}
         action={(
           <>
-          {compact || retainCollapsedActions ? <Stack direction="row" spacing={0.25} sx={{ alignItems: "center", flexShrink: 0 }}>{status}{actionsInMobileTabs ? null : actions}</Stack> : null}
+          {compact || retainCollapsedActions ? <Stack direction="row" spacing={0.25} sx={{ alignItems: "center", flexShrink: 0 }}>{statusBeforePrimaryActions ? null : status}{actionsInMobileTabs ? null : actions}</Stack> : null}
           <Tooltip title="Expand workspace header">
             <IconButton
               ref={toggleButtonRef}
@@ -359,8 +366,9 @@ export function TabbedWorkspaceFrame<T extends string>({
               maxWidth: "100%",
             }}
           >
+            {statusBeforePrimaryActions ? status : null}
             <PrimaryHeaderActionsOutlet />
-            {status}
+            {statusBeforePrimaryActions ? null : status}
             {compact && actionsInMobileTabs ? null : actions}
           </Stack>
           <Tooltip title="Collapse workspace header">
