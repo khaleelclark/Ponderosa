@@ -6,7 +6,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 const {BranchWorkspaceHeader}=await import('../../apps/web/src/components/branches/BranchWorkspaceHeader.tsx');
 
 test('Branch header reuses ordered shared icon tabs, names and guarded publication controls',()=>{
- const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'A long workflow name',tab:'workflow',published:false,embeddedChat:false,dirty:true,saving:false,saveDisabled:true,onTab(){},onSave(){},onExport(){},onUpdate(){}}));
+ const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'A long workflow name',tab:'workflow',published:false,dirty:true,saving:false,saveDisabled:true,onTab(){},onSave(){},onExport(){},onUpdate(){}}));
  assert.ok(html.includes('A long workflow name'),'Selected workflow name is present');assert.ok(html.includes('aria-label="Unpublished changes"'),'Dirty indication is accessible');
  assert.ok(/<button[^>]*disabled=""[^>]*aria-label="Save changes…"/.test(html),'Clean/invalid/pending Save remains disabled');
  const names=[...html.matchAll(/role="tab"[^>]*>(.*?)<\/button>/g)].map(match=>match[1].replace(/<style[^>]*>[\s\S]*?<\/style>/g,'').replace(/<[^>]*>/g,''));
@@ -16,10 +16,11 @@ test('Branch header reuses ordered shared icon tabs, names and guarded publicati
  assert.ok(!/Ponderosa Branches|Build and operate|No changes to publish/.test(html),'No displaced product banner or duplicate actions');
 });
 
-test('selected nested Chat retains the Branch tabs without duplicating shared Chat identity or controls',()=>{
- const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'Owning workflow',tab:'chats',published:true,embeddedChat:true,dirty:false,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){}}));
+test('selected nested Chat retains the owning Branch identity and guarded actions',()=>{
+ const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'Owning workflow',tab:'chats',published:true,dirty:false,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){}}));
  assert.ok(html.includes('aria-label="Branch views"'),'Branch navigation remains reachable');assert.ok(/aria-selected="true"[^>]*>.*ChatBubbleOutline/.test(html),'Chats is the selected shared icon tab');
- assert.ok(!/Owning workflow|Save changes|Branch actions|<h1/.test(html),'Nested Chat owns its identity and actions');
+ for(const label of ['Owning workflow','Save changes…','Branch actions'])assert.ok(html.includes(label),'Branch owner remains visible beside its nested Chat');
+ assert.equal((html.match(/role="tablist"/g)??[]).length,1,'One Branch navigation owner');
 });
 const {WorkspacePreferencesWriter}=await import('../../apps/web/src/workspacePreferencesWriter.ts');
 const {branchRoutePath,parseBranchRoute,branchWorkspaceRoute}=await import('../../apps/web/src/branchesRouting.ts');
@@ -41,6 +42,13 @@ test('Branch nested routes preserve the selected Chat, execution and exact messa
  const route={branchId:'b',tab:'chats',executionId:'e',chatId:'c',workspace:{kind:'conversation',projectId:'p',conversationId:'c',focusMessageId:'a#Build-Coordinator?ü'}};
  assert.deepEqual(parseBranchRoute(new URL(branchRoutePath(route),'https://example.test').search),{...route,workspace:{...route.workspace,urlDriven:true}});
  assert.equal(parseBranchRoute('?workspace=https://outside.test/projects/p').workspace,undefined);
+});
+
+test('explicit Workflow navigation survives reload with a retained execution selection',()=>{
+ const route={branchId:'b',tab:'workflow',executionId:'e'};
+ const path=branchRoutePath(route);assert.ok(path.includes('tab=workflow'));
+ assert.deepEqual(parseBranchRoute(new URL(path,'https://example.test').search),route);
+ assert.equal(parseBranchRoute('?branch=b&execution=e').tab,'executions','Existing execution-only deep links retain their default');
 });
 
 test('Branch transport scopes shared APIs exactly once without changing normal product requests',()=>{
@@ -703,14 +711,14 @@ test('an external publication cannot unmount and erase an open workflow Rename d
 });
 
 test('Branch execution status distinguishes confirmed zero, active, unresolved and failed cached counts',()=>{
- const props={name:'Workflow status owner',tab:'workflow',published:true,embeddedChat:false,dirty:true,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){},onRename(){}};
+ const props={name:'Workflow status owner',tab:'workflow',published:true,dirty:true,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){},onRename(){}};
  const render=extra=>renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,...extra}));
  for(const [extra,label] of [[{executionCount:0},'0 active executions'],[{executionCount:4},'4 active executions'],[{},'Executions loading…'],[{executionCount:4,executionsUnavailable:true},'Executions unavailable']]){
   const html=render(extra);assert.ok(html.includes(`aria-label="${label}"`));assert.ok(html.includes('aria-label="Unpublished changes"'),'Execution state and unpublished draft remain independently visible');
   if(extra.executionsUnavailable)assert.ok(!html.includes('4 active executions'),'A failed query overrides its cached count');
  }
- const nested=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,embeddedChat:true,tab:'chats',executionCount:4}));
- assert.ok(!nested.includes('4 active executions'),'Branch status never leaks into the embedded Chat identity');
+ const nested=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,tab:'chats',executionCount:4}));
+ assert.ok(nested.includes('4 active executions'),'The retained outer Branch header keeps its own execution status in Chats');
 });
 
 
