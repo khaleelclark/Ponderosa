@@ -807,3 +807,21 @@ test('over-limit authoring labels stay complete without prefix measurement work'
  const decomposed='e\u0301'.repeat(100),lines=wrapGraphLabel(decomposed,value=>Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value)).length*10);
  assert.equal(lines.join(''),decomposed);assert.ok(lines.length>1,'NFC-valid decomposed choices keep their normal editing and wrapping behavior');
 });
+
+
+test('scoped header usage stays with the nested owner across outer remounts and falls back on cleanup',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/PrimaryHeaderActions.tsx',import.meta.url),'utf8');
+ const ast=ts.createSourceFile('header.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),provider=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='PrimaryHeaderActionsProvider');
+ const declaration=name=>provider.body.statements.flatMap(node=>ts.isVariableStatement(node)?[...node.declarationList.declarations]:[]).find(node=>node.name.getText(ast)===name).initializer.getText(ast);
+ const scope={useCallback:fn=>fn,outlets:[],setOutlets:update=>{scope.outlets=update(scope.outlets)}};
+ const execute=value=>vm.runInNewContext(ts.transpile(value,{target:ts.ScriptTarget.ES2022}),scope);
+ const register=execute(declaration('register')),active=()=>execute(declaration('activeOutlet'));
+ const outer={},nested={},laterOuter={},peer={},deep={};
+ const removeOuter=register(outer);assert.equal(active(),outer);
+ const scopedProvider=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='PrimaryHeaderActionsScope'),scopedDeclaration=scopedProvider.body.statements.flatMap(node=>ts.isVariableStatement(node)?[...node.declarationList.declarations]:[]).find(node=>node.name.getText(ast)==='scopedRegister').initializer.getText(ast);scope.register=register;
+ const scopedRegister=execute(scopedDeclaration),removeNested=scopedRegister(nested),removeLater=register(laterOuter);assert.equal(active(),nested,'A later outer registration cannot steal scoped usage');
+ const removePeer=register(peer,1);assert.equal(active(),peer,'Equal-depth ordering remains last registered');
+ const removeDeep=register(deep,2);assert.equal(active(),deep);removeDeep();assert.equal(active(),peer);
+ removePeer();assert.equal(active(),nested);removeNested();assert.equal(active(),laterOuter,'Nested cleanup restores the latest outer owner');
+ removeLater();assert.equal(active(),outer);removeOuter();assert.equal(active(),undefined,'The existing fallback can take over');
+});
