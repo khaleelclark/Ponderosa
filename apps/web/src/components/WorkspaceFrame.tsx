@@ -174,6 +174,7 @@ export function WorkspaceTabBar<T extends string>({ value, items, onChange, labe
           minHeight: compact ? 44 : 48,
           minWidth: compact ? 44 : { xs: 88, sm: 112 },
           px: compact ? 0 : { xs: 1.25, sm: 2 },
+          ...(compact ? { py: 0 } : {}),
         }}
       />)}
     </Tabs>
