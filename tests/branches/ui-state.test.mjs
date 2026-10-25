@@ -675,3 +675,18 @@ test('Main permission saves protect subsection and history navigation while reta
  try{assert.equal(navigationPreservesSettings(general,providers),true);setReloadBlocker(blocker,true);assert.equal(navigationPreservesSettings(general,providers),false);assert.equal(navigationPreservesSettings(providers,general),false);assert.equal(navigationPreservesSettings(general,{kind:'home'}),false);}finally{setReloadBlocker(blocker,false)}
  assert.equal(navigationPreservesSettings(general,providers),true);
 });
+
+
+test('workflow Rename uses the clicked owner, preserves canceled navigation and fences late dialogs',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/BranchesView.tsx',import.meta.url),'utf8');
+ const handlers=['requestRename','applyRename'].map(name=>source.split('\n').find(line=>line.trim().startsWith(`const ${name}=`))).join('\n');
+ const draft={branchId:'a',definition:{name:'Original',steps:[{id:'retained'}]},bindings:{retained:true}},opened=[],scope={loading:false,openingLink:false,creating:false,review:{isPending:false},deploy:{isPending:false},draft,route:{branchId:'a'},routeOwner:{current:{branchId:'a'}},selection:{current:1},editorGeneration:1,renameId:'a',navigate:()=>false,setRenameId:id=>opened.push(id),setDraft:update=>{scope.draft=update(scope.draft)}};
+ vm.runInNewContext(ts.transpile(handlers+';this.requestRename=requestRename;this.applyRename=applyRename;',{target:ts.ScriptTarget.ES2022}),scope);
+ scope.requestRename({id:'b'});assert.deepEqual(opened,[],'Canceled navigation never opens the wrong owner');
+ scope.navigate=route=>{assert.equal(route.branchId,'b');return true};scope.requestRename({id:'b'});assert.deepEqual(opened,['b']);
+ scope.requestRename({id:'a'});assert.equal(opened.at(-1),'a');
+ scope.applyRename('  Updated  ');assert.equal(scope.draft.definition.name,'Updated');assert.equal(scope.draft.definition.steps,draft.definition.steps);assert.equal(scope.draft.bindings,draft.bindings);assert.equal(opened.at(-1),undefined);
+ for(const change of [()=>scope.selection.current++,()=>scope.routeOwner.current={branchId:'b'},()=>scope.routeOwner.current={branchId:'a',global:'general'},()=>scope.deploy.isPending=true]){
+  scope.selection.current=1;scope.routeOwner.current={branchId:'a'};scope.deploy.isPending=false;change();scope.applyRename('Stale');assert.equal(scope.draft.definition.name,'Updated');
+ }
+});

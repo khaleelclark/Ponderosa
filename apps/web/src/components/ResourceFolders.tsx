@@ -22,7 +22,7 @@ const initialStarredExpansion = (kind: string, folder: ResourceFolder): boolean 
 };
 
 /** Shared presentation-only grouping for Chats and Branch workflows. */
-export function ResourceFolders<Item extends FolderResource>({ resourceKind, resourceLabel, items, starredItems = items, openItems = [], folders, sort, starredIds, filtering, folderUnread, notificationState, renderFolderStatus, renderRow, onChange, onRename, onDelete, onOpenInNewTab, onReorder, children }: {
+export function ResourceFolders<Item extends FolderResource>({ resourceKind, resourceLabel, items, starredItems = items, openItems = [], folders, sort, starredIds, filtering, folderUnread, notificationState, renderFolderStatus, renderRow, onChange, onRename, renameLabel = "Rename", onDelete, onOpenInNewTab, onReorder, children }: {
   resourceKind: "conversation" | "branch"; resourceLabel: string;
   starredItems?: Item[];
   items: Item[]; folders: ResourceFolder[]; sort: ProjectSort; starredIds: ReadonlySet<string>; filtering: boolean;
@@ -32,6 +32,7 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
   renderFolderStatus?(folder: ResourceFolder): ReactNode;
   renderRow(item: Item): ReactNode;
   onChange(folders: ResourceFolder[], customOrder?: boolean): void;
+  renameLabel?: string;
   onRename?(item: Item): void; onDelete?(item: Item): void; onOpenInNewTab?(item: Item): void;
   onReorder(source: string, target: string, position: "before" | "after", folders?: ResourceFolder[]): void;
   children(rows: { starredRows: ReactNode; allRows: ReactNode; openRows: ReactNode }): ReactNode;
@@ -231,7 +232,7 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
     <Menu open={Boolean(menu)} anchorEl={menu?.anchor} onClose={closeMenu} disableEnforceFocus={Boolean(moveAnchor)}>
       {menu?.item ? [
         ...(onOpenInNewTab ? [<MenuItem key="open-tab" onClick={() => action(() => onOpenInNewTab(menu.item!))}>Open in new tab</MenuItem>] : []),
-        ...(onRename ? [<MenuItem key="rename" onClick={() => action(() => onRename(menu.item!))}>Rename</MenuItem>] : []),
+        ...(onRename ? [<MenuItem key="rename" onClick={() => action(() => onRename(menu.item!))}>{renameLabel}</MenuItem>] : []),
         <MenuItem key="create" onClick={() => action(() => onChange([...remove(menu.item!.id), { id: createClientId(), name: "New folder", expanded: true, memberIds: [menu.item!.id] }]))}>Create Folder</MenuItem>,
         <MenuItem key="move" aria-haspopup="dialog" aria-expanded={Boolean(moving)}
           onMouseEnter={event => { if (!desktopHover) return; stopTimer(); const anchor = event.currentTarget; hoverTimer.current = setTimeout(() => openPicker(anchor), 180); }}
