@@ -96,12 +96,17 @@ export class CapabilityPolicyStore {
     })();
   }
 
+  resolveForProduct(product: "interactive" | "branches"): EffectiveCapabilityPolicy {
+    return this.resolveLayers([["global", "ponderosa", "Installation defaults"],
+      ["product", product, product === "branches" ? "Ponderosa Branches defaults" : "Ponderosa defaults"]]);
+  }
+
   resolveForBranch(branchId: string): EffectiveCapabilityPolicy {
     const branch = this.sqlite.prepare("SELECT id, name FROM branches WHERE id = ?").get(branchId) as { id: string; name: string } | undefined;
     if (!branch) throw new Error("Branch not found");
     return this.resolveLayers([
-      ["global", "ponderosa", "Ponderosa"],
-      ["product", "branches", "Ponderosa Branches"],
+      ["global", "ponderosa", "Installation defaults"],
+      ["product", "branches", "Ponderosa Branches defaults"],
       ["branch", branch.id, branch.name],
     ]);
   }
@@ -162,8 +167,8 @@ export class CapabilityPolicyStore {
 
   private resolveOwnership(owner: OwnershipRow, runId?: string, agentAncestors:Array<{id:string;title:string}>=[]): EffectiveCapabilityPolicy {
     const layers: Array<[CapabilityScopeKind, string, string]> = [
-      ["global", "ponderosa", "Ponderosa"],
-      ["product", owner.branch_id ? "branches" : "interactive", owner.branch_id ? "Ponderosa Branches" : "Ponderosa"],
+      ["global", "ponderosa", "Installation defaults"],
+      ["product", owner.branch_id ? "branches" : "interactive", owner.branch_id ? "Ponderosa Branches defaults" : "Ponderosa defaults"],
     ];
     if (owner.branch_id) layers.push(["branch", owner.branch_id, owner.branch_name ?? "Branch"]);
     layers.push(["chat", owner.conversation_id, owner.conversation_title]);

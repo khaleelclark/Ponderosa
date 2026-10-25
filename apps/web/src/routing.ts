@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentTelemetryStream, ConversationChannel } from "@ponderosa/core";
-import { confirmUnsavedNavigation } from "./reloadSafety.js";
+import { confirmUnsavedNavigation, reloadBlockers } from "./reloadSafety.js";
 import { routeToPath } from "./routeRegistry.js";
 
 export interface AgentTelemetryFocus {
@@ -281,15 +281,16 @@ function initialWorkspaceLocation(): { route: Route; replacement?: string } {
 }
 
 export function navigationPreservesSettings(current: Route, next: Route): boolean {
-  // General drafts remain mounted across subsection changes. The profile form
-  // unmounts when its section changes, so it always needs the discard guard.
+  // Parent Settings drafts survive subsection changes. Profile and permission
+  // editors unmount, so their pending edits still need the discard guard.
   return current.kind === "settings" && next.kind === "settings" &&
-    current.section !== "profile" && next.section !== "profile";
+    current.section !== "profile" && next.section !== "profile" &&
+    !reloadBlockers().includes("tool-permissions:/api/workspace/capabilities");
 }
 
 export function useRoute(): {
   route: Route;
-  navigate(route: Route, options?: { replace?: boolean }): void;
+  navigate(route: Route, options?: { replace?: boolean }): boolean;
 } {
   const [route, setRoute] = useState<Route>(() => initialWorkspaceLocation().route);
 
@@ -337,9 +338,9 @@ export function useRoute(): {
     const path = routeToPath(next);
     if (path === `${window.location.pathname}${window.location.search}`) {
       setRoute(next);
-      return;
+      return true;
     }
-    if (!navigationPreservesSettings(currentRoute.current, next) && !confirmUnsavedNavigation()) return;
+    if (!navigationPreservesSettings(currentRoute.current, next) && !confirmUnsavedNavigation()) return false;
     acceptedLocation.current = path;
     if (options?.replace) {
       window.history.replaceState(null, "", path);
@@ -347,6 +348,7 @@ export function useRoute(): {
       window.history.pushState(null, "", path);
     }
     setRoute(next);
+    return true;
   }, []);
 
   return { route, navigate };

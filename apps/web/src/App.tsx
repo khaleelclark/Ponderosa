@@ -528,10 +528,11 @@ export default function App({
       );
     }
   };
-  const navigateWorkspace = (next: Route) => {
+  const navigateWorkspace = (next: Route, options?: {replace?: boolean}) => {
+    if (!navigate(next, {replace: options?.replace ?? (route.kind === "create" && route.resource === "chat" && next.kind === "conversation")})) return false;
     stopSpeech();
     recordWorkspaceRouteUse(next);
-    navigate(next, { replace: route.kind === "create" && route.resource === "chat" && next.kind === "conversation" });
+    return true;
   };
   useEffect(() => {
     if (route.kind === "create" && route.resource === "chat" && !route.creationKey) {

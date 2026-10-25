@@ -6,8 +6,8 @@ import { realpathSync, statSync } from 'node:fs';
 import {createHash} from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {validatedObject,exactObjectFields} from '../object-validation.js';
-import { workspaceRecencyCte, CapabilityPolicyRevisionConflictError, CapabilityPolicyStore, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
-import { AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,BUILT_IN_CAPABILITIES, connectorCapability, parseConnectorCapabilityId, type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type CapabilityDescriptor, type CapabilityPolicyRecord, type CapabilityScopeKind, type DeployBranchRequest, type EffectiveCapabilityPolicy, type WorkspacePreferencesDto } from '@ponderosa/core';
+import { workspaceRecencyCte, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
+import { AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type DeployBranchRequest, type WorkspacePreferencesDto } from '@ponderosa/core';
 import {activeChatResourceOwner} from '../branch-resource-owner.js';
 import {previewBranchExecutionDetail} from '../branch-detail-preview.js';
 import {branchOperationalSummary, type ProviderIntakeStatus} from '../branch-operations.js';
@@ -16,49 +16,8 @@ import {sqliteCollectionGeneration,StaleCollectionCursorError,sqliteCollectionPa
 import {parseTokenUsageRange} from '../token-usage.js';
 import {workspaceNotificationPage} from './notifications.js';
 
-interface BranchCapabilityResponse {
-  policy: CapabilityPolicyRecord;
-  effective: EffectiveCapabilityPolicy;
-  catalog: Array<CapabilityDescriptor & { available: boolean; unavailableReason?: string }>;
-}
-class BranchCapabilityOwnerError extends Error{}
-
-export function registerBranchRoutes(app: FastifyInstance, context: { branches: BranchStore; installations:BranchInstallationService; store: AgentStore; workspace:WorkspaceStore; sources: BranchTriggerSourceService;createChat:ChatCreator; engineAvailable?(id:string):boolean; providerStatus?(id:string):Promise<ProviderIntakeStatus|undefined>; discoverConnectors?(branchId:string):Promise<Array<{engineId:string;name:string;usable:boolean;detail?:string}>>; preferences?():WorkspacePreferencesDto; notify(): void }): void {
+export function registerBranchRoutes(app: FastifyInstance, context: { branches: BranchStore; installations:BranchInstallationService; store: AgentStore; workspace:WorkspaceStore; sources: BranchTriggerSourceService;createChat:ChatCreator; engineAvailable?(id:string):boolean; providerStatus?(id:string):Promise<ProviderIntakeStatus|undefined>; preferences?():WorkspacePreferencesDto; notify(): void }): void {
   const { branches, store, sources, notify } = context;
-  const capabilityPolicies = new CapabilityPolicyStore(store.sqlite);
-  const policyOrDefault=(scopeKind:CapabilityScopeKind,scopeId:string):CapabilityPolicyRecord=>capabilityPolicies.get(scopeKind,scopeId)??{scopeKind,scopeId,revision:0,restrictedCapabilityIds:[],updatedAt:''};
-  const capabilityCatalog=async(branchId:string)=>{
-    const connectors=await context.discoverConnectors?.(branchId)??[];
-    const unique=new Map<string,CapabilityDescriptor&{available:boolean;unavailableReason?:string}>();
-    for(const capability of BUILT_IN_CAPABILITIES)unique.set(capability.id,{...capability,available:true});
-    for(const connector of connectors){const capability=connectorCapability(connector.engineId,connector.name);unique.set(capability.id,{...capability,available:connector.usable,...(!connector.usable?{unavailableReason:connector.detail??'Connector is unavailable'}:{})});}
-    return [...unique.values()];
-  };
-  const capabilityResponse=async(scopeKind:'branch'|'chat'|'agent',scopeId:string,branchId:string):Promise<BranchCapabilityResponse>=>{
-    const policy=policyOrDefault(scopeKind,scopeId);
-    const effective=scopeKind==='branch'?capabilityPolicies.resolveForBranch(scopeId):scopeKind==='chat'?capabilityPolicies.resolveForChat(scopeId):capabilityPolicies.resolveForAgent(scopeId);
-    const catalog=await capabilityCatalog(branchId),known=new Set(catalog.map(capability=>capability.id));
-    for(const id of effective.restrictedCapabilityIds){
-      const connector=parseConnectorCapabilityId(id);
-      if(connector&&!known.has(id))catalog.push({...connectorCapability(connector.engineId,connector.connectorName),available:false,unavailableReason:'Connector is not currently reported by the Engine.'});
-    }
-    return {policy,effective,catalog};
-  };
-  const assertCapabilityOwner=(branchId:string,scopeKind:'branch'|'chat'|'agent',scopeId:string)=>{
-    if(!store.sqlite.prepare('SELECT 1 FROM branches WHERE id=? AND deleting=0').get(branchId))throw new BranchCapabilityOwnerError('Branch not found');
-    if(scopeKind==='branch'&&scopeId===branchId)return;
-    const owner=activeChatResourceOwner(store,scopeKind==='chat'?'chat':'agent',scopeId);
-    if(!owner||owner.branchId!==branchId)throw new BranchCapabilityOwnerError(scopeKind==='chat'?'Chat not found in this Branch':'Agent not found in this Branch');
-  };
-  const putCapabilities=async(scopeKind:'branch'|'chat'|'agent',scopeId:string,branchId:string,body:{revision:number;restrictedCapabilityIds:string[]})=>{
-    assertCapabilityOwner(branchId,scopeKind,scopeId);
-    if(scopeKind==='chat'&&store.getConversation(scopeId)?.executionId || scopeKind==='agent'&&store.getConversation(store.getAgent(scopeId)?.conversationId??'')?.executionId)throw new BranchCapabilityOwnerError('Execution-owned temporary resources are read-only');
-    if(!Number.isInteger(body.revision)||body.revision<0||!Array.isArray(body.restrictedCapabilityIds)||!body.restrictedCapabilityIds.every(id=>typeof id==='string'))throw new Error('Invalid capability policy');
-    const known=new Set(BUILT_IN_CAPABILITIES.map(capability=>capability.id));
-    if(body.restrictedCapabilityIds.some(id=>!known.has(id)&&!parseConnectorCapabilityId(id)))throw new Error('Unknown capability');
-    capabilityPolicies.put({scopeKind,scopeId,expectedRevision:body.revision,restrictedCapabilityIds:body.restrictedCapabilityIds});
-    return capabilityResponse(scopeKind,scopeId,branchId);
-  };
   const assertEditable=(id:string)=>{
     if(store.sqlite.prepare("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')").get(id))throw new Error('An installation update is applying; wait for it to finish');
   };
@@ -188,24 +147,6 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
   app.get<{Params:{id:string}}>('/api/branches/:id/settings',async(request,reply)=>{
     if(!branches.getBranch(request.params.id))return reply.code(404).send({error:'Branch not found'});
     return publicSettings(request.params.id);
-  });
-  app.get<{Params:{id:string}}>('/api/branches/:id/capabilities',async(request,reply)=>{
-    try{assertCapabilityOwner(request.params.id,'branch',request.params.id);return await capabilityResponse('branch',request.params.id,request.params.id)}catch(error){return reply.code(404).send({error:(error as Error).message})}
-  });
-  app.put<{Params:{id:string};Body:{revision:number;restrictedCapabilityIds:string[]}}>('/api/branches/:id/capabilities',async(request,reply)=>{
-    try{return await putCapabilities('branch',request.params.id,request.params.id,request.body)}catch(error){return reply.code(error instanceof CapabilityPolicyRevisionConflictError?409:error instanceof BranchCapabilityOwnerError?404:400).send({error:(error as Error).message,...(error instanceof CapabilityPolicyRevisionConflictError?{current:error.current}:{})})}
-  });
-  app.get<{Params:{id:string;chatId:string}}>('/api/branches/:id/chats/:chatId/capabilities',async(request,reply)=>{
-    try{assertCapabilityOwner(request.params.id,'chat',request.params.chatId);return await capabilityResponse('chat',request.params.chatId,request.params.id)}catch(error){return reply.code(404).send({error:(error as Error).message})}
-  });
-  app.put<{Params:{id:string;chatId:string};Body:{revision:number;restrictedCapabilityIds:string[]}}>('/api/branches/:id/chats/:chatId/capabilities',async(request,reply)=>{
-    try{return await putCapabilities('chat',request.params.chatId,request.params.id,request.body)}catch(error){return reply.code(error instanceof CapabilityPolicyRevisionConflictError?409:error instanceof BranchCapabilityOwnerError?404:400).send({error:(error as Error).message,...(error instanceof CapabilityPolicyRevisionConflictError?{current:error.current}:{})})}
-  });
-  app.get<{Params:{id:string;agentId:string}}>('/api/branches/:id/agents/:agentId/capabilities',async(request,reply)=>{
-    try{assertCapabilityOwner(request.params.id,'agent',request.params.agentId);return await capabilityResponse('agent',request.params.agentId,request.params.id)}catch(error){return reply.code(404).send({error:(error as Error).message})}
-  });
-  app.put<{Params:{id:string;agentId:string};Body:{revision:number;restrictedCapabilityIds:string[]}}>('/api/branches/:id/agents/:agentId/capabilities',async(request,reply)=>{
-    try{return await putCapabilities('agent',request.params.agentId,request.params.id,request.body)}catch(error){return reply.code(error instanceof CapabilityPolicyRevisionConflictError?409:error instanceof BranchCapabilityOwnerError?404:400).send({error:(error as Error).message,...(error instanceof CapabilityPolicyRevisionConflictError?{current:error.current}:{})})}
   });
   app.put<{Params:{id:string};Body:{configuration:unknown;revision:number}}>('/api/branches/:id/settings',async(request,reply)=>{
     try{assertEditable(request.params.id);const configuration=request.body.configuration as Record<string,unknown>;if(!configuration||Object.hasOwn(configuration,'secretBindings'))throw new Error('Secret bindings are managed by Engine integrations');const id=request.params.id,branch=branches.getBranch(id);if(!branch)throw new Error('Branch not found');const definition=branches.version(id,branch.versionId)!.definition;
