@@ -1211,3 +1211,56 @@ test('canonical publication issue selects its owning step before unrelated local
  const run=vm.runInNewContext(ts.transpile(effects[0],{target:ts.ScriptTarget.ES2022}),scope);run();assert.equal(calls.length,0,'The canonical issue effect owns the identified Agent; generic local guidance must not replace it');
  scope.validationIssues=[];run();assert.deepEqual(calls,['script'],'Without canonical issues, local guidance still opens an incomplete Step');
 });
+
+/** Run the existing trigger owner and shared draft hook; only React scheduling is controlled. */
+async function branchTriggerDraftFixture(kind,config,{echo=true}={}) {
+ const {readFileSync}=await import('node:fs'),{createRequire}=await import('node:module'),vm=await import('node:vm'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),ts=require('typescript');
+ const slots=[],effects=[],calls=[],invalid=[];let index=0,dirty=false,tree,props;
+ const react={
+  useState(initial){const i=index++;slots[i]??={value:typeof initial==='function'?initial():initial};return[slots[i].value,next=>{const value=typeof next==='function'?next(slots[i].value):next;if(!Object.is(value,slots[i].value)){slots[i].value=value;dirty=true;}}];},
+  useRef(initial){return react.useState(()=>({current:initial}))[0];},
+  useEffect(fn,deps){const i=index++,old=slots[i];if(!old||deps.some((value,j)=>!Object.is(value,old.deps[j]))){slots[i]={deps,cleanup:old?.cleanup};effects.push(()=>{slots[i].cleanup?.();slots[i].cleanup=fn();});}},
+ };
+ const compile=(source,imports={})=>{const exports={};vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,JSON,Date,Intl,Error,require:name=>name==='react'?react:name in imports?imports[name]:require(name)});return exports;};
+ const values=compile(readFileSync(new URL('../../apps/web/src/components/triggerSourceValues.ts',import.meta.url),'utf8'));
+ const shared=compile(readFileSync(new URL('../../apps/web/src/components/TriggerSourceFields.tsx',import.meta.url),'utf8'),{'./triggerSourceValues':values});
+ const source=readFileSync(new URL('../../apps/web/src/components/branches/WorkflowEditor.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('WorkflowEditor.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),owner=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='BranchTriggerSource');assert.ok(owner);
+ const context={exports:{},JSON,Date,Intl,Error,...react,...shared,require};vm.runInNewContext(ts.transpileModule(owner.getText(ast)+'\nglobalThis.component=BranchTriggerSource;',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,context);
+ props={kind,config,onChange(next){calls.push(JSON.parse(JSON.stringify(next)));if(echo){props={...props,config:next};dirty=true;}},onInvalid(value){invalid.push(value)}};
+ const render=()=>{let attempts=0;do{dirty=false;index=0;tree=context.component(props);for(const run of effects.splice(0))run();assert.ok(++attempts<25,'The trigger owner settles without undoing external configuration.');}while(dirty);return tree;};
+ render();
+ return {calls,get draft(){return tree.props.draft;},get invalid(){return invalid.at(-1);},get config(){return props.config;},input(field,value){tree.props.draft['set'+field[0].toUpperCase()+field.slice(1)](value);render();},setConfig(next){props={...props,config:next};render();},render,unmount(){for(const slot of slots)slot?.cleanup?.();}};
+}
+
+test('trigger draft same-kind Undo/Redo reloads displayed schedule fields without emitting the displaced values',async()=>{
+ const original={scheduleKind:'interval',everyMs:3600000,startsAt:'2030-01-01T00:00:00.000Z'},f=await branchTriggerDraftFixture('schedule',original);
+ assert.equal(f.calls.length,0);f.input('intervalValue','2');assert.equal(f.calls.length,1);assert.equal(f.draft.intervalValue,'2');assert.equal(f.config.everyMs,7200000);assert.equal(f.config.startsAt,original.startsAt);
+ const changed=structuredClone(f.config);f.setConfig(original);assert.equal(f.draft.intervalValue,'1');assert.equal(f.calls.length,1,'Undo must not republish the old displayed two-hour value');assert.equal(f.invalid,false);
+ f.setConfig(changed);assert.equal(f.draft.intervalValue,'2');assert.equal(f.calls.length,1,'Redo adopts the canonical config without another draft edit');
+ f.input('intervalValue','');assert.equal(f.invalid,true);f.setConfig(structuredClone(changed));assert.equal(f.draft.intervalValue,'');assert.equal(f.invalid,true,'An equal parent rerender preserves invalid local text and publication blocking');
+ f.setConfig(original);assert.equal(f.draft.intervalValue,'1');assert.equal(f.invalid,false);assert.equal(f.calls.length,1);f.unmount();
+});
+
+test('trigger self-echo preserves formatting and newer invalid input instead of reloading an acknowledged save',async()=>{
+ const original={scheduleKind:'interval',everyMs:3600000,startsAt:'2030-01-01T00:00:00.000Z'},f=await branchTriggerDraftFixture('schedule',original,{echo:false});
+ f.input('intervalValue','02');assert.equal(f.calls.length,1);assert.equal(f.draft.intervalValue,'02');assert.equal(f.calls[0].everyMs,7200000);
+ f.input('intervalValue','');assert.equal(f.invalid,true);f.setConfig(f.calls[0]);assert.equal(f.draft.intervalValue,'');assert.equal(f.invalid,true);assert.equal(f.calls.length,1);
+ f.input('intervalValue','02');f.setConfig(structuredClone(f.calls[0]));assert.equal(f.draft.intervalValue,'02','Equivalent saved milliseconds must not rewrite authored formatting');
+ f.setConfig(original);assert.equal(f.draft.intervalValue,'1');assert.equal(f.invalid,false);assert.equal(f.calls.length,1);f.unmount();
+});
+
+test('trigger external filesystem changes restore every field and clear only superseded invalid drafts',async()=>{
+ const original={include:['src/**'],exclude:['.git/**'],quietMs:1000,maxWindowMs:10000},f=await branchTriggerDraftFixture('filesystem',original);
+ f.input('include','src/**  \nnew/**');assert.equal(f.draft.include,'src/**  \nnew/**','The local canonical echo must retain authored whitespace');assert.deepEqual(f.calls[0].include,['src/**','new/**']);
+ f.input('quietSeconds','');assert.equal(f.invalid,true);const changed={include:['restored/**','other/**'],exclude:['cache/**'],quietMs:2000,maxWindowMs:30000};f.setConfig(changed);
+ assert.equal(f.draft.include,'restored/**\nother/**');assert.equal(f.draft.exclude,'cache/**');assert.equal(f.draft.quietSeconds,'2');assert.equal(f.draft.maxWindowSeconds,'30');assert.equal(f.invalid,false);assert.equal(f.calls.length,1);
+ f.setConfig(original);assert.equal(f.draft.include,'src/**');assert.equal(f.draft.exclude,'.git/**');assert.equal(f.draft.quietSeconds,'1');assert.equal(f.draft.maxWindowSeconds,'10');assert.equal(f.calls.length,1);f.unmount();
+});
+
+test('trigger external schedule subtype and webhook configuration changes do not become new draft edits',async()=>{
+ const cron={scheduleKind:'cron',expression:'15 10 * * 1-5',timezone:'America/New_York'},f=await branchTriggerDraftFixture('schedule',cron);
+ const interval={scheduleKind:'interval',everyMs:7200000,startsAt:'2030-01-01T00:00:00.000Z'};f.setConfig(interval);assert.equal(f.draft.scheduleKind,'interval');assert.equal(f.draft.intervalValue,'2');assert.equal(f.draft.intervalUnit,'hours');
+ f.setConfig(cron);assert.equal(f.draft.scheduleKind,'cron');assert.equal(f.draft.cronExpression,cron.expression);assert.equal(f.draft.timezone,cron.timezone);
+ const once={scheduleKind:'once',at:'2030-01-02T03:04:05.000Z'};f.setConfig(once);assert.equal(f.draft.scheduleKind,'once');assert.equal(new Date(f.draft.onceAt).toISOString(),once.at);assert.equal(f.calls.length,0);f.unmount();
+ const webhook=await branchTriggerDraftFixture('webhook',{replayWindowSeconds:300});webhook.setConfig({replayWindowSeconds:600});assert.equal(webhook.calls.length,0);assert.equal(webhook.config.replayWindowSeconds,600);webhook.unmount();
+});
