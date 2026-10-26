@@ -39,7 +39,7 @@ export function BranchNavigation({ children }: { children(router: {
 }): ReactNode }): JSX.Element {
   const [route, setRoute] = useState(() => parseBranchRoute(window.location.search));
   const historyIndex=useRef<number>(Number.isSafeInteger(window.history.state?.branchesIndex)?window.history.state.branchesIndex:0);
-  const restoringHistory=useRef<(() => void)>();
+  const restoringHistory=useRef<{index:number;after():void}>();
   const replayingHistory=useRef<{route:BranchRoute;index:number}>();
   const current = useRef(route);
   current.current = route;
@@ -71,7 +71,7 @@ export function BranchNavigation({ children }: { children(router: {
     (retained.settings||confirmUnsavedNavigation())&&((![...dirty.current].some(key => key !== 'workflow' && key !== 'workflow-editor' && !retained.localKeys.includes(key))) ||
     window.confirm('Discard unsaved changes? Workflow variables, workflow edits, execution settings, and capability changes that have not been saved will be lost.')), []);
   const requestLeave = useCallback((action: () => void, retained: Retained): boolean => {
-    if (intent.current) return false;
+    if (intent.current || restoringHistory.current || replayingHistory.current) return false;
     if ((!retained.workflow && dirty.current.has('workflow')) || (!retained.editor && dirty.current.has('workflow-editor'))) {
       const pending = { owner: current.current, generation: generation.current, action, retained };
       intent.current = pending;
@@ -86,7 +86,10 @@ export function BranchNavigation({ children }: { children(router: {
     if (intent.current !== pending) return;
     const owns = pending.generation === generation.current && pending.owner.branchId === current.current.branchId && workflow.current?.().branchId === pending.owner.branchId;
     cancelLeave();
-    if (success && owns && confirmOtherLeave(pending.retained)) pending.action();
+    const resume = () => { if (success && owns && pending.generation === generation.current && pending.owner.branchId === current.current.branchId && workflow.current?.().branchId === pending.owner.branchId && confirmOtherLeave(pending.retained)) pending.action(); };
+    // A native Back can still be restoring the accepted entry when save settles.
+    if (restoringHistory.current) restoringHistory.current.after = resume;
+    else resume();
   }, [cancelLeave, confirmOtherLeave]);
   const settleWorkflow = (kind: 'save' | 'discard') => {
     const pending = intent.current, actions = workflow.current?.();
@@ -125,10 +128,26 @@ export function BranchNavigation({ children }: { children(router: {
   useEffect(() => {
     window.history.replaceState({...window.history.state,branchesIndex:historyIndex.current},'');
     const pop = (event:PopStateEvent) => {
-      if(restoringHistory.current){const restored=restoringHistory.current;restoringHistory.current=undefined;restored();return;}
-      if(replayingHistory.current){const replay=replayingHistory.current;replayingHistory.current=undefined;historyIndex.current=replay.index;generation.current++;setRoute(replay.route);return;}
       const nextIndex=event.state?.branchesIndex;
       const next = parseBranchRoute(window.location.search);
+      const traversal = restoringHistory.current ?? replayingHistory.current;
+      if (traversal) {
+        if (nextIndex !== traversal.index) {
+          if (Number.isSafeInteger(nextIndex)) window.history.go(traversal.index-nextIndex);
+          else {
+            restoringHistory.current=undefined;replayingHistory.current=undefined;cancelLeave();
+            window.history.pushState({branchesIndex:historyIndex.current},'',branchRoutePath(current.current));
+          }
+          return;
+        }
+        if(restoringHistory.current){const restored=restoringHistory.current;restoringHistory.current=undefined;restored.after();return;}
+        const replay=replayingHistory.current!;replayingHistory.current=undefined;
+        if(branchRoutePath(next)!==branchRoutePath(replay.route)) {
+          window.history.pushState({branchesIndex:historyIndex.current},'',branchRoutePath(current.current));
+          return;
+        }
+        historyIndex.current=replay.index;generation.current++;setRoute(replay.route);return;
+      }
       const retained = retainedBranchDrafts(current.current, next);
       const workflowBlocked = (!retained.workflow && dirty.current.has('workflow')) || (!retained.editor && dirty.current.has('workflow-editor'));
       if (!intent.current && !workflowBlocked) {
@@ -137,14 +156,14 @@ export function BranchNavigation({ children }: { children(router: {
           generation.current++;
           setRoute(next);
         } else if(Number.isSafeInteger(nextIndex)&&nextIndex!==historyIndex.current) {
-          restoringHistory.current=()=>{};
+          restoringHistory.current={index:historyIndex.current,after:()=>{}};
           window.history.go(historyIndex.current-nextIndex);
         } else window.history.pushState({branchesIndex:historyIndex.current},'',branchRoutePath(current.current));
         return;
       }
       if(Number.isSafeInteger(nextIndex)&&nextIndex!==historyIndex.current){
         // Put the accepted URL back before any asynchronous save/review dialog.
-        restoringHistory.current=()=>requestLeave(()=>{replayingHistory.current={route:next,index:nextIndex};window.history.go(nextIndex-historyIndex.current)},retained);
+        restoringHistory.current={index:historyIndex.current,after:()=>requestLeave(()=>{replayingHistory.current={route:next,index:nextIndex};window.history.go(nextIndex-historyIndex.current)},retained)};
         window.history.go(historyIndex.current-nextIndex);
       }else{
         window.history.pushState({branchesIndex:historyIndex.current},'',branchRoutePath(current.current));
@@ -157,7 +176,7 @@ export function BranchNavigation({ children }: { children(router: {
     window.addEventListener('popstate', pop);
     window.addEventListener('beforeunload', unload);
     return () => { window.removeEventListener('popstate', pop); window.removeEventListener('beforeunload', unload); };
-  }, [requestLeave, commitRoute, confirmOtherLeave]);
+  }, [requestLeave, commitRoute, confirmOtherLeave, cancelLeave]);
   const actions = workflow.current?.();
   return <DirtyContext.Provider value={register}><WorkflowLeaveContext.Provider value={registerWorkflow}><GuardContext.Provider value={guard}>{children({ route, navigate })}
     <ConfirmDialog open={Boolean(prompt)} title="Unsaved Changes" confirmLabel="Save And Leave" cancelLabel="Back To Editing" pending={actions?.pending} confirmDisabled={!actions?.canSave} onCancel={cancelLeave} onConfirm={()=>settleWorkflow('save')} secondaryAction={{label:'Discard And Leave',disabled:!actions?.canDiscard,onClick:()=>settleWorkflow('discard')}}>Save your workflow changes before leaving?</ConfirmDialog>

@@ -18,7 +18,7 @@ async function fixture(){
  const useCallback=(fn,deps)=>{const index=slot++;if(!states[index]||!same(states[index].deps,deps))states[index]={deps,fn};return states[index].fn};
  const useEffect=(fn,deps)=>{const index=slot++;if(!states[index]||!same(states[index].deps,deps)){const before=states[index];states[index]={deps,cleanup:before?.cleanup};effects.push(()=>{states[index].cleanup?.();states[index].cleanup=fn()})}};
  const react={useState,useRef,useCallback,useEffect,useLayoutEffect:useEffect,useContext:context=>context.value,createContext:value=>({value,Provider:'Provider'})};
- const history={get state(){return entries[cursor].state},replaceState(state,_title,path){entries[cursor]={state,path:path??entries[cursor].path};updateLocation()},pushState(state,_title,path){entries.splice(cursor+1);entries.push({state,path});cursor++;updateLocation()},go(delta){const next=cursor+delta;if(next<0||next>=entries.length)return;cursor=next;updateLocation();historyEvents.push({state:entries[cursor].state})}};
+ const history={get state(){return entries[cursor].state},replaceState(state,_title,path){entries[cursor]={state,path:path??entries[cursor].path};updateLocation()},pushState(state,_title,path){entries.splice(cursor+1);entries.push({state,path});cursor++;updateLocation()},go(delta){historyEvents.push({delta})}};
  const window={location,history,confirm(){otherPrompts++;return otherAllowed},addEventListener(type,fn){listeners.set(type,fn)},removeEventListener(type,fn){if(listeners.get(type)===fn)listeners.delete(type)}};
  const module={exports:{}};
  const scope={window,navigator:{},URL,URLSearchParams,Number,Set,console,module,exports:module.exports,require:name=>name==='react'?react:name==='react/jsx-runtime'?{jsx,jsxs:jsx}:name.includes('productScope')?{isBranchesPath:pathname=>pathname==='/branches'}:name.includes('branchesRouting')?{branchRoutePath,parseBranchRoute,retainedBranchDrafts}:name.includes('reloadSafety')?{confirmUnsavedNavigation(){settingsPrompts++;return settingsAllowed}}:name.includes('ConfirmationDialogs')?{ConfirmDialog:'ConfirmDialog'}:(()=>{throw Error(name)})()};
@@ -27,7 +27,7 @@ async function fixture(){
  render();
  const providers=()=>({dirty:tree.props.value,workflow:tree.props.children.props.value,guard:tree.props.children.props.children.props.value,prompt:tree.props.children.props.children.props.children[1]});
  const actions={branchId:'a',pending:false,canSave:true,canDiscard:true,save(){},discard(){}};const get=()=>actions;providers().workflow(get);
- return {router:()=>router,actions,mark:(key,value=true)=>providers().dirty(key,value),prompt:()=>providers().prompt,guard:(action,abandon)=>providers().guard(action,abandon),refresh:()=>providers().workflow(get,true),replaceOwner:branchId=>{actions.branchId=branchId;providers().workflow(get,true)},settings:value=>{settingsAllowed=value},other:value=>{otherAllowed=value},counts:()=>({settingsPrompts,otherPrompts}),location,history,entries,listeners,flushHistory(){while(historyEvents.length)listeners.get('popstate')?.(historyEvents.shift())},historyPosition:()=>cursor};
+ return {router:()=>router,actions,mark:(key,value=true)=>providers().dirty(key,value),prompt:()=>providers().prompt,guard:(action,abandon)=>providers().guard(action,abandon),refresh:()=>providers().workflow(get,true),replaceOwner:branchId=>{actions.branchId=branchId;providers().workflow(get,true)},settings:value=>{settingsAllowed=value},other:value=>{otherAllowed=value},counts:()=>({settingsPrompts,otherPrompts}),location,history,entries,listeners,flushOne(){const traversal=historyEvents.shift();if(!traversal)return;const next=cursor+traversal.delta;if(next<0||next>=entries.length)return;cursor=next;updateLocation();listeners.get('popstate')?.({state:entries[cursor].state})},flushHistory(){let limit=100;while(historyEvents.length){if(!--limit)throw Error('History traversal did not settle');this.flushOne()}},historyPosition:()=>cursor};
 }
 
 test('Save And Leave waits for its exact successful workflow settlement and repeats no submission',async()=>{
@@ -58,6 +58,16 @@ test('pending and unavailable owner controls remain current without replacing th
 test('browser Back restores the accepted URL before review and replays the exact destination once',async()=>{
  const f=await fixture();f.router().navigate({branchId:'b',tab:'workflow'});f.actions.branchId='b';f.refresh();f.mark('workflow');let complete;f.actions.save=done=>{complete=done};f.history.go(-1);f.flushHistory();assert.equal(f.location.search,'?branch=b');assert.equal(f.router().route.branchId,'b');assert.equal(f.prompt().props.open,true);f.prompt().props.onCancel();assert.equal(f.historyPosition(),1);
  f.history.go(-1);f.flushHistory();f.prompt().props.onConfirm();complete(true);f.flushHistory();assert.equal(f.router().route.branchId,'a');assert.equal(f.location.search,'?branch=a');assert.equal(f.historyPosition(),0);assert.equal(f.entries.length,2);
+});
+
+test('rapid history changes cannot consume another restore or replay and mismatch the route owner',async()=>{
+ const f=await fixture();for(const branchId of ['b','c','d'])f.router().navigate({branchId,tab:'workflow'});f.actions.branchId='d';f.refresh();f.mark('workflow');
+ f.history.go(-1);f.history.go(-1);f.flushOne();f.flushOne();assert.equal(f.prompt().props.open,false,'An unrelated Back event cannot count as accepted-entry restoration');f.flushHistory();assert.equal(f.location.search,'?branch=d');f.prompt().props.onCancel();
+ f.history.go(-3);f.flushHistory();let complete;f.actions.save=done=>{complete=done};f.prompt().props.onConfirm();f.history.go(-1);f.mark('workflow',false);complete(true);f.flushOne();assert.equal(f.router().route.branchId,'d','An unrelated c entry must not be accepted as the requested a destination');f.flushHistory();assert.equal(f.router().route.branchId,'a');assert.equal(f.location.search,'?branch=a');
+});
+
+test('save settlement during a Back restoration waits for the accepted entry before leaving',async()=>{
+ const f=await fixture();for(const branchId of ['b','c'])f.router().navigate({branchId,tab:'workflow'});f.actions.branchId='c';f.refresh();f.mark('workflow');let complete;f.actions.save=done=>{complete=done};f.router().navigate({branchId:'d',tab:'workflow'});f.prompt().props.onConfirm();f.history.go(-1);f.flushOne();assert.equal(f.location.search,'?branch=b');f.mark('workflow',false);complete(true);assert.equal(f.router().route.branchId,'c','Save must not commit into a still-restoring browser entry');f.flushHistory();assert.equal(f.router().route.branchId,'d');assert.equal(f.location.search,'?branch=d');assert.equal(f.historyPosition(),3);
 });
 
 test('clean browser Back accepts its destination directly without adding history entries',async()=>{
