@@ -27,7 +27,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
  const insertion=selectedNode?.id??definition.entry;
  const insertionNode=[...definition.steps,...definition.controls].find(node=>node.id===insertion);
  const restricted=definition.controls.some(control=>control.kind==='map'&&control.workerId===insertion)||Boolean(insertionNode&&['fork','condition','route','map'].includes(insertionNode.kind));
- const add=(kind:Parameters<typeof addNode>[1]|'condition'|'route')=>{const result=kind==='condition'?conditionBefore(definition,insertion):kind==='route'?routeBefore(definition,insertion):addNode(definition,kind,insertion);onDefinition(result.definition);setSelected(result.selected);setEditorOpen(true);setFocusRequest(value=>value+1);setAddAnchor(null)};
+ const add=(kind:Parameters<typeof addNode>[1]|'condition'|'route')=>{if(!addAnchor)return;const result=kind==='condition'?conditionBefore(definition,insertion):kind==='route'?routeBefore(definition,insertion):addNode(definition,kind,insertion);onDefinition(result.definition);setSelected(result.selected);setEditorOpen(true);setFocusRequest(value=>value+1);setAddAnchor(null)};
  useEffect(()=>{if(!validationRequest)return;const missing=definition.steps.find(step=>advancedSettingsNeedAttention(step,bindings)||step.kind==='script'&&(!step.source.trim()||!bindings.directories[step.cwdRef]?.trim())||step.kind==='agent'&&(!step.instructions.trim()||'ref'in step.target&&!bindings.agents[step.target.ref])||step.kind==='human_gate'&&!step.prompt.trim()||step.kind==='branch_call'&&!bindings.branches?.[step.branchRef]);if(missing){setSelected(missing.id);setEditorOpen(true);onInvalidStep?.()}else if(!definition.steps.length){onInvalidStep?.();addButton.current?.focus()}},[validationRequest]);
  useEffect(()=>{onPendingEdits?.(triggerInvalid||(advanced!==undefined&&advanced!==JSON.stringify(definition,null,2)))},[advanced,definition,onPendingEdits,triggerInvalid]);
  useEffect(()=>()=>onPendingEdits?.(false),[onPendingEdits]);
@@ -52,7 +52,7 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
    {intake}
   </Stack>
   <Stack direction="row" spacing={1} alignItems="center"><Typography variant="h6" sx={{flex:1}}>Workflow</Typography><Button ref={addButton} variant="outlined" aria-haspopup="menu" aria-expanded={Boolean(addAnchor)} onClick={event=>{setBranching(false);setAddAnchor(event.currentTarget)}}>{definition.steps.length+definition.controls.length?'Add step':'Add your first step'}</Button></Stack>
-  <Menu anchorEl={addAnchor} open={Boolean(addAnchor)} onClose={()=>setAddAnchor(null)}>
+  <Menu transitionDuration={0} anchorEl={addAnchor} open={Boolean(addAnchor)} onClose={()=>setAddAnchor(null)}>
    {branching?<MenuItem onClick={()=>setBranching(false)}>← All steps</MenuItem>:null}
    <Box sx={{px:2,py:1,maxWidth:280}}><Typography variant="caption" color="text.secondary">{restricted?'Select an ordinary step or a Join to add follow-up work.':insertionNode?`After ${nodeName(insertionNode)}`:'First step'}</Typography></Box>
    {branching&&!definition.steps.some(node=>node.id===insertion)&&<Box sx={{px:2,maxWidth:280}}><Typography variant="caption">Conditions and named routes need an ordinary step selected as their destination.</Typography></Box>}

@@ -1132,3 +1132,13 @@ test('execution settings edits return a draft definition without mutating its pu
  const surface=WorkflowExecutionSettings(props),fields=surface.props.children[1];fields[0].props.onChange({target:{value:'5'}});assert.equal(changes[0].policy.maxConcurrentExecutions,5);assert.equal(published.policy.maxConcurrentExecutions,2);assert.equal(changes[0].steps,published.steps);
  const failure=surface.props.children[2];failure.props.onChange({action:'retry',maxAttempts:4,delayMs:2000});assert.deepEqual(changes[1].policy.failure,{action:'retry',maxAttempts:4,delayMs:2000});assert.deepEqual(published.policy.failure,{action:'stop'});
 });
+
+test('closing the Add-step menu fences its exiting item handlers from creating another step',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),model=await import('../../apps/web/src/components/branches/model.ts');
+ const source=await fs.readFile(new URL('../../apps/web/src/components/branches/WorkflowEditor.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('WorkflowEditor.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ let handler;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='add')handler=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(handler);
+ const edits=[],scope={...model,definition:model.newDefinition(),insertion:'',addAnchor:{},onDefinition:definition=>edits.push(definition),setSelected(){},setEditorOpen(){},setFocusRequest(){},setAddAnchor:value=>{scope.addAnchor=value}};
+ const add=vm.runInNewContext(ts.transpile(handler,{target:ts.ScriptTarget.ES2022}),scope);
+ add('agent');assert.equal(edits.length,1);assert.equal(edits[0].steps.length,1);assert.equal(scope.addAnchor,null);
+ add('agent');add('script');assert.equal(edits.length,1,'Closed/transitioning menu items cannot add work');assert.equal(scope.definition.steps.length,0,'The original snapshot remains untouched');
+});
