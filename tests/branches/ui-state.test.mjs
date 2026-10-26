@@ -5,10 +5,10 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 const {BranchWorkspaceHeader}=await import('../../apps/web/src/components/branches/BranchWorkspaceHeader.tsx');
 
-test('Branch header reuses ordered shared icon tabs, names and guarded publication controls',()=>{
- const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'A long workflow name',tab:'workflow',published:false,dirty:true,saving:false,saveDisabled:true,onTab(){},onSave(){},onExport(){},onUpdate(){}}));
+test('Branch header reuses ordered shared icon tabs and unpublished status without a duplicate Save',()=>{
+ const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'A long workflow name',tab:'workflow',published:false,dirty:true,onTab(){},onExport(){},onUpdate(){}}));
  assert.ok(html.includes('A long workflow name'),'Selected workflow name is present');assert.ok(html.includes('aria-label="Unpublished changes"'),'Dirty indication is accessible');
- assert.ok(/<button[^>]*disabled=""[^>]*aria-label="Review &amp; publish"/.test(html),'Clean/invalid/pending Save remains disabled');
+ assert.ok(!/aria-label="Review &amp; publish"|SaveOutlined/.test(html),'Publication has one canvas entry point');assert.ok(html.includes('Use Save Workflow in the Workflow tab'),'Unpublished tooltip points to the retained action');
  const names=[...html.matchAll(/role="tab"[^>]*>(.*?)<\/button>/g)].map(match=>match[1].replace(/<style[^>]*>[\s\S]*?<\/style>/g,'').replace(/<[^>]*>/g,''));
  assert.deepEqual(names,['Workflow','Chats','Executions','Settings']);
  for(const tab of ['workflow','chats','executions','settings'])assert.ok(new RegExp(`id="branch-${tab}-tab"[^>]*aria-controls="branch-${tab}-panel"`).test(html),`Tab/panel association for ${tab}`);
@@ -17,9 +17,9 @@ test('Branch header reuses ordered shared icon tabs, names and guarded publicati
 });
 
 test('selected nested Chat retains the owning Branch identity and guarded actions',()=>{
- const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'Owning workflow',tab:'chats',published:true,dirty:false,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){}}));
+ const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'Owning workflow',tab:'chats',published:true,dirty:false,onTab(){},onExport(){},onUpdate(){}}));
  assert.ok(html.includes('aria-label="Branch views"'),'Branch navigation remains reachable');assert.ok(/aria-selected="true"[^>]*>.*ChatBubbleOutline/.test(html),'Chats is the selected shared icon tab');
- for(const label of ['Owning workflow','Review &amp; publish','Branch actions'])assert.ok(html.includes(label),'Branch owner remains visible beside its nested Chat');
+ for(const label of ['Owning workflow','Branch actions'])assert.ok(html.includes(label),'Branch owner remains visible beside its nested Chat');
  assert.equal((html.match(/role="tablist"/g)??[]).length,1,'One Branch navigation owner');
 });
 const {WorkspacePreferencesWriter}=await import('../../apps/web/src/workspacePreferencesWriter.ts');
@@ -713,7 +713,7 @@ test('an external publication cannot unmount and erase an open workflow Rename d
 });
 
 test('Branch execution status distinguishes confirmed zero, active, unresolved and failed cached counts',()=>{
- const props={name:'Workflow status owner',tab:'workflow',published:true,dirty:true,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){},onRename(){}};
+ const props={name:'Workflow status owner',tab:'workflow',published:true,dirty:true,onTab(){},onExport(){},onUpdate(){},onRename(){}};
  const render=extra=>renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,...extra}));
  for(const [extra,label] of [[{executionCount:0},'0 active executions'],[{executionCount:4},'4 active executions'],[{},'Executions loading…'],[{executionCount:4,executionsUnavailable:true},'Executions unavailable']]){
   const html=render(extra);assert.ok(html.includes(`aria-label="${label}"`));assert.ok(html.includes('aria-label="Unpublished changes"'),'Execution state and unpublished draft remain independently visible');
@@ -914,7 +914,7 @@ async function discardActionFixture(){
   input:'keep execution input',runOpen:true,occurrenceKey:'keep accepted intent',notice:'Unrelated success',error:'Unrelated failure',independentSettings:{count:'dirty'},current:branch,
   review:{isPending:false,reset(){resets.push('review')},mutate(){resets.push('new preview')}},deploy:{isPending:false,isError:false,reset(){resets.push('deploy')}},run:{reset(){resets.push('run')}},
   actionLocks:{current:new Set()},once(key,action){if(scope.actionLocks.current.has(key))return;scope.actionLocks.current.add(key);action()},
-  newDefinition:()=>({...definition,name:'Untitled workflow'}),updateDraft:next=>{scope.draft=next},setAdvancedDirty:value=>{scope.advancedDirty=value},setDeployedUpdate:value=>{scope.deployedUpdate=value},setEditorKey:update=>{scope.editorKey=update(scope.editorKey??0)},setPreview:value=>{scope.preview=value},setReminderDismissed:value=>{scope.reminderDismissed=value},setDiscardIntent:value=>{scope.discardIntent=value},setError:value=>{scope.error=value},setLoading:value=>{scope.loading=value},setSecret:value=>{scope.secret=value},setSecretRecovery:value=>{scope.secretRecovery=value},setNotice:value=>{scope.notice=value},
+  newDefinition:()=>({...definition,name:'Untitled workflow'}),updateDraft:next=>{scope.draft=next},setAdvancedDirty:value=>{scope.advancedDirty=value},setDeployedUpdate:value=>{scope.deployedUpdate=value},setEditorKey:update=>{scope.editorKey=update(scope.editorKey??0)},setPreview:value=>{scope.preview=value},setDiscardIntent:value=>{scope.discardIntent=value},setError:value=>{scope.error=value},setLoading:value=>{scope.loading=value},setSecret:value=>{scope.secret=value},setSecretRecovery:value=>{scope.secretRecovery=value},setNotice:value=>{scope.notice=value},
   client:{setQueryData:(key,value)=>cache.push({key,value}),invalidateQueries:async()=>{}},
   requestJson:async(path,init)=>{requests.push({path,method:init?.method??'GET',cache:init?.cache,body:init?.body});await scope.onRead?.(path,init);if(init?.method==='POST')return scope.serverBranch;if(path.includes('/versions/'))return {id:scope.serverBranch.versionId,branchId:'owner',definition:scope.serverDefinition};if(path.includes('/configuration'))return scope.serverBindings;return {...scope.serverBranch}},
   useMutation:options=>{const state={options,isPending:false,isError:false,error:null,reset(){state.error=null;state.isError=false},mutate(input){state.pending=state.mutateAsync(input).catch(()=>{})},async mutateAsync(input){state.variables=input;state.isPending=true;state.isError=false;state.error=null;try{await options.onMutate?.(input);const value=await options.mutationFn(input);await options.onSuccess?.(value,input);return value}catch(error){state.isError=true;state.error=error;throw error}finally{state.isPending=false;options.onSettled?.()}}};return state}
@@ -927,7 +927,7 @@ async function discardActionFixture(){
 
 test('Discard resets the verified workflow only and uses immutable binding revision with fresh reads',async()=>{
  const f=await discardActionFixture(),s=f.scope;s.requestDiscard();assert.equal(s.discardIntent.branchId,'owner');await s.discard.mutateAsync(s.discardIntent);
- assert.equal(s.draft.definition.name,'Published workflow');assert.equal(s.savedDraft.current,s.branchDraftRevision(s.draft));assert.equal(s.pendingAdvanced.current,false);assert.equal(s.advancedDirty,false);assert.equal(s.preview,undefined);assert.equal(s.discardIntent,undefined);assert.equal(s.reminderDismissed,false);
+ assert.equal(s.draft.definition.name,'Published workflow');assert.equal(s.savedDraft.current,s.branchDraftRevision(s.draft));assert.equal(s.pendingAdvanced.current,false);assert.equal(s.advancedDirty,false);assert.equal(s.preview,undefined);assert.equal(s.discardIntent,undefined);
  assert.equal(s.input,'keep execution input');assert.equal(s.runOpen,true);assert.equal(s.occurrenceKey,'keep accepted intent');assert.equal(s.independentSettings.count,'dirty');assert.equal(s.error,'Unrelated failure');assert.equal(s.notice,'Unrelated success');assert.deepEqual(f.resets,['review']);
  assert.equal(f.requests.length,4);assert.ok(f.requests.every(r=>r.method==='GET'&&r.cache==='no-store'));assert.ok(f.requests.some(r=>r.path.endsWith('/configuration?revisionId=b1')));assert.equal(f.requests[0].path,f.requests.at(-1).path);
 });
@@ -990,11 +990,11 @@ test('pending actual advanced Apply survives publication retry without a new edi
 
 
 test('unpublished dot has a focusable shared tooltip and disappears at every clean baseline',()=>{
- const props={name:'Workflow',tab:'workflow',published:true,dirty:true,executionCount:2,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){}};
+ const props={name:'Workflow',tab:'workflow',published:true,dirty:true,executionCount:2,onTab(){},onExport(){},onUpdate(){}};
  const dirty=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,props));
- assert.ok(/role="img"[^>]*tabindex="0"[^>]*aria-label="Unpublished changes"/.test(dirty));assert.ok(dirty.includes('Unpublished workflow changes. Use Review &amp; publish, or Discard changes.'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Unpublished changes"'));assert.ok(dirty.indexOf('aria-label="Unpublished changes"')<dirty.indexOf('aria-label="Review &amp; publish"'));
+ assert.ok(/role="img"[^>]*tabindex="0"[^>]*aria-label="Unpublished changes"/.test(dirty));assert.ok(dirty.includes('Unpublished workflow changes. Use Save Workflow in the Workflow tab, or Discard changes.'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Unpublished changes"'));assert.ok(!dirty.includes('aria-label="Review &amp; publish"'));
  const clean=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false}));assert.ok(!clean.includes('aria-label="Unpublished changes"'));assert.ok(!clean.includes('Unpublished workflow changes.'));
- const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(!initial.includes('aria-label="Unpublished changes"'));assert.ok(!initial.includes('Unpublished changes'));assert.ok(!initial.includes('Use Review &amp; publish, or Discard changes.'));
+ const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(!initial.includes('aria-label="Unpublished changes"'));assert.ok(!initial.includes('Unpublished changes'));assert.ok(!initial.includes('Use Save Workflow in the Workflow tab, or Discard changes.'));
 });
 
 
@@ -1012,7 +1012,7 @@ test('compact execution count preserves full meaning and uses Ponderosa’s shar
  const {SidebarActivityBadge}=await import('../../apps/web/src/components/SidebarActivityBadge.tsx');
  const svg=html=>html.match(/<svg[^>]*viewBox="0 0 8 8"[\s\S]*?<\/svg>/)?.[0];
  const reference=svg(renderToStaticMarkup(React.createElement(SidebarActivityBadge)));assert.ok(reference);
- const base={name:'Workflow',tab:'workflow',published:true,dirty:false,saving:false,saveDisabled:true,onTab(){},onSave(){},onExport(){},onUpdate(){},onRename(){}};
+ const base={name:'Workflow',tab:'workflow',published:true,dirty:false,onTab(){},onExport(){},onUpdate(){},onRename(){}};
  for(const [props,label,visible] of [[{executionCount:0},'0 active executions','0'],[{executionCount:12},'12 active executions','12'],[{},'Executions loading…','…'],[{executionCount:12,executionsUnavailable:true},'Executions unavailable','!']]){
   const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...base,...props}));
   assert.ok(html.includes(`role="img" tabindex="0" aria-label="${label}"`));assert.ok(html.includes(`</span>${visible}</span>`),'The narrow status has a visible count or explicit unresolved/error symbol');assert.ok(html.includes(`aria-label="${label}"`));
@@ -1065,7 +1065,7 @@ test('Branch usage reuses its canonical menu and forwards the persistent usage a
  assert.equal(menu.props.label,'Branch actions');assert.equal(menu.props.showExports,false);assert.deepEqual(Array.from(menu.props.actions,item=>item.label),['Provider usage','Rename…','Discard changes','Export template','Export full','Apply package update…']);assert.equal(menu.props.actions[2].disabled,true);
  for(const action of menu.props.actions)action.onSelect(anchor);assert.deepEqual(calls,[anchor,'rename','discard','template','full','update']);
  const inactive=render().props.children[1];const full=React.createElement('button',null,'Full usage'),wide=render(open,full);assert.equal(wide.props.children[0],full);assert.deepEqual(Array.from(wide.props.children[1].props.actions,item=>item.label),['Rename…','Discard changes','Export template','Export full','Apply package update…']);assert.deepEqual(Array.from(inactive.props.actions,item=>item.label),['Rename…','Discard changes','Export template','Export full','Apply package update…'],'A nested usage owner cannot remove the retained Branch authoring menu');
- const header=BranchWorkspaceHeader({name:'Workflow',tab:'workflow',published:true,dirty:false,saving:false,saveDisabled:false,onTab(){},onSave(){},onRename(){},onExport(){},onUpdate(){}}).props.children;
+ const header=BranchWorkspaceHeader({name:'Workflow',tab:'workflow',published:true,dirty:false,onTab(){},onRename(){},onExport(){},onUpdate(){}}).props.children;
  assert.equal(header.props.primaryActions.type.name,'BranchHeaderActions','Expanded and collapsed frames reuse the same owner outlet');
 });
 
@@ -1263,4 +1263,26 @@ test('trigger external schedule subtype and webhook configuration changes do not
  f.setConfig(cron);assert.equal(f.draft.scheduleKind,'cron');assert.equal(f.draft.cronExpression,cron.expression);assert.equal(f.draft.timezone,cron.timezone);
  const once={scheduleKind:'once',at:'2030-01-02T03:04:05.000Z'};f.setConfig(once);assert.equal(f.draft.scheduleKind,'once');assert.equal(new Date(f.draft.onceAt).toISOString(),once.at);assert.equal(f.calls.length,0);f.unmount();
  const webhook=await branchTriggerDraftFixture('webhook',{replayWindowSeconds:300});webhook.setConfig({replayWindowSeconds:600});assert.equal(webhook.calls.length,0);assert.equal(webhook.config.replayWindowSeconds,600);webhook.unmount();
+});
+
+
+test('Save Workflow renders the existing guarded review action with pending and disabled states',async()=>{
+ const f=await discardActionFixture(),s=f.scope,{createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url));
+ const matches=[];function walk(node){if(f.ts.isJsxElement(node)&&node.openingElement.tagName.getText(f.file)==='Button'&&node.children.some(child=>f.ts.isJsxText(child)&&child.text==='Save Workflow'))matches.push(node);f.ts.forEachChild(node,walk)}walk(f.file);
+ assert.equal(matches.length,1,'One primary Save Workflow entry point');
+ Object.assign(s,{exports:{},require,Button:require('@mui/material').Button,setValidationRequest(){},setTab(){}});
+ f.vm.runInContext(f.ts.transpileModule('globalThis.renderSave=()=>('+matches[0].getText(f.file)+')',{compilerOptions:{module:f.ts.ModuleKind.CommonJS,target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.ReactJSX}}).outputText,s);
+ s.advancedDirty=false;s.preview=undefined;s.pendingAdvanced.current=false;
+ const before=s.draft,baseline=s.savedDraft.current;assert.equal(s.renderSave().props.disabled,false);assert.equal(s.renderSave().props.onClick,s.reviewChanges);
+ s.renderSave().props.onClick();s.renderSave().props.onClick();assert.equal(f.resets.filter(value=>value==='new preview').length,1,'Synchronous review intent prevents duplicate requests before pending render');assert.equal(s.draft,before);assert.equal(s.savedDraft.current,baseline,'Review does not clear unpublished state');
+ for(const owner of ['review','deploy','discard']){s[owner].isPending=true;assert.equal(s.renderSave().props.disabled,true,owner+' pending disables Save');assert.equal(s.renderSave().props['aria-busy'],true);s[owner].isPending=false;}
+ for(const patch of [{current:undefined},{dirty:false},{advancedDirty:true}]){const old={current:s.current,dirty:s.dirty,advancedDirty:s.advancedDirty};Object.assign(s,patch);assert.equal(s.renderSave().props.disabled,true);Object.assign(s,old);}
+ const attempt={input:{branchId:'owner',idempotencyKey:'same-attempt'},draftRevision:s.draftRevision.current};s.deploy.variables=attempt;s.publicationUnconfirmed=true;s.preview=undefined;s.renderSave().props.onClick();assert.equal(s.preview,attempt,'Uncertain publication reuses its exact existing review attempt');
+});
+
+test('review and publication failures retain the draft and its canonical baseline',async()=>{
+ const f=await discardActionFixture(),s=f.scope,before=s.draft,baseline=s.savedDraft.current;
+ Object.assign(s,{contexts:{data:[]},trigger:{data:undefined},bindDefinitionDirectories:value=>value,createClientId:()=> 'same-intent'});s.pendingAdvanced.current=false;s.advancedDirty=false;
+ f.load('review');s.requestJson=async()=>{throw Error('Controlled review failure')};await assert.rejects(s.review.mutateAsync(before),/Controlled review failure/);assert.equal(s.draft,before);assert.equal(s.savedDraft.current,baseline);assert.equal(s.review.error.message,'Controlled review failure');
+ f.load('deploy');await assert.rejects(s.deploy.mutateAsync(s.preview),/Controlled review failure/);assert.equal(s.draft,before);assert.equal(s.savedDraft.current,baseline);assert.equal(s.deploy.error.message,'Controlled review failure');
 });
