@@ -1386,6 +1386,13 @@
       "requirements": "Pure bounded canvas framing and view-state checks; no providers or live data"
     },
     {
+      "path": "tests/branches/canvas-insertion-menu.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; actual insertion-menu owners with transient control replacement, captured client geometry and focus-return behavior; no providers or live data"
+    },
+    {
       "path": "tests/branches/canvas-layout.test.mjs",
       "feature": "branches",
       "lane": "web",

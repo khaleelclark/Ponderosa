@@ -82,9 +82,9 @@ test('restoring an Explore view with an already open dock does not reveal or enl
  applied.current={mode:'explore',layout:{...graph,key:'before-insertion',nodes:[]},selected:undefined,docked:true};scope.reveal=(id,force)=>revealed.push({id,force});const inserted=await canvasOwner((node,ts,ast)=>ts.isArrowFunction(node)&&ts.isCallExpression(node.parent)&&node.parent.expression.getText(ast)==='useLayoutEffect'&&node.getText(ast).includes('applied.current='),scope);inserted();assert.deepEqual(revealed.at(-1),{id:'entry',force:true},'A newly inserted card must leave a tiny overview even if it was already onscreen');
 });
 
-test('compact low-zoom insertion uses its clicked control when the Outline trigger is absent',async()=>{
+test('all insertion controls retain their exact clicked anchor, with Outline as focus-return fallback',async()=>{
  const {createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),opened=[],target={kind:'edge',edgeId:'failure'},clicked={id:'visible-fallback'},outline={id:'outline-trigger'},outlineButton={current:null};
- const render=await canvasOwner((node,ts)=>ts.isArrowFunction(node)&&ts.isVariableDeclaration(node.parent)&&node.parent.name.getText()==='insertionButton',{Button:'button',AddIcon:'svg',require,outlineButton,setOutlineOpen(){},edgeTarget:()=>target,onInsert:(value,anchor)=>opened.push({value,anchor})});
+ const render=await canvasOwner((node,ts)=>ts.isArrowFunction(node)&&ts.isVariableDeclaration(node.parent)&&node.parent.name.getText()==='insertionButton',{Button:'button',AddIcon:'svg',require,outlineButton,setOutlineOpen(){},edgeTarget:()=>target,onInsert:(value,anchor,returnTo)=>opened.push({value,anchor,returnTo})});
  const edge={id:'failure',label:'Failure Path'};render(edge).props.onClick({currentTarget:clicked});assert.equal(opened[0].anchor,clicked);assert.equal(opened[0].value,target);
- outlineButton.current=outline;render(edge,true).props.onClick({currentTarget:{id:'temporary-dialog-button'}});assert.equal(opened[1].anchor,outline,'Closing Outline retains a mounted anchor for the existing menu');
+ outlineButton.current=outline;const temporary={id:'temporary-dialog-button'};render(edge,true).props.onClick({currentTarget:temporary});assert.equal(opened[1].anchor,temporary,'The clicked control supplies the captured position even when Outline closes');assert.equal(opened[1].returnTo,outline,'The mounted Outline trigger restores focus after its temporary control closes');
 });
