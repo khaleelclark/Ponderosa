@@ -66,7 +66,7 @@ function validateDefinition(value: unknown): BranchDefinition {
   }
   if (d.templates !== undefined) for (const [ref, template] of Object.entries(record(d.templates))) {
     try { branchKey(ref); validateBranchTemplate(template); }
-    catch (error) { const step = Array.isArray(d.steps) ? d.steps.find(raw => raw && typeof raw === 'object' && raw.kind === 'agent' && raw.target?.templateRef === ref) : undefined; throw new BranchValidationError((error as Error).message, { ...(step ? { nodeId: String(step.id) } : {}), section: 'agent_setup', field: 'templates' }); }
+    catch (error) { const step = Array.isArray(d.steps) ? d.steps.find(raw => raw && typeof raw === 'object' && raw.kind === 'agent' && raw.target?.templateRef === ref) : undefined; throw new BranchValidationError((error as Error).message, {section:'agent_setup',field:'templates',...(error instanceof BranchValidationError?error.issue:{}),...(step?{nodeId:String(step.id)}:{})}); }
   }
   const policy = keys(d.policy, ["maxConcurrentExecutions", "maxPathInstances", "maxStepInvocations", "maxEphemeralAgents", "failure"]);
   boundedInteger(policy.maxConcurrentExecutions, 1, 1000, "Branch concurrency");

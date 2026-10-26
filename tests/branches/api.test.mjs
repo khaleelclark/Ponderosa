@@ -189,7 +189,11 @@ test('publication issues preserve canonical messages and stable step/edge identi
   const definition={schema:'ponderosa.branch.v1',name:'Issue navigation',trigger:{kind:'manual'},entry:'first',steps:[script('first'),script('second')],controls:[],edges:[{id:'next',from:'first',to:'second',on:'success'}],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
   const payload={chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:randomUUID(),definition,bindings:{agents:{},directories:{root:f.root}}};
   const versionCount=store.sqlite.prepare('SELECT COUNT(*) n FROM branch_versions').get().n;
+  const temporary=d=>{d.steps[1]={id:'second',label:'Duplicate Name',kind:'agent',target:{kind:'ephemeral_agent',templateRef:'temp'},instructions:''};d.templates={temp:{schema:'ponderosa.agent-package.v1',mode:'template',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:'Team',rootRef:'root',agents:[{ref:'root',title:'Agent',engine:'default',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]}};return d.templates.temp.agents[0]};
   const cases=[
+   {change:d=>{temporary(d).title=''},nodeId:'second',section:'agent_setup',field:'title',templateMemberRef:'root',message:/Invalid template Agent title/},
+   {change:d=>{temporary(d).initialInstructions=42},nodeId:'second',section:'agent_setup',field:'initialInstructions',templateMemberRef:'root',message:/Branch text must be a string/},
+   {change:d=>{temporary(d).managerRef='root'},nodeId:'second',section:'agent_setup',field:'managerRef',templateMemberRef:'root',message:/Template root cannot have a manager/},
    {change:d=>{d.steps[1].failure={action:'retry',maxAttempts:0,delayMs:0}},nodeId:'second',section:'failure',field:'failure.maxAttempts',message:/retry attempts must be a whole number/},
    {change:d=>{d.steps[1].failure={action:'retry',maxAttempts:3,delayMs:-1}},nodeId:'second',section:'failure',field:'failure.delayMs',message:/retry delay must be a whole number/},
    {change:d=>{d.steps[1]={id:'second',label:'Duplicate Name',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:42}},nodeId:'second',section:'task',field:'instructions',message:/Branch text must be a string/},
@@ -210,11 +214,24 @@ test('publication issues preserve canonical messages and stable step/edge identi
     assert.equal(result.status,400,JSON.stringify(result));assert.match(result.body.error,expected.message);
     const issue=result.body.issues?.[0];assert.ok(issue,'Canonical validation supplies navigation context');
     assert.equal(result.body.issues.length,1);assert.equal(issue.message,result.body.error);
-    for(const key of ['nodeId','edgeId','section','field'])assert.equal(issue[key],expected[key],`${key}: ${result.body.error}`);
+    for(const key of ['nodeId','edgeId','section','field','templateMemberRef'])assert.equal(issue[key],expected[key],`${key}: ${result.body.error}`);
    }
   }
   assert.equal((await f.api('POST','/api/branches/preview',payload)).status,200,'Existing empty Script acceptance is unchanged');
   assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM branch_versions').get().n,versionCount);
   assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,0);
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('Agent picker team and Chat context comes from canonical membership outside filtered pages',async t=>{
+ await withFixture(t,async f=>{
+  const owner=await branch(f,'Picker owner'),owned=await chat(f,owner),foreign=await branch(f,'Other owner'),other=await chat(f,foreign);
+  const create=async(chat,title,managerAgentId)=>f.ok(await f.api('POST',`/api/branches/engine/projects/${chat.projectId}/agents`,{title,engine:'codex',conversationId:chat.id,managerAgentId,idempotencyKey:randomUUID()}));
+  const lead=await create(owned,'Unique lead'),member=await create(owned,'Different member',lead.id);await create(other,'Foreign Agent');
+  const leads=f.ok(await f.api('GET',`/api/branches/${owner.id}/agents?limit=1&search=Unique`));
+  assert.equal(leads.length,1);assert.equal(leads[0].id,lead.id);assert.equal(leads[0].hasTeam,true);assert.equal(leads[0].chatTitle,owned.title);
+  const members=f.ok(await f.api('GET',`/api/branches/${owner.id}/agents?limit=1&search=Different`));
+  assert.equal(members[0].id,member.id);assert.equal(members[0].managerTitle,lead.title);assert.equal(members[0].hasTeam,false);
+  assert.equal(f.ok(await f.api('GET',`/api/branches/${owner.id}/agents?search=Foreign`)).length,0);
+ });
 });

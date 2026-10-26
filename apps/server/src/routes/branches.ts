@@ -49,7 +49,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
       }
     }
     for(const step of input.definition.steps)if(step.kind==='branch_call' && !branches.getBranch(input.bindings.branches?.[step.branchRef]??''))throw new BranchValidationError(`Branch "${input.definition.name}" · Step "${step.label??step.id}": Called Branch is missing or unavailable. Choose an existing Branch.`, {nodeId:step.id,section:'task',field:'branchRef'});
-    for(const template of Object.values(input.definition.templates??{}))for(const member of template.agents){const engine=input.bindings.engines?.[member.engine];if(!engine||(context.engineAvailable&&!context.engineAvailable(engine))){const step=input.definition.steps.find(step=>step.kind==='agent'&&'templateRef'in step.target&&input.definition.templates?.[step.target.templateRef]===template);throw new BranchValidationError('Template engine is unavailable',{nodeId:step?.id,section:'agent_setup',field:'engine'});}}
+    for(const template of Object.values(input.definition.templates??{}))for(const member of template.agents){const engine=input.bindings.engines?.[member.engine];if(!engine||(context.engineAvailable&&!context.engineAvailable(engine))){const step=input.definition.steps.find(step=>step.kind==='agent'&&'templateRef'in step.target&&input.definition.templates?.[step.target.templateRef]===template);throw new BranchValidationError('Template engine is unavailable',{nodeId:step?.id,section:'agent_setup',field:'engine',templateMemberRef:member.ref});}}
     if(input.definition.trigger.kind==='manual')return undefined;
     const local=input.bindings.triggers?.[input.definition.trigger.configRef];if(!local)throw new Error('Local trigger configuration is required');
         const parsed = triggerSourceConfig(input.definition.trigger.kind, resolveBranchParameterReferences(local.sourceConfig,input.definition,configuration));
@@ -110,11 +110,12 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
     try{
       const search=request.query.search?.trim()??'';
       if(search.length>200)throw new Error('Agent search must be at most 200 characters');
+      const hasTeam=store.sqlite.prepare(`SELECT 1 FROM agents member WHERE member.manager_agent_id=? AND member.conversation_id=? AND ${activeAgentProductSql('member','branches')} LIMIT 1`);
       const page=sqliteCollectionPage(store.sqlite,request.query,{
         baseSql:`SELECT a.id,a.title,a.updated_at FROM agents a JOIN conversations c ON c.id=a.conversation_id
           WHERE c.branch_id=? AND c.branch_execution_id IS NULL AND ${activeAgentProductSql('a','branches')}
           ${search?"AND instr(lower(a.title),lower(?))>0":''}`,
-        params:[request.params.id,...(search?[search]:[])],order:'title',scope:`branch-agents:${request.params.id}`,generationKeys:['agents','conversations','projects'],hydrate:id=>store.getAgent(id),
+        params:[request.params.id,...(search?[search]:[])],order:'title',scope:`branch-agents:${request.params.id}`,generationKeys:['agents','conversations','projects'],hydrate:id=>{const agent=store.getAgent(id);if(!agent)return undefined;const chat=store.getConversation(agent.conversationId),manager=agent.managerAgentId?store.getAgent(agent.managerAgentId):undefined;return {...agent,chatTitle:chat?.title??'Branch Chat',...(manager?{managerTitle:manager.title}:{}),hasTeam:Boolean(hasTeam.get(id,agent.conversationId))} satisfies import('@ponderosa/core').BranchAgentChoiceDto},
       });
       applyCollectionPageHeaders(reply,page);return page.items;
     }catch(error){return sendCollectionPageError(reply,error);}
