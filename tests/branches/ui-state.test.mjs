@@ -7,8 +7,8 @@ const {BranchWorkspaceHeader}=await import('../../apps/web/src/components/branch
 
 test('Branch header reuses ordered shared icon tabs and unpublished status without a duplicate Save',()=>{
  const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'A long workflow name',tab:'workflow',published:false,dirty:true,onTab(){},onExport(){},onUpdate(){}}));
- assert.ok(html.includes('A long workflow name'),'Selected workflow name is present');assert.ok(html.includes('aria-label="Unpublished changes"'),'Dirty indication is accessible');
- assert.ok(!/aria-label="Review &amp; publish"|SaveOutlined/.test(html),'Publication has one canvas entry point');assert.ok(html.includes('Use Save Workflow in the Workflow tab'),'Unpublished tooltip points to the retained action');
+ assert.ok(html.includes('A long workflow name'),'Selected workflow name is present');assert.ok(html.includes('aria-label="Editing"'),'Dirty indication is accessible');
+ assert.ok(!/aria-label="Review &amp; publish"|SaveOutlined/.test(html),'Publication has one canvas entry point');assert.ok(html.includes('Unpublished Changes'),'Editing tooltip explains unpublished changes');
  const names=[...html.matchAll(/role="tab"[^>]*>(.*?)<\/button>/g)].map(match=>match[1].replace(/<style[^>]*>[\s\S]*?<\/style>/g,'').replace(/<[^>]*>/g,''));
  assert.deepEqual(names,['Workflow','Chats','Executions','Settings']);
  for(const tab of ['workflow','chats','executions','settings'])assert.ok(new RegExp(`id="branch-${tab}-tab"[^>]*aria-controls="branch-${tab}-panel"`).test(html),`Tab/panel association for ${tab}`);
@@ -716,7 +716,7 @@ test('Branch execution status distinguishes confirmed zero, active, unresolved a
  const props={name:'Workflow status owner',tab:'workflow',published:true,dirty:true,onTab(){},onExport(){},onUpdate(){},onRename(){}};
  const render=extra=>renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,...extra}));
  for(const [extra,label] of [[{executionCount:0},'0 active executions'],[{executionCount:4},'4 active executions'],[{},'Executions loading…'],[{executionCount:4,executionsUnavailable:true},'Executions unavailable']]){
-  const html=render(extra);assert.ok(html.includes(`aria-label="${label}"`));assert.ok(html.includes('aria-label="Unpublished changes"'),'Execution state and unpublished draft remain independently visible');
+  const html=render(extra);assert.ok(html.includes(`aria-label="${label}"`));assert.ok(html.includes('aria-label="Editing"'),'Execution state and unpublished draft remain independently visible');
   if(extra.executionsUnavailable)assert.ok(!html.includes('4 active executions'),'A failed query overrides its cached count');
  }
  const nested=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,tab:'chats',executionCount:4}));
@@ -989,12 +989,12 @@ test('pending actual advanced Apply survives publication retry without a new edi
 });
 
 
-test('unpublished dot has a focusable shared tooltip and disappears at every clean baseline',()=>{
+test('Editing label has the Unpublished Changes tooltip and disappears at every clean baseline',()=>{
  const props={name:'Workflow',tab:'workflow',published:true,dirty:true,executionCount:2,onTab(){},onExport(){},onUpdate(){}};
  const dirty=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,props));
- assert.ok(/role="img"[^>]*tabindex="0"[^>]*aria-label="Unpublished changes"/.test(dirty));assert.ok(dirty.includes('Unpublished workflow changes. Use Save Workflow in the Workflow tab, or Discard changes.'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Unpublished changes"'));assert.ok(!dirty.includes('aria-label="Review &amp; publish"'));
- const clean=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false}));assert.ok(!clean.includes('aria-label="Unpublished changes"'));assert.ok(!clean.includes('Unpublished workflow changes.'));
- const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(!initial.includes('aria-label="Unpublished changes"'));assert.ok(!initial.includes('Unpublished changes'));assert.ok(!initial.includes('Use Save Workflow in the Workflow tab, or Discard changes.'));
+ assert.ok(/tabindex="0"[^>]*aria-label="Editing"/.test(dirty));assert.ok(dirty.includes('Unpublished Changes'));assert.ok(dirty.includes('>Editing</span>'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Editing"'));assert.ok(!dirty.includes('aria-label="Review &amp; publish"'));
+ const clean=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false}));assert.ok(!clean.includes('aria-label="Editing"'));assert.ok(!clean.includes('Unpublished Changes'));
+ const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(!initial.includes('aria-label="Editing"'));assert.ok(!initial.includes('Unpublished Changes'));assert.ok(!initial.includes('>Editing</span>'));
 });
 
 
@@ -1018,8 +1018,8 @@ test('compact execution count preserves full meaning and uses Ponderosa’s shar
   assert.ok(html.includes(`role="img" tabindex="0" aria-label="${label}"`));assert.ok(html.includes(`</span>${visible}</span>`),'The narrow status has a visible count or explicit unresolved/error symbol');assert.ok(html.includes(`aria-label="${label}"`));
   const status=BranchWorkspaceHeader({...base,...props,dirty:true}).props.children.props.status;
   const compact=status.props.children[1].props.children,executionCircle=compact.props.children[0],dirty=status.props.children[2].props.children;
-  assert.equal(executionCircle.props.children.type,SemanticStatusCircle,'Execution status reuses the actual shared renderer');assert.equal(dirty.props.children.type,SemanticStatusCircle,'Unpublished status reuses the actual shared renderer');
-  assert.equal(svg(renderToStaticMarkup(compact)),reference);assert.equal(svg(renderToStaticMarkup(dirty)),reference);
+  assert.equal(executionCircle.props.children.type,SemanticStatusCircle,'Execution status reuses the actual shared renderer');assert.equal(dirty.props.children,'Editing','Unpublished workflow changes use the visible Editing label');assert.equal(status.props.children[2].props.title,'Unpublished Changes');
+  assert.equal(svg(renderToStaticMarkup(compact)),reference);assert.equal(svg(renderToStaticMarkup(dirty)),undefined,'The Editing label replaces the ambiguous dot');
   const kind=props.executionsUnavailable?'needs_attention':props.executionCount===undefined?'waiting':props.executionCount>0?'running':'idle';
   for(const mode of ['light','dark'])assert.equal(executionCircle.props.sx({palette:{mode}}).color,semanticStatusColorToken(kind,mode));
   assert.equal(dirty.props.sx.color,'warning.main');assert.equal(dirty.props.sx.display,'inline-flex');assert.equal(compact.props.tabIndex,0);assert.equal(dirty.props.tabIndex,0);
@@ -1140,7 +1140,7 @@ test('closing the Add-step menu fences its exiting item handlers from creating a
  const source=await fs.readFile(new URL('../../apps/web/src/components/branches/WorkflowEditor.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('WorkflowEditor.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
  let handler;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='add')handler=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(handler);
  const {insertGuidedStep}=await import('../../apps/web/src/components/branches/guided-operations.ts');
- const edits=[],scope={...model,insertGuidedStep,definition:model.newDefinition(),insertionTarget:{kind:'entry'},addAnchor:{},onDraft:edit=>edits.push(edit.definition),setInsertError(){},setSelected(){},setEditorOpen(){},setFocusRequest(){},setAddAnchor:value=>{scope.addAnchor=value}};
+ const edits=[],scope={...model,insertGuidedStep,definition:model.newDefinition(),insertionTarget:{kind:'entry'},addAnchor:{},dismissedInsertion:{current:null},onDraft:edit=>edits.push(edit.definition),setInsertError(){},setSelected(){},setEditorOpen(){},setFocusRequest(){},setAddAnchor:value=>{scope.addAnchor=value}};
  const add=vm.runInNewContext(ts.transpile(handler,{target:ts.ScriptTarget.ES2022}),scope);
  add('agent');assert.equal(edits.length,1);assert.equal(edits[0].steps.length,1);assert.equal(scope.addAnchor,null);
  add('agent');add('script');assert.equal(edits.length,1,'Closed/transitioning menu items cannot add work');assert.equal(scope.definition.steps.length,0,'The original snapshot remains untouched');
