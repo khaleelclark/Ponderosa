@@ -1,5 +1,5 @@
 import { validateBranchTemplate } from "./branch-template.js";
-import { normalizeCanonicalText, INLINE_TEXT_MAX_CODE_POINTS, unicodeCodePointLength, type BranchBindings, type BranchDefinition } from "@ponderosa/core";
+import { BranchValidationError, type BranchValidationIssue, normalizeCanonicalText, INLINE_TEXT_MAX_CODE_POINTS, unicodeCodePointLength, type BranchBindings, type BranchDefinition } from "@ponderosa/core";
 import { stableJson } from "./coordination-v3-canonical-json.js";
 
 export function branchText(value: unknown): string {
@@ -27,20 +27,23 @@ function boundedInteger(value: unknown, min: number, max: number, name: string):
   if (!Number.isSafeInteger(value) || Number(value) < min || Number(value) > max) throw new Error(`${name} must be a whole number from ${min} to ${max}.`);
 }
 function failurePolicy(value: unknown): void {
+  let field = "failure";
+  try {
   const p = record(value);
   if (p.action === "stop" || p.action === "ask_human") keys(p, ["action"]);
   else if (p.action === "retry") {
     keys(p, ["action", "maxAttempts", "delayMs", "freshContext"]);
     if (p.freshContext !== undefined && typeof p.freshContext !== "boolean") throw new Error("Invalid fresh retry policy");
-    boundedInteger(p.maxAttempts, 1, 100, "retry attempts"); boundedInteger(p.delayMs, 0, 86_400_000, "retry delay");
+    field = "failure.maxAttempts"; boundedInteger(p.maxAttempts, 1, 100, "retry attempts"); field = "failure.delayMs"; boundedInteger(p.delayMs, 0, 86_400_000, "retry delay");
   } else if (p.action === "recover") {
-    keys(p, ["action", "agentRef", "maxAttempts"]); branchKey(p.agentRef); boundedInteger(p.maxAttempts, 1, 100, "recovery attempts");
+    keys(p, ["action", "agentRef", "maxAttempts"]); field = "failure.agentRef"; branchKey(p.agentRef); field = "failure.maxAttempts"; boundedInteger(p.maxAttempts, 1, 100, "recovery attempts");
   } else throw new Error("Invalid failure policy");
+  } catch (error) { throw new BranchValidationError((error as Error).message, { section: "failure", field }); }
 }
 /** Validate a structured graph with explicit loop edges; fork instances pair with exact joins. */
 export function validateBranchDefinition(value: unknown): BranchDefinition {
   try { return validateDefinition(value); }
-  catch(error) { const name=value && typeof value==='object' && 'name' in value && typeof value.name==='string' ? value.name.slice(0,240) : 'Untitled'; throw new Error(`Branch "${name}": ${error instanceof Error?error.message:'Invalid definition.'}`); }
+  catch(error) { const name=value && typeof value==='object' && 'name' in value && typeof value.name==='string' ? value.name.slice(0,240) : 'Untitled'; throw new BranchValidationError(`Branch "${name}": ${error instanceof Error?error.message:'Invalid definition.'}`, error instanceof BranchValidationError ? error.issue : { section: 'workflow' }); }
 }
 function validateDefinition(value: unknown): BranchDefinition {
   const serialized = stableJson(value, { maxDepth: 32, maxNodes: 10_000 });
@@ -61,9 +64,13 @@ function validateDefinition(value: unknown): BranchDefinition {
     if (p.type === 'secret' && p.default !== undefined) throw new Error('Secret defaults are forbidden');
     if (p.default !== undefined && ((p.type === 'text'||p.type==='path') ? typeof p.default !== 'string' : p.type==='number' ? typeof p.default !== 'number'||!Number.isFinite(p.default) : typeof p.default !== 'boolean')) throw new Error('Invalid parameter default');
   }
-  if (d.templates !== undefined) for (const [ref, template] of Object.entries(record(d.templates))) { branchKey(ref); validateBranchTemplate(template); }
+  if (d.templates !== undefined) for (const [ref, template] of Object.entries(record(d.templates))) {
+    try { branchKey(ref); validateBranchTemplate(template); }
+    catch (error) { const step = Array.isArray(d.steps) ? d.steps.find(raw => raw && typeof raw === 'object' && raw.kind === 'agent' && raw.target?.templateRef === ref) : undefined; throw new BranchValidationError((error as Error).message, { ...(step ? { nodeId: String(step.id) } : {}), section: 'agent_setup', field: 'templates' }); }
+  }
   const policy = keys(d.policy, ["maxConcurrentExecutions", "maxPathInstances", "maxStepInvocations", "maxEphemeralAgents", "failure"]);
-  boundedInteger(policy.maxConcurrentExecutions, 1, 1000, "Branch concurrency"); failurePolicy(policy.failure);
+  boundedInteger(policy.maxConcurrentExecutions, 1, 1000, "Branch concurrency");
+  try { failurePolicy(policy.failure); } catch (error) { throw new BranchValidationError((error as Error).message, { ...(error instanceof BranchValidationError ? error.issue : {}), section: 'settings' }); }
   for (const key of ["maxPathInstances", "maxStepInvocations", "maxEphemeralAgents"]) if (policy[key] !== undefined) boundedInteger(policy[key], 1, 100_000, key);
   if (!Array.isArray(d.steps) || !d.steps.length || d.steps.length > 100) throw new Error("Branch requires 1–100 steps");
   if (!Array.isArray(d.controls) || d.controls.length > 100) throw new Error("Invalid control nodes");
@@ -75,30 +82,31 @@ function validateDefinition(value: unknown): BranchDefinition {
   }
   for (const raw of d.steps) {
     const step = record(raw);
+    let section: BranchValidationIssue["section"] = "task", field: string | undefined;
     try {
     if (step.failure !== undefined) failurePolicy(step.failure);
     if (step.kind === "agent") {
       keys(step, ["id", "label", "kind", "target", "instructions", "failure", "requireUserCommunication"]);
       if(step.requireUserCommunication!==undefined&&typeof step.requireUserCommunication!=='boolean')throw Error('requireUserCommunication must be boolean');
-      const target = record(step.target);
+      field = "target"; const target = record(step.target);
       if (target.kind === "persistent_agent" || target.kind === "persistent_organization") { keys(target, ["kind", "ref"]); branchKey(target.ref); }
       else if (target.kind === "ephemeral_agent" || target.kind === "ephemeral_organization") {
         keys(target, ["kind", "templateRef"]); branchKey(target.templateRef);
         const template = record(d.templates)[String(target.templateRef)];
         if (!template || validateBranchTemplate(template).kind !== (target.kind === "ephemeral_agent" ? "agent" : "organization")) throw new Error("Missing or incompatible Agent template");
       } else throw new Error("Invalid Agent target");
-      step.instructions = branchText(step.instructions);
+      field = "instructions"; step.instructions = branchText(step.instructions);
     } else if (step.kind === "branch_call") {
-      keys(step,['id','label','kind','branchRef','canceled','failure']); branchKey(step.branchRef);
+      keys(step,['id','label','kind','branchRef','canceled','failure']); field = 'branchRef'; branchKey(step.branchRef);
       if (step.canceled !== undefined && !['retry','ask_human','terminate'].includes(String(step.canceled))) throw new Error('Invalid canceled child policy');
     } else if (step.kind === "script") {
       keys(step, ["id", "label", "kind", "runtime", "source", "cwdRef", "timeoutMs", "failure"]);
       if (step.runtime !== "node") throw new Error("Unsupported Script runtime");
-      if (typeof step.source !== "string" || Buffer.byteLength(step.source) > 256_000) throw new Error("Invalid Script source");
-      branchKey(step.cwdRef); boundedInteger(step.timeoutMs, 1, 3_600_000, "Script timeout");
+      field = "source"; if (typeof step.source !== "string" || Buffer.byteLength(step.source) > 256_000) throw new Error("Invalid Script source");
+      section = "advanced"; field = "cwdRef"; branchKey(step.cwdRef); field = "timeoutMs"; boundedInteger(step.timeoutMs, 1, 3_600_000, "Script timeout");
     } else if (step.kind === "human_gate") {
       keys(step, ["id", "label", "kind", "prompt", "editable", "choices", "failure"]);
-      step.prompt = branchText(step.prompt);
+      field = "prompt"; step.prompt = branchText(step.prompt);
       if (typeof step.editable !== "boolean") throw new Error("Gate editable must be boolean");
       if (step.choices !== undefined && (!Array.isArray(step.choices) || !step.choices.length || step.choices.length > 30 || new Set(step.choices).size !== step.choices.length)) throw new Error("Invalid gate choices");
       if (Array.isArray(step.choices)) step.choices = step.choices.map(branchText);
@@ -106,7 +114,7 @@ function validateDefinition(value: unknown): BranchDefinition {
       keys(step,["id","label","kind","action","configRefs","failure"]);
       if(step.action!=="notify" || !Array.isArray(step.configRefs) || step.configRefs.length!==0)throw new Error("Supported Action: notify, with no external configuration");
     } else throw new Error(`Step kind is invalid. Choose Agent, Script, human gate, Branch Call or notify.`);
-    } catch(error) { throw new Error(`Step "${step.label??step.id}": ${(error as Error).message}`); }
+    } catch(error) { throw new BranchValidationError(`Step "${step.label??step.id}": ${(error as Error).message}`, { nodeId: String(step.id), section, field, ...(error instanceof BranchValidationError ? error.issue : {}) }); }
   }
   for (const raw of d.controls) {
     const c = record(raw);
@@ -136,19 +144,22 @@ function validateDefinition(value: unknown): BranchDefinition {
       if (c.mode === "quorum") boundedInteger(c.quorum, 1, 100_000, "join quorum");
       else if (c.quorum !== undefined) throw new Error("Quorum belongs only to quorum joins");
     } else throw new Error("Control kind must be condition, route, fork, Map or Join.");
-    } catch(error) { throw new Error(`Control "${c.label??c.id}": ${(error as Error).message}`); }
+    } catch(error) { throw new BranchValidationError(`Control "${c.label??c.id}": ${(error as Error).message}`, { nodeId: String(c.id), section: "task" }); }
   }
   if (!Array.isArray(d.edges) || d.edges.length > 500) throw new Error("Invalid graph edges");
   const edges = d.edges.map(raw => keys(raw, ["id", "from", "to", "on", "choice", "loop", "input"]));
   const edgeIds = new Set<string>();
   for (const e of edges) {
+    let field = "to";
+    try {
     const id = branchKey(e.id), from = branchKey(e.from), to = branchKey(e.to);
     if (edgeIds.has(id) || !nodes.has(from) || !nodes.has(to)) throw new Error("Invalid graph edge");
     edgeIds.add(id);
-    if (e.loop !== undefined && typeof e.loop !== 'boolean') throw new Error('Invalid loop edge');
-    if(e.input !== undefined) { const input=keys(e.input,['kind','text']); if(input.kind === 'literal') branchText(input.text); else if(input.kind !== 'output'||input.text !== undefined) throw new Error('Invalid edge input'); }
-    if (e.choice !== undefined) { e.choice = branchText(e.choice).trim(); if (!e.choice || String(e.choice).length > 100) throw new Error('Invalid route choice'); }
-    if (!["success", "failure", "approved", "rejected", "selected", "canceled"].includes(String(e.on))) throw new Error("Invalid edge outcome");
+    field = 'loop'; if (e.loop !== undefined && typeof e.loop !== 'boolean') throw new Error('Invalid loop edge');
+    field = 'input'; if(e.input !== undefined) { const input=keys(e.input,['kind','text']); if(input.kind === 'literal') branchText(input.text); else if(input.kind !== 'output'||input.text !== undefined) throw new Error('Invalid edge input'); }
+    field = "choice"; if (e.choice !== undefined) { e.choice = branchText(e.choice).trim(); if (!e.choice || String(e.choice).length > 100) throw new Error('Invalid route choice'); }
+    field = "on"; if (!["success", "failure", "approved", "rejected", "selected", "canceled"].includes(String(e.on))) throw new Error("Invalid edge outcome");
+    } catch (error) { throw new BranchValidationError((error as Error).message, { nodeId: String(e.from), edgeId: String(e.id), section: field === "input" || field === "loop" ? "advanced" : "connections", field }); }
   }
   for (const [id, node] of nodes) {
     const outgoing = edges.filter(e => e.from === id);
@@ -180,7 +191,7 @@ function validateDefinition(value: unknown): BranchDefinition {
       if ((join.inputOrder as unknown[]).length) throw new Error("Map Join uses item order, not static inputOrder");
     }
     if (node.kind === "join" && (!["fork", "map"].includes(String(nodes.get(String(node.forkId))?.kind)) || nodes.get(String(node.forkId))?.joinId !== id)) throw new Error("Join requires its paired Fork or Map");
-    } catch(error) { throw new Error(`Node "${node.label??id}": ${(error as Error).message}`); }
+    } catch(error) { throw new BranchValidationError(`Node "${node.label??id}": ${(error as Error).message}`, { nodeId: id, section: "connections" }); }
   }
   const visited = new Set<string>(), visiting = new Set<string>();
   const acyclic = (id: string): void => {
@@ -224,10 +235,12 @@ export function validateBranchBindings(value: unknown, definition?: BranchDefini
     for (const [key,value] of Object.entries(map)) {
       branchKey(key);
       if (typeof value !== 'string' || !value.trim() || value.length>4096) {
-        const step=definition?.steps.find(s=>category==='directories'?s.kind==='script'&&s.cwdRef===key:category==='branches'?s.kind==='branch_call'&&s.branchRef===key:s.kind==='agent'&&'ref' in s.target&&s.target.ref===key);
+        const step=definition?.steps.find(s=>category==='directories'?s.kind==='script'&&s.cwdRef===key:category==='branches'?s.kind==='branch_call'&&s.branchRef===key:category==='engines'?s.kind==='agent'&&'templateRef'in s.target&&definition.templates?.[s.target.templateRef]?.agents.some(agent=>agent.engine===key):s.kind==='agent'&&'ref' in s.target&&s.target.ref===key);
+        const recovery=category==='agents'?definition?.steps.find(step=>step.failure?.action==='recover'&&step.failure.agentRef===key):undefined;
+        const defaultRecovery=category==='agents'&&definition?.policy.failure.action==='recover'&&definition.policy.failure.agentRef===key;
         const where=step?`Step "${step.label??step.id}"`: `Binding "${key}"`;
         const expected=category==='directories'?'Working directory is required. Choose an existing directory, or use "." for the Engine’s current working directory.':category==='agents'?'Agent is required. Choose a persistent Agent in this Branch.':category==='branches'?'Called Branch is required. Choose the workflow to invoke.':'Engine is required. Choose an available subscription-backed Engine.';
-        throw new Error(`${definition?`Branch "${definition.name}": `:''}${where}: ${typeof value==='string'&&value.length>4096?'Value exceeds 4096 characters.':expected}`);
+        throw new BranchValidationError(`${definition?`Branch "${definition.name}": `:''}${where}: ${typeof value==='string'&&value.length>4096?'Value exceeds 4096 characters.':expected}`, { ...(step||recovery ? { nodeId: (step??recovery)!.id } : {}), section: category === 'directories' ? 'advanced' : category === 'engines' ? 'agent_setup' : !step&&recovery ? 'failure' : !step&&defaultRecovery ? 'settings' : 'task', field: category === 'directories' ? 'cwdRef' : category === 'agents' ? !step&&(recovery||defaultRecovery) ? 'failure.agentRef' : 'target' : category === 'branches' ? 'branchRef' : 'engine' });
       }
     }
   }

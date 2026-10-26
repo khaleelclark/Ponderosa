@@ -7,7 +7,7 @@ import {createHash} from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {validatedObject,exactObjectFields} from '../object-validation.js';
 import { workspaceRecencyCte, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
-import { AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type DeployBranchRequest, type WorkspacePreferencesDto } from '@ponderosa/core';
+import { BranchValidationError, AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type DeployBranchRequest, type WorkspacePreferencesDto } from '@ponderosa/core';
 import {activeChatResourceOwner} from '../branch-resource-owner.js';
 import {previewBranchExecutionDetail} from '../branch-detail-preview.js';
 import {branchOperationalSummary, type ProviderIntakeStatus} from '../branch-operations.js';
@@ -36,16 +36,20 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
     for(const step of input.definition.steps)if(step.kind==='script') {
       const directory=input.bindings.directories[step.cwdRef];
       const prefix=`Branch "${input.definition.name}" · Script "${step.label??step.id}": `;
-      if(!directory?.trim())throw new Error(prefix+'Working directory is required. Choose an existing directory or use "." for the Engine’s current directory.');
+      if(!directory?.trim())throw new BranchValidationError(prefix+'Working directory is required. Choose an existing directory or use "." for the Engine’s current directory.', {nodeId:step.id,section:'advanced',field:'cwdRef'});
       try {if(!statSync(realpathSync(interpolateBranchText(directory,input.definition,configuration))).isDirectory())throw new Error();}
-      catch {throw new Error(prefix+'Working directory does not resolve to an accessible directory on this Engine. Check the path and permissions.');}
+      catch {throw new BranchValidationError(prefix+'Working directory does not resolve to an accessible directory on this Engine. Check the path and permissions.', {nodeId:step.id,section:'advanced',field:'cwdRef'});}
     }
     for(const agentId of Object.values(input.bindings.agents)){
       const agent=store.getAgent(agentId),chat=agent?.conversationId?store.getConversation(agent.conversationId):undefined;
-      if(!chat || chat.branchId!==input.branchId || chat.executionId)throw new Error('Persistent Agents must belong to a persistent Chat in this Branch');
+      if(!chat || chat.branchId!==input.branchId || chat.executionId){
+        const step=input.definition.steps.find(step=>step.kind==='agent'&&'ref'in step.target&&input.bindings.agents[step.target.ref]===agentId);
+        const recovery=input.definition.steps.find(step=>step.failure?.action==='recover'&&input.bindings.agents[step.failure.agentRef]===agentId);
+        throw new BranchValidationError('Persistent Agents must belong to a persistent Chat in this Branch', {nodeId:step?.id??recovery?.id,section:step?'task':recovery?'failure':'settings',field:step?'target':'failure.agentRef'});
+      }
     }
-    for(const step of input.definition.steps)if(step.kind==='branch_call' && !branches.getBranch(input.bindings.branches?.[step.branchRef]??''))throw new Error(`Branch "${input.definition.name}" · Step "${step.label??step.id}": Called Branch is missing or unavailable. Choose an existing Branch.`);
-    for(const template of Object.values(input.definition.templates??{}))for(const member of template.agents){const engine=input.bindings.engines?.[member.engine];if(!engine||(context.engineAvailable&&!context.engineAvailable(engine)))throw new Error('Template engine is unavailable');}
+    for(const step of input.definition.steps)if(step.kind==='branch_call' && !branches.getBranch(input.bindings.branches?.[step.branchRef]??''))throw new BranchValidationError(`Branch "${input.definition.name}" · Step "${step.label??step.id}": Called Branch is missing or unavailable. Choose an existing Branch.`, {nodeId:step.id,section:'task',field:'branchRef'});
+    for(const template of Object.values(input.definition.templates??{}))for(const member of template.agents){const engine=input.bindings.engines?.[member.engine];if(!engine||(context.engineAvailable&&!context.engineAvailable(engine))){const step=input.definition.steps.find(step=>step.kind==='agent'&&'templateRef'in step.target&&input.definition.templates?.[step.target.templateRef]===template);throw new BranchValidationError('Template engine is unavailable',{nodeId:step?.id,section:'agent_setup',field:'engine'});}}
     if(input.definition.trigger.kind==='manual')return undefined;
     const local=input.bindings.triggers?.[input.definition.trigger.configRef];if(!local)throw new Error('Local trigger configuration is required');
         const parsed = triggerSourceConfig(input.definition.trigger.kind, resolveBranchParameterReferences(local.sourceConfig,input.definition,configuration));
@@ -298,7 +302,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
     try {
       validateLocal(request.body);
       return branches.preview(request.body);
-    }catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid deployment preview'})}
+    }catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid deployment preview',...(error instanceof BranchValidationError?{issues:[error.issue]}:{})})}
   });
   app.post<{Body:unknown}>('/api/branches/import-preview',{bodyLimit:AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+1},async(request,reply)=>{
     try{return request.body&&typeof request.body==='object'&&'schema'in request.body&&request.body.schema==='ponderosa.branch-installation.v1'?context.installations.validate(request.body):importBranchPackage(request.body)}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid package'})}
@@ -328,7 +332,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
       await sources.applyDefinitionChange(currentTrigger,branches.trigger(result.id));
       notify();
       return { ...result, ...(secret && branches.trigger(result.id)?.secretFingerprint === secret.fingerprint ? { webhookSecret: secret.secret } : {}) };
-    } catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid Branch deployment' }); }
+    } catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid Branch deployment', ...(error instanceof BranchValidationError?{issues:[error.issue]}:{}) }); }
   });
   app.post<{ Params: { id: string }; Body: { occurrenceKey: string; input: string } }>('/api/branches/:id/executions', async (request, reply) => {
     try { const execution = branches.accept(request.params.id, request.body.occurrenceKey, request.body.input); notify(); return execution; }

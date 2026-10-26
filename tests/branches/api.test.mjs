@@ -180,3 +180,41 @@ test('BR010 Chat picker searches before paging, keeps exact ownership and fences
   assert.equal(f.ok(await f.api('GET',`/api/branches/contexts/${rows[0].id}`)).branchId,owner.id);await f.reopen();assert.equal(f.ok(await f.api('GET',base+'?limit=1'))[0].id,rows[0].id);assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
+
+test('publication issues preserve canonical messages and stable step/edge identities without publishing',async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const owner=await branch(f,'Issue navigation');
+  const script=(id,cwdRef='root')=>({id,label:'Duplicate Name',kind:'script',runtime:'node',source:'',cwdRef,timeoutMs:5000});
+  const definition={schema:'ponderosa.branch.v1',name:'Issue navigation',trigger:{kind:'manual'},entry:'first',steps:[script('first'),script('second')],controls:[],edges:[{id:'next',from:'first',to:'second',on:'success'}],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
+  const payload={chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:randomUUID(),definition,bindings:{agents:{},directories:{root:f.root}}};
+  const versionCount=store.sqlite.prepare('SELECT COUNT(*) n FROM branch_versions').get().n;
+  const cases=[
+   {change:d=>{d.steps[1].failure={action:'retry',maxAttempts:0,delayMs:0}},nodeId:'second',section:'failure',field:'failure.maxAttempts',message:/retry attempts must be a whole number/},
+   {change:d=>{d.steps[1].failure={action:'retry',maxAttempts:3,delayMs:-1}},nodeId:'second',section:'failure',field:'failure.delayMs',message:/retry delay must be a whole number/},
+   {change:d=>{d.steps[1]={id:'second',label:'Duplicate Name',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:42}},nodeId:'second',section:'task',field:'instructions',message:/Branch text must be a string/},
+   {change:d=>{d.edges[0].to='missing'},nodeId:'first',edgeId:'next',section:'connections',field:'to',message:/Invalid graph edge/},
+   {change:d=>{d.edges[0].input={kind:'literal',text:42}},nodeId:'first',edgeId:'next',section:'advanced',field:'input',message:/Branch text must be a string/},
+   {change:d=>{d.edges[0].loop='yes'},nodeId:'first',edgeId:'next',section:'advanced',field:'loop',message:/Invalid loop edge/},
+   {change:d=>{d.steps[1]={id:'second',label:'Duplicate Name',kind:'branch_call',branchRef:'missing'}},nodeId:'second',section:'task',field:'branchRef',message:/Called Branch is missing or unavailable/},
+   {change:(d,b)=>{d.steps[1].failure={action:'recover',agentRef:'repair',maxAttempts:1};b.agents.repair=''},nodeId:'second',section:'failure',field:'failure.agentRef',message:/Agent is required/},
+   {change:d=>{d.policy.failure={action:'retry',maxAttempts:0,delayMs:0}},section:'settings',field:'failure.maxAttempts',message:/retry attempts must be a whole number/},
+   {change:(d,b)=>{d.steps[1].cwdRef='second';b.directories.second=''},nodeId:'second',section:'advanced',field:'cwdRef',message:/Working directory is required/},
+   {change:(d,b)=>{d.steps[1].cwdRef='second';b.directories.second=f.root+'/missing-directory'},nodeId:'second',section:'advanced',field:'cwdRef',message:/Working directory does not resolve/},
+   {change:d=>{d.steps[1]={id:'second',label:'Duplicate Name',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:''}},nodeId:'second',section:'task',field:'target',message:/Branch Agent is unavailable/},
+  ];
+  for(const expected of cases){
+   const input=structuredClone(payload);expected.change(input.definition,input.bindings);
+   for(const endpoint of ['preview','deploy']){
+    const result=await f.api('POST',`/api/branches/${endpoint}`,input);
+    assert.equal(result.status,400,JSON.stringify(result));assert.match(result.body.error,expected.message);
+    const issue=result.body.issues?.[0];assert.ok(issue,'Canonical validation supplies navigation context');
+    assert.equal(result.body.issues.length,1);assert.equal(issue.message,result.body.error);
+    for(const key of ['nodeId','edgeId','section','field'])assert.equal(issue[key],expected[key],`${key}: ${result.body.error}`);
+   }
+  }
+  assert.equal((await f.api('POST','/api/branches/preview',payload)).status,200,'Existing empty Script acceptance is unchanged');
+  assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM branch_versions').get().n,versionCount);
+  assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,0);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
