@@ -23,6 +23,7 @@ interface FormDialogShellProps {
   confirmDisabled?: boolean;
   cancelLabel?: string;
   maxWidth?: DialogProps["maxWidth"];
+  secondaryAction?: { label: string; onClick(): void; disabled?: boolean };
   onCancel(): void;
   onConfirm(): void;
 }
@@ -39,6 +40,7 @@ function FormDialogShell({
   confirmDisabled = false,
   cancelLabel = "Cancel",
   maxWidth = "xs",
+  secondaryAction,
   onCancel,
   onConfirm,
 }: FormDialogShellProps): JSX.Element {
@@ -60,6 +62,7 @@ function FormDialogShell({
       </DialogContent>
       <DialogActions>
         <Button onClick={close} disabled={pending}>{cancelLabel}</Button>
+        {secondaryAction && <Button onClick={secondaryAction.onClick} disabled={pending || secondaryAction.disabled}>{secondaryAction.label}</Button>}
         <Button
           autoFocus
           color={confirmColor}
@@ -83,6 +86,8 @@ export interface ConfirmDialogProps {
   pending?: boolean;
   error?: ReactNode;
   confirmDisabled?: boolean;
+  cancelLabel?: string;
+  secondaryAction?: FormDialogShellProps["secondaryAction"];
   onCancel(): void;
   onConfirm(): void;
 }
