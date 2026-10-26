@@ -18,12 +18,12 @@ export function frameWorkflowCanvas(layout:CanvasLayout,entryId:string,startSize
 /** A finite native-scroll scene keeps readable scale; Fit is an explicit separate action. */
 export function guidedWorkflowScene(frame:WorkflowCanvasFrame,available:CanvasSize):{width:number;height:number;viewport:Viewport}{
  const width=Math.max(frame.bounds.width,positive(available.width,1)),height=Math.max(frame.bounds.height,positive(available.height,1));
- return {width,height,viewport:{x:(width-frame.bounds.width)/2-frame.bounds.x,y:(height-frame.bounds.height)/2-frame.bounds.y,zoom:1}};
+ return {width,height,viewport:{x:(width-frame.bounds.width)/2-frame.bounds.x,y:-frame.bounds.y,zoom:1}};
 }
 
 /** Expand only to the currently visible world rectangle, so a small graph can center without blank acres. */
 export function workflowTranslateExtent(frame:WorkflowCanvasFrame,available:CanvasSize,zoom=1):CoordinateExtent{
- const scale=positive(zoom,1),width=Math.max(frame.bounds.width,positive(available.width,1)/scale),height=Math.max(frame.bounds.height,positive(available.height,1)/scale),x=frame.bounds.x-(width-frame.bounds.width)/2,y=frame.bounds.y-(height-frame.bounds.height)/2;
+ const scale=positive(zoom,1),width=Math.max(frame.bounds.width,positive(available.width,1)/scale),height=Math.max(frame.bounds.height,positive(available.height,1)/scale),x=frame.bounds.x-(width-frame.bounds.width)/2,y=frame.bounds.y;
  return [[x,y],[x+width,y+height]];
 }
 

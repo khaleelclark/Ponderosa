@@ -1,4 +1,5 @@
 import {AgentStepFields,type AgentSetupRequest} from './AgentStepFields';
+import {guidedInsertionRestriction} from './guided-operations';
 import {createClientId} from '../../clientId';
 import {useEffect,useRef,useState,type ReactNode} from 'react';
 import {useQuery} from '@tanstack/react-query';
@@ -67,6 +68,7 @@ export function NodeEditor({definition,nodeId,onChange,onRemove,bindings,onBindi
   {node.kind==='branch_call'&&bindings.branches?.[node.branchRef]&&<Button href={`/branches?branch=${encodeURIComponent(bindings.branches[node.branchRef]!)}`}>Open Called Branch</Button>}
   <Divider/>
   <Typography variant="subtitle2">What Happens Next</Typography>
+  {[...new Set(definition.edges.filter(edge=>edge.from===node.id).map(edge=>guidedInsertionRestriction(definition,{kind:'edge',edgeId:edge.id})).filter(Boolean))].map(reason=><Typography key={reason} variant="body2" color="text.secondary" role="note">{reason}</Typography>)}
   <Box><Typography variant="caption">Receives From</Typography>{workflowIncoming(definition,node.id).map(source=><Typography key={source.id} variant="body2">{source.label}{source.custom?' · Custom Input':''}</Typography>)}{!workflowIncoming(definition,node.id).length&&<Typography variant="body2">No Incoming Connection</Typography>}</Box>
   {mapOwner?.kind==='map'&&<TextField label="Next Step" size="small" value={nodeName(nodes.find(candidate=>candidate.id===mapOwner.joinId)??mapOwner)} slotProps={{input:{readOnly:true}}}/>}
   {mapOwner&&<Typography variant="body2" color="text.secondary">Each item returns directly to its paired Join. Configure retries with the failure policy below.</Typography>}

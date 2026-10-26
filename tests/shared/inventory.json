@@ -1379,6 +1379,13 @@
       "origin": "Shared Voice options, canonical call owners, unchanged dictation controls, explicit capture and canonical speech/lifecycle fences"
     },
     {
+      "path": "tests/branches/canvas-navigation.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Pure bounded canvas framing and view-state checks; no providers or live data"
+    },
+    {
       "path": "tests/branches/canvas-layout.test.mjs",
       "feature": "branches",
       "lane": "web",
