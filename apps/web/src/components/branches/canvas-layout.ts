@@ -24,7 +24,7 @@ const order=(a:string,b:string)=>a<b?-1:a>b?1:0;
 const size=(value:CanvasSize|undefined,fallback:CanvasSize):CanvasSize=>value&&Number.isFinite(value.width)&&value.width>0&&Number.isFinite(value.height)&&value.height>0?{width:value.width,height:value.height}:fallback;
 const nodeSize={width:240,height:112},terminalSize={width:190,height:60},labelSize={width:160,height:32};
 const insertionSize=44,insertionGap=12;
-const terminalId=(nodeId:string,on:WorkflowEdge['on'])=>`canvas:terminal:${JSON.stringify([nodeId,on])}`;
+const terminalId=(nodeId:string,on:WorkflowEdge['on'])=>`canvas:terminal:${encodeURIComponent(JSON.stringify([nodeId,on]))}`;
 
 /** Display only outcomes that genuinely terminate; failure policies do not create routes. */
 export function workflowTerminalOutcomes(definition:BranchDefinition):CanvasTerminal[]{
@@ -76,7 +76,7 @@ function groups(definition:BranchDefinition):CanvasLayoutGroup[]{
 }
 
 /** ELK owns positions, orthogonal routing and label clearance; no canonical object is passed to it. */
-export async function layoutWorkflowCanvas(definition:BranchDefinition,bindings:BranchBindings,measurements:CanvasMeasurements={},context:Record<string,string>={}):Promise<CanvasLayout>{
+export async function layoutWorkflowCanvas(definition:BranchDefinition,bindings:BranchBindings,measurements:CanvasMeasurements={},context:Record<string,string>={},engine:Pick<import('elkjs/lib/elk-api.js').ELK,'layout'>):Promise<CanvasLayout>{
  const key=workflowCanvasKey(definition,bindings,measurements,context),canonicalNodes=[...definition.steps,...definition.controls].sort((a,b)=>Number(b.id===definition.entry)-Number(a.id===definition.entry)||order(a.id,b.id));
  const nodes:CanvasLayoutNode[]=canonicalNodes.map(node=>({id:node.id,kind:'workflow',workflowNodeId:node.id,x:0,y:0,...size(measurements.nodes?.[node.id],nodeSize),context:nodeContext(node,definition,bindings,context),ports:[]}));
  const edges:CanvasLayoutEdge[]=definition.edges.slice().sort((a,b)=>{
@@ -102,9 +102,7 @@ export async function layoutWorkflowCanvas(definition:BranchDefinition,bindings:
   // Let ELK break declared return edges before ordinary top-to-bottom routes.
   elkEdges.push({id:edge.id,sources:[edge.sourcePort],targets:[edge.targetPort],layoutOptions:{'elk.layered.priority.direction':edge.loop?'0':String(edges.length+1)},labels:[{id:`canvas:label:${edge.id}`,text:edge.label,width:edge.labelBox.width+insertionGap+insertionSize,height:Math.max(edge.labelBox.height,insertionSize),layoutOptions:{'elk.edgeLabels.placement':'CENTER','elk.edgeLabels.inline':'false'}}]});
  }
- const {default:ELK}=await import('elkjs/lib/elk.bundled.js');
- const elk=new ELK();
- const graph:ElkNode=await elk.layout({id:'canvas:root',children:elkNodes,edges:elkEdges,layoutOptions:{'elk.algorithm':'layered','elk.direction':'DOWN','elk.edgeRouting':'ORTHOGONAL','elk.randomSeed':'1','elk.padding':'[top=28,left=28,bottom=28,right=28]','elk.spacing.nodeNode':'72','elk.spacing.edgeNode':'28','elk.spacing.edgeEdge':'24','elk.spacing.edgeLabel':'12','elk.spacing.labelNode':'24','elk.layered.spacing.nodeNodeBetweenLayers':'48','elk.layered.spacing.edgeNodeBetweenLayers':'32','elk.layered.spacing.edgeEdgeBetweenLayers':'24','elk.layered.considerModelOrder.strategy':'NODES_AND_EDGES','elk.layered.feedbackEdges':'true','elk.layered.mergeEdges':'false','elk.layered.mergeHierarchyEdges':'false'}});
+ const graph:ElkNode=await engine.layout({id:'canvas:root',children:elkNodes,edges:elkEdges,layoutOptions:{'elk.algorithm':'layered','elk.direction':'DOWN','elk.edgeRouting':'ORTHOGONAL','elk.randomSeed':'1','elk.padding':'[top=28,left=28,bottom=28,right=28]','elk.spacing.nodeNode':'72','elk.spacing.edgeNode':'28','elk.spacing.edgeEdge':'24','elk.spacing.edgeLabel':'12','elk.spacing.labelNode':'24','elk.layered.spacing.nodeNodeBetweenLayers':'48','elk.layered.spacing.edgeNodeBetweenLayers':'32','elk.layered.spacing.edgeEdgeBetweenLayers':'24','elk.layered.considerModelOrder.strategy':'NODES_AND_EDGES','elk.layered.feedbackEdges':'true','elk.layered.mergeEdges':'false','elk.layered.mergeHierarchyEdges':'false'}});
  for(const child of graph.children??[]){
   const node=byId.get(child.id)!;node.x=child.x??0;node.y=child.y??0;
   node.ports=(child.ports??[]).map(port=>({id:port.id,x:port.x??0,y:port.y??0,side:(port.layoutOptions?.['elk.port.side']??'NORTH') as CanvasPort['side']}));

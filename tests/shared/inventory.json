@@ -1377,6 +1377,27 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Actual React component closures with controlled scheduling, native speech and transport; no physical microphone qualification",
       "origin": "Shared Voice options, canonical call owners, unchanged dictation controls, explicit capture and canonical speech/lifecycle fences"
+    },
+    {
+      "path": "tests/branches/canvas-layout.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; pure canonical draft/layout behavioral checks; no providers or live data"
+    },
+    {
+      "path": "tests/branches/guided-operations.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; pure canonical draft/layout behavioral checks; no providers or live data"
+    },
+    {
+      "path": "tests/branches/workflow-history.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; pure canonical draft/layout behavioral checks; no providers or live data"
     }
   ],
   "retainedReleasePayload": [

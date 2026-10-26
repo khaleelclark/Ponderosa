@@ -1139,7 +1139,8 @@ test('closing the Add-step menu fences its exiting item handlers from creating a
  const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),model=await import('../../apps/web/src/components/branches/model.ts');
  const source=await fs.readFile(new URL('../../apps/web/src/components/branches/WorkflowEditor.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('WorkflowEditor.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
  let handler;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='add')handler=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(handler);
- const edits=[],scope={...model,definition:model.newDefinition(),insertion:'',addAnchor:{},onDefinition:definition=>edits.push(definition),setSelected(){},setEditorOpen(){},setFocusRequest(){},setAddAnchor:value=>{scope.addAnchor=value}};
+ const {insertGuidedStep}=await import('../../apps/web/src/components/branches/guided-operations.ts');
+ const edits=[],scope={...model,insertGuidedStep,definition:model.newDefinition(),insertionTarget:{kind:'entry'},addAnchor:{},onDraft:edit=>edits.push(edit.definition),setInsertError(){},setSelected(){},setEditorOpen(){},setFocusRequest(){},setAddAnchor:value=>{scope.addAnchor=value}};
  const add=vm.runInNewContext(ts.transpile(handler,{target:ts.ScriptTarget.ES2022}),scope);
  add('agent');assert.equal(edits.length,1);assert.equal(edits[0].steps.length,1);assert.equal(scope.addAnchor,null);
  add('agent');add('script');assert.equal(edits.length,1,'Closed/transitioning menu items cannot add work');assert.equal(scope.definition.steps.length,0,'The original snapshot remains untouched');

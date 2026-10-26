@@ -1,7 +1,10 @@
 import test from 'node:test';
+import {createRequire} from 'node:module';
 import assert from 'node:assert/strict';
 import '../shared/web-typescript-loader.mjs';
-const {layoutWorkflowCanvas,workflowCanvasKey,workflowConnectionLabel,workflowTerminalOutcomes}=await import('../../apps/web/src/components/branches/canvas-layout.ts');
+const {layoutWorkflowCanvas:layoutWithEngine,workflowCanvasKey,workflowConnectionLabel,workflowTerminalOutcomes}=await import('../../apps/web/src/components/branches/canvas-layout.ts');
+const ELK=createRequire(new URL('../../apps/web/package.json',import.meta.url))('elkjs/lib/elk.bundled.js'),engine=new ELK();
+const layoutWorkflowCanvas=(definition,bindings,measurements={},context={})=>layoutWithEngine(definition,bindings,measurements,context,engine);
 const script=id=>({id,label:id,kind:'script',runtime:'node',source:'process.stdout.write("done")',cwdRef:'workspace',timeoutMs:1000});
 const edge=(id,from,to,on='success',extra={})=>({id,from,to,on,...extra});
 const graph=(steps,controls=[],edges=[],entry=steps[0]?.id??controls[0]?.id??'')=>({schema:'ponderosa.branch.v1',name:'Canvas test',trigger:{kind:'manual'},entry,steps,controls,edges,policy:{maxConcurrentExecutions:2,failure:{action:'stop'}}});
@@ -94,4 +97,12 @@ test('canonical array order alone does not rearrange a graph or change the proje
  const reordered={...d,steps:d.steps.slice().reverse(),edges:d.edges.slice().reverse()};
  const one=await layoutWorkflowCanvas(d,bindings),two=await layoutWorkflowCanvas(reordered,bindings);
  assert.deepEqual(one,two);
+});
+
+// React Flow uses node IDs inside quoted attribute selectors for Handle updates.
+test('terminal presentation identities are selector-safe and cannot collide with canonical identities',async()=>{
+ const d=graph([script('canvas:terminal:source')]),layout=await layoutWorkflowCanvas(d,bindings);
+ const terminal=layout.nodes.find(node=>node.kind==='terminal');
+ assert.ok(terminal&&!/["\\\r\n]/u.test(terminal.id),'Presentation IDs must not break library selectors');
+ assert.ok(terminal.id.includes('%'),'Canonical Branch IDs cannot contain the terminal namespace delimiter');
 });
