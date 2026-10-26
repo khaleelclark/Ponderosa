@@ -68,6 +68,7 @@ export class AgentProjectionRebuilder {
   ) {}
 
   rebuildProjections(): void {
+    this.agentCatalog.clearRoleCache();
     // Project recovery crosses an irreversible filesystem boundary. Its receipt
     // commits must not be rolled back when a later, unrelated projection replay
     // fails and the broad rebuild transaction is reverted.

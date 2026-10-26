@@ -36,12 +36,42 @@ import type {
   EngineDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { publishUpdatedAgent } from "../conversationAgentCache";
 import { queryKeys } from "../queryKeys";
 import { HostPathPresentation } from "./HostPathPresentation";
 import { ResourceNotificationSettings } from "./ResourceNotificationSettings";
 import { useMutationNotification } from "./MutationNotifications";
+
+/** Explicit standing-role editing, shared by Agent Settings and workflow setup. */
+export function AgentRoleSettings({ agent, onSaved }: { agent: AgentDto; onSaved?(): void }): JSX.Element {
+  const client = useQueryClient();
+  const [role, setRole] = useState(agent.role ?? "");
+  const owner = useRef(agent.id), previousOwner = useRef(agent.id), baseline = useRef(agent.role ?? ""), pending = useRef(false), mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  owner.current = agent.id;
+  useEffect(() => {
+    setRole(current => previousOwner.current !== agent.id || current === baseline.current ? agent.role ?? "" : current);
+    previousOwner.current = agent.id;
+    baseline.current = agent.role ?? "";
+  }, [agent.id, agent.role]);
+  const save = useMutation({
+    mutationFn: ({ id, role }: { id: string; role: string }) => api.updateAgent(id, { role: role || null }),
+    onSuccess: (updated, variables) => {
+      publishUpdatedAgent(client, updated);
+      void client.invalidateQueries({ queryKey: ["branch-agents"] });
+      if (mounted.current && owner.current === variables.id) { baseline.current = updated.role ?? ""; setRole(updated.role ?? ""); onSaved?.(); }
+    },
+    onSettled: () => { pending.current = false; },
+  });
+  return <Stack spacing={1.5}>
+    <TextField label="Agent Role" multiline minRows={3} value={role} disabled={save.isPending} onChange={event => setRole(event.target.value)} placeholder="Describe This Agent’s Standing Responsibilities" />
+    <Typography variant="caption" color="text.secondary">Applies when the next Run starts. Active work keeps its accepted instructions.</Typography>
+    {save.isError ? <Alert severity="error">{save.error instanceof Error ? save.error.message : "Could Not Save Agent Role"}</Alert> : null}
+    <Button variant="outlined" disabled={save.isPending || role === (agent.role ?? "")} onClick={() => { if (pending.current) return; pending.current = true; save.mutate({ id: agent.id, role }); }}>{save.isPending ? "Saving…" : "Save Agent Role"}</Button>
+  </Stack>;
+}
 
 function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
   const queryClient = useQueryClient();
@@ -382,6 +412,7 @@ export function AgentSettingsPane({
           )}
         </Typography>
       </Paper>
+      <Paper variant="outlined" sx={{ p: 2 }}><AgentRoleSettings key={agent.id} agent={agent} /></Paper>
       <AgentWorkingCopySettings agent={agent} />
       <Paper variant="outlined" sx={{ p: 2 }}><ResourceNotificationSettings kind="agent" id={agent.id} /></Paper>
       <AgentBrowserProfileSettings agent={agent} />

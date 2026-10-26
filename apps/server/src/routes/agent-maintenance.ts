@@ -1,3 +1,4 @@
+import { normalizeAgentRole } from "@ponderosa/core";
 import type {
   AgentWorkingCopyDto,
   AgentDeletionPreviewRequest,
@@ -111,9 +112,13 @@ export function registerAgentMaintenanceRoutes(
       const current = store.getAgent(request.params.id);
       if (!current) return reply.code(404).send({ error: "agent not found" });
       const body = request.body ?? {};
-      const allowedFields = new Set(["title", "activeEngine", "model", "effort", "speed", "workingCopyMode", "managementPermissions"]);
+      const allowedFields = new Set(["title", "role", "activeEngine", "model", "effort", "speed", "workingCopyMode", "managementPermissions"]);
       if (Object.keys(body).some((key) => !allowedFields.has(key))) {
         return reply.code(400).send({ error: "unknown agent field" });
+      }
+      if (body.role !== undefined) {
+        try { body.role = normalizeAgentRole(body.role) ?? null; }
+        catch (error) { return reply.code(400).send({ error: (error as Error).message }); }
       }
       let normalizedTitle: string | undefined;
       if (body.title !== undefined) {

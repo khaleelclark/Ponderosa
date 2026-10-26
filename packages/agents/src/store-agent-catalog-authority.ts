@@ -15,7 +15,7 @@ import type {
   PortableAgentHistoryMessageDto,
   ProjectDto,
 } from "@ponderosa/core";
-import { allocateAgentMentionHandle } from "@ponderosa/core";
+import { allocateAgentMentionHandle, normalizeAgentRole } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { normalizeAgentTitle } from "./agent-identity.js";
 import { sharedWorkingCopy } from "./working-copy.js";
@@ -138,6 +138,8 @@ function validateWorkingCopy(
 
 export class AgentCatalogAuthority {
   private readonly agentById;
+  // ponytail: cache 256 recent metadata roles; use a projected column only if roles need indexed queries.
+  private readonly roles = new Map<string, { updatedAt: string; role?: string }>();
 
   constructor(
     private readonly dataDir: string,
@@ -148,6 +150,20 @@ export class AgentCatalogAuthority {
   ) {
     this.agentById = db.select().from(agents)
       .where(and(eq(agents.id, sql.placeholder("agentId")), isNull(agents.deletedAt))).prepare();
+  }
+
+  clearRoleCache(agentId?: string): void {
+    if (agentId) this.roles.delete(agentId); else this.roles.clear();
+  }
+
+  private roleFor(row: typeof agents.$inferSelect): string | undefined {
+    if (row.deletedAt) return undefined;
+    const cached = this.roles.get(row.id);
+    if (cached?.updatedAt === row.updatedAt) return cached.role;
+    const role = normalizeAgentRole(readJson<AgentJson>(agentJsonPath(this.dataDir, row.projectId, row.id)).role);
+    if (this.roles.size >= 256) this.roles.delete(this.roles.keys().next().value!);
+    this.roles.set(row.id, { updatedAt: row.updatedAt, role });
+    return role;
   }
 
   private readCreationReceipt(projectId: string, agentId: string): AgentCreationReceipt | undefined {
@@ -292,6 +308,7 @@ export class AgentCatalogAuthority {
       projectId,
       conversationId: input.conversationId,
       title,
+      role: normalizeAgentRole(input.role),
       handle,
       activeEngine: input.engine,
       model,
@@ -807,6 +824,7 @@ export class AgentCatalogAuthority {
       projectId: row.projectId,
       conversationId: row.conversationId ?? (() => { throw new Error(`live Agent ${row.id} has no owner Chat`); })(),
       title: row.title,
+      role: this.roleFor(row),
       handle: row.handle,
       activeEngine: row.activeEngine,
       model: row.model ?? undefined,

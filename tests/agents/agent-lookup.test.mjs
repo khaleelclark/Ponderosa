@@ -83,3 +83,39 @@ test('lookups use the reopened database and remain isolated from other stores', 
   assert.equal(first.getAgent('missing-agent'), undefined);
   assert.equal(other.getAgent(otherAgent.id).title, otherAgent.title);
 }));
+
+
+test('Agent Role is canonical setup, survives rebuild/reopen, clears independently of provenance', t => withStores(t, async f => {
+  let store = f.open('role');
+  const agent = f.seed(store), original = store.getAgent(agent.id);
+  const role = 'Review Cafe\u0301\r\nCarefully';
+  const updated = store.updateAgent(agent.id, { role });
+  assert.equal(updated.role, 'Review Café\nCarefully');
+  assert.equal(updated.spawnPrompt, original.spawnPrompt);
+  assert.deepEqual(updated.presetSnapshot, original.presetSnapshot);
+  store.rebuildProjections();
+  assert.equal(store.getAgent(agent.id).role, updated.role);
+  assert.equal(store.listAgents(agent.projectId).find(item => item.id === agent.id).role, updated.role);
+  f.close(store); store = f.open('role');
+  assert.equal(store.getAgent(agent.id).role, updated.role);
+  assert.throws(() => store.updateAgent(agent.id, { role: '😀'.repeat(8001) }), /8000/);
+  assert.equal(store.getAgent(agent.id).role, updated.role);
+  assert.equal(store.updateAgent(agent.id, { role: null }).role, undefined);
+  store.rebuildProjections();
+  assert.equal(store.getAgent(agent.id).role, undefined);
+}));
+
+
+test('same-millisecond role updates invalidate metadata readback without changing the database schema', t => withStores(t, async f => {
+  const store = f.open('role-cache'), agent = f.seed(store);
+  const NativeDate = globalThis.Date, stamp = agent.updatedAt;
+  class FixedDate extends NativeDate { constructor(...args) { super(...(args.length ? args : [stamp])); } }
+  globalThis.Date = FixedDate;
+  try {
+    for (const role of ['First Standing Role', 'Newer Standing Role', null]) {
+      assert.equal(store.updateAgent(agent.id, { role }).role, role ?? undefined);
+      assert.equal(store.getAgent(agent.id).role, role ?? undefined);
+    }
+    assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM pragma_table_info('agents') WHERE name='role'").get().n, 0);
+  } finally { globalThis.Date = NativeDate; }
+}));

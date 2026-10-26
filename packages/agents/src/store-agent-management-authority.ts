@@ -11,6 +11,7 @@ import type {
 import {
   agentMentionHandleBase,
   allocateAgentMentionHandle,
+  normalizeAgentRole,
 } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { normalizeAgentTitle } from "./agent-identity.js";
@@ -337,9 +338,11 @@ export class AgentManagementAuthority {
     // SQLite projection changes. A crash can therefore never resurrect a
     // permission that the operator just revoked.
     const json = readJson<AgentJson>(agentJsonPath(this.dataDir, row.projectId, id));
+    const role = patch.role === undefined ? json.role : normalizeAgentRole(patch.role);
     writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
       ...json,
       title,
+      role,
       handle,
       activeEngine,
       model,

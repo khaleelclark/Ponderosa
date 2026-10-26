@@ -97,6 +97,7 @@ export interface AgentJson {
   /** Canonical owner Chat. Missing only from immutable deleted-Agent tombstones. */
   conversationId?: string;
   title: string;
+  role?: string;
   handle: string;
   activeEngine: string;
   model?: string;

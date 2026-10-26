@@ -276,7 +276,7 @@ export function createAgentStoreComponents(
     ports.getAgent,
     ports.listAgents,
     ports.getProject,
-    ports.rowToAgentDto,
+    id => { agentCatalog.clearRoleCache(id); return ports.rowToAgentDto(id); },
   );
   const agentDeletion = new AgentDeletionAuthority(
     dataDir,

@@ -1,7 +1,12 @@
+import { effortLabel } from "./ComposerRuntimeSelector";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { publishCreatedAgent } from "../conversationAgentCache";
 import UploadFileOutlinedIcon from "@mui/icons-material/UploadFileOutlined";
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Button,
   FormControl,
@@ -24,8 +29,9 @@ import {
   engineIsAvailable,
   modelSelectionIsCompatible,
   soleAvailableEngineId,
+  resolveRuntimeSelection,
 } from "../conversationEngine";
-import { useAgentPresets, useConversation } from "../hooks/queries";
+import { useAgentPresets, useConversation, useWorkspacePreferences } from "../hooks/queries";
 import { useProjectAgents, useProjectConversations } from "../hooks/useProjectCollections";
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
@@ -55,6 +61,8 @@ export interface AgentCreateFormProps {
   onCreated(projectId: string, agent: AgentDto): void;
   onPendingChange?(pending: boolean): void;
   stickyActions?: boolean;
+  /** Configure a reusable worker without dispatching an opening task. */
+  workflowSetup?: boolean;
 }
 
 export interface AgentCreateSurfaceProps extends AgentCreateFormProps {
@@ -77,8 +85,10 @@ export function AgentCreateForm({
   onCreated,
   onPendingChange,
   stickyActions = false,
+  workflowSetup = false,
 }: AgentCreateFormProps): JSX.Element {
   const queryClient = useQueryClient();
+  const preferences = useWorkspacePreferences();
   const [projectId, setProjectId] = useState(
     fixedProjectId ??
       (projects.some(project => project.id === initialProjectId)
@@ -127,6 +137,8 @@ export function AgentCreateForm({
   const { conversationId, managerAgentId } = ownership;
   const [presetId, setPresetId] = useState(UNSET);
   const [initialMessage, setInitialMessage] = useState("");
+  const [role, setRole] = useState("");
+  const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
   const titleEditedRef = useRef(Boolean(initialName));
   const conversationEditedRef = useRef(false);
   const managerEditedRef = useRef(false);
@@ -168,8 +180,8 @@ export function AgentCreateForm({
             soleAvailableEngineId(engines) ??
             UNSET,
         );
-        setModel(initialModel ?? project?.defaultModel ?? UNSET);
-        setEffort(initialEffort ?? project?.defaultEffort ?? UNSET);
+        setModel(initialModel ?? (workflowSetup ? UNSET : project?.defaultModel) ?? UNSET);
+        setEffort(initialEffort ?? (workflowSetup ? UNSET : project?.defaultEffort) ?? UNSET);
       }
       return;
     }
@@ -185,14 +197,15 @@ export function AgentCreateForm({
         soleAvailableEngineId(engines) ??
         UNSET,
     );
-    setModel(initialModel ?? project?.defaultModel ?? UNSET);
-    setEffort(initialEffort ?? project?.defaultEffort ?? UNSET);
+    setModel(initialModel ?? (workflowSetup ? UNSET : project?.defaultModel) ?? UNSET);
+    setEffort(initialEffort ?? (workflowSetup ? UNSET : project?.defaultEffort) ?? UNSET);
     setOwnership({
       conversationId: fixedConversationId ?? UNSET,
       managerAgentId: UNSET,
     });
     setPresetId(UNSET);
     setInitialMessage("");
+    setRole("");
   }, [
     engines,
     effectiveFixedConversationId,
@@ -201,6 +214,7 @@ export function AgentCreateForm({
     initialEngine,
     initialModel,
     initialName,
+    workflowSetup,
     project?.defaultEffort,
     project?.defaultEngine,
     project?.defaultModel,
@@ -261,7 +275,7 @@ export function AgentCreateForm({
           : undefined,
         presetId: presetId || undefined,
         managerAgentId: managerAgentId || undefined,
-        initialMessage: initialMessage.trim() || undefined,
+        ...(workflowSetup ? { role: role.trim() || undefined } : { initialMessage: initialMessage.trim() || undefined }),
       };
       createAttemptRef.current = retainIdempotentAttempt(
         createAttemptRef.current,
@@ -299,6 +313,73 @@ export function AgentCreateForm({
     },
   });
 
+  const recoveringId = workflowSetup && create.data && "recovering" in create.data ? create.data.agentId : undefined;
+  const recovered = useQuery({ queryKey: ["agent-create-recovery", recoveringId], queryFn: () => api.getAgent(recoveringId!, 1), enabled: Boolean(recoveringId), retry: false, refetchInterval: query => query.state.data ? false : 1000 });
+  const deliveredRecovery = useRef<string>();
+  useEffect(() => {
+    const agent = recovered.data?.agent;
+    if (!agent || agent.id !== recoveringId || deliveredRecovery.current === agent.id) return;
+    deliveredRecovery.current = agent.id;
+    publishCreatedAgent(queryClient, agent);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(agent.projectId) });
+    onCreated(agent.projectId, agent);
+  }, [recoveringId, recovered.data, queryClient, onCreated]);
+
+  const inheritedOwner = fixedConversation?.defaultEngine ? { defaultEngine: fixedConversation.defaultEngine, defaultModel: fixedConversation.defaultModel, defaultEffort: fixedConversation.defaultEffort } : project;
+  const inheritedDefaults = resolveRuntimeSelection(activeEngine, preferences.data, inheritedOwner);
+  const resolvedDefaults = resolveRuntimeSelection(activeEngine, preferences.data, inheritedOwner, { model: model || undefined });
+  const settingsEngine = workflowSetup && activeEngine ? { ...activeEngine,
+    efforts: activeEngine.efforts.map(option => ({ ...option, label: effortLabel(option)! })),
+    models: activeEngine.models.map(option => ({ ...option, efforts: option.efforts?.map(effort => ({ ...effort, label: effortLabel(effort)! })) })),
+  } : activeEngine;
+  const inheritedEffort = settingsEngine?.models.find(option => option.id === resolvedDefaults.model)?.efforts?.find(option => option.id === resolvedDefaults.effort) ?? settingsEngine?.efforts.find(option => option.id === resolvedDefaults.effort);
+  const inheritedEffortLabel = effortLabel(inheritedEffort ?? { id: resolvedDefaults.effort, label: resolvedDefaults.effort }) || "Unavailable";
+  const runtimeFields = <>
+      <FormControl fullWidth size="small">
+        <InputLabel id="create-agent-engine-label">Engine</InputLabel>
+        <Select
+          labelId="create-agent-engine-label"
+          label="Engine"
+          value={engine}
+          onChange={(event: SelectChangeEvent) => {
+            setEngine(event.target.value);
+            setModel(UNSET);
+            setEffort(UNSET);
+          }}
+        >
+          {engines.map(option => (
+            <MenuItem
+              key={option.id}
+              value={option.id}
+              disabled={!engineIsAvailable(option)}
+            >
+              {option.displayName}
+              {engineIsAvailable(option) ? "" : ` — ${engineUnavailableReason(option)}`}
+            </MenuItem>
+          ))}
+        </Select>
+      </FormControl>
+      <EngineModelEffortFields
+        engine={settingsEngine}
+        selection={{ model, effort }}
+        optionSelection={workflowSetup ? resolvedDefaults : undefined}
+        onChange={selection => {
+          setModel(selection.model);
+          setEffort(selection.effort);
+        }}
+        modelLabel="Model"
+        effortLabel={workflowSetup ? "Reasoning Effort" : "Effort"}
+        modelLabelId="create-agent-model-label"
+        effortLabelId="create-agent-effort-label"
+        modelEmptyLabel={workflowSetup ? `Default — ${activeEngine?.models.find(option => option.id === inheritedDefaults.model)?.label ?? (inheritedDefaults.model || "Unavailable")}` : "Engine Default"}
+        effortEmptyLabel={workflowSetup ? `Default — ${inheritedEffortLabel}` : "Engine Default"}
+        size="small"
+        runtimeSpacing={2}
+        hideModelWhenEmpty={!workflowSetup}
+        hideEffortWhenEmpty={!workflowSetup}
+      />
+  </>;
+
   if (create.data && "recovering" in create.data) {
     return (
       <Stack spacing={2.25}>
@@ -331,7 +412,7 @@ export function AgentCreateForm({
           </Select>
         </FormControl>
       ) : null}
-      <FormControl fullWidth size="small">
+      {!workflowSetup ? <FormControl fullWidth size="small">
         <InputLabel id="create-agent-preset-label">Preset (optional)</InputLabel>
         <Select
           labelId="create-agent-preset-label"
@@ -357,9 +438,9 @@ export function AgentCreateForm({
               </MenuItem>
             ))}
         </Select>
-      </FormControl>
+      </FormControl> : null}
       <TextField
-        label="Name"
+        label={workflowSetup ? "Agent Name" : "Name"}
         value={title}
         onChange={event => {
           titleEditedRef.current = true;
@@ -368,48 +449,10 @@ export function AgentCreateForm({
         autoFocus
         fullWidth
       />
-      <FormControl fullWidth size="small">
-        <InputLabel id="create-agent-engine-label">Engine</InputLabel>
-        <Select
-          labelId="create-agent-engine-label"
-          label="Engine"
-          value={engine}
-          onChange={(event: SelectChangeEvent) => {
-            setEngine(event.target.value);
-            setModel(UNSET);
-            setEffort(UNSET);
-          }}
-        >
-          {engines.map(option => (
-            <MenuItem
-              key={option.id}
-              value={option.id}
-              disabled={!engineIsAvailable(option)}
-            >
-              {option.displayName}
-              {engineIsAvailable(option) ? "" : ` — ${engineUnavailableReason(option)}`}
-            </MenuItem>
-          ))}
-        </Select>
-      </FormControl>
-      <EngineModelEffortFields
-        engine={activeEngine}
-        selection={{ model, effort }}
-        onChange={selection => {
-          setModel(selection.model);
-          setEffort(selection.effort);
-        }}
-        modelLabel="Model"
-        effortLabel="Effort"
-        modelLabelId="create-agent-model-label"
-        effortLabelId="create-agent-effort-label"
-        modelEmptyLabel="Engine Default"
-        effortEmptyLabel="Engine Default"
-        size="small"
-        runtimeSpacing={2}
-        hideModelWhenEmpty
-        hideEffortWhenEmpty
-      />
+      {workflowSetup ? <>
+        <TextField label="Agent Role" placeholder="Describe This Agent’s Standing Responsibilities" multiline minRows={3} value={role} onChange={event => setRole(event.target.value)} />
+        <Accordion disableGutters expanded={aiSettingsOpen || Boolean(activeEngine && !engineIsAvailable(activeEngine))} onChange={(_, open) => setAiSettingsOpen(open)}><AccordionSummary expandIcon={<ExpandMoreIcon />}>AI Settings</AccordionSummary><AccordionDetails><Stack spacing={2}>{runtimeFields}</Stack></AccordionDetails></Accordion>
+      </> : runtimeFields}
       {fixedConversationInvalid ? (
         <Alert
           severity="warning"
@@ -464,10 +507,10 @@ export function AgentCreateForm({
         />
       )}
       <FormControl fullWidth size="small">
-        <InputLabel id="create-agent-manager-label">Delegated under</InputLabel>
+        <InputLabel id="create-agent-manager-label">{workflowSetup ? "Delegated Under" : "Delegated under"}</InputLabel>
         <Select
           labelId="create-agent-manager-label"
-          label="Delegated under"
+          label={workflowSetup ? "Delegated Under" : "Delegated under"}
           value={managerAgentId}
           onChange={(event: SelectChangeEvent) => {
             managerEditedRef.current = true;
@@ -487,14 +530,14 @@ export function AgentCreateForm({
             ))}
         </Select>
       </FormControl>
-      <TextField
+      {!workflowSetup ? <TextField
         label="Initial message (optional)"
         helperText="Give the Agent a task, role, or introduction—or leave it idle."
         value={initialMessage}
         onChange={event => setInitialMessage(event.target.value)}
         multiline
         minRows={3}
-      />
+      /> : null}
       {!projects.length ? (
         <Alert severity="info">
           Create a Chat before creating an Agent.
