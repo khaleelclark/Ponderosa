@@ -269,3 +269,26 @@ test('deferred sign-in checks stay checking during host pressure and recover wit
 
   } finally {await app.close();}
 });
+
+test('Claude probe start failures remain operation errors when process registration also refuses the helper', {timeout:15000,skip:process.platform==='win32'?'Covers POSIX asynchronous spawn failure; Windows launches behind the existing Job gate':false},async t=>{
+ const {spawnSync}=await import('node:child_process');
+ const root=await mkdtemp(path.join(tmpdir(),'ponderosa-probe-start-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const moduleUrl=new URL('../../packages/engines/dist/claude-models.js',import.meta.url).href;
+ for(const method of ['discover','validate'])for(const refusesRegistration of [false,true]){
+  const source=`
+   import assert from 'node:assert/strict';
+   import {ClaudeModelCatalogProbe} from ${JSON.stringify(moduleUrl)};
+   const probe=new ClaudeModelCatalogProbe({bin:process.execPath,killGraceMs:50});
+   const handles=[],context={signal:new AbortController().signal,onRuntimeSpawned(handle){handles.push(handle);if(${refusesRegistration})throw new Error('fixture registration refused missing identity');}};
+   const operation=${JSON.stringify(method)}==='discover'?()=>probe.discover(${JSON.stringify(path.join(root,'missing-directory'))},context):()=>probe.validate(${JSON.stringify(path.join(root,'missing-directory'))},'fixture',context);
+   await assert.rejects(operation);
+   await Promise.all(handles.map(handle=>handle.close()));
+   assert.ok(handles.every(handle=>!handle.isAlive()),'Failed helper left process authority alive');
+   await new Promise(resolve=>setTimeout(resolve,30));
+   console.log('failure reported; host survived');
+  `;
+  const result=spawnSync(process.execPath,['--unhandled-rejections=strict','--input-type=module','-e',source],{cwd:root,env:{...process.env,PONDEROSA_AGENT_SCOPE_MODE:''},encoding:'utf8',timeout:3000});
+  assert.equal(result.status,0,`${method}, registration refuses=${refusesRegistration}: ${result.error?.message??result.stderr.slice(-1800)}`);
+  assert.match(result.stdout,/failure reported; host survived/u);
+ }
+});
