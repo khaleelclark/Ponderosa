@@ -35,7 +35,7 @@ export const useBranchNavigationGuard = () => useContext(GuardContext);
 /** One guard for route changes, nested dialogs, browser history, and reload. */
 export function BranchNavigation({ children }: { children(router: {
   route: BranchRoute;
-  navigate(route: BranchRoute, replace?: boolean): boolean;
+  navigate(route: BranchRoute, replace?: boolean, onAccepted?: () => void): boolean;
 }): ReactNode }): JSX.Element {
   const [route, setRoute] = useState(() => parseBranchRoute(window.location.search));
   const historyIndex=useRef<number>(Number.isSafeInteger(window.history.state?.branchesIndex)?window.history.state.branchesIndex:0);
@@ -106,12 +106,12 @@ export function BranchNavigation({ children }: { children(router: {
     generation.current++;
     setRoute(next);
   }, []);
-  const navigate = useCallback((next: BranchRoute, replace = false): boolean => {
-    if (branchRoutePath(next) === branchRoutePath(current.current)) return true;
+  const navigate = useCallback((next: BranchRoute, replace = false, onAccepted?: () => void): boolean => {
+    if (branchRoutePath(next) === branchRoutePath(current.current)) { onAccepted?.(); return true; }
     // Definition edits stay in BranchesWorkspace; editor-local fields survive
     // same-Branch tab and execution inspection while the editor stays mounted.
     const retained = retainedBranchDrafts(current.current, next);
-    return requestLeave(() => commitRoute(next, replace), retained);
+    return requestLeave(() => { commitRoute(next, replace); onAccepted?.(); }, retained);
   }, [requestLeave, commitRoute]);
   useEffect(()=>{
     if(new URLSearchParams(window.location.search).get('tab')==='parameters')window.history.replaceState(window.history.state,'',branchRoutePath(route)+window.location.hash);

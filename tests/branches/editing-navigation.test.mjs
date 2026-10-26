@@ -35,6 +35,13 @@ test('Save And Leave waits for its exact successful workflow settlement and repe
  f.prompt().props.onConfirm();assert.equal(f.prompt().props.open,false);f.prompt().props.onConfirm();assert.equal(calls,1);assert.equal(f.router().route.branchId,'a');done(true);assert.equal(f.router().route.branchId,'b');done(true);assert.equal(f.entries.length,2,'A late duplicate callback cannot navigate twice');
 });
 
+test('accepted callbacks retain post-navigation actions across save and never run for canceled or failed leaves',async()=>{
+ for(const outcome of ['cancel','failure','success']){const f=await fixture();f.mark('workflow');let complete,accepted=0;f.actions.save=done=>{complete=done};assert.equal(f.router().navigate({branchId:'b',tab:'workflow'},false,()=>accepted++),false);assert.equal(accepted,0);
+  if(outcome==='cancel')f.prompt().props.onCancel();else{f.prompt().props.onConfirm();complete(outcome==='success');complete(true)}assert.equal(accepted,outcome==='success'?1:0,outcome);assert.equal(f.router().route.branchId,outcome==='success'?'b':'a',outcome);
+ }
+ const same=await fixture();let accepted=0;assert.equal(same.router().navigate({branchId:'a',tab:'workflow'},false,()=>accepted++),true);assert.equal(accepted,1);assert.equal(same.entries.length,1);
+});
+
 test('Back To Editing, failed save, and stale-owner callbacks retain the accepted route',async()=>{
  for(const outcome of ['cancel','failure','owner']){const f=await fixture();f.mark('workflow');let complete;f.actions.save=done=>{complete=done};f.router().navigate({branchId:'b',tab:'workflow'});if(outcome==='cancel')f.prompt().props.onCancel();else{f.prompt().props.onConfirm();if(outcome==='owner')f.replaceOwner('new-owner');complete(outcome==='owner')}
   assert.equal(f.router().route.branchId,'a',outcome);assert.equal(f.entries.length,1,outcome);
