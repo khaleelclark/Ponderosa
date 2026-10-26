@@ -1202,3 +1202,12 @@ test('switching from an imported temporary ref preserves its form and never remo
  template.agents[0].title='';const persistent=changeAgentTarget(original,original.steps[0],{kind:'persistent_agent',ref:id});
  const {validateBranchDefinition}=await import('../../packages/agents/dist/branch-definition.js');assert.doesNotThrow(()=>validateBranchDefinition(persistent),'An unselected invalid setup cannot silently block publication');
 });
+
+
+test('canonical publication issue selects its owning step before unrelated local field guidance',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/WorkflowEditor.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('WorkflowEditor.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),effects=[];
+ function walk(node){if(ts.isCallExpression(node)&&node.expression.getText(ast)==='useEffect'&&node.arguments[0]?.getText(ast).includes('if(!validationRequest'))effects.push(node.arguments[0].getText(ast));ts.forEachChild(node,walk)}walk(ast);assert.equal(effects.length,1);
+ const calls=[],scope={validationRequest:1,validationIssues:[{nodeId:'agent',field:'agent'}],definition:{steps:[{id:'script',kind:'script',source:'',cwdRef:'workspace'},{id:'agent',kind:'agent',target:{ref:'agent'}}]},bindings:{agents:{},directories:{workspace:'/qa'}},advancedSettingsNeedAttention:()=>false,setSelected:id=>calls.push(id),setEditorOpen:()=>{},onInvalidStep:()=>{},addButton:{current:null}};
+ const run=vm.runInNewContext(ts.transpile(effects[0],{target:ts.ScriptTarget.ES2022}),scope);run();assert.equal(calls.length,0,'The canonical issue effect owns the identified Agent; generic local guidance must not replace it');
+ scope.validationIssues=[];run();assert.deepEqual(calls,['script'],'Without canonical issues, local guidance still opens an incomplete Step');
+});
