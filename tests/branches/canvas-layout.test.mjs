@@ -49,6 +49,8 @@ test('declared loops and self-loops remain distinct labeled return routes outsid
  const d=graph([script('a'),script('b'),script('end')],[],[edge('down','a','b'),edge('finish','b','end'),edge('again','b','a','failure',{loop:true}),edge('self','a','a','failure',{loop:true})]);
  const layout=await layoutWorkflowCanvas(d,bindings);
  for(const id of ['again','self']){const e=layout.edges.find(e=>e.id===id);assert.equal(e.loop,true);assert.equal(e.label,'Return — Failure');assert.ok(e.sections.some(points=>points.length>2));assert.ok(layout.nodes.find(n=>n.id===e.source).ports.some(port=>port.id===e.sourcePort&&port.side==='EAST'));}
+ assert.ok(layout.nodes.find(n=>n.id==='a').y<layout.nodes.find(n=>n.id==='b').y,'Ordinary Success stays top to bottom despite cycle breaking');
+ assert.ok(layout.nodes.find(n=>n.id==='b').y<layout.nodes.find(n=>n.id==='end').y,'Forward chain retains its reading direction');
  assert.equal(d.edges.length,4);assertGeometry(layout);
 });
 

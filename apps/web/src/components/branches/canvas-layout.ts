@@ -99,7 +99,8 @@ export async function layoutWorkflowCanvas(definition:BranchDefinition,bindings:
   const side=edge.loop?'EAST':'SOUTH';
   source.ports!.push({id:edge.sourcePort,width:0,height:0,layoutOptions:{'elk.port.side':side}});
   target.ports!.push({id:edge.targetPort,width:0,height:0,layoutOptions:{'elk.port.side':edge.loop?'EAST':'NORTH'}});
-  elkEdges.push({id:edge.id,sources:[edge.sourcePort],targets:[edge.targetPort],labels:[{id:`canvas:label:${edge.id}`,text:edge.label,width:edge.labelBox.width+insertionGap+insertionSize,height:Math.max(edge.labelBox.height,insertionSize),layoutOptions:{'elk.edgeLabels.placement':'CENTER','elk.edgeLabels.inline':'false'}}]});
+  // Let ELK break declared return edges before ordinary top-to-bottom routes.
+  elkEdges.push({id:edge.id,sources:[edge.sourcePort],targets:[edge.targetPort],layoutOptions:{'elk.layered.priority.direction':edge.loop?'0':String(edges.length+1)},labels:[{id:`canvas:label:${edge.id}`,text:edge.label,width:edge.labelBox.width+insertionGap+insertionSize,height:Math.max(edge.labelBox.height,insertionSize),layoutOptions:{'elk.edgeLabels.placement':'CENTER','elk.edgeLabels.inline':'false'}}]});
  }
  const {default:ELK}=await import('elkjs/lib/elk.bundled.js');
  const elk=new ELK();
