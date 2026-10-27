@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
-import { AgentStore } from '@ponderosa/agents';
+import { AgentStore, publishManagedArtifactContentAsync } from '@ponderosa/agents';
 import { PONDEROSA_HISTORY_TOOL } from '@ponderosa/core';
 import { artifactIdsIntersectingTextRange } from '../../apps/server/dist/artifact-refs.js';
 import { historyArtifactReferences, readableArtifactReferences } from '../../apps/server/dist/communication-artifacts.js';
@@ -21,22 +21,26 @@ test('history keeps linked messages searchable and reads complete text with boun
     const agent = store.createAgent(project.id, { title: 'Reader', engine: 'codex', conversationId: chat.id });
     const ids = Array.from({ length: 120 }, (_, index) => `linked-file-${index}`);
     const body = 'Amber compass retained files 😀\n' + ids.map(id => `[Complete file ${id}](ponderosa://artifact/${id})`).join('\n') + '\nEND 東京';
+    await publishManagedArtifactContentAsync(root, project.id, 'primary-document', Buffer.from('Complete primary document'));
     const event = { schemaVersion: 2, eventId: randomUUID(), projectId: project.id, conversationId: chat.id,
       sender: { kind: 'user', userId: 'operator' }, intent: 'user_dm', audience: { kind: 'user_agent', userId: 'operator', agentId: agent.id },
       text: body, artifactIds: ['restricted-file'], createdAt: new Date().toISOString(),
-      document: { id: 'primary-document', artifactId: 'primary-document', title: 'Complete document', mediaType: 'text/markdown', byteLength: 123, createdAt: new Date().toISOString() } };
+      document: { id: 'primary-document', artifactId: 'primary-document', authorUserId: 'operator', title: 'Complete document', mediaType: 'text/markdown', byteLength: 25, createdAt: new Date().toISOString() } };
     store.appendCommunicationEvent(event);
     const token = 'owned-history-metadata-token', run = { runId: 'owned-run', executionId: 'owned-execution', messageCapability: token, conversationId: chat.id, controller: new AbortController() };
     const capability = { agentId: agent.id, runId: run.runId, conversationId: chat.id, historyRetrievalBoundary: store.communicationHistoryBoundary(project.id),
       historyRetrievalExcludedCommunicationEventIds: [], availableToolNames: [PONDEROSA_HISTORY_TOOL.name] };
     const resolved = [];
+    const managed = path.join(root, ...Array(8).fill('verified-managed-path'.repeat(4)));
+    await mkdir(managed, { recursive: true });
+    for (const id of ['primary-document', ...ids]) await writeFile(path.join(managed, id), 'Owned metadata fixture');
     // The established authorization/storage owners are controlled here; other
     // Files & Results checks qualify the real managed file bytes and hashes.
     store.getProjectArtifact = (owner, id) => owner === project.id ? { id, projectId: owner } : undefined;
     store.agentCanReadProjectArtifact = (owner, id, reader) => owner === project.id && reader === agent.id && id !== 'restricted-file';
     const assets = { pendingGeneratedArtifactImports: () => [], authoritativeManagedProjectArtifact: (owner, artifact) => {
       assert.equal(owner, project.id); assert.notEqual(artifact.id, 'restricted-file'); resolved.push(artifact.id);
-      return { localPath: path.join(root, ...Array(16).fill('verified-managed-path'.repeat(4)), artifact.id), byteLength: 123, contentHash: 'a'.repeat(64) };
+      return { localPath: path.join(managed, artifact.id), byteLength: 123, contentHash: 'a'.repeat(64) };
     } };
     registerAgentRuntimeToolRoutes(app, { store, assets, agentMessageCapabilities: new Map([[token, capability]]), activeRuns: new Map([[agent.id, run]]),
       deletingProjectIds: new Set(), deletingAgentIds: new Set(), deletingConversationIds: new Set(), capabilityOwnsAuthoritativeRun: (c, r) => c.runId === r?.runId });
@@ -63,7 +67,11 @@ test('history keeps linked messages searchable and reads complete text with boun
     } while (continuation);
     assert.equal(reconstructed, body); assert.equal(offset, [...body].length); assert.ok(omitted > 0);
     assert.throws(() => readableArtifactReferences({ projectId: project.id, agentId: agent.id, store, assets, artifactIds: ids }), /too many referenced artifacts/, 'Prompt resolver keeps its existing 100-file refusal');
-    assets.authoritativeManagedProjectArtifact = () => ({ localPath: '/' + 'oversized-primary-path'.repeat(500), byteLength: 123, contentHash: 'a'.repeat(64) });
+    // Exercise the response-budget owner separately from platform path limits.
+    const read = store.readCompactionHistory.bind(store);
+    store.readCompactionHistory = input => read({ ...input, readableArtifactReferences: () => ({ referencedFiles: [
+      { artifactId: 'primary-document', localPath: '/' + 'oversized-primary-metadata'.repeat(500), byteLength: 123, sha256: 'a'.repeat(64) },
+    ] }) });
     const oversized = await app.inject({ method: 'POST', url: '/api/agent-history', headers: { authorization: `Bearer ${token}` },
       payload: { action: 'read', communicationEventId: event.eventId, before: 0, after: 0 } });
     assert.equal(oversized.statusCode, 400); assert.match(oversized.json().error, /metadata exceeds the response budget/);
@@ -82,7 +90,13 @@ test('chunk reference ranges retain split links and exclude adjacent complete li
   assert.deepEqual(artifactIdsIntersectingTextRange(text, before.length, before.length + reference.length), ['a'.repeat(256)]);
 });
 
-test('historical descriptor budget stops blob validation after the first non-fitting supplemental file', () => {
+test('historical descriptor budget stops blob validation after the first non-fitting supplemental file', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'history-metadata-prefix-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let managed = root;
+  while (Buffer.byteLength(path.join(managed, 'longest-file-id')) < 960) managed = path.join(managed, 'owned-segment'.repeat(3));
+  await mkdir(managed, { recursive: true });
+  for (const id of ['primary-document', 'large-file-0', 'large-file-1']) await writeFile(path.join(managed, id), 'Owned descriptor');
   const ids = Array.from({ length: 120 }, (_, index) => `large-file-${index}`);
   const text = ids.map(id => `ponderosa://artifact/${id}`).join('\n');
   const content = Buffer.alloc(1024 * 1024, 65), validated = [];
@@ -92,7 +106,7 @@ test('historical descriptor budget stops blob validation after the first non-fit
     store: { getProjectArtifact: (_project, id) => ({ id }), agentCanReadProjectArtifact: () => true },
     assets: { authoritativeManagedProjectArtifact: (_project, artifact) => {
       validated.push(artifact.id); validatedBytes += content.length;
-      return { localPath: '/' + 'managed-segment/'.repeat(90) + artifact.id, byteLength: content.length,
+      return { localPath: path.join(managed, artifact.id), byteLength: content.length,
         contentHash: createHash('sha256').update(content).digest('hex') };
     } },
   });
