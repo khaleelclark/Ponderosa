@@ -34,7 +34,7 @@ const COLUMNS = "m.rowid, m.role, m.source_kind, m.source_sequence, m.source_cre
 
 /** BLOB windows preserve embedded NUL; SQLite TEXT substr/length do not. */
 export function decodeImportedUtf8Window(bytes: Buffer): string {
-  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   for (let end = bytes.length; end >= Math.max(0, bytes.length - 3); end--) {
     try { return decoder.decode(bytes.subarray(0, end)); } catch { /* incomplete final code point */ }
   }
