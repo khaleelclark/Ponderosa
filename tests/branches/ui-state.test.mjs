@@ -821,7 +821,7 @@ test('scoped header usage stays with the nested owner across outer remounts and 
  const declaration=name=>provider.body.statements.flatMap(node=>ts.isVariableStatement(node)?[...node.declarationList.declarations]:[]).find(node=>node.name.getText(ast)===name).initializer.getText(ast);
  const scope={useCallback:fn=>fn,outlets:[],setOutlets:update=>{scope.outlets=update(scope.outlets)}};
  const execute=value=>vm.runInNewContext(ts.transpile(value,{target:ts.ScriptTarget.ES2022}),scope);
- const register=execute(declaration('register')),active=()=>execute(declaration('activeOutlet'));
+ const register=execute(declaration('register')),active=()=>{scope.activeRegistration=execute(declaration('activeRegistration'));scope.activeOutlet=execute(declaration('activeOutlet'));return scope.activeOutlet;};
  const outer={},nested={},laterOuter={},peer={},deep={};
  const removeOuter=register(outer);assert.equal(active(),outer);
  const scopedProvider=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='PrimaryHeaderActionsScope'),scopedDeclaration=scopedProvider.body.statements.flatMap(node=>ts.isVariableStatement(node)?[...node.declarationList.declarations]:[]).find(node=>node.name.getText(ast)==='scopedRegister').initializer.getText(ast);scope.register=register;
@@ -830,6 +830,11 @@ test('scoped header usage stays with the nested owner across outer remounts and 
  const removeDeep=register(deep,2);assert.equal(active(),deep);removeDeep();assert.equal(active(),peer);
  removePeer();assert.equal(active(),nested);removeNested();assert.equal(active(),laterOuter,'Nested cleanup restores the latest outer owner');
  removeLater();assert.equal(active(),outer);removeOuter();assert.equal(active(),undefined,'The existing fallback can take over');
+ const compactTrigger=()=>null,removeCompact=scopedRegister(nested,0,compactTrigger);active();assert.equal(scope.activeRegistration.renderTrigger,compactTrigger,'The same scoped registration carries the existing usage renderer');removeCompact();
+ assert.ok(!source.includes('createPortal(notifications,'),'The shared usage owner no longer has a duplicate notification slot');
+ let feedback;function findFeedback(node){if(ts.isJsxExpression(node)&&node.expression?.getText(ast).includes('createPortal(workspaceStatus,'))feedback=node.expression.getText(ast);ts.forEachChild(node,findFeedback)}findFeedback(provider);scope.workspaceStatus='Connection/recovery notice';scope.fallbackOutlet=outer;scope.createPortal=(child,target)=>({child,target});active();assert.ok(execute(feedback),'Compact presentation retains connection and uncertain-creation recovery notices');
+
+
 });
 
 
@@ -986,8 +991,114 @@ test('unpublished dot has a focusable shared tooltip and disappears at every cle
  const props={name:'Workflow',tab:'workflow',published:true,dirty:true,executionCount:2,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){}};
  const dirty=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,props));
  assert.ok(/role="img"[^>]*tabindex="0"[^>]*aria-label="Unpublished changes"/.test(dirty));assert.ok(dirty.includes('Unpublished workflow changes. Use Save to review and publish, or Discard changes.'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Unpublished changes"'));assert.ok(dirty.indexOf('aria-label="Unpublished changes"')<dirty.indexOf('aria-label="Save changes…"'));
- const clean=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false}));assert.ok(!clean.includes('aria-label="Unpublished changes"'));assert.ok(!clean.includes('role="img"'));
- const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(!initial.includes('role="img"'));assert.ok(!initial.includes('Unpublished changes'));assert.ok(!initial.includes('Use Save to review and publish, or Discard changes.'));
+ const clean=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false}));assert.ok(!clean.includes('aria-label="Unpublished changes"'));assert.ok(!clean.includes('Unpublished workflow changes.'));
+ const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(!initial.includes('aria-label="Unpublished changes"'));assert.ok(!initial.includes('Unpublished changes'));assert.ok(!initial.includes('Use Save to review and publish, or Discard changes.'));
+});
+
+
+test('compact shared tabs keep canonical IDs, selection, disabled eligibility and names while omitting visible labels',async()=>{
+ const {WorkspaceTabBar}=await import('../../apps/web/src/components/WorkspaceFrame.tsx');const items=[{value:'workflow',label:'Workflow',icon:React.createElement('svg',{'data-icon':'workflow'})},{value:'chats',label:'Chats',icon:React.createElement('svg',{'data-icon':'chats'})},{value:'executions',label:'Executions',disabled:true,icon:React.createElement('svg',{'data-icon':'executions'})},{value:'settings',label:'Settings',icon:React.createElement('svg',{'data-icon':'settings'})}];
+ const render=value=>renderToStaticMarkup(React.createElement(WorkspaceTabBar,{compact:true,idPrefix:'branch',label:'Branch views',items,value,onChange(){}}));
+ const html=render('chats'),tabs=[...html.matchAll(/<button[^>]*role="tab"[^>]*>[\s\S]*?<\/button>/g)].map(m=>m[0]);assert.equal(tabs.length,4);assert.equal((html.match(/role="tablist"/g)??[]).length,1);
+ for(let i=0;i<items.length;i++){const item=items[i];assert.ok(tabs[i].includes(`id="branch-${item.value}-tab"`));assert.ok(tabs[i].includes(`aria-controls="branch-${item.value}-panel"`));assert.ok(tabs[i].includes(`aria-label="${item.label}"`));assert.ok(tabs[i].includes(`aria-selected="${item.value==='chats'}"`));assert.ok(tabs[i].includes(`data-icon="${item.value}"`));assert.ok(!tabs[i].includes(`>${item.label}<`),'Compact labels remain accessible instead of consuming row width')}
+ assert.ok(tabs[2].includes('disabled=""'));assert.ok(html.includes('<span aria-disabled="true"'),'Disabled tab keeps its tooltip event wrapper without becoming another focus stop');assert.equal((render(false).match(/aria-selected="true"/g)??[]).length,0,'Work-open false value must not falsely select Chat');
+});
+
+
+test('compact execution count preserves full meaning and uses Ponderosa’s shared circles for every state',async()=>{
+ const {SemanticStatusCircle,semanticStatusColorToken}=await import('../../apps/web/src/components/SemanticStatus.tsx');
+ const {SidebarActivityBadge}=await import('../../apps/web/src/components/SidebarActivityBadge.tsx');
+ const svg=html=>html.match(/<svg[^>]*viewBox="0 0 8 8"[\s\S]*?<\/svg>/)?.[0];
+ const reference=svg(renderToStaticMarkup(React.createElement(SidebarActivityBadge)));assert.ok(reference);
+ const base={name:'Workflow',tab:'workflow',published:true,dirty:false,saving:false,saveDisabled:true,onTab(){},onSave(){},onExport(){},onUpdate(){},onRename(){}};
+ for(const [props,label,visible] of [[{executionCount:0},'0 active executions','0'],[{executionCount:12},'12 active executions','12'],[{},'Executions loading…','…'],[{executionCount:12,executionsUnavailable:true},'Executions unavailable','!']]){
+  const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...base,...props}));
+  assert.ok(html.includes(`role="img" tabindex="0" aria-label="${label}"`));assert.ok(html.includes(`</span>${visible}</span>`),'The narrow status has a visible count or explicit unresolved/error symbol');assert.ok(html.includes(`aria-label="${label}"`));
+  const status=BranchWorkspaceHeader({...base,...props,dirty:true}).props.children.props.status;
+  const compact=status.props.children[1].props.children,executionCircle=compact.props.children[0],dirty=status.props.children[2].props.children;
+  assert.equal(executionCircle.props.children.type,SemanticStatusCircle,'Execution status reuses the actual shared renderer');assert.equal(dirty.props.children.type,SemanticStatusCircle,'Unpublished status reuses the actual shared renderer');
+  assert.equal(svg(renderToStaticMarkup(compact)),reference);assert.equal(svg(renderToStaticMarkup(dirty)),reference);
+  const kind=props.executionsUnavailable?'needs_attention':props.executionCount===undefined?'waiting':props.executionCount>0?'running':'idle';
+  for(const mode of ['light','dark'])assert.equal(executionCircle.props.sx({palette:{mode}}).color,semanticStatusColorToken(kind,mode));
+  assert.equal(dirty.props.sx.color,'warning.main');assert.equal(dirty.props.sx.display,'inline-flex');assert.equal(compact.props.tabIndex,0);assert.equal(dirty.props.tabIndex,0);
+ }
+});
+
+
+test('Chat menu actions receive the persistent menu button and ignore closed or detached anchors',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/ChatOverflowMenu.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('menu.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ let run;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='run')run=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(run);
+ const button={isConnected:true},calls=[],scope={anchor:button,close:()=>calls.push('closed')};const action=vm.runInNewContext(ts.transpile(run,{target:ts.ScriptTarget.ES2022}),scope);action(anchor=>calls.push(anchor));assert.deepEqual(calls,['closed',button],'Usage opens against the persistent icon button after closing the menu');
+ scope.anchor=null;action(()=>calls.push('unexpected'));scope.anchor={isConnected:false};action(()=>calls.push('unexpected'));assert.equal(calls.length,2,'An exiting/closed or disconnected owner cannot open a control');
+ let exportAction;function findExport(node){if(ts.isJsxAttribute(node)&&node.name.getText(ast)==='onClick'&&node.initializer&&ts.isJsxExpression(node.initializer)&&node.initializer.expression?.getText(ast).includes('const mainAnchor = exportMenu?.anchor'))exportAction=node.initializer.expression.getText(ast);ts.forEachChild(node,findExport)}findExport(ast);assert.ok(exportAction);
+ const exported=[];scope.exportMenu={kind:'copy',anchor:button};scope.setExportMenu=value=>{scope.exportMenu=value;exported.push('closed')};scope.action={onSelect:anchor=>exported.push(anchor)};const selectExport=vm.runInNewContext(ts.transpile(exportAction,{target:ts.ScriptTarget.ES2022}),scope);selectExport();assert.deepEqual(exported,['closed',button],'Export actions capture the same main button before clearing their submenu state');selectExport();scope.exportMenu={anchor:{isConnected:false}};selectExport();assert.equal(exported.length,2);
+
+});
+
+test('collapsed Chat reuses its actions and usage callback while audit-only menus remain read-only',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/ConversationView.parts.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('chat.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ let renderer;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='renderCollapsedMenu')renderer=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(renderer);
+ const calls=[],scope={React,Stack:()=>null,useCallback:fn=>fn,ChatOverflowMenu:()=>null,DataUsageOutlinedIcon:()=>null,LanguageIcon:()=>null,menuLabel:'Chat settings and actions',transcriptMarkdown:'kept transcript',transcriptTitle:'Chat',transcriptFileName:value=>value+'.md',auditOnly:false,chatActions:[{label:'Chat settings',onSelect(){}}],onOpenProjectBrowser:()=>calls.push('browser')};
+ scope.browserAction=React.createElement('button',{onClick:scope.onOpenProjectBrowser},'Browser');
+ const read=()=>vm.runInNewContext(ts.transpile(renderer,{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope),open=anchor=>calls.push(anchor),button={isConnected:true};let menu=read()(open).props.children[2];assert.deepEqual(Array.from(menu.props.actions,action=>action.label),['Chat settings','Provider usage','Browser']);menu.props.actions[1].onSelect(button);menu.props.actions[2].onSelect(button);assert.deepEqual(calls,[button,'browser']);assert.equal(menu.props.showExports,true);
+ const full=React.createElement('button',null,'Full usage'),wide=read()(open,full);assert.equal(wide.props.children[0],full);assert.equal(wide.props.children[1],scope.browserAction,'Wide collapsed and expanded Chat reuse the same Browser action');assert.deepEqual(Array.from(wide.props.children[2].props.actions,action=>action.label),['Chat settings'],'Roomy inline actions are not duplicated in the menu');
+ scope.auditOnly=true;menu=read()(open).props.children[2];assert.deepEqual(Array.from(menu.props.actions,action=>action.label),['Provider usage']);assert.equal(menu.props.showExports,false,'Execution inspection exposes neither Browser, mutation nor export actions');const readOnlyWide=read()(open,full);assert.equal(readOnlyWide.props.children[0],full);assert.equal(readOnlyWide.props.children[1],null);assert.equal(readOnlyWide.props.children[2],null,'Roomy read-only views do not expose an empty or mutating menu');
+});
+
+
+test('Branch notifications stay in the sidebar and drawer rather than the shared workspace header',async()=>{
+ const fs=await import('node:fs/promises'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/BranchesView.tsx',import.meta.url),'utf8');
+ const ast=ts.createSourceFile('branches.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),headers=[],sidebars=[];
+ function visit(node){if(ts.isJsxOpeningElement(node)||ts.isJsxSelfClosingElement(node)){const name=node.tagName.getText(ast);if(name==='PrimaryHeaderActionsProvider')headers.push(node);if(name==='BranchesSidebar')sidebars.push(node);}ts.forEachChild(node,visit)}visit(ast);
+ const attributes=node=>node.attributes.properties.filter(ts.isJsxAttribute).map(attribute=>attribute.name.getText(ast));
+ assert.equal(headers.length,1);assert.ok(!attributes(headers[0]).includes('notifications'),'No Branch header, including a nested Chat/Agent outlet, receives a notification entry');
+ assert.equal(sidebars.length,2);for(const sidebar of sidebars){const notification=sidebar.attributes.properties.find(attribute=>ts.isJsxAttribute(attribute)&&attribute.name.getText(ast)==='notifications');assert.ok(notification?.getText(ast).includes('BranchNotifications'),'Both navigation presentations keep the existing notification controller');}
+});
+
+test('Branch usage reuses its canonical menu and forwards the persistent usage anchor',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchWorkspaceHeader.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('branch.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ let renderer;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='renderMenu')renderer=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(renderer);
+ const calls=[],scope={React,Box:()=>null,useCallback:fn=>fn,ChatOverflowMenu:()=>null,DataUsageOutlined:()=>null,onRename:()=>calls.push('rename'),onDiscard:()=>calls.push('discard'),discardDisabled:true,onExport:mode=>calls.push(mode),onUpdate:()=>calls.push('update')};
+ const render=vm.runInNewContext(ts.transpile(renderer,{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope),open=anchor=>calls.push(anchor),menu=render(open).props.children[1],anchor={isConnected:true};
+ assert.equal(menu.props.label,'Branch actions');assert.equal(menu.props.showExports,false);assert.deepEqual(Array.from(menu.props.actions,item=>item.label),['Provider usage','Rename…','Discard changes','Export template','Export full','Apply package update…']);assert.equal(menu.props.actions[2].disabled,true);
+ for(const action of menu.props.actions)action.onSelect(anchor);assert.deepEqual(calls,[anchor,'rename','discard','template','full','update']);
+ const inactive=render().props.children[1];const full=React.createElement('button',null,'Full usage'),wide=render(open,full);assert.equal(wide.props.children[0],full);assert.deepEqual(Array.from(wide.props.children[1].props.actions,item=>item.label),['Rename…','Discard changes','Export template','Export full','Apply package update…']);assert.deepEqual(Array.from(inactive.props.actions,item=>item.label),['Rename…','Discard changes','Export template','Export full','Apply package update…'],'A nested usage owner cannot remove the retained Branch authoring menu');
+ const header=BranchWorkspaceHeader({name:'Workflow',tab:'workflow',published:true,dirty:false,saving:false,saveDisabled:false,onTab(){},onSave(){},onRename(){},onExport(){},onUpdate(){}}).props.children;
+ assert.equal(header.props.primaryActions.type.name,'BranchHeaderActions','Expanded and collapsed frames reuse the same owner outlet');
+});
+
+
+test('an open usage panel reanchors to the current header trigger and preserves panel selection',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/ProviderUsageCenter.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('usage.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ let effect;function find(node){if(ts.isCallExpression(node)&&node.expression.getText(ast)==='useEffect'&&node.arguments[0]?.getText(ast).includes('anchor.isConnected'))effect=node.arguments[0].getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(effect);
+ const next={isConnected:true},old={isConnected:true},calls=[],scope={anchor:old,portalTarget:{contains:()=>false},triggerRef:{current:{querySelector:()=>next}},restoreTriggerFocusRef:{current:false},setAnchor:value=>calls.push(value)};
+ const run=()=>vm.runInNewContext(ts.transpile(effect,{target:ts.ScriptTarget.ES2022}),scope)();run();assert.equal(calls[0],next);assert.equal(scope.restoreTriggerFocusRef.current,true);
+ scope.portalTarget.contains=()=>true;run();assert.equal(calls.length,1,'Connected current anchors and provider selection stay untouched');scope.anchor={isConnected:false};scope.triggerRef.current=null;run();assert.equal(calls[1],undefined,'Missing/disconnected replacement closes safely');
+ let settings;function findSettings(node){if(ts.isJsxAttribute(node)&&node.name.getText(ast)==='onOpenProviderSettings'&&node.initializer&&ts.isJsxExpression(node.initializer)&&node.initializer.expression?.getText(ast).includes('setAnchor(undefined)'))settings=node.initializer.expression.getText(ast);ts.forEachChild(node,findSettings)}findSettings(ast);assert.ok(settings);scope.onOpenProviderSettings=()=>calls.push('settings');scope.restoreTriggerFocusRef.current=true;vm.runInNewContext(ts.transpile(settings,{target:ts.ScriptTarget.ES2022}),scope)();assert.deepEqual(calls.slice(-2),[undefined,'settings'],'An explicit Settings action closes usage before navigating');assert.equal(scope.restoreTriggerFocusRef.current,false);
+
+});
+
+test('expanded Branch actions share the title row while ordinary frame defaults remain unchanged',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/WorkspaceFrame.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('frame.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ const frame=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='TabbedWorkspaceFrame');
+ const component=()=>null,scope={React,Box:component,Stack:component,Tooltip:component,IconButton:component,Typography:component,IconTitle:component,MobileNavigationButton:component,PrimaryHeaderActionsOutlet:component,CompactWorkspaceHeader:component,WorkspaceTabBar:component,KeyboardArrowUpIcon:component,KeyboardArrowDownIcon:component,useWorkspaceHeaderCollapse:()=>({collapsed:false,toggleCollapsed(){}}),useMediaQuery:()=>false,useRef:()=>({current:null}),useLayoutEffect(){},workspaceHeaderSurfaceSx:()=>({})};
+ const render=vm.runInNewContext(ts.transpile(`(${frame.getText(ast).replace(/^export /,'')})`,{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope);
+ const props={title:'Workflow',icon:React.createElement('svg'),primaryActions:React.createElement('button',null,'Owner menu'),tabs:{value:'workflow',items:[{value:'workflow',label:'Workflow'}]}};
+ const branch=render({...props,statusBeforePrimaryActions:true}),grid=branch.props.children[0].props.children;
+ assert.equal(grid.props.children[2].props.sx.gridRow.xs,1,'Actions cannot create another row above the tabs');assert.equal(grid.props.children[2].props.sx.flexWrap,'nowrap');assert.equal(grid.props.children[2].props.children[0],props.primaryActions);assert.equal(grid.props.children[3].props.children.props.sx.gridColumn.xs,4,'Collapse gets its own trailing column');assert.equal(grid.props.children[1].props.sx.overflow,'visible','Status and controls cannot be clipped to meet the row limit');
+ assert.equal(grid.props.children[1].props.children[0].props.children[0].props.children.type,scope.Typography,'A desktop Branch narrowed by its sidebar keeps title space instead of reserving another decorative icon');
+ const ordinary=render({...props,primaryActions:undefined}),ordinaryGrid=ordinary.props.children[0].props.children;
+ assert.equal(ordinaryGrid.props.children[2].props.sx.gridRow.xs,2);assert.equal(ordinaryGrid.props.children[1].props.sx.overflow,'hidden');
+ scope.useWorkspaceHeaderCollapse=()=>({collapsed:true,toggleCollapsed(){}});const collapsed=render({...props,statusBeforePrimaryActions:true});assert.equal(collapsed.props.primaryActions,props.primaryActions,'Collapsed and expanded Branch headers keep one usage destination contract');
+});
+
+
+test('inline header usage follows the actual active header width and cleans up its sole resize observer',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/ProviderUsageCenter.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('usage.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ let effect;function find(node){if(ts.isCallExpression(node)&&node.expression.getText(ast)==='useLayoutEffect'&&node.arguments[0]?.getText(ast).includes('new ResizeObserver(measure)'))effect=node.arguments[0].getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(effect);
+ let width=959,observe=0,disconnect=0,callback;const changes=[],header={getBoundingClientRect:()=>({width})},scope={customTrigger:true,portalTarget:{closest:selector=>{assert.equal(selector,'[data-workspace-header]');return header}},setRoomy:value=>changes.push(value),ResizeObserver:class{constructor(fn){callback=fn;}observe(element){assert.equal(element,header);observe++;}disconnect(){disconnect++;}}};
+ const run=()=>vm.runInNewContext(ts.transpile(effect,{target:ts.ScriptTarget.ES2022}),scope)();const cleanup=run();assert.equal(changes.at(-1),false);width=960;callback();assert.equal(changes.at(-1),true);width=320;callback();assert.equal(changes.at(-1),false,'A desktop narrowed by its sidebar must return to the menu');cleanup();assert.equal(observe,1);assert.equal(disconnect,1);
+ scope.customTrigger=false;run();assert.equal(observe,1,'Default owners do not gain an observer');scope.customTrigger=true;scope.ResizeObserver=undefined;run();assert.equal(changes.at(-1),false,'Without measurements the compact menu stays usable');scope.portalTarget=null;run();assert.equal(changes.at(-1),false);
 });
 
 // Exercise the real intervention fields, mutation and shared dialog shell.

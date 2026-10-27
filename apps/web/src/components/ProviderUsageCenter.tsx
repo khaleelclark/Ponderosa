@@ -23,7 +23,7 @@ import type {
   ProviderUsageWindow,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
@@ -269,13 +269,30 @@ export function ProviderQuotaIndicator({
 }: {
   preferredProvider?: string;
   mobile?: boolean;
-  renderTrigger?: (open: (element: HTMLElement) => void) => ReactNode;
+  renderTrigger?: (open: (element: HTMLElement) => void, fullTrigger?: ReactNode) => ReactNode;
   portalTarget?: Element | null;
   onOpenProviderSettings?: () => void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [anchor, setAnchor] = useState<HTMLElement>();
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const restoreTriggerFocusRef = useRef(false);
   const [selectedProvider, setSelectedProvider] = useState<string>();
+  const [roomy, setRoomy] = useState(false);
+  const customTrigger = renderTrigger !== undefined;
+  useLayoutEffect(() => {
+    const header = customTrigger ? portalTarget?.closest('[data-workspace-header]') : undefined;
+    if (!header || typeof ResizeObserver === "undefined") {
+      setRoomy(false);
+      return;
+    }
+    // ponytail: reserve title/tab/action space at 960px; remeasure this cutoff if the controls change.
+    const measure = () => setRoomy(header.getBoundingClientRect().width >= 960);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(header);
+    return () => observer.disconnect();
+  }, [portalTarget, customTrigger]);
   const query = useQuery({
     queryKey: queryKeys.providerUsage.all,
     queryFn: () => api.getProviderUsage(),
@@ -346,11 +363,29 @@ export function ProviderQuotaIndicator({
       !anchor.isConnected ||
       (portalTarget !== undefined && !portalTarget?.contains(anchor))
     ) {
-      setAnchor(undefined);
+      // The persistent usage panel follows its header outlet without resetting its selection.
+      const next = triggerRef.current?.querySelector<HTMLElement>('button, [role="button"]');
+      if (next?.isConnected) restoreTriggerFocusRef.current = true;
+      setAnchor(next?.isConnected ? next : undefined);
     }
-  }, [anchor, portalTarget]);
+  }, [anchor, portalTarget, mobile, renderTrigger, roomy]);
 
-  const trigger = renderTrigger ? renderTrigger(open) : mobile ? (
+  const fullTrigger = (
+    <Chip
+      size="small"
+      variant="outlined"
+      label={label}
+      icon={query.isLoading || constrained?.refreshing ? <CircularProgress size={13} /> : undefined}
+      aria-label={accessibleLabel}
+      onClick={(event) => open(event.currentTarget)}
+      sx={{
+        cursor: "pointer",
+        maxWidth: 170,
+        "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" },
+      }}
+    />
+  );
+  const trigger = renderTrigger ? renderTrigger(open, roomy ? fullTrigger : undefined) : mobile ? (
     <Tooltip title={label}>
       <IconButton
         aria-label={accessibleLabel}
@@ -372,29 +407,16 @@ export function ProviderQuotaIndicator({
         ) : null}
       </IconButton>
     </Tooltip>
-  ) : (
-    <Chip
-      size="small"
-      variant="outlined"
-      label={label}
-      icon={query.isLoading || constrained?.refreshing ? <CircularProgress size={13} /> : undefined}
-      aria-label={accessibleLabel}
-      onClick={(event) => open(event.currentTarget)}
-      sx={{
-        cursor: "pointer",
-        maxWidth: 170,
-        "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" },
-      }}
-    />
-  );
+  ) : fullTrigger;
 
+  const renderedTrigger = <Box ref={triggerRef} sx={{display:"flex",alignItems:"center"}}>{trigger}</Box>;
   return (
     <>
       {portalTarget === null
         ? null
         : portalTarget
-          ? createPortal(trigger, portalTarget)
-          : trigger}
+          ? createPortal(renderedTrigger, portalTarget)
+          : renderedTrigger}
       <Popover
         open={Boolean(anchor)}
         anchorEl={anchor}
@@ -402,6 +424,10 @@ export function ProviderQuotaIndicator({
         anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
         transformOrigin={{ vertical: "top", horizontal: "right" }}
         slotProps={{
+          transition: {onExited: () => {
+            if (restoreTriggerFocusRef.current) triggerRef.current?.querySelector<HTMLElement>('button, [role="button"]')?.focus();
+            restoreTriggerFocusRef.current = false;
+          }},
           paper: {
             sx: {
               width: "min(420px, calc(100vw - 24px))",
@@ -436,7 +462,11 @@ export function ProviderQuotaIndicator({
               state={selected}
               onRefresh={() => refresh(selected.provider)}
               onClose={() => setAnchor(undefined)}
-              onOpenProviderSettings={onOpenProviderSettings}
+              onOpenProviderSettings={onOpenProviderSettings ? () => {
+                restoreTriggerFocusRef.current = false;
+                setAnchor(undefined);
+                onOpenProviderSettings();
+              } : undefined}
               compact
               requestPending={load.isPending || (
                 refreshRequest.isPending &&
