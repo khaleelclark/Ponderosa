@@ -1,3 +1,4 @@
+import { DECISION_MAX_QUESTIONS, DECISION_QUESTION_MAX_CODE_POINTS } from "./decision-questions.js";
 import type { RuntimeDynamicToolSpec } from "./adapter.js";
 import { LONG_TEXT_MAX_UTF8_BYTES } from "./text-policy.js";
 
@@ -300,14 +301,20 @@ export const PONDEROSA_CREATE_MANAGED_AGENT_TOOL: RuntimeDynamicToolSpec = {
  * action; it does not pretend the host sandbox structurally forbids the work. */
 export const PONDEROSA_DECISION_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_decision",
-  description: "Ask the user one durable question with {question}. Ponderosa derives stable idempotency and defaults to an open text answer; providing options defaults to choice. Use mode:approval for permission. Every approval/choice includes a Something else path. Set blocking false when safe independent work remains. Descendant deletion or rearrangement requires a Decision unless the user enabled that exact Agent setting; detaching or promoting descendants remains a user action.",
+  description: "Ask the user one durable question with {question}, or one to three related text/choice questions with {questions:[{id,question,mode,options}]}. Submit approvals separately. Each prompt allows 10,000 Unicode code points; never split numbered prose in the browser. Ponderosa derives stable idempotency and defaults to an open text answer; providing options defaults to choice. Use mode:approval for permission. Every approval/choice includes a Something else path. Set blocking false when safe independent work remains. Descendant deletion or rearrangement requires a Decision unless the user enabled that exact Agent setting; detaching or promoting descendants remains a user action.",
   inputSchema: {
     type: "object", additionalProperties: false,
-    required: ["question"],
+    anyOf: [{ required: ["question"] }, { required: ["questions"] }],
     properties: {
       idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },
       mode: { type: "string", enum: ["approval", "choice", "text"] },
-      question: { type: "string", minLength: 1, maxLength: 1000 },
+      question: { type: "string", minLength: 1, maxLength: DECISION_QUESTION_MAX_CODE_POINTS },
+      questions: { type: "array", minItems: 1, maxItems: DECISION_MAX_QUESTIONS, items: { type: "object", additionalProperties: false, required: ["id", "question"], properties: {
+        id: { type: "string", minLength: 1, maxLength: 80, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]*$" },
+        question: { type: "string", minLength: 1, maxLength: DECISION_QUESTION_MAX_CODE_POINTS },
+        context: { type: "string" }, mode: { type: "string", enum: ["text", "choice"] },
+        options: { type: "array", minItems: 1, maxItems: 8, items: { type: "object", additionalProperties: false, required: ["id", "label"], properties: { id: { type: "string", minLength: 1, maxLength: 80 }, label: { type: "string", minLength: 1, maxLength: 120 }, description: { type: "string", maxLength: 400 } } } },
+      } } },
       context: { type: "string" },
       options: { type: "array", minItems: 1, maxItems: 8, items: { type: "object", additionalProperties: false, required: ["id", "label"], properties: { id: { type: "string", minLength: 1, maxLength: 80 }, label: { type: "string", minLength: 1, maxLength: 120 }, description: { type: "string", maxLength: 400 } } } },
       allowOther: { type: "boolean", description: "Defaults true and cannot be disabled for approval or choice." },

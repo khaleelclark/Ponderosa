@@ -609,8 +609,8 @@ export class AssetAuthority {
       `).all() as RuntimeAttachmentAssociation[];
     } catch (error) { throw this.mapped(error); }
   }
-  removeRuntimeCommunicationAssociations(communicationId: string): void {
-    try { this.db.prepare("DELETE FROM runtime_attachment_associations WHERE communication_id=?").run(communicationId); }
+  removeRuntimeCommunicationAssociations(communicationId: string, attachmentId: string): void {
+    try { this.db.prepare("DELETE FROM runtime_attachment_associations WHERE communication_id=? AND asset_id=?").run(communicationId, attachmentId); }
     catch (error) { throw this.mapped(error); }
   }
   runtimeAssociatedAssetIds(projectId: string, agentId: string): Set<string> {

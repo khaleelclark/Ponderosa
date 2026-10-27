@@ -2,9 +2,7 @@ import type {
   AgentDto,
   AgentHealthDto,
   AllChatSourceDto,
-  WorkspaceNotificationDto,
 } from "@ponderosa/core";
-import { notificationTechnicalFocusId } from "../technicalFocus.js";
 
 export const ALL_CHAT_REPLY_TARGET_KEY = "messages:composer:reply-target";
 export const ALL_CHAT_SOURCE_KEY = "messages:composer:source";
@@ -172,31 +170,6 @@ export function allChatRuntimeSelectionReady(
   initializedAgentId: string | undefined,
 ): boolean {
   return Boolean(selectedAgentId && selectedAgentId === initializedAgentId);
-}
-
-export function allChatAttentionRoute(
-  item: WorkspaceNotificationDto,
-) {
-  if (item.action?.kind === "open_settings") {
-    return { kind: "settings", section: "providers" } as const;
-  }
-  if (!item.projectId) return undefined;
-  const focusId = notificationTechnicalFocusId(item);
-  if (item.action?.kind === "open_agent" && item.action.targetId) {
-    return {
-      kind: "agent",
-      projectId: item.projectId,
-      agentId: item.action.targetId,
-      view: "technical",
-      ...(focusId ? { technicalFocusId: focusId } : {}),
-    } as const;
-  }
-  return {
-    kind: "projectWork",
-    projectId: item.projectId,
-    ...(item.conversationId ? { conversationId: item.conversationId } : {}),
-    ...(focusId ? { focusId } : {}),
-  } as const;
 }
 
 export function allChatSourceIdentity(

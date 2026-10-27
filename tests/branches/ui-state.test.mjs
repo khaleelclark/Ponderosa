@@ -190,6 +190,31 @@ test('provider-attention Settings link stays in Branches and retains its executi
  } finally {client.clear();}
 });
 
+
+test('both products share ordered accessible sidebar controls and preserve normal mobile messages',async()=>{
+ const React=await import('react'),{renderToStaticMarkup}=await import('react-dom/server');
+ const {ProjectRail}=await import('../../apps/web/src/components/ProjectNavigation.tsx');
+ const {BranchesSidebar}=await import('../../apps/web/src/components/branches/BranchesSidebar.tsx');
+ const {createPonderosaTheme}=await import('../../apps/web/src/theme.ts');
+ const {ThemeProvider}=await import('@mui/material');
+ const noop=()=>{},profile={displayName:'Operator',handle:'operator'};
+ for(const mode of ['light','dark'])for(const drawer of [false,true]){
+  const render=element=>renderToStaticMarkup(React.createElement(ThemeProvider,{theme:createPonderosaTheme(mode)},element));
+  const normal=render(React.createElement(ProjectRail,{drawer,route:{kind:'home'},profile,sections:{onSelect:noop},attentionNotifications:7,unreadNotificationUpdates:0,onOpenHome:noop,onOpenAllMessages:noop,onManageSection:noop,onOpenSearch:noop,onOpenNotifications:noop,onOpenSettings:noop,onCollapse:noop,onClose:noop}));
+  const branches=render(React.createElement(BranchesSidebar,{drawer,panel:null,notifications:React.createElement('button',{'aria-label':'Branches notifications, 7 unread'}),onHome:noop,onSearch:noop,onGlobal:noop,onDismiss:noop,onCollapsedChange:noop}));
+  for(const [html,home,search,bell]of [[normal,'Home','Search','Notifications, 7 unread'],[branches,'Ponderosa Branches home','Search Branch Chats','Branches notifications, 7 unread']]){
+   const end=drawer?'Close workspace navigation':'Collapse sidebar';
+   const labels=[home,search,bell,end].map(label=>html.indexOf('aria-label="'+label+'"'));
+   assert.ok(labels.every(i=>i>=0));assert.deepEqual([...labels].sort((a,b)=>a-b),labels);
+   assert.match(html,/width:32px;height:32px/);
+   assert.match(html,drawer?/data-testid="CloseIcon"/:/data-testid="MenuIcon"/);
+   assert.doesNotMatch(html,/data-testid="ChevronLeftIcon"/);
+  }
+  assert.match(normal,/aria-label="Home" aria-current="page"/);
+  assert.ok(normal.includes('aria-label="Messages across Ponderosa"'));
+ }
+});
+
 // Exercise the real intervention fields, mutation and shared dialog shell.
 // Controlled transport keeps this recovery check isolated from live work.
 async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}={}){

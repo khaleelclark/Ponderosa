@@ -544,8 +544,13 @@ export function registerServerLifecycle(
     const runtimeArtifacts = coordinationV3.runtimeArtifacts();
     if (artifactFilesystem.ok) {
       resolveOperationalNotification("startup:artifact-filesystem-capability");
-      const recoveredAssociations = await assets.recoverRuntimeCommunicationAssociations((communicationId, projectId) =>
-        coordinationV3.runtimeCommunication(communicationId)?.projectId === projectId);
+      const recoveredAssociations = await assets.recoverRuntimeCommunicationAssociations((communicationId, projectId, binding) => {
+        const decisionId = /^decision:([^:]+):response$/.exec(communicationId)?.[1];
+        if (!decisionId) return coordinationV3.runtimeCommunication(communicationId)?.projectId === projectId;
+        const decision = workspace.getDecision(decisionId);
+        return Boolean(decision?.status === "resolved" && decision.projectId === projectId && decision.agentId === binding.agentId &&
+          decision.response?.attachments?.some(file => file.id === binding.attachmentId && file.sha256 === binding.contentHash && file.size === binding.byteLength));
+      });
       if (recoveredAssociations.unavailable) {
         app.log.error({ recovery: recoveredAssociations }, "runtime Communication attachment recovery found unavailable immutable content");
       }

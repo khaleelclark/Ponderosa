@@ -8,6 +8,7 @@ import {
 } from "./coordination-v3-canonical-json.js";
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
+import type { CoordinationV3RuntimeAttachmentAuthority } from "./coordination-v3-runtime-attachment-authority.js";
 import { isIso } from "./coordination-v3-runtime-validation.js";
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import { taskOriginRunIds } from "./coordination-v3-task-lineage.js";
@@ -26,6 +27,7 @@ export class CoordinationV3CoordinateAuthority {
     private readonly sqlite: Database.Database,
     private readonly support: CoordinationV3StoreSupport,
     private readonly runtimeScopeAuthority: CoordinationV3RuntimeScopeAuthority,
+    private readonly runtimeAttachmentAuthority: CoordinationV3RuntimeAttachmentAuthority,
     private readonly requestRecoveryAuthority: CoordinationV3RequestRecoveryAuthority,
     private readonly createActivation: (input: CreateActivationV3Input) => string,
     private readonly insertQuestionSuspensions: (
@@ -542,6 +544,18 @@ export class CoordinationV3CoordinateAuthority {
     })();
   }
 
+  protectMessageAttachments(input: Pick<EnqueueMessageActivationInput, "projectId" | "agentId" | "messageId" | "payload">): unknown {
+    const prepared = this.runtimeAttachmentAuthority.bindRuntimeAttachments(input.projectId, input.payload, [input.agentId]);
+    if (!prepared.bindings.length) return prepared.payload;
+    return this.sqlite.transaction(() => {
+      this.support.requireProject(input.projectId);
+      this.support.requireAgent(input.projectId, input.agentId);
+      this.runtimeAttachmentAuthority.reserveRuntimeCommunication(input.messageId, prepared.bindings);
+      this.runtimeAttachmentAuthority.revalidateRuntimeAttachments(input.projectId, prepared.bindings);
+      return prepared.payload;
+    })();
+  }
+
   enqueueMessageActivation(input: EnqueueMessageActivationInput): string {
     const now = input.now ?? new Date().toISOString();
     return this.sqlite.transaction(() => {
@@ -589,7 +603,7 @@ export class CoordinationV3CoordinateAuthority {
                 : "ordinary"
           ),
         dedupeKey: `message:${input.messageId}`,
-        payload,
+        payload: this.protectMessageAttachments({ ...input, payload }),
         sourceKind: "message",
         sourceId: input.messageId,
         externalIntake: !input.bypassCapacity,

@@ -13,9 +13,10 @@ import { normalizedToolResult } from "./tool-result.js";
 //   {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"...",
 //        "content":"...","is_error":false}]}}
 //   {"type":"result","subtype":"success","is_error":false,"result":"...","usage":{...}}
-//   {"type":"rate_limit_event", ...}  (informational — ignored)
+//   {"type":"rate_limit_event", ...}  (allowed/warning remain informational)
 
 import {
+  providerResetAt,
   type AgentEvent,
   type FileChangeKind,
   type ProviderErrorCode,
@@ -52,6 +53,7 @@ interface RawClaudeEvent {
   is_error?: boolean;
   error?: string;
   errors?: string[];
+  rate_limit_info?: { status?: string; resetsAt?: unknown; rateLimitType?: string; overageStatus?: string; overageResetsAt?: unknown; isUsingOverage?: boolean };
   usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
 }
 
@@ -169,6 +171,18 @@ export function mapClaudeEvent(raw: unknown, ctx: CodexMapContext = {}): AgentEv
       return [{ type: "error", message: providerErrorMessage(code, detail), ...(code ? { code } : {}) }];
     }
 
+    case "rate_limit_event": {
+      const info = ev.rate_limit_info;
+      // Informational allowance/usage snapshots never reject work. A rejected
+      // base window with available extra usage is not a blocked request either.
+      if (info?.status !== "rejected" || info.overageStatus === "allowed" || info.overageStatus === "allowed_warning") return [];
+      const extraUsage = info.rateLimitType === "overage" || info.isUsingOverage === true;
+      const quotaResetAt = providerResetAt(extraUsage ? info.overageResetsAt : info.resetsAt);
+      const quotaLimit = extraUsage ? "extra_usage" as const : ({ five_hour: "five_hour", seven_day: "weekly", seven_day_opus: "weekly_model", seven_day_sonnet: "weekly_model", seven_day_overage_included: "weekly" } as Record<string, import("@ponderosa/core").ProviderQuotaLimit>)[info.rateLimitType ?? ""];
+      return [{ type: "error", code: "quota_exhausted", category: "quota_exhausted", message: "Provider usage limit reached.",
+        ...(quotaResetAt ? { quotaResetAt } : {}), ...(quotaLimit ? { quotaLimit } : {}) }];
+    }
+
     case "user":
       return mapUser(ev.message);
 
@@ -190,7 +204,7 @@ export function mapClaudeEvent(raw: unknown, ctx: CodexMapContext = {}): AgentEv
       return out;
     }
 
-    // rate_limit_event, stream_event (partials, not requested), etc. → nothing.
+    // stream_event (partials, not requested), etc. → nothing.
     default:
       return [];
   }

@@ -1,12 +1,17 @@
 import type { AgentEvent, ProviderErrorCode } from "./events.js";
 import type { EngineModelValidationError } from "./adapter.js";
 
+export const PROVIDER_QUOTA_LIMITS = ["five_hour", "weekly", "weekly_model", "extra_usage"] as const;
+export type ProviderQuotaLimit = typeof PROVIDER_QUOTA_LIMITS[number];
+
 export const MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS = 240;
 export const MAX_PROVIDER_FAILURE_CLASSIFICATION_CHARACTERS = 2_048;
 
 export const PROVIDER_FAILURE_CATEGORIES = [
   "authentication",
   "rate_limit",
+  "quota_exhausted",
+  "throttled",
   "capacity",
   "context_length",
   "invalid_request",
@@ -32,6 +37,8 @@ const ENGINE_MODEL_VALIDATION_ERRORS = new Set<EngineModelValidationError>([
   "model_not_found",
   "authentication",
   "rate_limit",
+  "quota_exhausted",
+  "throttled",
   "capacity",
   "context_length",
   "organization_policy",
@@ -53,6 +60,8 @@ export function normalizeEngineModelValidationError(
 export const PUBLIC_PROVIDER_FAILURE_MESSAGES = {
   authentication: "Provider authentication was rejected.",
   rate_limit: "Provider limited the request.",
+  quota_exhausted: "Provider usage limit reached.",
+  throttled: "Provider is temporarily limiting requests.",
   capacity: "Provider is temporarily at capacity.",
   context_length: "Provider context limit was reached.",
   invalid_request: "Provider rejected the request.",
@@ -63,6 +72,8 @@ export const PUBLIC_PROVIDER_FAILURE_MESSAGES = {
 export const PUBLIC_PROVIDER_FAILURE_REMEDIATIONS = {
   authentication: "Check the provider subscription and sign-in, then retry.",
   rate_limit: "Wait before retrying; check provider usage information for any reset time.",
+  quota_exhausted: "Check provider usage and the reported reset time, then explicitly retry if needed.",
+  throttled: "Wait for the scheduled retry or retry explicitly after automatic recovery stops.",
   capacity: "Retry when provider capacity is available.",
   context_length: "Start a new provider session or reduce the request context, then retry.",
   invalid_request: "Review the request settings, then retry.",
@@ -70,6 +81,8 @@ export const PUBLIC_PROVIDER_FAILURE_REMEDIATIONS = {
   unknown: "Review the restricted server logs, then retry the provider operation.",
 } as const satisfies Record<ProviderFailureCategory, string>;
 
+const PLAN_ENTITLEMENT_SUMMARY = "The provider subscription does not include access to this work.";
+const PLAN_ENTITLEMENT_REMEDIATION = "Check your provider subscription and model access, then recheck.";
 const ORGANIZATION_POLICY_SUMMARY = "Organization policy blocks provider access.";
 const ORGANIZATION_POLICY_REMEDIATION = "Ask your organization administrator to enable provider access, then recheck.";
 const CLIENT_UPGRADE_SUMMARY = "The provider CLI needs an update for the selected model.";
@@ -94,9 +107,11 @@ const STRUCTURED_PROVIDER_FAILURE_CODES = new Map<string, ProviderFailureCategor
   ["subscription_inactive", "authentication"],
   ["plan_entitlement", "authentication"],
   ["rate_limit", "rate_limit"],
-  ["usage_limit", "rate_limit"],
-  ["quota_exhausted", "rate_limit"],
+  ["usage_limit", "quota_exhausted"],
+  ["quota_exhausted", "quota_exhausted"],
+  ["usage_limit_reached", "quota_exhausted"],
   ["rate_limit_error", "rate_limit"],
+  ["throttled", "throttled"],
   ["capacity", "capacity"],
   ["overloaded_error", "capacity"],
   ["context", "context_length"],
@@ -127,6 +142,8 @@ const PUBLIC_PROVIDER_ERROR_CODES = new Set<ProviderErrorCode>([
   "model_not_found",
   "authentication_failed",
   "rate_limit",
+  "quota_exhausted",
+  "throttled",
   "capacity",
   "context_length",
   "organization_policy",
@@ -149,6 +166,8 @@ export function publicProviderFailureEvent(event: {
   terminalStatus?: Extract<AgentEvent, { type: "error" }>["terminalStatus"];
   httpStatusCode?: number;
   retryAfterMs?: number;
+  quotaResetAt?: string;
+  quotaLimit?: ProviderQuotaLimit;
 }): {
   type: "error";
   message: string;
@@ -158,6 +177,8 @@ export function publicProviderFailureEvent(event: {
   terminalStatus?: Extract<AgentEvent, { type: "error" }>["terminalStatus"];
   httpStatusCode?: number;
   retryAfterMs?: number;
+  quotaResetAt?: string;
+  quotaLimit?: ProviderQuotaLimit;
 } {
   const failure = publicProviderFailure({
     detail: event.message,
@@ -165,10 +186,13 @@ export function publicProviderFailureEvent(event: {
     code: event.code,
   });
   const code = publicProviderErrorCode(event.code);
+  const resetAt = failure.category === "quota_exhausted" ? providerResetAt(event.quotaResetAt) : undefined;
   return {
     type: "error",
     ...(code ? { code } : {}),
     message: failure.summary,
+    ...(resetAt ? { quotaResetAt: resetAt } : {}),
+    ...(failure.category === "quota_exhausted" && event.quotaLimit && PROVIDER_QUOTA_LIMITS.includes(event.quotaLimit) ? { quotaLimit: event.quotaLimit } : {}),
     category: failure.category,
     remediation: failure.remediation,
     ...(event.terminalStatus !== undefined ? { terminalStatus: event.terminalStatus } : {}),
@@ -190,6 +214,7 @@ function highConfidenceTextCategory(detail: string): ProviderFailureCategory {
   // Only the exact ASCII policy prefix is evidence; the CLI's Unicode suffix
   // is ignored and never included in a public message.
   if (organizationPolicyDetail(detail)) return "invalid_request";
+  if (detail === PLAN_ENTITLEMENT_SUMMARY) return "authentication";
   if (/[^\x09\x0a\x0d\x20-\x7e]/u.test(detail)) return "unknown";
   const value = detail.trim().toLowerCase();
   if (value === CLIENT_UPGRADE_SUMMARY.toLowerCase() || value === INVALID_MODEL_SUMMARY.toLowerCase()) return "invalid_request";
@@ -204,7 +229,9 @@ function highConfidenceTextCategory(detail: string): ProviderFailureCategory {
   if (/\b(?:subscription (?:expired|inactive)|oauth session expired|failed to authenticate|unauthori[sz]ed|authentication (?:failed|rejected|required)|not authenticated|sign[- ]?in required|invalid credentials?)\b/u.test(value)) {
     return "authentication";
   }
-  if (/\b(?:0 weighted tokens left|rate limit(?:ed)?|too many requests|usage limit (?:was )?reached|quota (?:exhausted|reached)|http 429)\b/u.test(value)) {
+  if (/\b(?:0 weighted tokens left|usage limit (?:was )?reached|quota (?:exhausted|reached)|you(?: have|'ve) hit your (?:usage )?limit)\b/u.test(value)) return "quota_exhausted";
+  if (/\b(?:temporary throttl(?:e|ing)|temporarily (?:throttl(?:ed|ing)|limiting requests))\b/u.test(value)) return "throttled";
+  if (/\b(?:rate limit(?:ed)?|too many requests|http 429)\b/u.test(value)) {
     return "rate_limit";
   }
   if (/\b(?:selected model is at capacity|provider is at capacity|service overloaded|resource exhausted)\b/u.test(value)) {
@@ -244,7 +271,9 @@ export function publicProviderFailure(input: {
     ?? highConfidenceTextCategory(input.detail ?? "");
   return {
     category,
-    ...(category === "invalid_request" && (input.code === "client_upgrade_required" || input.detail === CLIENT_UPGRADE_SUMMARY)
+    ...(category === "authentication" && (input.code === "plan_entitlement" || input.detail === PLAN_ENTITLEMENT_SUMMARY)
+      ? { summary: PLAN_ENTITLEMENT_SUMMARY, remediation: PLAN_ENTITLEMENT_REMEDIATION }
+      : category === "invalid_request" && (input.code === "client_upgrade_required" || input.detail === CLIENT_UPGRADE_SUMMARY)
       ? { summary: CLIENT_UPGRADE_SUMMARY, remediation: CLIENT_UPGRADE_REMEDIATION }
       : category === "invalid_request" && (input.code === "invalid_model" || input.code === "model_not_found" || input.detail === INVALID_MODEL_SUMMARY)
       ? { summary: INVALID_MODEL_SUMMARY, remediation: INVALID_MODEL_REMEDIATION }
@@ -255,6 +284,15 @@ export function publicProviderFailure(input: {
   };
 }
 
+/** Only structured provider timestamps; never parse reset times from prose or retry delays. */
+export function providerResetAt(value: unknown): string | undefined {
+  const iso = typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z$/u.test(value) ? value : undefined;
+  const timestamp = typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value * 1000 : iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(timestamp) || timestamp <= 0 || timestamp > 253402300799999) return undefined;
+  const normalized = new Date(timestamp).toISOString();
+  return iso && normalized.slice(0,19) !== iso.slice(0,19) ? undefined : normalized;
+}
+
 /** One bounded policy for delivery and required-reply recovery. The count
  * includes the just-ended attempt; an operator retry starts a new lineage. */
 export const MAX_PROVIDER_RECOVERY_ATTEMPTS = 6;
@@ -263,10 +301,16 @@ export function providerRecoveryDelay(
   attempts: number,
   retryable = true,
   retryAfterMs = 0,
+  quotaResetAt?: string,
+  now = Date.now(),
 ): number | null {
   if (!Number.isSafeInteger(attempts) || attempts < 0 || !retryable || attempts >= MAX_PROVIDER_RECOVERY_ATTEMPTS ||
       category === "authentication" || category === "invalid_request" || category === "context_length") return null;
-  const backoff = category === "rate_limit" || category === "capacity" || category === "unavailable"
+  if (category === "quota_exhausted") {
+    const reset = providerResetAt(quotaResetAt);
+    return reset && Date.parse(reset) > now ? Date.parse(reset) - now : null;
+  }
+  const backoff = category === "rate_limit" || category === "throttled" || category === "capacity" || category === "unavailable"
     ? Math.min(120_000, 2_000 * 2 ** Math.min(Math.max(0, attempts - 1), 6))
     : 1_000;
   const delay = Math.round(backoff * (1 + Math.random() * 0.2));

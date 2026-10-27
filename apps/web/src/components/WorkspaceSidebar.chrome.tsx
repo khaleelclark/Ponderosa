@@ -1,6 +1,6 @@
 import {ButtonBase,IconButton,Tooltip} from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
-import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
+import MenuIcon from '@mui/icons-material/Menu';
 import type {OperatorProfileDto} from '@ponderosa/core';
 import {OperatorAvatar} from './OperatorAvatar';
 import {useWorkspaceSidebarResize} from './useWorkspaceSidebarState';
@@ -124,10 +124,14 @@ export function SettingsSidebarPanel({
 }
 
 /** Product-neutral horizontal chrome; directory contents remain product-owned. */
-export function SidebarHeader({title='Ponderosa',drawer,onHome,onCollapse,actions}:{title?:string;drawer?:boolean;onHome():void;onCollapse?():void;actions?:ReactNode}):JSX.Element {
- return <Stack direction="row" alignItems="center" gap={.25} sx={{gridRow:1,p:.75,minWidth:0}}>
-  <ButtonBase aria-label={`${title} home`} onClick={onHome} sx={{flex:1,minWidth:0,justifyContent:'flex-start',gap:1,borderRadius:1,minHeight:36,px:.5}}><Box component="img" src="/icons/app-icon.png" alt="" sx={{width:28,height:28}}/><Typography noWrap sx={{fontSize:16,fontWeight:750}}>{title}</Typography></ButtonBase>
-  {onCollapse&&<Tooltip title={drawer?'Close navigation':'Collapse navigation'}><IconButton aria-label={drawer?'Close workspace navigation':'Collapse workspace navigation'} onClick={onCollapse}>{drawer?<CloseIcon/>:<ChevronLeftIcon/>}</IconButton></Tooltip>}{actions}
+export function SidebarHeader({title='Ponderosa',drawer=false,homeLabel=`${title} home`,selected=false,hideTitle=false,onHome,onCollapse,actions}:{title?:string;drawer?:boolean;homeLabel?:string;selected?:boolean;hideTitle?:boolean;onHome():void;onCollapse?():void;actions?:ReactNode}):JSX.Element {
+ return <Stack component="nav" aria-label="Workspace navigation" data-workspace-sidebar-header direction="row" alignItems="center" gap={.25} sx={{gridRow:1,px:1.25,py:.75,minWidth:0,borderBottom:1,borderColor:'divider','& > .MuiIconButton-root':{flexShrink:0}}}>
+  <ButtonBase aria-label={homeLabel} aria-current={selected?'page':undefined} onClick={onHome} sx={{flex:hideTitle?'0 0 44px':1,minWidth:0,minHeight:44,justifyContent:hideTitle?'center':'flex-start',gap:.75,borderRadius:1.5,px:.5,py:.25,bgcolor:selected?'action.selected':'transparent','&:hover':{bgcolor:'action.hover'}}}>
+   <Box component="img" src="/icons/app-icon.png" alt="" sx={{width:32,height:32,flex:'0 0 32px',borderRadius:1,objectFit:'cover'}}/>
+   {!hideTitle&&<Typography noWrap sx={{minWidth:0,fontSize:16,fontWeight:750}}>{title}</Typography>}
+  </ButtonBase>
+  {actions}
+  {onCollapse&&<Tooltip title={drawer?'Close navigation':'Collapse sidebar'}><IconButton aria-label={drawer?'Close workspace navigation':'Collapse sidebar'} onClick={onCollapse}>{drawer?<CloseIcon fontSize="small"/>:<MenuIcon/>}</IconButton></Tooltip>}
  </Stack>;
 }
 

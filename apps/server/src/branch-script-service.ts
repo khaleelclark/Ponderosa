@@ -5,7 +5,7 @@ import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import type { BranchStore, BranchScriptLease, AgentStore } from "@ponderosa/agents";
 import { branchScriptFailureSummary, normalizeCanonicalText, unicodeCodePointLength, INLINE_TEXT_MAX_CODE_POINTS, type RuntimeProcessHandle, type WorkspaceEvent, type ReadinessDto } from "@ponderosa/core";
-import { recoveredRuntimeProcessHandle, runtimeProcessHandle, spawnContainedCli } from "@ponderosa/engines";
+import { recoveredRuntimeProcessHandle, runtimeEnvironment, runtimeProcessHandle, spawnContainedCli } from "@ponderosa/engines";
 
 // No user code or input is present until the parent commits process authority.
 // EOF before authorization (including parent death) exits without running work.
@@ -88,7 +88,7 @@ export class BranchScriptService {
       const context = this.store.getChatContext(branch.chatId);
       if (branch.chatId && (!context || realpathSync(lease.cwd) !== realpathSync(context.hostPath))) throw new Error('Script directory is not the bound Chat working directory');
       if (process.platform !== 'darwin' && process.platform !== 'linux') throw new Error('Recoverable Branch Scripts currently require macOS or Linux');
-      const { child, authority } = spawnContainedCli({ bin: process.execPath, args: ['--input-type=module', '--eval', SCRIPT_BOOTSTRAP, '--', createHash('sha256').update(lease.source).digest('hex')], cwd: lease.cwd, env: { ...process.env, NODE_OPTIONS: undefined, PONDEROSA_PARAMETERS: JSON.stringify(lease.parameters) }, stdin: 'pipe', controlPipe: true });
+      const { child, authority } = spawnContainedCli({ bin: process.execPath, args: ['--input-type=module', '--eval', SCRIPT_BOOTSTRAP, '--', createHash('sha256').update(lease.source).digest('hex')], cwd: lease.cwd, env: runtimeEnvironment({ NODE_OPTIONS: undefined, PONDEROSA_PARAMETERS: JSON.stringify(lease.parameters) }), stdin: 'pipe', controlPipe: true });
       handle = runtimeProcessHandle(child, { label: `Branch Script ${lease.attemptId}`, termGraceMs: 1000, killConfirmationMs: 1000 }, authority);
       const control = child.stdio[3] as Writable;
       control.on('error', () => undefined);
