@@ -10,7 +10,6 @@ import type {BranchRoute} from '../../branchesRouting';
 import {engineAvailabilityPresentation} from '../../conversationEngine';
 import {branchHomeItems, useBranchHome} from '../../hooks/useBranchHome';
 import {HomeFirstItem, HomeItemCard, HomeLayout, HomeSection, HomeSummaryCard, homeItemsGridSx, homeSummaryGridSx} from '../HomeView.parts';
-import {PrimaryHeaderActionsProvider} from '../PrimaryHeaderActions';
 import type {SemanticStatusKind} from '../SemanticStatus';
 import {BranchNotifications} from './BranchNotifications';
 
@@ -22,9 +21,9 @@ const statusKinds: Record<BranchHomeExecutionDto['operational']['state'], Semant
  canceled:'idle', skipped:'idle', merged:'idle',
 };
 
-export function BranchHome({engines, enginesLoaded, enginesError, onRetryEngines, onNavigate, onCreate, onImport, creating, notificationAction}: {
+export function BranchHome({engines, enginesLoaded, enginesError, onRetryEngines, onNavigate, onCreate, onImport, creating}: {
  engines: EngineDto[]; enginesLoaded: boolean; enginesError?: string; onRetryEngines():void;
- onNavigate(route:BranchRoute):void; onCreate():void; onImport():void; creating:boolean; notificationAction?:JSX.Element;
+ onNavigate(route:BranchRoute):void; onCreate():void; onImport():void; creating:boolean;
 }):JSX.Element {
  const {data, active, outcomes}=useBranchHome();
  const working=useRef<HTMLDivElement>(null);
@@ -50,8 +49,7 @@ export function BranchHome({engines, enginesLoaded, enginesError, onRetryEngines
    {query.hasNextPage?<Button sx={{alignSelf:'flex-start'}} disabled={query.isFetchingNextPage} onClick={()=>void query.fetchNextPage({cancelRefetch:false})}>{query.isFetchingNextPage?'Loading…':query.isFetchNextPageError?'Retry next page':section==='activeExecutions'?'Load more active executions':'Load more outcomes'}</Button>:null}
   </Stack>;
  };
- return <PrimaryHeaderActionsProvider onOpenProviderSettings={()=>onNavigate({tab:'workflow',global:'providers'})} workspaceStatus={notificationAction}>
-  <BranchNotifications onNavigate={onNavigate}>{({openInbox,openNotification})=><HomeLayout fill context="Across your workflows" loading={loading} status={loading?'Loading Home summary':initialError?'Home summary unavailable':partialError?'Home summary could not be fully loaded':refreshError?'Home refresh failed. Last loaded results are still available.':'Home summary loaded'}>
+ return <BranchNotifications onNavigate={onNavigate}>{({openInbox,openNotification})=><HomeLayout fill context="Across your workflows" loading={loading} status={loading?'Loading Home summary':initialError?'Home summary unavailable':partialError?'Home summary could not be fully loaded':refreshError?'Home refresh failed. Last loaded results are still available.':'Home summary loaded'}>
    <Box sx={homeSummaryGridSx}>
     <HomeSummaryCard label="Active Executions" value={data?.activeExecutionCount??(initialError?'Unavailable':'Loading')} onClick={()=>{working.current?.scrollIntoView({block:'start'});working.current?.focus({preventScroll:true})}}/>
     <HomeSummaryCard label="Needs Attention" value={data?.openActionCount??(initialError?'Unavailable':'Loading')} onClick={openInbox}/>
@@ -69,6 +67,5 @@ export function BranchHome({engines, enginesLoaded, enginesError, onRetryEngines
    </HomeSection>
    <Box ref={working} tabIndex={-1} sx={{outline:'none'}}><HomeSection title="Working Now" description="Queued, running, and waiting executions across workflows.">{executionSection('activeExecutions')}</HomeSection></Box>
    <HomeSection title="Recent Outcomes" description="Recently finished workflow executions.">{executionSection('recentOutcomes')}</HomeSection>
-  </HomeLayout>}</BranchNotifications>
- </PrimaryHeaderActionsProvider>;
+  </HomeLayout>}</BranchNotifications>;
 }

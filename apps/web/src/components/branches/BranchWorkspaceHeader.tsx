@@ -1,0 +1,36 @@
+import AccountTreeOutlined from '@mui/icons-material/AccountTreeOutlined';
+import ChatBubbleOutline from '@mui/icons-material/ChatBubbleOutline';
+import PlayCircleOutline from '@mui/icons-material/PlayCircleOutline';
+import TuneOutlined from '@mui/icons-material/TuneOutlined';
+import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
+import SaveOutlined from '@mui/icons-material/SaveOutlined';
+import {Box,IconButton,Tooltip} from '@mui/material';
+import type {BranchTab} from '../../branchesRouting';
+import {TabbedWorkspaceFrame,WorkspaceTabBar} from '../WorkspaceFrame';
+import {ChatOverflowMenu} from '../ChatOverflowMenu';
+
+/** Branch actions adapt the shared workspace chrome; publication stays with its owner. */
+export function BranchWorkspaceHeader({name,tab,published,embeddedChat,dirty,saving,saveDisabled,onTab,onSave,onExport,onUpdate}:{
+ name:string;tab:BranchTab;published:boolean;embeddedChat:boolean;dirty:boolean;saving:boolean;saveDisabled:boolean;
+ onTab(tab:BranchTab):void;onSave():void;onExport(mode:'template'|'full'):void;onUpdate():void;
+}):JSX.Element{
+ const tabs={idPrefix:'branch',value:tab,label:'Branch views',onChange:onTab,items:[
+  {value:'workflow' as const,label:'Workflow',icon:<AccountTreeOutlined/>},
+  {value:'chats' as const,label:'Chats',icon:<ChatBubbleOutline/>},
+  {value:'executions' as const,label:'Executions',icon:<PlayCircleOutline/>,disabled:!published},
+  {value:'parameters' as const,label:'Parameters',icon:<TuneOutlined/>,disabled:!published},
+  {value:'settings' as const,label:'Settings',icon:<SettingsOutlined/>},
+ ]};
+ // A selected Chat/Agent supplies its own identity, usage and Browser controls.
+ if(embeddedChat)return <WorkspaceTabBar {...tabs}/>;
+ return <Box sx={{flexShrink:0,minWidth:0}}><TabbedWorkspaceFrame icon={<AccountTreeOutlined/>} title={name} compactMobile retainCollapsedActions
+  status={dirty?<Box component="span" aria-label="Unpublished changes" title="Unpublished changes" sx={{color:'warning.main'}}>●</Box>:undefined}
+  actions={<>
+   <Tooltip title="Save changes…"><span><IconButton aria-label="Save changes…" aria-description="Review changes before publishing" disabled={saveDisabled} aria-busy={saving||undefined} onClick={onSave}><SaveOutlined/></IconButton></span></Tooltip>
+   <ChatOverflowMenu label="Branch actions" showExports={false} transcriptMarkdown="" transcriptFileName="" actions={[
+    {label:'Export template',onSelect:()=>onExport('template')},
+    {label:'Export full',onSelect:()=>onExport('full')},
+    {label:'Apply package update…',onSelect:onUpdate},
+   ]}/>
+  </>} tabs={tabs}/></Box>;
+}
