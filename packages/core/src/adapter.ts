@@ -274,13 +274,16 @@ export interface RuntimeSession extends RuntimeProcessHandle {
   readonly engineAgentId: string;
   readonly events: AsyncIterable<AgentEvent>;
   /** Best-effort current context occupancy for this provider session.
-   * `usedTokens` counts everything occupying the provider's context window.
+   * `usedTokens` is the provider's current request checkpoint; an explicit
+   * false requestOutputIncluded marks a partial input-only observation.
    * `windowTokens` is present only when the provider reports it. */
   contextUsage?(): {
     usedTokens: number;
     windowTokens?: number;
     aggregateTokens?: number;
     providerSessionGeneration?: string;
+    /** True only when reported request-local output is included; false is an input-only checkpoint. */
+    requestOutputIncluded?: boolean;
   } | undefined;
   /** Provider rate-limit lines already available through this authenticated
    * runtime transport. Implementations must not add an out-of-band API call. */

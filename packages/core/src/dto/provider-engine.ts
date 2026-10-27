@@ -64,10 +64,14 @@ export interface ProviderInputSourceManifestV3 {
     inputCeilingTokens: number;
     windowTokens?: number;
     responseHeadroomTokens: number;
-    responseHeadroomBasis: "policy_low_water_margin" | "provider_window_margin";
+    responseHeadroomBasis: "policy_low_water_margin" | "provider_window_margin" | "handoff_remaining_window";
     occupancyBasis: "exact_session" | "unavailable" | "fresh_session";
     occupancyTokens: number;
+    /** Conservative estimate of subsequent durable output; old observations stay unchanged. */
+    postObservationUtf8Bytes: number;
     providerSessionGeneration?: string;
+    occupancyObservation?: { source: "live_session" | "accepted_run"; providerSessionId: string;
+      observedAt?: string; sampledAt?: string; executionId?: string; requestOutputIncluded?: boolean };
     submittedUtf8Bytes: number;
     systemPromptUtf8Bytes: number;
     toolDefinitionsUtf8Bytes: number;

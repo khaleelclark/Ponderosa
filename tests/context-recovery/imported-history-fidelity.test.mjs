@@ -188,7 +188,7 @@ test('imported archive retains >100k Unicode/control text and retrieves late fac
     } });
   };
   try {
-    const seed = f.store.getImportedHistoryMessagePage(f.agent.id, { limit: 1 });
+    const seed = f.store.getImportedHistoryMessagePage(f.agent.id, { limit: 1, maxTextUtf8Bytes: 24000 });
     assert.equal(seed.items.length, 1);
     assert.ok(Buffer.byteLength(seed.items[0].text) < 25000);
     search(f.store, f.agent.id, version, 'LATEFIDELITYWITNESS', 1);

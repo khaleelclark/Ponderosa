@@ -269,7 +269,7 @@ function exact(value: unknown, keys: readonly string[], budget: Budget): DataRec
 export function projectAgentEvent(value: unknown): AgentEvent {
   const budget = new Budget();
   const envelope = record(value, ["type", ...new Set([
-    "sessionId", "providerSessionId", "providerSessionGeneration", "usedTokens", "aggregateTokens", "windowTokens",
+    "sessionId", "providerSessionId", "providerSessionGeneration", "usedTokens", "aggregateTokens", "windowTokens", "requestOutputIncluded",
     "executionId", "rolloverId", "lowWaterMark", "seedPromptUtf8Bytes", "contextSections",
     "previousProviderSessionId", "replacementProviderSessionId", "startingOccupancy", "delta", "id", "name", "input",
     "output", "voiceReplyStreamId", "isError", "failureCategory", "retryable", "command", "cwd", "callId", "path", "kind", "diff", "passed", "summary", "status",
@@ -303,7 +303,8 @@ export function projectAgentEvent(value: unknown): AgentEvent {
       return { type, sessionId: identifier(row, "sessionId", budget, 2) };
     }
     case "context_usage": {
-      const row = exact(value, ["providerSessionId", "providerSessionGeneration", "usedTokens", "aggregateTokens", "windowTokens"], budget);
+      const row = exact(value, ["providerSessionId", "providerSessionGeneration", "usedTokens", "aggregateTokens", "windowTokens", "requestOutputIncluded"], budget);
+      const requestOutputIncluded = optionalBoolean(row, "requestOutputIncluded", budget, 2);
       const aggregateTokens = optionalInteger(row, "aggregateTokens", budget, 2);
       const windowTokens = optionalInteger(row, "windowTokens", budget, 2, 1);
       return {
@@ -313,6 +314,7 @@ export function projectAgentEvent(value: unknown): AgentEvent {
         usedTokens: integer(row, "usedTokens", budget, 2),
         ...(aggregateTokens === undefined ? {} : { aggregateTokens }),
         ...(windowTokens === undefined ? {} : { windowTokens }),
+        ...(requestOutputIncluded === undefined ? {} : { requestOutputIncluded }),
       };
     }
     case "context_rollover_seed_overflow": {

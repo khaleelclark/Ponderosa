@@ -67,6 +67,8 @@ export type AgentEvent =
       providerSessionGeneration: string;
       usedTokens: number;
       aggregateTokens?: number;
+      /** True only when reported request-local output is included; false is an input-only checkpoint. */
+      requestOutputIncluded?: boolean;
       windowTokens?: number;
     }
   | {

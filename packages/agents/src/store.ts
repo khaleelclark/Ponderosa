@@ -487,18 +487,20 @@ export class AgentStore extends AgentEventSessionFacade {
   } | undefined {
     const accepted = this.resumeSessionState(agentId);
     if (!accepted) return undefined;
-    const events = this.readEvents(agentId);
-    let boundaryExecutionId: string | undefined;
-    let rolloverId: string | undefined;
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const event = events[index]!.event;
-      if ((event.type === "session_snapshot" || event.type === "context_rollover_session_accepted") &&
-          event.sessionId === accepted.sessionId) {
-        boundaryExecutionId = event.executionId;
-        rolloverId = event.type === "context_rollover_session_accepted" ? event.rolloverId : undefined;
-        break;
-      }
-    }
+    // These are already verified canonical event projections. Read only the
+    // latest matching accepted snapshots, never the Agent's full output log.
+    const snapshots = ["session_snapshot", "context_rollover_session_accepted"].flatMap(type => {
+      const row = this.client.prepare(`
+        SELECT seq, payload_json FROM events
+        WHERE agent_id=? AND type=? AND json_extract(payload_json, '$.sessionId')=?
+        ORDER BY seq DESC LIMIT 1
+      `).get(agentId, type, accepted.sessionId) as { seq: number; payload_json: string } | undefined;
+      return row ? [{ seq: row.seq, event: JSON.parse(row.payload_json) as LogEvent }] : [];
+    }).sort((left, right) => right.seq - left.seq);
+    const snapshot = snapshots[0]?.event;
+    const boundaryExecutionId = snapshot && (snapshot.type === "session_snapshot" || snapshot.type === "context_rollover_session_accepted")
+      ? snapshot.executionId : undefined;
+    const rolloverId = snapshot?.type === "context_rollover_session_accepted" ? snapshot.rolloverId : undefined;
     if (!boundaryExecutionId) return undefined;
     const boundaryRun = this.client.prepare(`
       SELECT provider_session_id, prompt_injection_state FROM scheduler_runs
@@ -519,6 +521,53 @@ export class AgentStore extends AgentEventSessionFacade {
   acceptedProviderSessionInput(agentId: string): ProviderInputDto | undefined {
     const boundary = this.acceptedProviderSessionBoundary(agentId);
     return boundary ? this.getProviderInput(boundary.executionId, true) : undefined;
+  }
+
+  /** A closed native process does not erase a measured accepted generation.
+   * Reuse only the final observation inside its exact completed Run. Any newer
+   * uncertain injection/steering invalidates it instead of charging stale data. */
+  acceptedProviderSessionContextUsage(agentId: string): {
+    usage: Extract<LogEvent, { type: "context_usage" }>;
+    observedAt: string; executionId: string; postObservationUtf8Bytes: number;
+  } | undefined {
+    const boundary = this.acceptedProviderSessionBoundary(agentId);
+    if (!boundary) return undefined;
+    const run = this.client.prepare(`SELECT status, fencing_token FROM scheduler_runs
+      WHERE id=? AND agent_id=?`).get(boundary.executionId, agentId) as { status: string; fencing_token: number } | undefined;
+    if (run?.status !== "completed") return undefined;
+    const later = this.client.prepare(`SELECT 1 FROM scheduler_runs
+      WHERE agent_id=? AND (provider_session_id=? OR provider_session_id IS NULL) AND fencing_token>?
+        AND prompt_injection_state <> 'not_injected' LIMIT 1`
+    ).get(agentId, boundary.sessionId, run.fencing_token);
+    if (later) return undefined;
+    const range = (type: string, lifecycle = false) => this.client.prepare(`SELECT seq FROM events
+      WHERE agent_id=? AND type=? AND json_extract(payload_json, '$.executionId')=?
+        ${lifecycle ? "AND json_extract(payload_json, '$.status')='running'" : ""}
+      ORDER BY seq DESC LIMIT 1`).get(agentId, type, boundary.executionId) as {seq: number} | undefined;
+    const start = range("agent_lifecycle", true), terminal = range("turn_done");
+    if (!start || !terminal || terminal.seq <= start.seq) return undefined;
+    const row = this.client.prepare(`SELECT substr(payload_json,1,4096) AS payload_json,
+        length(CAST(payload_json AS BLOB)) AS bytes, created_at, seq
+      FROM events WHERE agent_id=? AND type='context_usage' AND seq>? AND seq<?
+      ORDER BY seq DESC LIMIT 1`).get(agentId, start.seq, terminal.seq) as {
+        payload_json: string; bytes: number; created_at: string; seq: number;
+      } | undefined;
+    if (!row || row.bytes > 4096) return undefined;
+    const usage = JSON.parse(row.payload_json) as Extract<LogEvent, {type: "context_usage"}>;
+    if (usage.type !== "context_usage" || usage.providerSessionId !== boundary.sessionId ||
+        usage.providerSessionGeneration !== boundary.sessionId) return undefined;
+    const steering = this.client.prepare(`SELECT 1 FROM scheduler_prompt_injections
+      WHERE run_id=? AND kind='steer' AND (state IN ('submitted','outcome_unknown')
+        OR (state='acknowledged' AND acknowledged_at>=?)) LIMIT 1`
+    ).get(boundary.executionId, row.created_at);
+    if (steering) return undefined;
+    const unmeteredWork = this.client.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq>? AND seq<?
+      AND type IN ('tool_call','tool_result','command','file_change') LIMIT 1`).get(agentId, row.seq, terminal.seq);
+    if (unmeteredWork) return undefined;
+    const tail = this.client.prepare(`SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) AS bytes
+      FROM events WHERE agent_id=? AND seq>? AND seq<? AND type IN ('text','reasoning')`
+    ).get(agentId, row.seq, terminal.seq) as {bytes: number};
+    return { usage, observedAt: row.created_at, executionId: boundary.executionId, postObservationUtf8Bytes: tail.bytes };
   }
 
   acceptedProviderSessionCommunicationEventIds(agentId: string): string[] | undefined {
