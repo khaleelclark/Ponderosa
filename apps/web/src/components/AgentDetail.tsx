@@ -162,7 +162,6 @@ export function AgentDetail({
   const [settingsEngine, setSettingsEngine] = useState("");
   const [settingsModel, setSettingsModel] = useState("");
   const [settingsEffort, setSettingsEffort] = useState("");
-  const [runtimeSettingsNotice, setRuntimeSettingsNotice] = useState<string>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
@@ -553,7 +552,6 @@ export function AgentDetail({
     settingsEffort,
     onRenameClosed: () => setRenameOpen(false),
     onOrganizationClosed: () => setOrganizationOpen(false),
-    onRuntimeSettingsNotice: setRuntimeSettingsNotice,
   });
 
   const loadOlderCombinedTimeline = useCallback(async () => {
@@ -867,7 +865,6 @@ export function AgentDetail({
       settingsModels={settingsModels}
       settingsEfforts={settingsEfforts}
       runtimeSettingsDirty={runtimeSettingsDirty}
-      runtimeSettingsNotice={runtimeSettingsNotice}
       runtimeSettingsPending={runtimeSaving}
       runtimeSettingsError={updateRuntimeSettings.error}
       recheckPending={recheckEngine.isPending}
@@ -883,7 +880,6 @@ export function AgentDetail({
       onSettingsEngine={setSettingsEngine}
       onSettingsModel={setSettingsModel}
       onSettingsEffort={setSettingsEffort}
-      onNotice={setRuntimeSettingsNotice}
       onSaveRuntimeSettings={() => updateRuntimeSettings.mutate(undefined)}
       onRecheckEngine={() => setRecheckEngineOpen(true)}
       onOpenMaster={onOpenMaster}

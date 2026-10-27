@@ -3,7 +3,6 @@ import type {
   AgentDto,
 } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useRef } from "react";
 import { runtimeMutationOptions } from "../hooks/useRuntimeControls";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
@@ -18,7 +17,6 @@ interface AgentDetailAdministrationInput {
   settingsEffort: string;
   onRenameClosed(): void;
   onOrganizationClosed(): void;
-  onRuntimeSettingsNotice(value?: string): void;
 }
 
 interface AgentRuntimeSettingsPatch {
@@ -36,12 +34,9 @@ export function useAgentDetailAdministration({
   settingsEffort,
   onRenameClosed,
   onOrganizationClosed,
-  onRuntimeSettingsNotice,
 }: AgentDetailAdministrationInput) {
   const queryClient = useQueryClient();
   const notify = useMutationNotification();
-  const currentAgentId = useRef(agentId);
-  currentAgentId.current = agentId;
   const rename = useMutation({
     mutationFn: (title: string) => api.updateAgent(agentId, { title }),
     onSuccess: updated => {
@@ -102,7 +97,7 @@ export function useAgentDetailAdministration({
         current =>
           current?.map(agent => (agent.id === updated.id ? updated : agent)),
       );
-      notify({ key: `agent-permissions:${agentId}`, message: "Agent permissions saved." });
+      notify({ key: `agent-permissions:${agentId}`, message: "Settings Saved" });
     },
   });
 
@@ -112,17 +107,7 @@ export function useAgentDetailAdministration({
       api.updateAgent(agentId, patch),
     onSuccess: (updated, variables) => {
       publishUpdatedAgent(queryClient, updated);
-      if (currentAgentId.current === variables.agentId) {
-        onRuntimeSettingsNotice(
-          variables.manual ? "Saved. These runtime settings apply when the next Run starts." : undefined,
-        );
-      }
-      if (variables.manual) notify({ key: `agent-runtime:${updated.id}`, message: "Agent defaults saved." });
-    },
-    onError: (_error, variables) => {
-      if (currentAgentId.current === variables.agentId) {
-        onRuntimeSettingsNotice(undefined);
-      }
+      if (variables.manual) notify({ key: `agent-runtime:${updated.id}`, message: "Settings Saved" });
     },
     onSettled: (_updated, _error, variables) => refreshAgentRuntime(queryClient, variables.agentId),
   });

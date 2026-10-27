@@ -142,23 +142,30 @@ test('reset owners resolve without overrides, save one complete tuple and skip u
   }
 });
 
-test('automatic runtime changes are quiet; explicit Settings Save keeps its confirmation', () => {
-  const mutations = [], notices = [], inline = [], exports = {};
+test('automatic runtime changes are quiet; explicit Settings saves share feedback without altering runtime updates', () => {
+  const mutations = [], notices = [], published = [], refreshed = [], exports = {};
   const imports = {
-    react: { useRef: value => ({ current: value }) },
     '@tanstack/react-query': { useMutation: options => { mutations.push(options); return options; }, useQueryClient: () => ({ setQueriesData() {} }) },
-    '../api': {}, '../conversationAgentCache': { publishUpdatedAgent() {} }, '../hooks/useRuntimeControls': { runtimeMutationOptions: () => ({}) },
+    '../api': {}, '../conversationAgentCache': { publishUpdatedAgent: (_client, agent) => published.push(agent.id), refreshAgentRuntime: (_client, id) => refreshed.push(id) }, '../hooks/useRuntimeControls': { runtimeMutationOptions: () => ({}) },
     '../queryKeys': { queryKeys: { agents: { detailPrefix: () => [], all: [] }, conversations: { detailAll: [] } } },
     './MutationNotifications': { useMutationNotification: () => notice => notices.push(notice) },
   };
   vm.runInNewContext(transpile(source('components/useAgentDetailAdministration.ts')), { exports, require: name => imports[name] });
-  exports.useAgentDetailAdministration({ agentId: 'a', onRuntimeSettingsNotice: value => inline.push(value) });
+  exports.useAgentDetailAdministration({ agentId: 'a' });
   const runtime = mutations.at(-1), updated = { id: 'a' }, context = { agentId: 'a' };
   runtime.onSuccess(updated, { agentId: 'a', manual: false }, context);
-  assert.deepEqual(notices, []); assert.deepEqual(inline, [undefined]);
+  assert.deepEqual(notices, []);
   runtime.onSuccess(updated, { agentId: 'a', manual: true }, context);
-  assert.equal(notices.length, 1); assert.match(inline.at(-1), /^Saved/);
-  runtime.onError(Error('save failed'), { agentId: 'a' }, context); assert.equal(inline.at(-1), undefined);
+  runtime.onSuccess(updated, { agentId: 'a', manual: true }, context);
+  assert.deepEqual(notices.map(notice => [notice.key, notice.message]), [
+    ['agent-runtime:a', 'Settings Saved'], ['agent-runtime:a', 'Settings Saved'],
+  ]);
+  assert.deepEqual(published, ['a', 'a', 'a'], 'Both quiet and manual saves update canonical projections');
+  runtime.onSettled(updated, null, { agentId: 'a' });
+  assert.deepEqual(refreshed, ['a'], 'Saved runtime state is still rechecked at its existing owner');
+  mutations[2].onSuccess(updated);
+  assert.equal(notices.at(-1).key, 'agent-permissions:a');
+  assert.equal(notices.at(-1).message, 'Settings Saved');
 });
 
 test('effort casing is presentation only and ordinary model rows omit subtext', t => {
@@ -270,7 +277,7 @@ function queueHarness() {
     '../hooks/useRuntimeControls': controls, '../conversationAgentCache': cache,
     './MutationNotifications': { useMutationNotification: () => () => {} },
   });
-  function agent(id) { index = 0; refIndex = 0; return admin.useAgentDetailAdministration({ agentId: id, settingsEngine: 'fixture', settingsModel: 'M0', settingsEffort: 'low', onRuntimeSettingsNotice() {} }).updateRuntimeSettings; }
+  function agent(id) { index = 0; refIndex = 0; return admin.useAgentDetailAdministration({ agentId: id, settingsEngine: 'fixture', settingsModel: 'M0', settingsEffort: 'low' }).updateRuntimeSettings; }
   function view(name, key, extra) {
     index = 8; const context = vm.createContext({ useMutation, api, queryClient: client, queryKeys: keys, ...cache, ...controls, ...extra });
     vm.runInContext(transpile('const ' + declaration('components/' + name + '.tsx', key) + '; exports.result = ' + key), Object.assign(context, { exports: {} }));
