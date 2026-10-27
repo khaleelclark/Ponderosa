@@ -275,11 +275,14 @@ test('preparing and unavailable imported archives stay distinct from a ready no-
   assert.equal(canonical.statusCode, 200); assert.ok(canonical.json().compactionBoundary);
 }));
 
-for (const engine of ['codex', 'claude']) test(`first ${engine} Run receives imported retrieval without rollover and keeps large archives outside its seed`, { timeout: 30000 }, t => {
+for (const product of ['dev', 'branches']) for (const engine of ['codex', 'claude']) test(`first ${product} ${engine} Run receives imported retrieval without rollover and keeps large archives outside its seed`, { timeout: 30000 }, t => {
   let store;
   return withFixture(t, async f => {
-    const chat = await f.createChat('Imported first Run ' + engine);
-    const agent = f.ok(await f.api('POST', `/api/projects/${chat.projectId}/agents`, { title: 'Imported reader', engine, conversationId: chat.id, idempotencyKey: randomUUID() }));
+    const prefix = product === 'branches' ? '/api/branches/engine' : '/api';
+    const branch = product === 'branches' ? f.ok(await f.api('POST', '/api/branches', { name: 'Imported first Run', idempotencyKey: randomUUID() })) : undefined;
+    const chat = branch ? f.ok(await f.api('POST', `/api/branches/${branch.id}/chats`, { label: 'Imported first Run ' + engine, defaultEngine: engine }, { 'idempotency-key': randomUUID() }))
+      : await f.createChat('Imported first Run ' + engine);
+    const agent = f.ok(await f.api('POST', `${prefix}/projects/${chat.projectId}/agents`, { title: 'Imported reader', engine, conversationId: chat.id, idempotencyKey: randomUUID() }));
     const history = [{ role: 'assistant', text: 'Ancient persimmon orchard OLD_IMPORT_OUTSIDE_SEED', createdAt: '2020-01-01T00:00:00.000Z' },
       ...Array.from({ length: 50 }, (_, i) => ({ role: 'assistant', text: 'Recent portable note ' + i, createdAt: `2021-01-${String(i % 28 + 1).padStart(2, '0')}T00:00:00.000Z` })),
       { role: 'assistant', text: '🌲'.repeat(100001) + ' LARGE_IMPORT_TRAILER', createdAt: '2022-01-01T00:00:00.000Z' }];
@@ -306,7 +309,12 @@ for (const engine of ['codex', 'claude']) test(`first ${engine} Run receives imp
       assert.equal((await session.tool(PONDEROSA_HISTORY_TOOL.name, { action: 'search', query: 'Ancient persimmon orchard' })).success, false);
       assert.equal((await session.tool('ponderosa_message', { text: 'Imported evidence retrieved safely' })).success, true);
     } }]);
-    await f.send(agent.id, 'Find the ancient persimmon decision'); await f.settled(agent.id);
+    f.ok(await f.api('POST', `${prefix}/agents/${agent.id}/messages`, { text: 'Find the ancient persimmon decision', idempotencyKey: randomUUID() }));
+    await until(async () => {
+      const detail = f.ok(await f.api('GET', `${prefix}/agents/${agent.id}`));
+      if (!detail.runs.length || detail.runs.some(run => ['running', 'preparing'].includes(run.status))) return false;
+      assert.equal(detail.runs.some(run => run.status === 'failed'), false, JSON.stringify(detail.runs)); return true;
+    }, 'first imported Run settles normally');
     assert.equal(retrieved, history[0].text);
     assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM context_rollovers WHERE agent_id=?').get(agent.id).n, 0);
   }, { diagnosticProvider: true, storeFactory: dataDir => store = new AgentStore(dataDir) });
