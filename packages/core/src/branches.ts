@@ -151,6 +151,17 @@ export interface BranchStepEvidenceDto {
   attempts: BranchAttemptDto[];
   sealedResult?: BranchSealedResultDto;
 }
+/** Focused current decisions and failed/uncertain attempts, independent of audit-history pages. */
+export type BranchExecutionActionDto =
+  | { kind: 'gate'; gate: BranchGateDto; step: BranchStepExecutionDto }
+  | { kind: 'attempt'; attempt: BranchAttemptDto; step: BranchStepExecutionDto; current: boolean };
+export interface BranchExecutionActionsDto {
+  executionId: string;
+  revision: number;
+  items: BranchExecutionActionDto[];
+  /** Execution/revision-bound continuation; older failure evidence remains explicitly paged. */
+  nextCursor?: string;
+}
 /** Read-only explanations projected from canonical workflow records. */
 export interface BranchWaitDto {
   kind:'execution_budget'|'child'|'disabled_branch'|'approval'|'retry'|'join'|'agent'|'capacity'|'cleanup'|'reconciliation'|'operation';
