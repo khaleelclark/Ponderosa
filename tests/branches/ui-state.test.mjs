@@ -282,6 +282,37 @@ test('same-workflow tabs retain only mounted local owners, while workflow/global
  for(const next of [{branchId:'foreign',tab:'workflow'},{branchId:'owner',tab:'workflow',global:'activity'},{tab:'workflow'}])assert.deepEqual(retainedBranchDrafts({branchId:'owner',tab:'parameters'},next).localKeys,[]);
 });
 
+// Exercise the actual asynchronous owner with controlled transport; no second restore implementation.
+async function versionActionFixture(){
+ const {readFile}=await import('node:fs/promises'),{createRequire}=await import('node:module'),vm=await import('node:vm');
+ const ts=createRequire(new URL('../../apps/web/package.json',import.meta.url))('typescript');
+ const source=await readFile(new URL('../../apps/web/src/components/BranchesView.tsx',import.meta.url),'utf8');
+ const handler=source.split('\n').find(line=>line.trim().startsWith('const versionDefinition='));assert.ok(handler,'Version action owner is available');
+ const errors=[],writes=[],requests=[];
+ const scope={dirty:false,selection:{current:1},versionRequest:{current:0},draftRevision:{current:'current-draft'},pendingAdvanced:{current:false},contexts:{data:[]},
+  setError:error=>errors.push(error),setDraft:update=>writes.push(update({bindings:{},definition:{name:'current'}})),setEditorKey(){},setTab(){},download(){},bindDefinitionDirectories:(_definition,bindings)=>bindings,
+  requestJson:async url=>{requests.push(url);return {definition:{name:'old'}}}};
+ const code=ts.transpileModule(handler.replace('const versionDefinition=','globalThis.action='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
+ vm.runInNewContext(code,scope);return {scope,errors,writes,requests};
+}
+
+test('definition restore refuses dirty edits, then an accepted retry retires the old refusal',async()=>{
+ const f=await versionActionFixture(),version={branchId:'owner',id:'old-version'};f.scope.dirty=true;
+ await f.scope.action(version,true);assert.equal(f.requests.length,0);assert.equal(f.writes.length,0);assert.ok(f.errors.at(-1).includes('Publish or discard'));
+ f.scope.dirty=false;await f.scope.action(version,true);
+ assert.equal(f.writes.length,1);assert.equal(f.writes[0].definition.name,'old');assert.equal(f.errors.at(-1),'','A successful retry must not retain a refusal that hides the unpublished reminder');
+});
+
+test('late definition failures cannot replace feedback for another owner or a newer request',async()=>{
+ for(const changed of ['selection','versionRequest']){
+  const f=await versionActionFixture();let reject;
+  f.scope.requestJson=()=>new Promise((_,fail)=>{reject=fail});
+  const pending=f.scope.action({branchId:'old-owner',id:'old-version'},true);
+  f.scope[changed].current++;f.scope.setError('Current owner feedback');reject(new Error('Old request failed'));await pending;
+  assert.equal(f.errors.at(-1),'Current owner feedback',`An outdated ${changed} must not publish its error`);assert.equal(f.writes.length,0);
+ }
+});
+
 // Exercise the real intervention fields, mutation and shared dialog shell.
 // Controlled transport keeps this recovery check isolated from live work.
 async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}={}){
