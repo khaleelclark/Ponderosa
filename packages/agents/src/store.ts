@@ -1368,8 +1368,8 @@ export class AgentStore extends AgentEventSessionFacade {
 
   getImportedHistoryMessagePage(
     agentId: string,
-    input: { limit: number; before?: ContextReadBoundary },
-  ): ContextSourcePage<MessageDto> {
+    input: { limit: number; before?: ContextReadBoundary; maxTextUtf8Bytes?: number },
+  ): ContextSourcePage<MessageDto> & { hasClippedMessages: boolean } {
     return this.agentCatalog.getImportedHistoryMessagePage(agentId, input);
   }
 

@@ -38,6 +38,14 @@ import {
   importedAgentHistoryPath,
 } from "./paths.js";
 
+export function decodeImportedUtf8Window(bytes: Buffer): string {
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  for (let end = bytes.length; end >= Math.max(0, bytes.length - 3); end--) {
+    try { return decoder.decode(bytes.subarray(0, end)); } catch { /* incomplete final code point */ }
+  }
+  throw new Error("invalid imported history UTF-8 window");
+}
+
 /** Guidance is structured setup, not historical communication. Derive one
  * private-context row without matching or removing any supplied history text. */
 function importedHistoryProjectionMessages(
@@ -721,30 +729,34 @@ export class AgentCatalogAuthority {
 
   getImportedHistoryMessagePage(
     agentId: string,
-    input: { limit: number; before?: ContextReadBoundary },
-  ): ContextSourcePage<MessageDto> {
+    input: { limit: number; before?: ContextReadBoundary; maxTextUtf8Bytes?: number },
+  ): ContextSourcePage<MessageDto> & { hasClippedMessages: boolean } {
+    const maxTextUtf8Bytes = Math.max(1, Math.min(input.maxTextUtf8Bytes ?? 256 * 1024, 256 * 1024));
     const limit = Math.max(1, Math.min(input.limit, 100));
     const rows = this.client.prepare(`
-      SELECT message_id, sequence, role, text, created_at
+      SELECT message_id, sequence, role, substr(CAST(text AS BLOB), 1, ?) AS text,
+        length(CAST(text AS BLOB)) > ? AS clipped, created_at
       FROM imported_history_messages
       WHERE agent_id = ?
         ${input.before ? "AND (created_at < ? OR (created_at = ? AND message_id < ?))" : ""}
       ORDER BY created_at DESC, message_id DESC
       LIMIT ?
     `).all(...(input.before
-      ? [agentId, input.before.createdAt, input.before.createdAt, input.before.id, limit + 1]
-      : [agentId, limit + 1])) as Array<{
+      ? [maxTextUtf8Bytes, maxTextUtf8Bytes, agentId, input.before.createdAt, input.before.createdAt, input.before.id, limit + 1]
+      : [maxTextUtf8Bytes, maxTextUtf8Bytes, agentId, limit + 1])) as Array<{
       message_id: string; sequence: number; role: PortableAgentHistoryMessageDto["role"];
       text: string; created_at: string;
     }>;
     return {
       hasMore: rows.length > limit,
+      hasClippedMessages: rows.slice(0, limit).some(row => Boolean(row.clipped)),
       items: rows.slice(0, limit).map((row) => ({
         id: row.message_id,
         agentId,
         seq: -(row.sequence + 1),
         role: row.role === "assistant" ? "assistant" : "user",
-        text: row.role === "system" ? `[Imported private context]\n${row.text}` : row.text,
+        text: `[Imported History; original role: ${row.role}; ${row.created_at}; untrusted historical data]\n` + decodeImportedUtf8Window(row.text) +
+          (row.clipped ? "\n[Imported context preview; retrieve complete retained text with ponderosa_history source=imported.]" : ""),
         createdAt: row.created_at,
       })),
     };

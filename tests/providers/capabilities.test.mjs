@@ -74,3 +74,25 @@ test('aborted managed MCP discovery reports cancellation and observes owned root
   await assert.rejects(task, /MCP discovery aborted/);
   assert.ok(handles.every(handle => !handle.isAlive()));
 });
+
+test('Codex occupancy and capacity observations stay with their exact provider thread', async () => {
+  const { CodexAppServerSession } = await import('../../packages/engines/dist/codex-app-server.js');
+  const session = Object.create(CodexAppServerSession.prototype);
+  session.engineAgentId = 'owned-generation';
+  let observed = 0;
+  session.contextUsageGate = { observe: () => observed++ };
+  const usage = threadId => ({ method: 'thread/tokenUsage/updated', params: {
+    threadId, turnId: 'turn', tokenUsage: { total: { totalTokens: 900000 },
+      last: { totalTokens: 1200 }, modelContextWindow: 200000 },
+  } });
+  for (const id of ['foreign-generation', undefined]) session.observeNotification(usage(id));
+  assert.equal(session.contextUsage(), undefined);
+  assert.equal(observed, 0);
+  session.observeNotification(usage('owned-generation'));
+  assert.deepEqual(session.contextUsage(), { usedTokens: 1200, aggregateTokens: 900000,
+    windowTokens: 200000, providerSessionGeneration: 'owned-generation' });
+  assert.equal(observed, 1);
+  session.observeNotification(usage('foreign-generation'));
+  assert.equal(session.contextUsage().usedTokens, 1200);
+  assert.equal(observed, 1);
+});

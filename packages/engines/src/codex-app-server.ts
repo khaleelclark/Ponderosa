@@ -676,9 +676,11 @@ export class CodexAppServerSession implements RuntimeSession {
   private observeNotification(notification: JsonRpcNotification): void {
     if (notification.method === "thread/tokenUsage/updated") {
       const params = notification.params as {
+        threadId?: unknown;
         tokenUsage?: { total?: unknown; last?: unknown; modelContextWindow?: unknown };
       } | undefined;
-      const usage = codexContextUsageSnapshot(params?.tokenUsage);
+      const usage = params?.threadId === this.engineAgentId
+        ? codexContextUsageSnapshot(params.tokenUsage) : undefined;
       if (usage) {
         this.latestContextUsage = usage;
         this.contextUsageGate.observe();
@@ -791,8 +793,8 @@ export class CodexAppServerSession implements RuntimeSession {
     yield { type: "session", sessionId: this.engineAgentId };
     for await (const notification of this.rpc.notifications) {
       if (notification.method === "thread/tokenUsage/updated") {
-        const params = notification.params as { turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown; modelContextWindow?: unknown } } | undefined;
-        if (typeof params?.turnId === "string") {
+        const params = notification.params as { threadId?: unknown; turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown; modelContextWindow?: unknown } } | undefined;
+        if (typeof params?.turnId === "string" && params.threadId === this.engineAgentId) {
           const total = mapCodexTokenUsage(params.tokenUsage?.total);
           const requestUsage = mapCodexTokenUsage(params.tokenUsage?.last);
           if (total || requestUsage) {

@@ -135,3 +135,31 @@ test('large first result cannot bypass verification of a later correlated result
   await assert.rejects(resolveCoordinationResultArtifacts(input), /correlated_artifact_unavailable/);
   assert.deepEqual(reads, ['result', 'second']);
 });
+
+
+test('complete input accounting distinguishes context policy, verified capacity and exact-session occupancy', async () => {
+  const { providerInputBudget, estimateProviderInput } = await import('../../apps/server/dist/context-rollover-pressure.js');
+  const policy = { contextRolloverTokens: 150000, contextRolloverWindowFraction: 0.7 };
+  const unknown = providerInputBudget(policy);
+  assert.equal(unknown.basis, 'context_policy'); assert.equal(unknown.windowTokens, undefined);
+  assert.equal(unknown.inputCeilingTokens, 90000);
+  assert.equal(unknown.responseHeadroomTokens, 60000);
+  assert.equal(unknown.responseHeadroomBasis, 'policy_low_water_margin');
+  const usage = { usedTokens: 1200, windowTokens: 200000, aggregateTokens: 900000, providerSessionGeneration: 'live' };
+  const exact = providerInputBudget(policy, usage, { resumeSessionId: 'live' });
+  assert.equal(exact.inputCeilingTokens, 140000); assert.equal(exact.responseHeadroomTokens, 60000);
+  assert.equal(exact.occupancyTokens, 1200); assert.equal(exact.occupancyBasis, 'exact_session');
+  const system = 'Required instructions 😀', tools = [{ name: 'fixture', description: 'Uncompressed schema \"' }], prompt = 'Current work 😀';
+  const fresh = estimateProviderInput(providerInputBudget(policy, usage), system, tools, prompt);
+  assert.equal(fresh.occupancyTokens, 0); assert.equal(fresh.occupancyBasis, 'fresh_session');
+  assert.equal(fresh.submittedUtf8Bytes, Buffer.byteLength(JSON.stringify({ systemPrompt: system, tools, input: prompt })));
+  const resumed = estimateProviderInput(exact, system, tools, prompt);
+  assert.equal(resumed.estimatedInputTokens, 1200 + Buffer.byteLength(JSON.stringify({ input: prompt })));
+  const stale = providerInputBudget(policy, usage, { resumeSessionId: 'discarded' });
+  assert.equal(stale.occupancyBasis, 'unavailable'); assert.equal(stale.occupancyTokens, 0);
+  assert.equal(estimateProviderInput(stale, system, tools, prompt).submittedUtf8Bytes, fresh.submittedUtf8Bytes);
+  const smallKnown = providerInputBudget(policy, { usedTokens: 0, windowTokens: 10000 });
+  assert.equal(smallKnown.inputCeilingTokens, 7000); assert.equal(smallKnown.responseHeadroomTokens, 3000);
+  const replacement = providerInputBudget(policy, usage, { replacementLowWaterMark: 50000 });
+  assert.equal(replacement.inputCeilingTokens, 49999);
+});

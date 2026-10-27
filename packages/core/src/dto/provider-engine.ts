@@ -54,6 +54,24 @@ export interface ProviderInputSourceManifestV3 {
     fullyIncludedCommunicationEventIds: string[];
     clippedCommunicationEventIds: string[];
     retrievalAvailable: boolean;
+    importedArchiveVersion?: string;
+  };
+  /** Frozen estimate for this exact packet; UTF-8 accounting is not tokenization.
+   * Policy headroom is conservative reserve, not observed model capacity. */
+  contextBudget?: {
+    estimator: "conservative_utf8_bytes";
+    basis: "context_policy" | "provider_window";
+    inputCeilingTokens: number;
+    windowTokens?: number;
+    responseHeadroomTokens: number;
+    responseHeadroomBasis: "policy_low_water_margin" | "provider_window_margin";
+    occupancyBasis: "exact_session" | "unavailable" | "fresh_session";
+    occupancyTokens: number;
+    providerSessionGeneration?: string;
+    submittedUtf8Bytes: number;
+    systemPromptUtf8Bytes: number;
+    toolDefinitionsUtf8Bytes: number;
+    estimatedInputTokens: number;
   };
   schemaVersion: 3;
   environmentFacts?: RuntimeEnvironmentFactsDto;

@@ -109,10 +109,6 @@ export {
   isProjectFileReferenceAllowed
 } from "./project-files.js";
 export {
-  boundedContinuationHistory,
-  boundedSeedHistory
-} from "./prompts.js";
-export {
   PROVIDER_TOOL_CONTRACT_HASH,
   providerSessionContractHash
 } from "./runtime-selection.js";
