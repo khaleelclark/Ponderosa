@@ -733,6 +733,78 @@ test('workflow directory status keeps availability, trigger intake and active wo
  const busy=render({activeExecutions:200});assert.ok(busy.includes('200 active executions'));assert.ok(busy.includes('99+'));assert.ok(!busy.includes('stable-id'),'Tooltip does not expose raw identifiers');
 });
 
+
+test('graph labels keep their full text above all connectors with a theme halo',async()=>{
+ const {BranchGraph}=await import('../../apps/web/src/components/branches/BranchGraph.tsx');
+ const long='A custom route '+ '界'.repeat(80);
+ const definition={name:'Labels',entry:'route',steps:[{id:'a',kind:'script',label:'First'},{id:'b',kind:'script',label:'Last'}],controls:[{id:'route',kind:'route',label:'Choose',otherwise:'b'}],edges:[{id:'one',from:'route',to:'a',on:'selected',choice:long},{id:'two',from:'a',to:'b',on:'success'},{id:'otherwise',from:'route',to:'b',on:'failure'},{id:'loop',from:'b',to:'route',on:'failure',loop:true},{id:'self',from:'a',to:'a',on:'failure',loop:true}]};
+ const html=renderToStaticMarkup(React.createElement(BranchGraph,{definition,onSelect(){}}));
+ const svg=html.slice(html.indexOf('<svg'),html.indexOf('</svg>'));
+ assert.ok(svg.includes(long),'Full custom choice is retained');
+ assert.ok(svg.lastIndexOf('<path')<svg.indexOf('<text'),'No connector can overpaint a label');
+ assert.equal((svg.match(/paint-order="stroke"/g)??[]).length,5);
+ assert.equal((svg.match(/stroke-width="8"/g)??[]).length,5);
+ assert.equal((svg.match(/d="M[^"]+ V[^"]+ H[^"]+ V[^"]+ V[^"]+ H[^"]+ V/g)??[]).length,2,'Explicit self and back loops use visible side gutters');
+ assert.ok(html.indexOf('</svg>')<html.indexOf('aria-label="Select First"'),'Cards remain above the connector/label layer');
+ assert.ok(html.includes('Workflow text description')&&html.includes('aria-pressed="false"'),'Accessible description and node controls remain');
+});
+
+test('native-sized graph labels clear cards and neighboring labels without truncation',async()=>{
+ const {placeGraphLabels}=await import('../../apps/web/src/components/branches/BranchGraph.tsx');
+ const nodes=[{x:142,y:30},{x:30,y:172},{x:254,y:172},{x:142,y:314}];
+ const labels=[{id:'left',x:170,y:136,width:50,height:20},{id:'right',x:180,y:136,width:1008,height:20},{id:'loop',x:200,y:200,width:108,height:20},{id:'converging',x:200,y:278,width:88,height:20},{id:'crossing',x:200,y:278,width:88,height:20}];
+ const placed=placeGraphLabels(labels,nodes,[143.5,285.5,427.5]);
+ const overlaps=(a,b)=>a.x<b.x+b.width&&a.x+a.width>b.x&&a.y<b.y+b.height&&a.y+a.height>b.y;
+ assert.deepEqual(placed.map(x=>[x.id,x.width,x.height]),labels.map(x=>[x.id,x.width,x.height]),'No text is shrunk or clipped');
+ for(let i=0;i<placed.length;i++){
+  assert.ok(!nodes.some(p=>overlaps(placed[i],{x:p.x-8,y:p.y-8,width:220,height:101})),'Label clears cards and arrowheads');
+  assert.ok(!placed.slice(0,i).some(other=>overlaps(placed[i],other)),'Labels do not overlap');
+ }
+});
+
+
+test('moving a graph label around another label rechecks node clearance',async()=>{
+ const {placeGraphLabels}=await import('../../apps/web/src/components/branches/BranchGraph.tsx');
+ const placed=placeGraphLabels([{id:'a',x:8,y:120,width:150,height:20},{id:'b',x:100,y:120,width:80,height:20}],[{x:200,y:100}],[250]);
+ const overlapsCard=p=>p.x<412&&p.x+p.width>192&&p.y<193&&p.y+p.height>92;
+ assert.ok(placed.every(p=>p.x>=8&&!overlapsCard(p)),'Labels stay within the scrolling canvas and clear nodes after horizontal shifts');
+});
+
+
+test('tall native graph ink gets a clear canvas fallback instead of reusing overlap',async()=>{
+ const {placeGraphLabels}=await import('../../apps/web/src/components/branches/BranchGraph.tsx');
+ const placed=placeGraphLabels([{id:'tall',x:90,y:60,width:80,height:100}],[{x:20,y:30}],[143.5]);
+ assert.equal(placed[0].height,100);assert.ok(placed[0].y>=30-8+101+8,'Full tall ink is below the card and remains inside the growing canvas');
+});
+
+
+test('graph label wrapping retains complete words and graphemes in native-width rows',async()=>{
+ const {wrapGraphLabel}=await import('../../apps/web/src/components/branches/BranchGraph.tsx');
+ const measure=value=>Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value)).length*10;
+ for(const text of ['W'.repeat(100),'界'.repeat(100),'A long custom choice with words that must remain readable across narrow graph views','👨‍👩‍👧‍👦'.repeat(6)+' é'.repeat(10)]){
+  const lines=wrapGraphLabel(text,measure);assert.equal(lines.join(''),text,'No authored label text is dropped');
+  assert.ok(lines.every(line=>measure(line)<=160),'Every line fits its native-width limit');
+  assert.ok(!lines.some(line=>line.startsWith('\u200d')||line.startsWith('\u0301')),'Grapheme clusters remain intact');
+ }
+});
+
+
+test('loop label gutters stay beyond the final forward labels and node bounds',async()=>{
+ const {placeGraphLabels,wrapGraphLabel}=await import('../../apps/web/src/components/branches/BranchGraph.tsx');
+ const labels=[{id:'a',x:38,y:127,width:168,height:90},{id:'b',x:38,y:127,width:168,height:90},{id:'otherwise',x:94.5,y:162,width:55,height:20},{id:'loop',x:280,y:162,width:41,height:20,loop:true}];
+ const placed=placeGraphLabels(labels,[{x:20,y:30},{x:20,y:229}],[172,371]),loop=placed.find(x=>x.id==='loop');
+ assert.ok(placed.filter(x=>!x.loop).every(x=>loop.x>=x.x+x.width+16),'Loop path and label share a dedicated clear gutter');
+ assert.deepEqual(wrapGraphLabel('',()=>0),[],'An empty authored choice has no stale text');
+});
+
+
+test('over-limit authoring labels stay complete without prefix measurement work',async()=>{
+ const {wrapGraphLabel}=await import('../../apps/web/src/components/branches/BranchGraph.tsx');
+ for(const text of ['W'.repeat(101),' '.repeat(101),'W'.repeat(100_000)]){let probes=0;assert.deepEqual(wrapGraphLabel(text,()=>{probes++;return 0}),[text]);assert.equal(probes,0);}
+ const decomposed='e\u0301'.repeat(100),lines=wrapGraphLabel(decomposed,value=>Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value)).length*10);
+ assert.equal(lines.join(''),decomposed);assert.ok(lines.length>1,'NFC-valid decomposed choices keep their normal editing and wrapping behavior');
+});
+
 // Exercise the real intervention fields, mutation and shared dialog shell.
 // Controlled transport keeps this recovery check isolated from live work.
 async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}={}){
