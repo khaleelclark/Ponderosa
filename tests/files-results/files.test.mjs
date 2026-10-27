@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import sharp from 'sharp';
-import { withFixture, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
+import { withFixture, until, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
 const exec = promisify(execFile);
 const upload = async (f, agent, name, bytes, media = 'text/plain') => f.ok(await f.api('POST', `/api/agents/${agent.id}/attachments`, bytes, { 'content-type': 'application/octet-stream', 'x-ponderosa-filename': name, 'x-ponderosa-media-type': media }));
@@ -202,3 +202,49 @@ test('Motion Photo upload retains accepted exact bytes and refuses an oversized 
   assert.equal(refused.status, 415);
   for (const [asset, body] of accepted) assert.deepEqual((await f.api('GET', asset.downloadUrl)).rawBody, body);
 }));
+
+
+// Exercise the URL returned by the real import tool; constructing a scoped URL
+// in the test would conceal a missing Branches response-prefix projection.
+test('imported download URLs preserve both product owners, authentication and captured checksums across reopen', options, t => withFixture(t, async f => {
+  const branch = f.ok(await f.api('POST', '/api/branches', { name: 'Scoped deliverables', idempotencyKey: randomUUID() }));
+  const downloads = [];
+  for (const product of ['dev', 'branches']) {
+    const base = product === 'branches' ? '/api/branches/engine' : '/api';
+    const otherBase = product === 'branches' ? '/api' : '/api/branches/engine';
+    const chats = [];
+    for (const name of ['Artifact owner', 'Foreign project']) chats.push(product === 'dev'
+      ? await f.createChat(name)
+      : f.ok(await f.api('POST', `/api/branches/${branch.id}/chats`, { label: name, defaultEngine: 'codex' }, { 'idempotency-key': randomUUID() })));
+    const [chat, foreign] = chats;
+    assert.notEqual(chat.projectId, foreign.projectId, 'The foreign-project check uses a distinct canonical project');
+    const agent = f.ok(await f.api('POST', `${base}/projects/${chat.projectId}/agents`, {
+      title: 'Deliverable author', engine: 'codex', conversationId: chat.id, idempotencyKey: randomUUID(),
+    }));
+    f.plans.set(agent.id, [{ hold: true }]);
+    f.ok(await f.api('POST', `${base}/agents/${agent.id}/messages`, { text: 'Capture controlled deliverable', idempotencyKey: randomUUID() }));
+    const session = await until(() => f.turns.some(turn => turn.agentId === agent.id) && f.sessions.get(agent.id), 'held artifact author');
+    const bytes = Buffer.from([0, 255, 128, 10, ...Buffer.from(`Owned ${product} café 🌲`)]), name = 'résultat 100%.bin';
+    const source = path.join(chat.workingDirectory, name);
+    await writeFile(source, bytes);
+    const { artifact } = f.ok(await f.tool(session, 'ponderosa_import_file', { path: name }));
+    const expected = `${base}/projects/${encodeURIComponent(chat.projectId)}/artifacts/${encodeURIComponent(artifact.id)}/download`;
+    assert.equal(artifact.downloadUrl, expected, `${product} returns its authorized route without client repair`);
+    assert.equal(artifact.sha256, createHash('sha256').update(bytes).digest('hex'));
+    await rm(source);
+    const response = await f.api('GET', artifact.downloadUrl); f.ok(response);
+    assert.deepEqual(response.rawBody, bytes);
+    assert.match(response.headers['content-disposition'], /^attachment/);
+    assert.equal((await f.api('GET', artifact.downloadUrl, undefined, { authorization: '' })).status, 401);
+    assert.equal((await f.api('GET', artifact.downloadUrl.replace(base, otherBase))).status, 404, 'A product URL cannot confer ownership');
+    assert.equal((await f.api('GET', `${base}/projects/${foreign.projectId}/artifacts/${encodeURIComponent(artifact.id)}/download`)).status, 404);
+    assert.equal((await f.api('GET', `${base}/projects/${chat.projectId}/artifacts/missing/download`)).status, 404);
+    downloads.push({ artifact, bytes });
+  }
+  await f.reopen();
+  for (const { artifact, bytes } of downloads) {
+    const response = await f.api('GET', artifact.downloadUrl); f.ok(response);
+    assert.deepEqual(response.rawBody, bytes);
+    assert.equal(createHash('sha256').update(response.rawBody).digest('hex'), artifact.sha256);
+  }
+}, { authToken: randomUUID() }));
