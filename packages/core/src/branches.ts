@@ -158,7 +158,11 @@ export type BranchExecutionActionDto =
 export interface BranchExecutionActionsDto {
   executionId: string;
   revision: number;
+  /** Canonical checkpoint/Request observation; decisions can change without a Run-state revision. */
+  generation: string;
   items: BranchExecutionActionDto[];
+  /** Attempt/Step text uses the ordinary bounded preview; full evidence remains explicit. */
+  largeEvidenceOmitted?: boolean;
   /** Execution/revision-bound continuation; older failure evidence remains explicitly paged. */
   nextCursor?: string;
 }
