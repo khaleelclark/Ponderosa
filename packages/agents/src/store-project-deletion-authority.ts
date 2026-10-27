@@ -293,6 +293,10 @@ export class AgentProjectDeletionAuthority {
         this.client.prepare(`DELETE FROM provider_inputs WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM messages WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
           .run(id);
+        this.client.prepare(`DELETE FROM imported_history_messages WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
+          .run(id);
+        this.client.prepare(`DELETE FROM imported_history_indexes WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
+          .run(id);
         this.client.prepare(`DELETE FROM agent_conversation_memberships WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
           .run(id);
         this.client.prepare(`DELETE FROM agent_presets WHERE project_id = ?`).run(id);

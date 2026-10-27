@@ -275,6 +275,29 @@ test('failed existing-archive indexing becomes unavailable and a restored versio
   assert.deepEqual(await readFile(f.pathname(f.agent.id)), original);
 }));
 
+for (const scope of ['Project', 'Chat']) test(`${scope} deletion erases private imported rows and cannot be undone by queued indexing`, { timeout: 20000 }, t => fixture(t, async f => {
+  f.store.setImportedHistory(f.agent.id, 'Disposable private archive', [{ role: 'user', text: 'DELETIONARCHIVEWITNESS' }]);
+  await ready(f.store, f.agent.id);
+  const rowIds = f.store.sqlite.prepare('SELECT rowid FROM imported_history_messages WHERE agent_id=?').all(f.agent.id).map(row => row.rowid);
+  f.store.rebuildProjections();
+  assert.equal(f.store.getImportedHistoryAvailability(f.agent.id).status, 'preparing');
+  if (scope === 'Project') assert.equal(f.store.deleteProject(f.project.id), true);
+  else {
+    assert.equal(f.store.deleteAgent(f.agent.id), true);
+    const receipt = f.store.commitConversationDeletion(f.chat.id);
+    assert.equal(receipt.canonicalDeletionCompleted, true);
+    f.store.finishConversationDeletionStorageCleanup(receipt);
+  }
+  await yieldToLoop(); await yieldToLoop();
+  assert.equal(f.store.getImportedHistoryAvailability(f.agent.id).status, 'unavailable');
+  for (const table of ['imported_history_messages', 'imported_history_indexes']) {
+    assert.equal(f.store.sqlite.prepare(`SELECT count(*) n FROM ${table} WHERE agent_id=?`).get(f.agent.id).n, 0);
+  }
+  for (const id of rowIds) assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM imported_history_fts WHERE rowid=?').get(id).n, 0);
+  f.reopen();
+  assert.equal(f.store.getImportedHistoryAvailability(f.agent.id).status, 'unavailable');
+}));
+
 test('constructor failure fences index jobs queued by recovery before a later startup barrier fails', { timeout: 20000 }, t => fixture(t, async f => {
   const agents = [f.agent, f.createAgent('Earlier queued archive'), f.createAgent('Another queued archive')];
   for (const agent of agents) f.store.setImportedHistory(agent.id, 'Queued startup archive', [{ role: 'assistant', text: 'STARTUPARCHIVEWITNESS' }]);
