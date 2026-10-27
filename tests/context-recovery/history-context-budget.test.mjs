@@ -25,8 +25,10 @@ function accepted(store, agentId) {
 const supplied = packet => `${packet.exactSystemPrompt ?? ''}\n${packet.exactPrompt}`;
 
 async function withBudgetFixture(t, work) {
-  let store; const pages = [];
-  await withFixture(t, f => work({ ...f, store, pages }), { storeFactory: root => {
+  let store; const pages = [], usage = new Map();
+  await withFixture(t, f => work({ ...f, store, pages, usage }), {
+    providerContextUsage: ({ agentId }) => usage.get(agentId) ?? { usedTokens: 1000, windowTokens: 200000 },
+    storeFactory: root => {
     store = new AgentStore(root);
     for (const name of ['getAgentPrivateContextSourcePage', 'getImportedHistoryMessagePage',
       'getOrganizationalConversationContextSourcePage', 'getOrganizationalConversationDeltaPage']) {
@@ -93,13 +95,13 @@ async function readAll(f, session, eventId) {
 
 test('unknown capacity uses explicit policy and one budget for complete instructions, tools, wrappers and history', fixtureTestOptions, t => withBudgetFixture(t, async f => {
   const instructions = `REQUIRED_BUDGET_INSTRUCTIONS_BEGIN\n${'Follow the documented local task rules. '.repeat(240)}REQUIRED_BUDGET_INSTRUCTIONS_END`;
-  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 75000, globalInstructions: instructions }));
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, globalInstructions: instructions }));
   const chat = await f.createChat('Shared outgoing budget'), agent = await f.createIdleAgent(chat, 'Complete input reader');
-  const notes = Array.from({ length: 70 }, (_, i) => authored(f.store, chat, agent, `COMPETING_HISTORY_${i} ${'ordinary evidence '.repeat(45)}`, i));
+  const notes = Array.from({ length: 70 }, (_, i) => authored(f.store, chat, agent, `COMPETING_HISTORY_${i} ${'ordinary evidence '.repeat(110)}`, i));
   const session = await f.hold(agent.id), packet = accepted(f.store, agent.id), value = budget(packet);
   assert.equal(value.basis, 'context_policy'); assert.equal(value.windowTokens, undefined, 'Do not invent a model window');
   assert.equal(value.occupancyBasis, 'fresh_session'); assert.equal(value.occupancyTokens, 0);
-  assert.ok(value.inputCeilingTokens + value.responseHeadroomTokens <= 75000);
+  assert.ok(value.inputCeilingTokens + value.responseHeadroomTokens <= 150000);
   assert.ok(packet.exactSystemPrompt.includes(instructions), 'Required instructions must remain whole');
   assert.equal(value.systemPromptUtf8Bytes, Buffer.byteLength(packet.exactSystemPrompt));
   assert.ok(value.toolDefinitionsUtf8Bytes > 1000, 'Uncompressed selected tool definitions must consume the same budget');
@@ -137,7 +139,7 @@ test('continuation budgets charge exact-generation occupancy, not aggregate traf
   const chat = await f.createChat('Exact session occupancy'), agent = await f.createIdleAgent(chat, 'Occupancy reader');
   let session = await f.hold(agent.id); const generation = session.engineAgentId;
   await finish(f, agent, session);
-  session.contextUsage = () => ({ usedTokens: 25000, aggregateTokens: 900000, windowTokens: 200000, providerSessionGeneration: generation });
+  f.usage.set(agent.id, { usedTokens: 25000, aggregateTokens: 900000, windowTokens: 200000, providerSessionGeneration: generation });
   session = await f.hold(agent.id); assert.equal(session.engineAgentId, generation);
   let value = budget(accepted(f.store, agent.id));
   assert.equal(value.basis, 'provider_window'); assert.equal(value.windowTokens, 200000);
@@ -145,7 +147,7 @@ test('continuation budgets charge exact-generation occupancy, not aggregate traf
   assert.equal(value.occupancyTokens, 25000, 'Aggregate provider traffic is not current occupancy');
   assert.ok(value.estimatedInputTokens < 900000);
   await finish(f, agent, session);
-  session.contextUsage = () => ({ usedTokens: 140000, aggregateTokens: 900000, windowTokens: 200000, providerSessionGeneration: 'foreign-generation' });
+  f.usage.set(agent.id, { usedTokens: 140000, aggregateTokens: 900000, windowTokens: 200000, providerSessionGeneration: 'foreign-generation' });
   session = await f.hold(agent.id); value = budget(accepted(f.store, agent.id));
   assert.equal(value.occupancyBasis, 'unavailable'); assert.equal(value.occupancyTokens, 0);
   assert.equal(value.providerSessionGeneration, undefined, 'Wrong-generation observations must not become accepted occupancy evidence');
@@ -159,9 +161,9 @@ test('fresh replacement ignores discarded occupancy and retrieves old submitted 
   let session = await f.hold(agent.id); const generation = session.engineAgentId, previous = accepted(f.store, agent.id), frozen = JSON.stringify(previous);
   assert.ok(previous.sourceManifest.historyContext.fullyIncludedCommunicationEventIds.includes(witness.eventId), 'Positive control: old session really received the complete witness');
   await finish(f, agent, session);
-  session.contextUsage = () => ({ usedTokens: 140000, aggregateTokens: 900000, windowTokens: 200000, providerSessionGeneration: generation });
-  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 75000, globalInstructions: `NEW_REPLACEMENT_RULES ${'Preserve the new required rules. '.repeat(240)}` }));
-  for (let i = 0; i < 70; i++) authored(f.store, chat, agent, `NEWER_REPLACEMENT_NOTE_${i} ${'recent detail '.repeat(40)}`, i + 1);
+  f.usage.set(agent.id, { usedTokens: 140000, aggregateTokens: 900000, windowTokens: 200000, providerSessionGeneration: generation });
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, globalInstructions: `NEW_REPLACEMENT_RULES ${'Preserve the new required rules. '.repeat(240)}` }));
+  for (let i = 0; i < 70; i++) authored(f.store, chat, agent, `NEWER_REPLACEMENT_NOTE_${i} ${'recent detail '.repeat(110)}`, i + 1);
   session = await f.hold(agent.id); assert.notEqual(session.engineAgentId, generation);
   const packet = accepted(f.store, agent.id), value = budget(packet);
   assert.equal(value.occupancyBasis, 'fresh_session'); assert.equal(value.occupancyTokens, 0);
@@ -184,7 +186,7 @@ function broadcast(store, chat, text) {
 }
 
 test('bounded continuation pages preserve FIFO cursor delivery without skipping or replaying pending Broadcasts', { ...fixtureTestOptions, timeout: 60000 }, t => withBudgetFixture(t, async f => {
-  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 75000, contextRolloverEnabled: false }));
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, contextRolloverEnabled: false }));
   const chat = await f.createChat('FIFO context continuation'), agent = await f.createIdleAgent(chat, 'Ordered reader');
   broadcast(f.store, chat, 'INITIAL_BROADCAST_CURSOR_ANCHOR');
   let session = await f.hold(agent.id); await finish(f, agent, session);
