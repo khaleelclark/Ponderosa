@@ -335,14 +335,19 @@ export async function prepareAgentRun(
       })
     ? candidateHistoryRetrievalBoundary
     : undefined;
-  // Provider tools are immutable for a persistent session. Expose history only
-  // when a fresh rollover generation owns a durable boundary; every later Run
-  // in that replacement session derives the same contract from its session ID.
+  // Imported private history is available independently of canonical rollover.
+  // Freeze the archive instance even while its rebuildable index is preparing;
+  // this never expands the canonical boundary or replays the archive as a seed.
+  const importedHistory = store.getImportedHistoryAvailability(agent.id);
+  const importedHistoryArchiveVersion = importedHistory.status !== "unavailable"
+    ? importedHistory.archiveVersion : undefined;
+  // Tools remain immutable for a persistent session; the existing contract hash
+  // retires a session when its authorized tool set changes.
   const capabilityPolicy=new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id,runId);
   const capabilityRestrictions=runtimeRestrictions(capabilityPolicy,runtimeEngineId);
   const availableRuntimeTools: RuntimeDynamicToolSpec[] = filterRuntimeToolsForCapabilities([
     ...providerDynamicTools(Boolean(opts.localMemory)),
-    ...(historyRetrievalBoundary ? [PONDEROSA_HISTORY_TOOL] : []),
+    ...(historyRetrievalBoundary || importedHistoryArchiveVersion ? [PONDEROSA_HISTORY_TOOL] : []),
   ],capabilityPolicy);
   const communicationPrompt = communicationV3SessionPrompt();
   const environmentFacts = await runtimeEnvironmentFacts({ cwd: workingCopy.rootPath, agentId: agent.id, allowedImportRoots: runContext.opts.allowedImportRoots });
@@ -1174,6 +1179,7 @@ ${freshGuidedPrompt}${attachmentContext}${freshBroadcastAttachmentContext}${coal
     capabilityRestrictions,
     availableRuntimeToolNames,
     historyRetrievalBoundary,
+    importedHistoryArchiveVersion,
     historyRetrievalFrozenExclusions,
     prompt: effectivePrompt,
     freshPrompt: effectiveFreshPrompt,

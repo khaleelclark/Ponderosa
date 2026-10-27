@@ -999,6 +999,7 @@ export function registerAgentMessageRunRoute(
         capabilityRestrictions,
         availableRuntimeToolNames,
         historyRetrievalBoundary,
+        importedHistoryArchiveVersion,
         historyRetrievalFrozenExclusions,
         prompt,
         freshPrompt,
@@ -1175,6 +1176,7 @@ export function registerAgentMessageRunRoute(
           ...freshProviderInputManifest.communicationEventIds,
         ])],
         ...(historyRetrievalBoundary ? { historyRetrievalBoundary } : {}),
+        ...(importedHistoryArchiveVersion ? { importedHistoryArchiveVersion } : {}),
         ...(sharedTaskTurn ? { plainSharedReply: true } : {}),
         ...(defaultReply ? { defaultReply } : {}),
         ...(Object.keys(recoveredRequiredReply.fingerprints).length

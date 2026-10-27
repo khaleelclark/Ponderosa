@@ -15,6 +15,7 @@ import {
   type BrowserSessionManager,
   type BrowserScope,
 } from "../browser-session-manager.js";
+import { activeChatResourceOwner } from "../branch-resource-owner.js";
 import { BrowserDriverActionError } from "../chrome-cdp-driver.js";
 import type { BrowserProfileAuthority } from "../browser-profile-authority.js";
 import type {
@@ -207,6 +208,9 @@ export function registerAgentRuntimeToolRoutes(
   app.post<{
     Body: {
       action?: unknown;
+      source?: unknown;
+      reference?: unknown;
+      continuation?: unknown;
       x?: unknown;
       y?: unknown;
       delta_x?: unknown;
@@ -224,14 +228,136 @@ export function registerAgentRuntimeToolRoutes(
     const active = capability ? activeRuns.get(capability.agentId) : undefined;
     const agent = capability ? store.getAgent(capability.agentId) : undefined;
     if (!capability || !active || !agent || !capabilityOwnsAuthoritativeRun(capability, active) ||
-        active.messageCapability !== token || !capability.historyRetrievalBoundary) {
-      return reply.code(401).send({ error: "history capability is not authorized for an active compacted run" });
+        active.messageCapability !== token) {
+      return reply.code(401).send({ error: "history capability is not authorized for an active run" });
     }
     if (!capability.availableToolNames?.includes(PONDEROSA_HISTORY_TOOL.name)) {
       return reply.code(403).send({ error: "History is not authorized by the server-issued tool set." });
     }
-    const historyBoundary = capability.historyRetrievalBoundary;
+    const requestedSource = request.body?.source;
+    if (requestedSource !== undefined && requestedSource !== "canonical" && requestedSource !== "imported") {
+      return reply.code(400).send({ error: "source must be canonical or imported" });
+    }
     const requestedAction = request.body?.action;
+    if (requestedSource === "imported") {
+      const archiveVersion = capability.importedHistoryArchiveVersion;
+      if (!archiveVersion) {
+        return reply.code(403).send({ error: "Imported history is not authorized by this Run’s archive grant." });
+      }
+      // Relationship hierarchy and request transport never grant archive access.
+      // Resolve the exact live Agent/Chat/product owner on every call, in addition
+      // to the authoritative scheduler Run/fence and selected-tool checks above.
+      const owner = activeChatResourceOwner(store, "agent", agent.id);
+      const chat = store.getConversation(agent.conversationId);
+      if (!owner || owner.projectId !== agent.projectId || !chat || chat.deletedAt ||
+          chat.projectId !== agent.projectId || active.conversationId !== agent.conversationId ||
+          capability.conversationId !== agent.conversationId || active.controller.signal.aborted ||
+          context.deletingProjectIds.has(agent.projectId) || context.deletingAgentIds.has(agent.id) ||
+          context.deletingConversationIds.has(agent.conversationId)) {
+        return reply.code(403).send({ error: "Imported history requires the exact live Agent, Chat and product owner." });
+      }
+      const action = requestedAction === "read" ? "read" as const : "search" as const;
+      const rawQuery = typeof request.body?.query === "string" ? request.body.query : "";
+      const rawReference = typeof request.body?.reference === "string" ? request.body.reference : "";
+      const rawContinuation = request.body?.continuation;
+      const appendAudit = (input: {
+        normalizedQuery?: string;
+        outcome: "results" | "no_match" | "rejected";
+        reason?: string;
+        eligibleMessages?: number;
+        matchedMessages?: number;
+        selected?: Array<{ reference: string; contentSha256: string; startCodePoint?: number; endCodePoint?: number }>;
+        responseUtf8Bytes?: number;
+        hasMore?: boolean;
+      }) => store.appendEvent(agent.id, {
+        type: "compaction_history_retrieval",
+        source: "imported",
+        executionId: active.executionId,
+        runId: active.runId,
+        archiveVersion,
+        action,
+        ...(action === "search" ? { query: rawQuery.trim().slice(0, 200), strategy: "lexical" as const } : {
+          reference: rawReference.slice(0, 2048),
+        }),
+        ...(input.normalizedQuery ? { normalizedQuery: input.normalizedQuery } : {}),
+        querySha256: createHash("sha256").update(action === "search" ? rawQuery.trim()
+          : `read:${rawReference}:${typeof rawContinuation === "string" ? rawContinuation : ""}`).digest("hex"),
+        outcome: input.outcome,
+        ...(input.reason ? { reason: input.reason } : {}),
+        scannedMessages: input.eligibleMessages ?? 0,
+        eligibleMessages: input.eligibleMessages ?? 0,
+        matchedMessages: input.matchedMessages ?? 0,
+        selected: input.selected ?? [],
+        responseUtf8Bytes: input.responseUtf8Bytes ?? 0,
+        hasMore: input.hasMore ?? false,
+        durationMs: Math.round((performance.now() - startedAt) * 1000) / 1000,
+      });
+      try {
+        const allowedKeys = new Set(["action", "source", "query", "reference", "continuation", "limit", "before", "after"]);
+        if (request.body && Object.keys(request.body).some(key => !allowedKeys.has(key))) {
+          throw new CompactionHistoryQueryError("imported history request contains an unsupported field");
+        }
+        if (requestedAction !== "search" && requestedAction !== "read") {
+          throw new CompactionHistoryQueryError("action must be search or read");
+        }
+        const availability = store.getImportedHistoryAvailability(agent.id);
+        if (availability.status === "unavailable" || availability.archiveVersion !== archiveVersion) {
+          const code = availability.status === "unavailable" ? "imported_history_unavailable" : "imported_history_version_changed";
+          appendAudit({ outcome: "rejected", reason: code });
+          return reply.code(409).send({ code, error: "Imported history archive is unavailable or changed since this Run was authorized." });
+        }
+        if (availability.status === "preparing") {
+          appendAudit({ outcome: "rejected", reason: "imported_history_index_preparing" });
+          return reply.code(503).send({ code: "imported_history_index_preparing", error: "Imported History: Index Preparing. Normal Agent work remains available; retry this retrieval later." });
+        }
+        if (action === "read") {
+          const { before, after } = request.body ?? {};
+          if (before !== undefined && (!Number.isSafeInteger(before) || Number(before) < 0 || Number(before) > 2) ||
+              after !== undefined && (!Number.isSafeInteger(after) || Number(after) < 0 || Number(after) > 2)) {
+            throw new CompactionHistoryQueryError("before and after must be integers from 0 to 2");
+          }
+          if (!rawReference || rawReference.length > 2048 ||
+              rawContinuation !== undefined && (typeof rawContinuation !== "string" || !rawContinuation || rawContinuation.length > 4096)) {
+            throw new CompactionHistoryQueryError("imported read requires a valid reference and optional continuation");
+          }
+          const { response, audit } = store.readImportedHistory({
+            agentId: agent.id, archiveVersion, reference: rawReference,
+            ...(typeof rawContinuation === "string" ? { continuation: rawContinuation } : {}),
+            ...(before !== undefined ? { before: Number(before) } : {}),
+            ...(after !== undefined ? { after: Number(after) } : {}),
+          });
+          appendAudit({ outcome: "results", eligibleMessages: audit.eligibleMessages,
+            matchedMessages: response.messages.length, selected: audit.selected,
+            responseUtf8Bytes: response.utf8Bytes, hasMore: response.messages.some(message => !message.complete) });
+          return response;
+        }
+        if (request.body?.reference !== undefined || rawContinuation !== undefined ||
+            request.body?.before !== undefined || request.body?.after !== undefined) {
+          throw new CompactionHistoryQueryError("imported search does not accept read fields");
+        }
+        const normalized = normalizeCompactionHistoryQuery(rawQuery);
+        const limit = request.body?.limit;
+        if (limit !== undefined && (!Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 8)) {
+          throw new CompactionHistoryQueryError("limit must be an integer from 1 to 8");
+        }
+        const { response, audit } = store.searchImportedHistory({
+          agentId: agent.id, archiveVersion, query: rawQuery,
+          ...(limit !== undefined ? { limit: Number(limit) } : {}),
+        });
+        appendAudit({ normalizedQuery: normalized.normalizedQuery, outcome: response.noMatch ? "no_match" : "results",
+          eligibleMessages: response.eligibleMessages, matchedMessages: response.hits.length,
+          selected: audit.selected, responseUtf8Bytes: response.utf8Bytes, hasMore: response.hasMore });
+        return response;
+      } catch (error) {
+        if (!(error instanceof CompactionHistoryQueryError)) throw error;
+        appendAudit({ outcome: "rejected", reason: error.message });
+        return reply.code(400).send({ error: error.message });
+      }
+    }
+    const historyBoundary = capability.historyRetrievalBoundary;
+    if (!historyBoundary) {
+      return reply.code(401).send({ error: "canonical history capability is not authorized for an active compacted run" });
+    }
     const action = requestedAction === "read" ? "read" as const : "search" as const;
     const rawQuery = typeof request.body?.query === "string" ? request.body.query : "";
     const rawCommunicationEventId = typeof request.body?.communicationEventId === "string"
@@ -280,7 +406,7 @@ export function registerAgentRuntimeToolRoutes(
       durationMs: Math.round((performance.now() - startedAt) * 1000) / 1000,
     });
     try {
-      const allowedKeys = new Set(["action", "query", "communicationEventId", "limit", "before", "after"]);
+      const allowedKeys = new Set(["action", "source", "query", "communicationEventId", "limit", "before", "after"]);
       if (request.body && Object.keys(request.body).some((key) => !allowedKeys.has(key))) {
         throw new CompactionHistoryQueryError("history request contains an unsupported field");
       }
