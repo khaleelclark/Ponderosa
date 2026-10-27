@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const proxy = fileURLToPath(new URL('../../apps/server/dist/operator-auth-proxy.js', import.meta.url));
+import {OPERATOR_IDENTITY_HEADER} from '../../apps/server/dist/security.js';
 const token = 'owned-proxy-fixture-token'.padEnd(40, 'x');
 const identity = 'operator@qualification.test';
 const headers = { host: 'qualification.test', 'tailscale-user-login': identity };
@@ -44,7 +45,8 @@ for (const [kind, signal] of [
     backendRequests++;
     incoming.on('error', () => {});
     assert.equal(incoming.headers.authorization, `Bearer ${token}`);
-    assert.equal(incoming.headers['tailscale-user-login'], identity);
+    assert.equal(incoming.headers[OPERATOR_IDENTITY_HEADER], identity);
+    assert.equal(incoming.headers['tailscale-user-login'], undefined);
     assert.equal(incoming.headers.host, 'qualification.test');
     assert.equal(incoming.headers['x-remove-me'], undefined);
     if (kind === 'completed HTTP/authentication controls') outgoing.end('exact completed response: café 東京');
@@ -58,7 +60,8 @@ for (const [kind, signal] of [
   backend.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
   backend.on('upgrade', (incoming, socket) => {
     assert.equal(incoming.headers.authorization, `Bearer ${token}`);
-    assert.equal(incoming.headers['tailscale-user-login'], identity);
+    assert.equal(incoming.headers[OPERATOR_IDENTITY_HEADER], identity);
+    assert.equal(incoming.headers['tailscale-user-login'], undefined);
     socket.resume();
     socket.once('end', () => socket.end());
     if (kind === 'established upgrade') socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n');
@@ -143,4 +146,17 @@ for (const [kind, signal] of [
     if (passed) await rm(root, { recursive: true, force: true });
     else t.diagnostic(`Failed owned proxy fixture retained: ${root}`);
   }
+});
+
+import Fastify from 'fastify';
+import {registerRequestSecurityHooks} from '../../apps/server/dist/server-request-hooks.js';
+for(const allowlist of [[],['verified@fixture.test']])test(`authenticated rate buckets ignore unvalidated rotated claims; allowlist=${allowlist.length}`,async t=>{
+ const app=Fastify();t.after(()=>app.close());
+ registerRequestSecurityHooks(app,{opts:{authToken:token,operatorIdentities:allowlist,networkSecurity:{mode:'reverse_proxy',bindHost:'127.0.0.1'},requestLimits:{maxRequestsPerMinute:2,maxInflight:2}},v3DispatchKey:'private-dispatch',agentMessageCapabilities:new Map(),deletingAgentIds:new Set(),validLauncherSession:()=>false,artifactFilesystemError:()=>undefined,isArtifactDependentWorkIntake:()=>false,isPublicWebAssetRequest:()=>false});
+ app.get('/api/owned',async()=>({ok:true}));
+ for(let i=0;i<4;i++){
+  const r=await app.inject({url:'/api/owned',headers:{host:'localhost',authorization:'Bearer '+token,'tailscale-user-login':'rotation-'+i,[OPERATOR_IDENTITY_HEADER]:allowlist[0]??'unvalidated-'+i}});
+  assert.equal(r.statusCode,i<2?200:429,r.body);
+ }
+ if(allowlist.length){const r=await app.inject({url:'/api/owned',headers:{host:'localhost',authorization:'Bearer '+token,[OPERATOR_IDENTITY_HEADER]:'intruder@fixture.test'}});assert.equal(r.statusCode,401);}
 });

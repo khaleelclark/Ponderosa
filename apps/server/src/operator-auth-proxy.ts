@@ -1,3 +1,4 @@
+import { OPERATOR_IDENTITY_HEADER } from "./security.js";
 import { createServer, request as httpRequest, type IncomingHttpHeaders, type Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { existsSync, lstatSync, mkdirSync, chmodSync, statSync, unlinkSync } from "@ponderosa/native-host/fs";
@@ -30,7 +31,7 @@ const hopByHop = new Set([
 ]);
 
 function forwardedHeaders(headers: IncomingHttpHeaders, backendToken: string, publicHost: string, identityHeader: string, identity: string): IncomingHttpHeaders {
-  const removed = new Set([...hopByHop, "authorization", "tailscale-user-login", identityHeader]);
+  const removed = new Set([...hopByHop, "authorization", OPERATOR_IDENTITY_HEADER, "tailscale-user-login", identityHeader]);
   const connection = headers.connection;
   if (typeof connection === "string") {
     for (const name of connection.split(",")) removed.add(name.trim().toLowerCase());
@@ -42,7 +43,7 @@ function forwardedHeaders(headers: IncomingHttpHeaders, backendToken: string, pu
   forwarded.authorization = `Bearer ${backendToken}`;
   // Never trust a second client-supplied identity. The backend reads this
   // canonical header regardless of which upstream identity header was used.
-  forwarded["tailscale-user-login"] = identity;
+  forwarded[OPERATOR_IDENTITY_HEADER] = identity;
   // Some front proxies (including Tailscale Serve for Unix targets) rewrite
   // Host to localhost. The configured public origin, not a forwarded claim,
   // is authoritative for Ponderosa's Host/Origin mutation check.

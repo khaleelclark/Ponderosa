@@ -833,7 +833,10 @@ export class BranchStore {
         let execution = this.execution(row.id)!;
         if(!['queued','running','waiting'].includes(execution.state))return;
         const branch = this.getBranch(execution.branchId)!;
-        if (this.row("SELECT cancel_requested FROM branch_executions WHERE id = ?", execution.id)!.cancel_requested) { this.aggregate(execution.id, now); return; }
+        for (const path of this.rows("SELECT id FROM branch_paths WHERE execution_id=? AND state='canceling'", execution.id)) this.cancelPath(path.id, now);
+        if (this.row("SELECT cancel_requested FROM branch_executions WHERE id = ?", execution.id)!.cancel_requested) {
+          this.aggregate(execution.id, now); return;
+        }
         try { if(branch.chatId)this.chat(branch.chatId); } catch { this.cancel(execution.id, now); return; }
         if(execution.state==='queued')execution=this.execution(this.executionBudgets.selectForStart(execution,now,id=>this.hasRunnableCapacity(id)))!;
         const definition = this.definition(execution);
@@ -1420,6 +1423,86 @@ export class BranchStore {
       this.checkpoint(id, `command:${input.commandKey}`, "operator_intervention", input, now);
     }, now);
   }
+  /** A Request state is not proof of stopped provider work. Keep the exact
+   * attempt/Run lineage and existing interrupt receipt as cancellation authority. */
+  private settleCanceledAgentAttempt(attempt: Row, now: string): boolean {
+    const request = this.coordination.getRequest(attempt.request_id);
+    if (!request) return false;
+    const runs = this.rows(`${REQUEST_SOURCE_LINEAGE_CTE}
+      SELECT DISTINCT r.* FROM request_source_lineage source
+      JOIN scheduler_run_activations attached ON attached.activation_id=source.activation_id
+      JOIN scheduler_runs r ON r.id=attached.run_id
+      WHERE source.request_id=? AND r.agent_id=? AND r.project_id=?`, request.id, request.recipientAgentId, request.projectId);
+    const cleanupOperation = (runId: string) => this.row(`SELECT operation.state
+      FROM scheduler_cancellation_receipts receipt
+      JOIN provider_operation_outbox operation ON operation.run_id=receipt.run_id
+        AND operation.idempotency_key='cancel:'||receipt.agent_id||':'||receipt.idempotency_key
+      WHERE receipt.run_id=? AND receipt.agent_id=? AND receipt.accepted=1 AND operation.operation='interrupt'
+      ORDER BY operation.id DESC LIMIT 1`, runId, request.recipientAgentId);
+    let settled = true;
+    for (const run of runs) {
+      const key = `branch-cancel:${attempt.id}:${run.id}`;
+      if (['failed', 'cancelled'].includes(run.status) && !cleanupOperation(run.id) &&
+          this.coordination.canRetryUninjectedRun(run.id)) continue;
+      const attached = this.rows(`${REQUEST_SOURCE_LINEAGE_CTE}
+        SELECT activation.id, source.source_kind, source.source_id, lineage.request_id
+        FROM scheduler_run_activations attached
+        JOIN agent_activations activation ON activation.id=attached.activation_id
+        LEFT JOIN activation_sources source ON source.activation_id=activation.id
+        LEFT JOIN request_source_lineage lineage ON lineage.activation_id=activation.id AND lineage.source_kind=source.source_kind
+        WHERE attached.run_id=?`, run.id);
+      const exclusive = attached.length > 0 && attached.every(source => {
+        if (source.source_kind === 'branch_schedule_update') {
+          // Use the immutable accepted occurrence/steering binding, never the
+          // Agent's current task or a live-trigger inference after cancellation.
+          return Boolean(this.row(`SELECT 1 FROM trigger_occurrences occurrence
+            JOIN agent_activations activation ON activation.id=?
+            JOIN branch_attempts owned ON owned.id=json_extract(occurrence.activation_config_json,'$.steering.attemptId')
+            JOIN branch_step_executions step ON step.id=owned.step_execution_id
+            JOIN branch_executions execution ON execution.id=step.execution_id
+            WHERE occurrence.id=? AND occurrence.branch_id=execution.branch_id
+              AND (occurrence.branch_execution_id IS NULL OR occurrence.branch_execution_id=execution.id)
+              AND json_extract(occurrence.activation_config_json,'$.steering.runId')=?
+              AND json_extract(occurrence.activation_config_json,'$.steering.fence')=?
+              AND json_extract(activation.payload_json,'$.steering.runId')=?
+              AND json_extract(activation.payload_json,'$.steering.attemptId')=owned.id
+              AND json_extract(activation.payload_json,'$.steering.fence')=?
+              AND (owned.cancel_requested=1 OR execution.cancel_requested=1)`,
+            source.id, source.source_id, run.id, run.fencing_token, run.id, run.fencing_token));
+        }
+        if (["context_rollover", "context_rollover_recovery"].includes(source.source_kind)) {
+          return attached.some(other => other.id === source.id && other.request_id);
+        }
+        return ["request", "request_update", "join"].includes(source.source_kind) && source.request_id &&
+          this.row(`SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
+            JOIN branch_executions e ON e.id=s.execution_id WHERE a.request_id=? AND (a.cancel_requested=1 OR e.cancel_requested=1)`, source.request_id);
+      });
+      const checkpointKey = `agent-cancel:${attempt.id}:${run.id}`;
+      if (!this.row('SELECT 1 FROM branch_checkpoints WHERE execution_id=? AND transition_key=?', attempt.execution_id, checkpointKey)) {
+        this.checkpoint(attempt.execution_id, checkpointKey, 'agent_cancel_bound', { attemptId: attempt.id, requestId: request.id, runId: run.id, fence: run.fencing_token }, now);
+      }
+      let operation = cleanupOperation(run.id);
+      if (!operation && ['leased','running'].includes(run.status) && exclusive &&
+          run.scope_key === (request.conversationId ? `conversation:${request.conversationId}` : `agent:${request.recipientAgentId}`)) {
+        this.coordination.cancelAgentRun({ agentId: request.recipientAgentId, expectedRunId: run.id, idempotencyKey: key, now });
+        operation = cleanupOperation(run.id);
+      }
+      // A terminal scheduler row alone cannot prove browser/process cleanup.
+      // Missing exact receipts remain a reconciliation hold, never Agent-wide cancellation.
+      if (operation?.state !== 'completed') settled = false;
+    }
+    // Pending original deliveries/notices must not start replacement work after
+    // an exclusive cancellation. Shared active work retains its cancellation steering.
+    if (settled || runs.every(run => Boolean(cleanupOperation(run.id)) ||
+        (['failed','cancelled'].includes(run.status) && this.coordination.canRetryUninjectedRun(run.id)))) {
+      for (const activation of this.rows(`${REQUEST_SOURCE_LINEAGE_CTE}
+        SELECT DISTINCT a.id FROM agent_activations a JOIN request_source_lineage source ON source.activation_id=a.id
+        WHERE source.request_id=? AND a.agent_id=? AND a.kind IN ('coordination_request','coordination_cancelled') AND a.state IN ('pending','retry_pending')`, request.id, request.recipientAgentId)) {
+        this.coordination.cancelPendingActivation({ projectId: request.projectId, activationId: activation.id, idempotencyKey: `branch-cancel:${attempt.id}:${activation.id}`, now });
+      }
+    }
+    return settled;
+  }
   private cancelPath(pathId: string, now: string): void {
     const paths = this.rows(`WITH RECURSIVE owned(id) AS (SELECT ? UNION ALL SELECT p.id FROM branch_paths p JOIN owned o ON p.parent_path_id = o.id)
       SELECT p.* FROM branch_paths p JOIN owned o ON o.id = p.id WHERE p.state IN ('active','waiting','joining','canceling')`, pathId);
@@ -1430,13 +1513,18 @@ export class BranchStore {
           const request = this.row("SELECT state FROM coordination_requests WHERE id = ?", a.request_id);
           if (request && !TERMINAL_REQUEST_STATES.has(request.state)) this.coordination.updateRequest({ requestId: a.request_id, updateId: `branch-cancel:${a.id}`, kind: "cancelled", actor: { kind: "user", id: "local-operator" }, now });
         }
-        if (!a.cancel_requested) this.run("UPDATE branch_attempts SET fence = fence + 1, cancel_requested = 1, state = ?, updated_at = ? WHERE id = ?", a.process_identity_json ? "outcome_unknown" : "canceled", now, a.id);
+        if (!a.cancel_requested) this.run("UPDATE branch_attempts SET fence = fence + 1, cancel_requested = 1, state = ?, updated_at = ? WHERE id = ?", a.process_identity_json || a.request_id ? "outcome_unknown" : "canceled", now, a.id);
+        if (a.request_id) {
+          const settled = this.settleCanceledAgentAttempt({ ...a, execution_id: path.execution_id }, now);
+          this.run("UPDATE branch_attempts SET state=?,error=?,updated_at=? WHERE id=?", settled ? 'canceled' : 'outcome_unknown', settled ? null : 'Cancellation awaiting exact Run settlement or cleanup; shared or uncertain work is retained for reconciliation', now, a.id);
+        }
       }
-      const pending = this.row("SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id = a.step_execution_id WHERE s.path_id = ? AND a.state = 'outcome_unknown' AND a.process_identity_json IS NOT NULL", path.id);
+      const pending = this.row("SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id = a.step_execution_id WHERE s.path_id = ? AND a.state = 'outcome_unknown'", path.id);
       this.run("UPDATE branch_paths SET state = ? WHERE id = ?", pending ? "canceling" : "canceled", path.id);
+      if (!pending && path.fork_invocation_id) this.updateMapState(path.fork_invocation_id);
       const mapItem=this.row('SELECT id,map_invocation_id,item_index FROM branch_map_items WHERE path_id=?',path.id);
-      if(mapItem)this.checkpoint(path.execution_id,`map-canceled:${mapItem.id}`,'map_item_canceled',{mapInvocationId:mapItem.map_invocation_id,itemId:mapItem.id,index:mapItem.item_index,pathId:path.id,pendingCleanup:Boolean(pending)},now);
-      this.run("UPDATE branch_step_executions SET state = 'canceled' WHERE path_id = ? AND state NOT IN ('completed','failed')", path.id);
+      if(mapItem&&!this.row('SELECT 1 FROM branch_checkpoints WHERE execution_id=? AND transition_key=?',path.execution_id,`map-canceled:${mapItem.id}`))this.checkpoint(path.execution_id,`map-canceled:${mapItem.id}`,'map_item_canceled',{mapInvocationId:mapItem.map_invocation_id,itemId:mapItem.id,index:mapItem.item_index,pathId:path.id,pendingCleanup:Boolean(pending)},now);
+      this.run("UPDATE branch_step_executions SET state = ? WHERE path_id = ? AND state NOT IN ('completed','failed')", pending ? 'outcome_unknown' : 'canceled', path.id);
       for(const gate of this.rows("SELECT g.id,g.revision FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.path_id=? AND g.state='waiting'",path.id)){
         this.run("UPDATE branch_gates SET state='canceled',revision=revision+1 WHERE id=?",gate.id);
         this.run("UPDATE branch_gate_notifications SET state=CASE WHEN state='pending' THEN 'closing_unpublished' ELSE 'closing' END,updated_at=? WHERE gate_id=? AND gate_revision=? AND state!='resolved'",now,gate.id,gate.revision);

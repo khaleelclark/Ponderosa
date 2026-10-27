@@ -53,7 +53,7 @@ type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
     | { kind: "notifications_read_all"; readAt: string }
     | { kind: "notifications_cleared"; notificationIds: string[] }
     | { kind: "notifications_dismissed"; notificationIds: string[]; at: string }
-    | { kind: "notification_status"; notificationId: string; status: "resolved" | "dismissed"; at: string }
+    | { kind: "notification_status"; notificationId: string; status: "resolved" | "dismissed"; at: string; preserveDismissal?: true }
     | { kind: "decision"; decision: DecisionDto; idempotencyKey: string }
     | { kind: "push_subscription"; subscription?: WebPushSubscriptionDto; deviceId: string; replacedDeviceIds?: string[] }
     | { kind: "push_delivery"; delivery: PushDeliveryRecord };
@@ -621,8 +621,9 @@ export class WorkspaceStore {
       if (current) {
         this.setNotification({
           ...current,
-          status: record.mutation.status,
-          resolvedAt: record.mutation.at,
+          status: record.mutation.preserveDismissal && current.status === "dismissed" ? "dismissed" : record.mutation.status,
+          resolvedAt: record.mutation.preserveDismissal && current.status === "dismissed" ? current.resolvedAt : record.mutation.at,
+          ...(record.mutation.preserveDismissal ? { recoveredAt: record.mutation.at } : {}),
           ...(record.mutation.status === "dismissed" ? { readAt: current.readAt ?? record.mutation.at } : {}),
         });
         if (record.mutation.status === "dismissed") {
@@ -1546,7 +1547,7 @@ export class WorkspaceStore {
     }, { kind: "draft_deleted", draftId });
   }
 
-  createNotification(input: Omit<WorkspaceNotificationDto, "id" | "createdAt">, queueWebPush = false): WorkspaceNotificationDto {
+  createNotification(input: Omit<WorkspaceNotificationDto, "id" | "createdAt">, queueWebPush = false, renewAfterRecovery = false): WorkspaceNotificationDto {
     // Operational notifications may point at the same Communication while
     // representing different retry attempts. Their explicit dedupe key is the
     // identity; communicationEventId remains navigation metadata. Ordinary
@@ -1558,7 +1559,7 @@ export class WorkspaceStore {
     if (input.dedupeKey) {
       const workKey = notificationWorkKey(input);
       const existing = (workKey ? this.notificationsByWork.get(workKey) : undefined) ?? this.notificationsByDedupeKey.get(input.dedupeKey);
-      if (existing) {
+      if (existing && !(renewAfterRecovery && (existing.status === "resolved" || existing.recoveredAt))) {
         if ((existing.status ?? "open") !== "open") return existing;
         const updated: WorkspaceNotificationDto = {
           ...existing,
@@ -1905,14 +1906,15 @@ export class WorkspaceStore {
     return this.notifications.get(notificationId);
   }
 
-  setNotificationStatus(notificationId: string, status: "resolved" | "dismissed"): WorkspaceNotificationDto | undefined {
+  setNotificationStatus(notificationId: string, status: "resolved" | "dismissed", confirmedRecovery = false): WorkspaceNotificationDto | undefined {
     const current = this.notifications.get(notificationId);
-    if (!current || (current.status ?? "open") !== "open") return current;
+    if (!current || current.status === "resolved" ||
+        current.status === "dismissed" && (!confirmedRecovery || status !== "resolved" || current.recoveredAt)) return current;
     if (current.decision && this.decisions.get(current.decision.id)?.status === "pending") return current;
     const at = new Date().toISOString();
     this.append(
       { type: "notification_changed", notificationId, conversationId: current.conversationId, action: "resolved" },
-      { kind: "notification_status", notificationId, status, at },
+      { kind: "notification_status", notificationId, status, at, ...(confirmedRecovery ? { preserveDismissal: true as const } : {}) },
     );
     return this.notifications.get(notificationId);
   }

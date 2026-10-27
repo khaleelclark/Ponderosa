@@ -353,7 +353,9 @@ for (const product of ['dev', 'branches']) for (const engine of ['codex', 'claud
       assert.equal(result.success, true, result.text); const found = JSON.parse(result.text); assert.equal(found.hits.length, 1);
       const exact = await session.tool(PONDEROSA_HISTORY_TOOL.name, { source: 'imported', action: 'read', reference: found.hits[0].reference });
       assert.equal(exact.success, true, exact.text); retrieved = JSON.parse(exact.text).messages[0].text;
-      assert.equal((await session.tool(PONDEROSA_HISTORY_TOOL.name, { action: 'search', query: 'Ancient persimmon orchard' })).success, false);
+      const canonical=await session.tool(PONDEROSA_HISTORY_TOOL.name,{action:'search',query:'Ancient persimmon orchard'});
+      assert.equal(canonical.success,true,canonical.text);
+      assert.equal(JSON.parse(canonical.text).hits.length,0,'Imported archive must not appear as canonical authored history');
       assert.equal((await session.tool('ponderosa_message', { text: 'Imported evidence retrieved safely' })).success, true);
     } }]);
     f.ok(await f.api('POST', `${prefix}/agents/${agent.id}/messages`, { text: 'Find the ancient persimmon decision', idempotencyKey: randomUUID() }));
@@ -404,4 +406,57 @@ test('bundled Claude Local Memory bridge forwards selected search and refuses un
     assert.equal((await call('local_memory_save'))[2].isError,true);assert.equal(requests.length,1);
     revoked=true;assert.equal((await call('local_memory_search'))[2].isError,true);assert.equal(requests.length,2);
   } finally {await app.close();}
+});
+
+
+test('ordinary accepted boundary supports complete Unicode chunks, concise direct reads and lifecycle fences', {timeout:20000}, t=>withHistory(t,async f=>{
+ const body='BEGIN canonical 🧭\0\n'+('東京 😀 \"line\"\n'.repeat(2400))+'END';
+ const event={schemaVersion:2,eventId:randomUUID(),projectId:f.project.id,conversationId:f.chat.id,sender:{kind:'user',userId:'operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'operator',agentId:f.agent.id},text:body,createdAt:new Date().toISOString()};
+ f.store.appendCommunicationEvent(event);f.capability.historyRetrievalBoundary=f.store.communicationHistoryBoundary(f.project.id);
+ const call=async arguments_=>{const r=await f.app.inject({method:'POST',url:'/api/agent-history',headers:{authorization:'Bearer '+f.run.messageCapability},payload:arguments_});assert.equal(r.statusCode,200,r.body);return r.json()};
+ let continuation,offset=0,reconstructed='';
+ do{const page=await call({action:'read',communicationEventId:event.eventId,before:0,after:0,...(continuation?{continuation}:{})}),message=page.messages[0];
+  assert.equal(Buffer.byteLength(JSON.stringify(page)),page.utf8Bytes);assert.ok(page.utf8Bytes<=8000);assert.equal(message.startCodePoint,offset);assert.ok(message.endCodePoint>offset);assert.equal(message.totalCodePoints,[...body].length);
+  reconstructed+=message.text;offset=message.endCodePoint;continuation=message.continuation;
+ }while(continuation);
+ assert.equal(reconstructed,body);assert.equal(offset,[...body].length);
+ const direct=f.store.readCompactionHistory({agentId:f.agent.id,communicationEventId:f.older[0].eventId,excludedCommunicationEventIds:new Set(),before:0,after:0});assert.equal(direct.response.messages[0].complete,true);
+ const routed=f.store.createConversation(f.project.id,{title:'Routed Chat'});f.run.conversationId=routed.id;f.capability.conversationId=routed.id;
+ assert.equal((await call({action:'read',communicationEventId:event.eventId,before:0,after:0})).messages[0].communicationEventId,event.eventId);
+ f.deletingConversationIds.add(routed.id);
+ const denied=await f.app.inject({method:'POST',url:'/api/agent-history',headers:{authorization:'Bearer '+f.run.messageCapability},payload:{action:'read',communicationEventId:event.eventId}});assert.equal(denied.statusCode,403);
+ const audits=f.store.readEvents(f.agent.id).filter(row=>row.event.type==='compaction_history_retrieval'&&row.event.action==='read'&&row.event.communicationEventId===event.eventId);
+ assert.equal(audits[0].event.selected[0].complete,false);assert.equal(audits[0].event.selected[0].startCodePoint,0);
+}));
+
+test('40-message omission reaches the actual prompt and a discarded session cannot hide its older history', {timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Canonical context'),agent=await f.createIdleAgent(chat,'Retained reader');
+  const authored=(text,number)=>{const event={schemaVersion:2,eventId:randomUUID(),projectId:chat.projectId,conversationId:chat.id,sender:{kind:'user',userId:'local-operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'local-operator',agentId:agent.id},text,createdAt:new Date(Date.now()-100000+number*10).toISOString()};store.appendCommunicationEvent(event);store.appendEvent(agent.id,{type:'communication_projection',communicationEventId:event.eventId,text:event.text,role:'user'});return event};
+  const older=authored('Unique amber compass secret retained fact',0);
+  await f.send(agent.id,'Read initial context');await f.settled(agent.id);const oldSession=f.turns.at(-1).sessionId;
+  for(let index=1;index<=45;index++)authored('Recent bounded private item '+index,index);
+  f.ok(await f.api('PATCH','/api/workspace/preferences',{globalInstructions:'Genuine new instruction for a fresh canonical context'}));
+  const session=await f.hold(agent.id);assert.notEqual(session.engineAgentId,oldSession);assert.match(f.turns.at(-1).input.prompt,/BOUNDED HISTORICAL CONTEXT.*Additional older/s);
+  const found=f.ok(await f.tool(session,'ponderosa_history',{action:'search',query:'Unique amber compass'}));assert.ok(found.hits.some(hit=>hit.communicationEventId===older.eventId));
+  const exact=f.ok(await f.tool(session,'ponderosa_history',{action:'read',communicationEventId:older.eventId,before:0,after:0}));assert.equal(exact.messages[0].text,older.text);
+  const before=f.turns.length;session.finish();await until(async()=>!(await f.detail(agent.id)).runs.some(run=>run.status==='running'),'settled retained turn');
+  // Cosmetic profile changes preserve the compatible accepted session.
+  const prefs=f.ok(await f.api('GET','/api/workspace/preferences'));f.ok(await f.api('PATCH','/api/workspace/preferences',{profile:{avatarId:prefs.profile.avatarId==='river'?'sunset':'river',handle:'#'+prefs.profile.handle.toUpperCase(),displayName:' '+prefs.profile.displayName+' '}}));
+  const previous=(await f.detail(agent.id)).runs.map(run=>run.id);await f.send(agent.id,'Compatible continuation');await f.settled(agent.id,previous);assert.equal(f.turns.at(-1).sessionId,session.engineAgentId);
+  const count=f.turns.length,prior=(await f.detail(agent.id)).runs.map(run=>run.id),coordination=new CoordinationV3Store(store.sqlite);
+  coordination.coordinate({projectId:chat.projectId,conversationId:chat.id,actorScope:'user:local-operator',idempotencyKey:'same-scope-new-request',requests:[{recipientAgentId:agent.id,lifetime:{kind:'indefinite'},payload:{text:'A new compatible Request'}}]});
+  await until(()=>f.turns.length>count,'new compatible Request turn');await f.settled(agent.id,prior);assert.equal(f.turns.at(-1).sessionId,session.engineAgentId,'A new Request alone must not reset compatible working context');
+ },{storeFactory:root=>store=new AgentStore(root)});
+});
+
+test('accepted session tail evidence never promotes a later authored revision', {timeout:30000},async t=>{
+ let store;await withFixture(t,async f=>{
+  const chat=await f.createChat('Revision continuity'),agent=await f.createAgent(chat,'Revision reader');
+  const ids=store.acceptedProviderSessionCommunicationEventIds(agent.id);assert.ok(ids?.length,'Fixture requires fully submitted canonical input');
+  const id=ids.find(id=>store.getCommunicationEvent(chat.projectId,id)?.sender.kind==='user');assert.ok(id);
+  const original=store.getCommunicationEvent(chat.projectId,id);store.appendCommunicationRevision({schemaVersion:1,eventId:randomUUID(),projectId:chat.projectId,conversationId:chat.id,targetEventId:id,kind:'edit',sender:original.sender,text:'Newer revision that this provider never received',idempotencyKey:'passive-edit',createdAt:new Date().toISOString()});
+  assert.equal(store.acceptedProviderSessionCommunicationEventIds(agent.id).includes(id),false);
+ },{storeFactory:root=>store=new AgentStore(root)});
 });

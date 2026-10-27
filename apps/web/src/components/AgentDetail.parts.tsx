@@ -17,7 +17,7 @@ import type {
   EngineDto,
 } from "@ponderosa/core";
 import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
-import type { RuntimeControlState } from "../conversationEngine";
+import {engineUnavailableReason,type RuntimeControlState} from "../conversationEngine";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { eligibleOrganizationParents } from "./AgentDetail.helpers";
 
@@ -87,13 +87,7 @@ function AgentRuntimeControls({
         id: option.id,
         label: option.displayName,
         disabled: !option.intakeReady || option.enabled === false,
-        detail: option.intakeReady
-          ? option.enabled === false
-            ? "Disabled in Settings"
-            : undefined
-          : option.authentication === "authenticated"
-            ? option.reachability === "degraded" ? "Provider degraded" : "Intake unavailable"
-            : "Signed out",
+        detail: engineUnavailableReason(option),
       }))}
       model={model}
       models={models}

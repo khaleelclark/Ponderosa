@@ -332,3 +332,16 @@ test('a verified suffix cannot route foreign-owner records into another canonica
   assert.equal(routed, false, 'Suffix replay followed embedded foreign routing instead of the journal owner');
   assert.equal(existsSync(path.join(f.dataDir, 'projects', other.id, 'communication-events.jsonl')), false);
 });
+
+import {renameSync} from 'node:fs';
+for(const surviving of [false,true])test(`missing owner Chat is quarantined without rewriting retained private ownership; survivor=${surviving}`,t=>{
+ const f=fixture(t),owner=f.store.createConversation(f.project.id,{title:'Private owner'}),a=f.store.createAgent(f.project.id,{title:'Private reader',engine:'codex',conversationId:owner.id});
+ f.store.setImportedHistory(a.id,'Private historical source',[{role:'user',text:'Do not give this archive to another Chat'}]);
+ const otherChats=!surviving?f.store.listConversations(f.project.id).filter(c=>c.id!==owner.id).map(c=>c.id):[];
+ const canonical=path.join(f.dataDir,'projects',f.project.id,'agents',a.id,'agent.json'),before=readFileSync(canonical);
+ f.close();for(const id of otherChats)renameSync(path.join(f.dataDir,'projects',f.project.id,'conversations',id),path.join(f.root,'retained-other-'+id));renameSync(path.join(f.dataDir,'projects',f.project.id,'conversations',owner.id),path.join(f.root,'retained-owner-for-repair'));
+ const reopened=f.open();const after=reopened.getAgent(a.id);
+ assert.ok(!after||after.conversationId===owner.id,'Recovery must never substitute a surviving Chat');
+ assert.equal(readFileSync(canonical).equals(before),true,'Quarantine must not rewrite canonical ownership');
+ assert.ok(reopened.startupProfile().recoveryIssues.some(issue=>issue.projectId===f.project.id&&issue.detail.includes(owner.id)));
+});

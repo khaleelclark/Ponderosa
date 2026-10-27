@@ -244,6 +244,7 @@ export interface InstalledBranchPackage {
 }
 
 export interface BranchLifecycleDto {
+ sourceDiagnostics?:Array<{id:string;title:string;body:string;createdAt:string}>;
  deleting:boolean;
  chats:number;
  activeExecutions:number;

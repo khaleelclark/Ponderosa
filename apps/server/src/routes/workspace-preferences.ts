@@ -280,10 +280,12 @@ export function registerWorkspacePreferenceRoutes(
     if(patch.branchFolders!==undefined&&patch.branchFoldersRevision!==previousPreferences.revision)return reply.code(409).send({error:'Branch folders changed; refresh and reapply the folder action.'});
     if(patch.branchFolders?.some(folder=>folder.branchIds.some(id=>!store.sqlite.prepare('SELECT 1 FROM branches WHERE id=? AND deleting=0').get(id))))return reply.code(400).send({error:'A Branch in this folder is unavailable. Refresh and retry.'});
     delete patch.branchFoldersRevision;
-    const globalInstructionsChanged = patch.globalInstructions !== undefined && patch.globalInstructions !== previousPreferences.globalInstructions;
-    const profileChanged = patch.profile !== undefined && JSON.stringify(patch.profile) !== JSON.stringify(previousPreferences.profile);
     const cursor = workspace.cursor();
     const preferences = workspace.updatePreferences(mergeProductPreferencePatch(store,previousPreferences,patch,requestProduct(request)));
+    // The store owns normalization; compare only fields delivered in the prompt.
+    const globalInstructionsChanged = preferences.globalInstructions.trim() !== previousPreferences.globalInstructions.trim();
+    const profileChanged = preferences.profile.displayName !== previousPreferences.profile.displayName ||
+      preferences.profile.handle !== previousPreferences.profile.handle;
     if (patch.claudeModelOptions !== undefined) {
       applyOperatorModelOptions();
       for (const entry of engineModelCatalogCache.values()) entry.expiresAt = 0;

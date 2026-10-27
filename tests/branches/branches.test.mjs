@@ -231,3 +231,64 @@ test('intake rollback creates neither a partial execution nor a conflicting dupl
  f.reopen();const e=f.branches.accept(f.branch.id,'atomic-intake','input');f.reopen();
  assert.equal(f.branches.accept(f.branch.id,'atomic-intake','input').id,e.id);
 });
+
+for (const active of [false,true]) test(`Branch cancellation settles exact owned work only after cleanup; leased=${active}`,t=>{
+ const f=fixture(t),e=f.branches.accept(f.branch.id,'cancel-proof','input');f.branches.advance();
+ const requestId=f.branches.detail(e.id).attempts[0].requestId;
+ let lease;
+ if(active){lease=f.coordination.leaseNextRun({workerId:'provider'});f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+  const injection={injectionId:lease.injectionId,runId:lease.runId,fencingToken:lease.fencingToken};f.coordination.preparePromptInjection({...injection,prompt:'Owned work'});f.coordination.markPromptSubmitted(injection);f.coordination.acknowledgePromptInjection(injection);}
+ f.branches.cancel(e.id);f.branches.cancel(e.id);
+ assert.equal(f.coordination.getRequest(requestId).state,'cancelled');
+ if(!active){assert.equal(f.branches.execution(e.id).state,'canceled');assert.equal(f.coordination.leaseNextRun({workerId:'late'}),undefined);return;}
+ assert.equal(f.branches.execution(e.id).state,'waiting');assert.equal(f.store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(lease.runId).status,'cancelled');
+ let [operation]=f.coordination.claimProviderOperations('cleanup');assert.ok(operation);assert.equal(operation.runId,lease.runId);
+ f.coordination.failProviderOperation(operation.id,'cleanup','Controlled cleanup remains pending',true);
+ f.reopen();f.branches.advance();assert.equal(f.branches.execution(e.id).state,'waiting');
+ const future=new Date(Date.now()+3600000).toISOString();[operation]=f.coordination.claimProviderOperations('cleanup',20,future);assert.ok(operation);
+ f.coordination.completeProviderOperation(operation.id,'cleanup',future);f.branches.advance(future);
+ assert.equal(f.branches.execution(e.id).state,'canceled');assert.equal(f.coordination.leaseNextRun({workerId:'late',now:future}),undefined);
+ assert.throws(()=>f.coordination.completeRun(lease.runId,lease.fencingToken),/fenc|lease|run|author/i);
+});
+
+test('canceling a Branch never interrupts a Run with a separate attached Request',t=>{
+ const f=fixture(t),e=f.branches.accept(f.branch.id,'cancel-shared','input');f.branches.advance();
+ f.coordination.coordinate({projectId:f.agent.projectId,conversationId:f.agent.conversationId,actorScope:'user:local-operator',requests:[{recipientAgentId:f.agent.id,lifetime:{kind:'indefinite'},payload:{text:'Unrelated independent assignment'}}],idempotencyKey:'unrelated-shared'});
+ const lease=f.coordination.leaseNextRun({workerId:'provider'});assert.ok(lease);
+ assert.ok(f.coordination.requestIdsAttachedToRun(lease.runId,f.agent.id).length>1,'Fixture must actually coalesce independent obligations');
+ f.branches.cancel(e.id);assert.equal(f.branches.execution(e.id).state,'waiting');
+ assert.equal(f.store.sqlite.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=?').get(lease.runId).fencing_token,lease.fencingToken);
+ assert.equal(f.coordination.claimProviderOperations('cleanup').length,0);
+ f.reopen();f.branches.advance();assert.equal(f.branches.execution(e.id).state,'waiting');
+});
+
+test('coalesced canceled Branch obligations share one exact cleanup receipt',t=>{
+ const f=fixture(t),first=f.branches.accept(f.branch.id,'first-cancel','one'),second=f.branches.accept(f.branch.id,'second-cancel','two');f.branches.advance();
+ const lease=f.coordination.leaseNextRun({workerId:'provider'});assert.equal(f.coordination.requestIdsAttachedToRun(lease.runId,f.agent.id).length,2);
+ f.branches.cancel(first.id);assert.equal(f.coordination.claimProviderOperations('cleanup').length,0);
+ f.branches.cancel(second.id);const operations=f.coordination.claimProviderOperations('cleanup');assert.equal(operations.length,1);
+ f.coordination.completeProviderOperation(operations[0].id,'cleanup');f.reopen();f.branches.advance();
+ assert.equal(f.branches.execution(first.id).state,'canceled');assert.equal(f.branches.execution(second.id).state,'canceled');
+});
+
+test('standalone Request cancellation is not classified as a newly created Request',t=>{
+ const f=fixture(t),e=f.branches.accept(f.branch.id,'classification','input');f.branches.advance();
+ const lease=f.coordination.leaseNextRun({workerId:'provider'});assert.equal(f.coordination.runStartsNewRecipientRequest(lease.runId,f.agent.id),true);
+ const injection={injectionId:lease.injectionId,runId:lease.runId,fencingToken:lease.fencingToken};f.coordination.markRunStarted(lease.runId,lease.fencingToken);f.coordination.preparePromptInjection({...injection,prompt:'Original Request'});f.coordination.markPromptSubmitted(injection);f.coordination.acknowledgePromptInjection(injection);
+ const requestId=f.branches.detail(e.id).attempts[0].requestId;f.coordination.updateRequest({requestId,updateId:'standalone-notice',kind:'cancelled',actor:{kind:'user',id:'local-operator'}});
+ f.coordination.completeRun(lease.runId,lease.fencingToken);
+ const notice=f.coordination.leaseNextRun({workerId:'provider'});assert.ok(notice);assert.equal(f.coordination.runStartsNewRecipientRequest(notice.runId,f.agent.id),false);
+});
+
+for (const recovery of ['defer','restart']) test(`Branch cancellation ignores a proven uninjected historical lease after ${recovery}`,t=>{
+ const f=fixture(t),e=f.branches.accept(f.branch.id,'historical-lease','input');f.branches.advance();
+ const old=f.coordination.leaseNextRun({workerId:'old-provider'});assert.ok(old);
+ if(recovery==='defer')f.coordination.deferUninjectedRun(old.runId,old.fencingToken);
+ else {f.reopen();assert.equal(f.coordination.recoverOrphanedRuns('new-provider').retried,1)}
+ const lease=f.coordination.leaseNextRun({workerId:'new-provider'});assert.ok(lease);assert.notEqual(lease.runId,old.runId);
+ f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+ f.branches.cancel(e.id);assert.equal(f.branches.execution(e.id).state,'waiting');
+ const operations=f.coordination.claimProviderOperations('cleanup');assert.equal(operations.length,1);assert.equal(operations[0].runId,lease.runId);
+ f.coordination.completeProviderOperation(operations[0].id,'cleanup');f.reopen();f.branches.advance();
+ assert.equal(f.branches.execution(e.id).state,'canceled');assert.equal(f.coordination.leaseNextRun({workerId:'late'}),undefined);
+});

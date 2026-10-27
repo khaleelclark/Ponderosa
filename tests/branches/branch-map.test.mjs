@@ -368,3 +368,21 @@ test('completed large result evidence persists across restart and is removed wit
  assert.equal(f.branches.resultBundle(bundleId),undefined);
  assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_sealed_results WHERE execution_id=?').get(execution.id).n,0);
 });
+
+test('Map cancellation closes its audit state after exact Agent cleanup while the workflow continues',t=>{
+ const controls=[{id:'map',kind:'map',joinId:'join',workerId:'worker',source:'list',maxItems:2,maxConcurrentItems:2},{id:'join',kind:'join',forkId:'map',mode:'any',remainder:'cancel',inputOrder:[]}];
+ // A persistent worker is created only inside this disposable store; no provider executes.
+ const f=fixture(t,{controls,steps:[script('worker')],maxItems:2,maxConcurrentItems:2});
+ const worker=f.store.createAgent(f.project.id,{title:'Map worker',engine:'codex',conversationId:f.chat.id});
+ const branch=f.branches.deploy({chatId:f.chat.id,branchId:f.branch.id,expectedVersionId:f.branch.versionId,idempotencyKey:'agent-map',definition:{...f.definition,steps:[{id:'worker',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Review item'}]},bindings:{agents:{worker:worker.id},directories:{root:f.dir}}});
+ const execution=f.branches.accept(branch.id,'agent-map-run','["slow","winner"]');f.branches.advance();f.branches.advance();
+ const lease=f.coordination.leaseNextRun({workerId:'provider'});assert.ok(lease);
+ const requests=f.coordination.requestIdsAttachedToRun(lease.runId,worker.id);assert.equal(requests.length,2);
+ f.coordination.updateRequest({requestId:requests[0],updateId:'winner',kind:'completed',actor:{kind:'agent',id:worker.id},payload:{text:'Won'}});f.branches.advance();
+ assert.equal(f.branches.detail(execution.id).maps[0].state,'open');assert.equal(f.branches.execution(execution.id).state,'waiting');
+ // Shared work is held, not broadly interrupted. Existing exact operator
+ // cancellation supplies independently observed cleanup for this fixture.
+ f.coordination.cancelAgentRun({agentId:worker.id,expectedRunId:lease.runId,idempotencyKey:'owned-map-cleanup'});
+ const [operation]=f.coordination.claimProviderOperations('cleanup');assert.ok(operation);f.coordination.completeProviderOperation(operation.id,'cleanup');
+ f.branches.advance();assert.equal(f.branches.execution(execution.id).state,'completed');assert.equal(f.branches.detail(execution.id).maps[0].state,'completed');
+});

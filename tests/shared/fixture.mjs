@@ -74,7 +74,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
       const record = { pid: child.pid, exited: false }; children.push(record);
       const birthMarker = processBirthMarker(child.pid);
       const exited = new Promise(resolve => child.once('exit', () => {
-        record.exited = true; events.end(); options.onRuntimeRootExit?.({ exitCode: child.exitCode }); resolve();
+        record.exited = true; events.end(); options.onRuntimeRootExit?.({ exitCode: child.exitCode, ...record.rootExitDetail }); resolve();
       }));
       try { job?.assign(child.pid); }
       catch (error) {
@@ -112,6 +112,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
         steer: async input => { steers.push({ agentId: options.agentId, input }); return steeringResponse ? await steeringResponse({agentId:options.agentId,input}) : { status: 'accepted' }; },
         interrupt: async () => { events.push({ type: 'error', terminalStatus: 'interrupted', message: 'Controlled interruption' }); session.finish(); },
         tool: (name, args, id = randomUUID()) => options.handleDynamicToolCall({ id, name, arguments: args }),
+        exitWithDetail: async detail => { record.rootExitDetail = detail; await session.close(); },
         finish: () => events.push({ type: 'turn_done', usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 } }),
         async startTurn(input) {
           const turnId = randomUUID(), plan = (plans.get(options.agentId) ?? []).shift() ?? {};
@@ -120,7 +121,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
           setImmediate(async () => {
             if (closing || record.exited) return;
             try {
-              events.push({ type: 'session', sessionId: session.engineAgentId });
+              if (plan.emitSession !== false) events.push({ type: 'session', sessionId: session.engineAgentId });
               if (plan.output !== false) events.push({ type: 'text', delta: 'Ordinary fixture execution output' });
               if (plan.hold) return;
               if (plan.run) await plan.run(session, input, turn);

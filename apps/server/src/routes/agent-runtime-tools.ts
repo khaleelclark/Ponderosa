@@ -1,3 +1,5 @@
+import { readableArtifactReferences } from "../communication-artifacts.js";
+import { collectReachableArtifactIds } from "../artifact-refs.js";
 import { chatBrowserOwnerId } from "@ponderosa/core";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -238,29 +240,29 @@ export function registerAgentRuntimeToolRoutes(
     if (requestedSource !== undefined && requestedSource !== "canonical" && requestedSource !== "imported") {
       return reply.code(400).send({ error: "source must be canonical or imported" });
     }
+    const owner = activeChatResourceOwner(store, "agent", agent.id);
+    const ownsResource = owner ? owner.projectId === agent.projectId
+      : Boolean(capability.v3SchedulerRunId) && Number.isSafeInteger(capability.v3FencingToken) &&
+        retainedRuntimeResources(store, { conversationId: agent.conversationId, agentId: agent.id,
+          runId: capability.v3SchedulerRunId, fencingToken: capability.v3FencingToken }).has(agent.id);
+    const ownerChat=store.getConversation(agent.conversationId);
+    const routedChat = capability.conversationId ? store.getConversation(capability.conversationId) : ownerChat;
+    if(!ownsResource||!ownerChat||ownerChat.deletedAt||ownerChat.projectId!==agent.projectId||
+        !routedChat || routedChat.deletedAt || routedChat.projectId !== agent.projectId ||
+        context.deletingConversationIds.has(routedChat.id) ||
+        active.controller.signal.aborted||context.deletingProjectIds.has(agent.projectId)||
+        context.deletingAgentIds.has(agent.id)||context.deletingConversationIds.has(agent.conversationId)||
+        active.conversationId!==capability.conversationId){
+      return reply.code(403).send({error:'History requires a live authorized Agent and Chat owner.'});
+    }
     const requestedAction = request.body?.action;
     if (requestedSource === "imported") {
       const archiveVersion = capability.importedHistoryArchiveVersion;
       if (!archiveVersion) {
         return reply.code(403).send({ error: "Imported history is not authorized by this Run’s archive grant." });
       }
-      // Relationship hierarchy and request transport never grant archive access.
-      // Resolve the exact live Agent/Chat/product owner on every call, in addition
-      // to the authoritative scheduler Run/fence and selected-tool checks above.
-      const owner = activeChatResourceOwner(store, "agent", agent.id);
-      // Retiring installed resources stay available to the exact accepted Branch
-      // attempt while its canonical Run is still authorized, as for other tools.
-      const ownsArchive = owner ? owner.projectId === agent.projectId
-        : Boolean(capability.v3SchedulerRunId) && Number.isSafeInteger(capability.v3FencingToken) &&
-          retainedRuntimeResources(store, { conversationId: agent.conversationId, agentId: agent.id,
-            runId: capability.v3SchedulerRunId, fencingToken: capability.v3FencingToken }).has(agent.id);
-      const chat = store.getConversation(agent.conversationId);
-      if (!ownsArchive || !chat || chat.deletedAt ||
-          chat.projectId !== agent.projectId || active.conversationId !== agent.conversationId ||
-          capability.conversationId !== agent.conversationId || active.controller.signal.aborted ||
-          context.deletingProjectIds.has(agent.projectId) || context.deletingAgentIds.has(agent.id) ||
-          context.deletingConversationIds.has(agent.conversationId)) {
-        return reply.code(403).send({ error: "Imported history requires the exact live Agent, Chat and product owner." });
+      if (active.conversationId !== agent.conversationId || capability.conversationId !== agent.conversationId) {
+        return reply.code(403).send({error:'Imported history requires the exact owning Chat.'});
       }
       const action = requestedAction === "read" ? "read" as const : "search" as const;
       const rawQuery = typeof request.body?.query === "string" ? request.body.query : "";
@@ -362,7 +364,7 @@ export function registerAgentRuntimeToolRoutes(
     }
     const historyBoundary = capability.historyRetrievalBoundary;
     if (!historyBoundary) {
-      return reply.code(401).send({ error: "canonical history capability is not authorized for an active compacted run" });
+      return reply.code(401).send({ error: "canonical history capability is not authorized for this accepted run boundary" });
     }
     const action = requestedAction === "read" ? "read" as const : "search" as const;
     const rawQuery = typeof request.body?.query === "string" ? request.body.query : "";
@@ -382,6 +384,7 @@ export function registerAgentRuntimeToolRoutes(
         communicationEventId: string;
         contentSha256: string;
         matchBasis?: "lexical";
+        startCodePoint?: number; endCodePoint?: number; totalCodePoints?: number; complete?: boolean;
       }>;
       excludedCurrentContextEventIds?: string[];
       responseUtf8Bytes?: number;
@@ -412,7 +415,7 @@ export function registerAgentRuntimeToolRoutes(
       durationMs: Math.round((performance.now() - startedAt) * 1000) / 1000,
     });
     try {
-      const allowedKeys = new Set(["action", "source", "query", "communicationEventId", "limit", "before", "after"]);
+      const allowedKeys = new Set(["action", "source", "query", "communicationEventId", "continuation", "limit", "before", "after"]);
       if (request.body && Object.keys(request.body).some((key) => !allowedKeys.has(key))) {
         throw new CompactionHistoryQueryError("history request contains an unsupported field");
       }
@@ -423,6 +426,9 @@ export function registerAgentRuntimeToolRoutes(
         agentId: agent.id,
         ...(capability.conversationId ? { currentConversationId: capability.conversationId } : {}),
         boundary: historyBoundary,
+        readableArtifactReferences: (event: import("@ponderosa/core").CommunicationEvent) =>
+          readableArtifactReferences({ projectId: agent.projectId, agentId: agent.id, store, assets,
+            artifactIds: [...collectReachableArtifactIds(event)] }),
         excludedCommunicationEventIds: new Set(
           capability.historyRetrievalExcludedCommunicationEventIds,
         ),
@@ -435,6 +441,11 @@ export function registerAgentRuntimeToolRoutes(
         const { response, audit } = store.readCompactionHistory({
           ...common,
           communicationEventId: rawCommunicationEventId,
+          integrityKey: token!,
+          ...(request.body?.continuation !== undefined ? { continuation: (()=>{
+            if(typeof request.body.continuation!=='string'||request.body.continuation.length>256)throw new CompactionHistoryQueryError('invalid canonical history continuation');
+            return request.body.continuation;
+          })() } : {}),
           ...(rawBefore !== undefined ? { before: Number(rawBefore) } : {}),
           ...(rawAfter !== undefined ? { after: Number(rawAfter) } : {}),
         });

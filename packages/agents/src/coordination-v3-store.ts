@@ -907,6 +907,12 @@ export class CoordinationV3Store {
     return this.requestAuthority.expireDue(now);
   }
 
+  /** Existing no-submission proof also closes historical cancellation claims
+   * that were deferred or recovered before provider work could begin. */
+  canRetryUninjectedRun(runId: string): boolean {
+    return this.schedulerLeaseAuthority.canRetryUninjectedRun(runId);
+  }
+
   /** On single-host startup every active lease owned by another server process
    * is orphaned. Pre-submission work is retryable; submitted or acknowledged
    * injections fail closed until an adapter can prove provider reconciliation. */

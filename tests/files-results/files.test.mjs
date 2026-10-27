@@ -364,3 +364,38 @@ test('Samsung capurl screenshots retain exact bytes through Agent, Chat and draf
     if(asset.previewUrl)assert.equal((await f.api('GET',asset.previewUrl)).status,200);
   }
 }));
+
+import {AgentStore} from '@ponderosa/agents';
+import {AgentWorkingCopyService} from '../../apps/server/dist/agent-working-copy-service.js';
+test('rejected and no-op working-copy changes preserve compatible context; teardown errors cannot be swallowed as missing paths',options,async t=>{
+ let store;await withFixture(t,async f=>{
+  const chat=await f.createChat('Working-copy continuity'),agent=await f.createAgent(chat,'Continuity reader'),session=f.sessions.get(agent.id),before=store.getAgent(agent.id).workingCopy;
+  assert.equal((await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'})).status,409);
+  assert.equal(JSON.stringify(store.getAgent(agent.id).workingCopy),JSON.stringify(before));
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'shared'}));assert.equal(JSON.stringify(store.getAgent(agent.id).workingCopy),JSON.stringify(before));
+  const previous=(await f.detail(agent.id)).runs.map(r=>r.id);await f.send(agent.id,'Continue after rejected folder change');await f.settled(agent.id,previous);assert.equal(f.turns.at(-1).sessionId,session.engineAgentId);
+  const source=chat.workingDirectory;await exec('git',['init','-b','main'],{cwd:source});await writeFile(path.join(source,'tracked'),'Keep');await exec('git',['add','tracked'],{cwd:source});await exec('git',['-c','user.name=Fixture','-c','user.email=fixture@invalid','commit','-m','Owned baseline'],{cwd:source});
+  const service=new AgentWorkingCopyService(f.dataDir,store),release=service.beginModeChange(agent.id);let called=0;
+  try{await assert.rejects(service.setMode(store.getAgent(agent.id),store.getProject(chat.projectId),'separate_git',async()=>{called++;throw Object.assign(Error('Owned teardown failure'),{code:'ENOENT'})}),/Owned teardown failure/);}finally{release()}
+  assert.equal(called,1);assert.equal(JSON.stringify(store.getAgent(agent.id).workingCopy),JSON.stringify(before));
+ },{storeFactory:root=>store=new AgentStore(root)});
+});
+
+test('canonical history reuses authorized artifact full-file references without treating the inline preview as the document',options,async t=>{
+ const {AgentStore}=await import('@ponderosa/agents');let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Retained document history'),agent=await f.createIdleAgent(chat,'Document reader'),other=await f.createIdleAgent(chat,'Other reader');
+  const body='Retained document 🧭\n'+'Exact Unicode 東京 😀\n'.repeat(3000),session=await f.hold(agent.id);
+  await writeFile(path.join(chat.workingDirectory,'document.txt'),body);
+  const {artifact}=f.ok(await f.tool(session,'ponderosa_import_file',{path:'document.txt'}));
+  const sent=f.ok(await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Retained short document preview',artifactIds:[artifact.id]}));
+  session.finish();await f.settled(agent.id);await f.reopen();
+  for(let index=0;index<45;index++){const event={schemaVersion:2,eventId:randomUUID(),projectId:chat.projectId,conversationId:chat.id,sender:{kind:'user',userId:'local-operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'local-operator',agentId:agent.id},text:'Newer bounded item '+index,createdAt:new Date().toISOString()};store.appendCommunicationEvent(event);store.appendEvent(agent.id,{type:'communication_projection',communicationEventId:event.eventId,text:event.text,role:'user'})}
+  // A fresh boundary, not a fabricated managed rollover, grants this canonical read.
+  f.ok(await f.api('PATCH','/api/workspace/preferences',{globalInstructions:'Read omitted evidence through the canonical history tool'}));
+  const next=await f.hold(agent.id),result=f.ok(await f.tool(next,'ponderosa_history',{action:'read',communicationEventId:sent.eventId,before:0,after:0}));
+  const message=result.messages[0],reference=message.referencedFiles.find(file=>file.artifactId===artifact.id);assert.ok(reference.localPath);assert.equal(reference.sha256,createHash('sha256').update(body).digest('hex'));assert.equal(await readFile(reference.localPath,'utf8'),body);
+  assert.equal(message.text,'Retained short document preview');assert.equal(message.complete,true);assert.match(result.notice,/inline.*referenced|referenced.*inline/i);
+  const foreign=await f.hold(other.id),denied=await f.tool(foreign,'ponderosa_history',{action:'read',communicationEventId:sent.eventId,before:0,after:0});assert.ok(denied.status>=400);assert.doesNotMatch(JSON.stringify(denied),new RegExp(artifact.id));
+ },{storeFactory:root=>store=new AgentStore(root)});
+});

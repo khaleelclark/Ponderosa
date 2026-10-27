@@ -53,7 +53,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
   /** A coarse injection flag alone cannot certify that abandoned work never
    * reached a provider. Preserve accepted evidence and use unknown-outcome
    * accounting rather than replaying its exact Activation. */
-  private canRetryUninjectedRun(runId: string): boolean {
+  canRetryUninjectedRun(runId: string): boolean {
     return Boolean(this.sqlite.prepare(`SELECT 1 FROM scheduler_runs run WHERE run.id=?
       AND run.prompt_injection_state='not_injected' AND run.started_at IS NULL
       AND NOT EXISTS (SELECT 1 FROM provider_inputs WHERE scheduler_run_id=run.id)

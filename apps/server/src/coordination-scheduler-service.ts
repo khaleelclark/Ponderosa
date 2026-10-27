@@ -236,7 +236,7 @@ interface CoordinationSchedulerContext {
     reason?: string,
     projectId?: string,
   ): Promise<string | undefined>;
-  closeRunBrowser(agentId: string, run: ActiveRun, reason: string): Promise<void>;
+  closeRunBrowser(agentId: string, run: Pick<ActiveRun, "runId" | "conversationId">, reason: string): Promise<void>;
   persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined;
   clearRunLeaseTimer(run: ActiveRun): void;
   clearRunLivenessTimer(run: ActiveRun): void;
@@ -397,8 +397,9 @@ return new CoordinationV3Scheduler(
         v3SchedulerRunId: lease.runId,
         v3FencingToken: lease.fencingToken,
         v3InjectionId: lease.injectionId,
-        v3FreshProviderSession: coordinationV3.runStartsNewRecipientRequest(lease.runId, lease.agentId) ||
-          coordinationV3.runChangesScope(lease.runId, lease.agentId),
+        // New work alone does not invalidate a compatible provider context.
+        // Scope and immutable runtime/policy contracts still fence reuse.
+        v3FreshProviderSession: coordinationV3.runChangesScope(lease.runId, lease.agentId),
         v3ActivationPrompt: prompt,
         ...(communication?.eventId ? { v3CommunicationEventId: communication.eventId } : {}),
       },
@@ -558,14 +559,22 @@ return new CoordinationV3Scheduler(
       const entry = [...activeRuns.entries()].find(([, run]) => run.runId === operation.runId);
       if (!entry) {
         try {
-          await providerProcessAuthority.terminateRun(operation.runId);
+          const canonical = store.sqlite.prepare('SELECT agent_id,scope_key FROM scheduler_runs WHERE id=?').get(operation.runId) as {agent_id:string;scope_key:string}|undefined;
+          if (!canonical) return { accepted: false, retryable: false, error: "Exact Run cleanup owner is unavailable" };
+          const results = await Promise.allSettled([
+            providerProcessAuthority.terminateRun(operation.runId),
+            closeRunBrowser(canonical.agent_id, {runId:operation.runId,
+              ...(canonical.scope_key.startsWith('conversation:') ? {conversationId:canonical.scope_key.slice('conversation:'.length)} : {})}, "run_cancelled"),
+          ]);
+          if (results.some(result => result.status === 'rejected')) throw new Error('Exact provider or browser cleanup remains pending');
           return { accepted: true };
         } catch (error) {
           return { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
         }
       }
       const [agentId, run] = entry;
-      void closeRunBrowser(agentId, run, "run_cancelled");
+      const browserCleanup = closeRunBrowser(agentId, run, "run_cancelled");
+      void browserCleanup.catch(() => undefined);
       closeLinkPreviewsForAgent(agentId, "run cancelled");
       clearRunLeaseTimer(run);
       clearRunLivenessTimer(run);
@@ -578,8 +587,11 @@ return new CoordinationV3Scheduler(
       }
       run.controller.abort();
       const runtime = persistentRuntimeForTermination(agentId);
-      const terminationError = await terminateRuntimeHandle(agentId, run, runtime);
-      if (terminationError) return { accepted: false, retryable: true, error: terminationError };
+      const cleanup = await Promise.allSettled([terminateRuntimeHandle(agentId, run, runtime), browserCleanup]);
+      const termination = cleanup[0];
+      if (cleanup.some(result => result.status === 'rejected') || termination.status === 'fulfilled' && termination.value) {
+        return { accepted: false, retryable: true, error: termination.status === 'fulfilled' && termination.value || 'Exact provider or browser cleanup remains pending' };
+      }
       try { await providerProcessAuthority.terminateRun(operation.runId); }
       catch (error) {
         return { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };

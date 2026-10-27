@@ -98,6 +98,10 @@ export interface CanonicalHistoryRetrievalEvent {
     communicationEventId: string;
     contentSha256: string;
     matchBasis?: "lexical";
+    startCodePoint?: number;
+    endCodePoint?: number;
+    totalCodePoints?: number;
+    complete?: boolean;
   }>;
   excludedCurrentContextEventIds: string[];
   responseUtf8Bytes: number;

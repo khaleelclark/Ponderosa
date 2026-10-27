@@ -90,11 +90,13 @@ export class BranchTriggerStore {
     })();
   }
 
-  listDueScheduleTriggers(now = new Date().toISOString(), limit = 100): TriggerDefinitionDto[] {
+  listDueScheduleTriggers(now = new Date().toISOString(), limit = 100, after?: { nextFireAt: string; id: string }): TriggerDefinitionDto[] {
     const rows = this.sqlite.prepare(`SELECT t.id FROM trigger_definitions t JOIN branches b ON b.id=t.branch_id
       WHERE t.enabled=1 AND b.enabled=1 AND b.deleting=0 AND b.trigger_id=t.id
-        AND t.source_kind='schedule' AND t.next_fire_at<=? ORDER BY t.next_fire_at,t.id LIMIT ?`)
-      .all(now,Math.max(1,Math.min(500,limit))) as {id:string}[];
+        AND t.source_kind='schedule' AND t.next_fire_at<=?
+        AND (? IS NULL OR t.next_fire_at>? OR (t.next_fire_at=? AND t.id>?))
+        ORDER BY t.next_fire_at,t.id LIMIT ?`)
+      .all(now, after?.nextFireAt ?? null, after?.nextFireAt ?? null, after?.nextFireAt ?? null, after?.id ?? null, Math.max(1,Math.min(500,limit))) as {id:string}[];
     return rows.map(row => this.getTriggerDefinition(row.id)!);
   }
 

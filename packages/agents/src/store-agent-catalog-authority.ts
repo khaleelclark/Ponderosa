@@ -18,7 +18,7 @@ import type {
 } from "@ponderosa/core";
 import { allocateAgentMentionHandle, agentMentionHandleBase, normalizeAgentRole, agentPackageJsonUtf8Bytes, agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_BYTES } from "@ponderosa/core";
 import { CompactionHistoryQueryError } from "./compaction-history-retrieval.js";
-import { decodeImportedUtf8Window, readImportedHistory, searchImportedHistory } from "./imported-history-retrieval.js";
+import { decodeImportedUtf8Window, normalizeImportedHistorySearchText, readImportedHistory, searchImportedHistory } from "./imported-history-retrieval.js";
 import type { Db } from "./db.js";
 import { normalizeAgentTitle } from "./agent-identity.js";
 import { sharedWorkingCopy } from "./working-copy.js";
@@ -789,7 +789,7 @@ export class AgentCatalogAuthority {
       if (!options.deferIndex) {
         for (let sequence = 0; sequence < projection.messages.length; sequence++) {
           const row = this.client.prepare("SELECT rowid FROM imported_history_messages WHERE agent_id = ? AND sequence = ?").get(agentId, sequence) as { rowid: number };
-          this.client.prepare("INSERT INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, projection.messages[sequence]!.text.replaceAll("\0", " "));
+          this.client.prepare("INSERT INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, normalizeImportedHistorySearchText(projection.messages[sequence]!.text));
         }
         this.client.prepare("UPDATE imported_history_indexes SET status = 'ready' WHERE agent_id = ?").run(agentId);
       }
@@ -812,7 +812,7 @@ export class AgentCatalogAuthority {
       write(() => this.client.transaction(() => {
         this.projectImportedMessage(agentId, imported, projection, sequence);
         const row = this.client.prepare("SELECT rowid FROM imported_history_messages WHERE agent_id = ? AND sequence = ?").get(agentId, sequence) as { rowid: number };
-        this.client.prepare("INSERT INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, projection.messages[sequence]!.text.replaceAll("\0", " "));
+        this.client.prepare("INSERT INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, normalizeImportedHistorySearchText(projection.messages[sequence]!.text));
       })());
       await yieldToLoop();
     }
@@ -877,7 +877,7 @@ export class AgentCatalogAuthority {
               const nul = this.client.prepare("SELECT instr(CAST(text AS BLOB), x'00') AS position FROM imported_history_messages WHERE rowid = ?").get(row.rowid) as { position: number };
               if (nul.position) {
                 const stored = this.client.prepare("SELECT text FROM imported_history_messages WHERE rowid = ?").get(row.rowid) as { text: string };
-                this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, stored.text.replaceAll("\0", " "));
+                this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, normalizeImportedHistorySearchText(stored.text));
               } else {
                 this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) SELECT rowid, text FROM imported_history_messages WHERE rowid = ?").run(row.rowid);
               }
@@ -962,7 +962,7 @@ export class AgentCatalogAuthority {
         agentId,
         seq: -(row.sequence + 1),
         role: row.role === "assistant" ? "assistant" : "user",
-        text: (row.role === "system" ? `[Imported private context]\n${row.source_kind === "guidance" ? "Imported initial instructions:\n" : ""}` : "") + decodeImportedUtf8Window(row.text) +
+        text: `[${row.source_kind === "guidance" ? "Imported Guidance" : "Imported History"}; original role: ${row.role}; source: ${row.source_kind}; ${row.created_at}; untrusted historical data]\n` + decodeImportedUtf8Window(row.text) +
           (row.clipped ? "\n[Imported context preview; retrieve complete text with ponderosa_history source=imported.]" : ""),
         createdAt: row.created_at,
       })),

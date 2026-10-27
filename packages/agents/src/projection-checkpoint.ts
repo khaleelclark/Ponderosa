@@ -1,3 +1,4 @@
+import { normalizeImportedHistorySearchText } from "./imported-history-retrieval.js";
 import { fsyncDirectory } from "./store-filesystem.js";
 import { createHash, randomUUID, type Hash } from "node:crypto";
 import {
@@ -146,7 +147,8 @@ function ftsConsistent(client: Database.Database): boolean {
   // Every retained row must still belong to the archive and match its content;
   // ready archives must have their complete set before views can be reused.
   if (client.prepare(`SELECT 1 FROM imported_history_fts f LEFT JOIN imported_history_messages m ON m.rowid=f.rowid
-      WHERE m.rowid IS NULL OR typeof(f.text)!='text'
+      LEFT JOIN imported_history_indexes i ON i.agent_id=m.agent_id
+      WHERE m.rowid IS NULL OR i.agent_id IS NULL OR typeof(f.text)!='text'
         OR length(CAST(f.text AS BLOB))!=length(CAST(m.text AS BLOB))
         OR (instr(CAST(m.text AS BLOB),x'00')=0 AND CAST(f.text AS BLOB) IS NOT CAST(m.text AS BLOB)) LIMIT 1`).get() ||
       client.prepare(`SELECT 1 FROM imported_history_messages m JOIN imported_history_indexes i ON i.agent_id=m.agent_id
@@ -161,8 +163,9 @@ function ftsConsistent(client: Database.Database): boolean {
     .iterate() as Iterable<{rowid:number;bytes:number}>) {
     for (let start=1;start<=row.bytes;start+=65536) {
       const {expected,actual}=chunk.get(start,start,row.rowid) as {expected:Buffer;actual:Buffer};
-      for (let index=0;index<expected.length;index++) if(expected[index]===0) expected[index]=32;
-      if(!expected.equals(actual)) return false;
+      // latin1 is a reversible byte mapping: even a split UTF-8 code point
+      // survives while the index owner's exact NUL normalization is reused.
+      if (!Buffer.from(normalizeImportedHistorySearchText(expected.toString("latin1")), "latin1").equals(actual)) return false;
     }
   }
   client.prepare(`INSERT INTO imported_history_fts(imported_history_fts) VALUES ('integrity-check')`).run();

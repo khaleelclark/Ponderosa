@@ -19,9 +19,10 @@ export function engineUnavailableReason(
 ): string | undefined {
   if (engine.installed === false) return "Not installed";
   if (engine.enabled === false) return "Disabled";
-  if (engine.authentication === "checking") return "Checking availability";
-  if (engine.authentication !== "authenticated") return "Sign-in required";
-  if (!engine.intakeReady) return "Unavailable";
+  if (engine.authentication === "checking") return "Checking Sign-In";
+  if (engine.authentication === "error") return "Sign-In Check Failed";
+  if (engine.authentication !== "authenticated") return "Sign-In Needed";
+  if (!engine.intakeReady) return "Provider Unavailable";
   return undefined;
 }
 

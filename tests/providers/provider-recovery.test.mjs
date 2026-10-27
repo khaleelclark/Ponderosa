@@ -189,7 +189,7 @@ test('missing-reply recovery still works for successful silent turns and stops a
   }
 });
 
-import { withFixture } from '../shared/fixture.mjs';
+import { withFixture, until } from '../shared/fixture.mjs';
 import { mkdtemp, writeFile, chmod, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -476,7 +476,7 @@ for(const persistent of [false,true])test(`UI014 Claude ${persistent?'persistent
  let events;
  if(persistent){session=new ClaudeStreamSession(options);await session.startTurn({prompt:'Controlled quota test'});const next=await session.events[Symbol.asyncIterator]().next();events=[next.value];}
  else events=await Array.fromAsync(new ClaudeAdapter({bin,killGraceMs:100}).seed({...options,prompt:'Controlled quota test'}));
- assert.equal(events.find(event=>event.type==='error').category,'quota_exhausted');assert.ok(handles.length);assert.equal(handles.every(handle=>!handle.isAlive()),true,'No independent CLI retry watchdog may remain alive');passed=true;
+ assert.equal(events.find(event=>event.type==='error').category,'quota_exhausted');if(persistent)await session.close();assert.ok(handles.length);assert.equal(handles.every(handle=>!handle.isAlive()),true,'No independent CLI retry watchdog may remain alive');passed=true;
 });
 
 test('UI014 Codex umbrella limit code never invents allowance exhaustion or hides subscription access',()=>{
@@ -486,4 +486,31 @@ test('UI014 Codex umbrella limit code never invents allowance exhaustion or hide
  const access=mapped('To use Codex with your ChatGPT plan, upgrade to Plus: https://chatgpt.com/explore/plus.');
  assert.equal(access.code,'plan_entitlement');assert.equal(access.category,'authentication');assert.match(access.message,/subscription does not include access/);assert.doesNotMatch(access.message,/usage limit reached/);
  assert.equal(publicProviderFailureEvent(access).message,access.message);
+});
+
+import {AgentStore} from '@ponderosa/agents';
+for(const acknowledged of [false,true])test(`typed root-exit rejection settles canonical quota once; acknowledged=${acknowledged}`,{timeout:30000},async t=>{
+ let store;await withFixture(t,async f=>{
+  const chat=await f.createChat('Quota ordering'),agent=await f.createIdleAgent(chat,'Quota reader'),reset=new Date(Date.now()+3600000).toISOString();
+  f.plans.set(agent.id,[{emitSession:acknowledged,output:false,run:session=>session.exitWithDetail({terminalEvent:{type:'error',category:'quota_exhausted',code:'quota_exhausted',message:'Controlled quota exhausted',quotaResetAt:reset,terminalStatus:'failed'}})}]);
+  await f.send(agent.id,'Original quota-bound task');
+  const run=await until(()=>store.sqlite.prepare("SELECT * FROM scheduler_runs WHERE agent_id=? AND status NOT IN ('leased','running')").get(agent.id),'canonical typed failure');
+  const failure=JSON.parse(run.provider_failure_json);assert.equal(failure.category,'quota_exhausted');assert.equal(failure.quotaResetAt??failure.resetAt??failure.failureDetail?.quotaResetAt,reset);
+  assert.equal(store.readEvents(agent.id).filter(row=>row.event.type==='agent_lifecycle'&&row.event.status==='failed'&&row.event.executionId===run.id).length,1);
+  const activations=store.sqlite.prepare('SELECT state,available_at FROM agent_activations WHERE agent_id=?').all(agent.id);
+  if(!acknowledged){assert.equal(activations.filter(row=>row.state==='retry_pending').length,1);assert.equal(activations.find(row=>row.state==='retry_pending').available_at,reset);}else assert.equal(activations.filter(row=>row.state==='retry_pending').length,0,'Acknowledged work must not be blindly replayed');
+  await f.reopen();assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs WHERE agent_id=?').get(agent.id).n,1);
+ },{storeFactory:root=>store=new AgentStore(root)});
+});
+
+test('Claude root observation revokes immediately but generic settlement waits for parsed buffered quota',{timeout:10000,skip:process.platform==='win32'},async t=>{
+ const {ClaudeStreamSession}=await import('../../packages/engines/dist/claude-stream-session.js');
+ const root=await mkdtemp(path.join(tmpdir(),'claude-buffered-exit-')),bin=path.join(root,'fake-claude'),observations=[];let session;
+ t.after(async()=>{await session?.close();await rm(root,{recursive:true,force:true})});
+ await writeFile(bin,'#!/usr/bin/env node\n'+`require('node:readline').createInterface({input:process.stdin}).on('line',line=>{if(JSON.parse(line).type!=='user')return;process.stdout.write(JSON.stringify({type:'system',subtype:'init',session_id:'retained-session'})+'\\n'+JSON.stringify({type:'rate_limit_event',rate_limit_info:{status:'rejected',rateLimitType:'five_hour',resetsAt:2000000000}})+'\\n',()=>process.exit(0));});`,{mode:0o700});
+ session=new ClaudeStreamSession({bin,cwd:root,history:[],agentId:'owned-buffered',signal:new AbortController().signal,permissionMode:'bypassPermissions',killGraceMs:100,onRuntimeSpawned(){},onRuntimeRootExit:detail=>observations.push(detail),environment:{PATH:path.dirname(process.execPath)+path.delimiter+(process.env.PATH??'')}});
+ await session.startTurn({prompt:'Controlled request'});const iterator=session.events[Symbol.asyncIterator]();assert.equal((await iterator.next()).value.type,'session');
+ await new Promise(resolve=>setTimeout(resolve,50));assert.ok(observations.some(row=>row.outputDraining));assert.equal(observations.some(row=>!row.outputDraining&&!row.terminalEvent),false);
+ const error=(await iterator.next()).value;assert.equal(error.category,'quota_exhausted');await session.close();await iterator.return();
+ assert.equal(observations.at(-1).terminalEvent.category,'quota_exhausted');assert.equal(session.isAlive(),false);
 });

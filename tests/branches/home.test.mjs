@@ -274,3 +274,25 @@ test('Home global read plans and bounded materialization remain stable at 25, 15
  }
  t.diagnostic(JSON.stringify({measurements,plans}));f.pass();
 });
+
+test('Trigger Events lifecycle projects bounded current diagnostics without attention badges and preserves dismissal after restart',async t=>{
+ const f=await fixture(t),branch=f.deploy('Diagnostic owner'),other=f.deploy('Other owner');
+ const notice=f.workspace.createNotification({kind:'information',severity:'info',branchId:branch.id,dedupeKey:'branch-source:owned:schedule:due',title:'Schedule Check Delayed',body:'Sanitized admission failure'},false);
+ f.workspace.createNotification({kind:'information',severity:'info',branchId:other.id,dedupeKey:'branch-source:foreign:schedule:due',title:'Foreign',body:'Private other source'},false);
+ const read=async()=>{const r=await f.app.inject({url:`/api/branches/${branch.id}/lifecycle`});assert.equal(r.statusCode,200);return r.json()};
+ assert.equal((await read()).sourceDiagnostics.length,1);assert.equal((await f.home()).openActionCount,0);
+ f.workspace.setNotificationStatus(notice.id,'dismissed');f.workspace.setNotificationStatus(notice.id,'resolved',true);await f.reopen();
+ assert.equal((await read()).sourceDiagnostics.length,0);const retained=f.workspace.getNotification(notice.id);assert.equal(retained.status,'dismissed');assert.ok(retained.recoveredAt);
+ f.pass();
+});
+
+test('a recovered polling notice can renew once while a dismissed unresolved episode stays dismissed across restart',async t=>{
+ const f=await fixture(t),input={kind:'information',severity:'info',dedupeKey:'branch-source:poller:schedule_polling',title:'Schedule Check Delayed',body:'Schedules could not be checked; retrying'};
+ const first=f.workspace.createNotification(input,false,true);
+ assert.equal(f.workspace.createNotification(input,false,true).id,first.id);
+ f.workspace.setNotificationStatus(first.id,'dismissed');await f.reopen();
+ assert.equal(f.workspace.createNotification(input,false,true).id,first.id);assert.equal(f.workspace.getNotification(first.id).status,'dismissed');
+ f.workspace.setNotificationStatus(first.id,'resolved',true);await f.reopen();
+ const next=f.workspace.createNotification(input,false,true);assert.notEqual(next.id,first.id);assert.equal(next.recoveredAt,undefined);
+ assert.equal(f.workspace.createNotification(input,false,true).id,next.id);assert.ok(f.workspace.getNotification(first.id).recoveredAt);assert.equal((await f.home()).openActionCount,0);f.pass();
+});

@@ -57,6 +57,7 @@ async function containedAuthCommand(
       finished = true;
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
+      const probeSucceeded = !error && !terminate;
       try {
         // close() is an observed no-op after natural exit and exact tree
         // teardown after timeout, output overflow, or spawn failure.
@@ -66,7 +67,7 @@ async function containedAuthCommand(
           `${error?.message ?? "provider authentication probe failed"}; teardown: ` +
           `${closeError instanceof Error ? closeError.message : String(closeError)}`,
         );
-        Object.assign(error, { probeReason: "cleanup_failed" });
+        Object.assign(error, { probeReason: "cleanup_failed", probeSucceeded });
       }
       if (error || terminate) {
         const failure = error ?? new Error("provider authentication probe failed");
@@ -127,8 +128,12 @@ export async function codexAuthStatus(
     const output = `${stdout}\n${stderr}`.trim();
     return parseCodexLoginStatus(output);
   } catch (err) {
-    const failed = err as Error & { stdout?: string; stderr?: string; probeReason?: EngineAuthStatus["reason"]; code?: string; probeExitCode?: number };
+    const failed = err as Error & { stdout?: string; stderr?: string; probeReason?: EngineAuthStatus["reason"]; code?: string; probeExitCode?: number; probeSucceeded?: boolean };
     const output = `${failed.stdout ?? ""}\n${failed.stderr ?? ""}`;
+    if(failed.probeReason==='cleanup_failed'&&failed.probeSucceeded&&output.length<=256*1024){
+      const observed=parseCodexLoginStatus(output);
+      if(observed.status!=='unknown')return {...observed,diagnosticFailure:'cleanup_failed'};
+    }
     if (!failed.probeReason && failed.probeExitCode === 1 && output.length <= 256 * 1024) {
       const observed = parseCodexLoginStatus(output);
       if (!observed.authenticated && observed.status !== "unknown") return observed;

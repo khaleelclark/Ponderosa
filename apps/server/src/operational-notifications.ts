@@ -36,6 +36,7 @@ export function createOperationalNotifications(context: OperationalNotifications
   const createOperationalNotification = (input: {
     dedupeKey: string;
     informational?: boolean;
+    renewAfterRecovery?: boolean;
     push?:boolean;
     branchId?:string;
     branchExecutionId?:string;
@@ -54,8 +55,8 @@ export function createOperationalNotifications(context: OperationalNotifications
     resolution?: WorkspaceNotificationDto["resolution"];
   }): WorkspaceNotificationDto => {
     const cursor = workspace.cursor();
-    const { informational, push, ...notificationInput } = input;
-    const notification = workspace.createNotification({ kind: informational ? "information" : "operational", status: "open", ...notificationInput }, push ?? input.severity !== "info");
+    const { informational, push, renewAfterRecovery, ...notificationInput } = input;
+    const notification = workspace.createNotification({ kind: informational ? "information" : "operational", status: "open", ...notificationInput }, push ?? input.severity !== "info", renewAfterRecovery);
     publishWorkspaceSince(cursor);
     return notification;
   };
