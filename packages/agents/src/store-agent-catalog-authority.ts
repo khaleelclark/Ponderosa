@@ -938,25 +938,27 @@ export class AgentCatalogAuthority {
 
   getImportedHistoryMessagePage(
     agentId: string,
-    input: { limit: number; before?: ContextReadBoundary },
-  ): ContextSourcePage<MessageDto> {
+    input: { limit: number; before?: ContextReadBoundary; maxTextUtf8Bytes?: number },
+  ): ContextSourcePage<MessageDto> & { hasClippedMessages: boolean } {
+    const maxTextUtf8Bytes = Math.max(1, Math.min(input.maxTextUtf8Bytes ?? 256 * 1024, 256 * 1024));
     const limit = Math.max(1, Math.min(input.limit, 100));
     const rows = this.client.prepare(`
-      SELECT message_id, sequence, role, source_kind, substr(CAST(text AS BLOB), 1, 24000) AS text,
-        total_utf8_bytes > 24000 AS clipped, created_at
+      SELECT message_id, sequence, role, source_kind, substr(CAST(text AS BLOB), 1, ?) AS text,
+        total_utf8_bytes > ? AS clipped, created_at
       FROM imported_history_messages
       WHERE agent_id = ?
         ${input.before ? "AND (created_at < ? OR (created_at = ? AND message_id < ?))" : ""}
       ORDER BY created_at DESC, message_id DESC
       LIMIT ?
     `).all(...(input.before
-      ? [agentId, input.before.createdAt, input.before.createdAt, input.before.id, limit + 1]
-      : [agentId, limit + 1])) as Array<{
+      ? [maxTextUtf8Bytes, maxTextUtf8Bytes, agentId, input.before.createdAt, input.before.createdAt, input.before.id, limit + 1]
+      : [maxTextUtf8Bytes, maxTextUtf8Bytes, agentId, limit + 1])) as Array<{
       message_id: string; sequence: number; role: PortableAgentHistoryMessageDto["role"];
       text: Buffer; source_kind: string; clipped: number; created_at: string;
     }>;
     return {
       hasMore: rows.length > limit,
+      hasClippedMessages: rows.slice(0, limit).some(row => Boolean(row.clipped)),
       items: rows.slice(0, limit).map((row) => ({
         id: row.message_id,
         agentId,

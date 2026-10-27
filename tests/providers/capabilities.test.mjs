@@ -91,3 +91,26 @@ test('existing provider inventories retain bounded tool names/descriptions witho
  let accessed=false;const getter=structuredClone(codex);Object.defineProperty(getter.mcpServers[0].tools[0],'description',{get(){accessed=true;return'unsafe'}});assert.throws(()=>projectProviderCapabilities(getter),/invalid structured data/);assert.equal(accessed,false);
  const wrong=structuredClone(codex);wrong.mcpServers[0].tools[0].description={nested:'bad'};assert.throws(()=>projectProviderCapabilities(wrong),/invalid structured data/);
 });
+
+
+test('Codex occupancy and capacity observations stay with their exact provider thread', async () => {
+  const { CodexAppServerSession } = await import('../../packages/engines/dist/codex-app-server.js');
+  const session = Object.create(CodexAppServerSession.prototype);
+  session.engineAgentId = 'owned-generation';
+  let observed = 0;
+  session.contextUsageGate = { observe: () => observed++ };
+  const usage = threadId => ({ method: 'thread/tokenUsage/updated', params: {
+    threadId, turnId: 'turn', tokenUsage: { total: { totalTokens: 900000 },
+      last: { totalTokens: 1200 }, modelContextWindow: 200000 },
+  } });
+  for (const id of ['foreign-generation', undefined]) session.observeNotification(usage(id));
+  assert.equal(session.contextUsage(), undefined);
+  assert.equal(observed, 0);
+  session.observeNotification(usage('owned-generation'));
+  assert.deepEqual(session.contextUsage(), { usedTokens: 1200, aggregateTokens: 900000,
+    windowTokens: 200000, providerSessionGeneration: 'owned-generation' });
+  assert.equal(observed, 1);
+  session.observeNotification(usage('foreign-generation'));
+  assert.equal(session.contextUsage().usedTokens, 1200);
+  assert.equal(observed, 1);
+});

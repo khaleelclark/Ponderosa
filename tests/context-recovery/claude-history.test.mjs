@@ -429,14 +429,14 @@ test('ordinary accepted boundary supports complete Unicode chunks, concise direc
  assert.equal(audits[0].event.selected[0].complete,false);assert.equal(audits[0].event.selected[0].startCodePoint,0);
 }));
 
-test('40-message omission reaches the actual prompt and a discarded session cannot hide its older history', {timeout:30000},async t=>{
+test('context-budget omission reaches the actual prompt and a discarded session cannot hide its older history', {timeout:30000},async t=>{
  let store;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Canonical context'),agent=await f.createIdleAgent(chat,'Retained reader');
   const authored=(text,number)=>{const event={schemaVersion:2,eventId:randomUUID(),projectId:chat.projectId,conversationId:chat.id,sender:{kind:'user',userId:'local-operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'local-operator',agentId:agent.id},text,createdAt:new Date(Date.now()-100000+number*10).toISOString()};store.appendCommunicationEvent(event);store.appendEvent(agent.id,{type:'communication_projection',communicationEventId:event.eventId,text:event.text,role:'user'});return event};
   const older=authored('Unique amber compass secret retained fact',0);
   await f.send(agent.id,'Read initial context');await f.settled(agent.id);const oldSession=f.turns.at(-1).sessionId;
-  for(let index=1;index<=45;index++)authored('Recent bounded private item '+index,index);
+  for(let index=1;index<=45;index++)authored('Recent bounded private item '+index+' · retained detail '.repeat(200),index);
   f.ok(await f.api('PATCH','/api/workspace/preferences',{globalInstructions:'Genuine new instruction for a fresh canonical context'}));
   const session=await f.hold(agent.id);assert.notEqual(session.engineAgentId,oldSession);assert.match(f.turns.at(-1).input.prompt,/BOUNDED HISTORICAL CONTEXT.*Additional older/s);
   const found=f.ok(await f.tool(session,'ponderosa_history',{action:'search',query:'Unique amber compass'}));assert.ok(found.hits.some(hit=>hit.communicationEventId===older.eventId));
