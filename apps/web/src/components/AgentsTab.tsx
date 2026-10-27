@@ -45,7 +45,6 @@ import { queryKeys } from "../queryKeys";
 import { AddAgentsFlow } from "./AddAgentsFlow";
 import { AgentPackageExportDialog } from "./AgentPackageDialogs";
 import { useAgentPackageActions } from "./useAgentPackageActions";
-import { useMutationNotification } from "./MutationNotifications";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { AgentOrganizationDialog } from "./AgentDetail.parts";
 import { TextInputDialog } from "./ConfirmationDialogs";
@@ -287,7 +286,6 @@ export function AgentsTab({
   organizationRootAgentId?: string;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const notify = useMutationNotification();
   const workspaceConnection = useWorkspaceConnection();
   const [statusFilters, setStatusFilters] = useState<StatusFilter[]>([]);
   const [masterFilter, setMasterFilter] = useState<string>("all");
@@ -317,7 +315,6 @@ export function AgentsTab({
   const { copyAgentPackage, downloadAgentPackage } = useAgentPackageActions({
     agentId: exportAgent?.id ?? "",
     title: exportAgent?.title,
-    onNotice: notify,
   });
   const [agentMenu, setAgentMenu] =
     useState<ResourceContextMenuState<string>>();

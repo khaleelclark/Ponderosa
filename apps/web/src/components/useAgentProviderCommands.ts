@@ -8,6 +8,7 @@ import { useState } from "react";
 import { api } from "../api";
 import { refreshLatestAgentProviderUsage } from "../providerUsageQuery";
 import { queryKeys } from "../queryKeys";
+import { useMutationNotification } from "./MutationNotifications";
 
 export function useAgentProviderCommands({
   agentId,
@@ -19,6 +20,7 @@ export function useAgentProviderCommands({
   onNotice(value: string): void;
 }) {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const [providerUsageState, setProviderUsageState] =
     useState<ProviderUsageStateDto>();
   const invokeAgentCommand = async (
@@ -62,10 +64,8 @@ export function useAgentProviderCommands({
       name: command.name,
       ...(argumentsText ? { argumentsText } : {}),
     });
-    onNotice(
-      result.message ??
-        `/${command.name} invoked through ${engine?.displayName ?? "the provider"}.`,
-    );
+    if (result.message) onNotice(result.message);
+    else notify({ key: "provider-command", message: `/${command.name} Completed` });
   };
   return {
     invokeAgentCommand,

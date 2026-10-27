@@ -251,3 +251,119 @@ test('All Messages keeps provider command output visible and uses shared feedbac
   await assert.rejects(scope.command({ name: 'compact' }), /Provider unavailable/);
   assert.equal(notices.length, 1, 'failures propagate to the existing command error owner');
 });
+
+// Exercise the real remaining copy owners with a controlled clipboard/notifier.
+// Their shared provider's timer and durable-error behavior is covered above.
+test('Agent header transcript and import conversion prompt copy preserve bytes without changing message notices', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const vm = await import('node:vm');
+  const ts = await import('typescript');
+  for (const [file, variable] of [['AgentDetail.header.tsx', undefined], ['ImportAgentDialog.tsx', 'copyExternalPrompt']]) {
+    const source = await readFile(new URL(`../../apps/web/src/components/${file}`, import.meta.url), 'utf8');
+    const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    let callback;
+    const visit = node => {
+      if (variable && ts.isVariableDeclaration(node) && node.name.getText(ast) === variable) callback = node.initializer.getText(ast);
+      if (!variable && ts.isPropertyAssignment(node) && node.name.getText(ast) === 'onSelect' && node.initializer.getText(ast).includes('copyText(transcriptMarkdown)')) callback = node.initializer.getText(ast);
+      ts.forEachChild(node, visit);
+    };
+    visit(ast);
+    assert.ok(callback, `${file} retains its existing copy action`);
+    const exact = '# Canonical transcript\n\n#Agent `literal` café 🌲\n\n{"text":"do not rewrite"}\n';
+    const copied = [], notices = [];
+    const scope = { transcriptMarkdown: exact, externalAgentImportPrompt: () => exact, Error,
+      copyText: async text => { copied.push(text); }, notify: notice => notices.push(notice) };
+    const copy = vm.runInNewContext(ts.transpile(`(${callback})`, { target: ts.ScriptTarget.ES2022 }), scope);
+    await copy();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(copied, [exact], file);
+    assert.equal(notices.length, 1); assert.equal(notices[0].message, 'Copied');
+    assert.equal(notices[0].persistent, undefined, 'success inherits the shared three-second timeout');
+    scope.copyText = async () => { throw new Error('Clipboard denied'); };
+    await copy();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(notices.length, 2); assert.equal(notices[1].severity, 'error', 'failure uses the shared durable error path');
+  }
+});
+
+test('Agent package copy retains deferred clipboard transfer and downloads have one shared acknowledgment', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const vm = await import('node:vm');
+  const ts = await import('typescript');
+  const source = await readFile(new URL('../../apps/web/src/components/useAgentPackageActions.ts', import.meta.url), 'utf8');
+  const module = { exports: {} }, notices = [], requests = [], copied = [], links = [];
+  const exact = '{"agent":"Original","content":"café 🌲\\nunchanged"}';
+  let exportText = Promise.withResolvers();
+  const anchor = { dataset: {}, style: {}, click() { links.push({ href: this.href, download: this.download, feedback: this.dataset.ponderosaDownloadFeedback }); }, remove() {} };
+  const imports = { '../api': { api: {
+    exportAgentText: (...args) => { requests.push(args); return exportText.promise; },
+    agentExportDownloadUrl: (...args) => { requests.push(args); return '/api/agents/agent-a/export?mode=full&organization=true'; },
+  } }, '../clipboard': { copyDeferredText: async pending => { assert.equal(pending, exportText.promise, 'Safari deferred clipboard receives the original export Promise'); copied.push(await pending); } },
+    './MutationNotifications': { useMutationNotification: () => notice => notices.push(notice) },
+    './AgentDetail.helpers': { portablePackageFileName: (title, organization, mode) => `${title}-${organization}-${mode}.json` } };
+  vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText,
+    { module, exports: module.exports, Error, document: { createElement: () => anchor, body: { appendChild() {} } }, require: name => imports[name] });
+  const actions = module.exports.useAgentPackageActions({ agentId: 'agent-a', title: 'Original' });
+  const copying = actions.copyAgentPackage('full', true);
+  assert.equal(notices.length, 0, 'an unconfirmed export is not acknowledged');
+  exportText.resolve(exact); await copying;
+  assert.deepEqual(copied, [exact]); assert.equal(notices[0].message, 'Copied'); assert.equal(notices[0].persistent, undefined);
+  exportText = Promise.withResolvers(); const failure = actions.copyAgentPackage('template'); exportText.reject(Error('Export failed')); await failure;
+  assert.equal(notices[1].severity, 'error'); assert.match(notices[1].message, /Export failed/);
+  await actions.downloadAgentPackage('full', true);
+  assert.deepEqual(links, [{ href: '/api/agents/agent-a/export?mode=full&organization=true', download: 'Original-true-full.json', feedback: 'handled' }]);
+  assert.equal(notices[2].message, 'Download started'); assert.equal(notices[2].persistent, undefined);
+  assert.deepEqual(requests.map(args => [...args]), [['agent-a', 'full', true], ['agent-a', 'template', false], ['agent-a', 'full', true]]);
+});
+
+test('Agent provider commands keep meaningful output and errors in their existing owner', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const vm = await import('node:vm');
+  const ts = await import('typescript');
+  const source = await readFile(new URL('../../apps/web/src/components/useAgentProviderCommands.ts', import.meta.url), 'utf8');
+  const module = { exports: {} }, output = [], notices = [], requests = [];
+  let result = { message: 'Model: GPT-6.1\nUsage: 25%\nReset: tomorrow' };
+  const api = { invokeProviderCommand: async (...args) => { requests.push(args); return result; } };
+  const imports = { react: { useState: () => [undefined, () => {}] }, '@tanstack/react-query': { useQueryClient: () => ({}) },
+    '../api': { api }, '../providerUsageQuery': {}, '../queryKeys': {},
+    './MutationNotifications': { useMutationNotification: () => notice => notices.push(notice) } };
+  vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText,
+    { module, exports: module.exports, require: name => imports[name] });
+  const commands = module.exports.useAgentProviderCommands({ agentId: 'agent-a', engine: {}, onNotice: value => output.push(value) });
+  await commands.invokeAgentCommand({ name: 'status' }, '');
+  assert.equal(output.at(-1), result.message); assert.equal(notices.length, 0, 'status output remains visible rather than timed feedback');
+  result = {}; await commands.invokeAgentCommand({ name: 'compact' }, '');
+  assert.equal(output.length, 1, 'completion does not overwrite an existing meaningful result');
+  assert.equal(notices[0].message, '/compact Completed'); assert.equal(notices[0].persistent, undefined);
+  api.invokeProviderCommand = async () => { throw Error('Provider command failed'); };
+  await assert.rejects(commands.invokeAgentCommand({ name: 'compact' }, ''), /Provider command failed/);
+  assert.equal(notices.length, 1, 'failures propagate to the existing command error owner');
+  assert.deepEqual(requests.map(([agentId, input]) => [agentId, { ...input }]), [['agent-a', { name: 'status' }], ['agent-a', { name: 'compact' }]]);
+});
+
+test('Chat provider command acknowledgment does not overwrite retained provider output', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const vm = await import('node:vm');
+  const ts = await import('typescript');
+  const source = await readFile(new URL('../../apps/web/src/components/ConversationView.tsx', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('chat.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let callback;
+  const visit = node => {
+    if (ts.isJsxAttribute(node) && node.name.getText(ast) === 'onCommand') callback = node.initializer.expression.getText(ast);
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  assert.ok(callback);
+  const output = [], notices = [], requests = [];
+  let result = { message: 'Provider status: usage resets tomorrow' };
+  const api = { invokeProviderCommand: async (...args) => { requests.push(args); return result; } };
+  const scope = { api, commandTargetAgent: { id: 'agent-a', title: 'Original' },
+    setQueuedMessageNotice: value => output.push(value), notify: notice => notices.push(notice) };
+  const command = vm.runInNewContext(ts.transpile(`(${callback})`, { target: ts.ScriptTarget.ES2022 }), scope);
+  await command({ name: 'status' }, ''); assert.equal(output[0], result.message); assert.equal(notices.length, 0);
+  result = {}; await command({ name: 'compact' }, ''); assert.equal(output.length, 1);
+  assert.equal(notices[0].message, '/compact Completed'); assert.equal(notices[0].persistent, undefined);
+  api.invokeProviderCommand = async () => { throw Error('Provider unavailable'); };
+  await assert.rejects(command({ name: 'compact' }, ''), /Provider unavailable/);
+  assert.equal(notices.length, 1); assert.deepEqual(requests.map(([id, input]) => [id, { ...input }]), [['agent-a', { name: 'status' }], ['agent-a', { name: 'compact' }]]);
+});

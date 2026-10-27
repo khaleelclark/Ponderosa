@@ -236,7 +236,6 @@ export function AgentDetail({
   } = useAgentPackageActions({
     agentId,
     title: detail?.agent.title,
-    onNotice: setQueuedMessageNotice,
   });
 
   useEffect(() => {
@@ -941,7 +940,6 @@ export function AgentDetail({
         onStop={stopActiveRun}
         onExportPackage={() => setExportOpen(true)}
         onDuplicate={conversations.length ? () => setDuplicateOpen(true) : undefined}
-        onNotice={setQueuedMessageNotice}
         onOpenTechnical={() => openTechnicalDetails()}
         onRename={() => {
           setRenameValue(detail.agent.title);

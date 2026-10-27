@@ -1,5 +1,6 @@
 import { api } from "../api";
 import { copyDeferredText } from "../clipboard";
+import { useMutationNotification } from "./MutationNotifications";
 import {
   portablePackageFileName,
 } from "./AgentDetail.helpers";
@@ -7,14 +8,13 @@ import {
 interface AgentPackageActionsInput {
   agentId: string;
   title?: string;
-  onNotice(value: string): void;
 }
 
 export function useAgentPackageActions({
   agentId,
   title,
-  onNotice,
 }: AgentPackageActionsInput) {
+  const notify = useMutationNotification();
 
   const copyAgentPackage = async (
     mode: "template" | "full",
@@ -24,13 +24,11 @@ export function useAgentPackageActions({
       await copyDeferredText(
         api.exportAgentText(agentId, mode, organization),
       );
-      onNotice("Agent package JSON copied. To import it, choose Add Agents → Import Agent package.");
+      notify({ key: "copy-agent-package", message: "Copied" });
     } catch (error) {
-      onNotice(
-        error instanceof Error
-          ? `Agent package JSON could not be copied: ${error.message}`
-          : "Agent package JSON could not be copied.",
-      );
+      notify({ key: "copy-agent-package", severity: "error", message: error instanceof Error
+        ? `Agent package JSON could not be copied: ${error.message}`
+        : "Agent package JSON could not be copied." });
     }
   };
   const downloadAgentPackage = async (
@@ -49,7 +47,7 @@ export function useAgentPackageActions({
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
-    onNotice("Agent package download started.");
+    notify({ key: "agent-package-download", message: "Download started" });
   };
   return {
     copyAgentPackage,
