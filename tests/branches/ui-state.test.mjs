@@ -981,6 +981,15 @@ test('pending actual advanced Apply survives publication retry without a new edi
  }
 });
 
+
+test('unpublished dot has a focusable shared tooltip and disappears at every clean baseline',()=>{
+ const props={name:'Workflow',tab:'workflow',published:true,dirty:true,executionCount:2,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){}};
+ const dirty=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,props));
+ assert.ok(/role="img"[^>]*tabindex="0"[^>]*aria-label="Unpublished changes"/.test(dirty));assert.ok(dirty.includes('Unpublished workflow changes. Use Save to review and publish, or Discard changes.'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Unpublished changes"'));assert.ok(dirty.indexOf('aria-label="Unpublished changes"')<dirty.indexOf('aria-label="Save changes…"'));
+ const clean=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false}));assert.ok(!clean.includes('aria-label="Unpublished changes"'));assert.ok(!clean.includes('role="img"'));
+ const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(!initial.includes('role="img"'));assert.ok(!initial.includes('Unpublished changes'));assert.ok(!initial.includes('Use Save to review and publish, or Discard changes.'));
+});
+
 // Exercise the real intervention fields, mutation and shared dialog shell.
 // Controlled transport keeps this recovery check isolated from live work.
 async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}={}){
