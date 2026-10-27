@@ -973,6 +973,7 @@ export function registerServerLifecycle(
         drainEngineCapabilityDiscoveries(),
         drainEngineModelCatalogDiscoveries(),
         providerUsage.shutdown(),
+        providerProcessAuthority.terminateDiagnostics(),
       ]);
       const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, "Provider runtime authority shutdown did not complete");

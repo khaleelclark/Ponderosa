@@ -146,6 +146,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       ? publicProviderAvailabilityDetail(denial.detail, denial.failureCategory)
       : undefined;
   };
+  const diagnosticCleanupPending = (id: string): boolean =>
+    ["authentication", "availability"].some((kind) =>
+      context.providerProcessAuthority.count({ purpose: `${id} ${kind} diagnostic` }) > 0);
   const runtimeAdmissionBlocker = (id: string, registration: EngineRegistration): import("@ponderosa/core").QueuedAdmissionBlockerDto | undefined => {
     const providerId = id.slice(0, 128);
     if (!providerEnabled(id)) return { kind: "provider_disabled", providerId };
@@ -156,6 +159,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     if (auth.state === "unknown") return { kind: "authentication_unknown", providerId,
       ...(auth.lastKnown ? { lastKnownAuthentication: auth.lastKnown } : {}) };
     if (!auth.authenticated) return { kind: "authentication_required", providerId, ...(auth.observedAt ? { observedAt: auth.observedAt } : {}) };
+    if (auth.diagnosticFailure || diagnosticCleanupPending(id)) return {kind:'provider_unavailable',providerId,...(auth.observedAt?{observedAt:auth.observedAt}:{})};
     const denial = engineAvailability.denial(id);
     return denial ? { kind: "provider_unavailable", providerId, observedAt: denial.observedAt } : undefined;
   };
@@ -165,7 +169,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
   ): Promise<{
     configured: true;
     installed?: boolean;
-    authentication: "authenticated" | "unauthenticated" | "error";
+    authentication: "checking" | "authenticated" | "unauthenticated" | "error";
     intakeReady: boolean;
     reachability: "unverified" | "reachable" | "degraded";
     authDetail?: string;
@@ -179,7 +183,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     availabilityBuildRevision?: string;
     availabilityInstanceId?: string;
     authLastKnown?: { authenticated: boolean; observedAt: string };
+    resourceAdmission?: import("@ponderosa/core").ResourceAdmissionDto;
   }> => {
+    let resources = context.resourceAdmission?.snapshot(activeRuns.size);
     if (!providerInstalled(id, registration)) return {
       configured: true, installed: false, authentication: "unauthenticated",
       intakeReady: false, reachability: "unverified",
@@ -188,8 +194,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     let auth: import("@ponderosa/core").EngineAuthStatus;
     try {
       auth = registration.authStatus
-        ? await engineAuthStatuses.read(id, registration.authStatus, providerEnabled(id) && context.resourceAdmission?.snapshot().state !== "held")
+        ? await engineAuthStatuses.read(id, registration.authStatus, providerEnabled(id) && resources?.state !== "held")
         : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
+      resources = context.resourceAdmission?.snapshot(activeRuns.size);
     } catch (error) {
       app.log.warn({
         providerError: restrictedProviderExceptionLogDetail(error),
@@ -208,23 +215,30 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       };
     }
     const unknown = auth.status === "unknown";
-    const authDetail = unknown ? "Provider authentication could not be checked."
+    const checking = unknown && auth.reason === "probe_pending";
+    const authDetail = checking ? resources?.state === "held"
+      ? "Provider sign-in check is deferred while waiting for host resources."
+      : "Provider sign-in check is pending."
+      : unknown ? "Provider authentication could not be checked."
       : auth.authenticated
       ? "Provider authentication is available."
       : "Provider authentication is required.";
     const denial = runtimeFailureDetail(id);
     const evidence = engineAvailability.get(id);
     const enabled = providerEnabled(id);
+    const cleanupPending = Boolean(auth.diagnosticFailure) || diagnosticCleanupPending(id);
     return {
       configured: true,
       installed: true,
-      authentication: unknown ? "error" : auth.authenticated ? "authenticated" : "unauthenticated",
-      intakeReady: enabled && !unknown && auth.authenticated && !denial && context.resourceAdmission?.snapshot(activeRuns.size).state !== "held",
+      authentication: checking ? "checking" : unknown ? "error" : auth.authenticated ? "authenticated" : "unauthenticated",
+      intakeReady: enabled && !unknown && auth.authenticated && !cleanupPending && !denial && resources?.state !== "held",
+      ...(resources ? { resourceAdmission: resources } : {}),
       authObservedAt: engineAuthStatuses.snapshot(id).observedAt,
       ...(auth.reason ? { authReason: auth.reason } : {}),
+      ...(auth.diagnosticFailure?{authDiagnosticFailure:auth.diagnosticFailure}:{}),
       ...(auth.source ? { authSource: auth.source } : {}),
       ...(unknown && engineAuthStatuses.snapshot(id).lastKnown ? { authLastKnown: engineAuthStatuses.snapshot(id).lastKnown } : {}),
-      reachability: evidence ? (evidence.available ? "reachable" : "degraded") : "unverified",
+      reachability: evidence ? (evidence.available ? "reachable" : denial ? "degraded" : "unverified") : "unverified",
       ...(evidence ? {
         availabilityObservedAt: evidence.observedAt,
         availabilitySource: evidence.source,
@@ -236,6 +250,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         ? { availabilityCategory: evidence.failureCategory ?? "unknown" }
         : {}),
       ...(!enabled ? { availabilityDetail: "disabled by the operator; queued work is held" }
+        : resources?.state === "held"
+        ? { availabilityDetail: "Waiting for host resources. Accepted work remains queued and will resume automatically when headroom recovers." }
+        : cleanupPending ? { availabilityDetail: "Provider diagnostic cleanup is pending; replacement remains blocked until the owned process exits." }
         : !auth.authenticated
         ? { availabilityDetail: authDetail ?? "runtime is not authenticated" }
         : denial ? { availabilityDetail: denial }

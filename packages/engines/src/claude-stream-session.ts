@@ -32,6 +32,8 @@ export class ClaudeStreamSession implements RuntimeSession {
   readonly engineAgentId: string;
   readonly events: AsyncIterable<AgentEvent>;
   private readonly child: ChildProcess;
+  private reportDrainedRootExit?: () => void;
+  private terminalEvent?: Extract<AgentEvent, {type:"error"}>;
   private active = false;
   private closed = false;
   private stderrTail = "";
@@ -97,18 +99,28 @@ export class ClaudeStreamSession implements RuntimeSession {
     opts.onRuntimeSpawned(this);
     let rootExitReported = false;
     let postExitDrainTimer: NodeJS.Timeout | undefined;
-    const reportRootExit = (code?: number | null, signal?: NodeJS.Signals | null) => {
-      if (rootExitReported) return;
+    let rootExit: { exitCode?: number | null; signal?: string | null } | undefined;
+    const reportRootExit = () => {
+      if (rootExitReported || !rootExit) return;
       rootExitReported = true;
-      opts.onRuntimeRootExit?.({ exitCode: code, signal, stderr: this.stderrTail });
-      postExitDrainTimer = setTimeout(() => this.child.stdout?.destroy(), 1_000);
-    };
-    this.child.stdout?.once("close", () => {
       if (postExitDrainTimer) clearTimeout(postExitDrainTimer);
-      postExitDrainTimer = undefined;
-    });
-    this.child.once("error", () => reportRootExit());
-    this.child.once("exit", reportRootExit);
+      opts.onRuntimeRootExit?.({ ...rootExit, stderr: this.stderrTail,
+        ...(this.terminalEvent ? { terminalEvent: this.terminalEvent } : {}) });
+    };
+    const observeRootExit = (code?: number | null, signal?: NodeJS.Signals | null) => {
+      if (rootExit) return;
+      rootExit = { exitCode: code, signal };
+      // Revoke tool authority immediately. Only generic settlement waits for
+      // the existing bounded stdout drain: a typed error may still be in the pipe.
+      opts.onRuntimeRootExit?.({ ...rootExit, outputDraining: true });
+      postExitDrainTimer = setTimeout(() => {
+        this.child.stdout?.destroy();
+        reportRootExit();
+      }, 1000);
+    };
+    this.reportDrainedRootExit = reportRootExit;
+    this.child.once("error", () => observeRootExit());
+    this.child.once("exit", observeRootExit);
     this.child.stdin?.on("error", () => undefined);
     this.child.stderr?.setEncoding("utf8");
     this.child.stderr?.on("data", (chunk: string) => {
@@ -125,6 +137,7 @@ export class ClaudeStreamSession implements RuntimeSession {
 
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
     if (this.active) throw new Error("Claude already has an active turn");
+    this.terminalEvent=undefined;
     const turnId = input.clientMessageId ?? randomUUID();
     const prompt = this.opts.resumeSessionId
       ? input.prompt
@@ -232,9 +245,23 @@ export class ClaudeStreamSession implements RuntimeSession {
         const observation = this.contextObservations.observe(raw);
         if (observation) yield observation;
         for (const event of mapClaudeEvent(raw, { cwd: this.opts.cwd })) {
+          if(event.type==='error')this.terminalEvent=event;
           if (event.type === "turn_done" || event.type === "error") {
             this.active = false;
             this.contextObservations.endTurn();
+          }
+          if (event.type === "error" && event.code === "quota_exhausted") {
+            // A rejected allowance event can arrive while Claude's own retry
+            // watchdog is waiting. Observe exit before handing recovery back
+            // to Ponderosa; never leave two independent retry authorities.
+            const closing=this.close();
+            // The caller may stop advancing this iterator at the error. Begin
+            // owned teardown, deliver the cause now, and let close() remain the
+            // shared observed-termination promise used by the runtime owner.
+            void closing.catch(()=>undefined);
+            yield event;
+            await closing;
+            return;
           }
           yield event;
         }
@@ -248,6 +275,10 @@ export class ClaudeStreamSession implements RuntimeSession {
       };
       await this.close();
       return;
+    } finally {
+      // Parser completion, not the stream close event, proves buffered JSONL
+      // was consumed. The root timer remains the bounded fallback.
+      this.reportDrainedRootExit?.();
     }
     if (!this.closed) {
       yield { type: "error", message: `Claude stream stopped${this.stderrTail.trim() ? `: ${this.stderrTail.trim()}` : ""}` };

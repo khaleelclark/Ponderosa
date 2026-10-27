@@ -37,6 +37,7 @@ import {
 } from "../hooks/queries";
 import {
   engineIsAvailable,
+  engineUnavailableReason,
   resolveConversationEngine,
   resolveRuntimeSelection,
 } from "../conversationEngine";
@@ -782,11 +783,7 @@ export function ConversationView({
           id: option.id,
           label: option.displayName,
           disabled: !engineIsAvailable(option),
-          detail: engineIsAvailable(option)
-            ? undefined
-            : option.authentication === "authenticated"
-              ? "Access unavailable"
-              : "Signed out",
+          detail: engineUnavailableReason(option),
         }))}
         model={model}
         models={models}

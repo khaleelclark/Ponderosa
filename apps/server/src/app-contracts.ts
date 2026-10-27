@@ -162,6 +162,8 @@ export interface ActiveRun {
   /** Bounded observations, not runtime authority or a substitute for terminal evidence. */
   observedProviderSessionGeneration?: string;
   observedProviderTerminalStatus?: "completed" | "failed" | "cancelled" | "interrupted" | "unknown";
+  observedProviderFailure?: Extract<AgentEvent, {type:"error"}>;
+  observedRootExit?: import("@ponderosa/core").ProviderRootExitDetail;
   v3SchedulerRunId?: string;
   v3FencingToken?: number;
   conversationId?: string;

@@ -461,6 +461,7 @@ export class ContextUsageObservationGate {
 
 
 export class CodexAppServerSession implements RuntimeSession {
+  readonly validatesResumeBeforeTurn = true;
   private activeTurnId?: string;
   private readonly usageByTurnId = new Map<string, TokenUsage>();
   private readonly providerRequestUsageByTurnId = new Map<string, TokenUsage[]>();

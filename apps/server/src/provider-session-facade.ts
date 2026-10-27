@@ -7,6 +7,7 @@ import {
   type RuntimeProcessIdentity,
   type RuntimeProcessHandle,
   type RuntimeSession,
+  type ProviderRootExitDetail,
 } from "@ponderosa/core";
 import { projectAgentEvent, preserveEngineSessionRecoverySignal } from "@ponderosa/engines";
 import { guardedProviderExceptionStringProperty } from "./provider-exception-properties.js";
@@ -329,6 +330,36 @@ export function providerEventStream(
   });
 }
 
+/** Copy root-exit observations through the same closed provider boundary as
+ * streamed events. Accessors/proxies cannot smuggle terminal authority. */
+export function projectProviderRootExitDetail(value: unknown): ProviderRootExitDetail | undefined {
+  if (value === undefined) return undefined;
+  const raw = target(value);
+  const detail: ProviderRootExitDetail = {};
+  for (const key of ["exitCode", "signal", "stderr", "outputDraining", "terminalEvent"] as const) {
+    const member = dataMember(raw, key);
+    if (member === undefined) continue;
+    if (key === "exitCode") {
+      if (member !== null && (typeof member !== "number" || !Number.isSafeInteger(member))) throw new Error(INVALID_PROVIDER_STRUCTURE);
+      detail.exitCode = member as number | null;
+    } else if (key === "signal") {
+      if (member !== null && (typeof member !== "string" || member.length > 64)) throw new Error(INVALID_PROVIDER_STRUCTURE);
+      detail.signal = member as string | null;
+    } else if (key === "stderr") {
+      if (typeof member !== "string" || member.length > 8192) throw new Error(INVALID_PROVIDER_STRUCTURE);
+      detail.stderr = member;
+    } else if (key === "outputDraining") {
+      if (typeof member !== "boolean") throw new Error(INVALID_PROVIDER_STRUCTURE);
+      detail.outputDraining = member;
+    } else {
+      const event = projectAgentEvent(member);
+      if (event.type !== "error") throw new Error(INVALID_PROVIDER_STRUCTURE);
+      detail.terminalEvent = preserveEngineSessionRecoverySignal(event, publicProviderFailureEvent(event));
+    }
+  }
+  return detail;
+}
+
 /** Copy a provider-returned RuntimeSession into one closed, code-owned facade.
  * Downstream consumers can use ordinary property access only on this facade;
  * all provider members were captured through non-Proxy data descriptors. */
@@ -337,6 +368,7 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
   let engineAgentId: string;
   let events: AsyncIterable<AgentEvent>;
   let identity: RuntimeProcessIdentity | undefined;
+  let validatesResumeBeforeTurn: boolean | undefined;
   let isAliveMethod: (...args: unknown[]) => unknown;
   let closeMethod: (...args: unknown[]) => unknown;
   let startTurnMethod: (...args: unknown[]) => unknown;
@@ -351,6 +383,9 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
     engineAgentId = projectProviderSessionIdentifier(dataMember(raw, "engineAgentId"));
     identity = processIdentity(dataMember(raw, "processIdentity"));
     events = providerEventStream(dataMember(raw, "events"));
+    const validation = dataMember(raw, "validatesResumeBeforeTurn");
+    if (validation !== undefined && typeof validation !== "boolean") throw new Error(INVALID_PROVIDER_STRUCTURE);
+    validatesResumeBeforeTurn = validation as boolean | undefined;
     isAliveMethod = method(raw, "isAlive")!;
     closeMethod = method(raw, "close")!;
     startTurnMethod = method(raw, "startTurn")!;
@@ -367,6 +402,7 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
   const facade: RuntimeSession = {
     engineAgentId,
     events,
+    ...(validatesResumeBeforeTurn !== undefined ? { validatesResumeBeforeTurn } : {}),
     ...(identity ? { processIdentity: identity } : {}),
     isAlive(): boolean {
       let alive: unknown;

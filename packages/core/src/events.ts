@@ -2,7 +2,7 @@
 // (inside packages/engines only) into this discriminated union, so the server,
 // projectors, and UI all render uniformly and never see runtime-specific shapes.
 
-import type { ProviderFailureCategory } from "./provider-failure-summary.js";
+import type { ProviderFailureCategory, ProviderQuotaLimit } from "./provider-failure-summary.js";
 import type { ToolFailureCategory } from "./tool-failure.js";
 
 /**
@@ -39,6 +39,8 @@ export type ProviderErrorCode =
   | "model_not_found"
   | "authentication_failed"
   | "rate_limit"
+  | "quota_exhausted"
+  | "throttled"
   | "capacity"
   | "context_length"
   | "organization_policy"
@@ -163,6 +165,9 @@ export type AgentEvent =
       /** Structured provider response metadata, never inferred from prose. */
       httpStatusCode?: number;
       retryAfterMs?: number;
+      /** Explicit subscription reset timestamp, distinct from a request retry delay. */
+      quotaResetAt?: string;
+      quotaLimit?: ProviderQuotaLimit;
       category?: ProviderFailureCategory;
       /** Finite code-owned action paired with category and message. */
       remediation?: string;

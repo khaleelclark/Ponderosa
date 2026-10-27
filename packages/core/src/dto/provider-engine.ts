@@ -47,6 +47,14 @@ export interface RuntimeEnvironmentFactsDto {
 }
 
 export interface ProviderInputSourceManifestV3 {
+  /** Frozen authorization and selection evidence for this exact accepted packet. */
+  historyContext?: {
+    boundary?: { canonicalOrdinal: number; communicationEventId?: string };
+    additionalHistory: boolean;
+    fullyIncludedCommunicationEventIds: string[];
+    clippedCommunicationEventIds: string[];
+    retrievalAvailable: boolean;
+  };
   schemaVersion: 3;
   environmentFacts?: RuntimeEnvironmentFactsDto;
   /** History messages represented in the exact text submitted for this Run. */
@@ -250,6 +258,7 @@ export interface EngineDto {
   authDetail?: string;
   authObservedAt?: string;
   authReason?: import("../adapter.js").EngineAuthStatus["reason"];
+  authDiagnosticFailure?: import("../adapter.js").EngineAuthStatus["diagnosticFailure"];
   authSource?: import("../adapter.js").EngineAuthStatus["source"];
   resourceAdmission?: ResourceAdmissionDto;
   /** Bounded stale information, never intake authority when authentication is error. */

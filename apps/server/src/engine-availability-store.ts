@@ -73,11 +73,18 @@ export class EngineAvailabilityStore {
 
   denial(engineId: string): EngineAvailabilityEvidence | undefined {
     const evidence = this.latest.get(engineId);
-    return evidence && !evidence.available ? evidence : undefined;
+    if(!evidence||evidence.available)return undefined;
+    // Inconclusive/transient access failures may be revalidated by a new owned
+    // operation after a bounded hold. Polling never spends provider tokens.
+    const transient=['unavailable','capacity','rate_limit','throttled','unknown'].includes(evidence.failureCategory??'unknown');
+    if(transient&&Date.now()-Date.parse(evidence.observedAt)>=60_000)return undefined;
+    return evidence;
   }
 
   record(input: Omit<EngineAvailabilityEvidence, "observedAt" | "buildRevision" | "instanceId"> & { observedAt?: string; operationStartedAt?: string }): EngineAvailabilityEvidence {
-    const newerDenial = this.denial(input.engineId);
+    const latest=this.latest.get(input.engineId);
+    // Expiry changes admission, never the ordering of durable observations.
+    const newerDenial = latest&&!latest.available?latest:undefined;
     if (input.available && input.operationStartedAt && newerDenial && newerDenial.observedAt >= input.operationStartedAt) return newerDenial;
     const hasFailureCategory = Object.prototype.hasOwnProperty.call(
       input,

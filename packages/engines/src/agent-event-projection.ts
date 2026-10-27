@@ -1,10 +1,10 @@
 import type {
   AgentEvent,
   ProviderErrorCode,
-  ProviderFailureCategory,
   TokenUsage,
   ToolFailureCategory,
 } from "@ponderosa/core";
+import { providerResetAt, PROVIDER_FAILURE_CATEGORIES, PROVIDER_QUOTA_LIMITS } from "@ponderosa/core";
 import { isProxy } from "node:util/types";
 
 const MAX_BYTES = 4 * 1024 * 1024;
@@ -17,13 +17,10 @@ const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:@/+\-]*$/u;
 
 const ERROR_CODES = [
   "client_upgrade_required", "invalid_request",
-  "invalid_model", "model_not_found", "authentication_failed", "rate_limit", "capacity",
+  "invalid_model", "model_not_found", "authentication_failed", "rate_limit", "quota_exhausted", "throttled", "capacity",
   "context_length", "organization_policy", "plan_entitlement", "network", "provider_error",
 ] as const satisfies readonly ProviderErrorCode[];
-const FAILURE_CATEGORIES = [
-  "authentication", "rate_limit", "capacity", "context_length", "invalid_request",
-  "unavailable", "unknown",
-] as const satisfies readonly ProviderFailureCategory[];
+const FAILURE_CATEGORIES = PROVIDER_FAILURE_CATEGORIES;
 const TOOL_FAILURE_CATEGORIES = [
   "operation_not_provided", "temporary_connection_failure", "authentication_required",
   "permission_denied", "invalid_input", "permanent_failure", "connector_rate_limit",
@@ -278,7 +275,7 @@ export function projectAgentEvent(value: unknown): AgentEvent {
     "output", "isError", "failureCategory", "retryable", "command", "cwd", "callId", "path", "kind", "diff", "passed", "summary", "status",
     "controlOwner", "controlEpoch", "url", "title", "reason", "actor", "action", "level", "text", "artifactId",
     "width", "height", "size", "sha256", "workItemId", "usage", "providerRequestUsage", "message", "code",
-    "category", "remediation", "presentation", "exitCode", "signal", "retryAfterMs", "terminalStatus", "httpStatusCode",
+    "category", "remediation", "presentation", "exitCode", "signal", "retryAfterMs", "terminalStatus", "httpStatusCode", "quotaResetAt", "quotaLimit",
   ])], budget, 0);
   const type = enumeration(envelope, "type", [
     "session", "context_usage", "context_rollover_seed_overflow", "context_rollover_completed", "text", "reasoning",
@@ -425,16 +422,20 @@ export function projectAgentEvent(value: unknown): AgentEvent {
       return { type, ...(projectedUsage === undefined ? {} : { usage: projectedUsage }), ...(requests === undefined ? {} : { providerRequestUsage: requests }) };
     }
     case "error": {
-      const row = exact(value, ["message", "code", "category", "remediation", "terminalStatus", "httpStatusCode", "retryAfterMs"], budget);
+      const row = exact(value, ["message", "code", "category", "remediation", "terminalStatus", "httpStatusCode", "quotaResetAt", "quotaLimit", "retryAfterMs"], budget);
       const terminalStatus = optionalEnumeration(row, "terminalStatus", ["failed", "interrupted", "unknown"] as const, budget, 2);
       const code = optionalEnumeration(row, "code", ERROR_CODES, budget, 2);
       const category = optionalEnumeration(row, "category", FAILURE_CATEGORIES, budget, 2);
       const remediation = optionalString(row, "remediation", budget, 2);
+      const quotaResetAt = optionalString(row, "quotaResetAt", budget, 2);
+      if (quotaResetAt !== undefined && (category !== "quota_exhausted" || providerResetAt(quotaResetAt) !== quotaResetAt)) reject();
+      const quotaLimit = optionalEnumeration(row, "quotaLimit", PROVIDER_QUOTA_LIMITS, budget, 2);
+      if (quotaLimit && category !== "quota_exhausted") reject();
       const httpStatusCode = optionalInteger(row, "httpStatusCode", budget, 2);
       const retryAfterMs = optionalInteger(row, "retryAfterMs", budget, 2);
       if (httpStatusCode !== undefined && (httpStatusCode < 100 || httpStatusCode > 599) ||
           retryAfterMs !== undefined && retryAfterMs > 86_400_000) reject();
-      return { type, message: string(row, "message", budget, 2), ...(code === undefined ? {} : { code }), ...(category === undefined ? {} : { category }), ...(remediation === undefined ? {} : { remediation }), ...(terminalStatus === undefined ? {} : { terminalStatus }), ...(httpStatusCode === undefined ? {} : { httpStatusCode }), ...(retryAfterMs === undefined ? {} : { retryAfterMs }) };
+      return { type, message: string(row, "message", budget, 2), ...(quotaResetAt ? { quotaResetAt } : {}), ...(quotaLimit ? { quotaLimit } : {}), ...(code === undefined ? {} : { code }), ...(category === undefined ? {} : { category }), ...(remediation === undefined ? {} : { remediation }), ...(terminalStatus === undefined ? {} : { terminalStatus }), ...(httpStatusCode === undefined ? {} : { httpStatusCode }), ...(retryAfterMs === undefined ? {} : { retryAfterMs }) };
     }
   }
 }

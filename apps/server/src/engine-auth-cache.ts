@@ -69,11 +69,11 @@ export class EngineAuthStatusCache {
   }
 
   /** Read-only scheduling/read-model observation; never launches a probe. */
-  snapshot(id: string): { state: "known" | "unknown"; authenticated?: boolean; observedAt?: string; lastKnown?: { authenticated: boolean; observedAt: string } } {
+  snapshot(id: string): { diagnosticFailure?:EngineAuthStatus["diagnosticFailure"]; state: "known" | "unknown"; authenticated?: boolean; observedAt?: string; lastKnown?: { authenticated: boolean; observedAt: string } } {
     const current = this.entries.get(id);
     const now = Date.now();
     if (current?.value && current.value.status !== "unknown" && current.expiresAt > now) {
-      return { state: "known", authenticated: current.value.authenticated, observedAt: new Date(current.observedAt!).toISOString() };
+      return { state: "known", ...(current.value.diagnosticFailure?{diagnosticFailure:current.value.diagnosticFailure}:{}), authenticated: current.value.authenticated, observedAt: new Date(current.observedAt!).toISOString() };
     }
     const known = current?.lastKnown;
     return { state: "unknown", ...(current?.observedAt ? { observedAt: new Date(current.observedAt).toISOString() } : {}), ...(known && now - known.observedAt <= 300_000

@@ -282,12 +282,19 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     createWebPushConfiguration(opts.dataDir, workspace, publishWorkspaceSince);
   store.recoverInterruptedExecutions();
   const engines = new Map(opts.engines.map((engine) => {
-    const diagnostic = <T>(kind: string, probe: (options?: import("@ponderosa/core").EngineProbeOptions) => Promise<T>) => async (): Promise<T> => {
+    const diagnostic = <T>(kind: string, probe: (options?: import("@ponderosa/core").EngineProbeOptions) => Promise<T>) => async (options?: import("@ponderosa/core").EngineProbeOptions): Promise<T> => {
       const purpose = `${engine.adapter.id} ${kind} diagnostic`;
       await providerProcessAuthority.terminatePurpose(purpose);
-      return probe({ onRuntimeSpawned: (raw: RuntimeProcessHandle) => {
-        providerProcessAuthority.register(providerProcessHandleFacade(raw), { purpose });
-      } });
+      try {
+        return await probe({ ...options, onRuntimeSpawned: (raw: RuntimeProcessHandle) => {
+          providerProcessAuthority.register(providerProcessHandleFacade(raw), { purpose });
+        } });
+      } finally {
+        // A failed close is not an expired availability observation: retain its
+        // exact process receipt until exit is observed, even after backoff.
+        try { providerProcessAuthority.pruneExited(); }
+        catch { app.log.warn({ engineId: engine.adapter.id, purpose }, "provider diagnostic exit could not be confirmed"); }
+      }
     };
     return [engine.adapter.id, { ...engine,
       ...(engine.authStatus ? { authStatus: diagnostic("authentication", options => engine.authStatus!(options)) } : {}),
