@@ -167,3 +167,10 @@ test('ordinary Read Aloud preserves long text and supplementary Unicode without 
     assert.equal(b.intervals.size, 0);
   }
 });
+
+test('ordinary dictation and calls share one capture lease; a stale release cannot stop its replacement',()=>{
+  const b=browser(),capture=b.load('captureCoordinator'),ended=[];
+  const first=capture.claimPageCapture(()=>ended.push('dictation'));
+  const second=capture.claimPageCapture(()=>ended.push('call'));
+  assert.deepEqual(ended,['dictation']);first();capture.abandonPageCapture();assert.deepEqual(ended,['dictation','call']);second();
+});

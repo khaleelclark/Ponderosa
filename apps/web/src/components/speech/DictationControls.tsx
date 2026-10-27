@@ -1,27 +1,48 @@
+import GraphicEqIcon from "@mui/icons-material/GraphicEq";
+import PhoneIcon from "@mui/icons-material/Phone";
 import MicNoneIcon from "@mui/icons-material/MicNone";
-import PauseIcon from "@mui/icons-material/Pause";
 import StopIcon from "@mui/icons-material/Stop";
-import { Box, IconButton, Tooltip, Typography } from "@mui/material";
-import { useEffect, useRef, useState } from "react";
+import { Box, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Tooltip, Typography } from "@mui/material";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   speechControlGroupSx,
   speechStatusSx,
   visuallyHiddenSpeechStatusSx,
 } from "./speechStyles";
+import { useWorkspaceReadOnly } from "../WorkspaceReadOnlyContext";
 import { useDictation } from "./useDictation";
+import { VoiceConversation, type VoiceConversationContext } from "./VoiceConversation";
 
 export function DictationControls({
-  disabled,
+  disabled: suppliedDisabled,
+  voiceContext,
   onFinalTranscript,
   onSettlingChange,
   onActiveChange,
 }: {
   disabled: boolean;
+  voiceContext?: VoiceConversationContext;
   onFinalTranscript(transcript: string): void;
   onSettlingChange(settling: boolean): void;
   onActiveChange?(active: boolean): void;
 }): JSX.Element {
+  const disabled = useWorkspaceReadOnly() || suppliedDisabled;
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const wasCallOpen = useRef(false);
+  const menuId = useId();
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const callOwner = JSON.stringify([voiceContext?.projectId, voiceContext?.conversationId, voiceContext?.selectedAgentId, voiceContext?.lockAgent]);
+  const [openedCallOwner, setOpenedCallOwner] = useState<string>();
+  const callOpen = openedCallOwner === callOwner;
+  useEffect(() => { setOpenedCallOwner(undefined); }, [callOwner]);
+  useEffect(() => {
+    if (disabled) { setAnchor(null); setOpenedCallOwner(undefined); }
+  }, [disabled]);
+  useEffect(() => {
+    if (wasCallOpen.current && !callOpen) buttonRef.current?.focus({preventScroll: true});
+    wasCallOpen.current = callOpen;
+  }, [callOpen]);
   const dictation = useDictation(
     onFinalTranscript,
     onSettlingChange,
@@ -77,31 +98,57 @@ export function DictationControls({
 
   return (
     <Box ref={rootRef} sx={speechControlGroupSx}>
-      <Tooltip title={primaryLabel}>
+      <Tooltip title="Voice options">
         <span>
           <IconButton
-            color={dictation.status === "listening" ? "primary" : "inherit"}
-            aria-label={primaryLabel}
-            aria-pressed={dictation.status === "listening"}
-            disabled={disabled || Boolean(unavailable) || busy}
-            onClick={() => {
-              if (dictation.status === "listening" || dictation.status === "starting") {
-                dictation.pause();
-              } else if (paused) {
-                dictation.resume();
-              } else {
-                dictation.start();
-              }
-            }}
+            ref={buttonRef}
+            color={active || paused ? "primary" : "inherit"}
+            aria-label="Voice options"
+            aria-haspopup="menu"
+            aria-expanded={Boolean(anchor)}
+            aria-controls={anchor ? menuId : undefined}
+            disabled={disabled || callOpen}
+            onClick={event => setAnchor(event.currentTarget)}
           >
-            {dictation.status === "listening" || dictation.status === "starting" ? (
-              <PauseIcon />
-            ) : (
-              <MicNoneIcon />
-            )}
+            <GraphicEqIcon />
           </IconButton>
         </span>
       </Tooltip>
+      <Menu
+        id={menuId}
+        anchorEl={anchor}
+        open={Boolean(anchor) && !disabled}
+        onClose={() => setAnchor(null)}
+        // Keep the dictation surface accessible while its own menu is open.
+        container={rootRef.current}
+        MenuListProps={{"aria-label": "Voice options"}}
+        disableRestoreFocus={callOpen}
+        disableScrollLock
+      >
+        <MenuItem
+          disabled={!anchor || disabled || active || paused || !voiceContext || !voiceContext.agents.some(agent =>
+            agent.projectId === voiceContext.projectId && agent.conversationId === voiceContext.conversationId &&
+            (!voiceContext.selectedAgentId || agent.id === voiceContext.selectedAgentId))}
+          onClick={() => { if (!anchor) return; setAnchor(null); setOpenedCallOwner(callOwner); }}
+        >
+          <ListItemIcon><PhoneIcon fontSize="small" /></ListItemIcon>
+          <ListItemText primary="Voice call" secondary={active || paused ? "Stop dictation first" : !voiceContext ? "Choose a source Chat and Agent" : undefined} />
+        </MenuItem>
+        <MenuItem
+          disabled={!anchor || disabled || Boolean(unavailable) || busy}
+          onClick={() => {
+            if (!anchor) return;
+            setAnchor(null);
+            if (dictation.status === "listening" || dictation.status === "starting") dictation.pause();
+            else if (paused) dictation.resume();
+            else dictation.start();
+          }}
+        >
+          <ListItemIcon><MicNoneIcon fontSize="small" /></ListItemIcon>
+          <ListItemText primary="Dictation" secondary={unavailable ?? (active || paused ? primaryLabel : undefined)} />
+        </MenuItem>
+      </Menu>
+      {voiceContext && callOpen && !disabled && <VoiceConversation {...voiceContext} open onClose={() => setOpenedCallOwner(undefined)} />}
       {active || paused ? (
         <Tooltip title="Stop voice dictation">
           <span>

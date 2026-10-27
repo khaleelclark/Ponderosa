@@ -1369,6 +1369,14 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24, real shared Home React components and QueryClient; no browser or provider account",
       "origin": "BR002 exact summary, canonical execution outcomes, bounded independent paging and cached refresh recovery"
+    },
+    {
+      "path": "tests/speech/voice-menu.test.mjs",
+      "feature": "speech",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Actual React component closures with controlled scheduling, native speech and transport; no physical microphone qualification",
+      "origin": "Shared Voice options, canonical call owners, unchanged dictation controls, explicit capture and canonical speech/lifecycle fences"
     }
   ],
   "retainedReleasePayload": [

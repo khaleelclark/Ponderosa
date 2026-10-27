@@ -1,3 +1,4 @@
+import type { VoiceConversationContext } from "../speech/VoiceConversation";
 import type { ChatComposerContract } from "./composerContracts";
 import type { AgentMentionBindingDto } from "@ponderosa/core";
 
@@ -20,6 +21,8 @@ export interface ComposerProps extends ChatComposerContract {
   attachmentsUnavailableReason?: string;
   /** Expose browser dictation on a composer with structurally resolved routing. */
   enableVoiceDictation?: boolean;
+  /** Canonical owner supplied by the workspace; absent when no call target is resolved. */
+  voiceContext?: VoiceConversationContext;
   busyMentionHandles?: string[];
   allowUnmentionedSend?: boolean;
   /** Explains why a valid-looking draft cannot use the ordinary send path. */
