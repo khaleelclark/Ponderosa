@@ -860,11 +860,17 @@ export class AgentCatalogAuthority {
             this.client.prepare("UPDATE imported_history_indexes SET status = 'ready' WHERE agent_id = ? AND archive_version = ?").run(agentId, job.version);
             break;
           }
-          // One row per turn bounds work without duplicating large text in JS.
+          // One admitted row per turn. Ordinary text stays inside SQLite; only
+          // embedded NUL needs a JS-normalized FTS copy (never an archive edit).
           for (const row of rows) {
             if (!this.importedProjectionCurrent(agentId, job.version, epoch)) break;
-            const stored = this.client.prepare("SELECT text FROM imported_history_messages WHERE rowid = ?").get(row.rowid) as { text: string };
-            this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, stored.text.replaceAll("\0", " "));
+            const nul = this.client.prepare("SELECT instr(CAST(text AS BLOB), x'00') AS position FROM imported_history_messages WHERE rowid = ?").get(row.rowid) as { position: number };
+            if (nul.position) {
+              const stored = this.client.prepare("SELECT text FROM imported_history_messages WHERE rowid = ?").get(row.rowid) as { text: string };
+              this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, stored.text.replaceAll("\0", " "));
+            } else {
+              this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) SELECT rowid, text FROM imported_history_messages WHERE rowid = ?").run(row.rowid);
+            }
             lastSequence = row.sequence;
             await yieldToLoop();
           }
