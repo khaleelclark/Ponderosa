@@ -8,7 +8,7 @@ const {BranchWorkspaceHeader}=await import('../../apps/web/src/components/branch
 test('Branch header reuses ordered shared icon tabs, names and guarded publication controls',()=>{
  const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'A long workflow name',tab:'workflow',published:false,dirty:true,saving:false,saveDisabled:true,onTab(){},onSave(){},onExport(){},onUpdate(){}}));
  assert.ok(html.includes('A long workflow name'),'Selected workflow name is present');assert.ok(html.includes('aria-label="Unpublished changes"'),'Dirty indication is accessible');
- assert.ok(/<button[^>]*disabled=""[^>]*aria-label="Save changes…"/.test(html),'Clean/invalid/pending Save remains disabled');
+ assert.ok(/<button[^>]*disabled=""[^>]*aria-label="Review &amp; publish"/.test(html),'Clean/invalid/pending Save remains disabled');
  const names=[...html.matchAll(/role="tab"[^>]*>(.*?)<\/button>/g)].map(match=>match[1].replace(/<style[^>]*>[\s\S]*?<\/style>/g,'').replace(/<[^>]*>/g,''));
  assert.deepEqual(names,['Workflow','Chats','Executions','Settings']);
  for(const tab of ['workflow','chats','executions','settings'])assert.ok(new RegExp(`id="branch-${tab}-tab"[^>]*aria-controls="branch-${tab}-panel"`).test(html),`Tab/panel association for ${tab}`);
@@ -19,7 +19,7 @@ test('Branch header reuses ordered shared icon tabs, names and guarded publicati
 test('selected nested Chat retains the owning Branch identity and guarded actions',()=>{
  const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'Owning workflow',tab:'chats',published:true,dirty:false,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){}}));
  assert.ok(html.includes('aria-label="Branch views"'),'Branch navigation remains reachable');assert.ok(/aria-selected="true"[^>]*>.*ChatBubbleOutline/.test(html),'Chats is the selected shared icon tab');
- for(const label of ['Owning workflow','Save changes…','Branch actions'])assert.ok(html.includes(label),'Branch owner remains visible beside its nested Chat');
+ for(const label of ['Owning workflow','Review &amp; publish','Branch actions'])assert.ok(html.includes(label),'Branch owner remains visible beside its nested Chat');
  assert.equal((html.match(/role="tablist"/g)??[]).length,1,'One Branch navigation owner');
 });
 const {WorkspacePreferencesWriter}=await import('../../apps/web/src/workspacePreferencesWriter.ts');
@@ -755,7 +755,7 @@ test('graph labels keep their full text above all connectors with a theme halo',
  assert.equal((svg.match(/stroke-width="8"/g)??[]).length,5);
  assert.equal((svg.match(/d="M[^"]+ V[^"]+ H[^"]+ V[^"]+ V[^"]+ H[^"]+ V/g)??[]).length,2,'Explicit self and back loops use visible side gutters');
  assert.ok(html.indexOf('</svg>')<html.indexOf('aria-label="Select First"'),'Cards remain above the connector/label layer');
- assert.ok(html.includes('Workflow text description')&&html.includes('aria-pressed="false"'),'Accessible description and node controls remain');
+ assert.ok(html.includes('Workflow outline')&&html.includes('aria-pressed="false"'),'Accessible description and node controls remain');
 });
 
 test('native-sized graph labels clear cards and neighboring labels without truncation',async()=>{
@@ -990,9 +990,9 @@ test('pending actual advanced Apply survives publication retry without a new edi
 test('unpublished dot has a focusable shared tooltip and disappears at every clean baseline',()=>{
  const props={name:'Workflow',tab:'workflow',published:true,dirty:true,executionCount:2,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){}};
  const dirty=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,props));
- assert.ok(/role="img"[^>]*tabindex="0"[^>]*aria-label="Unpublished changes"/.test(dirty));assert.ok(dirty.includes('Unpublished workflow changes. Use Save to review and publish, or Discard changes.'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Unpublished changes"'));assert.ok(dirty.indexOf('aria-label="Unpublished changes"')<dirty.indexOf('aria-label="Save changes…"'));
+ assert.ok(/role="img"[^>]*tabindex="0"[^>]*aria-label="Unpublished changes"/.test(dirty));assert.ok(dirty.includes('Unpublished workflow changes. Use Review &amp; publish, or Discard changes.'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Unpublished changes"'));assert.ok(dirty.indexOf('aria-label="Unpublished changes"')<dirty.indexOf('aria-label="Review &amp; publish"'));
  const clean=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false}));assert.ok(!clean.includes('aria-label="Unpublished changes"'));assert.ok(!clean.includes('Unpublished workflow changes.'));
- const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(!initial.includes('aria-label="Unpublished changes"'));assert.ok(!initial.includes('Unpublished changes'));assert.ok(!initial.includes('Use Save to review and publish, or Discard changes.'));
+ const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(!initial.includes('aria-label="Unpublished changes"'));assert.ok(!initial.includes('Unpublished changes'));assert.ok(!initial.includes('Use Review &amp; publish, or Discard changes.'));
 });
 
 
@@ -1058,7 +1058,7 @@ test('Branch notifications stay in the sidebar and drawer rather than the shared
 test('Branch usage reuses its canonical menu and forwards the persistent usage anchor',async()=>{
  const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchWorkspaceHeader.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('branch.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
  let renderer;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='renderMenu')renderer=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(renderer);
- const calls=[],scope={React,Box:()=>null,useCallback:fn=>fn,ChatOverflowMenu:()=>null,DataUsageOutlined:()=>null,onRename:()=>calls.push('rename'),onDiscard:()=>calls.push('discard'),discardDisabled:true,onExport:mode=>calls.push(mode),onUpdate:()=>calls.push('update')};
+ const calls=[],scope={React,Box:()=>null,useCallback:fn=>fn,ChatOverflowMenu:()=>null,DataUsageOutlined:()=>null,onHistory:undefined,onEditJson:undefined,onRename:()=>calls.push('rename'),onDiscard:()=>calls.push('discard'),discardDisabled:true,onExport:mode=>calls.push(mode),onUpdate:()=>calls.push('update')};
  const render=vm.runInNewContext(ts.transpile(renderer,{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope),open=anchor=>calls.push(anchor),menu=render(open).props.children[1],anchor={isConnected:true};
  assert.equal(menu.props.label,'Branch actions');assert.equal(menu.props.showExports,false);assert.deepEqual(Array.from(menu.props.actions,item=>item.label),['Provider usage','Rename…','Discard changes','Export template','Export full','Apply package update…']);assert.equal(menu.props.actions[2].disabled,true);
  for(const action of menu.props.actions)action.onSelect(anchor);assert.deepEqual(calls,[anchor,'rename','discard','template','full','update']);
@@ -1099,6 +1099,48 @@ test('inline header usage follows the actual active header width and cleans up i
  let width=959,observe=0,disconnect=0,callback;const changes=[],header={getBoundingClientRect:()=>({width})},scope={customTrigger:true,portalTarget:{closest:selector=>{assert.equal(selector,'[data-workspace-header]');return header}},setRoomy:value=>changes.push(value),ResizeObserver:class{constructor(fn){callback=fn;}observe(element){assert.equal(element,header);observe++;}disconnect(){disconnect++;}}};
  const run=()=>vm.runInNewContext(ts.transpile(effect,{target:ts.ScriptTarget.ES2022}),scope)();const cleanup=run();assert.equal(changes.at(-1),false);width=960;callback();assert.equal(changes.at(-1),true);width=320;callback();assert.equal(changes.at(-1),false,'A desktop narrowed by its sidebar must return to the menu');cleanup();assert.equal(observe,1);assert.equal(disconnect,1);
  scope.customTrigger=false;run();assert.equal(observe,1,'Default owners do not gain an observer');scope.customTrigger=true;scope.ResizeObserver=undefined;run();assert.equal(changes.at(-1),false,'Without measurements the compact menu stays usable');scope.portalTarget=null;run();assert.equal(changes.at(-1),false);
+});
+
+test('an unpublished workflow starts empty and explicitly inserts Agent then Approval without binding an unrelated Agent',async()=>{
+ const {newDefinition,addNode}=await import('../../apps/web/src/components/branches/model.ts');
+ const empty=newDefinition();assert.equal(empty.entry,'');assert.deepEqual(empty.steps,[]);assert.deepEqual(empty.controls,[]);
+ const first=addNode(empty,'agent');assert.equal(first.definition.entry,first.selected);assert.equal(first.definition.steps.length,1);assert.equal(first.definition.steps[0].target.kind,'persistent_agent');assert.equal(first.definition.steps[0].target.ref,first.selected);
+ const next=addNode(first.definition,'human_gate',first.selected);assert.deepEqual(next.definition.edges.map(({from,to,on})=>({from,to,on})),[{from:first.selected,to:next.selected,on:'success'}]);assert.deepEqual(empty.steps,[],'The original draft is not mutated');
+ const {validateBranchDefinition}=await import('../../packages/agents/dist/branch-definition.js');assert.equal(validateBranchDefinition(next.definition).steps.length,2,'The existing published model accepts the new-user graph');
+});
+
+test('branching insertion retains condition fallback, named choices, parallel pairing and item worker structure',async()=>{
+ const {newDefinition,addNode,conditionBefore,routeBefore}=await import('../../apps/web/src/components/branches/model.ts'),{validateBranchDefinition}=await import('../../packages/agents/dist/branch-definition.js');
+ const first=addNode(newDefinition(),'agent');
+ for(const result of [conditionBefore(first.definition,first.selected),routeBefore(first.definition,first.selected),addNode(first.definition,'parallel',first.selected),addNode(first.definition,'for_each',first.selected)]){
+  const validated=validateBranchDefinition(result.definition);assert.ok([...validated.steps,...validated.controls].some(node=>node.id===result.selected));assert.equal(first.definition.steps.length,1,'Insertion does not mutate the existing snapshot');
+ }
+ const parallel=addNode(newDefinition(),'parallel');assert.equal(parallel.definition.entry,parallel.selected);validateBranchDefinition(parallel.definition);
+ const map=addNode(newDefinition(),'for_each');assert.equal(map.definition.entry,map.selected);validateBranchDefinition(map.definition);
+});
+
+test('authoring outline describes condition outcomes without introducing execution state',async()=>{
+ const {newDefinition,addNode,conditionBefore}=await import('../../apps/web/src/components/branches/model.ts'),{BranchGraph}=await import('../../apps/web/src/components/branches/BranchGraph.tsx');
+ const first=addNode(newDefinition(),'agent'),definition=conditionBefore(first.definition,first.selected).definition;
+ const html=renderToStaticMarkup(React.createElement(BranchGraph,{definition,onSelect(){}}));assert.ok(html.includes('Workflow outline'));assert.ok(html.includes('Matches'));assert.ok(html.includes('Otherwise'));assert.ok(!html.includes('not run'));assert.ok(!html.includes('failure →'),'Non-matching conditions are not presented as failures');
+ const execution=renderToStaticMarkup(React.createElement(BranchGraph,{definition,onSelect(){},controlStates:{[definition.entry]:'completed'}}));assert.ok(execution.includes('completed'),'Execution consumers retain their supplied state');
+});
+
+test('execution settings edits return a draft definition without mutating its published snapshot',async()=>{
+ const {WorkflowExecutionSettings}=await import('../../apps/web/src/components/branches/WorkflowEditor.tsx'),{newDefinition,addNode}=await import('../../apps/web/src/components/branches/model.ts');
+ const published=addNode(newDefinition(),'agent').definition,changes=[],props={definition:published,bindings:{agents:{},directories:{}},agents:[],contexts:[],onDefinition:value=>changes.push(value),onBindings(){}};
+ const surface=WorkflowExecutionSettings(props),fields=surface.props.children[1];fields[0].props.onChange({target:{value:'5'}});assert.equal(changes[0].policy.maxConcurrentExecutions,5);assert.equal(published.policy.maxConcurrentExecutions,2);assert.equal(changes[0].steps,published.steps);
+ const failure=surface.props.children[2];failure.props.onChange({action:'retry',maxAttempts:4,delayMs:2000});assert.deepEqual(changes[1].policy.failure,{action:'retry',maxAttempts:4,delayMs:2000});assert.deepEqual(published.policy.failure,{action:'stop'});
+});
+
+test('closing the Add-step menu fences its exiting item handlers from creating another step',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),model=await import('../../apps/web/src/components/branches/model.ts');
+ const source=await fs.readFile(new URL('../../apps/web/src/components/branches/WorkflowEditor.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('WorkflowEditor.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ let handler;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='add')handler=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(handler);
+ const edits=[],scope={...model,definition:model.newDefinition(),insertion:'',addAnchor:{},onDefinition:definition=>edits.push(definition),setSelected(){},setEditorOpen(){},setFocusRequest(){},setAddAnchor:value=>{scope.addAnchor=value}};
+ const add=vm.runInNewContext(ts.transpile(handler,{target:ts.ScriptTarget.ES2022}),scope);
+ add('agent');assert.equal(edits.length,1);assert.equal(edits[0].steps.length,1);assert.equal(scope.addAnchor,null);
+ add('agent');add('script');assert.equal(edits.length,1,'Closed/transitioning menu items cannot add work');assert.equal(scope.definition.steps.length,0,'The original snapshot remains untouched');
 });
 
 // Exercise the real intervention fields, mutation and shared dialog shell.
