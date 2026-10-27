@@ -1,13 +1,15 @@
 import {useBranchDraftGuard} from './BranchNavigation';
 import {useEffect,useLayoutEffect,useRef,useState,type ReactNode} from "react";
 import {useMutation,useQuery,useQueryClient} from "@tanstack/react-query";
-import {Alert,Box,Button,Checkbox,FormControlLabel,Paper,Stack,Switch,TextField,Typography} from "@mui/material";
+import {Accordion,AccordionDetails,AccordionSummary,Alert,Box,Button,Checkbox,FormControlLabel,Paper,Stack,Switch,TextField,Typography} from "@mui/material";
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import type {BranchConfiguration,BranchDefinition,BranchDto,BranchLifecycleDto} from "@ponderosa/core";
 import {requestJson} from "../../api/real";
 import {ApiRequestError} from "../../api/types";
 import {ResourceDeletionDialog} from "../ConfirmationDialogs";
 import {useMutationNotification} from "../MutationNotifications";
 import {CapabilityPolicyEditor} from "../CapabilityPolicyEditor";
+import {BranchExecutionBudget} from './BranchExecutionBudget';
 
 export function BranchAvailability({branch,disabled=false}:{branch:BranchDto;disabled?:boolean}):JSX.Element {
  const client=useQueryClient();
@@ -20,7 +22,7 @@ export function BranchAvailability({branch,disabled=false}:{branch:BranchDto;dis
  </Stack>;
 }
 
-export function BranchLocalLimits({branch,definition}:{branch:BranchDto;definition:BranchDefinition}):JSX.Element {
+export function BranchLocalLimits({branch,definition}:{branch:BranchDto;definition?:BranchDefinition}):JSX.Element {
  return <BranchConfigurationEditor key={branch.id} branch={branch} definition={definition}/>;
 }
 function BranchConfigurationEditor({branch,definition,parameters=false,active=true,focusVariables=false,feedback}:{branch:BranchDto;definition?:BranchDefinition;parameters?:boolean;active?:boolean;focusVariables?:boolean;feedback?:ReactNode}):JSX.Element {
@@ -55,8 +57,10 @@ function BranchConfigurationEditor({branch,definition,parameters=false,active=tr
   return <Stack spacing={2}>{(settings.error||save.error||reloadAction.error)&&<Alert severity="error">{reloadAction.error?.message||settings.error?.message||save.error?.message}{(save.error||reloadAction.error)&&reload}</Alert>}<Box><Typography variant="h6" fontWeight={800}>Limits within an execution</Typography><Typography variant="body2" color="text.secondary">These ceilings stop runaway recursion and traversal with an explicit workflow failure.</Typography></Box>{([['maxCallDepth','Nested Branch depth'],['maxLoopIterations','Loop iterations'],['maxTraversals','Graph traversals']] as const).map(([key,label])=><TextField disabled={save.isPending||reloadAction.isPending} key={key} label={label} type="number" error={!Number.isSafeInteger(draft.limits[key])||draft.limits[key]<1} helperText="A positive whole number is required." value={draft.limits[key]} onChange={e=>setDraft({...draft,limits:{...draft.limits,[key]:Number(e.target.value)}})}/>)}<Button variant="contained" sx={{alignSelf:"start"}} disabled={save.isPending||reloadAction.isPending||!branch.versionId||invalidLimits} onClick={()=>save.mutate()}>Save execution settings</Button></Stack>;
 }
 
-export function BranchSettings({branch,definition,active:settingsActive=true,focusVariables=false,variablesFeedback,executionSettings,onDeleted}:{executionSettings?:ReactNode;branch:BranchDto;definition?:BranchDefinition;active?:boolean;focusVariables?:boolean;variablesFeedback?:ReactNode;onDeleted?():boolean|void}):JSX.Element {
+export function BranchSettings({branch,definition,active:settingsActive=true,focusVariables=false,focusExecutionControls=false,variablesFeedback,executionSettings,onDeleted}:{executionSettings?:ReactNode;branch:BranchDto;definition?:BranchDefinition;active?:boolean;focusVariables?:boolean;focusExecutionControls?:boolean;variablesFeedback?:ReactNode;onDeleted?():boolean|void}):JSX.Element {
  const client=useQueryClient(),[capabilityDirty,setCapabilityDirty]=useState(false),[deleteOpen,setDeleteOpen]=useState(false),[acknowledged,setAcknowledged]=useState(false);
+ const executionControls=useRef<HTMLDivElement>(null);
+ useEffect(()=>{if(settingsActive&&focusExecutionControls){executionControls.current?.focus({preventScroll:true});executionControls.current?.scrollIntoView({block:'start'})}},[settingsActive,focusExecutionControls]);
  const active=useRef(true),generation=useRef(0),removing=useRef(false),finished=useRef(false);
  useLayoutEffect(()=>{active.current=true;return()=>{active.current=false;generation.current++}},[]);
  const finishDeleted=()=>{if(!active.current||finished.current)return;if(onDeleted?.()===false)return;finished.current=true;void client.invalidateQueries({queryKey:["branches"]})};
@@ -73,7 +77,12 @@ export function BranchSettings({branch,definition,active:settingsActive=true,foc
  useBranchDraftGuard(`branch-capabilities:${branch.id}`,capabilityDirty);
  const callerNames=new Map(lifecycle.data?.callers.map(caller=>[caller.id,caller.name]));
  return <Stack spacing={2} sx={{minWidth:0,width:"100%"}}>
-  {executionSettings}
+  <Stack component="section" aria-label="Execution Controls" id="branch-execution-controls" ref={executionControls} tabIndex={-1} spacing={2} sx={{minWidth:0,scrollMarginTop:16}}>
+   <Typography variant="h6" fontWeight={800}>Execution Controls</Typography>
+   <BranchExecutionBudget key={branch.id} branchId={branch.id} settings active={settingsActive}/>
+   <Accordion disableGutters><AccordionSummary expandIcon={<ExpandMoreIcon/>}>Advanced local execution limits</AccordionSummary><AccordionDetails><BranchLocalLimits key={branch.id} branch={branch} definition={definition}/></AccordionDetails></Accordion>
+   {executionSettings}
+  </Stack>
   {lifecycle.error&&<Alert severity="error" action={<Button onClick={()=>void lifecycle.refetch()}>Retry lifecycle</Button>}>Workflow lifecycle could not be refreshed. Deletion is unavailable.</Alert>}
       {!lifecycle.data?.deleting&&!remove.data?.pending&&<CapabilityPolicyEditor endpoint={`/api/branches/${branch.id}/capabilities`} scopeKind="branch" title="Branch capabilities" immediateSave onDirtyChange={setCapabilityDirty}/>}
       <BranchConfigurationEditor branch={branch} definition={definition} parameters active={settingsActive} focusVariables={focusVariables} feedback={variablesFeedback}/>

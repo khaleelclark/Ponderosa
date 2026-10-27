@@ -1204,6 +1204,14 @@
       "origin": "PR95 workflow leave choices, exact settlement fencing, retained drafts, native reload and shared pending dismissal"
     },
     {
+      "path": "tests/branches/execution-controls.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; controlled budget query and mutation owners",
+      "origin": "BR024 Execution Controls placement, stable refresh and exact revision/period/uncertain-save safeguards"
+    },
+    {
       "path": "tests/branches/ui-state.test.mjs",
       "feature": "branches",
       "lane": "web",
