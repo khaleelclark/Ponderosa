@@ -14,6 +14,7 @@ const MAX_RECORD_UNITS = 100_000; // Existing canonical import writer limit; nev
 const MAX_JSON_VALUE_BYTES = 1024 * 1024;
 const WINDOW_BYTES = 4096, MAX_WINDOWS = 32;
 type Row = { message_id: string; sequence: number; role: "user" | "assistant" | "system"; text: string; created_at: string };
+type RowSnapshot = { sequence: number; hash: string };
 type Proof = { archiveSha256: string; importedAt: string; sourceLabel: "Imported History" | "Imported Guidance" };
 export type ImportedHistoryProofCache = Map<string, Proof>;
 export interface ImportedHistoryRetrievalInput {
@@ -60,7 +61,7 @@ function same(row: Row | undefined, message: PortableAgentHistoryMessageDto, imp
 /** Validate the canonical import without hydrating its archive. One bounded JSON
  * value crosses this parser at a time; every read turn yields through async fs.
  * Projection disagreement is a refusal, never a false complete search result. */
-async function verifyArchive(input: ImportedHistoryRetrievalInput, selected: readonly Row[]): Promise<{ proofs: Map<number, Proof>; archiveSha256: string; count: number; repairedGuidance: boolean }> {
+async function verifyArchive(input: ImportedHistoryRetrievalInput, selected: readonly Row[], snapshots: readonly RowSnapshot[] = selected.map(row => ({sequence: row.sequence, hash: rowHash(row)}))): Promise<{ proofs: Map<number, Proof>; archiveSha256: string; count: number; repairedGuidance: boolean }> {
   input.assertCurrent();
   const handle = await fs.open(input.file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   const rows = input.sqlite.prepare(ROW_QUERY);
@@ -111,7 +112,7 @@ async function verifyArchive(input: ImportedHistoryRetrievalInput, selected: rea
     const openedVersion = createHash("sha256").update([opened.dev, opened.ino, opened.size, opened.mtimeNs, opened.ctimeNs].join(":" )).digest("hex");
     if (!opened.isFile() || openedVersion !== input.archiveVersion) throw new CompactionHistoryQueryError("imported archive changed before reading");
     const metadata: Record<string, unknown> = {}, keys = new Set<string>();
-    let count = 0; const matching = [true, true], selectedCanonicalHashes = new Map<string, string>();
+    let count = 0; const matching = [true, true], scannedCanonicalHashes = new Map<string, string>();
     await expect("{");
     while (await peek() !== undefined) {
       await whitespace(); if (await peek() === "}") { position++; break; }
@@ -128,7 +129,7 @@ async function verifyArchive(input: ImportedHistoryRetrievalInput, selected: rea
           if (Object.keys(item).some(name => !["role", "text", "createdAt"].includes(name)) || !["user", "assistant", "system"].includes(message.role) || typeof message.text !== "string" || message.text.length > MAX_RECORD_UNITS || message.createdAt !== undefined && (typeof message.createdAt !== "string" || message.createdAt.length > 256)) throw new CompactionHistoryQueryError("invalid retained imported message");
           for (const offset of [0, 1]) {
             if (matching[offset] && !same(rowAt(input, count + offset, rows), message, metadata.importedAt)) matching[offset] = false;
-            if (selected.some(row => row.sequence === count + offset)) selectedCanonicalHashes.set(`${offset}:${count + offset}`, hash(JSON.stringify([message.role, message.text, message.createdAt ?? metadata.importedAt])));
+            if (snapshots.some(row => row.sequence === count + offset)) scannedCanonicalHashes.set(`${offset}:${count + offset}`, hash(JSON.stringify([message.role, message.text, message.createdAt ?? metadata.importedAt])));
           }
           count++; await whitespace();
           if (await peek() === "]") break;
@@ -147,16 +148,28 @@ async function verifyArchive(input: ImportedHistoryRetrievalInput, selected: rea
     if (!matching[separated ? 1 : 0] || actual !== count + Number(separated)) throw new CompactionHistoryQueryError("imported projection disagrees with its canonical archive; recovery is required");
     input.assertCurrent();
     const archiveSha256 = digest.digest("hex"), proofs = new Map<number, Proof>();
+    const currentGuidance = guidance ? rowAt(input, 0, rows) : undefined;
+    const legacyGuidance = guidance && guidance.text.length > MAX_RECORD_UNITS
+      ? {...guidance, text: guidance.text.slice(0, MAX_RECORD_UNITS)} : undefined;
+    for (const snapshot of snapshots) {
+      const current = rowAt(input, snapshot.sequence, rows);
+      // The existing exact legacy Guidance repair is the only derived prefix
+      // authorized here. All other scanned content must match canonical data.
+      const expectedGuidance = legacyGuidance && same(currentGuidance, legacyGuidance, legacyGuidance.createdAt)
+        ? legacyGuidance : guidance;
+      const canonicalHash = separated && snapshot.sequence === 0
+        ? hash(JSON.stringify([expectedGuidance!.role, expectedGuidance!.text, expectedGuidance!.createdAt]))
+        : scannedCanonicalHashes.get(`${Number(separated)}:${snapshot.sequence}`);
+      if (!current || rowHash(current) !== snapshot.hash || canonicalHash !== snapshot.hash) {
+        throw new CompactionHistoryQueryError("imported projection changed or differs from its scanned canonical record");
+      }
+    }
     if (guidance && !same(rowAt(input, 0, rows), guidance, metadata.importedAt as string)) {
       if (!input.reconcileGuidance(guidance.text, guidance.createdAt) || !same(rowAt(input, 0, rows), guidance, guidance.createdAt)) throw new CompactionHistoryQueryError("imported guidance projection differs from its canonical source");
       input.assertCurrent();
       return { proofs, archiveSha256, count: actual, repairedGuidance: true };
     }
     for (const row of selected) {
-      const current = rowAt(input, row.sequence, rows);
-      const canonicalHash = separated && row.sequence === 0 ? hash(JSON.stringify([guidance!.role, guidance!.text, guidance!.createdAt]))
-        : selectedCanonicalHashes.get(`${Number(separated)}:${row.sequence}`);
-      if (!current || rowHash(current) !== rowHash(row) || canonicalHash !== rowHash(row)) throw new CompactionHistoryQueryError("imported projection changed or differs from its selected canonical record");
       const proof: Proof = { archiveSha256, importedAt: metadata.importedAt as string, sourceLabel: separated && row.sequence === 0 ? "Imported Guidance" : "Imported History" };
       proofs.set(row.sequence, proof); input.cache.set(cacheKey(input, row, archiveSha256), proof);
       while (input.cache.size > 32) input.cache.delete(input.cache.keys().next().value!);
@@ -190,18 +203,22 @@ export async function searchImportedHistory(input: ImportedHistoryRetrievalInput
     if (!Array.isArray(parsed) || parsed.length !== 4 || typeof parsed[3] !== "boolean" || parsed[0] !== normalized.normalizedQuery || !Number.isSafeInteger(parsed[1]) || parsed[1] < 0 || !Number.isSafeInteger(parsed[2]) || parsed[2] < 0) throw new CompactionHistoryQueryError("invalid imported search cursor");
     [, sequence, byte, hadMatches] = parsed;
   }
-  const candidates: Array<{row: Row; start: number; text: string}> = []; let windows = 0, scannedRow: Row | undefined;
-  const meta = input.sqlite.prepare(`SELECT sequence,length(CAST(text AS BLOB)) bytes FROM imported_history_messages
+  const candidates: Array<{row: Row; start: number; text: string}> = [], snapshots: RowSnapshot[] = [];
+  let windows = 0, scannedRow: Row | undefined;
+  const meta = input.sqlite.prepare(`SELECT sequence FROM imported_history_messages
     WHERE agent_id=? AND message_id>=? ORDER BY message_id LIMIT 1`);
   while (windows < MAX_WINDOWS && candidates.length < limit) {
-    const next = meta.get(input.agentId, id(input, sequence)) as {sequence: number; bytes: number} | undefined;
+    const next = meta.get(input.agentId, id(input, sequence)) as {sequence: number} | undefined;
     if (!next) break;
-    if (next.sequence !== sequence) { sequence = next.sequence; byte = 0; }
-    if (byte >= next.bytes && next.bytes !== 0) { sequence++; byte = 0; continue; }
-    const row = scannedRow?.sequence === sequence ? scannedRow : rowAt(input, sequence); scannedRow = row; if (!row) throw new CompactionHistoryQueryError("imported projection exceeds retained-record bounds");
-    const window = input.sqlite.prepare("SELECT substr(CAST(text AS BLOB),?,?) bytes FROM imported_history_messages WHERE agent_id=? AND message_id=?")
-      .get(byte + 1, WINDOW_BYTES, input.agentId, row.message_id) as {bytes: Buffer};
-    const text = decodeImportedUtf8Window(window.bytes), folded = text.toLocaleLowerCase();
+    if (next.sequence !== sequence) throw new CompactionHistoryQueryError("imported projection sequence is missing; canonical recovery is required");
+    const row = scannedRow?.sequence === sequence ? scannedRow : rowAt(input, sequence);
+    if (!row) throw new CompactionHistoryQueryError("imported projection exceeds retained-record bounds");
+    if (scannedRow?.sequence !== sequence) snapshots.push({sequence, hash: rowHash(row)});
+    scannedRow = row;
+    // Search and proof use the same bounded row snapshot, including misses.
+    // A second SQL window read could observe different content before proof.
+    const rowBytes = Buffer.from(row.text), window = rowBytes.subarray(byte, byte + WINDOW_BYTES);
+    const text = decodeImportedUtf8Window(window), folded = text.toLocaleLowerCase();
     windows++;
     if (normalized.terms.some(term => folded.includes(term))) {
       // A complete retained row is bounded by the existing import writer; use
@@ -211,13 +228,13 @@ export async function searchImportedHistory(input: ImportedHistoryRetrievalInput
       const localStart = Math.max(0, [...text.slice(0, match)].length - 48);
       candidates.push({row, start: [...prefix].length + localStart, text: utf8Prefix([...text].slice(localStart).join(""), MAX_HISTORY_EXCERPT_UTF8_BYTES)});
       sequence++; byte = 0;
-    } else if (byte + window.bytes.length >= next.bytes || !window.bytes.length) { sequence++; byte = 0; }
+    } else if (byte + window.length >= rowBytes.length || !window.length) { sequence++; byte = 0; }
     else {
       const advance = Math.max(1, Buffer.byteLength(text) - 800);
       byte += Buffer.byteLength(decodeImportedUtf8Window(Buffer.from(row.text).subarray(byte, byte + advance)));
     }
   }
-  const verified = await verifyArchive(input, candidates.map(candidate => candidate.row));
+  const verified = await verifyArchive(input, candidates.map(candidate => candidate.row), snapshots);
   if (verified.repairedGuidance) return searchImportedHistory(input);
   const proofs = verified.proofs;
   const proof: Proof = { archiveSha256: verified.archiveSha256, importedAt: "", sourceLabel: "Imported History" };

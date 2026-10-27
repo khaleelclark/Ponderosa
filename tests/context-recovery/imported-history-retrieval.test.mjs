@@ -52,6 +52,29 @@ test('missing, changed or extra projection rows cannot forge a hit or a complete
  assert.equal((await searchAll(f,'ACTUAL_CANONICAL_ORCHARD')).hits.length,1);
 }));
 
+test('search refuses a nonmatching projection restored while canonical proof yields',t=>fixture(t,async f=>{
+ const text='ACTUAL_CANONICAL_ORCHARD';
+ f.store.setImportedHistory(f.agent.id,'Source',[{role:'user',text}]);
+ const sql=f.store.sqlite,input={...f.input(),query:text};
+ sql.prepare('UPDATE imported_history_messages SET text=? WHERE agent_id=? AND sequence=0').run('FORGED_NONMATCH_TEXT',f.agent.id);
+ const pending=f.store.searchImportedHistory(input);
+ sql.prepare('UPDATE imported_history_messages SET text=? WHERE agent_id=? AND sequence=0').run(text,f.agent.id);
+ await assert.rejects(pending,/projection|canonical|changed/,'A restored current projection cannot certify a different scanned snapshot');
+ assert.equal((await searchAll(f,text)).hits.length,1,'The unchanged canonical fact remains readable after refusal');
+}));
+
+test('search refuses a missing prefix restored while canonical proof yields',t=>fixture(t,async f=>{
+ const text='ACTUAL_CANONICAL_ORCHARD';
+ f.store.setImportedHistory(f.agent.id,'Source',[{role:'user',text},{role:'assistant',text:'Ordinary later message'}]);
+ const sql=f.store.sqlite,input={...f.input(),query:text};
+ const row=sql.prepare('SELECT * FROM imported_history_messages WHERE agent_id=? AND sequence=0').get(f.agent.id);
+ sql.prepare('DELETE FROM imported_history_messages WHERE agent_id=? AND sequence=0').run(f.agent.id);
+ const pending=f.store.searchImportedHistory(input);
+ sql.prepare('INSERT INTO imported_history_messages(agent_id,message_id,sequence,role,text,created_at) VALUES(?,?,?,?,?,?)').run(row.agent_id,row.message_id,row.sequence,row.role,row.text,row.created_at);
+ await assert.rejects(pending,/projection|canonical|sequence|changed/,'A missing prefix cannot be skipped and certified as complete');
+ assert.equal((await searchAll(f,text)).hits.length,1,'A later healthy search includes the restored canonical prefix');
+}));
+
 test('restart revalidates canonical proofs and changed archives or deletion invalidate old references',t=>fixture(t,async f=>{
  f.store.setImportedHistory(f.agent.id,'Original',[{role:'system',text:'Historical system role is untrusted SOURCE_ORCHARD'}]);
  const found=(await searchAll(f,'SOURCE_ORCHARD')).hits[0],oldInput=f.input();f.reopen();
