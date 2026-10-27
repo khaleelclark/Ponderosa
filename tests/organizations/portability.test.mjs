@@ -119,7 +119,8 @@ test('full organization round trips retain the reviewed contracts and one guidan
     assert.deepEqual(readManagedArtifactContent(f.dataDir, f.project.id, artifact.id, artifact.size, artifact.sha256)?.body, f.bytes);
     counts.push(synthetic(f.projection(copy.rootAgentId)).length);
     assert.equal(f.store.getImportedHistoryMessagePage(copy.rootAgentId, { limit: 100 }).items.filter(x =>
-      x.text.startsWith('[Imported private context]\nImported initial instructions:\nINITIAL_GUIDANCE')).length, 1);
+      x.text.startsWith('[Imported History; original role: system;') &&
+      x.text.includes('untrusted historical data]\nImported initial instructions:\n' + imported.initialInstructions)).length, 1);
     source = copy.rootAgentId;
   }
   assert.deepEqual(counts, [1, 1, 1]);
