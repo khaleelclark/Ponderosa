@@ -534,18 +534,47 @@ test('a stale Branch panel cannot start creation for a new selection or temporar
  }
 });
 
-test('BR010 compact picker distinguishes unknown and empty counts without restoring the wide dropdown',async()=>{
- const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),mui=await import('@mui/material'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchChats.tsx',import.meta.url),'utf8');
- const toolbar=source.split('\n').find(line=>line.includes('aria-haspopup="dialog"'));assert.ok(toolbar);
- const scope={React,...mui,ChatIcon:()=>null,ArrowDropDownIcon:()=>null,AddIcon:()=>null,MoreHorizIcon:()=>null,executionId:undefined,chatCount:undefined,chatPages:{},creationKey:undefined,chat:undefined,notificationAction:undefined,setSearch(){},setPicker(){},startChat(){}};
- vm.runInNewContext(ts.transpileModule('globalThis.Toolbar=()=>('+toolbar+');',{fileName:'toolbar.tsx',compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText,scope);
- for(const total of [undefined,0,103]){scope.chatCount=total;const html=renderToStaticMarkup(React.createElement(scope.Toolbar));assert.ok(html.includes(`Chats (${total??'…'})`));assert.doesNotMatch(html,/Branch Chat<|role="combobox"/);assert.match(html,/aria-label="New Chat"/);}
- scope.chatPages={error:Error('Unavailable')};scope.chatCount=undefined;assert.ok(renderToStaticMarkup(React.createElement(scope.Toolbar)).includes('Chats (?)'));
+// Exercise the real BranchChats props/closures while controlling only hook scheduling and transport.
+async function chatDropdownFixture(){
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchChats.tsx',import.meta.url),'utf8');
+ const cells=[],queries=[],requests=[],navigations=[];let cursor=0;
+ const state=initial=>{const i=cursor++;cells[i]??={value:typeof initial==='function'?initial():initial};return[cells[i].value,next=>{cells[i].value=typeof next==='function'?next(cells[i].value):next}];};
+ const react={...React,useState:state,useRef:initial=>state(()=>({current:initial}))[0],useEffect(){},useLayoutEffect(){}},mui=new Proxy({},{get:(_o,key)=>String(key)});
+ const selected={id:'selected-outside-page',title:'Selected Chat',branchId:'owner',projectId:'p'},rows=[{...selected,id:'one',title:'Duplicate'},{...selected,id:'two',title:'Duplicate'},{...selected,id:'three',title:'Unique'}];
+ const page={data:{pages:[{items:rows}]},isSuccess:true,hasNextPage:true,fetchNextPage:()=>requests.push('next'),refetch:()=>requests.push('retry')},search={...page,data:{pages:[{items:[]}]}};
+ const queryClient={invalidateQueries:async()=>{}},exports={},imports={
+  react,'react/jsx-runtime':await import('react/jsx-runtime'),'@mui/material':mui,
+  '@tanstack/react-query':{useQueryClient:()=>queryClient,useQuery:options=>options.queryKey[0]==='branch-chat-owner'?{data:selected}:{},useInfiniteQuery:options=>{queries.push(options);return options.queryKey.includes('search')?search:page}},
+  '../../hooks/queries':{useWorkspacePreferences:()=>({}),useWorkspacePreferencesWriter:()=>({})},'./BranchNavigation':{useBranchNavigationGuard:()=>()=>true,useBranchDraftGuard(){}},
+  '../chatCreationAttempts':{readCreationAttempts:()=>[],sameCreationOwner:()=>false},'../../clientId':{createClientId:()=> 'intent'},'../../collections':await import('../../apps/web/src/collections.ts'),
+  '../../api/types':{ApiRequestError},'../../api/real':{requestCollectionPage:path=>requests.push(path)},'../../workspaceRecency':{markWorkspaceResourceUsed:async()=>{}}
+ };
+ vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText,{exports,require:name=>imports[name]??new Proxy({},{get:(_o,key)=>key==='__esModule'?true:String(key)})});
+ const props={branchId:'owner',branchRoute:{branchId:'owner',tab:'chats',chatId:selected.id},engines:[],onNavigate:next=>{navigations.push(next);return true}},walk=node=>Array.isArray(node)?node.flatMap(walk):React.isValidElement(node)?[node,...walk(node.props.children),...walk(node.props.action)]:[];
+ let nodes;const render=()=>{cursor=0;queries.length=0;nodes=walk(exports.BranchChats(props));};render();
+ const control=()=>nodes.find(n=>n.type==='Autocomplete').props;
+ return{page,search,selected,rows,props,queries,requests,navigations,render,control,button:label=>nodes.find(n=>n.type==='Button'&&n.props.children===label).props};
+}
+
+test('Chat dropdown retains an unloaded selected owner, uses server search and disambiguates only duplicate names',async()=>{
+ const f=await chatDropdownFixture(),a=f.control();assert.equal(a.value.id,f.selected.id);assert.equal(a.inputValue,'Selected Chat');assert.equal(a.options.some(c=>c.id===f.selected.id),false);
+ assert.equal(a.filterOptions(f.rows),f.rows,'Server result ordering/filtering is authoritative');assert.equal(a.getOptionKey(f.rows[0]),'one');assert.equal(a.isOptionEqualToValue(f.rows[0],{...f.rows[0]}),true);
+ const html=c=>renderToStaticMarkup(a.renderOption({key:c.id},c));assert.match(html(f.rows[0]),/one/);assert.doesNotMatch(html(f.rows[2]),/three/);
+ a.onOpen();f.render();assert.equal(f.control().inputValue,'');f.control().onInputChange({},'beyond page','input');f.render();const q=f.queries.find(q=>q.queryKey.includes('search'));assert.equal(q.enabled,true);await q.queryFn({pageParam:'exact cursor'});assert.match(f.requests.at(-1),/search=beyond%20page/);assert.match(f.requests.at(-1),/cursor=exact%20cursor/);
+ f.control().onInputChange({},'Selected Chat','reset');f.render();assert.equal(f.control().inputValue,'beyond page','MUI reset must not replace the server search');f.control().onClose({},'escape');f.render();assert.equal(f.control().inputValue,'Selected Chat');f.control().onInputChange({},'A','input');f.control().onOpen();f.render();assert.equal(f.control().inputValue,'A','MUI input-before-open must preserve the first character');f.control().onClose({},'selectOption');f.render();assert.equal(f.control().open,false,'Selecting the exact current value closes even without onChange');
+});
+
+test('Chat dropdown preserves guarded selection, pagination, loading/error feedback and one-click creation',async()=>{
+ const f=await chatDropdownFixture();f.control().onOpen();f.render();f.props.onNavigate=()=>false;f.render();const event={};f.control().onChange(event,f.rows[0]);f.control().onClose(event,'selectOption');f.render();assert.equal(f.control().open,true,'Declined navigation keeps the chooser open');
+ f.props.onNavigate=next=>{f.navigations.push(next);return true};f.render();f.control().onChange({},f.rows[1]);f.render();assert.equal(f.control().open,false);assert.equal(f.navigations.at(-1).chatId,'two');assert.equal(f.navigations.at(-1).workspace.projectId,'p');
+ f.control().slotProps.listbox.onScroll({currentTarget:{scrollHeight:200,scrollTop:90,clientHeight:100}});f.control().onHighlightChange({},f.rows.at(-1),'keyboard');assert.deepEqual(f.requests,['next','next']);f.page.isFetching=true;f.render();f.control().onHighlightChange({},f.rows.at(-1),'keyboard');assert.equal(f.requests.length,2);
+ f.page.isFetching=false;f.page.error=Error('Offline');f.render();assert.equal(f.control().noOptionsText,'Chats could not be loaded.');f.control().onOpen();f.render();f.control().onInputChange({},'failed search','input');f.search.error=Error('Search unavailable');f.render();f.control().onClose({},'blur');f.render();assert.equal(f.control().open,false);assert.ok(f.button('Retry search'),'Retry remains mounted outside the popup after keyboard blur');f.button('Retry search').onClick();assert.equal(f.requests.at(-1),'retry');f.requests.pop();f.control().onHighlightChange({},f.rows.at(-1),'keyboard');assert.equal(f.requests.length,2,'Failed paging waits for explicit retry');
+ f.button('New Chat').onClick();f.button('New Chat').onClick();assert.equal(f.navigations.at(-1).creationKey,'intent');assert.equal(f.navigations.filter(n=>n.creationKey).length,1);
 });
 
 test('BR010 picker uses current owner/execution and keeps the chooser open when navigation is refused',async()=>{
  const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchChats.tsx',import.meta.url),'utf8'),handler=source.split('\n').find(line=>line.trim().startsWith('const chooseChat='));assert.ok(handler);
- const route={branchId:'owner',tab:'chats'},writes=[],closes=[],scope={branchId:'owner',executionId:undefined,currentRoute:{current:route},openChat:(...args)=>{writes.push(args);return false},setPicker:value=>closes.push(value)};vm.runInNewContext(ts.transpileModule(handler.replace('const chooseChat=','globalThis.chooseChat='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);
+ const route={branchId:'owner',tab:'chats'},writes=[],closes=[],scope={branchId:'owner',executionId:undefined,currentRoute:{current:route},openChat:(...args)=>{writes.push(args);return false},setPicker:value=>closes.push(value),setSearch(){}};vm.runInNewContext(ts.transpileModule(handler.replace('const chooseChat=','globalThis.chooseChat='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);
  for(const current of [{...route,branchId:'other'},{...route,executionId:'temporary'},{...route,tab:'workflow'},{...route,global:'providers'}]){scope.currentRoute.current=current;scope.chooseChat({id:'c',projectId:'p'})}assert.equal(writes.length,0);
  scope.currentRoute.current=route;scope.chooseChat({id:'c',projectId:'p'});assert.equal(writes.length,1);assert.equal(closes.length,0);scope.openChat=()=>true;scope.chooseChat({id:'c',projectId:'p'});assert.deepEqual(closes,[false]);
 });
@@ -593,7 +622,7 @@ test('BR011 shared Chat settings closes only after its scoped draft guard accept
 });
 
 test('BR011 scoped workspace adapter returns the shared navigation decision and replacement semantics',async()=>{
- const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchChats.tsx',import.meta.url),'utf8'),handler=source.slice(source.indexOf(' const navigate='),source.indexOf(' return <Stack'));const calls=[],scope={chat:{id:'c',projectId:'p'},executionId:undefined,setRoute:(...args)=>{calls.push(args);return false},route:undefined,setChatId:()=>false,setError(){}};
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchChats.tsx',import.meta.url),'utf8'),handler=source.slice(source.indexOf(' const navigate='),source.indexOf(' const pickerPaperProps:'));const calls=[],scope={chat:{id:'c',projectId:'p'},executionId:undefined,setRoute:(...args)=>{calls.push(args);return false},route:undefined,setChatId:()=>false,setError(){}};
  vm.runInNewContext(ts.transpileModule(handler.replace('const navigate=','globalThis.navigate='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);assert.equal(scope.navigate({kind:'agent',projectId:'p',agentId:'a',view:'settings'},{replace:true}),false);assert.equal(calls[0][1],true);scope.executionId='temporary';assert.equal(scope.navigate({kind:'trigger',projectId:'p',triggerId:'t'}),false);assert.equal(calls.length,1);
 });
 

@@ -1,5 +1,3 @@
-import ChatIcon from "@mui/icons-material/ChatBubbleOutline";
-import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import {markWorkspaceResourceUsed} from "../../workspaceRecency";
 import {normalizeResetPages,uniqueBy} from "../../collections";
 import AddIcon from "@mui/icons-material/Add";
@@ -14,7 +12,7 @@ import {useBranchDraftGuard,useBranchNavigationGuard} from './BranchNavigation';
 import {ResourceSettingsContext} from '../ResourceSettingsContext';
 import {useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 'react';
 import {useQuery,useQueryClient,useInfiniteQuery} from '@tanstack/react-query';
-import {Alert,Box,Button,Dialog,DialogActions,DialogContent,DialogTitle,IconButton,Tooltip,List,ListItem,ListItemButton,ListItemText,Stack,TextField,Typography} from '@mui/material';
+import {Alert,Box,Button,Dialog,DialogContent,DialogTitle,Autocomplete,CircularProgress,Paper,type PaperProps,Stack,TextField,Typography} from '@mui/material';
 import type {BranchContextDto,EngineDto} from '@ponderosa/core';
 import {realApi,requestJson,requestCollectionPage} from '../../api/real';
 import type {ProjectRoute} from '../../routeRegistry';
@@ -25,6 +23,10 @@ import {WorkspaceReadOnlyContext} from '../WorkspaceReadOnlyContext';
 import {ApiRequestError} from '../../api/types';
 import {AgentCreateSurface} from '../AgentCreateDialog';
 import {CapabilityPolicyEditor} from '../CapabilityPolicyEditor';
+type ChatOptionsPaperProps=PaperProps & {footer?:ReactNode};
+function ChatOptionsPaper({children,footer,...props}:ChatOptionsPaperProps):JSX.Element {
+ return <Paper {...props}>{children}{footer}</Paper>;
+}
 /** Shared interaction surfaces receive scoped transport and navigation from their product shell. */
 export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate,notificationAction,onHeaderReady,enginesLoaded=true}:{branchId:string;engines:EngineDto[];enginesLoaded?:boolean;executionId?:string;branchRoute:BranchRoute;onNavigate(route:BranchRoute,replace?:boolean):boolean;notificationAction?:ReactNode;onHeaderReady?(ready:boolean):void}):JSX.Element {
  const guard=useBranchNavigationGuard();
@@ -46,7 +48,7 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
  const searches=useInfiniteQuery({queryKey:['branch-chats',branchId,executionId,'search',searchText],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestCollectionPage<BranchContextDto>(`/api/branches/${branchId}/chats?limit=100&search=${encodeURIComponent(searchText)}${executionId?'&executionId='+encodeURIComponent(executionId):''}${pageParam?'&cursor='+encodeURIComponent(pageParam):''}`),getNextPageParam:last=>last.hasMore?last.cursor:undefined,select:normalizeResetPages,enabled:picker&&Boolean(searchText),refetchInterval:picker&&searchText?5000:false});
  const chats={...chatPages,data:chatPages.data?uniqueBy(chatPages.data.pages.flatMap(page=>page.items),chat=>chat.id):undefined};
  const choices=searchText?searches:chatPages,choiceRows=uniqueBy(choices.data?.pages.flatMap(page=>page.items)??[],chat=>chat.id);
- const chatCount=chatPages.data?.pages[0]?.total;
+ const titleCounts=new Map<string,number>();for(const c of choiceRows)titleCounts.set(c.title,(titleCounts.get(c.title)??0)+1);
  const [browserRequest,setBrowserRequest]=useState<ProjectBrowserRequest>(),browserRequestSequence=useRef(0);
  const owner=useQuery({queryKey:['branch-chat-owner',chatId],queryFn:()=>requestJson<BranchContextDto>(`/api/branches/contexts/${chatId}`),enabled:Boolean(chatId),retry:false,refetchInterval:5000});
  const listedChat=chats.data?.find(c=>c.id===chatId),ownerMatches=!(owner.error instanceof ApiRequestError&&[404,410].includes(owner.error.status))&&owner.data?.branchId===branchId&&(owner.data.executionId??undefined)===(executionId??undefined),chat=listedChat??(ownerMatches?owner.data:undefined),project=useQuery({queryKey:['project',chat?.projectId],queryFn:()=>realApi.getProject(chat!.projectId),enabled:Boolean(chat)});
@@ -63,7 +65,7 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
  const usedChat=useRef<string>();
  const recordSelectedChatUse=()=>{const current=currentRoute.current,id=current.branchId===branchId&&current.tab==='chats'&&!current.global&&!executionId&&ownerMatches?chatId:undefined;if(usedChat.current===id)return;usedChat.current=id;if(id)void markWorkspaceResourceUsed(client,'conversation',id).then(()=>client.invalidateQueries({queryKey:['branch-chats',branchId]}));};
  useEffect(recordSelectedChatUse,[branchId,chatId,ownerMatches,branchRoute.tab,branchRoute.global,branchRoute.branchId,executionId]);
- const chooseChat=(chat:BranchContextDto)=>{const current=currentRoute.current;if(current.branchId===branchId&&current.tab==='chats'&&!current.global&&(current.executionId??undefined)===(executionId??undefined)&&openChat(chat.id,chat.projectId))setPicker(false);};
+ const chooseChat=(chat:BranchContextDto)=>{const current=currentRoute.current,accepted=current.branchId===branchId&&current.tab==='chats'&&!current.global&&(current.executionId??undefined)===(executionId??undefined)&&openChat(chat.id,chat.projectId);if(accepted){setPicker(false);setSearch('')}return accepted;};
  const created=(projectId:string,conversationId:string)=>{const current=currentRoute.current;if(current.branchId!==branchId||current.tab!=='chats'||current.global||current.executionId||current.creationKey!==creationKey)return false;return onNavigate({...current,creationKey:undefined,chatId:conversationId,workspace:{kind:'conversation',projectId,conversationId}},true);};
  const currentAgentCreate=useRef(agentCreate);currentAgentCreate.current=agentCreate;
  useBranchDraftGuard('agent-create',agentCreatePending);
@@ -79,16 +81,25 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
    if(next.kind==='home')return chat&&route?.kind==='browser'?setRoute({kind:'conversation',projectId:chat.projectId,conversationId:chat.id}):setChatId('');
    setError('This view belongs outside the selected Branch Chat.');return false;
  };
+ const pickerPaperProps:ChatOptionsPaperProps={footer:<Stack spacing={0.5} onMouseDown={event=>event.preventDefault()}>
+  {choices.isFetchingNextPage&&<Typography role="status" sx={{px:2,py:1}}>Loading more Chats…</Typography>}
+  {choices.hasNextPage&&<Button disabled={choices.isFetching} onClick={()=>void choices.fetchNextPage()}>Load more Chats</Button>}
+ </Stack>};
  return <Stack spacing={1} sx={{flex:1,minHeight:0,minWidth:0,overflow:'hidden'}}>
-  <Stack direction="row" gap={1} alignItems="center" sx={{flexShrink:0,minWidth:0}}><Button size="small" startIcon={<ChatIcon/>} endIcon={<ArrowDropDownIcon/>} aria-haspopup="dialog" onClick={()=>{setSearch('');setPicker(true)}} sx={{whiteSpace:'nowrap'}}>{executionId?'Execution Chats':'Chats'} ({chatCount??(chatPages.error?'?':'…')})</Button>{executionId&&<Button size="small" onClick={()=>onNavigate({...branchRoute,executionId:undefined,chatId:undefined,workspace:undefined})}>Persistent Chats</Button>}{!executionId&&<Tooltip title="New Chat"><span><IconButton aria-label="New Chat" disabled={Boolean(creationKey)} onClick={startChat}><AddIcon/></IconButton></span></Tooltip>}{notificationAction}</Stack>
-  <Dialog open={picker} onClose={()=>setPicker(false)} fullWidth maxWidth="sm"><DialogTitle>{executionId?'Execution Chats':'Chats'}</DialogTitle><DialogContent dividers><Stack spacing={1}>
-   <TextField autoFocus size="small" label="Search Chats" value={search} onChange={event=>setSearch(event.target.value)} slotProps={{htmlInput:{maxLength:200}}}/>
-   {choices.isPending&&<Typography role="status">Loading Chats…</Typography>}
-   {choices.error&&<Alert severity="error" action={<Button onClick={()=>void choices.refetch()}>Retry</Button>}>Chats could not be loaded. {choices.error.message}</Alert>}
-   {choices.isSuccess&&!choiceRows.length&&<Typography color="text.secondary">{searchText?'No Chats match this search.':'No Chats in this scope.'}</Typography>}
-   <List disablePadding aria-label="Choose Chat">{choiceRows.map(c=><ListItem key={c.id} disablePadding><ListItemButton component="button" type="button" selected={c.id===chatId} aria-current={c.id===chatId?'true':undefined} onClick={()=>chooseChat(c)} sx={{width:'100%',borderRadius:1}}><ListItemText primary={c.title} secondary={`${c.id.slice(0,8)} · ${new Date(c.updatedAt).toLocaleString()}`} slotProps={{primary:{sx:{overflowWrap:'anywhere'}},secondary:{sx:{overflowWrap:'anywhere'}}}}/></ListItemButton></ListItem>)}</List>
-   {choices.hasNextPage&&<Button disabled={choices.isFetchingNextPage} onClick={()=>void choices.fetchNextPage()}>Load more Chats</Button>}
-  </Stack></DialogContent><DialogActions><Button onClick={()=>setPicker(false)}>Close</Button></DialogActions></Dialog>
+  <Stack direction="row" gap={1} alignItems="center" sx={{flexShrink:0,minWidth:0}}>
+   <Autocomplete options={choiceRows} value={chat??null} getOptionLabel={c=>c.title} getOptionKey={c=>c.id} isOptionEqualToValue={(a,b)=>a.id===b.id} filterOptions={options=>options} disableClearable={Boolean(chat)}
+    open={picker} onOpen={()=>setPicker(true)} onClose={(event,reason)=>{if(reason==='selectOption'&&'defaultMuiPrevented'in event&&event.defaultMuiPrevented)return;setPicker(false);if(reason==='selectOption')setSearch('')}} onChange={(event,c)=>{if(c&&!chooseChat(c))(event as {defaultMuiPrevented?:boolean}).defaultMuiPrevented=true}}
+    inputValue={picker?search:chat?.title??''} onInputChange={(_event,value,reason)=>{if(reason==='input')setSearch(value)}}
+    loading={choices.isPending} loadingText="Loading Chats…" noOptionsText={choices.error?'Chats could not be loaded.':searchText?'No Chats match this search.':'No Chats in this scope.'}
+    onHighlightChange={(_event,c,reason)=>{if(reason==='keyboard'&&c?.id===choiceRows.at(-1)?.id&&choices.hasNextPage&&!choices.isFetching&&!choices.error)void choices.fetchNextPage()}}
+    slots={{paper:ChatOptionsPaper}} slotProps={{paper:pickerPaperProps,listbox:{onScroll:event=>{const list=event.currentTarget;if(list.scrollHeight-list.scrollTop-list.clientHeight<32&&choices.hasNextPage&&!choices.isFetching&&!choices.error)void choices.fetchNextPage()}}}}
+    renderOption={({key,...props},c)=><Box component="li" key={key} {...props}><Box sx={{minWidth:0}}><Typography sx={{overflowWrap:'anywhere'}}>{c.title}</Typography>{(titleCounts.get(c.title)??0)>1&&<Typography variant="caption" color="text.secondary" sx={{overflowWrap:'anywhere'}}>{c.id}</Typography>}</Box></Box>}
+    renderInput={params=><TextField {...params} size="small" label={executionId?'Execution Chat':'Chat'} placeholder="Search Chats" slotProps={{htmlInput:{...params.inputProps,maxLength:200}}} InputProps={{...params.InputProps,endAdornment:<>{choices.isFetching&&<CircularProgress size={16} aria-label="Loading Chats"/>}{params.InputProps.endAdornment}</>}}/>}
+    sx={{flex:1,minWidth:0,maxWidth:360}}/>
+   {!executionId&&<Button size="small" startIcon={<AddIcon/>} disabled={Boolean(creationKey)} onClick={startChat} sx={{flexShrink:0,whiteSpace:'nowrap'}}>New Chat</Button>}
+   {executionId&&<Button size="small" onClick={()=>onNavigate({...branchRoute,executionId:undefined,chatId:undefined,workspace:undefined})}>Persistent Chats</Button>}{notificationAction}
+  </Stack>
+  {searchText&&searches.error&&<Alert severity="error" action={<Button onClick={()=>void searches.refetch()}>Retry search</Button>}>Chats could not be searched. {searches.error.message}</Alert>}
   {creationKey&&<NewChatComposer key={creationKey} creationKey={creationKey} owner={creationOwner} inline engines={engines} enginesLoaded={enginesLoaded} onCreated={created} onCancel={()=>onNavigate({...branchRoute,creationKey:undefined},true)} onConfigureProvider={()=>onNavigate({...branchRoute,global:'providers'})}/>}
   {!creationKey&&creationAllowed&&pendingAttempt&&<Button onClick={startChat}>Retry opening Chat</Button>}
   {routedAgent.error&&<Alert severity="error" action={<Button onClick={()=>void routedAgent.refetch()}>Retry Agent</Button>}>The linked Agent is unavailable in Branches.</Alert>}
