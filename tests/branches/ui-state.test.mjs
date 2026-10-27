@@ -275,7 +275,7 @@ test('same-workflow tabs retain only mounted local owners, while workflow/global
  const {retainedBranchDrafts}=await import('../../apps/web/src/branchesRouting.ts');
  for(const from of ['workflow','chats','executions','parameters','settings'])for(const to of ['workflow','chats','executions','parameters','settings']){
   const retained=retainedBranchDrafts({branchId:'owner',tab:from},{branchId:'owner',tab:to});
-  for(const key of ['branch-settings:owner:parameters','branch-settings:owner:limits','branch-execution-budget:owner','branch-capabilities:owner','branch-availability:owner'])assert.ok(retained.localKeys.includes(key),'Mounted local editors must survive same-workflow tab changes');
+  for(const key of ['branch-settings:owner:parameters','branch-settings:owner:limits','branch-execution-budget:owner','branch-capabilities:owner','branch-availability:owner','branch-deletion:owner'])assert.ok(retained.localKeys.includes(key),'Mounted local editors must survive same-workflow tab changes');
   assert.ok(!retained.localKeys.includes('chat-capabilities'),'Unmounted child dialogs must keep their own navigation guard');
   assert.ok(!retained.localKeys.includes('branch-settings:foreign:limits'),'Another workflow must not borrow this draft retention');
  }
@@ -390,6 +390,71 @@ test('capability readback starts a fresh HTTP request instead of joining a pre-w
   pending[0](new Response(JSON.stringify(f.scope.query.data)));await prior;assert.equal(f.scope.dirty,true);
   pending[1](new Response(JSON.stringify({policy:{revision:12,restrictedCapabilityIds:['connector:fresh']}})));await readback;assert.equal(f.scope.draft.revision,12);
  }finally{for(const resolve of pending)resolve(new Response(JSON.stringify({policy:{revision:4,restrictedCapabilityIds:[]}})));await Promise.allSettled([prior,readback]);globalThis.fetch=original}
+});
+
+async function deletionActionFixture(initial={}){
+ const {readFile}=await import('node:fs/promises'),{createRequire}=await import('node:module'),vm=await import('node:vm'),{ApiRequestError}=await import('../../apps/web/src/api/types.ts');
+ const ts=createRequire(new URL('../../apps/web/package.json',import.meta.url))('typescript'),source=await readFile(new URL('../../apps/web/src/components/branches/BranchSettings.tsx',import.meta.url),'utf8'),calls=[];
+ const life={deleting:false,chats:2,activeExecutions:0,callers:[],updates:[],pendingRemoval:[],...initial};
+ const scope={branch:{id:'owner'},active:{current:true},generation:{current:1},removing:{current:false},finished:{current:false},acknowledged:false,deleteOpen:true,serverLife:life,lifecycle:{data:life,refetch:async()=>{}},client:{invalidateQueries:async()=>{},setQueryData:(_key,data)=>{scope.lifecycle.data=data}},ApiRequestError,
+  get deletionBlocked(){return scope.blocked()},setAcknowledged:value=>{scope.acknowledged=value},setDeleteOpen:value=>{scope.deleteOpen=value},onDeleted:()=>{scope.deleted=(scope.deleted??0)+1},
+  requestJson:async(path,init)=>{calls.push({path,method:init?.method??'GET',cache:init?.cache});if(init?.method==='DELETE'){if(scope.deleteError)throw scope.deleteError;return scope.deleteResult??{deleted:true,pending:false}}if(scope.readError)throw scope.readError;return scope.serverLife},
+  useEffect:effect=>effect(),useMutation:options=>{const state={isPending:false,isSuccess:false,isError:false,options,mutate:input=>{state.pending=state.mutateAsync(input).catch(()=>{})},mutateAsync:async input=>{state.variables=input;state.data=undefined;state.error=null;state.isPending=true;state.isSuccess=state.isError=false;try{const data=await options.mutationFn(input);await options.onSuccess?.(data,input);state.data=data;state.isSuccess=true;return data}catch(error){await options.onError?.(error,input);state.error=error;state.isError=true;throw error}finally{state.isPending=false;options.onSettled?.()}}};return state}};
+ const prefixes=['const finishDeleted=','const preflight=','const remove=','const refreshDeletion=','const closeDeletion=','const deletionBlocked=','const confirmDeletion='];
+ const lines=source.split('\n').filter(line=>prefixes.some(prefix=>line.trim().startsWith(prefix)));assert.equal(lines.length,prefixes.length);
+ const code=lines.map(line=>line.replace(/const (finishDeleted|preflight|remove|refreshDeletion|closeDeletion|confirmDeletion)=/,'globalThis.$1=').replace('const deletionBlocked=','globalThis.blocked=()=>')).join('\n');
+ const run=code=>vm.runInNewContext(ts.transpileModule(code,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);run(code);
+ scope.checkRemoval=()=>run(source.split('\n').find(line=>line.includes('useEffect(()=>{if(lifecycle.error instanceof ApiRequestError')));
+ await scope.preflight.mutateAsync(scope.generation.current);return {scope,calls,ApiRequestError};
+}
+
+test('workflow deletion requires acknowledgement, fresh counts and a single exact DELETE',async()=>{
+ const f=await deletionActionFixture();f.scope.confirmDeletion();assert.equal(f.calls.filter(c=>c.method==='DELETE').length,0);f.scope.acknowledged=true;f.scope.confirmDeletion();f.scope.confirmDeletion();await f.scope.remove.pending;
+ assert.deepEqual(f.calls.filter(c=>c.method==='DELETE'),[{path:'/api/branches/owner',method:'DELETE',cache:undefined}]);assert.equal(f.scope.deleted,1);assert.equal(f.scope.deleteOpen,false);assert.ok(f.calls.filter(c=>c.method==='GET').every(c=>c.cache==='no-store'));
+});
+
+test('changed workflow counts or blockers require fresh acknowledgement without deleting',async()=>{
+ for(const change of [{chats:3},{activeExecutions:1},{callers:[{id:'caller',name:'Caller'}]},{updates:[{id:'update'}]}]){
+  const f=await deletionActionFixture();f.scope.serverLife={...f.scope.serverLife,...change};f.scope.acknowledged=true;f.scope.confirmDeletion();await f.scope.remove.pending;
+  assert.equal(f.calls.some(c=>c.method==='DELETE'),false);assert.equal(f.scope.acknowledged,false);assert.equal(f.scope.deleted,undefined);assert.ok(f.scope.remove.error,'Changed preflight remains visible for review');
+ }
+});
+
+test('uncertain deletion reads back canonical pending cleanup without retrying DELETE; exact 404 retires once',async()=>{
+ const f=await deletionActionFixture();f.scope.deleteError=new Error('Response lost');const request=f.scope.requestJson;f.scope.requestJson=async(path,init)=>{if(init?.method==='DELETE')f.scope.serverLife={...f.scope.serverLife,deleting:true};return request(path,init)};
+ f.scope.acknowledged=true;f.scope.confirmDeletion();await f.scope.remove.pending;assert.equal(f.scope.deleteOpen,false);assert.equal(f.scope.deleted,undefined);assert.equal(f.calls.filter(c=>c.method==='DELETE').length,1);assert.equal(f.scope.deletionBlocked,true);
+ f.scope.lifecycle.error=new f.ApiRequestError(503,'Unavailable');f.scope.checkRemoval();assert.equal(f.scope.deleted,undefined,'Service failure is not deletion proof');
+ f.scope.lifecycle.error=new f.ApiRequestError(404,'Branch not found');f.scope.checkRemoval();f.scope.checkRemoval();assert.equal(f.scope.deleted,1);
+});
+
+test('failed deletion readback stays blocked and late owner cleanup cannot delete or clear another workflow',async()=>{
+ const f=await deletionActionFixture(),request=f.scope.requestJson;f.scope.requestJson=async(path,init)=>{if(init?.method==='DELETE'){f.scope.readError=new Error('Offline');f.scope.deleteError=new Error('Response lost')}return request(path,init)};f.scope.acknowledged=true;f.scope.confirmDeletion();await f.scope.remove.pending;
+ assert.equal(f.scope.preflight.isError,true);assert.equal(f.scope.deletionBlocked,true);assert.equal(f.scope.acknowledged,false);assert.equal(f.scope.deleted,undefined);f.scope.confirmDeletion();assert.equal(f.calls.filter(c=>c.method==='DELETE').length,1);
+ const old=await deletionActionFixture();let complete;old.scope.requestJson=()=>new Promise(resolve=>{complete=resolve});old.scope.acknowledged=true;old.scope.confirmDeletion();old.scope.active.current=false;old.scope.generation.current++;complete(old.scope.serverLife);await old.scope.remove.pending;
+ assert.equal(old.calls.some(c=>c.method==='DELETE'),false);assert.equal(old.scope.deleted,undefined);
+});
+
+test('closing deletion resets acknowledgement and invalidates a late preflight',async()=>{
+ const f=await deletionActionFixture();f.scope.acknowledged=true;f.scope.closeDeletion();assert.equal(f.scope.acknowledged,false);assert.equal(f.scope.deleteOpen,false);assert.equal(f.scope.deletionBlocked,true,'Closed confirmation cannot submit its earlier snapshot');const current=f.scope.lifecycle.data;f.scope.preflight.options.onSuccess({...current,chats:99},f.scope.generation.current-1);assert.equal(f.scope.lifecycle.data,current,'Closed confirmation must not publish its late counts');
+});
+
+test('canonical workflow deletion defers navigation until cleanup and fences both owner and next frame',async()=>{
+ const {readFile}=await import('node:fs/promises'),{createRequire}=await import('node:module'),vm=await import('node:vm');const ts=createRequire(new URL('../../apps/web/package.json',import.meta.url))('typescript'),source=await readFile(new URL('../../apps/web/src/components/BranchesView.tsx',import.meta.url),'utf8'),handler=source.split('\n').find(line=>line.trim().startsWith('const branchDeleted='));
+ for(const changed of ['none','before-owner','before-global','after-owner','after-tab','after-selection']){
+  const frames=[],writes=[],navigations=[],scope={routeOwner:{current:{branchId:changed==='before-owner'?'new':'old',...(changed==='before-global'?{global:'general'}:{})}},selection:{current:7},savedDraft:{current:'dirty'},emptyDraft:()=>({}),setDraft:value=>writes.push(value),setAdvancedDirty(){},setPreview(){},client:{removeQueries(){},invalidateQueries:async()=>{}},requestAnimationFrame:cb=>frames.push(cb),navigate:route=>navigations.push(route)};
+  vm.runInNewContext(ts.transpileModule(handler.replace('const branchDeleted=','globalThis.deleted='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);scope.deleted('old',7);
+  if(changed==='before-owner'||changed==='before-global'){assert.equal(writes.length,0);continue}assert.equal(writes.length,1);assert.equal(navigations.length,0);if(changed==='after-owner')scope.routeOwner.current={branchId:'new'};if(changed==='after-tab')scope.routeOwner.current={branchId:'old',tab:'chats'};if(changed==='after-selection')scope.selection.current++;frames[0]();assert.equal(navigations.length,changed==='none'?1:0);
+ }
+});
+
+test('a fresh deletion owner resumes durable pending cleanup and leaves only on canonical absence',async()=>{
+ const f=await deletionActionFixture({deleting:true});assert.equal(f.scope.deleteOpen,false);assert.equal(f.scope.deletionBlocked,true);assert.equal(f.scope.deleted,undefined);assert.equal(f.calls.some(c=>c.method==='DELETE'),false);
+ f.scope.lifecycle.error=new f.ApiRequestError(404,'Branch not found');f.scope.checkRemoval();assert.equal(f.scope.deleted,1);
+});
+
+test('declined parent deletion cleanup remains retryable when the current callback is reconciled',async()=>{
+ const f=await deletionActionFixture();f.scope.onDeleted=()=>false;f.scope.lifecycle.error=new f.ApiRequestError(404,'Branch not found');f.scope.checkRemoval();assert.equal(f.scope.finished.current,false);
+ f.scope.onDeleted=()=>{f.scope.deleted=(f.scope.deleted??0)+1};f.scope.checkRemoval();assert.equal(f.scope.finished.current,true);assert.equal(f.scope.deleted,1);
 });
 
 // Exercise the real intervention fields, mutation and shared dialog shell.
