@@ -186,6 +186,29 @@ test('fresh replacement ignores discarded occupancy and retrieves old submitted 
   await finish(f, agent, session);
 }));
 
+test('unknown over-policy occupancy rejects required input before provider dispatch and preserves accepted context', fixtureTestOptions, t => withRetainedBudgetFixture(t, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
+  const chat = await f.createChat('Explicit context overflow'), agent = await f.createIdleAgent(chat, 'Retained context owner');
+  const session = await f.hold(agent.id), generation = session.engineAgentId;
+  const packet = accepted(f.store, agent.id), frozen = JSON.stringify(packet);
+  await finish(f, agent, session);
+  const before = (await f.detail(agent.id)).runs.map(run => run.id), turnsBefore = f.turns.length;
+  f.usage.set(agent.id, { usedTokens: 160000, aggregateTokens: 900000, providerSessionGeneration: generation });
+  await f.send(agent.id, 'Required work must not silently discard or replay the original context.');
+  const detail = await until(async () => {
+    const current = await f.detail(agent.id), runs = current.runs.filter(run => !before.includes(run.id));
+    return runs.length && runs.every(run => !['running', 'preparing'].includes(run.status)) ? current : false;
+  }, 'over-policy Run fails before provider dispatch');
+  const runs = detail.runs.filter(run => !before.includes(run.id));
+  assert.equal(runs.length, 1); assert.equal(runs[0].status, 'failed');
+  assert.equal(f.turns.length, turnsBefore, 'Overflow cannot execute or silently replay the task');
+  assert.equal(f.sessions.get(agent.id), session, 'Overflow cannot substitute a fresh provider root');
+  assert.equal(f.store.resumeSessionState(agent.id)?.sessionId, generation);
+  assert.equal(JSON.stringify(f.store.getProviderInput(packet.executionId, true)), frozen);
+  assert.equal(new CoordinationV3Store(f.store.sqlite).activeAgentRun(agent.id), undefined);
+  assert.match(JSON.stringify(f.store.readLog(agent.id)), /context policy.*response headroom/i);
+}));
+
 let broadcastSequence = 0;
 function broadcast(store, chat, text) {
   const event = { schemaVersion: 2, eventId: randomUUID(), projectId: chat.projectId, conversationId: chat.id,
