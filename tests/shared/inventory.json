@@ -1524,6 +1524,14 @@
       "moduleBase": "packages/agents/package.json",
       "requirements": "Node24, built agents/native-host; disposable current-state SQLite and canonical logs; no provider account",
       "origin": "Native write-active restart and incomplete history tails; metadata, SQL, V3 and saved-decision preservation"
+    },
+    {
+      "path": "tests/workspace-navigation/browser-theme.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built web assets; generated startup script in VM and existing theme owner, no native Android claim",
+      "origin": "Android PWA browser metadata and prepaint theme consistency"
     }
   ],
   "retainedReleasePayload": [
