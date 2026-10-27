@@ -661,7 +661,7 @@ export async function prepareAgentRun(
   const newlySubmittedContextArtifacts = replacementCandidateRollover || ownsFrozenHandoff
     ? []
     : contextArtifacts.filter((artifact) => !retainedSessionArtifactIds.includes(artifact.id));
-  const contextArtifactHistory = newlySubmittedContextArtifacts.length ? [{
+  const contextArtifactHistory: ChatMessage[] = newlySubmittedContextArtifacts.length ? [{
     role: "assistant",
     text: "Pinned or published project artifacts available to this session:",
     attachments: newlySubmittedContextArtifacts.map(generatedArtifactReference),
