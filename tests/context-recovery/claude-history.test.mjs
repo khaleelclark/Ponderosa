@@ -179,12 +179,21 @@ test('context-budget omission reaches the actual prompt and a discarded session 
   const session=await f.hold(agent.id);assert.notEqual(session.engineAgentId,oldSession);assert.match(f.turns.at(-1).input.prompt,/BOUNDED HISTORICAL CONTEXT.*Additional older/s);
   const found=f.ok(await f.tool(session,'ponderosa_history',{action:'search',query:'Unique amber compass'}));assert.ok(found.hits.some(hit=>hit.communicationEventId===older.eventId));
   const exact=f.ok(await f.tool(session,'ponderosa_history',{action:'read',communicationEventId:older.eventId,before:0,after:0}));assert.equal(exact.messages[0].text,older.text);
-  const before=f.turns.length;session.finish();await until(async()=>!(await f.detail(agent.id)).runs.some(run=>run.status==='running'),'settled retained turn');
+  // This compatibility fixture fills the fresh byte policy; provide actual
+  // generation-scoped checkpoints instead of assuming unmeasured context is zero.
+  const meter=s=>s.events.push({type:'context_usage',providerSessionId:s.engineAgentId,providerSessionGeneration:s.engineAgentId,usedTokens:25000,windowTokens:200000});
+  const meteredReply=async s=>{
+   let reply=await s.tool('ponderosa_update_request',{text:'Compatible continuation completed'});
+   if(!reply.success)reply=await s.tool('ponderosa_message',{text:'Compatible continuation completed'});
+   assert.equal(reply.success,true,reply.text);
+   meter(s);
+  };
+  const before=f.turns.length;meter(session);session.finish();await until(async()=>!(await f.detail(agent.id)).runs.some(run=>run.status==='running'),'settled retained turn');
   // Cosmetic profile changes preserve the compatible accepted session.
   const prefs=f.ok(await f.api('GET','/api/workspace/preferences'));f.ok(await f.api('PATCH','/api/workspace/preferences',{profile:{avatarId:prefs.profile.avatarId==='river'?'sunset':'river',handle:'#'+prefs.profile.handle.toUpperCase(),displayName:' '+prefs.profile.displayName+' '}}));
-  const previous=(await f.detail(agent.id)).runs.map(run=>run.id);await f.send(agent.id,'Compatible continuation');await f.settled(agent.id,previous);assert.equal(f.turns.at(-1).sessionId,session.engineAgentId);
+  const previous=(await f.detail(agent.id)).runs.map(run=>run.id);f.plans.set(agent.id,[{run:meteredReply}]);await f.send(agent.id,'Compatible continuation');await f.settled(agent.id,previous);assert.equal(f.turns.at(-1).sessionId,session.engineAgentId);
   const count=f.turns.length,prior=(await f.detail(agent.id)).runs.map(run=>run.id),coordination=new CoordinationV3Store(store.sqlite);
-  coordination.coordinate({projectId:chat.projectId,conversationId:chat.id,actorScope:'user:local-operator',idempotencyKey:'same-scope-new-request',requests:[{recipientAgentId:agent.id,lifetime:{kind:'indefinite'},payload:{text:'A new compatible Request'}}]});
+  f.plans.set(agent.id,[{run:meteredReply}]);coordination.coordinate({projectId:chat.projectId,conversationId:chat.id,actorScope:'user:local-operator',idempotencyKey:'same-scope-new-request',requests:[{recipientAgentId:agent.id,lifetime:{kind:'indefinite'},payload:{text:'A new compatible Request'}}]});
   await until(()=>f.turns.length>count,'new compatible Request turn');await f.settled(agent.id,prior);assert.equal(f.turns.at(-1).sessionId,session.engineAgentId,'A new Request alone must not reset compatible working context');
  },{storeFactory:root=>store=new AgentStore(root)});
 });
