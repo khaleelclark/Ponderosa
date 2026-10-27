@@ -14,7 +14,7 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a,b) 
 
 // Execute both real hooks with controlled transport, effects and debounce time.
 // No second draft/upload implementation: assertions observe the production hooks.
-function fixture(overrides = {}, fields = {}) {
+function fixture(overrides = {}, fields = {}, browserCrypto = crypto) {
   let index=0, dirty=true, current, live=true;
   const slots=[], effects=[], timers=new Map(), calls={get:[],put:[],upload:[],remove:[]};
   const decision={id:'decision-a',agentId:'agent-a',...fields}, scope='agent:agent-a';
@@ -36,14 +36,22 @@ function fixture(overrides = {}, fields = {}) {
     downloadDraftAttachment:async file=>new File(['restored bytes'],file.name,{type:file.mediaType}),
     ...overrides,
   };
-  function load(relative,imports) {const exports={};vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/'+relative,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports,Error,crypto,AbortSignal,window:{queueMicrotask},setTimeout:fn=>{const key={};timers.set(key,fn);return key;},clearTimeout:key=>timers.delete(key),require:name=>imports[name]??require(name)});return exports;}
-  const common={react,'../../api':{api},'@ponderosa/core':core};
+  function load(relative,imports) {const exports={};vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/'+relative,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports,Error,crypto:browserCrypto,AbortSignal,window:{queueMicrotask},setTimeout:fn=>{const key={};timers.set(key,fn);return key;},clearTimeout:key=>timers.delete(key),require:name=>imports[name]??require(name)});return exports;}
+  const common={react,'../../api':{api},'../../clientId':load('clientId.ts',{}),'@ponderosa/core':core};
   const uploader=load('components/chat/useComposerDraftAttachments.ts',{...common,'./composerUtils':utils});
   const {useDecisionAnswerDraft}=load('components/decisions/useDecisionAnswerDraft.ts',{...common,'@tanstack/react-query':{useQuery:()=>({data:core.DEFAULT_ASSET_LIMITS})},'../../queryKeys':{queryKeys:{assetLimits:{all:[]}}},'../chat/composerUtils':utils,'../chat/useComposerDraftAttachments':uploader});
   const render=()=>{if(!live)return;index=0;dirty=false;current=useDecisionAnswerDraft(decision,true);while(effects.length)effects.shift()();};
   const flush=async()=>{for(let i=0;i<15;i++){if(dirty)render();await Promise.resolve();}return current;};
   return {calls,api,metadata,scope,decision,get value(){return current;},setCanonical(value){canonical={...canonical,...value};},async start(){render();return flush();},flush,async debounce(){await flush();const pending=[...timers.values()];timers.clear();pending.forEach(fn=>fn());return flush();},unmount(){live=false;slots.forEach(slot=>slot?.cleanup?.());timers.clear();}};
 }
+
+for(const browserCrypto of [{},null])test('Decision draft reuses one fallback client ID through rerenders, uncertain writes and retry',async()=>{
+  let attempt=0;const f=fixture({putConversationDraft:async(...args)=>{f.calls.put.push(args);if(++attempt===1){f.setCanonical({...args[1],revision:1});throw Error('response lost');}if(attempt===2)throw Error('offline');return{revision:2};}},{},browserCrypto);
+  await f.start();f.value.setText('First');await f.debounce();assert.equal(f.value.saveError,undefined,'Canonical readback reconciles the accepted write');
+  const id=f.calls.put[0][1].clientId;assert.equal(typeof id,'string');assert.ok(id.length>0);
+  f.value.setText('Second');await f.debounce();assert.match(f.value.saveError,/could not be confirmed/);f.value.retry();await f.debounce();assert.equal(f.value.saveError,undefined);
+  assert.equal(f.calls.put.length,3);assert.ok(f.calls.put.every(call=>call[1].clientId===id),'Mounted identity survives rerender, uncertain readback and explicit retry');assert.equal(f.calls.put[2][1].expectedRevision,1);f.unmount();
+});
 
 test('Decision draft loads only its stable owner and restores original attachment IDs/order',async()=>{
   const f=fixture();f.setCanonical({revision:7,text:'Saved answer',attachmentIds:['two','one'],attachments:[f.metadata('two',new File(['2'],'two.txt',{type:'text/plain'})),f.metadata('one',new File(['1'],'one.txt',{type:'text/plain'}))]});

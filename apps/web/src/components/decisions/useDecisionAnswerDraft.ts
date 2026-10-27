@@ -2,6 +2,7 @@ import { DEFAULT_ASSET_LIMITS, decisionAnswersError, type DecisionAnswerDto } fr
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useReducer, useRef, useState } from "react";
 import { api } from "../../api";
+import { createClientId } from "../../clientId";
 import type { DecisionPrompt } from "../../decisions";
 import { queryKeys } from "../../queryKeys";
 import { composerAttachmentReducer } from "../chat/composerUtils";
@@ -18,7 +19,7 @@ export function useDecisionAnswerDraft(decision: DecisionPrompt, open: boolean) 
   const [ready, setReady] = useState(!scope), [loadError, setLoadError] = useState<string>();
   const [saveError, setSaveError] = useState<string>(), [retry, setRetry] = useState(0);
   const mounted = useRef(true), loaded = useRef(false), revision = useRef(0), saved = useRef("");
-  const [clientId] = useState(() => crypto.randomUUID());
+  const [clientId] = useState(() => createClientId());
   const writes = useRef(Promise.resolve());
   const { data: limits = DEFAULT_ASSET_LIMITS } = useQuery({ queryKey: queryKeys.assetLimits.all,
     queryFn: () => api.getAssetLimits(), staleTime: 5 * 60_000, enabled: open && Boolean(scope) });
