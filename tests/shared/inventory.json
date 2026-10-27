@@ -872,6 +872,14 @@
       "origin": "Q12: Claude history dispatch and frozen canonical scope qualification"
     },
     {
+      "path": "tests/context-recovery/history-artifact-metadata.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/agents; private canonical SQLite/HTTP fixtures and controlled managed-file authorization; no provider account",
+      "origin": "Production audit: bounded historical artifact metadata without losing canonical text, primary documents or authorization"
+    },
+    {
       "path": "tests/chats/receipt-batching.test.mjs",
       "feature": "chats",
       "lane": "server",

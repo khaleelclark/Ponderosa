@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { CommunicationEvent } from "@ponderosa/core";
+import type { CommunicationEvent, HistoryMessageProvenanceDto } from "@ponderosa/core";
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
   requestParticipantAgentIds,
@@ -15,7 +15,7 @@ import {
 import { AssetError, type AssetStore } from "./assets.js";
 import { boundedUtf8Preview } from "./static-content.js";
 import type { PreparedCommunicationArtifact } from "./routes/conversation-deliveries.js";
-import { collectReachableArtifactIds } from "./artifact-refs.js";
+import { artifactIdsIntersectingTextRange, collectReachableArtifactIds } from "./artifact-refs.js";
 import { runtimeAttachmentProviderPath } from "./runtime-attachments.js";
 
 const OPERATOR_MESSAGE_PREVIEW_UTF8_BYTES = 4_000;
@@ -39,6 +39,32 @@ export function readableArtifactReferences(input: ReadableArtifactContext & { ar
       byteLength: content.byteLength, sha256: content.contentHash,
     } : { artifactId: id, available: false as const };
   });
+}
+
+/** Historical text progress must not depend on the number of links elsewhere
+ * in a retained message. The primary long-form document is never omitted. */
+export function historyArtifactReferences(input: ReadableArtifactContext & {
+  event: CommunicationEvent;
+  chunk: { text: string; start: number; end: number };
+}): Pick<HistoryMessageProvenanceDto, "referencedFiles" | "referencedFilesOmitted"> {
+  const primaryId = input.event.document?.artifactId;
+  const referencedFiles = primaryId ? readableArtifactReferences({ ...input, artifactIds: [primaryId] }) : [];
+  const candidates = new Set([
+    ...(input.event.artifactIds ?? []),
+    ...artifactIdsIntersectingTextRange(input.chunk.text, input.chunk.start, input.chunk.end),
+  ]);
+  if (primaryId) candidates.delete(primaryId);
+  // ponytail: supplemental descriptors have a 2 KiB response budget; the
+  // canonical text/IDs remain complete, and omitted metadata is explicit.
+  let bytes = 2, omitted = 0;
+  for (const artifactId of candidates) {
+    const reference = readableArtifactReferences({ ...input, artifactIds: [artifactId] })[0]!;
+    const size = Buffer.byteLength(JSON.stringify(reference), "utf8") + 1;
+    if (bytes + size > 2_048) { omitted += 1; continue; }
+    referencedFiles.push(reference);
+    bytes += size;
+  }
+  return { referencedFiles, ...(omitted ? { referencedFilesOmitted: omitted } : {}) };
 }
 
 /** Give providers a usable file reference for canonical message IDs and links.
