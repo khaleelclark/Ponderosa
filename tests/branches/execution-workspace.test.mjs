@@ -184,3 +184,46 @@ test('React Query refetch retains coherent loaded action pages when a later curs
  await observer.refetch();await observer.fetchNextPage();const before=client.getQueryData(key);assert.equal(before.pages.length,2);fail=true;await observer.refetch();assert.equal(client.getQueryData(key),before,'Failed refresh must retain the exact previous coherent pages, not destroy forms or mix generations');
  assert.equal(observer.getCurrentResult().isError,true);assert.equal(observer.getCurrentResult().data.pages[1].items[0].decision.id,'decision-b');
 });
+
+// Keep the real mutation owner and shared dialog callbacks in this regression;
+// the transport alone models an accepted command whose response was lost.
+async function interventionIntentFixture(t,action,{failure=new Error('Response lost')}={}){
+ const {QueryClient,MutationObserver}=require('@tanstack/react-query');
+ const ast=ts.createSourceFile('ExecutionPanel.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),declarations=new Map();let dialog;
+ function visit(node){if(ts.isVariableDeclaration(node))declarations.set(node.name.getText(ast),node);if(ts.isBinaryExpression(node)&&node.left.getText(ast)==='intervention'&&ts.isJsxElement(node.right)&&node.right.openingElement.tagName.getText(ast)==='ConfirmDialog')dialog=node.getText(ast);ts.forEachChild(node,visit)}visit(ast);assert.ok(dialog);
+ const bodies=[],refreshes=[],setters=[],scope={React,ApiRequestError,JSON,Date,Error,execution:{id:'exact-run',revision:7,parentExecutionId:'parent'},intervention:{action,...(['retry','resolve_script'].includes(action)?{attemptId:'exact-attempt',unknown:true}:{})},reason:'Verified exact reason',reconciled:true,result:'Exact observed output',failed:true,target:'exact-target',commandKey:'original-command',mergeTargets:{data:{},isPending:false,error:null,hasNextPage:false},executions:[{id:'exact-target',state:'completed',createdAt:'2026-10-26T00:00:00Z'}],detail:{attempts:[],steps:[]},attentionAttempts:[],refresh:()=>refreshes.push('refresh'),createClientId:()=>{setters.push('new-key');return 'new-command'},inspectStep(){}};
+ for(const name of ['intervention','reason','reconciled','result','failed','target','commandKey'])scope['set'+name[0].toUpperCase()+name.slice(1)]=value=>{setters.push(name);scope[name]=value;};
+ for(const name of ['ConfirmDialog','Stack','Alert','Typography','Button','TextField','MenuItem','FormControlLabel','Switch'])scope[name]=name;
+ let release;
+ scope.requestJson=async(path,options)=>{bodies.push({path,body:options.body});if(bodies.length===1)await new Promise((_resolve,reject)=>{release=()=>reject(failure)});return {accepted:true};};
+ const load=text=>vm.runInContext(ts.transpileModule(text,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText,context);
+ const context=vm.createContext(scope),client=new QueryClient({defaultOptions:{mutations:{retry:false,gcTime:Infinity}}});
+ const options=load('('+declarations.get('act').initializer.arguments[0].getText(ast)+')'),observer=new MutationObserver(client,options),unsubscribe=observer.subscribe(()=>{});
+ t.after(()=>{unsubscribe();client.clear()});
+ const refresh=()=>{scope.act={...observer.getCurrentResult(),mutateAsync:observer.mutate.bind(observer),reset:observer.reset.bind(observer)};for(const name of ['interventionUnconfirmed','interventionLocked','submitIntervention','open'])load('globalThis.'+name+'='+declarations.get(name).initializer.getText(ast));};
+ const children=tree=>tree&&typeof tree==='object'?[tree,...React.Children.toArray(tree.props?.children).flatMap(children)]:[];
+ const render=()=>{refresh();const root=load('('+dialog+')');return{root,nodes:children(root)}};
+ refresh();
+ return {scope,bodies,refreshes,setters,refresh,render,release:()=>release(),submit:()=>{refresh();return scope.submitIntervention()}};
+}
+
+for(const action of ['retry','resolve_script','merge','skip'])test('uncertain '+action+' replays byte-identical intervention after polling advances the Run revision',async t=>{
+ const f=await interventionIntentFixture(t,action),pending=f.submit();await new Promise(resolve=>setImmediate(resolve));f.refresh();assert.equal(f.scope.interventionLocked,true);
+ f.release();await assert.rejects(pending,/Response lost/);f.scope.execution.revision=12;
+ const view=f.render();assert.equal(f.scope.interventionUnconfirmed,true);assert.equal(view.root.props.confirmDisabled,false,'A newer revision cannot block exact idempotent readback');
+ assert.equal(view.root.props.error,'Response lost');assert.equal(view.root.props.pending,false);assert.equal(view.root.props.onConfirm,f.scope.submitIntervention);
+ const before={reason:f.scope.reason,result:f.scope.result,target:f.scope.target,reconciled:f.scope.reconciled,failed:f.scope.failed,commandKey:f.scope.commandKey};
+ for(const node of view.nodes.filter(node=>node.type==='TextField')){assert.equal(node.props.disabled,true);node.props.onChange?.({target:{value:'Must not replace the submitted value'}});}
+ for(const node of view.nodes.filter(node=>node.type==='FormControlLabel')){const control=node.props.control;assert.equal(control.props.disabled,true);control.props.onChange(null,false);}
+ assert.deepEqual({reason:f.scope.reason,result:f.scope.result,target:f.scope.target,reconciled:f.scope.reconciled,failed:f.scope.failed,commandKey:f.scope.commandKey},before);
+ view.root.props.onCancel();f.refresh();f.scope.open({action:action==='skip'?'merge':'skip'});assert.equal(f.scope.intervention.action,action);assert.equal(f.scope.commandKey,'original-command');assert.ok(!f.setters.includes('new-key'),'Reopening uncertain work cannot replace the original command identity');
+ await f.submit();assert.equal(f.bodies.length,2);assert.deepEqual(f.bodies[1],f.bodies[0]);const payload=JSON.parse(f.bodies[0].body);assert.equal(payload.expectedRevision,7);assert.equal(payload.commandKey,'original-command');assert.equal(payload.action,action);if(action==='resolve_script')assert.deepEqual(payload.result,{failed:true,output:'Exact observed output'});if(action==='merge')assert.equal(payload.mergedInto,'exact-target');
+ assert.equal(f.scope.intervention,undefined);assert.deepEqual(f.refreshes,['refresh']);
+});
+
+test('known intervention rejection permits review against the current revision while 5xx retains the original intent',async t=>{
+ const known=await interventionIntentFixture(t,'retry',{failure:new ApiRequestError(409,'Stale revision')}),first=known.submit();await new Promise(resolve=>setImmediate(resolve));known.release();await assert.rejects(first,/Stale revision/);known.scope.execution.revision=9;
+ const view=known.render();assert.equal(known.scope.interventionUnconfirmed,false);assert.equal(known.scope.interventionLocked,false);assert.equal(view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Reason for this decision').props.disabled,false);
+ view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Reason for this decision').props.onChange({target:{value:'Reviewed the current revision'}});await known.submit();assert.equal(JSON.parse(known.bodies[1].body).expectedRevision,9);assert.equal(JSON.parse(known.bodies[1].body).reason,'Reviewed the current revision');assert.equal(JSON.parse(known.bodies[1].body).commandKey,'new-command');
+ const uncertain=await interventionIntentFixture(t,'skip',{failure:new ApiRequestError(503,'Response unavailable')}),second=uncertain.submit();await new Promise(resolve=>setImmediate(resolve));uncertain.release();await assert.rejects(second,/Response unavailable/);uncertain.refresh();assert.equal(uncertain.scope.interventionUnconfirmed,true);uncertain.scope.execution.revision=14;await uncertain.submit();assert.equal(uncertain.bodies[1].body,uncertain.bodies[0].body);
+});
