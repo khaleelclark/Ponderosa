@@ -188,7 +188,7 @@ function ChatLink({ href, children, previewScope, projectId, fileScope }: { href
 
   if (projectFilePreview) return <a className="chat-text-navigation" href={projectFilePreview} target="_blank" rel="noreferrer">{children}</a>;
   if (isLocalWorkspaceHref(href)) return <Box component="span">{children}</Box>;
-  if (!link) return <a className="chat-text-navigation" href={href}>{children}</a>;
+  if (!link) return <a className="chat-text-navigation" href={href} download={/^\/api\/(?:branches\/engine\/)?projects\/[^/]+\/artifacts\/[^/?#]+\/download$/u.test(href) || undefined}>{children}</a>;
   const activate = (event: React.MouseEvent) => {
     if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     if (!link.loopback && projectBrowser.projectId) {
@@ -500,7 +500,7 @@ function ChatMarkdown({
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMessageFormatting, [remarkMessageTags, { tokens, recipients: collaborationRecipients, mentions: agentMentions }]]}
-        urlTransform={chatMarkdownUrlTransform}
+        urlTransform={(url, key) => chatMarkdownUrlTransform(url, key, projectId)}
         components={{
           table: ScrollableMessageTable,
           th: MessageTableHeader,
