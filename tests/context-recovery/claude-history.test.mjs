@@ -258,7 +258,7 @@ test('imported history rechecks Run, grant, exact ownership, cancellation and de
 }));
 
 test('preparing and unavailable imported archives stay distinct from a ready no-match result', { timeout: 20000 }, t => withHistory(t, async f => {
-  await grantImportedHistory(f, [{ role: 'assistant', text: 'Walnut orchard retained fact' }]);
+  await grantImportedHistory(f, Array.from({ length: 12 }, (_, index) => ({ role: 'assistant', text: 'Walnut orchard retained fact ' + index })));
   const version = f.capability.importedHistoryArchiveVersion;
   const availability = f.store.getImportedHistoryAvailability.bind(f.store);
   const inject = payload => f.app.inject({ method: 'POST', url: '/api/agent-history', headers: { authorization: 'Bearer ' + f.env.PONDEROSA_AGENT_MESSAGE_TOKEN }, payload });
@@ -271,6 +271,8 @@ test('preparing and unavailable imported archives stay distinct from a ready no-
   } finally { f.store.getImportedHistoryAvailability = availability; }
   const response = await inject({ source: 'imported', action: 'search', query: 'Unmatched constellation' });
   assert.equal(response.statusCode, 200); assert.equal(response.json().noMatch, true);
+  const defaults = await inject({ source: 'imported', action: 'search', query: 'Walnut orchard' });
+  assert.equal(defaults.statusCode, 200); assert.equal(defaults.json().hits.length, 5); assert.equal(defaults.json().hasMore, true);
   const canonical = await inject({ action: 'search', query: 'Amber orchard' });
   assert.equal(canonical.statusCode, 200); assert.ok(canonical.json().compactionBoundary);
 }));
