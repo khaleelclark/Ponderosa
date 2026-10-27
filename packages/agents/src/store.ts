@@ -325,6 +325,7 @@ export class AgentStore extends AgentEventSessionFacade {
       }
       admittedStores.add(this);
     } catch (error) {
+      this.agentCatalog?.invalidateImportedIndexes(true);
       releaseDataDirectoryOwnership(this.ownership);
       this.ownership = undefined;
       throw error;
@@ -515,7 +516,7 @@ export class AgentStore extends AgentEventSessionFacade {
     const selectedHistoryIds: string[] = [];
     for (const stored of events) {
       const event = stored.event;
-      if (event.type === "compaction_history_retrieval" && executionIds.has(event.executionId)) {
+      if (event.type === "compaction_history_retrieval" && event.source !== "imported" && executionIds.has(event.executionId)) {
         selectedHistoryIds.push(...event.selected.map((selected) => selected.communicationEventId));
       }
     }
@@ -1388,6 +1389,18 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentCatalog.getImportedHistoryMessagePage(agentId, input);
   }
 
+  getImportedHistoryAvailability(agentId: string) {
+    return this.agentCatalog.getImportedHistoryAvailability(agentId);
+  }
+
+  searchImportedHistory(input: Parameters<AgentCatalogAuthority["searchImportedHistory"]>[0]) {
+    return this.agentCatalog.searchImportedHistory(input);
+  }
+
+  readImportedHistory(input: Parameters<AgentCatalogAuthority["readImportedHistory"]>[0]) {
+    return this.agentCatalog.readImportedHistory(input);
+  }
+
   listAgentSubtree(id: string): AgentDto[] {
     return this.agentManagement.listAgentSubtree(id);
   }
@@ -1837,6 +1850,7 @@ export class AgentStore extends AgentEventSessionFacade {
   abortStartup(): void {
     if (!this.ownership) return;
     this.closing = true;
+    this.agentCatalog.invalidateImportedIndexes(true);
     admittedStores.delete(this);
     releaseDataDirectoryOwnership(this.ownership);
     this.ownership = undefined;
@@ -1846,6 +1860,7 @@ export class AgentStore extends AgentEventSessionFacade {
     if (!this.ownership) return;
     if (!this.closing) {
       this.closing = true;
+      this.agentCatalog.invalidateImportedIndexes(true);
       admittedStores.delete(this);
       // A checkpoint is an optimization, never shutdown authority. Canonical
       // files are committed before their projections. A write-active lifetime

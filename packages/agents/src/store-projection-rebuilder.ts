@@ -68,6 +68,7 @@ export class AgentProjectionRebuilder {
   ) {}
 
   rebuildProjections(): void {
+    this.agentCatalog.invalidateImportedIndexes();
     this.agentCatalog.clearRoleCache();
     // Project recovery crosses an irreversible filesystem boundary. Its receipt
     // commits must not be rolled back when a later, unrelated projection replay
@@ -89,6 +90,7 @@ export class AgentProjectionRebuilder {
     this.db.delete(changedFileProjection).run();
     this.db.delete(managedArtifactProjection).run();
     this.db.delete(importedHistoryMessages).run();
+    this.client.prepare("DELETE FROM imported_history_indexes").run();
     this.db.delete(events).run();
     this.db.delete(artifacts).run();
     this.db.delete(workItems).run();
@@ -302,7 +304,7 @@ export class AgentProjectionRebuilder {
 
         const importedHistoryFile = importedAgentHistoryPath(this.dataDir, projectId, agentId);
         if (existsSync(importedHistoryFile)) {
-          this.agentCatalog.projectImportedHistory(agentId, readJson(importedHistoryFile));
+          this.agentCatalog.projectImportedHistory(agentId, readJson(importedHistoryFile), { deferIndex: true });
         }
 
         const logFile = eventsPath(this.dataDir, projectId, agentId);

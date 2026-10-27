@@ -241,6 +241,13 @@ export const importedHistoryMessages = sqliteTable("imported_history_messages", 
   role: text("role").notNull(),
   text: text("text").notNull(),
   createdAt: text("created_at").notNull(),
+  sourceKind: text("source_kind").notNull().default("history"),
+  sourceSequence: integer("source_sequence").notNull().default(0),
+  sourceCreatedAt: text("source_created_at"),
+  contentSha256: text("content_sha256").notNull().default(""),
+  totalCodePoints: integer("total_code_points").notNull().default(0),
+  totalUtf8Bytes: integer("total_utf8_bytes").notNull().default(0),
+  codePointByteOffsets: text("code_point_byte_offsets").notNull().default("[0]"),
 }, (table) => [primaryKey({ columns: [table.agentId, table.messageId] })]);
 
 export const activityProjection = sqliteTable("activity_projection", {
