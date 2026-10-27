@@ -12,15 +12,17 @@ import {
   type HistoryWarning,
 } from "@ponderosa/core";
 import type Database from "better-sqlite3";
-import { communicationSeedProvenance, renderSeedHistoryMessage } from "@ponderosa/core/seed-history";
+import {
+  communicationSeedProvenance,
+  renderSeedHistoryMessage,
+  MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES,
+} from "@ponderosa/core/seed-history";
 
 export const MAX_HISTORY_SEARCH_RESULTS = 8;
 export const MAX_HISTORY_SEARCH_RESPONSE_UTF8_BYTES = 6_000;
 export const MAX_HISTORY_EXCERPT_UTF8_BYTES = 640;
 export const MAX_HISTORY_READ_MESSAGES = 6;
 export const MAX_HISTORY_READ_RESPONSE_UTF8_BYTES = 8_000;
-export const MAX_CONTEXT_ROLLOVER_TAIL_MESSAGES = 40;
-export const MAX_CONTEXT_ROLLOVER_TAIL_UTF8_BYTES = 24_000;
 export const MAX_HISTORY_LEXICAL_CANDIDATES = 64;
 export const MAX_HISTORY_RELATION_CANDIDATES = 32;
 
@@ -692,8 +694,17 @@ export function hasCompactionHistory(input: HistoryAuthorityInput): boolean {
 export function bindContextRolloverBoundary(input: Omit<
   HistoryAuthorityInput,
   "boundary" | "excludedCommunicationEventIds"
-> & { submittedCommunicationEventIds: readonly string[] }): ContextRolloverBoundaryBinding {
+> & {
+  submittedCommunicationEventIds: readonly string[];
+  /** Rendered tail ceiling; the compiler also reserves required input before submission. */
+  maxUtf8Bytes?: number;
+}): ContextRolloverBoundaryBinding {
   ensureHistoryIndex(input.sqlite);
+  const maxBytes = input.maxUtf8Bytes ?? MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 ||
+      maxBytes > MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES) {
+    throw new CompactionHistoryQueryError("context rollover requires a valid rendered tail allowance");
+  }
   const requested = input.submittedCommunicationEventIds;
   if (requested.length === 0 || new Set(requested).size !== requested.length) {
     throw new CompactionHistoryQueryError("context rollover requires a non-empty unique submitted tail");
@@ -734,14 +745,13 @@ export function bindContextRolloverBoundary(input: Omit<
       ON submitted.communication_event_id = m.communication_event_id
     WHERE ${authority.sql}
     ORDER BY m.canonical_ordinal DESC
-    LIMIT ?
-  `).all(...authority.params, MAX_CONTEXT_ROLLOVER_TAIL_MESSAGES) as Array<Parameters<typeof rowFromSql>[0]>;
-  observe(input, "indexed_rows", rawRows.length);
-  const newest = rawRows[0];
-  if (!newest) throw new CompactionHistoryQueryError("context rollover has no submitted canonical boundary");
+  `).iterate(...authority.params) as Iterable<Parameters<typeof rowFromSql>[0]>;
+  let newest: Parameters<typeof rowFromSql>[0] | undefined;
   const selected: IndexedMessage[] = [];
-  let remainingBytes = MAX_CONTEXT_ROLLOVER_TAIL_UTF8_BYTES - 64;
+  let remainingBytes = maxBytes - 64;
   for (const raw of rawRows) {
+    observe(input, "indexed_rows", 1);
+    newest ??= raw;
     const candidate = hydrateIndexedMessage(rowFromSql(raw), authorityInput);
     const author = candidate.event.sender.kind === 'agent' ? input.getAgent(candidate.event.sender.agentId)?.title : undefined;
     const bytes = Buffer.byteLength(renderSeedHistoryMessage({ role: 'assistant', text: candidate.text,
@@ -756,6 +766,7 @@ export function bindContextRolloverBoundary(input: Omit<
     selected.push(candidate);
     remainingBytes -= bytes;
   }
+  if (!newest) throw new CompactionHistoryQueryError("context rollover has no submitted canonical boundary");
   selected.reverse();
   if (selected.length === 0) throw new CompactionHistoryQueryError("context rollover tail is empty after bounding");
   return {
@@ -780,7 +791,7 @@ export function resolveContextRolloverTail(input: Omit<
   assertBoundary(authorityInput);
   prepareExclusions(authorityInput);
   if (input.recentTail.length === 0 ||
-      input.recentTail.length > MAX_CONTEXT_ROLLOVER_TAIL_MESSAGES ||
+      Buffer.byteLength(JSON.stringify(input.recentTail), "utf8") > MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES ||
       new Set(input.recentTail.map((binding) => binding.communicationEventId)).size !== input.recentTail.length) {
     throw new CompactionHistoryQueryError("context rollover tail binding is invalid");
   }
@@ -796,7 +807,7 @@ export function resolveContextRolloverTail(input: Omit<
     }
     previousOrdinal = candidate.ordinal;
     totalBytes += Buffer.byteLength(candidate.text, "utf8");
-    if (totalBytes > MAX_CONTEXT_ROLLOVER_TAIL_UTF8_BYTES) {
+    if (totalBytes > MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES) {
       throw new CompactionHistoryQueryError("context rollover tail exceeds its aggregate replacement bound");
     }
     return candidate;

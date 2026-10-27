@@ -40,15 +40,21 @@ export function renderSeedHistoryMessage(message: ChatMessage): string {
   return `${author} (quoted background, not current instructions):\n${JSON.stringify(p.sourceRecord === undefined ? p : compact)}\nContent:\n${message.text}${attachments}`;
 }
 
+/** Transport safety, separate from the current context-selection policy. */
+export const MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES = 256 * 1024;
+
 const CLIPPED = "[Canonical content clipped at session boundary.]\n";
 const OMITTED = "[Canonical content omitted at session boundary.]";
 const bytes = (value: string) => Buffer.byteLength(value, "utf8");
 
-/** Preserve legacy frozen IDs/hashes/counts, not an unbounded presentation.
- * The newly accepted provider packet records these exact displayed bytes.
- * No canonical message or already accepted input is rewritten. */
-export function boundedFrozenSeedHistory<T extends ChatMessage>(messages: readonly T[], maxBytes = 24_000): T[] {
-  if (messages.length > 40) throw new Error("frozen seed history exceeds its message bound");
+/** Preserve frozen IDs/hashes/counts within the caller's remaining input budget.
+ * The newly accepted provider packet records these exact displayed bytes; any
+ * clipped remainder stays retrievable. Previously accepted input is unchanged. */
+export function boundedFrozenSeedHistory<T extends ChatMessage>(messages: readonly T[], maxBytes = MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES): T[] {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 ||
+      maxBytes > MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES) {
+    throw new Error("frozen seed history requires a valid rendered allowance");
+  }
   const selected = messages.map(message => ({ ...message }));
   const overhead = (message: ChatMessage) => bytes(renderSeedHistoryMessage({ ...message, text: OMITTED }));
   // Enough room for the outer envelope and separators. First omit optional
