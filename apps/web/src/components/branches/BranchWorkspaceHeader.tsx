@@ -10,9 +10,9 @@ import {SemanticStatus} from '../SemanticStatus';
 import {ChatOverflowMenu} from '../ChatOverflowMenu';
 
 /** Branch actions adapt the shared workspace chrome; publication stays with its owner. */
-export function BranchWorkspaceHeader({name,tab,published,dirty,executionCount,executionsUnavailable=false,saving,saveDisabled,onTab,onSave,onExport,onUpdate,onRename}:{
+export function BranchWorkspaceHeader({name,tab,published,dirty,executionCount,executionsUnavailable=false,saving,saveDisabled,onTab,onSave,onExport,onUpdate,onRename,onDiscard,discardDisabled=true}:{
  name:string;tab:BranchTab;published:boolean;dirty:boolean;executionCount?:number;executionsUnavailable?:boolean;saving:boolean;saveDisabled:boolean;
- onTab(tab:BranchTab):void;onSave():void;onExport(mode:'template'|'full'):void;onUpdate():void;onRename():void;
+ onTab(tab:BranchTab):void;onSave():void;onExport(mode:'template'|'full'):void;onUpdate():void;onRename():void;onDiscard?():void;discardDisabled?:boolean;
 }):JSX.Element{
  const tabs={idPrefix:'branch',value:tab,label:'Branch views',onChange:onTab,items:[
   {value:'workflow' as const,label:'Workflow',icon:<AccountTreeOutlined/>},
@@ -26,6 +26,7 @@ export function BranchWorkspaceHeader({name,tab,published,dirty,executionCount,e
    <Tooltip title="Save changes…"><span><IconButton aria-label="Save changes…" aria-description="Review changes before publishing" disabled={saveDisabled} aria-busy={saving||undefined} onClick={onSave}><SaveOutlined/></IconButton></span></Tooltip>
    <ChatOverflowMenu label="Branch actions" showExports={false} transcriptMarkdown="" transcriptFileName="" actions={[
     {label:'Rename…',onSelect:onRename},
+    {label:'Discard changes',onSelect:()=>onDiscard?.(),disabled:discardDisabled},
     {label:'Export template',onSelect:()=>onExport('template')},
     {label:'Export full',onSelect:()=>onExport('full')},
     {label:'Apply package update…',onSelect:onUpdate},
