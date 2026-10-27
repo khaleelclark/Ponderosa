@@ -5,9 +5,10 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 const {BranchWorkspaceHeader}=await import('../../apps/web/src/components/branches/BranchWorkspaceHeader.tsx');
 const {MutationNotificationProvider}=await import('../../apps/web/src/components/MutationNotifications.tsx');
+const renderBranchHeader=props=>renderToStaticMarkup(React.createElement(MutationNotificationProvider,null,React.createElement(BranchWorkspaceHeader,props)));
 
 test('Branch header reuses ordered shared icon tabs and unpublished status without a duplicate Save',()=>{
- const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'A long workflow name',tab:'workflow',published:false,dirty:true,onTab(){},onExport(){},onUpdate(){}}));
+ const html=renderBranchHeader({name:'A long workflow name',tab:'workflow',published:false,dirty:true,onTab(){},onExport(){},onUpdate(){}});
  assert.ok(html.includes('A long workflow name'),'Selected workflow name is present');assert.ok(html.includes('aria-label="Editing"'),'Dirty indication is accessible');
  assert.ok(!/aria-label="Review &amp; publish"|SaveOutlined/.test(html),'Publication has one canvas entry point');assert.ok(html.includes('Unpublished Changes'),'Editing tooltip explains unpublished changes');
  const names=[...html.matchAll(/role="tab"[^>]*>(.*?)<\/button>/g)].map(match=>match[1].replace(/<style[^>]*>[\s\S]*?<\/style>/g,'').replace(/<[^>]*>/g,''));
@@ -18,7 +19,7 @@ test('Branch header reuses ordered shared icon tabs and unpublished status witho
 });
 
 test('selected nested Chat retains the owning Branch identity and guarded actions',()=>{
- const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'Owning workflow',tab:'chats',published:true,dirty:false,onTab(){},onExport(){},onUpdate(){}}));
+ const html=renderBranchHeader({name:'Owning workflow',tab:'chats',published:true,dirty:false,onTab(){},onExport(){},onUpdate(){}});
  assert.ok(html.includes('aria-label="Branch views"'),'Branch navigation remains reachable');assert.ok(/aria-selected="true"[^>]*>.*ChatBubbleOutline/.test(html),'Chats is the selected shared icon tab');
  for(const label of ['Owning workflow','Branch actions'])assert.ok(html.includes(label),'Branch owner remains visible beside its nested Chat');
  assert.equal((html.match(/role="tablist"/g)??[]).length,1,'One Branch navigation owner');
@@ -740,12 +741,12 @@ test('an external publication cannot unmount and erase an open workflow Rename d
 
 test('Branch execution status distinguishes confirmed zero, active, unresolved and failed cached counts',()=>{
  const props={name:'Workflow status owner',tab:'workflow',published:true,dirty:true,onTab(){},onExport(){},onUpdate(){},onRename(){}};
- const render=extra=>renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,...extra}));
+ const render=extra=>renderBranchHeader({...props,...extra});
  for(const [extra,label] of [[{executionCount:0},'0 active executions'],[{executionCount:4},'4 active executions'],[{},'Executions loading…'],[{executionCount:4,executionsUnavailable:true},'Executions unavailable']]){
   const html=render(extra);assert.ok(html.includes(`aria-label="${label}"`));assert.ok(html.includes('aria-label="Editing"'),'Execution state and unpublished draft remain independently visible');
   if(extra.executionsUnavailable)assert.ok(!html.includes('4 active executions'),'A failed query overrides its cached count');
  }
- const nested=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,tab:'chats',executionCount:4}));
+ const nested=renderBranchHeader({...props,tab:'chats',executionCount:4});
  assert.ok(nested.includes('4 active executions'),'The retained outer Branch header keeps its own execution status in Chats');
 });
 
@@ -1017,10 +1018,10 @@ test('pending actual advanced Apply survives publication retry without a new edi
 
 test('Editing label has the Unpublished Changes tooltip and disappears at every clean baseline',()=>{
  const props={name:'Workflow',tab:'workflow',published:true,dirty:true,executionCount:2,onTab(){},onExport(){},onUpdate(){}};
- const dirty=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,props));
+ const dirty=renderBranchHeader(props);
  assert.ok(/tabindex="0"[^>]*aria-label="Editing"/.test(dirty));assert.ok(dirty.includes('Unpublished Changes'));assert.ok(dirty.includes('>Editing</span>'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Editing"'));assert.ok(!dirty.includes('aria-label="Review &amp; publish"'));
- const clean=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false}));assert.ok(!clean.includes('aria-label="Editing"'));assert.ok(!clean.includes('Unpublished Changes'));
- const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(!initial.includes('aria-label="Editing"'));assert.ok(!initial.includes('Unpublished Changes'));assert.ok(!initial.includes('>Editing</span>'));
+ const clean=renderBranchHeader({...props,dirty:false});assert.ok(!clean.includes('aria-label="Editing"'));assert.ok(!clean.includes('Unpublished Changes'));
+ const initial=renderBranchHeader({...props,dirty:false,published:false});assert.ok(!initial.includes('aria-label="Editing"'));assert.ok(!initial.includes('Unpublished Changes'));assert.ok(!initial.includes('>Editing</span>'));
 });
 
 
@@ -1040,7 +1041,7 @@ test('compact execution count preserves full meaning and uses Ponderosa’s shar
  const reference=svg(renderToStaticMarkup(React.createElement(SidebarActivityBadge)));assert.ok(reference);
  const base={name:'Workflow',tab:'workflow',published:true,dirty:false,onTab(){},onExport(){},onUpdate(){},onRename(){}};
  for(const [props,label,visible] of [[{executionCount:0},'0 active executions','0'],[{executionCount:12},'12 active executions','12'],[{},'Executions loading…','…'],[{executionCount:12,executionsUnavailable:true},'Executions unavailable','!']]){
-  const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...base,...props}));
+  const html=renderBranchHeader({...base,...props});
   assert.ok(html.includes(`role="img" tabindex="0" aria-label="${label}"`));assert.ok(html.includes(`</span>${visible}</span>`),'The narrow status has a visible count or explicit unresolved/error symbol');assert.ok(html.includes(`aria-label="${label}"`));
   const status=BranchWorkspaceHeader({...base,...props,dirty:true}).props.children.props.status;
   const compact=status.props.children[1].props.children,executionCircle=compact.props.children[0],dirty=status.props.children[2].props.children;
