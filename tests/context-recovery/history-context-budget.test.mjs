@@ -315,3 +315,27 @@ test('bounded continuation pages preserve FIFO cursor delivery without skipping 
   assert.ok(batches > 1, 'The fixture must require multiple budget-limited submissions');
   assert.deepEqual(delivered, notes.map(note => note.eventId));
 }));
+
+test('oversized FIFO head submits its exact read reference before advancing to the following Broadcast', { ...fixtureTestOptions, timeout: 60000 }, t => withBudgetFixture(t, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
+  const chat = await f.createChat('Oversized ordered Broadcast'), agent = await f.createIdleAgent(chat, 'Referenced FIFO reader');
+  broadcast(f.store, chat, 'OVERSIZED_FIFO_INITIAL_CURSOR');
+  let session = await f.hold(agent.id); await finish(f, agent, session);
+  const body = `OVERSIZED_FIFO_BEGIN\n${'東京 🌲 café\0\n'.repeat(10000)}OVERSIZED_FIFO_END`;
+  const large = broadcast(f.store, chat, body), following = broadcast(f.store, chat, 'FOLLOWING_OVERSIZED_FIFO_MESSAGE');
+  session = await f.hold(agent.id);
+  const packet = accepted(f.store, agent.id), context = packet.sourceManifest.historyContext;
+  assert.ok(packet.exactPrompt.includes(`communicationEventId:${JSON.stringify(large.eventId)}`), 'The retained head must identify its authorized complete read');
+  assert.ok(context.clippedCommunicationEventIds.includes(large.eventId));
+  assert.equal(context.fullyIncludedCommunicationEventIds.includes(large.eventId), false);
+  assert.equal(context.fullyIncludedCommunicationEventIds.includes(following.eventId), false, 'Do not skip the oversized FIFO head');
+  assert.equal(await readAll(f, session, large.eventId), body, 'The complete Unicode remainder stays authorized');
+  await finish(f, agent, session);
+  session = await f.hold(agent.id);
+  const next = accepted(f.store, agent.id);
+  assert.ok(next.sourceManifest.historyContext.fullyIncludedCommunicationEventIds.includes(following.eventId));
+  assert.ok(next.exactPrompt.includes(following.text));
+  assert.equal(next.exactPrompt.includes(`communicationEventId:${JSON.stringify(large.eventId)}`), false, 'The acknowledged reference must not replay');
+  assert.equal(next.exactPrompt.includes('OVERSIZED_FIFO_BEGIN'), false);
+  await finish(f, agent, session);
+}));
