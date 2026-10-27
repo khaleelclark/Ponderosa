@@ -9,7 +9,7 @@ import type Database from "better-sqlite3";
 
 const CHECKPOINT_FILE = ".projection-clean-shutdown.json";
 // Bump whenever projection semantics change without a schema marker.
-const PROJECTION_CHECKPOINT_VERSION = 4;
+const PROJECTION_CHECKPOINT_VERSION = 5;
 const NON_CANONICAL_ROOTS = new Set([
   "workspaces", "working-copies", "browser-profiles", "browser-sessions", "diagnostics", "launcher-state",
   // Separate owners validate/recover these physical bytes and host identity;
@@ -142,6 +142,30 @@ function ftsConsistent(client: Database.Database): boolean {
   if (client.prepare(`SELECT 1 FROM (${expected} EXCEPT ${actual}) LIMIT 1`).get() ||
       client.prepare(`SELECT 1 FROM (${actual} EXCEPT ${expected}) LIMIT 1`).get()) return false;
   client.prepare(`INSERT INTO compaction_history_fts(compaction_history_fts) VALUES ('integrity-check')`).run();
+  // Preparing archives legitimately have only a subset of their FTS rows.
+  // Every retained row must still belong to the archive and match its content;
+  // ready archives must have their complete set before views can be reused.
+  if (client.prepare(`SELECT 1 FROM imported_history_fts f LEFT JOIN imported_history_messages m ON m.rowid=f.rowid
+      WHERE m.rowid IS NULL OR typeof(f.text)!='text'
+        OR length(CAST(f.text AS BLOB))!=length(CAST(m.text AS BLOB))
+        OR (instr(CAST(m.text AS BLOB),x'00')=0 AND CAST(f.text AS BLOB) IS NOT CAST(m.text AS BLOB)) LIMIT 1`).get() ||
+      client.prepare(`SELECT 1 FROM imported_history_messages m JOIN imported_history_indexes i ON i.agent_id=m.agent_id
+        WHERE i.status='ready' AND NOT EXISTS(SELECT 1 FROM imported_history_fts f WHERE f.rowid=m.rowid) LIMIT 1`).get()) return false;
+  // SQLite's replace() stops at embedded NUL. Compare those exceptional rows
+  // using the index owner's exact byte-preserving normalization in 64 KiB windows.
+  const chunk = client.prepare(`SELECT substr(CAST(m.text AS BLOB),?,65536) expected,
+    substr(CAST(f.text AS BLOB),?,65536) actual FROM imported_history_messages m
+    JOIN imported_history_fts f ON f.rowid=m.rowid WHERE m.rowid=?`);
+  for (const row of client.prepare(`SELECT m.rowid,length(CAST(m.text AS BLOB)) bytes FROM imported_history_messages m
+    JOIN imported_history_fts f ON f.rowid=m.rowid WHERE instr(CAST(m.text AS BLOB),x'00')>0`)
+    .iterate() as Iterable<{rowid:number;bytes:number}>) {
+    for (let start=1;start<=row.bytes;start+=65536) {
+      const {expected,actual}=chunk.get(start,start,row.rowid) as {expected:Buffer;actual:Buffer};
+      for (let index=0;index<expected.length;index++) if(expected[index]===0) expected[index]=32;
+      if(!expected.equals(actual)) return false;
+    }
+  }
+  client.prepare(`INSERT INTO imported_history_fts(imported_history_fts) VALUES ('integrity-check')`).run();
   return true;
 }
 function emptyWal(dataDir: string): boolean {
