@@ -65,7 +65,7 @@ export function useAgentProviderCommands({
       ...(argumentsText ? { argumentsText } : {}),
     });
     if (result.message) onNotice(result.message);
-    else notify({ key: "provider-command", message: `/${command.name} Completed` });
+    else notify({ key: "provider-command", message: `/${command.name} Invoked` });
   };
   return {
     invokeAgentCommand,

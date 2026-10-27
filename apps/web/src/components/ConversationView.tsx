@@ -1310,7 +1310,7 @@ export function ConversationView({
                   );
                   return invocation.then(result => {
                     if (result.message) setQueuedMessageNotice(result.message);
-                    else notify({ key: "provider-command", message: `/${command.name} Completed` });
+                    else notify({ key: "provider-command", message: `/${command.name} Invoked` });
                   });
                 }
               : undefined

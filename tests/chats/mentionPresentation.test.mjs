@@ -334,7 +334,7 @@ test('Agent provider commands keep meaningful output and errors in their existin
   assert.equal(output.at(-1), result.message); assert.equal(notices.length, 0, 'status output remains visible rather than timed feedback');
   result = {}; await commands.invokeAgentCommand({ name: 'compact' }, '');
   assert.equal(output.length, 1, 'completion does not overwrite an existing meaningful result');
-  assert.equal(notices[0].message, '/compact Completed'); assert.equal(notices[0].persistent, undefined);
+  assert.equal(notices[0].message, '/compact Invoked'); assert.equal(notices[0].persistent, undefined);
   api.invokeProviderCommand = async () => { throw Error('Provider command failed'); };
   await assert.rejects(commands.invokeAgentCommand({ name: 'compact' }, ''), /Provider command failed/);
   assert.equal(notices.length, 1, 'failures propagate to the existing command error owner');
@@ -362,7 +362,7 @@ test('Chat provider command acknowledgment does not overwrite retained provider 
   const command = vm.runInNewContext(ts.transpile(`(${callback})`, { target: ts.ScriptTarget.ES2022 }), scope);
   await command({ name: 'status' }, ''); assert.equal(output[0], result.message); assert.equal(notices.length, 0);
   result = {}; await command({ name: 'compact' }, ''); assert.equal(output.length, 1);
-  assert.equal(notices[0].message, '/compact Completed'); assert.equal(notices[0].persistent, undefined);
+  assert.equal(notices[0].message, '/compact Invoked'); assert.equal(notices[0].persistent, undefined);
   api.invokeProviderCommand = async () => { throw Error('Provider unavailable'); };
   await assert.rejects(command({ name: 'compact' }, ''), /Provider unavailable/);
   assert.equal(notices.length, 1); assert.deepEqual(requests.map(([id, input]) => [id, { ...input }]), [['agent-a', { name: 'status' }], ['agent-a', { name: 'compact' }]]);
