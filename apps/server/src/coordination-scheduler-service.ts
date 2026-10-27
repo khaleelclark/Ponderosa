@@ -435,14 +435,20 @@ return new CoordinationV3Scheduler(
           steeringWaitReason: "provider_not_ready",
         };
       }
+      const providerSessionId = readProviderSessionIdentifier(run.runtimeSession);
       try {
-        const providerSessionId = readProviderSessionIdentifier(run.runtimeSession);
         coordinationV3.markPromptSubmitted({
           injectionId: lease.injectionId,
           runId: lease.runId,
           fencingToken: lease.fencingToken,
           providerSessionId,
         });
+      } catch {
+        // Nothing was sent. A changed workflow/approval/fence must remain a
+        // known non-delivery, rather than a fabricated uncertain provider RPC.
+        return {accepted:false,retryable:true,retrySteering:true,error:"steering authority changed before submission",steeringWaitReason:"provider_not_ready"};
+      }
+      try {
         const result = await invokeProviderSteer(run.runtimeSession, {
           prompt,
           kind: "user_message",

@@ -270,6 +270,7 @@ export class CoordinationV3Store {
       (runId, now) => { this.requiredReplyAuthority.settleRetried(runId, now); },
       (runId, now) => { this.requiredReplyAuthority.settleForRun(runId, "cancelled", now); },
       (runId, now) => { this.requiredReplyAuthority.restoreUninjectedDecisionRoots(runId, now); },
+      options.canonicalTaskDecisions,
     );
     this.deletionAuthority = new CoordinationV3DeletionAuthority(
       sqlite,
@@ -316,6 +317,7 @@ export class CoordinationV3Store {
       this.questionAuthority,
       input => this.createActivation(input),
       input => this.cancelAgentRun(input),
+      options.canonicalTaskDecisions,
     );
     this.schedulerLeaseAuthority = new CoordinationV3SchedulerLeaseAuthority(
       sqlite,
@@ -964,6 +966,11 @@ export class CoordinationV3Store {
     })();
     return this.schedulerLeaseAuthority.leaseNextRun(input);
   }
+
+  branchScheduleUpdateTarget(branchId:string,now?:string) { return this.steeringAuthority.branchScheduleUpdateTarget(branchId,now); }
+  queueBranchScheduleUpdate(input:{occurrenceId:string;runId:string;attemptId:string;fence:number;now?:string}) { return this.steeringAuthority.queueBranchScheduleUpdate(input); }
+  branchScheduleUpdateStatus(occurrenceId:string,now?:string) { return this.steeringAuthority.branchScheduleUpdateStatus(occurrenceId,now); }
+  cancelUndeliveredBranchScheduleUpdate(occurrenceId:string,now?:string):boolean { return this.steeringAuthority.cancelUndeliveredBranchScheduleUpdate(occurrenceId,now); }
 
   leaseNextSteering(input: { workerId: string; now?: string; coalesceLimit?: number }): SteeringLease | undefined {
     return this.steeringAuthority.leaseNextSteering(input);

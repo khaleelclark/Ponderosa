@@ -1,3 +1,4 @@
+import { branchScheduleTarget, branchScheduleActivationEligible, type BranchScheduleUpdateTarget } from "./coordination-v3-branch-schedule.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { PRIORITY } from "./coordination-v3-activation.js";
@@ -9,6 +10,7 @@ import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runt
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import type {
   SteeringLease,
+  CoordinationV3StoreOptions,
   RunAuthorizationV3,
   SteeringRecoveryDecisionResult,
 } from "./coordination-v3-types.js";
@@ -66,7 +68,80 @@ export class CoordinationV3SteeringAuthority {
     private readonly questionAuthority: CoordinationV3QuestionAuthority,
     private readonly createActivation: (input: CreateActivationV3Input) => string,
     private readonly cancelAgentRun: (input: CancelAgentRunInput) => unknown,
+    private readonly canonicalTaskDecisions: CoordinationV3StoreOptions["canonicalTaskDecisions"],
   ) {}
+
+  branchScheduleUpdateTarget(branchId:string,now=new Date().toISOString()):BranchScheduleUpdateTarget|undefined {
+    const target=branchScheduleTarget(this.sqlite,branchId,now,this.canonicalTaskDecisions);
+    return target && {runId:target.runId,attemptId:target.attemptId,fence:target.fence,executionId:target.executionId};
+  }
+
+  queueBranchScheduleUpdate(input:{occurrenceId:string;runId:string;attemptId:string;fence:number;now?:string}):{activationId:string;replayed:boolean} {
+    const now=input.now??new Date().toISOString();
+    return this.sqlite.transaction(()=>{
+      const existing=this.sqlite.prepare("SELECT source.activation_id,activation.payload_json FROM activation_sources source JOIN agent_activations activation ON activation.id=source.activation_id WHERE source.source_kind='branch_schedule_update' AND source.source_id=?").get(input.occurrenceId) as {activation_id:string;payload_json:string}|undefined;
+      const occurrence=this.sqlite.prepare(`SELECT occurrence.* FROM trigger_occurrences occurrence JOIN trigger_definitions trigger ON trigger.id=occurrence.trigger_id AND trigger.branch_id=occurrence.branch_id AND trigger.source_kind='schedule' WHERE occurrence.id=?`).get(input.occurrenceId) as {
+        branch_id:string;branch_execution_id:string|null;state:string;activation_config_json:string;payload_json:string;provenance_json:string;payload_media_type:string;
+      }|undefined;
+      if(!occurrence)throw new Error('scheduled occurrence not found');
+      const config=JSON.parse(occurrence.activation_config_json) as {schedule?:{policy?:string;firstScheduledAt?:string;lastScheduledAt?:string;eventCount?:number};steering?:{runId?:string;attemptId?:string;fence?:number}};
+      if(config.schedule?.policy!=='update_current' || config.steering?.runId!==input.runId || config.steering.attemptId!==input.attemptId || config.steering.fence!==input.fence)throw new Error('scheduled update target binding changed');
+      // Replay never reselects a later task after the original target ends.
+      if(existing){
+        const bound=JSON.parse(existing.payload_json).steering;
+        if(bound?.runId!==input.runId||bound?.attemptId!==input.attemptId||bound?.fence!==input.fence)throw new Error('scheduled update idempotency conflict');
+        return {activationId:existing.activation_id,replayed:true};
+      }
+      const target=branchScheduleTarget(this.sqlite,occurrence.branch_id,now,this.canonicalTaskDecisions);
+      if(occurrence.state!=='pending'||!target||target.runId!==input.runId||target.attemptId!==input.attemptId||target.fence!==input.fence||
+        (occurrence.branch_execution_id&&occurrence.branch_execution_id!==target.executionId))throw new Error('scheduled update target is unavailable');
+      const activationId=this.createActivation({projectId:target.projectId,agentId:target.agentId,scopeKey:target.scopeKey,
+        kind:'branch_schedule_update',sourceKind:'branch_schedule_update',sourceId:input.occurrenceId,dedupeKey:`branch_schedule_update:${input.occurrenceId}`,
+        priority:PRIORITY.ordinary,dispatchPolicy:'steer_or_run',promptClass:'ordinary',externalIntake:true,now,
+        payload:{occurrenceId:input.occurrenceId,branchId:occurrence.branch_id,executionId:target.executionId,attemptId:target.attemptId,steering:{runId:target.runId,attemptId:target.attemptId,fence:target.fence},schedule:config.schedule,
+          occurrence:{artifactRef:`trigger-occurrence:${input.occurrenceId}`,payload:JSON.parse(occurrence.payload_json),provenance:JSON.parse(occurrence.provenance_json),payloadMediaType:occurrence.payload_media_type},
+          instruction:'Perform the latest scheduled check within this exact active workflow Request. Incorporate its current result, then report through the existing Request. Do not start another workflow execution or repeat completed side effects.'}});
+      return {activationId,replayed:false};
+    })();
+  }
+
+  branchScheduleUpdateStatus(occurrenceId:string,now=new Date().toISOString()):{state:'queued'|'acknowledged'|'not_delivered'|'outcome_unknown';activationId?:string;injectionId?:string} {
+    const activation=this.sqlite.prepare(`SELECT activation.id,activation.state,activation.payload_json FROM activation_sources source JOIN agent_activations activation ON activation.id=source.activation_id
+      WHERE source.source_kind='branch_schedule_update' AND source.source_id=?`).get(occurrenceId) as {id:string;state:string;payload_json:string}|undefined;
+    if(!activation)return {state:'not_delivered'};
+    const boundRunId=JSON.parse(activation.payload_json).steering?.runId;
+    if(typeof boundRunId!=='string')return {state:'outcome_unknown',activationId:activation.id};
+    const injections=this.sqlite.prepare(`SELECT injection.id,injection.run_id,injection.state FROM scheduler_prompt_injections injection,json_each(injection.activation_ids_json) member
+      WHERE injection.run_id=? AND member.value=? ORDER BY injection.sequence DESC`).all(boundRunId,activation.id) as {id:string;run_id:string;state:string}[];
+    const result=(state:'queued'|'acknowledged'|'not_delivered'|'outcome_unknown',injectionId?:string)=>({state,activationId:activation.id,...(injectionId?{injectionId}:{})});
+    const unknown=injections.find(injection=>injection.state==='outcome_unknown');
+    if(activation.state==='outcome_unknown'||unknown)return result('outcome_unknown',unknown?.id);
+    const acknowledged=injections.find(injection=>injection.state==='acknowledged');
+    if(acknowledged)return result('acknowledged',acknowledged.id);
+    const unsettled=injections.find(injection=>injection.state==='pending'||injection.state==='submitted');
+    if(unsettled)return result('queued',unsettled.id);
+    // An attachment without an exact cancelled injection cannot prove non-delivery.
+    const ambiguous=this.sqlite.prepare(`SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=? AND NOT EXISTS(
+      SELECT 1 FROM scheduler_prompt_injections injection,json_each(injection.activation_ids_json) member WHERE injection.run_id=attached.run_id AND member.value=? AND injection.state='cancelled') OR (attached.activation_id=? AND EXISTS(
+      SELECT 1 FROM scheduler_prompt_injections injection,json_each(injection.activation_ids_json) member WHERE injection.run_id=attached.run_id AND member.value=? AND injection.state<>'cancelled')) LIMIT 1`).get(activation.id,activation.id,activation.id,activation.id);
+    if(ambiguous)return result('outcome_unknown');
+    if(injections.length||!['pending','retry_pending'].includes(activation.state))return result('not_delivered');
+    const occurrence=this.sqlite.prepare('SELECT activation_config_json FROM trigger_occurrences WHERE id=?').get(occurrenceId) as {activation_config_json:string}|undefined;
+    const runId=occurrence&&JSON.parse(occurrence.activation_config_json).steering?.runId;
+    return result(runId&&branchScheduleActivationEligible(this.sqlite,activation.id,runId,now,this.canonicalTaskDecisions)?'queued':'not_delivered');
+  }
+
+  cancelUndeliveredBranchScheduleUpdate(occurrenceId:string,now=new Date().toISOString()):boolean {
+    return this.sqlite.transaction(()=>{
+      const status=this.branchScheduleUpdateStatus(occurrenceId,now);
+      if(!status.activationId)return true;
+      const unsafe=this.sqlite.prepare(`SELECT 1 FROM scheduler_prompt_injections injection,json_each(injection.activation_ids_json) member
+        WHERE injection.run_id=json_extract((SELECT payload_json FROM agent_activations WHERE id=?),'$.steering.runId') AND member.value=? AND injection.state<>'cancelled' LIMIT 1`).get(status.activationId,status.activationId);
+      if(unsafe||status.state==='outcome_unknown'||status.state==='acknowledged')return false;
+      const changed=this.sqlite.prepare("UPDATE agent_activations SET state='cancelled',updated_at=?,terminal_at=? WHERE id=? AND state IN ('pending','retry_pending','failed','cancelled')").run(now,now,status.activationId).changes;
+      return changed===1;
+    })();
+  }
 
   leaseNextSteering(input: {
     workerId: string;
@@ -77,8 +152,8 @@ export class CoordinationV3SteeringAuthority {
     const limit = Math.max(1, Math.min(input.coalesceLimit ?? 4, 16));
     return this.sqlite.transaction(() => {
       this.activationLifecycle.settleUnauthorizedPendingActivations(now);
-      const candidate = this.sqlite.prepare(`
-        SELECT a.agent_id, a.project_id, a.scope_key, r.id AS run_id,
+      const candidates = this.sqlite.prepare(`
+        SELECT a.id AS activation_id,EXISTS(SELECT 1 FROM activation_sources source WHERE source.activation_id=a.id AND source.source_kind='branch_schedule_update') AS scheduled,a.agent_id, a.project_id, a.scope_key, r.id AS run_id,
           r.fencing_token, r.provider_session_id
         FROM agent_activations a
         JOIN scheduler_runs r
@@ -106,17 +181,23 @@ export class CoordinationV3SteeringAuthority {
               AND injection.state IN ('pending', 'submitted')
           )
         ORDER BY a.priority DESC, a.created_at, a.id
-        LIMIT 1
-      `).get(now) as {
+        LIMIT 64
+      `).all(now) as Array<{
+        activation_id:string;
+        scheduled:number;
         agent_id: string;
         project_id: string;
         scope_key: string;
         run_id: string;
         fencing_token: number;
         provider_session_id: string | null;
-      } | undefined;
+      }>;
+      const candidate=candidates.find(row=>!row.scheduled||branchScheduleActivationEligible(this.sqlite,row.activation_id,row.run_id,now,this.canonicalTaskDecisions));
       if (!candidate) return undefined;
-      const activations = this.sqlite.prepare(`
+      // Human steering recovery may retry its sources on a fresh Run. Schedule
+      // updates must never share that recovery boundary or acquire that fallback.
+      const scheduled=Boolean(candidate.scheduled);
+      const activations = (this.sqlite.prepare(`
         SELECT * FROM agent_activations
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending')
@@ -124,6 +205,7 @@ export class CoordinationV3SteeringAuthority {
           AND dispatch_policy = 'steer_or_run'
           AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=agent_activations.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait'))
           AND ${decisionSteeringAuthority('agent_activations', '?')}
+          AND EXISTS(SELECT 1 FROM activation_sources source WHERE source.activation_id=agent_activations.id AND source.source_kind='branch_schedule_update')=?
           AND (kind = 'context_rollover_handoff' OR NOT EXISTS (
             SELECT 1 FROM context_rollovers rollover
             WHERE rollover.agent_id = agent_activations.agent_id
@@ -141,8 +223,9 @@ export class CoordinationV3SteeringAuthority {
         candidate.scope_key,
         now,
         candidate.run_id,
-        limit,
-      ) as ActivationRow[];
+        scheduled?1:0,
+        scheduled?64:limit,
+      ) as ActivationRow[]).filter(activation=>!scheduled||branchScheduleActivationEligible(this.sqlite,activation.id,candidate.run_id,now,this.canonicalTaskDecisions)).slice(0,limit);
       if (activations.length === 0) return undefined;
       if (!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
         candidate.project_id,
@@ -312,6 +395,7 @@ export class CoordinationV3SteeringAuthority {
           UPDATE agent_activations
           SET state = 'retry_pending',
             dispatch_policy = CASE
+              WHEN EXISTS(SELECT 1 FROM activation_sources source WHERE source.activation_id=agent_activations.id AND source.source_kind='branch_schedule_update') THEN 'next_run'
               WHEN ? = 1 THEN dispatch_policy
               ELSE 'next_run'
             END,
