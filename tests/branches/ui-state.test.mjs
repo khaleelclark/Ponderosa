@@ -5,10 +5,10 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 const {BranchWorkspaceHeader}=await import('../../apps/web/src/components/branches/BranchWorkspaceHeader.tsx');
 
-test('Branch header reuses ordered shared icon tabs, names and guarded publication controls',()=>{
- const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'A long workflow name',tab:'workflow',published:false,dirty:true,saving:false,saveDisabled:true,onTab(){},onSave(){},onExport(){},onUpdate(){}}));
- assert.ok(html.includes('A long workflow name'),'Selected workflow name is present');assert.ok(html.includes('aria-label="Unpublished changes"'),'Dirty indication is accessible');
- assert.ok(/<button[^>]*disabled=""[^>]*aria-label="Review &amp; publish"/.test(html),'Clean/invalid/pending Save remains disabled');
+test('Branch header reuses ordered shared icon tabs and unpublished status without a duplicate Save',()=>{
+ const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'A long workflow name',tab:'workflow',published:false,dirty:true,onTab(){},onExport(){},onUpdate(){}}));
+ assert.ok(html.includes('A long workflow name'),'Selected workflow name is present');assert.ok(html.includes('aria-label="Editing"'),'Dirty indication is accessible');
+ assert.ok(!/aria-label="Review &amp; publish"|SaveOutlined/.test(html),'Publication has one canvas entry point');assert.ok(html.includes('Unpublished Changes'),'Editing tooltip explains unpublished changes');
  const names=[...html.matchAll(/role="tab"[^>]*>(.*?)<\/button>/g)].map(match=>match[1].replace(/<style[^>]*>[\s\S]*?<\/style>/g,'').replace(/<[^>]*>/g,''));
  assert.deepEqual(names,['Workflow','Chats','Executions','Settings']);
  for(const tab of ['workflow','chats','executions','settings'])assert.ok(new RegExp(`id="branch-${tab}-tab"[^>]*aria-controls="branch-${tab}-panel"`).test(html),`Tab/panel association for ${tab}`);
@@ -17,9 +17,9 @@ test('Branch header reuses ordered shared icon tabs, names and guarded publicati
 });
 
 test('selected nested Chat retains the owning Branch identity and guarded actions',()=>{
- const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'Owning workflow',tab:'chats',published:true,dirty:false,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){}}));
+ const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'Owning workflow',tab:'chats',published:true,dirty:false,onTab(){},onExport(){},onUpdate(){}}));
  assert.ok(html.includes('aria-label="Branch views"'),'Branch navigation remains reachable');assert.ok(/aria-selected="true"[^>]*>.*ChatBubbleOutline/.test(html),'Chats is the selected shared icon tab');
- for(const label of ['Owning workflow','Review &amp; publish','Branch actions'])assert.ok(html.includes(label),'Branch owner remains visible beside its nested Chat');
+ for(const label of ['Owning workflow','Branch actions'])assert.ok(html.includes(label),'Branch owner remains visible beside its nested Chat');
  assert.equal((html.match(/role="tablist"/g)??[]).length,1,'One Branch navigation owner');
 });
 const {WorkspacePreferencesWriter}=await import('../../apps/web/src/workspacePreferencesWriter.ts');
@@ -449,8 +449,9 @@ test('closing deletion resets acknowledgement and invalidates a late preflight',
 
 test('canonical workflow deletion defers navigation until cleanup and fences both owner and next frame',async()=>{
  const {readFile}=await import('node:fs/promises'),{createRequire}=await import('node:module'),vm=await import('node:vm');const ts=createRequire(new URL('../../apps/web/package.json',import.meta.url))('typescript'),source=await readFile(new URL('../../apps/web/src/components/BranchesView.tsx',import.meta.url),'utf8'),handler=source.split('\n').find(line=>line.trim().startsWith('const branchDeleted='));
+ const {emptyWorkflowHistory}=await import('../../apps/web/src/components/branches/workflow-history.ts');
  for(const changed of ['none','before-owner','before-global','after-owner','after-tab','after-selection']){
-  const frames=[],writes=[],navigations=[],scope={routeOwner:{current:{branchId:changed==='before-owner'?'new':'old',...(changed==='before-global'?{global:'general'}:{})}},selection:{current:7},savedDraft:{current:'dirty'},emptyDraft:()=>({}),setDraft:value=>writes.push(value),setAdvancedDirty(){},setPreview(){},client:{removeQueries(){},invalidateQueries:async()=>{}},requestAnimationFrame:cb=>frames.push(cb),navigate:route=>navigations.push(route)};
+  const frames=[],writes=[],navigations=[],scope={emptyWorkflowHistory,draftHistory:{current:emptyWorkflowHistory()},canvasViews:{current:new Map()},routeOwner:{current:{branchId:changed==='before-owner'?'new':'old',...(changed==='before-global'?{global:'general'}:{})}},selection:{current:7},savedDraft:{current:'dirty'},emptyDraft:()=>({}),setDraft:value=>writes.push(value),setAdvancedDirty(){},setPreview(){},client:{removeQueries(){},invalidateQueries:async()=>{}},requestAnimationFrame:cb=>frames.push(cb),navigate:route=>navigations.push(route)};
   vm.runInNewContext(ts.transpileModule(handler.replace('const branchDeleted=','globalThis.deleted='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);scope.deleted('old',7);
   if(changed==='before-owner'||changed==='before-global'){assert.equal(writes.length,0);continue}assert.equal(writes.length,1);assert.equal(navigations.length,0);if(changed==='after-owner')scope.routeOwner.current={branchId:'new'};if(changed==='after-tab')scope.routeOwner.current={branchId:'old',tab:'chats'};if(changed==='after-selection')scope.selection.current++;frames[0]();assert.equal(navigations.length,changed==='none'?1:0);
  }
@@ -691,8 +692,8 @@ test('workflow Rename uses the clicked owner, preserves canceled navigation and 
  const handlers=['requestRename','applyRename'].map(name=>source.split('\n').find(line=>line.trim().startsWith(`const ${name}=`))).join('\n');
  const draft={branchId:'a',definition:{name:'Original',steps:[{id:'retained'}]},bindings:{retained:true}},opened=[],scope={loading:false,openingLink:false,creating:false,review:{isPending:false},deploy:{isPending:false},draft,route:{branchId:'a'},routeOwner:{current:{branchId:'a'}},selection:{current:1},editorGeneration:1,renameId:'a',navigate:()=>false,setRenameId:id=>opened.push(id),setDraft:update=>{scope.draft=update(scope.draft)}};
  vm.runInNewContext(ts.transpile(handlers+';this.requestRename=requestRename;this.applyRename=applyRename;',{target:ts.ScriptTarget.ES2022}),scope);
- scope.requestRename({id:'b'});assert.deepEqual(opened,[],'Canceled navigation never opens the wrong owner');
- scope.navigate=route=>{assert.equal(route.branchId,'b');return true};scope.requestRename({id:'b'});assert.deepEqual(opened,['b']);
+ scope.requestRename({id:'b'});assert.deepEqual(opened,[],'Canceled navigation never opens the wrong owner');let accept;scope.navigate=(_route,_replace,onAccepted)=>{accept=onAccepted;return false};scope.requestRename({id:'b'});assert.deepEqual(opened,[],'Queued navigation waits for confirmation');accept();assert.deepEqual(opened,['b'],'A saved asynchronous navigation retains Rename');opened.length=0;
+ scope.navigate=(route,_replace,onAccepted)=>{assert.equal(route.branchId,'b');onAccepted();return true};scope.requestRename({id:'b'});assert.deepEqual(opened,['b']);
  scope.requestRename({id:'a'});assert.equal(opened.at(-1),'a');
  scope.applyRename('  Updated  ');assert.equal(scope.draft.definition.name,'Updated');assert.equal(scope.draft.definition.steps,draft.definition.steps);assert.equal(scope.draft.bindings,draft.bindings);assert.equal(opened.at(-1),undefined);
  for(const change of [()=>scope.selection.current++,()=>scope.routeOwner.current={branchId:'b'},()=>scope.routeOwner.current={branchId:'a',global:'general'},()=>scope.deploy.isPending=true]){
@@ -712,10 +713,10 @@ test('an external publication cannot unmount and erase an open workflow Rename d
 });
 
 test('Branch execution status distinguishes confirmed zero, active, unresolved and failed cached counts',()=>{
- const props={name:'Workflow status owner',tab:'workflow',published:true,dirty:true,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){},onRename(){}};
+ const props={name:'Workflow status owner',tab:'workflow',published:true,dirty:true,onTab(){},onExport(){},onUpdate(){},onRename(){}};
  const render=extra=>renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,...extra}));
  for(const [extra,label] of [[{executionCount:0},'0 active executions'],[{executionCount:4},'4 active executions'],[{},'Executions loading…'],[{executionCount:4,executionsUnavailable:true},'Executions unavailable']]){
-  const html=render(extra);assert.ok(html.includes(`aria-label="${label}"`));assert.ok(html.includes('aria-label="Unpublished changes"'),'Execution state and unpublished draft remain independently visible');
+  const html=render(extra);assert.ok(html.includes(`aria-label="${label}"`));assert.ok(html.includes('aria-label="Editing"'),'Execution state and unpublished draft remain independently visible');
   if(extra.executionsUnavailable)assert.ok(!html.includes('4 active executions'),'A failed query overrides its cached count');
  }
  const nested=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,tab:'chats',executionCount:4}));
@@ -906,26 +907,27 @@ async function discardActionFixture(){
  const declarations=new Map();function visit(node){if(ts.isVariableStatement(node))for(const d of node.declarationList.declarations)if(ts.isIdentifier(d.name))declarations.set(d.name.text,node.getText(file));if(ts.isFunctionDeclaration(node)&&node.name)declarations.set(node.name.text,node.getText(file));ts.forEachChild(node,visit)}visit(file);
  const branch={id:'owner',name:'Published workflow',versionId:'v1',bindingRevisionId:'b1',chatId:'chat'},definition={name:branch.name,steps:[],controls:[],edges:[],trigger:{kind:'manual'}},bindings={agents:{},directories:{workspace:'.'}};
  const {branchDraftRevision}=await import('../../apps/web/src/components/branches/model.ts'),{ApiRequestError}=await import('../../apps/web/src/api/types.ts');
+ const {emptyWorkflowHistory,recordWorkflowEdit}=await import('../../apps/web/src/components/branches/workflow-history.ts');
  const baseline={branchId:branch.id,expectedVersionId:branch.versionId,chatId:branch.chatId,definition,bindings},draft={...baseline,definition:{...definition,name:'Local rename'}},requests=[],resets=[],cache=[];
- const scope={draft,currentDraft:{current:draft},draftRevision:{current:branchDraftRevision(draft)},pendingAdvanced:{current:true},workflowEdits:{current:3},routeOwner:{current:{branchId:'owner',tab:'workflow'}},selection:{current:7},savedDraft:{current:branchDraftRevision(baseline)},branchDraftRevision,ApiRequestError,
+ const scope={emptyWorkflowHistory,recordWorkflowEdit,draftHistory:{current:emptyWorkflowHistory()},workflowLeave:{current:undefined},draft,currentDraft:{current:draft},draftRevision:{current:branchDraftRevision(draft)},pendingAdvanced:{current:true},workflowEdits:{current:3},routeOwner:{current:{branchId:'owner',tab:'workflow'}},selection:{current:7},savedDraft:{current:branchDraftRevision(baseline)},branchDraftRevision,ApiRequestError,
   serverBranch:branch,serverDefinition:definition,serverBindings:bindings,advancedDirty:true,dirty:true,loading:false,openingLink:false,publicationUnconfirmed:false,discardDisabled:false,discardIntent:undefined,preview:{draftRevision:branchDraftRevision(draft),input:{branchId:'owner',idempotencyKey:'exact-attempt',definition:draft.definition},expectsNewWebhookSecret:false,result:{operations:[]}},
   input:'keep execution input',runOpen:true,occurrenceKey:'keep accepted intent',notice:'Unrelated success',error:'Unrelated failure',independentSettings:{count:'dirty'},current:branch,
   review:{isPending:false,reset(){resets.push('review')},mutate(){resets.push('new preview')}},deploy:{isPending:false,isError:false,reset(){resets.push('deploy')}},run:{reset(){resets.push('run')}},
   actionLocks:{current:new Set()},once(key,action){if(scope.actionLocks.current.has(key))return;scope.actionLocks.current.add(key);action()},
-  newDefinition:()=>({...definition,name:'Untitled workflow'}),updateDraft:next=>{scope.draft=next},setAdvancedDirty:value=>{scope.advancedDirty=value},setDeployedUpdate:value=>{scope.deployedUpdate=value},setEditorKey:update=>{scope.editorKey=update(scope.editorKey??0)},setPreview:value=>{scope.preview=value},setReminderDismissed:value=>{scope.reminderDismissed=value},setDiscardIntent:value=>{scope.discardIntent=value},setError:value=>{scope.error=value},setLoading:value=>{scope.loading=value},setSecret:value=>{scope.secret=value},setSecretRecovery:value=>{scope.secretRecovery=value},setNotice:value=>{scope.notice=value},
+  newDefinition:()=>({...definition,name:'Untitled workflow'}),updateDraft:next=>{scope.draft=next},setAdvancedDirty:value=>{scope.advancedDirty=value},setDeployedUpdate:value=>{scope.deployedUpdate=value},setEditorKey:update=>{scope.editorKey=update(scope.editorKey??0)},setPreview:value=>{scope.preview=value},setDiscardIntent:value=>{scope.discardIntent=value},setError:value=>{scope.error=value},setLoading:value=>{scope.loading=value},setSecret:value=>{scope.secret=value},setSecretRecovery:value=>{scope.secretRecovery=value},setNotice:value=>{scope.notice=value},setInput:value=>{scope.input=value},setRunOpen:value=>{scope.runOpen=value},setOccurrenceKey:value=>{scope.occurrenceKey=value},setOpeningLink:value=>{scope.openingLink=value},setValidationRequest(){},setTab(){},createClientId:()=> 'test-intent',contexts:{data:[]},trigger:{data:undefined},bindDefinitionDirectories:(_definition,bindings)=>bindings,
   client:{setQueryData:(key,value)=>cache.push({key,value}),invalidateQueries:async()=>{}},
   requestJson:async(path,init)=>{requests.push({path,method:init?.method??'GET',cache:init?.cache,body:init?.body});await scope.onRead?.(path,init);if(init?.method==='POST')return scope.serverBranch;if(path.includes('/versions/'))return {id:scope.serverBranch.versionId,branchId:'owner',definition:scope.serverDefinition};if(path.includes('/configuration'))return scope.serverBindings;return {...scope.serverBranch}},
-  useMutation:options=>{const state={options,isPending:false,isError:false,error:null,reset(){state.error=null;state.isError=false},mutate(input){state.pending=state.mutateAsync(input).catch(()=>{})},async mutateAsync(input){state.variables=input;state.isPending=true;state.isError=false;state.error=null;try{await options.onMutate?.(input);const value=await options.mutationFn(input);await options.onSuccess?.(value,input);return value}catch(error){state.isError=true;state.error=error;throw error}finally{state.isPending=false;options.onSettled?.()}}};return state}
+  useMutation:options=>{const state={options,isPending:false,isError:false,error:null,reset(){state.error=null;state.isError=false},mutate(input){state.pending=state.mutateAsync(input).catch(()=>{})},async mutateAsync(input){state.variables=input;state.isPending=true;state.isError=false;state.error=null;try{await options.onMutate?.(input);const value=await options.mutationFn(input);await options.onSuccess?.(value,input);return value}catch(error){state.isError=true;state.error=error;await options.onError?.(error,input);throw error}finally{state.isPending=false;options.onSettled?.()}}};return state}
  };
  vm.createContext(scope);
  const load=name=>{let statement=declarations.get(name);assert.ok(statement,`Actual owner ${name} exists`);if(statement.startsWith('async function'))statement=statement.replace(`async function ${name}`,`globalThis.${name}=async function`);else statement=statement.replace(`const ${name}=`,`globalThis.${name}=`);vm.runInContext(ts.transpileModule(statement,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope)};
- for(const name of ['readWorkflowDraft','setDraft','resetWorkflowBaseline','ownsDiscard','discard','requestDiscard','reviewChanges','publishChanges'])load(name);
+ for(const name of ['readWorkflowDraft','setDraft','resetWorkflowBaseline','finishWorkflowLeave','ownsDiscard','discard','requestDiscard','reviewChanges','publishChanges','saveDisabled','saveBeforeLeaving','discardBeforeLeaving'])load(name);
  return {scope,requests,resets,cache,baseline,load,source,file,ts,vm};
 }
 
 test('Discard resets the verified workflow only and uses immutable binding revision with fresh reads',async()=>{
  const f=await discardActionFixture(),s=f.scope;s.requestDiscard();assert.equal(s.discardIntent.branchId,'owner');await s.discard.mutateAsync(s.discardIntent);
- assert.equal(s.draft.definition.name,'Published workflow');assert.equal(s.savedDraft.current,s.branchDraftRevision(s.draft));assert.equal(s.pendingAdvanced.current,false);assert.equal(s.advancedDirty,false);assert.equal(s.preview,undefined);assert.equal(s.discardIntent,undefined);assert.equal(s.reminderDismissed,false);
+ assert.equal(s.draft.definition.name,'Published workflow');assert.equal(s.savedDraft.current,s.branchDraftRevision(s.draft));assert.equal(s.pendingAdvanced.current,false);assert.equal(s.advancedDirty,false);assert.equal(s.preview,undefined);assert.equal(s.discardIntent,undefined);
  assert.equal(s.input,'keep execution input');assert.equal(s.runOpen,true);assert.equal(s.occurrenceKey,'keep accepted intent');assert.equal(s.independentSettings.count,'dirty');assert.equal(s.error,'Unrelated failure');assert.equal(s.notice,'Unrelated success');assert.deepEqual(f.resets,['review']);
  assert.equal(f.requests.length,4);assert.ok(f.requests.every(r=>r.method==='GET'&&r.cache==='no-store'));assert.ok(f.requests.some(r=>r.path.endsWith('/configuration?revisionId=b1')));assert.equal(f.requests[0].path,f.requests.at(-1).path);
 });
@@ -987,12 +989,12 @@ test('pending actual advanced Apply survives publication retry without a new edi
 });
 
 
-test('unpublished dot has a focusable shared tooltip and disappears at every clean baseline',()=>{
- const props={name:'Workflow',tab:'workflow',published:true,dirty:true,executionCount:2,saving:false,saveDisabled:false,onTab(){},onSave(){},onExport(){},onUpdate(){}};
+test('Editing label has the Unpublished Changes tooltip and disappears at every clean baseline',()=>{
+ const props={name:'Workflow',tab:'workflow',published:true,dirty:true,executionCount:2,onTab(){},onExport(){},onUpdate(){}};
  const dirty=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,props));
- assert.ok(/role="img"[^>]*tabindex="0"[^>]*aria-label="Unpublished changes"/.test(dirty));assert.ok(dirty.includes('Unpublished workflow changes. Use Review &amp; publish, or Discard changes.'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Unpublished changes"'));assert.ok(dirty.indexOf('aria-label="Unpublished changes"')<dirty.indexOf('aria-label="Review &amp; publish"'));
- const clean=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false}));assert.ok(!clean.includes('aria-label="Unpublished changes"'));assert.ok(!clean.includes('Unpublished workflow changes.'));
- const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(!initial.includes('aria-label="Unpublished changes"'));assert.ok(!initial.includes('Unpublished changes'));assert.ok(!initial.includes('Use Review &amp; publish, or Discard changes.'));
+ assert.ok(/tabindex="0"[^>]*aria-label="Editing"/.test(dirty));assert.ok(dirty.includes('Unpublished Changes'));assert.ok(dirty.includes('>Editing</span>'));assert.ok(dirty.indexOf('2 active executions')<dirty.indexOf('aria-label="Editing"'));assert.ok(!dirty.includes('aria-label="Review &amp; publish"'));
+ const clean=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false}));assert.ok(!clean.includes('aria-label="Editing"'));assert.ok(!clean.includes('Unpublished Changes'));
+ const initial=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...props,dirty:false,published:false}));assert.ok(!initial.includes('aria-label="Editing"'));assert.ok(!initial.includes('Unpublished Changes'));assert.ok(!initial.includes('>Editing</span>'));
 });
 
 
@@ -1010,14 +1012,14 @@ test('compact execution count preserves full meaning and uses Ponderosa’s shar
  const {SidebarActivityBadge}=await import('../../apps/web/src/components/SidebarActivityBadge.tsx');
  const svg=html=>html.match(/<svg[^>]*viewBox="0 0 8 8"[\s\S]*?<\/svg>/)?.[0];
  const reference=svg(renderToStaticMarkup(React.createElement(SidebarActivityBadge)));assert.ok(reference);
- const base={name:'Workflow',tab:'workflow',published:true,dirty:false,saving:false,saveDisabled:true,onTab(){},onSave(){},onExport(){},onUpdate(){},onRename(){}};
+ const base={name:'Workflow',tab:'workflow',published:true,dirty:false,onTab(){},onExport(){},onUpdate(){},onRename(){}};
  for(const [props,label,visible] of [[{executionCount:0},'0 active executions','0'],[{executionCount:12},'12 active executions','12'],[{},'Executions loading…','…'],[{executionCount:12,executionsUnavailable:true},'Executions unavailable','!']]){
   const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{...base,...props}));
   assert.ok(html.includes(`role="img" tabindex="0" aria-label="${label}"`));assert.ok(html.includes(`</span>${visible}</span>`),'The narrow status has a visible count or explicit unresolved/error symbol');assert.ok(html.includes(`aria-label="${label}"`));
   const status=BranchWorkspaceHeader({...base,...props,dirty:true}).props.children.props.status;
   const compact=status.props.children[1].props.children,executionCircle=compact.props.children[0],dirty=status.props.children[2].props.children;
-  assert.equal(executionCircle.props.children.type,SemanticStatusCircle,'Execution status reuses the actual shared renderer');assert.equal(dirty.props.children.type,SemanticStatusCircle,'Unpublished status reuses the actual shared renderer');
-  assert.equal(svg(renderToStaticMarkup(compact)),reference);assert.equal(svg(renderToStaticMarkup(dirty)),reference);
+  assert.equal(executionCircle.props.children.type,SemanticStatusCircle,'Execution status reuses the actual shared renderer');assert.equal(dirty.props.children,'Editing','Unpublished workflow changes use the visible Editing label');assert.equal(status.props.children[2].props.title,'Unpublished Changes');
+  assert.equal(svg(renderToStaticMarkup(compact)),reference);assert.equal(svg(renderToStaticMarkup(dirty)),undefined,'The Editing label replaces the ambiguous dot');
   const kind=props.executionsUnavailable?'needs_attention':props.executionCount===undefined?'waiting':props.executionCount>0?'running':'idle';
   for(const mode of ['light','dark'])assert.equal(executionCircle.props.sx({palette:{mode}}).color,semanticStatusColorToken(kind,mode));
   assert.equal(dirty.props.sx.color,'warning.main');assert.equal(dirty.props.sx.display,'inline-flex');assert.equal(compact.props.tabIndex,0);assert.equal(dirty.props.tabIndex,0);
@@ -1063,7 +1065,7 @@ test('Branch usage reuses its canonical menu and forwards the persistent usage a
  assert.equal(menu.props.label,'Branch actions');assert.equal(menu.props.showExports,false);assert.deepEqual(Array.from(menu.props.actions,item=>item.label),['Provider usage','Rename…','Discard changes','Export template','Export full','Apply package update…']);assert.equal(menu.props.actions[2].disabled,true);
  for(const action of menu.props.actions)action.onSelect(anchor);assert.deepEqual(calls,[anchor,'rename','discard','template','full','update']);
  const inactive=render().props.children[1];const full=React.createElement('button',null,'Full usage'),wide=render(open,full);assert.equal(wide.props.children[0],full);assert.deepEqual(Array.from(wide.props.children[1].props.actions,item=>item.label),['Rename…','Discard changes','Export template','Export full','Apply package update…']);assert.deepEqual(Array.from(inactive.props.actions,item=>item.label),['Rename…','Discard changes','Export template','Export full','Apply package update…'],'A nested usage owner cannot remove the retained Branch authoring menu');
- const header=BranchWorkspaceHeader({name:'Workflow',tab:'workflow',published:true,dirty:false,saving:false,saveDisabled:false,onTab(){},onSave(){},onRename(){},onExport(){},onUpdate(){}}).props.children;
+ const header=BranchWorkspaceHeader({name:'Workflow',tab:'workflow',published:true,dirty:false,onTab(){},onRename(){},onExport(){},onUpdate(){}}).props.children;
  assert.equal(header.props.primaryActions.type.name,'BranchHeaderActions','Expanded and collapsed frames reuse the same owner outlet');
 });
 
@@ -1137,7 +1139,8 @@ test('closing the Add-step menu fences its exiting item handlers from creating a
  const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),model=await import('../../apps/web/src/components/branches/model.ts');
  const source=await fs.readFile(new URL('../../apps/web/src/components/branches/WorkflowEditor.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('WorkflowEditor.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
  let handler;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='add')handler=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(handler);
- const edits=[],scope={...model,definition:model.newDefinition(),insertion:'',addAnchor:{},onDefinition:definition=>edits.push(definition),setSelected(){},setEditorOpen(){},setFocusRequest(){},setAddAnchor:value=>{scope.addAnchor=value}};
+ const {insertGuidedStep}=await import('../../apps/web/src/components/branches/guided-operations.ts');
+ const edits=[],scope={...model,insertGuidedStep,definition:model.newDefinition(),insertionTarget:{kind:'entry'},addAnchor:{},dismissedInsertion:{current:null},onDraft:edit=>edits.push(edit.definition),setInsertError(){},setSelected(){},setEditorOpen(){},setFocusRequest(){},setAddAnchor:value=>{scope.addAnchor=value}};
  const add=vm.runInNewContext(ts.transpile(handler,{target:ts.ScriptTarget.ES2022}),scope);
  add('agent');assert.equal(edits.length,1);assert.equal(edits[0].steps.length,1);assert.equal(scope.addAnchor,null);
  add('agent');add('script');assert.equal(edits.length,1,'Closed/transitioning menu items cannot add work');assert.equal(scope.definition.steps.length,0,'The original snapshot remains untouched');
@@ -1200,6 +1203,153 @@ test('switching from an imported temporary ref preserves its form and never remo
  const {validateBranchDefinition}=await import('../../packages/agents/dist/branch-definition.js');assert.doesNotThrow(()=>validateBranchDefinition(persistent),'An unselected invalid setup cannot silently block publication');
 });
 
+
+test('canonical publication issue selects its owning step before unrelated local field guidance',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/WorkflowEditor.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('WorkflowEditor.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),effects=[];
+ function walk(node){if(ts.isCallExpression(node)&&node.expression.getText(ast)==='useEffect'&&node.arguments[0]?.getText(ast).includes('if(!validationRequest'))effects.push(node.arguments[0].getText(ast));ts.forEachChild(node,walk)}walk(ast);assert.equal(effects.length,1);
+ const calls=[],scope={validationRequest:1,validationIssues:[{nodeId:'agent',field:'agent'}],definition:{steps:[{id:'script',kind:'script',source:'',cwdRef:'workspace'},{id:'agent',kind:'agent',target:{ref:'agent'}}]},bindings:{agents:{},directories:{workspace:'/qa'}},advancedSettingsNeedAttention:()=>false,setSelected:id=>calls.push(id),setEditorOpen:()=>{},onInvalidStep:()=>{},addButton:{current:null}};
+ const run=vm.runInNewContext(ts.transpile(effects[0],{target:ts.ScriptTarget.ES2022}),scope);run();assert.equal(calls.length,0,'The canonical issue effect owns the identified Agent; generic local guidance must not replace it');
+ scope.validationIssues=[];run();assert.deepEqual(calls,['script'],'Without canonical issues, local guidance still opens an incomplete Step');
+});
+
+/** Run the existing trigger owner and shared draft hook; only React scheduling is controlled. */
+async function branchTriggerDraftFixture(kind,config,{echo=true}={}) {
+ const {readFileSync}=await import('node:fs'),{createRequire}=await import('node:module'),vm=await import('node:vm'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),ts=require('typescript');
+ const slots=[],effects=[],calls=[],invalid=[];let index=0,dirty=false,tree,props;
+ const react={
+  useState(initial){const i=index++;slots[i]??={value:typeof initial==='function'?initial():initial};return[slots[i].value,next=>{const value=typeof next==='function'?next(slots[i].value):next;if(!Object.is(value,slots[i].value)){slots[i].value=value;dirty=true;}}];},
+  useRef(initial){return react.useState(()=>({current:initial}))[0];},
+  useEffect(fn,deps){const i=index++,old=slots[i];if(!old||deps.some((value,j)=>!Object.is(value,old.deps[j]))){slots[i]={deps,cleanup:old?.cleanup};effects.push(()=>{slots[i].cleanup?.();slots[i].cleanup=fn();});}},
+ };
+ const compile=(source,imports={})=>{const exports={};vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,JSON,Date,Intl,Error,require:name=>name==='react'?react:name in imports?imports[name]:require(name)});return exports;};
+ const values=compile(readFileSync(new URL('../../apps/web/src/components/triggerSourceValues.ts',import.meta.url),'utf8'));
+ const shared=compile(readFileSync(new URL('../../apps/web/src/components/TriggerSourceFields.tsx',import.meta.url),'utf8'),{'./triggerSourceValues':values});
+ const source=readFileSync(new URL('../../apps/web/src/components/branches/WorkflowEditor.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('WorkflowEditor.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),owner=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='BranchTriggerSource');assert.ok(owner);
+ const context={exports:{},JSON,Date,Intl,Error,...react,...shared,require};vm.runInNewContext(ts.transpileModule(owner.getText(ast)+'\nglobalThis.component=BranchTriggerSource;',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,context);
+ props={kind,config,onChange(next){calls.push(JSON.parse(JSON.stringify(next)));if(echo){props={...props,config:next};dirty=true;}},onInvalid(value){invalid.push(value)}};
+ const render=()=>{let attempts=0;do{dirty=false;index=0;tree=context.component(props);for(const run of effects.splice(0))run();assert.ok(++attempts<25,'The trigger owner settles without undoing external configuration.');}while(dirty);return tree;};
+ render();
+ return {calls,get draft(){return tree.props.draft;},get invalid(){return invalid.at(-1);},get config(){return props.config;},input(field,value){tree.props.draft['set'+field[0].toUpperCase()+field.slice(1)](value);render();},setConfig(next){props={...props,config:next};render();},render,unmount(){for(const slot of slots)slot?.cleanup?.();}};
+}
+
+test('trigger draft same-kind Undo/Redo reloads displayed schedule fields without emitting the displaced values',async()=>{
+ const original={scheduleKind:'interval',everyMs:3600000,startsAt:'2030-01-01T00:00:00.000Z'},f=await branchTriggerDraftFixture('schedule',original);
+ assert.equal(f.calls.length,0);f.input('intervalValue','2');assert.equal(f.calls.length,1);assert.equal(f.draft.intervalValue,'2');assert.equal(f.config.everyMs,7200000);assert.equal(f.config.startsAt,original.startsAt);
+ const changed=structuredClone(f.config);f.setConfig(original);assert.equal(f.draft.intervalValue,'1');assert.equal(f.calls.length,1,'Undo must not republish the old displayed two-hour value');assert.equal(f.invalid,false);
+ f.setConfig(changed);assert.equal(f.draft.intervalValue,'2');assert.equal(f.calls.length,1,'Redo adopts the canonical config without another draft edit');
+ f.input('intervalValue','');assert.equal(f.invalid,true);f.setConfig(structuredClone(changed));assert.equal(f.draft.intervalValue,'');assert.equal(f.invalid,true,'An equal parent rerender preserves invalid local text and publication blocking');
+ f.setConfig(original);assert.equal(f.draft.intervalValue,'1');assert.equal(f.invalid,false);assert.equal(f.calls.length,1);f.unmount();
+});
+
+test('trigger self-echo preserves formatting and newer invalid input instead of reloading an acknowledged save',async()=>{
+ const original={scheduleKind:'interval',everyMs:3600000,startsAt:'2030-01-01T00:00:00.000Z'},f=await branchTriggerDraftFixture('schedule',original,{echo:false});
+ f.input('intervalValue','02');assert.equal(f.calls.length,1);assert.equal(f.draft.intervalValue,'02');assert.equal(f.calls[0].everyMs,7200000);
+ f.input('intervalValue','');assert.equal(f.invalid,true);f.setConfig(f.calls[0]);assert.equal(f.draft.intervalValue,'');assert.equal(f.invalid,true);assert.equal(f.calls.length,1);
+ f.input('intervalValue','02');f.setConfig(structuredClone(f.calls[0]));assert.equal(f.draft.intervalValue,'02','Equivalent saved milliseconds must not rewrite authored formatting');
+ f.setConfig(original);assert.equal(f.draft.intervalValue,'1');assert.equal(f.invalid,false);assert.equal(f.calls.length,1);f.unmount();
+});
+
+test('trigger external filesystem changes restore every field and clear only superseded invalid drafts',async()=>{
+ const original={include:['src/**'],exclude:['.git/**'],quietMs:1000,maxWindowMs:10000},f=await branchTriggerDraftFixture('filesystem',original);
+ f.input('include','src/**  \nnew/**');assert.equal(f.draft.include,'src/**  \nnew/**','The local canonical echo must retain authored whitespace');assert.deepEqual(f.calls[0].include,['src/**','new/**']);
+ f.input('quietSeconds','');assert.equal(f.invalid,true);const changed={include:['restored/**','other/**'],exclude:['cache/**'],quietMs:2000,maxWindowMs:30000};f.setConfig(changed);
+ assert.equal(f.draft.include,'restored/**\nother/**');assert.equal(f.draft.exclude,'cache/**');assert.equal(f.draft.quietSeconds,'2');assert.equal(f.draft.maxWindowSeconds,'30');assert.equal(f.invalid,false);assert.equal(f.calls.length,1);
+ f.setConfig(original);assert.equal(f.draft.include,'src/**');assert.equal(f.draft.exclude,'.git/**');assert.equal(f.draft.quietSeconds,'1');assert.equal(f.draft.maxWindowSeconds,'10');assert.equal(f.calls.length,1);f.unmount();
+});
+
+test('trigger external schedule subtype and webhook configuration changes do not become new draft edits',async()=>{
+ const cron={scheduleKind:'cron',expression:'15 10 * * 1-5',timezone:'America/New_York'},f=await branchTriggerDraftFixture('schedule',cron);
+ const interval={scheduleKind:'interval',everyMs:7200000,startsAt:'2030-01-01T00:00:00.000Z'};f.setConfig(interval);assert.equal(f.draft.scheduleKind,'interval');assert.equal(f.draft.intervalValue,'2');assert.equal(f.draft.intervalUnit,'hours');
+ f.setConfig(cron);assert.equal(f.draft.scheduleKind,'cron');assert.equal(f.draft.cronExpression,cron.expression);assert.equal(f.draft.timezone,cron.timezone);
+ const once={scheduleKind:'once',at:'2030-01-02T03:04:05.000Z'};f.setConfig(once);assert.equal(f.draft.scheduleKind,'once');assert.equal(new Date(f.draft.onceAt).toISOString(),once.at);assert.equal(f.calls.length,0);f.unmount();
+ const webhook=await branchTriggerDraftFixture('webhook',{replayWindowSeconds:300});webhook.setConfig({replayWindowSeconds:600});assert.equal(webhook.calls.length,0);assert.equal(webhook.config.replayWindowSeconds,600);webhook.unmount();
+});
+
+
+test('Save Workflow renders the existing guarded review action with pending and disabled states',async()=>{
+ const f=await discardActionFixture(),s=f.scope,{createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url));
+ const matches=[];function walk(node){if(f.ts.isJsxElement(node)&&node.openingElement.tagName.getText(f.file)==='Button'&&node.children.some(child=>f.ts.isJsxText(child)&&child.text==='Save Workflow'))matches.push(node);f.ts.forEachChild(node,walk)}walk(f.file);
+ assert.equal(matches.length,1,'One primary Save Workflow entry point');
+ Object.assign(s,{exports:{},require,Button:require('@mui/material').Button,setValidationRequest(){},setTab(){}});
+ f.vm.runInContext(f.ts.transpileModule('globalThis.renderSave=()=>('+matches[0].getText(f.file)+')',{compilerOptions:{module:f.ts.ModuleKind.CommonJS,target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.ReactJSX}}).outputText,s);
+ const renderSave=s.renderSave;s.renderSave=()=>{f.load('saveDisabled');return renderSave()};
+ s.advancedDirty=false;s.preview=undefined;s.pendingAdvanced.current=false;
+ const before=s.draft,baseline=s.savedDraft.current;assert.equal(s.renderSave().props.disabled,false);assert.equal(s.renderSave().props.onClick,s.reviewChanges);
+ s.renderSave().props.onClick();s.renderSave().props.onClick();assert.equal(f.resets.filter(value=>value==='new preview').length,1,'Synchronous review intent prevents duplicate requests before pending render');assert.equal(s.draft,before);assert.equal(s.savedDraft.current,baseline,'Review does not clear unpublished state');
+ for(const owner of ['review','deploy','discard']){s[owner].isPending=true;assert.equal(s.renderSave().props.disabled,true,owner+' pending disables Save');assert.equal(s.renderSave().props['aria-busy'],true);s[owner].isPending=false;}
+ for(const patch of [{current:undefined},{dirty:false},{advancedDirty:true}]){const old={current:s.current,dirty:s.dirty,advancedDirty:s.advancedDirty};Object.assign(s,patch);assert.equal(s.renderSave().props.disabled,true);Object.assign(s,old);}
+ const attempt={input:{branchId:'owner',idempotencyKey:'same-attempt'},draftRevision:s.draftRevision.current};s.deploy.variables=attempt;s.publicationUnconfirmed=true;s.preview=undefined;s.renderSave().props.onClick();assert.equal(s.preview,attempt,'Uncertain publication reuses its exact existing review attempt');
+});
+
+test('review and publication failures retain the draft and its canonical baseline',async()=>{
+ const f=await discardActionFixture(),s=f.scope,before=s.draft,baseline=s.savedDraft.current;
+ Object.assign(s,{contexts:{data:[]},trigger:{data:undefined},bindDefinitionDirectories:value=>value,createClientId:()=> 'same-intent'});s.pendingAdvanced.current=false;s.advancedDirty=false;
+ f.load('review');s.requestJson=async()=>{throw Error('Controlled review failure')};await assert.rejects(s.review.mutateAsync(before),/Controlled review failure/);assert.equal(s.draft,before);assert.equal(s.savedDraft.current,baseline);assert.equal(s.review.error.message,'Controlled review failure');
+ f.load('deploy');await assert.rejects(s.deploy.mutateAsync(s.preview),/Controlled review failure/);assert.equal(s.draft,before);assert.equal(s.savedDraft.current,baseline);assert.equal(s.deploy.error.message,'Controlled review failure');
+});
+
+
+async function workflowLeaveFixture(){
+ const f=await discardActionFixture(),s=f.scope;
+ s.advancedDirty=false;s.pendingAdvanced.current=false;s.error='';s.preview=undefined;
+ const request=s.requestJson;
+ s.requestJson=async(path,init)=>{if(path==='/api/branches/preview'){await s.onPreview?.();return {operations:[{kind:'change',resource:'Workflow',ref:'owner'}],notes:[]}}if(path==='/api/branches/deploy'){await s.onPublish?.();s.serverBranch={...s.serverBranch,versionId:'v2',name:s.draft.definition.name};s.serverDefinition=s.preview.input.definition;}return request(path,init)};
+ for(const name of ['select','review','deploy','saveDisabled'])f.load(name);
+ const outcomes=[];return {...f,outcomes,leave(kind='save'){f.load('saveDisabled');s[kind+'BeforeLeaving'](success=>outcomes.push(success));return s.review.pending??s.discard.pending;}};
+}
+
+test('Save And Leave waits for the existing review, publication and verified current baseline',async()=>{
+ const f=await workflowLeaveFixture(),s=f.scope,before=s.draft;
+ await f.leave();assert.equal(f.outcomes.length,0);assert.equal(s.preview.input.definition,before.definition);assert.equal(s.workflowLeave.current.attempt,s.preview);
+ const attempt=s.preview;s.publishChanges();s.publishChanges();await s.deploy.pending;
+ assert.deepEqual(f.outcomes,[true]);assert.equal(s.workflowLeave.current,undefined);assert.equal(s.savedDraft.current,s.draftRevision.current);assert.equal(s.draft.expectedVersionId,'v2');
+ assert.equal(f.requests.filter(row=>row.path==='/api/branches/deploy').length,1,'Publication remains fenced by the existing synchronous intent');
+});
+
+test('review cancellation, validation errors and uncertain publication never resume a queued destination',async()=>{
+ for(const mode of ['cancel','validation','uncertain']){const f=await workflowLeaveFixture(),s=f.scope,before=s.draft,baseline=s.savedDraft.current;
+  if(mode==='validation')s.onPreview=async()=>{throw new s.ApiRequestError(400,'Invalid workflow')};
+  await f.leave();
+  if(mode==='cancel')s.finishWorkflowLeave();
+  if(mode==='uncertain'){s.onPublish=async()=>{throw Error('Publication response lost')};s.publishChanges();await s.deploy.pending;f.load('publicationUnconfirmed');assert.equal(s.publicationUnconfirmed,true);}
+  assert.deepEqual(f.outcomes,[false],mode);assert.equal(s.draft,before);assert.equal(s.savedDraft.current,baseline);assert.equal(s.workflowLeave.current,undefined);
+ }
+});
+
+test('a publication older than the current draft cannot reset or navigate away from newer edits',async()=>{
+ for(const point of ['before-publish-response','during-readback','advanced','readback-error']){const f=await workflowLeaveFixture(),s=f.scope;await f.leave();const attempt=s.preview;
+  const newer=()=>s.setDraft(d=>({...d,definition:{...d.definition,name:'Newer edit retained'}}));
+  if(point==='before-publish-response')s.onPublish=async()=>newer();
+  if(point==='advanced')s.onPublish=async()=>{s.pendingAdvanced.current=true;s.advancedDirty=true};
+  if(point==='during-readback'){let once=false;s.onRead=async(path,init)=>{if(init?.method!=='POST'&&!once){once=true;newer()}};}
+  if(point==='readback-error')s.onRead=async(path,init)=>{if(init?.method!=='POST')throw Error('Fresh read unavailable')};
+  s.publishChanges();await s.deploy.pending;
+  assert.deepEqual(f.outcomes,[false],point);assert.equal(s.workflowLeave.current,undefined);assert.notEqual(s.savedDraft.current,s.draftRevision.current,'Edits are still unpublished');
+  if(point.includes('readback')&&point!=='readback-error'||point==='before-publish-response')assert.equal(s.draft.definition.name,'Newer edit retained');
+  if(point==='advanced')assert.equal(s.pendingAdvanced.current,true);
+  if(point==='during-readback')assert.equal(s.deployedUpdate.reason,'dirty','A newer edit is not mislabeled a failed read');
+  assert.equal(attempt.input.idempotencyKey,'test-intent');
+ }
+});
+
+test('Discard And Leave uses canonical recovery once and never deletes created resources',async()=>{
+ const f=await workflowLeaveFixture(),s=f.scope;s.independentSettings.createdAgent='agent-created-during-editing';
+ await f.leave('discard');assert.deepEqual(f.outcomes,[true]);assert.equal(s.draft.definition.name,'Published workflow');assert.equal(s.savedDraft.current,s.draftRevision.current);assert.equal(s.independentSettings.createdAgent,'agent-created-during-editing');assert.equal(s.independentSettings.count,'dirty');assert.equal(f.requests.length,4);assert.ok(f.requests.every(row=>row.method==='GET'));
+ const failed=await workflowLeaveFixture(),a=failed.scope,before=a.draft;a.onRead=async()=>{throw Error('Discard read failed')};await failed.leave('discard');assert.deepEqual(failed.outcomes,[false]);assert.equal(a.draft,before);assert.equal(a.error,'Discard read failed');
+});
+
+test('uncertain Save And Leave retries the original publication and stale completions cannot finish a later intent',async()=>{
+ const f=await workflowLeaveFixture(),s=f.scope;await f.leave();const attempt=s.preview;s.onPublish=async()=>{throw Error('Response lost')};s.publishChanges();await s.deploy.pending;assert.deepEqual(f.outcomes,[false]);
+ f.load('publicationUnconfirmed');s.onPublish=undefined;await f.leave();assert.equal(s.preview,attempt);assert.equal(s.workflowLeave.current.attempt,attempt);s.publishChanges();await s.deploy.pending;assert.deepEqual(f.outcomes,[false,true]);
+ const g=await workflowLeaveFixture(),a=g.scope;await g.leave();const stale=a.workflowLeave.current;a.finishWorkflowLeave();await g.leave();const current=a.workflowLeave.current;a.finishWorkflowLeave(true,stale);assert.equal(a.workflowLeave.current,current);assert.deepEqual(g.outcomes,[false]);a.finishWorkflowLeave();assert.deepEqual(g.outcomes,[false,false]);
+});
+
+
+test('workflow reload fences failures and fresh reads to their original owner and draft',async()=>{
+ for(const change of ['owner','generation','revision']){const f=await discardActionFixture(),s=f.scope;f.load('reloadWorkflow');let reject;s.requestJson=()=>new Promise((_resolve,fail)=>{reject=fail});const pending=s.reloadWorkflow('owner');if(change==='owner')s.routeOwner.current={branchId:'other'};else if(change==='generation')s.selection.current++;else s.draftRevision.current='newer edit';reject(Error('Old reload failed'));await pending;assert.equal(s.error,'Unrelated failure',change);}
+ const f=await discardActionFixture(),s=f.scope;s.pendingAdvanced.current=false;f.load('reloadWorkflow');let selected;s.select=async(branch,force,revision)=>{selected={branch,force,revision}};s.serverBranch={...s.serverBranch,versionId:'fresh-v3'};await s.reloadWorkflow('owner');assert.equal(selected.branch.versionId,'fresh-v3');assert.equal(selected.revision,s.draftRevision.current);assert.ok(f.requests.every(row=>row.cache==='no-store'));
+});
+
 // Exercise the real intervention fields, mutation and shared dialog shell.
 // Controlled transport keeps this recovery check isolated from live work.
 async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}={}){
@@ -1240,7 +1390,7 @@ test('shared confirmation fences async submissions until settlement without trap
  const latch={current:false},scope={React,useRef:()=>latch,...Object.fromEntries(['Dialog','DialogTitle','DialogContent','DialogActions','Button','Alert'].map(name=>[name,name]))};
  const render=vm.runInNewContext(ts.transpile('('+shell+')',{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope);let canceled=0,confirmed=0;
  const props={open:true,title:'Confirm',children:'Body',confirmLabel:'Apply',onCancel(){canceled++;}};
- const confirm=tree=>tree.props.children[2].props.children[1].props.onClick;
+ const confirm=tree=>tree.props.children[2].props.children.find(button=>button?.props.children==='Apply').props.onClick;
  for(const throws of [false,true]){
   const tree=render({...props,onConfirm(){confirmed++;if(throws)throw Error('Declined');}});
   if(throws)assert.throws(()=>confirm(tree)(),/Declined/);else confirm(tree)();

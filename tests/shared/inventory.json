@@ -1188,6 +1188,14 @@
       "origin": "Current master Branch product isolation, pagination and canonical ownership qualification"
     },
     {
+      "path": "tests/branches/editing-navigation.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; controlled browser history and actual TSX navigation/dialog owners",
+      "origin": "PR95 workflow leave choices, exact settlement fencing, retained drafts, native reload and shared pending dismissal"
+    },
+    {
       "path": "tests/branches/ui-state.test.mjs",
       "feature": "branches",
       "lane": "web",
@@ -1377,6 +1385,41 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Actual React component closures with controlled scheduling, native speech and transport; no physical microphone qualification",
       "origin": "Shared Voice options, canonical call owners, unchanged dictation controls, explicit capture and canonical speech/lifecycle fences"
+    },
+    {
+      "path": "tests/branches/canvas-navigation.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Pure bounded canvas framing and view-state checks; no providers or live data"
+    },
+    {
+      "path": "tests/branches/canvas-insertion-menu.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; actual insertion-menu owners with transient control replacement, captured client geometry and focus-return behavior; no providers or live data"
+    },
+    {
+      "path": "tests/branches/canvas-layout.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; pure canonical draft/layout behavioral checks; no providers or live data"
+    },
+    {
+      "path": "tests/branches/guided-operations.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; pure canonical draft/layout behavioral checks; no providers or live data"
+    },
+    {
+      "path": "tests/branches/workflow-history.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; pure canonical draft/layout behavioral checks; no providers or live data"
     }
   ],
   "retainedReleasePayload": [

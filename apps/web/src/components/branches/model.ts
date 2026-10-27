@@ -11,12 +11,12 @@ export function makeTemplate(organization:boolean):AgentPortablePackageDto{
 }
 export function newDefinition():BranchDefinition{return {schema:'ponderosa.branch.v1',name:'Untitled workflow',trigger:{kind:'manual'},entry:'',steps:[],controls:[],edges:[],policy:{maxConcurrentExecutions:2,maxPathInstances:1000,maxStepInvocations:1000,maxEphemeralAgents:100,failure:{action:'stop'}}}}
 export function addNode(definition:BranchDefinition,kind:BranchStep['kind']|'parallel'|'for_each',after?:string):{definition:BranchDefinition;selected:string}{
- const d=structuredClone(definition),id='step_'+createClientId().slice(0,8),previous=after?[...d.steps,...d.controls].find(n=>n.id===after):undefined;
+ const d=structuredClone(definition),id='step_'+createClientId(),previous=after?[...d.steps,...d.controls].find(n=>n.id===after):undefined;
  if(!d.steps.length&&!d.controls.length)d.entry=id;
  const outcome=previous?.kind==='human_gate'?'approved':'success';
  const forward=previous&&!['fork','map','condition','route'].includes(previous.kind)?d.edges.find(e=>e.from===after&&e.on===outcome):undefined;
  if(forward)d.edges=d.edges.filter(e=>e.id!==forward.id);
- const link=(from:string,to:string,on:BranchDefinition['edges'][number]['on']='success')=>d.edges.push({id:'edge_'+createClientId().slice(0,8),from,to,on});
+ const link=(from:string,to:string,on:BranchDefinition['edges'][number]['on']='success')=>d.edges.push({id:'edge_'+createClientId(),from,to,on});
  if(kind==='parallel'){
   const join=id+'_join',a=id+'_a',b=id+'_b';d.controls.push({id,kind:'fork',label:'Parallel work',joinId:join},{id:join,kind:'join',label:'Combine results',forkId:id,mode:'all',remainder:'finish',inputOrder:[id+'_left',id+'_right']});
   d.steps.push({...makeScript(a),label:'First path'},{...makeScript(b),label:'Second path'});d.edges.push({id:id+'_left',from:id,to:a,on:'selected'},{id:id+'_right',from:id,to:b,on:'selected'});link(a,join);link(b,join);if(forward)link(join,forward.to);
@@ -33,7 +33,7 @@ export function addNode(definition:BranchDefinition,kind:BranchStep['kind']|'par
  return {definition:d,selected:id};
 }
 export function conditionBefore(definition:BranchDefinition,nodeId:string):{definition:BranchDefinition;selected:string}{
- const d=structuredClone(definition),id='condition_'+createClientId().slice(0,8),skip='skip_'+createClientId().slice(0,8);
+ const d=structuredClone(definition),id='condition_'+createClientId(),skip='skip_'+createClientId();
  // Both explicit routes remain authorable. The fallback is a separate identity with a valid terminal result.
  d.steps.push({...makeScript(skip),label:'Otherwise'});d.controls.push({id,label:'Choose a path',kind:'condition',predicate:{source:'input',equals:'yes'},otherwise:skip});
  for(const edge of d.edges)if(edge.to===nodeId)edge.to=id;
@@ -43,7 +43,7 @@ export function conditionBefore(definition:BranchDefinition,nodeId:string):{defi
  return {definition:d,selected:id};
 }
 export function routeBefore(definition:BranchDefinition,nodeId:string):{definition:BranchDefinition;selected:string}{
- const d=structuredClone(definition),id='route_'+createClientId().slice(0,8),fallback='fallback_'+createClientId().slice(0,8);
+ const d=structuredClone(definition),id='route_'+createClientId(),fallback='fallback_'+createClientId();
  d.steps.push({...makeScript(fallback),label:'Otherwise'});
  d.controls.push({id,label:'Ask which route to take',kind:'route',otherwise:fallback});
  for(const edge of d.edges)if(edge.to===nodeId)edge.to=id;
@@ -111,9 +111,9 @@ export function workflowGraphLevels(definition:BranchDefinition):Map<string,numb
  return levels;
 }
 
-/** New Script nodes always use the selected Chat folder, including helper paths. */
+/** Initialize new Script bindings from the selected Chat without rewriting explicit folders. */
 export function bindDefinitionDirectories(definition:BranchDefinition,bindings:import('@ponderosa/core').BranchBindings,folder?:string):import('@ponderosa/core').BranchBindings{
- return {...bindings,directories:Object.fromEntries(definition.steps.filter(s=>s.kind==='script').map(s=>[s.cwdRef,folder??bindings.directories[s.cwdRef]??'']))};
+ return {...bindings,directories:Object.fromEntries(definition.steps.filter(s=>s.kind==='script').map(s=>[s.cwdRef,bindings.directories[s.cwdRef]??folder??'']))};
 }
 
 type BranchDraftRevisionInput={definition:BranchDefinition;bindings:BranchBindings;chatId:string;branchId?:string;expectedVersionId?:string};
