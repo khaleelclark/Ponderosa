@@ -676,6 +676,32 @@ test('Main permission saves protect subsection and history navigation while reta
  assert.equal(navigationPreservesSettings(general,providers),true);
 });
 
+
+test('workflow Rename uses the clicked owner, preserves canceled navigation and fences late dialogs',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/BranchesView.tsx',import.meta.url),'utf8');
+ const handlers=['requestRename','applyRename'].map(name=>source.split('\n').find(line=>line.trim().startsWith(`const ${name}=`))).join('\n');
+ const draft={branchId:'a',definition:{name:'Original',steps:[{id:'retained'}]},bindings:{retained:true}},opened=[],scope={loading:false,openingLink:false,creating:false,review:{isPending:false},deploy:{isPending:false},draft,route:{branchId:'a'},routeOwner:{current:{branchId:'a'}},selection:{current:1},editorGeneration:1,renameId:'a',navigate:()=>false,setRenameId:id=>opened.push(id),setDraft:update=>{scope.draft=update(scope.draft)}};
+ vm.runInNewContext(ts.transpile(handlers+';this.requestRename=requestRename;this.applyRename=applyRename;',{target:ts.ScriptTarget.ES2022}),scope);
+ scope.requestRename({id:'b'});assert.deepEqual(opened,[],'Canceled navigation never opens the wrong owner');
+ scope.navigate=route=>{assert.equal(route.branchId,'b');return true};scope.requestRename({id:'b'});assert.deepEqual(opened,['b']);
+ scope.requestRename({id:'a'});assert.equal(opened.at(-1),'a');
+ scope.applyRename('  Updated  ');assert.equal(scope.draft.definition.name,'Updated');assert.equal(scope.draft.definition.steps,draft.definition.steps);assert.equal(scope.draft.bindings,draft.bindings);assert.equal(opened.at(-1),undefined);
+ for(const change of [()=>scope.selection.current++,()=>scope.routeOwner.current={branchId:'b'},()=>scope.routeOwner.current={branchId:'a',global:'general'},()=>scope.deploy.isPending=true]){
+  scope.selection.current=1;scope.routeOwner.current={branchId:'a'};scope.deploy.isPending=false;change();scope.applyRename('Stale');assert.equal(scope.draft.definition.name,'Updated');
+ }
+});
+
+
+test('an external publication cannot unmount and erase an open workflow Rename draft',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/BranchesView.tsx',import.meta.url),'utf8');
+ const effect=source.split('\n').find(line=>line.includes('current.versionId===draft.expectedVersionId'));
+ const refreshed=[],updates=[],scope={current:{id:'a',versionId:'new'},draft:{branchId:'a',expectedVersionId:'old'},renameId:'a',dirty:false,deployedUpdate:undefined,draftRevision:{current:'baseline'},useEffect:fn=>fn(),setDeployedUpdate:value=>updates.push(value),select:(...args)=>refreshed.push(args)};
+ const run=()=>vm.runInNewContext(ts.transpile(effect,{target:ts.ScriptTarget.ES2022}),scope);
+ run();assert.equal(refreshed.length,0,'Dialog remains mounted with its local input');assert.equal(updates.length,0);
+ scope.renameId=undefined;run();assert.equal(refreshed.length,1,'Cancel allows canonical refresh');
+ scope.dirty=true;run();assert.equal(refreshed.length,1,'Apply preserves the edited definition');assert.equal(updates.at(-1).reason,'dirty');
+});
+
 // Exercise the real intervention fields, mutation and shared dialog shell.
 // Controlled transport keeps this recovery check isolated from live work.
 async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}={}){
