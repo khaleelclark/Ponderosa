@@ -7,6 +7,7 @@ import { resolveAgentMentionBindings, recipientMentionIdentities } from '../../a
 import { communicationMentionBindings } from '../../packages/agents/src/store-mention-bindings.ts';
 import { resolveMessageMentionText } from '../../apps/web/src/components/chat/messageMentionPresentation.ts';
 const { ChatMessageBody, communicationVisibleText, authoredAgentMentionForHandle } = await import('../../apps/web/src/components/chat/ChatMessages.tsx');
+const { MutationNotificationProvider } = await import('../../apps/web/src/components/MutationNotifications.tsx');
 
 const projectId = 'fbe0e9a6-8af1-55c3-9805-9d3daa984a1b';
 const agentId = 'a6cc0309-455b-4e2f-88f3-d630ca060b1c';
@@ -15,10 +16,10 @@ const fragment = 'CY083Ht8uv2B1Ww4YmGJ9QdGfc6SS70+PX3+SY-ptcJHhZHa1';
 const url = `https://wynnbuilder.github.io/builder/#${fragment}`;
 const binding = handle => ({ projectId, agentId, handle, currentHandle: agent.handle, currentTitle: agent.title });
 const visible = (text, mentions) => communicationVisibleText({ text, intent: 'user_dm', fromAgent: false, agentMentions: mentions });
-const render = (text, mentions) => renderToStaticMarkup(React.createElement(ChatMessageBody, {
+const render = (text, mentions) => renderToStaticMarkup(React.createElement(MutationNotificationProvider, null, React.createElement(ChatMessageBody, {
   text, agentMentions: mentions, agentMentionForHandle: handle => authoredAgentMentionForHandle(handle, mentions),
   collapseLongMessage: false, onOpenAgent() {},
-}));
+})));
 const hrefs = html => [...html.matchAll(/<a\b[^>]*href="([^"]*)"/gu)].map(match => match[1].replaceAll('&amp;', '&'));
 
 test('one unmatched nonnumeric token is never inferred from the DM recipient', () => {
@@ -134,13 +135,16 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
     import { createRoot } from 'react-dom/client';
     import { ChatMessageBody, communicationVisibleText, authoredAgentMentionForHandle } from ${JSON.stringify(path.join(webRoot, 'src/components/chat/ChatMessages.tsx'))};
     import { CopyMessageButton } from ${JSON.stringify(path.join(webRoot, 'src/components/CopyMessageButton.tsx'))};
+    import { MutationNotificationProvider } from ${JSON.stringify(path.join(webRoot, 'src/components/MutationNotifications.tsx'))};
     import { ProjectBrowserContext } from ${JSON.stringify(path.join(webRoot, 'src/components/ProjectBrowserContext.tsx'))};
     const mentions = ${JSON.stringify(mentions)};
     const text = communicationVisibleText({ text: ${JSON.stringify(text)}, intent: 'user_dm', fromAgent: false, agentMentions: mentions });
-    createRoot(document.getElementById('root')!).render(<ProjectBrowserContext.Provider value={{ projectId: 'test', open(url) { window.openedInside = url; } }}>
+    const root = createRoot(document.getElementById('root')!);
+    window.rerender = () => root.render(<MutationNotificationProvider><ProjectBrowserContext.Provider value={{ projectId: 'test', open(url) { window.openedInside = url; } }}>
       <ChatMessageBody text={text} agentMentions={mentions} agentMentionForHandle={handle => authoredAgentMentionForHandle(handle, mentions)} onOpenAgent={id => { window.openedAgent = id; }} collapseLongMessage={false} />
       <CopyMessageButton text={text} />
-    </ProjectBrowserContext.Provider>);
+    </ProjectBrowserContext.Provider></MutationNotificationProvider>);
+    window.rerender();
   `);
   const rsbuild = await createRsbuild({ cwd: webRoot, rsbuildConfig: {
     plugins: [pluginReact()], source: { entry: { index: path.join(root, 'entry.tsx') } },
@@ -182,10 +186,68 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   const expectedCopy = visible(text, mentions);
   assert.ok(expectedCopy.includes(payload), 'copy preserves the later literal JSON payload');
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), expectedCopy);
+  const feedback = page.getByRole('alert').filter({ hasText: /^Copied$/u });
+  await feedback.waitFor();
+  await page.waitForTimeout(1800);
+  await page.getByRole('button', { name: 'Copy whole message' }).click();
+  await page.waitForTimeout(1500);
+  assert.equal(await feedback.isVisible(), true, 'a repeated copy receives a fresh shared dismissal timer');
+  await feedback.waitFor({ state: 'hidden', timeout: 2200 });
+  await page.evaluate(() => window.rerender());
+  assert.equal(await feedback.isVisible(), false, 'rerendering does not recreate settled feedback');
   await page.getByRole('button', { name: 'Copy code', exact: true }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), url);
+  await feedback.waitFor();
+  await feedback.waitFor({ state: 'hidden', timeout: 4000 });
   // Exercise the existing selection/execCommand clipboard fallback as well.
   await page.evaluate(() => Object.defineProperty(navigator.clipboard, 'writeText', { value: async () => { throw new Error('test fallback'); } }));
   await page.getByRole('button', { name: 'Copy whole message' }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), expectedCopy);
+  await page.evaluate(() => { document.execCommand = () => false; });
+  await page.getByRole('button', { name: 'Copy whole message' }).click();
+  const error = page.getByRole('alert').filter({ hasText: 'Copy failed; select the message text instead' });
+  await error.waitFor();
+  await page.waitForTimeout(3300);
+  assert.equal(await error.isVisible(), true, 'clipboard failures stay visible beyond the ordinary success timeout');
+  await error.getByRole('button', { name: 'Close' }).click();
+  await error.waitFor({ state: 'hidden' });
+});
+
+
+test('All Messages keeps provider command output visible and uses shared feedback only for an acknowledgment', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const vm = await import('node:vm');
+  const ts = await import('typescript');
+  const source = await readFile(new URL('../../apps/web/src/components/AllChatView.tsx', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('view.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let command;
+  const visit = node => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'invokeCommand') command = node.getText(ast);
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  assert.ok(command, 'the command callback exists');
+  const output = [], notices = [], requests = [];
+  let result = { message: 'Model: GPT-6.1\nContext: 20%\nUsage resets at 8 PM' };
+  const scope = { selectedAgentId: 'agent-1', setCommandResult: value => output.push(value), notify: value => notices.push(value),
+    api: { invokeProviderCommand: async (...args) => { requests.push(args); return result; } } };
+  vm.createContext(scope);
+  vm.runInContext(ts.transpileModule(`globalThis.command = (${command.slice(command.indexOf('=') + 1)});`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText, scope);
+  await scope.command({ name: 'status' });
+  assert.equal(output.at(-1), result.message, 'provider output remains owned by the durable inline result');
+  assert.equal(notices.length, 0, 'status details are not expired as a success acknowledgment');
+  result = {};
+  await scope.command({ name: 'compact' });
+  assert.equal(output.at(-1), undefined);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].message, '/compact Completed');
+  assert.equal(notices[0].persistent, undefined, 'ordinary completion uses the shared default timeout');
+  assert.deepEqual(requests.map(([agentId, input]) => [agentId, { ...input }]), [
+    ['agent-1', { name: 'status' }], ['agent-1', { name: 'compact' }],
+  ]);
+  scope.api.invokeProviderCommand = async () => { throw new Error('Provider unavailable'); };
+  await assert.rejects(scope.command({ name: 'compact' }), /Provider unavailable/);
+  assert.equal(notices.length, 1, 'failures propagate to the existing command error owner');
 });
