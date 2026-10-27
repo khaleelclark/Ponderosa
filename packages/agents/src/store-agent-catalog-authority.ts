@@ -745,7 +745,7 @@ export class AgentCatalogAuthority {
       ? [maxTextUtf8Bytes, maxTextUtf8Bytes, agentId, input.before.createdAt, input.before.createdAt, input.before.id, limit + 1]
       : [maxTextUtf8Bytes, maxTextUtf8Bytes, agentId, limit + 1])) as Array<{
       message_id: string; sequence: number; role: PortableAgentHistoryMessageDto["role"];
-      text: string; created_at: string;
+      text: Buffer; clipped: number; created_at: string;
     }>;
     return {
       hasMore: rows.length > limit,
