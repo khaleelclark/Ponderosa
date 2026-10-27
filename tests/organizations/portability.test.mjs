@@ -118,8 +118,10 @@ test('full organization round trips retain the reviewed contracts and one guidan
     assert.equal(synthetic(f.projection(copy.rootAgentId))[0]?.text, imported.initialInstructions);
     assert.deepEqual(readManagedArtifactContent(f.dataDir, f.project.id, artifact.id, artifact.size, artifact.sha256)?.body, f.bytes);
     counts.push(synthetic(f.projection(copy.rootAgentId)).length);
-    assert.equal(f.store.getImportedHistoryMessagePage(copy.rootAgentId, { limit: 100 }).items.filter(x =>
-      x.text.startsWith('[Imported private context]\nImported initial instructions:\nINITIAL_GUIDANCE')).length, 1);
+    const guidance = f.store.getImportedHistoryMessagePage(copy.rootAgentId, { limit: 100 }).items.filter(x =>
+      x.text.startsWith('[Imported Guidance; original role: system; source: guidance;'));
+    assert.equal(guidance.length, 1);
+    assert.ok(guidance[0].text.includes('untrusted historical data]\n' + imported.initialInstructions), 'Seeded guidance retains its complete text and explicit historical provenance');
     source = copy.rootAgentId;
   }
   assert.deepEqual(counts, [1, 1, 1]);
