@@ -6,10 +6,47 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import sharp from 'sharp';
+import { managedArtifactContentPath } from '@ponderosa/agents';
 import { withFixture, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
 const exec = promisify(execFile);
 const upload = async (f, agent, name, bytes, media = 'text/plain') => f.ok(await f.api('POST', `/api/agents/${agent.id}/attachments`, bytes, { 'content-type': 'application/octet-stream', 'x-ponderosa-filename': name, 'x-ponderosa-media-type': media }));
+
+test('imported deliverable and checksum links retain captured bytes after reload and fail closed outside their project', options, t => withFixture(t, async f => {
+  const chat = await f.createChat('Download links'), foreign = await f.createChat('Other project');
+  const agent = await f.createIdleAgent(chat, 'Publisher'), session = await f.hold(agent.id);
+  const bytes = Buffer.from([0, 255, 1, 128, 10]);
+  const files = [['résultat 100%.bin', bytes], ['SHA256SUMS', Buffer.from(`${createHash('sha256').update(bytes).digest('hex')}  résultat 100%.bin\n`)]];
+  const imported = [];
+  for (const [name, body] of files) {
+    const file = path.join(chat.workingDirectory, name);
+    await writeFile(file, body);
+    const { artifact } = f.ok(await f.tool(session, 'ponderosa_import_file', { path: name }));
+    imported.push(artifact);
+    await rm(file);
+  }
+  const text = `[Deliverable](ponderosa://artifact/${imported[0].id})\n[Checksum](${imported[1].downloadUrl})`;
+  f.ok(await f.tool(session, 'ponderosa_message', { intent: 'direct_to_user', text, artifactIds: imported.map(x => x.id) }));
+  await f.reopen();
+  assert.ok((await f.detail(agent.id)).messages.some(message => message.text === text), 'Reload changed authored Markdown');
+  for (const [i, artifact] of imported.entries()) {
+    const response = await f.api('GET', artifact.downloadUrl);
+    f.ok(response);
+    assert.deepEqual(response.rawBody, files[i][1]);
+    assert.equal(createHash('sha256').update(response.rawBody).digest('hex'), artifact.sha256);
+    assert.match(response.headers['content-disposition'], /^attachment/);
+    assert.ok(response.headers['content-disposition'].includes(encodeURIComponent(files[i][0])));
+    assert.equal(response.headers['x-content-type-options'], 'nosniff');
+    assert.equal((await f.api('GET', `/api/projects/${foreign.projectId}/artifacts/${artifact.id}/download`)).status, 404);
+  }
+  assert.equal((await f.api('GET', `/api/projects/${chat.projectId}/artifacts/missing/download`)).status, 404);
+  // Authoritative captured storage only: no fallback to the mutable host path.
+  await writeFile(path.join(chat.workingDirectory, files[0][0]), 'Different mutable host bytes');
+  await rm(managedArtifactContentPath(f.dataDir, chat.projectId, imported[0].id));
+  assert.equal((await f.api('GET', imported[0].downloadUrl)).status, 404);
+  await writeFile(managedArtifactContentPath(f.dataDir, chat.projectId, imported[1].id), 'corrupted');
+  assert.equal((await f.api('GET', imported[1].downloadUrl)).status, 404);
+}));
 
 test('F15: real Agent, Chat and draft uploads retain Unicode and literal percent names through storage and restart', options, t => withFixture(t, async f => {
   const chat = await f.createChat('Filename round trips'), agent = await f.createIdleAgent(chat, 'Filename reader');
