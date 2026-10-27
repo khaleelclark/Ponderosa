@@ -887,21 +887,37 @@ export async function prepareAgentRun(
   const observedUsage = reusablePersistentRuntime && resumeSessionId &&
       readProviderSessionIdentifier(reusablePersistentRuntime.session) === resumeSessionId
     ? readProviderContextUsage(reusablePersistentRuntime.session) : undefined;
-  const acceptedUsage = !observedUsage && resumeSessionId
-    ? store.acceptedProviderSessionContextUsage(agent.id) : undefined;
+  // A live getter has no turn/time fence. It may raise a proven estimate, but
+  // never bypasses the durable completed-Run tail or native/steering refusal.
+  const validLiveUsage = observedUsage?.providerSessionGeneration === resumeSessionId ? observedUsage : undefined;
+  const acceptedUsage = resumeSessionId ? store.acceptedProviderSessionContextUsage(agent.id) : undefined;
+  const retainedEstimate = resumeSessionId && !acceptedUsage ? store.acceptedProviderSessionInputEstimate(agent.id) : undefined;
+  if (resumeSessionId && !acceptedUsage && !retainedEstimate) {
+    throw Object.assign(new Error("Retained provider context cannot be safely measured under the context policy. Native work or uncertain input requires explicit context recovery before another turn."), { statusCode: 413 });
+  }
   const { type: _usageType, providerSessionId: _observedSession, ...durableUsage } = acceptedUsage?.usage ?? {};
-  const budgetUsage = observedUsage ?? (acceptedUsage ? projectProviderContextUsage(durableUsage) : undefined);
-  const occupancyObservation = observedUsage && resumeSessionId ? {
-    source: "live_session" as const, providerSessionId: resumeSessionId, sampledAt: new Date().toISOString(),
-    ...(observedUsage.requestOutputIncluded === undefined ? {} : { requestOutputIncluded: observedUsage.requestOutputIncluded }),
-  } : acceptedUsage ? {
+  const measuredUsage = acceptedUsage ? projectProviderContextUsage(durableUsage) : undefined;
+  // Reject foreign-generation capacity once, for both current and fresh packets.
+  const budgetUsage = measuredUsage ? { ...measuredUsage,
+    usedTokens: Math.max(measuredUsage.usedTokens, validLiveUsage?.usedTokens ?? 0),
+    ...(validLiveUsage?.windowTokens ? { windowTokens: validLiveUsage.windowTokens } : {}),
+  } : validLiveUsage;
+  const retainedStaticUtf8Bytes = retainedEstimate ? Buffer.byteLength(JSON.stringify({ systemPrompt, tools: availableRuntimeTools }), "utf8") : 0;
+  const occupancyObservation = acceptedUsage ? {
     source: "accepted_run" as const, providerSessionId: acceptedUsage.usage.providerSessionId,
     observedAt: acceptedUsage.observedAt, executionId: acceptedUsage.executionId,
     ...(acceptedUsage.usage.requestOutputIncluded === undefined ? {} : { requestOutputIncluded: acceptedUsage.usage.requestOutputIncluded }),
+    ...(validLiveUsage ? { liveLowerBoundTokens: validLiveUsage.usedTokens } : {}),
+  } : retainedEstimate ? {
+    source: "accepted_input_estimate" as const, providerSessionId: retainedEstimate.providerSessionId,
+    executionId: retainedEstimate.executionId, acceptedInputUtf8Bytes: retainedEstimate.acceptedInputUtf8Bytes,
+    outputUtf8Bytes: retainedEstimate.outputUtf8Bytes, retainedStaticUtf8Bytes,
+    ...(validLiveUsage ? { liveLowerBoundTokens: validLiveUsage.usedTokens } : {}),
   } : undefined;
   const currentBudget = providerInputBudget(workspacePreferences, budgetUsage, {
     resumeSessionId, replacementLowWaterMark: replacementCandidateRollover?.lowWaterMark,
     handoff: ownsFrozenHandoff, occupancyObservation,
+    ...(retainedEstimate ? { estimatedSessionUtf8Bytes: retainedEstimate.acceptedInputUtf8Bytes + retainedEstimate.outputUtf8Bytes + retainedStaticUtf8Bytes } : {}),
     postObservationUtf8Bytes: acceptedUsage?.postObservationUtf8Bytes,
   });
   const freshBudget = providerInputBudget(workspacePreferences, budgetUsage, {

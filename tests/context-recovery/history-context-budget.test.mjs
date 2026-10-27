@@ -145,11 +145,30 @@ test('oversized omitted history remains completely readable in authorized Unicod
   await finish(f, agent, session);
 }));
 
-test('continuation budgets charge exact-generation occupancy, not aggregate traffic or unverified generations', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+async function checkpoint(f, agent, session, usedTokens = 25000, windowTokens = 200000) {
+  const before = f.store.sqlite.prepare("SELECT COALESCE(MAX(seq),0) seq FROM events WHERE agent_id=? AND type='context_usage'").get(agent.id).seq;
+  session.events.push({ type: 'context_usage', providerSessionId: session.engineAgentId, providerSessionGeneration: session.engineAgentId,
+    usedTokens, ...(windowTokens ? { windowTokens } : {}), aggregateTokens: 900000 });
+  await until(() => f.store.sqlite.prepare("SELECT MAX(seq) seq FROM events WHERE agent_id=? AND type='context_usage'").get(agent.id).seq > before, 'exact occupancy checkpoint persisted');
+}
+
+async function refusedContinuation(f, agent, text = 'Do not dispatch unmeasured retained context') {
+  const before = new Set(f.store.sqlite.prepare('SELECT id FROM scheduler_runs WHERE agent_id=?').all(agent.id).map(row => row.id));
+  const turns = f.turns.length;
+  await f.send(agent.id, text);
+  const rows = await until(() => {
+    const rows = f.store.sqlite.prepare('SELECT id,status,prompt_injection_state FROM scheduler_runs WHERE agent_id=?').all(agent.id).filter(row => !before.has(row.id));
+    return rows.length && rows.every(row => row.status === 'failed') ? rows : false;
+  }, 'unsafe retained context fails before dispatch');
+  assert.equal(rows.length, 1); assert.equal(rows[0].prompt_injection_state, 'not_injected');
+  assert.equal(f.turns.length, turns, 'Refusal cannot execute, reseed or replay');
+}
+
+test('continuation budgets charge proven completed-turn occupancy and reject foreign capacity for both packets', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
   const chat = await f.createChat('Exact session occupancy'), agent = await f.createIdleAgent(chat, 'Occupancy reader');
   let session = await f.hold(agent.id); const generation = session.engineAgentId;
-  await finish(f, agent, session);
+  await checkpoint(f, agent, session); await finish(f, agent, session);
   f.usage.set(agent.id, { usedTokens: 25000, aggregateTokens: 900000, windowTokens: 200000, providerSessionGeneration: generation });
   session = await f.hold(agent.id); assert.equal(session.engineAgentId, generation);
   let value = budget(accepted(f.store, agent.id));
@@ -160,8 +179,102 @@ test('continuation budgets charge exact-generation occupancy, not aggregate traf
   await finish(f, agent, session);
   f.usage.set(agent.id, { usedTokens: 140000, aggregateTokens: 900000, windowTokens: 200000, providerSessionGeneration: 'foreign-generation' });
   session = await f.hold(agent.id); value = budget(accepted(f.store, agent.id));
-  assert.equal(value.occupancyBasis, 'unavailable'); assert.equal(value.occupancyTokens, 0);
-  assert.equal(value.providerSessionGeneration, undefined, 'Wrong-generation observations must not become accepted occupancy evidence');
+  assert.equal(value.occupancyBasis, 'estimated_session'); assert.ok(value.occupancyTokens > 0);
+  assert.equal(value.basis, 'context_policy'); assert.equal(value.windowTokens, undefined);
+  assert.equal(value.occupancyObservation.source, 'accepted_input_estimate');
+  const resumedPacket = accepted(f.store, agent.id);
+  assert.equal(value.submittedUtf8Bytes, Buffer.byteLength(JSON.stringify({ input: resumedPacket.exactPrompt })), 'Submitted bytes describe only the actual resumed packet');
+  assert.ok(value.occupancyObservation.retainedStaticUtf8Bytes > 0, 'Verified retained system/tools are charged once in the host estimate');
+  assert.ok(value.occupancyTokens >= value.occupancyObservation.acceptedInputUtf8Bytes + value.occupancyObservation.outputUtf8Bytes + value.occupancyObservation.retainedStaticUtf8Bytes);
+  const plan = f.store.sqlite.prepare(`EXPLAIN QUERY PLAN SELECT COALESCE(SUM(s.raw_utf8_bytes * 6 + 128),0) AS bytes
+    FROM run_output_segments s WHERE s.agent_id=? AND s.execution_id IN (SELECT id FROM scheduler_runs
+      WHERE agent_id=? AND provider_session_id=? AND prompt_injection_state='injected')`).all(agent.id, agent.id, generation);
+  assert.ok(plan.some(row => /idx_run_output_segments_execution_response.*execution_id=/.test(row.detail)), 'Output aggregation must seek exact generation execution IDs, not scan lifetime output');
+  t.diagnostic(`Retained output query plan: ${plan.map(row => row.detail).join('; ')}`);
+  assert.equal(value.occupancyObservation.liveLowerBoundTokens, undefined, 'Foreign capacity/occupancy must not enter current or fallback evidence');
+  await finish(f, agent, session);
+  for (let i = 0; i < 70; i++) authored(f.store, chat, agent, `FALLBACK_POLICY_NOTE_${i} ${'bounded fresh context '.repeat(90)}`, i + 100);
+  const turnsBefore = f.turns.length;
+  f.plans.set(agent.id, [
+    { output: false, run: async s => s.events.push({ type: 'error', terminalStatus: 'failed', message: 'failed to run pre-sampling compact: controlled context budget fallback' }) },
+    { hold: true },
+  ]);
+  await f.send(agent.id, 'Use the separately qualified fresh packet only after confirmed pre-sampling rejection');
+  await until(() => f.turns.length >= turnsBefore + 2, 'confirmed fresh fallback');
+  session = f.sessions.get(agent.id); value = budget(accepted(f.store, agent.id));
+  assert.equal(value.occupancyBasis, 'fresh_session'); assert.equal(value.basis, 'context_policy');
+  assert.equal(value.windowTokens, undefined, 'Foreign-generation capacity cannot leak into the precompiled fresh packet');
+  assert.equal(value.inputCeilingTokens, 90000);
+  await finish(f, agent, session);
+}));
+
+test('warm continuation includes durable text following a partial checkpoint', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
+  const chat = await f.createChat('Warm partial checkpoint'), agent = await f.createIdleAgent(chat, 'Partial reader');
+  let session = await f.hold(agent.id); const generation = session.engineAgentId;
+  await checkpoint(f, agent, session);
+  const tail = 'POST_CHECKPOINT_TEXT '.repeat(1804);
+  session.events.push({ type: 'text', delta: tail });
+  await until(() => f.store.sqlite.prepare("SELECT SUM(raw_utf8_bytes) bytes FROM run_output_segments WHERE agent_id=?").get(agent.id).bytes >= Buffer.byteLength(tail), 'durable tail projected');
+  await finish(f, agent, session);
+  f.usage.set(agent.id, { usedTokens: 25000, windowTokens: 200000, providerSessionGeneration: generation, requestOutputIncluded: false });
+  session = await f.hold(agent.id); const value = budget(accepted(f.store, agent.id));
+  assert.equal(value.occupancyBasis, 'exact_session'); assert.equal(value.occupancyTokens, 25000);
+  assert.ok(value.postObservationUtf8Bytes >= Buffer.byteLength(tail), 'A warm getter cannot erase post-checkpoint output');
+  assert.ok(value.estimatedInputTokens >= 25000 + Buffer.byteLength(tail) + value.submittedUtf8Bytes);
+  await finish(f, agent, session);
+}));
+
+for (const nativeWork of [false, "tool_call", "work_start"]) {
+  test(`warm stale checkpoint refuses ${nativeWork || 'later steering'}`, fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+    f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
+    const chat = await f.createChat('Stale warm proof'), agent = await f.createIdleAgent(chat, 'Guarded reader');
+    const session = await f.hold(agent.id), generation = session.engineAgentId;
+    await checkpoint(f, agent, session);
+    let fence;
+    if (nativeWork) {
+      session.events.push(nativeWork === 'work_start' ? { type: 'work_start', kind: 'native_tool' }
+        : { type: 'tool_call', id: randomUUID(), name: 'unmetered_native', input: {} });
+      await until(() => f.store.readEvents(agent.id).some(row => row.event.type === nativeWork), 'native work recorded');
+    } else {
+      await f.send(agent.id, 'Later uncertain-size steering', { activeRunDelivery: 'steer' });
+      await until(() => f.steers.some(row => row.agentId === agent.id), 'steering acknowledged');
+      fence = f.steers.at(-1).input.clientMessageId;
+    }
+    await finish(f, agent, session, fence);
+    f.usage.set(agent.id, { usedTokens: 25000, windowTokens: 200000, providerSessionGeneration: generation });
+    assert.equal(f.store.acceptedProviderSessionContextUsage(agent.id), undefined);
+    await refusedContinuation(f, agent);
+    assert.equal(f.store.resumeSessionState(agent.id)?.sessionId, generation);
+  }));
+}
+
+test('a newer exact checkpoint supersedes durable payload-free native work', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
+  const chat = await f.createChat('Metered native work'), agent = await f.createIdleAgent(chat, 'Native checkpoint reader');
+  let session = await f.hold(agent.id);
+  session.events.push({ type: 'work_start', kind: 'native_tool' });
+  await until(() => f.store.readEvents(agent.id).some(row => row.event.type === 'work_start'), 'internal work marker persisted');
+  const marker = f.store.readEvents(agent.id).find(row => row.event.type === 'work_start').event;
+  assert.equal(marker.executionId, accepted(f.store, agent.id).executionId);
+  await checkpoint(f, agent, session, 40000); await finish(f, agent, session);
+  session = await f.hold(agent.id); const value = budget(accepted(f.store, agent.id));
+  assert.equal(value.occupancyBasis, 'exact_session'); assert.equal(value.occupancyTokens, 40000);
+  await finish(f, agent, session);
+}));
+
+test('third cold turn uses the latest acknowledged completed turn rather than the initial snapshot', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 0, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
+  const chat = await f.createChat('Three cold turns'), agent = await f.createIdleAgent(chat, 'Cold generation owner');
+  let session = await f.hold(agent.id); const generation = session.engineAgentId, original = accepted(f.store, agent.id), frozen = JSON.stringify(original);
+  await checkpoint(f, agent, session, 25000); await finish(f, agent, session); await until(() => !session.isAlive(), 'first root exits');
+  session = await f.hold(agent.id); const second = accepted(f.store, agent.id);
+  assert.equal(budget(second).occupancyTokens, 25000);
+  await checkpoint(f, agent, session, 40000); await finish(f, agent, session); await until(() => !session.isAlive(), 'second root exits');
+  session = await f.hold(agent.id); const value = budget(accepted(f.store, agent.id));
+  assert.equal(session.engineAgentId, generation); assert.equal(value.occupancyTokens, 40000);
+  assert.equal(value.occupancyObservation.executionId, second.executionId);
+  assert.equal(JSON.stringify(f.store.getProviderInput(original.executionId, true)), frozen);
   await finish(f, agent, session);
 }));
 
@@ -236,12 +349,14 @@ for (const laterSteering of [false, true]) {
       assert.equal(measured.usage.usedTokens, 25000); assert.equal(measured.executionId, previous.executionId);
       assert.equal(measured.usage.providerSessionGeneration, generation); assert.ok(measured.observedAt);
     }
+    if (laterSteering) {
+      await refusedContinuation(f, agent);
+      assert.equal(JSON.stringify(f.store.getProviderInput(previous.executionId, true)), frozen);
+      return;
+    }
     const resumed = await f.hold(agent.id), packet = accepted(f.store, agent.id), value = budget(packet);
     assert.notEqual(resumed, session); assert.equal(resumed.engineAgentId, generation);
-    if (laterSteering) {
-      assert.equal(value.occupancyBasis, 'unavailable'); assert.equal(value.occupancyTokens, 0);
-      assert.equal(value.occupancyObservation, undefined);
-    } else {
+    {
       assert.equal(value.occupancyBasis, 'exact_session'); assert.equal(value.occupancyTokens, 25000);
       assert.equal(value.occupancyObservation.source, 'accepted_run');
       assert.equal(value.occupancyObservation.providerSessionId, generation);
@@ -266,7 +381,7 @@ test('bounded continuation pages preserve FIFO cursor delivery without skipping 
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, contextRolloverEnabled: false }));
   const chat = await f.createChat('FIFO context continuation'), agent = await f.createIdleAgent(chat, 'Ordered reader');
   broadcast(f.store, chat, 'INITIAL_BROADCAST_CURSOR_ANCHOR');
-  let session = await f.hold(agent.id); await finish(f, agent, session);
+  let session = await f.hold(agent.id); await checkpoint(f, agent, session, 1000, 120000); await finish(f, agent, session);
   const notes = Array.from({ length: 65 }, (_, i) => broadcast(f.store, chat, `FIFO_BUDGET_${String(i).padStart(3, '0')} ${'ordered detail '.repeat(95)}`));
   const delivered = []; let batches = 0;
   while (delivered.length < notes.length) {
@@ -279,7 +394,7 @@ test('bounded continuation pages preserve FIFO cursor delivery without skipping 
     let position = -1;
     for (const note of batch) { const next = text.indexOf(note.text); assert.ok(next > position, 'Broadcast order in the actual prompt is FIFO'); position = next; }
     assert.equal(batch.some(note => delivered.includes(note.eventId)), false);
-    delivered.push(...batch.map(note => note.eventId)); await finish(f, agent, session);
+    delivered.push(...batch.map(note => note.eventId)); await checkpoint(f, agent, session, 1000, 120000); await finish(f, agent, session);
   }
   assert.ok(batches > 1, 'The fixture must require multiple budget-limited submissions');
   assert.deepEqual(delivered, notes.map(note => note.eventId));

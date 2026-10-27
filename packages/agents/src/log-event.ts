@@ -202,7 +202,8 @@ export type TurnDoneLogEvent = Extract<AgentEvent, { type: "turn_done" }> & { ex
 
 /** Anything that can be appended to an agent's `events.jsonl`. */
 export type LogEvent = import("@ponderosa/core").MemoryChangedEvent | import("@ponderosa/core").VoiceReplyEvent | UserMessageEvent | SessionResetEvent | SessionSnapshotEvent | ContextRolloverSessionAcceptedEvent | ContinuationHandoffEvent | ContinuationHandoffConsumedEvent | CommunicationProjectionEvent | CompactionHistoryRetrievalEvent | AgentLifecycleEvent | CoordinationV3ChangedEvent | GeneratedArtifactEvent | ArtifactVisibilityEvent |
-  AgentOutputEvent | TurnDoneLogEvent | ContextRolloverTriggeredEvent | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" | "response_text" | "work_start" }> | AgentExecutionDeltaEvent;
+  AgentOutputEvent | TurnDoneLogEvent | ContextRolloverTriggeredEvent |
+  (Extract<AgentEvent, { type: "work_start" }> & { executionId: string }) | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" | "response_text" | "work_start" }> | AgentExecutionDeltaEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-agent seq + ts. */
 export interface StoredLogEvent {

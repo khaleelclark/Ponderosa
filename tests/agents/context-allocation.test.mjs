@@ -155,9 +155,14 @@ test('complete input accounting distinguishes context policy, verified capacity 
   assert.equal(fresh.submittedUtf8Bytes, Buffer.byteLength(JSON.stringify({ systemPrompt: system, tools, input: prompt })));
   const resumed = estimateProviderInput(exact, system, tools, prompt);
   assert.equal(resumed.estimatedInputTokens, 1200 + Buffer.byteLength(JSON.stringify({ input: prompt })));
-  const stale = providerInputBudget(policy, usage, { resumeSessionId: 'discarded' });
-  assert.equal(stale.occupancyBasis, 'unavailable'); assert.equal(stale.occupancyTokens, 0);
-  assert.equal(estimateProviderInput(stale, system, tools, prompt).submittedUtf8Bytes, fresh.submittedUtf8Bytes);
+  assert.throws(() => providerInputBudget(policy, usage, { resumeSessionId: 'discarded' }),
+    error => error.statusCode === 413 && /context.*unavailable/i.test(error.message), 'Unknown retained occupancy cannot become zero');
+  const hostEstimate = estimateProviderInput(providerInputBudget(policy, undefined, {
+    resumeSessionId: 'legacy', estimatedSessionUtf8Bytes: 5000,
+    occupancyObservation: { source: 'accepted_input_estimate', providerSessionId: 'legacy' },
+  }), system, tools, prompt);
+  assert.equal(hostEstimate.occupancyBasis, 'estimated_session'); assert.equal(hostEstimate.occupancyTokens, 5000);
+  assert.equal(hostEstimate.submittedUtf8Bytes, Buffer.byteLength(JSON.stringify({ input: prompt })));
   const smallKnown = providerInputBudget(policy, { usedTokens: 0, windowTokens: 10000 });
   assert.equal(smallKnown.inputCeilingTokens, 7000); assert.equal(smallKnown.responseHeadroomTokens, 3000);
   const replacement = providerInputBudget(policy, usage, { replacementLowWaterMark: 50000 });
