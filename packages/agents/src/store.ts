@@ -505,29 +505,38 @@ export class AgentStore extends AgentEventSessionFacade {
     return boundary ? this.getProviderInput(boundary.executionId, true) : undefined;
   }
 
-  /** A closed native process does not erase a measured accepted generation.
-   * Reuse only the final observation inside its exact completed Run. Any newer
-   * uncertain injection/steering invalidates it instead of charging stale data. */
+  /** The accepted snapshot proves a generation, not its latest turn. Same-contract
+   * continuations intentionally do not rewrite that snapshot. */
+  private acceptedProviderSessionCompletedRun(agentId: string) {
+    const boundary = this.acceptedProviderSessionBoundary(agentId);
+    if (!boundary) return undefined;
+    const run = this.client.prepare(`SELECT id, status, fencing_token, provider_session_id, prompt_injection_state
+      FROM scheduler_runs WHERE agent_id=? AND fencing_token >=
+        (SELECT fencing_token FROM scheduler_runs WHERE id=?)
+        AND (provider_session_id=? OR provider_session_id IS NULL)
+        AND prompt_injection_state <> 'not_injected'
+      ORDER BY fencing_token DESC LIMIT 1`).get(agentId, boundary.executionId, boundary.sessionId) as {
+        id: string; status: string; fencing_token: number; provider_session_id: string | null; prompt_injection_state: string;
+      } | undefined;
+    if (run?.status !== "completed" || run.provider_session_id !== boundary.sessionId ||
+        run.prompt_injection_state !== "injected") return undefined;
+    const range = (type: string, lifecycle = false) => this.client.prepare(`SELECT seq FROM events
+      WHERE agent_id=? AND type=? AND json_extract(payload_json, '$.executionId')=?
+        ${lifecycle ? "AND json_extract(payload_json, '$.status')='running'" : ""}
+      ORDER BY seq DESC LIMIT 1`).get(agentId, type, run.id) as {seq: number} | undefined;
+    const start = range("agent_lifecycle", true), terminal = range("turn_done");
+    return start && terminal && terminal.seq > start.seq ? { ...boundary, run, start, terminal } : undefined;
+  }
+
+  /** Warm and cold resumes share this completed-Run proof. Native work and
+   * uncertain steering after the checkpoint cannot be estimated as plain text. */
   acceptedProviderSessionContextUsage(agentId: string): {
     usage: Extract<LogEvent, { type: "context_usage" }>;
     observedAt: string; executionId: string; postObservationUtf8Bytes: number;
   } | undefined {
-    const boundary = this.acceptedProviderSessionBoundary(agentId);
-    if (!boundary) return undefined;
-    const run = this.client.prepare(`SELECT status, fencing_token FROM scheduler_runs
-      WHERE id=? AND agent_id=?`).get(boundary.executionId, agentId) as { status: string; fencing_token: number } | undefined;
-    if (run?.status !== "completed") return undefined;
-    const later = this.client.prepare(`SELECT 1 FROM scheduler_runs
-      WHERE agent_id=? AND (provider_session_id=? OR provider_session_id IS NULL) AND fencing_token>?
-        AND prompt_injection_state <> 'not_injected' LIMIT 1`
-    ).get(agentId, boundary.sessionId, run.fencing_token);
-    if (later) return undefined;
-    const range = (type: string, lifecycle = false) => this.client.prepare(`SELECT seq FROM events
-      WHERE agent_id=? AND type=? AND json_extract(payload_json, '$.executionId')=?
-        ${lifecycle ? "AND json_extract(payload_json, '$.status')='running'" : ""}
-      ORDER BY seq DESC LIMIT 1`).get(agentId, type, boundary.executionId) as {seq: number} | undefined;
-    const start = range("agent_lifecycle", true), terminal = range("turn_done");
-    if (!start || !terminal || terminal.seq <= start.seq) return undefined;
+    const proof = this.acceptedProviderSessionCompletedRun(agentId);
+    if (!proof) return undefined;
+    const { sessionId, run, start, terminal } = proof;
     const row = this.client.prepare(`SELECT substr(payload_json,1,4096) AS payload_json,
         length(CAST(payload_json AS BLOB)) AS bytes, created_at, seq
       FROM events WHERE agent_id=? AND type='context_usage' AND seq>? AND seq<?
@@ -536,20 +545,69 @@ export class AgentStore extends AgentEventSessionFacade {
       } | undefined;
     if (!row || row.bytes > 4096) return undefined;
     const usage = JSON.parse(row.payload_json) as Extract<LogEvent, {type: "context_usage"}>;
-    if (usage.type !== "context_usage" || usage.providerSessionId !== boundary.sessionId ||
-        usage.providerSessionGeneration !== boundary.sessionId) return undefined;
+    if (usage.type !== "context_usage" || usage.providerSessionId !== sessionId ||
+        usage.providerSessionGeneration !== sessionId) return undefined;
     const steering = this.client.prepare(`SELECT 1 FROM scheduler_prompt_injections
       WHERE run_id=? AND kind='steer' AND (state IN ('submitted','outcome_unknown')
         OR (state='acknowledged' AND acknowledged_at>=?)) LIMIT 1`
-    ).get(boundary.executionId, row.created_at);
+    ).get(run.id, row.created_at);
     if (steering) return undefined;
     const unmeteredWork = this.client.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq>? AND seq<?
-      AND type IN ('tool_call','tool_result','command','file_change') LIMIT 1`).get(agentId, row.seq, terminal.seq);
+      AND type IN ('tool_call','tool_result','command','file_change','work_start') LIMIT 1`).get(agentId, row.seq, terminal.seq);
     if (unmeteredWork) return undefined;
+    // SQL counts complete serialized output (including escaping/wrappers),
+    // never materializing historical bodies in the compiler.
     const tail = this.client.prepare(`SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) AS bytes
       FROM events WHERE agent_id=? AND seq>? AND seq<? AND type IN ('text','reasoning')`
     ).get(agentId, row.seq, terminal.seq) as {bytes: number};
-    return { usage, observedAt: row.created_at, executionId: boundary.executionId, postObservationUtf8Bytes: tail.bytes };
+    return { usage, observedAt: row.created_at, executionId: run.id, postObservationUtf8Bytes: tail.bytes };
+  }
+
+  /** No provider measurement is invented here. Exact acknowledged inputs plus
+   * text/reasoning projections provide a conservative host estimate only when
+   * the entire retained generation is proven; opaque native work refuses. */
+  acceptedProviderSessionInputEstimate(agentId: string): {
+    providerSessionId: string; executionId: string; acceptedInputUtf8Bytes: number; outputUtf8Bytes: number;
+  } | undefined {
+    const proof = this.acceptedProviderSessionCompletedRun(agentId);
+    if (!proof) return undefined;
+    const { sessionId, run, terminal } = proof;
+    const first = this.client.prepare(`SELECT r.id, r.fencing_token,
+        json_extract(p.source_manifest_json, '$.providerSessionDisposition') AS disposition
+      FROM scheduler_runs r LEFT JOIN provider_inputs p ON p.execution_id=r.id
+      WHERE r.agent_id=? AND r.provider_session_id=? AND r.prompt_injection_state<>'not_injected'
+      ORDER BY r.fencing_token LIMIT 1`).get(agentId, sessionId) as {
+        id: string; fencing_token: number; disposition: string | null;
+      } | undefined;
+    if (!first || !["fresh_task", "reseeded"].includes(first.disposition ?? "")) return undefined;
+    const invalid = this.client.prepare(`SELECT 1 FROM scheduler_runs r LEFT JOIN provider_inputs p ON p.execution_id=r.id
+      WHERE r.agent_id=? AND r.fencing_token>=? AND r.fencing_token<=?
+        AND (r.provider_session_id=? OR r.provider_session_id IS NULL)
+        AND r.prompt_injection_state<>'not_injected'
+        AND (r.provider_session_id IS NULL OR r.status<>'completed' OR r.prompt_injection_state<>'injected'
+          OR p.execution_id IS NULL OR p.system_prompt_hash IS NULL OR p.system_prompt_hash<>(SELECT system_prompt_hash FROM provider_inputs WHERE execution_id=?)) LIMIT 1`
+    ).get(agentId, first.fencing_token, run.fencing_token, sessionId, run.id);
+    if (invalid) return undefined;
+    const steering = this.client.prepare(`SELECT 1 FROM scheduler_prompt_injections i JOIN scheduler_runs r ON r.id=i.run_id
+      WHERE r.agent_id=? AND r.provider_session_id=? AND i.kind='steer'
+        AND i.state IN ('submitted','acknowledged','outcome_unknown') LIMIT 1`).get(agentId, sessionId);
+    if (steering) return undefined;
+    const start = this.client.prepare(`SELECT seq FROM events WHERE agent_id=? AND type='agent_lifecycle'
+      AND json_extract(payload_json, '$.executionId')=? AND json_extract(payload_json, '$.status')='running'
+      ORDER BY seq LIMIT 1`).get(agentId, first.id) as {seq: number} | undefined;
+    if (!start || this.client.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq>? AND seq<?
+      AND type IN ('tool_call','tool_result','command','file_change','work_start') LIMIT 1`).get(agentId, start.seq, terminal.seq)) return undefined;
+    const inputs = this.client.prepare(`SELECT COALESCE(SUM(length(CAST(json_quote(p.provider_prompt) AS BLOB))+64),0) AS bytes
+      FROM provider_inputs p WHERE p.execution_id IN (SELECT id FROM scheduler_runs
+        WHERE agent_id=? AND provider_session_id=? AND prompt_injection_state='injected')`
+    ).get(agentId, sessionId) as {bytes: number};
+    // At most six JSON bytes per raw text byte (escaping), plus a bounded
+    // wrapper per segment. Native/tool context is excluded by the refusal above.
+    const outputs = this.client.prepare(`SELECT COALESCE(SUM(s.raw_utf8_bytes * 6 + 128),0) AS bytes
+      FROM run_output_segments s WHERE s.agent_id=? AND s.execution_id IN (SELECT id FROM scheduler_runs
+        WHERE agent_id=? AND provider_session_id=? AND prompt_injection_state='injected')`
+    ).get(agentId, agentId, sessionId) as {bytes: number};
+    return { providerSessionId: sessionId, executionId: run.id, acceptedInputUtf8Bytes: inputs.bytes, outputUtf8Bytes: outputs.bytes };
   }
 
   acceptedProviderSessionCommunicationEventIds(agentId: string): string[] | undefined {

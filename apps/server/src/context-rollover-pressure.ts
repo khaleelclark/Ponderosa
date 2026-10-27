@@ -44,12 +44,15 @@ export function providerInputBudget(
   preferences: ContextRolloverPressurePreferences,
   usage: { usedTokens: number; windowTokens?: number; providerSessionGeneration?: string } | undefined = undefined,
   input: { resumeSessionId?: string; replacementLowWaterMark?: number; handoff?: boolean;
-    postObservationUtf8Bytes?: number;
-    occupancyObservation?: { source: "live_session" | "accepted_run"; providerSessionId: string;
+    postObservationUtf8Bytes?: number; estimatedSessionUtf8Bytes?: number;
+    occupancyObservation?: { source: "live_session" | "accepted_run" | "accepted_input_estimate"; providerSessionId: string;
       observedAt?: string; sampledAt?: string; executionId?: string;
-      requestOutputIncluded?: boolean } } = {},
+      requestOutputIncluded?: boolean; acceptedInputUtf8Bytes?: number; outputUtf8Bytes?: number; retainedStaticUtf8Bytes?: number; liveLowerBoundTokens?: number } } = {},
 ) {
   const exact = Boolean(input.resumeSessionId && usage?.providerSessionGeneration === input.resumeSessionId);
+  if (input.resumeSessionId && !exact && input.estimatedSessionUtf8Bytes === undefined) {
+    throw Object.assign(new Error("Retained provider context is unavailable under the context policy; explicit context recovery is required before dispatch."), { statusCode: 413 });
+  }
   const reportedWindow = input.resumeSessionId && usage?.providerSessionGeneration &&
       usage.providerSessionGeneration !== input.resumeSessionId ? undefined : usage?.windowTokens;
   const windowTokens = reportedWindow && reportedWindow > 0 ? reportedWindow : undefined;
@@ -75,10 +78,12 @@ export function providerInputBudget(
     responseHeadroomBasis: windowTokens === undefined ? "policy_low_water_margin" as const
       : input.handoff ? "handoff_remaining_window" as const : "provider_window_margin" as const,
     ...(windowTokens === undefined ? {} : { windowTokens }),
-    occupancyBasis: exact ? "exact_session" as const : input.resumeSessionId ? "unavailable" as const : "fresh_session" as const,
-    occupancyTokens: exact ? usage!.usedTokens : 0,
+    occupancyBasis: input.estimatedSessionUtf8Bytes !== undefined ? "estimated_session" as const
+      : exact ? "exact_session" as const : "fresh_session" as const,
+    occupancyTokens: input.estimatedSessionUtf8Bytes !== undefined
+      ? Math.max(input.estimatedSessionUtf8Bytes, exact ? usage!.usedTokens : 0) : exact ? usage!.usedTokens : 0,
     postObservationUtf8Bytes: exact ? input.postObservationUtf8Bytes ?? 0 : 0,
-    ...(exact ? { providerSessionGeneration: input.resumeSessionId,
+    ...(input.resumeSessionId && (exact || input.estimatedSessionUtf8Bytes !== undefined) ? { providerSessionGeneration: input.resumeSessionId,
       ...(input.occupancyObservation ? { occupancyObservation: input.occupancyObservation } : {}) } : {}),
   };
 }
@@ -89,7 +94,7 @@ export function estimateProviderInput(
 ) {
   // JSON escaping and field wrappers are counted too. Retained instructions and
   // tools are already in exact-session occupancy; do not charge them twice.
-  const retained = budget.occupancyBasis === "exact_session";
+  const retained = budget.occupancyBasis === "exact_session" || budget.occupancyBasis === "estimated_session";
   const outgoing = retained ? { input: prompt } : { systemPrompt, tools, input: prompt };
   const submittedUtf8Bytes = Buffer.byteLength(JSON.stringify(outgoing), "utf8");
   return {

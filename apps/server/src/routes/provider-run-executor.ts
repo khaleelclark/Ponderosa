@@ -897,6 +897,12 @@ export function startProviderRunExecution(
           for (const buffered of bufferedSessionEvents.splice(0)) {
             await persistRuntimeEvent(agent.id, activeRun, buffered);
           }
+          // Retain payload-free native-work evidence for context accounting in
+          // the internal audit only; it is not Chat or ordinary activity output.
+          if (event.type === "work_start") {
+            if (!await persistRuntimeEvent(agent.id, activeRun, { ...event, executionId: runId })) break;
+            continue;
+          }
           const logEvent: LogEvent = event.type === "text" || event.type === "reasoning" || event.type === "work_item_update" || event.type === "turn_done"
             ? { ...event, executionId: runId,
                 ...(event.type === "text" && event.presentation === "progress" && activeRun.v3SchedulerRunId
