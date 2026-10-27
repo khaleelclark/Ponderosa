@@ -7,10 +7,6 @@ import {
   Button,
   Chip,
   CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   Paper,
   Stack,
   Typography,
@@ -25,6 +21,7 @@ import { api } from "../api";
 import { ApiRequestError } from "../api/types";
 import { queryKeys } from "../queryKeys";
 import { useWorkspaceReadOnly } from "./WorkspaceReadOnlyContext";
+import { ConfirmDialog } from "./ConfirmationDialogs";
 
 const UPDATE_PREVIEW_CHARACTERS = 900;
 
@@ -436,21 +433,26 @@ export function RequestLifecycleCard({
                 Open Work details
               </Button>
             ) : null}
-            {expanded && retryAvailable ? <Button size="small" disabled={retry.isPending} sx={{ alignSelf: "flex-start" }} onClick={() => { retry.reset(); setConfirmRetry(true); }}>Retry assignment…</Button> : null}
+            {expanded && retryAvailable ? <Button size="small" disabled={retry.isPending} sx={{ alignSelf: "flex-start" }} onClick={event => { event.stopPropagation(); retry.reset(); setConfirmRetry(true); }}>Retry assignment…</Button> : null}
           </Stack>
         ) : null}
-        <Dialog open={confirmRetry} onClose={() => { if (!retry.isPending) setConfirmRetry(false); }} fullWidth maxWidth="xs" aria-labelledby={`retry-assignment-${requestId}`} onClick={event => event.stopPropagation()}>
-          <DialogTitle id={`retry-assignment-${requestId}`}>Retry this assignment?</DialogTitle>
-          <DialogContent>
+        <Box onClick={event => event.stopPropagation()}>
+          <ConfirmDialog
+            open={confirmRetry}
+            title="Retry this assignment?"
+            cancelLabel="Not now"
+            confirmLabel="Retry assignment"
+            pendingLabel="Starting…"
+            pending={retry.isPending}
+            confirmDisabled={!retryAvailable}
+            error={retry.isError ? retry.error instanceof Error ? retry.error.message : "The retry could not be started." : undefined}
+            onCancel={() => setConfirmRetry(false)}
+            onConfirm={() => retry.mutateAsync()}
+          >
             <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{resolvedRequestText ?? "Assignment description unavailable."}</Typography>
             <Typography variant="body2" sx={{ mt: 1 }}>Earlier work or changes may already exist. Retrying starts another attempt and may duplicate changes. Review the activity first.</Typography>
-            {retry.isError ? <Alert severity="error" sx={{ mt: 1 }}>{retry.error instanceof Error ? retry.error.message : "The retry could not be started."}</Alert> : null}
-          </DialogContent>
-          <DialogActions>
-            <Button disabled={retry.isPending} onClick={() => setConfirmRetry(false)}>Not now</Button>
-            <Button disabled={retry.isPending || !retryAvailable} onClick={() => retry.mutate()}>{retry.isPending ? "Starting…" : "Retry assignment"}</Button>
-          </DialogActions>
-        </Dialog>
+          </ConfirmDialog>
+        </Box>
       </AccordionDetails>
     </Accordion>
   );

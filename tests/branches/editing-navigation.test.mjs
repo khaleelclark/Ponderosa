@@ -86,7 +86,7 @@ test('reload retains the native unsaved-changes warning without treating present
 });
 
 test('shared confirmation shell disables all actions and dismissal while pending',async()=>{
- const source=await readFile(new URL('../../apps/web/src/components/ConfirmationDialogs.tsx',import.meta.url),'utf8'),module={exports:{}};const scope={module,exports:module.exports,require:name=>name==='react/jsx-runtime'?{jsx,jsxs:jsx}:name==='react'?{}:new Proxy({},{get:(_target,key)=>String(key)})};
+ const source=await readFile(new URL('../../apps/web/src/components/ConfirmationDialogs.tsx',import.meta.url),'utf8'),module={exports:{}};const scope={module,exports:module.exports,require:name=>name==='react/jsx-runtime'?{jsx,jsxs:jsx}:name==='react'?{useRef:()=>({current:false})}:new Proxy({},{get:(_target,key)=>String(key)})};
  vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,scope);
  for(const pending of [true,false]){let closed=0;const props={open:true,title:'Unsaved Changes',children:'Keep edits',pending,confirmLabel:'Save And Leave',cancelLabel:'Back To Editing',onCancel(){closed++},onConfirm(){},secondaryAction:{label:'Discard And Leave',onClick(){}}};const outer=module.exports.ConfirmDialog(props),shell=outer.type(outer.props),buttons=shell.props.children[2].props.children;
   assert.equal(buttons.length,3);assert.equal(buttons[0].props.children,'Back To Editing');assert.equal(buttons[1].props.children,'Discard And Leave');assert.equal(buttons[2].props.children,pending?'Save And Leave…':'Save And Leave');assert.ok(buttons.every(button=>Boolean(button.props.disabled)===pending));shell.props.onClose();assert.equal(closed,pending?0:1);
