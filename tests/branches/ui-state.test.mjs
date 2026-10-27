@@ -908,13 +908,13 @@ async function discardActionFixture(){
  const branch={id:'owner',name:'Published workflow',versionId:'v1',bindingRevisionId:'b1',chatId:'chat'},definition={name:branch.name,steps:[],controls:[],edges:[],trigger:{kind:'manual'}},bindings={agents:{},directories:{workspace:'.'}};
  const {branchDraftRevision}=await import('../../apps/web/src/components/branches/model.ts'),{ApiRequestError}=await import('../../apps/web/src/api/types.ts');
  const {emptyWorkflowHistory,recordWorkflowEdit}=await import('../../apps/web/src/components/branches/workflow-history.ts');
- const baseline={branchId:branch.id,expectedVersionId:branch.versionId,chatId:branch.chatId,definition,bindings},draft={...baseline,definition:{...definition,name:'Local rename'}},requests=[],resets=[],cache=[];
+ const baseline={branchId:branch.id,expectedVersionId:branch.versionId,chatId:branch.chatId,definition,bindings},draft={...baseline,definition:{...definition,name:'Local rename'}},requests=[],resets=[],cache=[],notices=[];
  const scope={emptyWorkflowHistory,recordWorkflowEdit,draftHistory:{current:emptyWorkflowHistory()},workflowLeave:{current:undefined},draft,currentDraft:{current:draft},draftRevision:{current:branchDraftRevision(draft)},pendingAdvanced:{current:true},workflowEdits:{current:3},routeOwner:{current:{branchId:'owner',tab:'workflow'}},selection:{current:7},savedDraft:{current:branchDraftRevision(baseline)},branchDraftRevision,ApiRequestError,
   serverBranch:branch,serverDefinition:definition,serverBindings:bindings,advancedDirty:true,dirty:true,loading:false,openingLink:false,publicationUnconfirmed:false,discardDisabled:false,discardIntent:undefined,preview:{draftRevision:branchDraftRevision(draft),input:{branchId:'owner',idempotencyKey:'exact-attempt',definition:draft.definition},expectsNewWebhookSecret:false,result:{operations:[]}},
-  input:'keep execution input',runOpen:true,occurrenceKey:'keep accepted intent',notice:'Unrelated success',error:'Unrelated failure',independentSettings:{count:'dirty'},current:branch,
+  input:'keep execution input',runOpen:true,occurrenceKey:'keep accepted intent',error:'Unrelated failure',independentSettings:{count:'dirty'},current:branch,
   review:{isPending:false,reset(){resets.push('review')},mutate(){resets.push('new preview')}},deploy:{isPending:false,isError:false,reset(){resets.push('deploy')}},run:{reset(){resets.push('run')}},
   actionLocks:{current:new Set()},once(key,action){if(scope.actionLocks.current.has(key))return;scope.actionLocks.current.add(key);action()},
-  newDefinition:()=>({...definition,name:'Untitled workflow'}),updateDraft:next=>{scope.draft=next},setAdvancedDirty:value=>{scope.advancedDirty=value},setDeployedUpdate:value=>{scope.deployedUpdate=value},setEditorKey:update=>{scope.editorKey=update(scope.editorKey??0)},setPreview:value=>{scope.preview=value},setDiscardIntent:value=>{scope.discardIntent=value},setError:value=>{scope.error=value},setLoading:value=>{scope.loading=value},setSecret:value=>{scope.secret=value},setSecretRecovery:value=>{scope.secretRecovery=value},setNotice:value=>{scope.notice=value},setInput:value=>{scope.input=value},setRunOpen:value=>{scope.runOpen=value},setOccurrenceKey:value=>{scope.occurrenceKey=value},setOpeningLink:value=>{scope.openingLink=value},setValidationRequest(){},setTab(){},createClientId:()=> 'test-intent',contexts:{data:[]},trigger:{data:undefined},bindDefinitionDirectories:(_definition,bindings)=>bindings,
+  newDefinition:()=>({...definition,name:'Untitled workflow'}),updateDraft:next=>{scope.draft=next},setAdvancedDirty:value=>{scope.advancedDirty=value},setDeployedUpdate:value=>{scope.deployedUpdate=value},setEditorKey:update=>{scope.editorKey=update(scope.editorKey??0)},setPreview:value=>{scope.preview=value},setDiscardIntent:value=>{scope.discardIntent=value},setError:value=>{scope.error=value},setLoading:value=>{scope.loading=value},setSecret:value=>{scope.secret=value},setSecretRecovery:value=>{scope.secretRecovery=value},notify:value=>notices.push(value),setInput:value=>{scope.input=value},setRunOpen:value=>{scope.runOpen=value},setOccurrenceKey:value=>{scope.occurrenceKey=value},setOpeningLink:value=>{scope.openingLink=value},setValidationRequest(){},setTab(){},createClientId:()=> 'test-intent',contexts:{data:[]},trigger:{data:undefined},bindDefinitionDirectories:(_definition,bindings)=>bindings,
   client:{setQueryData:(key,value)=>cache.push({key,value}),invalidateQueries:async()=>{}},
   requestJson:async(path,init)=>{requests.push({path,method:init?.method??'GET',cache:init?.cache,body:init?.body});await scope.onRead?.(path,init);if(init?.method==='POST')return scope.serverBranch;if(path.includes('/versions/'))return {id:scope.serverBranch.versionId,branchId:'owner',definition:scope.serverDefinition};if(path.includes('/configuration'))return scope.serverBindings;return {...scope.serverBranch}},
   useMutation:options=>{const state={options,isPending:false,isError:false,error:null,reset(){state.error=null;state.isError=false},mutate(input){state.pending=state.mutateAsync(input).catch(()=>{})},async mutateAsync(input){state.variables=input;state.isPending=true;state.isError=false;state.error=null;try{await options.onMutate?.(input);const value=await options.mutationFn(input);await options.onSuccess?.(value,input);return value}catch(error){state.isError=true;state.error=error;await options.onError?.(error,input);throw error}finally{state.isPending=false;options.onSettled?.()}}};return state}
@@ -922,13 +922,13 @@ async function discardActionFixture(){
  vm.createContext(scope);
  const load=name=>{let statement=declarations.get(name);assert.ok(statement,`Actual owner ${name} exists`);if(statement.startsWith('async function'))statement=statement.replace(`async function ${name}`,`globalThis.${name}=async function`);else statement=statement.replace(`const ${name}=`,`globalThis.${name}=`);vm.runInContext(ts.transpileModule(statement,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope)};
  for(const name of ['readWorkflowDraft','setDraft','resetWorkflowBaseline','finishWorkflowLeave','ownsDiscard','discard','requestDiscard','reviewChanges','publishChanges','saveDisabled','saveBeforeLeaving','discardBeforeLeaving'])load(name);
- return {scope,requests,resets,cache,baseline,load,source,file,ts,vm};
+ return {scope,requests,resets,cache,notices,baseline,load,source,file,ts,vm};
 }
 
 test('Discard resets the verified workflow only and uses immutable binding revision with fresh reads',async()=>{
  const f=await discardActionFixture(),s=f.scope;s.requestDiscard();assert.equal(s.discardIntent.branchId,'owner');await s.discard.mutateAsync(s.discardIntent);
  assert.equal(s.draft.definition.name,'Published workflow');assert.equal(s.savedDraft.current,s.branchDraftRevision(s.draft));assert.equal(s.pendingAdvanced.current,false);assert.equal(s.advancedDirty,false);assert.equal(s.preview,undefined);assert.equal(s.discardIntent,undefined);
- assert.equal(s.input,'keep execution input');assert.equal(s.runOpen,true);assert.equal(s.occurrenceKey,'keep accepted intent');assert.equal(s.independentSettings.count,'dirty');assert.equal(s.error,'Unrelated failure');assert.equal(s.notice,'Unrelated success');assert.deepEqual(f.resets,['review']);
+ assert.equal(s.input,'keep execution input');assert.equal(s.runOpen,true);assert.equal(s.occurrenceKey,'keep accepted intent');assert.equal(s.independentSettings.count,'dirty');assert.equal(s.error,'Unrelated failure');assert.equal(f.notices.length,0,'Discard is not publication or a feedback reset');assert.deepEqual(f.resets,['review']);
  assert.equal(f.requests.length,4);assert.ok(f.requests.every(r=>r.method==='GET'&&r.cache==='no-store'));assert.ok(f.requests.some(r=>r.path.endsWith('/configuration?revisionId=b1')));assert.equal(f.requests[0].path,f.requests.at(-1).path);
 });
 
@@ -1302,7 +1302,7 @@ test('Save And Leave waits for the existing review, publication and verified cur
  const f=await workflowLeaveFixture(),s=f.scope,before=s.draft;
  await f.leave();assert.equal(f.outcomes.length,0);assert.equal(s.preview.input.definition,before.definition);assert.equal(s.workflowLeave.current.attempt,s.preview);
  const attempt=s.preview;s.publishChanges();s.publishChanges();await s.deploy.pending;
- assert.deepEqual(f.outcomes,[true]);assert.equal(s.workflowLeave.current,undefined);assert.equal(s.savedDraft.current,s.draftRevision.current);assert.equal(s.draft.expectedVersionId,'v2');
+ assert.deepEqual(f.outcomes,[true]);assert.equal(s.workflowLeave.current,undefined);assert.equal(s.savedDraft.current,s.draftRevision.current);assert.equal(s.draft.expectedVersionId,'v2');assert.equal(f.notices.length,1);assert.equal(f.notices[0].message,'Workflow Saved');assert.equal(f.notices[0].key,'workflow-save:owner');
  assert.equal(f.requests.filter(row=>row.path==='/api/branches/deploy').length,1,'Publication remains fenced by the existing synchronous intent');
 });
 
@@ -1312,7 +1312,7 @@ test('review cancellation, validation errors and uncertain publication never res
   await f.leave();
   if(mode==='cancel')s.finishWorkflowLeave();
   if(mode==='uncertain'){s.onPublish=async()=>{throw Error('Publication response lost')};s.publishChanges();await s.deploy.pending;f.load('publicationUnconfirmed');assert.equal(s.publicationUnconfirmed,true);}
-  assert.deepEqual(f.outcomes,[false],mode);assert.equal(s.draft,before);assert.equal(s.savedDraft.current,baseline);assert.equal(s.workflowLeave.current,undefined);
+  assert.deepEqual(f.outcomes,[false],mode);assert.equal(s.draft,before);assert.equal(s.savedDraft.current,baseline);assert.equal(s.workflowLeave.current,undefined);assert.equal(f.notices.length,0,'Rejected, cancelled and uncertain saves are never confirmed');
  }
 });
 
@@ -1328,7 +1328,7 @@ test('a publication older than the current draft cannot reset or navigate away f
   if(point.includes('readback')&&point!=='readback-error'||point==='before-publish-response')assert.equal(s.draft.definition.name,'Newer edit retained');
   if(point==='advanced')assert.equal(s.pendingAdvanced.current,true);
   if(point==='during-readback')assert.equal(s.deployedUpdate.reason,'dirty','A newer edit is not mislabeled a failed read');
-  assert.equal(attempt.input.idempotencyKey,'test-intent');
+  assert.equal(attempt.input.idempotencyKey,'test-intent');assert.equal(f.notices.length,0,'Only current canonical readback confirms a save');
  }
 });
 
