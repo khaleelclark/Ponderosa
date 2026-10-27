@@ -15,6 +15,6 @@ export function BranchGlobalSettings({view,preferences,engines,colorMode,onToggl
  const save=async(patch:Partial<WorkspacePreferencesDto>)=>{setError('');try{return await preferenceWriter.enqueueAndWait(patch)}catch(e){setError((e as Error).message);throw e}};
  return <Stack sx={{flex:1,minHeight:0,minWidth:0}}>
   {error&&<Alert severity="error" onClose={()=>setError('')}>{error} Retry saving your changes.</Alert>}
-   <WorkspaceSettingsView preferences={preferences} engines={engines} projects={projects.data??[]} colorMode={colorMode} onToggleColorMode={onToggleColorMode} onPreferences={patch=>void save(patch).catch(()=>{})} onSavePreferences={save} section={branchSettingsSection(view)} onReturn={onClose} returnLabel="Back to Branches"/>
+   <WorkspaceSettingsView activityWorkflows preferences={preferences} engines={engines} projects={projects.data??[]} colorMode={colorMode} onToggleColorMode={onToggleColorMode} onPreferences={patch=>void save(patch).catch(()=>{})} onSavePreferences={save} section={branchSettingsSection(view)} onReturn={onClose} returnLabel="Back to Branches"/>
  </Stack>;
 }

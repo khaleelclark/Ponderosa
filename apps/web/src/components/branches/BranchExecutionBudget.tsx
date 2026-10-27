@@ -9,9 +9,9 @@ import {useBranchDraftGuard} from './BranchNavigation';
 import {budgetPresentation,validBudgetNumber} from './budgetPresentation';
 
 const countedSources='Scheduled, webhook and filesystem executions, and incoming Branch Calls count when workflow work first starts. Direct manual runs and trigger Run once are exempt. Steps and retries within an execution do not count again.';
-export function BranchExecutionBudget({branchId,settings=false}:{branchId:string;settings?:boolean}):JSX.Element {
+export function BranchExecutionBudget({branchId,settings=false,active=true}:{branchId:string;settings?:boolean;active?:boolean}):JSX.Element {
  const client=useQueryClient(),queryKey=['branch-execution-budget',branchId];
- const query=useQuery({queryKey,queryFn:()=>requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget`),refetchInterval:5000});
+ const query=useQuery({queryKey,queryFn:()=>requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget`),enabled:active,refetchInterval:active?5000:false});
  const [draft,setDraft]=useState<BranchExecutionBudgetPolicy|null>(),[base,setBase]=useState<BranchExecutionBudgetDto>(),[grantOpen,setGrantOpen]=useState(false),[additional,setAdditional]=useState('1');
  const policyAttempt=useRef<BranchExecutionBudgetUpdate>(),grantAttempt=useRef<BranchExecutionBudgetGrant>(),grantResultLimit=useRef<number>();
  const dirty=draft!==undefined&&Boolean(base)&&JSON.stringify(draft)!==JSON.stringify(base?.policy);
