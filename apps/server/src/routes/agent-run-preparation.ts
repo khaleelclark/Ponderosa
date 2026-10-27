@@ -784,6 +784,7 @@ export async function prepareAgentRun(
   const broadcastCanonicalTipId = broadcastDeltaPage?.latestMessageId
     ?? (sharedCommunication && sourceMasterMessage ? sourceMasterMessage.id : broadcastSeedPage?.items[0]?.id);
   const canonicalRetrievalAvailable = availableRuntimeToolNames.includes(PONDEROSA_HISTORY_TOOL.name) && Boolean(historyRetrievalBoundary?.canonicalOrdinal);
+  const importedRetrievalAvailable = availableRuntimeToolNames.includes(PONDEROSA_HISTORY_TOOL.name) && importedHistory.status === "ready";
   const historyNotice = (omitted: boolean) => omitted
     ? "[BOUNDED HISTORICAL CONTEXT] Additional older messages or parts of messages were omitted from this packet. " +
       (canonicalRetrievalAvailable ? "Use ponderosa_history to search/read authorized retained canonical history. " : "Canonical history retrieval is unavailable in this Run's authorized tools. ") +
@@ -1136,7 +1137,7 @@ export async function prepareAgentRun(
       contextBudget: input.contextBudget,
       historyContext: { boundary: historyRetrievalBoundary, additionalHistory: input.additionalHistory,
         fullyIncludedCommunicationEventIds: [...complete], clippedCommunicationEventIds: [...clipped],
-        retrievalAvailable: canonicalRetrievalAvailable,
+        retrievalAvailable: canonicalRetrievalAvailable || importedRetrievalAvailable,
         ...(importedHistoryArchiveVersion ? { importedArchiveVersion: importedHistoryArchiveVersion } : {}) },
       memorySessionResetSeq: voicePacketSessionSeq,
       memoryScopes: [],
