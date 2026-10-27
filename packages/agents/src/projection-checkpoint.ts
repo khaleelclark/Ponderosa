@@ -17,7 +17,7 @@ import type Database from "better-sqlite3";
 
 const CHECKPOINT_FILE = ".projection-clean-shutdown.json";
 // Bump whenever projection semantics change without a schema marker.
-const PROJECTION_CHECKPOINT_VERSION = 2;
+const PROJECTION_CHECKPOINT_VERSION = 3;
 const NON_CANONICAL_ROOTS = new Set(["browser-sessions", "diagnostics", "launcher-state"]);
 const NON_CANONICAL_FILES = new Set([
   CHECKPOINT_FILE,

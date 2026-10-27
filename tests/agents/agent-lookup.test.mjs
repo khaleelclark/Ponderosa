@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { AgentStore } from '@ponderosa/agents';
+import { AgentStore, importedAgentHistoryPath } from '@ponderosa/agents';
 
 async function withStores(t, run) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-agent-lookup-'));
@@ -16,7 +16,7 @@ async function withStores(t, run) {
     return store.createAgent(project.id, { title: 'Lookup Agent', engine: 'codex', conversationId: chat.id });
   };
   let passed = false;
-  try { await run({ open, seed, close(store) { store.close(); stores.delete(store); } }); passed = true; }
+  try { await run({ root, open, seed, close(store) { store.close(); stores.delete(store); } }); passed = true; }
   finally {
     for (const store of stores) store.close();
     if (passed) await rm(root, { recursive: true, force: true });
@@ -82,4 +82,39 @@ test('lookups use the reopened database and remain isolated from other stores', 
   assert.equal(first.getAgent(otherAgent.id), undefined);
   assert.equal(first.getAgent('missing-agent'), undefined);
   assert.equal(other.getAgent(otherAgent.id).title, otherAgent.title);
+}));
+
+for (const surviving of [false, true]) test(`missing owner Chat is quarantined without reassigning private history; survivor=${surviving}`, t => withStores(t, async f => {
+  const store = f.open('missing-owner'), agent = f.seed(store);
+  if (surviving) store.createConversation(agent.projectId, { title: 'Unrelated Chat' });
+  store.setImportedHistory(agent.id, 'Private source', [{ role: 'user', text: 'Private history must keep its original owner' }]);
+  const data = path.join(f.root, 'missing-owner');
+  const canonical = path.join(data, 'projects', agent.projectId, 'agents', agent.id, 'agent.json');
+  const imported = importedAgentHistoryPath(data, agent.projectId, agent.id);
+  const before = await readFile(canonical), history = await readFile(imported);
+  f.close(store);
+  await rename(path.join(data, 'projects', agent.projectId, 'conversations', agent.conversationId), path.join(f.root, 'owner-retained-for-repair'));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const reopened = f.open('missing-owner'), projected = reopened.getAgent(agent.id);
+    assert.ok(!projected || projected.conversationId === agent.conversationId, 'Recovery must never substitute a surviving Chat');
+    assert.equal((await readFile(canonical)).equals(before), true, 'Quarantine must not rewrite canonical ownership');
+    assert.equal((await readFile(imported)).equals(history), true, 'Private history must remain intact');
+    assert.ok(reopened.startupProfile().recoveryIssues.some(issue => issue.projectId === agent.projectId && issue.detail.includes(agent.conversationId)));
+    f.close(reopened);
+  }
+}));
+
+test('ownership proof change rejects older checkpoints while healthy current checkpoints remain reusable', t => withStores(t, async f => {
+  let store = f.open('checkpoint'); const agent = f.seed(store);
+  f.close(store); store = f.open('checkpoint'); f.close(store);
+  const marker = path.join(f.root, 'checkpoint', '.projection-clean-shutdown.json');
+  const certificate = JSON.parse(await readFile(marker, 'utf8'));
+  certificate.projectionVersion = 2;
+  await writeFile(marker, JSON.stringify(certificate));
+  store = f.open('checkpoint');
+  assert.equal(store.startupProfile().mode, 'recovery');
+  assert.equal(store.getAgent(agent.id).conversationId, agent.conversationId);
+  f.close(store); store = f.open('checkpoint');
+  assert.equal(store.startupProfile().mode, 'clean');
+  assert.equal(store.getAgent(agent.id).conversationId, agent.conversationId);
 }));

@@ -124,8 +124,13 @@ Environment=PONDEROSA_TRUSTED_REVERSE_PROXY=true
 Environment=PONDEROSA_OPERATOR_IDENTITIES=operator@example.com
 ```
 
-The proxy must overwrite (not append or preserve) `Tailscale-User-Login`, and
-the configured identities are compared exactly after case normalization.
+The bridge forwards verified identity through the internal
+`x-ponderosa-operator-identity` header, stripping any client-supplied claim.
+A front proxy injecting the backend bearer directly must likewise overwrite
+(not append or preserve) this internal header with its authenticated identity.
+The upstream header used by the optional bridge remains configurable through
+`PONDEROSA_PROXY_IDENTITY_HEADER`; the Tailscale example above is unchanged.
+Configured identities are compared exactly after case normalization.
 Current production configuration requires a high-entropy
 `PONDEROSA_AUTH_TOKEN` alongside this identity declaration; the identity header
 alone is never sufficient. Readiness reports `reverse_proxy` rather than

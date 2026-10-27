@@ -1844,7 +1844,9 @@ export class AgentStore extends AgentEventSessionFacade {
         if (!unchanged && options.checkpointWrites) {
           this.rebuildProjections();
         }
-        if (unchanged || options.checkpointWrites) {
+        // Quarantined Projects must be re-evaluated on restart, not certified
+        // as healthy empty projections that would hide their recovery issue.
+        if ((unchanged || options.checkpointWrites) && this.projectionRebuilder.listRecoveryIssues().length === 0) {
           writeProjectionCheckpoint(this.dataDirectory, this.client);
         }
       }
