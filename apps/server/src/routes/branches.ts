@@ -3,6 +3,7 @@ import type {ChatCreator} from './projects.js';
 import { normalizeTriggerSourceConfig, type BranchTriggerSourceService } from '../branch-trigger-service.js';
 import { triggerSourceConfig } from '../branch-trigger-config.js';
 import { realpathSync, statSync } from 'node:fs';
+import {createHash} from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {validatedObject,exactObjectFields} from '../object-validation.js';
 import { CapabilityPolicyRevisionConflictError, CapabilityPolicyStore, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
@@ -11,7 +12,7 @@ import {activeChatResourceOwner} from '../branch-resource-owner.js';
 import {previewBranchExecutionDetail} from '../branch-detail-preview.js';
 import {branchOperationalSummary, type ProviderIntakeStatus} from '../branch-operations.js';
 import {activeChatProductSql,activeAgentProductSql} from '@ponderosa/agents';
-import {sqliteCollectionPage,applyCollectionPageHeaders,sendCollectionPageError,type CollectionQuery} from '../collection-page.js';
+import {sqliteCollectionGeneration,StaleCollectionCursorError,sqliteCollectionPage,applyCollectionPageHeaders,sendCollectionPageError,type CollectionQuery} from '../collection-page.js';
 import {parseTokenUsageRange} from '../token-usage.js';
 import {workspaceNotificationPage} from './notifications.js';
 
@@ -225,15 +226,34 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
     calls:store.sqlite.prepare('SELECT target_branch_id id,ref FROM branch_dependencies WHERE branch_id=?').all(request.params.id),
     callers:store.sqlite.prepare('SELECT branch_id id,ref FROM branch_dependencies WHERE target_branch_id=?').all(request.params.id),
   }));
-  app.get<{ Querystring: { chatId?: string;before?:string;search?:string;section?:string } }>('/api/branches', async(request,reply)=>{
+  app.get<{ Querystring: { chatId?: string;cursor?:string;before?:string;search?:string;section?:string } }>('/api/branches', async(request,reply)=>{
+    if(Object.values(request.query).some(value=>typeof value!=='string'))return reply.code(400).send({error:'Workflow query values must be strings'});
+    if(request.query.before!==undefined)return reply.code(400).send({error:'Workflow pagination changed. Reload the application.'});
     if(request.query.section!==undefined&&request.query.section!=='organized')return reply.code(400).send({error:'Invalid workflow section'});
-    const preferences=context.preferences?.();
-    const ids=request.query.section==='organized'?[...new Set([
+    const preferences=context.preferences?.(),organized=request.query.section==='organized';
+    const ids=organized?[...new Set([
       ...(preferences?.starredResourceIds??[]).filter(id=>id.startsWith('branch:')).map(id=>id.slice(7)),
       ...(preferences?.branchFolders??[]).flatMap(folder=>folder.branchIds),
-    ])]:undefined;
-    try{return branches.listBranches(request.query.chatId,request.query.before,request.query.search,{ids,sort:preferences?.branchSort,order:preferences?.branchOrder})}
-    catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid workflow cursor'})}
+    ])].sort():undefined;
+    const sort=preferences?.branchSort??'last_used',search=(request.query.search??'').trim().slice(0,240);
+    const recency=context.workspace.resourceRecencySnapshot('branch');
+    const scope=createHash('sha256').update(stableJson({product:'branches',chatId:request.query.chatId??'',search,ids,sort,order:preferences?.branchOrder??[]})).digest('base64url');
+    const collection=branches.branchDirectoryRevision(request.query.chatId,search,ids);
+    const revision=sqliteCollectionGeneration(store.sqlite,[])+':'+collection.revision+(sort==='last_used'?':'+recency.revision:'');
+    try {
+      let before:string|undefined;
+      if(request.query.cursor){
+        if(organized||request.query.cursor.length>2048)throw new Error('Invalid workflow cursor');
+        const cursor=JSON.parse(Buffer.from(request.query.cursor,'base64url').toString('utf8'));
+        if(cursor?.v!==1||cursor.scope!==scope||typeof cursor.revision!=='string'||typeof cursor.before!=='string'||!cursor.before||cursor.before.length>200)throw new Error('Invalid workflow cursor');
+        if(cursor.revision!==revision)throw new StaleCollectionCursorError();
+        before=cursor.before;
+      }
+      const rows=branches.listBranches(request.query.chatId,before,search,{ids,sort,order:preferences?.branchOrder,recency:recency.json,completeOrganized:organized,limit:101});
+      const hasMore=!organized&&rows.length>100,items=organized?rows:rows.slice(0,100);
+      applyCollectionPageHeaders(reply,{items,total:collection.total,limit:organized?items.length:100,hasMore,...(hasMore?{cursor:Buffer.from(JSON.stringify({v:1,scope,revision,before:items.at(-1)!.id})).toString('base64url')}:{})});
+      return items;
+    } catch(error){return sendCollectionPageError(reply,error,'Invalid workflow cursor');}
   });
   app.get<{Querystring:{activeCursor?:string;outcomeCursor?:string;attentionCursor?:string}}>('/api/branches/home',async(request,reply)=>{
     const decode=(value:string|undefined,section:string):{at:string;id:string}|undefined=>{
