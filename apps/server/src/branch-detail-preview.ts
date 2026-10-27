@@ -18,7 +18,7 @@ function previewAttempt(row:BranchAttemptDto,text:TextPreview):BranchAttemptDto 
 export function previewBranchExecutionActions(page:BranchExecutionActionsDto):BranchExecutionActionsDto {
   let omitted=false;
   const text:TextPreview=value=>{const next=previewText(value);if(next!==value)omitted=true;return next};
-  const items=page.items.map(item=>item.kind==='decision'?item:item.kind==='gate'?{...item,step:previewStep(item.step,text)}:
+  const items=page.items.map(item=>item.kind==='decision'||item.kind==='schedule_update'?item:item.kind==='gate'?{...item,step:previewStep(item.step,text)}:
     {...item,step:previewStep(item.step,text),attempt:previewAttempt(item.attempt,text)});
   return {...page,items,...(omitted?{largeEvidenceOmitted:true}:{})};
 }

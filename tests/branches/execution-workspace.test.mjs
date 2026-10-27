@@ -10,6 +10,7 @@ const {branchScriptFailureSummary}=require('@ponderosa/core');
 const {ApiRequestError}=await import('../../apps/web/src/api/types.ts');
 const {ChatMessageBody}=await import('../../apps/web/src/components/chat/ChatMessages.tsx');
 const presentation=await import('../../apps/web/src/components/branches/executionPresentation.ts');
+const {previewBranchExecutionActions}=await import('../../apps/server/src/branch-detail-preview.ts');
 const source=await readFile(new URL('../../apps/web/src/components/branches/ExecutionPanel.tsx',import.meta.url),'utf8');
 
 function fixture({actions=[],state='waiting',output='Result with the complete original wording.\nSecond line.',savedView,operationsState='waiting_human'}={}){
@@ -191,8 +192,8 @@ async function interventionIntentFixture(t,action,{failure=new Error('Response l
  const {QueryClient,MutationObserver}=require('@tanstack/react-query');
  const ast=ts.createSourceFile('ExecutionPanel.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),declarations=new Map();let dialog;
  function visit(node){if(ts.isVariableDeclaration(node))declarations.set(node.name.getText(ast),node);if(ts.isBinaryExpression(node)&&node.left.getText(ast)==='intervention'&&ts.isJsxElement(node.right)&&node.right.openingElement.tagName.getText(ast)==='ConfirmDialog')dialog=node.getText(ast);ts.forEachChild(node,visit)}visit(ast);assert.ok(dialog);
- const bodies=[],refreshes=[],setters=[],scope={React,ApiRequestError,JSON,Date,Error,execution:{id:'exact-run',revision:7,parentExecutionId:'parent'},intervention:{action,...(['retry','resolve_script'].includes(action)?{attemptId:'exact-attempt',unknown:true}:{})},reason:'Verified exact reason',reconciled:true,result:'Exact observed output',failed:true,target:'exact-target',commandKey:'original-command',actionsCurrent:true,mergeTargets:{data:{},isPending:false,error:null,hasNextPage:false},executions:[{id:'exact-target',state:'completed',createdAt:'2026-10-26T00:00:00Z'}],detail:{attempts:[],steps:[]},attentionAttempts:[],refresh:()=>refreshes.push('refresh'),createClientId:()=>{setters.push('new-key');return 'new-command'},inspectStep(){}};
- for(const name of ['intervention','reason','reconciled','result','failed','target','commandKey'])scope['set'+name[0].toUpperCase()+name.slice(1)]=value=>{setters.push(name);scope[name]=value;};
+ const bodies=[],refreshes=[],setters=[],scope={React,ApiRequestError,JSON,Date,Error,execution:{id:'exact-run',revision:7,parentExecutionId:'parent'},intervention:{action,...(['retry','resolve_script'].includes(action)?{attemptId:'exact-attempt',unknown:true}:{}),...(action==='resolve_schedule_update'?{occurrenceId:'exact-occurrence'}:{})},updateApplied:'not_applied',reason:'Verified exact reason',reconciled:true,result:'Exact observed output',failed:true,target:'exact-target',commandKey:'original-command',actionsCurrent:true,mergeTargets:{data:{},isPending:false,error:null,hasNextPage:false},executions:[{id:'exact-target',state:'completed',createdAt:'2026-10-26T00:00:00Z'}],detail:{attempts:[],steps:[]},attentionAttempts:[],refresh:()=>refreshes.push('refresh'),createClientId:()=>{setters.push('new-key');return 'new-command'},inspectStep(){}};
+ for(const name of ['intervention','updateApplied','reason','reconciled','result','failed','target','commandKey'])scope['set'+name[0].toUpperCase()+name.slice(1)]=value=>{setters.push(name);scope[name]=value;};
  for(const name of ['ConfirmDialog','Stack','Alert','Typography','Button','TextField','MenuItem','FormControlLabel','Switch'])scope[name]=name;
  let release;
  scope.requestJson=async(path,options)=>{bodies.push({path,body:options.body});if(bodies.length===1)await new Promise((_resolve,reject)=>{release=()=>reject(failure)});return {accepted:true};};
@@ -207,17 +208,17 @@ async function interventionIntentFixture(t,action,{failure=new Error('Response l
  return {scope,bodies,refreshes,setters,refresh,render,release:()=>release(),submit:()=>{refresh();return scope.submitIntervention()}};
 }
 
-for(const action of ['retry','resolve_script','merge','skip'])test('uncertain '+action+' replays byte-identical intervention after polling advances the Run revision',async t=>{
+for(const action of ['retry','resolve_script','resolve_schedule_update','merge','skip'])test('uncertain '+action+' replays byte-identical intervention after polling advances the Run revision',async t=>{
  const f=await interventionIntentFixture(t,action),pending=f.submit();await new Promise(resolve=>setImmediate(resolve));f.refresh();assert.equal(f.scope.interventionLocked,true);
  f.release();await assert.rejects(pending,/Response lost/);f.scope.execution.revision=12;
  const view=f.render();assert.equal(f.scope.interventionUnconfirmed,true);assert.equal(view.root.props.confirmDisabled,false,'A newer revision cannot block exact idempotent readback');
  assert.equal(view.root.props.error,'Response lost');assert.equal(view.root.props.pending,false);assert.equal(view.root.props.onConfirm,f.scope.submitIntervention);
- const before={reason:f.scope.reason,result:f.scope.result,target:f.scope.target,reconciled:f.scope.reconciled,failed:f.scope.failed,commandKey:f.scope.commandKey};
+ const before={updateApplied:f.scope.updateApplied,reason:f.scope.reason,result:f.scope.result,target:f.scope.target,reconciled:f.scope.reconciled,failed:f.scope.failed,commandKey:f.scope.commandKey};
  for(const node of view.nodes.filter(node=>node.type==='TextField')){assert.equal(node.props.disabled,true);node.props.onChange?.({target:{value:'Must not replace the submitted value'}});}
  for(const node of view.nodes.filter(node=>node.type==='FormControlLabel')){const control=node.props.control;assert.equal(control.props.disabled,true);control.props.onChange(null,false);}
- assert.deepEqual({reason:f.scope.reason,result:f.scope.result,target:f.scope.target,reconciled:f.scope.reconciled,failed:f.scope.failed,commandKey:f.scope.commandKey},before);
+ assert.deepEqual({updateApplied:f.scope.updateApplied,reason:f.scope.reason,result:f.scope.result,target:f.scope.target,reconciled:f.scope.reconciled,failed:f.scope.failed,commandKey:f.scope.commandKey},before);
  view.root.props.onCancel();f.refresh();f.scope.open({action:action==='skip'?'merge':'skip'});assert.equal(f.scope.intervention.action,action);assert.equal(f.scope.commandKey,'original-command');assert.ok(!f.setters.includes('new-key'),'Reopening uncertain work cannot replace the original command identity');
- await f.submit();assert.equal(f.bodies.length,2);assert.deepEqual(f.bodies[1],f.bodies[0]);const payload=JSON.parse(f.bodies[0].body);assert.equal(payload.expectedRevision,7);assert.equal(payload.commandKey,'original-command');assert.equal(payload.action,action);if(action==='resolve_script')assert.deepEqual(payload.result,{failed:true,output:'Exact observed output'});if(action==='merge')assert.equal(payload.mergedInto,'exact-target');
+ await f.submit();assert.equal(f.bodies.length,2);assert.deepEqual(f.bodies[1],f.bodies[0]);const payload=JSON.parse(f.bodies[0].body);assert.equal(payload.expectedRevision,7);assert.equal(payload.commandKey,'original-command');assert.equal(payload.action,action);if(action==='resolve_script')assert.deepEqual(payload.result,{failed:true,output:'Exact observed output'});if(action==='merge')assert.equal(payload.mergedInto,'exact-target');if(action==='resolve_schedule_update'){assert.equal(payload.occurrenceId,'exact-occurrence');assert.equal(payload.updateApplied,false);assert.equal(payload.externalEffectsReconciled,true);assert.equal(f.scope.intervention,undefined);}
  assert.equal(f.scope.intervention,undefined);assert.deepEqual(f.refreshes,['refresh']);
 });
 
@@ -226,4 +227,28 @@ test('known intervention rejection permits review against the current revision w
  const view=known.render();assert.equal(known.scope.interventionUnconfirmed,false);assert.equal(known.scope.interventionLocked,false);assert.equal(view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Reason for this decision').props.disabled,false);
  view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Reason for this decision').props.onChange({target:{value:'Reviewed the current revision'}});await known.submit();assert.equal(JSON.parse(known.bodies[1].body).expectedRevision,9);assert.equal(JSON.parse(known.bodies[1].body).reason,'Reviewed the current revision');assert.equal(JSON.parse(known.bodies[1].body).commandKey,'new-command');
  const uncertain=await interventionIntentFixture(t,'skip',{failure:new ApiRequestError(503,'Response unavailable')}),second=uncertain.submit();await new Promise(resolve=>setImmediate(resolve));uncertain.release();await assert.rejects(second,/Response unavailable/);uncertain.refresh();assert.equal(uncertain.scope.interventionUnconfirmed,true);uncertain.scope.execution.revision=14;await uncertain.submit();assert.equal(uncertain.bodies[1].body,uncertain.bodies[0].body);
+});
+
+
+test('an uncertain scheduled update remains actionable without opening Technical Details or inventing completion',()=>{
+ const update={kind:'schedule_update',occurrenceId:'own-occurrence',injectionId:'uncertain-injection',eventCount:3,lastScheduledAt:'2026-10-27T12:00:00.000Z'};
+ const f=fixture({actions:[update]}),html=f.render();assert.match(html,/Scheduled Update Needs Reconciliation/);assert.match(html,/3 scheduled events/);assert.ok(html.indexOf('Reconcile Scheduled Update')<html.indexOf('<details'));assert.equal(f.disclosures[0].open,false);
+ assert.equal(f.queries.get('branch-step-evidence').enabled,false);assert.equal(f.requests.length,0);f.button('Reconcile Scheduled Update').onClick();const dialog=f.render();assert.match(dialog,/Neither choice cancels or restarts the Agent/);assert.match(dialog,/retains one latest check for delivery/);
+ const selector=f.fields.find(field=>field.label==='Observed scheduled update outcome');assert.equal(selector.value,'');assert.equal(selector.disabled,true,'No outcome can be selected before inspecting actual effects');selector.onChange({target:{value:'applied'}});f.render();assert.equal(f.fields.find(field=>field.label===selector.label).value,'');assert.equal(f.requests.length,0);
+ f.props.authorityFresh=false;f.render();assert.equal(f.button('Reconcile Scheduled Update').disabled,true,'Stale run data cannot authorize reconciliation');
+ const page={executionId:f.execution.id,revision:f.execution.revision,generation:'current',items:[update]};assert.equal(presentation.currentExecutionActions(f.execution,[page,page]).length,1);
+ const changed={...update,injectionId:'replacement-injection'};assert.equal(presentation.currentExecutionActions(f.execution,[page,{...page,items:[changed]}]).length,2,'Different uncertainty evidence must never be collapsed into the old injection');
+ const preview=previewBranchExecutionActions(page);assert.deepEqual(preview.items,[update]);assert.equal(preview.largeEvidenceOmitted,undefined);
+});
+
+test('scheduled update reconciliation requires an observed outcome, checked effects and reason while reusing the shared dialog',async t=>{
+ const f=await interventionIntentFixture(t,'resolve_schedule_update');f.scope.updateApplied='';f.scope.reconciled=false;f.scope.reason='';
+ let view=f.render();assert.equal(view.root.props.title,'Reconcile Scheduled Update');assert.equal(view.root.props.confirmDisabled,true);assert.equal(f.bodies.length,0);
+ const outcome=()=>view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Observed scheduled update outcome');assert.equal(outcome().props.disabled,true);outcome().props.onChange({target:{value:'applied'}});assert.equal(f.scope.updateApplied,'');
+ const confirmation=view.nodes.find(node=>node.type==='FormControlLabel'&&node.props.label==='I have checked and reconciled the scheduled update’s effects');assert.ok(confirmation);confirmation.props.control.props.onChange(null,true);
+ view=f.render();assert.equal(outcome().props.disabled,false);outcome().props.onChange({target:{value:'applied'}});view=f.render();assert.equal(view.root.props.confirmDisabled,true,'A reason is still required');
+ view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Reason for this decision').props.onChange({target:{value:'Verified actual Agent output and external effects'}});view=f.render();assert.equal(view.root.props.confirmDisabled,false);
+ const pending=view.root.props.onConfirm();await new Promise(resolve=>setImmediate(resolve));view=f.render();assert.equal(view.root.props.pending,true);assert.equal(outcome().props.disabled,true);assert.equal(await f.submit(),undefined,'Pending decisions cannot submit twice');
+ f.release();await assert.rejects(pending,/Response lost/);f.scope.execution.revision=19;view=f.render();assert.equal(view.root.props.confirmDisabled,false);assert.equal(outcome().props.disabled,true);await f.submit();assert.equal(f.bodies[1].body,f.bodies[0].body);
+ const intent=JSON.parse(f.bodies[0].body);assert.equal(intent.action,'resolve_schedule_update');assert.equal(intent.occurrenceId,'exact-occurrence');assert.equal(intent.updateApplied,true);assert.equal(intent.externalEffectsReconciled,true);assert.equal(intent.reason,'Verified actual Agent output and external effects');assert.equal(intent.expectedRevision,7);
 });
