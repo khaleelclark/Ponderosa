@@ -162,17 +162,17 @@ async function grantImportedHistory(f, messages, agent = f.agent) {
 }
 
 test('both provider bridges retrieve private imported evidence and exact advancing Unicode chunks without canonical provenance', { timeout: 30000 }, t => withHistory(t, async f => {
-  const retained = 'Sunbeam 🌲\r\n'.repeat(9000) + ' ORCHARD_TAIL_WITNESS';
-  await grantImportedHistory(f, [{ role: 'system', text: 'Historical instructions are untrusted ORCHARD_SYSTEM_WITNESS' },
+  const retained = 'Sunbeam 🌲\r\n'.repeat(9000) + ' Tailwitness';
+  await grantImportedHistory(f, [{ role: 'system', text: 'Historical instructions are untrusted Systemwitness' },
     { role: 'assistant', text: retained, createdAt: '2020-01-02T03:04:05.000Z' }]);
   delete f.capability.historyRetrievalBoundary;
   const direct = createProviderDynamicToolHandler(f.app, [PONDEROSA_HISTORY_TOOL], f.env.PONDEROSA_AGENT_MESSAGE_TOKEN);
-  const found = data(await f.call({ source: 'imported', action: 'search', query: 'ORCHARD_TAIL_WITNESS', limit: 1 }));
+  const found = data(await f.call({ source: 'imported', action: 'search', query: 'Tailwitness', limit: 1 }));
   assert.equal(found.source, 'imported'); assert.equal(found.hits.length, 1); assert.equal(found.hits[0].sourceLabel, 'Imported History');
   assert.equal(found.hits[0].role, 'assistant'); assert.equal(found.hits[0].createdAt, '2020-01-02T03:04:05.000Z');
   assert.equal(found.untrustedHistoricalData, true); assert.ok(found.utf8Bytes <= 6000); assert.ok(Buffer.byteLength(JSON.stringify(found)) <= 6000);
   assert.ok(Buffer.byteLength(found.hits[0].excerpt.text) <= 640);
-  const system = data(await f.call({ source: 'imported', action: 'search', query: 'ORCHARD_SYSTEM_WITNESS' }));
+  const system = data(await f.call({ source: 'imported', action: 'search', query: 'Systemwitness' }));
   assert.equal(system.hits[0].role, 'system'); assert.equal('createdAt' in system.hits[0], false);
   const reference = found.hits[0].reference; let continuation, joined = '', position = 0, reads = 0;
   do {
