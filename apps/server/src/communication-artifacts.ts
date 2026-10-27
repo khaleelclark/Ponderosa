@@ -56,11 +56,14 @@ export function historyArtifactReferences(input: ReadableArtifactContext & {
   if (primaryId) candidates.delete(primaryId);
   // ponytail: supplemental descriptors have a 2 KiB response budget; the
   // canonical text/IDs remain complete, and omitted metadata is explicit.
-  let bytes = 2, omitted = 0;
+  let bytes = 2, omitted = 0, remaining = candidates.size;
   for (const artifactId of candidates) {
+    remaining -= 1;
     const reference = readableArtifactReferences({ ...input, artifactIds: [artifactId] })[0]!;
     const size = Buffer.byteLength(JSON.stringify(reference), "utf8") + 1;
-    if (bytes + size > 2_048) { omitted += 1; continue; }
+    // Validation may read/hash the entire blob. Once the bounded prefix is
+    // full, do not resolve later files merely to discover they cannot fit.
+    if (bytes + size > 2_048) { omitted = remaining + 1; break; }
     referencedFiles.push(reference);
     bytes += size;
   }

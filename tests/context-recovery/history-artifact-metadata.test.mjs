@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,7 +8,7 @@ import Fastify from 'fastify';
 import { AgentStore } from '@ponderosa/agents';
 import { PONDEROSA_HISTORY_TOOL } from '@ponderosa/core';
 import { artifactIdsIntersectingTextRange } from '../../apps/server/dist/artifact-refs.js';
-import { readableArtifactReferences } from '../../apps/server/dist/communication-artifacts.js';
+import { historyArtifactReferences, readableArtifactReferences } from '../../apps/server/dist/communication-artifacts.js';
 import { registerAgentRuntimeToolRoutes } from '../../apps/server/dist/routes/agent-runtime-tools.js';
 
 test('history keeps linked messages searchable and reads complete text with bounded authorized file metadata', { timeout: 20_000 }, async t => {
@@ -80,4 +80,25 @@ test('chunk reference ranges retain split links and exclude adjacent complete li
   const midpoint = before.length + 70;
   assert.deepEqual(artifactIdsIntersectingTextRange(text, midpoint, midpoint + 10), ['a'.repeat(256)]);
   assert.deepEqual(artifactIdsIntersectingTextRange(text, before.length, before.length + reference.length), ['a'.repeat(256)]);
+});
+
+test('historical descriptor budget stops blob validation after the first non-fitting supplemental file', () => {
+  const ids = Array.from({ length: 120 }, (_, index) => `large-file-${index}`);
+  const text = ids.map(id => `ponderosa://artifact/${id}`).join('\n');
+  const content = Buffer.alloc(1024 * 1024, 65), validated = [];
+  let validatedBytes = 0;
+  const metadata = historyArtifactReferences({ projectId: 'project', agentId: 'reader',
+    event: { text, document: { artifactId: 'primary-document' } }, chunk: { text, start: 0, end: text.length },
+    store: { getProjectArtifact: (_project, id) => ({ id }), agentCanReadProjectArtifact: () => true },
+    assets: { authoritativeManagedProjectArtifact: (_project, artifact) => {
+      validated.push(artifact.id); validatedBytes += content.length;
+      return { localPath: '/' + 'managed-segment/'.repeat(90) + artifact.id, byteLength: content.length,
+        contentHash: createHash('sha256').update(content).digest('hex') };
+    } },
+  });
+  assert.deepEqual(validated, ['primary-document', ids[0], ids[1]]);
+  assert.equal(validatedBytes, content.length * 3, 'Later omitted blobs must not be read or hashed');
+  assert.deepEqual(metadata.referencedFiles.map(file => file.artifactId), ['primary-document', ids[0]]);
+  assert.equal(metadata.referencedFilesOmitted, ids.length - 1);
+  assert.equal(text, ids.map(id => `ponderosa://artifact/${id}`).join('\n'));
 });
