@@ -713,6 +713,26 @@ test('Branch execution status distinguishes confirmed zero, active, unresolved a
  assert.ok(!nested.includes('4 active executions'),'Branch status never leaks into the embedded Chat identity');
 });
 
+
+test('workflow directory status keeps availability, trigger intake and active work independent',async()=>{
+ const {BranchDirectoryStatus}=await import('../../apps/web/src/components/branches/BranchDirectoryStatus.tsx');
+ const branch={id:'stable-id',name:'Full workflow name',versionId:'published',enabled:true,activeExecutions:0};
+ const render=(patch={},delayed=false)=>renderToStaticMarkup(React.createElement(BranchDirectoryStatus,{branch:{...branch,...patch},delayed}));
+ const enabled=render();assert.ok(enabled.includes('aria-label="Enabled · Manual · No active executions"'));assert.ok(enabled.includes('data-branch-availability="enabled"'));
+ const paused=render({enabled:false,triggerId:'trigger',triggerEnabled:true,activeExecutions:3});assert.ok(paused.includes('aria-label="Paused · Automatic intake paused · 3 active executions"'));assert.ok(paused.includes('data-branch-availability="paused"'));assert.ok(paused.includes('Automatic'));
+ assert.ok(render({triggerId:'trigger',triggerEnabled:true}).includes('Enabled · Automatic intake on · No active executions'));
+ assert.ok(render({triggerId:'trigger',triggerEnabled:false}).includes('Automatic intake paused'));
+ const unknown=render({enabled:undefined,activeExecutions:undefined,triggerId:'trigger',triggerEnabled:true},true);assert.ok(unknown.includes('Availability unknown · Automatic intake unknown · Active executions unknown · Updates delayed'));assert.ok(!unknown.includes('No active executions'));
+ assert.ok(render({versionId:''}).includes('Unpublished — cannot run'));assert.ok(!render({versionId:''}).includes('aria-label="Enabled'));
+ for(const activeExecutions of [-1,NaN,Infinity])assert.ok(render({activeExecutions}).includes('Active executions unknown'));
+ const {SidebarActivityBadge}=await import('../../apps/web/src/components/SidebarActivityBadge.tsx');
+ const svg=html=>html.match(/<svg[^>]*viewBox="0 0 8 8"[\s\S]*?<\/svg>/)?.[0];
+ const ponderosaCircle=svg(renderToStaticMarkup(React.createElement(SidebarActivityBadge)));
+ assert.ok(ponderosaCircle,'The reference is Ponderosa’s actual sidebar renderer');
+ for(const patch of [{},{enabled:false},{versionId:''},{enabled:undefined,activeExecutions:undefined}])assert.equal(svg(render(patch)),ponderosaCircle,'Every Branch availability state uses the exact same circle as Ponderosa');
+ const busy=render({activeExecutions:200});assert.ok(busy.includes('200 active executions'));assert.ok(busy.includes('99+'));assert.ok(!busy.includes('stable-id'),'Tooltip does not expose raw identifiers');
+});
+
 // Exercise the real intervention fields, mutation and shared dialog shell.
 // Controlled transport keeps this recovery check isolated from live work.
 async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}={}){
