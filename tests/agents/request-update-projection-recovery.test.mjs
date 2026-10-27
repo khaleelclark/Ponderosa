@@ -17,7 +17,7 @@ const quiet = detail => !detail.coordinationV3.activeRun &&
 const reconciliation = (f, chat) => f.api('GET', `/api/projects/${chat.projectId}/communication-reconciliation`);
 
 const recoveryCases=['replay','restart'].flatMap(recover=>[0,1,2,3,'team-metadata','author-metadata','peer-metadata'].map(after=>[recover,after,'codex']));
-recoveryCases.push(['replay','author-metadata','claude']);
+recoveryCases.push(['replay','author-metadata','claude'], ['restart','author-metadata','claude']);
 for (const [recover,after,engine] of recoveryCases) {
   test(`${engine} passive Request metadata recovers by ${recover} after durable write ${after}`, options, t => withFixture(t, async f => {
     const chat = await f.createChat('Interrupted passive handoff');
