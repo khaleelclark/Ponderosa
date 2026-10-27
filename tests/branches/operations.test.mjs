@@ -55,6 +55,25 @@ test('unrelated work is queued behind the same Agent and only an exact Request r
  const summary=await f.summary();assert.equal(summary.state,'retrying');assert.equal(summary.agentWaits[0].state,'provider_retry');assert.equal(summary.agentWaits[0].nextRetryAt,due);f.pass();
 });
 
+test('an answered Request keeps its exact provider retry visible without claiming active work',async t=>{
+ const f=fixture(t);f.branches.advance();
+ const requestId=f.branches.detail(f.execution.id).attempts[0].requestId;
+ const lease=f.coordination.leaseNextRun({workerId:'question-fixture'});
+ f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+ f.coordination.preparePromptInjection({...lease,prompt:'Review this document'});
+ f.coordination.markPromptSubmitted(lease);f.coordination.acknowledgePromptInjection(lease);
+ f.coordination.updateRequest({requestId,updateId:'question',kind:'question',actor:{kind:'agent',id:f.agent.id},payload:{text:'Which document?'}});
+ f.coordination.completeRun(lease.runId,lease.fencingToken);
+ f.coordination.updateRequest({requestId,updateId:'answer',kind:'answer',inReplyToUpdateId:'question',actor:{kind:'user'},payload:{text:'The quarterly update'}});
+ const due=new Date(Date.now()+60000).toISOString();
+ const retry=f.store.sqlite.prepare("UPDATE agent_activations SET state='retry_pending',provider_failure_category='capacity',available_at=? WHERE id IN(SELECT activation_id FROM activation_sources WHERE source_kind='request_update' AND source_id='answer')").run(due);
+ assert.equal(retry.changes,1);
+ const summary=await f.summary();assert.equal(summary.state,'retrying');assert.equal(summary.counts.running,0);
+ assert.equal(summary.agentWaits[0].state,'provider_retry');assert.equal(summary.agentWaits[0].nextRetryAt,due);
+ assert.deepEqual(f.branches.listBranches().find(branch=>branch.id===f.execution.branchId).runCounts,{running:0,waiting:1,queued:0});
+ f.pass();
+});
+
 test('large Branch status materializes at most one bounded Agent page, retains exact counts, and sees provider attention beyond that page',async t=>{
  const f=fixture(t,120);for(let i=0;i<12;i++)f.branches.advance();
  f.store.sqlite.prepare("UPDATE coordination_requests SET created_at='9999-01-01T00:00:00.000Z' WHERE recipient_agent_id=?").run(f.other.id);

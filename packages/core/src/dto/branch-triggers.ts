@@ -134,7 +134,7 @@ export interface TriggerOccurrenceDto {
     eventCount: number;
     eventCountExact?: boolean;
     delivery: "held" | "steering" | "updated" | "run" | "unconfirmed" | "combined";
-    combinedIntoOccurrenceId?: string;
+    combinedIntoOccurrenceId?: string;reconciled?: 'applied'|'not_applied';
   };
   state: TriggerOccurrenceState;
   payload: unknown;

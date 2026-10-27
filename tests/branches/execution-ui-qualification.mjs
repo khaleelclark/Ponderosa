@@ -15,8 +15,8 @@ export async function startExecutionQualification({web=fileURLToPath(new URL('..
  if(!Number.isSafeInteger(historyRuns)||historyRuns<101||historyRuns>150)throw Error('Use 101–150 history runs for the off-page check.');
  web=path.resolve(web);await readFile(path.join(web,'index.html'));
  const [{fixture,until},{AgentStore,BranchStore,CoordinationV3Store}]=await Promise.all([import('../shared/fixture.mjs'),import('../../packages/agents/dist/index.js')]);
- let store,server,stopping=false,manifest;
- const f=await fixture({diagnosticProvider:true,storeFactory:dir=>(store=new AgentStore(dir))}),requests=[];
+ let store,server,stopping=false,manifest,loseSteeringAcknowledgement=false;
+ const f=await fixture({diagnosticProvider:true,storeFactory:dir=>(store=new AgentStore(dir)),steeringResponse:()=>{if(loseSteeringAcknowledgement)throw new Error('Controlled unconfirmed scheduled update');return {status:'accepted'}}}),requests=[];
  const branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
  const inspect=()=>({executionCount:store.sqlite.prepare('SELECT COUNT(*) n FROM branch_executions').get().n,providerRunCount:store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,states:store.sqlite.prepare('SELECT state,COUNT(*) n FROM branch_executions GROUP BY state').all()});
  const onSignal=()=>void stop().then(()=>process.exit(0),error=>{console.error(error);process.exitCode=1});
@@ -109,6 +109,28 @@ export async function startExecutionQualification({web=fileURLToPath(new URL('..
   const preferences=f.ok(await f.api('GET','/api/branches/engine/workspace/preferences'));
   f.ok(await f.api('PATCH','/api/branches/engine/workspace/preferences',{branchFolders:[{id:randomUUID(),name:'Document Review Examples',expanded:true,branchIds:[documentReview.id,approvalAudit.id,...assisted.map(item=>item.branch.id),budgetBranch.id,caller.id,eventsManual.id]}],branchFoldersRevision:preferences.revision,starredResourceIds:[`branch:${documentReview.id}`]}));
 
+  const pendingOwner=await create('Scheduled Document Review — Existing Queue');
+  const repeating={scheduleKind:'interval',everyMs:60000,startsAt:'2099-01-01T00:00:00.000Z'};
+  const pendingBranch=await publish(pendingOwner,{...definition(pendingOwner.name,[gate('review','Approve Scheduled Document')]),trigger:{kind:'schedule',configRef:'schedule'},policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},{agents:{},directories:{},triggers:{schedule:{enabled:true,sourceConfig:repeating}}});
+  const pendingBudget=f.ok(await f.api('GET',`/api/branches/${pendingBranch.id}/execution-budget`));
+  f.ok(await f.api('PUT',`/api/branches/${pendingBranch.id}/execution-budget`,{commandKey:randomUUID(),expectedRevision:pendingBudget.revision,expectedPeriodId:pendingBudget.periodId,policy:{limit:1,period:'lifetime'},acknowledgeNewPeriod:true}));
+  for(let i=0;i<40;i++){branches.triggers.recordTriggerOccurrence({triggerId:pendingBranch.triggerId,occurrenceKey:randomUUID(),payload:{document:`Queued document ${i+1}`},provenance:{source:'qualification_schedule'}});if(i===0)branches.advance()}
+  const pendingCounts=f.ok(await f.api('GET',`/api/branches/${pendingBranch.id}/lifecycle`)).runCounts;
+  assert.deepEqual(pendingCounts,{running:0,waiting:1,queued:39});
+
+  const updateOwner=await create('Scheduled Document Review — Unconfirmed Update');
+  const updateChat=f.ok(await f.api('POST',`/api/branches/${updateOwner.id}/chats`,{label:'Scheduled Review Team',defaultEngine:'codex'},{'idempotency-key':randomUUID()}));
+  const updateAgent=f.ok(await f.api('POST',`/api/branches/engine/projects/${updateChat.projectId}/agents`,{title:'Scheduled Reviewer',engine:'codex',conversationId:updateChat.id,idempotencyKey:randomUUID()}));
+  f.plans.set(updateAgent.id,[{hold:true,output:false}]);
+  const updateBranch=await publish(updateOwner,{...definition(updateOwner.name,[{id:'review',label:'Review Latest Document',kind:'agent',target:{kind:'persistent_agent',ref:'reviewer'},instructions:'Review the latest scheduled document.'}]),trigger:{kind:'schedule',configRef:'schedule'}},{agents:{reviewer:updateAgent.id},directories:{},triggers:{schedule:{enabled:true,sourceConfig:{...repeating,whenRunning:'update_current'}}}});
+  const updateRun=await run(updateBranch,'Original scheduled document');
+  await until(()=>f.sessions.get(updateAgent.id),'scheduled reviewer is working');
+  const checkAt=new Date().toISOString();branches.triggers.updateTriggerDefinition(updateBranch.triggerId,{nextFireAt:checkAt});
+  loseSteeringAcknowledgement=true;
+  const uncertainCheck=branches.triggers.recordScheduledTriggerOccurrence({triggerId:updateBranch.triggerId,expectedNextFireAt:checkAt,nextFireAt:repeating.startsAt,lastFiredAt:checkAt,occurrenceKey:randomUUID(),payload:{scheduledTimes:[checkAt],missedCount:1,document:'Latest quarterly update'},provenance:{source:'qualification_schedule'},now:checkAt});
+  await until(()=>branches.triggers.getTriggerOccurrence(uncertainCheck.occurrenceId).schedule.delivery==='unconfirmed','scheduled update has durable uncertainty');
+  loseSteeringAcknowledgement=false;
+
   const api=await f.listen();
   const mime={'.js':'text/javascript','.mjs':'text/javascript','.css':'text/css','.html':'text/html','.woff2':'font/woff2','.png':'image/png','.svg':'image/svg+xml','.json':'application/json','.webmanifest':'application/manifest+json'};
   server=createServer(async(req,res)=>{try{
@@ -128,6 +150,7 @@ export async function startExecutionQualification({web=fileURLToPath(new URL('..
   const origin=`http://127.0.0.1:${server.address().port}`,view=(branch,executionId,tab='executions')=>origin+`/branches?${new URLSearchParams({branch:branch.id,tab,...(executionId?{execution:executionId}:{})})}`;
   manifest={ready:true,pid:process.pid,origin,root:f.root,web,providerMode:'controlled fixture adapters; no external provider account',documentReview:{branch:documentReview,originalVersionId,currentVersionId:documentReview.versionId,historyRuns,oldestRunId:completed[0].id,fullResultRunId:completed.at(-1).id,reviewRunId:needsReview.id,url:view(documentReview,needsReview.id),offPageUrl:view(documentReview,completed[0].id),workflowUrl:view(documentReview,undefined,'workflow'),draftEditingInstructions:'Rename Check Document in Workflow without saving. Run Workflow must identify Run Published Workflow; historical Run Graph must retain the accepted version.'},approvalAudit:{branch:approvalAudit,runId:auditRun.id,oldPendingGateId:oldPending.id,resolvedGates:100,pendingGates:2,oldPendingOutsideFirstPage:true,url:view(approvalAudit,auditRun.id)},assisted:assisted.map(item=>({...item,activeUrl:view(item.branch,item.active.id),settledUrl:view(item.branch,item.settled.id)})),budget:{branch:budgetBranch,chargedRunId:charged.branchExecutionId,queuedRunId:queuedEvent.branchExecutionId,url:view(budgetBranch,queuedEvent.branchExecutionId),caller,callerRunId:callerRun.id,calledRunId:called.id,callerUrl:view(caller,callerRun.id)},decisions,generatedResult:{runId:generatedResult.id,url:view(documentReview,generatedResult.id),artifact},retainedEvents:{branch:eventsManual,historicalTriggerId:eventsScheduled.triggerId,occurrenceId:historical.occurrenceId,readStatus:retainedEventRead.status,url:view(eventsManual,undefined)},normal:{chat:normal,agent:normalAgent,url:origin+`/projects/${normal.projectId}/chats/${normal.id}`},initial:inspect()};
   manifest.decisionDraftRetention={branch:retentionBranch,runId:retentionRun.id,url:view(retentionBranch,retentionRun.id),chat:retentionChat,agent:retentionAgent,decisionB:retentionDecision,gateA:{id:retentionGate.id,revision:retentionGate.revision,resolvePath:`/api/branch-gates/${retentionGate.id}/resolve`,resolveBody:{commandKey:randomUUID(),expectedRevision:retentionGate.revision,decision:'approve',output:'Gate A approved by another reviewer.'}},answerPath:`/api/branches/engine/decisions/${retentionDecision.id}/respond`,instructions:'Open Decision B and type/attach an answer. Resolve Gate A independently through its API, then verify the Decision B dialog and draft remain mounted before submitting the answer.'};
+  manifest.scheduledRuns={pending:{branch:pendingBranch,counts:pendingCounts,url:view(pendingBranch,undefined),workflowUrl:view(pendingBranch,undefined,'workflow')},uncertain:{branch:updateBranch,runId:updateRun.id,occurrenceId:uncertainCheck.occurrenceId,url:view(updateBranch,updateRun.id)},emptyWorkflowUrl:view(await create('Scheduled Document Review — New Workflow'),undefined,'workflow')};
   const encoded=JSON.stringify(manifest,null,2)+'\n';await writeFile(path.join(f.root,'execution-ui-fixture.json'),encoded);if(manifestPath)await writeFile(path.resolve(manifestPath),encoded);console.log(JSON.stringify(manifest));
   return {manifest,stop};
  }catch(error){await writeFile(path.join(f.root,'execution-ui-setup-error.json'),JSON.stringify({error:String(error),stack:error.stack},null,2)+'\n');await stop();throw error}

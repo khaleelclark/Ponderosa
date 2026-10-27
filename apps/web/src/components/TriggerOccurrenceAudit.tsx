@@ -10,6 +10,7 @@ export function OccurrenceAudit({ occurrence, onOpenAgentWork, runTerminology=fa
         status={delivery?.status??(occurrence.state === "dead_lettered" ? "failed" : occurrence.state === "cancelled" ? "disabled" : runTerminology ? occurrence.state === "pending" ? "waiting" : "enabled" : "completed")}
         label={delivery?.label??(runTerminology ? ({pending:"Pending Activation",activated:"Activated",cancelled:"Canceled",dead_lettered:"Activation Failed"} as const)[occurrence.state] : occurrence.state.replaceAll("_", " "))}
       />
+      {schedule?.reconciled&&<Typography variant="caption">{schedule.reconciled==='applied'?'Update applied — confirmed by you':'Update not applied — reconciled by you'}</Typography>}
       {schedule ? <Chip size="small" variant="outlined" label="Scheduled" /> : null}
       {occurrence.provenance.source === "operator_manual_run" ? <Chip size="small" variant="outlined" label="Manual" /> : null}
       <Typography variant="caption">{new Date(occurrence.occurredAt).toLocaleString()}</Typography>

@@ -13,10 +13,10 @@ const {MutationNotificationProvider}=await import('../../apps/web/src/components
 const base={name:'Workflow',tab:'executions',published:true,dirty:false,onTab(){},onExport(){},onUpdate(){},onRename(){}};
 
 test('Run count presentation separates Running, Waiting and Queued without guessing unknown as zero',()=>{
- assert.deepEqual(branchRunStatus({running:2,waiting:3,queued:4}),{status:'running',label:'2 Running · 7 Pending',compact:'2 / 7',lines:['Running: 2','Waiting: 3','Queued: 4']});
- assert.equal(branchRunStatus({running:0,waiting:1,queued:2}).status,'waiting');assert.equal(branchRunStatus({running:0,waiting:0,queued:0}).status,'idle');
+ assert.deepEqual(branchRunStatus({running:2,waiting:3,queued:4}),{status:'running',label:'2 Running · 7 Pending',compact:'2 / 7',lines:['Workflow Runs','Running: 2','Waiting: 3','Queued: 4']});
+ assert.equal(branchRunStatus({running:0,waiting:1,queued:2}).status,'waiting');assert.equal(branchRunStatus({running:0,waiting:0,queued:0}).status,'idle');assert.equal(branchRunStatus({running:0,waiting:0,queued:0}).label,'0 Running');assert.equal(branchRunStatus({running:4,waiting:0,queued:0}).label,'4 Running');assert.equal(branchRunStatus({running:0,waiting:1,queued:39}).label,'0 Running · 40 Pending');
  for(const counts of [undefined,{running:-1,waiting:0,queued:0},{running:0.5,waiting:0,queued:0}])assert.match(branchRunStatus(counts).label,/loading/);
- assert.equal(branchRunStatus(undefined,true).label,'Run status unavailable');assert.deepEqual(branchRunStatus({running:1,waiting:0,queued:0},true).lines,['Running: 1','Waiting: 0','Queued: 0','Updates delayed']);
+ assert.equal(branchRunStatus(undefined,true).label,'Run status unavailable');assert.deepEqual(branchRunStatus({running:1,waiting:0,queued:0},true).lines,['Workflow Runs','Running: 1','Waiting: 0','Queued: 0','Updates delayed']);
 });
 
 test('expanded and compact header counts reuse shared status presentation and one accessible breakdown',()=>{

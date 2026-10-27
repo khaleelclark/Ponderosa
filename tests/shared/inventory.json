@@ -1476,6 +1476,30 @@
       "moduleBase": "packages/agents/package.json",
       "requirements": "Node24, built core/native/agents; disposable local SQLite stores, no provider, listener or live data",
       "origin": "Exact scheduled update ownership, non-delivery, uncertainty, approval races and no fallback Run regressions"
+    },
+    {
+      "path": "tests/branches/run-status.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built core/native/agents; disposable SQLite authority fixtures, no listener or provider account",
+      "origin": "PR #98 scheduled Run policies and canonical counts"
+    },
+    {
+      "path": "tests/branches/run-status-ui.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies and source loader; shared status markup, no listener or provider account",
+      "origin": "PR #98 scheduled Run policies and canonical counts"
+    },
+    {
+      "path": "tests/branches/schedule-overlap.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; disposable SQLite and controlled Codex/Claude adapters, no external provider account",
+      "origin": "PR #98 scheduled Run policies and canonical counts"
     }
   ],
   "retainedReleasePayload": [

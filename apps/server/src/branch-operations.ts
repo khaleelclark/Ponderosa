@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import {REQUEST_SOURCE_LINEAGE_CTE} from "@ponderosa/agents";
+import {BRANCH_LIVE_REQUEST_LINEAGE_CTE,branchStartedRequestRunSql,readBranchWorkingStepCount,requestSourceLineageBody} from "@ponderosa/agents";
 import type { BranchExecutionDto, BranchOperationalSummaryDto } from "@ponderosa/core";
 
 type Row = Record<string, any>;
@@ -24,7 +24,7 @@ export async function branchOperationalSummary(
   const now = new Date().toISOString();
   // Aggregate in SQLite; materialize only the visible page and provider/state groups.
   const steps = db.prepare(`SELECT
-    SUM(state='completed') completed,SUM(state IN ('running','leased')) running,
+    SUM(state='completed') completed,
     SUM(state='failed') failed FROM branch_step_executions WHERE execution_id=?`).get(execution.id) as Row;
   const attempts = db.prepare(`SELECT
     SUM(a.state='outcome_unknown') unknown,
@@ -39,19 +39,21 @@ export async function branchOperationalSummary(
   const pendingGates = (db.prepare(`SELECT COUNT(*) count FROM branch_gates g
     JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? AND g.state='waiting'`).get(execution.id) as Row).count as number;
   const activeExecution = ['queued','running','waiting'].includes(execution.state);
-  const waitCte = `${REQUEST_SOURCE_LINEAGE_CTE}, waits AS (
+  const waitCte = `${BRANCH_LIVE_REQUEST_LINEAGE_CTE}, waits AS (
     SELECT a.id,a.updated_at,r.id request_id,r.state request_state,r.created_at request_created_at,
       r.recipient_agent_id agent_id,ag.title agent_title,ag.active_engine engine_id,
-      EXISTS(SELECT 1 FROM request_source_lineage source
-        JOIN scheduler_run_activations attached ON attached.activation_id=source.activation_id
-        JOIN scheduler_runs sr ON sr.id=attached.run_id
-        WHERE source.request_id=r.id AND sr.agent_id=r.recipient_agent_id
-          AND sr.status IN ('leased','running') AND sr.terminal_at IS NULL
-          AND sr.side_effects_fenced_at IS NULL AND sr.lease_expires_at>:now) attached_run,
+      ${branchStartedRequestRunSql('r')} attached_run,
       EXISTS(SELECT 1 FROM scheduler_runs sr WHERE sr.agent_id=r.recipient_agent_id
         AND sr.status IN ('leased','running') AND sr.terminal_at IS NULL
         AND sr.side_effects_fenced_at IS NULL AND sr.lease_expires_at>:now) active_run,
-      (SELECT activation.id FROM request_source_lineage source
+      (WITH branch_retry_sources AS MATERIALIZED (
+        SELECT source.* FROM agent_activations activation
+        CROSS JOIN activation_sources source ON source.activation_id=activation.id
+        WHERE activation.agent_id=r.recipient_agent_id AND activation.project_id=r.project_id
+          AND activation.scope_key=CASE WHEN r.conversation_id IS NOT NULL THEN 'conversation:'||r.conversation_id ELSE 'agent:'||r.recipient_agent_id END
+          AND activation.state='retry_pending'
+      ),${requestSourceLineageBody('branch_retry_sources')}
+        SELECT activation.id FROM request_source_lineage source
         JOIN agent_activations activation ON activation.id=source.activation_id
         WHERE source.request_id=r.id AND activation.agent_id=r.recipient_agent_id
           AND activation.state='retry_pending' ORDER BY activation.available_at,activation.id LIMIT 1) retry_id
@@ -104,7 +106,7 @@ export async function branchOperationalSummary(
   const unknown=Number(attempts.unknown??0),retrying=Number(attempts.retrying??0),scheduledRetries=Number(attempts.scheduled??0);
   const humanRequests=classifications.filter(row=>row.state==='waiting_human').reduce((n,row)=>n+row.total,0);
   const totalWaits=classifications.reduce((n,row)=>n+row.total,0);
-  const counts={completed:Number(steps.completed??0),running:Number(steps.running??0),retrying,failed:Number(steps.failed??0),
+  const counts={completed:Number(steps.completed??0),running:readBranchWorkingStepCount(db,execution.id,now),retrying,failed:Number(steps.failed??0),
     waitingAgent:totalWaits,waitingHuman:pendingGates+humanRequests,needsReconciliation:unknown,
     mapItems:Number(mapPaths.total),mapSettled:Number(mapPaths.settled??0)};
   let state: BranchOperationalSummaryDto["state"];
@@ -119,7 +121,7 @@ export async function branchOperationalSummary(
   else if (classifications.some(wait => wait.state === "provider_unavailable")) { state = "provider_unavailable"; label = "Provider unavailable"; }
   else if (pendingGates || humanRequests) { state = "waiting_human"; label = "Waiting on a person"; }
   else if (classifications.some(wait => wait.state === "provider_retry" || wait.state === "retry_pending") || scheduledRetries) { state = "retrying"; label = "Retry scheduled"; }
-  else if (counts.running || classifications.some(wait=>wait.state==='agent_running')) { state = "running"; label = "Work in progress"; }
+  else if (counts.running) { state = "running"; label = "Work in progress"; }
   else if (totalWaits && classifications.every(wait=>wait.state==='waiting_dependency')) { state='blocked';label='Waiting for dependent work'; }
   else if (totalWaits) { state = "waiting_agent"; label = "Waiting for Agent"; }
   else if (execution.state === "queued") { state = "queued"; label = execution.budgetWait ? "Waiting for automatic execution budget" : "Queued"; }

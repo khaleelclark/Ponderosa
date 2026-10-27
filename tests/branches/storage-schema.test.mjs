@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AgentStore } from '@ponderosa/agents';
+import Database from 'better-sqlite3';
+import {DataDirectoryAuthority} from '@ponderosa/native-host';
+import {storageDatabaseFilename} from '@ponderosa/native-host/sqlite-storage';
+import {initializeCurrentDatabase} from '../../packages/agents/dist/db.js';
 
 function fixture(t) {
   const root=mkdtempSync(path.join(tmpdir(),'branches-current-schema-'));
@@ -37,5 +41,35 @@ test('Branch storage survives reopening without restoring archive or direct-Agen
   f.reopen();
   assert.equal(f.store.sqlite.prepare('SELECT generation_id FROM _state_generation').get().generation_id,generation);
   assert.equal(f.store.sqlite.prepare('SELECT branch_id FROM trigger_definitions').get().branch_id,id);
+  for(const [index,columns] of [['scheduler_run_activations_by_activation',['activation_id','run_id']],['scheduler_steering_recoveries_by_run',['run_id']]]) {
+    assert.deepEqual(f.store.sqlite.prepare(`PRAGMA index_info(${index})`).all().map(column=>column.name),columns);
+  }
+  // Older schemas retain the shipped refusal boundary. Qualify the explicit
+  // offline extension on a separate copy, never silently migrate on startup.
+  f.store.sqlite.transaction(()=>{
+    f.store.sqlite.exec('DROP INDEX scheduler_run_activations_by_activation; DROP INDEX scheduler_steering_recoveries_by_run;');
+    f.store.sqlite.prepare("DELETE FROM _schema_version WHERE name='0027_schedule_work_lookup.sql'").run();
+  })();
+  f.store.close();
+  const data=path.join(f.root,'data'),sourceBytes=readFileSync(path.join(data,'ponderosa.db'));
+  assert.throws(()=>f.reopen(),/unsupported or incomplete current state/);
+  assert.deepEqual(readFileSync(path.join(data,'ponderosa.db')),sourceBytes);
+  const sourceAuthority=new DataDirectoryAuthority(data),converted=path.join(f.root,'converted');
+  try{cpSync(data,converted,{recursive:true})}finally{sourceAuthority.close()}
+  const targetAuthority=new DataDirectoryAuthority(converted);
+  try{
+    const offline=new Database(storageDatabaseFilename(path.join(targetAuthority.rootPath,'ponderosa.db')));
+    try{initializeCurrentDatabase(offline)}finally{offline.close()}
+  }finally{targetAuthority.close()}
+  for(let reopen=0;reopen<2;reopen++){
+    const admitted=new AgentStore(converted);
+    try{
+      assert.equal(admitted.sqlite.prepare('SELECT generation_id FROM _state_generation').get().generation_id,generation);
+      assert.equal(admitted.sqlite.prepare('SELECT branch_id FROM trigger_definitions').get().branch_id,id);
+      assert.equal(admitted.sqlite.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name IN ('scheduler_run_activations_by_activation','scheduler_steering_recoveries_by_run')").get().n,2);
+      assert.equal(admitted.sqlite.prepare("SELECT COUNT(*) n FROM _schema_version WHERE name='0027_schedule_work_lookup.sql'").get().n,1);
+    }finally{admitted.close()}
+  }
+  assert.deepEqual(readFileSync(path.join(data,'ponderosa.db')),sourceBytes);
   f.complete();
 });

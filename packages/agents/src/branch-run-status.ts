@@ -2,13 +2,24 @@ import type Database from 'better-sqlite3';
 import type {BranchRunCountsDto} from '@ponderosa/core';
 import {requestSourceLineageBody} from './coordination-v3-request-lineage.js';
 
+/** Bound the shared source map by live scheduler authority before mapping
+ * direct, answered and joined Requests; never materialize retained history. */
+export const BRANCH_LIVE_REQUEST_LINEAGE_CTE=`WITH branch_live_sources AS MATERIALIZED (
+  SELECT source.activation_id,source.source_kind,source.source_id FROM scheduler_runs live
+  CROSS JOIN scheduler_run_activations attached ON attached.run_id=live.id
+  CROSS JOIN activation_sources source ON source.activation_id=attached.activation_id
+  WHERE live.status IN ('leased','running') AND live.started_at IS NOT NULL
+    AND live.terminal_at IS NULL AND live.side_effects_fenced_at IS NULL AND live.lease_expires_at>:now
+),${requestSourceLineageBody('branch_live_sources')}`;
+
 /** Canonical Request attachment, including answer/Join continuations. The
  * alias is restricted to the two existing projection callers. */
 export function branchStartedRequestRunSql(requestAlias:'request'|'r'):string {
   return `EXISTS(
     SELECT 1 FROM request_source_lineage source
-    JOIN scheduler_run_activations attached ON attached.activation_id=source.activation_id
-    JOIN scheduler_runs scheduler ON scheduler.id=attached.run_id AND scheduler.agent_id=${requestAlias}.recipient_agent_id
+    CROSS JOIN scheduler_run_activations attached ON attached.activation_id=source.activation_id
+    CROSS JOIN scheduler_runs scheduler ON scheduler.id=attached.run_id AND scheduler.agent_id=${requestAlias}.recipient_agent_id AND scheduler.project_id=${requestAlias}.project_id
+      AND scheduler.scope_key=CASE WHEN ${requestAlias}.conversation_id IS NOT NULL THEN 'conversation:'||${requestAlias}.conversation_id ELSE 'agent:'||${requestAlias}.recipient_agent_id END
     WHERE source.request_id=${requestAlias}.id AND ${requestAlias}.state IN ('open','in_progress') AND ${requestAlias}.terminal_at IS NULL
       AND scheduler.status='running' AND scheduler.started_at IS NOT NULL
       AND scheduler.terminal_at IS NULL AND scheduler.side_effects_fenced_at IS NULL
@@ -49,7 +60,7 @@ const workingSteps = `
 export function readBranchRunCounts(db:Database.Database,branchIds:readonly string[],now=new Date().toISOString()):Map<string,BranchRunCountsDto> {
   const ids=[...new Set(branchIds)],counts=new Map(ids.map(id=>[id,{running:0,waiting:0,queued:0}]));
   if(!ids.length)return counts;
-  const rows=db.prepare(`WITH ${requestSourceLineageBody()},active_branch_runs AS (
+  const rows=db.prepare(`${BRANCH_LIVE_REQUEST_LINEAGE_CTE},active_branch_runs AS (
     SELECT id,branch_id,state,cancel_requested FROM branch_executions
     WHERE branch_id IN (SELECT value FROM json_each(:branchIds)) AND state IN ('queued','running','waiting')
   ),${workingSteps}, classified AS (
@@ -64,7 +75,7 @@ export function readBranchRunCounts(db:Database.Database,branchIds:readonly stri
 /** Selected-Run diagnostics reuse the exact batch-count proof, not a second
  * interpretation of branch state or an Agent-wide scheduler lookup. */
 export function readBranchWorkingStepCount(db:Database.Database,executionId:string,now=new Date().toISOString()):number {
-  const row=db.prepare(`WITH ${requestSourceLineageBody()},active_branch_runs AS (
+  const row=db.prepare(`${BRANCH_LIVE_REQUEST_LINEAGE_CTE},active_branch_runs AS (
     SELECT id,branch_id,state,cancel_requested FROM branch_executions
     WHERE id=:executionId AND state IN ('queued','running','waiting')
   ),${workingSteps} SELECT COUNT(*) count FROM working_branch_steps`).get({executionId,now}) as {count:number};

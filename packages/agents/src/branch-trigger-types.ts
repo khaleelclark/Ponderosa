@@ -1,4 +1,4 @@
-import type { TriggerSourceKind, TriggerSourceConfig, TriggerOccurrenceState } from "@ponderosa/core";
+import type { TriggerSourceKind, TriggerSourceConfig, TriggerOccurrenceState, TriggerOccurrenceDto } from "@ponderosa/core";
 export interface TriggerFilesystemBurst {
   triggerId: string;
   occurrenceKey: string;
@@ -46,6 +46,8 @@ export interface UpdateTriggerDefinitionInput {
 }
 
 export interface RecordTriggerOccurrenceInput {
+  /** Scheduler-owned hold, never accepted from external event data. */
+  heldSchedule?: NonNullable<TriggerOccurrenceDto['schedule']>;
   /** Trusted server intake flag, never copied from payload or provenance. Branch-only. */
   branchOperatorManual?: boolean;
   triggerId: string;

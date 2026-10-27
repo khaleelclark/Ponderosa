@@ -6,7 +6,7 @@ import { realpathSync, statSync } from 'node:fs';
 import {createHash} from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {validatedObject,exactObjectFields} from '../object-validation.js';
-import { workspaceRecencyCte, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
+import { readBranchRunCounts, workspaceRecencyCte, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
 import { BranchValidationError, AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type DeployBranchRequest, type WorkspacePreferencesDto } from '@ponderosa/core';
 import {activeChatResourceOwner} from '../branch-resource-owner.js';
 import {previewBranchExecutionActions,previewBranchExecutionDetail} from '../branch-detail-preview.js';
@@ -56,9 +56,12 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
         const current = input.branchId ? branches.trigger(input.branchId) : undefined;
         const previous = input.branchId ? branches.localConfiguration(input.branchId)?.triggers?.[input.definition.trigger.configRef] : undefined;
         const same = current?.sourceKind === input.definition.trigger.kind && previous && stableJson(previous.sourceConfig) === stableJson(local.sourceConfig) && stableJson(current.sourceConfig)===stableJson(parsed);
-        const keepSchedule = same && (previous.enabled === local.enabled || !local.enabled);
-        const normalized = keepSchedule ? { config: current.sourceConfig, nextFireAt: current.nextFireAt } : normalizeTriggerSourceConfig(input.definition.trigger.kind, parsed);
-    return {sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt,resetSchedule:!keepSchedule,...(keepSchedule?{enabledOverride:local.enabled?current.enabled:false}:{})};
+        const cadence=(value:import('@ponderosa/core').TriggerSourceConfig)=>{const {whenRunning,...timing}=value as import('@ponderosa/core').TriggerSourceConfig & {whenRunning?:string};return timing};
+        const sameCadence=current?.sourceKind==='schedule'&&input.definition.trigger.kind==='schedule'&&previous&&
+          stableJson(cadence(previous.sourceConfig))===stableJson(cadence(local.sourceConfig))&&stableJson(cadence(current.sourceConfig))===stableJson(cadence(parsed));
+        const keepSchedule = (same||sameCadence) && previous && (previous.enabled === local.enabled || !local.enabled);
+        const normalized = keepSchedule ? { config: same?current!.sourceConfig:parsed, nextFireAt: current!.nextFireAt } : normalizeTriggerSourceConfig(input.definition.trigger.kind, parsed);
+    return {sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt,resetSchedule:!keepSchedule,...(keepSchedule?{enabledOverride:local.enabled?current!.enabled:false}:{})};
   }
   context.installations.setPublisher((input,configuration)=>{
     let trigger=validateLocal(input,configuration);
@@ -165,7 +168,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
   app.get<{Params:{id:string}}>('/api/branches/:id/lifecycle',async(request,reply)=>{
     const id=request.params.id,row=store.sqlite.prepare('SELECT deleting FROM branches WHERE id=?').get(id) as {deleting:number}|undefined;
     if(!row)return reply.code(404).send({error:'Branch not found'});
-    return {deleting:Boolean(row.deleting),chats:(store.sqlite.prepare('SELECT COUNT(*) n FROM conversations WHERE branch_id=?').get(id) as {n:number}).n,
+    return {deleting:Boolean(row.deleting),runCounts:readBranchRunCounts(store.sqlite,[id]).get(id)!,chats:(store.sqlite.prepare('SELECT COUNT(*) n FROM conversations WHERE branch_id=?').get(id) as {n:number}).n,
       activeExecutions:(store.sqlite.prepare("SELECT COUNT(*) n FROM branch_executions WHERE branch_id=? AND state IN ('queued','running','waiting')").get(id) as {n:number}).n,
       callers:store.sqlite.prepare('SELECT DISTINCT b.id,b.name FROM branch_dependencies d JOIN branches b ON b.id=d.branch_id WHERE d.target_branch_id=? AND d.branch_id!=?').all(id,id) as Array<{id:string;name:string}>,
       pendingRemoval:store.sqlite.prepare("SELECT r.local_id id,CASE WHEN r.agent_ref='' THEN 'Chat' ELSE 'Agent' END kind,e.error FROM branch_installation_resources r LEFT JOIN branch_retirement_errors e ON e.resource_id=r.local_id WHERE r.branch_id=? AND r.state='retiring'").all(id) as Array<{id:string;kind:'Chat'|'Agent';error?:string}>,
