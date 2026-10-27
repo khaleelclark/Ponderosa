@@ -266,17 +266,67 @@ test('complete separated guidance survives empty-history imports through both st
   assert.equal(pkg.agents[0].initialInstructions, '');
 }));
 
-test('long history and guidance rewrite only artifact references and retain duplicates, timestamps and trailing text', options, t => withPortability(t, async f => {
+test('long history and guidance retain exact text through remapping and three full-copy generations', options, t => withPortability(t, async f => {
+ const historyHash=history=>createHash('sha256').update(JSON.stringify(history)).digest('hex');
  const pkg=await f.exportAgent(f.a.id),node=pkg.agents[0],text='雪\r\n🌲'.repeat(25_000)+` [File](ponderosa://artifact/${f.artifactId}) TRAILING_HISTORY`;
- node.initialInstructions=text;
+ assert.ok(text.length>100000);node.initialInstructions=text;
  node.history=[{role:'user',text,createdAt:'2026-10-27T02:00:00+02:00'},{role:'user',text},{role:'system',text}];
  const imported=f.ok(await f.request(f.importRequest(pkg))),archive=f.store.getImportedHistory(imported.rootAgentId);
  const artifact=f.store.getProjectArtifacts(f.project.id).find(a=>a.originAgentId===imported.rootAgentId),rewritten=text.replaceAll(f.artifactId,artifact.id);
  assert.ok(archive.initialInstructions===rewritten,'complete guidance rewrites only the artifact reference');
- assert.equal(createHash('sha256').update(JSON.stringify(archive.messages)).digest('hex'),createHash('sha256').update(JSON.stringify(node.history.map(message=>({...message,text:rewritten})))).digest('hex'));
+ assert.equal(historyHash(archive.messages),historyHash(node.history.map(message=>({...message,text:rewritten}))));
  const again=await f.exportAgent(imported.rootAgentId);
- assert.equal(again.agents[0].initialInstructions,rewritten);assert.deepEqual(again.agents[0].history,archive.messages);
- await f.restart();assert.deepEqual(f.store.getImportedHistory(imported.rootAgentId).messages,archive.messages);
+ assert.ok(again.agents[0].initialInstructions===rewritten);assert.equal(historyHash(again.agents[0].history),historyHash(archive.messages));
+ await f.restart();assert.equal(historyHash(f.store.getImportedHistory(imported.rootAgentId).messages),historyHash(archive.messages));
+ let source=imported.rootAgentId,currentArtifact=artifact.id,expected=rewritten;
+ for(let generation=0;generation<3;generation++){
+  const copied=await f.copy(source),mapped=f.store.getProjectArtifacts(f.project.id).find(item=>item.originAgentId===copied.rootAgentId);
+  assert.ok(mapped,'Every full copy retains its managed artifact');
+  expected=expected.replaceAll(currentArtifact,mapped.id);currentArtifact=mapped.id;
+  const retained=f.store.getImportedHistory(copied.rootAgentId),history=node.history.map(message=>({...message,text:expected}));
+  assert.ok(retained.initialInstructions===expected,'Each generation retains the complete >100k guidance, including its suffix');
+  assert.equal(historyHash(retained.messages),historyHash(history),'Each generation preserves all long messages, duplicates, roles and optional timestamps');
+  const guidance=synthetic(f.projection(copied.rootAgentId));assert.equal(guidance.length,1);assert.ok(guidance[0].text===expected,'Derived guidance remains complete and unique');
+  const exported=await f.exportAgent(copied.rootAgentId);assert.ok(exported.agents[0].initialInstructions===expected);
+  assert.equal(historyHash(exported.agents[0].history),historyHash(history));
+  source=copied.rootAgentId;
+  if(generation===1){await f.restart();f.store.rebuildProjections();assert.ok(f.store.getImportedHistory(source).initialInstructions===expected,'Restart and rebuild retain the copied guidance');}
+ }
+}));
+
+test('organization import and copy preserve each member’s private history and retrieval identity after restart',options,t=>withPortability(t,async f=>{
+ const markers=['LEADPRIVATESUNRISE','WORKERPRIVATEHARVEST','SIBLINGPRIVATERIVER'],roles=['user','assistant','system'];
+ const members=markers.map((marker,index)=>({ref:`private${index}`,title:`Private member ${index}`,engine:'codex',
+  managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},
+  ...(index?{managerRef:'private0'}:{}),history:[{role:roles[index],text:`${marker} retained private transcript ${index}`}]}));
+ const pkg={schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Separate private histories',rootRef:'private0',agents:members};
+ const check=async result=>{
+  const owners=new Map(result.agentIds.map(id=>[f.store.getAgent(id).title,id])),archives=new Map(),hits=new Map();
+  assert.equal(owners.size,members.length);
+  for(const member of members){
+   const id=owners.get(member.title);assert.ok(id);const archived=f.store.getImportedHistory(id);assert.deepEqual(archived.messages,member.history);
+   assert.equal(f.store.getAgent(id).managerAgentId,member.ref===pkg.rootRef?undefined:result.rootAgentId);
+   const deadline=Date.now()+10000;let availability;
+   do{availability=f.store.getImportedHistoryAvailability(id);if(availability.status==='ready')break;assert.notEqual(availability.status,'unavailable');await delay(10)}while(Date.now()<deadline);
+   assert.equal(availability.status,'ready','Each complete private archive must become searchable');archives.set(id,availability.archiveVersion);
+   const found=f.store.searchImportedHistory({agentId:id,archiveVersion:availability.archiveVersion,query:markers[members.indexOf(member)]}).response;
+   assert.equal(found.hits.length,1);assert.equal(found.hits[0].role,member.history[0].role);assert.equal(found.hits[0].sourceLabel,'Imported History');hits.set(id,found.hits[0]);
+  }
+  for(const [title,id] of owners){
+   const archiveVersion=archives.get(id),own=members.find(member=>member.title===title);
+   const exact=f.store.readImportedHistory({agentId:id,archiveVersion,reference:hits.get(id).reference}).response;
+   assert.equal(exact.messages[exact.requestedMessageIndex].text,own.history[0].text);
+   for(const member of members.filter(member=>member.title!==title)){
+    const foreignId=owners.get(member.title),foreign=hits.get(foreignId);
+    assert.equal(f.store.searchImportedHistory({agentId:id,archiveVersion,query:markers[members.indexOf(member)]}).response.noMatch,true,'Managers, organization roots and siblings do not inherit member archives');
+    assert.throws(()=>f.store.readImportedHistory({agentId:id,archiveVersion,reference:foreign.reference}),/reference|archive/);
+   }
+  }
+ };
+ const imported=f.ok(await f.request(f.importRequest(pkg)));await check(imported);
+ const copied=await f.copy(imported.rootAgentId);await f.restart();f.store.rebuildProjections();await check(copied);
+ assert.equal(f.store.readCommunicationEvents(f.project.id).filter(event=>event.conversationId===f.destination.id).length,0);
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);
 }));
 
 test('101-Agent organizations import, copy and export whole after restart with bounded bottom-up assignment', options, t => withPortability(t, async f => {

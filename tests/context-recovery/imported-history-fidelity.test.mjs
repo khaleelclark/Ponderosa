@@ -392,3 +392,20 @@ test('constructor failure fences index jobs queued by recovery before a later st
   f.reopen();
   for (const agent of agents) await ready(f.store, agent.id);
 }));
+
+
+test('requested large neighbors cannot prevent exact forward progress through a long imported message', { timeout: 20000 }, t => fixture(t, async f => {
+  const neighbor = label => ({ role: 'assistant', text: label + '🌲\r\n'.repeat(4000) });
+  const retained = 'NEIGHBORPROGRESSWITNESS\n' + '雪🌲\r\n'.repeat(20000) + ' EXACT_TARGET_END';
+  const messages = [neighbor('First before '), neighbor('Second before '), { role: 'user', text: retained }, neighbor('First after '), neighbor('Second after ')];
+  assert.ok(retained.length > 100000);
+  assert.ok(messages.filter(message => message.text !== retained).every(message => Buffer.byteLength(message.text) > 8000));
+  f.store.setImportedHistory(f.agent.id, 'Neighbor budget pressure', messages);
+  const version = await ready(f.store, f.agent.id);
+  const hit = search(f.store, f.agent.id, version, 'NEIGHBORPROGRESSWITNESS', 1).hits[0];
+  assert.equal(hit.sequence, 2);
+  const initial = f.store.readImportedHistory({ agentId: f.agent.id, archiveVersion: version, reference: hit.reference, before: 2, after: 2 }).response;
+  const target = initial.messages[initial.requestedMessageIndex];
+  assert.equal(target.reference, hit.reference); assert.equal(target.complete, false); assert.ok(target.endCodePoint > target.startCodePoint); assert.ok(target.continuation);
+  assert.ok(reassemble(f.store, f.agent.id, version, hit, retained, { before: 2, after: 2 }) > 1);
+}));
