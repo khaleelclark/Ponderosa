@@ -93,7 +93,6 @@ export function ImportAgentForm({
   const instructionsConflict = Boolean(sourceInstructions && destinationInstructions && sourceInstructions !== destinationInstructions);
   useEffect(() => { setInstructionsAction(""); importRequestId.current = createClientId(); }, [sourceInstructions, destinationInstructions, conversationId]);
   const [error, setError] = useState<string>();
-  const [promptCopyStatus, setPromptCopyStatus] = useState<string>();
   const destinationAgentsQuery = useQuery<AgentDto[]>({
     queryKey: queryKeys.agents.project(projectId),
     queryFn: () => api.listAgents(projectId),
@@ -290,9 +289,9 @@ export function ImportAgentForm({
   const copyExternalPrompt = async () => {
     try {
       await copyText(externalAgentImportPrompt(new Date().toISOString()));
-      setPromptCopyStatus("Prompt copied");
+      notify({ key: "copy-import-prompt", message: "Copied" });
     } catch {
-      setPromptCopyStatus("Could not copy the prompt. Check clipboard access and try again.");
+      notify({ key: "copy-import-prompt", message: "Could not copy the prompt. Check clipboard access and try again.", severity: "error" });
     }
   };
 
@@ -310,9 +309,6 @@ export function ImportAgentForm({
             Copy conversion prompt
           </Button>
         </Stack>
-        {promptCopyStatus ? <Typography role="status" variant="caption" color={promptCopyStatus === "Prompt copied" ? "success.main" : "error.main"} sx={{ display: "block", mt: 0.75 }}>
-          {promptCopyStatus}
-        </Typography> : null}
       </Paper>
       <Typography variant="body2" color="text.secondary">Agent and organization packages: up to {AGENT_PACKAGE_LIMIT_LABEL}, with up to {AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL} of embedded artifacts. Choose a file for large imports.</Typography>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" } }}>

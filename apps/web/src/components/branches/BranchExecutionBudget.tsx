@@ -5,12 +5,13 @@ import {Alert,Button,Dialog,DialogActions,DialogContent,DialogTitle,FormControlL
 import type {BranchExecutionBudgetDto,BranchExecutionBudgetGrant,BranchExecutionBudgetPolicy,BranchExecutionBudgetUpdate} from '@ponderosa/core';
 import {requestJson} from '../../api/real';
 import {ApiRequestError} from '../../api/types';
+import {useMutationNotification} from '../MutationNotifications';
 import {useBranchDraftGuard} from './BranchNavigation';
 import {budgetPresentation,validBudgetNumber} from './budgetPresentation';
 
 const countedSources='Scheduled, webhook and filesystem executions, and incoming Branch Calls count when workflow work first starts. Direct manual runs and trigger Run once are exempt. Steps and retries within an execution do not count again.';
 export function BranchExecutionBudget({branchId,settings=false,active=true}:{branchId:string;settings?:boolean;active?:boolean}):JSX.Element {
- const client=useQueryClient(),queryKey=['branch-execution-budget',branchId];
+ const client=useQueryClient(),notify=useMutationNotification(),queryKey=['branch-execution-budget',branchId];
  const query=useQuery({queryKey,queryFn:()=>requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget`),enabled:active,refetchInterval:active?5000:false});
  const [draft,setDraft]=useState<BranchExecutionBudgetPolicy|null>(),[base,setBase]=useState<BranchExecutionBudgetDto>(),[grantOpen,setGrantOpen]=useState(false),[additional,setAdditional]=useState('1');
  const policyAttempt=useRef<BranchExecutionBudgetUpdate>(),grantAttempt=useRef<BranchExecutionBudgetGrant>(),grantResultLimit=useRef<number>();
@@ -21,7 +22,7 @@ export function BranchExecutionBudget({branchId,settings=false,active=true}:{bra
  const save=useMutation({mutationFn:()=>{
    if(!policyAttempt.current){if(!base||draft===undefined)throw new Error('Load the current budget first');policyAttempt.current={commandKey:createClientId(),expectedRevision:base.revision,expectedPeriodId:base.periodId,policy:draft,acknowledgeNewPeriod:true}}
    return requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget`,{method:'PUT',body:JSON.stringify(policyAttempt.current)});
- },onSuccess:result=>{policyAttempt.current=undefined;setDraft(result.policy);setBase(result);refresh()},onError:error=>{if(error instanceof ApiRequestError&&error.status>=400&&error.status<500){policyAttempt.current=undefined;refresh()}}});
+ },onSuccess:result=>{policyAttempt.current=undefined;setDraft(result.policy);setBase(result);refresh();notify({key:`branch-execution-budget:${branchId}`,message:"Settings Saved"})},onError:error=>{if(error instanceof ApiRequestError&&error.status>=400&&error.status<500){policyAttempt.current=undefined;refresh()}}});
  const grant=useMutation({mutationFn:()=>{
    if(!grantAttempt.current){const current=query.data;if(!current?.periodId)throw new Error('Load the current budget first');grantResultLimit.current=current.policy!.limit+current.allowance+Number(additional);grantAttempt.current={commandKey:createClientId(),expectedRevision:current.revision,expectedPeriodId:current.periodId,additional:Number(additional)}}
    return requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget/allow`,{method:'POST',body:JSON.stringify(grantAttempt.current)});
@@ -43,7 +44,6 @@ export function BranchExecutionBudget({branchId,settings=false,active=true}:{bra
    {draft===null&&base?.policy&&<Alert severity="info">Removing this budget releases queued work. Adding a budget again starts a new period.</Alert>}
    <Typography variant="body2">This local policy survives workflow and package updates. Enabling or disabling the Branch does not refill it.</Typography>
    {save.error&&<Alert severity="error">{save.error.message}{policyAttempt.current?' Retry sends the same command safely.':' Refresh the budget and review your changes before saving again.'}</Alert>}
-   {save.isSuccess&&<Alert severity="success">Budget saved.</Alert>}
    <Button sx={{alignSelf:'start'}} variant="contained" disabled={save.isPending||(!policyAttempt.current&&(unavailable||!dirty||!valid||base?.revision!==query.data?.revision))} onClick={()=>save.mutate()}>{save.isPending?'Saving…':policyAttempt.current?'Retry budget save':epochChange?'Save and start new period':'Save budget'}</Button>
    {dirty&&base?.revision!==query.data?.revision&&<Alert severity="warning" action={<Button disabled={policyLocked} onClick={()=>{setBase(query.data);setDraft(query.data?.policy);save.reset()}}>Load current budget</Button>}>Budget changed. Load the current budget before saving.</Alert>}
   </>}

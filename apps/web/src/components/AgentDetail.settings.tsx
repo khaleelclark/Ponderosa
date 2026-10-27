@@ -338,7 +338,6 @@ export function AgentSettingsPane({
   settingsModels: RuntimeModelChoice[];
   settingsEfforts: RuntimeEffortChoice[];
   runtimeSettingsDirty: boolean;
-  runtimeSettingsNotice?: string;
   runtimeSettingsPending: boolean;
   runtimeSettingsError?: unknown;
   recheckPending: boolean;

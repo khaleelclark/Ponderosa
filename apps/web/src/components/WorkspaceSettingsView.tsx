@@ -1,4 +1,5 @@
 import { useEngineModelCatalogs } from "../hooks/useEngineModelCatalogs";
+import {useMutationNotification} from "./MutationNotifications";
 import {CapabilityPolicyEditor} from "./CapabilityPolicyEditor";
 import {currentProductScope} from "../api/productScope";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
@@ -128,13 +129,11 @@ function GeneralSettingsSection({
   onLimit,
   onSaveAgentDefaults,
   agentDefaultsSaving,
-  agentDefaultsSaved,
   agentDefaultsSaveError,
   onRolloverTokens,
   onRolloverFraction,
   onSaveRollover,
   rolloverSaving,
-  rolloverSaved,
   rolloverSaveError,
 }: {
   preferences: WorkspacePreferencesDto;
@@ -151,13 +150,11 @@ function GeneralSettingsSection({
   onLimit(value: string): void;
   onSaveAgentDefaults(): void;
   agentDefaultsSaving: boolean;
-  agentDefaultsSaved: boolean;
   agentDefaultsSaveError?: string;
   onRolloverTokens(value: string): void;
   onRolloverFraction(value: string): void;
   onSaveRollover(tokens: number, fraction: number): void;
   rolloverSaving: boolean;
-  rolloverSaved: boolean;
   rolloverSaveError?: string;
 }): JSX.Element {
   const parsedRolloverTokens = Number(rolloverTokens);
@@ -246,11 +243,6 @@ function GeneralSettingsSection({
           >
             {agentDefaultsSaving ? "Saving…" : "Save Agent Defaults"}
           </Button>
-          {agentDefaultsSaved ? (
-            <Alert severity="success" role="status">
-              Agent defaults saved successfully.
-            </Alert>
-          ) : null}
           {agentDefaultsSaveError ? (
             <Alert severity="error" role="alert">
               {agentDefaultsSaveError}
@@ -314,7 +306,7 @@ function GeneralSettingsSection({
           >
             {rolloverSaving ? "Saving…" : "Save Rollover Limits"}
           </Button>
-          {rolloverSaveError ? <Alert severity="error">{rolloverSaveError}</Alert> : rolloverSaved ? <Alert severity="success" role="status">Rollover limits saved</Alert> : null}
+          {rolloverSaveError ? <Alert severity="error">{rolloverSaveError}</Alert> : null}
         </Stack>
       </Paper>
     </Stack>
@@ -904,6 +896,7 @@ export function WorkspaceSettingsView({
   returnLabel?: string;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const validationProject = projects[0];
   const modelCatalogQuery = useEngineModelCatalogs(validationProject?.id, engines);
   const readinessQuery = useQuery({
@@ -1062,6 +1055,9 @@ export function WorkspaceSettingsView({
         limitRef.current,
         String(submitted.maxConcurrentAgentRuns),
       ));
+      if (instructionsRef.current === submitted.globalInstructions && limitRef.current === String(submitted.maxConcurrentAgentRuns)) {
+        notify({ key: "workspace-agent-defaults", message: "Settings Saved" });
+      }
     },
   });
   const saveRollover = useMutation({
@@ -1069,17 +1065,11 @@ export function WorkspaceSettingsView({
     onSuccess: (_saved, submitted) => {
       setRolloverTokensDirty(rolloverTokensRef.current !== String(submitted.contextRolloverTokens));
       setRolloverFractionDirty(rolloverFractionRef.current !== String(submitted.contextRolloverWindowFraction));
+      if (rolloverTokensRef.current === String(submitted.contextRolloverTokens) && rolloverFractionRef.current === String(submitted.contextRolloverWindowFraction)) {
+        notify({ key: "workspace-rollover-limits", message: "Settings Saved" });
+      }
     },
   });
-  useEffect(() => {
-    if (!saveAgentDefaults.isSuccess) return;
-
-    const timeoutId = window.setTimeout(() => {
-      saveAgentDefaults.reset();
-    }, 3_000);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [saveAgentDefaults.isSuccess, saveAgentDefaults.reset]);
   const setPushFrom = (action: () => Promise<WebPushState>) => {
     setPushBusy(true);
     void action()
@@ -1126,7 +1116,6 @@ export function WorkspaceSettingsView({
               })
             }
             agentDefaultsSaving={saveAgentDefaults.isPending}
-            agentDefaultsSaved={saveAgentDefaults.isSuccess}
             agentDefaultsSaveError={
               saveAgentDefaults.isError
                 ? saveAgentDefaults.error instanceof Error
@@ -1149,7 +1138,6 @@ export function WorkspaceSettingsView({
               });
             }}
             rolloverSaving={saveRollover.isPending}
-            rolloverSaved={saveRollover.isSuccess && !rolloverTokensDirty && !rolloverFractionDirty}
             rolloverSaveError={saveRollover.isError ? saveRollover.error instanceof Error ? saveRollover.error.message : "Rollover limits could not be saved. Try again." : undefined}
           />
         ) : null}
@@ -1255,7 +1243,17 @@ function OperatorProfileSettingsSection({
   onSavePreferences(patch: Partial<WorkspacePreferencesDto>): Promise<WorkspacePreferencesDto>;
 }): JSX.Element {
   const form = useOperatorProfileForm(preferences.profile);
-  const save = useMutation({ mutationFn: (profile: WorkspacePreferencesDto["profile"]) => onSavePreferences({ profile }) });
+  const notify = useMutationNotification();
+  const currentProfile = useRef(form.profile);
+  currentProfile.current = form.profile;
+  const save = useMutation({
+    mutationFn: (profile: WorkspacePreferencesDto["profile"]) => onSavePreferences({ profile }),
+    onSuccess: (_saved, submitted) => {
+      if (JSON.stringify(submitted) === JSON.stringify(currentProfile.current)) {
+        notify({ key: "operator-profile", message: "Settings Saved" });
+      }
+    },
+  });
   return (
     <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 } }}>
       <OperatorProfileEditor
@@ -1275,7 +1273,7 @@ function OperatorProfileSettingsSection({
       >
         {save.isPending ? "Saving…" : "Save Profile"}
       </Button>
-      {save.isError ? <Alert severity="error" sx={{ mt: 1 }}>{save.error instanceof Error ? save.error.message : "Profile could not be saved. Try again."}</Alert> : save.isSuccess && JSON.stringify(save.variables) === JSON.stringify(form.profile) ? <Alert severity="success" role="status" sx={{ mt: 1 }}>Profile saved</Alert> : null}
+      {save.isError ? <Alert severity="error" sx={{ mt: 1 }}>{save.error instanceof Error ? save.error.message : "Profile could not be saved. Try again."}</Alert> : null}
     </Paper>
   );
 }

@@ -105,13 +105,9 @@ export function AgentWorkTechnicalDetails({
 
 function CopyRecordId({ id }: { id: string }): JSX.Element {
   const notify = useMutationNotification();
-  const [copied, setCopied] = useState(false);
-  return <Tooltip title={copied ? "Copied" : `Copy ID ${id}`}>
+  return <Tooltip title={`Copy ID ${id}`}>
     <IconButton size="small" aria-label={`Copy ID ${id}`} onClick={() => {
-      void copyText(id).then(() => {
-        setCopied(true);
-        globalThis.setTimeout(() => setCopied(false), 1_500);
-      }, () => notify({ key: "copy-record-id", message: "ID could not be copied. Check your browser clipboard permissions and try again.", severity: "error" }));
+      void copyText(id).then(() => notify({ key: "copy-record-id", message: "Copied" }), () => notify({ key: "copy-record-id", message: "ID could not be copied. Check your browser clipboard permissions and try again.", severity: "error" }));
     }}><ContentCopyIcon fontSize="inherit" /></IconButton>
   </Tooltip>;
 }
@@ -170,7 +166,6 @@ export function AgentWorkInspector({
   });
   const [expandedTraceId, setExpandedTraceId] = useState<string>();
   const notify = useMutationNotification();
-  const [logsCopied, setLogsCopied] = useState(false);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const scrollRegionRef = useRef<HTMLDivElement>(null);
   const positionedScopeRef = useRef<string>();
@@ -249,13 +244,10 @@ export function AgentWorkInspector({
           disabled={!query.data}
           onClick={() => {
             if (!query.data) return;
-            void copyText(diagnosticLogBundle(query.data)).then(() => {
-              setLogsCopied(true);
-              globalThis.setTimeout(() => setLogsCopied(false), 1_500);
-            }, () => notify({ key: "copy-diagnostic-logs", message: "Logs could not be copied. Check your browser clipboard permissions and try again.", severity: "error" }));
+            void copyText(diagnosticLogBundle(query.data)).then(() => notify({ key: "copy-diagnostic-logs", message: "Copied" }), () => notify({ key: "copy-diagnostic-logs", message: "Logs could not be copied. Check your browser clipboard permissions and try again.", severity: "error" }));
           }}
         >
-          {logsCopied ? "Copied" : "Copy Logs"}
+          Copy Logs
         </Button>
         <Tooltip title="Refresh Diagnostics"><span><IconButton aria-label="Refresh Diagnostics" disabled={query.isFetching} onClick={() => void query.refetch()}><RefreshIcon /></IconButton></span></Tooltip>
       </Stack>

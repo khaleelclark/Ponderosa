@@ -1,5 +1,4 @@
 import {productApiPath,productWorkspacePath} from "../../api/productScope.js";
-import CheckIcon from "@mui/icons-material/Check";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
@@ -8,7 +7,7 @@ import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutl
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { parseRichMessageBlock, messageTagTokens, missingCollaborationRecipients, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CollaborationRecipientDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto, WorkspaceFileOwnerDto } from "@ponderosa/core";
-import { type ReactNode, type ComponentPropsWithoutRef, useEffect, useRef, useState } from "react";
+import { type ReactNode, type ComponentPropsWithoutRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { remarkMessageFormatting } from "./messageMarkdown";
@@ -17,6 +16,7 @@ import { ScrollableMessageTable } from "./ScrollableMessageTable";
 import { copyText } from "../../clipboard";
 import { MESSAGE_TAG_PREFIX, messageTagHandle } from "../../mentions";
 import { LazySyntaxHighlightedCode } from "../LazySyntaxHighlightedCode";
+import { useMutationNotification } from "../MutationNotifications";
 import { useProjectBrowser } from "../ProjectBrowserContext";
 import { ChatDocumentCard } from "./ChatDocumentCard";
 import {
@@ -295,36 +295,19 @@ function fencedCodeLanguage(children: ReactNode): string {
 }
 
 function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element {
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
-  const resetTimer = useRef<ReturnType<typeof setTimeout>>();
+  const notify = useMutationNotification();
   const code = codeBlockText(children).replace(/\n$/, "");
   const language = fencedCodeLanguage(children);
   const highlighted = !["text", "txt", "plaintext", "none", "ponderosa"].includes(language);
 
-  useEffect(
-    () => () => {
-      if (resetTimer.current !== undefined) {
-        globalThis.clearTimeout(resetTimer.current);
-      }
-    },
-    [],
-  );
-
   async function copyCode(): Promise<void> {
     try {
       await copyText(code);
-      setCopyState("copied");
+      notify({ key: "copy-code", message: "Copied" });
     } catch {
-      setCopyState("error");
+      notify({ key: "copy-code", message: "Code could not be copied. Check your browser clipboard permissions and try again.", severity: "error" });
     }
-    if (resetTimer.current !== undefined) {
-      globalThis.clearTimeout(resetTimer.current);
-    }
-    resetTimer.current = globalThis.setTimeout(() => setCopyState("idle"), 2000);
   }
-
-  const label =
-    copyState === "copied" ? "Copied code" : copyState === "error" ? "Copy failed" : "Copy code";
 
   const plainCode = ({ status, retry }: {
     status: "pending" | "failed";
@@ -350,9 +333,9 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
     <Box sx={{ my: 1, maxWidth: "100%", minWidth: 0, overflow: "hidden", borderRadius: 2, bgcolor: "action.hover", border: 1, borderColor: "divider" }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ minHeight: 38, px: 1.5, color: "text.secondary", borderBottom: 1, borderColor: "divider" }}>
         <Typography variant="caption" sx={{ fontFamily: "monospace", textTransform: "lowercase" }}>{language}</Typography>
-        <Tooltip title={label}>
-          <IconButton aria-label={label} size="small" onClick={() => void copyCode()}>
-            {copyState === "copied" ? <CheckIcon fontSize="inherit" /> : <ContentCopyIcon fontSize="inherit" />}
+        <Tooltip title="Copy code">
+          <IconButton aria-label="Copy code" size="small" onClick={() => void copyCode()}>
+            <ContentCopyIcon fontSize="inherit" />
           </IconButton>
         </Tooltip>
       </Stack>

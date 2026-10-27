@@ -12,13 +12,13 @@ import {
   MenuItem,
   MenuList,
   Popover,
-  Snackbar,
   Tooltip,
 } from "@mui/material";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { copyText } from "../clipboard";
 import { downloadMarkdownTranscript } from "../chatTranscript";
+import { useMutationNotification } from "./MutationNotifications";
 
 export interface ChatOverflowAction {
   label: string;
@@ -55,7 +55,7 @@ export function ChatOverflowMenu({
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [detailsAnchor, setDetailsAnchor] = useState<HTMLElement | null>(null);
   const [exportMenu, setExportMenu] = useState<{ kind: "copy" | "download"; anchor: HTMLElement }>();
-  const [notice, setNotice] = useState<string>();
+  const notify = useMutationNotification();
   const close = () => setAnchor(null);
   const run = (action: ChatOverflowAction["onSelect"]) => {
     const mainAnchor = anchor;
@@ -149,8 +149,8 @@ export function ChatOverflowMenu({
             return;
           }
           void copyText(transcriptMarkdown)
-            .then(() => setNotice("Chat transcript copied"))
-            .catch((error) => setNotice(error instanceof Error ? error.message : "Chat transcript could not be copied"));
+            .then(() => notify({ key: "copy-transcript", message: "Copied" }))
+            .catch((error) => notify({ key: "copy-transcript", message: error instanceof Error ? error.message : "Chat transcript could not be copied", severity: "error" }));
         }}>
           <ListItemIcon>{exportMenu?.kind === "download" ? <DownloadOutlinedIcon fontSize="small" /> : <ContentCopyOutlinedIcon fontSize="small" />}</ListItemIcon>
           <ListItemText>{CHAT_EXPORT_ACTION_LABELS[2]}</ListItemText>
@@ -167,11 +167,5 @@ export function ChatOverflowMenu({
     >
       {details}
     </Popover>
-    <Snackbar
-      open={Boolean(notice)}
-      autoHideDuration={2500}
-      onClose={() => setNotice(undefined)}
-      message={notice}
-    />
   </>;
 }

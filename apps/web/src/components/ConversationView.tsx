@@ -79,6 +79,7 @@ import { useConversationNotificationVisibility } from "./useConversationNotifica
 import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
 import { ProviderFailureBanner } from "./ProviderFailureBanner";
+import { useMutationNotification } from "./MutationNotifications";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 import {
   resolveMessageMentionText,
@@ -146,6 +147,7 @@ export function ConversationView({
 }): JSX.Element {
   const auditOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const [storedView, setActiveView] = useConversationActiveViewState(
     conversationId,
     initialView,
@@ -1306,12 +1308,10 @@ export function ConversationView({
                       ...(argumentsText ? { argumentsText } : {}),
                     },
                   );
-                  return invocation.then(result =>
-                    setQueuedMessageNotice(
-                      result.message ??
-                        `/${command.name} invoked for ${commandTargetAgent.title}.`,
-                    ),
-                  );
+                  return invocation.then(result => {
+                    if (result.message) setQueuedMessageNotice(result.message);
+                    else notify({ key: "provider-command", message: `/${command.name} Invoked` });
+                  });
                 }
               : undefined
           }

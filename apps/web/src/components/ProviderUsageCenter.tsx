@@ -35,6 +35,7 @@ import {
   refreshLatestProviderUsage,
 } from "../providerUsageQuery";
 import { queryKeys } from "../queryKeys";
+import { useMutationNotification } from "./MutationNotifications";
 import { providerUsageCollectionPresentation } from "./providerUsagePresentation";
 
 function useClock(active = true): number {
@@ -125,11 +126,15 @@ export function ProviderUsageCard({
   requestPending?: boolean;
 }): JSX.Element {
   const now = useClock();
+  const notify = useMutationNotification();
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const reading = usageData(state);
   const failure = state.status === "stale" || state.status === "unavailable" ? state.failure : undefined;
   const actions = failure ? failureActions(failure.code) : undefined;
-  const reportCopy = useMutation({ mutationKey: ["copy-support-report", state.provider, state.status, failure?.correlationId], mutationFn: async () => {
+  const reportIdentity = JSON.stringify([state.provider, state.status, failure?.correlationId]);
+  const currentReport = useRef(reportIdentity);
+  currentReport.current = reportIdentity;
+  const reportCopy = useMutation({ mutationKey: ["copy-support-report", state.provider, state.status, failure?.correlationId], mutationFn: async (_identity: string) => {
     if (!failure) throw new Error("No support report is available.");
     await copyText(JSON.stringify({
       provider: state.provider,
@@ -144,6 +149,8 @@ export function ProviderUsageCard({
         runtimeVersion: failure.runtimeVersion,
       },
     }, null, 2));
+  }, onSuccess: (_copied, identity) => {
+    if (identity === currentReport.current) notify({ key: "copy-support-report", message: "Copied" });
   } });
   return (
     <Paper
@@ -228,10 +235,9 @@ export function ProviderUsageCard({
               <Button size="small" onClick={() => setDiagnosticsOpen(value => !value)}>View Diagnostics</Button>
             ) : null}
             {actions.support ? (
-              <Button size="small" disabled={reportCopy.isPending} onClick={() => reportCopy.mutate()}>Copy Support Report</Button>
+              <Button size="small" disabled={reportCopy.isPending} onClick={() => reportCopy.mutate(reportIdentity)}>Copy Support Report</Button>
             ) : null}
           </Stack>
-          {actions.support && reportCopy.isSuccess ? <Alert severity="success" sx={{ mt: 1 }}>Support report copied.</Alert> : null}
           {actions.support && reportCopy.isError ? <Alert severity="error" sx={{ mt: 1 }}>Support report could not be copied. Try again or check your browser clipboard permissions.</Alert> : null}
           <Collapse in={diagnosticsOpen}>
             <Box sx={{ mt: 1, p: 1, borderRadius: 1, bgcolor: "action.hover" }}>

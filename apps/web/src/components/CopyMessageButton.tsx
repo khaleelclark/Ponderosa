@@ -1,28 +1,21 @@
-import CheckIcon from "@mui/icons-material/Check";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
-import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
-import { Box, IconButton, Tooltip } from "@mui/material";
-import { useState } from "react";
+import { IconButton, Tooltip } from "@mui/material";
 import { copyText } from "../clipboard";
+import { useMutationNotification } from "./MutationNotifications";
 
 export function CopyMessageButton({ text }: { text: string }): JSX.Element {
-  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const notify = useMutationNotification();
   const copy = async () => {
     try {
       await copyText(text);
-      setState("copied");
+      notify({ key: "copy-message", message: "Copied" });
     } catch {
-      setState("failed");
+      notify({ key: "copy-message", message: "Copy failed; select the message text instead", severity: "error" });
     }
-    window.setTimeout(() => setState("idle"), 2_000);
   };
-  const label = state === "copied" ? "Message copied" : state === "failed" ? "Copy failed; select the message text instead" : "Copy whole message";
-  return <>
-    <Tooltip title={label}>
-      <IconButton size="small" color={state === "failed" ? "error" : "inherit"} aria-label="Copy whole message" onClick={() => void copy()}>
-        {state === "copied" ? <CheckIcon fontSize="inherit" /> : state === "failed" ? <ErrorOutlineIcon fontSize="inherit" /> : <ContentCopyIcon fontSize="inherit" />}
-      </IconButton>
-    </Tooltip>
-    <Box component="span" aria-live="polite" sx={{ position: "absolute", width: "1px", height: "1px", p: 0, m: "-1px", overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{state === "idle" ? "" : label}</Box>
-  </>;
+  return <Tooltip title="Copy whole message">
+    <IconButton size="small" aria-label="Copy whole message" onClick={() => void copy()}>
+      <ContentCopyIcon fontSize="inherit" />
+    </IconButton>
+  </Tooltip>;
 }

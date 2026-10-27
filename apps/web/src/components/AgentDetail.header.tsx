@@ -23,6 +23,7 @@ import {
 import { downloadMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { formatExecutionElapsed } from "../time";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
+import { useMutationNotification } from "./MutationNotifications";
 import type { AgentTab } from "./AgentDetail.helpers";
 import {
   AgentHeaderRelationships,
@@ -143,7 +144,6 @@ interface AgentDetailHeaderProps {
   onStop(): void;
   onExportPackage(): void;
   onDuplicate?(): void;
-  onNotice(message: string): void;
   onOpenTechnical(): void;
   onRename(): void;
   onCreateAgent(): void;
@@ -177,7 +177,6 @@ export function AgentDetailHeader({
   onStop,
   onExportPackage,
   onDuplicate,
-  onNotice,
   onOpenTechnical,
   onRename,
   onCreateAgent,
@@ -186,6 +185,7 @@ export function AgentDetailHeader({
   onTabChange,
 }: AgentDetailHeaderProps): JSX.Element {
   const auditOnly=useWorkspaceReadOnly();
+  const notify=useMutationNotification();
   return (
     <TabbedWorkspaceFrame
       compactMobile
@@ -303,8 +303,8 @@ export function AgentDetailHeader({
                 label: "Copy chat transcript",
                 icon: <ContentCopyOutlinedIcon fontSize="small" />,
                 onSelect: () => void copyText(transcriptMarkdown)
-                  .then(() => onNotice("Chat transcript copied."))
-                  .catch(error => onNotice(error instanceof Error ? error.message : "Chat transcript could not be copied.")),
+                  .then(() => notify({ key: "copy-transcript", message: "Copied" }))
+                  .catch(error => notify({ key: "copy-transcript", message: error instanceof Error ? error.message : "Chat transcript could not be copied.", severity: "error" })),
               },
               {
                 label: "Download chat transcript",

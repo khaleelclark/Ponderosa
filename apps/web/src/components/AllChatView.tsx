@@ -58,6 +58,7 @@ import { copyText } from "../clipboard";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { LiveAgentProgress } from "./chat/LiveAgentProgress";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
+import { useMutationNotification } from "./MutationNotifications";
 import { MessageRequestAction } from "./MessageRequestAction";
 import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
@@ -258,7 +259,8 @@ export function AllChatView({
   const [speed, setSpeed] = useState("");
   const [submissionRuntimeIntent, setSubmissionRuntimeIntent] = useState(0);
   const [runtimeAgentId, setRuntimeAgentId] = useState<string>();
-  const [notice, setNotice] = useState<string>();
+  const notify = useMutationNotification();
+  const [commandResult, setCommandResult] = useState<string>();
   const [pendingUploadCleanups, setPendingUploadCleanups] = useState(0);
   const {
     recipientUnavailable, cleanupSettled, definitiveFailure,
@@ -722,10 +724,8 @@ export function AllChatView({
       name: command.name,
       ...(argumentsText ? { argumentsText } : {}),
     });
-    setNotice(
-      result.message ??
-        `/${command.name} completed for ${activeReplyTarget?.title ?? "Agent"}.`,
-    );
+    setCommandResult(result.message);
+    if (!result.message) notify({ key: "provider-command", message: `/${command.name} Completed` });
   };
   const send = useMutation({
     mutationFn: async ({
@@ -1122,7 +1122,7 @@ export function AllChatView({
     onSuccess: async result => {
       const sameTarget = replyTargetRef.current?.id === result.submissionTargetId &&
         submissionIntentRef.current.sourceKey === result.submissionSourceKey;
-      if (sameTarget) setNotice(undefined);
+      if (sameTarget) setCommandResult(undefined);
       const confirmation = sameTarget ? allChatDeliveryConfirmation(result) : undefined;
       if (confirmation) {
         directSendConfirmationSequence.current += 1;
@@ -1189,7 +1189,7 @@ export function AllChatView({
       }
       setReplyTarget(undefined);
     }
-    setNotice(undefined);
+    setCommandResult(undefined);
     setDirectSendConfirmation(undefined);
     send.reset();
   };
@@ -1581,7 +1581,7 @@ export function AllChatView({
                               intent: item.communicationIntent,
                               fromAgent: !fromUser,
                               agentMentions: item.agentMentions,
-                            })).then(() => setNotice("Message copied."), () => setNotice("Message could not be copied. Check your browser clipboard permissions and try again."));
+                            })).then(() => notify({ key: "copy-message", message: "Copied" }), () => notify({ key: "copy-message", message: "Message could not be copied. Check your browser clipboard permissions and try again.", severity: "error" }));
                           }}
                         >
                           <ContentCopyOutlinedIcon fontSize="inherit" />
@@ -1658,9 +1658,9 @@ export function AllChatView({
             </TimedChatLiveBanner>
           </Box>
         ) : null}
-        {notice ? (
-          <Alert severity="success" sx={{ mx: 1.5, mt: 1 }}>
-            {notice}
+        {commandResult ? (
+          <Alert severity="info" onClose={() => setCommandResult(undefined)} sx={{ mx: 1.5, mt: 1 }}>
+            {commandResult}
           </Alert>
         ) : null}
         {updateRuntimeEngine.isError ? (
