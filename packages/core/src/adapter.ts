@@ -355,6 +355,8 @@ export interface EngineCommand {
 }
 
 export interface EngineMcpServer {
+  /** Exact names/descriptions when the existing provider inventory reports them. */
+  tools?: import("./capability-policy.js").CapabilityTool[];
   name: string;
   configured: boolean;
   initialization: "not_initialized" | "initializing" | "initialized" | "failed";

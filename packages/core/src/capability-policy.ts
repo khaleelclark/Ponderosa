@@ -42,6 +42,21 @@ export interface CapabilityDescriptor {
   runtimeToolNames?: string[];
 }
 
+/** Metadata from the same tool inventory used to prepare provider sessions. */
+export interface CapabilityTool { name: string; description?: string }
+export interface CapabilityCatalogEntry extends CapabilityDescriptor {
+  available: boolean;
+  unavailableReason?: string;
+  includedTools?: CapabilityTool[];
+  toolDetailsReason?: string;
+}
+export interface CapabilityPolicyResponse {
+  policy: CapabilityPolicyRecord;
+  effective: EffectiveCapabilityPolicy;
+  catalog: CapabilityCatalogEntry[];
+  catalogNotice?: string;
+}
+
 export interface RuntimeCapabilityRestrictions {
   restrictedCapabilityIds: string[];
   restrictedConnectorNames: string[];

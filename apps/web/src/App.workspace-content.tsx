@@ -51,7 +51,7 @@ interface WorkspaceRouteOutletProps {
   loadError: boolean;
   refreshError: boolean;
   onRetryLoad(): void;
-  onNavigate(route: Route): void;
+  onNavigate(route: Route, options?: {replace?: boolean}): boolean | void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onSavePreferences(
     patch: Partial<WorkspacePreferencesDto>,

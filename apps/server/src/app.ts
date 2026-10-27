@@ -1,8 +1,8 @@
 import {registerLocalMemory,localMemoryFor} from "./local-memory.js";
 import {BranchScriptService} from "./branch-script-service.js";
 import {BranchTriggerSourceService} from "./branch-trigger-service.js";
+import {registerCapabilityRoutes} from './routes/capabilities.js';
 import {registerBranchRoutes} from './routes/branches.js';
-import {activeChatResourceOwner} from './branch-resource-owner.js';
 import {registerProductScope,rewriteProductUrl} from './product-scope.js';
 import {BranchResourceService} from "./branch-resource-service.js";
 import {BranchInstallationService} from "./branch-installation-service.js";
@@ -1383,29 +1383,11 @@ app.server.on("upgrade", linkPreviewUpgrade);
     onSourceFailure:({trigger,kind,error})=>{createOperationalNotification({dedupeKey:`branch-source:${trigger.id}:${kind}`,branchId:trigger.branchId,category:'system',severity:'attention',title:'Branch discovery needs attention',body:error,action:{kind:'open_branch',targetId:trigger.branchId!}});},
     onSourceRecovered:(id,kind)=>resolveOperationalNotification(`branch-source:${id}:${kind}`),
   });
+  registerCapabilityRoutes(app,{store,branches,engines,dataDir:opts.dataDir,localMemoryEnabled:Boolean(opts.localMemory),providerEnabled,discoverCapabilities:discoverEngineCapabilities});
   registerBranchRoutes(app,{branches,store,workspace,installations:branchInstallations,sources:branchSources,createChat:application.createChat,
     preferences:()=>workspace.getPreferences(),engineAvailable:id=>engines.has(id)&&providerEnabled(id),
     providerStatus:async id=>{const registration=engines.get(id);return registration?{...await runtimeStatus(id,registration),enabled:providerEnabled(id)}:{authentication:'error',intakeReady:false,availabilityDetail:'Provider is not configured'};},
-    discoverConnectors:async branchId=>{
-      const rows=store.sqlite.prepare(`SELECT MIN(a.id) id FROM agents a JOIN conversations c ON c.id=a.conversation_id
-        WHERE c.branch_id=? AND c.branch_execution_id IS NULL AND a.deleted_at IS NULL
-        GROUP BY a.project_id,a.active_engine,a.model ORDER BY a.project_id,a.active_engine,a.model LIMIT 100`).all(branchId) as {id:string}[];
-      const discoveries=new Map<string,Promise<{engineId:string;capabilities:import('@ponderosa/core').EngineCapabilities}>>();
-      for(const engineId of new Set(Object.values(branches.localConfiguration(branchId)?.engines??{}))){
-        const engine=engines.get(engineId);if(!engine||!providerEnabled(engineId))continue;
-        const projectId=`branch:${branchId}`,key=[projectId,opts.dataDir,engineId,''].join('\0');
-        discoveries.set(key,discoverEngineCapabilities(projectId,opts.dataDir,engine.adapter,undefined,false).then(capabilities=>({engineId,capabilities})));
-      }
-      for(const {id} of rows){
-        if(!activeChatResourceOwner(store,'agent',id))continue;
-        const agent=store.getAgent(id),project=agent?store.getChatContext(agent.conversationId):undefined,engine=agent?engines.get(agent.activeEngine):undefined;
-        if(!agent||!project||!engine||!providerEnabled(agent.activeEngine))continue;
-        const key=[project.id,project.hostPath,agent.activeEngine,agent.model??''].join('\0');
-        if(!discoveries.has(key))discoveries.set(key,discoverEngineCapabilities(project.id,project.hostPath,engine.adapter,agent.model,false).then(capabilities=>({engineId:agent.activeEngine,capabilities})));
-      }
-      const settled=await Promise.allSettled(discoveries.values());
-      return settled.flatMap(result=>result.status==='fulfilled'?result.value.capabilities.mcpServers.map(server=>({engineId:result.value.engineId,name:server.name,usable:server.usable,detail:server.detail})):[]);
-    },notify:()=>coordinationV3Scheduler.notify(),
+notify:()=>coordinationV3Scheduler.notify(),
   });
   app.addHook('onReady',async()=>{await branchSources!.start();});
 

@@ -1,4 +1,6 @@
 import { useEngineModelCatalogs } from "../hooks/useEngineModelCatalogs";
+import {CapabilityPolicyEditor} from "./CapabilityPolicyEditor";
+import {currentProductScope} from "../api/productScope";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import { BrowserVoiceSettings } from "./speech/BrowserVoiceSettings";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
@@ -180,6 +182,7 @@ function GeneralSettingsSection({
   return (
     <Stack spacing={2.5}>
       <BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences} />
+      {currentProductScope()!=="branches"&&<Paper variant="outlined" sx={{p:2.5}}><CapabilityPolicyEditor endpoint="/api/workspace/capabilities" scopeKind="product" title="Default tool permissions" description="Applies to regular Ponderosa Chats and their Agents. Chat and Agent settings may add restrictions; they cannot undo these defaults. Branches has its own policies." immediateSave/></Paper>}
       <Paper variant="outlined" sx={{ p: 2.5 }}>
         <Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>
           Appearance

@@ -48,19 +48,19 @@ export function runtimeAttachmentPaths(value) {
 // The child is real but inert: no shell, network, provider account or user data.
 // Inert Windows roots cannot spawn descendants and are assigned to an exact
 // kill-on-close Job before publication; POSIX roots keep their detached group.
-export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerInstalled, modelCatalog, modelValidator, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation } = {}) {
+export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerInstalled, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
   let closingFixture = false;
   const capabilities = { steering: true, persistentSessions: true, commands: [], mcpServers: [], composerCapabilities: [] };
-  const providerProbes = [];
+  const providerProbes = [], capabilityDiscoveries = [];
   const adapter = {
     id: 'codex', displayName: 'Controlled regression adapter', trustedSystemPromptChannel: 'developer',
     ...(modelValidator ? { validateModel: modelValidator } : {}),
     ...(modelCatalog ? { discoverModelCatalog: modelCatalog, modelSpecificEfforts: true } : {}),
     listModels: () => [{ id: modelCatalog ? '' : 'fixture', label: 'Fixture' }], listEfforts: () => [{ id: 'medium', label: 'Medium' }],
-    defaultModel: () => 'fixture', defaultEffort: () => 'medium', capabilities: async () => capabilities,
+    defaultModel: () => 'fixture', defaultEffort: () => 'medium', capabilities: async cwd => { capabilityDiscoveries.push({cwd}); return capabilityCatalog ? capabilityCatalog(cwd) : capabilities; },
     async *seed() { throw Error('Persistent fixture unexpectedly used one-shot seed'); },
     async *continue() { throw Error('Persistent fixture unexpectedly used one-shot continuation'); },
     async openSession(options) {
@@ -203,7 +203,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
     plans.set(id, [{ hold: true }]); await send(id, 'Controlled held task');
     await until(() => turns.filter(t => t.agentId === id).length > count, 'held provider input'); return sessions.get(id);
   };
-  return { root, dataDir, api, ok, detail, settled, createChat, createAgent, createIdleAgent, send, tool, hold, plans, sessions, turns, capabilities, commands, steers, providerProbes,
+  return { root, dataDir, api, ok, detail, settled, createChat, createAgent, createIdleAgent, send, tool, hold, plans, sessions, turns, capabilities, commands, steers, providerProbes, capabilityDiscoveries,
     listen: () => app.listen({ host: '127.0.0.1', port: 0 }),
     async reopen() { await close(); await open(); },
     async dispose(remove = true) {

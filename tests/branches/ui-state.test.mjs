@@ -610,6 +610,43 @@ test('BR011 a loading or unavailable deep-linked Agent cannot be replaced by aut
  const run=()=>vm.runInNewContext(ts.transpileModule(effect,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);run();assert.equal(opened.length,0,'Pending/failed Agent ownership keeps the requested Agent route');scope.chatId='c';run();assert.equal(opened.length,0,'Resolved Agent owner stays selected');scope.chatId='';scope.routeAgentId=undefined;run();assert.equal(opened.length,1,'An unselected ordinary Branch Chat still autoselects');scope.branchRoute={creationKey:'draft'};run();assert.equal(opened.length,1,'New Chat intent remains intact');
 });
 
+test('shared permissions expose Included tools, friendly effective states and immediate saves in ordinary resource Settings',async()=>{
+ const {QueryClient,QueryClientProvider}=await import('@tanstack/react-query'),{CapabilityPolicyEditor}=await import('../../apps/web/src/components/CapabilityPolicyEditor.tsx'),{ResourceSettingsContext}=await import('../../apps/web/src/components/ResourceSettingsContext.tsx');
+ const client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}}),policy={scopeKind:'chat',scopeId:'normal',revision:2,restrictedCapabilityIds:['local','connector:codex:missing']},catalog=[
+  {id:'allowed',label:'Import files',description:'Copy a file',categoryLabel:'Files',available:true,includedTools:[{name:'ponderosa_import_file',description:'Import an authorized file'}]},
+  {id:'local',label:'Read pages',description:'Inspect pages',categoryLabel:'Browser',available:true},
+  {id:'ancestor',label:'Interact with pages',description:'Control pages',categoryLabel:'Browser',available:true},
+  {id:'unavailable',label:'Read memory',description:'Read granted memory',categoryLabel:'Memory',available:false,unavailableReason:'Local Memory is not configured',includedTools:[]},
+ ];
+ const endpoint='/api/conversations/normal/capabilities';client.setQueryData(['capability-policy',endpoint],{policy,effective:{restrictionSources:{ancestor:{scopeKind:'product',scopeId:'interactive',label:'Ponderosa defaults'}}},catalog});
+ try{const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'chat',immediateSave:true})));assert.ok(html.includes('<summary>Included tools')&&html.includes('ponderosa_import_file')&&html.includes('Import an authorized file'));for(const text of ['Allowed','Restricted here','Restricted by Ponderosa defaults','Unavailable','Local Memory is not configured','next Run','Activity'])assert.ok(html.includes(text),text);assert.equal(html.includes('Save capabilities'),false);assert.ok(html.includes('Allow Import files'));
+  const Probe=()=>React.useContext(ResourceSettingsContext).render('chat','normal');const ordinary=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(Probe)));assert.ok(ordinary.includes('Tool permissions')&&ordinary.includes('ponderosa_import_file'));assert.equal(ordinary.includes('Save capabilities'),false);
+ }finally{client.clear()}
+});
+
+
+test('ordinary Agent navigation preserves a canceled permission draft through the real route and App callbacks',async()=>{
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript');
+ const routing=await fs.readFile(new URL('../../apps/web/src/routing.ts',import.meta.url),'utf8'),app=await fs.readFile(new URL('../../apps/web/src/App.tsx',import.meta.url),'utf8'),agent=await fs.readFile(new URL('../../apps/web/src/components/AgentDetail.tsx',import.meta.url),'utf8');
+ const routeHandler=routing.slice(routing.indexOf('  const navigate = useCallback('),routing.indexOf('  return { route, navigate };'));
+ const workspaceHandler=app.slice(app.indexOf('  const navigateWorkspace ='),app.indexOf('  useEffect(() => {',app.indexOf('  const navigateWorkspace =')));
+ const tabHandler=agent.split('\n').find(line=>line.trim().startsWith('const changeTab='));
+ const changes=[],history=[],uses=[],speech=[],route={kind:'agent',projectId:'p',agentId:'a',view:'settings'},scope={route,currentRoute:{current:route},acceptedLocation:{current:'/settings'},window:{location:{pathname:'/settings',search:''},history:{replaceState:(_s,_t,p)=>history.push(['replace',p]),pushState:(_s,_t,p)=>history.push(['push',p])}},useCallback:fn=>fn,routeToPath:r=>r.view==='settings'?'/settings':'/chat',navigationPreservesSettings:()=>false,confirmUnsavedNavigation:()=>false,setRoute:r=>changes.push(r),stopSpeech:()=>speech.push(true),recordWorkspaceRouteUse:r=>uses.push(r),setTab:v=>changes.push(v)};
+ const run=code=>vm.runInNewContext(ts.transpileModule(code,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);
+ run(routeHandler.replace('const navigate =','globalThis.navigate =')+workspaceHandler.replace('const navigateWorkspace =','globalThis.navigateWorkspace ='));
+ scope.onViewChange=view=>scope.navigateWorkspace({...route,view},{replace:true});run(tabHandler.replace('const changeTab=','globalThis.changeTab='));scope.changeTab('chat');
+ assert.equal(changes.length,0);assert.equal(history.length,0);assert.equal(uses.length,0);assert.equal(speech.length,0);
+ scope.confirmUnsavedNavigation=()=>true;scope.changeTab('chat');assert.equal(changes.at(-1),'chat');assert.deepEqual(history,[['replace','/chat']]);assert.equal(uses.length,1);assert.equal(speech.length,1);
+ assert.equal(scope.navigate({...route}),true,'Same-location navigation reports acceptance');
+});
+
+test('Main permission saves protect subsection and history navigation while retained ordinary Settings drafts stay mounted',async()=>{
+ const {navigationPreservesSettings}=await import('../../apps/web/src/routing.ts'),{setReloadBlocker}=await import('../../apps/web/src/reloadSafety.ts');
+ const general={kind:'settings',section:'general'},providers={kind:'settings',section:'providers'},blocker='tool-permissions:/api/workspace/capabilities';
+ try{assert.equal(navigationPreservesSettings(general,providers),true);setReloadBlocker(blocker,true);assert.equal(navigationPreservesSettings(general,providers),false);assert.equal(navigationPreservesSettings(providers,general),false);assert.equal(navigationPreservesSettings(general,{kind:'home'}),false);}finally{setReloadBlocker(blocker,false)}
+ assert.equal(navigationPreservesSettings(general,providers),true);
+});
+
 // Exercise the real intervention fields, mutation and shared dialog shell.
 // Controlled transport keeps this recovery check isolated from live work.
 async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}={}){
