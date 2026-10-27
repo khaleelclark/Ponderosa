@@ -100,11 +100,13 @@ export type BranchExecutionState = "queued" | "running" | "waiting" | "completed
 export type BranchAttemptState = "prepared" | "leased" | "running" | "waiting" | "completed" | "failed" | "canceled" | "outcome_unknown";
 export interface BranchVersionDto { id: string; branchId: string; hash: string; definition: BranchDefinition; createdAt: string }
 export type BranchVersionSummaryDto = Omit<BranchVersionDto, "definition">;
+/** Mutually exclusive current activity of all nonterminal workflow Runs. */
+export interface BranchRunCountsDto {running:number;waiting:number;queued:number}
 export interface BranchDto {
   /** Canonical last use, supplied by directory reads. Creation is the fallback. */
   lastUsedAt?: string;
  id: string; chatId: string; enabled?: boolean; name: string; versionId: string; bindingRevisionId: string;
- triggerId?: string; triggerEnabled?: boolean; activeExecutions?: number; createdAt: string;
+ triggerId?: string; triggerEnabled?: boolean; activeExecutions?: number; runCounts?:BranchRunCountsDto; createdAt: string;
 }
 export interface BranchExecutionDto {
   id: string; branchId: string; versionId: string; bindingRevisionId: string;
@@ -244,6 +246,7 @@ export interface BranchLifecycleDto {
  deleting:boolean;
  chats:number;
  activeExecutions:number;
+ runCounts?:BranchRunCountsDto;
  callers:Array<{id:string;name:string}>;
  pendingRemoval:Array<{id:string;kind:'Chat'|'Agent';error?:string}>;
  updates:Array<{id:string;error?:string}>;
