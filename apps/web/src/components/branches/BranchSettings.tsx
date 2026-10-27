@@ -14,7 +14,6 @@ export function BranchAvailability({branch,disabled=false}:{branch:BranchDto;dis
  useBranchDraftGuard(`branch-availability:${branch.id}`,availability.isPending);
  return <Stack spacing={1}>
   <FormControlLabel label="Branch enabled" control={<Switch checked={branch.enabled!==false} disabled={availability.isPending||disabled} onChange={(_,enabled)=>availability.mutate(enabled)}/>}/>
-  <Typography variant="body2" color="text.secondary">Pausing blocks new work; accepted executions follow their existing runtime rules. Resuming may release waiting Branch callers. Automatic trigger intake is controlled separately.</Typography>
   {availability.isPending&&<Typography role="status">Saving availability…</Typography>}
   {availability.error&&<Alert severity="error">{availability.error.message} Check the live state before trying again.</Alert>}
  </Stack>;

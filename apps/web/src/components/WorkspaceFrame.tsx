@@ -103,6 +103,8 @@ export interface TabbedWorkspaceFrameProps<T extends string> {
   actionsInMobileTabs?: boolean;
   /** Keep essential authoring controls reachable in the compact desktop header. */
   retainCollapsedActions?: boolean;
+  /** Keep owner status beside identity, ahead of shared usage controls. */
+  statusBeforePrimaryActions?: boolean;
   tabs: {
     idPrefix?: string;
     activeLabel?: string;
@@ -171,12 +173,14 @@ export function CompactWorkspaceHeader({
   context,
   action,
   hideIcon = false,
+  status,
 }: {
   icon: ReactElement;
   title: string;
   context?: ReactNode;
   action?: ReactNode;
   hideIcon?: boolean;
+  status?: ReactNode;
 }): JSX.Element {
   return (
     <Box
@@ -196,6 +200,7 @@ export function CompactWorkspaceHeader({
           px: { xs: 1, sm: 1.5 },
           alignItems: "center",
           minWidth: 0,
+          ...(status ? {"@container (max-width: 27.5rem)":{flexWrap:"wrap",justifyContent:"flex-end",rowGap:0}} : {}),
         }}
       >
         <MobileNavigationButton />
@@ -206,6 +211,7 @@ export function CompactWorkspaceHeader({
             gap: 1,
             minWidth: 0,
             flexGrow: 1,
+            ...(status ? {"@container (max-width: 27.5rem)":{flexBasis:"calc(100% - 52px)"}} : {}),
           }}
         >
           <Box
@@ -227,6 +233,7 @@ export function CompactWorkspaceHeader({
           >
             {title}
           </Typography>
+          {status}
           {context ? (
             <Typography
               variant="caption"
@@ -260,6 +267,7 @@ export function TabbedWorkspaceFrame<T extends string>({
   compactMobile = false,
   actionsInMobileTabs = false,
   retainCollapsedActions = false,
+  statusBeforePrimaryActions = false,
   tabs,
 }: TabbedWorkspaceFrameProps<T>): JSX.Element {
   const { collapsed, toggleCollapsed } = useWorkspaceHeaderCollapse();
@@ -270,6 +278,7 @@ export function TabbedWorkspaceFrame<T extends string>({
   const activeLabel =
     tabs.activeLabel ??
     tabs.items.find(item => item.value === tabs.value)?.label;
+  const identity = compact ? <Typography component="h1" variant="body2" fontWeight={800} noWrap title={title}>{title}</Typography> : <IconTitle icon={icon} title={title} component="h1" />;
   const handleToggleCollapsed = () => {
     restoreToggleFocusRef.current =
       document.activeElement === toggleButtonRef.current;
@@ -287,10 +296,11 @@ export function TabbedWorkspaceFrame<T extends string>({
         icon={icon}
         title={title}
         hideIcon={compact}
+        status={statusBeforePrimaryActions ? status : undefined}
         context={activeLabel}
         action={(
           <>
-          {compact || retainCollapsedActions ? <Stack direction="row" spacing={0.25} sx={{ alignItems: "center", flexShrink: 0 }}>{status}{actionsInMobileTabs ? null : actions}</Stack> : null}
+          {compact || retainCollapsedActions ? <Stack direction="row" spacing={0.25} sx={{ alignItems: "center", flexShrink: 0 }}>{statusBeforePrimaryActions ? null : status}{actionsInMobileTabs ? null : actions}</Stack> : null}
           <Tooltip title="Expand workspace header">
             <IconButton
               ref={toggleButtonRef}
@@ -324,7 +334,7 @@ export function TabbedWorkspaceFrame<T extends string>({
         <Box
           sx={{
             display: "grid",
-            gridTemplateColumns: { xs: compact ? "auto minmax(0, 1fr) auto auto" : "auto minmax(0, 1fr) auto", md: "auto minmax(0, 1fr) minmax(0, auto) auto" },
+            gridTemplateColumns: { xs: compact && !statusBeforePrimaryActions ? "auto minmax(0, 1fr) auto auto" : "auto minmax(0, 1fr) auto", md: "auto minmax(0, 1fr) minmax(0, auto) auto" },
             alignItems: "center",
             columnGap: 1,
             rowGap: 0.25,
@@ -340,8 +350,7 @@ export function TabbedWorkspaceFrame<T extends string>({
               overflow: "hidden",
             }}
           >
-            {compact ? <Typography component="h1" variant="body2" fontWeight={800} noWrap title={title}>{title}</Typography>
-              : <IconTitle icon={icon} title={title} component="h1" />}
+            {statusBeforePrimaryActions ? <Box sx={{display:"flex",alignItems:"center",gap:1,minWidth:0}}><Box sx={{minWidth:0}}>{identity}</Box>{status}</Box> : identity}
             {context ? <Box sx={{ mt: 0.15, minWidth: 0 }}>{context}</Box> : null}
             {meta ? <Box sx={{ mt: 0.15, minWidth: 0 }}>{meta}</Box> : null}
           </Box>
@@ -353,14 +362,14 @@ export function TabbedWorkspaceFrame<T extends string>({
               alignItems: "center",
               justifyContent: "flex-end",
               flexWrap: compact ? "nowrap" : "wrap",
-              gridColumn: { xs: compact ? 3 : "1 / -1", md: 3 },
-              gridRow: { xs: compact ? 1 : 2, md: 1 },
+              gridColumn: { xs: compact && !statusBeforePrimaryActions ? 3 : "1 / -1", md: 3 },
+              gridRow: { xs: compact && !statusBeforePrimaryActions ? 1 : 2, md: 1 },
               minWidth: 0,
               maxWidth: "100%",
             }}
           >
             <PrimaryHeaderActionsOutlet />
-            {status}
+            {statusBeforePrimaryActions ? null : status}
             {compact && actionsInMobileTabs ? null : actions}
           </Stack>
           <Tooltip title="Collapse workspace header">
@@ -372,7 +381,7 @@ export function TabbedWorkspaceFrame<T extends string>({
               onClick={handleToggleCollapsed}
               sx={{
                 flexShrink: 0,
-                gridColumn: { xs: compact ? 4 : 3, md: 4 },
+                gridColumn: { xs: compact && !statusBeforePrimaryActions ? 4 : 3, md: 4 },
                 gridRow: 1,
                 width: { xs: 44, sm: 36 },
                 height: { xs: 44, sm: 36 },
