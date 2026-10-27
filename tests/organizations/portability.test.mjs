@@ -252,12 +252,12 @@ test('separated guidance is bounded and survives empty-history imports through b
   f.store.setImportedHistory(f.b.id, 'Synchronous fixture', [], guidance);
   assert.equal(f.store.getImportedHistory(f.b.id).initialInstructions.length, 100_000);
   assert.equal(f.projection(f.b.id).length, 1);
-  assert.equal(f.projection(f.b.id)[0].text.length, 100_000);
+  assert.equal(f.projection(f.b.id)[0].text, 'Imported initial instructions:\n' + f.store.getImportedHistory(f.b.id).initialInstructions);
   let pkg = await f.exportAgent(f.b.id, 'template');
   let imported = f.ok(await f.request(f.importRequest(pkg)));
   assert.deepEqual(f.store.getImportedHistory(imported.rootAgentId).messages, []);
   assert.equal(f.store.getImportedHistory(imported.rootAgentId).initialInstructions.length, 100_000);
-  assert.equal(f.projection(imported.rootAgentId)[0].text.length, 100_000);
+  assert.equal(f.projection(imported.rootAgentId)[0].text, 'Imported initial instructions:\n' + f.store.getImportedHistory(imported.rootAgentId).initialInstructions);
   pkg.agents[0].initialInstructions = '';
   imported = f.ok(await f.request(f.importRequest(pkg)));
   assert.equal(f.store.getImportedHistory(imported.rootAgentId).initialInstructions, '');
