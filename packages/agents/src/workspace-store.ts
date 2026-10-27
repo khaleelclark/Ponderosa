@@ -1497,6 +1497,14 @@ export class WorkspaceStore {
           createdAt: existing.createdAt,
           ...(existing.readAt ? { readAt: existing.readAt } : {}),
         };
+        // Affected Agents are membership, not a ranking. Preserve the saved
+        // order when trace regrouping supplies the same members again.
+        if (existing.agentIds && updated.agentIds) {
+          const previous = new Set(existing.agentIds), next = new Set(updated.agentIds);
+          if (previous.size === next.size && [...next].every(id => previous.has(id))) {
+            updated.agentIds = existing.agentIds;
+          }
+        }
         if (JSON.stringify(updated) === JSON.stringify(existing)) return existing;
         this.append(
           {
