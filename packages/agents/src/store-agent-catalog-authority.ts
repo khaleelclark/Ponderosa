@@ -717,6 +717,10 @@ export class AgentCatalogAuthority {
   }
 
   private validateImportedArchiveSize(imported: ImportedArchive): void {
+    if (imported.initialInstructions !== undefined && !agentPackageTextIsWellFormed(imported.initialInstructions) ||
+        imported.messages.some(message => !agentPackageTextIsWellFormed(message.text))) {
+      throw new Error("Imported history must contain well-formed Unicode text");
+    }
     // Count one row at a time: the retained archive, not a clipped substitute,
     // must fit the existing package ceiling before canonical storage changes.
     agentPackageJsonUtf8Bytes(imported, AGENT_PACKAGE_MAX_BYTES - 1);
@@ -1029,7 +1033,3 @@ export class AgentCatalogAuthority {
     };
   }
 }
-    if (imported.initialInstructions !== undefined && !agentPackageTextIsWellFormed(imported.initialInstructions) ||
-        imported.messages.some(message => !agentPackageTextIsWellFormed(message.text))) {
-      throw new Error("Imported history must contain well-formed Unicode text");
-    }

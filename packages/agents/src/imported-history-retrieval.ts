@@ -109,7 +109,7 @@ export function searchImportedHistory(input: SearchImportedHistoryInput): {
   response: ImportedHistorySearchResponseDto; audit: ImportedHistoryRetrievalAudit;
 } {
   const { normalizedQuery, terms } = normalizeCompactionHistoryQuery(input.query);
-  const limit = input.limit ?? MAX_HISTORY_SEARCH_RESULTS;
+  const limit = input.limit ?? 5;
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_HISTORY_SEARCH_RESULTS) throw new CompactionHistoryQueryError("limit must be 1-8");
   // Reuse the canonical lexical normalization/FTS prefix strategy. The full
   // corpus is indexed, but only bounded windows cross the SQLite boundary.
