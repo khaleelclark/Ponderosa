@@ -1420,6 +1420,14 @@
       "lane": "web",
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24; pure canonical draft/layout behavioral checks; no providers or live data"
+    },
+    {
+      "path": "tests/chats/mutation-notifications.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; controlled React scheduling, no live data",
+      "origin": "Shared transient success feedback and durable actionable/progress contract"
     }
   ],
   "retainedReleasePayload": [
