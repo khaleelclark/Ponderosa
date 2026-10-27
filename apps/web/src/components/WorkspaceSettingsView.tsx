@@ -1089,7 +1089,7 @@ export function WorkspaceSettingsView({
   return (
     <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflow: "auto" }}>
       {showHeader&&<SettingsHeader onReturn={onReturn} returnLabel={returnLabel} />}
-      <Box sx={{ maxWidth: 900, mx: "auto", p: { xs: 2, md: 4 } }}>
+      <Box sx={{ maxWidth: section === "general" ? undefined : 900, mx: "auto", p: { xs: 2, md: 4 } }}>
         {section === "profile" ? (
           <OperatorProfileSettingsSection
             preferences={preferences}
