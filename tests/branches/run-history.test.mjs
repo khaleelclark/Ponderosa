@@ -57,3 +57,15 @@ test('Trigger Events keep activation distinct from completion and raw identifier
  const pending=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:{...occurrence,state:'pending'},runTerminology:true}));assert.match(pending,/Pending Activation/);
  const normal=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence}));assert.match(normal,/aria-label="activated"/);assert.ok(normal.indexOf('artifact-id')<normal.indexOf('<details'));
 });
+
+test('scheduled Trigger Events explain held, update, combined and Run creation outcomes without claiming workflow completion',()=>{
+ const base={id:'event-id',artifactId:'artifact-id',state:'pending',provenance:{source:'schedule'},inputHash:'hash',occurredAt:'2030-01-02T00:00:00Z'},schedule={policy:'run_latest',firstScheduledAt:'2030-01-01T23:00:00Z',lastScheduledAt:'2030-01-02T00:00:00Z',eventCount:61};
+ const labels={held:'Waiting For Current Run',steering:'Updating Current Run',updated:'Current Run Updated',run:'Run Created',unconfirmed:'Update Unconfirmed',combined:'Combined Into Latest Check'};
+ for(const [delivery,label] of Object.entries(labels)){
+  const occurrence={...base,state:delivery==='combined'?'cancelled':['updated','run'].includes(delivery)?'activated':'pending',schedule:{...schedule,delivery,...(delivery==='combined'?{combinedIntoOccurrenceId:'newer-event-id'}:{})}},html=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence,runTerminology:true}));
+  assert.ok(html.includes(`aria-label="${label}"`),`${delivery} delivery retains its distinct audit outcome`);assert.equal(html.includes('aria-label="Completed"'),false,'An event outcome is not workflow completion');assert.ok(html.includes('Scheduled'),'Schedule source is visible');assert.ok(html.includes('First scheduled:')&&html.includes('Latest scheduled:')&&html.includes('61 scheduled events'),'Schedule range and count are visible');
+  if(delivery==='combined'){assert.equal(html.includes('aria-label="Canceled"'),false,'A combined held check is not presented as canceled work');assert.ok(html.indexOf('newer-event-id')>html.indexOf('<details'),'Raw combined event identity stays in diagnostic evidence');}
+ }
+ const partial=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:{...base,schedule:{...schedule,delivery:'held',eventCountExact:false}},runTerminology:true}));assert.ok(partial.includes('At least ')&&partial.includes('61 scheduled events'),'Truncated cron history never claims an exact count');
+ for(const [state,label] of [['cancelled','Canceled'],['dead_lettered','Activation Failed']]){const html=renderToStaticMarkup(React.createElement(OccurrenceAudit,{occurrence:{...base,state,schedule:{...schedule,delivery:'held'}},runTerminology:true}));assert.ok(html.includes(`aria-label="${label}"`),'Terminal occurrence failure/cancellation is not hidden by earlier delivery metadata');}
+});

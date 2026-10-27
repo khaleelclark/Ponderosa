@@ -1296,6 +1296,30 @@ test('trigger external schedule subtype and webhook configuration changes do not
  const webhook=await branchTriggerDraftFixture('webhook',{replayWindowSeconds:300});webhook.setConfig({replayWindowSeconds:600});assert.equal(webhook.calls.length,0);assert.equal(webhook.config.replayWindowSeconds,600);webhook.unmount();
 });
 
+test('repeating busy policy preserves legacy absence, explicit choice and Undo without rewriting cadence',async()=>{
+ const legacy={scheduleKind:'interval',everyMs:3600000,startsAt:'2030-01-01T00:00:00.000Z'},f=await branchTriggerDraftFixture('schedule',legacy);
+ assert.equal(f.calls.length,0);assert.equal(f.draft.whenRunning,undefined);assert.ok(renderToStaticMarkup(f.render()).includes('Queue Every Run'),'Legacy schedule displays Queue Every Run');
+ f.input('whenRunning','run_latest');assert.equal(f.config.whenRunning,'run_latest');assert.equal(f.config.startsAt,legacy.startsAt);assert.equal(f.calls.length,1);
+ const selected=structuredClone(f.config);f.input('intervalValue','2');assert.equal(f.config.whenRunning,'run_latest');assert.equal(f.config.startsAt,legacy.startsAt);
+ f.setConfig(legacy);assert.equal(f.draft.whenRunning,undefined);assert.equal(f.calls.length,2,'Undo loads the old policy without authoring another edit');
+ f.setConfig(selected);assert.equal(f.draft.whenRunning,'run_latest');assert.equal(f.calls.length,2);
+ const markup=renderToStaticMarkup(f.render());assert.ok(markup.includes('When Already Running'),'Policy control is labeled');assert.ok(markup.includes('Run Latest When Finished'),'Selected policy is readable');assert.ok(markup.includes('already queued'),'Existing backlog warning remains visible');f.unmount();
+ const cron={scheduleKind:'cron',expression:'0 9 * * *',timezone:'UTC',whenRunning:'update_current'},c=await branchTriggerDraftFixture('schedule',cron);
+ assert.equal(c.calls.length,0);assert.equal(c.draft.whenRunning,'update_current');c.input('timezone','America/New_York');assert.equal(c.config.whenRunning,'update_current');c.unmount();
+});
+
+test('new repeating schedules default to Run Latest while one-time schedules carry no busy policy',async()=>{
+ const once={scheduleKind:'once',at:'2030-01-02T03:04:05.000Z'},f=await branchTriggerDraftFixture('schedule',once);
+ assert.equal(renderToStaticMarkup(f.render()).includes('When Already Running'),false,'One-time schedules have no busy policy control');assert.equal(f.calls.length,0);
+ f.input('scheduleKind','interval');assert.equal(f.config.whenRunning,'run_latest');f.input('scheduleKind','once');assert.equal(Object.hasOwn(f.config,'whenRunning'),false);
+ f.input('scheduleKind','cron');assert.equal(f.config.whenRunning,'run_latest');f.unmount();
+ const {readFileSync}=await import('node:fs'),{createRequire}=await import('node:module'),vm=await import('node:vm'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),ts=require('typescript');
+ const source=readFileSync(new URL('../../apps/web/src/components/branches/WorkflowEditor.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('WorkflowEditor.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),matches=[];
+ function walk(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='setTrigger')matches.push(node.initializer.getText(ast));ts.forEachChild(node,walk)}walk(ast);assert.equal(matches.length,1);
+ const changes=[],setTrigger=vm.runInNewContext(ts.transpile('('+matches[0]+')',{target:ts.ScriptTarget.ES2022}),{bindings:{agents:{},directories:{}},definition:{trigger:{kind:'manual'}},onDraft:value=>changes.push(value),Date});
+ setTrigger('schedule');assert.equal(changes[0].bindings.triggers.source.sourceConfig.whenRunning,'run_latest');
+});
+
 
 test('Save Workflow renders the existing guarded review action with pending and disabled states',async()=>{
  const f=await discardActionFixture(),s=f.scope,{createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url));

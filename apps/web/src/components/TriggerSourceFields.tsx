@@ -1,6 +1,6 @@
 import {useState} from 'react';
 import {FormControl,InputLabel,Select,MenuItem,Stack,TextField,Typography} from '@mui/material';
-import type {TriggerSourceConfig,TriggerSourceKind} from '@ponderosa/core';
+import type {TriggerScheduleWhenRunning,TriggerSourceConfig,TriggerSourceKind} from '@ponderosa/core';
 import {splitTriggerGlobText} from './triggerSourceValues';
 export function isoToDatetimeLocal(value: string): string {
   const date = new Date(value);
@@ -59,7 +59,9 @@ export function filesystemWindowErrors(quietValue: string, maxValue: string): { 
 export function useTriggerSourceDraft(initial?:TriggerSourceConfig){
  const schedule=initial&&'scheduleKind'in initial?initial:undefined;
  const files=initial&&'include'in initial?initial:undefined;
-  const [scheduleKind, setScheduleKind] = useState<"once" | "interval" | "cron">(schedule?.scheduleKind??"interval");
+  const [scheduleKind, setScheduleKindValue] = useState<"once" | "interval" | "cron">(schedule?.scheduleKind??"interval");
+  const [whenRunning,setWhenRunning]=useState<TriggerScheduleWhenRunning|undefined>(schedule&&schedule.scheduleKind!=='once'?schedule.whenRunning:'run_latest');
+  const setScheduleKind=(kind:typeof scheduleKind)=>{if(scheduleKind==='once'&&kind!=='once')setWhenRunning('run_latest');setScheduleKindValue(kind)};
   const [onceAt, setOnceAt] = useState(isoToDatetimeLocal(schedule?.scheduleKind==='once'?schedule.at:new Date(Date.now()+300000).toISOString()));
   const [intervalValue, setIntervalValue] = useState(schedule?.scheduleKind==='interval'?intervalParts(schedule.everyMs).value:'1');
   const [intervalUnit, setIntervalUnit] = useState<IntervalUnit>(schedule?.scheduleKind==='interval'?intervalParts(schedule.everyMs).unit:'hours');
@@ -77,20 +79,21 @@ export function useTriggerSourceDraft(initial?:TriggerSourceConfig){
   try { if (!timezone.trim()) throw new Error(); new Intl.DateTimeFormat(undefined, { timeZone: timezone.trim() }); }
   catch { timezoneError = "Enter a valid IANA timezone, such as America/New_York or UTC."; }
   const load=(config:TriggerSourceConfig)=>{
-   if('scheduleKind'in config){setScheduleKind(config.scheduleKind);if(config.scheduleKind==='once')setOnceAt(isoToDatetimeLocal(config.at));else if(config.scheduleKind==='interval'){const parts=intervalParts(config.everyMs);setIntervalValue(parts.value);setIntervalUnit(parts.unit)}else{setCronExpression(config.expression);setTimezone(config.timezone)}}
+   if('scheduleKind'in config){setScheduleKindValue(config.scheduleKind);setWhenRunning(config.scheduleKind==='once'?'run_latest':config.whenRunning);if(config.scheduleKind==='once')setOnceAt(isoToDatetimeLocal(config.at));else if(config.scheduleKind==='interval'){const parts=intervalParts(config.everyMs);setIntervalValue(parts.value);setIntervalUnit(parts.unit)}else{setCronExpression(config.expression);setTimezone(config.timezone)}}
    else if('include'in config){setInclude(config.include.join('\n'));setExclude(config.exclude.join('\n'));setQuietSeconds(String(config.quietMs/1000));setMaxWindowSeconds(String(config.maxWindowMs/1000))}
   };
   const configuration=(kind:TriggerSourceKind,original?:TriggerSourceConfig):TriggerSourceConfig=>{
    if(kind==='webhook')return original&&'replayWindowSeconds'in original?original:{replayWindowSeconds:300};
    if(kind==='filesystem')return {include:splitTriggerGlobText(include),exclude:splitTriggerGlobText(exclude),quietMs:Math.round(Number(quietSeconds)*1000),maxWindowMs:Math.round(Number(maxWindowSeconds)*1000)};
    if(scheduleKind==='once')return {scheduleKind:'once',at:new Date(onceAt).toISOString()};
-   if(scheduleKind==='cron')return {scheduleKind:'cron',expression:cronExpression,timezone};
-   return intervalSourceConfig(Math.round(intervalMs),original&&'scheduleKind'in original&&original.scheduleKind==='interval'?original:undefined);
+   const policy=whenRunning===undefined?{}:{whenRunning};
+   if(scheduleKind==='cron')return {scheduleKind:'cron',expression:cronExpression,timezone,...policy};
+   return {...intervalSourceConfig(Math.round(intervalMs),original&&'scheduleKind'in original&&original.scheduleKind==='interval'?original:undefined),...policy};
   };
-  return {scheduleKind,onceAt,intervalValue,intervalUnit,cronExpression,timezone,include,exclude,quietSeconds,maxWindowSeconds,setScheduleKind,setOnceAt,setIntervalValue,setIntervalUnit,setCronExpression,setTimezone,setInclude,setExclude,setQuietSeconds,setMaxWindowSeconds,filesystemErrors,intervalInvalid,cronFormatError,timezoneError,configuration,load};
+  return {scheduleKind,whenRunning,onceAt,intervalValue,intervalUnit,cronExpression,timezone,include,exclude,quietSeconds,maxWindowSeconds,setScheduleKind,setWhenRunning,setOnceAt,setIntervalValue,setIntervalUnit,setCronExpression,setTimezone,setInclude,setExclude,setQuietSeconds,setMaxWindowSeconds,filesystemErrors,intervalInvalid,cronFormatError,timezoneError,configuration,load};
 }
 export function TriggerSourceFields({sourceKind,draft}:{sourceKind:TriggerSourceKind;draft:ReturnType<typeof useTriggerSourceDraft>}):JSX.Element{
- const {scheduleKind,onceAt,intervalValue,intervalUnit,cronExpression,timezone,include,exclude,quietSeconds,maxWindowSeconds,setScheduleKind,setOnceAt,setIntervalValue,setIntervalUnit,setCronExpression,setTimezone,setInclude,setExclude,setQuietSeconds,setMaxWindowSeconds,filesystemErrors,intervalInvalid,cronFormatError,timezoneError}=draft;
+ const {scheduleKind,whenRunning,onceAt,intervalValue,intervalUnit,cronExpression,timezone,include,exclude,quietSeconds,maxWindowSeconds,setScheduleKind,setWhenRunning,setOnceAt,setIntervalValue,setIntervalUnit,setCronExpression,setTimezone,setInclude,setExclude,setQuietSeconds,setMaxWindowSeconds,filesystemErrors,intervalInvalid,cronFormatError,timezoneError}=draft;
  return <>      {sourceKind === "schedule" ? <>
         <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule type</InputLabel><Select labelId="schedule-kind-label" label="Schedule type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem><MenuItem value="once">One Time</MenuItem><MenuItem value="cron">Cron</MenuItem></Select></FormControl>
         {scheduleKind === "interval" ? <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
@@ -99,6 +102,7 @@ export function TriggerSourceFields({sourceKind,draft}:{sourceKind:TriggerSource
         </Stack> : null}
         {scheduleKind === "once" ? <TextField label="Run at" type="datetime-local" value={onceAt} onChange={(event) => setOnceAt(event.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ step: 0.001 }} /> : null}
         {scheduleKind === "cron" ? <><TextField label="Cron expression" value={cronExpression} onChange={(event) => setCronExpression(event.target.value)} error={Boolean(cronFormatError)} helperText={cronFormatError ?? "Five fields; minimum frequency is once per minute."} /><TextField label="IANA timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} error={Boolean(timezoneError)} helperText={timezoneError} /></> : null}
+        {scheduleKind !== "once" ? <><FormControl fullWidth><InputLabel id="schedule-when-running-label">When Already Running</InputLabel><Select labelId="schedule-when-running-label" label="When Already Running" value={whenRunning??'queue_all'} onChange={event=>setWhenRunning(event.target.value as TriggerScheduleWhenRunning)}><MenuItem value="update_current">Update Current Run</MenuItem><MenuItem value="run_latest">Run Latest When Finished</MenuItem><MenuItem value="queue_all">Queue Every Run</MenuItem></Select></FormControl><Typography variant="caption" color="text.secondary">{whenRunning==='update_current'?'Send newer scheduled events to supported active Agent work; otherwise keep only the latest event for the next Run.':whenRunning==='run_latest'?'Keep only the latest scheduled event for the next Run when current work finishes.':'Queue a separate Run for each schedule check, even while current work is active.'} Runs already queued remain queued. Changing this setting does not clear or merge them.</Typography></> : null}
       </> : null}
       {sourceKind === "filesystem" ? <><TextField label="Include globs" value={include} onChange={(event) => setInclude(event.target.value)} multiline minRows={2} /><TextField label="Exclude globs" value={exclude} onChange={(event) => setExclude(event.target.value)} multiline minRows={3} /><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Quiet window (seconds)" type="number" value={quietSeconds} onChange={(event) => setQuietSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.quiet)} helperText={filesystemErrors.quiet ?? "0.1 seconds–1 hour"} /><TextField fullWidth label="Maximum window (seconds)" type="number" value={maxWindowSeconds} onChange={(event) => setMaxWindowSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.max)} helperText={filesystemErrors.max ?? "At least quiet window; no more than 1 hour"} /></Stack><Typography variant="caption" color="text.secondary">Only paths and event types are captured; file contents are not injected.</Typography></> : null}
       {sourceKind === "webhook" ? <Typography variant="body2" color="text.secondary">Ponderosa will show a signing secret once. Send a stable event ID, Unix timestamp, and v1 HMAC-SHA256 signature with each JSON request.</Typography> : null}

@@ -132,7 +132,9 @@ export interface TriggerOccurrenceDto {
     firstScheduledAt: string;
     lastScheduledAt: string;
     eventCount: number;
-    delivery: "held" | "steering" | "updated" | "run" | "unconfirmed";
+    eventCountExact?: boolean;
+    delivery: "held" | "steering" | "updated" | "run" | "unconfirmed" | "combined";
+    combinedIntoOccurrenceId?: string;
   };
   state: TriggerOccurrenceState;
   payload: unknown;

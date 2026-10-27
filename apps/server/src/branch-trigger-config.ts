@@ -15,7 +15,7 @@ export function triggerSourceConfig(
     } else if (scheduleKind === "interval") {
       exactObjectFields(
         config,
-        ["scheduleKind", "everyMs", "startsAt"],
+        ["scheduleKind", "everyMs", "startsAt", "whenRunning"],
         "interval schedule",
       );
       if (
@@ -29,7 +29,7 @@ export function triggerSourceConfig(
     } else if (scheduleKind === "cron") {
       exactObjectFields(
         config,
-        ["scheduleKind", "expression", "timezone"],
+        ["scheduleKind", "expression", "timezone", "whenRunning"],
         "cron schedule",
       );
       if (
@@ -40,6 +40,9 @@ export function triggerSourceConfig(
       }
     } else {
       throw new Error("invalid scheduleKind");
+    }
+    if (config.whenRunning !== undefined && !["update_current", "run_latest", "queue_all"].includes(config.whenRunning as string)) {
+      throw new Error("whenRunning must be update_current, run_latest or queue_all");
     }
   } else if (kind === "webhook") {
     exactObjectFields(config, ["replayWindowSeconds"], "webhook config");

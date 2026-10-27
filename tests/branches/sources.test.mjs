@@ -69,6 +69,39 @@ test('source configuration validates exact current fields and preserves the minu
  const normalized=normalizeTriggerSourceConfig('schedule',{scheduleKind:'cron',expression:'0 9 * * *',timezone:'America/New_York'},new Date('2026-03-07T15:00:00Z'));assert.equal(normalized.nextFireAt,'2026-03-08T13:00:00.000Z');
 });
 
+test('repeating schedules preserve explicit busy policies and leave legacy queue behavior implicit',()=>{
+ const now=new Date('2030-01-01T00:00:00Z'),configs=[{scheduleKind:'interval',everyMs:60000,startsAt:'2030-01-02T00:00:00Z'},{scheduleKind:'cron',expression:'0 9 * * *',timezone:'UTC'}];
+ for(const config of configs){
+  const legacy=normalizeTriggerSourceConfig('schedule',triggerSourceConfig('schedule',config),now);
+  assert.equal(Object.hasOwn(legacy.config,'whenRunning'),false,'Republishing a legacy schedule must not opt it into a new policy');
+  for(const whenRunning of ['update_current','run_latest','queue_all']){
+   const normalized=normalizeTriggerSourceConfig('schedule',triggerSourceConfig('schedule',{...config,whenRunning}),now);
+   assert.equal(normalized.config.whenRunning,whenRunning);assert.equal(normalized.nextFireAt,legacy.nextFireAt,'Busy policy must not change cadence calculation');
+  }
+  for(const whenRunning of [null,false,0,{},'latest','']){
+   assert.throws(()=>triggerSourceConfig('schedule',{...config,whenRunning}),/whenRunning/);
+   assert.throws(()=>normalizeTriggerSourceConfig('schedule',{...config,whenRunning},now),/whenRunning/);
+  }
+  assert.throws(()=>triggerSourceConfig('schedule',{...config,unknownPolicy:true}),/unknown/);
+ }
+ assert.throws(()=>triggerSourceConfig('schedule',{scheduleKind:'once',at:'2030-01-02T00:00:00Z',whenRunning:'run_latest'}),/unknown/);
+});
+
+test('template and full Branch packages preserve explicit and legacy schedule policies through publication',async t=>{
+ const {BranchInstallationService}=await import('../../apps/server/dist/branch-installation-service.js');
+ for(const whenRunning of [undefined,'update_current','run_latest','queue_all']){
+  const config={scheduleKind:'interval',everyMs:60000,startsAt:'2030-01-02T00:00:00.000Z',...(whenRunning?{whenRunning}:{})},f=await fixture(t,'schedule',config),unexpected=()=>{throw Error('No Agent or Chat lifecycle operation is needed for this schedule-only package')};
+  const installation=new BranchInstallationService(f.store,f.branches,unexpected,unexpected,unexpected);installation.setEngine({validateAgent:unexpected,exportAgent:unexpected,importAgent:unexpected});
+  installation.setPublisher((input,configuration)=>{const source=input.bindings.triggers.source.sourceConfig,normalized=normalizeTriggerSourceConfig('schedule',triggerSourceConfig('schedule',source));return f.branches.deploy(input,new Date().toISOString(),{sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt},configuration)});
+  for(const mode of ['template','full']){
+   const pkg=await installation.export(f.branch.id,mode);assert.deepEqual(pkg.triggers.source.sourceConfig,config);
+   const preview=installation.preview(pkg,{agents:{},directories:{workspace:f.workspace}}),result=await installation.confirm(preview.id,mode==='full');assert.equal(result.state,'completed',result.error);
+   assert.deepEqual(f.branches.localConfiguration(result.branchId).triggers.source.sourceConfig,config);assert.deepEqual(f.branches.trigger(result.branchId).sourceConfig,config);
+  }
+  await installation.stop();f.noProviderWork();f.pass();
+ }
+});
+
 // A folder/configuration edit must not reinterpret already accepted file paths.
 test('publishing a new binding seals pending filesystem evidence against its previous version',async t=>{
  const f=await fixture(t,'filesystem',{include:['**/*'],exclude:[],quietMs:1000,maxWindowMs:5000});
