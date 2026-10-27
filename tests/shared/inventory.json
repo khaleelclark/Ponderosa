@@ -872,6 +872,14 @@
       "origin": "Q12: Claude history dispatch and frozen canonical scope qualification"
     },
     {
+      "path": "tests/context-recovery/imported-history-fidelity.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built agents/native workspaces; disposable real SQLite and canonical archives; no provider account",
+      "origin": "Imported archive fidelity: exact bounded Unicode retrieval, provenance, index lifecycle and private reference fences"
+    },
+    {
       "path": "tests/chats/receipt-batching.test.mjs",
       "feature": "chats",
       "lane": "server",
