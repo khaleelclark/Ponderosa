@@ -3,23 +3,16 @@ import AddIcon from '@mui/icons-material/Add';
 import FileUploadOutlinedIcon from '@mui/icons-material/FileUploadOutlined';
 import WarningAmberOutlinedIcon from '@mui/icons-material/WarningAmberOutlined';
 import {Alert, Box, Button, Paper, Stack, Typography} from '@mui/material';
-import type {BranchHomeExecutionDto, EngineDto} from '@ponderosa/core';
+import type {EngineDto} from '@ponderosa/core';
 import {useRef} from 'react';
 import {attentionPresentation, isOpenAttention} from '../../attention';
 import type {BranchRoute} from '../../branchesRouting';
 import {engineAvailabilityPresentation} from '../../conversationEngine';
 import {branchHomeItems, useBranchHome} from '../../hooks/useBranchHome';
 import {HomeFirstItem, HomeItemCard, HomeLayout, HomeSection, HomeSummaryCard, homeItemsGridSx, homeSummaryGridSx} from '../HomeView.parts';
-import type {SemanticStatusKind} from '../SemanticStatus';
+import {branchOperationalStatusKinds} from './executionPresentation';
 import {BranchNotifications} from './BranchNotifications';
 
-// Color only: the canonical operational projection supplies every status label.
-const statusKinds: Record<BranchHomeExecutionDto['operational']['state'], SemanticStatusKind> = {
- queued:'waiting', running:'running', waiting_agent:'waiting', waiting_human:'needs_decision',
- retrying:'waiting', provider_unavailable:'waiting', provider_attention:'needs_attention',
- needs_reconciliation:'needs_attention', blocked:'blocked', completed:'completed', failed:'failed',
- canceled:'idle', skipped:'idle', merged:'idle',
-};
 
 export function BranchHome({engines, enginesLoaded, enginesError, onRetryEngines, onNavigate, onCreate, onImport, creating}: {
  engines: EngineDto[]; enginesLoaded: boolean; enginesError?: string; onRetryEngines():void;
@@ -40,7 +33,7 @@ export function BranchHome({engines, enginesLoaded, enginesError, onRetryEngines
    {rows.length?<Box sx={homeItemsGridSx}>{rows.map(item=><HomeItemCard key={item.id}
     icon={<AccountTreeOutlinedIcon/>} title={item.branchName}
     detail={`Execution ${item.id.slice(0,8)} · ${new Date(section==='activeExecutions'?item.createdAt:item.updatedAt).toLocaleString()}${item.parentExecutionId?` · Child of ${item.parentExecutionId.slice(0,8)}`:''}`}
-    status={statusKinds[item.operational.state]} statusLabel={item.operational.label} statusBelow multilineDetail
+    status={branchOperationalStatusKinds[item.operational.state]} statusLabel={item.operational.label} statusBelow multilineDetail
     onClick={()=>onNavigate({branchId:item.branchId,tab:'executions',executionId:item.id})}/>)}</Box>
     :!query.data&&query.isError?<Alert severity="error" action={<Button color="inherit" onClick={()=>void query.refetch({cancelRefetch:false})}>Retry</Button>}>{section==='activeExecutions'?'Active executions':'Recent outcomes'} could not be loaded.</Alert>
     :!query.data?<Typography color="text.secondary">Loading {section==='activeExecutions'?'active executions':'recent outcomes'}…</Typography>
