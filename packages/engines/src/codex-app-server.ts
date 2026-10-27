@@ -569,6 +569,9 @@ export class CodexAppServerSession implements RuntimeSession {
             inputSchema: tool.inputSchema,
           })) ?? null,
         });
+    if (opts.resumeSessionId && response.thread.id !== opts.resumeSessionId) {
+      throw new Error("Codex did not confirm the requested saved session");
+    }
     session = new CodexAppServerSession(
       response.thread.id,
       rpc,

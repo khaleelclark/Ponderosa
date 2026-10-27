@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { withFixture } from '../shared/fixture.mjs';
+import { withFixture, until } from '../shared/fixture.mjs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { createServer } from '../../apps/server/dist/app.js';
+import { processBirthMarker } from '@ponderosa/engines';
 
 test('check 31: provider status reads do not test access; explicit recheck probes only its selected provider', {
   timeout: 30000
@@ -296,4 +300,45 @@ test('a successful sign-in observation survives a separate diagnostic cleanup fa
  const result=await codexAuthStatus({PONDEROSA_CODEX_BIN:bin,PATH:process.env.PATH},{onRuntimeSpawned:spawned=>{handle=spawned;const close=handle.close.bind(handle);handle.close=async()=>{await close();throw Error('Controlled cleanup receipt failure')}}});
  assert.equal(handle.isAlive(),false);assert.equal(result.authenticated,true);assert.equal(result.diagnosticFailure,'cleanup_failed');
  const cache=new EngineAuthStatusCache();await cache.get('codex',async()=>result);assert.equal(cache.snapshot('codex').authenticated,true);assert.equal(cache.snapshot('codex').diagnosticFailure,'cleanup_failed');
+});
+
+for (const phase of ['before-probe', 'before-spawn']) test(`shutdown fences and drains diagnostic operations delayed ${phase}`, { timeout: 10000, skip: process.platform === 'win32' }, async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'diagnostic-shutdown-'));
+  let release, entered = false, calls = 0, child, exited, app;
+  const gate = new Promise(resolve => { release = resolve; });
+  const original = ProviderProcessAuthority.prototype.terminatePurpose;
+  ProviderProcessAuthority.prototype.terminatePurpose = async function(purpose) {
+    if (phase === 'before-probe' && !entered && purpose === 'codex authentication diagnostic') { entered = true; await gate; }
+    return original.call(this, purpose);
+  };
+  try {
+    app = createServer({ dataDir: root, logger: false, engines: [{
+      adapter: { id: 'codex', displayName: 'Owned diagnostic', listModels: () => [], listEfforts: () => [], defaultModel: () => '', defaultEffort: () => '' },
+      isInstalled: () => true,
+      authStatus: async options => {
+        calls++; entered = true; await gate;
+        child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { detached: true, stdio: 'ignore' });
+        exited = once(child, 'exit'); await once(child, 'spawn');
+        const identity = { pid: child.pid, pgid: child.pid, birthMarker: processBirthMarker(child.pid) };
+        const handle = { processIdentity: identity, isAlive: () => child.exitCode === null && child.signalCode === null,
+          close: async () => { if (handle.isAlive()) process.kill(-child.pid, 'SIGTERM'); await exited; } };
+        options.onRuntimeSpawned(handle);
+        return { authenticated: true };
+      },
+    }] });
+    await app.ready();
+    const request = app.inject({ url: '/api/engines' });
+    await until(() => entered, 'owned diagnostic entered'); await request;
+    app.prepareForShutdown(); let finished = false;
+    const closing = app.close().then(() => { finished = true; });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(finished, false, 'Storage must remain owned while diagnostic admission or spawning is pending');
+    release(); await closing;
+    assert.equal(calls, phase === 'before-probe' ? 0 : 1);
+    if (child) assert.ok(child.exitCode !== null || child.signalCode !== null, 'Late registered diagnostic survived shutdown');
+  } finally {
+    release(); ProviderProcessAuthority.prototype.terminatePurpose = original;
+    if (child && child.exitCode === null && child.signalCode === null) { process.kill(-child.pid, 'SIGTERM'); await exited; }
+    await app?.close(); await rm(root, { recursive: true, force: true });
+  }
 });

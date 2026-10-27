@@ -1039,7 +1039,8 @@ ${freshGuidedPrompt}${attachmentContext}${freshBroadcastAttachmentContext}${coal
       if (event && !event.document && event.text === delivered.text &&
           !store.getLatestCommunicationRevision(project.id, event.eventId)) complete.add(event.eventId);
     }
-    if (communication && !communication.document && communication.text === text) complete.add(communication.eventId);
+    if (communication && !communication.document && communication.text === text &&
+        !store.getLatestCommunicationRevision(project.id, communication.eventId)) complete.add(communication.eventId);
     for (const id of [...complete]) if (store.getCommunicationEvent(project.id, id)?.document) complete.delete(id);
     for (const id of clipped) complete.delete(id);
     return {

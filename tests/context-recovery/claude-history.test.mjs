@@ -198,3 +198,26 @@ test('accepted session tail evidence never promotes a later authored revision', 
   assert.equal(store.acceptedProviderSessionCommunicationEventIds(agent.id).includes(id),false);
  },{storeFactory:root=>store=new AgentStore(root)});
 });
+
+test('queued input cannot certify an edited revision that was not submitted', { timeout: 30000 }, async t => {
+  let store;
+  await withFixture(t, async f => {
+    const chat = await f.createChat('Queued revision proof'), agent = await f.createIdleAgent(chat, 'Queue reader');
+    const first = await f.hold(agent.id), before = f.turns.length;
+    const queued = await f.send(agent.id, 'Original queued input', { activeRunDelivery: 'queue' });
+    const original = store.getCommunicationEvent(chat.projectId, queued.communicationEventId);
+    assert.ok(original);
+    const newer = 'Distinct later revision not submitted with the frozen queued input';
+    store.appendCommunicationRevision({ schemaVersion: 1, eventId: randomUUID(), projectId: chat.projectId, conversationId: chat.id,
+      targetEventId: original.eventId, kind: 'edit', sender: original.sender, text: newer, idempotencyKey: 'queued-revision', createdAt: new Date().toISOString() });
+    f.plans.set(agent.id, [{ hold: true }]); first.finish();
+    await until(() => f.turns.length > before, 'queued frozen input');
+    const session = f.sessions.get(agent.id);
+    assert.ok(f.turns.at(-1).input.prompt.includes('Original queued input'));
+    assert.equal(f.turns.at(-1).input.prompt.includes(newer), false);
+    assert.equal(store.acceptedProviderSessionCommunicationEventIds(agent.id).includes(original.eventId), false, 'Unsubmitted revision must remain retrievable');
+    const retrieved = f.ok(await f.tool(session, 'ponderosa_history', { action: 'read', communicationEventId: original.eventId, before: 0, after: 0 }));
+    assert.equal(retrieved.messages[0].text, newer);
+    session.finish();
+  }, { storeFactory: root => store = new AgentStore(root) });
+});

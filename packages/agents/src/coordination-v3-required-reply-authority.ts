@@ -1004,7 +1004,7 @@ export class CoordinationV3RequiredReplyAuthority {
           WHERE id = ? AND state IN ('consumed', 'outcome_unknown')
         `).run(
           attempts,
-          category ?? null,
+          category === "quota_exhausted" || category === "throttled" ? "rate_limit" : category ?? null,
           error,
           exhausted ? 'retry_exhausted' : 'permanent_failure',
           now,
