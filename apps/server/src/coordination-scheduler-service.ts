@@ -386,8 +386,8 @@ return new CoordinationV3Scheduler(
         v3SchedulerRunId: lease.runId,
         v3FencingToken: lease.fencingToken,
         v3InjectionId: lease.injectionId,
-        v3FreshProviderSession: coordinationV3.runStartsNewRecipientRequest(lease.runId, lease.agentId) ||
-          coordinationV3.runChangesScope(lease.runId, lease.agentId),
+        // A new Request alone does not invalidate compatible provider context.
+        v3FreshProviderSession: coordinationV3.runChangesScope(lease.runId, lease.agentId),
         v3ActivationPrompt: prompt,
         ...(communication?.eventId ? { v3CommunicationEventId: communication.eventId } : {}),
       },

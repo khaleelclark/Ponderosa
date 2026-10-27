@@ -41,9 +41,10 @@ export function boundedSeedHistory<T extends { text: string; provenance?: unknow
     }
     const marker = "[Earlier content omitted at session boundary]\n";
     const markerLength = unicodeCodePointLength(marker);
-    const clipped = remaining > markerLength
-      ? `${marker}${[...message.text].slice(-(remaining - markerLength)).join("")}`
-      : [...message.text].slice(-remaining).join("");
+    const prefix = remaining > markerLength ? marker : "[Clipped]";
+    const available = remaining - unicodeCodePointLength(prefix);
+    if (available < 0) break; // Whole omission is disclosed by the packet owner.
+    const clipped = `${prefix}${available ? [...message.text].slice(-available).join("") : ""}`;
     selected.push({ ...message, text: clipped });
     remaining = 0;
   }
@@ -55,8 +56,8 @@ export function boundedSeedHistory<T extends { text: string; provenance?: unknow
  * pages. Unlike a seed (which intentionally selects the newest tail), a
  * continuation must never jump over an older unseen message merely to fit the
  * prompt budget. Canonical messages larger than the entire page are represented
- * by a bounded preview. Their complete content remains durable, but V4 exposes
- * no provider history-retrieval capability.
+ * by a bounded preview. Their complete content remains durable and retrievable
+ * through the accepted Run’s bounded canonical history capability.
  */
 export function boundedContinuationHistory<T extends { text: string }>(
   messages: T[],
@@ -76,11 +77,12 @@ export function boundedContinuationHistory<T extends { text: string }>(
     if (selected.length > 0) break;
     const marker = "\n[Remaining durable history omitted at this session boundary]";
     const available = Math.max(0, remaining - unicodeCodePointLength(marker));
+    if (available === 0 && remaining < unicodeCodePointLength("[Clipped]")) break;
     selected.push({
       ...message,
       text: available > 0
         ? `${truncateUnicodeCodePoints(message.text, available)}${marker}`
-        : truncateUnicodeCodePoints(message.text, remaining),
+        : "[Clipped]",
     });
     remaining = 0;
   }

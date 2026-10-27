@@ -437,6 +437,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.communicationJournal.readCommunicationEvents(projectId);
   }
 
+  getLatestCommunicationRevision(projectId: string, eventId: string): CommunicationRevisionEvent | undefined {
+    return this.communicationJournal.latestCommunicationRevision(projectId, eventId);
+  }
+
   getCommunicationEvent(projectId: string, eventId: string): CommunicationEvent | undefined {
     return this.communicationJournal.getCommunicationEvent(projectId, eventId);
   }
@@ -502,7 +506,6 @@ export class AgentStore extends AgentEventSessionFacade {
   acceptedProviderSessionCommunicationEventIds(agentId: string): string[] | undefined {
     const boundary = this.acceptedProviderSessionBoundary(agentId);
     if (!boundary) return undefined;
-    const events = this.readEvents(agentId);
     const { sessionId, rolloverId } = boundary;
     const executionIds = new Set((this.client.prepare(`
       SELECT id FROM scheduler_runs
@@ -510,25 +513,21 @@ export class AgentStore extends AgentEventSessionFacade {
         AND prompt_injection_state = 'injected'
       ORDER BY created_at, id
     `).all(agentId, sessionId) as Array<{ id: string }>).map((row) => row.id));
-    const selectedHistoryIds: string[] = [];
-    for (const stored of events) {
-      const event = stored.event;
-      if (event.type === "compaction_history_retrieval" && executionIds.has(event.executionId)) {
-        selectedHistoryIds.push(...event.selected.map((selected) => selected.communicationEventId));
-      }
-    }
-    const rolloverTail = rolloverId
-      ? (this.client.prepare(`
-          SELECT recent_tail_event_ids_json FROM context_rollovers WHERE id = ? AND agent_id = ?
-        `).get(rolloverId, agentId) as { recent_tail_event_ids_json: string } | undefined)
-      : undefined;
-    const providerInputIds = [...executionIds].flatMap((executionId) =>
-      this.getProviderInput(executionId)?.sourceManifest.communicationEventIds ?? []);
-    return [...new Set([
-      ...(rolloverTail ? JSON.parse(rolloverTail.recent_tail_event_ids_json) as string[] : []),
-      ...providerInputIds,
-      ...selectedHistoryIds,
-    ])];
+    const projectId = this.getAgent(agentId)?.projectId;
+    const canonicalHash = this.client.prepare('SELECT content_sha256 FROM compaction_history_messages WHERE project_id=? AND communication_event_id=?');
+    const matches = (id: string, hash: string | undefined): boolean => Boolean(projectId && hash &&
+      (canonicalHash.get(projectId, id) as {content_sha256:string}|undefined)?.content_sha256 === hash);
+    const rolloverTail = rolloverId ? this.client.prepare(`
+      SELECT recent_tail_event_ids_json, recent_tail_hashes_json FROM context_rollovers WHERE id=? AND agent_id=?
+    `).get(rolloverId, agentId) as {recent_tail_event_ids_json:string;recent_tail_hashes_json:string}|undefined : undefined;
+    const tailIds = rolloverTail ? JSON.parse(rolloverTail.recent_tail_event_ids_json) as string[] : [];
+    const tailHashes = rolloverTail ? JSON.parse(rolloverTail.recent_tail_hashes_json) as string[] : [];
+    const providerInputIds = [...executionIds].flatMap(executionId => {
+      const manifest = this.getProviderInput(executionId)?.sourceManifest;
+      return manifest?.schemaVersion === 3 ? (manifest.historyContext?.fullyIncludedCommunicationEventIds ?? []).filter(id =>
+        manifest.sources.some(source => source.kind === 'communication' && source.ref === id && matches(id, source.hash))) : [];
+    });
+    return [...new Set([...tailIds.filter((id,index)=>matches(id,tailHashes[index])), ...providerInputIds])];
   }
 
   bindContextRolloverBoundary(input: {

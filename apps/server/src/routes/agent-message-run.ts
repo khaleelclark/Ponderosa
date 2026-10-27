@@ -1168,11 +1168,7 @@ export function registerAgentMessageRunRoute(
         mentionTrail,
         reachableArtifactIds: manifestArtifactIds,
         availableToolNames: availableRuntimeToolNames,
-        historyRetrievalExcludedCommunicationEventIds: [...new Set([
-          ...historyRetrievalFrozenExclusions,
-          ...providerInputManifest.communicationEventIds,
-          ...freshProviderInputManifest.communicationEventIds,
-        ])],
+        historyRetrievalExcludedCommunicationEventIds: historyRetrievalFrozenExclusions,
         ...(historyRetrievalBoundary ? { historyRetrievalBoundary } : {}),
         ...(sharedTaskTurn ? { plainSharedReply: true } : {}),
         ...(defaultReply ? { defaultReply } : {}),

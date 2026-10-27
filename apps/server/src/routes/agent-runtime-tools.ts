@@ -1,3 +1,5 @@
+import { readableArtifactReferences } from "../communication-artifacts.js";
+import { collectReachableArtifactIds } from "../artifact-refs.js";
 import { chatBrowserOwnerId } from "@ponderosa/core";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -213,6 +215,7 @@ export function registerAgentRuntimeToolRoutes(
       delta_y?: unknown;
       query?: unknown;
       communicationEventId?: unknown;
+      continuation?: unknown;
       limit?: unknown;
       before?: unknown;
       after?: unknown;
@@ -225,10 +228,19 @@ export function registerAgentRuntimeToolRoutes(
     const agent = capability ? store.getAgent(capability.agentId) : undefined;
     if (!capability || !active || !agent || !capabilityOwnsAuthoritativeRun(capability, active) ||
         active.messageCapability !== token || !capability.historyRetrievalBoundary) {
-      return reply.code(401).send({ error: "history capability is not authorized for an active compacted run" });
+      return reply.code(401).send({ error: "history capability is not authorized for this accepted run boundary" });
     }
     if (!capability.availableToolNames?.includes(PONDEROSA_HISTORY_TOOL.name)) {
       return reply.code(403).send({ error: "History is not authorized by the server-issued tool set." });
+    }
+    const ownerChat = store.getConversation(agent.conversationId);
+    const routedChat = capability.conversationId ? store.getConversation(capability.conversationId) : ownerChat;
+    if (!ownerChat || ownerChat.deletedAt || ownerChat.projectId !== agent.projectId ||
+        !routedChat || routedChat.deletedAt || routedChat.projectId !== agent.projectId ||
+        active.controller.signal.aborted || context.deletingProjectIds.has(agent.projectId) ||
+        context.deletingAgentIds.has(agent.id) || context.deletingConversationIds.has(agent.conversationId) ||
+        context.deletingConversationIds.has(routedChat.id) || active.conversationId !== capability.conversationId) {
+      return reply.code(403).send({ error: "History requires a live authorized Agent and Chat owner." });
     }
     const historyBoundary = capability.historyRetrievalBoundary;
     const requestedAction = request.body?.action;
@@ -250,6 +262,10 @@ export function registerAgentRuntimeToolRoutes(
         communicationEventId: string;
         contentSha256: string;
         matchBasis?: "lexical";
+        startCodePoint?: number;
+        endCodePoint?: number;
+        totalCodePoints?: number;
+        complete?: boolean;
       }>;
       excludedCurrentContextEventIds?: string[];
       responseUtf8Bytes?: number;
@@ -280,7 +296,7 @@ export function registerAgentRuntimeToolRoutes(
       durationMs: Math.round((performance.now() - startedAt) * 1000) / 1000,
     });
     try {
-      const allowedKeys = new Set(["action", "query", "communicationEventId", "limit", "before", "after"]);
+      const allowedKeys = new Set(["action", "query", "communicationEventId", "continuation", "limit", "before", "after"]);
       if (request.body && Object.keys(request.body).some((key) => !allowedKeys.has(key))) {
         throw new CompactionHistoryQueryError("history request contains an unsupported field");
       }
@@ -291,6 +307,9 @@ export function registerAgentRuntimeToolRoutes(
         agentId: agent.id,
         ...(capability.conversationId ? { currentConversationId: capability.conversationId } : {}),
         boundary: historyBoundary,
+        readableArtifactReferences: (event: import("@ponderosa/core").CommunicationEvent) =>
+          readableArtifactReferences({ projectId: agent.projectId, agentId: agent.id, store, assets,
+            artifactIds: [...collectReachableArtifactIds(event)] }),
         excludedCommunicationEventIds: new Set(
           capability.historyRetrievalExcludedCommunicationEventIds,
         ),
@@ -303,6 +322,13 @@ export function registerAgentRuntimeToolRoutes(
         const { response, audit } = store.readCompactionHistory({
           ...common,
           communicationEventId: rawCommunicationEventId,
+          integrityKey: token!,
+          ...(request.body?.continuation !== undefined ? { continuation: (() => {
+            if (typeof request.body.continuation !== "string" || request.body.continuation.length > 256) {
+              throw new CompactionHistoryQueryError("invalid canonical history continuation");
+            }
+            return request.body.continuation;
+          })() } : {}),
           ...(rawBefore !== undefined ? { before: Number(rawBefore) } : {}),
           ...(rawAfter !== undefined ? { after: Number(rawAfter) } : {}),
         });
@@ -315,6 +341,9 @@ export function registerAgentRuntimeToolRoutes(
           responseUtf8Bytes: response.utf8Bytes,
         });
         return response;
+      }
+      if (request.body?.continuation !== undefined) {
+        throw new CompactionHistoryQueryError("search does not accept a read continuation");
       }
       const normalized = normalizeCompactionHistoryQuery(rawQuery);
       if (rawLimit !== undefined && (!Number.isSafeInteger(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 8)) {

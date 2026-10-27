@@ -12,7 +12,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import Fastify from 'fastify';
-import { AgentStore } from '@ponderosa/agents';
+import { AgentStore, CoordinationV3Store } from '@ponderosa/agents';
+import { withFixture, until } from '../shared/fixture.mjs';
 import { PONDEROSA_HISTORY_TOOL } from '@ponderosa/core';
 import { encodeSessionTools } from '../../packages/engines/dist/ponderosa-mcp-contract.js';
 import { ClaudeStreamSession } from '../../packages/engines/dist/claude-stream-session.js';
@@ -54,12 +55,13 @@ async function withHistory(t, work) {
     const foreignAgent = store.createAgent(foreignProject.id, { title: 'Foreign reader', engine: 'claude', conversationId: foreignChat.id });
     const crossProject = authored('Amber orchard PRIVATE_OTHER_PROJECT', foreignAgent, foreignProject);
     const boundary = store.communicationHistoryBoundary(project.id), newer = authored('Amber orchard NEW_AFTER_BOUNDARY');
-    const token = 'owned-fake-history-capability', run = { runId: 'owned-run', executionId: 'owned-execution', messageCapability: token };
+    const token = 'owned-fake-history-capability', run = { runId: 'owned-run', executionId: 'owned-execution', messageCapability: token, conversationId: chat.id, controller: new AbortController() };
     const capability = { agentId: agent.id, runId: run.runId, conversationId: chat.id, historyRetrievalBoundary: boundary,
       historyRetrievalExcludedCommunicationEventIds: [excluded.eventId], availableToolNames: [PONDEROSA_HISTORY_TOOL.name] };
     const capabilities = new Map([[token, capability]]), activeRuns = new Map([[agent.id, run]]);
+    const deletingProjectIds = new Set(), deletingAgentIds = new Set(), deletingConversationIds = new Set();
     let requests = 0; app.addHook('onRequest', async request => { if (request.url === '/api/agent-history') requests++; });
-    registerAgentRuntimeToolRoutes(app, { store, assets: { pendingGeneratedArtifactImports: () => [] }, agentMessageCapabilities: capabilities, activeRuns,
+    registerAgentRuntimeToolRoutes(app, { store, assets: { pendingGeneratedArtifactImports: () => [] }, agentMessageCapabilities: capabilities, activeRuns, deletingProjectIds, deletingAgentIds, deletingConversationIds,
       capabilityOwnsAuthoritativeRun: (c, r) => c.runId === r?.runId });
     const base = await app.listen({ host: '127.0.0.1', port: 0 });
     const env = runEnvironment(base, token);
@@ -76,7 +78,7 @@ async function withHistory(t, work) {
         assert.equal(rows.length, 2); return { listed: rows[0].result.tools, result: rows[1].result };
       } finally { clearTimeout(timer); if (child.exitCode === null && child.signalCode === null) { child.kill(); await completion; } }
     };
-    await work({ root, store, app, env, call, older, excluded, foreign, crossProject, newer, capability, capabilities, activeRuns, run, agent, requests: () => requests }); passed = true;
+    await work({ root, store, app, project, chat, other, deletingProjectIds, deletingAgentIds, deletingConversationIds, env, call, older, excluded, foreign, crossProject, newer, capability, capabilities, activeRuns, run, agent, requests: () => requests }); passed = true;
   } finally {
     await app?.close(); store?.close();
     if (passed) await rm(root, { recursive: true, force: true }); else t.diagnostic('Retained owned history fixture: ' + root);
@@ -144,3 +146,55 @@ test('Codex direct handler and Claude MCP share canonical history and revoked ca
   assert.equal((await direct({ id: 'revoked', name: PONDEROSA_HISTORY_TOOL.name, arguments: arguments_ })).success, false);
   assert.equal((await f.call(arguments_)).result.isError, true);
 }));
+
+test('ordinary accepted boundary supports complete Unicode chunks, concise direct reads and lifecycle fences', {timeout:20000}, t=>withHistory(t,async f=>{
+ const body='BEGIN canonical 🧭\0\n'+('東京 😀 \"line\"\n'.repeat(2400))+'END';
+ const event={schemaVersion:2,eventId:randomUUID(),projectId:f.project.id,conversationId:f.chat.id,sender:{kind:'user',userId:'operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'operator',agentId:f.agent.id},text:body,createdAt:new Date().toISOString()};
+ f.store.appendCommunicationEvent(event);f.capability.historyRetrievalBoundary=f.store.communicationHistoryBoundary(f.project.id);
+ const call=async arguments_=>{const r=await f.app.inject({method:'POST',url:'/api/agent-history',headers:{authorization:'Bearer '+f.run.messageCapability},payload:arguments_});assert.equal(r.statusCode,200,r.body);return r.json()};
+ let continuation,offset=0,reconstructed='';
+ do{const page=await call({action:'read',communicationEventId:event.eventId,before:0,after:0,...(continuation?{continuation}:{})}),message=page.messages[0];
+  assert.equal(Buffer.byteLength(JSON.stringify(page)),page.utf8Bytes);assert.ok(page.utf8Bytes<=8000);assert.equal(message.startCodePoint,offset);assert.ok(message.endCodePoint>offset);assert.equal(message.totalCodePoints,[...body].length);
+  reconstructed+=message.text;offset=message.endCodePoint;continuation=message.continuation;
+ }while(continuation);
+ assert.equal(reconstructed,body);assert.equal(offset,[...body].length);
+ const direct=f.store.readCompactionHistory({agentId:f.agent.id,communicationEventId:f.older[0].eventId,excludedCommunicationEventIds:new Set(),before:0,after:0});assert.equal(direct.response.messages[0].complete,true);
+ const routed=f.store.createConversation(f.project.id,{title:'Routed Chat'});f.run.conversationId=routed.id;f.capability.conversationId=routed.id;
+ assert.equal((await call({action:'read',communicationEventId:event.eventId,before:0,after:0})).messages[0].communicationEventId,event.eventId);
+ f.deletingConversationIds.add(routed.id);
+ const denied=await f.app.inject({method:'POST',url:'/api/agent-history',headers:{authorization:'Bearer '+f.run.messageCapability},payload:{action:'read',communicationEventId:event.eventId}});assert.equal(denied.statusCode,403);
+ const audits=f.store.readEvents(f.agent.id).filter(row=>row.event.type==='compaction_history_retrieval'&&row.event.action==='read'&&row.event.communicationEventId===event.eventId);
+ assert.equal(audits[0].event.selected[0].complete,false);assert.equal(audits[0].event.selected[0].startCodePoint,0);
+}));
+
+test('40-message omission reaches the actual prompt and a discarded session cannot hide its older history', {timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Canonical context'),agent=await f.createIdleAgent(chat,'Retained reader');
+  const authored=(text,number)=>{const event={schemaVersion:2,eventId:randomUUID(),projectId:chat.projectId,conversationId:chat.id,sender:{kind:'user',userId:'local-operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'local-operator',agentId:agent.id},text,createdAt:new Date(Date.now()-100000+number*10).toISOString()};store.appendCommunicationEvent(event);store.appendEvent(agent.id,{type:'communication_projection',communicationEventId:event.eventId,text:event.text,role:'user'});return event};
+  const older=authored('Unique amber compass secret retained fact',0);
+  await f.send(agent.id,'Read initial context');await f.settled(agent.id);const oldSession=f.turns.at(-1).sessionId;
+  for(let index=1;index<=45;index++)authored('Recent bounded private item '+index,index);
+  f.ok(await f.api('PATCH','/api/workspace/preferences',{globalInstructions:'Genuine new instruction for a fresh canonical context'}));
+  const session=await f.hold(agent.id);assert.notEqual(session.engineAgentId,oldSession);assert.match(f.turns.at(-1).input.prompt,/BOUNDED HISTORICAL CONTEXT.*Additional older/s);
+  const found=f.ok(await f.tool(session,'ponderosa_history',{action:'search',query:'Unique amber compass'}));assert.ok(found.hits.some(hit=>hit.communicationEventId===older.eventId));
+  const exact=f.ok(await f.tool(session,'ponderosa_history',{action:'read',communicationEventId:older.eventId,before:0,after:0}));assert.equal(exact.messages[0].text,older.text);
+  const before=f.turns.length;session.finish();await until(async()=>!(await f.detail(agent.id)).runs.some(run=>run.status==='running'),'settled retained turn');
+  // Cosmetic profile changes preserve the compatible accepted session.
+  const prefs=f.ok(await f.api('GET','/api/workspace/preferences'));f.ok(await f.api('PATCH','/api/workspace/preferences',{profile:{avatarId:prefs.profile.avatarId==='river'?'sunset':'river',handle:'#'+prefs.profile.handle.toUpperCase(),displayName:' '+prefs.profile.displayName+' '}}));
+  const previous=(await f.detail(agent.id)).runs.map(run=>run.id);await f.send(agent.id,'Compatible continuation');await f.settled(agent.id,previous);assert.equal(f.turns.at(-1).sessionId,session.engineAgentId);
+  const count=f.turns.length,prior=(await f.detail(agent.id)).runs.map(run=>run.id),coordination=new CoordinationV3Store(store.sqlite);
+  coordination.coordinate({projectId:chat.projectId,conversationId:chat.id,actorScope:'user:local-operator',idempotencyKey:'same-scope-new-request',requests:[{recipientAgentId:agent.id,lifetime:{kind:'indefinite'},payload:{text:'A new compatible Request'}}]});
+  await until(()=>f.turns.length>count,'new compatible Request turn');await f.settled(agent.id,prior);assert.equal(f.turns.at(-1).sessionId,session.engineAgentId,'A new Request alone must not reset compatible working context');
+ },{storeFactory:root=>store=new AgentStore(root)});
+});
+
+test('accepted session tail evidence never promotes a later authored revision', {timeout:30000},async t=>{
+ let store;await withFixture(t,async f=>{
+  const chat=await f.createChat('Revision continuity'),agent=await f.createAgent(chat,'Revision reader');
+  const ids=store.acceptedProviderSessionCommunicationEventIds(agent.id);assert.ok(ids?.length,'Fixture requires fully submitted canonical input');
+  const id=ids.find(id=>store.getCommunicationEvent(chat.projectId,id)?.sender.kind==='user');assert.ok(id);
+  const original=store.getCommunicationEvent(chat.projectId,id);store.appendCommunicationRevision({schemaVersion:1,eventId:randomUUID(),projectId:chat.projectId,conversationId:chat.id,targetEventId:id,kind:'edit',sender:original.sender,text:'Newer revision that this provider never received',idempotencyKey:'passive-edit',createdAt:new Date().toISOString()});
+  assert.equal(store.acceptedProviderSessionCommunicationEventIds(agent.id).includes(id),false);
+ },{storeFactory:root=>store=new AgentStore(root)});
+});
