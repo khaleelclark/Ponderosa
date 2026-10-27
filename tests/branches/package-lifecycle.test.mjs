@@ -108,3 +108,12 @@ test('post-remap UTF-8 growth is refused before Agent reservation, artifact publ
  const receipt=f.store.findAgentCreationOperation({projectId:f.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});
  assert.equal(receipt.status,'rolled_back');assert.deepEqual(receipt.agentIds,[]);assert.deepEqual(receipt.artifactIds,[]);
 }));
+
+test('a Chat instruction change during import is preserved while the existing rollback removes pending Agents',t=>withPackages(t,async f=>{
+ const pkg=portable();pkg.mode='full';pkg.sourceProjectInstructions='Imported Chat instructions';
+ const create=f.store.createAgent.bind(f.store);let edited=false;
+ f.store.createAgent=(...args)=>{const agent=create(...args);if(!edited){edited=true;f.store.updateConversation(f.chatId,{instructions:'Newer human instructions'})}return agent};
+ await assert.rejects(f.packageEngine.importAgent(f.project.id,f.chatId,pkg,{codex:'codex'},randomUUID()),error=>error.statusCode===409&&/instructions changed/u.test(error.message));
+ assert.equal(f.store.getConversation(f.chatId).instructions,'Newer human instructions');
+ assert.equal(f.store.listAgents(f.project.id).length,0);assert.equal(f.pending.size,0);
+}));

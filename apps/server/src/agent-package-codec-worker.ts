@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "@ponderosa/native-host/fs";
 import { agentPackageJsonUtf8Bytes, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_METADATA_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL } from "@ponderosa/core";
 import type { PackageWireEntry } from "./agent-package-codec.js";
-import { stableJsonParts } from "@ponderosa/agents";
+import { stableJsonParts } from "@ponderosa/agents/canonical-json";
 import { exactObjectFields, validatedObject } from "./object-validation.js";
 
 const port = parentPort!;

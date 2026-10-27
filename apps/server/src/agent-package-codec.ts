@@ -6,7 +6,8 @@ import {
   AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL, agentPackageJsonPieces,
   type AgentPortablePackageDto, type ImportAgentPackageRequest,
 } from "@ponderosa/core";
-import { MANAGED_ARTIFACT_MAX_BYTES, stableJsonParts } from "@ponderosa/agents";
+import { MANAGED_ARTIFACT_MAX_BYTES } from "@ponderosa/agents";
+import { stableJsonParts } from "@ponderosa/agents/canonical-json";
 
 const CODEC_TIMEOUT_MS = 60_000;
 // The JSON source and parsed UTF-16 strings can coexist. A single bounded

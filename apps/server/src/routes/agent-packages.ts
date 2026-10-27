@@ -1400,7 +1400,7 @@ export function registerAgentPackageRoutes(
         created.set(node.ref, agent);
         rollbackAgentIds.push(agent.id);
         deletingAgentIds.add(agent.id);
-        if (index % 32 === 0) await yieldToLoop();
+        await yieldToLoop();
       }
 
       const catalogArtifacts: Array<{
@@ -1460,17 +1460,15 @@ export function registerAgentPackageRoutes(
       for (let index = 0; index < assignmentOrder.length; index++) {
         for (const child of childrenByManager.get(assignmentOrder[index]!.ref) ?? []) assignmentOrder.push(child);
       }
-      for (const [index, node] of assignmentOrder.reverse().entries()) {
+      for (const node of assignmentOrder.reverse()) {
+        signal?.throwIfAborted();
         if (node.managerRef) {
           store.updateAgentOrganization(
             created.get(node.ref)!.id,
             { managerAgentId: created.get(node.managerRef)!.id },
           );
         }
-        if (index % 32 === 0) {
-          signal?.throwIfAborted();
-          await yieldToLoop();
-        }
+        await yieldToLoop();
       }
       for (const { artifact } of catalogArtifacts) {
         if (artifact.kind !== "generated_file") continue;
@@ -1489,6 +1487,10 @@ export function registerAgentPackageRoutes(
         // caller cannot observe success with stale recovery data.
         await removeCopySnapshot(creationOperationId);
         if (importedChatInstructions !== undefined) {
+          const currentDestination = activeDestinationConversation();
+          if (!currentDestination || (currentDestination.instructions ?? "") !== destinationInstructions) {
+            throw Object.assign(new Error("Destination Chat instructions changed. Review them and choose again."), { statusCode: 409 });
+          }
           appliedChatInstructions = importedChatInstructions;
           if (!store.updateConversation(conversation.id, { instructions: importedChatInstructions })) {
             throw new Error("The destination Chat is no longer active");

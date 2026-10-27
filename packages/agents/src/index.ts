@@ -110,7 +110,7 @@ export {
   restoreOfflineDataDirectoryBackup,
   type DataDirectoryBackupManifest,
 } from "./data-directory-backup.js";
-export { stableJson, stableJsonParts } from "./coordination-v3-canonical-json.js";
+export { stableJson } from "./coordination-v3-canonical-json.js";
 export {
   artifactContentPath, artifactsDir, managedArtifactsDir, managedArtifactsLogPath, managedArtifactContentPath, managedArtifactStorageFilename, managedArtifactStorageFilenames, attachmentPath, attachmentsDir,
   importedAgentHistoryPath,
