@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,rm,readFile,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+import {createHash,randomUUID} from 'node:crypto';
 import Fastify from 'fastify';
 import {AgentStore,importedAgentHistoryPath,CompactionHistoryQueryError} from '@ponderosa/agents';
 import {PONDEROSA_HISTORY_TOOL} from '@ponderosa/core';
@@ -73,6 +74,24 @@ test('search refuses a missing prefix restored while canonical proof yields',t=>
  sql.prepare('INSERT INTO imported_history_messages(agent_id,message_id,sequence,role,text,created_at) VALUES(?,?,?,?,?,?)').run(row.agent_id,row.message_id,row.sequence,row.role,row.text,row.created_at);
  await assert.rejects(pending,/projection|canonical|sequence|changed/,'A missing prefix cannot be skipped and certified as complete');
  assert.equal((await searchAll(f,text)).hits.length,1,'A later healthy search includes the restored canonical prefix');
+}));
+
+for(const source of ['canonical','imported']) test(`${source} excerpts preserve original Unicode offsets after case-fold expansion`,t=>fixture(t,async f=>{
+ const text='İ'.repeat(300)+' ORCHARD_MARKER '+'z'.repeat(300);
+ let hit;
+ if(source==='canonical'){
+  f.store.appendCommunicationEvent({schemaVersion:2,eventId:randomUUID(),projectId:f.project.id,conversationId:f.chat.id,
+   sender:{kind:'user',userId:'local-operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'local-operator',agentId:f.agent.id},text,createdAt:new Date().toISOString()});
+  hit=f.store.searchCompactionHistory({agentId:f.agent.id,currentConversationId:f.chat.id,excludedCommunicationEventIds:new Set(),query:'ORCHARD_MARKER'}).response.hits[0];
+ }else{
+  f.store.setImportedHistory(f.agent.id,'Unicode source',[{role:'assistant',text}]);
+  hit=(await searchAll(f,'ORCHARD_MARKER')).hits[0];
+ }
+ assert.ok(hit,'The source contains a real lexical match');
+ assert.match(hit.excerpt.text,/ORCHARD_MARKER/,'Case-fold expansion must not move the excerpt past the actual match');
+ assert.equal([...text].slice(hit.excerpt.startCodePoint,hit.excerpt.endCodePoint).join(''),hit.excerpt.text);
+ assert.equal(createHash('sha256').update(hit.excerpt.text).digest('hex'),hit.excerpt.sha256);
+ assert.ok(Buffer.byteLength(hit.excerpt.text)<=640);
 }));
 
 test('restart revalidates canonical proofs and changed archives or deletion invalidate old references',t=>fixture(t,async f=>{
