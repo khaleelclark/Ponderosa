@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { closeSync, openSync, readSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, unlinkSync } from "@ponderosa/native-host/fs";
 import { dirname, join } from "node:path";
 import { promises as fs } from "@ponderosa/native-host/fs";
@@ -15,7 +15,9 @@ import type {
   PortableAgentHistoryMessageDto,
   ProjectDto,
 } from "@ponderosa/core";
-import { allocateAgentMentionHandle, normalizeAgentRole } from "@ponderosa/core";
+import { allocateAgentMentionHandle, agentMentionHandleBase, normalizeAgentRole, agentPackageJsonUtf8Bytes, agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_BYTES } from "@ponderosa/core";
+import { CompactionHistoryQueryError } from "./compaction-history-retrieval.js";
+import { decodeImportedUtf8Window, readImportedHistory, searchImportedHistory } from "./imported-history-retrieval.js";
 import type { Db } from "./db.js";
 import { normalizeAgentTitle } from "./agent-identity.js";
 import { sharedWorkingCopy } from "./working-copy.js";
@@ -49,7 +51,7 @@ function importedHistoryProjectionMessages(
   return [
     ...(initialInstructionsSeparated && initialInstructions ? [{
       role: "system" as const,
-      text: `Imported initial instructions:\n${initialInstructions}`.slice(0, 100_000),
+      text: initialInstructions,
       createdAt: importedAt,
     }] : []),
     ...messages,
@@ -59,6 +61,22 @@ function importedHistoryProjectionMessages(
 const MAX_AGENT_TITLE_PROJECTION_IDS = 500;
 const AGENT_CREATION_MARKER = ".ponderosa-agent-creation.json";
 const agentIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
+type ImportedArchive = { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[];
+  initialInstructions?: string; initialInstructionsSeparated?: boolean };
+type ImportedIndex = { archive_version: string; integrity_key: string; imported_at: string; expected_messages: number;
+  status: "preparing" | "ready" | "unavailable" };
+
+function importedArchiveVersion(file: string): string | undefined {
+  try {
+    const stat = lstatSync(file, { bigint: true });
+    if (!stat.isFile() || stat.isSymbolicLink()) return undefined;
+    return createHash("sha256").update([stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(":")).digest("hex");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
 
 interface AgentCreationReceipt {
   version: 1;
@@ -137,6 +155,13 @@ function validateWorkingCopy(
 }
 
 export class AgentCatalogAuthority {
+  private readonly nextHandleSuffix = new Map<string, number>();
+  private importedIndexClosed = false;
+  private importedIndexEpoch = 0;
+  private importedIndexRunning = false;
+  private importedIndexProjectionChanges = 0;
+  private readonly importedIndexActive = new Map<string, string>();
+  private readonly importedIndexQueue = new Map<string, { version: string; project: boolean }>();
   private readonly agentById;
   // ponytail: cache 256 recent metadata roles; use a projected column only if roles need indexed queries.
   private readonly roles = new Map<string, { updatedAt: string; role?: string }>();
@@ -275,14 +300,11 @@ export class AgentCatalogAuthority {
     const stagingRoot = agentCreationStagePath(this.dataDir, receipt);
     const now = new Date().toISOString();
     const title = normalizeAgentTitle(input.title);
-    const handle = allocateAgentMentionHandle(
-      title,
-      this.db.select({ handle: agentHandleReservations.handle })
-        .from(agentHandleReservations)
-        .where(eq(agentHandleReservations.projectId, projectId))
-        .all()
-        .map(row => row.handle),
-    );
+    const handleBase = agentMentionHandleBase(title);
+    const handleKey = `${projectId}:${handleBase.toLocaleLowerCase()}`;
+    const handle = allocateAgentMentionHandle(title, normalized => Boolean(this.client.prepare(
+      "SELECT 1 FROM agent_handle_reservations WHERE project_id = ? AND normalized_handle = ?",
+    ).get(projectId, normalized)), this.nextHandleSuffix.get(handleKey));
     const preset = resolvedPresetSnapshot === undefined && input.presetId
       ? this.getAgentPreset(input.presetId)
       : undefined;
@@ -426,6 +448,11 @@ export class AgentCatalogAuthority {
     receipt.phase = "canonical_committed";
     writeJson(agentCreationReceiptPath(this.dataDir, projectId, id), receipt);
     this.finishCreationReceipt(receipt);
+    // Reservations are monotonic. Keep only a bounded allocation hint; SQLite's
+    // unique reservation remains authority, including after a failed create.
+    if (this.nextHandleSuffix.size >= 256) this.nextHandleSuffix.delete(this.nextHandleSuffix.keys().next().value!);
+    const suffix = handle.slice(handleBase.length + 1);
+    this.nextHandleSuffix.set(handleKey, /^\d+$/u.test(suffix) ? Number(suffix) + 1 : 2);
     return this.rowToAgentDto(id)!;
   }
 
@@ -640,22 +667,17 @@ export class AgentCatalogAuthority {
   setImportedHistory(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string): void {
     const agent = this.getAgent(agentId);
     if (!agent) throw new Error("agent not found");
-    const bounded = messages.map((message) => ({
-      role: message.role,
-      text: message.text.slice(0, 100_000),
-      ...(message.createdAt ? { createdAt: message.createdAt } : {}),
-    }));
-    const imported = {
-      source: source.slice(0, 240), importedAt: new Date().toISOString(), messages: bounded,
-      ...(initialInstructions !== undefined ? { initialInstructions: initialInstructions.slice(0, 100_000), initialInstructionsSeparated: true } : {}),
+    const imported: ImportedArchive = {
+      source: source.slice(0, 240), importedAt: new Date().toISOString(), messages,
+      ...(initialInstructions !== undefined ? { initialInstructions, initialInstructionsSeparated: true } : {}),
     };
-    writeJson(importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id), imported);
+    this.validateImportedArchiveSize(imported);
+    this.importedIndexQueue.delete(agentId);
+    writeJson(importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id), imported, 0);
     this.projectImportedHistory(agent.id, imported);
   }
 
-  /** Package imports keep their Agents creation-pending until this canonical
-   * file and its rebuildable projection are complete. Never await inside a
-   * SQLite transaction; bounded batches remain hidden by that existing fence. */
+  /** Creation-pending fencing keeps incomplete imports out of ordinary views. */
   async setImportedHistoryAsync(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string): Promise<void> {
     const agent = this.getAgent(agentId);
     if (!agent) throw new Error("agent not found");
@@ -664,21 +686,22 @@ export class AgentCatalogAuthority {
       WHERE members.agent_id = ? AND operations.status = 'preparing'`).get(agentId)) {
       throw new Error("async history import requires a creation operation");
     }
-    const importedAt = new Date().toISOString();
+    const imported: ImportedArchive = { source: source.slice(0, 240), importedAt: new Date().toISOString(), messages,
+      ...(initialInstructions !== undefined ? { initialInstructions, initialInstructionsSeparated: true } : {}) };
+    this.validateImportedArchiveSize(imported);
+    this.importedIndexQueue.delete(agentId);
     const pathname = importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id);
     const directory = dirname(pathname);
     await fs.mkdir(directory, { recursive: true });
     const temporary = join(directory, `.${randomUUID()}.json.tmp`);
     const handle = await fs.open(temporary, "wx", 0o600);
     try {
-      const metadata = { source: source.slice(0, 240), importedAt };
-      await handle.writeFile(JSON.stringify(metadata).slice(0, -1) + ',"messages":[');
+      await handle.writeFile(JSON.stringify({ source: imported.source, importedAt: imported.importedAt }).slice(0, -1) + ',"messages":[');
       for (let index = 0; index < messages.length; index++) {
-        const message = messages[index]!;
-        await handle.writeFile((index ? "," : "") + JSON.stringify({ ...message, text: message.text.slice(0, 100_000) }));
+        await handle.writeFile((index ? "," : "") + JSON.stringify(messages[index]));
       }
       await handle.writeFile("]" + (initialInstructions !== undefined
-        ? ',"initialInstructions":' + JSON.stringify(initialInstructions.slice(0, 100_000)) + ',"initialInstructionsSeparated":true' : "") + "}\n");
+        ? ',"initialInstructions":' + JSON.stringify(initialInstructions) + ',"initialInstructionsSeparated":true' : "") + "}\n");
       await handle.sync();
       await handle.close();
       await fs.rename(temporary, pathname);
@@ -691,24 +714,20 @@ export class AgentCatalogAuthority {
       await fs.unlink(temporary).catch(() => undefined);
       throw error;
     }
-    const projectedMessages = importedHistoryProjectionMessages(messages, initialInstructions, importedAt, true);
-    this.db.delete(importedHistoryMessages).where(eq(importedHistoryMessages.agentId, agentId)).run();
-    for (let offset = 0; offset < projectedMessages.length; offset += 8) {
-      this.db.transaction(tx => {
-        projectedMessages.slice(offset, offset + 8).forEach((message, index) => {
-          const sequence = offset + index;
-          tx.insert(importedHistoryMessages).values({
-            agentId, messageId: `imported:${agentId}:${String(sequence).padStart(12, "0")}`,
-            sequence, role: message.role, text: message.text.slice(0, 100_000),
-            createdAt: message.createdAt ?? importedAt,
-          }).run();
-        });
-      });
-      await yieldToLoop();
-    }
+    await this.projectImportedHistoryAsync(agentId, imported, importedArchiveVersion(pathname)!);
   }
 
-  getImportedHistory(agentId: string): { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[]; initialInstructions?: string } | undefined {
+  private validateImportedArchiveSize(imported: ImportedArchive): void {
+    if (imported.initialInstructions !== undefined && !agentPackageTextIsWellFormed(imported.initialInstructions) ||
+        imported.messages.some(message => !agentPackageTextIsWellFormed(message.text))) {
+      throw new Error("Imported history must contain well-formed Unicode text");
+    }
+    // Count one row at a time: the retained archive, not a clipped substitute,
+    // must fit the existing package ceiling before canonical storage changes.
+    agentPackageJsonUtf8Bytes(imported, AGENT_PACKAGE_MAX_BYTES - 1);
+  }
+
+  getImportedHistory(agentId: string): ImportedArchive | undefined {
     const agent = this.getAgent(agentId);
     if (!agent) return undefined;
     const file = importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id);
@@ -716,24 +735,211 @@ export class AgentCatalogAuthority {
     return readJson(file);
   }
 
-  projectImportedHistory(
-    agentId: string,
-    imported: { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[]; initialInstructions?: string; initialInstructionsSeparated?: boolean },
-  ): void {
-    this.db.transaction((tx) => {
-      tx.delete(importedHistoryMessages).where(eq(importedHistoryMessages.agentId, agentId)).run();
-      // Existing unmarked history remains exact; never infer provenance from text.
-      importedHistoryProjectionMessages(imported.messages, imported.initialInstructions, imported.importedAt, imported.initialInstructionsSeparated === true).forEach((message, sequence) => {
-        tx.insert(importedHistoryMessages).values({
-          agentId,
-          messageId: `imported:${agentId}:${String(sequence).padStart(12, "0")}`,
-          sequence,
-          role: message.role,
-          text: message.text,
-          createdAt: message.createdAt ?? imported.importedAt,
-        }).run();
-      });
-    });
+  private beginImportedProjection(agentId: string, imported: ImportedArchive, version: string): {
+    messages: PortableAgentHistoryMessageDto[]; separated: boolean; digest: ReturnType<typeof createHash>;
+  } {
+    this.importedIndexQueue.delete(agentId);
+    const separated = imported.initialInstructionsSeparated === true && Boolean(imported.initialInstructions);
+    const messages = importedHistoryProjectionMessages(imported.messages, imported.initialInstructions, imported.importedAt, imported.initialInstructionsSeparated === true);
+    this.client.transaction(() => {
+      this.client.prepare("DELETE FROM imported_history_messages WHERE agent_id = ?").run(agentId);
+      this.client.prepare(`INSERT OR REPLACE INTO imported_history_indexes
+        (agent_id, archive_version, integrity_key, imported_at, expected_messages, status) VALUES (?, ?, '', ?, ?, 'preparing')`)
+        .run(agentId, version, imported.importedAt, messages.length);
+    })();
+    return { messages, separated, digest: createHash("sha256").update(JSON.stringify([
+      imported.source, imported.importedAt, imported.initialInstructionsSeparated === true,
+    ])) };
+  }
+
+  private projectImportedMessage(agentId: string, imported: ImportedArchive,
+    projection: ReturnType<AgentCatalogAuthority["beginImportedProjection"]>, sequence: number): void {
+    const message = projection.messages[sequence]!;
+    const guidance = projection.separated && sequence === 0;
+    const contentSha256 = createHash("sha256").update(message.text).digest("hex");
+    let totalCodePoints = 0, totalUtf8Bytes = 0;
+    const codePointByteOffsets = [0];
+    for (const point of message.text) {
+      const code = point.codePointAt(0)!;
+      totalUtf8Bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+      if (++totalCodePoints % 4096 === 0) codePointByteOffsets.push(totalUtf8Bytes);
+    }
+    projection.digest.update(JSON.stringify([message.role, contentSha256, message.createdAt ?? null, guidance]));
+    this.db.insert(importedHistoryMessages).values({
+      agentId, messageId: `imported:${agentId}:${String(sequence).padStart(12, "0")}`,
+      sequence, role: message.role, text: message.text, createdAt: message.createdAt ?? imported.importedAt,
+      sourceKind: guidance ? "guidance" : "history", sourceSequence: guidance ? 0 : sequence - (projection.separated ? 1 : 0),
+      sourceCreatedAt: guidance ? null : message.createdAt ?? null,
+      contentSha256, totalCodePoints, totalUtf8Bytes, codePointByteOffsets: JSON.stringify(codePointByteOffsets),
+    }).run();
+  }
+
+  projectImportedHistory(agentId: string, imported: ImportedArchive, options: { deferIndex?: boolean } = {}): void {
+    const agent = this.getAgent(agentId);
+    if (!agent) return;
+    const file = importedAgentHistoryPath(this.dataDir, agent.projectId, agentId);
+    const version = importedArchiveVersion(file);
+    if (!version) return;
+    this.client.transaction(() => {
+      const projection = this.beginImportedProjection(agentId, imported, version);
+      for (let sequence = 0; sequence < projection.messages.length; sequence++) this.projectImportedMessage(agentId, imported, projection, sequence);
+      this.client.prepare("UPDATE imported_history_indexes SET integrity_key = ? WHERE agent_id = ?")
+        .run(projection.digest.digest("hex"), agentId);
+      if (!options.deferIndex) {
+        for (let sequence = 0; sequence < projection.messages.length; sequence++) {
+          const row = this.client.prepare("SELECT rowid FROM imported_history_messages WHERE agent_id = ? AND sequence = ?").get(agentId, sequence) as { rowid: number };
+          this.client.prepare("INSERT INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, projection.messages[sequence]!.text.replaceAll("\0", " "));
+        }
+        this.client.prepare("UPDATE imported_history_indexes SET status = 'ready' WHERE agent_id = ?").run(agentId);
+      }
+    })();
+    if (options.deferIndex) this.queueImportedIndex(agentId, version, false);
+  }
+
+  /** Only synchronous derived-index writes may be discounted by the clean-shutdown guard. */
+  deferredImportedProjectionChanges(): number { return this.importedIndexProjectionChanges; }
+
+  private importedIndexWrite<T>(write: () => T): T {
+    // Include FTS shadow/trigger changes, but never another owner's work across an await.
+    const before = (this.client.prepare("SELECT total_changes() value").get() as { value: number }).value;
+    try { return write(); }
+    finally {
+      this.importedIndexProjectionChanges +=
+        (this.client.prepare("SELECT total_changes() value").get() as { value: number }).value - before;
+    }
+  }
+
+  private async projectImportedHistoryAsync(agentId: string, imported: ImportedArchive, version: string, deferred = false): Promise<void> {
+    const epoch = this.importedIndexEpoch;
+    const write = <T>(operation: () => T): T => deferred ? this.importedIndexWrite(operation) : operation();
+    const projection = write(() => this.beginImportedProjection(agentId, imported, version));
+    for (let sequence = 0; sequence < projection.messages.length; sequence++) {
+      if (!this.importedProjectionCurrent(agentId, version, epoch)) throw new Error("imported history projection was superseded");
+      write(() => this.client.transaction(() => {
+        this.projectImportedMessage(agentId, imported, projection, sequence);
+        const row = this.client.prepare("SELECT rowid FROM imported_history_messages WHERE agent_id = ? AND sequence = ?").get(agentId, sequence) as { rowid: number };
+        this.client.prepare("INSERT INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, projection.messages[sequence]!.text.replaceAll("\0", " "));
+      })());
+      await yieldToLoop();
+    }
+    if (!this.importedProjectionCurrent(agentId, version, epoch)) throw new Error("imported history projection was superseded");
+    write(() => this.client.prepare("UPDATE imported_history_indexes SET integrity_key = ?, status = 'ready' WHERE agent_id = ? AND archive_version = ?")
+      .run(projection.digest.digest("hex"), agentId, version));
+  }
+
+  private importedProjectionCurrent(agentId: string, version: string, epoch: number): boolean {
+    if (this.importedIndexClosed || this.importedIndexEpoch !== epoch) return false;
+    const row = this.client.prepare("SELECT project_id FROM agents WHERE id = ? AND deleted_at IS NULL").get(agentId) as { project_id: string } | undefined;
+    const index = this.client.prepare("SELECT archive_version FROM imported_history_indexes WHERE agent_id = ?").get(agentId) as { archive_version: string } | undefined;
+    return Boolean(row && index?.archive_version === version && importedArchiveVersion(importedAgentHistoryPath(this.dataDir, row.project_id, agentId)) === version);
+  }
+
+  /** Reuse this catalog's projection lifecycle; no scheduler or canonical writes. */
+  private queueImportedIndex(agentId: string, version: string, project: boolean): void {
+    if (this.importedIndexClosed || this.importedIndexActive.get(agentId) === version) return;
+    if (project) this.importedIndexWrite(() => this.client.prepare(`INSERT OR REPLACE INTO imported_history_indexes
+      (agent_id, archive_version, integrity_key, imported_at, expected_messages, status)
+      VALUES (?, ?, '', '', 0, 'preparing')`).run(agentId, version));
+    this.importedIndexQueue.set(agentId, { version, project });
+    if (this.importedIndexRunning) return;
+    this.importedIndexRunning = true;
+    void this.drainImportedIndexes().finally(() => { this.importedIndexRunning = false; });
+  }
+
+  private async drainImportedIndexes(): Promise<void> {
+    await yieldToLoop();
+    while (!this.importedIndexClosed && this.importedIndexQueue.size) {
+      const [agentId, job] = this.importedIndexQueue.entries().next().value!;
+      this.importedIndexQueue.delete(agentId);
+      const epoch = this.importedIndexEpoch;
+      this.importedIndexActive.set(agentId, job.version);
+      try {
+        if (job.project) {
+          const row = this.client.prepare("SELECT project_id FROM agents WHERE id = ? AND deleted_at IS NULL").get(agentId) as { project_id: string } | undefined;
+          if (!row) continue;
+          const file = importedAgentHistoryPath(this.dataDir, row.project_id, agentId);
+          const raw = await fs.readFile(file, "utf8");
+          if (this.importedIndexClosed || epoch !== this.importedIndexEpoch || importedArchiveVersion(file) !== job.version) continue;
+          await this.projectImportedHistoryAsync(agentId, JSON.parse(raw) as ImportedArchive, job.version, true);
+          continue;
+        }
+        let lastSequence = -1;
+        while (this.importedProjectionCurrent(agentId, job.version, epoch)) {
+          const rows = this.client.prepare(`SELECT rowid, sequence FROM imported_history_messages
+            WHERE agent_id = ? AND sequence > ? ORDER BY sequence LIMIT 8`).all(agentId, lastSequence) as Array<{ rowid: number; sequence: number }>;
+          if (!rows.length) {
+            const counts = this.client.prepare(`SELECT expected_messages AS expected,
+              (SELECT count(*) FROM imported_history_messages m JOIN imported_history_fts f ON f.rowid = m.rowid WHERE m.agent_id = ?) AS actual
+              FROM imported_history_indexes WHERE agent_id = ?`).get(agentId, agentId) as { expected: number; actual: number };
+            if (counts.expected !== counts.actual) throw new Error("imported history index is incomplete");
+            this.importedIndexWrite(() => this.client.prepare("UPDATE imported_history_indexes SET status = 'ready' WHERE agent_id = ? AND archive_version = ?").run(agentId, job.version));
+            break;
+          }
+          // One admitted row per turn. Ordinary text stays inside SQLite; only
+          // embedded NUL needs a JS-normalized FTS copy (never an archive edit).
+          for (const row of rows) {
+            if (!this.importedProjectionCurrent(agentId, job.version, epoch)) break;
+            this.importedIndexWrite(() => {
+              const nul = this.client.prepare("SELECT instr(CAST(text AS BLOB), x'00') AS position FROM imported_history_messages WHERE rowid = ?").get(row.rowid) as { position: number };
+              if (nul.position) {
+                const stored = this.client.prepare("SELECT text FROM imported_history_messages WHERE rowid = ?").get(row.rowid) as { text: string };
+                this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, stored.text.replaceAll("\0", " "));
+              } else {
+                this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) SELECT rowid, text FROM imported_history_messages WHERE rowid = ?").run(row.rowid);
+              }
+            });
+            lastSequence = row.sequence;
+            await yieldToLoop();
+          }
+        }
+      } catch {
+        if (!this.importedIndexClosed && epoch === this.importedIndexEpoch) {
+          this.importedIndexWrite(() => this.client.prepare("UPDATE imported_history_indexes SET status = 'unavailable' WHERE agent_id = ? AND archive_version = ?").run(agentId, job.version));
+        }
+      } finally {
+        if (this.importedIndexActive.get(agentId) === job.version) this.importedIndexActive.delete(agentId);
+      }
+    }
+  }
+
+  invalidateImportedIndexes(close = false): void {
+    this.importedIndexEpoch++;
+    this.importedIndexQueue.clear();
+    this.importedIndexActive.clear();
+    this.nextHandleSuffix.clear();
+    if (close) this.importedIndexClosed = true;
+  }
+
+  getImportedHistoryAvailability(agentId: string): { status: "ready" | "preparing" | "unavailable"; archiveVersion?: string } {
+    if (this.importedIndexClosed) return { status: "unavailable" };
+    const agent = this.getAgent(agentId);
+    if (!agent) return { status: "unavailable" };
+    const version = importedArchiveVersion(importedAgentHistoryPath(this.dataDir, agent.projectId, agentId));
+    if (!version) return { status: "unavailable" };
+    const index = this.client.prepare("SELECT * FROM imported_history_indexes WHERE agent_id = ?").get(agentId) as ImportedIndex | undefined;
+    if (index?.archive_version === version) {
+      if (index.status === "preparing") this.queueImportedIndex(agentId, version, !index.integrity_key);
+      return { status: index.status, archiveVersion: version };
+    }
+    this.queueImportedIndex(agentId, version, true);
+    return { status: "preparing", archiveVersion: version };
+  }
+
+  private importedRetrievalInput(agentId: string, archiveVersion: string) {
+    const availability = this.getImportedHistoryAvailability(agentId);
+    if (availability.status !== "ready" || availability.archiveVersion !== archiveVersion) {
+      throw new CompactionHistoryQueryError(availability.status === "preparing" ? "Imported History Index Preparing" : "imported history archive is unavailable or changed");
+    }
+    const index = this.client.prepare("SELECT * FROM imported_history_indexes WHERE agent_id = ?").get(agentId) as ImportedIndex;
+    return { sqlite: this.client, agentId, archiveVersion, integrityKey: index.integrity_key, importedAt: index.imported_at };
+  }
+
+  searchImportedHistory(input: { agentId: string; archiveVersion: string; query: string; limit?: number }) {
+    return searchImportedHistory({ ...input, ...this.importedRetrievalInput(input.agentId, input.archiveVersion) });
+  }
+
+  readImportedHistory(input: { agentId: string; archiveVersion: string; reference: string; continuation?: string; before?: number; after?: number }) {
+    return readImportedHistory({ ...input, ...this.importedRetrievalInput(input.agentId, input.archiveVersion) });
   }
 
   getImportedHistoryMessagePage(
@@ -742,7 +948,8 @@ export class AgentCatalogAuthority {
   ): ContextSourcePage<MessageDto> {
     const limit = Math.max(1, Math.min(input.limit, 100));
     const rows = this.client.prepare(`
-      SELECT message_id, sequence, role, text, created_at
+      SELECT message_id, sequence, role, source_kind, substr(CAST(text AS BLOB), 1, 24000) AS text,
+        total_utf8_bytes > 24000 AS clipped, created_at
       FROM imported_history_messages
       WHERE agent_id = ?
         ${input.before ? "AND (created_at < ? OR (created_at = ? AND message_id < ?))" : ""}
@@ -752,7 +959,7 @@ export class AgentCatalogAuthority {
       ? [agentId, input.before.createdAt, input.before.createdAt, input.before.id, limit + 1]
       : [agentId, limit + 1])) as Array<{
       message_id: string; sequence: number; role: PortableAgentHistoryMessageDto["role"];
-      text: string; created_at: string;
+      text: Buffer; source_kind: string; clipped: number; created_at: string;
     }>;
     return {
       hasMore: rows.length > limit,
@@ -761,7 +968,8 @@ export class AgentCatalogAuthority {
         agentId,
         seq: -(row.sequence + 1),
         role: row.role === "assistant" ? "assistant" : "user",
-        text: row.role === "system" ? `[Imported private context]\n${row.text}` : row.text,
+        text: (row.role === "system" ? `[Imported private context]\n${row.source_kind === "guidance" ? "Imported initial instructions:\n" : ""}` : "") + decodeImportedUtf8Window(row.text) +
+          (row.clipped ? "\n[Imported context preview; retrieve complete text with ponderosa_history source=imported.]" : ""),
         createdAt: row.created_at,
       })),
     };

@@ -413,7 +413,7 @@ export class AgentDeletionAuthority {
     this.client.transaction(() => {
       for (const table of ["events", "messages", "runs", "provider_inputs", "work_items",
         "artifacts", "activity_projection", "tool_output_projection", "run_output_segments", "run_output_heads",
-        "changed_file_projection", "changed_file_execution_projection", "imported_history_messages",
+        "changed_file_projection", "changed_file_execution_projection", "imported_history_messages", "imported_history_indexes",
         "continuation_handoffs", "agent_health_projection", "agent_event_head_projection"]) {
         this.client.prepare(`DELETE FROM ${table} WHERE agent_id = ?`).run(agentId);
       }

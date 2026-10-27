@@ -1,4 +1,4 @@
-import {AGENT_PACKAGE_ARTIFACT_MAX_BYTES,AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL,type AgentPortablePackageDto,type PortableArtifactDto} from '@ponderosa/core';
+import {AGENT_PACKAGE_MAX_AGENTS,agentPackageJsonUtf8Bytes,agentPackageTextIsWellFormed,AGENT_PACKAGE_ARTIFACT_MAX_BYTES,AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL,type AgentPortablePackageDto,type PortableArtifactDto} from '@ponderosa/core';
 import {CANONICAL_ARTIFACT_ID,portableAgentTopologyError} from './artifact-refs.js';
 import {exactObjectFields,validatedObject} from './object-validation.js';
 import {portableBase64ByteLength} from './agent-package-codec.js';
@@ -14,16 +14,19 @@ export interface ValidatedPortableAgentPackage {
 export function validatePortableAgentPackage(value:unknown):ValidatedPortableAgentPackage {
   const record=validatedObject(value,'Agent package');
   exactObjectFields(record,['schema','mode','kind','exportedAt','sourceLabel','sourceProjectInstructions','rootRef','agents'],'Agent package');
-  if(record.schema!=='ponderosa.agent-package.v1'||(record.mode!=='template'&&record.mode!=='full')||!Array.isArray(record.agents)||record.agents.length<1||record.agents.length>100)throw new Error('invalid Ponderosa Agent package');
+  if(record.schema!=='ponderosa.agent-package.v1'||(record.mode!=='template'&&record.mode!=='full')||!Array.isArray(record.agents)||record.agents.length<1)throw new Error('invalid Ponderosa Agent package');
+  if(record.agents.length>AGENT_PACKAGE_MAX_AGENTS)throw Object.assign(new Error(`Agent package contains ${record.agents.length} Agents; the limit is ${AGENT_PACKAGE_MAX_AGENTS}`),{statusCode:413});
   if(typeof record.exportedAt!=='string'||!Number.isFinite(Date.parse(record.exportedAt))||typeof record.sourceLabel!=='string'||(record.sourceProjectInstructions!==undefined&&(typeof record.sourceProjectInstructions!=='string'||record.sourceProjectInstructions.length>100_000)))throw new Error('Agent package metadata is invalid');
   if(record.mode==='template'&&record.sourceProjectInstructions!==undefined)throw new Error('template packages cannot contain full-mode Project context');
   const portable=record as unknown as AgentPortablePackageDto;
   const topologyError=portableAgentTopologyError(portable);if(topologyError)throw new Error(topologyError);
+  agentPackageJsonUtf8Bytes(portable);
   const artifactBytes=new Map<PortableArtifactDto,number>(),artifactRefs=new Set<string>();let totalArtifactBytes=0;
   for(const candidate of portable.agents as unknown[]){
     const node=validatedObject(candidate,'Agent package node');
     exactObjectFields(node,['ref','title','engine','model','effort','initialInstructions','managerRef','managementPermissions','history','artifacts'],'Agent package node');
     if(typeof node.ref!=='string'||typeof node.title!=='string'||typeof node.engine!=='string'||!node.engine.trim()||(node.model!==undefined&&typeof node.model!=='string')||(node.effort!==undefined&&typeof node.effort!=='string')||(node.initialInstructions!==undefined&&typeof node.initialInstructions!=='string'))throw new Error('every imported Agent must declare valid identity and runtime fields');
+    if(typeof node.initialInstructions==='string'&&!agentPackageTextIsWellFormed(node.initialInstructions))throw new Error('Agent initial instructions must contain well-formed Unicode');
     const permissions=validatedObject(node.managementPermissions,'managementPermissions');
     exactObjectFields(permissions,['allowAutomaticDescendantDeletion','allowAutomaticDescendantReorganization'],'managementPermissions');
     if(typeof permissions.allowAutomaticDescendantDeletion!=='boolean'||typeof permissions.allowAutomaticDescendantReorganization!=='boolean')throw new Error('every imported Agent must declare exact boolean management permissions');
@@ -32,6 +35,7 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
     for(const messageCandidate of (node.history as unknown[]|undefined)??[]){
       const message=validatedObject(messageCandidate,'history message');exactObjectFields(message,['role','text','createdAt'],'history message');
       if(!['user','assistant','system'].includes(String(message.role))||typeof message.text!=='string'||(message.createdAt!==undefined&&(typeof message.createdAt!=='string'||!Number.isFinite(Date.parse(message.createdAt)))))throw new Error('Agent history messages have an invalid shape');
+      if(!agentPackageTextIsWellFormed(message.text as string))throw new Error('Agent history text must contain well-formed Unicode');
     }
     if(node.artifacts!==undefined&&!Array.isArray(node.artifacts))throw new Error('Agent artifacts must be an array');
     for(const artifactCandidate of (node.artifacts as unknown[]|undefined)??[]){

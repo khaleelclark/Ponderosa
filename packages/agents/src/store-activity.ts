@@ -35,7 +35,7 @@ function utf8Prefix(text: string, maximumBytes: number): string {
   if (bytes.length <= maximumBytes) return text;
   let end = maximumBytes;
   while (end > 0) {
-    try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, end)); }
+    try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, end)); }
     catch { end -= 1; }
   }
   return "";

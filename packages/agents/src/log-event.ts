@@ -77,8 +77,9 @@ export interface CommunicationProjectionEvent {
 }
 
 /** Durable, text-minimal audit evidence for one bounded compaction-history read. */
-export interface CompactionHistoryRetrievalEvent {
+export interface CanonicalHistoryRetrievalEvent {
   type: "compaction_history_retrieval";
+  source?: "canonical";
   executionId: string;
   runId: string;
   action: "search" | "read";
@@ -103,6 +104,38 @@ export interface CompactionHistoryRetrievalEvent {
   hasMore: boolean;
   durationMs: number;
 }
+
+/** Imported references and returned ranges remain separate from canonical
+ * Communication IDs and rollover exclusions in the same Run audit stream. */
+export interface ImportedHistoryRetrievalEvent {
+  type: "compaction_history_retrieval";
+  source: "imported";
+  executionId: string;
+  runId: string;
+  action: "search" | "read";
+  archiveVersion: string;
+  query?: string;
+  reference?: string;
+  normalizedQuery?: string;
+  querySha256: string;
+  strategy?: "lexical";
+  outcome: "results" | "no_match" | "rejected";
+  reason?: string;
+  scannedMessages: number;
+  eligibleMessages: number;
+  matchedMessages: number;
+  selected: Array<{
+    reference: string;
+    contentSha256: string;
+    startCodePoint?: number;
+    endCodePoint?: number;
+  }>;
+  responseUtf8Bytes: number;
+  hasMore: boolean;
+  durationMs: number;
+}
+
+export type CompactionHistoryRetrievalEvent = CanonicalHistoryRetrievalEvent | ImportedHistoryRetrievalEvent;
 
 /** Durable manager-facing lifecycle transition for ordinary agents. */
 export interface AgentLifecycleEvent {

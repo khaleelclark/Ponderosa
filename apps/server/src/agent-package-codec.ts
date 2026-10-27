@@ -3,10 +3,11 @@ import { freemem } from "node:os";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { Worker } from "node:worker_threads";
 import {
-  AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL,
+  AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL, agentPackageJsonPieces,
   type AgentPortablePackageDto, type ImportAgentPackageRequest,
 } from "@ponderosa/core";
 import { MANAGED_ARTIFACT_MAX_BYTES } from "@ponderosa/agents";
+import { stableJsonParts } from "@ponderosa/agents/canonical-json";
 
 const CODEC_TIMEOUT_MS = 60_000;
 // The JSON source and parsed UTF-16 strings can coexist. A single bounded
@@ -28,6 +29,23 @@ async function admission<T>(kind: "import" | "codec", work: () => Promise<T>): P
 export function withAgentImportAdmission<T>(work: () => Promise<T>): Promise<T> {
   return admission("import", work);
 }
+
+/** Internal imports retain the same canonical identity without materializing
+ * a whole JSON string or borrowing the live-runtime structural budget. */
+export async function portableImportPayloadHash(value: unknown, signal?: AbortSignal): Promise<string> {
+  const hash = createHash("sha256");
+  let batchBytes = 0;
+  for (const part of stableJsonParts(value, { maxDepth: 64, maxNodes: AGENT_PACKAGE_MAX_BYTES })) {
+    signal?.throwIfAborted();
+    hash.update(part);
+    batchBytes += Buffer.byteLength(part, "utf8");
+    if (batchBytes >= 256 * 1024) {
+      batchBytes = 0;
+      await yieldToLoop();
+    }
+  }
+  return hash.digest("hex");
+}
 export type PackageWireEntry =
   | { kind: "array" | "object"; path: Array<string | number> }
   | { kind: "string"; path: Array<string | number>; value: string }
@@ -36,11 +54,13 @@ export type PackageWireEntry =
 export interface PackageCodecOptions {
   signal?: AbortSignal;
   packageOnly?: boolean;
+  jsonEnvelope?: boolean;
   onMemory?: (memory: NodeJS.MemoryUsage) => void;
 }
 export async function parsePortablePackageFile(pathname: string, options: PackageCodecOptions = {}): Promise<{
   metadata: Omit<ImportAgentPackageRequest, "package">;
   portable: AgentPortablePackageDto;
+  canonicalPayloadHash?: string;
 }> {
   return admission("codec", async () => {
     options.signal?.throwIfAborted();
@@ -59,7 +79,7 @@ export async function parsePortablePackageFile(pathname: string, options: Packag
       const worker = new Worker(import.meta.url.endsWith(".ts")
         ? new URL("../dist/agent-package-codec-worker.js", import.meta.url)
         : new URL("./agent-package-codec-worker.js", import.meta.url), {
-        workerData: { pathname, packageOnly: options.packageOnly },
+        workerData: { pathname, packageOnly: options.packageOnly, jsonEnvelope: options.jsonEnvelope },
         resourceLimits: { maxOldGenerationSizeMb: AGENT_PACKAGE_CODEC_HEAP_MIB, maxYoungGenerationSizeMb: 32 },
       });
       let result: unknown;
@@ -78,9 +98,9 @@ export async function parsePortablePackageFile(pathname: string, options: Packag
       const abort = () => void finish(new Error("Agent package processing cancelled"));
       const timeout = setTimeout(() => void finish(new Error("Agent package codec exceeded its 60 second processing budget")), CODEC_TIMEOUT_MS);
       timeout.unref();
-      worker.on("message", (message: { entries?: PackageWireEntry[]; done?: boolean; error?: string; memory?: NodeJS.MemoryUsage }) => {
+      worker.on("message", (message: { entries?: PackageWireEntry[]; done?: boolean; error?: string; statusCode?: number; memory?: NodeJS.MemoryUsage }) => {
         if (settled) return;
-        if (message.error) return void finish(new Error(message.error));
+        if (message.error) return void finish(Object.assign(new Error(message.error), { statusCode: message.statusCode }));
         if (message.done) {
           if (message.memory) options.onMemory?.(message.memory);
           return void finish();
@@ -158,46 +178,15 @@ export async function decodePortableArtifact(dataBase64: string): Promise<{ data
   return { data, sha256: hash.digest("hex") };
 }
 
-/** Bounded JSON serialization avoids cloning/stringifying a full package on
- * either event loop. Chunk boundaries preserve surrogate pairs and UTF-8. */
+/** Chunk boundaries preserve surrogate pairs and UTF-8. */
 export async function* portablePackageJsonChunks(portable: AgentPortablePackageDto): AsyncGenerator<string> {
   let bytes = 0;
   let batchBytes = 0;
   let batch: string[] = [];
-  async function* visit(value: unknown): AsyncGenerator<string> {
-    if (typeof value === "string") {
-      yield '"';
-      for (let offset = 0; offset < value.length;) {
-        let end = Math.min(value.length, offset + 32 * 1024);
-        if (end < value.length && /[\uD800-\uDBFF]/u.test(value[end - 1]!)) end--;
-        yield JSON.stringify(value.slice(offset, end)).slice(1, -1);
-        offset = end;
-      }
-      yield '"';
-    } else if (Array.isArray(value)) {
-      yield "[";
-      for (let index = 0; index < value.length; index++) {
-        if (index) yield ",";
-        yield* visit(value[index] ?? null);
-      }
-      yield "]";
-    } else if (value && typeof value === "object") {
-      yield "{";
-      let first = true;
-      for (const [key, child] of Object.entries(value)) {
-        if (child === undefined) continue;
-        if (!first) yield ",";
-        first = false;
-        yield JSON.stringify(key) + ":";
-        yield* visit(child);
-      }
-      yield "}";
-    } else yield JSON.stringify(value) ?? "null";
-  }
-  for await (const chunk of visit(portable)) {
+  for (const chunk of agentPackageJsonPieces(portable)) {
     const size = Buffer.byteLength(chunk, "utf8");
     bytes += size;
-    if (bytes > AGENT_PACKAGE_MAX_BYTES) throw Object.assign(new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL}`), { statusCode: 413 });
+    if (bytes > AGENT_PACKAGE_MAX_BYTES) throw Object.assign(new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL} (${bytes} serialized UTF-8 bytes)`), { statusCode: 413 });
     batch.push(chunk);
     batchBytes += size;
     if (batchBytes >= 256 * 1024 || batch.length >= 1024) {

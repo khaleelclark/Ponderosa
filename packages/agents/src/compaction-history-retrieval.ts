@@ -953,7 +953,7 @@ function warningsFor(
   return { warnings: [...warnings], relatedCommunicationEventIds: related };
 }
 
-function finalizeResponseUtf8Bytes<T extends { utf8Bytes: number }>(response: T): number {
+export function finalizeResponseUtf8Bytes<T extends { utf8Bytes: number }>(response: T): number {
   let measured = Buffer.byteLength(JSON.stringify(response), "utf8");
   for (let attempt = 0; attempt < 8; attempt += 1) {
     response.utf8Bytes = measured;

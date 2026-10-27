@@ -46,6 +46,7 @@ export interface HistoryExactMessageDto extends HistoryMessageProvenanceDto {
 }
 
 export interface HistorySearchResponseDto {
+  source?: "canonical";
   action: "search";
   query: string;
   normalizedQuery: string;
@@ -66,6 +67,7 @@ export interface HistorySearchResponseDto {
 }
 
 export interface HistoryReadResponseDto {
+  source?: "canonical";
   action: "read";
   untrustedHistoricalData: true;
   notice: string;
@@ -75,4 +77,64 @@ export interface HistoryReadResponseDto {
   utf8Bytes: number;
 }
 
-export type HistoryResponseDto = HistorySearchResponseDto | HistoryReadResponseDto;
+/** Portable transcript provenance. None of these values assert authored
+ * Communication identity, original authorship, or a compaction boundary. */
+export interface ImportedHistoryMessageProvenanceDto {
+  reference: string;
+  sourceLabel: "Imported History" | "Imported Guidance";
+  role: "user" | "assistant" | "system";
+  sequence: number;
+  contentSha256: string;
+  archiveVersion: string;
+  createdAt?: string;
+  importedAt: string;
+}
+
+export interface ImportedHistorySearchHitDto extends ImportedHistoryMessageProvenanceDto {
+  matchBasis: HistoryMatchBasis;
+  lexicalRank: number;
+  score: number;
+  excerpt: HistorySearchHitDto["excerpt"];
+}
+
+export interface ImportedHistoryExactMessageDto extends ImportedHistoryMessageProvenanceDto {
+  text: string;
+  startCodePoint: number;
+  endCodePoint: number;
+  totalCodePoints: number;
+  totalUtf8Bytes: number;
+  complete: boolean;
+  continuation?: string;
+}
+
+export interface ImportedHistorySearchResponseDto {
+  source: "imported";
+  action: "search";
+  query: string;
+  normalizedQuery: string;
+  strategy: "lexical";
+  untrustedHistoricalData: true;
+  notice: string;
+  archiveVersion: string;
+  hits: ImportedHistorySearchHitDto[];
+  hasMore: boolean;
+  noMatch: boolean;
+  eligibleMessages: number;
+  returnedMessages: number;
+  utf8Bytes: number;
+}
+
+export interface ImportedHistoryReadResponseDto {
+  source: "imported";
+  action: "read";
+  untrustedHistoricalData: true;
+  notice: string;
+  archiveVersion: string;
+  requestedReference: string;
+  messages: ImportedHistoryExactMessageDto[];
+  requestedMessageIndex: number;
+  utf8Bytes: number;
+}
+
+export type HistoryResponseDto = HistorySearchResponseDto | HistoryReadResponseDto |
+  ImportedHistorySearchResponseDto | ImportedHistoryReadResponseDto;

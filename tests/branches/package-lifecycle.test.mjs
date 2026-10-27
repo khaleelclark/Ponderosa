@@ -8,6 +8,7 @@ import {randomUUID} from 'node:crypto';
 import {AgentStore,BranchStore,CoordinationV3Store} from '@ponderosa/agents';
 import {registerAgentPackageRoutes} from '../../apps/server/dist/routes/agent-packages.js';
 import {validatePortableAgentPackage} from '../../apps/server/dist/portable-agent-package-validation.js';
+import {AGENT_PACKAGE_MAX_BYTES,agentPackageJsonUtf8Bytes} from '@ponderosa/core';
 
 const permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
 const portable=()=>({schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Portable workers',rootRef:'root',agents:[{ref:'root',title:'Worker',engine:'codex',managementPermissions:permissions},{ref:'child',title:'Child',managerRef:'root',engine:'codex',managementPermissions:permissions}]});
@@ -75,4 +76,44 @@ test('ordinary HTTP import retains explicit permission acknowledgement, exact re
  assert.equal(operation.conversationId,project.lastConversationId);assert.equal(operation.productScope,'dev');assert.equal(operation.status,'completed');
  assert.throws(()=>f.store.beginAgentCreationOperation({projectId:project.id,conversationId:f.chatId,actorScope:operation.actorScope,kind:'import',idempotencyKey:authorizedKey,payloadHash:operation.payloadHash}),/different input/);
  const replay=await f.app.inject({method:'POST',url:`/api/projects/${project.id}/import-agents`,payload:authorized,headers:{'idempotency-key':authorizedKey}});assert.equal(replay.statusCode,200);assert.deepEqual(replay.json(),result);
+ const reordered=await f.app.inject({method:'POST',url:`/api/projects/${project.id}/import-agents`,payload:{engineMapping:{codex:' codex '},conversationId:project.lastConversationId,acknowledgeElevatedManagementPermissions:true,package:pkg},headers:{'idempotency-key':authorizedKey}});
+ assert.equal(reordered.statusCode,200,reordered.body);assert.deepEqual(reordered.json(),result,'canonical JSON replay retains its original identity');
+}));
+
+test('legacy JSON envelopes retain bounded metadata and reject malformed text before destination mutations',t=>withPackages(t,async f=>{
+ const project=f.store.createProject({label:'Envelope destination',chatOwned:true,hostPath:f.store.getProject(f.project.id).hostPath,defaultEngine:'codex'});
+ for(const failure of ['metadata','history','initialInstructions']){
+  const pkg=portable();pkg.mode='full';
+  if(failure==='history')pkg.agents[0].history=[{role:'user',text:'\ud800'}];
+  if(failure==='initialInstructions')pkg.agents[0].initialInstructions='\udfff';
+  const payload={package:pkg,conversationId:project.lastConversationId,engineMapping:{codex:failure==='metadata'?'x'.repeat(16384):'codex'}};
+  const result=await f.app.inject({method:'POST',url:`/api/projects/${project.id}/import-agents`,headers:{'idempotency-key':randomUUID()},payload});
+  assert.equal(result.statusCode,failure==='metadata'?413:400,result.body);
+  assert.match(result.json().error,failure==='metadata'?/metadata exceeds 16 KiB/u:/well-formed Unicode/u);
+  assert.equal(f.store.listAgents(project.id).length,0);
+ }
+}));
+
+test('post-remap UTF-8 growth is refused before Agent reservation, artifact publication or Chat changes',{timeout:60_000},t=>withPackages(t,async f=>{
+ const pkg=portable();pkg.mode='full';
+ const artifact={ref:randomUUID(),kind:'document',path:'a.txt',createdAt:new Date().toISOString(),dataBase64:'eA=='};
+ pkg.agents[0].artifacts=[artifact];
+ const text='雪'.repeat(64*1024),history=Array.from({length:1300},()=>({role:'user',text}));history.push({role:'assistant',text:''});pkg.agents[0].history=history;
+ history.at(-1).text='x'.repeat(AGENT_PACKAGE_MAX_BYTES-agentPackageJsonUtf8Bytes(pkg));
+ assert.equal(agentPackageJsonUtf8Bytes(pkg),AGENT_PACKAGE_MAX_BYTES);
+ const before=f.store.getConversation(f.chatId),key=randomUUID();
+ await assert.rejects(f.packageEngine.importAgent(f.project.id,f.chatId,pkg,{codex:'codex'},key),error=>error.statusCode===413&&/256 MiB/u.test(error.message));
+ assert.equal(f.store.listAgents(f.project.id).length,0);assert.equal(f.store.getProjectArtifacts(f.project.id).length,0);
+ assert.equal(f.store.getConversation(f.chatId).instructions,before.instructions);
+ const receipt=f.store.findAgentCreationOperation({projectId:f.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});
+ assert.equal(receipt.status,'rolled_back');assert.deepEqual(receipt.agentIds,[]);assert.deepEqual(receipt.artifactIds,[]);
+}));
+
+test('a Chat instruction change during import is preserved while the existing rollback removes pending Agents',t=>withPackages(t,async f=>{
+ const pkg=portable();pkg.mode='full';pkg.sourceProjectInstructions='Imported Chat instructions';
+ const create=f.store.createAgent.bind(f.store);let edited=false;
+ f.store.createAgent=(...args)=>{const agent=create(...args);if(!edited){edited=true;f.store.updateConversation(f.chatId,{instructions:'Newer human instructions'})}return agent};
+ await assert.rejects(f.packageEngine.importAgent(f.project.id,f.chatId,pkg,{codex:'codex'},randomUUID()),error=>error.statusCode===409&&/instructions changed/u.test(error.message));
+ assert.equal(f.store.getConversation(f.chatId).instructions,'Newer human instructions');
+ assert.equal(f.store.listAgents(f.project.id).length,0);assert.equal(f.pending.size,0);
 }));
