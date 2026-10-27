@@ -1,10 +1,10 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { readFileSync, statSync } from "@ponderosa/native-host/fs";
-import { AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_METADATA_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL } from "@ponderosa/core";
+import { agentPackageJsonUtf8Bytes, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_METADATA_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL } from "@ponderosa/core";
 import type { PackageWireEntry } from "./agent-package-codec.js";
 
 const port = parentPort!;
-const input = workerData as { pathname: string; packageOnly?: boolean };
+const input = workerData as { pathname: string; packageOnly?: boolean; jsonEnvelope?: boolean };
 
 // Only a bounded batch crosses the server event loop at once. Acknowledgement
 // prevents a fast worker from queuing an entire large package in the parent.
@@ -14,15 +14,27 @@ async function parse(): Promise<void> {
     throw new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL}`);
   }
   let body: Buffer | undefined = readFileSync(input.pathname);
-  const separator = input.packageOnly ? -1 : body.indexOf(0x0a);
-  if (!input.packageOnly && (separator < 1 || separator > AGENT_PACKAGE_METADATA_MAX_BYTES)) {
+  const separator = input.packageOnly || input.jsonEnvelope ? -1 : body.indexOf(0x0a);
+  if (!input.packageOnly && !input.jsonEnvelope && (separator < 1 || separator > AGENT_PACKAGE_METADATA_MAX_BYTES)) {
     throw new Error("Agent package upload metadata is invalid");
   }
   let raw: Buffer | undefined = body.subarray(separator + 1);
-  if (raw.length > AGENT_PACKAGE_MAX_BYTES) throw new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL}`);
+  if (!input.jsonEnvelope && raw.length > AGENT_PACKAGE_MAX_BYTES) throw new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL}`);
   const decoder = new TextDecoder("utf-8", { fatal: true });
-  const metadata = input.packageOnly ? {} : JSON.parse(decoder.decode(body.subarray(0, separator)));
-  const portable: unknown = JSON.parse(decoder.decode(raw));
+  let metadata = input.packageOnly || input.jsonEnvelope ? {} : JSON.parse(decoder.decode(body.subarray(0, separator)));
+  let portable: unknown = JSON.parse(decoder.decode(raw));
+  if (input.jsonEnvelope) {
+    if (!portable || typeof portable !== "object" || Array.isArray(portable)) throw new Error("Agent import request must be an object");
+    const envelope = portable as Record<string, unknown>;
+    metadata = Object.fromEntries(Object.entries(envelope).filter(([key]) => key !== "package"));
+    agentPackageJsonUtf8Bytes(metadata, AGENT_PACKAGE_METADATA_MAX_BYTES);
+    portable = envelope.package;
+    agentPackageJsonUtf8Bytes(portable);
+  }
+  const agents = portable && typeof portable === "object" && "agents" in portable ? portable.agents : undefined;
+  if (Array.isArray(agents) && agents.length > AGENT_PACKAGE_MAX_AGENTS) {
+    throw Object.assign(new Error(`Agent package contains ${agents.length} Agents; the limit is ${AGENT_PACKAGE_MAX_AGENTS}`), { statusCode: 413 });
+  }
   body = undefined;
   raw = undefined;
   let batch: PackageWireEntry[] = [];
@@ -60,4 +72,4 @@ async function parse(): Promise<void> {
   await flush();
   port.postMessage({ done: true, memory: process.memoryUsage() });
 }
-void parse().catch(error => port.postMessage({ error: error instanceof Error ? error.message : String(error) }));
+void parse().catch(error => port.postMessage({ error: error instanceof Error ? error.message : String(error), statusCode: (error as {statusCode?:number})?.statusCode }));

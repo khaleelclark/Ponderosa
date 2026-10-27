@@ -75,7 +75,7 @@ async function withPortability(t, run) {
     const copy = async (id, key = randomUUID(), mode = 'full') => ok(await request(copyRequest(id, key, mode)));
     const importRequest = (pkg, key = randomUUID(), extra = {}) => ({ method: 'POST', url: `/api/projects/${project.id}/import-agents`,
       headers: { 'idempotency-key': key }, payload: { package: pkg, conversationId: destination.id, engineMapping: { codex: 'codex' }, ...extra } });
-    const projection = id => store.sqlite.prepare('SELECT role, text, created_at AS createdAt FROM imported_history_messages WHERE agent_id = ? ORDER BY sequence').all(id);
+    const projection = id => store.sqlite.prepare('SELECT role, text, source_kind AS sourceKind, created_at AS createdAt FROM imported_history_messages WHERE agent_id = ? ORDER BY sequence').all(id);
     await run({ dataDir, project, chat, destination, a, b, outside, artifactId, guidance, bytes, collaboration, request, ok,
       exportAgent, copy, copyRequest, importRequest, projection, get store() { return store; },
       async restart() { await close(); open(); await app.ready(); } });
@@ -87,7 +87,7 @@ async function withPortability(t, run) {
   }
 }
 const options = { timeout: 30_000 };
-const synthetic = rows => rows.filter(x => x.role === 'system' && x.text.startsWith('Imported initial instructions:\nINITIAL_GUIDANCE'));
+const synthetic = rows => rows.filter(x => x.sourceKind === 'guidance');
 
 test('full organization round trips retain the reviewed contracts and one guidance projection across three generations', options, t => withPortability(t, async f => {
   const pkg = await f.exportAgent(f.a.id);
@@ -115,7 +115,7 @@ test('full organization round trips retain the reviewed contracts and one guidan
     const artifact = f.store.getProjectArtifacts(f.project.id).find(x => x.originAgentId === copy.rootAgentId);
     const imported = f.store.getImportedHistory(copy.rootAgentId);
     assert.equal(imported.initialInstructions, `INITIAL_GUIDANCE ponderosa://artifact/${artifact.id}`);
-    assert.equal(synthetic(f.projection(copy.rootAgentId))[0]?.text, `Imported initial instructions:\n${imported.initialInstructions}`);
+    assert.equal(synthetic(f.projection(copy.rootAgentId))[0]?.text, imported.initialInstructions);
     assert.deepEqual(readManagedArtifactContent(f.dataDir, f.project.id, artifact.id, artifact.size, artifact.sha256)?.body, f.bytes);
     counts.push(synthetic(f.projection(copy.rootAgentId)).length);
     assert.equal(f.store.getImportedHistoryMessagePage(copy.rootAgentId, { limit: 100 }).items.filter(x =>
@@ -124,7 +124,7 @@ test('full organization round trips retain the reviewed contracts and one guidan
   }
   assert.deepEqual(counts, [1, 1, 1]);
   const final = await f.exportAgent(source);
-  assert.equal(synthetic(final.agents[0].history).length, 0, 'derived guidance must not become portable history');
+  assert.equal(final.agents[0].history.filter(x=>x.role==='system'&&x.text===final.agents[0].initialInstructions).length, 0, 'derived guidance must not become portable history');
   assert.equal(f.store.readCommunicationEvents(f.project.id).filter(x => x.conversationId === f.destination.id).length, 0);
 }));
 
@@ -139,7 +139,8 @@ test('identical genuine user, assistant and system history survives full exports
     const imported = f.ok(await f.request(f.importRequest(pkg)));
     assert.deepEqual(f.store.getImportedHistory(imported.rootAgentId).messages, history);
     const rows = f.projection(imported.rootAgentId);
-    assert.equal(rows.filter(x => x.role === 'system' && x.text === identical).length, 3, 'two genuine system messages plus one derived guidance entry');
+    assert.equal(rows.filter(x => x.role === 'system' && x.text === identical && x.sourceKind === 'history').length, 2, 'both genuine system messages remain history');
+    assert.equal(synthetic(rows).length, 1); assert.equal(synthetic(rows)[0].text, instructions);
     pkg = await f.exportAgent(imported.rootAgentId);
     assert.deepEqual(pkg.agents[0].history, history);
   }
@@ -246,21 +247,75 @@ test('rebuilding existing current-format unmarked history preserves its exact en
   assert.equal(await readFile(file, 'utf8'), original);
 }));
 
-test('separated guidance is bounded and survives empty-history imports through both store writers', options, t => withPortability(t, async f => {
-  const guidance = 'INITIAL_GUIDANCE ' + '雪'.repeat(100_000);
+test('complete separated guidance survives empty-history imports through both store writers', options, t => withPortability(t, async f => {
+  const guidance = 'INITIAL_GUIDANCE ' + '雪\r\n🌲'.repeat(30_000) + 'TRAILING_GUIDANCE';
   f.store.setImportedHistory(f.b.id, 'Synchronous fixture', [], guidance);
-  assert.equal(f.store.getImportedHistory(f.b.id).initialInstructions.length, 100_000);
+  assert.ok(f.store.getImportedHistory(f.b.id).initialInstructions===guidance,'synchronous writer retains complete guidance');
   assert.equal(f.projection(f.b.id).length, 1);
-  assert.equal(f.projection(f.b.id)[0].text.length, 100_000);
+  assert.ok(f.projection(f.b.id)[0].text===guidance,'derived guidance retains complete text');
   let pkg = await f.exportAgent(f.b.id, 'template');
   let imported = f.ok(await f.request(f.importRequest(pkg)));
   assert.deepEqual(f.store.getImportedHistory(imported.rootAgentId).messages, []);
-  assert.equal(f.store.getImportedHistory(imported.rootAgentId).initialInstructions.length, 100_000);
-  assert.equal(f.projection(imported.rootAgentId)[0].text.length, 100_000);
+  assert.ok(f.store.getImportedHistory(imported.rootAgentId).initialInstructions===guidance,'asynchronous writer retains complete guidance');
+  assert.ok(f.projection(imported.rootAgentId)[0].text===guidance,'asynchronous projection retains complete guidance');
   pkg.agents[0].initialInstructions = '';
   imported = f.ok(await f.request(f.importRequest(pkg)));
   assert.equal(f.store.getImportedHistory(imported.rootAgentId).initialInstructions, '');
   assert.deepEqual(f.projection(imported.rootAgentId), []);
   pkg = await f.exportAgent(imported.rootAgentId, 'template');
   assert.equal(pkg.agents[0].initialInstructions, '');
+}));
+
+test('long history and guidance rewrite only artifact references and retain duplicates, timestamps and trailing text', options, t => withPortability(t, async f => {
+ const pkg=await f.exportAgent(f.a.id),node=pkg.agents[0],text='雪\r\n🌲'.repeat(25_000)+` [File](ponderosa://artifact/${f.artifactId}) TRAILING_HISTORY`;
+ node.initialInstructions=text;
+ node.history=[{role:'user',text,createdAt:'2026-10-27T02:00:00+02:00'},{role:'user',text},{role:'system',text}];
+ const imported=f.ok(await f.request(f.importRequest(pkg))),archive=f.store.getImportedHistory(imported.rootAgentId);
+ const artifact=f.store.getProjectArtifacts(f.project.id).find(a=>a.originAgentId===imported.rootAgentId),rewritten=text.replaceAll(f.artifactId,artifact.id);
+ assert.ok(archive.initialInstructions===rewritten,'complete guidance rewrites only the artifact reference');
+ assert.equal(createHash('sha256').update(JSON.stringify(archive.messages)).digest('hex'),createHash('sha256').update(JSON.stringify(node.history.map(message=>({...message,text:rewritten})))).digest('hex'));
+ const again=await f.exportAgent(imported.rootAgentId);
+ assert.equal(again.agents[0].initialInstructions,rewritten);assert.deepEqual(again.agents[0].history,archive.messages);
+ await f.restart();assert.deepEqual(f.store.getImportedHistory(imported.rootAgentId).messages,archive.messages);
+}));
+
+test('101-Agent organizations import, copy and export whole after restart with bounded bottom-up assignment', options, t => withPortability(t, async f => {
+ const pkg={schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Readable organization',rootRef:'a0',agents:Array.from({length:101},(_,i)=>({ref:`a${i}`,title:`Portable Agent ${i}`,engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},...(i?{managerRef:`a${i-1}`}:{})})).reverse()};
+ const assign=f.store.updateAgentOrganization.bind(f.store);let assignments=0;
+ f.store.updateAgentOrganization=(id,input)=>{if(input.managerAgentId){assert.equal(f.store.getAgent(input.managerAgentId).managerAgentId,undefined,'new managers remain detached while descendants are attached');assignments++}return assign(id,input)};
+ const imported=f.ok(await f.request(f.importRequest(pkg)));
+ assert.equal(imported.agentIds.length,101);assert.equal(assignments,100);
+ const exported=await f.exportAgent(imported.rootAgentId,'template');assert.equal(exported.agents.length,101);
+ const copied=await f.copy(imported.rootAgentId,randomUUID(),'template');assert.equal(copied.agentIds.length,101);assert.equal(assignments,200);
+ await f.restart();assert.equal((await f.exportAgent(copied.rootAgentId,'template')).agents.length,101);
+ const live=f.store.listAgentSubtree(copied.rootAgentId);assert.equal(live.length,101);
+ for(let index=1;index<live.length;index++)assert.equal(live[index].managerAgentId,live[index-1].id);
+}));
+
+test('oversized organizations are refused whole before export preparation or destination mutations', options, t => withPortability(t, async f => {
+ const pkg={schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Too many Agents',rootRef:'a0',agents:Array.from({length:10001},(_,i)=>({ref:`a${i}`,title:`Agent ${i}`,engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},...(i?{managerRef:'a0'}:{})}))};
+ const before=f.store.listAgents(f.project.id).length,response=await f.request(f.importRequest(pkg));
+ assert.equal(response.statusCode,413,response.body);assert.match(response.json().error,/10001.*10000/u);assert.equal(f.store.listAgents(f.project.id).length,before);
+ const subtree=f.store.listAgentSubtree.bind(f.store);f.store.listAgentSubtree=()=>Array(10001).fill(f.a);
+ try{const rejected=await f.request({method:'GET',url:`/api/agents/${f.a.id}/export?mode=template&organization=true`});assert.equal(rejected.statusCode,413,rejected.body);assert.match(rejected.json().message??rejected.json().error,/10001.*10000/u)}finally{f.store.listAgentSubtree=subtree}
+}));
+
+test('10000-Agent package admission, assignment, durable receipt, restart and complete export qualification',{
+ skip:process.env.PONDEROSA_TEST_AGENT_PACKAGE_SCALE!=='1',timeout:15*60_000,
+},t=>withPortability(t,async f=>{
+ const count=10000,key=randomUUID(),pkg={schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Complete scale qualification',rootRef:'a0',agents:Array.from({length:count},(_,i)=>({ref:`a${i}`,title:'Portable Worker',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},...(i?{managerRef:`a${i-1}`}:{})})).reverse()};
+ const started=performance.now(),result=f.ok(await f.request(f.importRequest(pkg,key)));
+ assert.equal(result.agentIds.length,count);assert.equal(new Set(result.agentIds).size,count);
+ const receipt=f.store.findAgentCreationOperation({projectId:f.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});
+ assert.equal(receipt.status,'completed');assert.equal(receipt.agentIds.length,count);assert.deepEqual(receipt.result,result);
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM agent_creation_operation_members WHERE operation_id=?').get(receipt.id).n,count);
+ await f.restart();
+ const replay=f.ok(await f.request(f.importRequest(pkg,key)));assert.deepEqual(replay,result);
+ const exported=await f.exportAgent(result.rootAgentId,'template');assert.equal(exported.agents.length,count);
+ const byId=new Map(exported.agents.map(node=>[node.ref,node]));assert.equal(byId.size,count);
+ for(const id of result.agentIds){const agent=f.store.getAgent(id);assert.equal(agent.conversationId,f.destination.id);assert.equal(f.store.agentCreationPending(id),false);assert.equal(byId.has(id),true)}
+ assert.equal(new Set(result.agentIds.map(id=>f.store.getAgent(id).handle)).size,count);
+ const ordered=f.store.listAgentSubtree(result.rootAgentId);assert.equal(ordered.length,count);
+ for(let index=1;index<ordered.length;index++)assert.equal(ordered[index].managerAgentId,ordered[index-1].id);
+ t.diagnostic(`Complete10000-Agent import/restart/export: ${Math.round(performance.now()-started)}ms`);
 }));

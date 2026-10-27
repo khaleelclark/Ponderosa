@@ -8,6 +8,7 @@ import {randomUUID} from 'node:crypto';
 import {AgentStore,BranchStore,CoordinationV3Store} from '@ponderosa/agents';
 import {registerAgentPackageRoutes} from '../../apps/server/dist/routes/agent-packages.js';
 import {validatePortableAgentPackage} from '../../apps/server/dist/portable-agent-package-validation.js';
+import {AGENT_PACKAGE_MAX_BYTES,agentPackageJsonUtf8Bytes} from '@ponderosa/core';
 
 const permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
 const portable=()=>({schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Portable workers',rootRef:'root',agents:[{ref:'root',title:'Worker',engine:'codex',managementPermissions:permissions},{ref:'child',title:'Child',managerRef:'root',engine:'codex',managementPermissions:permissions}]});
@@ -75,4 +76,19 @@ test('ordinary HTTP import retains explicit permission acknowledgement, exact re
  assert.equal(operation.conversationId,project.lastConversationId);assert.equal(operation.productScope,'dev');assert.equal(operation.status,'completed');
  assert.throws(()=>f.store.beginAgentCreationOperation({projectId:project.id,conversationId:f.chatId,actorScope:operation.actorScope,kind:'import',idempotencyKey:authorizedKey,payloadHash:operation.payloadHash}),/different input/);
  const replay=await f.app.inject({method:'POST',url:`/api/projects/${project.id}/import-agents`,payload:authorized,headers:{'idempotency-key':authorizedKey}});assert.equal(replay.statusCode,200);assert.deepEqual(replay.json(),result);
+}));
+
+test('post-remap UTF-8 growth is refused before Agent reservation, artifact publication or Chat changes',{timeout:60_000},t=>withPackages(t,async f=>{
+ const pkg=portable();pkg.mode='full';
+ const artifact={ref:randomUUID(),kind:'document',path:'a.txt',createdAt:new Date().toISOString(),dataBase64:'eA=='};
+ pkg.agents[0].artifacts=[artifact];
+ const text='雪'.repeat(64*1024),history=Array.from({length:1300},()=>({role:'user',text}));history.push({role:'assistant',text:''});pkg.agents[0].history=history;
+ history.at(-1).text='x'.repeat(AGENT_PACKAGE_MAX_BYTES-agentPackageJsonUtf8Bytes(pkg));
+ assert.equal(agentPackageJsonUtf8Bytes(pkg),AGENT_PACKAGE_MAX_BYTES);
+ const before=f.store.getConversation(f.chatId),key=randomUUID();
+ await assert.rejects(f.packageEngine.importAgent(f.project.id,f.chatId,pkg,{codex:'codex'},key),error=>error.statusCode===413&&/256 MiB/u.test(error.message));
+ assert.equal(f.store.listAgents(f.project.id).length,0);assert.equal(f.store.getProjectArtifacts(f.project.id).length,0);
+ assert.equal(f.store.getConversation(f.chatId).instructions,before.instructions);
+ const receipt=f.store.findAgentCreationOperation({projectId:f.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});
+ assert.equal(receipt.status,'rolled_back');assert.deepEqual(receipt.agentIds,[]);assert.deepEqual(receipt.artifactIds,[]);
 }));

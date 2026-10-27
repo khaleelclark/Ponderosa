@@ -8,12 +8,11 @@ const CANONICAL_ARTIFACT_REFERENCE = new RegExp(
 );
 const CANONICAL_ARTIFACT_ID_CHARACTER = /[A-Za-z0-9._:-]/u;
 
-function canonicalArtifactReferenceMatches(text: string): Array<{
+function* canonicalArtifactReferenceMatches(text: string): Generator<{
   reference: string;
   artifactId: string;
   index: number;
 }> {
-  const matches: Array<{ reference: string; artifactId: string; index: number }> = [];
   const matcher = new RegExp(CANONICAL_ARTIFACT_REFERENCE.source, CANONICAL_ARTIFACT_REFERENCE.flags);
   for (let match = matcher.exec(text); match; match = matcher.exec(text)) {
     const reference = match[0];
@@ -28,9 +27,8 @@ function canonicalArtifactReferenceMatches(text: string): Array<{
       }
       continue;
     }
-    matches.push({ reference, artifactId, index });
+    yield { reference, artifactId, index };
   }
-  return matches;
 }
 
 export function collectReachableArtifactIds(value: unknown, found = new Set<string>()): Set<string> {

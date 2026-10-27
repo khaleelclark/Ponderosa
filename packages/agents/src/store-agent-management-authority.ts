@@ -185,14 +185,21 @@ export class AgentManagementAuthority {
     const children = new Map<string, AgentDto[]>();
     for (const agent of projectAgents) {
       if (!agent.managerAgentId) continue;
-      children.set(agent.managerAgentId, [...(children.get(agent.managerAgentId) ?? []), agent]);
+      const siblings = children.get(agent.managerAgentId) ?? [];
+      siblings.push(agent);
+      children.set(agent.managerAgentId, siblings);
     }
     const ordered: AgentDto[] = [];
-    const visit = (agent: AgentDto) => {
+    const pending = [root];
+    const visited = new Set<string>();
+    while (pending.length) {
+      const agent = pending.pop()!;
+      if (visited.has(agent.id)) throw new Error("Agent organization contains a cycle");
+      visited.add(agent.id);
       ordered.push(agent);
-      for (const child of children.get(agent.id) ?? []) visit(child);
-    };
-    visit(root);
+      const descendants = children.get(agent.id) ?? [];
+      for (let index = descendants.length - 1; index >= 0; index--) pending.push(descendants[index]!);
+    }
     return ordered;
   }
 
