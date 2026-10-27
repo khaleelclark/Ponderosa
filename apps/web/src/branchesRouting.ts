@@ -2,7 +2,7 @@ import type {BranchContextDto} from "@ponderosa/core";
 import { parseRoute, navigationPreservesSettings, type Route } from './routing.js';
 import { routeToPath, type ProjectRoute } from './routeRegistry.js';
 
-export const branchTabs = ['workflow', 'executions', 'settings', 'chats'] as const;
+export const branchTabs = ['workflow', 'executions', 'chats', 'settings'] as const;
 export type BranchTab = typeof branchTabs[number];
 export type BranchGlobalView = 'general' | 'providers' | 'notifications' | 'activity' | 'profile' | 'usage' | 'status';
 export const branchSettingsSection=(view:BranchGlobalView):NonNullable<Extract<Route,{kind:'settings'}>['section']>=>view==='status'?'providers':view==='usage'?'activity':view;
@@ -15,7 +15,7 @@ export interface BranchRoute {
   workspace?: ProjectRoute;
   global?: BranchGlobalView;
   executionFilter?: string;
-  settingsSection?: 'variables';
+  settingsSection?: 'variables' | 'execution-controls';
 }
 
 /** The model draft stays in BranchesWorkspace; editor-local fields need its panel mounted. */
@@ -35,7 +35,7 @@ export function parseBranchRoute(search: string): BranchRoute {
   const workspace: Route | undefined = location ? parseRoute(location.pathname, location.search) : undefined;
   return {
     tab: tab === 'parameters' ? 'settings' : branchTabs.includes(tab as BranchTab) ? tab as BranchTab : executionId ? 'executions' : 'workflow',
-    ...(tab === 'parameters' || tab === 'settings' && query.get('section') === 'variables' ? {settingsSection:'variables' as const} : {}),
+    ...(tab === 'parameters' ? {settingsSection:'variables' as const} : tab === 'settings' && ['variables','execution-controls'].includes(query.get('section') ?? '') ? {settingsSection:query.get('section') as NonNullable<BranchRoute['settingsSection']>} : {}),
     ...(query.get('branch') ? { branchId: query.get('branch')! } : {}),
     ...(executionId ? { executionId } : {}),
     ...(query.get('createChat') ? { creationKey: query.get('createChat')! } : {}),

@@ -12,7 +12,7 @@ test('Branch header reuses ordered shared icon tabs and unpublished status witho
  assert.ok(html.includes('A long workflow name'),'Selected workflow name is present');assert.ok(html.includes('aria-label="Editing"'),'Dirty indication is accessible');
  assert.ok(!/aria-label="Review &amp; publish"|SaveOutlined/.test(html),'Publication has one canvas entry point');assert.ok(html.includes('Unpublished Changes'),'Editing tooltip explains unpublished changes');
  const names=[...html.matchAll(/role="tab"[^>]*>(.*?)<\/button>/g)].map(match=>match[1].replace(/<style[^>]*>[\s\S]*?<\/style>/g,'').replace(/<[^>]*>/g,''));
- assert.deepEqual(names,['Workflow','Chats','Executions','Settings']);
+ assert.deepEqual(names,['Workflow','Executions','Chats','Settings']);
  for(const tab of ['workflow','chats','executions','settings'])assert.ok(new RegExp(`id="branch-${tab}-tab"[^>]*aria-controls="branch-${tab}-panel"`).test(html),`Tab/panel association for ${tab}`);
  for(const tab of ['executions'])assert.ok(new RegExp(`disabled=""[^>]*id="branch-${tab}-tab"|id="branch-${tab}-tab"[^>]*disabled=""`).test(html),`Unpublished ${tab} remains disabled`);
  assert.ok(!/Ponderosa Branches|Build and operate|No changes to publish/.test(html),'No displaced product banner or duplicate actions');
@@ -256,7 +256,7 @@ test('workflow Settings sections load without parameter configuration and keep l
  const html=render(),labels=['Branch capabilities','Dependencies','Delete workflow'];
  assert.ok(labels.every(label=>html.includes(label)),'All workflow Settings sections must render while configuration is unavailable');
  assert.ok(labels.every((label,index)=>!index||html.indexOf(label)>html.indexOf(labels[index-1])),'Settings section order must remain capabilities, dependencies, delete');
- assert.ok(!html.includes('Workflow settings sections')&&!html.includes('Loading configuration'),'No nested navigation or unrelated configuration gate');
+ assert.ok(!html.includes('Workflow settings sections'),'No nested Settings navigation');assert.ok(html.indexOf('Loading configuration')>html.indexOf('Advanced local execution limits')&&html.indexOf('Loading configuration')<html.indexOf('Branch capabilities'),'Local limits load independently inside Execution Controls without gating the other sections');
  assert.ok(client.getQueryCache().find({queryKey:['branch-settings',branch.id]}),'The sole configuration editor stays mounted without blocking other Settings sections');
  client.setQueryData(['branch-lifecycle-summary',branch.id],{deleting:false,activeExecutions:0,chats:0,callers:[{id:'billing-workflow',name:'Billing workflow'}],updates:[],pendingRemoval:[]});
  const named=render();assert.ok(named.includes('Billing workflow')&&!named.includes('reports-alias'),'Called by must show the calling workflow name, never its alias for this target');
@@ -1118,7 +1118,11 @@ test('expanded Branch actions share the title row while ordinary frame defaults 
  assert.equal(grid.props.children[1].props.children[0].props.children[0].props.children.type,scope.Typography,'A desktop Branch narrowed by its sidebar keeps title space instead of reserving another decorative icon');
  const ordinary=render({...props,primaryActions:undefined}),ordinaryGrid=ordinary.props.children[0].props.children;
  assert.equal(ordinaryGrid.props.children[2].props.sx.gridRow.xs,2);assert.equal(ordinaryGrid.props.children[1].props.sx.overflow,'hidden');
- scope.useWorkspaceHeaderCollapse=()=>({collapsed:true,toggleCollapsed(){}});const collapsed=render({...props,statusBeforePrimaryActions:true});assert.equal(collapsed.props.primaryActions,props.primaryActions,'Collapsed and expanded Branch headers keep one usage destination contract');
+ scope.useWorkspaceHeaderCollapse=()=>({collapsed:true,toggleCollapsed(){}});const collapsed=render({...props,statusBeforePrimaryActions:true});assert.equal(collapsed.props.primaryActions,props.primaryActions,'Collapsed and expanded Branch headers keep one usage destination contract');assert.equal(collapsed.props.singleRow,false,'Ordinary defaults keep their existing compact layout');assert.equal(render({...props,collapsedSingleRow:true}).props.singleRow,true,'Branches explicitly opts into one collapsed row');
+ const compact=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='CompactWorkspaceHeader'),renderCompact=vm.runInNewContext(ts.transpile(`(${compact.getText(ast).replace(/^export /,'')})`,{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope);
+ const ordinaryCompact=renderCompact({...props,tabs:React.createElement('div')}),single=renderCompact({...props,tabs:React.createElement('div'),singleRow:true});
+ assert.match(ordinaryCompact.props.children.props.sx['@container (max-width: 40rem)'].gridTemplateAreas,/".*" "/,'Other consumers retain their current two-row narrow arrangement');
+ assert.equal(single.props.children.props.sx['@container (max-width: 40rem)'].gridTemplateAreas,undefined,'The Branch narrow override retains the single-row areas');assert.match(single.props.children.props.sx['@container (max-width: 40rem)'].gridTemplateColumns,/44px/,'A scrollable tab remains a full touch target');
 });
 
 
@@ -1375,6 +1379,78 @@ test('uncertain Save And Leave retries the original publication and stale comple
 test('workflow reload fences failures and fresh reads to their original owner and draft',async()=>{
  for(const change of ['owner','generation','revision']){const f=await discardActionFixture(),s=f.scope;f.load('reloadWorkflow');let reject;s.requestJson=()=>new Promise((_resolve,fail)=>{reject=fail});const pending=s.reloadWorkflow('owner');if(change==='owner')s.routeOwner.current={branchId:'other'};else if(change==='generation')s.selection.current++;else s.draftRevision.current='newer edit';reject(Error('Old reload failed'));await pending;assert.equal(s.error,'Unrelated failure',change);}
  const f=await discardActionFixture(),s=f.scope;s.pendingAdvanced.current=false;f.load('reloadWorkflow');let selected;s.select=async(branch,force,revision)=>{selected={branch,force,revision}};s.serverBranch={...s.serverBranch,versionId:'fresh-v3'};await s.reloadWorkflow('owner');assert.equal(selected.branch.versionId,'fresh-v3');assert.equal(selected.revision,s.draftRevision.current);assert.ok(f.requests.every(row=>row.cache==='no-store'));
+});
+
+async function workflowRunFixture(t,submit=async()=>({id:'accepted-run',branchId:'owner',state:'queued'})){
+ const f=await discardActionFixture(),s=f.scope,{createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url));
+ const React=require('react'),{renderToStaticMarkup}=require('react-dom/server'),{QueryClient,MutationObserver}=require('@tanstack/react-query'),{readFileSync}=await import('node:fs');
+ const {INLINE_TEXT_MAX_CODE_POINTS,normalizeCanonicalText,unicodeCodePointLength}=await import('../../packages/core/dist/index.js'),navigations=[],buttons=[],fields=[],dialogs=[];
+ Object.assign(s,{React,INLINE_TEXT_MAX_CODE_POINTS,normalizeCanonicalText,unicodeCodePointLength,selectedBranch:{error:null},lifecycle:{data:{deleting:false}},runOpen:false,input:'  First line\r\nSecond line 😀  ',occurrenceKey:'original-run-intent',navigate:next=>{navigations.push(next);return true},isCurrentWorkflowResponse:(a,b)=>a.branchId===b.branchId&&a.selection===b.selection});
+ let intent=0;s.createClientId=()=>`new-run-intent-${++intent}`;const readWorkflow=s.requestJson;s.currentDraft.current=s.draft;s.requestJson=async(path,init)=>{if(!init?.body)return readWorkflow(path,init);f.requests.push({path,body:JSON.parse(init.body)});return submit()};
+ const client=new QueryClient({defaultOptions:{mutations:{retry:false,gcTime:Infinity}}});let observer;
+ s.useMutation=options=>{observer=new MutationObserver(client,options);return observer.getCurrentResult()};f.load('run');const unsubscribe=observer.subscribe(()=>{});t.after(()=>{unsubscribe();client.clear()});
+ const primitive=({children})=>React.createElement('div',null,children),mui=Object.fromEntries(['Alert','DialogActions','DialogContent','DialogTitle','Stack'].map(name=>[name,primitive]));
+ mui.Alert=props=>React.createElement('div',null,props.children,props.action);mui.Dialog=props=>{dialogs.push(props);return props.open?React.createElement('section',null,props.children):null};mui.Button=props=>{buttons.push(props);return React.createElement('button',{disabled:props.disabled},props.children)};mui.TextField=props=>{fields.push(props);return null};
+ const exports={};f.vm.runInNewContext(f.ts.transpile(readFileSync(new URL('../../apps/web/src/components/ConfirmationDialogs.tsx',import.meta.url),'utf8'),{module:f.ts.ModuleKind.CommonJS,target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.React}),{exports,React,require:name=>name==='@mui/material'?mui:require(name)});
+ Object.assign(s,mui,{ConfirmDialog:exports.ConfirmDialog});let dialog;
+ function find(node){if(f.ts.isJsxElement(node)&&node.openingElement.tagName.getText(f.file)==='ConfirmDialog'&&node.openingElement.attributes.properties.some(a=>a.name?.getText(f.file)==='onConfirm'&&a.initializer?.expression?.getText(f.file)==='submitRun'))dialog=node.getText(f.file);f.ts.forEachChild(node,find)}find(f.file);assert.ok(dialog,'Run uses the existing shared confirmation shell');
+ const render=()=>{s.route=s.routeOwner.current;s.run={...observer.getCurrentResult(),mutateAsync:observer.mutate.bind(observer)};for(const name of ['once','runUnconfirmed','runInputError','runUnavailable','openRun','submitRun'])f.load(name);buttons.length=0;fields.length=0;dialogs.length=0;return renderToStaticMarkup(f.vm.runInContext(f.ts.transpile('('+dialog+')',{target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.React}),s))};
+ return {...f,navigations,render,dialogs,button:label=>buttons.find(button=>button.children===label),field:()=>fields.find(field=>field.label==='Run Input'),observer};
+}
+
+test('header Run uses the published workflow without changing its schedule, fences duplicate clicks and opens the accepted run',async t=>{
+ let finish;const f=await workflowRunFixture(t,()=>new Promise(resolve=>{finish=resolve})),s=f.scope;s.draft.definition.trigger={kind:'schedule',configRef:'schedule'};const trigger=JSON.stringify(s.draft.definition.trigger),key=s.occurrenceKey;
+ f.render();s.openRun();f.render();assert.equal(f.dialogs[0].maxWidth,'sm');assert.equal(f.button('Run Published Workflow').disabled,false);assert.match(f.render(),/unpublished edits are not included/);
+ const click=f.button('Run Published Workflow').onClick,pending=click();assert.equal(click(),undefined);f.dialogs[0].onClose({},'escapeKeyDown');assert.equal(s.runOpen,true,'The shared shell fences immediate dismissal before mutation pending renders');
+ await new Promise(resolve=>setImmediate(resolve));f.render();assert.equal(f.button('Submitting…').disabled,true);assert.equal(f.button('Cancel').disabled,true);assert.equal(f.field().disabled,true);assert.equal(f.requests.length,1);
+ assert.deepEqual(JSON.parse(JSON.stringify(f.requests[0])),{path:'/api/branches/owner/executions',body:{occurrenceKey:key,input:'  First line\r\nSecond line 😀  '}});assert.equal(JSON.stringify(s.draft.definition.trigger),trigger,'Run never changes the saved trigger or publishes the draft');
+ finish({id:'accepted-run',branchId:'owner',state:'queued'});await pending;f.render();assert.deepEqual(JSON.parse(JSON.stringify(f.navigations)),[{branchId:'owner',tab:'executions',executionId:'accepted-run'}]);assert.equal(s.runOpen,false);assert.equal(f.notices.at(-1).message,'Run Accepted');assert.equal(s.occurrenceKey,key,'Feedback settlement does not rotate or reset mutation identity');
+ s.openRun();f.render();assert.notEqual(s.occurrenceKey,key);assert.equal(f.button('Run Published Workflow').disabled,false,'Another run intent is available while the accepted run remains queued');
+});
+
+test('uncertain Run submissions freeze raw input and retry the exact wire intent even after disable or publication reload',async t=>{
+ let count=0;const f=await workflowRunFixture(t,async()=>{if(++count===1)throw Error('Controlled response loss');return {id:'accepted-run',branchId:'owner'}}),s=f.scope;
+ f.render();s.openRun();f.render();await assert.rejects(f.button('Run Published Workflow').onClick(),/response loss/);f.render();assert.equal(f.field().disabled,true);assert.match(f.render(),/submission outcome is not confirmed/);assert.equal(f.button('Retry Run Submission').disabled,false);
+ const key=s.occurrenceKey,input=s.input;s.current={...s.current,enabled:false,versionId:undefined};s.selection.current++;s.routeOwner.current={branchId:'owner',tab:'settings',settingsSection:'execution-controls'};f.render();s.openRun();f.render();assert.equal(s.occurrenceKey,key);assert.equal(s.input,input);assert.equal(f.button('Retry Run Submission').disabled,false,'An exact replay may recover an already accepted run after availability changes');
+ await f.button('Retry Run Submission').onClick();assert.deepEqual(f.requests[1],f.requests[0]);assert.deepEqual(JSON.parse(JSON.stringify(f.navigations)),[{branchId:'owner',tab:'executions',executionId:'accepted-run'}]);
+});
+
+test('same-Branch published reload preserves uncertain run input, key and mutation while a new owner clears only its own form',async t=>{
+ const f=await workflowRunFixture(t,async()=>{throw Error('Controlled lost response')}),s=f.scope;f.render();s.openRun();f.render();await assert.rejects(f.button('Run Published Workflow').onClick(),/lost response/);f.render();
+ const input=s.input,key=s.occurrenceKey,attempt=s.run.variables;f.load('select');s.serverBranch={...s.serverBranch,versionId:'v2'};await s.select(s.serverBranch,true);f.render();
+ assert.equal(s.input,input);assert.equal(s.occurrenceKey,key);assert.equal(s.run.variables,attempt);assert.equal(s.runUnconfirmed,true);assert.ok(!f.resets.includes('run'),'Background reload must not discard a possibly accepted intent');
+ await s.select({...s.serverBranch,id:'another-owner'},true);f.render();assert.equal(s.input,'');assert.notEqual(s.occurrenceKey,key);assert.equal(s.runOpen,false);assert.equal(s.run.isError,false);
+});
+
+test('late Run acceptance cannot replace another owner, global view or selected run',async t=>{
+ for(const change of ['owner','global','selected-run','generation']){
+  let finish;const f=await workflowRunFixture(t,()=>new Promise(resolve=>{finish=resolve})),s=f.scope;f.render();s.openRun();f.render();const pending=f.button('Run Published Workflow').onClick();await new Promise(resolve=>setImmediate(resolve));
+  if(change==='generation')s.selection.current++;else s.routeOwner.current={...s.routeOwner.current,...(change==='owner'?{branchId:'other'}:change==='global'?{global:'providers'}:{tab:'executions',executionId:'chosen-run'})};
+  finish({id:'late-run',branchId:'owner'});await pending;assert.equal(f.navigations.length,0,change);assert.equal(f.notices.length,0,change);
+ }
+});
+
+test('Run input stays raw, validates canonical code points and exposes unpublished/disabled guidance without submitting',async t=>{
+ const f=await workflowRunFixture(t),s=f.scope;f.render();s.openRun();f.render();f.field().onChange({target:{value:'😀'.repeat(10_001)}});f.render();assert.equal(f.button('Run Published Workflow').disabled,true);assert.match(f.field().helperText,/10,000/);assert.equal(s.submitRun(),undefined);assert.equal(f.requests.length,0);
+ s.input='e\u0301'.repeat(10_000);f.render();assert.equal(f.field().error,false,'Validation uses the existing server normalization contract');
+ s.current={...s.current,versionId:undefined};f.render();assert.match(f.render(),/Save Workflow before running/);assert.equal(f.button('Run Workflow').disabled,true);assert.equal(f.requests.length,0);
+ s.current={...s.current,versionId:'v1',enabled:false};f.render();assert.match(f.render(),/Enable it in Workflow trigger settings/);assert.equal(f.button('Run Published Workflow').disabled,true);f.button('Open Workflow').onClick();assert.equal(s.runOpen,false);
+});
+
+test('Branch tabs and execution-control deep links share canonical semantic order',async()=>{
+ const {branchTabs}=await import('../../apps/web/src/branchesRouting.ts');assert.deepEqual([...branchTabs],['workflow','executions','chats','settings']);
+ const route={branchId:'called-workflow',tab:'settings',settingsSection:'execution-controls'};assert.deepEqual(parseBranchRoute(new URL(branchRoutePath(route),'https://example.test').search),route);
+ assert.equal(parseBranchRoute('?branch=b&tab=workflow&section=execution-controls').settingsSection,undefined);
+});
+
+test('every Branch tab shares a title-adjacent compact Run control with optional defaults for other callers',()=>{
+ let opened=0;const props={name:'An unusually long workflow title',published:true,dirty:true,executionCount:0,onTab(){},onExport(){},onUpdate(){},onRename(){},onRun(){opened++}};
+ for(const tab of ['workflow','executions','chats','settings']){
+  const element=BranchWorkspaceHeader({...props,tab}),frame=element.props.children,status=frame.props.status,run=status.props.children[3].props.children.props.children;
+  assert.equal(frame.props.collapsedSingleRow,true);assert.equal(run.props['aria-label'],'Run Published Workflow');assert.equal(run.props.sx.minWidth,44);assert.equal(run.props.sx.minHeight,44);assert.equal(run.props.sx['@container (max-width: 40rem)'].width,44);run.props.onClick();
+  const html=renderBranchHeader({...props,tab});assert.match(html,/aria-label="Run Published Workflow"/);assert.equal((html.match(/data-testid="PlayArrowOutlinedIcon"/g)??[]).length,1);
+ }
+ assert.equal(opened,4);const pending=BranchWorkspaceHeader({...props,tab:'workflow',runPending:true}).props.children.props.status.props.children[3].props.children.props.children;assert.equal(pending.props.disabled,true);
 });
 
 // Exercise the real intervention fields, mutation and shared dialog shell.
