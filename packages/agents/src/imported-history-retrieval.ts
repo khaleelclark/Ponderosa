@@ -78,7 +78,7 @@ async function verifyArchive(input: ImportedHistoryRetrievalInput, selected: rea
     while (position >= buffer.length && !eof) await refill();
     return buffer[position];
   };
-  const whitespace = async () => { while (/\s/u.test((await peek()) ?? "x")) position++; };
+  const whitespace = async () => { while (/[ \t\r\n]/u.test((await peek()) ?? "x")) position++; };
   const expect = async (character: string) => { await whitespace(); if (await peek() !== character) throw new CompactionHistoryQueryError("invalid canonical imported history grammar"); position++; };
   const value = async (): Promise<unknown> => {
     await whitespace(); let text = "", quoted = false, escape = false, depth = 0, started = false;
@@ -98,7 +98,7 @@ async function verifyArchive(input: ImportedHistoryRetrievalInput, selected: rea
         } else if (character === '"') quoted = true;
         else if (character === "{" || character === "[") depth++;
         else if (character === "}" || character === "]") { if (!depth) break; if (--depth === 0) { position++; break; } }
-        else if (!depth && (character === "," || /\s/u.test(character))) break;
+        else if (!depth && (character === "," || /[ \t\r\n]/u.test(character))) break;
       }
       text += buffer.slice(start, position);
       if (Buffer.byteLength(text) > MAX_JSON_VALUE_BYTES) throw new CompactionHistoryQueryError("canonical imported history value exceeds the existing retained-record bound");

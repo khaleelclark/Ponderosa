@@ -117,11 +117,13 @@ test('complete retained Guidance tails are repaired only from the exact legacy p
 }));
 
 test('canonical grammar, type and trailing-byte failures remain explicit refusals',t=>fixture(t,async f=>{
- f.store.setImportedHistory(f.agent.id,'Grammar source',[{role:'user',text:'GRAMMAR_ORCHARD'}]);const original=await readFile(f.file,'utf8');
- for(const invalid of [original.slice(0,-3),original+' trailing',original.replace('"messages": [','"messages": [false,'),original.replace('"source":','"unknown":')]){
+ const text='GRAMMAR_ORCHARD\u00a0valid string data';
+ f.store.setImportedHistory(f.agent.id,'Grammar source',[{role:'user',text}]);const original=await readFile(f.file,'utf8');
+ for(const invalid of [original.slice(0,-3),original+' trailing',original.replace('"messages": [','"messages": [false,'),original.replace('"source":','"unknown":'),original.replace('"source":','"source"\u00a0:')]){
   await writeFile(f.file,invalid);await assert.rejects(f.store.searchImportedHistory({...f.input(),query:'GRAMMAR_ORCHARD'}),/canonical|imported|retained/);
  }
  await writeFile(f.file,original);
+ assert.equal(await readAll(f,(await searchAll(f,'GRAMMAR_ORCHARD')).hits[0].reference),text,'Non-JSON whitespace remains valid inside authored strings');
 }));
 
 test('the existing history route authorizes imported-only Runs and rechecks scope after asynchronous proof',t=>fixture(t,async f=>{
