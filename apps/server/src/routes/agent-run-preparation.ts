@@ -4,6 +4,7 @@ import { copyFile, mkdir, writeFile } from "@ponderosa/native-host/fs/promises";
 import path from "node:path";
 import { providerInputBudget, estimateProviderInput } from "../context-rollover-pressure.js";
 import { readProviderContextUsage, readProviderSessionIdentifier } from "../provider-session-success.js";
+import { projectProviderContextUsage } from "../provider-success-projection.js";
 import {
   ASSET_MEDIA_TYPES,
   type AgentDto,
@@ -20,7 +21,7 @@ import {
   unicodeCodePointLength,
 } from "@ponderosa/core";
 import { attachmentsDir } from "@ponderosa/agents";
-import { boundedFrozenSeedHistory, communicationSeedProvenance } from "@ponderosa/core/seed-history";
+import { boundedFrozenSeedHistory, communicationSeedProvenance, renderSeedHistoryMessage } from "@ponderosa/core/seed-history";
 import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
 import { renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
@@ -38,6 +39,7 @@ import {
   continuationPrompt,
   contextSection,
   conversationPrompt,
+  renderConversationContextMessage,
   individualChatPrompt,
   mergeScopedContextSources,
   runtimeSystemPrompt,
@@ -291,7 +293,6 @@ export async function prepareAgentRun(
   importedArchiveUnchanged();
   const secondaryPrivateHistory = mergeScopedContextSources(
     [agentPrivateHistoryPage, importedHistoryPage],
-    Number.POSITIVE_INFINITY,
   );
   const currentChatIds = new Set(currentChatPrivateHistoryPage.items.map((message) =>
     message.communicationEventId ?? message.id));
@@ -657,7 +658,7 @@ export async function prepareAgentRun(
   // Project context (including pinned/published generated files) remains in
   // the catalog for later accepted-session Runs, but must not widen this
   // candidate or make its exact manifest fail closed before provider startup.
-  const newlySubmittedContextArtifacts = replacementCandidateRollover
+  const newlySubmittedContextArtifacts = replacementCandidateRollover || ownsFrozenHandoff
     ? []
     : contextArtifacts.filter((artifact) => !retainedSessionArtifactIds.includes(artifact.id));
   const contextArtifactHistory = newlySubmittedContextArtifacts.length ? [{
@@ -899,11 +900,24 @@ export async function prepareAgentRun(
   const observedUsage = reusablePersistentRuntime && resumeSessionId &&
       readProviderSessionIdentifier(reusablePersistentRuntime.session) === resumeSessionId
     ? readProviderContextUsage(reusablePersistentRuntime.session) : undefined;
-  const currentBudget = providerInputBudget(workspacePreferences, observedUsage, {
+  const acceptedUsage = !observedUsage && resumeSessionId
+    ? store.acceptedProviderSessionContextUsage(agent.id) : undefined;
+  const { type: _usageType, providerSessionId: _observedSession, ...durableUsage } = acceptedUsage?.usage ?? {};
+  const budgetUsage = observedUsage ?? (acceptedUsage ? projectProviderContextUsage(durableUsage) : undefined);
+  const occupancyObservation = observedUsage && resumeSessionId ? {
+    source: "live_session" as const, providerSessionId: resumeSessionId, sampledAt: new Date().toISOString(),
+    ...(observedUsage.requestOutputIncluded === undefined ? {} : { requestOutputIncluded: observedUsage.requestOutputIncluded }),
+  } : acceptedUsage ? {
+    source: "accepted_run" as const, providerSessionId: acceptedUsage.usage.providerSessionId,
+    observedAt: acceptedUsage.observedAt, executionId: acceptedUsage.executionId,
+    ...(acceptedUsage.usage.requestOutputIncluded === undefined ? {} : { requestOutputIncluded: acceptedUsage.usage.requestOutputIncluded }),
+  } : undefined;
+  const currentBudget = providerInputBudget(workspacePreferences, budgetUsage, {
     resumeSessionId, replacementLowWaterMark: replacementCandidateRollover?.lowWaterMark,
-    handoff: ownsFrozenHandoff,
+    handoff: ownsFrozenHandoff, occupancyObservation,
+    postObservationUtf8Bytes: acceptedUsage?.postObservationUtf8Bytes,
   });
-  const freshBudget = providerInputBudget(workspacePreferences, observedUsage, {
+  const freshBudget = providerInputBudget(workspacePreferences, budgetUsage, {
     replacementLowWaterMark: replacementCandidateRollover?.lowWaterMark,
   });
   const omissionState = () => {
@@ -944,10 +958,13 @@ export async function prepareAgentRun(
     return appendReadableArtifactReferences({ prompt: promptText, artifactIds: deliveredArtifactIds,
       projectId: project.id, agentId: agent.id, store, assets });
   };
+  // The near-full original generation receives only its required handoff.
+  // Additional optional context cannot consume its remaining response window.
+  if (ownsFrozenHandoff) { roomMessages = []; initialBroadcastContext = []; }
   const estimate = (fresh: boolean, exact: string) => estimateProviderInput(
     fresh ? freshBudget : currentBudget, systemPrompt, availableRuntimeTools, exact,
   );
-  const overflow = () => new Error("Required provider input exceeds the available context policy after response headroom; instructions and canonical history were retained. Compact context or reduce the required input before retrying.");
+  const overflow = () => Object.assign(new Error("Required provider input exceeds the available context policy after response headroom; instructions and canonical history were retained. Compact context or reduce the required input before retrying."), { statusCode: 413 });
   // Reserve the complete required packet first. History uses only its remaining
   // allowance, including provenance, JSON escaping, tools and outer wrappers.
   const originalCandidates = boundedHistoryCandidates;
@@ -966,19 +983,39 @@ export async function prepareAgentRun(
   let freshPrompt = await compilePrompt(true, omissionState().fresh);
   let freshExactProviderInput = renderSeedPrompt(seedHistory, freshPrompt);
   let frozenAllowance = freshBudget.inputCeilingTokens - requiredFreshEstimate.estimatedInputTokens;
+  const contextNames = new Map(contextAgents.map(member => [member.id, member.title]));
+  const serializedBytes = (value: string) => Buffer.byteLength(JSON.stringify(value), "utf8");
+  const contextBytes = (message: ConversationMessageDto, broadcast: boolean) => {
+    const rendered = broadcast ? sharedBroadcastContextPrompt([message], conversation?.agents ?? [])
+      : renderConversationContextMessage(message, contextNames);
+    return serializedBytes(broadcast ? rendered.slice(rendered.indexOf("\n") + 1) : rendered);
+  };
+  const trimContext = (messages: ConversationMessageDto[], excess: number, fifo: boolean, broadcast: boolean) => {
+    // Remove a measured batch before rerendering. Never repeatedly rebuild the
+    // entire packet for each tiny message in a large optional tail.
+    while (messages.length > (fifo ? 1 : 0) && excess > 0) {
+      const message = fifo ? messages.pop()! : messages.shift()!;
+      excess -= contextBytes(message, broadcast);
+    }
+  };
   while (estimate(true, freshExactProviderInput).estimatedInputTokens > freshBudget.inputCeilingTokens) {
-    if (freshBroadcastContext.length) freshBroadcastContext.shift();
-    else if (freshRoomMessages.length) freshRoomMessages.shift();
+    const excess = estimate(true, freshExactProviderInput).estimatedInputTokens - freshBudget.inputCeilingTokens;
+    if (freshBroadcastContext.length) trimContext(freshBroadcastContext, excess, false, true);
+    else if (freshRoomMessages.length) trimContext(freshRoomMessages, excess, false, false);
     else if (frozenRolloverTail) {
-      const excess = estimate(true, freshExactProviderInput).estimatedInputTokens - freshBudget.inputCeilingTokens;
       frozenAllowance -= Math.max(1, excess);
       if (frozenAllowance <= 0) throw overflow();
       boundedHistoryCandidates = boundedFrozenSeedHistory(fullHistory, frozenAllowance);
     } else if (boundedHistoryCandidates.length) {
       // Current Chat continuity outranks other Agent-private/imported history.
-      const secondary = boundedHistoryCandidates.findIndex(message =>
-        !message.sourceCommunicationEventId || !currentChatIds.has(message.sourceCommunicationEventId));
-      boundedHistoryCandidates.splice(secondary < 0 ? 0 : secondary, 1);
+      let remainingExcess = excess;
+      while (boundedHistoryCandidates.length && remainingExcess > 0) {
+        const secondary = boundedHistoryCandidates.findIndex(message =>
+          !contextArtifactHistory.includes(message) &&
+          (!message.sourceCommunicationEventId || !currentChatIds.has(message.sourceCommunicationEventId)));
+        const [removed] = boundedHistoryCandidates.splice(secondary < 0 ? 0 : secondary, 1);
+        remainingExcess -= serializedBytes(renderSeedHistoryMessage(removed!));
+      }
     } else throw overflow();
     updateSeed();
     freshPrompt = await compilePrompt(true, true);
@@ -996,13 +1033,15 @@ export async function prepareAgentRun(
     const messages = initialBroadcastContext.length ? initialBroadcastContext : roomMessages;
     const fifo = initialBroadcastContext.length ? broadcastIncremental : incremental;
     if (!messages.length) throw overflow();
-    if (fifo && messages.length === 1 && !clippedFifoHead) {
+    if (fifo && messages.length === 1 && !clippedFifoHead &&
+        messages[0]!.communicationEventId && canonicalRetrievalAvailable) {
       // Preserve FIFO cursor authority while disclosing the oversized head. Its
       // exact remainder stays immediately readable through ponderosa_history.
-      messages[0] = { ...messages[0]!, text: "[Durable history omitted from this packet; read the complete message with ponderosa_history.]" };
+      messages[0] = { ...messages[0]!, text: `[Durable history omitted from this packet. Read the complete message with ponderosa_history({action:"read",communicationEventId:${JSON.stringify(messages[0]!.communicationEventId)},before:0,after:0}); follow every returned continuation.]` };
       clippedFifoHead = true;
-    } else if (fifo) messages.pop();
-    else messages.shift();
+    } else if (fifo && messages.length === 1) messages.pop();
+    else trimContext(messages, estimate(false, exactProviderInput).estimatedInputTokens - currentBudget.inputCeilingTokens,
+      fifo, messages === initialBroadcastContext);
     prompt = await compilePrompt(false, true);
     exactProviderInput = renderSeedPrompt(contextArtifactHistory, prompt);
   }
@@ -1230,6 +1269,10 @@ export async function prepareAgentRun(
   if (recoveryProviderInput && (recoveryProviderInput.exactSystemPrompt !== systemPrompt ||
       recoveryPolicyHash !== policySnapshotHash)) {
     throw new Error("context rollover recovery provider contract changed since the exact packet was committed");
+  }
+  if (recoveryProviderInput && estimate(true, recoveryProviderInput.exactPrompt!).estimatedInputTokens > freshBudget.inputCeilingTokens) {
+    // Immutable recovery evidence is never rebudgeted or silently clipped.
+    throw Object.assign(new Error("The exact saved recovery input exceeds the current context policy after response headroom; the accepted packet and recovery authority were retained."), { statusCode: 413 });
   }
   const effectiveSeedHistory = recoveryProviderInput ? [] : seedHistory;
   // Resumed adapters receive no seed history. Submit the same rendered

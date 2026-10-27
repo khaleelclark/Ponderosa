@@ -62,7 +62,6 @@ type ScopedContextMessage = MessageDto | ConversationMessageDto;
 
 function mergeScopedContextSources(
   sources: Array<{ items: ScopedContextMessage[]; hasMore: boolean }>,
-  limit: number,
 ): { newest: ScopedContextMessage[]; hasMore: boolean } {
   const deduped = new Map<string, ScopedContextMessage>();
   for (const source of sources) for (const message of source.items) {
@@ -73,8 +72,8 @@ function mergeScopedContextSources(
   const ordered = [...deduped.values()].sort((left, right) =>
     right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
   return {
-    newest: ordered.slice(0, limit),
-    hasMore: sources.some((source) => source.hasMore) || ordered.length > limit,
+    newest: ordered,
+    hasMore: sources.some((source) => source.hasMore),
   };
 }
 
@@ -146,6 +145,18 @@ export function runtimeSystemPrompt(
  * response contract. This is intentionally part of the next user prompt (rather
  * than engine-specific configuration) so new and resumed agents behave alike.
  */
+function renderConversationContextMessage(message: ConversationMessageDto, names: ReadonlyMap<string, string>): string {
+  const speaker = message.authorAgentId
+    ? names.get(message.authorAgentId) ?? "Agent"
+    : message.role === "user"
+      ? "Manager"
+      : "Team";
+  const document = message.document ? ` [document: ${message.document.title}; id: ${message.document.id}]` : "";
+  const artifacts = message.artifactIds?.map((id) => ` [artifact: ponderosa://artifact/${id}]`).join("") ?? "";
+  const content = `${message.text}${document}${artifacts}`.trim();
+  return `${speaker}: ${content} [message id: ${message.id}]`;
+}
+
 function conversationPrompt(
   messages: ConversationMessageDto[],
   agents: AgentDto[],
@@ -157,19 +168,7 @@ function conversationPrompt(
   routingMetadata?: string,
 ): string {
   const names = new Map(agents.map((agent) => [agent.id, agent.title]));
-  const transcript = messages
-    .map((message) => {
-      const speaker = message.authorAgentId
-        ? names.get(message.authorAgentId) ?? "Agent"
-        : message.role === "user"
-          ? "Manager"
-          : "Team";
-      const document = message.document ? ` [document: ${message.document.title}; id: ${message.document.id}]` : "";
-      const artifacts = message.artifactIds?.map((id) => ` [artifact: ponderosa://artifact/${id}]`).join("") ?? "";
-      const content = `${message.text}${document}${artifacts}`.trim();
-      return `${speaker}: ${content} [message id: ${message.id}]`;
-    })
-    .join("\n");
+  const transcript = messages.map(message => renderConversationContextMessage(message, names)).join("\n");
 
   const staticInstructions = incremental ? [] : [
     "[PROJECT CHAT TURN | HOST-PROVIDED DATA]",
@@ -222,6 +221,7 @@ export {
   contextSection,
   continuationPrompt,
   conversationPrompt,
+  renderConversationContextMessage,
   individualChatPrompt,
   managerRelationshipPrompt,
   mergeScopedContextSources,

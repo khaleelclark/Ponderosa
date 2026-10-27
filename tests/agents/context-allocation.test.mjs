@@ -163,3 +163,23 @@ test('complete input accounting distinguishes context policy, verified capacity 
   const replacement = providerInputBudget(policy, usage, { replacementLowWaterMark: 50000 });
   assert.equal(replacement.inputCeilingTokens, 49999);
 });
+
+
+test('near-full handoff accounts for its real remaining window without inventing unknown capacity', async () => {
+  const { providerInputBudget, estimateProviderInput } = await import('../../apps/server/dist/context-rollover-pressure.js');
+  const policy = { contextRolloverTokens: 150000, contextRolloverWindowFraction: 0.7 };
+  const live = { usedTokens: 160000, windowTokens: 200000, providerSessionGeneration: 'handoff' };
+  const known = estimateProviderInput(providerInputBudget(policy, live, { resumeSessionId: 'handoff', handoff: true }),
+    'Retained instructions', [{ name: 'retained_tools' }], 'Write the required canonical handoff');
+  assert.equal(known.occupancyTokens, 160000);
+  assert.equal(known.responseHeadroomBasis, 'handoff_remaining_window');
+  assert.equal(known.responseHeadroomTokens, 200000 - known.estimatedInputTokens);
+  assert.ok(known.responseHeadroomTokens > 0);
+  assert.ok(known.estimatedInputTokens > 140000 && known.estimatedInputTokens < 200000);
+  const unknown = estimateProviderInput(providerInputBudget(policy,
+    { usedTokens: 160000, providerSessionGeneration: 'handoff' }, { resumeSessionId: 'handoff', handoff: true }),
+    'Retained instructions', [], 'Write the required canonical handoff');
+  assert.equal(unknown.windowTokens, undefined);
+  assert.equal(unknown.inputCeilingTokens + unknown.responseHeadroomTokens, 150000);
+  assert.ok(unknown.estimatedInputTokens > unknown.inputCeilingTokens);
+});

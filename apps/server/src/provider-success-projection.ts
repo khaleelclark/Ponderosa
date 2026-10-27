@@ -625,6 +625,7 @@ export interface ProjectedProviderContextUsage {
   windowTokens?: number;
   aggregateTokens?: number;
   providerSessionGeneration?: string;
+  requestOutputIncluded?: boolean;
 }
 
 /** Copy a synchronous session usage snapshot before rollover decisions. */
@@ -632,12 +633,13 @@ export function projectProviderContextUsage(value: unknown): ProjectedProviderCo
   if (value === undefined) return undefined;
   const budget = new ProjectionBudget("context_usage");
   const record = dataRecord(value, [
-    "usedTokens", "windowTokens", "aggregateTokens", "providerSessionGeneration",
+    "usedTokens", "windowTokens", "aggregateTokens", "providerSessionGeneration", "requestOutputIncluded",
   ], "context_usage", budget, 0);
   const optionalTokenCount = (key: "windowTokens" | "aggregateTokens"): number | undefined =>
     record.has(key) && record.get(key) !== undefined
       ? finiteNumber(record, key, 0, Number.MAX_SAFE_INTEGER, "context_usage", budget, 1)
       : undefined;
+  const requestOutputIncluded = optionalBoolean(record, "requestOutputIncluded", "context_usage", budget, 1);
   const windowTokens = optionalTokenCount("windowTokens");
   const aggregateTokens = optionalTokenCount("aggregateTokens");
   const providerSessionGeneration = optionalIdentifierString(
@@ -660,6 +662,7 @@ export function projectProviderContextUsage(value: unknown): ProjectedProviderCo
     ...(windowTokens === undefined ? {} : { windowTokens }),
     ...(aggregateTokens === undefined ? {} : { aggregateTokens }),
     ...(providerSessionGeneration === undefined ? {} : { providerSessionGeneration }),
+    ...(requestOutputIncluded === undefined ? {} : { requestOutputIncluded }),
   };
 }
 

@@ -96,3 +96,31 @@ test('Codex occupancy and capacity observations stay with their exact provider t
   assert.equal(session.contextUsage().usedTokens, 1200);
   assert.equal(observed, 1);
 });
+
+
+test('Claude context includes actual request-local output while missing output stays an explicit partial checkpoint', async () => {
+  const { ClaudeContextUsage } = await import('../../packages/engines/dist/claude-context-usage.js');
+  const { projectAgentEvent } = await import('../../packages/engines/dist/agent-event-projection.js');
+  const { projectProviderContextUsage } = await import('../../apps/server/dist/provider-success-projection.js');
+  const observations = new ClaudeContextUsage('owned-claude-generation');
+  observations.beginTurn('submission');
+  observations.observe({ type: 'user', uuid: 'submission', session_id: 'owned-claude-generation', parent_tool_use_id: null, message: { role: 'user' } });
+  const assistant = (id, usage) => ({ type: 'assistant', session_id: 'owned-claude-generation', parent_tool_use_id: null,
+    message: { role: 'assistant', id, model: 'fixture', usage } });
+  const usage = { input_tokens: 10, cache_read_input_tokens: 100, cache_creation_input_tokens: 20, output_tokens: 30 };
+  assert.equal(observations.observe({ type: 'result', session_id: 'owned-claude-generation', usage: { input_tokens: 900000, output_tokens: 900000 } }), undefined);
+  const measured = observations.observe(assistant('request-one', usage));
+  assert.equal(measured.usedTokens, 160); assert.equal(measured.requestOutputIncluded, true);
+  assert.equal(projectAgentEvent(measured).requestOutputIncluded, true);
+  assert.deepEqual(projectProviderContextUsage(observations.contextUsage()), {
+    usedTokens: 160, providerSessionGeneration: 'owned-claude-generation', requestOutputIncluded: true,
+  });
+  assert.equal(observations.observe(assistant('request-one', { ...usage, output_tokens: 99999 })), undefined, 'Replayed request cannot change occupancy');
+  const partial = observations.observe(assistant('request-two', { input_tokens: 11, cache_read_input_tokens: 101, cache_creation_input_tokens: 21 }));
+  assert.equal(partial.usedTokens, 133); assert.equal(partial.requestOutputIncluded, false);
+  assert.equal(observations.contextUsage().requestOutputIncluded, false);
+  for (const output_tokens of [-1, 1.5, '30', Number.POSITIVE_INFINITY]) {
+    assert.equal(observations.observe(assistant('bad-' + output_tokens, { ...usage, output_tokens })), undefined);
+  }
+  assert.equal(observations.contextUsage().usedTokens, 133);
+});

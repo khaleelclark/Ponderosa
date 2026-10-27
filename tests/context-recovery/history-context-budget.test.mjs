@@ -84,8 +84,9 @@ function budget(packet) {
   return value;
 }
 
-async function finish(f, agent, session) {
-  f.ok(await f.tool(session, 'ponderosa_message', { text: 'Controlled context-budget task complete' }));
+async function finish(f, agent, session, steeringInjectionId) {
+  f.ok(await f.tool(session, 'ponderosa_message', { text: 'Controlled context-budget task complete',
+    ...(steeringInjectionId ? { steeringInjectionId } : {}) }));
   session.finish();
   await until(() => !new CoordinationV3Store(f.store.sqlite).activeAgentRun(agent.id), 'exact accepted Run settles');
 }
@@ -192,21 +193,23 @@ test('unknown over-policy occupancy rejects required input before provider dispa
   const session = await f.hold(agent.id), generation = session.engineAgentId;
   const packet = accepted(f.store, agent.id), frozen = JSON.stringify(packet);
   await finish(f, agent, session);
-  const before = (await f.detail(agent.id)).runs.map(run => run.id), turnsBefore = f.turns.length;
+  const before = new Set(f.store.sqlite.prepare('SELECT id FROM scheduler_runs WHERE agent_id=?').all(agent.id).map(row => row.id));
+  const turnsBefore = f.turns.length;
   f.usage.set(agent.id, { usedTokens: 160000, aggregateTokens: 900000, providerSessionGeneration: generation });
   await f.send(agent.id, 'Required work must not silently discard or replay the original context.');
-  const detail = await until(async () => {
-    const current = await f.detail(agent.id), runs = current.runs.filter(run => !before.includes(run.id));
-    return runs.length && runs.every(run => !['running', 'preparing'].includes(run.status)) ? current : false;
-  }, 'over-policy Run fails before provider dispatch');
-  const runs = detail.runs.filter(run => !before.includes(run.id));
-  assert.equal(runs.length, 1); assert.equal(runs[0].status, 'failed');
+  const runs = await until(() => {
+    const rows = f.store.sqlite.prepare('SELECT id,status,prompt_injection_state FROM scheduler_runs WHERE agent_id=?').all(agent.id).filter(row => !before.has(row.id));
+    return rows.length && rows.every(row => row.status === 'failed') ? rows : false;
+  }, 'over-policy scheduler Run fails before provider admission');
+  assert.equal(runs.length, 1); assert.equal(runs[0].prompt_injection_state, 'not_injected');
   assert.equal(f.turns.length, turnsBefore, 'Overflow cannot execute or silently replay the task');
   assert.equal(f.sessions.get(agent.id), session, 'Overflow cannot substitute a fresh provider root');
   assert.equal(f.store.resumeSessionState(agent.id)?.sessionId, generation);
   assert.equal(JSON.stringify(f.store.getProviderInput(packet.executionId, true)), frozen);
   assert.equal(new CoordinationV3Store(f.store.sqlite).activeAgentRun(agent.id), undefined);
-  assert.match(JSON.stringify(f.store.readLog(agent.id)), /context policy.*response headroom/i);
+  const rejection = f.store.sqlite.prepare("SELECT last_delivery_error FROM agent_activations WHERE agent_id=? AND state='failed' ORDER BY created_at DESC LIMIT 1").get(agent.id);
+  assert.match(rejection.last_delivery_error, /context policy.*response headroom/i);
+  assert.match(rejection.last_delivery_error, /413/);
 }));
 
 for (const laterSteering of [false, true]) {
@@ -223,7 +226,9 @@ for (const laterSteering of [false, true]) {
       await f.send(agent.id, 'Input accepted after the occupancy observation', { activeRunDelivery: 'steer' });
       await until(() => f.steers.some(steer => steer.agentId === agent.id), 'later steering acknowledged');
     }
-    await finish(f, agent, session);
+    const steeringFence = laterSteering ? f.steers.filter(steer => steer.agentId === agent.id).at(-1)?.input.clientMessageId : undefined;
+    if (laterSteering) assert.ok(steeringFence, 'Exact acknowledged steering identity must reach its canonical final reply');
+    await finish(f, agent, session, steeringFence);
     await until(() => !session.isAlive(), 'idle owned provider root exits');
     const measured = f.store.acceptedProviderSessionContextUsage(agent.id);
     if (laterSteering) assert.equal(measured, undefined, 'Post-observation steering invalidates the measurement');
