@@ -872,6 +872,14 @@
       "origin": "Q12: Claude history dispatch and frozen canonical scope qualification"
     },
     {
+      "path": "tests/context-recovery/history-context-budget.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; private canonical stores and inert persistent providers, no provider account",
+      "origin": "PR99 context budget addendum: complete accepted-input accounting, paginated selection, session occupancy and frozen scoped retrieval"
+    },
+    {
       "path": "tests/context-recovery/imported-history-fidelity.test.mjs",
       "feature": "context-recovery",
       "lane": "server",
