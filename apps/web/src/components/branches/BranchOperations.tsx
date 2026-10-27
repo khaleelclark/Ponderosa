@@ -14,9 +14,9 @@ export function BranchLifecycleStatus({lifecycle,onCancelUpdate,canceling=false}
  </Stack>;
 }
 
-export function BranchTriggerAudit({triggerId,onNavigate,branchId}:{triggerId?:string;branchId:string;onNavigate(route:BranchRoute):boolean}):JSX.Element {
+export function BranchTriggerAudit({onNavigate,branchId}:{branchId:string;onNavigate(route:BranchRoute):boolean}):JSX.Element {
  const [open,setOpen]=useState(false);
- const pages=useInfiniteQuery({queryKey:['branch-trigger-occurrences',branchId,triggerId],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<TriggerOccurrenceDto[]>(`/api/branches/${branchId}/trigger/occurrences?limit=50${pageParam?'&before='+encodeURIComponent(pageParam):''}`),getNextPageParam:last=>last.length===50?last.at(-1)?.id:undefined,enabled:open,refetchInterval:open?5000:false});
+ const pages=useInfiniteQuery({queryKey:['branch-trigger-occurrences',branchId],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestJson<TriggerOccurrenceDto[]>(`/api/branches/${branchId}/trigger/occurrences?limit=50${pageParam?'&before='+encodeURIComponent(pageParam):''}`),getNextPageParam:last=>last.length===50?last.at(-1)?.id:undefined,enabled:open,refetchInterval:open?5000:false});
  const occurrences=pages.data?.pages.flat()??[];
  return <>
   <Button variant="outlined" sx={{minHeight:44}} onClick={()=>setOpen(true)}>Trigger Events</Button>

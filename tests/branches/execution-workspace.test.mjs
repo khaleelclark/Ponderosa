@@ -36,7 +36,7 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
  };
  const scope={exports:{},console,Date,JSON,Map,Set,Error,navigator:{clipboard:{writeText:async()=>{}}},requestAnimationFrame:fn=>{fn();return 1},cancelAnimationFrame(){},document:{getElementById:id=>({scrollIntoView(){focused.push(id)},focus(){focused.push('focus:'+id)}})},require:name=>{
   if(name==='react')return hooks;
-  if(name==='@tanstack/react-query')return {useQuery:query,useInfiniteQuery:query,useQueryClient:()=>({invalidateQueries:value=>invalidations.push(value),resetQueries:value=>invalidations.push(value)}) ,useMutation:options=>{const mutation={isPending:false,error:null,reset(){},mutate:input=>mutation.mutateAsync(input),async mutateAsync(input){requests.push({mutation:options,input});return options.mutationFn(input)}};mutations.push(mutation);return mutation;}};
+  if(name==='@tanstack/react-query')return {useQuery:query,useInfiniteQuery:query,useQueryClient:()=>({invalidateQueries:value=>invalidations.push(value),resetQueries:()=>{throw Error('Refreshing must not reset mounted decisions')}}) ,useMutation:options=>{const mutation={isPending:false,error:null,reset(){},mutate:input=>mutation.mutateAsync(input),async mutateAsync(input){requests.push({mutation:options,input});return options.mutationFn(input)}};mutations.push(mutation);return mutation;}};
   if(name==='@ponderosa/core')return {branchScriptFailureSummary};
   if(name==='@mui/material')return mui;
   if(name.startsWith('@mui/icons-material/'))return {default:()=>null};
@@ -94,7 +94,7 @@ test('focused action pages reject foreign or mixed revisions and retain explicit
  assert.equal(presentation.currentExecutionActions(owner,[good,good]).length,1);
  for(const patch of [{executionId:'foreign'},{revision:6},{revision:8},{generation:'later-checkpoint'}])assert.equal(presentation.currentExecutionActions(owner,[good,{...good,...patch}]),undefined);
  for(const patch of [{executionId:'foreign'},{revision:8}]){f.setTransport(async()=>({...good,...patch}));await assert.rejects(f.queries.get('branch-execution-actions').queryFn({}),/run changed/);}
- f.actionPage.revision=6;f.setQuery('branch-execution-actions',{error:Error('Unable to refresh current decisions')});const html=f.render();assert.match(html,/Decisions and failures could not refresh/);assert.doesNotMatch(html,/Earlier Important Step · Step Failed/);assert.ok(f.button('Refresh Run'));assert.equal(f.button('Retry Step'),undefined);
+ f.actionPage.revision=6;f.setQuery('branch-execution-actions',{error:Error('Unable to refresh current decisions')});const html=f.render();assert.match(html,/Decisions and failures could not refresh/);assert.ok(f.button('Refresh Run'));assert.equal(f.button('Retry Step').disabled,true,'Cached evidence must not grant stale Branch intervention authority');
 });
 
 test('required action and status loading never become an empty or completed assertion',()=>{
@@ -133,14 +133,14 @@ test('operational status refuses another run and background refresh errors prese
  f.setQuery('branch-execution-operations',{error:Error('Temporary status connection failure')});const html=f.render();assert.match(html,/Needs Your Review/);assert.match(html,/Run status could not refresh/);assert.match(html,/Temporary status connection failure/);assert.equal(f.disclosures[0].open,false);assert.ok(f.button('Retry Status'));
 });
 
-test('a changed canonical action cursor resets only this exact run revision and retains results and view state',()=>{
- const f=fixture({actions:[olderAttempt()]});f.setQuery('branch-execution-actions',{error:new ApiRequestError(409,'Execution actions changed; reload current actions')});
- f.render();f.flushEffects();assert.equal(f.invalidations.length,1);assert.deepEqual(Array.from(f.invalidations[0].queryKey),['branch-execution-actions','run-a',7]);assert.equal(f.invalidations[0].exact,true);assert.equal(f.disclosures[0].open,false);assert.equal(f.execution.output,'Result with the complete original wording.\nSecond line.');assert.equal(f.requests.length,0);
+test('a changed Run revision refetches its stable actions owner without clearing mounted decision forms',()=>{
+ const f=fixture({actions:[olderAttempt()]});f.execution.revision=8;
+ f.render();f.flushEffects();assert.equal(f.invalidations.length,1);assert.deepEqual(Array.from(f.invalidations[0].queryKey),['branch-execution-actions','run-a']);assert.equal(f.invalidations[0].exact,true);assert.equal(f.disclosures[0].open,false);assert.equal(f.execution.output,'Result with the complete original wording.\nSecond line.');assert.equal(f.requests.length,0);
  const unavailable=fixture();unavailable.setQuery('branch-execution-actions',{error:new ApiRequestError(503,'Unavailable')});unavailable.render();unavailable.flushEffects();assert.equal(unavailable.invalidations.length,0,'Ordinary failures remain visible without a blind reset loop');
 });
 
 test('Merge discovers paged canonical candidates only on demand, independently of the visible history filter',async()=>{
- const f=fixture();f.props.executions=[];f.render();assert.equal(f.queries.get('branch-merge-targets').enabled,false);assert.ok(f.button('Merge Into Another Run'));assert.equal(f.button('Merge Into Another Run').disabled,undefined);
+ const f=fixture();f.props.executions=[];f.render();assert.equal(f.queries.get('branch-merge-targets').enabled,false);assert.ok(f.button('Merge Into Another Run'));assert.equal(f.button('Merge Into Another Run').disabled,false);
  f.button('Merge Into Another Run').onClick();let html=f.render();assert.equal(f.queries.get('branch-merge-targets').enabled,true);assert.match(html,/Loading eligible runs/);
  const completed={...f.execution,id:'completed-target',state:'completed',createdAt:'2026-10-25T01:00:00Z'};f.setQuery('branch-merge-targets',{data:{pages:[[completed]],pageParams:[undefined]},isPending:false,hasNextPage:true});html=f.render();assert.match(html,/completed/);assert.ok(f.button('Load Older Runs'));
  const field=f.fields.find(field=>field.label==='Keep this execution');field.onChange({target:{value:'completed-target'}});f.render();assert.equal(f.fields.find(field=>field.label==='Keep this execution').value,'completed-target');
@@ -167,4 +167,20 @@ test('canonical Agent decisions use the existing shared DecisionCard before Tech
  const decision={id:'exact-agent-decision',projectId:'actual-project',agentId:'actual-agent',coordinationRunId:'actual-scheduler-run',mode:'text',question:'Which report should I publish?',options:[],allowOther:true,status:'pending'};
  const f=fixture({actions:[{kind:'decision',decision}]}),html=f.render();assert.match(html,/Shared Decision/);assert.ok(html.indexOf(decision.question)<html.indexOf('<details'));
  assert.equal(presentation.currentExecutionActions(f.execution,[f.actionPage,f.actionPage]).length,1);
+});
+
+
+test('a pending Decision remains in the same render position across revision refresh and failed refresh',()=>{
+ const decision={id:'decision-b',projectId:'owned-project',agentId:'reviewer',question:'Preserve this open answer',mode:'text',options:[],allowOther:true,status:'pending'};
+ const f=fixture({actions:[{kind:'decision',decision},olderAttempt()]});f.render();const key=[...f.queries.get('branch-execution-actions').queryKey];
+ f.execution.revision++;const refreshing=f.render();assert.match(refreshing,/Preserve this open answer/);assert.match(refreshing,/Your open decisions are kept/);assert.equal(f.button('Retry Step').disabled,true);assert.deepEqual([...f.queries.get('branch-execution-actions').queryKey],key);f.flushEffects();
+ f.setQuery('branch-execution-actions',{error:new ApiRequestError(409,'Actions changed')});const failed=f.render();assert.match(failed,/Preserve this open answer/);assert.match(failed,/could not refresh/);assert.equal(f.button('Retry Step').disabled,true);
+});
+
+test('React Query refetch retains coherent loaded action pages when a later cursor conflicts',async t=>{
+ const {QueryClient,InfiniteQueryObserver}=require('@tanstack/react-query');let fail=false;const client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}}),key=['branch-execution-actions','run-a'];
+ const queryFn=async({pageParam})=>{if(fail&&pageParam)throw new ApiRequestError(409,'Changed cursor');return{executionId:'run-a',revision:7,generation:fail?'new':'old',items:[{kind:'decision',decision:{id:pageParam?'decision-b':'decision-a'}}],nextCursor:pageParam?undefined:'older'}};
+ const observer=new InfiniteQueryObserver(client,{queryKey:key,initialPageParam:undefined,queryFn,getNextPageParam:page=>page.nextCursor}),unsubscribe=observer.subscribe(()=>{});t.after(()=>{unsubscribe();client.clear()});
+ await observer.refetch();await observer.fetchNextPage();const before=client.getQueryData(key);assert.equal(before.pages.length,2);fail=true;await observer.refetch();assert.equal(client.getQueryData(key),before,'Failed refresh must retain the exact previous coherent pages, not destroy forms or mix generations');
+ assert.equal(observer.getCurrentResult().isError,true);assert.equal(observer.getCurrentResult().data.pages[1].items[0].decision.id,'decision-b');
 });

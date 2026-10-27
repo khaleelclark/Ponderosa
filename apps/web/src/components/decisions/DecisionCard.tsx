@@ -8,11 +8,13 @@ export function DecisionCard({
   title,
   context,
   onResolved,
+  onRetentionChange,
 }: {
   decision: DecisionPrompt;
   title?: string;
   context?: string;
   onResolved?(): void;
+  onRetentionChange?(decision: DecisionPrompt, retain: boolean): void;
 }): JSX.Element {
   return (
     <Paper variant="outlined" component="section" aria-label="Decision" sx={{ p: 1.5 }}>
@@ -23,7 +25,7 @@ export function DecisionCard({
             <DecisionQuestionContent {...question} projectId={decision.projectId} />
           </Box>) : <DecisionQuestionContent question={title ?? decision.question ?? "Decision"} context={context ?? decision.context} projectId={decision.projectId} />}
         </Box>
-        <DecisionActions decision={decision} onResolved={onResolved} />
+        <DecisionActions decision={decision} onResolved={onResolved} onRetentionChange={onRetentionChange} />
       </Stack>
     </Paper>
   );
