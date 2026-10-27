@@ -12,7 +12,7 @@ import type Database from "better-sqlite3";
 import {
   BranchValidationError, CAPABILITY_IDS,
   TERMINAL_REQUEST_STATES, type ProjectSort, type BranchConfiguration, type BranchRuntimeOutcome, type BranchDefinition, type BranchBindings, type BranchDto,
-  type BranchExecutionDto, type BranchExecutionDetailDto, type BranchHomeExecutionDto, type BranchResult, type BranchVersionDto,
+  type BranchExecutionDto, type BranchExecutionDetailDto, type BranchExecutionActionsDto, type BranchGateDto, type BranchStepExecutionDto, type BranchHomeExecutionDto, type BranchResult, type BranchVersionDto,
   type DeployBranchRequest, type RuntimeProcessIdentity, type CommunicationEvent,
   type BranchDeploymentPreviewDto, type AgentPortablePackageDto, type ImportAgentPackageResponse, type TriggerSourceConfig, type CoordinationRequestState, type WorkspaceEvent, type BranchGateResolution, type BranchIntervention,
 } from "@ponderosa/core";
@@ -22,6 +22,7 @@ import { payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
 import { CapabilityPolicyStore } from "./capability-policy-store.js";
 
 type Row = Record<string, any>;
+const MERGE_TARGET_STATES:readonly string[]=['queued','running','waiting','completed'];
 export interface BranchResourceProvision { branchId:string; executionId:string; workingDirectory:string; defaultEngine:string; stepExecutionId: string; projectId: string; chatId: string; creationKey: string; template: AgentPortablePackageDto; engineMapping: Record<string, string> }
 export interface BranchActionLease { attemptId:string; fence:number; workerId:string; branchId:string; executionId:string; projectId?:string; chatId?:string; title:string; input:string }
 
@@ -552,11 +553,6 @@ export class BranchStore {
     const resources=page('resources','r.*','branch_resources r','r','r.execution_id');
     const paths=page('paths','p.*','branch_paths p','p','p.execution_id');
     const gates=page('gates','g.*,s.step_id','branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id','g','s.execution_id');
-    const gateOpened = new Map<string,string>();
-    if(gates.length)for(const checkpoint of this.rows("SELECT evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND kind='gate_opened' ORDER BY id",id)){
-      const gateId=JSON.parse(checkpoint.evidence_json).gateId;
-      if(typeof gateId==='string')gateOpened.set(gateId,checkpoint.created_at);
-    }
     const decisions=page('decisions','c.*','branch_checkpoints c','c',"c.kind IN ('condition_selected','route_selected','route_invalid','fork_started','map_items_sealed','map_item_started','join_resolved','join_arrival','loop_traversed','limit_exhausted') AND c.execution_id");
     const sealedResults=page('sealedResults','r.*','branch_sealed_results r','r','r.execution_id');
     const maps=page('maps','m.*','branch_map_invocations m','m','m.execution_id');
@@ -569,14 +565,68 @@ export class BranchStore {
       sealedResults:sealedResults.map(r=>({id:r.id,executionId:id,pathId:r.path_id,stepExecutionId:r.step_execution_id,terminalAttemptId:r.terminal_attempt_id,result:JSON.parse(r.result_json),contentHash:r.content_hash,createdAt:r.created_at})),
       maps:maps.map(r=>({id:r.id,mapId:r.map_id,parentPathId:r.parent_path_id,joinId:r.join_id,...(r.source_result_id?{sourceResultId:r.source_result_id}:{}),itemCount:r.item_count,itemsHash:r.items_hash,state:r.state})),
       mapItems:mapItems.map(r=>({id:r.id,mapInvocationId:r.map_invocation_id,mapId:this.row('SELECT map_id FROM branch_map_invocations WHERE id=?',r.map_invocation_id)!.map_id,index:r.item_index,pathId:r.path_id,input:r.input_text,inputHash:r.input_hash,state:r.path_state,...(r.path_result_json?{result:JSON.parse(r.path_result_json)}:{}),...(r.step_execution_id?{stepExecutionId:r.step_execution_id,...this.mapItemAttemptSummary(r.step_execution_id)}:{attemptCount:0}),...(r.step_execution_id&&this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.step_execution_id)?{sealedResultId:this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.step_execution_id)!.id}:{})})),
-      steps: steps.map(r => ({ id: r.id, executionId: id, stepId: r.step_id, pathId: r.path_id, invocation: r.invocation, state: r.state, input: r.input_text, ...(r.result_json ? { result: JSON.parse(r.result_json) } : {}),...(this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.id)?{sealedResultId:this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.id)!.id}:{}) })), attempts: attempts.map(r => this.attemptDto(execution,definition,r)),
+      steps: steps.map(r => this.stepDto(r)), attempts: attempts.map(r => this.attemptDto(execution,definition,r)),
       resources: resources.map(r=>({stepExecutionId:r.step_execution_id,templateRef:r.template_ref,state:r.state,...(r.root_agent_id?{rootAgentId:r.root_agent_id}:{}),agentIds:this.rows("SELECT agent_id FROM branch_resource_members WHERE step_execution_id=?",r.step_execution_id).map(m=>m.agent_id),...(r.error?{error:r.error}:{})})),
       paths: paths.map(r => ({ id: r.id, state: r.state, input: r.input_text, ...(r.node_id ? { nodeId: r.node_id } : {}), ...(r.step_execution_id?{stepExecutionId:r.step_execution_id}:{}), ...(r.parent_path_id ? { parentPathId: r.parent_path_id } : {}), ...(r.fork_invocation_id ? { forkInvocationId: r.fork_invocation_id, edgeId: r.edge_id } : {}), ...(r.last_result_id?{lastResultId:r.last_result_id}:{}), ...(r.result_json ? { result: JSON.parse(r.result_json) } : {}) })),
-      gates: gates.map(r => {
-        const step = definition.steps.find(step => step.id === r.step_id);
-        const openedAt=gateOpened.get(r.id);
-        return { id: r.id, stepExecutionId: r.step_execution_id, attemptId: r.attempt_id, state: r.state, purpose: r.purpose, revision: r.revision, proposal: r.proposal_text, ...(r.choices_json ? { choices: JSON.parse(r.choices_json) } : {}), ...(openedAt ? { openedAt } : {}), prompt:r.prompt_text || (step?.kind === "human_gate" ? this.text(execution,step.prompt) : "Review the failed Step before retrying"),...(r.response_json?{resolution:JSON.parse(r.response_json)}:{}), editable: step?.kind === "human_gate" ? step.editable : false };
-      }) };
+      gates: gates.map(r => this.gateDto(execution,definition,r)) };
+  }
+  private stepDto(r:Row):BranchStepExecutionDto {
+    const sealed=this.row('SELECT id FROM branch_sealed_results WHERE step_execution_id=?',r.id);
+    return {id:r.id,executionId:r.execution_id,stepId:r.step_id,pathId:r.path_id,invocation:r.invocation,state:r.state,input:r.input_text,
+      ...(r.result_json?{result:JSON.parse(r.result_json)}:{}),...(sealed?{sealedResultId:sealed.id}:{})};
+  }
+  private gateDto(execution:BranchExecutionDto,definition:BranchDefinition,r:Row):BranchGateDto {
+    const step=definition.steps.find(step=>step.id===r.step_id);
+    const openedAt=this.row("SELECT created_at FROM branch_checkpoints WHERE execution_id=? AND transition_key=? AND kind='gate_opened'",
+      execution.id,`gate:${r.id}:${r.state==='waiting'?r.revision:r.revision-1}`)?.created_at;
+    return {id:r.id,stepExecutionId:r.step_execution_id,attemptId:r.attempt_id,state:r.state,purpose:r.purpose,revision:r.revision,proposal:r.proposal_text,
+      ...(r.choices_json?{choices:JSON.parse(r.choices_json)}:{}),...(openedAt?{openedAt}:{}),
+      prompt:r.prompt_text||(step?.kind==='human_gate'?this.text(execution,step.prompt):'Review the failed Step before retrying'),
+      ...(r.response_json?{resolution:JSON.parse(r.response_json)}:{}),editable:step?.kind==='human_gate'?step.editable:false};
+  }
+  /** Current decisions cannot disappear behind newer resolved audit rows. */
+  currentActions(id:string,cursor?:string):BranchExecutionActionsDto|undefined {
+    const execution=this.execution(id);if(!execution)return undefined;
+    // Gate/path/attempt additions checkpoint atomically. Script uncertainty
+    // advances existing fences; Request count/versions also cover cleanup and
+    // outcomes observed before the next Branch turn.
+    const checkpoint=this.row('SELECT COALESCE(MAX(id),0) id FROM branch_checkpoints WHERE execution_id=?',id)!.id;
+    const changes=this.row(`SELECT COUNT(a.id) attempts,CAST(COALESCE(SUM(a.fence),0) AS TEXT) fences,
+      COUNT(r.id) requests,CAST(COALESCE(SUM(r.version),0) AS TEXT) versions FROM branch_attempts a
+      JOIN branch_step_executions s ON s.id=a.step_execution_id LEFT JOIN coordination_requests r ON r.id=a.request_id WHERE s.execution_id=?`,id)!;
+    const generation=`${checkpoint}:${changes.attempts}:${changes.fences}:${changes.requests}:${changes.versions}`;
+    let after:{rank:number;position:number}|undefined;
+    if(cursor){
+      if(cursor.length>512)throw new Error('Invalid execution actions cursor');
+      let parsed:Record<string,unknown>;
+      try{parsed=JSON.parse(Buffer.from(cursor,'base64url').toString())}catch{throw new Error('Invalid execution actions cursor')}
+      if(!parsed||parsed.executionId!==id||!Number.isSafeInteger(parsed.revision)||typeof parsed.generation!=='string'||parsed.generation.length>128||!Number.isSafeInteger(parsed.rank)||
+        ![0,1,2].includes(parsed.rank as number)||!Number.isSafeInteger(parsed.position)||(parsed.position as number)<1)throw new Error('Invalid execution actions cursor');
+      if(parsed.revision!==execution.revision||parsed.generation!==generation)throw new Error('Execution actions changed; reload current actions');
+      after={rank:parsed.rank as number,position:parsed.position as number};
+    }
+    const rows=this.rows(`SELECT * FROM (
+      SELECT 0 rank,g.rowid position,'gate' kind,g.id,s.id step_id
+        FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id
+        WHERE s.execution_id=? AND g.state='waiting'
+      UNION ALL
+      SELECT CASE WHEN p.step_execution_id=s.id AND p.state NOT IN ('arrived','canceled','completed','skipped') THEN 1 ELSE 2 END rank,
+        a.rowid position,'attempt' kind,a.id,s.id step_id
+        FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id JOIN branch_paths p ON p.id=s.path_id
+        LEFT JOIN coordination_requests r ON r.id=a.request_id
+        WHERE s.execution_id=? AND (a.state IN ('failed','outcome_unknown') OR a.state='waiting' AND r.state='outcome_unknown')
+          AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=s.id AND newer.number>a.number)
+          AND NOT EXISTS(SELECT 1 FROM branch_gates g WHERE g.step_execution_id=s.id AND g.state='waiting')
+      ) WHERE ? IS NULL OR rank>? OR rank=? AND position>? ORDER BY rank,position LIMIT 101`,
+      id,id,after?.rank??null,after?.rank??null,after?.rank??null,after?.position??null);
+    const definition=this.definition(execution),page=rows.slice(0,100);
+    const items:BranchExecutionActionsDto['items']=page.map(row=>{
+      const step=this.stepDto(this.row('SELECT * FROM branch_step_executions WHERE id=? AND execution_id=?',row.step_id,id)!);
+      if(row.kind==='gate')return {kind:'gate',step,gate:this.gateDto(execution,definition,this.row('SELECT g.*,s.step_id FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE g.id=? AND s.execution_id=?',row.id,id)!)};
+      return {kind:'attempt',step,current:row.rank===1,attempt:this.attemptDto(execution,definition,this.row('SELECT * FROM branch_attempts WHERE id=? AND step_execution_id=?',row.id,step.id)!)};
+    });
+    const last=page.at(-1);
+    return {executionId:id,revision:execution.revision,generation,items,...(rows.length>100&&last?{nextCursor:Buffer.from(JSON.stringify({executionId:id,revision:execution.revision,generation,rank:last.rank,position:last.position})).toString('base64url')}:{})};
   }
   /** One canonical projection for bounded history and exact full Step evidence. */
   private attemptDto(execution:BranchExecutionDto,definition:BranchDefinition,r:Row):import('@ponderosa/core').BranchAttemptDto {
@@ -638,11 +688,14 @@ export class BranchStore {
     const child=this.row('SELECT id,state,version_id FROM branch_executions WHERE parent_attempt_id=?',attemptId);
     return {...(branch?{calledBranch:{id:branch.id,name:branch.name,enabled:branch.enabled!==false}}:{}),...(child?{childExecution:{id:child.id,state:child.state,versionId:child.version_id}}:{})};
   }
-  listExecutions(branchId: string, beforeId?: string, state?: string): BranchExecutionDto[] {
+  listExecutions(branchId: string, beforeId?: string, state?: string, mergeFor?:string): BranchExecutionDto[] {
     if(state&&!['queued','running','waiting','completed','failed','canceled','skipped','merged'].includes(state))throw new Error('Invalid execution status filter');
+    if(mergeFor!==undefined){const source=this.execution(mergeFor);if(!source||source.branchId!==branchId)throw new Error('Merge source does not belong to this Branch');if(state)throw new Error('Merge candidates use their own eligible states');}
     const before = beforeId ? this.row("SELECT rowid AS position FROM branch_executions WHERE id = ? AND branch_id = ?", beforeId, branchId)?.position : Number.MAX_SAFE_INTEGER;
     if (before === undefined) throw new Error("Execution cursor does not belong to this Branch");
-    return this.rows("SELECT id FROM branch_executions WHERE branch_id = ? AND rowid < ?"+(state?" AND state = ?":"")+" ORDER BY rowid DESC LIMIT 100", branchId, before, ...(state?[state]:[])).map(r => this.execution(r.id)!);
+    return this.rows("SELECT id FROM branch_executions WHERE branch_id = ? AND rowid < ?"+
+      (mergeFor!==undefined?` AND id!=? AND state IN (${MERGE_TARGET_STATES.map(()=>'?').join(',')})`:state?" AND state = ?":"")+
+      " ORDER BY rowid DESC LIMIT 100", branchId, before, ...(mergeFor!==undefined?[mergeFor,...MERGE_TARGET_STATES]:state?[state]:[])).map(r => this.execution(r.id)!);
   }
   /** Global execution membership is canonical, independent of sidebar pages, search and folders. */
   homeExecutions(input: { activeBefore?: { at: string; id: string }; outcomeBefore?: { at: string; id: string } }) {
@@ -1161,7 +1214,7 @@ export class BranchStore {
         if (!["queued", "running", "waiting"].includes(execution.state)) throw new Error("Only live executions can be skipped or merged");
         if (input.action === "merge") {
           const target = this.execution(input.mergedInto ?? "");
-          if (!target || target.id === id || target.branchId !== execution.branchId || !["queued", "running", "waiting", "completed"].includes(target.state)) throw new Error("Invalid merge target");
+          if (!target || target.id === id || target.branchId !== execution.branchId || !MERGE_TARGET_STATES.includes(target.state)) throw new Error("Invalid merge target");
           // A target cannot already lead back to the execution being merged.
           let current: BranchExecutionDto | undefined = target;
           const seen = new Set<string>();

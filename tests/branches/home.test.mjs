@@ -32,6 +32,69 @@ test('Branches Home distinguishes no workflows from an empty draft without creat
  assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,0);assert.deepEqual(f.probes,[]);f.pass();
 });
 
+test('focused Run action HTTP reads preserve complete gate fields, exact ownership and unchanged runtime authority',async t=>{
+ const f=await fixture(t),prompt='Review the full proposal '+ '🌲'.repeat(500),proposal='Authored result '+ '漢'.repeat(500);
+ const branch=f.deploy('Full approval',{...gate,prompt}),execution=f.branches.accept(branch.id,'approval',proposal);f.branches.advance();
+ const url=`/api/branch-executions/${execution.id}/actions`,before=f.store.sqlite.prepare('SELECT total_changes() n').get().n;
+ const response=await f.app.inject({url});assert.equal(response.statusCode,200,response.body);const page=response.json();
+ assert.equal(page.executionId,execution.id);assert.equal(page.revision,f.branches.execution(execution.id).revision);assert.equal(page.items.length,1);
+ const item=page.items[0];assert.equal(item.kind,'gate');assert.equal(item.gate.prompt,prompt);assert.equal(item.gate.proposal,proposal);assert.equal(item.gate.editable,true);assert.equal(item.gate.revision,0);assert.ok(item.gate.openedAt);
+ assert.equal(page.largeEvidenceOmitted,true,'The Step preview is bounded while decision text stays complete');assert.equal(Array.from(item.step.input).length,129);
+ const exact=await f.app.inject({url:`/api/branch-executions/${execution.id}/steps/${item.step.id}/evidence`});assert.equal(exact.statusCode,200,exact.body);assert.equal(exact.json().input,proposal);
+ const other=f.branches.accept(branch.id,'other','Unrelated');
+ assert.equal((await f.app.inject({url:`/api/branch-executions/${other.id}/steps/${item.step.id}/evidence`})).statusCode,404);
+ const inspected=f.store.sqlite.prepare('SELECT total_changes() n').get().n;
+ assert.equal((await f.app.inject({url:'/api/branch-executions/missing/actions'})).statusCode,404);
+ assert.equal((await f.app.inject({url:url+'?cursor=broken'})).statusCode,400);
+ assert.equal(f.store.sqlite.prepare('SELECT total_changes() n').get().n,inspected,'Missing or malformed reads do not mutate authority');
+ assert.ok(inspected>before,'Only the explicitly accepted second Run changed authority');
+ f.branches.resolveGate(item.gate.id,{commandKey:'resolve-owned-approval',expectedRevision:0,decision:'approve'});
+ assert.equal((await f.app.inject({url})).json().items.length,0);
+ assert.equal(f.branches.detail(execution.id).gates[0].openedAt,item.gate.openedAt,'Resolved audit reuses the same exact gate-open checkpoint');
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,0);f.pass();
+});
+
+test('Branch Trigger Events retain replaced sources and unlinked events after changing to Manual with exact-owner pagination',async t=>{
+ const f=await fixture(t);let branch=f.deploy('Retained events');
+ const definition=f.branches.version(branch.id,branch.versionId).definition;
+ const publish=kind=>{
+  const sourceConfig=kind==='schedule'?{scheduleKind:'interval',everyMs:60000}:{replayWindowSeconds:300};
+  branch=f.branches.deploy({chatId:'',branchId:branch.id,expectedVersionId:branch.versionId,idempotencyKey:randomUUID(),definition:{...definition,trigger:kind==='manual'?{kind}:{kind,configRef:'source'}},bindings:{agents:{},directories:{},...(kind==='manual'?{}:{triggers:{source:{enabled:true,sourceConfig}}})}},new Date().toISOString(),kind==='manual'?undefined:{sourceConfig});
+  return branch;
+ };
+ publish('schedule');const schedule=f.branches.triggers.recordTriggerOccurrence({triggerId:branch.triggerId,occurrenceKey:'schedule',payload:{source:'schedule'},provenance:{source:'schedule'}});
+ const unlinked=randomUUID();
+ f.store.sqlite.prepare(`INSERT INTO trigger_occurrences
+  (id,trigger_id,occurrence_key,project_id,agent_id,scope_key,payload_json,provenance_json,trigger_snapshot_json,payload_media_type,input_hash,activation_config_json,state,attempts,available_at,occurred_at,created_at,updated_at)
+  SELECT ?,trigger_id,'unlinked',project_id,agent_id,scope_key,payload_json,provenance_json,trigger_snapshot_json,payload_media_type,input_hash,activation_config_json,'dead_lettered',0,available_at,occurred_at,created_at,updated_at FROM trigger_occurrences WHERE id=?`).run(unlinked,schedule.occurrenceId);
+ publish('webhook');const webhook=f.branches.triggers.recordTriggerOccurrence({triggerId:branch.triggerId,occurrenceKey:'webhook',payload:{source:'webhook'},provenance:{source:'webhook'}});
+ publish('manual');assert.equal(branch.triggerId,undefined);
+ const seen=[];let before;
+ do{const response=await f.app.inject({url:`/api/branches/${branch.id}/trigger/occurrences?limit=1${before?'&before='+before:''}`});assert.equal(response.statusCode,200,response.body);const rows=response.json();seen.push(...rows);before=rows.at(-1)?.id;}while(before);
+ assert.deepEqual(seen.map(row=>row.id).sort(),[schedule.occurrenceId,webhook.occurrenceId,unlinked].sort());
+ assert.equal(seen.find(row=>row.id===unlinked).branchExecutionId,undefined);assert.deepEqual([...new Set(seen.map(row=>row.triggerSnapshot.sourceKind))].sort(),['schedule','webhook']);
+ const empty=f.deploy('No automatic events');assert.deepEqual((await f.app.inject({url:`/api/branches/${empty.id}/trigger/occurrences`})).json(),[]);
+ assert.equal((await f.app.inject({url:`/api/branches/${empty.id}/trigger/occurrences?before=${schedule.occurrenceId}`})).statusCode,400);
+ assert.equal((await f.app.inject({url:'/api/branches/missing/trigger/occurrences'})).statusCode,404);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,0);f.pass();
+});
+
+test('merge target reads page all permitted outcomes independently of visible history and reject another Branch source',async t=>{
+ const f=await fixture(t),branch=f.deploy('Merge targets'),ids=[];
+ f.store.sqlite.transaction(()=>{for(let i=0;i<125;i++){const execution=f.branches.accept(branch.id,`target_${i}`,'');ids.push(execution.id);f.store.sqlite.prepare("UPDATE branch_executions SET state='completed' WHERE id=?").run(execution.id)}})();
+ const source=f.branches.accept(branch.id,'merge-source',''),base=`/api/branches/${branch.id}/executions?mergeFor=${source.id}`;
+ const seen=[];let before;
+ do{const response=await f.app.inject({url:base+(before?'&before='+before:'')});assert.equal(response.statusCode,200,response.body);const page=response.json();assert.ok(page.length<=100);assert.ok(page.every(item=>item.id!==source.id&&item.branchId===branch.id&&['queued','running','waiting','completed'].includes(item.state)));seen.push(...page.map(item=>item.id));before=page.length===100?page.at(-1).id:undefined;}while(before);
+ assert.deepEqual(seen.sort(),ids.sort());assert.equal(new Set(seen).size,125);
+ assert.equal((await f.app.inject({url:`/api/branches/${branch.id}/executions?state=running`})).json().length,0,'The selected history filter has no bearing on merge candidates');
+ const foreign=f.deploy('Foreign merge target'),other=f.branches.accept(foreign.id,'source','');
+ assert.equal((await f.app.inject({url:`/api/branches/${branch.id}/executions?mergeFor=${other.id}`})).statusCode,400);
+ assert.equal((await f.app.inject({url:base+`&before=${other.id}`})).statusCode,400);
+ assert.equal((await f.app.inject({url:base+'&state=failed'})).statusCode,400);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_commands').get().n,0,'Reading candidates must not merge or retry any Run');
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,0);f.pass();
+});
+
 test('global Home pages count distinct nested executions beyond sidebar limits and omit full evidence',async t=>{
  const f=await fixture(t),ids=[],terminal=['completed','failed','canceled','skipped','merged'];
  f.store.sqlite.transaction(()=>{
