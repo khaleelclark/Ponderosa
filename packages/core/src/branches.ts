@@ -1,7 +1,7 @@
 import type { ConversationDto } from "./dto/conversations.js";
 import type { AgentPortablePackageDto } from "./dto/agents.js";
 import type { TriggerBudgetPeriod, TriggerSourceConfig } from "./dto/branch-triggers.js";
-import type { WorkspaceNotificationDto } from "./dto/workspace.js";
+import type { DecisionDto, WorkspaceNotificationDto } from "./dto/workspace.js";
 /** Branch definitions are desired structure. Runtime records never live in a package. */
 /** Local operational policy; never part of portable definitions or execution snapshots. */
 export interface BranchExecutionBudgetPolicy { limit: number; period: TriggerBudgetPeriod }
@@ -153,6 +153,7 @@ export interface BranchStepEvidenceDto {
 }
 /** Focused current decisions and failed/uncertain attempts, independent of audit-history pages. */
 export type BranchExecutionActionDto =
+  | { kind: 'decision'; decision: DecisionDto }
   | { kind: 'gate'; gate: BranchGateDto; step: BranchStepExecutionDto }
   | { kind: 'attempt'; attempt: BranchAttemptDto; step: BranchStepExecutionDto; current: boolean };
 export interface BranchExecutionActionsDto {

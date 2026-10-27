@@ -95,7 +95,7 @@ test('focused Run actions retain old pending gates beyond newer resolved history
  assert.throws(()=>f.branches.currentActions(f.execution.id,first.nextCursor),/cursor/i);
  for(const gate of gates.slice(2))f.branches.resolveGate(gate.id,{commandKey:`reject_${gate.id}`,expectedRevision:gate.revision,decision:'reject'});
  assert.throws(()=>f.branches.currentActions(execution.id,first.nextCursor),/changed/i);
- const app=Fastify();registerBranchRoutes(app,{store:f.store,workspace:{},branches:f.branches,installations:{setPublisher(){}},sources:{},createChat:()=>{throw Error('Read-only actions must not create Chats')},notify:()=>{throw Error('Read-only actions must not publish work')}});
+ const app=Fastify();registerBranchRoutes(app,{store:f.store,workspace:{decisionsForRuns:()=>[],getDecision:()=>undefined},branches:f.branches,installations:{setPublisher(){}},sources:{},createChat:()=>{throw Error('Read-only actions must not create Chats')},notify:()=>{throw Error('Read-only actions must not publish work')}});
  try{const stale=await app.inject({url:`/api/branch-executions/${execution.id}/actions?cursor=${encodeURIComponent(first.nextCursor)}`});assert.equal(stale.statusCode,409,stale.body);assert.match(stale.json().error,/changed/);}finally{await app.close()}
  const ordinary=f.branches.detail(execution.id);assert.ok(!ordinary.gates.some(gate=>gate.id===gates[0].id),'The original bounded audit window omits the oldest unresolved gate');
  const focused=f.branches.currentActions(execution.id),pending=focused.items.filter(item=>item.kind==='gate');assert.deepEqual(pending.map(item=>item.gate.id),gates.slice(0,2).map(gate=>gate.id));

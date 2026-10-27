@@ -54,6 +54,89 @@ test('focused Run action HTTP reads preserve complete gate fields, exact ownersh
  assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,0);f.pass();
 });
 
+test('focused actions page exact Agent Decisions beyond newer history for both providers and observe canonical answers without Run revision changes',async t=>{
+ const f=await fixture(t),project=f.store.createProject({label:'Decision owners',hostPath:f.root,defaultEngine:'codex'}),chat=f.store.createConversation(project.id,{title:'Owned questions'});
+ const runs=[];
+ for(const engine of ['codex','claude']){
+  const agent=f.store.createAgent(project.id,{title:engine+' question owner',engine,conversationId:chat.id});
+  const branch=f.deploy(engine+' pending questions',{id:'work',kind:'agent',target:{kind:'persistent_organization',ref:'worker'},instructions:'Ask for the exact missing input'},{agents:{worker:agent.id},directories:{}},chat.id);
+  const execution=f.branches.accept(branch.id,'questions','');f.branches.advance();
+  const lease=f.coordination.leaseNextRun({workerId:'controlled-no-provider'});assert.ok(lease);f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+  assert.equal(f.store.sqlite.prepare('SELECT agent_id FROM scheduler_runs WHERE id=?').get(lease.runId).agent_id,agent.id);
+  runs.push({agent,execution,lease});
+ }
+ const [codex,claude]=runs,question='Which exact choice? '+'🌲'.repeat(300),options=[{id:'approved',label:'Use the reviewed choice'}];
+ const create=(owner,key,extra={})=>f.workspace.createDecision({projectId:project.id,conversationId:chat.id,agentId:owner.agent.id,runId:`provider:${owner.lease.runId}`,coordinationRunId:owner.lease.runId,mode:'choice',question,options,allowOther:true,blocking:true,idempotencyKey:key,...extra});
+ const pending=Array.from({length:125},(_,i)=>create(codex,'pending-'+i));
+ const elicitation=create(claude,'provider-elicitation',{runtimeAction:{kind:'mcp_elicitation',mode:'form',serverName:'Controlled service'}});
+ for(let i=0;i<125;i++){const resolved=create(codex,'newer-resolved-'+i);f.workspace.resolveDecision(resolved.id,{optionId:'approved',respondedAt:new Date().toISOString()});create(codex,'unrelated-'+i,{runId:'other-provider-run',coordinationRunId:'other-scheduler-run'});}
+ assert.ok(!f.workspace.listDecisionPage({projectId:project.id,agentId:codex.agent.id,limit:100}).decisions.some(decision=>decision.id===pending[0].id),'The oldest exact question is outside the ordinary latest page');
+ for(const extra of [{projectId:'foreign-project'},{conversationId:'foreign-chat'},{agentId:claude.agent.id}])create(codex,randomUUID(),extra);
+ const url=`/api/branch-executions/${codex.execution.id}/actions`,read=async(cursor)=>{
+  const response=await f.app.inject({url:url+(cursor?'?cursor='+encodeURIComponent(cursor):'')});assert.equal(response.statusCode,200,response.body);return response.json();
+ };
+ const before=f.store.sqlite.prepare('SELECT total_changes() n').get().n,first=await read(),second=await read(first.nextCursor);
+ assert.equal(first.items.length,100);assert.equal(second.items.length,25);assert.equal(second.nextCursor,undefined);
+ const all=[...first.items,...second.items];assert.ok(all.every(item=>item.kind==='decision'));
+ assert.deepEqual(all.map(item=>item.decision.id).sort(),pending.map(item=>item.id).sort());assert.equal(all[0].decision.question,question);assert.deepEqual(all[0].decision.options,options);
+ const other=await f.app.inject({url:`/api/branch-executions/${claude.execution.id}/actions`});assert.equal(other.statusCode,200,other.body);
+ assert.deepEqual(other.json().items,[{kind:'decision',decision:elicitation}]);
+ const request=f.branches.detail(claude.execution.id).attempts[0].requestId;
+ assert.notEqual(f.coordination.getRequest(request).state,'awaiting_answer','A live provider permission question need not change the Request state');
+ assert.equal(f.store.sqlite.prepare('SELECT total_changes() n').get().n,before,'Focused reads do not repair, resume or mutate Requests');
+ const unrelated=create(codex,'later-unrelated',{coordinationRunId:'unrelated-run',runId:'unrelated-provider'});f.workspace.cancelDecision(unrelated.id);
+ assert.equal((await read()).generation,first.generation,'Other questions from the same Agent must not invalidate this Run page');
+ f.workspace.resolveDecision(pending[0].id,{optionId:'approved',respondedAt:new Date().toISOString()});
+ assert.equal((await f.app.inject({url:url+'?cursor='+encodeURIComponent(first.nextCursor)})).statusCode,409);
+ const answered=await read();assert.equal(answered.revision,first.revision);assert.notEqual(answered.generation,first.generation);
+ const answeredNext=await read(answered.nextCursor);assert.ok(![...answered.items,...answeredNext.items].some(item=>item.decision.id===pending[0].id));
+ f.workspace.cancelDecision(pending[1].id);assert.notEqual((await read()).generation,answered.generation);
+ await f.reopen();const reopened=await read(),reopenedNext=await read(reopened.nextCursor);assert.equal([...reopened.items,...reopenedNext.items].length,123);
+ assert.equal(f.store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,2,'Qualification never starts a provider process');f.pass();
+});
+
+test('focused Agent Decisions follow exact task carriers and open question suspensions without inheriting unrelated Agent questions',async t=>{
+ const f=await fixture(t),project=f.store.createProject({label:'Decision lineage',hostPath:f.root,defaultEngine:'codex'}),chat=f.store.createConversation(project.id,{title:'Scoped lineage'});
+ const agent=f.store.createAgent(project.id,{title:'Task owner',engine:'codex',conversationId:chat.id}),manager=f.store.createAgent(project.id,{title:'Question requester',engine:'claude',conversationId:chat.id});
+ const branch=f.deploy('Decision lineage',{id:'work',kind:'agent',target:{kind:'persistent_organization',ref:'worker'},instructions:'Ask for missing input'},{agents:{worker:agent.id},directories:{}},chat.id);
+ const execution=f.branches.accept(branch.id,'lineage','');f.branches.advance();
+ const requestId=f.branches.detail(execution.id).attempts[0].requestId,lease=f.coordination.leaseNextRun({workerId:'controlled-no-provider'});assert.ok(lease);
+ const now=new Date().toISOString(),source=f.store.sqlite.prepare('SELECT activation_id FROM scheduler_run_activations WHERE run_id=?').get(lease.runId).activation_id;
+ const carrier=randomUUID(),unrelated=randomUUID();
+ // Controlled durable lineage fixture: the later Run carries the same authored
+ // task root; sharing an Agent alone is deliberately insufficient.
+ for(const [id,fence] of [[carrier,100],[unrelated,101]])f.store.sqlite.prepare(`INSERT INTO scheduler_runs
+  (id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key)
+  VALUES (?,?,?,'completed','controlled-no-provider',?,?,'injected',?,?,?,?)`).run(id,project.id,agent.id,now,fence,now,now,now,`conversation:${chat.id}`);
+ const obligation=f.store.sqlite.prepare(`INSERT INTO required_reply_obligations
+  (run_id,source_activation_id,project_id,agent_id,scope_key,reply_authority_json,state,created_at,updated_at,delivery_phase)
+  VALUES (?,?,?,?,?,'{}','pending',?,?,?)`);
+ obligation.run(lease.runId,source,project.id,agent.id,`conversation:${chat.id}`,now,now,'initial');
+ obligation.run(carrier,source,project.id,agent.id,`conversation:${chat.id}`,now,now,'final');
+ obligation.run(unrelated,'different-authored-root',project.id,agent.id,`conversation:${chat.id}`,now,now,'final');
+ const create=(runId,key,extra={})=>f.workspace.createDecision({projectId:project.id,conversationId:chat.id,agentId:agent.id,runId:'provider:'+runId,coordinationRunId:runId,mode:'text',question:key,options:[],allowOther:true,blocking:true,idempotencyKey:key,...extra});
+ const continued=create(carrier,'Same task after continuation');create(unrelated,'Unrelated same Agent task');
+ const url=`/api/branch-executions/${execution.id}/actions`,read=async()=>{const response=await f.app.inject({url});assert.equal(response.statusCode,200,response.body);return response.json()};
+ assert.deepEqual((await read()).items.map(item=>item.decision.id),[continued.id]);
+ // An outbound question is owned by its requester. Its exact current
+ // suspension is a canonical link even without a recipient-Run attachment.
+ const outbound=f.coordination.coordinate({projectId:project.id,conversationId:chat.id,requesterAgentId:manager.id,actorScope:'controlled-manager',idempotencyKey:'outbound-question',requests:[{recipientAgentId:agent.id,lifetime:{kind:'indefinite'},payload:{text:'Return the finding'}}]}).requestIds[0];
+ f.coordination.updateRequest({requestId:outbound,updateId:'current-question',kind:'question',actor:{kind:'agent',id:agent.id},payload:{text:'Need an operator decision'}});
+ f.store.sqlite.prepare('UPDATE branch_attempts SET request_id=? WHERE request_id=?').run(outbound,requestId);
+ const suspended=create('unattached-manager-run','Resolve exact suspended question',{agentId:manager.id,continuationRequestIds:[outbound]});
+ const insert=f.store.sqlite.prepare(`INSERT INTO coordination_question_suspensions
+  (question_update_id,request_id,owner_agent_id,dependency_kind,dependency_id,state,created_at,updated_at) VALUES (?,?,?,'decision',?,'open',?,?)`);
+ insert.run('current-question',outbound,manager.id,suspended.id,now,now);
+ const foreign=create('unattached-manager-run','Wrong suspension Agent');insert.run('current-question',outbound,manager.id,foreign.id,now,now);
+ const suspendedPage=await read();assert.deepEqual(suspendedPage.items,[{kind:'decision',decision:suspended}]);
+ f.workspace.resolveDecision(suspended.id,{text:'Proceed with the reviewed input',respondedAt:now});
+ const resolved=await read();assert.equal(resolved.revision,suspendedPage.revision);assert.notEqual(resolved.generation,suspendedPage.generation);assert.deepEqual(resolved.items,[]);
+ const stale=create('unattached-manager-run','Historical suspension must not reopen',{agentId:manager.id,continuationRequestIds:[outbound]});insert.run('current-question',outbound,manager.id,stale.id,now,now);
+ f.coordination.updateRequest({requestId:outbound,updateId:'operator-answer',kind:'answer',inReplyToUpdateId:'current-question',actor:{kind:'agent',id:manager.id},payload:{text:'Answered'}});
+ f.coordination.updateRequest({requestId:outbound,updateId:'replacement-question',kind:'question',actor:{kind:'agent',id:agent.id},payload:{text:'A different question'}});
+ assert.deepEqual((await read()).items,[],'A historical open suspension cannot authorize the current question');f.pass();
+});
+
 test('Branch Trigger Events retain replaced sources and unlinked events after changing to Manual with exact-owner pagination',async t=>{
  const f=await fixture(t);let branch=f.deploy('Retained events');
  const definition=f.branches.version(branch.id,branch.versionId).definition;

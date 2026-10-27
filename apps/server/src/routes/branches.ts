@@ -361,7 +361,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { branches: 
     return execution?branchOperationalSummary(store.sqlite,execution,context.providerStatus):reply.code(404).send({error:"Execution not found"});
   });
   app.get<{Params:{id:string};Querystring:{cursor?:string}}>('/api/branch-executions/:id/actions',async(request,reply)=>{
-    try{const page=branches.currentActions(request.params.id,request.query.cursor);return page?previewBranchExecutionActions(page):reply.code(404).send({error:'Branch execution not found'});}
+    try{const page=branches.currentActions(request.params.id,request.query.cursor,context.workspace);return page?previewBranchExecutionActions(page):reply.code(404).send({error:'Branch execution not found'});}
     catch(error){const message=error instanceof Error?error.message:'Invalid execution actions cursor';return reply.code(message==='Execution actions changed; reload current actions'?409:400).send({error:message});}
   });
   app.get<{ Params: { id: string };Querystring:{cursor?:string} }>('/api/branch-executions/:id', async (request, reply) => {

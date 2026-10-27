@@ -1,4 +1,5 @@
-import {workspaceRecencyCte} from './workspace-store.js';
+import {workspaceRecencyCte,type WorkspaceStore} from './workspace-store.js';
+import {REQUEST_SOURCE_LINEAGE_CTE} from './coordination-v3-request-lineage.js';
 import { BranchTriggerStore } from "./branch-trigger-store.js";
 import { BranchExecutionBudgetAuthority } from "./branch-execution-budget.js";
 import {inspectBranchExecution} from "./branch-inspection.js";
@@ -585,8 +586,59 @@ export class BranchStore {
       ...(r.response_json?{resolution:JSON.parse(r.response_json)}:{}),editable:step?.kind==='human_gate'?step.editable:false};
   }
   /** Current decisions cannot disappear behind newer resolved audit rows. */
-  currentActions(id:string,cursor?:string):BranchExecutionActionsDto|undefined {
+  currentActions(id:string,cursor?:string,workspace?:Pick<WorkspaceStore,'decisionsForRuns'|'getDecision'>):BranchExecutionActionsDto|undefined {
     const execution=this.execution(id);if(!execution)return undefined;
+    const decisions=new Map<string,import('@ponderosa/core').DecisionDto>();
+    if(workspace){
+      // Reuse immutable Request attachment and durable task roots, never all
+      // questions belonging to an Agent that happens to work on this Branch.
+      const runs=new Map<string,Row>();
+      for(const attached of this.rows(`${REQUEST_SOURCE_LINEAGE_CTE}
+        SELECT DISTINCT run.id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
+        JOIN coordination_requests r ON r.id=a.request_id JOIN request_source_lineage source ON source.request_id=r.id
+        JOIN scheduler_run_activations attached ON attached.activation_id=source.activation_id
+        JOIN scheduler_runs run ON run.id=attached.run_id AND run.agent_id=r.recipient_agent_id AND run.project_id=r.project_id
+          AND run.scope_key=CASE WHEN r.conversation_id IS NOT NULL THEN 'conversation:'||r.conversation_id ELSE 'agent:'||r.recipient_agent_id END
+        WHERE s.execution_id=?`,id)){
+        if(runs.has(attached.id))continue;
+        // A Request can still attach to the initial Run after its task moves
+        // to a later carrier. One carrier per authored root reuses the existing
+        // equivalence helper without rescanning it for every historical Run.
+        const carriers=this.rows(`SELECT MIN(current.run_id) run_id FROM required_reply_obligations origin
+          JOIN required_reply_obligations current ON current.source_activation_id=origin.source_activation_id
+            AND current.agent_id=origin.agent_id AND current.project_id=origin.project_id AND current.scope_key=origin.scope_key
+          WHERE origin.run_id=? AND current.delivery_phase='final' GROUP BY origin.source_activation_id`,attached.id);
+        const related=new Set(this.coordination.taskOriginRunIds(attached.id));
+        for(const carrier of carriers)if(!related.has(carrier.run_id))for(const runId of this.coordination.taskOriginRunIds(carrier.run_id))related.add(runId);
+        for(const runId of related){
+          const run=this.row('SELECT id,agent_id,project_id,scope_key FROM scheduler_runs WHERE id=?',runId);
+          if(run)runs.set(run.id,run);
+        }
+      }
+      const owned=(decision:import('@ponderosa/core').DecisionDto,owner:Row)=>decision.status==='pending'&&decision.agentId===owner.agent_id&&
+        decision.projectId===owner.project_id&&(decision.conversationId?`conversation:${decision.conversationId}`:`agent:${decision.agentId}`)===owner.scope_key;
+      // The existing workspace index returns canonical references; question
+      // content is materialized on the wire only for the selected page.
+      for(const decision of workspace.decisionsForRuns(new Set(runs.keys()))){
+        const run=runs.get(decision.coordinationRunId??decision.runId);
+        if(run&&owned(decision,run))decisions.set(decision.id,decision);
+      }
+      // An outbound question may be suspended by its requester's Decision.
+      // Its exact durable dependency owns that continuation, not the recipient.
+      for(const row of this.rows(`SELECT DISTINCT suspension.dependency_id,r.project_id,r.requester_agent_id agent_id,
+          CASE WHEN r.conversation_id IS NOT NULL THEN 'conversation:'||r.conversation_id ELSE 'agent:'||r.requester_agent_id END scope_key
+        FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
+        JOIN coordination_requests r ON r.id=a.request_id JOIN coordination_question_suspensions suspension ON suspension.request_id=r.id
+        WHERE s.execution_id=? AND suspension.dependency_kind='decision' AND suspension.state='open'
+          AND suspension.owner_agent_id=r.requester_agent_id AND r.state='awaiting_answer'
+          AND suspension.question_update_id=r.open_question_update_id`,id)){
+        const decision=workspace.getDecision(row.dependency_id);
+        if(decision&&owned(decision,row))decisions.set(decision.id,decision);
+      }
+    }
+    const pending=[...decisions.values()].sort((a,b)=>a.id.localeCompare(b.id));
+    const decisionGeneration=createHash('sha256');
+    for(const decision of pending)decisionGeneration.update(JSON.stringify([decision.id,decision.status,decision.updatedAt]));
     // Gate/path/attempt additions checkpoint atomically. Script uncertainty
     // advances existing fences; Request count/versions also cover cleanup and
     // outcomes observed before the next Branch turn.
@@ -594,23 +646,25 @@ export class BranchStore {
     const changes=this.row(`SELECT COUNT(a.id) attempts,CAST(COALESCE(SUM(a.fence),0) AS TEXT) fences,
       COUNT(r.id) requests,CAST(COALESCE(SUM(r.version),0) AS TEXT) versions FROM branch_attempts a
       JOIN branch_step_executions s ON s.id=a.step_execution_id LEFT JOIN coordination_requests r ON r.id=a.request_id WHERE s.execution_id=?`,id)!;
-    const generation=`${checkpoint}:${changes.attempts}:${changes.fences}:${changes.requests}:${changes.versions}`;
+    const generation=`${checkpoint}:${changes.attempts}:${changes.fences}:${changes.requests}:${changes.versions}:${decisionGeneration.digest('hex')}`;
     let after:{rank:number;position:number}|undefined;
     if(cursor){
       if(cursor.length>512)throw new Error('Invalid execution actions cursor');
       let parsed:Record<string,unknown>;
       try{parsed=JSON.parse(Buffer.from(cursor,'base64url').toString())}catch{throw new Error('Invalid execution actions cursor')}
-      if(!parsed||parsed.executionId!==id||!Number.isSafeInteger(parsed.revision)||typeof parsed.generation!=='string'||parsed.generation.length>128||!Number.isSafeInteger(parsed.rank)||
-        ![0,1,2].includes(parsed.rank as number)||!Number.isSafeInteger(parsed.position)||(parsed.position as number)<1)throw new Error('Invalid execution actions cursor');
+      if(!parsed||parsed.executionId!==id||!Number.isSafeInteger(parsed.revision)||typeof parsed.generation!=='string'||parsed.generation.length>256||!Number.isSafeInteger(parsed.rank)||
+        ![0,1,2,3].includes(parsed.rank as number)||!Number.isSafeInteger(parsed.position)||(parsed.position as number)<1)throw new Error('Invalid execution actions cursor');
       if(parsed.revision!==execution.revision||parsed.generation!==generation)throw new Error('Execution actions changed; reload current actions');
       after={rank:parsed.rank as number,position:parsed.position as number};
     }
     const rows=this.rows(`SELECT * FROM (
-      SELECT 0 rank,g.rowid position,'gate' kind,g.id,s.id step_id
+      SELECT 0 rank,CAST(key AS INTEGER)+1 position,'decision' kind,value id,NULL step_id FROM json_each(?)
+      UNION ALL
+      SELECT 1 rank,g.rowid position,'gate' kind,g.id,s.id step_id
         FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id
         WHERE s.execution_id=? AND g.state='waiting'
       UNION ALL
-      SELECT CASE WHEN p.step_execution_id=s.id AND p.state NOT IN ('arrived','canceled','completed','skipped') THEN 1 ELSE 2 END rank,
+      SELECT CASE WHEN p.step_execution_id=s.id AND p.state NOT IN ('arrived','canceled','completed','skipped') THEN 2 ELSE 3 END rank,
         a.rowid position,'attempt' kind,a.id,s.id step_id
         FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id JOIN branch_paths p ON p.id=s.path_id
         LEFT JOIN coordination_requests r ON r.id=a.request_id
@@ -618,12 +672,13 @@ export class BranchStore {
           AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=s.id AND newer.number>a.number)
           AND NOT EXISTS(SELECT 1 FROM branch_gates g WHERE g.step_execution_id=s.id AND g.state='waiting')
       ) WHERE ? IS NULL OR rank>? OR rank=? AND position>? ORDER BY rank,position LIMIT 101`,
-      id,id,after?.rank??null,after?.rank??null,after?.rank??null,after?.position??null);
+      JSON.stringify(pending.map(decision=>decision.id)),id,id,after?.rank??null,after?.rank??null,after?.rank??null,after?.position??null);
     const definition=this.definition(execution),page=rows.slice(0,100);
     const items:BranchExecutionActionsDto['items']=page.map(row=>{
+      if(row.kind==='decision')return {kind:'decision',decision:decisions.get(row.id)!};
       const step=this.stepDto(this.row('SELECT * FROM branch_step_executions WHERE id=? AND execution_id=?',row.step_id,id)!);
       if(row.kind==='gate')return {kind:'gate',step,gate:this.gateDto(execution,definition,this.row('SELECT g.*,s.step_id FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE g.id=? AND s.execution_id=?',row.id,id)!)};
-      return {kind:'attempt',step,current:row.rank===1,attempt:this.attemptDto(execution,definition,this.row('SELECT * FROM branch_attempts WHERE id=? AND step_execution_id=?',row.id,step.id)!)};
+      return {kind:'attempt',step,current:row.rank===2,attempt:this.attemptDto(execution,definition,this.row('SELECT * FROM branch_attempts WHERE id=? AND step_execution_id=?',row.id,step.id)!)};
     });
     const last=page.at(-1);
     return {executionId:id,revision:execution.revision,generation,items,...(rows.length>100&&last?{nextCursor:Buffer.from(JSON.stringify({executionId:id,revision:execution.revision,generation,rank:last.rank,position:last.position})).toString('base64url')}:{})};
