@@ -159,6 +159,7 @@ export class AgentCatalogAuthority {
   private importedIndexClosed = false;
   private importedIndexEpoch = 0;
   private importedIndexRunning = false;
+  private importedIndexProjectionChanges = 0;
   private readonly importedIndexActive = new Map<string, string>();
   private readonly importedIndexQueue = new Map<string, { version: string; project: boolean }>();
   private readonly agentById;
@@ -795,21 +796,35 @@ export class AgentCatalogAuthority {
     if (options.deferIndex) this.queueImportedIndex(agentId, version, false);
   }
 
-  private async projectImportedHistoryAsync(agentId: string, imported: ImportedArchive, version: string): Promise<void> {
+  /** Only synchronous derived-index writes may be discounted by the clean-shutdown guard. */
+  deferredImportedProjectionChanges(): number { return this.importedIndexProjectionChanges; }
+
+  private importedIndexWrite<T>(write: () => T): T {
+    // Include FTS shadow/trigger changes, but never another owner's work across an await.
+    const before = (this.client.prepare("SELECT total_changes() value").get() as { value: number }).value;
+    try { return write(); }
+    finally {
+      this.importedIndexProjectionChanges +=
+        (this.client.prepare("SELECT total_changes() value").get() as { value: number }).value - before;
+    }
+  }
+
+  private async projectImportedHistoryAsync(agentId: string, imported: ImportedArchive, version: string, deferred = false): Promise<void> {
     const epoch = this.importedIndexEpoch;
-    const projection = this.beginImportedProjection(agentId, imported, version);
+    const write = <T>(operation: () => T): T => deferred ? this.importedIndexWrite(operation) : operation();
+    const projection = write(() => this.beginImportedProjection(agentId, imported, version));
     for (let sequence = 0; sequence < projection.messages.length; sequence++) {
       if (!this.importedProjectionCurrent(agentId, version, epoch)) throw new Error("imported history projection was superseded");
-      this.client.transaction(() => {
+      write(() => this.client.transaction(() => {
         this.projectImportedMessage(agentId, imported, projection, sequence);
         const row = this.client.prepare("SELECT rowid FROM imported_history_messages WHERE agent_id = ? AND sequence = ?").get(agentId, sequence) as { rowid: number };
         this.client.prepare("INSERT INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, projection.messages[sequence]!.text.replaceAll("\0", " "));
-      })();
+      })());
       await yieldToLoop();
     }
     if (!this.importedProjectionCurrent(agentId, version, epoch)) throw new Error("imported history projection was superseded");
-    this.client.prepare("UPDATE imported_history_indexes SET integrity_key = ?, status = 'ready' WHERE agent_id = ? AND archive_version = ?")
-      .run(projection.digest.digest("hex"), agentId, version);
+    write(() => this.client.prepare("UPDATE imported_history_indexes SET integrity_key = ?, status = 'ready' WHERE agent_id = ? AND archive_version = ?")
+      .run(projection.digest.digest("hex"), agentId, version));
   }
 
   private importedProjectionCurrent(agentId: string, version: string, epoch: number): boolean {
@@ -822,9 +837,9 @@ export class AgentCatalogAuthority {
   /** Reuse this catalog's projection lifecycle; no scheduler or canonical writes. */
   private queueImportedIndex(agentId: string, version: string, project: boolean): void {
     if (this.importedIndexClosed || this.importedIndexActive.get(agentId) === version) return;
-    if (project) this.client.prepare(`INSERT OR REPLACE INTO imported_history_indexes
+    if (project) this.importedIndexWrite(() => this.client.prepare(`INSERT OR REPLACE INTO imported_history_indexes
       (agent_id, archive_version, integrity_key, imported_at, expected_messages, status)
-      VALUES (?, ?, '', '', 0, 'preparing')`).run(agentId, version);
+      VALUES (?, ?, '', '', 0, 'preparing')`).run(agentId, version));
     this.importedIndexQueue.set(agentId, { version, project });
     if (this.importedIndexRunning) return;
     this.importedIndexRunning = true;
@@ -845,7 +860,7 @@ export class AgentCatalogAuthority {
           const file = importedAgentHistoryPath(this.dataDir, row.project_id, agentId);
           const raw = await fs.readFile(file, "utf8");
           if (this.importedIndexClosed || epoch !== this.importedIndexEpoch || importedArchiveVersion(file) !== job.version) continue;
-          await this.projectImportedHistoryAsync(agentId, JSON.parse(raw) as ImportedArchive, job.version);
+          await this.projectImportedHistoryAsync(agentId, JSON.parse(raw) as ImportedArchive, job.version, true);
           continue;
         }
         let lastSequence = -1;
@@ -857,27 +872,29 @@ export class AgentCatalogAuthority {
               (SELECT count(*) FROM imported_history_messages m JOIN imported_history_fts f ON f.rowid = m.rowid WHERE m.agent_id = ?) AS actual
               FROM imported_history_indexes WHERE agent_id = ?`).get(agentId, agentId) as { expected: number; actual: number };
             if (counts.expected !== counts.actual) throw new Error("imported history index is incomplete");
-            this.client.prepare("UPDATE imported_history_indexes SET status = 'ready' WHERE agent_id = ? AND archive_version = ?").run(agentId, job.version);
+            this.importedIndexWrite(() => this.client.prepare("UPDATE imported_history_indexes SET status = 'ready' WHERE agent_id = ? AND archive_version = ?").run(agentId, job.version));
             break;
           }
           // One admitted row per turn. Ordinary text stays inside SQLite; only
           // embedded NUL needs a JS-normalized FTS copy (never an archive edit).
           for (const row of rows) {
             if (!this.importedProjectionCurrent(agentId, job.version, epoch)) break;
-            const nul = this.client.prepare("SELECT instr(CAST(text AS BLOB), x'00') AS position FROM imported_history_messages WHERE rowid = ?").get(row.rowid) as { position: number };
-            if (nul.position) {
-              const stored = this.client.prepare("SELECT text FROM imported_history_messages WHERE rowid = ?").get(row.rowid) as { text: string };
-              this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, stored.text.replaceAll("\0", " "));
-            } else {
-              this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) SELECT rowid, text FROM imported_history_messages WHERE rowid = ?").run(row.rowid);
-            }
+            this.importedIndexWrite(() => {
+              const nul = this.client.prepare("SELECT instr(CAST(text AS BLOB), x'00') AS position FROM imported_history_messages WHERE rowid = ?").get(row.rowid) as { position: number };
+              if (nul.position) {
+                const stored = this.client.prepare("SELECT text FROM imported_history_messages WHERE rowid = ?").get(row.rowid) as { text: string };
+                this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, stored.text.replaceAll("\0", " "));
+              } else {
+                this.client.prepare("INSERT OR REPLACE INTO imported_history_fts(rowid, text) SELECT rowid, text FROM imported_history_messages WHERE rowid = ?").run(row.rowid);
+              }
+            });
             lastSequence = row.sequence;
             await yieldToLoop();
           }
         }
       } catch {
         if (!this.importedIndexClosed && epoch === this.importedIndexEpoch) {
-          this.client.prepare("UPDATE imported_history_indexes SET status = 'unavailable' WHERE agent_id = ? AND archive_version = ?").run(agentId, job.version);
+          this.importedIndexWrite(() => this.client.prepare("UPDATE imported_history_indexes SET status = 'unavailable' WHERE agent_id = ? AND archive_version = ?").run(agentId, job.version));
         }
       } finally {
         if (this.importedIndexActive.get(agentId) === job.version) this.importedIndexActive.delete(agentId);

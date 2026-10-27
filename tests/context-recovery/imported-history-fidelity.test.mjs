@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setImmediate as yieldToLoop } from 'node:timers/promises';
-import { AgentStore, importedAgentHistoryPath } from '@ponderosa/agents';
+import { AgentStore, CoordinationV3Store, importedAgentHistoryPath } from '@ponderosa/agents';
 
 const digest = text => createHash('sha256').update(text).digest('hex');
 const bytes = value => Buffer.byteLength(JSON.stringify(value), 'utf8');
@@ -41,6 +41,68 @@ async function fixture(t, work) {
     if (passed) await rm(root, { recursive: true, force: true });
     else t.diagnostic('Retained owned imported-history fixture: ' + root);
   }
+}
+
+test('completed deferred imported indexing preserves the clean restart checkpoint', { timeout: 20000 }, t => fixture(t, async f => {
+  const messages = Array.from({ length: 48 }, (_, index) => ({ role: 'assistant', text: `CHECKPOINTARCHIVEWITNESS ${index}` }));
+  f.store.setImportedHistory(f.agent.id, 'Checkpoint archive', messages);
+  f.reopen();
+  assert.equal(f.store.startupProfile().mode, 'recovery');
+  assert.equal(f.store.getImportedHistoryAvailability(f.agent.id).status, 'preparing');
+  const version = await ready(f.store, f.agent.id);
+  f.reopen();
+  assert.equal(f.store.startupProfile().mode, 'clean', 'Projection-only deferred writes must not force another archive rebuild');
+  assert.equal(f.store.getImportedHistoryAvailability(f.agent.id).status, 'ready');
+  assert.equal(search(f.store, f.agent.id, version, 'CHECKPOINTARCHIVEWITNESS').eligibleMessages, messages.length);
+  f.reopen();
+  assert.equal(f.store.startupProfile().mode, 'clean');
+  assert.deepEqual(f.store.getImportedHistory(f.agent.id).messages, messages);
+}));
+
+test('a clean checkpoint preserves preparing state and safely resumes a fenced partial index', { timeout: 20000 }, t => fixture(t, async f => {
+  const messages = Array.from({ length: 48 }, (_, index) => ({ role: 'assistant', text: `PARTIALCHECKPOINTWITNESS ${index}` }));
+  f.store.setImportedHistory(f.agent.id, 'Partial checkpoint archive', messages);
+  f.reopen();
+  await yieldToLoop();
+  const indexed = f.store.sqlite.prepare('SELECT count(*) count FROM imported_history_fts').get().count;
+  assert.ok(indexed > 0 && indexed < messages.length, 'Close must interrupt actual indexing work');
+  f.reopen();
+  assert.equal(f.store.startupProfile().mode, 'clean');
+  const partial = f.store.getImportedHistoryAvailability(f.agent.id);
+  assert.equal(partial.status, 'preparing');
+  assert.throws(() => search(f.store, f.agent.id, partial.archiveVersion, 'PARTIALCHECKPOINTWITNESS'), /preparing/i);
+  const version = await ready(f.store, f.agent.id);
+  assert.equal(search(f.store, f.agent.id, version, 'PARTIALCHECKPOINTWITNESS').eligibleMessages, messages.length);
+  f.reopen();
+  assert.equal(f.store.startupProfile().mode, 'clean');
+  assert.equal(f.store.getImportedHistoryAvailability(f.agent.id).status, 'ready');
+}));
+
+for (const source of ['canonical files', 'SQLite authority']) {
+  test(`writes to ${source} between deferred index turns still require recovery`, { timeout: 20000 }, t => fixture(t, async f => {
+    const messages = Array.from({ length: 48 }, (_, index) => ({ role: 'assistant', text: `DIRTYCHECKPOINTWITNESS ${index}` }));
+    f.store.setImportedHistory(f.agent.id, 'Dirty checkpoint archive', messages);
+    f.reopen();
+    await yieldToLoop();
+    const indexed = f.store.sqlite.prepare('SELECT count(*) count FROM imported_history_fts').get().count;
+    assert.ok(indexed > 0 && indexed < messages.length, 'Authoritative write must interleave actual indexing turns');
+    let requestBefore;
+    if (source === 'canonical files') f.store.updateAgent(f.agent.id, { title: 'Canonical edit between indexing turns' });
+    else {
+      const requests = new CoordinationV3Store(f.store.sqlite).coordinate({
+        projectId: f.project.id, conversationId: f.chat.id, actorScope: 'user:local-operator', idempotencyKey: randomUUID(),
+        requests: [{ recipientAgentId: f.agent.id, lifetime: { kind: 'indefinite' } }],
+      });
+      requestBefore = f.store.sqlite.prepare('SELECT * FROM coordination_requests WHERE id=?').get(requests.requestIds[0]);
+    }
+    await ready(f.store, f.agent.id);
+    f.reopen();
+    assert.equal(f.store.startupProfile().mode, 'recovery', 'Deferred projection accounting must never credit unrelated writes');
+    if (source === 'canonical files') assert.equal(f.store.getAgent(f.agent.id).title, 'Canonical edit between indexing turns');
+    else assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM coordination_requests WHERE id=?').get(requestBefore.id), requestBefore);
+    await ready(f.store, f.agent.id);
+    assert.deepEqual(f.store.getImportedHistory(f.agent.id).messages, messages);
+  }));
 }
 function search(store, agentId, archiveVersion, query, limit = 8) {
   const { response } = store.searchImportedHistory({ agentId, archiveVersion, query, limit });

@@ -317,7 +317,7 @@ export class AgentStore extends AgentEventSessionFacade {
       try {
         this.checkpointBaselineChanges = (
           this.client.prepare("SELECT total_changes() value").get() as { value: number }
-        ).value;
+        ).value - this.agentCatalog.deferredImportedProjectionChanges();
         this.checkpointBaselineFingerprint = projectionSourceFingerprint(dataDir);
       } catch {
         this.checkpointBaselineChanges = undefined;
@@ -1863,16 +1863,15 @@ export class AgentStore extends AgentEventSessionFacade {
       this.agentCatalog.invalidateImportedIndexes(true);
       admittedStores.delete(this);
       // A checkpoint is an optimization, never shutdown authority. Canonical
-      // files are committed before their projections. A write-active lifetime
-      // requires full recovery at the next startup unless the caller explicitly
-      // requests replay before checkpointing. Partial projection writes must
-      // never be certified as clean.
+      // files and non-index SQLite writes still require full recovery. Discount
+      // only exact synchronous deferred-index writes, never other work between
+      // indexing turns. A fenced index retains its preparing/unavailable state.
       try {
         const currentChanges = (
           this.client.prepare("SELECT total_changes() value").get() as { value: number }
         ).value;
         const unchanged = this.checkpointBaselineChanges !== undefined &&
-          currentChanges === this.checkpointBaselineChanges &&
+          currentChanges - this.agentCatalog.deferredImportedProjectionChanges() === this.checkpointBaselineChanges &&
           this.checkpointBaselineFingerprint !== undefined &&
           projectionSourceFingerprint(this.dataDirectory) === this.checkpointBaselineFingerprint;
         if (!unchanged && options.checkpointWrites) {
