@@ -47,7 +47,7 @@ export function parseBranchRoute(search: string): BranchRoute {
 export function branchRoutePath(route: BranchRoute): string {
   const query = new URLSearchParams();
   if (route.branchId) query.set('branch', route.branchId);
-  if (route.tab !== 'workflow') query.set('tab', route.tab);
+  if (route.tab !== 'workflow' || route.executionId) query.set('tab', route.tab);
   if (route.executionId) query.set('execution', route.executionId);
   if (route.creationKey) query.set('createChat', route.creationKey);
   if (route.chatId) query.set('chat', route.chatId);

@@ -5,14 +5,14 @@ import {
   useContext,
   useLayoutEffect,
   useMemo,
-  useRef,
   useState,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { ProviderQuotaIndicator } from "./ProviderUsageCenter";
 
-type RegisterHeaderActionOutlet = (element: HTMLElement) => () => void;
+type RegisterHeaderActionOutlet = (element: HTMLElement, depth?: number) => () => void;
+type HeaderActionOutlet = { element: HTMLElement; depth: number };
 
 const PrimaryHeaderActionsContext = createContext<
   RegisterHeaderActionOutlet | undefined
@@ -39,15 +39,16 @@ export function PrimaryHeaderActionsProvider({
   const coarsePointer = useMediaQuery("(pointer: coarse)");
   const mobile = narrow || coarsePointer;
   const [fallbackOutlet, setFallbackOutlet] = useState<HTMLDivElement | null>(null);
-  const [outlets, setOutlets] = useState<HTMLElement[]>([]);
-  const register = useCallback<RegisterHeaderActionOutlet>((element) => {
-    setOutlets(current => [...current.filter(candidate => candidate !== element), element]);
+  const [outlets, setOutlets] = useState<HeaderActionOutlet[]>([]);
+  const register = useCallback<RegisterHeaderActionOutlet>((element, depth = 0) => {
+    setOutlets(current => [...current.filter(candidate => candidate.element !== element), { element, depth }]);
     return () => {
-      setOutlets(current => current.filter(candidate => candidate !== element));
+      setOutlets(current => current.filter(candidate => candidate.element !== element));
     };
   }, []);
   const value = useMemo(() => register, [register]);
-  const activeOutlet = outlets.at(-1);
+  // Scoped Chat/Agent chrome outranks its Branch even when the outer header remounts.
+  const activeOutlet = outlets.reduce<HeaderActionOutlet | undefined>((active, next) => !active || next.depth >= active.depth ? next : active, undefined)?.element;
 
   return (
     <PrimaryHeaderActionsContext.Provider value={value}>
@@ -89,20 +90,13 @@ export function PrimaryHeaderActionsProvider({
   );
 }
 
-/** Observe real nested headers through the existing outlet registration, including lazy/error views. */
-export function PrimaryHeaderActionsScope({onPresenceChange,children}:{onPresenceChange?(present:boolean):void;children:ReactNode}):JSX.Element {
+/** Keep shared usage in the deepest mounted Chat/Agent header, with outer fallback. */
+export function PrimaryHeaderActionsScope({children}:{children:ReactNode}):JSX.Element {
   const register=useContext(PrimaryHeaderActionsContext);
-  const outlets=useRef(new Set<HTMLElement>());
-  const scopedRegister=useCallback<RegisterHeaderActionOutlet>(element=>{
-    const unregister=register?.(element);
-    outlets.current.add(element);
-    onPresenceChange?.(true);
-    return ()=>{
-      unregister?.();
-      outlets.current.delete(element);
-      onPresenceChange?.(outlets.current.size>0);
-    };
-  },[register,onPresenceChange]);
+  const scopedRegister=useCallback<RegisterHeaderActionOutlet>((element,depth=0)=>{
+    const unregister=register?.(element,depth+1);
+    return ()=>unregister?.();
+  },[register]);
   return <PrimaryHeaderActionsContext.Provider value={scopedRegister}>{children}</PrimaryHeaderActionsContext.Provider>;
 }
 
