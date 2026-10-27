@@ -39,9 +39,9 @@ async function withBudgetFixture(t, work) {
   } });
 }
 
-async function withRetainedBudgetFixture(t, work) {
+async function withRuntimePoolBudgetFixture(t, maxIdleSessions, work) {
   const previous = process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;
-  process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS = '2';
+  process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS = String(maxIdleSessions);
   try { await withBudgetFixture(t, work); }
   finally {
     if (previous === undefined) delete process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;
@@ -144,7 +144,7 @@ test('oversized omitted history remains completely readable in authorized Unicod
   await finish(f, agent, session);
 }));
 
-test('continuation budgets charge exact-generation occupancy, not aggregate traffic or unverified generations', fixtureTestOptions, t => withRetainedBudgetFixture(t, async f => {
+test('continuation budgets charge exact-generation occupancy, not aggregate traffic or unverified generations', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
   const chat = await f.createChat('Exact session occupancy'), agent = await f.createIdleAgent(chat, 'Occupancy reader');
   let session = await f.hold(agent.id); const generation = session.engineAgentId;
@@ -164,7 +164,7 @@ test('continuation budgets charge exact-generation occupancy, not aggregate traf
   await finish(f, agent, session);
 }));
 
-test('fresh replacement ignores discarded occupancy and retrieves old submitted evidence omitted from the new input', fixtureTestOptions, t => withRetainedBudgetFixture(t, async f => {
+test('fresh replacement ignores discarded occupancy and retrieves old submitted evidence omitted from the new input', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
   const chat = await f.createChat('Discarded context is not retained'), agent = await f.createIdleAgent(chat, 'Replacement reader');
   const witness = authored(f.store, chat, agent, `DISCARDED_BUDGET_WITNESS ${'saved evidence '.repeat(1900)}`);
@@ -186,7 +186,7 @@ test('fresh replacement ignores discarded occupancy and retrieves old submitted 
   await finish(f, agent, session);
 }));
 
-test('unknown over-policy occupancy rejects required input before provider dispatch and preserves accepted context', fixtureTestOptions, t => withRetainedBudgetFixture(t, async f => {
+test('unknown over-policy occupancy rejects required input before provider dispatch and preserves accepted context', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
   const chat = await f.createChat('Explicit context overflow'), agent = await f.createIdleAgent(chat, 'Retained context owner');
   const session = await f.hold(agent.id), generation = session.engineAgentId;
@@ -208,6 +208,45 @@ test('unknown over-policy occupancy rejects required input before provider dispa
   assert.equal(new CoordinationV3Store(f.store.sqlite).activeAgentRun(agent.id), undefined);
   assert.match(JSON.stringify(f.store.readLog(agent.id)), /context policy.*response headroom/i);
 }));
+
+for (const laterSteering of [false, true]) {
+  test(`cold resume ${laterSteering ? 'refuses occupancy made stale by later steering' : 'reuses an exact completed-Run occupancy observation'}`, fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 0, async f => {
+    f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
+    const chat = await f.createChat('Observed cold resume'), agent = await f.createIdleAgent(chat, 'Cold reader');
+    const session = await f.hold(agent.id), generation = session.engineAgentId;
+    const previous = accepted(f.store, agent.id), frozen = JSON.stringify(previous);
+    await until(async () => (await f.detail(agent.id)).runOutput.some(output => output.text.includes('Ordinary fixture execution output')), 'initial provider output observed');
+    session.events.push({ type: 'context_usage', providerSessionId: generation, providerSessionGeneration: generation,
+      usedTokens: 25000, windowTokens: 200000, aggregateTokens: 900000 });
+    await until(() => f.store.readEvents(agent.id).some(({ event }) => event.type === 'context_usage' && event.providerSessionGeneration === generation), 'exact occupancy event persisted');
+    if (laterSteering) {
+      await f.send(agent.id, 'Input accepted after the occupancy observation', { activeRunDelivery: 'steer' });
+      await until(() => f.steers.some(steer => steer.agentId === agent.id), 'later steering acknowledged');
+    }
+    await finish(f, agent, session);
+    await until(() => !session.isAlive(), 'idle owned provider root exits');
+    const measured = f.store.acceptedProviderSessionContextUsage(agent.id);
+    if (laterSteering) assert.equal(measured, undefined, 'Post-observation steering invalidates the measurement');
+    else {
+      assert.equal(measured.usage.usedTokens, 25000); assert.equal(measured.executionId, previous.executionId);
+      assert.equal(measured.usage.providerSessionGeneration, generation); assert.ok(measured.observedAt);
+    }
+    const resumed = await f.hold(agent.id), packet = accepted(f.store, agent.id), value = budget(packet);
+    assert.notEqual(resumed, session); assert.equal(resumed.engineAgentId, generation);
+    if (laterSteering) {
+      assert.equal(value.occupancyBasis, 'unavailable'); assert.equal(value.occupancyTokens, 0);
+      assert.equal(value.occupancyObservation, undefined);
+    } else {
+      assert.equal(value.occupancyBasis, 'exact_session'); assert.equal(value.occupancyTokens, 25000);
+      assert.equal(value.occupancyObservation.source, 'accepted_run');
+      assert.equal(value.occupancyObservation.providerSessionId, generation);
+      assert.equal(value.occupancyObservation.executionId, previous.executionId);
+      assert.equal(value.occupancyObservation.observedAt, measured.observedAt);
+    }
+    assert.equal(JSON.stringify(f.store.getProviderInput(previous.executionId, true)), frozen);
+    await finish(f, agent, resumed);
+  }));
+}
 
 let broadcastSequence = 0;
 function broadcast(store, chat, text) {
