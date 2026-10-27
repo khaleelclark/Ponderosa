@@ -52,6 +52,7 @@ import {
   encodePortableArtifact,
   parsePortablePackageFile,
   portablePackageJsonChunks,
+  portableImportPayloadHash,
   withAgentImportAdmission,
 } from "../agent-package-codec.js";
 
@@ -150,6 +151,7 @@ export function registerAgentPackageRoutes(
   const pendingUploads=new WeakMap<IncomingMessage,StagedImportUpload>();
   const completedUploadRequests=new WeakSet<IncomingMessage>();
   const maximumImportBytes = AGENT_PACKAGE_MAX_BYTES + AGENT_PACKAGE_METADATA_MAX_BYTES + 1;
+  const maximumJsonImportBytes = AGENT_PACKAGE_MAX_BYTES + AGENT_PACKAGE_METADATA_MAX_BYTES + 12;
   const maximumStagedImportBytes = AGENT_PACKAGE_STAGING_MAX_BYTES;
   let stagedImportBytes = 0;
   const stagedReservations = new Map<string, number>();
@@ -454,7 +456,7 @@ export function registerAgentPackageRoutes(
                 metadata=value as unknown as StagedImportUpload['metadata'];
               }
             }
-            if (jsonEnvelope ? size > maximumImportBytes : size - (metadataBytes ?? headerBytes) > AGENT_PACKAGE_MAX_BYTES) {
+            if (jsonEnvelope ? size > maximumJsonImportBytes : size - (metadataBytes ?? headerBytes) > AGENT_PACKAGE_MAX_BYTES) {
               throw Object.assign(new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL}`), { statusCode: 413 });
             }
             reserveStagedBytes(reservationId, bytes.length);
@@ -902,14 +904,24 @@ export function registerAgentPackageRoutes(
           Object.entries(importBody.engineMapping as Record<string, string>)
             .map(([source, target]) => [source, target.trim()]),
         );
-        const payloadHash = creationRequest.rawPayloadHash ?? createHash("sha256").update(stableJson({
-          package: importBody.package,
-          conversationId: importBody.conversationId,
-          engineMapping: normalizedEngineMapping,
-          ...(importBody.chatInstructionsResolution ? { chatInstructionsResolution: importBody.chatInstructionsResolution } : {}),
-          acknowledgeElevatedManagementPermissions:
-            importBody.acknowledgeElevatedManagementPermissions ?? false,
-        })).digest("hex");
+        let payloadHash: string;
+        try {
+          if (!creationRequest.rawPayloadHash) {
+            const { package: portable, ...metadata } = importBody;
+            agentPackageJsonUtf8Bytes(portable);
+            agentPackageJsonUtf8Bytes(metadata, AGENT_PACKAGE_METADATA_MAX_BYTES);
+          }
+          payloadHash = creationRequest.rawPayloadHash ?? await portableImportPayloadHash({
+            package: importBody.package,
+            conversationId: importBody.conversationId,
+            engineMapping: normalizedEngineMapping,
+            ...(importBody.chatInstructionsResolution ? { chatInstructionsResolution: importBody.chatInstructionsResolution } : {}),
+            acknowledgeElevatedManagementPermissions:
+              importBody.acknowledgeElevatedManagementPermissions ?? false,
+          }, signal);
+        } catch (error) {
+          return reply.code((error as {statusCode?:number})?.statusCode ?? 400).send({ error: error instanceof Error ? error.message : "invalid Agent import identity" });
+        }
         try {
           creationOperationId = store.beginAgentCreationOperation({
             projectId,
@@ -1284,7 +1296,7 @@ export function registerAgentPackageRoutes(
             importedAt: new Date().toISOString(),
             ...(node.initialInstructions !== undefined ? { initialInstructions: node.initialInstructions, initialInstructionsSeparated: true } : {}),
             messages: node.history,
-          });
+          }, AGENT_PACKAGE_MAX_BYTES - 1);
         }
       } catch (error) {
         abandonMutationFreeOperation(error instanceof Error ? error.message : "Agent package exceeds its byte limit");
@@ -1605,7 +1617,8 @@ export function registerAgentPackageRoutes(
       if (!idempotencyKey) return reply.code(400).send({ error: "a valid import idempotency key is required" });
       return await withAgentImportAdmission(async () => {
         if (await sha256File(request.body.pathname) !== request.body.sha256) throw new Error("Agent upload changed after admission");
-        const { metadata, portable } = await parsePortablePackageFile(request.body.pathname, { jsonEnvelope });
+        const { metadata, portable, canonicalPayloadHash } = await parsePortablePackageFile(request.body.pathname, { jsonEnvelope });
+        if (jsonEnvelope && !canonicalPayloadHash) throw new Error("Agent import canonical identity is unavailable");
         if ((!jsonEnvelope && metadata.conversationId !== request.body.metadata?.conversationId) ||
             !resourceInProduct(store, "conversation", metadata.conversationId, requestProduct(request))) {
           return reply.code(404).send({ error: "The destination Chat is unavailable in this product" });
@@ -1614,7 +1627,7 @@ export function registerAgentPackageRoutes(
           idempotencyKey,
           // JSON callers retain their original canonical payload identity;
           // binary uploads retain their exact owned-upload identity.
-          ...(!jsonEnvelope ? { rawPayloadHash: request.body.sha256 } : {}),
+          rawPayloadHash: jsonEnvelope ? canonicalPayloadHash : request.body.sha256,
         });
       });
     } catch (error) {
@@ -1631,7 +1644,7 @@ export function registerAgentPackageRoutes(
     scope.addContentTypeParser("application/json", stagedImportParser(true));
     scope.post<{ Params: { id: string }; Headers: { "idempotency-key"?: string }; Body: StagedImportUpload }>(
       "/api/projects/:id/import-agents",
-      { bodyLimit: maximumImportBytes, preHandler: claimUpload },
+      { bodyLimit: maximumJsonImportBytes, preHandler: claimUpload },
       (request, reply) => importStagedPackage(request, reply, true),
     );
   });

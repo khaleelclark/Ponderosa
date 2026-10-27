@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {randomBytes} from 'node:crypto';
-import {portableBase64ByteLength,decodePortableArtifact,portablePackageJsonChunks} from '../../apps/server/dist/agent-package-codec.js';
-import {MANAGED_ARTIFACT_MAX_BYTES} from '@ponderosa/agents';
+import {createHash} from 'node:crypto';
+import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {portableBase64ByteLength,decodePortableArtifact,portablePackageJsonChunks,parsePortablePackageFile,portableImportPayloadHash} from '../../apps/server/dist/agent-package-codec.js';
+import {MANAGED_ARTIFACT_MAX_BYTES,stableJson,stableJsonParts} from '@ponderosa/agents';
+import {payloadHash} from '../../packages/agents/dist/coordination-v3-canonical-json.js';
 import {AGENT_PACKAGE_MAX_AGENTS,AGENT_PACKAGE_MAX_BYTES,agentPackageJsonPieces,agentPackageJsonUtf8Bytes} from '@ponderosa/core';
 import {validatePortableAgentPackage} from '../../apps/server/dist/portable-agent-package-validation.js';
 import {AgentManagementAuthority} from '../../packages/agents/dist/store-agent-management-authority.js';
@@ -119,4 +124,39 @@ test('external conversion guidance requests complete transcript text under the s
  assert.match(prompt,/complete original conversation/u);assert.match(prompt,/256 MiB of UTF-8 bytes/u);
  assert.doesNotMatch(prompt,/100,?000|single message exceeds/u);
  assert.match(prompt,/hidden system\/developer prompts/u);assert.match(prompt,/do not.*partial package/iu);
+});
+
+test('legacy JSON codec preserves canonical identity beyond the live-runtime node budget',{timeout:60_000},async t=>{
+ const directory=await mkdtemp(path.join(tmpdir(),'ponderosa-package-json-')),file=path.join(directory,'request.json');let passed=false;
+ try{
+  const pkg=packageFor();pkg.agents[0].history=Array.from({length:400000},()=>({role:'user',text:''}));
+  const payload={engineMapping:{codex:' codex '},conversationId:'destination',package:pkg};
+  await writeFile(file,JSON.stringify(payload));
+  const decoded=await parsePortablePackageFile(file,{jsonEnvelope:true});
+  assert.equal(decoded.portable.agents[0].history.length,400000);
+  assert.equal(validatePortableAgentPackage(decoded.portable).package.agents[0].history.length,400000);
+  const canonical={package:pkg,conversationId:'destination',engineMapping:{codex:'codex'},acknowledgeElevatedManagementPermissions:false};
+  assert.throws(()=>stableJson(canonical),/1000000 nodes/u,'fixture exceeds the separate runtime canonicalization limit');
+  const expected=createHash('sha256').update(stableJson(canonical,{maxDepth:64,maxNodes:AGENT_PACKAGE_MAX_BYTES})).digest('hex');
+  assert.equal(decoded.canonicalPayloadHash,expected);
+  let yielded=false;setImmediate(()=>{yielded=true});
+  assert.equal(await portableImportPayloadHash(canonical),expected);assert.equal(yielded,true,'internal import hashing yields to unrelated work');
+  passed=true;
+ }finally{if(passed)await rm(directory,{recursive:true,force:true});else t.diagnostic(`Retained JSON codec fixture: ${directory}`)}
+});
+
+test('streamed canonical JSON retains established byte ordering, hashes and default structural safeguards',async()=>{
+ const values=[undefined,null,-0,NaN,[undefined,'雪\r\n🌲','\ud800'],{z:'last',a:{2:'two',10:'ten',b:undefined,a:false},b:[true,null,'🌲'.repeat(20000)]}];
+ const keys=['z','a','b','2','10'].sort();
+ for(const value of values){
+  const expected=JSON.stringify(value,keys)??'null';
+  assert.equal(stableJson(value),expected);assert.equal([...stableJsonParts(value)].join(''),expected);
+  assert.equal(payloadHash(value),createHash('sha256').update(expected).digest('hex'));
+  assert.equal(await portableImportPayloadHash(value),payloadHash(value));
+ }
+ assert.equal(stableJson({2:'two',10:'ten'}),'{"10":"ten","2":"two"}');
+ assert.throws(()=>stableJson([1,2],{maxDepth:1,maxNodes:2}),/2 nodes/u);
+ assert.throws(()=>stableJson({a:{b:1}},{maxDepth:1,maxNodes:10}),/maximum depth 1/u);
+ const abort=new AbortController();abort.abort(Error('Owned import canceled'));
+ await assert.rejects(portableImportPayloadHash({text:'bounded'},abort.signal),/Owned import canceled/u);
 });

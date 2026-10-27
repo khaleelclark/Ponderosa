@@ -6,7 +6,7 @@ import {
   AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL, agentPackageJsonPieces,
   type AgentPortablePackageDto, type ImportAgentPackageRequest,
 } from "@ponderosa/core";
-import { MANAGED_ARTIFACT_MAX_BYTES } from "@ponderosa/agents";
+import { MANAGED_ARTIFACT_MAX_BYTES, stableJsonParts } from "@ponderosa/agents";
 
 const CODEC_TIMEOUT_MS = 60_000;
 // The JSON source and parsed UTF-16 strings can coexist. A single bounded
@@ -28,6 +28,23 @@ async function admission<T>(kind: "import" | "codec", work: () => Promise<T>): P
 export function withAgentImportAdmission<T>(work: () => Promise<T>): Promise<T> {
   return admission("import", work);
 }
+
+/** Internal imports retain the same canonical identity without materializing
+ * a whole JSON string or borrowing the live-runtime structural budget. */
+export async function portableImportPayloadHash(value: unknown, signal?: AbortSignal): Promise<string> {
+  const hash = createHash("sha256");
+  let batchBytes = 0;
+  for (const part of stableJsonParts(value, { maxDepth: 64, maxNodes: AGENT_PACKAGE_MAX_BYTES })) {
+    signal?.throwIfAborted();
+    hash.update(part);
+    batchBytes += Buffer.byteLength(part, "utf8");
+    if (batchBytes >= 256 * 1024) {
+      batchBytes = 0;
+      await yieldToLoop();
+    }
+  }
+  return hash.digest("hex");
+}
 export type PackageWireEntry =
   | { kind: "array" | "object"; path: Array<string | number> }
   | { kind: "string"; path: Array<string | number>; value: string }
@@ -42,6 +59,7 @@ export interface PackageCodecOptions {
 export async function parsePortablePackageFile(pathname: string, options: PackageCodecOptions = {}): Promise<{
   metadata: Omit<ImportAgentPackageRequest, "package">;
   portable: AgentPortablePackageDto;
+  canonicalPayloadHash?: string;
 }> {
   return admission("codec", async () => {
     options.signal?.throwIfAborted();

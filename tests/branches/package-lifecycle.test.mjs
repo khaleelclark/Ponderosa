@@ -76,6 +76,22 @@ test('ordinary HTTP import retains explicit permission acknowledgement, exact re
  assert.equal(operation.conversationId,project.lastConversationId);assert.equal(operation.productScope,'dev');assert.equal(operation.status,'completed');
  assert.throws(()=>f.store.beginAgentCreationOperation({projectId:project.id,conversationId:f.chatId,actorScope:operation.actorScope,kind:'import',idempotencyKey:authorizedKey,payloadHash:operation.payloadHash}),/different input/);
  const replay=await f.app.inject({method:'POST',url:`/api/projects/${project.id}/import-agents`,payload:authorized,headers:{'idempotency-key':authorizedKey}});assert.equal(replay.statusCode,200);assert.deepEqual(replay.json(),result);
+ const reordered=await f.app.inject({method:'POST',url:`/api/projects/${project.id}/import-agents`,payload:{engineMapping:{codex:' codex '},conversationId:project.lastConversationId,acknowledgeElevatedManagementPermissions:true,package:pkg},headers:{'idempotency-key':authorizedKey}});
+ assert.equal(reordered.statusCode,200,reordered.body);assert.deepEqual(reordered.json(),result,'canonical JSON replay retains its original identity');
+}));
+
+test('legacy JSON envelopes retain bounded metadata and reject malformed text before destination mutations',t=>withPackages(t,async f=>{
+ const project=f.store.createProject({label:'Envelope destination',chatOwned:true,hostPath:f.store.getProject(f.project.id).hostPath,defaultEngine:'codex'});
+ for(const failure of ['metadata','history','initialInstructions']){
+  const pkg=portable();pkg.mode='full';
+  if(failure==='history')pkg.agents[0].history=[{role:'user',text:'\ud800'}];
+  if(failure==='initialInstructions')pkg.agents[0].initialInstructions='\udfff';
+  const payload={package:pkg,conversationId:project.lastConversationId,engineMapping:{codex:failure==='metadata'?'x'.repeat(16384):'codex'}};
+  const result=await f.app.inject({method:'POST',url:`/api/projects/${project.id}/import-agents`,headers:{'idempotency-key':randomUUID()},payload});
+  assert.equal(result.statusCode,failure==='metadata'?413:400,result.body);
+  assert.match(result.json().error,failure==='metadata'?/metadata exceeds 16 KiB/u:/well-formed Unicode/u);
+  assert.equal(f.store.listAgents(project.id).length,0);
+ }
 }));
 
 test('post-remap UTF-8 growth is refused before Agent reservation, artifact publication or Chat changes',{timeout:60_000},t=>withPackages(t,async f=>{
