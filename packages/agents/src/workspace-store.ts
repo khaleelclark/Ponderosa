@@ -1632,6 +1632,7 @@ export class WorkspaceStore {
     limit: number;
     before?: WorkspaceNotificationPageCursor;
     include?:(notification:WorkspaceNotificationDto)=>boolean;
+    kind?: NotificationLiveKind;
   }): WorkspaceNotificationPage {
     const limit = Math.max(1, Math.min(100, Math.floor(input.limit)));
     let start = 0;
@@ -1645,13 +1646,13 @@ export class WorkspaceStore {
       }
       start = low;
     }
-    if(input.include){
+    if(input.include||input.kind){
       const items:WorkspaceNotificationDto[]=[];
       let openActionCount=0,unacknowledgedActionCount=0,unreadUpdateCount=0,hasMore=false;
       for(let index=0;index<this.activeNotifications.length;index++){
-        const item=this.activeNotifications[index]!;if(!input.include(item))continue;
+        const item=this.activeNotifications[index]!;if(input.include&&!input.include(item))continue;
         if(notificationLiveKind(item)==='attention'){openActionCount++;if(!item.acknowledgedAt)unacknowledgedActionCount++;}else unreadUpdateCount++;
-        if(index<start)continue;
+        if(index<start||(input.kind&&notificationLiveKind(item)!==input.kind))continue;
         if(items.length<limit)items.push(item);else hasMore=true;
       }
       const last=items.at(-1);

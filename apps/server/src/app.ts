@@ -1383,7 +1383,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     onSourceFailure:({trigger,kind,error})=>{createOperationalNotification({dedupeKey:`branch-source:${trigger.id}:${kind}`,branchId:trigger.branchId,category:'system',severity:'attention',title:'Branch discovery needs attention',body:error,action:{kind:'open_branch',targetId:trigger.branchId!}});},
     onSourceRecovered:(id,kind)=>resolveOperationalNotification(`branch-source:${id}:${kind}`),
   });
-  registerBranchRoutes(app,{branches,store,installations:branchInstallations,sources:branchSources,createChat:application.createChat,
+  registerBranchRoutes(app,{branches,store,workspace,installations:branchInstallations,sources:branchSources,createChat:application.createChat,
     preferences:()=>workspace.getPreferences(),engineAvailable:id=>engines.has(id)&&providerEnabled(id),
     providerStatus:async id=>{const registration=engines.get(id);return registration?{...await runtimeStatus(id,registration),enabled:providerEnabled(id)}:{authentication:'error',intakeReady:false,availabilityDetail:'Provider is not configured'};},
     discoverConnectors:async branchId=>{

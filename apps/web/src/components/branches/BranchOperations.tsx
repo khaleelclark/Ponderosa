@@ -1,23 +1,10 @@
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import {Accordion,AccordionDetails,AccordionSummary,Alert,Button,Paper,Stack,Typography} from '@mui/material';
-import {useQuery,useInfiniteQuery} from '@tanstack/react-query';
-import type {BranchDto,BranchLifecycleDto,TriggerOccurrenceDto} from '@ponderosa/core';
-import {realApi,requestJson} from '../../api/real';
-import {queryKeys} from '../../queryKeys';
-import {isOpenAttention} from '../../attention';
+import {Accordion,AccordionDetails,AccordionSummary,Alert,Button,Stack,Typography} from '@mui/material';
+import {useInfiniteQuery} from '@tanstack/react-query';
+import type {BranchLifecycleDto,TriggerOccurrenceDto} from '@ponderosa/core';
+import {requestJson} from '../../api/real';
 import type {BranchRoute} from '../../branchesRouting';
 import {OccurrenceAudit} from '../TriggerOccurrenceAudit';
-
-export function BranchOperations({branches,onNavigate}:{branches:BranchDto[];onNavigate(route:BranchRoute):void}):JSX.Element {
- const attention=useQuery({queryKey:queryKeys.notifications.all,queryFn:()=>realApi.listNotifications(undefined,50),refetchInterval:5000});
- // Home previews 50 notifications and the loaded directory; the shared inbox and directory pagination expose older records.
- const items=attention.data?.items.filter(isOpenAttention)??[];
- const working=branches.filter(branch=>(branch.activeExecutions??0)>0);
- return <Stack spacing={2}>
-  <Paper variant="outlined" sx={{p:2}}><Typography variant="h6">Needs Attention</Typography>{attention.isPending?<Typography>Loading decisions and delivery issues…</Typography>:attention.error?<Alert severity="error" action={<Button onClick={()=>void attention.refetch()}>Retry</Button>}>{attention.error.message}</Alert>:items.length?items.map(item=><Stack key={item.id} direction="row" alignItems="center" gap={1}><Typography sx={{flex:1}}>{item.title}</Typography>{item.branchId&&<Button onClick={()=>onNavigate({branchId:item.branchId,tab:'executions'})}>Review Branch</Button>}</Stack>):<Typography color="text.secondary">Nothing in the current notification page needs your attention.</Typography>}<Typography variant="caption" color="text.secondary">Open Notifications to review decisions, delivery details, and older attention items.</Typography></Paper>
-  <Paper variant="outlined" sx={{p:2}}><Typography variant="h6">Working Now</Typography>{working.length?working.map(branch=><Button key={branch.id} onClick={()=>onNavigate({branchId:branch.id,tab:'executions'})}>{branch.name} · {branch.activeExecutions} active</Button>):<Typography color="text.secondary">No active executions in the loaded workflow directory.</Typography>}</Paper>
- </Stack>;
-}
 
 export function BranchLifecycleStatus({lifecycle,onCancelUpdate,canceling=false}:{lifecycle:BranchLifecycleDto;onCancelUpdate?(id:string):void;canceling?:boolean}):JSX.Element {
  return <Stack spacing={1} role="status">

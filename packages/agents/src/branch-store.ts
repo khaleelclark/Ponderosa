@@ -11,7 +11,7 @@ import type Database from "better-sqlite3";
 import {
   CAPABILITY_IDS,
   TERMINAL_REQUEST_STATES, type ProjectSort, type BranchConfiguration, type BranchRuntimeOutcome, type BranchDefinition, type BranchBindings, type BranchDto,
-  type BranchExecutionDto, type BranchExecutionDetailDto, type BranchResult, type BranchVersionDto,
+  type BranchExecutionDto, type BranchExecutionDetailDto, type BranchHomeExecutionDto, type BranchResult, type BranchVersionDto,
   type DeployBranchRequest, type RuntimeProcessIdentity, type CommunicationEvent,
   type BranchDeploymentPreviewDto, type AgentPortablePackageDto, type ImportAgentPackageResponse, type TriggerSourceConfig, type CoordinationRequestState, type WorkspaceEvent, type BranchGateResolution, type BranchIntervention,
 } from "@ponderosa/core";
@@ -622,6 +622,30 @@ export class BranchStore {
     const before = beforeId ? this.row("SELECT rowid AS position FROM branch_executions WHERE id = ? AND branch_id = ?", beforeId, branchId)?.position : Number.MAX_SAFE_INTEGER;
     if (before === undefined) throw new Error("Execution cursor does not belong to this Branch");
     return this.rows("SELECT id FROM branch_executions WHERE branch_id = ? AND rowid < ?"+(state?" AND state = ?":"")+" ORDER BY rowid DESC LIMIT 100", branchId, before, ...(state?[state]:[])).map(r => this.execution(r.id)!);
+  }
+  /** Global execution membership is canonical, independent of sidebar pages, search and folders. */
+  homeExecutions(input: { activeBefore?: { at: string; id: string }; outcomeBefore?: { at: string; id: string } }) {
+    const page = (active: boolean, before?: { at: string; id: string }) => {
+      const timestamp = active ? "created_at" : "updated_at", limit = active ? 8 : 6;
+      const states = active ? "'queued','running','waiting'" : "'completed','failed','canceled','skipped','merged'";
+      const rows = this.rows(`SELECT e.id,e.branch_id,b.name branch_name,e.parent_execution_id,e.state,
+        e.created_at,e.updated_at,e.budget_wait,e.cancel_requested
+        FROM branch_executions e JOIN branches b ON b.id=e.branch_id
+        WHERE e.state IN (${states}) ${before ? `AND (e.${timestamp},e.id)<(?,?)` : ""}
+        ORDER BY e.${timestamp} DESC,e.id DESC LIMIT ?`, ...(before ? [before.at, before.id] : []), limit + 1);
+      const visible = rows.slice(0, limit);
+      const items = visible.map(r => ({ id:r.id,branchId:r.branch_id,branchName:r.branch_name,
+        ...(r.parent_execution_id?{parentExecutionId:r.parent_execution_id}:{}),state:r.state,createdAt:r.created_at,updatedAt:r.updated_at,
+        ...(r.state==='queued'&&r.budget_wait&&!r.cancel_requested?{budgetWait:{kind:'execution_budget' as const,branchId:r.branch_id}}:{})
+      } satisfies Omit<BranchHomeExecutionDto, 'operational'> & Pick<BranchExecutionDto, 'budgetWait'>));
+      const last = visible.at(-1);
+      return { items, ...(rows.length>limit&&last?{next:{at:last[timestamp] as string,id:last.id as string}}:{}) };
+    };
+    return this.sqlite.transaction(() => ({
+      workflowCount: Number(this.row('SELECT COUNT(*) count FROM branches')!.count),
+      activeExecutionCount: Number(this.row("SELECT COUNT(*) count FROM branch_executions WHERE state IN ('queued','running','waiting')")!.count),
+      activeExecutions: page(true,input.activeBefore), recentOutcomes: page(false,input.outcomeBefore),
+    }))();
   }
   private definition(execution: BranchExecutionDto): BranchDefinition { return JSON.parse(this.row("SELECT definition_json FROM branch_versions WHERE id = ?", execution.versionId)!.definition_json); }
   private bindings(execution: BranchExecutionDto): BranchBindings { return JSON.parse(this.row("SELECT bindings_json FROM branch_bindings WHERE id = ?", execution.bindingRevisionId)!.bindings_json); }
