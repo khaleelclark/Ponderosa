@@ -11,6 +11,7 @@ import type {
 import { publicProviderFailure } from "@ponderosa/core";
 import {
   CoordinationIdempotencyConflictError,
+  MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES,
   type AgentStore,
   type CoordinationV3Store,
   type StoredLogEvent,
@@ -645,6 +646,7 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
         ? { currentConversationId: rolloverConversationId }
         : {}),
       submittedCommunicationEventIds: acceptedSessionTail,
+      maxUtf8Bytes: Math.min(pressure.lowWaterMark, MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES),
     });
   } catch (error) {
     return reply.code(409).send({

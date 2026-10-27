@@ -1,4 +1,5 @@
 import { requireAdmittedDatabase } from "./state-admission.js";
+import { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES } from "@ponderosa/core/seed-history";
 import type Database from "better-sqlite3";
 import { runOwnsAwaitedDelegation, taskOriginRunIds } from "./coordination-v3-task-lineage.js";
 import type { RunAuthorizationV3 } from "./coordination-v3-types.js";
@@ -133,10 +134,10 @@ export type {
   ContextRolloverV3,
 } from "./coordination-v3-types.js";
 
+export { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES } from "@ponderosa/core/seed-history";
+
 /** Transactional authority for Communication V3. Runtime telemetry may mirror
  * these transitions, but scheduler decisions must read this store. */
-export const MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES = 256 * 1024;
-
 export class CoordinationV3Store {
   private readonly sqlite: Database.Database;
   private readonly activationReadModel: CoordinationV3ActivationReadModel;

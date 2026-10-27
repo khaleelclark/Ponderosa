@@ -18,7 +18,12 @@ import {
   safeProviderConnectionUrl,
 } from "@ponderosa/core";
 import { randomUUID } from "node:crypto";
-import { AgentEventPersistenceError, type LogEvent, type ResolvedAgentWorkingCopy } from "@ponderosa/agents";
+import {
+  AgentEventPersistenceError,
+  MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES,
+  type LogEvent,
+  type ResolvedAgentWorkingCopy,
+} from "@ponderosa/agents";
 import {
   classifyProviderFailure,
   shouldRolloverEngineSession,
@@ -1110,6 +1115,7 @@ export function startProviderRunExecution(
                         ...acceptedSessionTail,
                         ...runCapability.historyRetrievalExcludedCommunicationEventIds,
                       ])],
+                      maxUtf8Bytes: Math.min(pressure.lowWaterMark, MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES),
                     });
                   } catch (error) {
                     createOperationalNotification({

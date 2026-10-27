@@ -552,6 +552,7 @@ export class AgentStore extends AgentEventSessionFacade {
     agentId: string;
     currentConversationId?: string;
     submittedCommunicationEventIds: readonly string[];
+    maxUtf8Bytes?: number;
   }): ContextRolloverBoundaryBinding {
     const agent = this.getAgent(input.agentId);
     if (!agent) throw new Error("context rollover agent is unavailable");

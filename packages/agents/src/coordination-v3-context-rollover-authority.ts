@@ -6,13 +6,13 @@ import {
   type CoordinationRequestState,
 } from "@ponderosa/core";
 import type Database from "better-sqlite3";
+import { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES } from "@ponderosa/core/seed-history";
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import type { ContextRolloverState, ContextRolloverV3 } from "./coordination-v3-types.js";
 import { stableJson } from "./coordination-v3-canonical-json.js";
 import { delegationOriginsForActivation, hasOutstandingDelegation, pendingTaskWakeIds, runOwnsAwaitedDelegation, taskOriginRunIds } from "./coordination-v3-task-lineage.js";
 
-const MAX_CONTEXT_ROLLOVER_RECENT_TAIL_IDS = 80;
 const MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS = 1_000;
 const UNSAFE_INTERNAL_ROLLOVER_FAILURE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 const CONTEXT_ROLLOVER_HANDOFF_GUIDANCE =
@@ -82,7 +82,8 @@ export class CoordinationV3ContextRolloverAuthority {
         !input.compactionCutoffEventId.trim()) {
       throw new Error("context rollover requires an exact positive canonical boundary");
     }
-    if (input.recentTail.length === 0 || input.recentTail.length > MAX_CONTEXT_ROLLOVER_RECENT_TAIL_IDS ||
+    if (input.recentTail.length === 0 ||
+        Buffer.byteLength(JSON.stringify(input.recentTail), "utf8") > MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES ||
         new Set(input.recentTail.map((binding) => binding.communicationEventId)).size !== input.recentTail.length ||
         input.recentTail.some((binding) => !binding.communicationEventId.trim() || !/^[a-f0-9]{64}$/u.test(binding.contentSha256))) {
       throw new Error("context rollover requires a bounded unique content-hash-bound recent tail");
