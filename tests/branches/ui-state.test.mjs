@@ -10,9 +10,9 @@ test('Branch header reuses ordered shared icon tabs, names and guarded publicati
  assert.ok(html.includes('A long workflow name'),'Selected workflow name is present');assert.ok(html.includes('aria-label="Unpublished changes"'),'Dirty indication is accessible');
  assert.ok(/<button[^>]*disabled=""[^>]*aria-label="Save changes…"/.test(html),'Clean/invalid/pending Save remains disabled');
  const names=[...html.matchAll(/role="tab"[^>]*>(.*?)<\/button>/g)].map(match=>match[1].replace(/<style[^>]*>[\s\S]*?<\/style>/g,'').replace(/<[^>]*>/g,''));
- assert.deepEqual(names,['Workflow','Chats','Executions','Parameters','Settings']);
- for(const tab of ['workflow','chats','executions','parameters','settings'])assert.ok(new RegExp(`id="branch-${tab}-tab"[^>]*aria-controls="branch-${tab}-panel"`).test(html),`Tab/panel association for ${tab}`);
- for(const tab of ['executions','parameters'])assert.ok(new RegExp(`disabled=""[^>]*id="branch-${tab}-tab"|id="branch-${tab}-tab"[^>]*disabled=""`).test(html),`Unpublished ${tab} remains disabled`);
+ assert.deepEqual(names,['Workflow','Chats','Executions','Settings']);
+ for(const tab of ['workflow','chats','executions','settings'])assert.ok(new RegExp(`id="branch-${tab}-tab"[^>]*aria-controls="branch-${tab}-panel"`).test(html),`Tab/panel association for ${tab}`);
+ for(const tab of ['executions'])assert.ok(new RegExp(`disabled=""[^>]*id="branch-${tab}-tab"|id="branch-${tab}-tab"[^>]*disabled=""`).test(html),`Unpublished ${tab} remains disabled`);
  assert.ok(!/Ponderosa Branches|Build and operate|No changes to publish/.test(html),'No displaced product banner or duplicate actions');
 });
 
@@ -250,18 +250,19 @@ test('workflow Settings sections load without parameter configuration and keep l
  const client=new QueryClient({defaultOptions:{queries:{retry:false,retryOnMount:false,gcTime:Infinity}}});t.after(()=>client.clear());
  client.setQueryData(['branch-dependencies',branch.id],{calls:[],callers:[{id:'billing-workflow',ref:'reports-alias'}]});
  client.setQueryData(['capability-policy',`/api/branches/${branch.id}/capabilities`],{policy:{scopeId:branch.id,revision:0,restrictedCapabilityIds:[]},effective:{restrictionSources:{}},catalog:[]});
- const render=parameters=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(BranchSettings,{branch,definition,parameters})));
- const html=render(false),labels=['Branch capabilities','Dependencies','Delete workflow'];
+ const render=(extra={})=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(BranchSettings,{branch,definition,...extra})));
+ const html=render(),labels=['Branch capabilities','Dependencies','Delete workflow'];
  assert.ok(labels.every(label=>html.includes(label)),'All workflow Settings sections must render while configuration is unavailable');
  assert.ok(labels.every((label,index)=>!index||html.indexOf(label)>html.indexOf(labels[index-1])),'Settings section order must remain capabilities, dependencies, delete');
  assert.ok(!html.includes('Workflow settings sections')&&!html.includes('Loading configuration'),'No nested navigation or unrelated configuration gate');
- assert.equal(client.getQueryCache().find({queryKey:['branch-settings',branch.id]}),undefined,'Settings must not subscribe to unrelated configuration');
+ assert.ok(client.getQueryCache().find({queryKey:['branch-settings',branch.id]}),'The sole configuration editor stays mounted without blocking other Settings sections');
  client.setQueryData(['branch-lifecycle-summary',branch.id],{deleting:false,activeExecutions:0,chats:0,callers:[{id:'billing-workflow',name:'Billing workflow'}],updates:[],pendingRemoval:[]});
- const named=render(false);assert.ok(named.includes('Billing workflow')&&!named.includes('reports-alias'),'Called by must show the calling workflow name, never its alias for this target');
+ const named=render();assert.ok(named.includes('Billing workflow')&&!named.includes('reports-alias'),'Called by must show the calling workflow name, never its alias for this target');
  const lifecycle=client.getQueryCache().find({queryKey:['branch-lifecycle-summary',branch.id]});lifecycle.setState({status:'error',error:new Error('Controlled lifecycle failure'),fetchStatus:'idle'});
- const failed=render(false);assert.ok(failed.includes('Deletion is unavailable'),'Unknown lifecycle must not allow deletion');
+ const failed=render();assert.ok(failed.includes('Deletion is unavailable'),'Unknown lifecycle must not allow deletion');
  assert.ok(/<button[^>]*disabled=""[^>]*>Delete workflow/.test(failed),'Deletion remains disabled after failed lifecycle loading');
- assert.ok(render(true).includes('Loading configuration'),'Parameters retain their separate configuration load');
+ assert.ok(render({definition:{parameters:{note:{type:'text'}}}}).includes('Loading configuration'),'Published variables retain their independent configuration load');
+ assert.ok(!html.includes('Workflow variables')&&!html.includes('Save variables'),'Zero variables creates no empty form or Save action');
 });
 
 test('shared Provider Activity offers bounded workflow pages only in the Branches opt-in view',async t=>{
@@ -281,7 +282,7 @@ test('shared Provider Activity offers bounded workflow pages only in the Branche
 
 test('same-workflow tabs retain only mounted local owners, while workflow/global exits keep their guards',async()=>{
  const {retainedBranchDrafts}=await import('../../apps/web/src/branchesRouting.ts');
- for(const from of ['workflow','chats','executions','parameters','settings'])for(const to of ['workflow','chats','executions','parameters','settings']){
+ for(const from of ['workflow','chats','executions','settings'])for(const to of ['workflow','chats','executions','settings']){
   const retained=retainedBranchDrafts({branchId:'owner',tab:from},{branchId:'owner',tab:to});
   for(const key of ['branch-settings:owner:parameters','branch-settings:owner:limits','branch-execution-budget:owner','branch-capabilities:owner','branch-availability:owner','branch-deletion:owner'])assert.ok(retained.localKeys.includes(key),'Mounted local editors must survive same-workflow tab changes');
   assert.ok(!retained.localKeys.includes('chat-capabilities'),'Unmounted child dialogs must keep their own navigation guard');
@@ -829,6 +830,69 @@ test('scoped header usage stays with the nested owner across outer remounts and 
  const removeDeep=register(deep,2);assert.equal(active(),deep);removeDeep();assert.equal(active(),peer);
  removePeer();assert.equal(active(),nested);removeNested();assert.equal(active(),laterOuter,'Nested cleanup restores the latest outer owner');
  removeLater();assert.equal(active(),outer);removeOuter();assert.equal(active(),undefined,'The existing fallback can take over');
+});
+
+
+test('legacy Parameters links normalize to the same Settings variables owner and preserve roundtrip',()=>{
+ const legacy=parseBranchRoute('?branch=owner&tab=parameters&execution=run&chat=chat');
+ assert.deepEqual(legacy,{branchId:'owner',tab:'settings',settingsSection:'variables',executionId:'run',chatId:'chat'});
+ const path=branchRoutePath(legacy);assert.ok(path.includes('tab=settings')&&path.includes('section=variables')&&!path.includes('parameters'));
+ assert.deepEqual(parseBranchRoute(new URL(path,'https://example.test').search),legacy);
+ assert.equal(parseBranchRoute('?branch=owner&tab=workflow&section=variables').settingsSection,undefined);
+});
+
+async function variableEditorFixture(parameters={note:'edited'},definition={parameters:{note:{type:'text'}}}){
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchSettings.tsx',import.meta.url),'utf8');
+ const ast=ts.createSourceFile('settings.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),editor=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='BranchConfigurationEditor'),declarations=editor.body.statements.flatMap(node=>ts.isVariableStatement(node)?[...node.declarationList.declarations]:[]),expression=name=>declarations.find(node=>node.name.getText(ast)===name).initializer.getText(ast),writes=[];
+ const configuration={parameters:{note:'original'},limits:{maxCallDepth:8,maxLoopIterations:50,maxTraversals:500}};
+ const scope={branch:{id:'variables-owner',versionId:'published'},definition,draft:{parameters,limits:{...configuration.limits}},revision:3,baseline:{current:{configuration,revision:3}},server:{configuration,revision:3},client:{setQueryData(){},invalidateQueries:async()=>{}},setDraft:value=>{scope.draft=value},setRevision:value=>{scope.revision=value},settings:{refetch:async()=>({data:scope.server})},requestJson:async(path,init)=>{if(init?.method!=='PUT'){if(scope.readback)return scope.readback(path,init);return scope.server}const body=JSON.parse(init.body);writes.push({path,...body});if(body.revision!==scope.server.revision)throw new Error('Configuration changed; reload before saving');scope.server={configuration:body.configuration,revision:body.revision+1};return scope.server},useMutation:options=>{const mutation={options,reset(){},mutate:input=>{mutation.pending=mutation.mutateAsync(input)},mutateAsync:async input=>{const next=await options.mutationFn(input);options.onSuccess(next);return next}};return mutation}};
+ scope.currentDraft={current:scope.draft};scope.writeDraft=value=>{scope.draft=value};
+ const execute=value=>vm.runInNewContext(ts.transpile(value,{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}),scope);
+ scope.setDraft=execute(expression('setDraft'));scope.save=execute(expression('save'));scope.reloadAction=execute(expression('reloadAction'));const errors=()=>execute(expression('parameterErrors'));
+ const reload=declarations.find(node=>node.name.getText(ast)==='reload').initializer,handler=reload.openingElement.attributes.properties.find(node=>node.name?.getText(ast)==='onClick').initializer.expression;
+ const clickReload=execute(handler.getText(ast));
+ return {scope,writes,errors,reload:()=>{clickReload();return scope.reloadAction.pending},hydrate:()=>execute(editor.body.statements.find(node=>node.getText(ast).startsWith('useEffect(()=>{if(!settings.data')).getText(ast)),execute};
+}
+
+test('workflow variables reject removed/secret keys, changed scalar types and missing required values without filtering drafts',async()=>{
+ const f=await variableEditorFixture({removed:'retain me',secret:'prior text',n:'wrong',flag:'wrong',path:12},{parameters:{secret:{type:'secret'},n:{type:'number'},flag:{type:'boolean'},path:{type:'path'},required:{type:'text',required:true}}});
+ assert.equal(f.errors().length,6);assert.equal(f.scope.draft.parameters.removed,'retain me');assert.equal(f.scope.draft.parameters.secret,'prior text');
+ f.scope.draft.parameters={n:2,flag:false,path:'/valid',required:'ready'};assert.deepEqual([...f.errors()],[]);
+ f.scope.draft.parameters.n=Infinity;assert.ok(f.errors().some(error=>error.includes('finite number')));
+ f.scope.definition={parameters:{}};assert.equal(f.errors().length,4,'Removing the final schema cannot silently drop unsaved fields');
+});
+
+test('variable saves retain full limits and CAS; concurrent configuration refresh preserves edits until explicit reload',async()=>{
+ const f=await variableEditorFixture();f.scope.server={configuration:{parameters:{note:'concurrent'},limits:{maxCallDepth:12,maxLoopIterations:60,maxTraversals:700}},revision:4};
+ f.scope.settings.data=f.scope.server;f.scope.useEffect=effect=>effect();f.hydrate();assert.equal(f.scope.draft.parameters.note,'edited');assert.equal(f.scope.revision,3);
+ await assert.rejects(f.scope.save.mutateAsync(),/Configuration changed/);assert.equal(f.writes[0].revision,3);assert.equal(f.writes[0].configuration.limits.maxCallDepth,8);assert.equal(f.scope.draft.parameters.note,'edited');
+ await f.reload();assert.equal(f.scope.revision,4);assert.equal(f.scope.draft.limits.maxCallDepth,12);assert.equal(f.scope.draft.parameters.note,'concurrent');
+ f.scope.draft={...f.scope.draft,parameters:{note:'after explicit reload'}};await f.scope.save.mutateAsync();assert.deepEqual(f.writes.at(-1).configuration,{parameters:{note:'after explicit reload'},limits:{maxCallDepth:12,maxLoopIterations:60,maxTraversals:700}});assert.equal(f.scope.revision,5);
+});
+
+
+test('a delayed variable reload cannot erase newer typed values',async()=>{
+ const f=await variableEditorFixture();let finish;f.scope.readback=()=>new Promise(resolve=>{finish=resolve});
+ const pending=f.reload();const newer={...f.scope.draft,parameters:{note:'typed while reloading'}};f.scope.setDraft(newer);
+ finish({configuration:{parameters:{note:'server'},limits:f.scope.draft.limits},revision:8});await pending;
+ assert.equal(f.scope.draft.parameters.note,'typed while reloading');assert.equal(f.scope.revision,3,'The stale completion cannot replace the edit baseline either');
+});
+
+
+test('explicit configuration recovery waits for its fresh HTTP response and ignores canceled query cache',async()=>{
+ const f=await variableEditorFixture();let finish,reads=0;f.scope.settings.refetch=async()=>({data:{configuration:f.scope.draft,revision:3},error:null});
+ f.scope.readback=async(path,init)=>{reads++;assert.equal(path,'/api/branches/variables-owner/settings');assert.equal(init.cache,'no-store');return new Promise(resolve=>{finish=resolve})};
+ const pending=f.reload();assert.equal(reads,1);assert.equal(f.scope.revision,3);
+ finish({configuration:{parameters:{note:'verified'},limits:f.scope.draft.limits},revision:9});await pending;assert.equal(f.scope.revision,9);assert.equal(f.scope.draft.parameters.note,'verified');
+ f.scope.settings.data={configuration:{parameters:{note:'old canceled cache'},limits:f.scope.draft.limits},revision:3};f.scope.useEffect=effect=>effect();f.hydrate();assert.equal(f.scope.revision,9);assert.equal(f.scope.draft.parameters.note,'verified','Older query completion cannot roll back verified recovery');
+});
+
+
+test('uncertain variable saves recover the accepted revision without replay and failed readback preserves edits',async()=>{
+ const f=await variableEditorFixture(),request=f.scope.requestJson;f.scope.requestJson=async(path,init)=>{const next=await request(path,init);if(init?.method==='PUT')throw new Error('Controlled response loss');return next};
+ await assert.rejects(f.scope.save.mutateAsync(),/response loss/);assert.equal(f.scope.revision,3);assert.equal(f.writes.length,1);assert.equal(f.scope.server.revision,4);
+ f.scope.readback=async()=>{throw new Error('Controlled recovery failure')};await assert.rejects(f.reload(),/recovery failure/);assert.equal(f.scope.draft.parameters.note,'edited');assert.equal(f.scope.revision,3);
+ f.scope.readback=undefined;await f.reload();assert.equal(f.scope.revision,4);assert.equal(f.scope.draft.parameters.note,'edited');assert.equal(f.writes.length,1,'Readback must not repeat the accepted write');
 });
 
 // Exercise the real intervention fields, mutation and shared dialog shell.

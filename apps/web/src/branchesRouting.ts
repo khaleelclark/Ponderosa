@@ -2,7 +2,7 @@ import type {BranchContextDto} from "@ponderosa/core";
 import { parseRoute, navigationPreservesSettings, type Route } from './routing.js';
 import { routeToPath, type ProjectRoute } from './routeRegistry.js';
 
-export const branchTabs = ['workflow', 'executions', 'settings', 'chats', 'parameters'] as const;
+export const branchTabs = ['workflow', 'executions', 'settings', 'chats'] as const;
 export type BranchTab = typeof branchTabs[number];
 export type BranchGlobalView = 'general' | 'providers' | 'notifications' | 'activity' | 'profile' | 'usage' | 'status';
 export const branchSettingsSection=(view:BranchGlobalView):NonNullable<Extract<Route,{kind:'settings'}>['section']>=>view==='status'?'providers':view==='usage'?'activity':view;
@@ -15,6 +15,7 @@ export interface BranchRoute {
   workspace?: ProjectRoute;
   global?: BranchGlobalView;
   executionFilter?: string;
+  settingsSection?: 'variables';
 }
 
 /** The model draft stays in BranchesWorkspace; editor-local fields need its panel mounted. */
@@ -33,7 +34,8 @@ export function parseBranchRoute(search: string): BranchRoute {
   const location = nested?.startsWith('/projects/') ? new URL(nested, 'http://ponderosa.invalid') : undefined;
   const workspace: Route | undefined = location ? parseRoute(location.pathname, location.search) : undefined;
   return {
-    tab: branchTabs.includes(tab as BranchTab) ? tab as BranchTab : executionId ? 'executions' : 'workflow',
+    tab: tab === 'parameters' ? 'settings' : branchTabs.includes(tab as BranchTab) ? tab as BranchTab : executionId ? 'executions' : 'workflow',
+    ...(tab === 'parameters' || tab === 'settings' && query.get('section') === 'variables' ? {settingsSection:'variables' as const} : {}),
     ...(query.get('branch') ? { branchId: query.get('branch')! } : {}),
     ...(executionId ? { executionId } : {}),
     ...(query.get('createChat') ? { creationKey: query.get('createChat')! } : {}),
@@ -54,6 +56,7 @@ export function branchRoutePath(route: BranchRoute): string {
   if (route.workspace) query.set('workspace', routeToPath(route.workspace));
   if (route.global) query.set('settings', route.global);
   if (route.executionFilter) query.set('state', route.executionFilter);
+  if (route.tab === 'settings' && route.settingsSection) query.set('section', route.settingsSection);
   return `/branches${query.size ? `?${query}` : ''}`;
 }
 
