@@ -1,3 +1,4 @@
+import {requestProduct,resourceInProduct,decisionInProduct} from '../product-scope.js';
 import { collaborationPresentation, type AllChatPageDto } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import type { SearchRoutesContext } from "../server-context.js";
@@ -24,7 +25,7 @@ export function registerSearchRoutes(
     if (request.query.projectId && !projects.length) return reply.code(404).send({ error: "Project not found" });
     // Discover registered Chat roots, never the mutable legacy namespace root.
     let roots = projects.flatMap(project => store.listConversations(project.id)
-      .filter(chat => chat.projectId === project.id && !chat.deletedAt && chat.workingDirectory)
+      .filter(chat => chat.projectId === project.id && !chat.deletedAt && chat.workingDirectory && resourceInProduct(store,'conversation',chat.id,requestProduct(request)))
       .map(chat => ({ ...project, hostPath: chat.workingDirectory!, label: chat.title, conversationId: chat.id })));
     if (request.query.conversationId) {
       const conversation = store.getConversation(request.query.conversationId);
@@ -41,7 +42,7 @@ export function registerSearchRoutes(
   app.get<{ Querystring: { q?: string; limit?: string; kind?: string; distinct?: string } }>("/api/search", async (request, reply) => {
     try {
       if (request.query.distinct !== undefined && request.query.distinct !== "chats") throw new Error("invalid search grouping");
-      return globalChatSearch(request.query);
+      return globalChatSearch({...request.query,productScope:requestProduct(request)});
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid search query" });
     }
@@ -56,6 +57,7 @@ export function registerSearchRoutes(
     try {
       type CombinedCursor = {
         v: 1;
+        productScope:'dev'|'branches';
         messages?: string;
         messagesDone?: boolean;
         decisions?: { createdAt: string; id: string };
@@ -64,12 +66,12 @@ export function registerSearchRoutes(
       let combined: CombinedCursor | undefined;
       if (request.query.cursor) {
         const parsed = JSON.parse(Buffer.from(request.query.cursor, "base64url").toString("utf8")) as Partial<CombinedCursor>;
-        if (parsed.v !== 1) throw new Error("invalid All Chat cursor");
+        if (parsed.v !== 1 || parsed.productScope!==requestProduct(request)) throw new Error("invalid All Chat cursor");
         combined = parsed as CombinedCursor;
       }
       const messagePage = combined?.messagesDone
         ? { items: [], history: { limit, hasMore: false } }
-        : store.getAllChatPage({ limit, cursor: combined?.messages });
+        : store.getAllChatPage({ limit, cursor: combined?.messages,productScope:requestProduct(request) });
       const receiptMaps = new Map([...new Set(
         messagePage.items.map(item => item.project.id),
       )].map(projectId => [
@@ -121,7 +123,7 @@ export function registerSearchRoutes(
       });
       const decisionPage = combined?.decisionsDone
         ? { events: [], hasMore: false as const }
-        : workspace.listDecisionEventPage({ limit, before: combined?.decisions });
+        : workspace.listDecisionEventPage({ limit, before: combined?.decisions,visible:decision=>decisionInProduct(store,decision,requestProduct(request)) });
       const decisions = decisionPage.events
         .flatMap((event) => {
           const decision = event.decision;
@@ -138,6 +140,7 @@ export function registerSearchRoutes(
       const hasMore = messagePage.history.hasMore || decisionPage.hasMore;
       const nextCursor: CombinedCursor = {
         v: 1,
+        productScope:requestProduct(request),
         ...(messagePage.history.hasMore && messagePage.history.cursor
           ? { messages: messagePage.history.cursor }
           : { messagesDone: true }),

@@ -73,6 +73,7 @@ async function handle(request: RpcRequest): Promise<void> {
       send({ jsonrpc: "2.0", id: request.id, result: { isError: true, content: [{ type: "text", text: "The requested Ponderosa capability is unavailable for this Run." }] } });
       return;
     }
+    const localMemoryOperation=typeof params?.name==="string"&&params.name.startsWith("local_memory_")?params.name.slice("local_memory_".length):undefined;
     const browserOperation = typeof params?.name === "string" && params.name.startsWith("browser_")
       ? params.name.slice("browser_".length)
       : undefined;
@@ -80,7 +81,7 @@ async function handle(request: RpcRequest): Promise<void> {
     const args = params?.arguments && typeof params.arguments === "object"
       ? params.arguments as { agentId?: unknown }
       : {};
-    const targetUrl = params?.name === "create_managed_agent"
+    const targetUrl = localMemoryOperation ? messageUrl?.replace(/\/api\/agent-messages$/, "/api/agent-local-memory") : params?.name === "voice_reply" ? messageUrl?.replace(/\/api\/agent-messages$/, "/api/agent-voice-reply") : params?.name === "create_managed_agent"
       ? spawnUrl
       : params?.name === "coordinate"
         ? coordinateUrl
@@ -108,7 +109,7 @@ async function handle(request: RpcRequest): Promise<void> {
       const response = await fetch(targetUrl, {
         method: isDirectory ? "GET" : "POST",
         headers: { authorization: `Bearer ${messageToken}`, "content-type": "application/json" },
-        ...(!isDirectory ? { body: JSON.stringify(browserOperation
+        ...(!isDirectory ? { body: JSON.stringify(localMemoryOperation ? {...(params?.arguments&&typeof params.arguments==="object"?params.arguments:{}),operation:localMemoryOperation} : browserOperation
           ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), operation: browserOperation }
           : params?.name === "import_file"
             ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), toolCallId: String(request.id) }

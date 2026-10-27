@@ -4,9 +4,26 @@ import { useSyncExternalStore } from "react";
 import { api } from "../api";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import { queryKeys } from "../queryKeys";
-import type { WorkspacePreferencesWriter } from "../workspacePreferencesWriter";
+import { WorkspacePreferencesWriter } from "../workspacePreferencesWriter";
+import {changedWorkspaceDirectoryKinds} from '../resourcePreferences';
 
 const workspacePreferenceWriters = new WeakMap<QueryClient, WorkspacePreferencesWriter>();
+
+/** Product shells share the canonical preference queue and conflict rebase. */
+export function useWorkspacePreferencesWriter():WorkspacePreferencesWriter {
+  const client=useQueryClient();
+  let writer=workspacePreferenceWriters.get(client);
+  if(!writer){
+    writer=new WorkspacePreferencesWriter({read:()=>client.getQueryData(queryKeys.workspacePreferences.all),publish:value=>client.setQueryData(queryKeys.workspacePreferences.all,value),write:patch=>api.updateWorkspacePreferences(patch),refresh:()=>api.getWorkspacePreferences(),onSuccess:(previous,value,patch)=>{
+      for(const kind of changedWorkspaceDirectoryKinds(previous,value))void client.invalidateQueries({queryKey:queryKeys.workspaceDirectory.kind(kind)});
+      void client.invalidateQueries({queryKey:['branches']});
+      if(patch.starredResourceIds!==undefined||patch.starredProjectIds!==undefined)void client.invalidateQueries({queryKey:queryKeys.workspaceResourceRecency.all});
+      if(patch.claudeModelOptions!==undefined){void client.invalidateQueries({queryKey:queryKeys.engines.all});void client.invalidateQueries({queryKey:['engine-models']});}
+    }});
+    workspacePreferenceWriters.set(client,writer);
+  }
+  return writer;
+}
 
 export function useProjects() {
   return useQuery({

@@ -1,4 +1,4 @@
-import { routeToPath } from "../routeRegistry";
+import { routeLinkPath } from "../routeRegistry";
 import { isUnmodifiedPrimaryClick } from "../nativeNavigation";
 import SearchIcon from "@mui/icons-material/Search";
 import CloseIcon from "@mui/icons-material/Close";
@@ -168,7 +168,7 @@ function GlobalSearchResultItem({ result, query, onSelect, active = false, id, o
   onActive?(): void;
 }): JSX.Element {
   return <SearchResultRow
-    href={routeToPath(routeForGlobalSearchSelection({ projectId: result.project.id, chat: result.chat, messageId: result.messageId }))}
+    href={routeLinkPath(routeForGlobalSearchSelection({ projectId: result.project.id, chat: result.chat, messageId: result.messageId }))}
     id={id}
     active={active}
     onActive={onActive}
@@ -196,7 +196,7 @@ function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
   onActive?(): void;
 }): JSX.Element {
   return <SearchResultRow
-    href={routeToPath(routeForGlobalSearchSelection({ projectId: recent.project.id, chat: recent.chat }))}
+    href={routeLinkPath(routeForGlobalSearchSelection({ projectId: recent.project.id, chat: recent.chat }))}
     id={id}
     active={active}
     onActive={onActive}
@@ -432,7 +432,7 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
           {fileResults.map((file, fileIndex) => {
             const index = chatEntries.length + fileIndex;
             return <SearchResultRow key={`file:${file.project.id}:${file.conversationId}:${file.path}`} id={`global-search-option-${index}`}
-              href={routeToPath(routeForGlobalSearchSelection({ projectId: file.project.id, file: { path: file.path, conversationId: file.conversationId } }))}
+              href={routeLinkPath(routeForGlobalSearchSelection({ projectId: file.project.id, file: { path: file.path, conversationId: file.conversationId } }))}
               active={activeIndex === index} onActive={() => setActiveIndex(index)}
               ariaLabel={`Open file ${file.name}`}
               onSelect={() => chooseSelection({ projectId: file.project.id, file: { path: file.path, conversationId: file.conversationId } })}

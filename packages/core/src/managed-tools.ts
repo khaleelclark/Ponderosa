@@ -179,6 +179,14 @@ export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
   },
 };
 
+export const PONDEROSA_VOICE_REPLY_TOOL: RuntimeDynamicToolSpec = {
+  name: "ponderosa_voice_reply",
+  description: "Explicitly authorize one final response item as the reply to this Run's sole accepted voice Direct Message. Call before writing the answer, after all other work. The host streams qualified final-answer text and publishes exactly one canonical Direct Message only after successful completion. Do not also call ponderosa_message for the same reply. If unavailable or rejected, use ordinary ponderosa_message. Never use for work logs, commentary, reasoning, peers, or unrelated turns.",
+  inputSchema: { type: "object", additionalProperties: false, required: [], properties: {
+    steeringInjectionId: { type: "string" },
+  } },
+};
+
 export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_message",
   description: "Send immediate communication, or set delivery to next_run for one-way information to explicit recipientAgentIds. {text} alone works only when the current capability explicitly has one authorized default reply route; otherwise supply intent. Immediate recipientAgentIds requires intent collaboration, even when replying to a peer. Recipients receive the submitted payload, not your hidden prompt or provider-session context; include the facts and context needed to act. next_run omits intent and creates no chat message, Run, Request, Join, reply obligation, or acknowledgement. Use coordinate for tracked work and update_request for a correlated result.",
@@ -459,6 +467,7 @@ export const PONDEROSA_RUNTIME_TOOLS: RuntimeDynamicToolSpec[] = [
   PONDEROSA_COORDINATE_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
   PONDEROSA_MESSAGE_TOOL,
+  PONDEROSA_VOICE_REPLY_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   ...PONDEROSA_BROWSER_TOOLS,
   PONDEROSA_IMPORT_FILE_TOOL,

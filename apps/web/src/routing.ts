@@ -280,7 +280,7 @@ function initialWorkspaceLocation(): { route: Route; replacement?: string } {
   return resolveStartupLocation(window.location.pathname, window.location.search, remembered);
 }
 
-function navigationPreservesSettings(current: Route, next: Route): boolean {
+export function navigationPreservesSettings(current: Route, next: Route): boolean {
   // General drafts remain mounted across subsection changes. The profile form
   // unmounts when its section changes, so it always needs the discard guard.
   return current.kind === "settings" && next.kind === "settings" &&

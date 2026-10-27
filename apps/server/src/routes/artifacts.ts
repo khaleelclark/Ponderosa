@@ -1,3 +1,4 @@
+import {requestProduct} from '../product-scope.js';
 import { Readable } from "node:stream";
 import {
   openManagedArtifactContent,
@@ -154,6 +155,7 @@ export function registerArtifactRoutes(
         cursor: request.query.cursor,
         conversationId,
         search: request.query.q,
+        productScope:requestProduct(request),
       });
     } catch (error) {
       return reply.code(400).send({

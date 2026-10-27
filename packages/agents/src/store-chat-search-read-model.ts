@@ -1,3 +1,4 @@
+import {activeChatProductSql,activeAgentProductSql,type ProductScope} from './product-scope-sql.js';
 import type Database from "better-sqlite3";
 import type {
   GlobalChatSearchAuthorDto,
@@ -10,6 +11,7 @@ import {
 } from "./chat-search.js";
 
 export interface GlobalChatSearchInput {
+  productScope?:ProductScope;
   query?: string;
   limit?: number;
   chatKind?: "conversation" | "agent";
@@ -82,6 +84,7 @@ export class AgentChatSearchReadModel {
           ON search.chat_kind = 'agent' AND chat_agent.id = search.chat_id AND chat_agent.deleted_at IS NULL
         LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
         WHERE (conversation.id IS NOT NULL OR chat_agent.id IS NOT NULL)
+          ${input.productScope?`AND ((conversation.id IS NOT NULL AND ${activeChatProductSql('conversation',input.productScope)}) OR (chat_agent.id IS NOT NULL AND ${activeAgentProductSql('chat_agent',input.productScope)}))`:''}
           AND (? IS NULL OR search.chat_kind = ?)
           AND NOT (
             search.chat_kind = 'agent' AND EXISTS (
@@ -90,6 +93,7 @@ export class AgentChatSearchReadModel {
               JOIN conversations preferred_conversation
                 ON preferred_conversation.id = preferred.chat_id AND NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = preferred_conversation.id)
               WHERE preferred.project_id = search.project_id
+                ${input.productScope?`AND ${activeChatProductSql('preferred_conversation',input.productScope)}`:''}
                 AND preferred.communication_event_id = search.communication_event_id
                 AND preferred.chat_kind = 'conversation'
             )
@@ -114,6 +118,7 @@ export class AgentChatSearchReadModel {
           FROM conversations conversation
           JOIN projects project ON project.id = conversation.project_id
           WHERE NOT EXISTS (SELECT 1 FROM conversation_deletion_receipts deleting_chat WHERE deleting_chat.conversation_id = conversation.id)
+            ${input.productScope?`AND ${activeChatProductSql('conversation',input.productScope)}`:''}
           ORDER BY conversation.updated_at DESC, conversation.id DESC
           LIMIT ?
         `)

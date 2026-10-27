@@ -29,11 +29,11 @@ import {
   type AgentStore,
   type CoordinationV3Store,
 } from "@ponderosa/agents";
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyReply,FastifyRequest } from "fastify";
+import type {IncomingMessage} from 'node:http';
+import {requestProduct,resourceInProduct} from '../product-scope.js';
 import type { createOperationalNotifications } from "../operational-notifications.js";
 import {
-  CANONICAL_ARTIFACT_ID,
-  portableAgentTopologyError,
   rewritePortableArtifactReferences,
 } from "../artifact-refs.js";
 import {
@@ -54,6 +54,15 @@ import {
   portablePackageJsonChunks,
   withAgentImportAdmission,
 } from "../agent-package-codec.js";
+
+import {validatePortableAgentPackage} from "../portable-agent-package-validation.js";
+import type {BranchInstallationService} from "../branch-installation-service.js";
+
+export type BranchPackageEngine = Parameters<BranchInstallationService["setEngine"]>[0];
+export interface BranchImportHooks {
+  plan(agentIds: string[], creationOperationId?: string): void;
+  commit(result: ImportAgentPackageResponse): void;
+}
 
 interface AgentPackageRoutesContext {
   dataDir: string;
@@ -89,7 +98,7 @@ interface AgentPackageRoutesContext {
 export function registerAgentPackageRoutes(
   app: FastifyInstance,
   context: AgentPackageRoutesContext,
-): void {
+): {packageEngine:BranchPackageEngine} {
   const {
     store,
     coordination: coordinationV3,
@@ -135,7 +144,11 @@ export function registerAgentPackageRoutes(
     sha256: string;
     size: number;
     reservationId: string;
+    metadata:Omit<ImportAgentPackageRequest,'package'>;
   };
+  const ownedUploads=new WeakSet<StagedImportUpload>();
+  const pendingUploads=new WeakMap<IncomingMessage,StagedImportUpload>();
+  const completedUploadRequests=new WeakSet<IncomingMessage>();
   const maximumImportBytes = AGENT_PACKAGE_MAX_BYTES + AGENT_PACKAGE_METADATA_MAX_BYTES + 1;
   const maximumStagedImportBytes = AGENT_PACKAGE_STAGING_MAX_BYTES;
   let stagedImportBytes = 0;
@@ -162,6 +175,25 @@ export function registerAgentPackageRoutes(
     if (bytes === undefined) return;
     stagedReservations.delete(reservationId);
     stagedImportBytes = Math.max(0, stagedImportBytes - bytes);
+  };
+  const cleanupUpload=async(staged:StagedImportUpload):Promise<void>=>{
+    // Only parser-created objects reach this helper. Failure retains the byte
+    // reservation until observed removal or restart inventory reconciliation.
+    try{await fs.unlink(staged.pathname);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+    releaseStagedReservation(staged.reservationId);ownedUploads.delete(staged);
+  };
+  const abandonUpload=async(request:FastifyRequest):Promise<void>=>{
+    completedUploadRequests.add(request.raw);
+    const staged=pendingUploads.get(request.raw);if(!staged)return;
+    pendingUploads.delete(request.raw);
+    try{await cleanupUpload(staged);}catch(error){request.log.error({err:error},'Unclaimed Agent upload cleanup remains pending');}
+  };
+  app.addHook('onResponse',abandonUpload);
+  app.addHook('onError',abandonUpload);
+  const claimUpload=async(request:FastifyRequest,reply:FastifyReply):Promise<unknown>=>{
+    const staged=request.body as StagedImportUpload;
+    if(!ownedUploads.has(staged))return reply.code(400).send({error:'An Agent package requires a parser-owned binary upload'});
+    pendingUploads.delete(request.raw);
   };
   const sha256File = async (pathname: string): Promise<string> => {
     const hash = createHash("sha256");
@@ -211,6 +243,8 @@ export function registerAgentPackageRoutes(
         typeof operation.requestId !== "string" || !validIdempotencyKey(operation.requestId) ||
         typeof operation.payloadHash !== "string" || !/^[0-9a-f]{64}$/u.test(operation.payloadHash) ||
         typeof operation.projectId !== "string" || !operation.projectId || operation.projectId.length > 200 ||
+        typeof operation.conversationId!=='string'||!operation.conversationId||operation.conversationId.length>200||
+        (operation.product!=='dev'&&operation.product!=='branches')||
         typeof operation.sourceLabel !== "string" || operation.sourceLabel.length > 240 ||
         typeof operation.phase !== "string" || !importPhases.has(operation.phase as AgentImportPhase) ||
         !["pending", "completed", "failed"].includes(operation.status ?? "") ||
@@ -388,6 +422,7 @@ export function registerAgentPackageRoutes(
     blobImportContentType,
     (request, payload, done) => {
       void (async () => {
+        if(request.method!=='POST'||!['/api/projects/:id/agent-import-operations','/api/projects/:id/import-agent-package'].includes(request.routeOptions.url??''))throw Object.assign(new Error('Agent package media is only accepted by upload routes'),{statusCode:415});
         await operationHydration;
         await fs.mkdir(importOperationDirectory, { recursive: true });
         const pathname = path.join(importOperationDirectory, `.incoming-${randomUUID()}`);
@@ -397,8 +432,11 @@ export function registerAgentPackageRoutes(
         let size = 0;
         let metadataBytes: number | undefined;
         let headerBytes = 0;
+        const headerParts:Buffer[]=[];
+        let metadata:StagedImportUpload['metadata']|undefined;
         try {
           for await (const chunk of payload) {
+            if(completedUploadRequests.has(request.raw))throw new Error('Agent upload request already completed');
             const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
             size += bytes.length;
             if (metadataBytes === undefined) {
@@ -408,6 +446,14 @@ export function registerAgentPackageRoutes(
               if ((metadataBytes ?? headerBytes) > AGENT_PACKAGE_METADATA_MAX_BYTES + 1) {
                 throw Object.assign(new Error("Agent package upload metadata is invalid"), { statusCode: 400 });
               }
+              headerParts.push(Buffer.from(bytes.subarray(0,separator<0?bytes.length:separator)));
+              if(separator>=0){
+                const value=validatedObject(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(headerParts))),'Agent upload metadata');
+                exactObjectFields(value,['conversationId','engineMapping','acknowledgeElevatedManagementPermissions','chatInstructionsResolution'],'Agent upload metadata');
+                const projectId=(request.params as {id:string}).id,destination=typeof value.conversationId==='string'?store.getConversation(value.conversationId):undefined;
+                if(!destination||destination.projectId!==projectId||!resourceInProduct(store,'conversation',destination.id,requestProduct(request)))throw Object.assign(new Error('The destination Chat is unavailable in this product'),{statusCode:404});
+                metadata=value as unknown as StagedImportUpload['metadata'];
+              }
             }
             if (size - (metadataBytes ?? headerBytes) > AGENT_PACKAGE_MAX_BYTES) {
               throw Object.assign(new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL}`), { statusCode: 413 });
@@ -416,18 +462,30 @@ export function registerAgentPackageRoutes(
             hash.update(bytes);
             await handle.write(bytes);
           }
+          if(!metadata||completedUploadRequests.has(request.raw))throw Object.assign(new Error('Agent upload metadata is unavailable'),{statusCode:400});
           await handle.sync();
           await handle.close();
-          done(null, {
+          if(completedUploadRequests.has(request.raw))throw new Error('Agent upload request already completed');
+          const staged:StagedImportUpload={
             pathname,
             sha256: hash.digest("hex"),
             size,
             reservationId,
-          } satisfies StagedImportUpload);
+            metadata,
+          };
+          ownedUploads.add(staged);pendingUploads.set(request.raw,staged);
+          done(null,staged);
         } catch (error) {
           await handle.close().catch(() => undefined);
-          await fs.unlink(pathname).catch(() => undefined);
-          releaseStagedReservation(reservationId);
+          // This pathname was allocated by this parser. Retain its byte charge
+          // if removal fails, just as handler-owned staged uploads do.
+          try {
+            await fs.unlink(pathname);
+            releaseStagedReservation(reservationId);
+          } catch (cleanupError) {
+            if ((cleanupError as NodeJS.ErrnoException).code === 'ENOENT') releaseStagedReservation(reservationId);
+            else request.log.error({ err: cleanupError }, 'Rejected Agent upload cleanup remains pending');
+          }
           request.log.warn({ err: error }, "Agent package upload was rejected before admission");
           done(error as Error);
         }
@@ -779,7 +837,10 @@ export function registerAgentPackageRoutes(
     onPhase?: (phase: AgentImportPhase) => Promise<void>,
     creationOperationId?: string,
     creationRequest?: { idempotencyKey: string; rawPayloadHash?: string },
+    branchHooks?: BranchImportHooks,
+    signal?: AbortSignal,
   ): Promise<unknown> => withProjectImportLock(projectId, async () => {
+      signal?.throwIfAborted();
       let importBody: Record<string, unknown>;
       try {
         importBody = validatedObject(body, "Agent import request");
@@ -824,6 +885,7 @@ export function registerAgentPackageRoutes(
             kind: "import",
             idempotencyKey: creationRequest.idempotencyKey,
             payloadHash,
+            conversationId: body.conversationId,
           }).operation.id;
         } catch (error) {
           return reply.code(409).send({
@@ -833,6 +895,9 @@ export function registerAgentPackageRoutes(
       }
       const durableOperation = store.getAgentCreationOperation(creationOperationId);
       if (!durableOperation) throw new Error("Agent import creation operation is unavailable");
+      if (durableOperation.projectId !== projectId || durableOperation.conversationId !== body.conversationId) {
+        return reply.code(409).send({error:"Agent import destination does not match its durable owner"});
+      }
       if (durableOperation.status === "completed" && durableOperation.result) {
         return reply.code(200).send(durableOperation.result);
       }
@@ -920,160 +985,20 @@ export function registerAgentPackageRoutes(
       let appliedChatInstructions: string | undefined;
       try {
       await onPhase?.("creating_records");
+      signal?.throwIfAborted();
 
       let portablePackage: AgentPortablePackageDto;
       let importNodes: PlannedNode[];
       let importSourceLabel: string;
       const artifactRefMap = new Map<string, string>();
       try {
-        const packageRecord = validatedObject(body?.package, "Agent package");
-        exactObjectFields(
-          packageRecord,
-          [
-            "schema", "mode", "kind", "exportedAt", "sourceLabel",
-            "sourceProjectInstructions", "rootRef", "agents",
-          ],
-          "Agent package",
-        );
-        if (
-          packageRecord.schema !== "ponderosa.agent-package.v1"
-          || (
-            packageRecord.mode !== "template"
-            && packageRecord.mode !== "full"
-          )
-          || !Array.isArray(packageRecord.agents)
-          || packageRecord.agents.length < 1
-          || packageRecord.agents.length > 100
-        ) {
-          throw new Error("invalid Ponderosa Agent package");
-        }
-        if (
-          typeof packageRecord.exportedAt !== "string"
-          || !Number.isFinite(Date.parse(packageRecord.exportedAt))
-          || typeof packageRecord.sourceLabel !== "string"
-          || (
-            packageRecord.sourceProjectInstructions !== undefined
-            && (typeof packageRecord.sourceProjectInstructions !== "string"
-              || packageRecord.sourceProjectInstructions.length > 100_000)
-          )
-        ) {
-          throw new Error("Agent package metadata is invalid");
-        }
-        if (
-          packageRecord.mode === "template"
-          && packageRecord.sourceProjectInstructions !== undefined
-        ) {
-          throw new Error(
-            "template packages cannot contain full-mode Project context",
-          );
-        }
-        portablePackage = packageRecord as unknown as AgentPortablePackageDto;
-        importSourceLabel = portablePackage.sourceLabel.slice(0, 240);
-        const topologyError = portableAgentTopologyError(portablePackage);
-        if (topologyError) throw new Error(topologyError);
-
-        const elevatedAgentRefs: string[] = [];
-        const sourceEngines = new Set<string>();
-        for (const candidate of portablePackage.agents as unknown[]) {
-          const node = validatedObject(candidate, "Agent package node");
-          exactObjectFields(
-            node,
-            [
-              "ref", "title", "engine", "model", "effort",
-              "initialInstructions", "managerRef", "managementPermissions",
-              "history", "artifacts",
-            ],
-            "Agent package node",
-          );
-          if (
-            typeof node.ref !== "string"
-            || typeof node.title !== "string"
-            || typeof node.engine !== "string"
-            || !node.engine.trim()
-            || (node.model !== undefined && typeof node.model !== "string")
-            || (node.effort !== undefined && typeof node.effort !== "string")
-            || (
-              node.initialInstructions !== undefined
-              && typeof node.initialInstructions !== "string"
-            )
-          ) {
-            throw new Error(
-              "every imported Agent must declare valid identity and runtime fields",
-            );
-          }
-          const permissions = validatedObject(
-            node.managementPermissions,
-            "managementPermissions",
-          );
-          exactObjectFields(
-            permissions,
-            [
-              "allowAutomaticDescendantDeletion",
-              "allowAutomaticDescendantReorganization",
-            ],
-            "managementPermissions",
-          );
-          if (
-            typeof permissions.allowAutomaticDescendantDeletion !== "boolean"
-            || typeof permissions.allowAutomaticDescendantReorganization
-              !== "boolean"
-          ) {
-            throw new Error(
-              "every imported Agent must declare exact boolean management permissions",
-            );
-          }
-          if (
-            permissions.allowAutomaticDescendantDeletion
-            || permissions.allowAutomaticDescendantReorganization
-          ) elevatedAgentRefs.push(node.ref);
-          sourceEngines.add(node.engine);
-          if (
-            portablePackage.mode === "template"
-            && (
-              node.history !== undefined
-              || node.artifacts !== undefined
-            )
-          ) {
-            throw new Error(
-              "template packages cannot contain history or artifacts",
-            );
-          }
-          if (node.history !== undefined && !Array.isArray(node.history)) {
-            throw new Error("Agent history must be an array");
-          }
-          let messagePosition = 0;
-          for (
-            const messageCandidate of
-              (node.history as unknown[] | undefined) ?? []
-          ) {
-            if (messagePosition++ % 128 === 0) await yieldToLoop();
-            const message = validatedObject(
-              messageCandidate,
-              "history message",
-            );
-            exactObjectFields(
-              message,
-              ["role", "text", "createdAt"],
-              "history message",
-            );
-            if (
-              !["user", "assistant", "system"].includes(String(message.role))
-              || typeof message.text !== "string"
-              || (
-                message.createdAt !== undefined
-                && (
-                  typeof message.createdAt !== "string"
-                  || !Number.isFinite(Date.parse(message.createdAt))
-                )
-              )
-            ) {
-              throw new Error("Agent history messages have an invalid shape");
-            }
-          }
-          if (node.artifacts !== undefined && !Array.isArray(node.artifacts)) {
-            throw new Error("Agent artifacts must be an array");
-          }
-        }
+        const validated = validatePortableAgentPackage(body?.package);
+        portablePackage = validated.package;
+        importSourceLabel = portablePackage.sourceLabel.slice(0,240);
+        const elevatedAgentRefs = portablePackage.agents.filter(node =>
+          node.managementPermissions.allowAutomaticDescendantDeletion ||
+          node.managementPermissions.allowAutomaticDescendantReorganization).map(node=>node.ref);
+        const sourceEngines = new Set(portablePackage.agents.map(node=>node.engine));
         if (
           elevatedAgentRefs.length > 0
           && body.acknowledgeElevatedManagementPermissions !== true
@@ -1109,64 +1034,8 @@ export function registerAgentPackageRoutes(
         for (const node of portablePackage.agents) {
           const plannedArtifacts: PlannedArtifact[] = [];
           for (const artifactCandidate of node.artifacts ?? []) {
-            const artifact = validatedObject(
-              artifactCandidate,
-              "portable artifact",
-            );
-            exactObjectFields(
-              artifact,
-              [
-                "ref", "kind", "path", "summary", "createdAt", "mediaType",
-                "visibility", "pinned", "sourcePath", "dataBase64",
-              ],
-              "portable artifact",
-            );
-            if (
-              typeof artifact.ref !== "string"
-              || !CANONICAL_ARTIFACT_ID.test(artifact.ref)
-              || artifactRefMap.has(artifact.ref)
-            ) {
-              throw new Error(
-                "artifact refs must be unique canonical identifiers",
-              );
-            }
-            if (
-              ![
-                "diff", "test_report", "pr_summary", "log", "document",
-                "screenshot", "generated_file",
-              ].includes(String(artifact.kind))
-              || typeof artifact.path !== "string"
-              || !artifact.path
-              || typeof artifact.createdAt !== "string"
-              || !Number.isFinite(Date.parse(artifact.createdAt))
-              || typeof artifact.dataBase64 !== "string"
-              || (
-                artifact.summary !== undefined
-                && typeof artifact.summary !== "string"
-              )
-              || (
-                artifact.mediaType !== undefined
-                && typeof artifact.mediaType !== "string"
-              )
-              || (
-                artifact.visibility !== undefined
-                && artifact.visibility !== "project"
-                && artifact.visibility !== "published"
-              )
-              || (
-                artifact.pinned !== undefined
-                && typeof artifact.pinned !== "boolean"
-              )
-              || (
-                artifact.sourcePath !== undefined
-                && typeof artifact.sourcePath !== "string"
-              )
-            ) {
-              throw new Error(
-                `artifact ${String(artifact.ref)} has an invalid shape`,
-              );
-            }
-            const encodedBytes = Math.floor(artifact.dataBase64.replace(/=+$/u, "").length * 3 / 4);
+            const artifact = artifactCandidate;
+            const encodedBytes = validated.artifactBytes.get(artifact)!;
             if (artifactBytes + encodedBytes > AGENT_PACKAGE_ARTIFACT_MAX_BYTES) {
               abandonMutationFreeOperation(`portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}`);
               return reply.code(413).send({ error: `portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}` });
@@ -1293,10 +1162,8 @@ export function registerAgentPackageRoutes(
         }
       } catch (error) {
         abandonMutationFreeOperation(error instanceof Error ? error.message : "invalid Ponderosa Agent package");
-        return reply.code(400).send({
-          error: error instanceof Error
-            ? error.message
-            : "invalid Ponderosa Agent package",
+        return reply.code((error as {statusCode?:number})?.statusCode ?? 400).send({
+          error: error instanceof Error ? error.message : "invalid Ponderosa Agent package",
         });
       }
 
@@ -1368,6 +1235,7 @@ export function registerAgentPackageRoutes(
       }
       const plannedArtifacts = importNodes.flatMap((node) => node.artifacts);
       rollbackArtifacts = plannedArtifacts;
+      store.sqlite.transaction(() => {
       if (creationOperationId) {
         const creationOperation = store.getAgentCreationOperation(creationOperationId);
         if (!creationOperation) throw new Error("Agent import creation operation is unavailable");
@@ -1410,7 +1278,11 @@ export function registerAgentPackageRoutes(
           for (const agentId of operationAgentIds) deletingAgentIds.add(agentId);
         }
       }
+      branchHooks?.plan(operationAgentIds, creationOperationId);
+      })();
+      signal?.throwIfAborted();
       await onPhase?.("importing_artifacts");
+      signal?.throwIfAborted();
       const publishedArtifacts = await publishManagedArtifactContentsAsync(
         context.dataDir,
         project.id,
@@ -1442,9 +1314,12 @@ export function registerAgentPackageRoutes(
         });
       }
 
+      signal?.throwIfAborted();
       const created = new Map<string, AgentDto>();
       await onPhase?.("importing_agents");
+      signal?.throwIfAborted();
       for (const [index, node] of importNodes.entries()) {
+        signal?.throwIfAborted();
         const agent = store.createAgent(project.id, {
           title: node.title,
           engine: node.targetEngine,
@@ -1500,6 +1375,7 @@ export function registerAgentPackageRoutes(
           );
         }
       }
+      signal?.throwIfAborted();
       for (const node of importNodes) {
         if (node.managerRef) {
           store.updateAgentOrganization(
@@ -1530,11 +1406,13 @@ export function registerAgentPackageRoutes(
             throw new Error("The destination Chat is no longer active");
           }
         }
-        store.updateAgentCreationOperation(creationOperationId, {
-          status: "completed",
-          result: response,
-          lastError: null,
-        });
+        signal?.throwIfAborted();
+        store.sqlite.transaction(() => {
+          branchHooks?.commit(response);
+          store.updateAgentCreationOperation(creationOperationId!, {
+            status: "completed", result: response, lastError: null,
+          });
+        })();
         for (const agentId of operationAgentIds) deletingAgentIds.delete(agentId);
       }
       try {
@@ -1563,15 +1441,18 @@ export function registerAgentPackageRoutes(
           } catch { rollbackComplete = false; }
         }
         const authorityBlockedArtifactIds = new Set<string>();
-        for (const agentId of [...rollbackAgentIds].reverse()) {
-          try {
-            if (!store.deleteAgent(agentId, (id) => coordinationV3.handleAgentDeletion(id)) &&
-                store.getAgent(agentId)) rollbackComplete = false;
-          } catch {
-            rollbackComplete = false;
-            // Preserve the original import failure. Startup deletion recovery
-            // completes any rollback whose durable deletion already committed.
+        try {
+          // Pending members are intentionally absent from the public directory.
+          // Resolve and delete the entire owned organization in one preview.
+          const liveIds=rollbackAgentIds.filter(id=>store.getAgent(id));
+          if(liveIds.length){
+            const preview=store.previewAgentDeletion(liveIds);
+            if(preview.affectedAgents.some(agent=>!rollbackAgentIds.includes(agent.id)))throw new Error("Import rollback would affect an unowned Agent");
+            store.deleteAgentSubtrees(liveIds,preview.previewHash,id=>coordinationV3.handleAgentDeletion(id));
           }
+        } catch {
+          // Exact cleanup authority remains durable for startup recovery.
+          rollbackComplete=false;
         }
         const operationAgentsRemain = operationAgentIds.some((agentId) => store.getAgent(agentId));
         if (creationOperationId) {
@@ -1676,6 +1557,7 @@ export function registerAgentPackageRoutes(
           title: "Agent import in progress",
           body: next.replaceAll("_", " "),
           projectId: operation!.projectId,
+          conversationId:operation!.conversationId,
           action: { kind: "open_project", targetId: operation!.projectId },
         });
       } catch { /* phase state is durable; notification is best effort */ }
@@ -1688,6 +1570,7 @@ export function registerAgentPackageRoutes(
         throw new Error("Import payload no longer matches its durable operation");
       }
       const { metadata, portable } = await parsePortablePackageFile(durablePayloadPath);
+      if(metadata.conversationId!==operation.conversationId||!resourceInProduct(store,'conversation',operation.conversationId,operation.product))throw new Error('Import destination no longer matches its admitted product');
       await update({ sourceLabel: portable.sourceLabel.slice(0, 240) });
       const creationOperation = store.beginAgentCreationOperation({
         projectId: operation.projectId,
@@ -1695,6 +1578,7 @@ export function registerAgentPackageRoutes(
         kind: "import",
         idempotencyKey: operation.requestId,
         payloadHash: operation.payloadHash,
+        conversationId: metadata.conversationId,
       }).operation;
       if (creationOperation.status === "completed" && creationOperation.result) {
         const result = creationOperation.result as ImportAgentPackageResponse;
@@ -1743,6 +1627,7 @@ export function registerAgentPackageRoutes(
           informational: true,
           body: `${operation.sourceLabel} was imported successfully. Reviewing its preserved history is optional; the Agent is ready to use.`,
           projectId: operation.projectId,
+          conversationId:operation.conversationId,
           agentId: result.rootAgentId,
           action: { kind: "open_agent", targetId: result.rootAgentId },
         });
@@ -1775,6 +1660,7 @@ export function registerAgentPackageRoutes(
           title: "Agent import failed",
           body: `${operation.sourceLabel}: ${message}`.slice(0, 1_000),
           projectId: operation.projectId,
+          conversationId:operation.conversationId,
           action: { kind: "open_project", targetId: operation.projectId },
         });
       } catch { /* failure state is durable */ }
@@ -1797,7 +1683,7 @@ export function registerAgentPackageRoutes(
     Body: StagedImportUpload;
   }>(
     "/api/projects/:id/agent-import-operations",
-    { bodyLimit: maximumImportBytes },
+    { bodyLimit: maximumImportBytes,preHandler:claimUpload },
     async (request, reply) => withProjectImportLock(request.params.id, async () => {
       const staged = request.body;
       let transferredReservation = false;
@@ -1807,12 +1693,15 @@ export function registerAgentPackageRoutes(
       if (!requestId) {
         return reply.code(400).send({ error: "a valid import idempotency key is required" });
       }
+      const destination=store.getConversation(staged.metadata.conversationId),product=requestProduct(request);
+      if(!destination||destination.projectId!==request.params.id||!resourceInProduct(store,'conversation',destination.id,product))return reply.code(404).send({error:'The destination Chat is unavailable in this product'});
       const requestKey = requestOperationKey(request.params.id, requestId);
       const requestPayloadHash = staged.sha256;
       const existingId = operationByRequest.get(requestKey);
       if (existingId) {
         const existing = operationCache.get(existingId) ?? await readOperation(existingId);
         if (existing) {
+          if(existing.conversationId!==destination.id||existing.product!==product)return reply.code(404).send({error:'import operation not found'});
           if (existing.payloadHash !== requestPayloadHash) {
             return reply.code(409).send({
               error: "Import idempotency key was reused with different input",
@@ -1835,6 +1724,8 @@ export function registerAgentPackageRoutes(
         requestId,
         payloadHash: requestPayloadHash,
         projectId: request.params.id,
+        conversationId:destination.id,
+        product,
         sourceLabel: "Agent import",
         phase: "queued",
         status: "pending",
@@ -1872,17 +1763,14 @@ export function registerAgentPackageRoutes(
           title: "Agent import queued",
           body: "The import continues in the background.",
           projectId: operation.projectId,
+          conversationId:operation.conversationId,
           action: { kind: "open_project", targetId: operation.projectId },
         });
       } catch { /* the durable queue and scheduled worker remain authoritative */ }
       return reply.code(202).send(operation);
       } finally {
-        const removed = await fs.unlink(staged.pathname)
-          .then(() => true)
-          .catch(() => false);
-        if (removed || !transferredReservation) {
-          releaseStagedReservation(staged.reservationId);
-        }
+        if(!transferredReservation)await cleanupUpload(staged);
+        else ownedUploads.delete(staged);
       }
     }),
   );
@@ -1893,7 +1781,7 @@ export function registerAgentPackageRoutes(
       await operationHydration;
       const operation = operationCache.get(request.params.operationId)
         ?? await readOperation(request.params.operationId);
-      if (!operation || operation.projectId !== request.params.id) {
+      if (!operation || operation.projectId !== request.params.id || operation.product!==requestProduct(request) || !resourceInProduct(store,'conversation',operation.conversationId,requestProduct(request))) {
         return reply.code(404).send({ error: "import operation not found" });
       }
       return operation;
@@ -1914,7 +1802,7 @@ export function registerAgentPackageRoutes(
     Body: StagedImportUpload;
   }>(
     "/api/projects/:id/import-agent-package",
-    { bodyLimit: maximumImportBytes },
+    { bodyLimit: maximumImportBytes,preHandler:claimUpload },
     async (request, reply) => {
       try {
         const idempotencyKey = validIdempotencyKey(request.headers["idempotency-key"]);
@@ -1922,7 +1810,9 @@ export function registerAgentPackageRoutes(
           return reply.code(400).send({ error: "a valid import idempotency key is required" });
         }
         return await withAgentImportAdmission(async () => {
+          if(await sha256File(request.body.pathname)!==request.body.sha256)throw new Error('Agent upload changed after admission');
           const { metadata, portable } = await parsePortablePackageFile(request.body.pathname);
+          if(metadata.conversationId!==request.body.metadata.conversationId||!resourceInProduct(store,'conversation',metadata.conversationId,requestProduct(request)))return reply.code(404).send({error:'The destination Chat is unavailable in this product'});
           return importPackage(
             request.params.id,
             { ...metadata, package: portable },
@@ -1942,8 +1832,7 @@ export function registerAgentPackageRoutes(
             : "invalid Ponderosa Agent package",
         });
       } finally {
-        await fs.unlink(request.body.pathname).catch(() => undefined);
-        releaseStagedReservation(request.body.reservationId);
+        await cleanupUpload(request.body);
       }
     },
   );
@@ -2024,6 +1913,7 @@ export function registerAgentPackageRoutes(
           kind: "import",
           idempotencyKey,
           payloadHash,
+          conversationId,
         }).operation;
       } catch (error) {
         return reply.code(409).send({
@@ -2143,4 +2033,23 @@ export function registerAgentPackageRoutes(
       });
     }),
   );
+  return {packageEngine:{
+    validateAgent(pkg,mapping) {
+      for (const node of validatePortableAgentPackage(pkg).package.agents) {
+        const target=mapping[node.engine]?.trim(), registration=target?engines.get(target):undefined;
+        if(!registration)throw new Error(`Choose an available Engine for ${node.engine}`);
+        const error=runtimeSelectionError(registration.adapter,node.model?.trim()||undefined,node.effort?.trim()||undefined,cachedModelOptions(registration.adapter));
+        if(error)throw new Error(`${node.title}: ${error}`);
+      }
+    },
+    exportAgent:(id,mode)=>withAgentImportAdmission(()=>buildPortablePackage(id,mode,false)),
+    importAgent:(projectId,chatId,pkg,engineMapping,key,options)=>withAgentImportAdmission(async()=>{
+      let status=200,body:unknown;
+      const response={code(value:number){status=value;return this;},send(value:unknown){body=value;return value;}} as unknown as FastifyReply;
+      await importPackage(projectId,{package:pkg,conversationId:chatId,engineMapping,acknowledgeElevatedManagementPermissions:true},response,undefined,undefined,{idempotencyKey:key},options?.branchHooks,options?.signal);
+      if(status>=400)throw Object.assign(new Error(typeof body==='object'&&body&&'error' in body?String(body.error):'Agent import failed'),{statusCode:status,provisionRejected:status===400||status===404});
+      return body as ImportAgentPackageResponse;
+    }),
+  }};
+
 }

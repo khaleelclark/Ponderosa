@@ -182,3 +182,23 @@ for (const background of [false, true]) for (const failure of ['none', 'projecti
     }
   });
 }
+
+test('first filtered collection requests work before any provider turn in Dev and Branches',async t=>{
+ const f=await fixture();let passed=false;
+ try{
+  const title='Cold 100%_\\literal 🌲',dev=await f.createChat(title),first=await f.createIdleAgent(dev,title);
+  const branchResponse=await f.api('POST','/api/branches',{name:'Cold Branch',idempotencyKey:'cold-filter-branch'});assert.equal(branchResponse.status,200,JSON.stringify(branchResponse.body));
+  const chatResponse=await f.api('POST','/api/branches/'+branchResponse.body.id+'/chats',{label:title,defaultEngine:'codex'},{'idempotency-key':randomUUID()});assert.equal(chatResponse.status,200,JSON.stringify(chatResponse.body));
+  const branchChat=chatResponse.body,agentResponse=await f.api('POST','/api/branches/engine/projects/'+branchChat.projectId+'/agents',{title,engine:'codex',conversationId:branchChat.id,idempotencyKey:'cold-filter-agent'});assert.equal(agentResponse.status,200,JSON.stringify(agentResponse.body));
+  const query='?'+new URLSearchParams({search:'100%_\\literal',limit:'100'});
+  for(const [scope,chat,agent,prefix] of [['Dev',dev,first,'/api'],['Branches',branchChat,agentResponse.body,'/api/branches/engine']]){
+   for(const [label,path,items] of [
+    ['directory',prefix+'/projects/'+chat.projectId+'/team-directory',body=>body.agents.map(a=>a.agentId)],
+    ['Chats',prefix+'/projects/'+chat.projectId+'/conversations',body=>body.map(c=>c.id)],
+    ['members',prefix+'/conversations/'+chat.id+'/members',body=>body.map(a=>a.id)],
+   ])await t.test(scope+' first filtered '+label,async()=>{const response=await f.api('GET',path+query);assert.equal(response.status,200,JSON.stringify(response.body));assert.deepEqual(items(response.body),[label==='Chats'?chat.id:agent.id])});
+  }
+  assert.equal(f.sessions.size,0,'filter readiness must not depend on provider priming');
+  passed=true;
+ }finally{await f.dispose(passed)}
+});

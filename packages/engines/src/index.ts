@@ -16,7 +16,7 @@ export { AgentEventProjectionError, projectAgentEvent } from "./agent-event-proj
 export { mapClaudeEvent } from "./claude-events.js";
 export type { CodexMapContext } from "./events.js";
 export { streamProcess } from "./process.js";
-export { processBirthMarker, processGroupAlive, recoveredRuntimeProcessHandle, runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
+export { processBirthMarker, processGroupAlive, recoveredRuntimeProcessHandle, runtimeProcessHandle, runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
 export { spawnWindowsContainedProcess } from "./windows-job-process.js";
 export type { NativeProcessTreeAuthority } from "./process-termination.js";
 export { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer, parseJsonLine, parseJsonlChunks } from "./jsonl.js";
@@ -76,3 +76,7 @@ export function defaultEngineRegistrations(
     },
   ];
 }
+
+export { spawnContainedCli } from "./contained-spawn.js";
+
+export {CodexResponseText} from "./codex-response-text.js";

@@ -3,6 +3,7 @@ import { lstatSync, realpathSync, promises as fs } from "@ponderosa/native-host/
 import path from "node:path";
 import type {
   CreateProjectRequest,
+  ConversationDto,
   ModelOption,
   UpdateProjectRequest,
 } from "@ponderosa/core";
@@ -26,6 +27,9 @@ import {
   registerProjectFolderRoutes,
   type ProjectFolderPathBoundary,
 } from "./project-folders.js";
+
+export type ChatCreator = (input: CreateProjectRequest, idempotencyKey: string,
+  owner?: {branchId:string;executionId?:string}, signal?: AbortSignal) => Promise<ConversationDto>;
 
 interface ProjectRoutesContext {
   store: AgentStore;
@@ -795,7 +799,7 @@ async function reconcileManagedProjectFolders(
 export function registerProjectRoutes(
   app: FastifyInstance,
   context: ProjectRoutesContext,
-): { reconcileManagedProjectFolders(): Promise<void> } {
+): { reconcileManagedProjectFolders(): Promise<void>; createChat: ChatCreator } {
   const {
     store,
     workspace,
@@ -857,84 +861,90 @@ export function registerProjectRoutes(
   };
 
   app.post("/api/projects", async (_request, reply) => reply.code(410).send({ code: "project_namespace_retired", error: "Create a Chat through /api/chats. Project namespaces are retained for storage compatibility." }));
-  app.post<{ Body: CreateProjectRequest; Headers: { "idempotency-key"?: string } }>("/api/chats", async (request, reply) => {
-    const idempotencyKey = request.headers["idempotency-key"]?.trim();
-    if (!idempotencyKey || !/^[A-Za-z0-9_-]{8,128}$/u.test(idempotencyKey)) {
-      return reply.code(400).send({ error: "a valid Chat creation idempotency key is required" });
+  const createChat: ChatCreator = async (input,key,owner,signal) => {
+    signal?.throwIfAborted();
+    if (owner) {
+      if (!store.sqlite.prepare("SELECT 1 FROM branches WHERE id=? AND deleting=0").get(owner.branchId)) throw Object.assign(new Error("Branch owner is unavailable"),{statusCode:404});
+      if (owner.executionId && !store.sqlite.prepare("SELECT 1 FROM branch_executions WHERE id=? AND branch_id=?").get(owner.executionId,owner.branchId)) throw Object.assign(new Error("Branch execution owner is unavailable"),{statusCode:404});
     }
-    const label = request.body?.label?.trim() || "New Chat";
-    if (!label) return reply.code(400).send({ error: "label is required" });
-    const defaultEngine = request.body?.defaultEngine;
-    if (!defaultEngine) return reply.code(400).send({ error: "a configured default engine is required" });
-    if (request.body.hostPath && request.body.createFolderName) return reply.code(400).send({ error: "choose an existing folder or create a new one, not both" });
-    const requestedName = request.body.createFolderName?.trim() ||
+    const idempotencyKey = key?.trim();
+    if (!idempotencyKey || !/^[A-Za-z0-9_-]{8,128}$/u.test(idempotencyKey)) {
+      throw Object.assign(new Error("a valid Chat creation idempotency key is required"), {statusCode:400});
+    }
+    const label = input?.label?.trim() || "New Chat";
+    if (!label) throw Object.assign(new Error("label is required"), {statusCode:400});
+    const defaultEngine = input?.defaultEngine;
+    if (!defaultEngine) throw Object.assign(new Error("a configured default engine is required"), {statusCode:400});
+    if (input.hostPath && input.createFolderName) throw Object.assign(new Error("choose an existing folder or create a new one, not both"), {statusCode:400});
+    const requestedName = input.createFolderName?.trim() ||
       `chat-${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 12)}`;
-    if (!request.body.hostPath &&
+    if (!input.hostPath &&
         (!/^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(requestedName) ||
           requestedName === "." || requestedName === "..")) {
-      return reply.code(400).send({ error: "folder name must be a single safe name" });
+      throw Object.assign(new Error("folder name must be a single safe name"), {statusCode:400});
     }
-    let hostPath = request.body.hostPath
-      ? path.resolve(request.body.hostPath)
+    let hostPath = input.hostPath
+      ? path.resolve(input.hostPath)
       : managedWorkspacePath(path.dirname(managedWorkspacesRoot), requestedName);
-    const creationHostPath = request.body.hostPath ? hostPath :
+    const creationHostPath = input.hostPath ? hostPath :
       store.getManagedCreationHostPath(idempotencyKey, requestedName) ?? `managed:workspaces/${requestedName}`;
     const creationIdentity = {
       idempotencyKey,
       payloadHash: createHash("sha256").update(stableJson({
-        ownership: "chat",
+        ownership: owner ? {kind:"branch_chat",...owner} : "chat",
         label,
         hostPath: creationHostPath,
         defaultEngine,
-        defaultModel: request.body.defaultModel ?? null,
-        defaultEffort: request.body.defaultEffort ?? null,
-        defaultSpeed: request.body.defaultSpeed ?? null,
+        defaultModel: input.defaultModel ?? null,
+        defaultEffort: input.defaultEffort ?? null,
+        defaultSpeed: input.defaultSpeed ?? null,
       })).digest("hex"),
     };
-    const managedIdentity: ManagedProjectCreationIdentity | undefined = request.body.hostPath
+    const managedIdentity: ManagedProjectCreationIdentity | undefined = input.hostPath
       ? undefined
       : { ...creationIdentity, hostPath };
     let releaseCreationClaim: (() => void) | undefined;
-    request.raw.socket.setTimeout?.(app.server.requestTimeout || 120_000);
     try {
       releaseCreationClaim = await claimProjectCreation({ ...creationIdentity, hostPath });
     } catch (error) {
-      return reply.code(409).send({
-        error: error instanceof Error ? error.message : "Project creation replay conflict",
-      });
+      throw Object.assign(new Error(error instanceof Error ? error.message : "Project creation replay conflict"), {statusCode:409});
     }
     try {
+    signal?.throwIfAborted();
     let replay;
     try {
       replay = store.getProjectCreation(creationIdentity);
     } catch (error) {
-      return reply.code(409).send({
-        error: error instanceof Error ? error.message : "Project creation replay conflict",
-      });
+      throw Object.assign(new Error(error instanceof Error ? error.message : "Project creation replay conflict"), {statusCode:409});
     }
     if (replay) {
       if (managedIdentity) await finishManagedProjectFolder(managedWorkspacesRoot, managedIdentity);
-      return store.getConversation(replay.lastConversationId!);
+      const chat=store.getConversation(replay.lastConversationId!);
+      if (!chat || chat.branchId !== owner?.branchId || chat.executionId !== owner?.executionId) {
+        throw Object.assign(new Error("Chat creation identity no longer belongs to a live Chat in this scope"), {statusCode:409});
+      }
+      return chat;
     }
-    if (!engines.has(defaultEngine)) return reply.code(400).send({ error: "a configured default engine is required" });
+    if (!engines.has(defaultEngine)) throw Object.assign(new Error("a configured default engine is required"), {statusCode:400});
     const creationAdapter = engines.get(defaultEngine)!.adapter;
     await prepareEngineModels(creationAdapter);
     const creationModelOptions = cachedModelOptions(creationAdapter);
     const resolvedCreation = chatCreationRuntimeSelection(creationAdapter, {
-      model: request.body.defaultModel,
-      effort: request.body.defaultEffort,
-      speed: request.body.defaultSpeed,
+      model: input.defaultModel,
+      effort: input.defaultEffort,
+      speed: input.defaultSpeed,
     }, workspace.getPreferences().engineDefaults?.[defaultEngine], creationModelOptions);
-    if (resolvedCreation.error) return reply.code(400).send({ error: resolvedCreation.error });
+    if (resolvedCreation.error) throw Object.assign(new Error(resolvedCreation.error), {statusCode:400});
     await fs.mkdir(managedWorkspacesRoot, { recursive: true });
-    if (request.body.hostPath) {
+    if (input.hostPath) {
       try {
         const stat = await fs.stat(hostPath);
-        if (!stat.isDirectory()) return reply.code(400).send({ error: "hostPath must be a directory" });
+        if (!stat.isDirectory()) throw Object.assign(new Error("hostPath must be a directory"), {statusCode:400});
         const validated = await projectFolderPathBoundary.validatedBrowsePath(hostPath);
         hostPath = validated.candidate;
-      } catch {
-        return reply.code(400).send({ error: "hostPath does not exist" });
+      } catch (error) {
+        if (error instanceof Error && "statusCode" in error) throw error;
+        throw Object.assign(new Error("hostPath does not exist"), {statusCode:400});
       }
     }
     let managedReceipt: AnyManagedProjectCreationReceipt | undefined;
@@ -948,18 +958,20 @@ export function registerProjectRoutes(
       } catch (error) {
         if (error instanceof Error && (error.message.includes("reused with different input") ||
             error.message.includes("folder already exists"))) {
-          return reply.code(409).send({ error: error.message });
+          throw Object.assign(new Error(error.message), {statusCode:409});
         }
         throw error;
       }
     }
     let project;
     try {
+      signal?.throwIfAborted();
       project = store.createProject({
         label,
         chatOwned: true,
+        ...owner,
         hostPath,
-        ...(!request.body.hostPath ? { managedWorkspaceName: requestedName, creationHostPath } : {}),
+        ...(!input.hostPath ? { managedWorkspaceName: requestedName, creationHostPath } : {}),
         defaultEngine,
         ...(resolvedCreation.model ? { defaultModel: resolvedCreation.model } : {}),
         ...(resolvedCreation.effort ? { defaultEffort: resolvedCreation.effort } : {}),
@@ -979,9 +991,20 @@ export function registerProjectRoutes(
     appendWorkspace({ type: "project_changed", projectId: project.id, action: "created" });
     refreshCommunicationReconciliation(project.id);
     if (project.lastConversationId) appendWorkspace({ type: "conversation_changed", projectId: project.id, conversationId: project.lastConversationId, action: "created" });
-    return store.getConversation(project.lastConversationId!);
+    const chat=store.getConversation(project.lastConversationId!);
+    if (!chat || chat.branchId !== owner?.branchId || chat.executionId !== owner?.executionId) throw new Error("Chat creation did not establish its owned context");
+    return chat;
     } finally {
       releaseCreationClaim?.();
+    }
+  };
+
+  app.post<{ Body: CreateProjectRequest; Headers: { "idempotency-key"?: string } }>("/api/chats", async (request,reply) => {
+    request.raw.socket.setTimeout?.(app.server.requestTimeout || 120_000);
+    try { return await createChat(request.body,request.headers["idempotency-key"] ?? ""); }
+    catch (error) {
+      if (error instanceof Error && "statusCode" in error) return reply.code(Number(error.statusCode)).send({error:error.message});
+      throw error;
     }
   });
 
@@ -1009,5 +1032,5 @@ export function registerProjectRoutes(
     return reply.code(410).send({ code: "project_namespace_retired", error: "Update the owning Chat through /api/conversations/:id. Project namespace settings are retired." });
   });
 
-  return { reconcileManagedProjectFolders: reconcileManagedFolders };
+  return { reconcileManagedProjectFolders: reconcileManagedFolders, createChat };
 }

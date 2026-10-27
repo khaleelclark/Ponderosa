@@ -200,7 +200,7 @@ export const queryKeys = {
   tokenUsage: {
     all: ["token-usage"] as const,
     detail: (
-      scope: "overall" | "project" | "agent" | "conversation",
+      scope: "overall" | "project" | "agent" | "conversation" | "branch",
       scopeId: string | undefined,
       rangeKey: "24h" | "7d" | "30d" | "all",
     ) => ["token-usage", scope, scopeId, rangeKey] as const,

@@ -1,3 +1,4 @@
+import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import {
   Alert,
   Box,
@@ -146,11 +147,13 @@ export function ConversationView({
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onDeleted(): void;
 }): JSX.Element {
+  const auditOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
-  const [activeView, setActiveView] = useConversationActiveViewState(
+  const [storedView, setActiveView] = useConversationActiveViewState(
     conversationId,
     initialView,
   );
+  const activeView=auditOnly&&storedView==='agents'?'main':storedView;
   const {
     agents,
     collaborationHistory,
@@ -1145,7 +1148,6 @@ export function ConversationView({
             searchValue={memberSearch}
             onSearchValueChange={setMemberSearch}
             agents={conversationAgents}
-            collectionRequest={membersRequest}
             relationshipAgents={projectAgents}
             projectId={conversation.projectId}
             engines={engines}
@@ -1167,16 +1169,9 @@ export function ConversationView({
               totalCount: membersQuery.data?.pages[0]?.total,
               variant: "embedded",
             }}
-            collectionFooter={(
-              <CollectionStateFeedback
-                resourceLabel="Agents"
-                request={membersRequest}
-                itemCount={conversationAgents.length}
-                filtersActive={Boolean(memberSearch.trim())}
-                emptyTitle="No Agents Yet"
-                suppressEmpty
-              />
-            )}
+            collectionRequest={membersRequest}
+            organizationDataComplete={!memberSearch&&membersRequest.hasResolved&&!membersRequest.hasNextPage&&!membersRequest.isPaginationError&&!membersRequest.isRefreshError}
+            collectionFooter={filteredCount=><CollectionStateFeedback resourceLabel="Agents" request={membersRequest} itemCount={filteredCount} filtersActive={Boolean(memberSearch.trim())} emptyTitle="No Agents Yet" suppressEmpty/>}
           /></Box>
         ) : null}
         {activeView === "main" && !agentWorkOpen ? (
@@ -1198,7 +1193,7 @@ export function ConversationView({
         ) : null}
       </Box>
 
-      <ChatComposerDock
+      {auditOnly?<Alert severity="info" sx={{m:1}}>This temporary Chat belongs to a workflow execution. Inspect its messages and results here.</Alert>:<ChatComposerDock
         visible={!agentWorkOpen && activeView === "main"}
       >
         {activeView === "main" && queuedMessageNotice ? (
@@ -1371,9 +1366,9 @@ export function ConversationView({
           onCancel={stopOperation}
           cancelPending={cancelOperationPending}
         />
-      </ChatComposerDock>
+      </ChatComposerDock>}
 
-      <ConversationDialogs
+      {!auditOnly&&<ConversationDialogs
         conversation={conversation}
         engines={engines}
         addAgentsOpen={addAgentsOpen}
@@ -1402,7 +1397,7 @@ export function ConversationView({
         onRename={() => rename.mutate(renameValue.trim())}
         onDeleteClose={() => setDeleteOpen(false)}
         onDelete={(expectedAgentIds) => deleteConversation.mutate(expectedAgentIds)}
-      />
+      />}
 
     </Box></OutgoingMessageProvider>
   );

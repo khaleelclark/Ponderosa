@@ -24,7 +24,7 @@ function parseRecovery(raw: string | undefined): DraftTextRecovery | undefined {
           !binding || ["agentId", "projectId", "handle", "currentHandle", "currentTitle"]
             .some(field => typeof binding[field] !== "string"))) return undefined;
     if (value.attachmentIds !== undefined && (!Array.isArray(value.attachmentIds) || value.attachmentIds.length > 20 || value.attachmentIds.some((id: unknown) => typeof id !== "string"))) return undefined;
-    if (value.attachments !== undefined && (!Array.isArray(value.attachments) || value.attachments.length > 20 || value.attachments.some((asset: DraftAttachmentDto) => !asset || typeof asset.id !== "string" || typeof asset.name !== "string" || typeof asset.mediaType !== "string" || typeof asset.downloadUrl !== "string" || !asset.downloadUrl.startsWith("/api/conversations/")))) return undefined;
+    if (value.attachments !== undefined && (!Array.isArray(value.attachments) || value.attachments.length > 20 || value.attachments.some((asset: DraftAttachmentDto) => !asset || typeof asset.id !== "string" || typeof asset.name !== "string" || typeof asset.mediaType !== "string" || typeof asset.downloadUrl !== "string" || !/^\/api\/(?:branches\/engine\/)?conversations\//.test(asset.downloadUrl)))) return undefined;
     return value;
   } catch { return undefined; }
 }

@@ -77,7 +77,10 @@ export function sqliteCollectionGeneration(
     generationId = randomUUID();
     sqliteGenerationIds.set(sqlite, generationId);
   }
-  const keys = [...new Set(generationKeys)].sort();
+  // Installation publication/retirement can change any product collection
+  // without changing an Agent or Chat row. Its durable visibility generation
+  // fences continuations across that same canonical transaction.
+  const keys = [...new Set([...generationKeys, 'resource_visibility'])].sort();
   if (keys.length === 0) return generationId;
   const rows = sqlite.prepare(`
     SELECT name, generation FROM collection_generations

@@ -267,7 +267,7 @@ async function runLauncher(command: "stop"): Promise<void> {
   });
 }
 
-async function openPonderosa(): Promise<void> {
+async function openPonderosa(destination: "/" | "/branches" = "/"): Promise<void> {
   const running = await currentStatus();
   if (!running) throw new Error("Ponderosa is not running.");
   const bootstrap = await launcherRequest<{ token: string }>(
@@ -276,7 +276,7 @@ async function openPonderosa(): Promise<void> {
     { method: "POST" },
   );
   const url = `http://${running.state.host}:${running.state.port}/__ponderosa_bootstrap` +
-    `?next=%2F#${encodeURIComponent(bootstrap.token)}`;
+    `?next=${encodeURIComponent(destination)}#${encodeURIComponent(bootstrap.token)}`;
   await shell.openExternal(url);
 }
 
@@ -436,6 +436,7 @@ function createTray(): void {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "Show Ponderosa Engine", click: showWindow },
     { label: "Open Ponderosa", click: () => void openPonderosa() },
+    { label: "Open Ponderosa Branches", click: () => void openPonderosa("/branches") },
     { type: "separator" },
     { label: "Quit Ponderosa Engine", click: () => void requestQuit() },
   ]));
@@ -505,6 +506,7 @@ if (!app.requestSingleInstanceLock()) {
 
   ipcMain.handle("engine:snapshot", snapshot);
   ipcMain.handle("engine:open", async () => openPonderosa());
+  ipcMain.handle("engine:open-branches", async () => openPonderosa("/branches"));
   ipcMain.handle("engine:restart", async () => {
     engineState = "stopping";
     engineDetail = "Stopping the local Ponderosa service before restart…";

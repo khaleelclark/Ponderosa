@@ -48,7 +48,7 @@ export function runtimeAttachmentPaths(value) {
 // The child is real but inert: no shell, network, provider account or user data.
 // Inert Windows roots cannot spawn descendants and are assigned to an exact
 // kill-on-close Job before publication; POSIX roots keep their detached group.
-export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerInstalled, modelCatalog, modelValidator, socketIdleTimeoutMs, storeFactory } = {}) {
+export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerInstalled, modelCatalog, modelValidator, socketIdleTimeoutMs, storeFactory, authToken } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
@@ -149,7 +149,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
     opening.then(() => openingSessions.delete(opening), () => openingSessions.delete(opening));
     return opening;
   };
-  const options = { dataDir, logger: false, allowedBrowseRoots: [root],
+  const options = { dataDir, logger: false, allowedBrowseRoots: [root], ...(authToken ? { authToken } : {}),
     // Controlled inert providers use a fixed sample, independent of CI host pressure.
     resourceAdmissionObservation: { sample: async () => ({ availableBytes: 8 * 1024 ** 3, memoryFullPercent: 0, ioFullPercent: 0, source: 'linux_host' }) },
     engines: [{ adapter, isInstalled: () => providerInstalled?.(adapter.id) !== false, authStatus: async () => ({ authenticated: true, source: 'subscription_presence', detail: 'Controlled fixture; no provider account' }), availabilityProbe: async () => { providerProbes.push({ engineId: adapter.id }); return { available: true }; } },
@@ -171,7 +171,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
   } };
   await open();
   const api = async (method, url, payload, headers = {}) => {
-    const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }), headers });
+    const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }), headers:{...(authToken?{authorization:`Bearer ${authToken}`} :{}),...headers} });
     let body; try { body = response.json(); } catch { body = response.body; }
     return { status: response.statusCode, body, headers: response.headers, rawBody: response.rawPayload };
   };

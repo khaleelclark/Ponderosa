@@ -1,3 +1,5 @@
+import {localMemoryFor} from "./local-memory.js";
+import {requestProduct,resourceInProduct} from "./product-scope.js";
 import type {
   AgentDto,
   AgentHealthProjectionDto,
@@ -447,6 +449,7 @@ export function registerProjectDeletionRoutes(
         throw new Error("Project deletion cannot commit while Chat deletion cleanup is pending");
       }
       browserProfiles.retainedBrowsers.assertClear({ projectId: project.id });
+      await localMemoryFor(app)?.purgeProject(project.id);
       const receipt = store.commitProjectDeletion(project.id, (projectId) => coordinationV3.purgeProject(projectId));
       if (!receipt) throw new Error("Project deletion commit did not produce a receipt");
       communicationReconciliation.delete(project.id);
@@ -558,7 +561,7 @@ export function registerProjectDeletionRoutes(
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
     return agentHealth(
       { type: "project", id: request.params.id },
-      store.listAgents(request.params.id),
+      store.listAgents(request.params.id).filter(agent=>resourceInProduct(store,"agent",agent.id,requestProduct(request))),
     );
   });
 }

@@ -108,6 +108,22 @@ export async function parsePortablePackageFile(pathname: string, options: Packag
 }
 
 const CHUNK_BYTES = 192 * 1024; // divisible by 3 for independent base64 chunks
+/** Package previews need exact sizes without allocating decoded artifacts. */
+export function portableBase64ByteLength(dataBase64: string): number {
+  if (dataBase64.length > Math.ceil(MANAGED_ARTIFACT_MAX_BYTES / 3) * 4) throw new Error("portable artifact exceeds the 64 MiB managed-file limit");
+  const padding = dataBase64.endsWith("==") ? 2 : dataBase64.endsWith("=") ? 1 : 0;
+  const length = dataBase64.length - padding;
+  const bytes = Math.floor(length * 3 / 4);
+  if (bytes > MANAGED_ARTIFACT_MAX_BYTES) throw new Error("portable artifact exceeds the 64 MiB managed-file limit");
+  if (length % 4 === 1 || (padding && dataBase64.length % 4 !== 0)) throw new Error("portable artifact has invalid base64 data");
+  for (let offset=0; offset<length; offset+=256*1024) {
+    if (/[^A-Za-z0-9+/]/u.test(dataBase64.slice(offset,Math.min(length,offset+256*1024)))) throw new Error("portable artifact has invalid base64 data");
+  }
+  const tail=dataBase64.slice(length ? Math.floor((length-1)/4)*4 : 0,length);
+  if (Buffer.from(tail,"base64").toString("base64").replace(/=+$/u,"") !== tail) throw new Error("portable artifact has invalid base64 data");
+  return bytes;
+}
+
 export async function encodePortableArtifact(source: Buffer): Promise<string> {
   if (source.length > MANAGED_ARTIFACT_MAX_BYTES) throw new Error("portable artifact exceeds the 64 MiB managed-file limit");
   const pieces: string[] = [];
@@ -123,7 +139,9 @@ export async function decodePortableArtifact(dataBase64: string): Promise<{ data
   const padding = dataBase64.endsWith("==") ? 2 : dataBase64.endsWith("=") ? 1 : 0;
   const unpaddedLength = dataBase64.length - padding;
   if (unpaddedLength % 4 === 1 || (padding && dataBase64.length % 4 !== 0)) throw new Error("portable artifact has invalid base64 data");
-  const data = Buffer.allocUnsafe(Math.floor(unpaddedLength * 3 / 4));
+  const decodedLength = Math.floor(unpaddedLength * 3 / 4);
+  if (decodedLength > MANAGED_ARTIFACT_MAX_BYTES) throw new Error("portable artifact exceeds the 64 MiB managed-file limit");
+  const data = Buffer.allocUnsafe(decodedLength);
   const hash = createHash("sha256");
   let written = 0;
   for (let offset = 0; offset < dataBase64.length; offset += 256 * 1024) {

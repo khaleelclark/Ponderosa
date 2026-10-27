@@ -165,7 +165,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
   ): Promise<{
     configured: true;
     installed?: boolean;
-    authentication: "authenticated" | "unauthenticated" | "error";
+    authentication: "checking" | "authenticated" | "unauthenticated" | "error";
     intakeReady: boolean;
     reachability: "unverified" | "reachable" | "degraded";
     authDetail?: string;
@@ -179,7 +179,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     availabilityBuildRevision?: string;
     availabilityInstanceId?: string;
     authLastKnown?: { authenticated: boolean; observedAt: string };
+    resourceAdmission?: import("@ponderosa/core").ResourceAdmissionDto;
   }> => {
+    let resources = context.resourceAdmission?.snapshot(activeRuns.size);
     if (!providerInstalled(id, registration)) return {
       configured: true, installed: false, authentication: "unauthenticated",
       intakeReady: false, reachability: "unverified",
@@ -188,8 +190,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     let auth: import("@ponderosa/core").EngineAuthStatus;
     try {
       auth = registration.authStatus
-        ? await engineAuthStatuses.read(id, registration.authStatus, providerEnabled(id) && context.resourceAdmission?.snapshot().state !== "held")
+        ? await engineAuthStatuses.read(id, registration.authStatus, providerEnabled(id) && resources?.state !== "held")
         : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
+      resources = context.resourceAdmission?.snapshot(activeRuns.size);
     } catch (error) {
       app.log.warn({
         providerError: restrictedProviderExceptionLogDetail(error),
@@ -208,7 +211,11 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       };
     }
     const unknown = auth.status === "unknown";
-    const authDetail = unknown ? "Provider authentication could not be checked."
+    const checking = unknown && auth.reason === "probe_pending";
+    const authDetail = checking ? resources?.state === "held"
+      ? "Provider sign-in check is deferred while waiting for host resources."
+      : "Provider sign-in check is pending."
+      : unknown ? "Provider authentication could not be checked."
       : auth.authenticated
       ? "Provider authentication is available."
       : "Provider authentication is required.";
@@ -218,8 +225,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     return {
       configured: true,
       installed: true,
-      authentication: unknown ? "error" : auth.authenticated ? "authenticated" : "unauthenticated",
-      intakeReady: enabled && !unknown && auth.authenticated && !denial && context.resourceAdmission?.snapshot(activeRuns.size).state !== "held",
+      authentication: checking ? "checking" : unknown ? "error" : auth.authenticated ? "authenticated" : "unauthenticated",
+      intakeReady: enabled && !unknown && auth.authenticated && !denial && resources?.state !== "held",
+      ...(resources ? { resourceAdmission: resources } : {}),
       authObservedAt: engineAuthStatuses.snapshot(id).observedAt,
       ...(auth.reason ? { authReason: auth.reason } : {}),
       ...(auth.source ? { authSource: auth.source } : {}),
@@ -236,6 +244,8 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
         ? { availabilityCategory: evidence.failureCategory ?? "unknown" }
         : {}),
       ...(!enabled ? { availabilityDetail: "disabled by the operator; queued work is held" }
+        : resources?.state === "held"
+        ? { availabilityDetail: "Waiting for host resources. Accepted work remains queued and will resume automatically when headroom recovers." }
         : !auth.authenticated
         ? { availabilityDetail: authDetail ?? "runtime is not authenticated" }
         : denial ? { availabilityDetail: denial }

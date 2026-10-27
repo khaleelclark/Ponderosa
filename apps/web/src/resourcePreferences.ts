@@ -3,9 +3,10 @@ import type {
   ProjectSort,
   WorkspaceConversationDirectoryItemDto,
   WorkspacePreferencesDto,
+  WorkspaceDirectoryKind,
 } from "@ponderosa/core";
 
-export type WorkspaceResourceKind = "project" | "conversation" | "agent";
+export type WorkspaceResourceKind = "project" | "conversation" | "agent" | "branch";
 export type WorkspaceResourceSortKind = "home" | "chat" | "agent";
 
 export function resourcePreferenceKey(kind: WorkspaceResourceKind, id: string): string {
@@ -62,9 +63,9 @@ export function sidebarChatItems(
 export function changedWorkspaceDirectoryKinds(
   previous: WorkspacePreferencesDto | undefined,
   next: WorkspacePreferencesDto,
-): WorkspaceResourceKind[] {
+): WorkspaceDirectoryKind[] {
   if (!previous) return ["project", "conversation", "agent"];
-  const changed = new Set<WorkspaceResourceKind>();
+  const changed = new Set<WorkspaceDirectoryKind>();
   if (
     previous.projectSort !== next.projectSort ||
     !sameSequence(previous.projectOrder, next.projectOrder)
@@ -177,40 +178,25 @@ export function sortWorkspaceResources<T>(
   });
 }
 
-/** Folder membership order is the custom order; other modes follow Chat activity or title. */
-export function sortChatFolderMembers(
-  folder: ChatFolderDto,
-  items: readonly WorkspaceConversationDirectoryItemDto[],
-  sort: ProjectSort,
-): WorkspaceConversationDirectoryItemDto[] {
-  const members = new Map(items.map(item => [item.conversation.id, item]));
-  if (sort === "custom") return folder.conversationIds.flatMap(id => members.get(id) ?? []);
-  return sortWorkspaceResources(
-    items.filter(item => folder.conversationIds.includes(item.conversation.id)),
-    sort,
-    undefined,
-    item => item.conversation.id,
-    item => item.conversation.title,
-    item => item.conversation.updatedAt,
-  );
-}
+export interface ResourceFolder { id: string; name: string; memberIds: string[]; expanded: boolean; starred?: boolean }
+export interface FolderResource { id: string; title: string; updatedAt: string; runningAgentCount?: number }
 
-export function sortChatFolders(
-  folders: readonly ChatFolderDto[],
-  items: readonly WorkspaceConversationDirectoryItemDto[],
-  sort: ProjectSort,
-): ChatFolderDto[] {
+/** Folder membership order is custom order; other modes follow resource activity/title. */
+export function sortResourceFolderMembers<Item extends FolderResource>(folder: ResourceFolder, items: readonly Item[], sort: ProjectSort): Item[] {
+  const members = new Map(items.map(item => [item.id, item]));
+  if (sort === "custom") return folder.memberIds.flatMap(id => members.get(id) ?? []);
+  return sortWorkspaceResources(items.filter(item => folder.memberIds.includes(item.id)), sort, undefined, item => item.id, item => item.title, item => item.updatedAt);
+}
+export function sortResourceFolders<Folder extends ResourceFolder>(folders: readonly Folder[], items: readonly FolderResource[], sort: ProjectSort): Folder[] {
   if (sort === "custom") return [...folders];
-  const updatedAt = new Map(items.map(item => [item.conversation.id, item.conversation.updatedAt]));
-  return sortWorkspaceResources(
-    [...folders],
-    sort,
-    undefined,
-    folder => folder.id,
-    folder => folder.name,
-    folder => folder.conversationIds.reduce((latest, id) => {
-      const value = updatedAt.get(id) ?? "";
-      return value > latest ? value : latest;
-    }, ""),
-  );
+  const updatedAt = new Map(items.map(item => [item.id, item.updatedAt]));
+  return sortWorkspaceResources([...folders], sort, undefined, folder => folder.id, folder => folder.name,
+    folder => folder.memberIds.reduce((latest, id) => { const value = updatedAt.get(id) ?? ""; return value > latest ? value : latest; }, ""));
+}
+export function sortChatFolderMembers(folder: ChatFolderDto, items: readonly WorkspaceConversationDirectoryItemDto[], sort: ProjectSort): WorkspaceConversationDirectoryItemDto[] {
+  const members = sortResourceFolderMembers({...folder, memberIds: folder.conversationIds}, items.map(item => ({...item, id: item.conversation.id, title: item.conversation.title, updatedAt: item.conversation.updatedAt, original: item})), sort);
+  return members.map(item => item.original);
+}
+export function sortChatFolders(folders: readonly ChatFolderDto[], items: readonly WorkspaceConversationDirectoryItemDto[], sort: ProjectSort): ChatFolderDto[] {
+  return sortResourceFolders(folders.map(folder => ({...folder, memberIds: folder.conversationIds})), items.map(item => ({id: item.conversation.id, title: item.conversation.title, updatedAt: item.conversation.updatedAt})), sort).map(({memberIds: _, ...folder}) => folder);
 }

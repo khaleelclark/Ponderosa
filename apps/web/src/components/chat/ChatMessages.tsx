@@ -1,3 +1,4 @@
+import {productApiPath,productWorkspacePath} from "../../api/productScope.js";
 import CheckIcon from "@mui/icons-material/Check";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
@@ -146,7 +147,7 @@ function projectFileHref(projectId: string | undefined, href: string | undefined
   if (fileScope.agentId) query.set("agentId", fileScope.agentId);
   else if (fileScope.conversationId) query.set("conversationId", fileScope.conversationId);
   else return undefined;
-  return `/api/projects/${encodeURIComponent(projectId)}/workspace-files/${mode}?${query}`;
+  return productApiPath(`/api/projects/${encodeURIComponent(projectId)}/workspace-files/${mode}?${query}`);
 }
 
 function projectFileViewerHref(projectId: string | undefined, href: string | undefined, fileScope?: WorkspaceFileOwnerDto): string | undefined {
@@ -155,7 +156,7 @@ function projectFileViewerHref(projectId: string | undefined, href: string | und
   if (fileScope.agentId) query.set("agentId", fileScope.agentId);
   else if (fileScope.conversationId) query.set("conversationId", fileScope.conversationId);
   else return undefined;
-  return `/projects/${encodeURIComponent(projectId)}/files/view?${query}`;
+  return productWorkspacePath(`/projects/${encodeURIComponent(projectId)}/files/view?${query}`);
 }
 
 /** Working-file ownership survives the Run-specific live-app preview grant. */
@@ -187,7 +188,7 @@ function ChatLink({ href, children, previewScope, projectId, fileScope }: { href
 
   if (projectFilePreview) return <a className="chat-text-navigation" href={projectFilePreview} target="_blank" rel="noreferrer">{children}</a>;
   if (isLocalWorkspaceHref(href)) return <Box component="span">{children}</Box>;
-  if (!link) return <a className="chat-text-navigation" href={href} download={/^\/api\/projects\/[^/]+\/artifacts\/[^/?#]+\/download$/u.test(href) || undefined}>{children}</a>;
+  if (!link) return <a className="chat-text-navigation" href={href} download={/^\/api\/(?:branches\/engine\/)?projects\/[^/]+\/artifacts\/[^/?#]+\/download$/u.test(href) || undefined}>{children}</a>;
   const activate = (event: React.MouseEvent) => {
     if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     if (!link.loopback && projectBrowser.projectId) {
@@ -202,7 +203,7 @@ function ChatLink({ href, children, previewScope, projectId, fileScope }: { href
     setOpening(true); setError(undefined);
     try {
       if (!previewScope) throw new Error("This localhost app is not associated with an active run.");
-      const response = await fetch("/api/link-previews", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url: link.url.href, ...previewScope }) });
+      const response = await fetch(productApiPath("/api/link-previews"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url: link.url.href, ...previewScope }) });
       if (!response.ok) throw new Error("Ponderosa could not open this localhost app.");
       const preview = await response.json() as { openUrl: string };
       window.open(preview.openUrl, "_blank", "noopener,noreferrer");

@@ -1,6 +1,6 @@
-import type { ChatFolderDto, ProjectFolderDto, WorkspacePreferencesDto, UpdateWorkspacePreferencesRequest } from "@ponderosa/core";
+import type { BranchFolderDto, ChatFolderDto, ProjectFolderDto, WorkspacePreferencesDto, UpdateWorkspacePreferencesRequest } from "@ponderosa/core";
 
-type PreferencePatch = Partial<WorkspacePreferencesDto> & Pick<UpdateWorkspacePreferencesRequest, "projectFoldersRevision" | "chatFoldersRevision">;
+type PreferencePatch = Partial<WorkspacePreferencesDto> & Pick<UpdateWorkspacePreferencesRequest, "projectFoldersRevision" | "chatFoldersRevision" | "branchFoldersRevision">;
 
 /** Reuse the same reviewed membership merge without touching Project ownership. */
 export function rebaseChatFolderChange(current: ChatFolderDto[], before: ChatFolderDto[], after: ChatFolderDto[]): ChatFolderDto[] {
@@ -19,6 +19,12 @@ export function rebaseChatFolderChange(current: ChatFolderDto[], before: ChatFol
         conversationIds: projectIds,
       };
     });
+}
+
+/** Branch folders reuse the same membership and concurrent-star merge. */
+export function rebaseBranchFolderChange(current: BranchFolderDto[], before: BranchFolderDto[], after: BranchFolderDto[]): BranchFolderDto[] {
+ const chats=(folders:BranchFolderDto[])=>folders.map(({branchIds,...folder})=>({...folder,conversationIds:branchIds}));
+ return rebaseChatFolderChange(chats(current),chats(before),chats(after)).map(({conversationIds,...folder})=>({...folder,branchIds:conversationIds}));
 }
 
 /** Reapply changed fields/membership only; untouched concurrent intent survives. */
@@ -103,7 +109,7 @@ export class WorkspacePreferencesWriter {
           response = await this.operations.write(patch);
           break;
         } catch (error) {
-          if ((!entry.patch.projectFolders && !entry.patch.chatFolders) || attempt === 2 || (error as { status?: number }).status !== 409) throw error;
+          if ((!entry.patch.projectFolders && !entry.patch.chatFolders && !entry.patch.branchFolders) || attempt === 2 || (error as { status?: number }).status !== 409) throw error;
           this.projectCanonical(await this.operations.refresh());
         }
       }
@@ -129,13 +135,14 @@ export class WorkspacePreferencesWriter {
 
   private projectPending(): WorkspacePreferencesDto {
     return this.pending.reduce((current, pending) => {
-      const { projectFoldersRevision: _revision, chatFoldersRevision: _chatRevision, ...patch } = this.rebasePatch(pending, current);
+      const { projectFoldersRevision: _revision, chatFoldersRevision: _chatRevision, branchFoldersRevision: _branchRevision, ...patch } = this.rebasePatch(pending, current);
       return { ...current, ...patch };
     }, this.canonical!);
   }
 
   private rebasePatch(entry: PendingWrite, current: WorkspacePreferencesDto): PreferencePatch {
     return { ...entry.patch,
+      ...(entry.patch.branchFolders ? {branchFoldersRevision:current.revision, branchFolders:rebaseBranchFolderChange(current.branchFolders??[],entry.previous?.branchFolders??[],entry.patch.branchFolders)} : {}),
       ...(entry.patch.projectFolders ? { projectFoldersRevision: current.revision,
         projectFolders: rebaseFolderChange(current.projectFolders ?? [], entry.previous?.projectFolders ?? [], entry.patch.projectFolders) } : {}),
       ...(entry.patch.chatFolders ? { chatFoldersRevision: current.revision,

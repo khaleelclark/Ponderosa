@@ -42,18 +42,19 @@ export interface ServerContext {
     | "getWorkItemPage"
   >;
   readonly tokenUsage: (
-    scope: { type: "overall" } | { type: "project" | "agent" | "conversation"; id: string },
+    scope: Parameters<AgentStore['getTokenUsage']>[0],
     range?: TokenUsageRangeDto,
   ) => TokenUsageSummaryDto;
 }
 
 export interface SearchRoutesContext extends ServerContext {
-  readonly store: ServerContext["store"] & Pick<AgentStore, "listProjects" | "listConversations">;
+  readonly store: ServerContext["store"] & Pick<AgentStore, "listProjects" | "listConversations"|'sqlite'>;
   readonly globalChatSearch: (query: {
     q?: string;
     limit?: string | number;
     kind?: string;
     distinct?: string;
+    productScope?:'dev'|'branches';
   }) => GlobalChatSearchResponseDto;
   readonly workspace: Pick<WorkspaceStore, "listDecisionEventPage">;
   readonly coordinationV3: Pick<

@@ -157,6 +157,8 @@ export interface AgentCreationArtifactIdentity {
 export interface AgentCreationOperation {
   id: string;
   projectId: string;
+  conversationId?: string;
+  productScope?: "dev" | "branches";
   actorScope: string;
   kind: "human" | "managed" | "import";
   idempotencyKey: string;
@@ -820,15 +822,23 @@ export class AgentStore extends AgentEventSessionFacade {
 
   beginAgentCreationOperation(input: {
     projectId: string;
+    conversationId?: string;
     actorScope: string;
     kind: AgentCreationOperation["kind"];
     idempotencyKey: string;
     payloadHash: string;
   }): { operation: AgentCreationOperation; replayed: boolean } {
     const id = this.agentCreationOperationId(input);
+    const productScope = input.conversationId
+      ? this.getConversation(input.conversationId)?.branchId ? "branches" : "dev"
+      : undefined;
+    const sameOwner = (operation: AgentCreationOperation) =>
+      operation.payloadHash === input.payloadHash &&
+      operation.conversationId === input.conversationId &&
+      operation.productScope === productScope;
     const existing = this.getAgentCreationOperation(id);
     if (existing) {
-      if (existing.payloadHash !== input.payloadHash) {
+      if (!sameOwner(existing)) {
         throw new Error("Agent creation idempotency key was reused with different input");
       }
       if (existing.status === "rolled_back") {
@@ -849,12 +859,12 @@ export class AgentStore extends AgentEventSessionFacade {
     try {
       this.client.prepare(`
         INSERT INTO agent_creation_operations
-          (id, project_id, actor_scope, kind, idempotency_key, payload_hash, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'preparing', ?, ?)
-      `).run(id, input.projectId, input.actorScope, input.kind, input.idempotencyKey, input.payloadHash, now, now);
+          (id, project_id, actor_scope, kind, idempotency_key, payload_hash, conversation_id, product_scope, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'preparing', ?, ?)
+      `).run(id, input.projectId, input.actorScope, input.kind, input.idempotencyKey, input.payloadHash, input.conversationId ?? null, productScope ?? null, now, now);
     } catch (error) {
       const raced = this.getAgentCreationOperation(id);
-      if (!raced || raced.payloadHash !== input.payloadHash) throw error;
+      if (!raced || !sameOwner(raced)) throw error;
       return { operation: raced, replayed: true };
     }
     return { operation: this.getAgentCreationOperation(id)!, replayed: false };
@@ -882,11 +892,11 @@ export class AgentStore extends AgentEventSessionFacade {
 
   getAgentCreationOperation(id: string): AgentCreationOperation | undefined {
     const row = this.client.prepare(`
-      SELECT id, project_id, actor_scope, kind, idempotency_key, payload_hash, status,
+      SELECT id, project_id, conversation_id, product_scope, actor_scope, kind, idempotency_key, payload_hash, status,
         communication_event_id, artifact_ids_json, artifact_identities_json, result_json, last_error
       FROM agent_creation_operations WHERE id = ?
     `).get(id) as {
-      id: string; project_id: string; actor_scope: string; kind: AgentCreationOperation["kind"];
+      id: string; project_id: string; conversation_id: string | null; product_scope: "dev" | "branches" | null; actor_scope: string; kind: AgentCreationOperation["kind"];
       idempotency_key: string; payload_hash: string; status: AgentCreationOperationStatus;
       communication_event_id: string | null; artifact_ids_json: string; artifact_identities_json: string;
       result_json: string | null; last_error: string | null;
@@ -898,6 +908,8 @@ export class AgentStore extends AgentEventSessionFacade {
     return {
       id: row.id,
       projectId: row.project_id,
+      ...(row.conversation_id ? {conversationId:row.conversation_id} : {}),
+      ...(row.product_scope ? {productScope:row.product_scope} : {}),
       actorScope: row.actor_scope,
       kind: row.kind,
       idempotencyKey: row.idempotency_key,
@@ -969,6 +981,8 @@ export class AgentStore extends AgentEventSessionFacade {
     input: Omit<CreateProjectRequest, "defaultEngine"> & {
       hostPath: string;
       chatOwned?: boolean;
+      branchId?: string;
+      executionId?: string;
       managedWorkspaceName?: string;
       creationHostPath?: string;
       defaultEngine?: CreateProjectRequest["defaultEngine"];
@@ -1445,6 +1459,11 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentManagement.updateAgent(id, patch);
   }
 
+  /** Internal installation compensation; preserves the exact reserved handle. */
+  restoreAgentConfiguration(id: string, snapshot: Pick<AgentDto,"title"|"handle"|"activeEngine"|"managementPermissions"> & {model:string|null;effort:string|null;speed:string|null}): AgentDto | undefined {
+    return this.agentManagement.restoreAgentConfiguration(id,snapshot);
+  }
+
   updateAgentOrganization(id: string, input: UpdateAgentOrganizationRequest): AgentDto | undefined {
     return this.agentManagement.updateAgentOrganization(id, input);
   }
@@ -1641,7 +1660,7 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.chatFeed.searchGlobalChats(input);
   }
 
-  getAllChatPage(input: { limit?: number; cursor?: string } = {}): AllChatPageDto {
+  getAllChatPage(input: { limit?: number; cursor?: string;productScope?:'dev'|'branches' } = {}): AllChatPageDto {
     return this.chatFeed.getAllChatPage(input);
   }
 
@@ -1675,7 +1694,7 @@ export class AgentStore extends AgentEventSessionFacade {
   }
 
   getTokenUsage(
-    scope: { type: "overall" } | { type: "project" | "agent" | "conversation"; id: string },
+    scope: ({ type: "overall" } | { type: "project" | "agent" | "conversation" | "branch"; id: string }) & {productScope?:'dev'|'branches'},
     range: TokenUsageRangeDto = {},
   ): TokenUsageSummaryDto {
     return this.runUsage.getTokenUsage(scope, range);
@@ -1713,7 +1732,7 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.artifactCatalog.projectHasArtifactSourcePath(projectId, sourcePath);
   }
 
-  getProjectArtifactPage(projectId: string, input: { limit: number; cursor?: string; conversationId?: string; search?: string }): HistoryPageDto<ArtifactDto> {
+  getProjectArtifactPage(projectId: string, input: { limit: number; cursor?: string; conversationId?: string; search?: string;productScope?:'dev'|'branches' }): HistoryPageDto<ArtifactDto> {
     return this.artifactCatalog.getProjectArtifactPage(projectId, input);
   }
 

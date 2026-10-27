@@ -1,3 +1,4 @@
+import {productApiPath} from "../../api/productScope.js";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { Box, Button, Paper, Stack, Typography } from "@mui/material";
 import type { ResponseFileActivityDto } from "@ponderosa/core";
@@ -42,7 +43,7 @@ export function ResponseFileActivity({
           {files.map((file) => {
             const displayPath = presentProjectPath(projectRoot ?? "", file.path).displayPath;
             const generated = file.artifactKind === "generated_file" && file.artifactId && projectId;
-            const root = generated ? `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(file.artifactId!)}` : undefined;
+            const root = generated ? productApiPath(`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(file.artifactId!)}`) : undefined;
             return <Stack
               key={`${file.sourceSeq}:${file.path}`}
               direction="row"

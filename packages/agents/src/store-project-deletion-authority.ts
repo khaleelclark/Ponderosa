@@ -44,6 +44,7 @@ function parseDraftSurfaceIds(value: string | null | undefined): string[] {
 function projectDeletionReceipt(row: typeof projectDeletionReceipts.$inferSelect): ProjectDeletionReceipt {
   return {
     projectId: row.projectId,
+    productScope:row.productScope as ProjectDeletionReceipt['productScope'],
     tombstoneName: row.tombstoneName,
     ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
     removalStarted: row.removalStarted === 1,
@@ -277,6 +278,9 @@ export class AgentProjectDeletionAuthority {
         if (pendingAgentDeletion) {
           throw new Error("Project deletion cannot commit while Agent deletion cleanup is pending");
         }
+        const products=this.client.prepare(`SELECT DISTINCT CASE WHEN branch_id IS NULL THEN 'dev' ELSE 'branches' END product
+          FROM (SELECT branch_id FROM conversations WHERE project_id=? UNION ALL SELECT branch_id FROM conversation_deletion_receipts WHERE project_id=?)`).all(id,id) as Array<{product:'dev'|'branches'}>;
+        const productScope:ProjectDeletionReceipt['productScope']=products.length>1?'mixed':products[0]?.product??'dev';
         beforeProjectionDelete?.(id);
         this.client.prepare(`DELETE FROM events WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
           .run(id);
@@ -310,6 +314,7 @@ export class AgentProjectDeletionAuthority {
         this.client.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
         this.db.insert(projectDeletionReceipts).values({
           projectId: id,
+          productScope,
           tombstoneName,
           ownershipToken,
           storageCleanupCompleted: 0,

@@ -1,4 +1,4 @@
-import { routeToPath } from "../routeRegistry";
+import { routeLinkPath } from "../routeRegistry";
 import { isUnmodifiedPrimaryClick } from "../nativeNavigation";
 import CloseIcon from "@mui/icons-material/Close";
 import { ConversationWorkspaceFiles } from "./files/ConversationWorkspaceFiles";
@@ -200,7 +200,7 @@ export function ConversationFilesResults({
           <Typography variant="overline">Working-folder files</Typography>
           {workspaceMatches.isLoading ? <Typography>Searching this Chat’s folder…</Typography> : null}
           {workspaceMatches.isError ? <Alert severity="error">Working-folder search is unavailable. Managed results remain below.</Alert> : null}
-          <List dense>{workspaceMatches.results.map(file => <ListItemButton key={file.path} component="a" href={routeToPath({ kind: "workspaceFile", projectId, conversationId, path: file.path })}
+          <List dense>{workspaceMatches.results.map(file => <ListItemButton key={file.path} component="a" href={routeLinkPath({ kind: "workspaceFile", projectId, conversationId, path: file.path })}
             onClick={event => { if (isUnmodifiedPrimaryClick(event)) { event.preventDefault(); setWorkspaceFile(file.path); } }}><ListItemText primary={file.path} secondary={`Working folder · ${file.project.label}`} /></ListItemButton>)}</List>
           {workspaceMatches.hasNextPage ? <Button disabled={workspaceMatches.isFetching} onClick={() => void workspaceMatches.fetchNextPage()}>{workspaceMatches.isFetchingNextPage ? "Loading…" : "Load more working-folder files"}</Button> : null}
           {workspaceMatches.truncated ? <Alert severity="info">Folder search reached its limit. Narrow the search to find more files.</Alert> : null}
