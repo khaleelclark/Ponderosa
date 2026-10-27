@@ -313,6 +313,85 @@ test('late definition failures cannot replace feedback for another owner or a ne
  }
 });
 
+async function capabilityActionFixture(immediateSave=true,endpoint='/api/branches/owner/capabilities'){
+ const {readFile}=await import('node:fs/promises'),{createRequire}=await import('node:module'),vm=await import('node:vm');
+ const ts=createRequire(new URL('../../apps/web/package.json',import.meta.url))('typescript');
+ const source=await readFile(new URL('../../apps/web/src/components/CapabilityPolicyEditor.tsx',import.meta.url),'utf8'),writes=[],cache=[];
+ const {capabilityDraftDirty}=await import('../../apps/web/src/components/capabilityPolicyDraft.ts');
+ const policy={revision:4,scopeId:'owner',restrictedCapabilityIds:['connector:hidden','unknown.future']};
+ const scope={endpoint,immediateSave,draft:undefined,get dirty(){return capabilityDraftDirty(scope.draft)},writing:{current:false},query:{data:{policy},refetch:async()=>({data:scope.query.data})},
+  setDraft:value=>{scope.draft=typeof value==='function'?value(scope.draft):value},client:{setQueryData:(key,value)=>{cache.push({key,value});scope.query.data=value}},
+  readback:async()=>scope.query.data,requestJson:async(url,init)=>{if(!init?.body)return scope.readback();writes.push({url,...JSON.parse(init.body)});return scope.query.data},
+  useMutation:options=>{scope.options=options;return {isPending:false,mutate:next=>{scope.next=next;scope.accepted=(scope.accepted??0)+1}}}};
+ const owner=source.split('\n').filter(line=>['const reloadPolicy=','const save=','const toggle='].some(prefix=>line.trim().startsWith(prefix))).join('\n');
+ assert.equal(owner.split('\n').length,3,'Exercise the existing editor owners');
+ vm.runInNewContext(ts.transpileModule(owner.replace('const reloadPolicy=','globalThis.reloadPolicy=').replace('const save=','globalThis.save=').replace('const toggle=','globalThis.toggle='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);
+ return {scope,writes,cache};
+}
+
+test('immediate capabilities preserve hidden restrictions and admit one write before React rerenders',async()=>{
+ const f=await capabilityActionFixture();f.scope.toggle('memory.read',false);f.scope.toggle('memory.write',false);
+ assert.equal(f.scope.accepted,1,'A second event must not start another write');await f.scope.options.mutationFn(f.scope.next);
+ assert.deepEqual(f.writes,[{url:'/api/branches/owner/capabilities',revision:4,restrictedCapabilityIds:['connector:hidden','memory.read','unknown.future']}]);
+ f.scope.options.onSuccess({policy:{revision:5,restrictedCapabilityIds:['connector:hidden','memory.read','unknown.future']}});f.scope.options.onSettled();
+ f.scope.toggle('memory.read',true);await f.scope.options.mutationFn(f.scope.next);
+ assert.equal(f.writes[1].revision,5);assert.deepEqual(f.writes[1].restrictedCapabilityIds,['connector:hidden','unknown.future']);
+});
+
+test('uncertain capability writes read back current policy before explicitly reapplying; failed readback keeps the draft unresolved',async()=>{
+ const f=await capabilityActionFixture();f.scope.toggle('memory.read',false);
+ f.scope.readback=async()=>{throw new Error('Offline')};await f.scope.options.onError();assert.notDeepEqual(f.scope.draft.restricted,f.scope.draft.baseline,'Unverified write retains navigation protection');
+ f.scope.toggle('memory.write',false);assert.equal(f.scope.accepted,1,'Readback remains inside the single write boundary');
+ const current={policy:{revision:8,restrictedCapabilityIds:['connector:other-editor']}};f.scope.options.onSettled();f.scope.toggle('memory.write',false);assert.equal(f.scope.accepted,1,'Failed readback must keep switches locked after the mutation settles');f.scope.query.data=current;f.scope.readback=async()=>current;await f.scope.reloadPolicy();
+ assert.equal(f.scope.accepted,1,'Readback must never retry the intended write');assert.equal(f.scope.draft.revision,8);assert.equal(f.scope.draft.restricted,f.scope.draft.baseline);
+ f.scope.toggle('memory.read',false);await f.scope.options.mutationFn(f.scope.next);assert.equal(f.writes[0].revision,8);assert.deepEqual(f.writes[0].restrictedCapabilityIds,['connector:other-editor','memory.read']);
+});
+
+test('manual capability callers still stage edits and responses stay scoped to their original endpoint',async()=>{
+ const manual=await capabilityActionFixture(false);manual.scope.toggle('memory.read',false);manual.scope.toggle('memory.write',false);assert.equal(manual.scope.accepted,undefined);assert.ok(manual.scope.draft.restricted.includes('memory.read')&&manual.scope.draft.restricted.includes('memory.write'));
+ const old=await capabilityActionFixture(true,'/api/branches/old/capabilities'),next=await capabilityActionFixture(true,'/api/branches/new/capabilities');old.scope.toggle('memory.read',false);old.scope.options.onSuccess({policy:{revision:5,restrictedCapabilityIds:['memory.read']}});
+ assert.deepEqual(JSON.parse(JSON.stringify(old.cache[0].key)),['capability-policy','/api/branches/old/capabilities']);assert.equal(next.cache.length,0);assert.equal(next.scope.draft,undefined);
+});
+
+test('immediate-save capability presentation removes manual actions while preserving inherited/unavailable switches and ordinary defaults',async()=>{
+ const {QueryClient,QueryClientProvider}=await import('@tanstack/react-query'),{CapabilityPolicyEditor}=await import('../../apps/web/src/components/CapabilityPolicyEditor.tsx');
+ const client=new QueryClient({defaultOptions:{queries:{staleTime:Infinity,gcTime:Infinity,retry:false}}}),endpoint='/api/branches/b/capabilities';
+ client.setQueryData(['capability-policy',endpoint],{policy:{scopeId:'b',revision:1,restrictedCapabilityIds:[]},effective:{restrictionSources:{inherited:{scopeKind:'global',scopeId:'global',label:'Global'}}},catalog:[{id:'inherited',label:'Inherited',description:'Broader restriction',categoryLabel:'Tools',available:true},{id:'unavailable',label:'Unavailable',description:'Not installed',categoryLabel:'Tools',available:false}]});
+ try{for(const immediateSave of [false,true]){const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'branch',immediateSave})));assert.equal(html.includes('Save capabilities'),!immediateSave);assert.ok(html.includes('Restricted by Global')&&html.includes('Not installed'));assert.equal((html.match(/type="checkbox"[^>]*disabled=""|disabled=""[^>]*type="checkbox"/g)??[]).length,2,'Inherited/unavailable switches stay disabled');}}finally{client.clear()}
+});
+
+test('canceled query refresh cannot retire an uncertain capability write before HTTP readback completes',async()=>{
+ const {QueryClient,QueryObserver}=await import('@tanstack/react-query'),{capabilityDraftDirty}=await import('../../apps/web/src/components/capabilityPolicyDraft.ts');
+ const f=await capabilityActionFixture(),client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}}),queryKey=['capability-policy',f.scope.endpoint];
+ client.setQueryData(queryKey,f.scope.query.data);
+ const observer=new QueryObserver(client,{queryKey,enabled:false,queryFn:()=>new Promise(()=>{})});f.scope.query.refetch=options=>observer.refetch(options);let complete;
+ f.scope.readback=()=>new Promise(resolve=>{complete=resolve});
+ try{
+  f.scope.toggle('memory.read',false);const refresh=observer.refetch(),pending=f.scope.options.onError();await client.cancelQueries({queryKey,exact:true});await refresh;
+  assert.equal(capabilityDraftDirty(f.scope.draft),true,'Canceled cached refresh is not a confirmed policy');f.scope.toggle('memory.write',false);assert.equal(f.scope.accepted,1,'Uncertain draft remains locked');
+  const current={policy:{revision:9,restrictedCapabilityIds:['connector:confirmed']}};complete(current);await pending;f.scope.options.onSettled();
+  assert.equal(f.scope.draft.revision,9);assert.equal(capabilityDraftDirty(f.scope.draft),false);f.scope.toggle('memory.read',false);assert.equal(f.scope.accepted,2,'Completed HTTP readback permits an explicit new toggle');
+ }finally{client.clear()}
+});
+
+test('explicit capability readback shares the existing single-flight write boundary',async()=>{
+ const f=await capabilityActionFixture();let complete,reads=0;f.scope.readback=()=>{reads++;return new Promise(resolve=>{complete=resolve})};
+ const first=f.scope.reloadPolicy(),duplicate=f.scope.reloadPolicy();await duplicate;f.scope.toggle('memory.read',false);
+ assert.equal(reads,1,'Duplicate reloads must not leave an older GET behind a newer write');assert.equal(f.scope.accepted,undefined,'No toggle may enter while readback is unresolved');
+ complete({policy:{revision:10,restrictedCapabilityIds:['connector:current']}});await first;f.scope.toggle('memory.read',false);assert.equal(f.scope.accepted,1);assert.equal(f.scope.next.revision,10);
+});
+
+test('capability readback starts a fresh HTTP request instead of joining a pre-write background GET',async()=>{
+ const {requestJson}=await import('../../apps/web/src/api/real.ts'),f=await capabilityActionFixture(true,'/api/branches/readback-isolated/capabilities'),original=globalThis.fetch,calls=[],pending=[];let prior,readback;
+ globalThis.fetch=async(url,init)=>{calls.push({url:String(url),cache:init?.cache});return new Promise(resolve=>pending.push(resolve))};f.scope.requestJson=requestJson;
+ try{
+  prior=requestJson(f.scope.endpoint);await new Promise(resolve=>setImmediate(resolve));f.scope.toggle('memory.read',false);readback=f.scope.options.onError();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(calls.length,2,'Readback cannot borrow a request that began before the uncertain write');assert.equal(calls[1].cache,'no-store');
+  pending[0](new Response(JSON.stringify(f.scope.query.data)));await prior;assert.equal(f.scope.dirty,true);
+  pending[1](new Response(JSON.stringify({policy:{revision:12,restrictedCapabilityIds:['connector:fresh']}})));await readback;assert.equal(f.scope.draft.revision,12);
+ }finally{for(const resolve of pending)resolve(new Response(JSON.stringify({policy:{revision:4,restrictedCapabilityIds:[]}})));await Promise.allSettled([prior,readback]);globalThis.fetch=original}
+});
+
 // Exercise the real intervention fields, mutation and shared dialog shell.
 // Controlled transport keeps this recovery check isolated from live work.
 async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}={}){
