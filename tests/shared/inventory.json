@@ -1212,6 +1212,22 @@
       "origin": "BR024 Execution Controls placement, stable refresh and exact revision/period/uncertain-save safeguards"
     },
     {
+      "path": "tests/branches/execution-workspace.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built workspaces, isolated controlled UI owners; no provider account",
+      "origin": "BR024 selected Run actions, results, lazy technical evidence and canonical recovery"
+    },
+    {
+      "path": "tests/branches/run-history.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built workspaces, isolated controlled UI owners; no provider account",
+      "origin": "BR024 retained Run history, mobile navigation, truthful activation audit"
+    },
+    {
       "path": "tests/branches/ui-state.test.mjs",
       "feature": "branches",
       "lane": "web",
