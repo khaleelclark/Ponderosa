@@ -300,6 +300,7 @@ export interface AgentMessageCapability {
    * manifest or its exact bounded fresh-reseed manifest. Retrieval must never
    * silently repeat this current-context tail, including on resumed sessions. */
   historyRetrievalExcludedCommunicationEventIds: string[];
+  importedHistoryArchiveVersion?: string;
   /** Present only for a provider continuity chain with a durable compaction
    * boundary and at least one authorized omitted message. */
   historyRetrievalBoundary?: {

@@ -1416,6 +1416,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.agentCatalog.getImportedHistory(agentId);
   }
 
+  getImportedHistoryAvailability(agentId: string) { return this.agentCatalog.getImportedHistoryAvailability(agentId); }
+  searchImportedHistory(input: Parameters<AgentCatalogAuthority["searchImportedHistory"]>[0]) { return this.agentCatalog.searchImportedHistory(input); }
+  readImportedHistory(input: Parameters<AgentCatalogAuthority["readImportedHistory"]>[0]) { return this.agentCatalog.readImportedHistory(input); }
+
   getImportedHistoryMessagePage(
     agentId: string,
     input: { limit: number; before?: ContextReadBoundary; maxTextUtf8Bytes?: number },

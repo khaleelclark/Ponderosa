@@ -1170,6 +1170,8 @@ export function registerAgentMessageRunRoute(
         availableToolNames: availableRuntimeToolNames,
         historyRetrievalExcludedCommunicationEventIds: historyRetrievalFrozenExclusions,
         ...(historyRetrievalBoundary ? { historyRetrievalBoundary } : {}),
+        ...(providerInputManifest.schemaVersion === 3 && providerInputManifest.historyContext?.importedArchiveVersion
+          ? { importedHistoryArchiveVersion: providerInputManifest.historyContext.importedArchiveVersion } : {}),
         ...(sharedTaskTurn ? { plainSharedReply: true } : {}),
         ...(defaultReply ? { defaultReply } : {}),
         ...(Object.keys(recoveredRequiredReply.fingerprints).length

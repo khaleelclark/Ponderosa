@@ -973,7 +973,7 @@ function warningsFor(
   return { warnings: [...warnings], relatedCommunicationEventIds: related };
 }
 
-function finalizeResponseUtf8Bytes<T extends { utf8Bytes: number }>(response: T): number {
+export function finalizeResponseUtf8Bytes<T extends { utf8Bytes: number }>(response: T): number {
   let measured = Buffer.byteLength(JSON.stringify(response), "utf8");
   for (let attempt = 0; attempt < 8; attempt += 1) {
     response.utf8Bytes = measured;
@@ -1110,7 +1110,7 @@ function neighborhoodRows(
 }
 
 /** Primary progress is mandatory; optional neighbors never displace its next chunk. */
-function fitHistoryReadChunk(
+export function fitHistoryReadChunk(
   response: {utf8Bytes:number},
   message: {text:string;startCodePoint:number;endCodePoint:number;totalCodePoints:number;totalUtf8Bytes:number;complete:boolean;continuation?:string},
   window: string,

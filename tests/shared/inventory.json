@@ -872,6 +872,14 @@
       "origin": "Q12: Claude history dispatch and frozen canonical scope qualification"
     },
     {
+      "path": "tests/context-recovery/imported-history-retrieval.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server/engine workspaces; actual SQLite/HTTP/MCP bridge; fake Claude executable POSIX whitespace-free Node only; no provider account",
+      "origin": "Production context budget: canonical-bound private imported-history search, chunk reads, restart and scope fences"
+    },
+    {
       "path": "tests/context-recovery/history-artifact-metadata.test.mjs",
       "feature": "context-recovery",
       "lane": "server",
