@@ -7,19 +7,20 @@ import {useEffect,useMemo,useRef,useState} from "react";
 import {currentProductScope} from "../api/productScope";
 import {useUnsavedForm} from "../reloadSafety";
 import {requestJson} from "../api/real";
+import {useMutationNotification} from "./MutationNotifications";
 import {capabilityDraftDirty,reconcileCapabilityDraft,type CapabilityDraft} from "./capabilityPolicyDraft";
 
 export type {CapabilityPolicyResponse} from "@ponderosa/core";
 
 type CapabilityPolicyEditorProps = { endpoint: string; scopeKind: Extract<CapabilityScopeKind,"product"|"branch"|"chat"|"agent">;
-  title?: string; description?: string; savedNotice?: string; immediateSave?: boolean;
+  title?: string; description?: string; immediateSave?: boolean;
   onSavingChange?(saving: boolean): void; onDirtyChange?(dirty: boolean): void };
 export function CapabilityPolicyEditor(props: CapabilityPolicyEditorProps): JSX.Element {
   // Changing owners discards old query/mutation state, including late responses.
   return <CapabilityPolicyEditorContent key={props.endpoint} {...props} />;
 }
-function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Capabilities",description,savedNotice,immediateSave=false,onDirtyChange,onSavingChange}: CapabilityPolicyEditorProps): JSX.Element {
-  const client=useQueryClient();
+function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Capabilities",description,immediateSave=false,onDirtyChange,onSavingChange}: CapabilityPolicyEditorProps): JSX.Element {
+  const client=useQueryClient(),notify=useMutationNotification();
   const query=useQuery({queryKey:["capability-policy",endpoint],queryFn:()=>requestJson<CapabilityPolicyResponse>(endpoint)});
   const [draft,setDraft]=useState<CapabilityDraft>(),writing=useRef(false);
   useEffect(()=>{setDraft(undefined);save.reset()},[endpoint]);
@@ -27,7 +28,7 @@ function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Capabilities",
   const dirty=capabilityDraftDirty(draft);
   const conflict=Boolean(dirty&&query.data&&draft&&query.data.policy.revision!==draft.revision);
   const reloadPolicy=async(duringSave=false)=>{if(!immediateSave){await query.refetch();return;}if(writing.current&&!duringSave)return;writing.current=true;try{const next=await requestJson<CapabilityPolicyResponse>(endpoint,{cache:"no-store"});setDraft({restricted:next.policy.restrictedCapabilityIds,baseline:next.policy.restrictedCapabilityIds,revision:next.policy.revision});client.setQueryData(["capability-policy",endpoint],next)}catch{/* Only a completed HTTP readback can retire the uncertain draft. */}finally{if(!duringSave)writing.current=false}};
-  const save=useMutation({mutationFn:(next:CapabilityDraft)=>requestJson<CapabilityPolicyResponse>(endpoint,{method:"PUT",body:JSON.stringify({revision:next.revision,restrictedCapabilityIds:next.restricted})}),onSuccess:next=>{setDraft({restricted:next.policy.restrictedCapabilityIds,baseline:next.policy.restrictedCapabilityIds,revision:next.policy.revision});client.setQueryData(["capability-policy",endpoint],next)},onError:()=>reloadPolicy(true),onSettled:()=>{writing.current=false},retry:false});
+  const save=useMutation({mutationFn:(next:CapabilityDraft)=>requestJson<CapabilityPolicyResponse>(endpoint,{method:"PUT",body:JSON.stringify({revision:next.revision,restrictedCapabilityIds:next.restricted})}),onSuccess:next=>{setDraft({restricted:next.policy.restrictedCapabilityIds,baseline:next.policy.restrictedCapabilityIds,revision:next.policy.revision});client.setQueryData(["capability-policy",endpoint],next);notify({key:`capability-policy:${endpoint}`,message:"Settings Saved"})},onError:()=>reloadPolicy(true),onSettled:()=>{writing.current=false},retry:false});
   useUnsavedForm(`tool-permissions:${endpoint}`,immediateSave&&currentProductScope()!=="branches"&&(dirty||save.isPending));
   useEffect(()=>{onDirtyChange?.(dirty||(immediateSave&&save.isPending))},[dirty,immediateSave,save.isPending,onDirtyChange]);
   useEffect(()=>()=>onDirtyChange?.(false),[onDirtyChange]);
@@ -49,7 +50,6 @@ function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Capabilities",
     {conflict&&<Alert severity="warning" action={<Button disabled={save.isPending} color="inherit" onClick={()=>immediateSave?void reloadPolicy():setDraft({restricted:query.data!.policy.restrictedCapabilityIds,baseline:query.data!.policy.restrictedCapabilityIds,revision:query.data!.policy.revision})}>Load latest</Button>}>Capability restrictions changed elsewhere. Load the latest policy, then reapply your edits.</Alert>}
     {save.error&&<Alert severity="error">{save.error.message}{immediateSave&&" Reload the current policy, review its state, then reapply your change if needed."} <Button disabled={save.isPending} onClick={()=>void reloadPolicy()}>Reload current policy</Button></Alert>}
     {immediateSave&&save.isPending&&<Typography role="status">Saving…</Typography>}
-    {save.isSuccess&&!dirty&&(!immediateSave||savedNotice)&&<Alert severity="success">{savedNotice??"Capability restrictions saved. New Runs use the updated tool contract."}</Alert>}
     <Box sx={{display:"grid",gridTemplateColumns:"minmax(0,1fr)",gap:2,alignItems:"start","@container capabilities (min-width:68.75rem)":{gridTemplateColumns:"repeat(2,minmax(0,1fr))"}}}>
     {groups.map(([label,items])=><Paper key={label} variant="outlined" sx={{overflow:"hidden"}}>
       <Typography variant="subtitle2" fontWeight={800} sx={{px:2,py:1.25,bgcolor:"action.hover"}}>{label}</Typography>

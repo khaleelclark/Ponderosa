@@ -4,6 +4,7 @@ import '../shared/web-typescript-loader.mjs';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 const {BranchWorkspaceHeader}=await import('../../apps/web/src/components/branches/BranchWorkspaceHeader.tsx');
+const {MutationNotificationProvider}=await import('../../apps/web/src/components/MutationNotifications.tsx');
 
 test('Branch header reuses ordered shared icon tabs and unpublished status without a duplicate Save',()=>{
  const html=renderToStaticMarkup(React.createElement(BranchWorkspaceHeader,{name:'A long workflow name',tab:'workflow',published:false,dirty:true,onTab(){},onExport(){},onUpdate(){}}));
@@ -250,7 +251,7 @@ test('workflow Settings sections load without parameter configuration and keep l
  const client=new QueryClient({defaultOptions:{queries:{retry:false,retryOnMount:false,gcTime:Infinity}}});t.after(()=>client.clear());
  client.setQueryData(['branch-dependencies',branch.id],{calls:[],callers:[{id:'billing-workflow',ref:'reports-alias'}]});
  client.setQueryData(['capability-policy',`/api/branches/${branch.id}/capabilities`],{policy:{scopeId:branch.id,revision:0,restrictedCapabilityIds:[]},effective:{restrictionSources:{}},catalog:[]});
- const render=(extra={})=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(BranchSettings,{branch,definition,...extra})));
+ const render=(extra={})=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(BranchSettings,{branch,definition,...extra}))));
  const html=render(),labels=['Branch capabilities','Dependencies','Delete workflow'];
  assert.ok(labels.every(label=>html.includes(label)),'All workflow Settings sections must render while configuration is unavailable');
  assert.ok(labels.every((label,index)=>!index||html.indexOf(label)>html.indexOf(labels[index-1])),'Settings section order must remain capabilities, dependencies, delete');
@@ -325,17 +326,17 @@ test('late definition failures cannot replace feedback for another owner or a ne
 async function capabilityActionFixture(immediateSave=true,endpoint='/api/branches/owner/capabilities'){
  const {readFile}=await import('node:fs/promises'),{createRequire}=await import('node:module'),vm=await import('node:vm');
  const ts=createRequire(new URL('../../apps/web/package.json',import.meta.url))('typescript');
- const source=await readFile(new URL('../../apps/web/src/components/CapabilityPolicyEditor.tsx',import.meta.url),'utf8'),writes=[],cache=[];
+ const source=await readFile(new URL('../../apps/web/src/components/CapabilityPolicyEditor.tsx',import.meta.url),'utf8'),writes=[],cache=[],notices=[];
  const {capabilityDraftDirty}=await import('../../apps/web/src/components/capabilityPolicyDraft.ts');
  const policy={revision:4,scopeId:'owner',restrictedCapabilityIds:['connector:hidden','unknown.future']};
- const scope={endpoint,immediateSave,draft:undefined,get dirty(){return capabilityDraftDirty(scope.draft)},writing:{current:false},query:{data:{policy},refetch:async()=>({data:scope.query.data})},
+ const scope={endpoint,immediateSave,notify:notice=>notices.push(notice),draft:undefined,get dirty(){return capabilityDraftDirty(scope.draft)},writing:{current:false},query:{data:{policy},refetch:async()=>({data:scope.query.data})},
   setDraft:value=>{scope.draft=typeof value==='function'?value(scope.draft):value},client:{setQueryData:(key,value)=>{cache.push({key,value});scope.query.data=value}},
   readback:async()=>scope.query.data,requestJson:async(url,init)=>{if(!init?.body)return scope.readback();writes.push({url,...JSON.parse(init.body)});return scope.query.data},
   useMutation:options=>{scope.options=options;return {isPending:false,mutate:next=>{scope.next=next;scope.accepted=(scope.accepted??0)+1}}}};
  const owner=source.split('\n').filter(line=>['const reloadPolicy=','const save=','const toggle='].some(prefix=>line.trim().startsWith(prefix))).join('\n');
  assert.equal(owner.split('\n').length,3,'Exercise the existing editor owners');
  vm.runInNewContext(ts.transpileModule(owner.replace('const reloadPolicy=','globalThis.reloadPolicy=').replace('const save=','globalThis.save=').replace('const toggle=','globalThis.toggle='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);
- return {scope,writes,cache};
+ return {scope,writes,cache,notices};
 }
 
 test('immediate capabilities preserve hidden restrictions and admit one write before React rerenders',async()=>{
@@ -343,6 +344,7 @@ test('immediate capabilities preserve hidden restrictions and admit one write be
  assert.equal(f.scope.accepted,1,'A second event must not start another write');await f.scope.options.mutationFn(f.scope.next);
  assert.deepEqual(f.writes,[{url:'/api/branches/owner/capabilities',revision:4,restrictedCapabilityIds:['connector:hidden','memory.read','unknown.future']}]);
  f.scope.options.onSuccess({policy:{revision:5,restrictedCapabilityIds:['connector:hidden','memory.read','unknown.future']}});f.scope.options.onSettled();
+ assert.deepEqual(f.notices.map(item=>[item.key,item.message]),[['capability-policy:/api/branches/owner/capabilities','Settings Saved']]);
  f.scope.toggle('memory.read',true);await f.scope.options.mutationFn(f.scope.next);
  assert.equal(f.writes[1].revision,5);assert.deepEqual(f.writes[1].restrictedCapabilityIds,['connector:hidden','unknown.future']);
 });
@@ -362,11 +364,35 @@ test('manual capability callers still stage edits and responses stay scoped to t
  assert.deepEqual(JSON.parse(JSON.stringify(old.cache[0].key)),['capability-policy','/api/branches/old/capabilities']);assert.equal(next.cache.length,0);assert.equal(next.scope.draft,undefined);
 });
 
+async function settingsFeedbackFixture(component, names, overrides={}){
+ const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),{draftChangedSinceSubmission}=await import('../../apps/web/src/components/settingsDrafts.ts');
+ const source=await fs.readFile(new URL('../../apps/web/src/components/WorkspaceSettingsView.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('settings.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),owner=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text===component),declarations=owner.body.statements.flatMap(node=>ts.isVariableStatement(node)?[...node.declarationList.declarations]:[]),notices=[],writes=[];
+ const scope={notify:notice=>notices.push(notice),useMutation:options=>options,draftChangedSinceSubmission,onSavePreferences:async patch=>{writes.push(patch);return patch},instructionsRef:{current:'Saved instructions'},limitRef:{current:'3'},rolloverTokensRef:{current:'150000'},rolloverFractionRef:{current:'0.75'},currentProfile:{current:{displayName:'Owner',handle:'owner',avatarId:'pine'}},setInstructionsDirty:value=>{scope.instructionsDirty=value},setLimitDirty:value=>{scope.limitDirty=value},setRolloverTokensDirty:value=>{scope.rolloverTokensDirty=value},setRolloverFractionDirty:value=>{scope.rolloverFractionDirty=value},...overrides};
+ for(const name of names){const expression=declarations.find(node=>node.name.getText(ast)===name)?.initializer;assert.ok(expression,`Exercise actual ${component}.${name} mutation`);vm.runInNewContext(ts.transpileModule(`globalThis.${name}=${expression.getText(ast)}`,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);}
+ return {scope,notices,writes};
+}
+
+test('workspace save feedback uses confirmed owner callbacks while newer defaults and rollover edits stay dirty',async()=>{
+ const f=await settingsFeedbackFixture('WorkspaceSettingsView',['saveAgentDefaults','saveRollover']),submitted={globalInstructions:'Saved instructions',maxConcurrentAgentRuns:3};
+ const saved=await f.scope.saveAgentDefaults.mutationFn(submitted);assert.equal(f.notices.length,0,'No acknowledgment before confirmed completion');f.scope.saveAgentDefaults.onSuccess(saved,submitted);
+ assert.deepEqual(f.notices.map(item=>[item.key,item.message]),[['workspace-agent-defaults','Settings Saved']]);assert.equal(f.scope.instructionsDirty,false);assert.equal(f.scope.limitDirty,false);
+ f.scope.instructionsRef.current='Newer unsaved instructions';f.scope.saveAgentDefaults.onSuccess(saved,submitted);assert.equal(f.notices.length,1);assert.equal(f.scope.instructionsDirty,true,'An older save cannot clear newer instructions');
+ const rollover={contextRolloverTokens:150000,contextRolloverWindowFraction:0.75};f.scope.saveRollover.onSuccess(rollover,rollover);assert.equal(f.notices.length,2);assert.equal(f.scope.rolloverTokensDirty,false);assert.equal(f.scope.rolloverFractionDirty,false);
+ f.scope.rolloverFractionRef.current='0.8';f.scope.saveRollover.onSuccess(rollover,rollover);assert.equal(f.notices.length,2);assert.equal(f.scope.rolloverFractionDirty,true,'An older save cannot acknowledge a newer rollover draft');
+});
+
+test('profile success requires the submitted profile to remain current and repeated saves use the same shared operation key',async()=>{
+ const f=await settingsFeedbackFixture('OperatorProfileSettingsSection',['save']),submitted={...f.scope.currentProfile.current};
+ const saved=await f.scope.save.mutationFn(submitted);assert.equal(f.notices.length,0);f.scope.save.onSuccess(saved,submitted);f.scope.save.onSuccess(saved,submitted);
+ assert.deepEqual(f.notices.map(item=>[item.key,item.message]),[['operator-profile','Settings Saved'],['operator-profile','Settings Saved']]);
+ f.scope.currentProfile.current={...submitted,displayName:'Newer name'};f.scope.save.onSuccess(saved,submitted);assert.equal(f.notices.length,2,'A stale profile completion never confirms the newer draft');assert.equal(f.writes.length,1);assert.equal(f.writes[0].profile,submitted);
+});
+
 test('immediate-save capability presentation removes manual actions while preserving inherited/unavailable switches and ordinary defaults',async()=>{
  const {QueryClient,QueryClientProvider}=await import('@tanstack/react-query'),{CapabilityPolicyEditor}=await import('../../apps/web/src/components/CapabilityPolicyEditor.tsx');
  const client=new QueryClient({defaultOptions:{queries:{staleTime:Infinity,gcTime:Infinity,retry:false}}}),endpoint='/api/branches/b/capabilities';
  client.setQueryData(['capability-policy',endpoint],{policy:{scopeId:'b',revision:1,restrictedCapabilityIds:[]},effective:{restrictionSources:{inherited:{scopeKind:'global',scopeId:'global',label:'Global'}}},catalog:[{id:'inherited',label:'Inherited',description:'Broader restriction',categoryLabel:'Tools',available:true},{id:'unavailable',label:'Unavailable',description:'Not installed',categoryLabel:'Tools',available:false}]});
- try{for(const immediateSave of [false,true]){const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'branch',immediateSave})));assert.equal(html.includes('Save capabilities'),!immediateSave);assert.ok(html.includes('Restricted by Global')&&html.includes('Not installed'));assert.equal((html.match(/type="checkbox"[^>]*disabled=""|disabled=""[^>]*type="checkbox"/g)??[]).length,2,'Inherited/unavailable switches stay disabled');}}finally{client.clear()}
+ try{for(const immediateSave of [false,true]){const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'branch',immediateSave}))));assert.equal(html.includes('Save capabilities'),!immediateSave);assert.ok(html.includes('Restricted by Global')&&html.includes('Not installed'));assert.equal((html.match(/type="checkbox"[^>]*disabled=""|disabled=""[^>]*type="checkbox"/g)??[]).length,2,'Inherited/unavailable switches stay disabled');}}finally{client.clear()}
 });
 
 test('canceled query refresh cannot retire an uncertain capability write before HTTP readback completes',async()=>{
@@ -658,8 +684,8 @@ test('shared permissions expose Included tools, friendly effective states and im
   {id:'unavailable',label:'Read memory',description:'Read granted memory',categoryLabel:'Memory',available:false,unavailableReason:'Local Memory is not configured',includedTools:[]},
  ];
  const endpoint='/api/conversations/normal/capabilities';client.setQueryData(['capability-policy',endpoint],{policy,effective:{restrictionSources:{ancestor:{scopeKind:'product',scopeId:'interactive',label:'Ponderosa defaults'}}},catalog});
- try{const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'chat',immediateSave:true})));assert.ok(html.includes('<summary>Included tools')&&html.includes('ponderosa_import_file')&&html.includes('Import an authorized file'));for(const text of ['Allowed','Restricted here','Restricted by Ponderosa defaults','Unavailable','Local Memory is not configured','next Run','Activity'])assert.ok(html.includes(text),text);assert.equal(html.includes('Save capabilities'),false);assert.ok(html.includes('Allow Import files'));
-  const Probe=()=>React.useContext(ResourceSettingsContext).render('chat','normal');const ordinary=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(Probe)));assert.ok(ordinary.includes('Tool permissions')&&ordinary.includes('ponderosa_import_file'));assert.equal(ordinary.includes('Save capabilities'),false);
+ try{const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'chat',immediateSave:true}))));assert.ok(html.includes('<summary>Included tools')&&html.includes('ponderosa_import_file')&&html.includes('Import an authorized file'));for(const text of ['Allowed','Restricted here','Restricted by Ponderosa defaults','Unavailable','Local Memory is not configured','next Run','Activity'])assert.ok(html.includes(text),text);assert.equal(html.includes('Save capabilities'),false);assert.ok(html.includes('Allow Import files'));
+  const Probe=()=>React.useContext(ResourceSettingsContext).render('chat','normal');const ordinary=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(Probe))));assert.ok(ordinary.includes('Tool permissions')&&ordinary.includes('ponderosa_import_file'));assert.equal(ordinary.includes('Save capabilities'),false);
  }finally{client.clear()}
 });
 
@@ -849,15 +875,15 @@ test('legacy Parameters links normalize to the same Settings variables owner and
 
 async function variableEditorFixture(parameters={note:'edited'},definition={parameters:{note:{type:'text'}}}){
  const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchSettings.tsx',import.meta.url),'utf8');
- const ast=ts.createSourceFile('settings.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),editor=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='BranchConfigurationEditor'),declarations=editor.body.statements.flatMap(node=>ts.isVariableStatement(node)?[...node.declarationList.declarations]:[]),expression=name=>declarations.find(node=>node.name.getText(ast)===name).initializer.getText(ast),writes=[];
+ const ast=ts.createSourceFile('settings.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),editor=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='BranchConfigurationEditor'),declarations=editor.body.statements.flatMap(node=>ts.isVariableStatement(node)?[...node.declarationList.declarations]:[]),expression=name=>declarations.find(node=>node.name.getText(ast)===name).initializer.getText(ast),writes=[],notices=[];
  const configuration={parameters:{note:'original'},limits:{maxCallDepth:8,maxLoopIterations:50,maxTraversals:500}};
- const scope={branch:{id:'variables-owner',versionId:'published'},definition,draft:{parameters,limits:{...configuration.limits}},revision:3,baseline:{current:{configuration,revision:3}},server:{configuration,revision:3},client:{setQueryData(){},invalidateQueries:async()=>{}},setDraft:value=>{scope.draft=value},setRevision:value=>{scope.revision=value},settings:{refetch:async()=>({data:scope.server})},requestJson:async(path,init)=>{if(init?.method!=='PUT'){if(scope.readback)return scope.readback(path,init);return scope.server}const body=JSON.parse(init.body);writes.push({path,...body});if(body.revision!==scope.server.revision)throw new Error('Configuration changed; reload before saving');scope.server={configuration:body.configuration,revision:body.revision+1};return scope.server},useMutation:options=>{const mutation={options,reset(){},mutate:input=>{mutation.pending=mutation.mutateAsync(input)},mutateAsync:async input=>{const next=await options.mutationFn(input);options.onSuccess(next);return next}};return mutation}};
+ const scope={notify:notice=>notices.push(notice),branch:{id:'variables-owner',versionId:'published'},definition,draft:{parameters,limits:{...configuration.limits}},revision:3,baseline:{current:{configuration,revision:3}},server:{configuration,revision:3},client:{setQueryData(){},invalidateQueries:async()=>{}},setDraft:value=>{scope.draft=value},setRevision:value=>{scope.revision=value},settings:{refetch:async()=>({data:scope.server})},requestJson:async(path,init)=>{if(init?.method!=='PUT'){if(scope.readback)return scope.readback(path,init);return scope.server}const body=JSON.parse(init.body);writes.push({path,...body});if(body.revision!==scope.server.revision)throw new Error('Configuration changed; reload before saving');scope.server={configuration:body.configuration,revision:body.revision+1};return scope.server},useMutation:options=>{const mutation={options,reset(){},mutate:input=>{mutation.pending=mutation.mutateAsync(input)},mutateAsync:async input=>{const next=await options.mutationFn(input);options.onSuccess(next);return next}};return mutation}};
  scope.currentDraft={current:scope.draft};scope.writeDraft=value=>{scope.draft=value};
  const execute=value=>vm.runInNewContext(ts.transpile(value,{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}),scope);
  scope.setDraft=execute(expression('setDraft'));scope.save=execute(expression('save'));scope.reloadAction=execute(expression('reloadAction'));const errors=()=>execute(expression('parameterErrors'));
  const reload=declarations.find(node=>node.name.getText(ast)==='reload').initializer,handler=reload.openingElement.attributes.properties.find(node=>node.name?.getText(ast)==='onClick').initializer.expression;
  const clickReload=execute(handler.getText(ast));
- return {scope,writes,errors,reload:()=>{clickReload();return scope.reloadAction.pending},hydrate:()=>execute(editor.body.statements.find(node=>node.getText(ast).startsWith('useEffect(()=>{if(!settings.data')).getText(ast)),execute};
+ return {scope,writes,notices,errors,reload:()=>{clickReload();return scope.reloadAction.pending},hydrate:()=>execute(editor.body.statements.find(node=>node.getText(ast).startsWith('useEffect(()=>{if(!settings.data')).getText(ast)),execute};
 }
 
 test('workflow variables reject removed/secret keys, changed scalar types and missing required values without filtering drafts',async()=>{
@@ -873,7 +899,7 @@ test('variable saves retain full limits and CAS; concurrent configuration refres
  f.scope.settings.data=f.scope.server;f.scope.useEffect=effect=>effect();f.hydrate();assert.equal(f.scope.draft.parameters.note,'edited');assert.equal(f.scope.revision,3);
  await assert.rejects(f.scope.save.mutateAsync(),/Configuration changed/);assert.equal(f.writes[0].revision,3);assert.equal(f.writes[0].configuration.limits.maxCallDepth,8);assert.equal(f.scope.draft.parameters.note,'edited');
  await f.reload();assert.equal(f.scope.revision,4);assert.equal(f.scope.draft.limits.maxCallDepth,12);assert.equal(f.scope.draft.parameters.note,'concurrent');
- f.scope.draft={...f.scope.draft,parameters:{note:'after explicit reload'}};await f.scope.save.mutateAsync();assert.deepEqual(f.writes.at(-1).configuration,{parameters:{note:'after explicit reload'},limits:{maxCallDepth:12,maxLoopIterations:60,maxTraversals:700}});assert.equal(f.scope.revision,5);
+ f.scope.draft={...f.scope.draft,parameters:{note:'after explicit reload'}};await f.scope.save.mutateAsync();assert.deepEqual(f.writes.at(-1).configuration,{parameters:{note:'after explicit reload'},limits:{maxCallDepth:12,maxLoopIterations:60,maxTraversals:700}});assert.equal(f.scope.revision,5);assert.deepEqual(f.notices.map(item=>[item.key,item.message]),[['branch-settings:variables-owner','Settings Saved']]);
 });
 
 
