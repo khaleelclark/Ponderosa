@@ -2,22 +2,6 @@
   "baseline": "d12fcb42d5e92ac4b01668293669ab7bf4650f9c",
   "tests": [
     {
-      "path": "tests/agents/agent-lookup.test.mjs",
-      "feature": "agents",
-      "lane": "server",
-      "moduleBase": "packages/agents/package.json",
-      "requirements": "Node24, built core/native/agents workspaces; disposable local stores; no listener or provider account",
-      "origin": "Prepared Agent lookup regression: one statement per authority, fresh typed DTOs, deletion/owner guards and database isolation/reopen"
-    },
-    {
-      "path": "tests/agents/context-allocation.test.mjs",
-      "feature": "agents",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built server workspaces and installed TypeScript; controlled recovery stores and verified artifact boundary; no provider account",
-      "origin": "Q08/Q09: bounded recovery scans and deferred correlated-result text allocation"
-    },
-    {
       "oldPath": "apps/server/test/delegation.test.mjs",
       "path": "tests/agents/delegation.test.mjs",
       "feature": "agents",
@@ -38,12 +22,12 @@
       "afterSha256": "502e0c9824a9282ac2e2b8ab51f8f1909b8036a7e55ee711894e6f950a2cc12f"
     },
     {
-      "path": "tests/agents/notification-reconciliation.test.mjs",
+      "path": "tests/agents/request-update-projection-recovery.test.mjs",
       "feature": "agents",
       "lane": "server",
       "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built server workspaces; private synthetic stores and controlled Codex/Claude adapters; no provider account",
-      "origin": "Workflow notification latency: coalescing, yielded scans, stale-pass safety and pending-agent quarantine"
+      "requirements": "Node24, built server; controlled providers and fresh private canonical stores only",
+      "origin": "Passive Request update metadata: interrupted projection/replay/restart, historical exact validation and scope fences"
     },
     {
       "path": "tests/agents/provider-cleanup.test.mjs",
@@ -55,6 +39,14 @@
       ],
       "requirements": "Node24, built native server workspaces; owned inert roots in POSIX groups or Windows Jobs; no provider account",
       "origin": "Approved checks 39/95: provider cleanup and replacement admission boundary"
+    },
+    {
+      "path": "tests/agents/workload-boundary.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; private stores and controlled inert provider roots only",
+      "origin": "Production-safe per-scope host memory validation and shutdown/restart canonical recovery without optional full replay"
     },
     {
       "oldPath": "apps/server/test/real-codex.test.mjs",
@@ -101,14 +93,6 @@
       "origin": "Approved checks 47/48/51/56: staged real any/quorum and each-result collection"
     },
     {
-      "path": "tests/agents/request-update-projection-recovery.test.mjs",
-      "feature": "agents",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built server; controlled providers and fresh private canonical stores only",
-      "origin": "Passive Request update metadata: interrupted projection/replay/restart, historical exact validation and scope fences"
-    },
-    {
       "oldPath": "apps/server/test/runtime-boundaries.test.mjs",
       "path": "tests/agents/runtime-boundaries.test.mjs",
       "feature": "agents",
@@ -147,14 +131,6 @@
       "moduleBase": "packages/engines/package.json",
       "requirements": "Node24, built engines/native-host; six deterministic authority cases and a Windows-only inert root/descendant Job case; no provider account",
       "origin": "Regression for drained Windows Job false liveness after close"
-    },
-    {
-      "path": "tests/agents/workload-boundary.test.mjs",
-      "feature": "agents",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built native server workspaces; private stores and controlled inert provider roots only",
-      "origin": "Production-safe per-scope host memory validation and shutdown/restart canonical recovery without optional full replay"
     },
     {
       "oldPath": "apps/server/test/browser-control.test.mjs",
@@ -226,26 +202,6 @@
       "afterSha256": "779dc22e6b75530a5304064848223713ccf1d0d05f44d43b458cc7c21d4c1769"
     },
     {
-      "path": "tests/chats/decision-skip.test.mjs",
-      "feature": "chats",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "additionalFeatures": [
-        "agents",
-        "notifications"
-      ],
-      "requirements": "Built workspaces; disposable canonical visibility test on every host, controlled owned POSIX fixture for route/steering/reopen checks; no provider account",
-      "origin": "Explicit Skip question and hidden pending-Decision repair"
-    },
-    {
-      "path": "tests/chats/delivery-recovery.test.mjs",
-      "feature": "chats",
-      "lane": "web",
-      "moduleBase": "apps/web/package.json",
-      "requirements": "Node24, existing TypeScript/React dependencies; controlled browser storage and actual component/hook callbacks; no provider account",
-      "origin": "Q01 lost acknowledgement, durable submission order, partial Stop and truthful receipt recovery qualification"
-    },
-    {
       "oldPath": "apps/web/src/components/chat/draftTextRecovery.test.mjs",
       "path": "tests/chats/draftTextRecovery.test.mjs",
       "feature": "chats",
@@ -259,46 +215,6 @@
       "testBodiesSha256": "a19f7f4df02720c7fcc8fed219845941d3ce41469ae35979ce10c025f870ea98",
       "beforeSha256": "cfb958d55621ee9932ad303a8f029e153a03d013fdeb1aa73d770a710dd31f25",
       "afterSha256": "245936b4484919a329ff4793520ba0d59ba9664871d9b550f6058d566bec6ce4"
-    },
-    {
-      "path": "tests/chats/filtered-search.test.mjs",
-      "feature": "chats",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built workspaces; controlled disposable fixture; no provider account",
-      "origin": "F01 filtered Agent search and honest request feedback"
-    },
-    {
-      "path": "tests/chats/member-search-feedback.test.mjs",
-      "feature": "chats",
-      "lane": "web",
-      "moduleBase": "apps/web/package.json",
-      "requirements": "Node24, built workspaces; controlled disposable fixture; no provider account",
-      "origin": "F01 filtered Agent search and honest request feedback"
-    },
-    {
-      "path": "tests/chats/mentionPresentation.test.mjs",
-      "feature": "chats",
-      "lane": "web",
-      "moduleBase": "apps/web/package.json",
-      "requirements": "Node24, built core; real Markdown/React rendering; no provider/browser account",
-      "origin": "URL-fragment corruption regression and durable renamed mentions"
-    },
-    {
-      "path": "tests/chats/message-formatting.test.mjs",
-      "feature": "chats",
-      "lane": "web",
-      "moduleBase": "apps/web/package.json",
-      "requirements": "Node24, built core; actual Markdown/React renderer; no provider or browser account",
-      "origin": "UI005/UI006 authored whitespace, bounded rich display contract and inert fallback regressions"
-    },
-    {
-      "path": "tests/chats/message-refresh.test.mjs",
-      "feature": "chats",
-      "lane": "web",
-      "moduleBase": "apps/web/package.json",
-      "requirements": "Node24; actual ProjectShell event handlers with controlled hook storage; no account or network",
-      "origin": "Safari long-chat refresh stalls: stable memoized message callbacks with fresh navigation state"
     },
     {
       "oldPath": "apps/server/test/messaging.test.mjs",
@@ -334,41 +250,6 @@
       "testBodiesSha256": "be4d4400c66dd284db9300911c9349ff63cefb7f0779c841187f13e5cca93944",
       "beforeSha256": "32f5d92e146cfe85848bc7af1e3230bc29d3174bbfe2cea7ab8fb0e410ffed48",
       "afterSha256": "22f027927eb365765a35c280d2a4619a637c40a23e884de3fe4adf8cebe3c5db"
-    },
-    {
-      "path": "tests/chats/notification-visibility.test.mjs",
-      "feature": "chats",
-      "lane": "web",
-      "moduleBase": "apps/web/package.json",
-      "additionalFeatures": [
-        "notifications"
-      ],
-      "requirements": "Node24; real visibility source with controlled native-observer geometry; no account or network",
-      "origin": "Mac Safari/PWA scroll observer churn and read-visibility regression"
-    },
-    {
-      "path": "tests/chats/prompt-fences.test.mjs",
-      "feature": "chats",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "additionalFeatures": [
-        "agents",
-        "organizations"
-      ],
-      "requirements": "Built agents/native SQLite; in-memory cases and owned native controlled provider routes; no provider account",
-      "origin": "Current-turn/steering communication identity repair; authoritative publication and replay tests"
-    },
-    {
-      "path": "tests/chats/receipt-batching.test.mjs",
-      "feature": "chats",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Node24; admitted in-memory SQLite and built agents; no provider account",
-      "origin": "UI004/UI008 bounded injection membership and exact receipt equivalence"
-    },
-    {
-      "path": "tests/chats/speech-lifecycle.test.mjs",
-      "lane": "web"
     },
     {
       "oldPath": "apps/web/src/api/uploadRetry.test.mjs",
@@ -425,14 +306,6 @@
       "afterSha256": "4946e6208afc3ac2351f4fd3741c975253e0599abaf5938bbb10dc7290c8dc4e"
     },
     {
-      "path": "tests/context-recovery/claude-history.test.mjs",
-      "feature": "context-recovery",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built native server/engine workspaces; actual SQLite/HTTP/MCP bridge; fake Claude executable POSIX whitespace-free Node only; no provider account",
-      "origin": "Q12: Claude history dispatch and frozen canonical scope qualification"
-    },
-    {
       "oldPath": "apps/server/test/compaction-recovery.test.mjs",
       "path": "tests/context-recovery/compaction-recovery.test.mjs",
       "feature": "context-recovery",
@@ -479,22 +352,6 @@
       "afterSha256": "e2fe2a0a6feb8a6442a8171c72e72ecee4e48f5ed7c4537ba6a6cec13548e3db"
     },
     {
-      "path": "tests/context-recovery/history-artifact-metadata.test.mjs",
-      "feature": "context-recovery",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built server/agents; private canonical SQLite/HTTP fixtures and controlled managed-file authorization; no provider account",
-      "origin": "Production audit: bounded historical artifact metadata without losing canonical text, primary documents or authorization"
-    },
-    {
-      "path": "tests/context-recovery/history-context-budget.test.mjs",
-      "feature": "context-recovery",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built native server workspaces; private canonical stores and inert persistent providers, no provider account",
-      "origin": "PR99 context budget addendum: complete accepted-input accounting, paginated selection, session occupancy and frozen scoped retrieval"
-    },
-    {
       "path": "tests/context-recovery/replay-limits.test.mjs",
       "feature": "context-recovery",
       "lane": "server",
@@ -521,14 +378,6 @@
       "afterSha256": "42e757e5d5bdc1f9669247d5f595d791431dcceacab2993e7079fc0e816b4e02"
     },
     {
-      "path": "tests/files-results/artifact-storage.test.mjs",
-      "feature": "files-results",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Built agents/native host; disposable native artifacts and workers; no provider account; Linux/macOS/Windows",
-      "origin": "Portable artifact storage filename repair"
-    },
-    {
       "oldPath": "apps/web/src/components/filePreview/artifactDiff.test.mjs",
       "path": "tests/files-results/artifactDiff.test.mjs",
       "feature": "files-results",
@@ -542,10 +391,6 @@
       "testBodiesSha256": "731a718b681e29a8db86445f5d63e4514c7ff12135dad588ae43fa1f2fbe7507",
       "beforeSha256": "f709d97e59178c8e8dc80e30d2c51371cc636142736c66e9bc34c8c87971e96e",
       "afterSha256": "f73e5c6e008c4e2561b40bc81c79d3c547e11df2e3ef88f51f4fc1e74a439fd2"
-    },
-    {
-      "path": "tests/files-results/asset-resource-cleanup.test.mjs",
-      "lane": "server"
     },
     {
       "oldPath": "apps/server/test/attachment-filename.test.mjs",
@@ -617,21 +462,6 @@
       "origin": "Newly authored approved captured-text-artifact real-reader check after consolidation"
     },
     {
-      "path": "tests/installation-release/appimage-sandbox.test.mjs",
-      "feature": "installation-release",
-      "lane": "tooling",
-      "moduleBase": "package.json",
-      "requirements": "Node24; POSIX entry checks on Linux/macOS, no real administrator operation; actual AppImage launch checked separately",
-      "origin": "AppImage scoped administrator setup boundary"
-    },
-    {
-      "path": "tests/installation-release/bundle-privacy.test.mjs",
-      "feature": "installation-release",
-      "lane": "tooling",
-      "requirements": "Node24; disposable files only; no provider requests",
-      "origin": "Public beta packaging: reject build-machine paths and preserve runtime addons while dropping native build intermediates"
-    },
-    {
       "oldPath": "packaging/qualification/chat-deletion-restart.test.mjs",
       "path": "tests/installation-release/chat-deletion-restart.test.mjs",
       "feature": "installation-release",
@@ -659,38 +489,6 @@
       "afterSha256": "8422a67bc8525b1a65f669035dd1af8d8673cbd5edc7acb9f3222e58833551e5"
     },
     {
-      "path": "tests/installation-release/data-directory-backup.test.mjs",
-      "feature": "installation-release",
-      "lane": "server",
-      "moduleBase": "packages/agents/package.json",
-      "requirements": "Built native agents/state admission; disposable data and external working folders; no provider account",
-      "origin": "Portable external backup binding and native restore regression"
-    },
-    {
-      "path": "tests/installation-release/debian-dependencies.test.mjs",
-      "feature": "installation-release",
-      "lane": "tooling",
-      "moduleBase": "package.json",
-      "requirements": "Linux dpkg-dev and C compiler; disposable ELF fixture; no provider or network",
-      "origin": "DEB native runtime dependencies and xdg-utils are declared for fresh installations"
-    },
-    {
-      "path": "tests/installation-release/desktop-lifecycle.test.mjs",
-      "feature": "installation-release",
-      "lane": "tooling",
-      "moduleBase": "package.json",
-      "requirements": "Node24, built desktop, existing TypeScript; isolated Electron/child-process event fixtures; no native desktop, provider or network",
-      "origin": "Windows session-ending teardown and Linux destroyed-window callback regression"
-    },
-    {
-      "path": "tests/installation-release/first-party-notices.test.mjs",
-      "feature": "installation-release",
-      "lane": "tooling",
-      "moduleBase": "package.json",
-      "requirements": "Node built-in test runner; disposable notice files; no provider or network",
-      "origin": "Approved first-party packaging omission correction"
-    },
-    {
       "path": "tests/installation-release/installed-pwa.test.mjs",
       "feature": "installation-release",
       "lane": "tooling",
@@ -700,49 +498,6 @@
       ],
       "requirements": "Opt-in PONDEROSA_REGRESSION_INSTALLED_PWA=1 and explicitly selected disposable native PONDEROSA_REGRESSION_BUNDLE; existing host Chromium; both providers disabled in its fresh data root; Windows qualification pending",
       "origin": "Newly authored approved check 109 after consolidation; reuses existing shipping PWA helper"
-    },
-    {
-      "path": "tests/installation-release/launcher-platform.test.mjs",
-      "feature": "installation-release",
-      "lane": "tooling",
-      "moduleBase": "package.json",
-      "requirements": "Node24, built launcher/native-host; disposable executable fixtures; no provider or network",
-      "origin": "Windows native provider discovery outside inherited PATH"
-    },
-    {
-      "path": "tests/installation-release/macos-code-signing.test.mjs",
-      "feature": "installation-release",
-      "lane": "tooling",
-      "moduleBase": "package.json",
-      "requirements": "macOS codesign and clang; disposable native app fixture; no signing identity, provider or network",
-      "origin": "0.1.1 invalid Electron resource seal: sign the finished bundle and reject resource tampering"
-    },
-    {
-      "path": "tests/installation-release/native-image-isolation.test.mjs",
-      "feature": "installation-release",
-      "lane": "tooling",
-      "moduleBase": "packages/agents/package.json",
-      "requirements": "Node24, built better-sqlite3; owned cache copies only; intentional Linux SIGBUS control in a bounded child with core dumps disabled; no provider account",
-      "origin": "F04 native image isolation from writable build cache before packaging and installed verification"
-    },
-    {
-      "path": "tests/installation-release/operator-proxy-shutdown.test.mjs",
-      "feature": "installation-release",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built server/native-host; owned POSIX proxy child and local backend/socket only; no provider or app data",
-      "origin": "F03 bounded proxy signal shutdown: HTTP, SSE, partial uploads/headers, established/pending/rejected upgrades and authentication controls"
-    },
-    {
-      "path": "tests/installation-release/retained-root-startup.test.mjs",
-      "feature": "installation-release",
-      "lane": "tooling",
-      "moduleBase": "package.json",
-      "additionalFeatures": [
-        "files-results"
-      ],
-      "requirements": "Node24, built launcher/server/native-host; Windows-only disposable retained roots and current-state startup admission; no provider account",
-      "origin": "Windows normal-profile retained-root enumeration error 50 regression: independent cursors, identity/no-follow/read-only/closed authority, nested and transferred handles, existing current-state launcher admission"
     },
     {
       "oldPath": "packaging/qualification/retire-doctor.test.mjs",
@@ -757,30 +512,6 @@
       "testBodiesSha256": "4cbd5cdad1c825f3decb4a5247943d00f66a5ff0c042cd757cc97b38c96bbd23",
       "beforeSha256": "82679a9c34bfae97ca90e5ba1f5bb55339dbf3caaa26d86166cf9cf0e1504518",
       "afterSha256": "82679a9c34bfae97ca90e5ba1f5bb55339dbf3caaa26d86166cf9cf0e1504518"
-    },
-    {
-      "path": "tests/installation-release/schema-line-endings.test.mjs",
-      "feature": "installation-release",
-      "lane": "tooling",
-      "moduleBase": "package.json",
-      "requirements": "Node24, built agents/native-host; synthetic real SQLite declarations and disposable current-state admission; no provider account",
-      "origin": "Current epoch2 LF/CRLF schema portability: exact literal/identifier/index/trigger semantics, comment boundaries, unchanged stored declarations/generation and changed-index refusal"
-    },
-    {
-      "path": "tests/installation-release/sqlite-admission-locking.test.mjs",
-      "feature": "installation-release",
-      "lane": "tooling",
-      "moduleBase": "packages/agents/package.json",
-      "requirements": "Node24, built agents/native-host and better-sqlite3; Linux and Python3 standard sqlite3/fcntl/resource modules; disposable current-state databases; bounded core-disabled native children; no provider account, live database or service",
-      "origin": "October22 SQLite admission source-descriptor lifetime/SHM race: retain POSIX locks, survive independent read-only SQLite readers, fail closed on cohort/identity/metadata/content/generation changes and release a failed acquisition"
-    },
-    {
-      "path": "tests/installation-release/state-admission-startup.test.mjs",
-      "feature": "installation-release",
-      "lane": "tooling",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built native server; disposable refused-state fixtures; no listening socket or provider account",
-      "origin": "October22 incident: explicit admission refusals exit78 without writes/listener; ordinary startup failures and restart policy remain distinct"
     },
     {
       "oldPath": "packaging/qualification/verify-release-action-pins.test.mjs",
@@ -829,14 +560,6 @@
       "afterSha256": "f90b2aeca096c8b6886aa1b112f8c0b2ea8c4892d4e50c670d5f7db96445ce92"
     },
     {
-      "path": "tests/organizations/portability.test.mjs",
-      "feature": "organizations",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built native workspaces; disposable Fastify/SQLite fixture; no provider account",
-      "origin": "F02 organization guidance portability and durable round trips"
-    },
-    {
       "oldPath": "apps/server/test/capabilities.test.mjs",
       "path": "tests/providers/capabilities.test.mjs",
       "feature": "providers",
@@ -852,22 +575,6 @@
       "afterSha256": "4e88207bc979425d920e4be3552e2dd30be240b740ec8ca9d2782ad2948c4ef2"
     },
     {
-      "path": "tests/providers/clipboard-feedback.test.mjs",
-      "feature": "providers",
-      "lane": "web",
-      "moduleBase": "apps/web/package.json",
-      "requirements": "Node24; actual TSX callbacks and shared clipboard helper with controlled browser APIs and real mutation observer; no provider account",
-      "origin": "F11 clipboard error handling and support report feedback"
-    },
-    {
-      "path": "tests/providers/optional-provider-ui.test.mjs",
-      "feature": "providers",
-      "lane": "web",
-      "moduleBase": "apps/web/package.json",
-      "requirements": "Node24; real TypeScript provider projections and query retry policy; no provider account",
-      "origin": "Optional Codex/Claude installation admission and presentation regression"
-    },
-    {
       "oldPath": "apps/server/test/provider-access.test.mjs",
       "path": "tests/providers/provider-access.test.mjs",
       "feature": "providers",
@@ -880,46 +587,6 @@
       "testBodiesSha256": "e9f0e70e32d7f0719375a8843082591b673241fa60c267e84c4adead8009d416",
       "beforeSha256": "9acb02bf49352f3ebee8b698f88100c5fb60d0de6c3fa337adef593c864e7b17",
       "afterSha256": "75fe07b8acfcfba6f0e998b19e2ac2bf9406abd0bdb1bd1f56b021a16d19619e"
-    },
-    {
-      "path": "tests/providers/provider-recovery.test.mjs",
-      "feature": "providers",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built native workspaces; admitted in-memory SQLite and inert fixtures; no provider account",
-      "origin": "Codex-only provider failure investigation: typed errors, bounded recovery, executing-client catalogs and legacy usage"
-    },
-    {
-      "path": "tests/providers/rpc-boundaries.test.mjs",
-      "feature": "providers",
-      "lane": "server",
-      "moduleBase": "packages/engines/package.json",
-      "requirements": "Node24, built engines/native-host; owned fake Node children only; no provider account",
-      "origin": "F06 malformed and late RPC containment; F07 bounded discovery output with explicit overflow and runtime controls"
-    },
-    {
-      "path": "tests/providers/runtime-slider.test.mjs",
-      "feature": "providers",
-      "lane": "web",
-      "moduleBase": "apps/web/package.json",
-      "requirements": "Node24; no provider account",
-      "origin": "Runtime slider: exact stop IDs, commit fences, pending state, Escape and atomic inherited reset"
-    },
-    {
-      "path": "tests/workspace-navigation/folder-directory.test.mjs",
-      "feature": "workspace-navigation",
-      "lane": "server",
-      "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built server/core and native SQLite; in-memory directory route with no provider or listener",
-      "origin": "UI001 complete saved-folder projection, scoped filtering and membership cursor reset"
-    },
-    {
-      "path": "tests/workspace-navigation/folder-presentation.test.mjs",
-      "feature": "workspace-navigation",
-      "lane": "web",
-      "moduleBase": "apps/web/package.json",
-      "requirements": "Node24, built core; actual folder component and sidebar projection; no provider/browser account",
-      "origin": "UI001 sidebar-only completeness, freshness, ordering and preferences invalidation"
     },
     {
       "oldPath": "apps/web/test/home-refresh.test.mjs",
@@ -993,6 +660,339 @@
       "testBodiesSha256": "1454a918add452ae53ea5e69f23b2f72d12d94a0954265610376ab1f9f94501c",
       "beforeSha256": "ea52e67d3dd936652eb875f1a47fa386688f95ded9c909641c3a61574b3a9daa",
       "afterSha256": "6271175eda4f9a4f29d740b2c6a9080511dd3499e18ff2f071d850bf717554c7"
+    },
+    {
+      "path": "tests/chats/prompt-fences.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "agents",
+        "organizations"
+      ],
+      "requirements": "Built agents/native SQLite; in-memory cases and owned native controlled provider routes; no provider account",
+      "origin": "Current-turn/steering communication identity repair; authoritative publication and replay tests"
+    },
+    {
+      "path": "tests/chats/decision-skip.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "agents",
+        "notifications"
+      ],
+      "requirements": "Built workspaces; disposable canonical visibility test on every host, controlled owned POSIX fixture for route/steering/reopen checks; no provider account",
+      "origin": "Explicit Skip question and hidden pending-Decision repair"
+    },
+    {
+      "path": "tests/files-results/artifact-storage.test.mjs",
+      "feature": "files-results",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built agents/native host; disposable native artifacts and workers; no provider account; Linux/macOS/Windows",
+      "origin": "Portable artifact storage filename repair"
+    },
+    {
+      "path": "tests/installation-release/first-party-notices.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Node built-in test runner; disposable notice files; no provider or network",
+      "origin": "Approved first-party packaging omission correction"
+    },
+    {
+      "path": "tests/chats/mentionPresentation.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built core; real Markdown/React rendering; no provider/browser account",
+      "origin": "URL-fragment corruption regression and durable renamed mentions"
+    },
+    {
+      "path": "tests/installation-release/retained-root-startup.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "additionalFeatures": [
+        "files-results"
+      ],
+      "requirements": "Node24, built launcher/server/native-host; Windows-only disposable retained roots and current-state startup admission; no provider account",
+      "origin": "Windows normal-profile retained-root enumeration error 50 regression: independent cursors, identity/no-follow/read-only/closed authority, nested and transferred handles, existing current-state launcher admission"
+    },
+    {
+      "path": "tests/installation-release/schema-line-endings.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Node24, built agents/native-host; synthetic real SQLite declarations and disposable current-state admission; no provider account",
+      "origin": "Current epoch2 LF/CRLF schema portability: exact literal/identifier/index/trigger semantics, comment boundaries, unchanged stored declarations/generation and changed-index refusal"
+    },
+    {
+      "path": "tests/installation-release/data-directory-backup.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built native agents/state admission; disposable data and external working folders; no provider account",
+      "origin": "Portable external backup binding and native restore regression"
+    },
+    {
+      "path": "tests/installation-release/appimage-sandbox.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Node24; POSIX entry checks on Linux/macOS, no real administrator operation; actual AppImage launch checked separately",
+      "origin": "AppImage scoped administrator setup boundary"
+    },
+    {
+      "path": "tests/installation-release/bundle-privacy.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "requirements": "Node24; disposable files only; no provider requests",
+      "origin": "Public beta packaging: reject build-machine paths and preserve runtime addons while dropping native build intermediates"
+    },
+    {
+      "path": "tests/chats/filtered-search.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built workspaces; controlled disposable fixture; no provider account",
+      "origin": "F01 filtered Agent search and honest request feedback"
+    },
+    {
+      "path": "tests/chats/member-search-feedback.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built workspaces; controlled disposable fixture; no provider account",
+      "origin": "F01 filtered Agent search and honest request feedback"
+    },
+    {
+      "path": "tests/organizations/portability.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces; disposable Fastify/SQLite fixture; no provider account",
+      "origin": "F02 organization guidance portability and durable round trips"
+    },
+    {
+      "path": "tests/installation-release/operator-proxy-shutdown.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/native-host; owned POSIX proxy child and local backend/socket only; no provider or app data",
+      "origin": "F03 bounded proxy signal shutdown: HTTP, SSE, partial uploads/headers, established/pending/rejected upgrades and authentication controls"
+    },
+    {
+      "path": "tests/installation-release/native-image-isolation.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built better-sqlite3; owned cache copies only; intentional Linux SIGBUS control in a bounded child with core dumps disabled; no provider account",
+      "origin": "F04 native image isolation from writable build cache before packaging and installed verification"
+    },
+    {
+      "path": "tests/installation-release/desktop-lifecycle.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Node24, built desktop, existing TypeScript; isolated Electron/child-process event fixtures; no native desktop, provider or network",
+      "origin": "Windows session-ending teardown and Linux destroyed-window callback regression"
+    },
+    {
+      "path": "tests/installation-release/launcher-platform.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Node24, built launcher/native-host; disposable executable fixtures; no provider or network",
+      "origin": "Windows native provider discovery outside inherited PATH"
+    },
+    {
+      "path": "tests/installation-release/debian-dependencies.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "Linux dpkg-dev and C compiler; disposable ELF fixture; no provider or network",
+      "origin": "DEB native runtime dependencies and xdg-utils are declared for fresh installations"
+    },
+    {
+      "path": "tests/installation-release/macos-code-signing.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "package.json",
+      "requirements": "macOS codesign and clang; disposable native app fixture; no signing identity, provider or network",
+      "origin": "0.1.1 invalid Electron resource seal: sign the finished bundle and reject resource tampering"
+    },
+    {
+      "path": "tests/providers/rpc-boundaries.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "packages/engines/package.json",
+      "requirements": "Node24, built engines/native-host; owned fake Node children only; no provider account",
+      "origin": "F06 malformed and late RPC containment; F07 bounded discovery output with explicit overflow and runtime controls"
+    },
+    {
+      "path": "tests/providers/clipboard-feedback.test.mjs",
+      "feature": "providers",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; actual TSX callbacks and shared clipboard helper with controlled browser APIs and real mutation observer; no provider account",
+      "origin": "F11 clipboard error handling and support report feedback"
+    },
+    {
+      "path": "tests/chats/delivery-recovery.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, existing TypeScript/React dependencies; controlled browser storage and actual component/hook callbacks; no provider account",
+      "origin": "Q01 lost acknowledgement, durable submission order, partial Stop and truthful receipt recovery qualification"
+    },
+    {
+      "path": "tests/chats/speech-lifecycle.test.mjs",
+      "lane": "web"
+    },
+    {
+      "path": "tests/files-results/asset-resource-cleanup.test.mjs",
+      "lane": "server"
+    },
+    {
+      "path": "tests/agents/context-allocation.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces and installed TypeScript; controlled recovery stores and verified artifact boundary; no provider account",
+      "origin": "Q08/Q09: bounded recovery scans and deferred correlated-result text allocation"
+    },
+    {
+      "path": "tests/context-recovery/claude-history.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server/engine workspaces; actual SQLite/HTTP/MCP bridge; fake Claude executable POSIX whitespace-free Node only; no provider account",
+      "origin": "Q12: Claude history dispatch and frozen canonical scope qualification"
+    },
+    {
+      "path": "tests/context-recovery/history-artifact-metadata.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/agents; private canonical SQLite/HTTP fixtures and controlled managed-file authorization; no provider account",
+      "origin": "Production audit: bounded historical artifact metadata without losing canonical text, primary documents or authorization"
+    },
+    {
+      "path": "tests/chats/receipt-batching.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; admitted in-memory SQLite and built agents; no provider account",
+      "origin": "UI004/UI008 bounded injection membership and exact receipt equivalence"
+    },
+    {
+      "path": "tests/chats/message-formatting.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built core; actual Markdown/React renderer; no provider or browser account",
+      "origin": "UI005/UI006 authored whitespace, bounded rich display contract and inert fallback regressions"
+    },
+    {
+      "path": "tests/workspace-navigation/folder-directory.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/core and native SQLite; in-memory directory route with no provider or listener",
+      "origin": "UI001 complete saved-folder projection, scoped filtering and membership cursor reset"
+    },
+    {
+      "path": "tests/workspace-navigation/folder-presentation.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built core; actual folder component and sidebar projection; no provider/browser account",
+      "origin": "UI001 sidebar-only completeness, freshness, ordering and preferences invalidation"
+    },
+    {
+      "path": "tests/providers/optional-provider-ui.test.mjs",
+      "feature": "providers",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; real TypeScript provider projections and query retry policy; no provider account",
+      "origin": "Optional Codex/Claude installation admission and presentation regression"
+    },
+    {
+      "path": "tests/providers/provider-recovery.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces; admitted in-memory SQLite and inert fixtures; no provider account",
+      "origin": "Codex-only provider failure investigation: typed errors, bounded recovery, executing-client catalogs and legacy usage"
+    },
+    {
+      "path": "tests/providers/runtime-slider.test.mjs",
+      "feature": "providers",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; no provider account",
+      "origin": "Runtime slider: exact stop IDs, commit fences, pending state, Escape and atomic inherited reset"
+    },
+    {
+      "path": "tests/chats/notification-visibility.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "additionalFeatures": [
+        "notifications"
+      ],
+      "requirements": "Node24; real visibility source with controlled native-observer geometry; no account or network",
+      "origin": "Mac Safari/PWA scroll observer churn and read-visibility regression"
+    },
+    {
+      "path": "tests/chats/message-refresh.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; actual ProjectShell event handlers with controlled hook storage; no account or network",
+      "origin": "Safari long-chat refresh stalls: stable memoized message callbacks with fresh navigation state"
+    },
+    {
+      "path": "tests/installation-release/sqlite-admission-locking.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host and better-sqlite3; Linux and Python3 standard sqlite3/fcntl/resource modules; disposable current-state databases; bounded core-disabled native children; no provider account, live database or service",
+      "origin": "October22 SQLite admission source-descriptor lifetime/SHM race: retain POSIX locks, survive independent read-only SQLite readers, fail closed on cohort/identity/metadata/content/generation changes and release a failed acquisition"
+    },
+    {
+      "path": "tests/installation-release/state-admission-startup.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server; disposable refused-state fixtures; no listening socket or provider account",
+      "origin": "October22 incident: explicit admission refusals exit78 without writes/listener; ordinary startup failures and restart policy remain distinct"
+    },
+    {
+      "path": "tests/agents/notification-reconciliation.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces; private synthetic stores and controlled Codex/Claude adapters; no provider account",
+      "origin": "Workflow notification latency: coalescing, yielded scans, stale-pass safety and pending-agent quarantine"
+    },
+    {
+      "path": "tests/agents/agent-lookup.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built core/native/agents workspaces; disposable local stores; no listener or provider account",
+      "origin": "Prepared Agent lookup regression: one statement per authority, fresh typed DTOs, deletion/owner guards and database isolation/reopen"
+    },
+    {
+      "path": "tests/context-recovery/history-context-budget.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; private canonical stores and inert persistent providers, no provider account",
+      "origin": "PR99 context budget addendum: complete accepted-input accounting, paginated selection, session occupancy and frozen scoped retrieval"
     }
   ],
   "retainedReleasePayload": [
