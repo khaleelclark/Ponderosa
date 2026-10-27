@@ -274,6 +274,10 @@ function observeChildErrors(
     child.on("error", onError);
     child.once("close", () => child.off("error", onError));
   });
+  // Registration can refuse the child before its race is installed. Observe
+  // this rejection immediately; return the original promise so callers still
+  // receive spawn failures whenever registration succeeds.
+  void failure.catch(() => undefined);
   return failure;
 }
 
