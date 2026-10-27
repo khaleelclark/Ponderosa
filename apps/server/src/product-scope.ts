@@ -176,7 +176,7 @@ function agentDraftOwner(store:AgentStore,request:FastifyRequest):{surfaceId:str
 }
 /** Supplied only after server authentication and exact live scheduler ownership. */
 export interface RuntimeProductOwner { conversationId: string; agentId: string; runId: string; fencingToken: number }
-function retainedRuntimeResources(store:Pick<AgentStore,'sqlite'>,owner:string|RuntimeProductOwner|undefined):Set<string> {
+export function retainedRuntimeResources(store:Pick<AgentStore,'sqlite'>,owner:string|RuntimeProductOwner|undefined):Set<string> {
   if(!owner||typeof owner==='string')return new Set();
   const retained=store.sqlite.prepare(`${REQUEST_SOURCE_LINEAGE_CTE} SELECT chat.project_id FROM scheduler_runs run
     JOIN scheduler_run_activations attached ON attached.run_id=run.id

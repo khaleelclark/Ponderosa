@@ -15,7 +15,7 @@ import {
   type BrowserSessionManager,
   type BrowserScope,
 } from "../browser-session-manager.js";
-import { activeChatResourceOwner } from "../branch-resource-owner.js";
+import { activeChatResourceOwner, retainedRuntimeResources } from "../product-scope.js";
 import { BrowserDriverActionError } from "../chrome-cdp-driver.js";
 import type { BrowserProfileAuthority } from "../browser-profile-authority.js";
 import type {
@@ -248,8 +248,14 @@ export function registerAgentRuntimeToolRoutes(
       // Resolve the exact live Agent/Chat/product owner on every call, in addition
       // to the authoritative scheduler Run/fence and selected-tool checks above.
       const owner = activeChatResourceOwner(store, "agent", agent.id);
+      // Retiring installed resources stay available to the exact accepted Branch
+      // attempt while its canonical Run is still authorized, as for other tools.
+      const ownsArchive = owner ? owner.projectId === agent.projectId
+        : Boolean(capability.v3SchedulerRunId) && Number.isSafeInteger(capability.v3FencingToken) &&
+          retainedRuntimeResources(store, { conversationId: agent.conversationId, agentId: agent.id,
+            runId: capability.v3SchedulerRunId, fencingToken: capability.v3FencingToken }).has(agent.id);
       const chat = store.getConversation(agent.conversationId);
-      if (!owner || owner.projectId !== agent.projectId || !chat || chat.deletedAt ||
+      if (!ownsArchive || !chat || chat.deletedAt ||
           chat.projectId !== agent.projectId || active.conversationId !== agent.conversationId ||
           capability.conversationId !== agent.conversationId || active.controller.signal.aborted ||
           context.deletingProjectIds.has(agent.projectId) || context.deletingAgentIds.has(agent.id) ||

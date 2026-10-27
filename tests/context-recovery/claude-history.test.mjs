@@ -12,7 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import Fastify from 'fastify';
-import { AgentStore } from '@ponderosa/agents';
+import { AgentStore, BranchStore, CoordinationV3Store } from '@ponderosa/agents';
 import { PONDEROSA_HISTORY_TOOL } from '@ponderosa/core';
 import { encodeSessionTools, decodeSessionTools } from '../../packages/engines/dist/ponderosa-mcp-contract.js';
 import { ClaudeStreamSession } from '../../packages/engines/dist/claude-stream-session.js';
@@ -39,6 +39,7 @@ async function withHistory(t, work) {
   let store, app, passed = false;
   try {
     store = new AgentStore(root); app = Fastify();
+    const coordination = new CoordinationV3Store(store.sqlite);
     const project = store.createProject({ label: 'History fixture', hostPath: root, defaultEngine: 'claude' });
     const chat = store.createConversation(project.id, { title: 'Compacted history' });
     const agent = store.createAgent(project.id, { title: 'History reader', engine: 'claude', conversationId: chat.id });
@@ -62,9 +63,10 @@ async function withHistory(t, work) {
     const capabilities = new Map([[token, capability]]), activeRuns = new Map([[agent.id, run]]);
     const deletingProjectIds = new Set(), deletingAgentIds = new Set(), deletingConversationIds = new Set();
     let requests = 0; app.addHook('onRequest', async request => { if (request.url === '/api/agent-history') requests++; });
-    registerAgentRuntimeToolRoutes(app, { store, assets: { pendingGeneratedArtifactImports: () => [] }, agentMessageCapabilities: capabilities, activeRuns,
+    registerAgentRuntimeToolRoutes(app, { store, coordinationV3: coordination, assets: { pendingGeneratedArtifactImports: () => [] }, agentMessageCapabilities: capabilities, activeRuns,
       deletingProjectIds, deletingAgentIds, deletingConversationIds,
-      capabilityOwnsAuthoritativeRun: (c, r) => c.runId === r?.runId });
+      capabilityOwnsAuthoritativeRun: (c, r) => c.runId === r?.runId && (!c.v3SchedulerRunId ||
+        coordination.ownsRun(c.v3SchedulerRunId, c.v3FencingToken, 'owned-history-scheduler')) });
     const base = await app.listen({ host: '127.0.0.1', port: 0 });
     const env = runEnvironment(base, token);
     assert.equal(env.PONDEROSA_AGENT_HISTORY_URL, base + '/api/agent-history');
@@ -80,7 +82,7 @@ async function withHistory(t, work) {
         assert.equal(rows.length, 2); return { listed: rows[0].result.tools, result: rows[1].result };
       } finally { clearTimeout(timer); if (child.exitCode === null && child.signalCode === null) { child.kill(); await completion; } }
     };
-    await work({ root, store, app, env, call, older, excluded, foreign, crossProject, newer, capability, capabilities, activeRuns, run, agent, other, project, chat,
+    await work({ root, store, coordination, app, env, call, older, excluded, foreign, crossProject, newer, capability, capabilities, activeRuns, run, agent, other, project, chat,
       deletingProjectIds, deletingAgentIds, deletingConversationIds, requests: () => requests }); passed = true;
   } finally {
     await app?.close(); store?.close();
@@ -275,6 +277,49 @@ test('preparing and unavailable imported archives stay distinct from a ready no-
   assert.equal(defaults.statusCode, 200); assert.equal(defaults.json().hits.length, 5); assert.equal(defaults.json().hasMore, true);
   const canonical = await inject({ action: 'search', query: 'Amber orchard' });
   assert.equal(canonical.statusCode, 200); assert.ok(canonical.json().compactionBoundary);
+}));
+
+for (const ending of ['lease', 'fence', 'inactive', 'removed', 'deleted']) test(`a retiring Branch keeps its exact accepted Run history until ${ending} revokes authority`, { timeout: 20000 }, t => withHistory(t, async f => {
+  const branches = new BranchStore(f.store.sqlite, f.coordination);
+  const branch = branches.create('Retained imported reader', randomUUID());
+  const project = f.store.createProject({ label: 'Retiring owner', hostPath: f.root, defaultEngine: 'claude', chatOwned: true, branchId: branch.id });
+  const chat = f.store.getConversation(project.lastConversationId);
+  const agent = f.store.createAgent(project.id, { title: 'Accepted reader', engine: 'claude', conversationId: chat.id });
+  const archiveVersion = await grantImportedHistory(f, [{ role: 'assistant', text: 'Blackberry imported evidence' }], agent);
+  for (const agentRef of ['', 'reader']) f.store.sqlite.prepare(`INSERT INTO branch_installation_resources
+    (branch_id,package_id,chat_ref,agent_ref,local_id,state) VALUES(?,?,'chat',?,?,'active')`).run(branch.id, 'owned-retained-history', agentRef, agentRef ? agent.id : chat.id);
+  const published = branches.deploy({ branchId: branch.id, expectedVersionId: branch.versionId ?? '', chatId: '', idempotencyKey: 'retained-history',
+    definition: { schema: 'ponderosa.branch.v1', name: 'Retained reader', trigger: { kind: 'manual' }, entry: 'read',
+      steps: [{ id: 'read', kind: 'agent', target: { kind: 'persistent_agent', ref: 'reader' }, instructions: 'Read own imported evidence' }],
+      controls: [], edges: [], policy: { maxConcurrentExecutions: 1, failure: { action: 'stop' } } },
+    bindings: { agents: { reader: agent.id }, directories: {} } });
+  const execution = branches.accept(published.id, 'retained-history-input', 'Read retained evidence'); branches.advance();
+  const lease = f.coordination.leaseNextRun({ workerId: 'owned-history-scheduler' }); assert.ok(lease);
+  f.coordination.markRunStarted(lease.runId, lease.fencingToken);
+  Object.assign(f.run, { runId: lease.runId, conversationId: chat.id });
+  Object.assign(f.capability, { agentId: agent.id, conversationId: chat.id, runId: lease.runId, v3SchedulerRunId: lease.runId,
+    v3FencingToken: lease.fencingToken, importedHistoryArchiveVersion: archiveVersion });
+  f.activeRuns.set(agent.id, f.run);
+  const canonical = { schemaVersion: 2, eventId: randomUUID(), projectId: project.id, conversationId: chat.id,
+    sender: { kind: 'user', userId: 'operator' }, intent: 'user_dm', audience: { kind: 'user_agent', userId: 'operator', agentId: agent.id },
+    text: 'Blackberry canonical evidence', createdAt: '2020-01-01T00:00:00.000Z' };
+  f.store.appendCommunicationEvent(canonical);
+  f.capability.historyRetrievalBoundary = f.store.communicationHistoryBoundary(project.id);
+  f.capability.historyRetrievalExcludedCommunicationEventIds = [];
+  const arguments_ = { source: 'imported', action: 'search', query: 'Blackberry' };
+  assert.equal(data(await f.call(arguments_)).hits.length, 1);
+  f.store.sqlite.prepare("UPDATE branch_installation_resources SET state='retiring' WHERE branch_id=?").run(branch.id);
+  assert.equal(branches.execution(execution.id).state, 'running');
+  assert.equal(data(await f.call({ action: 'search', query: 'Blackberry canonical' })).hits.length, 1, 'Existing canonical Run retrieval remains allowed');
+  const found = data(await f.call(arguments_)); assert.equal(found.hits.length, 1);
+  const read = data(await f.call({ source: 'imported', action: 'read', reference: found.hits[0].reference }));
+  assert.equal(read.messages[0].text, 'Blackberry imported evidence');
+  if (ending === 'lease') f.store.sqlite.prepare("UPDATE scheduler_runs SET lease_expires_at='2000-01-01T00:00:00.000Z' WHERE id=?").run(lease.runId);
+  else if (ending === 'fence') f.coordination.fenceRunSideEffects(lease.runId, lease.fencingToken, 'owned-history-scheduler');
+  else if (ending === 'inactive' || ending === 'removed') f.store.sqlite.prepare('UPDATE branch_installation_resources SET state=? WHERE branch_id=?').run(ending === 'inactive' ? 'staging' : 'deleted', branch.id);
+  else f.store.sqlite.prepare('UPDATE agents SET deleted_at=? WHERE id=?').run(new Date().toISOString(), agent.id);
+  assert.equal((await f.call(arguments_)).result.isError, true);
+  assert.equal((await f.call({ source: 'imported', action: 'read', reference: found.hits[0].reference })).result.isError, true);
 }));
 
 for (const product of ['dev', 'branches']) for (const engine of ['codex', 'claude']) test(`first ${product} ${engine} Run receives imported retrieval without rollover and keeps large archives outside its seed`, { timeout: 30000 }, t => {
