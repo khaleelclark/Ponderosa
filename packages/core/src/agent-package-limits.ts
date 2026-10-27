@@ -9,6 +9,11 @@ export const AGENT_PACKAGE_METADATA_MAX_BYTES = 16 * 1024;
 export const AGENT_PACKAGE_LIMIT_LABEL = "256 MiB";
 export const AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL = "128 MiB";
 
+/** Portable text must survive UTF-8 storage without replacement characters. */
+export function agentPackageTextIsWellFormed(value: string): boolean {
+  return (value as string & { isWellFormed(): boolean }).isWellFormed();
+}
+
 /** Shared bounded serialization also admits text-only and remapped packages
  * without allocating a second, whole-package JSON string. */
 export function* agentPackageJsonPieces(value: unknown, depth = 0): Generator<string> {
