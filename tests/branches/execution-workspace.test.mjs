@@ -8,6 +8,7 @@ const require=createRequire(new URL('../../apps/web/package.json',import.meta.ur
 const ts=require('typescript'),React=require('react'),{renderToStaticMarkup}=require('react-dom/server');
 const {branchScriptFailureSummary}=require('@ponderosa/core');
 const {ApiRequestError}=await import('../../apps/web/src/api/types.ts');
+const {ChatMessageBody}=await import('../../apps/web/src/components/chat/ChatMessages.tsx');
 const presentation=await import('../../apps/web/src/components/branches/executionPresentation.ts');
 const source=await readFile(new URL('../../apps/web/src/components/branches/ExecutionPanel.tsx',import.meta.url),'utf8');
 
@@ -44,6 +45,8 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
   if(name==='../../api/types')return {ApiRequestError};
   if(name==='../../api/real')return {requestJson:async(path,options)=>{requests.push({path,options});return transport(path,options)}};
   if(name==='./BranchGraph')return {BranchGraph:()=>React.createElement('div',null,'Pinned Run Graph And Accessible Outline')};
+  if(name==='../chat/ChatMessages')return {ChatMessageBody};
+  if(name==='../decisions/DecisionCard')return {DecisionCard:props=>React.createElement('section',{'aria-label':'Shared Decision'},props.decision.question,React.createElement('button',{onClick:props.onResolved},'Resolve Through Existing Decision'))};
   if(name==='../ConfirmationDialogs')return {ConfirmDialog:props=>React.createElement('section',null,props.children)};
   if(name==='./model')return {currentFailedInvocations:()=>[],nodeName:node=>node.label??node.id};
   if(name==='../SemanticStatus')return {SemanticStatus:props=>React.createElement('span',{'data-status':props.status},props.label)};
@@ -96,7 +99,7 @@ test('focused action pages reject foreign or mixed revisions and retain explicit
 
 test('required action and status loading never become an empty or completed assertion',()=>{
  const f=fixture();f.setQuery('branch-execution-actions',{data:undefined,isPending:true});f.setQuery('branch-execution-operations',{data:undefined,isPending:true});const html=f.render();
- assert.match(html,/Loading current decisions and failures/);assert.match(html,/Loading run status/);assert.doesNotMatch(html,/No decisions|All done|100%/);
+ assert.match(html,/Loading current decisions and failures/);assert.match(html,/Loading run status/);assert.doesNotMatch(html.replace(/<style[^>]*>[\s\S]*?<\/style>/g,''),/No decisions|All done|100%/);
 });
 
 test('budget and provider controls use canonical run ownership without changing or starting work',()=>{
@@ -150,4 +153,18 @@ test('Script failure summaries keep the existing exit-code interpretation ahead 
  const action=olderAttempt();action.attempt.error=undefined;action.attempt.scriptEvidence={code:7,stdout:'Ordinary output is not the failure explanation'};action.attempt.result={failed:true,output:'Ordinary stdout'};
  const f=fixture({actions:[action]});f.props.runLinks=React.createElement('a',{href:'/exact-run-chat'},'Open Exact Run Chat');const html=f.render();
  assert.match(html,/Script exited with code 7. Inspect Step evidence for error output/);assert.ok(html.indexOf('Open Exact Run Chat')<html.indexOf('<details'));assert.equal(f.disclosures[0].open,false);assert.equal(f.requests.length,0);
+});
+
+
+test('main results reuse shared Markdown for authored download links without guessing a result project owner',()=>{
+ const url='/api/branches/engine/projects/own-project/artifacts/own-file/download';
+ const f=fixture({output:`Report ready. [Download report](${url})`}),html=f.render();
+ assert.ok(html.includes('href="'+url+'"'));assert.ok(html.includes('Download report'));assert.ok(html.indexOf('href="'+url+'"')<html.indexOf('<details'));
+ const unsafe=fixture({output:'[Unsupported](javascript:alert(1)) [Unscoped legacy](ponderosa://artifact/opaque)'}).render();assert.doesNotMatch(unsafe,/href="(?:javascript:|ponderosa:)/);
+});
+
+test('canonical Agent decisions use the existing shared DecisionCard before Technical Details',()=>{
+ const decision={id:'exact-agent-decision',projectId:'actual-project',agentId:'actual-agent',coordinationRunId:'actual-scheduler-run',mode:'text',question:'Which report should I publish?',options:[],allowOther:true,status:'pending'};
+ const f=fixture({actions:[{kind:'decision',decision}]}),html=f.render();assert.match(html,/Shared Decision/);assert.ok(html.indexOf(decision.question)<html.indexOf('<details'));
+ assert.equal(presentation.currentExecutionActions(f.execution,[f.actionPage,f.actionPage]).length,1);
 });

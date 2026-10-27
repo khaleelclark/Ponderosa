@@ -7,7 +7,7 @@ import {SemanticStatus,semanticAgentStatus} from '../SemanticStatus';
 /** History uses recorded Run state. The selected Run's operations owner supplies its current explanation. */
 export function BranchRunHistory({runs,selectedId,selectedRun,filter,onFilter,onSelect,loading,error,onRetry,hasMore,loadingMore,onMore,triggerEvents,children}:{
  runs:readonly BranchExecutionDto[];selectedId:string;selectedRun?:BranchExecutionDto;filter?:string;
- onFilter(value:string):void;onSelect(id:string):void;loading:boolean;error?:Error|null;onRetry():void;
+ onFilter(value:string):void;onSelect(id:string):boolean;loading:boolean;error?:Error|null;onRetry():void;
  hasMore:boolean;loadingMore:boolean;onMore():void;triggerEvents:ReactNode;children:ReactNode;
 }):JSX.Element {
  const [showHistory,setShowHistory]=useState(!selectedId);
@@ -15,7 +15,7 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filter,onFilter,on
  useLayoutEffect(()=>{if(historyScroll.current)historyScroll.current.scrollTop=scroll.current.history;if(detailScroll.current)detailScroll.current.scrollTop=scroll.current.detail},[showHistory]);
  useEffect(()=>{if(previous.current!==selectedId){previous.current=selectedId;scroll.current.detail=0;if(detailScroll.current)detailScroll.current.scrollTop=0;setShowHistory(!selectedId)}},[selectedId]);
  const retained=selectedRun?.id===selectedId&&!runs.some(run=>run.id===selectedId)?selectedRun:undefined;
- const renderRun=(run:BranchExecutionDto,outside=false)=><ListItemButton key={run.id} selected={run.id===selectedId} aria-current={run.id===selectedId?'true':undefined} onClick={()=>{onSelect(run.id);setShowHistory(false)}} sx={{alignItems:'flex-start',borderRadius:1,minHeight:64}}>
+ const renderRun=(run:BranchExecutionDto,outside=false)=><ListItemButton key={run.id} selected={run.id===selectedId} aria-current={run.id===selectedId?'true':undefined} onClick={()=>{if(onSelect(run.id))setShowHistory(false)}} sx={{alignItems:'flex-start',borderRadius:1,minHeight:64}}>
   <Stack spacing={0.75} sx={{minWidth:0,width:'100%'}}>
    <Typography variant="body2" sx={{fontWeight:600}}>{new Date(run.createdAt).toLocaleString()}</Typography>
    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{alignItems:'center'}}>

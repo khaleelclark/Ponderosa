@@ -9,7 +9,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 const {BranchRunHistory}=await import('../../apps/web/src/components/branches/BranchRunHistory.tsx');
 const {OccurrenceAudit}=await import('../../apps/web/src/components/TriggerOccurrenceAudit.tsx');
 const run=(id,state='completed',source='manual')=>({id,branchId:'workflow',createdAt:'2026-10-27T11:30:00Z',state,admissionSource:source});
-const props={runs:[],selectedId:'',onFilter(){},onSelect(){},loading:false,onRetry(){},hasMore:false,loadingMore:false,onMore(){},triggerEvents:'Trigger Events',children:'Selected Run evidence'};
+const props={runs:[],selectedId:'',onFilter(){},onSelect(){return true},loading:false,onRetry(){},hasMore:false,loadingMore:false,onMore(){},triggerEvents:'Trigger Events',children:'Selected Run evidence'};
 const render=extra=>renderToStaticMarkup(React.createElement(BranchRunHistory,{...props,...extra}));
 
 test('Run History distinguishes initial, filtered, loading and unavailable states without claiming unknown is empty',()=>{
@@ -38,13 +38,14 @@ function historyFixture(){
 }
 
 test('mobile history back retains selection, filter and scroll; only explicit selection opens another Run',()=>{
- const f=historyFixture(),selected=[],filters=[],extra={runs:[run('a'),run('b')],selectedId:'a',filter:'waiting',onSelect:id=>selected.push(id),onFilter:value=>filters.push(value)};
+ const f=historyFixture(),selected=[],filters=[],extra={runs:[run('a'),run('b')],selectedId:'a',filter:'waiting',onSelect:id=>{selected.push(id);return true},onFilter:value=>filters.push(value)};
  let nodes=f.render(extra),history=nodes.find(node=>node.props?.['aria-label']==='Run History'),detail=nodes.find(node=>node.props?.['aria-label']==='Selected Run');
  const historyElement={scrollTop:140},detailElement={scrollTop:220};history.props.ref.current=historyElement;detail.props.ref.current=detailElement;
  history.props.onScroll({currentTarget:historyElement});detail.props.onScroll({currentTarget:detailElement});
  nodes.find(node=>node.type==='Button'&&node.props.children==='Run History').props.onClick();nodes=f.render(extra);
  assert.equal(nodes.find(node=>node.props?.['aria-label']==='Run History').props.sx.display,'flex');assert.equal(historyElement.scrollTop,140);assert.equal(detailElement.scrollTop,220);assert.deepEqual(selected,[]);
  nodes.find(node=>node.type==='TextField').props.onChange({target:{value:'failed'}});assert.deepEqual(filters,['failed']);assert.deepEqual(selected,[]);
+ nodes=f.render({...extra,onSelect:()=>false});nodes.find(node=>node.type==='ListItemButton').props.onClick();nodes=f.render(extra);assert.equal(nodes.find(node=>node.props?.['aria-label']==='Run History').props.sx.display,'flex','Rejected navigation leaves the history pane intact');
  nodes.find(node=>node.type==='ListItemButton'&&node.props['aria-current']==='true').props.onClick();nodes=f.render(extra);assert.deepEqual(selected,['a']);assert.equal(nodes.find(node=>node.props?.['aria-label']==='Selected Run').props.sx.display,'block');
  nodes=f.render({...extra,runs:[run('new'),...extra.runs]});assert.deepEqual(selected,['a'],'Background history must not navigate');
  nodes=f.render({...extra,selectedId:'b'});assert.equal(detailElement.scrollTop,0,'Explicit different Run starts at its result');

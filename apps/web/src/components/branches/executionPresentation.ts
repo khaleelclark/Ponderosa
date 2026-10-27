@@ -12,7 +12,7 @@ export const branchOperationalStatusKinds: Record<BranchOperationalSummaryDto['s
 /** A paginated action view is useful only for this exact canonical run revision. */
 export function currentExecutionActions(execution: Pick<BranchExecutionDto,'id'|'revision'>, pages?: readonly BranchExecutionActionsDto[]): BranchExecutionActionsDto['items'] | undefined {
   if (!pages?.length || !pages[0]!.generation || pages.some(page => page.executionId !== execution.id || page.revision !== execution.revision || page.generation !== pages[0]!.generation)) return undefined;
-  return Array.from(new Map(pages.flatMap(page => page.items).map(item => [item.kind + ':' + (item.kind === 'gate' ? item.gate.id : item.attempt.id), item])).values());
+  return Array.from(new Map(pages.flatMap(page => page.items).map(item => [item.kind + ':' + (item.kind === 'decision' ? item.decision.id : item.kind === 'gate' ? item.gate.id : item.attempt.id), item])).values());
 }
 
 /** Keep the operations projection fresh until it has observed the terminal execution. */
