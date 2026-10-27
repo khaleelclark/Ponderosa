@@ -7,6 +7,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import {branchScriptFailureSummary} from '@ponderosa/core';
 import type {BranchDefinition,BranchExecutionDetailDto,BranchExecutionDto,BranchGateDto,BranchGateResolution,BranchIntervention,BranchStepEvidenceDto,BranchMapItemDto,BranchOperationalSummaryDto,BranchExecutionActionsDto,BranchStepExecutionDto} from '@ponderosa/core';
 import {requestJson} from '../../api/real';
+import {ApiRequestError} from '../../api/types';
 import {BranchGraph} from './BranchGraph';
 import {ConfirmDialog} from '../ConfirmationDialogs';
 import {DecisionCard} from '../decisions/DecisionCard';
@@ -94,7 +95,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const actionItems=currentActions??currentExecutionActions({id:execution.id,revision:actions.data?.pages[0]?.revision??execution.revision},actions.data?.pages);
  const actionsCurrent=authorityFresh&&Boolean(currentActions)&&!actions.error;
  useEffect(()=>{if(actions.data?.pages[0]&&actions.data.pages[0].revision!==execution.revision)void client.invalidateQueries({queryKey:actionsKey,exact:true})},[client,execution.id,execution.revision]);
- const pendingDecisions=Array.from(new Map([...retainedDecisionForms,...(actionItems?.filter(item=>item.kind==='decision').map(item=>[item.decision.id,item.decision] as const)??[])]).values());
+ const pendingDecisions=Array.from(new Map<string,DecisionPrompt>([...retainedDecisionForms,...(actionItems?.filter(item=>item.kind==='decision').map(item=>[item.decision.id,item.decision] as const)??[])]).values());
  const waitingGates=actionItems?.filter(item=>item.kind==='gate')??[];
  const attentionAttempts=actionItems?.filter(item=>item.kind==='attempt')??[];
  const inspectStep=(step:BranchStepExecutionDto)=>{if(step.executionId!==execution.id)return;setInspectedStep(step);setSelected(step.stepId);setSelectedInvocation(step.id);setTechnicalOpen(true);requestAnimationFrame(()=>{const target=document.getElementById('branch-step-'+step.id)??technicalDetails.current;target?.scrollIntoView({block:'nearest'});target?.focus({preventScroll:true})})};
@@ -105,7 +106,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const interventionUnconfirmed=act.isError&&!(act.error instanceof ApiRequestError&&act.error.status>=400&&act.error.status<500);
  const interventionLocked=act.isPending||interventionUnconfirmed;
  const submitIntervention=()=>{
-  if(!intervention||act.isPending)return;
+  if(!intervention||act.isPending||(!interventionUnconfirmed&&!actionsCurrent))return;
   const intent:BranchIntervention=interventionUnconfirmed?act.variables!:{commandKey,expectedRevision:execution.revision,action:intervention.action,reason,...(intervention.attemptId?{attemptId:intervention.attemptId}:{}),...(intervention.unknown?{externalEffectsReconciled:reconciled}:{}),...(intervention.action==='resolve_script'?{result:{failed,output:result}}:{}),...(intervention.action==='merge'?{mergedInto:target}:{})};
   return act.mutateAsync(intent);
  };
@@ -129,6 +130,7 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
    {operations.error&&<Alert severity="warning" action={<Button onClick={()=>void operations.refetch()}>Retry Status</Button>}>Run status could not refresh. {operations.error.message}</Alert>}
    {cancel.error&&<Alert severity="error">{cancel.error.message}</Alert>}
   </Stack>
+  {interventionUnconfirmed&&!intervention&&act.variables&&<Alert severity="warning" action={<Button onClick={()=>open({action:act.variables!.action})}>Reconcile Decision Submission</Button>}>A previous decision submission is unconfirmed. Reopen its exact submission before making another decision.</Alert>}
   {execution.parentExecutionId&&<Button sx={{alignSelf:'start'}} href={branchRoutePath({tab:'executions',executionId:execution.parentExecutionId})}>Open Parent Run</Button>}
   {waitRows.length>0?<Stack spacing={1}>{waitRows}</Stack>:execution.waitReason&&<Alert severity="info">{execution.waitReason}</Alert>}
   {(execution.budgetWait||detail.waits?.some(wait=>wait.kind==='execution_budget'))&&<Alert severity="warning" action={onBudgetSettings?<Button onClick={()=>onBudgetSettings(execution.budgetWait?.branchId??detail.waits?.find(wait=>wait.kind==='execution_budget')?.branchId)}>Budget Settings</Button>:undefined}>This run is waiting for its workflow's automatic execution budget. Manual runs do not consume the automatic allowance.</Alert>}
