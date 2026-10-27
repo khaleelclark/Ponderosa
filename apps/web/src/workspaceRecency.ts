@@ -52,7 +52,7 @@ export function markWorkspaceResourceUsed(
   queryClient: QueryClient,
   kind: WorkspaceResourceKind,
   resourceId: string,
-): void {
+): Promise<void> {
   const optimistic: WorkspaceResourceRecencyDto = {
     resourceKey: workspaceResourceKey(kind, resourceId),
     kind,
@@ -86,7 +86,7 @@ export function markWorkspaceResourceUsed(
     );
   };
   apply(optimistic);
-  void api.markWorkspaceResourceUsed({ kind, resourceId }).then(apply).catch(() => {
+  return api.markWorkspaceResourceUsed({ kind, resourceId }).then(apply).catch(() => {
     void queryClient.invalidateQueries({
       queryKey: queryKeys.workspaceResourceRecency.all,
     });
