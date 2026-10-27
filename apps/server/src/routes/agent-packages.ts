@@ -671,7 +671,7 @@ export function registerAgentPackageRoutes(
       }
       await flushArtifacts();
       portableArtifactBytes = reservedArtifactBytes;
-      const initialInstructions = agent.spawnPrompt ?? agent.presetSnapshot?.guidance
+      const initialInstructions = agent.role ?? agent.spawnPrompt ?? agent.presetSnapshot?.guidance
         ?? importedHistories.get(agent.id)?.initialInstructions;
       agents.push({
         ref: agent.id,

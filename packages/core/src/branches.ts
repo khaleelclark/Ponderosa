@@ -39,6 +39,18 @@ export interface BranchMapInvocationDto {
   id: string; mapId: string; parentPathId: string; joinId: string;
   sourceResultId?: string; itemCount: number; itemsHash: string; state: string;
 }
+/** Navigation hints from the canonical publication validator, never client authority. */
+export interface BranchValidationIssue {
+  message: string; nodeId?: string; edgeId?: string; templateMemberRef?: string;
+  section?: "task" | "agent_setup" | "connections" | "failure" | "advanced" | "workflow" | "settings";
+  field?: string;
+}
+export class BranchValidationError extends Error {
+  readonly issue: BranchValidationIssue;
+  constructor(message: string, context: Omit<BranchValidationIssue, "message"> = {}) {
+    super(message); this.name = "BranchValidationError"; this.issue = { ...context, message };
+  }
+}
 export type BranchFailurePolicy =
   | { action: "stop" }
   | { action: "retry"; maxAttempts: number; delayMs: number; freshContext?: boolean }
@@ -228,3 +240,6 @@ export interface BranchFullImportAgentReviewDto {
  artifacts:{count:number;bytes:number;items:Array<{name:string;kind:string;mediaType:string;bytes:number}>};
 }
 export interface BranchInstallationPreviewDto {id:string;operations:BranchInstallationOperationDto[];fullImportReview?:{mode:'full';warning:string;agents:BranchFullImportAgentReviewDto[]}}
+
+/** Scoped picker context comes from canonical membership, independent of search pagination. */
+export type BranchAgentChoiceDto = import('./dto/agents.js').AgentDto & { hasTeam:boolean; chatTitle:string; managerTitle?:string };

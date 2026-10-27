@@ -1143,6 +1143,63 @@ test('closing the Add-step menu fences its exiting item handlers from creating a
  add('agent');add('script');assert.equal(edits.length,1,'Closed/transitioning menu items cannot add work');assert.equal(scope.definition.steps.length,0,'The original snapshot remains untouched');
 });
 
+test('Agent-step failure choices follow runtime precedence and preserve inactive policy and unrelated connections',async()=>{
+ const {effectiveStepFailure,setStepFailure,newDefinition,addNode}=await import('../../apps/web/src/components/branches/model.ts');
+ const first=addNode(newDefinition(),'agent'),second=addNode(first.definition,'human_gate',first.selected),id=first.selected;
+ const policy={action:'retry',maxAttempts:3,delayMs:1250,freshContext:true};
+ const definition={...second.definition,steps:second.definition.steps.map(step=>step.id===id?{...step,failure:policy}:step),edges:[...second.definition.edges,{id:'failed',from:id,to:second.selected,on:'failure',input:{kind:'literal',text:'replacement'},loop:true}]};
+ const snapshot=structuredClone(definition);
+ assert.equal(effectiveStepFailure(definition,definition.steps[0]),'goto');
+ for(const failure of [undefined,{action:'stop'},{action:'retry',maxAttempts:3,delayMs:1000},{action:'ask_human'},{action:'recover',agentRef:'recovery',maxAttempts:2}]){
+  const changed=setStepFailure(definition,id,failure);
+  assert.equal(effectiveStepFailure(changed,changed.steps[0]),failure?.action??'inherit');
+  assert.deepEqual(changed.edges,definition.edges.filter(edge=>edge.id!=='failed'));
+  assert.deepEqual(changed.steps[0].failure,failure);
+ }
+ assert.deepEqual(definition,snapshot,'Draft changes never mutate the published definition or retained policy');
+});
+
+test('incoming context includes workflow input, every named source and per-edge custom input',async()=>{
+ const {workflowIncoming}=await import('../../apps/web/src/components/branches/model.ts');
+ const definition={entry:'first',steps:[{id:'first',label:'First'},{id:'second',label:'Second'}],controls:[],edges:[{id:'again',from:'second',to:'first',input:{kind:'literal',text:'private'}},{id:'previous',from:'second',to:'first',input:{kind:'output'}}]};
+ assert.deepEqual(workflowIncoming(definition,'first'),[{id:'workflow-input',label:'Workflow Input',custom:false},{id:'again',label:'Second',custom:true},{id:'previous',label:'Second',custom:false}]);
+ assert.deepEqual(workflowIncoming(definition,'second'),[]);
+});
+
+test('new Agent tasks leave instructions for the author and temporary roles distinct from task text',async()=>{
+ const {newDefinition,addNode,makeTemplate}=await import('../../apps/web/src/components/branches/model.ts');
+ const added=addNode(newDefinition(),'agent');
+ assert.equal(added.definition.steps[0].instructions,'');
+ assert.equal(added.definition.templates,undefined);
+ for(const organization of [false,true]){
+  const template=makeTemplate(organization);assert.equal(template.kind,organization?'organization':'agent');
+  assert.ok(template.agents.every(agent=>agent.initialInstructions===undefined),'No generic prefilled standing role');
+ }
+});
+
+test('temporary Agent and organization selections preserve each authored setup across switching',async()=>{
+ const {newDefinition,addNode,selectTemporaryAgent}=await import('../../apps/web/src/components/branches/model.ts');
+ const first=addNode(newDefinition(),'agent');let definition=selectTemporaryAgent(first.definition,first.definition.steps[0],false);
+ const ref=definition.steps[0].target.templateRef;
+ definition={...definition,templates:{...definition.templates,[ref]:{...definition.templates[ref],agents:[{...definition.templates[ref].agents[0],title:'Authored Name',initialInstructions:'Standing role',model:'custom-model'}]}}};
+ const snapshot=structuredClone(definition),organization=selectTemporaryAgent(definition,definition.steps[0],true),again=selectTemporaryAgent(organization,organization.steps[0],false,snapshot.templates);
+ assert.deepEqual(again.templates[again.steps[0].target.templateRef],snapshot.templates[ref]);
+ assert.deepEqual(definition,snapshot,'Switching does not mutate the original draft');
+ assert.notEqual(organization.steps[0].target.templateRef,ref);assert.equal(organization.templates[ref],undefined,'Inactive forms are retained by the editor, not validated as active definitions');
+});
+
+test('switching from an imported temporary ref preserves its form and never removes a shared setup',async()=>{
+ const {newDefinition,addNode,selectTemporaryAgent,changeAgentTarget,makeTemplate}=await import('../../apps/web/src/components/branches/model.ts');
+ const added=addNode(newDefinition(),'agent'),id=added.selected,template=makeTemplate(false);template.agents[0].title='Imported Author';template.agents[0].initialInstructions='Authored Guidance';
+ const original={...added.definition,steps:[{...added.definition.steps[0],target:{kind:'ephemeral_agent',templateRef:'customRef'}}],templates:{customRef:template}};
+ const retained={[id+'_agent_template']:template,customRef:template},other=selectTemporaryAgent(original,original.steps[0],true,retained),back=selectTemporaryAgent(other,other.steps[0],false,retained);
+ assert.deepEqual(back.templates[back.steps[0].target.templateRef],template);
+ const shared={...original,steps:[...original.steps,{...original.steps[0],id:'other'}]};
+ assert.deepEqual(changeAgentTarget(shared,shared.steps[0],{kind:'persistent_agent',ref:id}).templates.customRef,template,'Another step owns the shared template');
+ template.agents[0].title='';const persistent=changeAgentTarget(original,original.steps[0],{kind:'persistent_agent',ref:id});
+ const {validateBranchDefinition}=await import('../../packages/agents/dist/branch-definition.js');assert.doesNotThrow(()=>validateBranchDefinition(persistent),'An unselected invalid setup cannot silently block publication');
+});
+
 // Exercise the real intervention fields, mutation and shared dialog shell.
 // Controlled transport keeps this recovery check isolated from live work.
 async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}={}){

@@ -10,7 +10,7 @@ import { branchRequirements } from "./branch-package.js";
 import { randomUUID, createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
-  CAPABILITY_IDS,
+  BranchValidationError, CAPABILITY_IDS,
   TERMINAL_REQUEST_STATES, type ProjectSort, type BranchConfiguration, type BranchRuntimeOutcome, type BranchDefinition, type BranchBindings, type BranchDto,
   type BranchExecutionDto, type BranchExecutionDetailDto, type BranchHomeExecutionDto, type BranchResult, type BranchVersionDto,
   type DeployBranchRequest, type RuntimeProcessIdentity, type CommunicationEvent,
@@ -181,9 +181,12 @@ export class BranchStore {
     if(input.branchId && (!current || current.chatId!==input.chatId || current.versionId!==input.expectedVersionId))throw new Error("Branch deployment revision conflict");
     const previous=current?this.localConfiguration(current.id):undefined;
     const requirements=branchRequirements(definition),operations:BranchDeploymentPreviewDto["operations"]=[];
-    for(const ref of requirements.agents)this.agent(bindings.agents[ref]??"",input.chatId,undefined,input.branchId);
-    for(const ref of requirements.directories)if(!bindings.directories[ref])throw new Error("Script directory binding is required");
-    for(const ref of requirements.engines)if(!bindings.engines?.[ref])throw new Error("Template engine binding is required");
+    for(const ref of requirements.agents){
+      try { this.agent(bindings.agents[ref]??"",input.chatId,undefined,input.branchId); }
+      catch(error){const step=definition.steps.find(step=>step.kind==='agent'&&'ref'in step.target&&step.target.ref===ref),recovery=definition.steps.find(step=>step.failure?.action==='recover'&&step.failure.agentRef===ref);throw new BranchValidationError((error as Error).message,{nodeId:step?.id??recovery?.id,section:step?'task':recovery?'failure':'settings',field:step?'target':'failure.agentRef'});}
+    }
+    for(const ref of requirements.directories)if(!bindings.directories[ref])throw new BranchValidationError("Script directory binding is required",{nodeId:definition.steps.find(step=>step.kind==='script'&&step.cwdRef===ref)?.id,section:'advanced',field:'cwdRef'});
+    for(const ref of requirements.engines)if(!bindings.engines?.[ref])throw new BranchValidationError("Template engine binding is required",{nodeId:definition.steps.find(step=>step.kind==='agent'&&'templateRef'in step.target&&definition.templates?.[step.target.templateRef]?.agents.some(agent=>agent.engine===ref))?.id,section:'agent_setup',field:'engine'});
     for(const category of ['agents','directories','engines'] as const){
       const before=previous?.[category]??{},after=bindings[category]??{};
       for(const ref of new Set([...Object.keys(before),...Object.keys(after)]))operations.push({resource:category,ref,kind:before[ref]===after[ref]?'unchanged':!after[ref]?'detach':!before[ref]?'create':'update',...(before[ref]?{before:before[ref]}:{}),...(after[ref]?{after:after[ref]}:{})});
@@ -237,13 +240,19 @@ export class BranchStore {
       if(input.chatId)this.chat(input.chatId);
       for(const id of Object.values(bindings.agents))if(this.row("SELECT 1 FROM branch_installation_resources r WHERE r.local_id=? AND r.state IN ('retiring','deleted')",id))throw new Error('Agent is pending removal from this Branch');
       for (const failure of [definition.policy.failure, ...definition.steps.map(step => step.failure)]) {
-        if (failure?.action === "recover") this.agent(bindings.agents[failure.agentRef] ?? "", input.chatId,undefined,input.branchId);
+        if (failure?.action === "recover") {
+          try { this.agent(bindings.agents[failure.agentRef] ?? "", input.chatId,undefined,input.branchId); }
+          catch(error){const step=definition.steps.find(step=>step.failure===failure);throw new BranchValidationError((error as Error).message,{nodeId:step?.id,section:step?'failure':'settings',field:'failure.agentRef'});}
+        }
       }
       for (const template of Object.values(definition.templates ?? {})) for (const node of template.agents) {
         if (!bindings.engines?.[node.engine]) throw new Error("Template engine binding is required");
       }
       for (const step of definition.steps) {
-        if (step.kind === "agent" && "ref" in step.target) this.agent(bindings.agents[step.target.ref] ?? "", input.chatId,undefined,input.branchId);
+        if (step.kind === "agent" && "ref" in step.target) {
+          try { this.agent(bindings.agents[step.target.ref] ?? "", input.chatId,undefined,input.branchId); }
+          catch(error){throw new BranchValidationError((error as Error).message,{nodeId:step.id,section:'task',field:'target'});}
+        }
         if (step.kind === "script" && !bindings.directories[step.cwdRef]) throw new Error("Script directory binding is required");
       }
       const existing = input.branchId ? this.getBranch(input.branchId) : undefined;

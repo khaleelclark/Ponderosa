@@ -660,6 +660,7 @@ export function restoreContent(options: ContentRestoreOptions): Record<string, u
         createdAt: agent.createdAt,
         updatedAt: agent.updatedAt,
         managementPermissions: agent.managementPermissions,
+        role: agent.role,
         presetSnapshot: agent.presetSnapshot,
         workingCopy
       });

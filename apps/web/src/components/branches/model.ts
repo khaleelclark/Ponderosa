@@ -7,7 +7,7 @@ export const nodeKind=(node:WorkflowNode)=>node.kind==='agent'?({persistent_agen
 export const makeScript=(id:string):BranchStep=>({id,label:'Transform input',kind:'script',runtime:'node',source:"let input = '';\nfor await (const chunk of process.stdin) input += chunk;\nprocess.stdout.write(input);\n",cwdRef:'workspace',timeoutMs:30000});
 export function makeTemplate(organization:boolean):AgentPortablePackageDto{
  const permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
- return {schema:'ponderosa.agent-package.v1',mode:'template',kind:organization?'organization':'agent',exportedAt:new Date().toISOString(),sourceLabel:'Workflow team',rootRef:'lead',agents:[{ref:'lead',title:organization?'Team lead':'Worker',engine:'default',initialInstructions:organization?'Coordinate the team and return the final result.':'Complete the assigned workflow step.',managementPermissions:permissions},...(organization?[{ref:'worker',title:'Specialist',engine:'default',managerRef:'lead',managementPermissions:permissions}]:[])]};
+ return {schema:'ponderosa.agent-package.v1',mode:'template',kind:organization?'organization':'agent',exportedAt:new Date().toISOString(),sourceLabel:'Workflow team',rootRef:'lead',agents:[{ref:'lead',title:organization?'Team Lead':'Agent',engine:'default',managementPermissions:permissions},...(organization?[{ref:'worker',title:'Specialist',engine:'default',managerRef:'lead',managementPermissions:permissions}]:[])]};
 }
 export function newDefinition():BranchDefinition{return {schema:'ponderosa.branch.v1',name:'Untitled workflow',trigger:{kind:'manual'},entry:'',steps:[],controls:[],edges:[],policy:{maxConcurrentExecutions:2,maxPathInstances:1000,maxStepInvocations:1000,maxEphemeralAgents:100,failure:{action:'stop'}}}}
 export function addNode(definition:BranchDefinition,kind:BranchStep['kind']|'parallel'|'for_each',after?:string):{definition:BranchDefinition;selected:string}{
@@ -23,10 +23,10 @@ export function addNode(definition:BranchDefinition,kind:BranchStep['kind']|'par
  }else if(kind==='for_each'){
   const join=id+'_join',worker=id+'_worker';
   d.controls.push({id,kind:'map',label:'For Each item',joinId:join,workerId:worker,source:'interpret',maxItems:100,maxConcurrentItems:4},{id:join,kind:'join',label:'Wait for items',forkId:id,mode:'all',remainder:'finish',inputOrder:[]});
-  d.steps.push({id:worker,label:'Review item',kind:'agent',target:{kind:'persistent_agent',ref:worker},instructions:'Complete this task for the supplied item and return the result.'});
+  d.steps.push({id:worker,label:'Review item',kind:'agent',target:{kind:'persistent_agent',ref:worker},instructions:''});
   d.edges.push({id:id+'_item',from:id,to:worker,on:'selected'});link(worker,join);if(forward)link(join,forward.to);
  }else{
-  const node:BranchStep=kind==='branch_call'?{id,label:'Run Branch',kind,branchRef:id}:kind==='script'?makeScript(id):kind==='human_gate'?{id,label:'Review result',kind,prompt:'Review the proposed result.',editable:true}:kind==='action'?{id,label:'Notify me',kind,action:'notify',configRefs:[]}:{id,label:'Agent work',kind:'agent',target:{kind:'persistent_agent',ref:id},instructions:'Complete this step using the supplied input and return the result.'};
+  const node:BranchStep=kind==='branch_call'?{id,label:'Run Branch',kind,branchRef:id}:kind==='script'?makeScript(id):kind==='human_gate'?{id,label:'Review result',kind,prompt:'Review the proposed result.',editable:true}:kind==='action'?{id,label:'Notify me',kind,action:'notify',configRefs:[]}:{id,label:'Agent work',kind:'agent',target:{kind:'persistent_agent',ref:id},instructions:''};
   d.steps.push(node);if(forward)link(id,forward.to,kind==='human_gate'?'approved':'success');
  }
  if(previous&&!['fork','map','condition','route'].includes(previous.kind))link(previous.id,id,outcome);
@@ -146,4 +146,30 @@ export function executionFailures(detail:BranchExecutionDetailDto):{stepId:strin
   const reason=attempt?.error||(attempt?.scriptEvidence?branchScriptFailureSummary(attempt.scriptEvidence.code,attempt.scriptEvidence.error):undefined)||attempt?.result?.output||step.result?.output||(step.state==='outcome_unknown'?'The previous attempt’s outcome is unknown. Review its effects before retrying.':'The Engine did not record a failure explanation. Open the Step for available evidence.');
   return {stepId:step.stepId,invocationId:step.id,reason};
  });
+}
+
+/** The explicit failure edge is the runtime's first choice; inactive policies are retained. */
+export function effectiveStepFailure(definition:BranchDefinition,node:BranchStep):string {
+ return definition.edges.some(edge=>edge.from===node.id&&edge.on==='failure')?'goto':node.failure?.action??'inherit';
+}
+export function setStepFailure(definition:BranchDefinition,nodeId:string,failure:BranchStep['failure']):BranchDefinition {
+ return {...definition,steps:definition.steps.map(step=>step.id===nodeId?{...step,failure}:step),edges:definition.edges.filter(edge=>edge.from!==nodeId||edge.on!=='failure')};
+}
+export function workflowIncoming(definition:BranchDefinition,nodeId:string):Array<{id:string;label:string;custom:boolean}> {
+ const nodes=[...definition.steps,...definition.controls];
+ return [...(definition.entry===nodeId?[{id:'workflow-input',label:'Workflow Input',custom:false}]:[]),...definition.edges.filter(edge=>edge.to===nodeId).map(edge=>({id:edge.id,label:nodeName(nodes.find(node=>node.id===edge.from)??{id:edge.from} as WorkflowNode),custom:edge.input?.kind==='literal'}))];
+}
+/** Remove a displaced template only when no other step uses it; the editor retains its unpublished form values. */
+export function changeAgentTarget(definition:BranchDefinition,node:Extract<BranchStep,{kind:'agent'}>,target:Extract<BranchStep,{kind:'agent'}>['target']):BranchDefinition {
+ const steps=definition.steps.map(step=>step.id===node.id?{...node,target}:step),templates={...definition.templates};
+ if('templateRef'in node.target&&!steps.some(step=>step.kind==='agent'&&'templateRef'in step.target&&step.target.templateRef===('templateRef'in node.target?node.target.templateRef:'')))delete templates[node.target.templateRef];
+ return {...definition,steps,...(definition.templates?{templates}:{})};
+}
+export function selectTemporaryAgent(definition:BranchDefinition,node:Extract<BranchStep,{kind:'agent'}>,organization:boolean,retained:NonNullable<BranchDefinition['templates']>={}):BranchDefinition {
+ const kind=organization?'organization':'agent',current='templateRef'in node.target?definition.templates?.[node.target.templateRef]:undefined;
+ const templateRef=current?.kind===kind&&'templateRef'in node.target?node.target.templateRef:node.id+'_'+kind+'_template';
+ const legacy=definition.templates?.[node.id+'_template']??retained[node.id+'_template'];
+ const template=definition.templates?.[templateRef]??retained[templateRef]??(legacy?.kind===kind?legacy:makeTemplate(organization));
+ const next=changeAgentTarget(definition,node,{kind:organization?'ephemeral_organization':'ephemeral_agent',templateRef});
+ return {...next,templates:{...next.templates,[templateRef]:template}};
 }

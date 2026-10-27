@@ -43,7 +43,7 @@ export function wrapGraphLabel(text:string,measure:(value:string)=>number):strin
  }
  return lines;
 }
-export function BranchGraph({definition,selected,onSelect,focusRequest=0,steps=[],controlStates={}}:{definition:BranchDefinition;selected?:string;onSelect(id:string):void;focusRequest?:number;steps?:BranchStepExecutionDto[];controlStates?:Record<string,string>}):JSX.Element{
+export function BranchGraph({definition,selected,onSelect,focusRequest=0,steps=[],controlStates={},issues=[]}:{definition:BranchDefinition;selected?:string;onSelect(id:string):void;focusRequest?:number;steps?:BranchStepExecutionDto[];controlStates?:Record<string,string>;issues?:import('@ponderosa/core').BranchValidationIssue[]}):JSX.Element{
  const theme=useTheme();
  const nodes=[...definition.steps,...definition.controls],levels=workflowGraphLevels(definition),arrowId=useId().replaceAll(':','');
  const labelElements=useRef(new Map<string,SVGTextElement>()),[labelSizes,setLabelSizes]=useState<Record<string,{width:number;height:number;top:number;lines:string[];lineHeight:number}>>({});
@@ -56,7 +56,7 @@ export function BranchGraph({definition,selected,onSelect,focusRequest=0,steps=[
  layers.forEach((layer,index)=>layer.forEach((node,column)=>positions.set(node.id,{x:(width-layer.length*224)/2+column*224,y:30+index*stride})));
  const edges=definition.edges.flatMap(edge=>{const a=positions.get(edge.from),b=positions.get(edge.to);if(!a||!b)return [];const source=definition.controls.find(c=>c.id===edge.from),x1=a.x+102,y1=a.y+85,x2=b.x+102,y2=b.y;
   const path=`M${x1},${y1} C${x1},${y1+30} ${x2},${y2-30} ${x2},${y2}`;
-  return [{...edge,path,x1,y1,x2,y2,labelX:(x1+x2)/2,labelY:(y1+y2)/2,label:edge.choice??(source?.kind==='condition'?(edge.on==='selected'?'Matches':'Otherwise'):source?.kind==='map'?'Each item':source?.kind==='route'&&edge.on==='failure'?'Otherwise':edge.on==='success'?'Next step':edge.on)}];
+  return [{...edge,path,x1,y1,x2,y2,labelX:(x1+x2)/2,labelY:(y1+y2)/2,label:(edge.choice??(source?.kind==='condition'?(edge.on==='selected'?'Matches':'Otherwise'):source?.kind==='map'?'Each item':source?.kind==='route'&&edge.on==='failure'?'Otherwise':edge.on==='success'?'Next step':edge.on))+(issues.some(issue=>issue.edgeId===edge.id)?' · Check Connection':'')}];
  });
  const labelKey=JSON.stringify(edges.map(edge=>[edge.id,edge.label]));
  useLayoutEffect(()=>{
@@ -87,9 +87,9 @@ export function BranchGraph({definition,selected,onSelect,focusRequest=0,steps=[
     })}
     {edges.map((edge,index)=>{const label=labels[index]!,size=labelSizes[edge.id];return <text data-edge-id={edge.id} ref={element=>{if(element)labelElements.current.set(edge.id,element);else labelElements.current.delete(edge.id)}} key={edge.id} x={label.x+label.width/2} y={label.y+4-(size?.top??-10)} textAnchor="middle" fill={theme.palette.text.secondary} stroke={theme.palette.background.default} strokeWidth="8" strokeLinejoin="round" paintOrder="stroke" fontSize="10">{(size?.lines??[edge.label]).map((line,lineIndex)=><tspan key={lineIndex} x={label.x+label.width/2} dy={lineIndex===0?0:size!.lineHeight}>{line}</tspan>)}</text>})}
    </svg>
-   {nodes.map(node=>{const p=positions.get(node.id)!,state=controlStates[node.id]??steps.filter(s=>s.stepId===node.id).at(-1)?.state;return <ButtonBase ref={element=>{if(element)nodeButtons.current.set(node.id,element);else nodeButtons.current.delete(node.id)}} key={node.id} onClick={()=>onSelect(node.id)} aria-label={`Select ${nodeName(node)}${state?`, ${state}`:''}`} aria-pressed={selected===node.id} sx={{position:'absolute',left:p.x,top:p.y,width:204,height:85,p:1.5,textAlign:'left',display:'block',border:'1px solid',borderColor:selected===node.id?'primary.main':'divider',borderRadius:2,bgcolor:'background.paper',boxShadow:selected===node.id?'0 0 0 2px rgba(71,120,93,.18)':'0 2px 6px rgba(0,0,0,.04)'}}>
+   {nodes.map(node=>{const p=positions.get(node.id)!,state=controlStates[node.id]??steps.filter(s=>s.stepId===node.id).at(-1)?.state;return <ButtonBase ref={element=>{if(element)nodeButtons.current.set(node.id,element);else nodeButtons.current.delete(node.id)}} key={node.id} onClick={()=>onSelect(node.id)} aria-label={`Select ${nodeName(node)}${state?`, ${state}`:''}${issues.some(issue=>issue.nodeId===node.id)?', Configuration Issue':''}`}  aria-pressed={selected===node.id} sx={{position:'absolute',left:p.x,top:p.y,width:204,height:85,p:1.5,textAlign:'left',display:'block',border:'1px solid',borderColor:selected===node.id?'primary.main':'divider',borderRadius:2,bgcolor:'background.paper',boxShadow:selected===node.id?'0 0 0 2px rgba(71,120,93,.18)':'0 2px 6px rgba(0,0,0,.04)'}}>
     <Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="overline" sx={{fontSize:9,lineHeight:1.5,color:'text.secondary'}}>{nodeKind(node)}</Typography>{definition.entry===node.id&&<Typography variant="caption" color="primary">Start</Typography>}</Stack>
-    <Typography fontWeight={650} noWrap sx={{mt:.5,fontSize:13}}>{nodeName(node)}</Typography>{state&&<Chip size="small" label={state} sx={{height:18,fontSize:10,mt:.5}}/>}
+    <Typography fontWeight={650} noWrap sx={{mt:.5,fontSize:13}}>{nodeName(node)}</Typography>{issues.some(issue=>issue.nodeId===node.id)&&<Typography variant="caption">Needs Attention</Typography>}{state&&<Chip size="small" label={state} sx={{height:18,fontSize:10,mt:.5}}/>}
    </ButtonBase>})}
   </Box>
  </Box></Stack>;

@@ -292,3 +292,62 @@ test('Claude probe start failures remain operation errors when process registrat
   assert.match(result.stdout,/failure reported; host survived/u);
  }
 });
+
+
+for (const engine of ['codex', 'claude']) test(`${engine}: reusable Agent Role creates idle once and updates only future session snapshots`, { timeout: 60000 }, t => withFixture(t, async f => {
+  const chat = await f.createChat('Standing role fixture');
+  const url = `/api/projects/${chat.projectId}/agents`;
+  const body = { title: 'Reusable Reviewer', engine, conversationId: chat.id, role: 'Review Cafe\u0301\r\nCarefully', idempotencyKey: crypto.randomUUID() };
+  const agent = f.ok(await f.api('POST', url, body));
+  assert.equal(agent.role, 'Review Café\nCarefully');
+  assert.equal(f.ok(await f.api('POST', url, body)).id, agent.id);
+  assert.equal((await f.api('POST', url, { ...body, role: 'A different role' })).status, 409);
+  const exported = f.ok(await f.api('GET', `/api/agents/${agent.id}/export?mode=template`));
+  assert.equal(exported.agents[0].initialInstructions, agent.role, 'Export lost the explicit standing role');
+  assert.equal(f.turns.length, 0, 'Standing setup dispatched task work');
+  assert.equal((await f.detail(agent.id)).runs.length, 0);
+  for (const role of [{ bad: true }, 'x'.repeat(8001)]) assert.equal((await f.api('PATCH', `/api/agents/${agent.id}`, { role })).status, 400);
+  await f.send(agent.id, 'Perform first controlled task');
+  const first = await f.settled(agent.id), before = first.runs.map(run => run.id);
+  const firstInput = f.ok(await f.api('GET', `/api/runs/${first.runs[0].id}/provider-input?exact=1`));
+  assert.match(firstInput.exactSystemPrompt, /Review Café\nCarefully/u);
+  const session = await f.hold(agent.id);
+  const active = (await f.detail(agent.id)).runs.find(run => !before.includes(run.id));
+  const activeInput = f.ok(await f.api('GET', `/api/runs/${active.id}/provider-input?exact=1`));
+  const changed = f.ok(await f.api('PATCH', `/api/agents/${agent.id}`, { role: 'Check Only Verified Evidence' }));
+  assert.equal(changed.role, 'Check Only Verified Evidence');
+  assert.deepEqual(f.ok(await f.api('GET', `/api/runs/${active.id}/provider-input?exact=1`)), activeInput, 'Role save rewrote accepted Run instructions');
+  assert.equal((await session.tool('ponderosa_message', { text: 'Finished the owned task' })).success, true); session.finish();
+  const completed = await f.settled(agent.id, before);
+  await f.send(agent.id, 'Perform next controlled task');
+  const next = await f.settled(agent.id, completed.runs.map(run => run.id));
+  const nextRun = next.runs.find(run => !completed.runs.some(previous => previous.id === run.id));
+  const nextInput = f.ok(await f.api('GET', `/api/runs/${nextRun.id}/provider-input?exact=1`));
+  assert.match(nextInput.exactSystemPrompt, /Check Only Verified Evidence/u);
+  assert.notEqual(nextInput.systemPromptHash, activeInput.systemPromptHash);
+  f.ok(await f.api('PATCH', `/api/agents/${agent.id}`, { role: null }));
+  const previous = next.runs.map(run => run.id);
+  await f.send(agent.id, 'Perform task after clearing explicit role');
+  const cleared = await f.settled(agent.id, previous), clearedRun = cleared.runs.find(run => !previous.includes(run.id));
+  const clearedInput = f.ok(await f.api('GET', `/api/runs/${clearedRun.id}/provider-input?exact=1`));
+  assert.doesNotMatch(clearedInput.exactSystemPrompt, /Agent standing role|Check Only Verified Evidence/u);
+  await f.reopen();
+  assert.equal((await f.detail(agent.id)).agent.role, undefined);
+}, { diagnosticProvider: true }));
+
+
+test('adding standing roles preserves existing creation fingerprints when no role was requested', { timeout: 30000 }, async t => {
+  const { AgentStore } = await import('@ponderosa/agents');
+  const { createHash } = await import('node:crypto');
+  const { stableJson } = await import('../../packages/agents/dist/coordination-v3-canonical-json.js');
+  let store;
+  await withFixture(t, async f => {
+    const chat = await f.createChat('Existing creation identity');
+    const idempotencyKey = crypto.randomUUID(), body = { title: 'Legacy Intent', engine: 'codex', conversationId: chat.id, idempotencyKey };
+    const agent = f.ok(await f.api('POST', `/api/projects/${chat.projectId}/agents`, body));
+    const oldPayload = { projectId: chat.projectId, title: body.title, engine: body.engine, conversationId: chat.id, model: null, effort: null, speed: null, initialMessage: null, draftAttachmentIds: [], draftOwnerId: null, presetId: null, managerAgentId: null, awaitResult: null, managementPermissions: null };
+    const expected = createHash('sha256').update(stableJson(oldPayload)).digest('hex');
+    assert.equal(store.sqlite.prepare('SELECT payload_hash FROM agent_creation_operations WHERE idempotency_key = ?').get(idempotencyKey).payload_hash, expected);
+    assert.equal(f.ok(await f.api('POST', `/api/projects/${chat.projectId}/agents`, body)).id, agent.id);
+  }, { storeFactory: dataDir => (store = new AgentStore(dataDir)) });
+});

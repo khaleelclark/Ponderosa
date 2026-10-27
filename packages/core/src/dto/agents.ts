@@ -1,3 +1,4 @@
+import { normalizeCanonicalText, unicodeCodePointLength } from "../text-policy.js";
 import type { EngineId } from "../adapter.js";
 import type { ArtifactKind } from "./artifacts.js";
 import type {
@@ -80,6 +81,8 @@ export interface AgentDto {
   /** The single Project Chat that owns this live Agent and supplies its Chat context. */
   conversationId: string;
   title: string;
+  /** Operator-authored standing role; distinct from provenance and work requests. */
+  role?: string;
   /** The engine currently bound to this agent. */
   activeEngine: EngineId;
   /** Durable provider selection used when a turn does not override it. */
@@ -208,6 +211,15 @@ export interface AgentCreationRecoveryDto {
 }
 export type CreateAgentResponse = AgentDto | AgentCreationRecoveryDto;
 
+/** Reuse the existing preset-guidance ceiling for bounded standing setup. */
+export function normalizeAgentRole(value: string | null | undefined): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error("Agent Role must be text");
+  const normalized = normalizeCanonicalText(value).trim();
+  if (unicodeCodePointLength(normalized) > 8000) throw new Error("Agent Role must be 8000 characters or fewer");
+  return normalized || undefined;
+}
+
 export interface AgentRoleProfile {
   role: string;
   description: string;
@@ -219,12 +231,13 @@ export interface AgentRoleProfile {
  * description compact because this profile is also injected into team discovery.
  */
 export function agentRoleProfile(
-  agent: Pick<AgentDto, "title" | "spawnPrompt" | "presetSnapshot">,
+  agent: Pick<AgentDto, "title" | "role" | "spawnPrompt" | "presetSnapshot">,
 ): AgentRoleProfile {
-  const prompt = agent.spawnPrompt?.replace(/\s+/g, " ").trim();
+  const prompt = (agent.role ?? agent.spawnPrompt)?.replace(/\s+/g, " ").trim();
   const compactPrompt = prompt && prompt.length > 160
     ? `${prompt.slice(0, 160).replace(/\s+\S*$/, "").trimEnd()}…`
     : prompt;
+  if (agent.role && compactPrompt) return { role: agent.title, description: compactPrompt };
   if (agent.presetSnapshot) {
     return { role: agent.presetSnapshot.name, description: agent.presetSnapshot.description };
   }
@@ -293,6 +306,8 @@ export const TEAM_DIRECTORY_LIMITS = {
 /** POST /api/projects/:id/agents body. */
 export interface CreateAgentRequest {
   title: string;
+  /** Standing guidance; does not dispatch an opening task. */
+  role?: string;
   engine: EngineId;
   /** Every live Agent belongs to exactly one Chat. */
   conversationId: string;
@@ -318,6 +333,8 @@ export interface CreateAgentRequest {
 /** PATCH /api/agents/:id body (persistent Agent settings). */
 export interface UpdateAgentRequest {
   title?: string;
+  /** Applies at the next Run; null clears the explicit standing role. */
+  role?: string | null;
   /** Provider used when the next Run starts. Does not reconfigure an active Run. */
   activeEngine?: EngineId;
   /** Durable next-Run model. Null clears the Agent override. */
