@@ -781,8 +781,9 @@ export class AgentCatalogAuthority {
       this.client.prepare("UPDATE imported_history_indexes SET integrity_key = ? WHERE agent_id = ?")
         .run(projection.digest.digest("hex"), agentId);
       if (!options.deferIndex) {
-        for (const row of this.client.prepare("SELECT rowid, text FROM imported_history_messages WHERE agent_id = ?").iterate(agentId) as Iterable<{ rowid: number; text: string }>) {
-          this.client.prepare("INSERT INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, row.text.replaceAll("\0", " "));
+        for (let sequence = 0; sequence < projection.messages.length; sequence++) {
+          const row = this.client.prepare("SELECT rowid FROM imported_history_messages WHERE agent_id = ? AND sequence = ?").get(agentId, sequence) as { rowid: number };
+          this.client.prepare("INSERT INTO imported_history_fts(rowid, text) VALUES (?, ?)").run(row.rowid, projection.messages[sequence]!.text.replaceAll("\0", " "));
         }
         this.client.prepare("UPDATE imported_history_indexes SET status = 'ready' WHERE agent_id = ?").run(agentId);
       }
