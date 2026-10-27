@@ -39,6 +39,16 @@ async function withBudgetFixture(t, work) {
   } });
 }
 
+async function withRetainedBudgetFixture(t, work) {
+  const previous = process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;
+  process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS = '2';
+  try { await withBudgetFixture(t, work); }
+  finally {
+    if (previous === undefined) delete process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;
+    else process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS = previous;
+  }
+}
+
 test('context selection includes all seventy short relevant messages through bounded pages, without private scope leaks', fixtureTestOptions, t => withBudgetFixture(t, async f => {
   const chat = await f.createChat('Readable context budget'), agent = await f.createIdleAgent(chat, 'Budget reader');
   const peer = await f.createIdleAgent(chat, 'Private peer');
@@ -134,7 +144,7 @@ test('oversized omitted history remains completely readable in authorized Unicod
   await finish(f, agent, session);
 }));
 
-test('continuation budgets charge exact-generation occupancy, not aggregate traffic or unverified generations', fixtureTestOptions, t => withBudgetFixture(t, async f => {
+test('continuation budgets charge exact-generation occupancy, not aggregate traffic or unverified generations', fixtureTestOptions, t => withRetainedBudgetFixture(t, async f => {
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
   const chat = await f.createChat('Exact session occupancy'), agent = await f.createIdleAgent(chat, 'Occupancy reader');
   let session = await f.hold(agent.id); const generation = session.engineAgentId;
@@ -154,7 +164,7 @@ test('continuation budgets charge exact-generation occupancy, not aggregate traf
   await finish(f, agent, session);
 }));
 
-test('fresh replacement ignores discarded occupancy and retrieves old submitted evidence omitted from the new input', fixtureTestOptions, t => withBudgetFixture(t, async f => {
+test('fresh replacement ignores discarded occupancy and retrieves old submitted evidence omitted from the new input', fixtureTestOptions, t => withRetainedBudgetFixture(t, async f => {
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
   const chat = await f.createChat('Discarded context is not retained'), agent = await f.createIdleAgent(chat, 'Replacement reader');
   const witness = authored(f.store, chat, agent, `DISCARDED_BUDGET_WITNESS ${'saved evidence '.repeat(1900)}`);
