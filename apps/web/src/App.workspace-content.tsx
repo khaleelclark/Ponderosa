@@ -2,7 +2,6 @@ import { Alert, Box, Button } from "@mui/material";
 import { LoadingState } from "./components/LoadingState";
 import { MobileNavigationButton } from "./components/MobileNavigationContext";
 import type {
-  ConversationDto,
   EngineDto,
   ProjectDto,
   WorkspaceNotificationDto,
@@ -67,12 +66,6 @@ interface WorkspaceRouteOutletProps {
   ): void;
   onCancelCreate(): void;
   onOpenInbox(): void;
-  onProjectDeleted(projectId: string): void;
-  onConversationAction(
-    kind: "rename" | "delete",
-    conversation: ConversationDto,
-  ): void;
-  onOpenEngineStatus(): void;
   onBrowserRequestHandled(requestId: number): void;
   onResourceDeleted(route: RemovableWorkspaceResourceRoute): void;
   onToggleColorMode(): void;
@@ -103,9 +96,6 @@ export function WorkspaceRouteOutlet({
   onCreate,
   onOpenInbox,
   onCancelCreate,
-  onProjectDeleted,
-  onConversationAction,
-  onOpenEngineStatus,
   onBrowserRequestHandled,
   onResourceDeleted,
   onToggleColorMode,
@@ -239,20 +229,13 @@ export function WorkspaceRouteOutlet({
               project: projects.find(project => project.id === selectedProjectId)!,
               route,
               engines,
-              notifications,
               preferences,
               onPreferences,
-              onRenameConversation: conversation =>
-                onConversationAction("rename", conversation),
-              onDeleteConversation: conversation =>
-                onConversationAction("delete", conversation),
-              onOpenEngineStatus,
               decisionReviewAction: <Button color="inherit" size="small" onClick={onOpenInbox}>View decision</Button>,
               navigate: onNavigate,
               browserRequest: projectBrowserRequest,
               onBrowserRequestHandled,
               onResourceDeleted,
-              onProjectDeleted,
               onCreate: (kind, context) => onCreate(kind, context),
             }}
           />
