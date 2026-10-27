@@ -56,8 +56,8 @@ export function boundedSeedHistory<T extends { text: string; provenance?: unknow
  * pages. Unlike a seed (which intentionally selects the newest tail), a
  * continuation must never jump over an older unseen message merely to fit the
  * prompt budget. Canonical messages larger than the entire page are represented
- * by a bounded preview. Their complete content remains durable, but V4 exposes
- * no provider history-retrieval capability.
+ * by a bounded preview. Their complete content remains durable and retrievable
+ * through the accepted Run’s bounded canonical history capability.
  */
 export function boundedContinuationHistory<T extends { text: string }>(
   messages: T[],

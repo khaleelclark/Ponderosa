@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -16,7 +16,7 @@ async function withStores(t, run) {
     return store.createAgent(project.id, { title: 'Lookup Agent', engine: 'codex', conversationId: chat.id });
   };
   let passed = false;
-  try { await run({ open, seed, close(store) { store.close(); stores.delete(store); } }); passed = true; }
+  try { await run({ root, open, seed, close(store) { store.close(); stores.delete(store); } }); passed = true; }
   finally {
     for (const store of stores) store.close();
     if (passed) await rm(root, { recursive: true, force: true });
@@ -118,4 +118,22 @@ test('same-millisecond role updates invalidate metadata readback without changin
     }
     assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM pragma_table_info('agents') WHERE name='role'").get().n, 0);
   } finally { globalThis.Date = NativeDate; }
+}));
+
+
+
+test('ownership proof change rejects older checkpoints while healthy current checkpoints remain reusable', t => withStores(t, async f => {
+  let store = f.open('checkpoint'); const agent = f.seed(store);
+  f.close(store); store = f.open('checkpoint'); f.close(store);
+  const marker = path.join(f.root, 'checkpoint', '.projection-clean-shutdown.json');
+  const certificate = JSON.parse(await readFile(marker, 'utf8'));
+  assert.equal(certificate.projectionVersion, 5);
+  certificate.projectionVersion = 4;
+  await writeFile(marker, JSON.stringify(certificate));
+  store = f.open('checkpoint');
+  assert.equal(store.startupProfile().mode, 'recovery');
+  assert.equal(store.getAgent(agent.id).conversationId, agent.conversationId);
+  f.close(store); store = f.open('checkpoint');
+  assert.equal(store.startupProfile().mode, 'clean');
+  assert.equal(store.getAgent(agent.id).conversationId, agent.conversationId);
 }));

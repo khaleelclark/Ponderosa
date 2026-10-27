@@ -1,5 +1,4 @@
-import { readableArtifactReferences } from "../communication-artifacts.js";
-import { collectReachableArtifactIds } from "../artifact-refs.js";
+import { historyArtifactReferences } from "../communication-artifacts.js";
 import { chatBrowserOwnerId } from "@ponderosa/core";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -426,9 +425,9 @@ export function registerAgentRuntimeToolRoutes(
         agentId: agent.id,
         ...(capability.conversationId ? { currentConversationId: capability.conversationId } : {}),
         boundary: historyBoundary,
-        readableArtifactReferences: (event: import("@ponderosa/core").CommunicationEvent) =>
-          readableArtifactReferences({ projectId: agent.projectId, agentId: agent.id, store, assets,
-            artifactIds: [...collectReachableArtifactIds(event)] }),
+        readableArtifactReferences: (event: import("@ponderosa/core").CommunicationEvent,
+          chunk: { text: string; start: number; end: number }) =>
+          historyArtifactReferences({ projectId: agent.projectId, agentId: agent.id, store, assets, event, chunk }),
         excludedCommunicationEventIds: new Set(
           capability.historyRetrievalExcludedCommunicationEventIds,
         ),
@@ -458,6 +457,9 @@ export function registerAgentRuntimeToolRoutes(
           responseUtf8Bytes: response.utf8Bytes,
         });
         return response;
+      }
+      if (request.body?.continuation !== undefined) {
+        throw new CompactionHistoryQueryError("search does not accept a read continuation");
       }
       const normalized = normalizeCompactionHistoryQuery(rawQuery);
       if (rawLimit !== undefined && (!Number.isSafeInteger(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 8)) {

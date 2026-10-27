@@ -30,8 +30,8 @@ PONDEROSA_OPERATOR_IDENTITIES=operator@example.com
 PONDEROSA_AUTH_TOKEN=<at-least-32-random-characters>
 ```
 
-Ponderosa requires both the exact `Tailscale-User-Login` identity inserted by
-the loopback Tailscale proxy and the backend bearer (or the secure browser
+Ponderosa requires both the verified `x-ponderosa-operator-identity` identity
+and the backend bearer (or the secure browser
 session obtained by opening `/__ponderosa_bootstrap#TOKEN`). An identity header
 alone never grants authority, including on loopback. Restrict the Serve port to
 the same identities with tailnet grants; the application allowlist is defense
@@ -39,6 +39,11 @@ in depth, not a substitute for tailnet policy. Production origins must be HTTPS.
 When Serve cannot inject a backend bearer, use the private Unix-socket
 identity bridge documented in `deploy/README.md`; do not rely on expiring
 browser cookies for a bookmarked hosted deployment.
+The bridge validates its configured upstream header (for example,
+`Tailscale-User-Login`) and replaces any caller-supplied internal identity.
+Deploy the bridge and backend from the same qualified artifact when this
+internal contract changes; direct authenticated probes must use the internal
+header, not the upstream one.
 
 Production support is Linux x64 only. The unit must load a mandatory
 `%h/.config/ponderosa/release.env` containing the exact installed identity:

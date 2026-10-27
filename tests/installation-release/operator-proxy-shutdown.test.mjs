@@ -14,7 +14,6 @@ const proxy = fileURLToPath(new URL('../../apps/server/dist/operator-auth-proxy.
 import {OPERATOR_IDENTITY_HEADER} from '../../apps/server/dist/security.js';
 const token = 'owned-proxy-fixture-token'.padEnd(40, 'x');
 const identity = 'operator@qualification.test';
-const headers = { host: 'qualification.test', 'tailscale-user-login': identity };
 async function bounded(promise, label, milliseconds = 2_000) {
   const abort = new AbortController();
   try {
@@ -24,8 +23,9 @@ async function bounded(promise, label, milliseconds = 2_000) {
 
 // Exercise the shipped signal handler in a real owned child, not server.close()
 // in the test process. No provider, app state or existing proxy is touched.
-for (const [kind, signal] of [
+for (const [kind, signal, identityHeader = 'tailscale-user-login'] of [
   ['completed HTTP/authentication controls', 'SIGTERM'],
+  ['completed HTTP/authentication controls', 'SIGTERM', 'x-owned-upstream-identity'],
   ['active HTTP response', 'SIGINT'],
   ['SSE response', 'SIGTERM'],
   ['incomplete upload', 'SIGINT'],
@@ -38,6 +38,7 @@ for (const [kind, signal] of [
   skip: process.platform === 'win32' ? 'Host-local Unix proxy is a POSIX deployment option' : false,
 }, async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'pqs-')), socketPath = path.join(root, 's');
+  const headers = { host: 'qualification.test', [identityHeader]: identity };
   const sockets = new Set();
   let observed, child, exited, client, response, passed = false, stderr = '', backendRequests = 0;
   const received = new Promise(resolve => { observed = resolve; });
@@ -75,7 +76,7 @@ for (const [kind, signal] of [
       PONDEROSA_PROXY_BACKEND_PORT: String(backend.address().port),
       PONDEROSA_PROXY_BACKEND_TOKEN: token,
       PONDEROSA_PROXY_PUBLIC_ORIGIN: 'https://qualification.test',
-      PONDEROSA_PROXY_IDENTITY_HEADER: 'tailscale-user-login',
+      PONDEROSA_PROXY_IDENTITY_HEADER: identityHeader,
       PONDEROSA_PROXY_ALLOWED_IDENTITIES: identity,
     }, stdio: ['ignore', 'ignore', 'pipe'] });
     child.stderr.setEncoding('utf8');
@@ -94,10 +95,10 @@ for (const [kind, signal] of [
           result.once('end', () => resolve({ status: result.statusCode, body })); result.once('error', reject);
         }); req.once('error', reject); req.end();
       });
-      assert.equal((await fetch({ 'tailscale-user-login': 'wrong@qualification.test' })).status, 401);
+      assert.equal((await fetch({ [identityHeader]: 'wrong@qualification.test', [OPERATOR_IDENTITY_HEADER]: identity })).status, 401);
       assert.equal((await fetch({ 'x-forwarded-host': 'wrong.test' })).status, 421);
       assert.equal(backendRequests, 0, 'Rejected identity/host reached the backend');
-      const result = await fetch({ authorization: 'Bearer untrusted-client-token', connection: 'x-remove-me', 'x-remove-me': 'private-hop' });
+      const result = await fetch({ authorization: 'Bearer untrusted-client-token', [OPERATOR_IDENTITY_HEADER]: 'forged@client.test', connection: 'x-remove-me', 'x-remove-me': 'private-hop' });
       assert.deepEqual(result, { status: 200, body: 'exact completed response: café 東京' });
       assert.equal(backendRequests, 1);
     } else if (kind.includes('upgrade') || kind === 'incomplete request headers') {
