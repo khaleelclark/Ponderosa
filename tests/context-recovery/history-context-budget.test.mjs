@@ -145,6 +145,37 @@ test('oversized omitted history remains completely readable in authorized Unicod
   await finish(f, agent, session);
 }));
 
+test('the first imported-history Run discloses budget omissions and retrieves complete retained private text', fixtureTestOptions, t => withBudgetFixture(t, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 75000 }));
+  const chat = await f.createChat('Retained imported evidence'), agent = await f.createIdleAgent(chat, 'Imported reader');
+  const peer = await f.createIdleAgent(chat, 'Other imported reader');
+  const text = `RETAINED_IMPORTED_BUDGET_BEGIN\n${'🌲東京 café\n'.repeat(6000)}RETAINED_IMPORTED_BUDGET_END`;
+  assert.ok(text.length < 100000, 'The fixture must fit the existing canonical import retention limit');
+  f.store.setImportedHistory(agent.id, 'Prior private work', [{ role: 'assistant', text }]);
+  const session = await f.hold(agent.id), packet = accepted(f.store, agent.id); budget(packet);
+  assert.ok(packet.sourceManifest.historyContext.importedArchiveVersion, 'The first accepted input freezes its imported archive authority');
+  assert.equal(packet.sourceManifest.historyContext.additionalHistory, true);
+  assert.equal(packet.sourceManifest.historyContext.retrievalAvailable, true);
+  assert.match(packet.exactPrompt, /source:"imported"/);
+  assert.equal(supplied(packet).includes('RETAINED_IMPORTED_BUDGET_END'), false, 'Oversized optional content must not masquerade as a complete submission');
+  const found = f.ok(await f.tool(session, 'ponderosa_history', { source: 'imported', action: 'search', query: 'RETAINED_IMPORTED_BUDGET_BEGIN' }));
+  const hit = found.hits[0]; assert.ok(hit?.reference);
+  let rebuilt = '', continuation, end = 0;
+  do {
+    const page = f.ok(await f.tool(session, 'ponderosa_history', { source: 'imported', action: 'read', reference: hit.reference,
+      before: 0, after: 0, ...(continuation ? { continuation } : {}) }));
+    const message = page.messages[page.requestedMessageIndex];
+    assert.equal(message.startCodePoint, end); assert.ok(message.endCodePoint > end);
+    rebuilt += message.text; end = message.endCodePoint; continuation = message.continuation;
+  } while (continuation);
+  assert.equal(rebuilt, text, 'The complete retained canonical Unicode content must remain available');
+  const peerSession = await f.hold(peer.id);
+  const foreign = await f.tool(peerSession, 'ponderosa_history', { source: 'imported', action: 'read', reference: hit.reference, before: 0, after: 0 });
+  assert.ok(foreign.status >= 400 && foreign.status < 500, 'A sibling Agent cannot read another imported private archive');
+  assert.doesNotMatch(JSON.stringify(foreign.body), /RETAINED_IMPORTED_BUDGET_BEGIN/);
+  await finish(f, peer, peerSession); await finish(f, agent, session);
+}));
+
 test('continuation budgets charge exact-generation occupancy, not aggregate traffic or unverified generations', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
   const chat = await f.createChat('Exact session occupancy'), agent = await f.createIdleAgent(chat, 'Occupancy reader');
