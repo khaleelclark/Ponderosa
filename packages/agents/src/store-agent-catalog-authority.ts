@@ -15,7 +15,7 @@ import type {
   PortableAgentHistoryMessageDto,
   ProjectDto,
 } from "@ponderosa/core";
-import { allocateAgentMentionHandle, agentMentionHandleBase, normalizeAgentRole, agentPackageJsonUtf8Bytes, AGENT_PACKAGE_MAX_BYTES } from "@ponderosa/core";
+import { allocateAgentMentionHandle, agentMentionHandleBase, normalizeAgentRole, agentPackageJsonUtf8Bytes, agentPackageTextIsWellFormed, AGENT_PACKAGE_MAX_BYTES } from "@ponderosa/core";
 import { CompactionHistoryQueryError } from "./compaction-history-retrieval.js";
 import { decodeImportedUtf8Window, readImportedHistory, searchImportedHistory } from "./imported-history-retrieval.js";
 import type { Db } from "./db.js";
@@ -878,6 +878,7 @@ export class AgentCatalogAuthority {
   invalidateImportedIndexes(close = false): void {
     this.importedIndexEpoch++;
     this.importedIndexQueue.clear();
+    this.importedIndexActive.clear();
     this.nextHandleSuffix.clear();
     if (close) this.importedIndexClosed = true;
   }
@@ -1028,3 +1029,7 @@ export class AgentCatalogAuthority {
     };
   }
 }
+    if (imported.initialInstructions !== undefined && !agentPackageTextIsWellFormed(imported.initialInstructions) ||
+        imported.messages.some(message => !agentPackageTextIsWellFormed(message.text))) {
+      throw new Error("Imported history must contain well-formed Unicode text");
+    }
