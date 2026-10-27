@@ -11,6 +11,7 @@ export interface BranchRoute {
   tab: BranchTab;
   executionId?: string;
   chatId?: string;
+  creationKey?: string;
   workspace?: ProjectRoute;
   global?: BranchGlobalView;
   executionFilter?: string;
@@ -35,6 +36,7 @@ export function parseBranchRoute(search: string): BranchRoute {
     tab: branchTabs.includes(tab as BranchTab) ? tab as BranchTab : executionId ? 'executions' : 'workflow',
     ...(query.get('branch') ? { branchId: query.get('branch')! } : {}),
     ...(executionId ? { executionId } : {}),
+    ...(query.get('createChat') ? { creationKey: query.get('createChat')! } : {}),
     ...(query.get('chat') ? { chatId: query.get('chat')! } : {}),
     ...(workspace && 'projectId' in workspace && workspace.projectId ? { workspace: workspace as ProjectRoute } : {}),
     ...(['general','providers','notifications','activity','profile','usage','status'].includes(global ?? '') ? { global: global as BranchGlobalView } : {}),
@@ -47,6 +49,7 @@ export function branchRoutePath(route: BranchRoute): string {
   if (route.branchId) query.set('branch', route.branchId);
   if (route.tab !== 'workflow') query.set('tab', route.tab);
   if (route.executionId) query.set('execution', route.executionId);
+  if (route.creationKey) query.set('createChat', route.creationKey);
   if (route.chatId) query.set('chat', route.chatId);
   if (route.workspace) query.set('workspace', routeToPath(route.workspace));
   if (route.global) query.set('settings', route.global);

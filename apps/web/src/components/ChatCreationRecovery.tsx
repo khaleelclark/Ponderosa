@@ -1,10 +1,9 @@
 import { Alert, Button, Dialog, DialogActions, DialogContent, DialogTitle, Stack } from "@mui/material";
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ConversationDto } from "@ponderosa/core";
-import { api } from "../api";
 import { queryKeys } from "../queryKeys";
-import { ensureCreationAttemptPersisted, readCreationAttempts, saveCreationAttempts, type ChatCreationAttempt } from "./chatCreationAttempts";
+import { ensureCreationAttemptPersisted, readCreationAttempts, saveCreationAttempts, sameCreationAttempt, submitCreationAttempt, type ChatCreationAttempt } from "./chatCreationAttempts";
 
 /** Recovery is available after healthy direct entry too, without delaying it or
  * replaying an opening message. The ordinary workspace header owns this slot. */
@@ -19,11 +18,11 @@ export function ChatCreationRecovery({ activeCreationKey, onCreated }: {
   const [error, setError] = useState<string>();
   const locked = useRef(false);
   const mounted = useRef(false);
-  useEffect(() => {
+  useLayoutEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
-  const retained = attempts.filter(item => item.key !== activeCreationKey && !item.chat);
+  const retained = attempts.filter(item => !item.owner && item.key !== activeCreationKey && !item.chat);
   const reveal = (chat: Pick<ConversationDto, "id" | "projectId">) => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all }).catch(() => {});
     void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.all }).catch(() => {});
@@ -36,10 +35,10 @@ export function ChatCreationRecovery({ activeCreationKey, onCreated }: {
       if (!ensureCreationAttemptPersisted(attempt)) {
         throw new Error("Browser storage is unavailable. The original attempt is retained; enable storage before retrying.");
       }
-      const chat = await api.createChat(attempt.input, attempt.key);
+      const chat = await submitCreationAttempt(attempt);
       // Keep completed exact identities for old history/settings return URLs.
       const journal = readCreationAttempts();
-      if (!saveCreationAttempts([...journal.filter(item => item.key !== attempt.key),
+      if (!saveCreationAttempts([...journal.filter(item => !sameCreationAttempt(item, attempt)),
         { ...attempt, chat: { id: chat.id, projectId: chat.projectId } }])) {
         throw new Error("Chat was saved, but its local receipt could not be saved. The original attempt is kept for exact retry.");
       }

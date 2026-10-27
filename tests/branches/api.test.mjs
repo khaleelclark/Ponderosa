@@ -149,3 +149,19 @@ test('BR004 canonical Workflow use drives complete organized metadata and genera
   assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs').get().n,0);
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });
+
+test('one-click Branch Chats resolve Settings once and replay exact receipts across defaults/provider changes and restart',async t=>{
+ let store,installed=true;
+ await withFixture(t,async f=>{
+  const owner=await branch(f,'One-click owner'),key=randomUUID(),input={label:'New Chat',defaultEngine:'codex'},url=`/api/branches/${owner.id}/chats`,headers={'idempotency-key':key};
+  f.ok(await f.api('PATCH','/api/workspace/preferences',{engineDefaults:{codex:{model:'first',effort:'medium'}}}));
+  const [a,b]=await Promise.all([f.api('POST',url,input,headers),f.api('POST',url,input,headers)]),created=f.ok(a);assert.equal(f.ok(b).id,created.id);assert.equal(created.branchId,owner.id);assert.equal(created.title,'New Chat');
+  const project=store.getChatContext(created.id);assert.equal(project.defaultModel,'first');assert.equal(project.defaultEffort,'medium');assert.equal(created.defaultSpeed,'fast');
+  f.ok(await f.api('PATCH','/api/workspace/preferences',{engineDefaults:{codex:{model:'second',effort:'high'}}}));
+  assert.equal(f.ok(await f.api('POST',url,input,headers)).id,created.id);assert.equal(store.getChatContext(created.id).defaultModel,'first');
+  const next=f.ok(await f.api('POST',url,input,{'idempotency-key':randomUUID()}));assert.equal(store.getChatContext(next.id).defaultModel,'second');assert.equal(store.getChatContext(next.id).defaultEffort,'high');
+  const other=await branch(f,'Other owner');assert.equal((await f.api('POST',`/api/branches/${other.id}/chats`,input,headers)).status,409);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);assert.equal(store.sqlite.prepare('SELECT count(*) n FROM branch_versions WHERE branch_id=?').get(owner.id).n,0);
+  installed=false;await f.reopen();assert.equal(f.ok(await f.api('POST',url,input,headers)).id,created.id);assert.equal(f.ok(await f.api('GET',`${url}?limit=100`)).length,2);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),providerInstalled:()=>installed,modelCatalog:async()=>({models:[{id:'first',label:'First',kind:'alias',source:'provider-probe',efforts:[{id:'medium',label:'Medium'}],defaultEffort:'medium',serviceTiers:[{id:'fast',label:'Fast'}],defaultServiceTier:'fast'},{id:'second',label:'Second',kind:'alias',source:'provider-probe',efforts:[{id:'high',label:'High'}],defaultEffort:'high'}],cliVersion:'fixture',configurationKey:'fixture'})});
+});
