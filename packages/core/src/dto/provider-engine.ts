@@ -60,11 +60,12 @@ export interface ProviderInputSourceManifestV3 {
    * Policy headroom is conservative reserve, not observed model capacity. */
   contextBudget?: {
     estimator: "conservative_utf8_bytes";
-    basis: "context_policy" | "provider_window";
-    inputCeilingTokens: number;
+    basis: "context_policy" | "provider_window" | "unknown_provider_window";
+    /** Absent for a compatible continuation with no verified provider window. */
+    inputCeilingTokens?: number;
     windowTokens?: number;
-    responseHeadroomTokens: number;
-    responseHeadroomBasis: "policy_low_water_margin" | "provider_window_margin" | "handoff_remaining_window";
+    responseHeadroomTokens?: number;
+    responseHeadroomBasis: "policy_low_water_margin" | "provider_window_margin" | "handoff_remaining_window" | "provider_window_remaining" | "unknown_provider_window";
     occupancyBasis: "exact_session" | "estimated_session" | "unavailable" | "fresh_session";
     occupancyTokens: number;
     /** Conservative estimate of subsequent durable output; old observations stay unchanged. */

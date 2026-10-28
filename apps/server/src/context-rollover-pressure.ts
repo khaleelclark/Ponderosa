@@ -37,13 +37,17 @@ export function shouldRequestAutomaticContextRollover(
   return pressure.shouldRequest && activeRollover === undefined;
 }
 
-/** Conservative pre-submit accounting, not a provider tokenizer. The existing
- * rollover policy is the fallback input ceiling, never a claimed model window.
- * A reported window reserves its remaining space for replies/host overhead. */
+export function contextRecoveryRequired(message: string) {
+  return Object.assign(new Error(message), { statusCode: 422, code: "context_recovery_required" });
+}
+
+/** Conservative pre-submit accounting, not a provider tokenizer. Reconstruction
+ * uses the existing context policy. Compatible continuations spend their actual
+ * remaining provider window; an unreported window stays unknown. */
 export function providerInputBudget(
   preferences: ContextRolloverPressurePreferences,
   usage: { usedTokens: number; windowTokens?: number; providerSessionGeneration?: string } | undefined = undefined,
-  input: { resumeSessionId?: string; replacementLowWaterMark?: number; handoff?: boolean;
+  input: { resumeSessionId?: string; replacementLowWaterMark?: number;
     postObservationUtf8Bytes?: number; estimatedSessionUtf8Bytes?: number;
     occupancyObservation?: { source: "live_session" | "accepted_run" | "provider_command" | "accepted_input_estimate"; providerSessionId: string;
       observedAt?: string; sampledAt?: string; executionId?: string; commandInvocationId?: string; fencingToken?: number;
@@ -51,32 +55,34 @@ export function providerInputBudget(
 ) {
   const exact = Boolean(input.resumeSessionId && usage?.providerSessionGeneration === input.resumeSessionId);
   if (input.resumeSessionId && !exact && input.estimatedSessionUtf8Bytes === undefined) {
-    throw Object.assign(new Error("Retained provider context is unavailable under the context policy; explicit context recovery is required before dispatch."), { statusCode: 413 });
+    throw contextRecoveryRequired("Retained provider context is unavailable; explicit context recovery is required before dispatch.");
   }
   const reportedWindow = input.resumeSessionId && usage?.providerSessionGeneration &&
       usage.providerSessionGeneration !== input.resumeSessionId ? undefined : usage?.windowTokens;
   const windowTokens = reportedWindow && reportedWindow > 0 ? reportedWindow : undefined;
   const pressure = evaluateContextRolloverPressure({ usedTokens: 0, ...(windowTokens ? { windowTokens } : {}) }, preferences);
   const knownInputCeiling = windowTokens === undefined ? undefined : Math.min(pressure.threshold, Math.floor(windowTokens * preferences.contextRolloverWindowFraction));
-  let responseHeadroomTokens = windowTokens === undefined
+  const responseHeadroomTokens = windowTokens === undefined
     ? pressure.threshold - pressure.lowWaterMark
     : Math.max(0, windowTokens - knownInputCeiling!);
   let inputCeilingTokens = windowTokens === undefined ? pressure.threshold - responseHeadroomTokens : knownInputCeiling!;
-  if (input.handoff && windowTokens !== undefined) {
-    // The original generation must still be able to write its bounded handoff
-    // after crossing the ordinary pressure threshold. Record only the actual
-    // remaining verified window; the final packet subtracts its required bytes.
-    inputCeilingTokens = windowTokens - 1;
-    responseHeadroomTokens = Math.max(0, windowTokens - (exact ? usage!.usedTokens : 0));
-  }
-  if (input.replacementLowWaterMark !== undefined) inputCeilingTokens = Math.min(inputCeilingTokens, input.replacementLowWaterMark - 1);
+  // Neither a proactive rollover threshold nor its reconstruction target is
+  // provider capacity. This applies to the original generation's handoff too.
+  const retained = Boolean(input.resumeSessionId);
+  if (!retained && input.replacementLowWaterMark !== undefined) inputCeilingTokens = Math.min(inputCeilingTokens, input.replacementLowWaterMark - 1);
   return {
     estimator: "conservative_utf8_bytes" as const,
-    basis: windowTokens === undefined ? "context_policy" as const : "provider_window" as const,
-    inputCeilingTokens: Math.max(0, Math.floor(inputCeilingTokens)),
-    responseHeadroomTokens,
-    responseHeadroomBasis: windowTokens === undefined ? "policy_low_water_margin" as const
-      : input.handoff ? "handoff_remaining_window" as const : "provider_window_margin" as const,
+    basis: retained && windowTokens === undefined ? "unknown_provider_window" as const
+      : windowTokens === undefined ? "context_policy" as const : "provider_window" as const,
+    // A verified window must leave at least one token for a response. There is
+    // no separately configured response limit; report the actual remainder.
+    inputCeilingTokens: retained ? windowTokens === undefined ? undefined : Math.max(0, windowTokens - 1)
+      : Math.max(0, Math.floor(inputCeilingTokens)),
+    responseHeadroomTokens: retained ? windowTokens === undefined ? undefined : Math.max(0, windowTokens - (exact ? usage!.usedTokens : 0))
+      : responseHeadroomTokens,
+    responseHeadroomBasis: retained ? windowTokens === undefined ? "unknown_provider_window" as const
+      : "provider_window_remaining" as const
+      : windowTokens === undefined ? "policy_low_water_margin" as const : "provider_window_margin" as const,
     ...(windowTokens === undefined ? {} : { windowTokens }),
     occupancyBasis: input.estimatedSessionUtf8Bytes !== undefined ? "estimated_session" as const
       : exact ? "exact_session" as const : "fresh_session" as const,
@@ -103,7 +109,7 @@ export function estimateProviderInput(
     systemPromptUtf8Bytes: Buffer.byteLength(systemPrompt, "utf8"),
     toolDefinitionsUtf8Bytes: Buffer.byteLength(JSON.stringify(tools), "utf8"),
     estimatedInputTokens: budget.occupancyTokens + budget.postObservationUtf8Bytes + submittedUtf8Bytes,
-    ...(budget.responseHeadroomBasis === "handoff_remaining_window" ? {
+    ...(budget.responseHeadroomBasis === "provider_window_remaining" ? {
       responseHeadroomTokens: Math.max(0, budget.windowTokens! - budget.occupancyTokens - budget.postObservationUtf8Bytes - submittedUtf8Bytes),
     } : {}),
   };
