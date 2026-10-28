@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { AgentStore } from '@ponderosa/agents';
+import { processBirthMarker } from '@ponderosa/engines';
 import { withFixture, until, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
 test('checks 14, 15: server drafts use revision fencing, owner isolation and durable recovery', options, t => withFixture(t, async f => {
@@ -69,6 +70,16 @@ test('cancelled cache is retained across failed cleanup and retired only after e
       const chat = await f.createChat('Cancelled cleanup boundary'), agent = await f.createIdleAgent(chat, 'Cleanup worker');
       const session = await f.hold(agent.id), run = (await f.detail(agent.id)).runs.find(x => x.status === 'running');
       blockedSession = session.engineAgentId; refuse = true;
+      const resetExitObservations = [], clearResume = store.clearResumeSession.bind(store);
+      store.clearResumeSession = (id, reason) => {
+        if (id === agent.id && reason === 'agent_cancelled') {
+          const identity = session.processIdentity;
+          // Recovered native cleanup can observe OS exit before the fixture's
+          // child-exit callback runs. This inert root has no descendants.
+          resetExitObservations.push(!session.isAlive() || Boolean(identity && processBirthMarker(identity.pid) !== identity.birthMarker));
+        }
+        return clearResume(id, reason);
+      };
       const packet = JSON.stringify(store.getProviderInput(run.id, true)), turnsBefore = f.turns.length;
       f.ok(await f.api('POST', `/api/agents/${agent.id}/cancel`, { targetRunId: run.id, idempotencyKey: randomUUID() }));
       await until(() => refusals > 0, 'owned cancellation cleanup refusal');
@@ -82,13 +93,18 @@ test('cancelled cache is retained across failed cleanup and retired only after e
       } }]);
       const before = (await f.detail(agent.id)).runs.map(x => x.id);
       await f.send(agent.id, 'Separate independent task waiting for cancellation cleanup');
-      await until(() => refusals > 1, 'retained exact-root cleanup retry');
-      assert.equal(f.turns.length, turnsBefore, 'No input is admitted while old cleanup remains uncertain');
-      assert.equal(store.resumeSessionId(agent.id), blockedSession);
+      await until(() => refusals > 1 || !session.isAlive(), 'retained exact-root cleanup retry or recovered native exit');
+      if (store.resumeSessionId(agent.id) === undefined) {
+        await until(() => !session.isAlive(), 'fixture observes recovered exact-root exit');
+      } else {
+        assert.equal(store.resumeSessionId(agent.id), blockedSession);
+        if (session.isAlive()) assert.equal(f.turns.length, turnsBefore, 'No input is admitted while old cleanup remains uncertain');
+      }
       refuse = false;
       const finished = await f.settled(agent.id, before);
       assert.equal(session.isAlive(), false);
       assert.equal(f.turns.length, turnsBefore + 1, 'Only the separate new task executes, once');
+      assert.deepEqual(resetExitObservations, [true], 'The cache reset itself requires exact observed exit, independent of SDK refusal counts');
       assert.equal(finished.runs.find(x => x.id === run.id).status, 'cancelled');
       assert.equal(JSON.stringify(store.getProviderInput(run.id, true)), packet);
       assert.ok(!finished.messages.some(x => x.text.includes('Late failed-cleanup output')));
