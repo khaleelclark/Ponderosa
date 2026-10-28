@@ -1048,15 +1048,18 @@ export function mapCodexAppServerNotification(
     }];
   }
   if (notification.method !== "item/started" && notification.method !== "item/completed") return [];
-  const item = params?.item as Record<string, unknown> | undefined;
-  if (!item || typeof item.type !== "string") return [];
-  if (notification.method === "item/started" && item.type === "commandExecution") {
-    return typeof item.command === "string" ? [{
+  const item = object(params?.item);
+  if (!item || typeof item.type !== "string") return [{ type: "work_start", kind: "native_tool" }];
+  if (notification.method === "item/started" && (item.type === "commandExecution" || item.type === "fileChange")) {
+    const boundary: AgentEvent = { type: "work_start", kind: item.type === "commandExecution" ? "command" : "file_change",
+      ...(typeof item.id === "string" ? { callId: item.id } : {}) };
+    if (item.type === "fileChange" || typeof item.command !== "string") return [boundary];
+    return [boundary, {
       type: "command",
       command: item.command,
       cwd: typeof item.cwd === "string" ? item.cwd : cwd,
       ...(typeof item.id === "string" ? { callId: item.id } : {}),
-    }] : [];
+    }];
   }
   if (notification.method === "item/completed" && item.type === "commandExecution") {
     return [{
@@ -1074,8 +1077,11 @@ export function mapCodexAppServerNotification(
           ...(item.phase === "commentary" ? { presentation: "progress" as const } : {}) }]
       : [];
   }
-  if (notification.method === "item/completed" && item.type === "fileChange" && Array.isArray(item.changes)) {
-    return item.changes.flatMap((change) => {
+  if (notification.method === "item/completed" && item.type === "fileChange") {
+    // Sparse or completion-only native work still invalidates plain-text estimates.
+    return [{ type: "work_start", kind: "file_change",
+      ...(typeof item.id === "string" ? { callId: item.id } : {}) },
+    ...(Array.isArray(item.changes) ? item.changes : []).flatMap((change) => {
       if (!change || typeof change !== "object") return [];
       const value = change as { path?: unknown; kind?: unknown; diff?: unknown };
       return typeof value.path === "string" ? [{
@@ -1085,9 +1091,10 @@ export function mapCodexAppServerNotification(
         ...(typeof value.diff === "string" ? { diff: value.diff } : {}),
         ...(typeof item.id === "string" ? { callId: item.id } : {}),
       }] : [];
-    });
+    })];
   }
   if (notification.method === "item/started" && item.type === "mcpToolCall") {
+    if (item.arguments === undefined) return [{ type: "work_start", kind: "native_tool" }];
     return [{
       type: "tool_call",
       id: typeof item.id === "string" ? item.id : "mcp",
@@ -1104,6 +1111,7 @@ export function mapCodexAppServerNotification(
     )];
   }
   if (notification.method === "item/started" && item.type === "dynamicToolCall") {
+    if (item.arguments === undefined) return [{ type: "work_start", kind: "native_tool" }];
     const namespace = typeof item.namespace === "string" && item.namespace ? `${item.namespace}.` : "";
     return [{
       type: "tool_call",
@@ -1120,5 +1128,8 @@ export function mapCodexAppServerNotification(
       isError,
     )];
   }
-  return [];
+  // Passive text/compaction is not opaque native work. Unknown items fail closed
+  // without inventing a public tool projection or persisting native payloads.
+  if (["agentMessage", "reasoning", "plan", "userMessage", "contextCompaction"].includes(item.type)) return [];
+  return [{ type: "work_start", kind: "native_tool" }];
 }

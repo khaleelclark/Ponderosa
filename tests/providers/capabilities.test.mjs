@@ -151,3 +151,44 @@ test('native Codex compact returns only gate-proven fresh telemetry and keeps RP
   const malformed = projectProviderCommandResult({ contextUsage: { usedTokens: 'invalid' } });
   assert.equal(malformed.contextUsage, undefined); assert.match(malformed.message, /completed.*invalid.*not repeat/i);
 });
+
+test('sparse and future Codex native work invalidates context estimates without exposing payloads', async () => {
+  const { mapCodexAppServerNotification, projectAgentEvent } = await import('@ponderosa/engines');
+  const { envelope } = await import('../../apps/server/dist/sse.js');
+  const fences = events => events.some(e => ['work_start', 'tool_call', 'tool_result', 'command', 'file_change'].includes(e.type));
+  const map = (method, item) => mapCodexAppServerNotification({ method, params: { item } }, '/fixture');
+  for (const type of ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall',
+    'functionCallOutput', 'webSearch', 'imageView', 'collabToolCall', 'enteredReviewMode',
+    'exitedReviewMode', 'hookPrompt', 'sleep', 'imageGeneration', 'futureNativeTool']) {
+    for (const method of ['item/started', 'item/completed']) {
+      const events = map(method, { type, id: 'owned', text: 'PRIVATE NATIVE BYTES' });
+      assert.ok(fences(events), `${type} ${method} cannot be counted as known plain text`);
+      for (const event of events) {
+        assert.deepEqual(projectAgentEvent(event), event);
+        if (event.type === 'work_start') {
+          assert.ok(!JSON.stringify(event).includes('PRIVATE NATIVE BYTES'));
+          assert.equal(envelope('owned-agent', { seq: 1, ts: '2026-10-27T00:00:00Z', event: { ...event, executionId: 'owned-run' } }), undefined);
+        }
+      }
+    }
+  }
+  for (const item of [undefined, null, [], 'private raw', {}, { type: 7 }]) assert.ok(fences(map('item/started', item)));
+  for (const type of ['agentMessage', 'reasoning', 'plan', 'userMessage', 'contextCompaction']) {
+    assert.equal(fences(map('item/started', { type, id: 'passive' })), false);
+  }
+  const ordinary = map('item/started', { type: 'commandExecution', id: 'cmd', command: 'inert' });
+  assert.deepEqual(ordinary.filter(e => e.type !== 'work_start'), [{ type: 'command', command: 'inert', cwd: '/fixture', callId: 'cmd' }]);
+  assert.deepEqual(map('item/completed', { type: 'fileChange', id: 'edit', changes: [{ path: 'fixture.txt', kind: 'edit', diff: 'inert' }] }).filter(e => e.type !== 'work_start'),
+    [{ type: 'file_change', path: 'fixture.txt', kind: 'edit', diff: 'inert', callId: 'edit' }]);
+});
+
+test('internal native-work projection rejects payloads and accessor fields', async () => {
+  const { projectAgentEvent } = await import('@ponderosa/engines');
+  assert.deepEqual(projectAgentEvent({ type: 'work_start', kind: 'native_tool' }), { type: 'work_start', kind: 'native_tool' });
+  for (const patch of [{ text: 'private' }, { itemType: 'webSearch' }, { kind: 'future' }]) {
+    assert.throws(() => projectAgentEvent({ type: 'work_start', kind: 'native_tool', ...patch }));
+  }
+  let reads = 0;
+  assert.throws(() => projectAgentEvent({ type: 'work_start', kind: 'native_tool', get callId() { reads++; return 'secret'; } }));
+  assert.equal(reads, 0);
+});

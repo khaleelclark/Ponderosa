@@ -278,12 +278,18 @@ export function projectAgentEvent(value: unknown): AgentEvent {
     "category", "remediation", "presentation", "exitCode", "signal", "retryAfterMs", "terminalStatus", "httpStatusCode", "quotaResetAt", "quotaLimit",
   ])], budget, 0);
   const type = enumeration(envelope, "type", [
-    "session", "context_usage", "context_rollover_seed_overflow", "context_rollover_completed", "text", "reasoning",
+    "work_start", "session", "context_usage", "context_rollover_seed_overflow", "context_rollover_completed", "text", "reasoning",
     "tool_call", "tool_result", "command", "file_change", "test_result", "browser_session", "browser_action",
     "browser_console", "browser_screenshot", "work_item_update", "turn_done", "error",
   ] as const, budget, 1);
 
   switch (type) {
+    case "work_start": {
+      const row = exact(value, ["kind", "callId"], budget);
+      const callId = optionalIdentifier(row, "callId", budget, 2);
+      return { type, kind: enumeration(row, "kind", ["command", "file_change", "native_tool"] as const, budget, 2),
+        ...(callId === undefined ? {} : { callId }) };
+    }
     case "session": {
       const row = exact(value, ["sessionId"], budget);
       return { type, sessionId: identifier(row, "sessionId", budget, 2) };

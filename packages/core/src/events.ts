@@ -58,6 +58,7 @@ export type ProviderErrorCode =
  * changing it requires a SPEC edit (AGENTS.md).
  */
 export type AgentEvent =
+  | { type: "work_start"; kind: "command" | "file_change" | "native_tool"; callId?: string } // payload-free internal work evidence, never reply text
   | { type: "session"; sessionId: string } // persist for resume
   | {
       /** Current provider-context occupancy, distinct from aggregate billing usage. */
