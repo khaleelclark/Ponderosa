@@ -147,7 +147,7 @@ test('complete input accounting distinguishes context policy, verified capacity 
   assert.equal(unknown.responseHeadroomBasis, 'policy_low_water_margin');
   const usage = { usedTokens: 1200, windowTokens: 200000, aggregateTokens: 900000, providerSessionGeneration: 'live' };
   const exact = providerInputBudget(policy, usage, { resumeSessionId: 'live' });
-  assert.equal(exact.inputCeilingTokens, 140000); assert.equal(exact.responseHeadroomTokens, 60000);
+  assert.equal(exact.inputCeilingTokens, 199999); assert.equal(exact.responseHeadroomTokens, 198800);
   assert.equal(exact.occupancyTokens, 1200); assert.equal(exact.occupancyBasis, 'exact_session');
   const system = 'Required instructions 😀', tools = [{ name: 'fixture', description: 'Uncompressed schema \"' }], prompt = 'Current work 😀';
   const fresh = estimateProviderInput(providerInputBudget(policy, usage), system, tools, prompt);
@@ -156,7 +156,7 @@ test('complete input accounting distinguishes context policy, verified capacity 
   const resumed = estimateProviderInput(exact, system, tools, prompt);
   assert.equal(resumed.estimatedInputTokens, 1200 + Buffer.byteLength(JSON.stringify({ input: prompt })));
   assert.throws(() => providerInputBudget(policy, usage, { resumeSessionId: 'discarded' }),
-    error => error.statusCode === 413 && /context.*unavailable/i.test(error.message), 'Unknown retained occupancy cannot become zero');
+    error => error.statusCode === 422 && error.code === 'context_recovery_required' && /context.*unavailable/i.test(error.message), 'Unknown retained occupancy cannot become zero');
   const hostEstimate = estimateProviderInput(providerInputBudget(policy, undefined, {
     resumeSessionId: 'legacy', estimatedSessionUtf8Bytes: 5000,
     occupancyObservation: { source: 'accepted_input_estimate', providerSessionId: 'legacy' },
@@ -174,17 +174,35 @@ test('near-full handoff accounts for its real remaining window without inventing
   const { providerInputBudget, estimateProviderInput } = await import('../../apps/server/dist/context-rollover-pressure.js');
   const policy = { contextRolloverTokens: 150000, contextRolloverWindowFraction: 0.7 };
   const live = { usedTokens: 160000, windowTokens: 200000, providerSessionGeneration: 'handoff' };
-  const known = estimateProviderInput(providerInputBudget(policy, live, { resumeSessionId: 'handoff', handoff: true }),
+  const known = estimateProviderInput(providerInputBudget(policy, live, { resumeSessionId: 'handoff' }),
     'Retained instructions', [{ name: 'retained_tools' }], 'Write the required canonical handoff');
   assert.equal(known.occupancyTokens, 160000);
-  assert.equal(known.responseHeadroomBasis, 'handoff_remaining_window');
+  assert.equal(known.responseHeadroomBasis, 'provider_window_remaining');
   assert.equal(known.responseHeadroomTokens, 200000 - known.estimatedInputTokens);
   assert.ok(known.responseHeadroomTokens > 0);
   assert.ok(known.estimatedInputTokens > 140000 && known.estimatedInputTokens < 200000);
   const unknown = estimateProviderInput(providerInputBudget(policy,
-    { usedTokens: 160000, providerSessionGeneration: 'handoff' }, { resumeSessionId: 'handoff', handoff: true }),
+    { usedTokens: 160000, providerSessionGeneration: 'handoff' }, { resumeSessionId: 'handoff' }),
     'Retained instructions', [], 'Write the required canonical handoff');
   assert.equal(unknown.windowTokens, undefined);
-  assert.equal(unknown.inputCeilingTokens + unknown.responseHeadroomTokens, 150000);
-  assert.ok(unknown.estimatedInputTokens > unknown.inputCeilingTokens);
+  assert.equal(unknown.basis, 'unknown_provider_window');
+  assert.equal(unknown.inputCeilingTokens, undefined); assert.equal(unknown.responseHeadroomTokens, undefined);
+  assert.equal(unknown.responseHeadroomBasis, 'unknown_provider_window');
+});
+
+test('Capulin continuation ignores reconstruction targets without inventing provider capacity or charging retained tools twice', async () => {
+  const { providerInputBudget, estimateProviderInput } = await import('../../apps/server/dist/context-rollover-pressure.js');
+  for (const contextRolloverTokens of [75000, 150000]) {
+    const policy = { contextRolloverTokens, contextRolloverWindowFraction: 0.7 };
+    const usage = { usedTokens: 115910, aggregateTokens: 900000, providerSessionGeneration: 'capulin' };
+    const value = estimateProviderInput(providerInputBudget(policy, usage, {
+      resumeSessionId: 'capulin', postObservationUtf8Bytes: 21,
+    }), 'Already retained instructions'.repeat(3000), [{ name: 'already_retained_tool' }], 'Yes');
+    assert.equal(value.basis, 'unknown_provider_window'); assert.equal(value.windowTokens, undefined);
+    assert.equal(value.inputCeilingTokens, undefined); assert.equal(value.responseHeadroomTokens, undefined);
+    assert.equal(value.estimatedInputTokens, 115910 + 21 + Buffer.byteLength(JSON.stringify({ input: 'Yes' })));
+    const known = estimateProviderInput(providerInputBudget(policy, { ...usage, windowTokens: 120000 }, { resumeSessionId: 'capulin' }), 'Retained', [], 'Yes');
+    assert.equal(known.inputCeilingTokens, 119999); assert.ok(known.estimatedInputTokens < known.inputCeilingTokens);
+    assert.equal(known.responseHeadroomTokens, 120000 - known.estimatedInputTokens);
+  }
 });

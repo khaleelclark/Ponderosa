@@ -851,41 +851,51 @@ export function startProviderRunExecution(
           if(event.type==='error')activeRun.observedProviderFailure=event;
           if (event.type === "error" && sessionId && !frozenHandoffSessionId &&
               !providerWorkObserved && shouldRolloverEngineSession(runtimeEngineId, event)) {
-            // The provider confirmed the resumed session failed before
-            // sampling. Discard its buffered session event and retry once
-            // with the separately persisted canonical fresh-seed packet.
-            clearAgentResumeSession(agent.id, "resume_compaction_failed");
-            coordinationV3.setRunContextDisposition(runId, v3FencingToken!, "reseeded");
-            coordinationV3.recordProviderInput({
-              executionId: runId,
-              schedulerRunId: runId,
-              fencingToken: v3FencingToken!,
-              agentId: agent.id,
-              projectId: project.id,
-              prompt: freshExactProviderInput,
-              systemPrompt,
-              sourceManifest: freshProviderInputManifest,
-            });
-            manifestArtifactIds.splice(0, manifestArtifactIds.length, ...freshProviderInputManifest.artifactIds);
-            if (freshProviderInputManifest.schemaVersion === 3) {
-              runCapability.historyRetrievalBoundary = freshProviderInputManifest.historyContext?.boundary;
-              runCapability.importedHistoryArchiveVersion = freshProviderInputManifest.historyContext?.importedArchiveVersion;
-              runCapability.historyRetrievalExcludedCommunicationEventIds = freshProviderInputManifest.historyContext?.fullyIncludedCommunicationEventIds ?? [];
+            const fallbackBudget = freshProviderInputManifest.schemaVersion === 3
+              ? freshProviderInputManifest.contextBudget : undefined;
+            if (!workspace.getPreferences().contextRolloverEnabled ||
+                fallbackBudget?.inputCeilingTokens === undefined ||
+                fallbackBudget.estimatedInputTokens > fallbackBudget.inputCeilingTokens) {
+              // Keep the accepted generation and the failed attempt. A provider
+              // pre-sampling error cannot authorize an over-budget/disabled reset.
+              bufferedSessionEvents.length = 0;
+            } else {
+              // The provider confirmed the resumed session failed before
+              // sampling. Discard its buffered session event and retry once
+              // with the separately persisted canonical fresh-seed packet.
+              clearAgentResumeSession(agent.id, "resume_compaction_failed");
+              coordinationV3.setRunContextDisposition(runId, v3FencingToken!, "reseeded");
+              coordinationV3.recordProviderInput({
+                executionId: runId,
+                schedulerRunId: runId,
+                fencingToken: v3FencingToken!,
+                agentId: agent.id,
+                projectId: project.id,
+                prompt: freshExactProviderInput,
+                systemPrompt,
+                sourceManifest: freshProviderInputManifest,
+              });
+              manifestArtifactIds.splice(0, manifestArtifactIds.length, ...freshProviderInputManifest.artifactIds);
+              if (freshProviderInputManifest.schemaVersion === 3) {
+                runCapability.historyRetrievalBoundary = freshProviderInputManifest.historyContext?.boundary;
+                runCapability.importedHistoryArchiveVersion = freshProviderInputManifest.historyContext?.importedArchiveVersion;
+                runCapability.historyRetrievalExcludedCommunicationEventIds = freshProviderInputManifest.historyContext?.fullyIncludedCommunicationEventIds ?? [];
+              }
+              if (persistentRuntime) {
+                const staleRuntime = persistentRuntime;
+                await teardownPersistentRuntime(agent.id, staleRuntime, "failed resume replacement", project.id);
+                activeRun.observedProviderFailure = undefined;
+                activeRun.observedProviderTerminalStatus = undefined;
+                activeRun.observedRootExit = undefined;
+                persistentRuntime = await openRegisteredPersistentRuntime();
+                activeRun.runtimeSession = persistentRuntime.session;
+                persistentTurnStarted = false;
+              }
+              sessionId = undefined;
+              usedFreshFallback = true;
+              retryFresh = true;
+              break;
             }
-            if (persistentRuntime) {
-              const staleRuntime = persistentRuntime;
-              await teardownPersistentRuntime(agent.id, staleRuntime, "failed resume replacement", project.id);
-              activeRun.observedProviderFailure = undefined;
-              activeRun.observedProviderTerminalStatus = undefined;
-              activeRun.observedRootExit = undefined;
-              persistentRuntime = await openRegisteredPersistentRuntime();
-              activeRun.runtimeSession = persistentRuntime.session;
-              persistentTurnStarted = false;
-            }
-            sessionId = undefined;
-            usedFreshFallback = true;
-            retryFresh = true;
-            break;
           }
           // Codex can emit its session id immediately before a resume-time
           // compaction failure. Hold only those initial session events so a
