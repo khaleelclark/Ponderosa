@@ -13,6 +13,7 @@ const {PonderosaMemory}=await import(createRequire(new URL('../../apps/server/pa
 import { randomBytes } from 'node:crypto';
 import { AgentStore, CoordinationV3Store, BranchStore } from '../../packages/agents/dist/index.js';
 import { createServer } from '../../apps/server/dist/app.js';
+import { isAgentStreamEvent } from '../../apps/server/dist/sse.js';
 import { mapCodexAppServerNotification } from '../../packages/engines/dist/index.js';
 import { PONDEROSA_VOICE_REPLY_TOOL } from '../../packages/core/dist/index.js';
 import { createProviderDynamicToolHandler } from '../../apps/server/dist/routes/provider-dynamic-tool-handler.js';
@@ -79,7 +80,7 @@ async function fixture(options={},runCheck){
  let originalBindChat=PonderosaMemory.prototype.bindChat;
  let app,release,armed,reauthorization,starts=0,submitted=[],completion,reached=false,memoryRecord,memoryHeaders,globalRecord,fallbackResult;const modes=[];const gate=new Promise(r=>release=r);const done=new Promise(r=>completion=r);
  const run=async function*(opts,fresh){try{
-  starts++;modes.push(fresh?'seed':'continue');if(options.retainedMemory)yield {type:'session',sessionId:fresh?randomBytes(16).toString('hex'):opts.resumeSessionId};submitted.push(store.getProviderInput(coord.activeAgentRun(agent.id).id,true));
+  starts++;modes.push(fresh?'seed':'continue');const generation=options.retainedMemory?(fresh?randomBytes(16).toString('hex'):opts.resumeSessionId):undefined;if(generation)yield {type:'session',sessionId:generation};submitted.push(store.getProviderInput(coord.activeAgentRun(agent.id).id,true));
    memoryHeaders={authorization:'Bearer '+opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN};
    if(options.memory&&options.readMemory!==false&&starts===1){
     memoryHeaders={authorization:'Bearer '+opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN};
@@ -103,7 +104,11 @@ async function fixture(options={},runCheck){
     reached=true;await gate;
     const result=await app.inject({method:'POST',url:'/api/agent-messages',headers:memoryHeaders,payload:{text:options.retainedMemory&&starts>1?(fresh?'Fresh canonical context.':'Remembered revoked memory.'):'Canonical fallback.',...(fence?{steeringInjectionId:fence}:{})}});
     fallbackResult={statusCode:result.statusCode,body:result.body};
-    if(options.cancelled)assert.ok([401,409].includes(result.statusCode),result.body);else assert.equal(result.statusCode,200,result.body);yield {type:'turn_done'};return;
+    if(options.cancelled)assert.ok([401,409].includes(result.statusCode),result.body);else assert.equal(result.statusCode,200,result.body);
+    // The retained-session voice fixture supplies an exact completed-turn
+    // checkpoint; it must not assume an unmeasured session has zero occupancy.
+    if(generation)yield {type:'context_usage',providerSessionId:generation,providerSessionGeneration:generation,usedTokens:1000,windowTokens:200000,requestOutputIncluded:true};
+    yield {type:'turn_done'};return;
    }
    yield {type:'text',delta:'FORBIDDEN WORK LOG'};
   if(options.ordinaryWork)yield* mapCodexAppServerNotification({method:'item/started',params:{item:{type:'webSearch',id:'ordinary',query:'PRIVATE NATIVE PAYLOAD'}}},dir);
@@ -258,6 +263,17 @@ for(const options of [{unsupported:true},{unsupported:true,memory:true},{ordinar
   if(options.memory)assert.equal((await f.app.inject({method:'GET',url:f.url,headers:f.headers})).json().memoryExposure.state,'valid');
 }));
 
+function assertPrivateNativeEvidence(f, executionId) {
+ const markers=f.store.readEvents(f.agent.id).filter(x=>x.event.type==='work_start').map(x=>x.event);
+ assert.ok(markers.some(marker=>marker.executionId===executionId),'exact native-work ownership remains in the internal audit');
+ for(const marker of markers){
+  assert.deepEqual(Object.keys(marker).sort(),['callId','executionId','kind','type'].filter(key=>key in marker).sort());
+  assert.equal(isAgentStreamEvent(marker),false,'internal evidence is never public Agent telemetry');
+  assert.ok(!JSON.stringify(marker).includes('PRIVATE NATIVE PAYLOAD'),'native payload is not retained in the marker');
+ }
+ assert.ok(!f.store.readEvents(f.agent.id).some(x=>x.event.type==='response_text'),'provisional text never becomes LogEvent');
+}
+
 for(const work of [{type:'work_start',kind:'command',callId:'native'}, {type:'work_start',kind:'file_change',callId:'native'}, {type:'command',command:'inert native work',cwd:'/synthetic',callId:'native'},
  {type:'file_change',path:'synthetic.txt',kind:'edit',callId:'native'}])
 for(const workAt of ['before','during','after'])test(`native ${work.type} ${workAt} invalidates irreversibly on actual host path`,async()=>fixture({work,workAt},async f=>{
@@ -273,7 +289,7 @@ for(const workAt of ['before','during','after'])test(`native ${work.type} ${work
  assert.equal(replies.filter(x=>x.payload.communication.sender.executionId===early.runId).length,0,'stale item never becomes canonical Communication in its exact Run');
  assert.ok(replies.every(x=>x.payload.communication.text==='Canonical fallback.'),'only explicit canonical recovery fallback may publish');
  console.log('INVALIDATED EXACT RUN ORACLE',JSON.stringify({work,workAt,originalRun:early.runId,originalCanonicalRows:0,recoveredExplicitFallbacks:replies.length,adapterStarts:f.starts}));
- if(work.type==='work_start')assert.ok(!f.store.readEvents(f.agent.id).some(x=>x.event.type==='work_start'),'internal boundary never enters public LogEvent');
+ if(work.type==='work_start')assertPrivateNativeEvidence(f,early.runId);
  else assert.ok(f.store.readEvents(f.agent.id).some(x=>x.event.type===work.type),'ordinary work evidence remains');
 }));
 
@@ -299,7 +315,7 @@ test('ordinary nonvoice native work still permits its explicit canonical reply',
  assert.equal(f.armed.statusCode,409);f.release();await f.done;await boundedWait(()=>f.coord.activeAgentRun(f.agent.id)===undefined,'ordinary completion');
  const replies=f.coord.runtimeCommunications(f.project.id).filter(x=>x.payload.communication?.sender.kind==='agent');
  assert.equal(replies.length,1);assert.equal(replies[0].payload.communication.text,'Canonical fallback.');
- assert.ok(!f.store.readEvents(f.agent.id).some(x=>x.event.type==='work_start'));
+ assertPrivateNativeEvidence(f,replies[0].payload.communication.sender.executionId);
 }));
 
 const nativeItem=(type,method)=>({method,params:{item:{type,id:'native-work',query:'PRIVATE NATIVE PAYLOAD',path:'/inert/image',tool:'inert',arguments:{},changes:[]}}});
@@ -321,7 +337,7 @@ for(const {label,nativeItems,workAt} of nativeCases)test(`mapper native ${label}
  const replies=f.coord.runtimeCommunications(f.project.id).filter(x=>x.payload.communication?.sender.kind==='agent');
  assert.equal(replies.filter(x=>x.payload.communication.sender.executionId===early.runId).length,0);
  assert.ok(replies.every(x=>x.payload.communication.sender.executionId!==early.runId&&x.payload.communication.text==='Canonical fallback.'));
- assert.ok(!f.store.readEvents(f.agent.id).some(x=>['work_start','response_text'].includes(x.event.type)),'private native boundary/candidate never becomes LogEvent');
+ assertPrivateNativeEvidence(f,early.runId);
  const chat=(await f.app.inject({method:'GET',url:`/api/branches/engine/conversations/${f.chat.id}?limit=20`,headers:f.headers})).json();
  assert.ok(!JSON.stringify(chat).includes('PRIVATE NATIVE PAYLOAD'),'native payload never becomes Chat');
  console.log('MAPPER NATIVE EXACT RUN ORACLE',JSON.stringify({label,originalCanonicalRows:0,recoveredExplicitFallbacks:replies.length,adapterStarts:f.starts,originalRun:early.runId,reauthorization:f.reauthorization.success}));
