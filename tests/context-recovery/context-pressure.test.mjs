@@ -62,7 +62,7 @@ test('check 93: repeated provider occupancy signals admit one automatic rollover
   } finally { db.close(); }
 }));
 
-test('checks 93, 94: automatic pressure completes one bounded handoff and preserves its fact in a verified replacement', options, t => withFixture(t, async f => {
+for (const windowTokens of [200000, undefined]) test(`checks 93, 94: automatic pressure completes one bounded handoff and preserves its fact (${windowTokens ? 'known' : 'unknown'} window)`, options, t => withFixture(t, async f => {
   const chat = await f.createChat('Automatic handoff completion'), agent = await f.createAgent(chat, 'Handoff reader');
   const unrelated = await f.createIdleAgent(chat, 'Unaffected reader');
   const fact = `handoff-${randomUUID()}`;
@@ -70,7 +70,7 @@ test('checks 93, 94: automatic pressure completes one bounded handoff and preser
   assert.equal(f.ok(await f.api('GET', '/api/workspace/preferences')).contextRolloverEnabled, true);
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, contextRolloverWindowFraction: 0.75 }));
   const session = await f.hold(agent.id);
-  session.contextUsage = () => ({ usedTokens: 160000, windowTokens: 200000 });
+  session.contextUsage = () => ({ usedTokens: 160000, ...(windowTokens ? { windowTokens } : {}), providerSessionGeneration: session.engineAgentId });
   const events = async () => (await readFile(path.join(f.dataDir, 'projects', chat.projectId, 'agents', agent.id, 'events.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line).event);
   f.plans.set(agent.id, [
     { run: async (s) => {
@@ -82,12 +82,12 @@ test('checks 93, 94: automatic pressure completes one bounded handoff and preser
       retainedFact = JSON.stringify(turn).match(/handoff-[a-f0-9-]{36}/)?.[0];
       assert.equal(retainedFact, fact, 'The accepted handoff was absent from the replacement input');
       replacementSessionId = s.engineAgentId;
-      s.events.push({ type: 'context_usage', providerSessionId: s.engineAgentId, providerSessionGeneration: s.engineAgentId, usedTokens: 1000, windowTokens: 200000 });
+      s.events.push({ type: 'context_usage', providerSessionId: s.engineAgentId, providerSessionGeneration: s.engineAgentId, usedTokens: 1000, ...(windowTokens ? { windowTokens } : {}) });
       await until(async () => (await events()).some(x => x.type === 'context_rollover_completed'), 'replacement accepted before task delivery');
       f.ok(await f.tool(s, 'ponderosa_message', { text: 'Original request recovered' }));
     } },
   ]);
-  for (let i = 0; i < 3; i++) session.events.push({ type: 'context_usage', providerSessionId: session.engineAgentId, providerSessionGeneration: session.engineAgentId, usedTokens: 160000, windowTokens: 200000 });
+  for (let i = 0; i < 3; i++) session.events.push({ type: 'context_usage', providerSessionId: session.engineAgentId, providerSessionGeneration: session.engineAgentId, usedTokens: 160000, ...(windowTokens ? { windowTokens } : {}) });
   await until(async () => (await events()).some(x => x.type === 'context_rollover_triggered'), 'automatic rollover admission');
   session.finish();
   const completed = await until(async () => (await events()).find(x => x.type === 'context_rollover_completed'), 'automatic replacement verified');

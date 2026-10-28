@@ -144,8 +144,13 @@ function budget(packet) {
   const value = packet.sourceManifest.contextBudget;
   assert.ok(value, 'Newly accepted inputs must freeze their complete context budget');
   assert.equal(value.estimator, 'conservative_utf8_bytes');
-  assert.ok(value.estimatedInputTokens <= value.inputCeilingTokens, 'The complete estimated input must fit its ceiling');
-  assert.ok(value.responseHeadroomTokens > 0, 'Response headroom must be reserved');
+  if (value.inputCeilingTokens === undefined) {
+    assert.equal(value.basis, 'unknown_provider_window'); assert.equal(value.windowTokens, undefined);
+    assert.equal(value.responseHeadroomTokens, undefined, 'Unknown capacity cannot manufacture a response allowance');
+  } else {
+    assert.ok(value.estimatedInputTokens <= value.inputCeilingTokens, 'The complete estimated input must fit its ceiling');
+    assert.ok(value.responseHeadroomTokens > 0, 'Verified or reconstruction headroom must remain');
+  }
   return value;
 }
 
@@ -245,7 +250,7 @@ test('continuation budgets charge proven completed-turn occupancy and reject for
   f.usage.set(agent.id, { usedTokens: 140000, aggregateTokens: 900000, windowTokens: 200000, providerSessionGeneration: 'foreign-generation' });
   session = await f.hold(agent.id); value = budget(accepted(f.store, agent.id));
   assert.equal(value.occupancyBasis, 'estimated_session'); assert.ok(value.occupancyTokens > 0);
-  assert.equal(value.basis, 'context_policy'); assert.equal(value.windowTokens, undefined);
+  assert.equal(value.basis, 'unknown_provider_window'); assert.equal(value.windowTokens, undefined);
   assert.equal(value.occupancyObservation.source, 'accepted_input_estimate');
   const resumedPacket = accepted(f.store, agent.id);
   assert.equal(value.submittedUtf8Bytes, Buffer.byteLength(JSON.stringify({ input: resumedPacket.exactPrompt })), 'Submitted bytes describe only the actual resumed packet');
@@ -260,6 +265,7 @@ test('continuation budgets charge proven completed-turn occupancy and reject for
   await finish(f, agent, session);
   for (let i = 0; i < 70; i++) authored(f.store, chat, agent, `FALLBACK_POLICY_NOTE_${i} ${'bounded fresh context '.repeat(90)}`, i + 100);
   const turnsBefore = f.turns.length;
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: true }));
   f.plans.set(agent.id, [
     { output: false, run: async s => s.events.push({ type: 'error', terminalStatus: 'failed', message: 'failed to run pre-sampling compact: controlled context budget fallback' }) },
     { hold: true },
@@ -365,29 +371,109 @@ test('fresh replacement ignores discarded occupancy and retrieves old submitted 
   await finish(f, agent, session);
 }));
 
-test('unknown over-policy occupancy rejects required input before provider dispatch and preserves accepted context', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
-  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
-  const chat = await f.createChat('Explicit context overflow'), agent = await f.createIdleAgent(chat, 'Retained context owner');
-  const session = await f.hold(agent.id), generation = session.engineAgentId;
+for (const maxIdleSessions of [0, 2]) test(`Capulin ordinary continuation preserves unknown-window context with rollover disabled (${maxIdleSessions ? 'warm' : 'cold'})`, fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, maxIdleSessions, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, contextRolloverEnabled: false }));
+  const chat = await f.createChat('Capulin reproduction'), agent = await f.createIdleAgent(chat, 'Retained context owner');
+  let session = await f.hold(agent.id); const generation = session.engineAgentId;
   const packet = accepted(f.store, agent.id), frozen = JSON.stringify(packet);
+  await checkpoint(f, agent, session, 115910, 0);
   await finish(f, agent, session);
-  const before = new Set(f.store.sqlite.prepare('SELECT id FROM scheduler_runs WHERE agent_id=?').all(agent.id).map(row => row.id));
+  if (!maxIdleSessions) await until(() => !session.isAlive(), 'idle provider root exits without discarding session');
   const turnsBefore = f.turns.length;
-  f.usage.set(agent.id, { usedTokens: 160000, aggregateTokens: 900000, providerSessionGeneration: generation });
-  await f.send(agent.id, 'Required work must not silently discard or replay the original context.');
-  const runs = await until(() => {
-    const rows = f.store.sqlite.prepare('SELECT id,status,prompt_injection_state FROM scheduler_runs WHERE agent_id=?').all(agent.id).filter(row => !before.has(row.id));
-    return rows.length && rows.every(row => row.status === 'failed') ? rows : false;
-  }, 'over-policy scheduler Run fails before provider admission');
-  assert.equal(runs.length, 1); assert.equal(runs[0].prompt_injection_state, 'not_injected');
-  assert.equal(f.turns.length, turnsBefore, 'Overflow cannot execute or silently replay the task');
-  assert.equal(f.sessions.get(agent.id), session, 'Overflow cannot substitute a fresh provider root');
+  f.usage.set(agent.id, { usedTokens: 115910, aggregateTokens: 900000, providerSessionGeneration: generation });
+  f.plans.set(agent.id, [{ hold: true }]); await f.send(agent.id, 'Yes');
+  await until(() => f.turns.length === turnsBefore + 1, 'short message reaches retained provider session');
+  session = f.sessions.get(agent.id); assert.equal(session.engineAgentId, generation);
+  const next = accepted(f.store, agent.id), value = budget(next);
+  assert.equal(value.basis, 'unknown_provider_window'); assert.equal(value.occupancyTokens, 115910);
+  assert.equal(value.occupancyBasis, 'exact_session'); assert.equal(value.providerSessionGeneration, generation);
+  assert.equal(value.submittedUtf8Bytes, Buffer.byteLength(JSON.stringify({ input: next.exactPrompt })));
+  assert.equal(value.estimatedInputTokens, 115910 + value.postObservationUtf8Bytes + value.submittedUtf8Bytes);
+  assert.ok(value.systemPromptUtf8Bytes + value.toolDefinitionsUtf8Bytes > 1000, 'Static content remains recorded but is already in occupancy');
   assert.equal(f.store.resumeSessionState(agent.id)?.sessionId, generation);
   assert.equal(JSON.stringify(f.store.getProviderInput(packet.executionId, true)), frozen);
-  assert.equal(new CoordinationV3Store(f.store.sqlite).activeAgentRun(agent.id), undefined);
-  const rejection = f.store.sqlite.prepare("SELECT last_delivery_error FROM agent_activations WHERE agent_id=? AND state='failed' ORDER BY created_at DESC LIMIT 1").get(agent.id);
-  assert.match(rejection.last_delivery_error, /context policy.*response headroom/i);
-  assert.match(rejection.last_delivery_error, /413/);
+  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n, 0);
+  await finish(f, agent, session);
+}));
+
+test('a compatible short continuation does not require its fresh reconstruction fallback to fit', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  const instructions = 'KEEP_THESE_RETAINED_RULES '.repeat(1800);
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, contextRolloverEnabled: false, globalInstructions: instructions }));
+  const chat = await f.createChat('Retained large instructions'), agent = await f.createIdleAgent(chat, 'Compatible reader');
+  let session = await f.hold(agent.id); const generation = session.engineAgentId;
+  const original = accepted(f.store, agent.id), frozen = JSON.stringify(original);
+  assert.ok(budget(original).estimatedInputTokens > 45000, 'The fixture must exceed the later reconstruction target');
+  await checkpoint(f, agent, session, 115910, 0); await finish(f, agent, session);
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 75000 }));
+  f.usage.set(agent.id, { usedTokens: 115910, providerSessionGeneration: generation });
+  session = await f.hold(agent.id);
+  const value = budget(accepted(f.store, agent.id));
+  assert.equal(session.engineAgentId, generation); assert.equal(value.basis, 'unknown_provider_window');
+  assert.ok(value.estimatedInputTokens < 150000, 'Retained instructions and tools are not submitted again');
+  assert.equal(JSON.stringify(f.store.getProviderInput(original.executionId, true)), frozen);
+  await finish(f, agent, session);
+}));
+
+for (const unavailableFallback of [false, true]) test(`pre-sampling error cannot reset ${unavailableFallback ? 'an over-budget fallback' : 'a session with automatic rollover disabled'}`, fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, contextRolloverEnabled: false,
+    ...(unavailableFallback ? { globalInstructions: 'KEEP_THESE_RETAINED_RULES '.repeat(1800) } : {}) }));
+  const chat = await f.createChat('Guarded provider fallback'), agent = await f.createIdleAgent(chat, 'Fallback owner');
+  const session = await f.hold(agent.id), generation = session.engineAgentId;
+  const original = accepted(f.store, agent.id), frozen = JSON.stringify(original);
+  await checkpoint(f, agent, session, 25000, 0); await finish(f, agent, session);
+  if (unavailableFallback) {
+    assert.ok(budget(original).estimatedInputTokens > 45000);
+    f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: true, contextRolloverTokens: 75000 }));
+  }
+  f.usage.set(agent.id, { usedTokens: 25000, providerSessionGeneration: generation });
+  const turns = f.turns.length; let attempted;
+  f.plans.set(agent.id, [{ output: false, emitSession: false, run: async s => {
+    attempted = accepted(f.store, agent.id);
+    s.events.push({ type: 'session', sessionId: 'unaccepted-speculative-generation' });
+    s.events.push({ type: 'error', terminalStatus: 'failed', message: 'failed to run pre-sampling compact: controlled no-reset refusal' });
+  } }]);
+  await f.send(agent.id, 'Preserve this compatible context');
+  await until(() => attempted && !new CoordinationV3Store(f.store.sqlite).activeAgentRun(agent.id), 'pre-sampling error settles without a fresh retry');
+  assert.equal(f.turns.length, turns + 1); assert.equal(f.store.resumeSessionState(agent.id)?.sessionId, generation);
+  assert.equal(f.sessions.get(agent.id), session);
+  assert.equal(JSON.stringify(f.store.getProviderInput(original.executionId, true)), frozen);
+  assert.equal(f.store.getProviderInput(attempted.executionId, true).promptHash, attempted.promptHash, 'Failed retained input cannot be rewritten as a fresh attempt');
+  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n, 0);
+}));
+
+test('verified capacity refusal preserves the original message and same-key supported retry delivers once in its session', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, contextRolloverEnabled: false }));
+  const chat = await f.createChat('Verified overflow retry'), agent = await f.createIdleAgent(chat, 'Original message owner');
+  let session = await f.hold(agent.id); const generation = session.engineAgentId;
+  await checkpoint(f, agent, session, 115910, 116000); await finish(f, agent, session);
+  f.usage.set(agent.id, { usedTokens: 115910, windowTokens: 116000, providerSessionGeneration: generation });
+  const turns = f.turns.length;
+  await refusedContinuation(f, agent, 'Yes');
+  const original = (await f.detail(agent.id)).messages.find(row => row.role === 'user' && row.text === 'Yes');
+  assert.ok(original?.communicationEventId);
+  const receipt = f.ok(await f.api('POST', `/api/conversations/${chat.id}/message-delivery-receipts`, {
+    communicationEventIds: [original.communicationEventId], activationIds: [],
+  })).items.flatMap(item => item.deliveryReceipts).find(row => row.canRetry);
+  assert.ok(receipt); assert.notEqual(receipt.providerAcknowledged, true);
+  const before = f.store.sqlite.prepare('SELECT state,last_delivery_error FROM agent_activations WHERE id=?').get(receipt.activationId);
+  assert.match(before.last_delivery_error, /422/); assert.match(before.last_delivery_error, /context_recovery_required/);
+  assert.doesNotMatch(before.last_delivery_error, /Payload Too Large|provider rejected/i);
+  assert.equal(f.store.resumeSessionState(agent.id)?.sessionId, generation);
+  // A controlled new same-generation observation verifies more capacity. No
+  // message is replayed until the supported explicit retry below.
+  f.usage.set(agent.id, { usedTokens: 115910, windowTokens: 200000, providerSessionGeneration: generation });
+  f.plans.set(agent.id, [{ hold: true }]);
+  const url = `/api/projects/${chat.projectId}/message-deliveries/${receipt.activationId}/retry`, body = { idempotencyKey: randomUUID() };
+  const retry = f.ok(await f.api('POST', url, body)), replay = f.ok(await f.api('POST', url, body));
+  assert.equal(retry.accepted, true); assert.equal(replay.replayed, true); assert.equal(replay.activationId, retry.activationId);
+  await until(() => f.turns.length === turns + 1, 'original failed message reaches the retained session once');
+  session = f.sessions.get(agent.id); assert.equal(session.engineAgentId, generation);
+  const packet = accepted(f.store, agent.id); assert.ok(packet.exactPrompt.includes('Yes'));
+  const value = budget(packet); assert.equal(value.occupancyTokens, 115910); assert.equal(value.windowTokens, 200000);
+  assert.deepEqual(f.store.sqlite.prepare('SELECT state,last_delivery_error FROM agent_activations WHERE id=?').get(receipt.activationId), before, 'Original failed attempt remains audit evidence');
+  await finish(f, agent, session);
+  assert.equal((await f.detail(agent.id)).messages.filter(row => row.role === 'user' && row.communicationEventId === original.communicationEventId).length, 1);
+  assert.equal(f.turns.length, turns + 1);
 }));
 
 for (const laterSteering of [false, true]) {
@@ -767,7 +853,7 @@ test('bounded continuation pages preserve FIFO cursor delivery without skipping 
   const chat = await f.createChat('FIFO context continuation'), agent = await f.createIdleAgent(chat, 'Ordered reader');
   broadcast(f.store, chat, 'INITIAL_BROADCAST_CURSOR_ANCHOR');
   let session = await f.hold(agent.id); await checkpoint(f, agent, session, 1000, 120000); await finish(f, agent, session);
-  const notes = Array.from({ length: 65 }, (_, i) => broadcast(f.store, chat, `FIFO_BUDGET_${String(i).padStart(3, '0')} ${'ordered detail '.repeat(95)}`));
+  const notes = Array.from({ length: 95 }, (_, i) => broadcast(f.store, chat, `FIFO_BUDGET_${String(i).padStart(3, '0')} ${'ordered detail '.repeat(95)}`));
   const delivered = []; let batches = 0;
   while (delivered.length < notes.length) {
     assert.ok(batches++ < 10, 'Continuation must make bounded progress');
@@ -789,7 +875,7 @@ test('oversized FIFO head submits its exact read reference before advancing to t
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
   const chat = await f.createChat('Oversized ordered Broadcast'), agent = await f.createIdleAgent(chat, 'Referenced FIFO reader');
   broadcast(f.store, chat, 'OVERSIZED_FIFO_INITIAL_CURSOR');
-  let session = await f.hold(agent.id); await finish(f, agent, session);
+  let session = await f.hold(agent.id); await checkpoint(f, agent, session, 1000, 200000); await finish(f, agent, session);
   const body = `OVERSIZED_FIFO_BEGIN\n${'東京 🌲 café\0\n'.repeat(10000)}OVERSIZED_FIFO_END`;
   const large = broadcast(f.store, chat, body), following = broadcast(f.store, chat, 'FOLLOWING_OVERSIZED_FIFO_MESSAGE');
   session = await f.hold(agent.id);

@@ -2,7 +2,7 @@ import {memorySessionResetSeq} from "../voice-memory-exposure.js";
 import {canonicalVoiceReplyInput} from "../voice-reply-input.js";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { providerInputBudget, estimateProviderInput } from "../context-rollover-pressure.js";
+import { providerInputBudget, estimateProviderInput, contextRecoveryRequired } from "../context-rollover-pressure.js";
 import { readProviderContextUsage, readProviderSessionIdentifier } from "../provider-session-success.js";
 import { projectProviderContextUsage } from "../provider-success-projection.js";
 import {
@@ -893,7 +893,7 @@ export async function prepareAgentRun(
   const acceptedUsage = resumeSessionId ? store.acceptedProviderSessionContextUsage(agent.id) : undefined;
   const retainedEstimate = resumeSessionId && !acceptedUsage ? store.acceptedProviderSessionInputEstimate(agent.id) : undefined;
   if (resumeSessionId && !acceptedUsage && !retainedEstimate) {
-    throw Object.assign(new Error("Retained provider context cannot be safely measured under the context policy. Native work or uncertain input requires explicit context recovery before another turn."), { statusCode: 413 });
+    throw contextRecoveryRequired("Retained provider context cannot be safely measured. Native work or uncertain input requires explicit context recovery before another turn.");
   }
   const { type: _usageType, providerSessionId: _observedSession, providerCommand: _commandOwner, ...durableUsage } = acceptedUsage?.usage ?? {};
   const measuredUsage = acceptedUsage ? projectProviderContextUsage(durableUsage) : undefined;
@@ -917,13 +917,14 @@ export async function prepareAgentRun(
   } : undefined;
   const currentBudget = providerInputBudget(workspacePreferences, budgetUsage, {
     resumeSessionId, replacementLowWaterMark: replacementCandidateRollover?.lowWaterMark,
-    handoff: ownsFrozenHandoff, occupancyObservation,
+    occupancyObservation,
     ...(retainedEstimate ? { estimatedSessionUtf8Bytes: retainedEstimate.acceptedInputUtf8Bytes + retainedEstimate.outputUtf8Bytes + retainedStaticUtf8Bytes } : {}),
     postObservationUtf8Bytes: acceptedUsage?.postObservationUtf8Bytes,
   });
   const freshBudget = providerInputBudget(workspacePreferences, budgetUsage, {
     replacementLowWaterMark: replacementCandidateRollover?.lowWaterMark,
   });
+  const reconstructionCeiling = freshBudget.inputCeilingTokens!;
   const omissionState = () => {
     const room = Boolean(roomDeltaPage?.hasMore || roomSeedPage?.hasMore) ||
       boundedHistoryOmitted(pendingRoomMessages, roomMessages);
@@ -968,7 +969,7 @@ export async function prepareAgentRun(
   const estimate = (fresh: boolean, exact: string) => estimateProviderInput(
     fresh ? freshBudget : currentBudget, systemPrompt, availableRuntimeTools, exact,
   );
-  const overflow = () => Object.assign(new Error("Required provider input exceeds the available context policy after response headroom; instructions and canonical history were retained. Compact context or reduce the required input before retrying."), { statusCode: 413 });
+  const overflow = () => contextRecoveryRequired("Required provider input exceeds the verified provider window or the fresh reconstruction budget; instructions and canonical history were retained. Use Context Refresh or reduce required input before retrying. This is a host estimate, not a provider rejection.");
   // Reserve the complete required packet first. History uses only its remaining
   // allowance, including provenance, JSON escaping, tools and outer wrappers.
   const originalCandidates = boundedHistoryCandidates;
@@ -976,17 +977,21 @@ export async function prepareAgentRun(
   boundedHistoryCandidates = []; updateSeed(); freshRoomMessages = []; freshBroadcastContext = [];
   const requiredFreshPrompt = await compilePrompt(true, true);
   const requiredFreshEstimate = estimate(true, requiredFreshPrompt);
-  if (requiredFreshEstimate.estimatedInputTokens > freshBudget.inputCeilingTokens) throw overflow();
-  boundedHistoryCandidates = originalCandidates;
-  freshRoomMessages = originalFreshRoom; freshBroadcastContext = originalFreshBroadcast;
+  const freshRequiredFits = requiredFreshEstimate.estimatedInputTokens <= reconstructionCeiling;
+  if (!freshRequiredFits && !resumeSessionId) throw overflow();
+  // An unavailable fresh fallback is not an admission failure for compatible
+  // retained context. The executor checks its frozen budget before replacing.
+  boundedHistoryCandidates = freshRequiredFits ? originalCandidates : [];
+  freshRoomMessages = freshRequiredFits ? originalFreshRoom : [];
+  freshBroadcastContext = freshRequiredFits ? originalFreshBroadcast : [];
   if (frozenRolloverTail) {
-    const available = freshBudget.inputCeilingTokens - requiredFreshEstimate.estimatedInputTokens;
+    const available = reconstructionCeiling - requiredFreshEstimate.estimatedInputTokens;
     boundedHistoryCandidates = boundedFrozenSeedHistory(fullHistory, available);
   }
   updateSeed();
   let freshPrompt = await compilePrompt(true, omissionState().fresh);
   let freshExactProviderInput = renderSeedPrompt(seedHistory, freshPrompt);
-  let frozenAllowance = freshBudget.inputCeilingTokens - requiredFreshEstimate.estimatedInputTokens;
+  let frozenAllowance = reconstructionCeiling - requiredFreshEstimate.estimatedInputTokens;
   const contextNames = new Map(contextAgents.map(member => [member.id, member.title]));
   const serializedBytes = (value: string) => Buffer.byteLength(JSON.stringify(value), "utf8");
   const contextBytes = (message: ConversationMessageDto, broadcast: boolean) => {
@@ -1002,8 +1007,8 @@ export async function prepareAgentRun(
       excess -= contextBytes(message, broadcast);
     }
   };
-  while (estimate(true, freshExactProviderInput).estimatedInputTokens > freshBudget.inputCeilingTokens) {
-    const excess = estimate(true, freshExactProviderInput).estimatedInputTokens - freshBudget.inputCeilingTokens;
+  while (freshRequiredFits && estimate(true, freshExactProviderInput).estimatedInputTokens > reconstructionCeiling) {
+    const excess = estimate(true, freshExactProviderInput).estimatedInputTokens - reconstructionCeiling;
     if (freshBroadcastContext.length) trimContext(freshBroadcastContext, excess, false, true);
     else if (freshRoomMessages.length) trimContext(freshRoomMessages, excess, false, false);
     else if (frozenRolloverTail) {
@@ -1020,7 +1025,8 @@ export async function prepareAgentRun(
         const [removed] = boundedHistoryCandidates.splice(secondary < 0 ? 0 : secondary, 1);
         remainingExcess -= serializedBytes(renderSeedHistoryMessage(removed!));
       }
-    } else throw overflow();
+    } else if (resumeSessionId) break;
+    else throw overflow();
     updateSeed();
     freshPrompt = await compilePrompt(true, true);
     freshExactProviderInput = renderSeedPrompt(seedHistory, freshPrompt);
@@ -1033,7 +1039,7 @@ export async function prepareAgentRun(
   let prompt = resumeSessionId ? await compilePrompt(false, omissionState().current) : freshPrompt;
   let exactProviderInput = resumeSessionId ? renderSeedPrompt(contextArtifactHistory, prompt) : freshExactProviderInput;
   let clippedFifoHead = false;
-  while (estimate(false, exactProviderInput).estimatedInputTokens > currentBudget.inputCeilingTokens) {
+  while (currentBudget.inputCeilingTokens !== undefined && estimate(false, exactProviderInput).estimatedInputTokens > currentBudget.inputCeilingTokens) {
     const messages = initialBroadcastContext.length ? initialBroadcastContext : roomMessages;
     const fifo = initialBroadcastContext.length ? broadcastIncremental : incremental;
     if (!messages.length) throw overflow();
@@ -1274,9 +1280,9 @@ export async function prepareAgentRun(
       recoveryPolicyHash !== policySnapshotHash)) {
     throw new Error("context rollover recovery provider contract changed since the exact packet was committed");
   }
-  if (recoveryProviderInput && estimate(true, recoveryProviderInput.exactPrompt!).estimatedInputTokens > freshBudget.inputCeilingTokens) {
+  if (recoveryProviderInput && estimate(true, recoveryProviderInput.exactPrompt!).estimatedInputTokens > reconstructionCeiling) {
     // Immutable recovery evidence is never rebudgeted or silently clipped.
-    throw Object.assign(new Error("The exact saved recovery input exceeds the current context policy after response headroom; the accepted packet and recovery authority were retained."), { statusCode: 413 });
+    throw contextRecoveryRequired("The exact saved recovery input exceeds the fresh reconstruction budget; the accepted packet and recovery authority were retained.");
   }
   const effectiveSeedHistory = recoveryProviderInput ? [] : seedHistory;
   // Resumed adapters receive no seed history. Submit the same rendered
