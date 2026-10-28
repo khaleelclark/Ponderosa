@@ -1,8 +1,69 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { AgentStore, CoordinationV3Store } from '@ponderosa/agents';
+import { createServer } from '../../apps/server/dist/app.js';
 import { withFixture, until, fixtureTestOptions } from '../shared/fixture.mjs';
+
+test('ordinary one-shot sessions bind fresh acknowledgements and fence late cancelled session events', fixtureTestOptions, async t => {
+  const root=await realpath(await mkdtemp(path.join(tmpdir(),'ponderosa-one-shot-budget-')));
+  const store=new AgentStore(path.join(root,'data')),coord=new CoordinationV3Store(store.sqlite);
+  const project=store.createProject({label:'Ordinary one-shot',hostPath:root,defaultEngine:'fixture',chatOwned:true});
+  const chat=store.getConversation(project.lastConversationId),agent=store.createAgent(project.id,{title:'One-shot reader',engine:'fixture',conversationId:chat.id});
+  const generation=randomUUID(),forged=randomUUID(),token=randomUUID(),headers={authorization:'Bearer '+token};
+  let app,passed=false,turns=0,seeds=0,release;
+  const gate=new Promise(resolve=>release=resolve),inputs=[];
+  const run=async function*(opts,fresh){
+    turns++;if(fresh)seeds++;
+    assert.equal(opts.resumeSessionId,fresh?undefined:generation);
+    const owner=coord.activeAgentRun(agent.id);assert.ok(owner);
+    inputs.push(store.getProviderInput(owner.id,true));
+    if(turns===3){
+      await gate;
+      // A provider may deliver buffered events after abort. They cannot
+      // acknowledge a cancelled fence or replace the accepted generation.
+      yield {type:'session',sessionId:forged};
+      yield {type:'context_usage',providerSessionId:forged,providerSessionGeneration:forged,usedTokens:1,windowTokens:200000};
+      yield {type:'turn_done'};return;
+    }
+    yield {type:'session',sessionId:generation};
+    const reply=await app.inject({method:'POST',url:'/api/agent-messages',headers:{authorization:'Bearer '+opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN},payload:{text:'Ordinary one-shot reply '+turns}});
+    assert.equal(reply.statusCode,200,reply.body);
+    yield {type:'context_usage',providerSessionId:generation,providerSessionGeneration:generation,usedTokens:1000,windowTokens:200000,requestOutputIncluded:true};
+    yield {type:'turn_done'};
+  };
+  const adapter={id:'fixture',displayName:'Inert one-shot',trustedSystemPromptChannel:'developer',listModels:()=>[],listEfforts:()=>[],seed:opts=>run(opts,true),continue:opts=>run(opts,false)};
+  try{
+    app=createServer({dataDir:path.join(root,'data'),store,authToken:token,engines:[{adapter,authStatus:async()=>({authenticated:true})}],logger:false,
+      resourceAdmissionObservation:{sample:async()=>({availableBytes:8*1024**3,memoryFullPercent:0,ioFullPercent:0,source:'linux_host'})},communicationV3:{pollMs:10}});
+    const send=()=>app.inject({method:'POST',url:'/api/conversations/'+chat.id+'/direct-messages',headers,payload:{text:'Independent ordinary task',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue'}});
+    const completed=()=>store.sqlite.prepare("SELECT id,provider_session_id FROM scheduler_runs WHERE agent_id=? AND status='completed' ORDER BY fencing_token").all(agent.id);
+    assert.equal((await send()).statusCode,200);
+    await until(()=>completed().length===1&&!coord.activeAgentRun(agent.id),'first one-shot completion');
+    assert.equal(completed()[0].provider_session_id,generation,'Fresh normalized session event owns its acknowledged input');
+    assert.equal(store.acceptedProviderSessionContextUsage(agent.id)?.usage.providerSessionGeneration,generation);
+    const frozen=JSON.stringify(inputs[0]);
+    assert.equal((await send()).statusCode,200);
+    await until(()=>completed().length===2&&!coord.activeAgentRun(agent.id),'compatible measured one-shot continuation');
+    assert.equal(turns,2);assert.equal(seeds,1,'A compatible continuation does not silently reseed');
+    assert.equal(completed()[1].provider_session_id,generation);
+    assert.equal(inputs[1].sourceManifest.contextBudget.occupancyObservation.source,'accepted_run');
+    assert.equal((await send()).statusCode,200);await until(()=>turns===3,'held exact one-shot continuation');
+    const cancelled=coord.activeAgentRun(agent.id);assert.ok(cancelled);
+    const cancel=await app.inject({method:'POST',url:'/api/agents/'+agent.id+'/cancel',headers,payload:{targetRunId:cancelled.id,idempotencyKey:randomUUID()}});assert.equal(cancel.statusCode,200,cancel.body);
+    release();await until(()=>!coord.activeAgentRun(agent.id),'late one-shot events fenced');
+    assert.ok(!store.readEvents(agent.id).some(({event})=>event.type==='session'&&event.sessionId===forged||event.type==='context_usage'&&event.providerSessionGeneration===forged));
+    assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM scheduler_runs WHERE agent_id=? AND provider_session_id=?').get(agent.id,forged).n,0);
+    assert.equal(JSON.stringify(store.getProviderInput(inputs[0].executionId,true)),frozen);
+    passed=true;
+  }finally{
+    release();if(app){app.prepareForShutdown();await app.close();}store.close();
+    if(passed)await rm(root,{recursive:true,force:true});else t.diagnostic('Retained one-shot fixture: '+root);
+  }
+});
 
 function authored(store, chat, agent, text, index = 0) {
   const event = { schemaVersion: 2, eventId: randomUUID(), projectId: chat.projectId, conversationId: chat.id,

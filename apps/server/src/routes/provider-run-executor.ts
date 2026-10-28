@@ -880,7 +880,7 @@ export function startProviderRunExecution(
               injectionId: v3InjectionId!,
               runId: activeRun.v3SchedulerRunId,
               fencingToken: activeRun.v3FencingToken,
-              providerSessionId: sessionId ?? (persistentRuntime
+              providerSessionId: sessionId ?? (event.type === "session" ? event.sessionId : persistentRuntime
                 ? readProviderSessionIdentifier(persistentRuntime.session)
                 : undefined),
             });
