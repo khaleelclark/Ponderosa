@@ -781,7 +781,7 @@ export function startProviderRunExecution(
 
       let sessionId = resumeSessionId;
       while (true) {
-        const bufferedSessionEvents: AgentEvent[] = [];
+        const bufferedSessionEvents: Extract<AgentEvent, { type: "session" }>[] = [];
         let retryFresh = false;
         if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected) {
           coordinationV3!.markPromptSubmitted({
