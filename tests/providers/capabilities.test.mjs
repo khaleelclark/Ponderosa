@@ -142,3 +142,30 @@ test('Claude context includes actual request-local output while missing output s
   }
   assert.equal(observations.contextUsage().usedTokens, 133);
 });
+
+
+test('native Codex compact returns only gate-proven fresh telemetry and keeps RPC success when telemetry is absent', async () => {
+  const { CodexAppServerSession, ContextUsageObservationGate } = await import('../../packages/engines/dist/codex-app-server.js');
+  const { projectProviderCommandResult } = await import('../../apps/server/dist/provider-success-projection.js');
+  for (const observed of [true, false]) {
+    const session = Object.create(CodexAppServerSession.prototype);
+    session.engineAgentId = 'compact-owned-generation';
+    session.contextUsageGate = new ContextUsageObservationGate();
+    session.latestContextUsage = { usedTokens: 160000, modelContextWindow: 200000 };
+    session.capabilities = async () => ({ commands: [{ name: 'compact', invocation: 'runtime', status: 'available' }] });
+    let compactRpcs = 0;
+    session.rpc = { request: async (method, input) => {
+      assert.equal(method, 'thread/compact/start'); assert.equal(input.threadId, session.engineAgentId); compactRpcs++;
+      if (observed) session.observeNotification({ method: 'thread/tokenUsage/updated', params: {
+        threadId: session.engineAgentId, tokenUsage: { last: { totalTokens: 25000 }, modelContextWindow: 200000 },
+      } });
+    } };
+    if (!observed) session.contextUsageGate.waitAfter = async () => { throw Error('controlled optional telemetry timeout'); };
+    const result = projectProviderCommandResult(await session.invokeCommand('compact'));
+    assert.equal(compactRpcs, 1);
+    if (observed) assert.deepEqual(result.contextUsage, { usedTokens: 25000, windowTokens: 200000, providerSessionGeneration: session.engineAgentId });
+    else { assert.equal(result.contextUsage, undefined); assert.match(result.message, /completed.*unavailable.*not repeat/i); }
+  }
+  const malformed = projectProviderCommandResult({ contextUsage: { usedTokens: 'invalid' } });
+  assert.equal(malformed.contextUsage, undefined); assert.match(malformed.message, /completed.*invalid.*not repeat/i);
+});

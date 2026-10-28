@@ -48,13 +48,13 @@ export function runtimeAttachmentPaths(value) {
 // The child is real but inert: no shell, network, provider account or user data.
 // Inert Windows roots cannot spawn descendants and are assigned to an exact
 // kill-on-close Job before publication; POSIX roots keep their detached group.
-export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage } = {}) {
+export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerValidatesResumeBeforeTurn = false } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
   let closingFixture = false;
   const capabilities = { steering: true, persistentSessions: true, commands: [], mcpServers: [], composerCapabilities: [] };
-  const providerProbes = [], capabilityDiscoveries = [];
+  const providerProbes = [], capabilityDiscoveries = [], knownProviderSessions = new Map();
   const adapter = {
     id: 'codex', displayName: 'Controlled regression adapter', trustedSystemPromptChannel: 'developer',
     ...(modelValidator ? { validateModel: modelValidator } : {}),
@@ -64,6 +64,11 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
     async *seed() { throw Error('Persistent fixture unexpectedly used one-shot seed'); },
     async *continue() { throw Error('Persistent fixture unexpectedly used one-shot continuation'); },
     async openSession(options) {
+      const known = knownProviderSessions.get(options.agentId) ?? new Set();
+      if (providerValidatesResumeBeforeTurn && options.resumeSessionId) {
+        assert.ok(known.has(options.resumeSessionId), 'Verified fixture resume refused an unknown or foreign Agent generation');
+      }
+      const engineAgentId = options.resumeSessionId ?? randomUUID();
       const events = new Events();
       const job = process.platform === 'win32' ? new WindowsProcessJob() : undefined;
       let child;
@@ -83,7 +88,8 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
       }
       let closing;
       const session = {
-        engineAgentId: options.resumeSessionId ?? randomUUID(), events,
+        engineAgentId, events,
+        ...(providerValidatesResumeBeforeTurn ? { validatesResumeBeforeTurn: true } : {}),
         processIdentity: job ? undefined : { pid: child.pid, pgid: child.pid, birthMarker },
         isAlive: () => !record.exited || (job?.activeProcesses() ?? 0) > 0,
         close: async () => {
@@ -106,7 +112,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
         capabilities: async () => ({ ...capabilities, sessionId: session.engineAgentId, model: 'fixture' }),
         invokeCommand: async (name, argumentsText) => {
           commands.push({ agentId: options.agentId, sessionId: session.engineAgentId, name, argumentsText });
-          return { message: 'Controlled command completed' };
+          return providerCommandResult ? await providerCommandResult({ agentId: options.agentId, sessionId: session.engineAgentId, name, argumentsText }) : { message: 'Controlled command completed' };
         },
         contextUsage: () => providerContextUsage
           ? providerContextUsage({ agentId: options.agentId, sessionId: session.engineAgentId })
@@ -141,6 +147,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
         },
       };
       record.close = session.close;
+      known.add(engineAgentId); knownProviderSessions.set(options.agentId, known);
       sessions.set(options.agentId, session); options.onRuntimeSpawned(session); return session;
     },
   };

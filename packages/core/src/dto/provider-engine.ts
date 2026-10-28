@@ -70,8 +70,8 @@ export interface ProviderInputSourceManifestV3 {
     /** Conservative estimate of subsequent durable output; old observations stay unchanged. */
     postObservationUtf8Bytes: number;
     providerSessionGeneration?: string;
-    occupancyObservation?: { source: "live_session" | "accepted_run" | "accepted_input_estimate"; providerSessionId: string;
-      observedAt?: string; sampledAt?: string; executionId?: string; requestOutputIncluded?: boolean;
+    occupancyObservation?: { source: "live_session" | "accepted_run" | "provider_command" | "accepted_input_estimate"; providerSessionId: string;
+      observedAt?: string; sampledAt?: string; executionId?: string; commandInvocationId?: string; fencingToken?: number; requestOutputIncluded?: boolean;
       acceptedInputUtf8Bytes?: number; outputUtf8Bytes?: number; retainedStaticUtf8Bytes?: number; liveLowerBoundTokens?: number };
     submittedUtf8Bytes: number;
     systemPromptUtf8Bytes: number;

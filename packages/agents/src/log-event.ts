@@ -200,10 +200,15 @@ export interface ArtifactVisibilityEvent {
 /** Runtime completion enriched by the server with its canonical execution id. */
 export type TurnDoneLogEvent = Extract<AgentEvent, { type: "turn_done" }> & { executionId?: string };
 
+/** Host-owned binding for fresh native-command telemetry, never provider input. */
+export type ContextUsageLogEvent = Extract<AgentEvent, { type: "context_usage" }> & {
+  providerCommand?: { name: "compact"; executionId: string; fencingToken: number; invocationId: string };
+};
+
 /** Anything that can be appended to an agent's `events.jsonl`. */
 export type LogEvent = import("@ponderosa/core").MemoryChangedEvent | import("@ponderosa/core").VoiceReplyEvent | UserMessageEvent | SessionResetEvent | SessionSnapshotEvent | ContextRolloverSessionAcceptedEvent | ContinuationHandoffEvent | ContinuationHandoffConsumedEvent | CommunicationProjectionEvent | CompactionHistoryRetrievalEvent | AgentLifecycleEvent | CoordinationV3ChangedEvent | GeneratedArtifactEvent | ArtifactVisibilityEvent |
-  AgentOutputEvent | TurnDoneLogEvent | ContextRolloverTriggeredEvent |
-  (Extract<AgentEvent, { type: "work_start" }> & { executionId: string }) | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" | "response_text" | "work_start" }> | AgentExecutionDeltaEvent;
+  AgentOutputEvent | TurnDoneLogEvent | ContextRolloverTriggeredEvent | ContextUsageLogEvent |
+  (Extract<AgentEvent, { type: "work_start" }> & { executionId: string }) | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" | "response_text" | "work_start" | "context_usage" }> | AgentExecutionDeltaEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-agent seq + ts. */
 export interface StoredLogEvent {

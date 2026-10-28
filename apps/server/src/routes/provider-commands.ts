@@ -375,7 +375,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
             composerCapabilities: [],
           };
       const command = catalog.commands.find((candidate) => candidate.name === name);
-      if (activeRuns.has(agent.id)) {
+      if (activeRuns.has(agent.id) || coordinationV3.activeAgentRun(agent.id)) {
         throw new Error("structured provider commands require an idle runtime");
       }
       if (!session.capabilities || !session.invokeCommand) {
@@ -386,29 +386,32 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         Object.assign(error, { catalogVersion: catalog.catalogVersion });
         throw error;
       }
+      const commandBoundary = name === "compact" ? store.providerCommandContextBoundary(agent.id) : undefined;
+      const invocationId = randomUUID();
       const result = projectProviderCommandResult(await session.invokeCommand(name, argumentsText));
       if (name === "compact") {
-        let usage: ReturnType<typeof readProviderContextUsage>;
         try {
-          usage = readProviderContextUsage(session);
-        } catch {
-          // Native compaction already succeeded. Invalid optional telemetry
-          // must not invite a duplicate command retry or influence rollover.
-          usage = undefined;
-        }
-        const providerSessionGeneration = usage?.providerSessionGeneration;
-        if (usage && providerSessionGeneration) {
+          const usage = result.contextUsage;
           const providerSessionId = readProviderSessionIdentifier(session);
-          const cancelled = coordinationV3.retireContextRolloverAfterHeadroomRecovery({
-            agentId: agent.id,
-            providerSessionGeneration,
-            providerSessionId,
-            usedTokens: usage.usedTokens,
-          });
-          if (cancelled) {
-            scheduledSessionRollovers.delete(agent.id);
-            notifyScheduler();
+          const stored = usage && commandBoundary && providerSessionId === commandBoundary.providerSessionId &&
+              usage.providerSessionGeneration === providerSessionId && !isClosed() &&
+              !deletingAgentIds.has(agent.id) && !deletingProjectIds.has(project.id)
+            ? store.recordProviderCommandContextUsage(agent.id, commandBoundary, { ...usage, providerSessionGeneration: providerSessionId }, invocationId) : undefined;
+          if (stored) {
+            publish(agent.id, stored);
+            const cancelled = coordinationV3.retireContextRolloverAfterHeadroomRecovery({
+              agentId: agent.id, providerSessionGeneration: providerSessionId,
+              providerSessionId, usedTokens: usage!.usedTokens,
+            });
+            if (cancelled) { scheduledSessionRollovers.delete(agent.id); notifyScheduler(); }
+          } else {
+            result.message ??= "Compaction completed; updated context usage could not be recorded. Do not repeat the command solely to refresh telemetry.";
           }
+        } catch (error) {
+          // Native compaction succeeded. An audit/ownership/telemetry failure
+          // must not turn it into a retryable command or trust a stale getter.
+          app.log.warn({ providerError: restrictedProviderExceptionLogDetail(error), agentId: agent.id }, "completed compact context observation was not recorded");
+          result.message ??= "Compaction completed; updated context usage could not be recorded. Do not repeat the command solely to refresh telemetry.";
         }
       }
       return { catalog, ...(result.message ? { message: result.message } : {}) };
@@ -430,7 +433,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       if (isClosed() || deletingProjectIds.has(project.id) || deletingAgentIds.has(agent.id)) {
         return reply.code(409).send({ error: "this Agent is unavailable for provider commands", retryable: true });
       }
-      if (activeRuns.has(agent.id)) {
+      if (activeRuns.has(agent.id) || coordinationV3.activeAgentRun(agent.id)) {
         return reply.code(409).send({ error: "structured provider commands require an idle runtime", retryable: true });
       }
       try {
@@ -488,6 +491,9 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       selection.effort,
     );
       const resumeSessionId = persisted?.toolContractHash === runtimeSessionContractHash ? persisted.sessionId : undefined;
+      if (name === "compact" && (!resumeSessionId || !store.providerCommandContextBoundary(agent.id))) {
+        return reply.code(409).send({ error: "Native /compact requires the accepted compatible provider runtime. Use Context Refresh to rebuild this Agent's context." });
+      }
       const authority: CapabilityDiscoveryAuthority = {
         projectId: project.id,
         agentId: agent.id,

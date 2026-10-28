@@ -109,7 +109,7 @@ import {
 } from "./store-data-directory.js";
 export { AgentDeletionConflictError } from "./store-agent-management.js";
 import type { Db } from "./db.js";
-import type { LogEvent } from "./log-event.js";
+import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import type {
   ContextReadBoundary,
   ContextSourcePage,
@@ -546,6 +546,30 @@ export class AgentStore extends AgentEventSessionFacade {
     return start && terminal && terminal.seq > start.seq ? { ...boundary, run, start, terminal } : undefined;
   }
 
+  /** Capture and recheck the canonical idle boundary around an async native
+   * command. A leased Run counts as active even before it reaches activeRuns. */
+  providerCommandContextBoundary(agentId: string) {
+    if (this.client.prepare(`SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running') LIMIT 1`).get(agentId)) return undefined;
+    const proof = this.acceptedProviderSessionCompletedRun(agentId);
+    const accepted = this.resumeSessionState(agentId);
+    return proof && accepted?.sessionId === proof.sessionId && accepted.toolContractHash ? {
+      providerSessionId: proof.sessionId, executionId: proof.run.id, fencingToken: proof.run.fencing_token,
+      toolContractHash: accepted.toolContractHash,
+    } : undefined;
+  }
+
+  recordProviderCommandContextUsage(agentId: string,
+    boundary: { providerSessionId: string; executionId: string; fencingToken: number; toolContractHash: string },
+    usage: Omit<Extract<LogEvent, {type: "context_usage"}>, "type" | "providerSessionId" | "providerCommand">,
+    invocationId: string,
+  ): StoredLogEvent | undefined {
+    const current = this.providerCommandContextBoundary(agentId);
+    if (!current || current.providerSessionId !== boundary.providerSessionId || current.executionId !== boundary.executionId ||
+        current.fencingToken !== boundary.fencingToken || current.toolContractHash !== boundary.toolContractHash || usage.providerSessionGeneration !== boundary.providerSessionId) return undefined;
+    return this.appendEvent(agentId, { type: "context_usage", ...usage, providerSessionId: boundary.providerSessionId,
+      providerCommand: { name: "compact", executionId: boundary.executionId, fencingToken: boundary.fencingToken, invocationId } });
+  }
+
   /** Warm and cold resumes share this completed-Run proof. Native work and
    * uncertain steering after the checkpoint cannot be estimated as plain text. */
   acceptedProviderSessionContextUsage(agentId: string): {
@@ -557,27 +581,32 @@ export class AgentStore extends AgentEventSessionFacade {
     const { sessionId, run, start, terminal } = proof;
     const row = this.client.prepare(`SELECT substr(payload_json,1,4096) AS payload_json,
         length(CAST(payload_json AS BLOB)) AS bytes, created_at, seq
-      FROM events WHERE agent_id=? AND type='context_usage' AND seq>? AND seq<?
-      ORDER BY seq DESC LIMIT 1`).get(agentId, start.seq, terminal.seq) as {
+      FROM events WHERE agent_id=? AND type='context_usage' AND seq>?
+        AND (seq<? OR (json_extract(payload_json,'$.providerCommand.name')='compact'
+          AND json_extract(payload_json,'$.providerCommand.executionId')=?
+          AND json_extract(payload_json,'$.providerCommand.fencingToken')=?))
+      ORDER BY seq DESC LIMIT 1`).get(agentId, start.seq, terminal.seq, run.id, run.fencing_token) as {
         payload_json: string; bytes: number; created_at: string; seq: number;
       } | undefined;
     if (!row || row.bytes > 4096) return undefined;
     const usage = JSON.parse(row.payload_json) as Extract<LogEvent, {type: "context_usage"}>;
     if (usage.type !== "context_usage" || usage.providerSessionId !== sessionId ||
         usage.providerSessionGeneration !== sessionId) return undefined;
+    const upper = row.seq < terminal.seq ? terminal.seq :
+      ((this.client.prepare("SELECT MAX(seq)+1 AS seq FROM events WHERE agent_id=?").get(agentId) as {seq: number}).seq);
     const steering = this.client.prepare(`SELECT 1 FROM scheduler_prompt_injections
       WHERE run_id=? AND kind='steer' AND (state IN ('submitted','outcome_unknown')
         OR (state='acknowledged' AND acknowledged_at>=?)) LIMIT 1`
     ).get(run.id, row.created_at);
     if (steering) return undefined;
     const unmeteredWork = this.client.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq>? AND seq<?
-      AND type IN ('tool_call','tool_result','command','file_change','work_start') LIMIT 1`).get(agentId, row.seq, terminal.seq);
+      AND type IN ('tool_call','tool_result','command','file_change','work_start') LIMIT 1`).get(agentId, row.seq, upper);
     if (unmeteredWork) return undefined;
     // SQL counts complete serialized output (including escaping/wrappers),
     // never materializing historical bodies in the compiler.
     const tail = this.client.prepare(`SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) AS bytes
       FROM events WHERE agent_id=? AND seq>? AND seq<? AND type IN ('text','reasoning')`
-    ).get(agentId, row.seq, terminal.seq) as {bytes: number};
+    ).get(agentId, row.seq, upper) as {bytes: number};
     return { usage, observedAt: row.created_at, executionId: run.id, postObservationUtf8Bytes: tail.bytes };
   }
 

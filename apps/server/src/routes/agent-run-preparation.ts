@@ -895,7 +895,7 @@ export async function prepareAgentRun(
   if (resumeSessionId && !acceptedUsage && !retainedEstimate) {
     throw Object.assign(new Error("Retained provider context cannot be safely measured under the context policy. Native work or uncertain input requires explicit context recovery before another turn."), { statusCode: 413 });
   }
-  const { type: _usageType, providerSessionId: _observedSession, ...durableUsage } = acceptedUsage?.usage ?? {};
+  const { type: _usageType, providerSessionId: _observedSession, providerCommand: _commandOwner, ...durableUsage } = acceptedUsage?.usage ?? {};
   const measuredUsage = acceptedUsage ? projectProviderContextUsage(durableUsage) : undefined;
   // Reject foreign-generation capacity once, for both current and fresh packets.
   const budgetUsage = measuredUsage ? { ...measuredUsage,
@@ -904,7 +904,8 @@ export async function prepareAgentRun(
   } : validLiveUsage;
   const retainedStaticUtf8Bytes = retainedEstimate ? Buffer.byteLength(JSON.stringify({ systemPrompt, tools: availableRuntimeTools }), "utf8") : 0;
   const occupancyObservation = acceptedUsage ? {
-    source: "accepted_run" as const, providerSessionId: acceptedUsage.usage.providerSessionId,
+    source: acceptedUsage.usage.providerCommand ? "provider_command" as const : "accepted_run" as const, providerSessionId: acceptedUsage.usage.providerSessionId,
+    ...(acceptedUsage.usage.providerCommand ? { commandInvocationId: acceptedUsage.usage.providerCommand.invocationId, fencingToken: acceptedUsage.usage.providerCommand.fencingToken } : {}),
     observedAt: acceptedUsage.observedAt, executionId: acceptedUsage.executionId,
     ...(acceptedUsage.usage.requestOutputIncluded === undefined ? {} : { requestOutputIncluded: acceptedUsage.usage.requestOutputIncluded }),
     ...(validLiveUsage ? { liveLowerBoundTokens: validLiveUsage.usedTokens } : {}),
