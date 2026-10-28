@@ -611,6 +611,81 @@ test('explicit Context Refresh retires unknown idle context without inventing a 
   await finish(f, agent, next);
 }, { providerValidatesResumeBeforeTurn: true }));
 
+test('explicit Context Refresh preserves public warm and cold pre-submission failures without replaying them', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
+  const chat = await f.createChat('Public refused-input recovery'), agent = await f.createIdleAgent(chat, 'Refused-input owner');
+  f.capabilities.commands = [compactCommand];
+  const session = await f.hold(agent.id), packet = accepted(f.store, agent.id), frozen = JSON.stringify(packet);
+  await checkpoint(f, agent, session, 25000); await finish(f, agent, session);
+  f.commandResults.set(agent.id, () => ({ outcome: 'completed', message: 'Compaction completed without updated telemetry.' }));
+  f.ok(await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' }));
+  await refusedContinuation(f, agent, 'PUBLIC_REFUSAL_WARM');
+  await f.reopen(); await refusedContinuation(f, agent, 'PUBLIC_REFUSAL_COLD');
+  const failed = () => f.store.sqlite.prepare(`SELECT obligation.*, run.status, run.prompt_injection_state,
+    run.provider_session_id, run.started_at, activation.state activation_state, activation.terminal_outcome,
+    injection.state injection_state, injection.submitted_at, injection.acknowledged_at
+    FROM required_reply_obligations obligation JOIN scheduler_runs run ON run.id=obligation.run_id
+    JOIN agent_activations activation ON activation.id=obligation.source_activation_id
+    JOIN scheduler_prompt_injections injection ON injection.run_id=run.id
+    WHERE obligation.agent_id=? AND obligation.state='failed' ORDER BY run.fencing_token`).all(agent.id);
+  const failures = failed(); assert.equal(failures.length, 2);
+  for (const row of failures) {
+    assert.equal(row.status, 'failed'); assert.equal(row.prompt_injection_state, 'not_injected');
+    assert.equal(row.provider_session_id, null); assert.equal(row.started_at, null);
+    assert.equal(row.activation_state, 'failed'); assert.equal(row.terminal_outcome, 'permanent_failure');
+    assert.equal(row.injection_state, 'cancelled'); assert.equal(row.submitted_at, null); assert.equal(row.acknowledged_at, null);
+  }
+  const audit = () => failures.map(row => ({
+    obligation: f.store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=?').get(row.run_id),
+    run: f.store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(row.run_id),
+    activation: f.store.sqlite.prepare('SELECT * FROM agent_activations WHERE id=?').get(row.source_activation_id),
+    injections: f.store.sqlite.prepare('SELECT * FROM scheduler_prompt_injections WHERE run_id=? ORDER BY sequence').all(row.run_id),
+  }));
+  const originalAudit = audit();
+  const turns = f.turns.length, runCount = f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs WHERE agent_id=?').get(agent.id).n;
+  const refresh = f.ok(await f.api('POST', `/api/agents/${agent.id}/compact`, {}));
+  assert.equal(refresh.mode, 'canonical_refresh');
+  assert.equal(new CoordinationV3Store(f.store.sqlite).contextRollover(refresh.rolloverId).completionReason, 'no_continuation_required');
+  assert.equal(f.turns.length, turns); assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs WHERE agent_id=?').get(agent.id).n, runCount);
+  assert.deepEqual(audit(), originalAudit, 'Refresh preserves the rejected inputs and their failed-delivery audit');
+  const next = await f.hold(agent.id), fresh = accepted(f.store, agent.id);
+  assert.equal(f.turns.length, turns + 1); assert.notEqual(next.engineAgentId, session.engineAgentId);
+  assert.equal(fresh.sourceManifest.contextBudget.occupancyBasis, 'fresh_session');
+  assert.equal(f.commands.length, 1); assert.equal(JSON.stringify(f.store.getProviderInput(packet.executionId, true)), frozen);
+  await finish(f, agent, next);
+  assert.deepEqual(audit(), originalAudit); assert.equal(f.turns.length, turns + 1, 'Only the independent new task executes');
+}, { providerValidatesResumeBeforeTurn: true }));
+
+for (const evidence of ['previous_accepted_attempt', 'failed_accepted_attempt', 'submitted', 'acknowledged']) test(`unknown-context refresh holds failed human delivery with ${evidence} evidence`, fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
+  const chat = await f.createChat('Failed delivery provenance'), agent = await f.createIdleAgent(chat, 'Provenance owner');
+  f.capabilities.commands = [compactCommand];
+  const session = await f.hold(agent.id), packet = accepted(f.store, agent.id), frozen = JSON.stringify(packet);
+  await checkpoint(f, agent, session, 25000); await finish(f, agent, session);
+  f.commandResults.set(agent.id, () => ({ outcome: 'completed', message: 'Compaction completed without updated telemetry.' }));
+  f.ok(await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' }));
+  await refusedContinuation(f, agent);
+  const failed = f.store.sqlite.prepare(`SELECT run_id,source_activation_id FROM required_reply_obligations
+    WHERE agent_id=? AND state='failed'`).get(agent.id); assert.ok(failed);
+  // Retained canonical evidence must win over the current failed/not-injected
+  // row, including an older accepted attachment or a cancelled injection that
+  // still records submission. These are deliberate negative provenance probes.
+  if (evidence === 'previous_accepted_attempt') f.store.sqlite.prepare(`INSERT INTO scheduler_run_activations
+    (run_id,activation_id,attached_at,consumed_at) VALUES (?,?,?,?)`)
+    .run(packet.executionId, failed.source_activation_id, new Date().toISOString(), new Date().toISOString());
+  else if (evidence === 'failed_accepted_attempt') f.store.sqlite.prepare(`UPDATE scheduler_runs
+    SET prompt_injection_state='injected',provider_session_id=? WHERE id=?`).run(session.engineAgentId, failed.run_id);
+  else f.store.sqlite.prepare(`UPDATE scheduler_prompt_injections SET ${evidence === 'submitted' ? 'submitted_at' : 'acknowledged_at'}=? WHERE run_id=?`)
+    .run(new Date().toISOString(), failed.run_id);
+  const turns = f.turns.length;
+  const refresh = await f.api('POST', `/api/agents/${agent.id}/compact`, {});
+  assert.equal(refresh.status, 409); assert.equal(f.turns.length, turns); assert.equal(f.commands.length, 1);
+  assert.equal(f.store.resumeSessionState(agent.id).sessionId, session.engineAgentId);
+  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n, 0);
+  assert.equal(f.store.sqlite.prepare('SELECT state FROM required_reply_obligations WHERE run_id=?').get(failed.run_id).state, 'failed');
+  assert.equal(JSON.stringify(f.store.getProviderInput(packet.executionId, true)), frozen);
+}, { providerValidatesResumeBeforeTurn: true }));
+
 test('late compact telemetry cannot cross a newer native command marker', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
   const chat = await f.createChat('Native command race'), agent = await f.createIdleAgent(chat, 'Fenced command owner');
   f.capabilities.commands = [compactCommand];
