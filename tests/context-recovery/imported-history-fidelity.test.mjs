@@ -435,3 +435,31 @@ for (const source of ['canonical', 'imported']) test(`${source} Unicode excerpts
   assert.equal([...text].slice(hit.excerpt.startCodePoint, hit.excerpt.endCodePoint).join(''), hit.excerpt.text);
   assert.equal(digest(hit.excerpt.text), hit.excerpt.sha256);
 }));
+
+test('existing archive grammar and types refuse before indexing while Unicode whitespace remains string data', { timeout: 20000 }, t => fixture(t, async f => {
+  const text = 'GRAMMAR_ORCHARD\u00a0valid authored string data';
+  f.store.setImportedHistory(f.agent.id, 'Grammar fixture', [{ role: 'user', text }]);
+  await ready(f.store, f.agent.id);
+  const original = await readFile(f.pathname(f.agent.id), 'utf8');
+  const parsed = JSON.parse(original);
+  const malformed = [original.slice(0, -3), original + ' trailing', original.replace('"source":', '"source"\u00a0:'),
+    original.replace('"source":', '"unknown":'), JSON.stringify({ ...parsed, source: 42 }),
+    JSON.stringify({ ...parsed, messages: false }), JSON.stringify({ ...parsed, messages: [{ role: 'tool', text }] }),
+    JSON.stringify({ ...parsed, messages: [{ role: 'user', text, createdAt: 42 }] })];
+  const oldRows = f.store.sqlite.prepare('SELECT * FROM imported_history_messages WHERE agent_id=?').all(f.agent.id);
+  for (const invalid of malformed) {
+    await writeFile(f.pathname(f.agent.id), invalid);
+    const pending = f.store.getImportedHistoryAvailability(f.agent.id);
+    assert.equal(pending.status, 'preparing');
+    const deadline = Date.now() + 5000;
+    while (f.store.getImportedHistoryAvailability(f.agent.id).status === 'preparing' && Date.now() < deadline) await yieldToLoop();
+    assert.equal(f.store.getImportedHistoryAvailability(f.agent.id).status, 'unavailable', 'Malformed canonical archive cannot be certified as searchable');
+    assert.throws(() => search(f.store, f.agent.id, pending.archiveVersion, 'GRAMMAR_ORCHARD'), /unavailable/i);
+    assert.equal(await readFile(f.pathname(f.agent.id), 'utf8'), invalid, 'Refusal cannot rewrite canonical archive bytes');
+    assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM imported_history_messages WHERE agent_id=?').all(f.agent.id), oldRows, 'Rejected source cannot replace the prior projection');
+  }
+  await writeFile(f.pathname(f.agent.id), original);
+  const version = await ready(f.store, f.agent.id);
+  const hit = search(f.store, f.agent.id, version, 'GRAMMAR_ORCHARD').hits[0];
+  reassemble(f.store, f.agent.id, version, hit, text);
+}));

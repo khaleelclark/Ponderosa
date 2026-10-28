@@ -719,6 +719,17 @@ export class AgentCatalogAuthority {
   }
 
   private validateImportedArchiveSize(imported: ImportedArchive): void {
+    if (!imported || typeof imported !== "object" || Array.isArray(imported) ||
+        Object.keys(imported).some(key => !["source", "importedAt", "messages", "initialInstructions", "initialInstructionsSeparated"].includes(key)) ||
+        typeof imported.source !== "string" || typeof imported.importedAt !== "string" || !Array.isArray(imported.messages) ||
+        imported.initialInstructions !== undefined && typeof imported.initialInstructions !== "string" ||
+        imported.initialInstructionsSeparated !== undefined && typeof imported.initialInstructionsSeparated !== "boolean" ||
+        imported.messages.some(message => !message || typeof message !== "object" || Array.isArray(message) ||
+          Object.keys(message).some(key => !["role", "text", "createdAt"].includes(key)) ||
+          !["user", "assistant", "system"].includes(message.role) || typeof message.text !== "string" ||
+          message.createdAt !== undefined && typeof message.createdAt !== "string")) {
+      throw new Error("Imported history archive has invalid fields or types");
+    }
     if (imported.initialInstructions !== undefined && !agentPackageTextIsWellFormed(imported.initialInstructions) ||
         imported.messages.some(message => !agentPackageTextIsWellFormed(message.text))) {
       throw new Error("Imported history must contain well-formed Unicode text");
@@ -776,6 +787,7 @@ export class AgentCatalogAuthority {
   }
 
   projectImportedHistory(agentId: string, imported: ImportedArchive, options: { deferIndex?: boolean } = {}): void {
+    this.validateImportedArchiveSize(imported);
     const agent = this.getAgent(agentId);
     if (!agent) return;
     const file = importedAgentHistoryPath(this.dataDir, agent.projectId, agentId);
@@ -854,7 +866,9 @@ export class AgentCatalogAuthority {
           const file = importedAgentHistoryPath(this.dataDir, row.project_id, agentId);
           const raw = await fs.readFile(file, "utf8");
           if (this.importedIndexClosed || epoch !== this.importedIndexEpoch || importedArchiveVersion(file) !== job.version) continue;
-          await this.projectImportedHistoryAsync(agentId, JSON.parse(raw) as ImportedArchive, job.version, true);
+          const imported = JSON.parse(raw) as ImportedArchive;
+          this.validateImportedArchiveSize(imported);
+          await this.projectImportedHistoryAsync(agentId, imported, job.version, true);
           continue;
         }
         let lastSequence = -1;
