@@ -245,6 +245,8 @@ export interface RuntimeContextUsage {
 }
 
 export interface RuntimeCommandResult {
+  /** Mutating commands distinguish observed completion from an uncertain reply. */
+  outcome?: "completed" | "failed" | "outcome_unknown";
   /** Provider-derived, human-readable result for non-mutating runtime commands. */
   message?: string;
   /** Present only when the command verified a NEW post-command observation. */

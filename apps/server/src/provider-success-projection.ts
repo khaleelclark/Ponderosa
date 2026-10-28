@@ -526,16 +526,17 @@ export function projectProviderModelIdentifier(value: unknown): string | undefin
 export function projectProviderCommandResult(value: unknown): RuntimeCommandResult {
   if (value === undefined) return {};
   const budget = new ProjectionBudget("command");
-  const record = dataRecord(value, ["message", "contextUsage"], "command", budget, 0);
+  const record = dataRecord(value, ["message", "contextUsage", "outcome"], "command", budget, 0);
+  const outcome = record.has("outcome") ? enumString(record, "outcome", ["completed", "failed", "outcome_unknown"] as const, "command", budget, 1) : undefined;
   let message = optionalString(record, "message", MAX_DESCRIPTION_CHARACTERS, "command", budget, 1);
   let contextUsage: ReturnType<typeof projectProviderContextUsage>;
   try { contextUsage = record.has("contextUsage") ? projectProviderContextUsage(record.get("contextUsage")) : undefined; }
   catch {
-    // The command has already completed; unusable optional telemetry cannot
+    // The command has already been invoked; unusable optional telemetry cannot
     // invite replay of that operation or become trusted usage evidence.
-    message = "Command completed; updated context telemetry is invalid. Do not repeat the command solely to refresh telemetry.";
+    message = "Command was invoked; updated context telemetry is invalid. Do not repeat the command solely to refresh telemetry.";
   }
-  return { ...(message === undefined ? {} : { message }), ...(contextUsage ? { contextUsage } : {}) };
+  return { ...(message === undefined ? {} : { message }), ...(outcome ? { outcome } : {}), ...(contextUsage ? { contextUsage } : {}) };
 }
 
 /** Copy authentication probe output before it enters the shared auth cache. */

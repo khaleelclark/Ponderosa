@@ -106,15 +106,15 @@ export class AgentRunUsageReadModel {
     return active;
   }
 
-  /** Runtime selection needs the latest projected Run, not its audit history. */
-  getLatestRun(agentId: string): Pick<AgentRunDto,
+  /** Read one exact source or the latest projected Run, never its full history. */
+  getLatestRun(agentId: string, exactRunId?: string): Pick<AgentRunDto,
     "id" | "status" | "engine" | "model" | "effort" | "communicationEventId"
   > | undefined {
     const row = this.client.prepare(`
       SELECT id, status, engine, model, effort, communication_event_id AS communicationEventId
-      FROM runs WHERE agent_id = ?
+      FROM runs WHERE agent_id = ? ${exactRunId ? "AND id = ?" : ""}
       ORDER BY started_at DESC, id DESC LIMIT 1
-    `).get(agentId) as (Pick<AgentRunDto, "id" | "status" | "engine"> & {
+    `).get(...(exactRunId ? [agentId, exactRunId] : [agentId])) as (Pick<AgentRunDto, "id" | "status" | "engine"> & {
       model: string | null; effort: string | null; communicationEventId: string | null;
     }) | undefined;
     return row ? {

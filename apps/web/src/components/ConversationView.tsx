@@ -1314,12 +1314,13 @@ export function ConversationView({
                       ...(argumentsText ? { argumentsText } : {}),
                     },
                   );
-                  return invocation.then(result =>
+                  return invocation.then(result => {
+                    if (result.outcome && result.outcome !== "completed") throw new Error(result.message ?? "Provider command completion is unconfirmed. Do not repeat the command.");
                     setQueuedMessageNotice(
                       result.message ??
                         `/${command.name} invoked for ${commandTargetAgent.title}.`,
-                    ),
-                  );
+                    );
+                  });
                 }
               : undefined
           }

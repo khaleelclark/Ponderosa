@@ -425,9 +425,8 @@ export function formatCodexRateLimits(rateLimits: unknown): string[] {
   return parts;
 }
 
-/** Orders structured commands against asynchronous provider usage
- * notifications. A command response alone is not proof that the session's
- * observable context state has advanced. */
+/** Wakes native-command waits on asynchronous provider observations. A command
+ * acknowledgement alone is not completion or fresh context evidence. */
 export class ContextUsageObservationGate {
   private version = 0;
   private readonly waiters = new Set<() => void>();
@@ -451,7 +450,7 @@ export class ContextUsageObservationGate {
       };
       const timeout = setTimeout(() => {
         this.waiters.delete(onUsage);
-        reject(new Error("Codex compact completed without a post-compaction context usage observation"));
+        reject(new Error("Codex native command observation timed out"));
       }, timeoutMs);
       timeout.unref?.();
       this.waiters.add(onUsage);
@@ -459,6 +458,15 @@ export class ContextUsageObservationGate {
   }
 }
 
+interface CompactOperation {
+  rpcStatus?: "accepted" | "rejected";
+  turnId?: string;
+  itemId?: string;
+  itemCompleted: boolean;
+  terminalStatus?: string;
+  usage?: CodexContextUsage;
+  closed: boolean;
+}
 
 export class CodexAppServerSession implements RuntimeSession {
   readonly validatesResumeBeforeTurn = true;
@@ -470,6 +478,9 @@ export class CodexAppServerSession implements RuntimeSession {
   private latestTotal?: TokenUsage;
   private latestContextUsage?: CodexContextUsage;
   private readonly contextUsageGate = new ContextUsageObservationGate();
+  private compactOperation?: CompactOperation;
+  private lastCompletedTurnId?: string;
+  private readonly nativeCommandNotifications = new WeakSet<JsonRpcNotification>();
   private capabilitiesSnapshot?: EngineCapabilities;
   private capabilitiesDiscovery?: Promise<EngineCapabilities>;
   private capabilitiesDirty = true;
@@ -514,7 +525,10 @@ export class CodexAppServerSession implements RuntimeSession {
       signal: opts.signal,
       killGraceMs: opts.killGraceMs,
       onRuntimeSpawned: opts.onRuntimeSpawned,
-      onRuntimeRootExit: opts.onRuntimeRootExit,
+      onRuntimeRootExit: detail => {
+        session?.stopCompactObservation();
+        opts.onRuntimeRootExit(detail);
+      },
       onNotification: (notification) => session?.observeNotification(notification),
       handleServerRequest: async (requestId, method, params) => {
         if (method === "mcpServer/elicitation/request") {
@@ -641,16 +655,54 @@ export class CodexAppServerSession implements RuntimeSession {
       throw new Error(command?.unavailableReason ?? `/${name} is unavailable in the Codex command catalog`);
     }
     if (name === "compact") {
-      const previousUsageVersion = this.contextUsageGate.currentVersion();
-      await this.rpc.request("thread/compact/start", { threadId: this.engineAgentId });
-      try {
-        await this.contextUsageGate.waitAfter(previousUsageVersion);
-      } catch {
-        // The RPC succeeded. Missing optional telemetry cannot turn a completed
-        // compaction into a retryable command failure.
-        return { message: "Compaction completed; updated context usage is unavailable. Do not repeat the command solely to refresh telemetry." };
+      if (this.compactOperation && !this.compactOperation.terminalStatus && !this.compactOperation.closed) {
+        throw new Error("Native compaction is already in progress; do not repeat the command.");
       }
-      return { contextUsage: this.contextUsage() };
+      const operation: CompactOperation = { itemCompleted: false, closed: false };
+      this.compactOperation = operation;
+      let version = this.contextUsageGate.currentVersion();
+      this.latestContextUsage = undefined;
+      // Stay inside the existing 60-second HTTP handler budget, including the
+      // acknowledgement and all progress/telemetry; never stack timeouts.
+      const deadline = Date.now() + 45_000;
+      // This RPC returns {} immediately. Completion belongs to the matching
+      // contextCompaction item and its terminal turn, not to this response.
+      try {
+        void this.rpc.request("thread/compact/start", { threadId: this.engineAgentId }).then(() => {
+          operation.rpcStatus = "accepted";
+          this.contextUsageGate.observe();
+        }, () => {
+          operation.rpcStatus = "rejected";
+          this.contextUsageGate.observe();
+        });
+      } catch {
+        operation.rpcStatus = "rejected";
+      }
+      try {
+        while (!operation.closed) {
+          if (operation.rpcStatus === "rejected" || operation.terminalStatus && operation.terminalStatus !== "completed") {
+            return { outcome: operation.terminalStatus === "failed" || operation.terminalStatus === "interrupted" ? "failed" : "outcome_unknown",
+              message: "Compaction did not complete successfully; its outcome and context usage are unconfirmed. Do not repeat the command solely to refresh telemetry. Use Context Refresh before more work." };
+          }
+          if (operation.rpcStatus === "accepted" && operation.itemCompleted && operation.terminalStatus === "completed" && operation.usage) {
+            return { outcome: "completed", contextUsage: { usedTokens: operation.usage.usedTokens,
+              ...(operation.usage.modelContextWindow ? { windowTokens: operation.usage.modelContextWindow } : {}),
+              ...(operation.usage.aggregateTokens !== undefined ? { aggregateTokens: operation.usage.aggregateTokens } : {}),
+              providerSessionGeneration: this.engineAgentId } };
+          }
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) break;
+          await this.contextUsageGate.waitAfter(version, remaining);
+          version = this.contextUsageGate.currentVersion();
+        }
+      } catch {
+        // Missing completion/telemetry is an uncertain native mutation, never
+        // permission to replay the operation or trust the pre-command getter.
+      }
+      const completed = operation.itemCompleted && operation.terminalStatus === "completed";
+      return { outcome: completed ? "completed" : "outcome_unknown", message: completed
+        ? "Compaction completed; updated context usage is unavailable. Do not repeat the command solely to refresh telemetry. Use Context Refresh before more work."
+        : "Compaction was started; completion and updated context usage are unconfirmed. Do not repeat the command. Use Context Refresh before more work." };
     }
     if (name === "status") {
       const rateLimits = await optionalRequest(this.rpc, "account/rateLimits/read", undefined);
@@ -680,6 +732,29 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   private observeNotification(notification: JsonRpcNotification): void {
+    const compact = this.compactOperation;
+    const params = object(notification.params);
+    if (compact && !compact.closed && params?.threadId === this.engineAgentId) {
+      const turn = object(params.turn);
+      if (notification.method === "turn/started" && !compact.turnId &&
+          typeof turn?.id === "string" && turn.id !== this.lastCompletedTurnId) compact.turnId = turn.id;
+      if (compact.turnId && (params.turnId === compact.turnId || turn?.id === compact.turnId)) {
+        // JsonRpcProcess also queues this exact object. Keep native lifecycle
+        // out of the next ordinary Run even when several commands precede it.
+        this.nativeCommandNotifications.add(notification);
+      }
+      if (compact.turnId && params.turnId === compact.turnId) {
+        const item = object(params.item);
+        if (item?.type === "contextCompaction" && typeof item.id === "string") {
+          if (notification.method === "item/started" && !compact.itemId) compact.itemId = item.id;
+          if (notification.method === "item/completed" && item.id === compact.itemId) compact.itemCompleted = true;
+        }
+      }
+      if (notification.method === "turn/completed" && compact.turnId && turn && turn.id === compact.turnId) {
+        compact.terminalStatus = typeof turn.status === "string" ? turn.status : "unknown";
+      }
+      this.contextUsageGate.observe();
+    }
     if (notification.method === "thread/tokenUsage/updated") {
       const params = notification.params as {
         threadId?: unknown;
@@ -689,8 +764,18 @@ export class CodexAppServerSession implements RuntimeSession {
         ? codexContextUsageSnapshot(params.tokenUsage) : undefined;
       if (usage) {
         this.latestContextUsage = usage;
+        if (compact && !compact.closed && compact.itemCompleted &&
+            object(notification.params)?.turnId === compact.turnId) compact.usage = usage;
+        if (this.nativeCommandNotifications.has(notification) && (!this.activeTurnId || this.activeTurnId === compact?.turnId)) {
+          const total = mapCodexTokenUsage(params?.tokenUsage?.total);
+          if (total) { this.baselineTotal = total; this.latestTotal = total; }
+        }
         this.contextUsageGate.observe();
       }
+    }
+    if (notification.method === "turn/completed" && params?.threadId === this.engineAgentId) {
+      const turn = object(params.turn);
+      if (typeof turn?.id === "string") this.lastCompletedTurnId = turn.id;
     }
     this.observeCapabilityNotification(notification);
   }
@@ -734,6 +819,9 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
+    if (this.compactOperation && !this.compactOperation.closed && !this.compactOperation.terminalStatus) {
+      throw new Error("Native compaction is still in progress; its completion is unconfirmed.");
+    }
     const prompt = this.seedHistory.length > 0
       ? renderSeedPrompt(this.seedHistory.splice(0), input.prompt)
       : input.prompt;
@@ -792,12 +880,19 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   close(): Promise<void> {
+    this.stopCompactObservation();
     return this.rpc.close();
+  }
+
+  private stopCompactObservation(): void {
+    if (this.compactOperation) this.compactOperation.closed = true;
+    this.contextUsageGate.observe();
   }
 
   private async *eventStream(): AsyncIterable<AgentEvent> {
     yield { type: "session", sessionId: this.engineAgentId };
     for await (const notification of this.rpc.notifications) {
+      if (this.nativeCommandNotifications.has(notification)) continue;
       if (notification.method === "thread/tokenUsage/updated") {
         const params = notification.params as { threadId?: unknown; turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown; modelContextWindow?: unknown } } | undefined;
         if (typeof params?.turnId === "string" && params.threadId === this.engineAgentId) {

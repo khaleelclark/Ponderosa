@@ -81,6 +81,7 @@ test('Codex occupancy and capacity observations stay with their exact provider t
   session.engineAgentId = 'owned-generation';
   let observed = 0;
   session.contextUsageGate = { observe: () => observed++ };
+  session.nativeCommandNotifications = new WeakSet();
   const usage = threadId => ({ method: 'thread/tokenUsage/updated', params: {
     threadId, turnId: 'turn', tokenUsage: { total: { totalTokens: 900000 },
       last: { totalTokens: 1200 }, modelContextWindow: 200000 },
@@ -126,30 +127,143 @@ test('Claude context includes actual request-local output while missing output s
 });
 
 
-test('native Codex compact returns only gate-proven fresh telemetry and keeps RPC success when telemetry is absent', async () => {
-  const { CodexAppServerSession, ContextUsageObservationGate } = await import('../../packages/engines/dist/codex-app-server.js');
-  const { projectProviderCommandResult } = await import('../../apps/server/dist/provider-success-projection.js');
-  for (const observed of [true, false]) {
-    const session = Object.create(CodexAppServerSession.prototype);
-    session.engineAgentId = 'compact-owned-generation';
-    session.contextUsageGate = new ContextUsageObservationGate();
-    session.latestContextUsage = { usedTokens: 160000, modelContextWindow: 200000 };
-    session.capabilities = async () => ({ commands: [{ name: 'compact', invocation: 'runtime', status: 'available' }] });
-    let compactRpcs = 0;
-    session.rpc = { request: async (method, input) => {
-      assert.equal(method, 'thread/compact/start'); assert.equal(input.threadId, session.engineAgentId); compactRpcs++;
-      if (observed) session.observeNotification({ method: 'thread/tokenUsage/updated', params: {
-        threadId: session.engineAgentId, tokenUsage: { last: { totalTokens: 25000 }, modelContextWindow: 200000 },
-      } });
-    } };
-    if (!observed) session.contextUsageGate.waitAfter = async () => { throw Error('controlled optional telemetry timeout'); };
-    const result = projectProviderCommandResult(await session.invokeCommand('compact'));
-    assert.equal(compactRpcs, 1);
-    if (observed) assert.deepEqual(result.contextUsage, { usedTokens: 25000, windowTokens: 200000, providerSessionGeneration: session.engineAgentId });
-    else { assert.equal(result.contextUsage, undefined); assert.match(result.message, /completed.*unavailable.*not repeat/i); }
+function nativeCompactSession() {
+  const session = Object.create(CodexAppServerSessionForTest.prototype);
+  session.engineAgentId = 'compact-owned-generation';
+  session.contextUsageGate = new ContextUsageGateForTest();
+  session.nativeCommandNotifications = new WeakSet();
+  session.latestContextUsage = { usedTokens: 160000, modelContextWindow: 200000 };
+  session.capabilities = async () => ({ commands: [{ name: 'compact', invocation: 'runtime', status: 'available' }] });
+  session.rpc = { request: async () => ({}), close: async () => {} };
+  session.usageByTurnId = new Map(); session.providerRequestUsageByTurnId = new Map(); session.usageCheckpointsByTurnId = new Map();
+  session.seedHistory = []; session.cwd = '/owned-fixture';
+  return session;
+}
+const { CodexAppServerSession: CodexAppServerSessionForTest, ContextUsageObservationGate: ContextUsageGateForTest } = await import('../../packages/engines/dist/codex-app-server.js');
+const compactNotice = (session, method, params) => session.observeNotification({ method, params: { threadId: session.engineAgentId, ...params } });
+const compactTurn = (session, status = 'completed') => {
+  compactNotice(session, 'turn/started', { turn: { id: 'owned-native-turn' } });
+  compactNotice(session, 'item/started', { turnId: 'owned-native-turn', item: { type: 'contextCompaction', id: 'owned-native-item' } });
+  compactNotice(session, 'item/completed', { turnId: 'owned-native-turn', item: { type: 'contextCompaction', id: 'owned-native-item' } });
+  compactNotice(session, 'turn/completed', { turn: { id: 'owned-native-turn', status } });
+};
+const compactUsage = (session, turnId = 'owned-native-turn', threadId = session.engineAgentId) => compactNotice(session, 'thread/tokenUsage/updated', {
+  threadId, turnId, tokenUsage: { last: { totalTokens: 25000 }, modelContextWindow: 200000 },
+});
+
+test('native Codex compact requires exact item and terminal completion before fresh telemetry', async () => {
+  const session = nativeCompactSession(); let rpcs = 0, settled = false;
+  session.lastCompletedTurnId = 'previous-turn';
+  session.rpc.request = async (method, input) => { assert.equal(method, 'thread/compact/start'); assert.equal(input.threadId, session.engineAgentId); rpcs++; return {}; };
+  const command = session.invokeCommand('compact').then(result => { settled = true; return result; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'The immediate RPC acknowledgement is not completion');
+  compactUsage(session, 'previous-turn');
+  compactNotice(session, 'turn/started', { turn: { id: 'previous-turn' } });
+  compactNotice(session, 'item/completed', { turnId: 'previous-turn', item: { type: 'contextCompaction', id: 'old-item' } });
+  compactNotice(session, 'turn/completed', { turn: { id: 'previous-turn', status: 'completed' } });
+  compactNotice(session, 'turn/started', { threadId: 'foreign-thread', turn: { id: 'foreign-turn' } });
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false);
+  compactNotice(session, 'turn/started', { turn: { id: 'owned-native-turn' } });
+  compactNotice(session, 'item/started', { turnId: 'owned-native-turn', item: { type: 'contextCompaction', id: 'owned-native-item' } });
+  compactUsage(session); // Summarizer telemetry before completion is not post-Compact occupancy.
+  compactNotice(session, 'item/completed', { turnId: 'owned-native-turn', item: { type: 'contextCompaction', id: 'wrong-item' } });
+  compactNotice(session, 'turn/completed', { turn: { id: 'unrelated-turn', status: 'completed' } });
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false);
+  compactNotice(session, 'item/completed', { turnId: 'owned-native-turn', item: { type: 'contextCompaction', id: 'owned-native-item' } });
+  compactNotice(session, 'turn/completed', { turn: { id: 'owned-native-turn', status: 'completed' } });
+  compactUsage(session, 'foreign-turn'); compactUsage(session, 'owned-native-turn', 'foreign-thread');
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false, 'Unrelated or pre-completion usage is not fresh command proof');
+  compactUsage(session);
+  assert.deepEqual(await command, { outcome: 'completed', contextUsage: { usedTokens: 25000, windowTokens: 200000, providerSessionGeneration: session.engineAgentId } });
+  assert.equal(rpcs, 1);
+});
+
+for (const mode of ['no_ack', 'ack_only', 'completed_no_usage', 'missing_item']) test(`native Codex compact reports ${mode} honestly without replay`, async () => {
+  const session = nativeCompactSession(); let rpcs = 0;
+  session.rpc.request = () => {
+    rpcs++;
+    if (mode === 'no_ack') return new Promise(() => {});
+    if (mode === 'completed_no_usage') compactTurn(session);
+    if (mode === 'missing_item') {
+      compactNotice(session, 'turn/started', { turn: { id: 'owned-native-turn' } });
+      compactNotice(session, 'turn/completed', { turn: { id: 'owned-native-turn', status: 'completed' } });
+      compactUsage(session);
+    }
+    return Promise.resolve({});
+  };
+  session.contextUsageGate.waitAfter = async () => { throw Error('Controlled native observation deadline'); };
+  const result = await session.invokeCommand('compact');
+  assert.equal(result.contextUsage, undefined); assert.match(result.message, /do not repeat/i); assert.equal(rpcs, 1);
+  assert.equal(result.outcome, mode === 'completed_no_usage' ? 'completed' : 'outcome_unknown');
+  if (mode !== 'completed_no_usage') assert.doesNotMatch(result.message, /compaction completed/i);
+  if (mode === 'ack_only' || mode === 'no_ack') {
+    await assert.rejects(session.invokeCommand('compact'), /already in progress/);
+    await assert.rejects(session.startTurn({ prompt: 'Do not overlap native work' }), /still in progress/);
+    assert.equal(rpcs, 1);
   }
-  const malformed = projectProviderCommandResult({ contextUsage: { usedTokens: 'invalid' } });
-  assert.equal(malformed.contextUsage, undefined); assert.match(malformed.message, /completed.*invalid.*not repeat/i);
+});
+
+test('post-item compact telemetry waits for its exact successful terminal turn', async () => {
+  const session = nativeCompactSession(); let settled = false;
+  const pending = session.invokeCommand('compact').then(result => { settled = true; return result; });
+  await new Promise(resolve => setImmediate(resolve));
+  compactNotice(session, 'turn/started', { turn: { id: 'owned-native-turn' } });
+  compactNotice(session, 'item/started', { turnId: 'owned-native-turn', item: { type: 'contextCompaction', id: 'owned-native-item' } });
+  compactNotice(session, 'item/completed', { turnId: 'owned-native-turn', item: { type: 'contextCompaction', id: 'owned-native-item' } });
+  compactUsage(session); await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false);
+  compactNotice(session, 'turn/completed', { turn: { id: 'owned-native-turn', status: 'completed' } });
+  const result = await pending; assert.equal(result.outcome, 'completed'); assert.equal(result.contextUsage.usedTokens, 25000);
+});
+
+for (const status of ['failed', 'interrupted', 'unknown']) test(`native Codex compact preserves ${status} terminal outcome`, async () => {
+  const session = nativeCompactSession(); session.rpc.request = async () => { compactTurn(session, status); return {}; };
+  const result = await session.invokeCommand('compact');
+  assert.equal(result.outcome, status === 'unknown' ? 'outcome_unknown' : 'failed'); assert.equal(result.contextUsage, undefined); assert.match(result.message, /do not repeat/i);
+});
+
+test('native Codex compact shutdown wakes the existing wait without claiming completion', async () => {
+  const session = nativeCompactSession(); let closed = 0; session.rpc.close = async () => { closed++; };
+  const pending = session.invokeCommand('compact'); await new Promise(resolve => setImmediate(resolve));
+  await session.close(); const result = await pending;
+  assert.equal(closed, 1); assert.equal(result.outcome, 'outcome_unknown'); assert.equal(result.contextUsage, undefined);
+});
+
+test('two completed native compacts cannot finish or charge the next warm ordinary turn', async () => {
+  const session = nativeCompactSession(), queue = []; let compacts = 0;
+  const emit = (method, params) => { const n = { method, params: { threadId: session.engineAgentId, ...params } }; session.observeNotification(n); queue.push(n); };
+  session.rpc.notifications = { async *[Symbol.asyncIterator]() { yield* queue; } };
+  session.rpc.request = async method => {
+    if (method === 'turn/start') return { turn: { id: 'ordinary-followup' } };
+    assert.equal(method, 'thread/compact/start'); const turnId = 'native-' + ++compacts, id = 'compact-item-' + compacts;
+    emit('turn/started', { turn: { id: turnId } });
+    emit('item/started', { turnId, item: { id, type: 'contextCompaction' } });
+    emit('item/completed', { turnId, item: { id, type: 'contextCompaction' } });
+    emit('thread/tokenUsage/updated', { turnId, tokenUsage: { last: { inputTokens: 24000, outputTokens: 1000, totalTokens: 25000 },
+      total: { inputTokens: compacts * 24000, outputTokens: compacts * 1000, totalTokens: compacts * 25000 }, modelContextWindow: 200000 } });
+    emit('turn/completed', { turn: { id: turnId, status: 'completed' } });
+    return {};
+  };
+  assert.equal((await session.invokeCommand('compact')).outcome, 'completed');
+  assert.equal((await session.invokeCommand('compact')).outcome, 'completed');
+  await session.startTurn({ prompt: 'A separate ordinary task' });
+  emit('turn/started', { turn: { id: 'ordinary-followup' } });
+  emit('thread/tokenUsage/updated', { turnId: 'ordinary-followup', tokenUsage: { last: { inputTokens: 900, outputTokens: 100, totalTokens: 1000 },
+    total: { inputTokens: 48900, outputTokens: 2100, totalTokens: 51000 }, modelContextWindow: 200000 } });
+  emit('turn/completed', { turn: { id: 'ordinary-followup', status: 'completed' } });
+  const events = []; for await (const event of session.eventStream()) events.push(event);
+  const terminals = events.filter(event => event.type === 'turn_done');
+  assert.equal(terminals.length, 1, 'Native completion is never the next Agent Run completion');
+  assert.equal(terminals[0].usage.totalTokens, 1000, 'Native usage is not billed to later ordinary work');
+  assert.equal(events.filter(event => event.type === 'context_usage').length, 1);
+});
+
+test('native command outcome stays closed and invalid telemetry cannot imply completion', async () => {
+  const { projectProviderCommandResult } = await import('../../apps/server/dist/provider-success-projection.js');
+  assert.equal(projectProviderCommandResult({ outcome: 'outcome_unknown' }).outcome, 'outcome_unknown');
+  assert.throws(() => projectProviderCommandResult({ outcome: 'invented' }));
+  const malformed = projectProviderCommandResult({ outcome: 'completed', contextUsage: { usedTokens: 'invalid' } });
+  assert.equal(malformed.contextUsage, undefined); assert.match(malformed.message, /invoked.*invalid.*not repeat/i);
 });
 
 test('sparse and future Codex native work invalidates context estimates without exposing payloads', async () => {

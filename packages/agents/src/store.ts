@@ -553,6 +553,19 @@ export class AgentStore extends AgentEventSessionFacade {
     } : undefined;
   }
 
+  beginProviderCommandContextMutation(agentId: string,
+    boundary: { providerSessionId: string; executionId: string; fencingToken: number; toolContractHash: string },
+    invocationId: string,
+  ): StoredLogEvent | undefined {
+    const current = this.providerCommandContextBoundary(agentId);
+    if (!current || current.providerSessionId !== boundary.providerSessionId || current.executionId !== boundary.executionId ||
+        current.fencingToken !== boundary.fencingToken || current.toolContractHash !== boundary.toolContractHash ||
+        !this.acceptedProviderSessionContextUsage(agentId) && !this.acceptedProviderSessionInputEstimate(agentId)) return undefined;
+    // Synchronous under the existing exclusive store lease: no second native
+    // command can begin until fresh evidence covers this exact opaque marker.
+    return this.appendEvent(agentId, { type: "work_start", kind: "native_tool", callId: invocationId, executionId: boundary.executionId });
+  }
+
   recordProviderCommandContextUsage(agentId: string,
     boundary: { providerSessionId: string; executionId: string; fencingToken: number; toolContractHash: string },
     usage: Omit<Extract<LogEvent, {type: "context_usage"}>, "type" | "providerSessionId" | "providerCommand">,
@@ -561,6 +574,12 @@ export class AgentStore extends AgentEventSessionFacade {
     const current = this.providerCommandContextBoundary(agentId);
     if (!current || current.providerSessionId !== boundary.providerSessionId || current.executionId !== boundary.executionId ||
         current.fencingToken !== boundary.fencingToken || current.toolContractHash !== boundary.toolContractHash || usage.providerSessionGeneration !== boundary.providerSessionId) return undefined;
+    const marker = this.client.prepare(`SELECT seq FROM events WHERE agent_id=? AND type='work_start'
+      AND json_extract(payload_json,'$.executionId')=? AND json_extract(payload_json,'$.callId')=?
+      AND json_extract(payload_json,'$.kind')='native_tool' ORDER BY seq DESC LIMIT 1`)
+      .get(agentId, boundary.executionId, invocationId) as {seq: number} | undefined;
+    if (!marker || this.client.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq>?
+      AND type IN ('tool_call','tool_result','command','file_change','work_start') LIMIT 1`).get(agentId, marker.seq)) return undefined;
     return this.appendEvent(agentId, { type: "context_usage", ...usage, providerSessionId: boundary.providerSessionId,
       providerCommand: { name: "compact", executionId: boundary.executionId, fencingToken: boundary.fencingToken, invocationId } });
   }
@@ -587,8 +606,9 @@ export class AgentStore extends AgentEventSessionFacade {
     const usage = JSON.parse(row.payload_json) as Extract<LogEvent, {type: "context_usage"}>;
     if (usage.type !== "context_usage" || usage.providerSessionId !== sessionId ||
         usage.providerSessionGeneration !== sessionId) return undefined;
-    const upper = row.seq < terminal.seq ? terminal.seq :
-      ((this.client.prepare("SELECT MAX(seq)+1 AS seq FROM events WHERE agent_id=?").get(agentId) as {seq: number}).seq);
+    // Native commands can mutate an idle session after its Run has completed.
+    // The proof must cover those events too, not stop at the old turn_done.
+    const upper = (this.client.prepare("SELECT MAX(seq)+1 AS seq FROM events WHERE agent_id=?").get(agentId) as {seq: number}).seq;
     const steering = this.client.prepare(`SELECT 1 FROM scheduler_prompt_injections
       WHERE run_id=? AND kind='steer' AND (state IN ('submitted','outcome_unknown')
         OR (state='acknowledged' AND acknowledged_at>=?)) LIMIT 1`
@@ -613,7 +633,7 @@ export class AgentStore extends AgentEventSessionFacade {
   } | undefined {
     const proof = this.acceptedProviderSessionCompletedRun(agentId);
     if (!proof) return undefined;
-    const { sessionId, run, terminal } = proof;
+    const { sessionId, run } = proof;
     const first = this.client.prepare(`SELECT r.id, r.fencing_token,
         json_extract(p.source_manifest_json, '$.providerSessionDisposition') AS disposition
       FROM scheduler_runs r LEFT JOIN provider_inputs p ON p.execution_id=r.id
@@ -637,8 +657,8 @@ export class AgentStore extends AgentEventSessionFacade {
     const start = this.client.prepare(`SELECT seq FROM events WHERE agent_id=? AND type='agent_lifecycle'
       AND json_extract(payload_json, '$.executionId')=? AND json_extract(payload_json, '$.status')='running'
       ORDER BY seq LIMIT 1`).get(agentId, first.id) as {seq: number} | undefined;
-    if (!start || this.client.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq>? AND seq<?
-      AND type IN ('tool_call','tool_result','command','file_change','work_start') LIMIT 1`).get(agentId, start.seq, terminal.seq)) return undefined;
+    if (!start || this.client.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq>?
+      AND type IN ('tool_call','tool_result','command','file_change','work_start') LIMIT 1`).get(agentId, start.seq)) return undefined;
     const inputs = this.client.prepare(`SELECT COALESCE(SUM(length(CAST(json_quote(p.provider_prompt) AS BLOB))+64),0) AS bytes
       FROM provider_inputs p WHERE p.execution_id IN (SELECT id FROM scheduler_runs
         WHERE agent_id=? AND provider_session_id=? AND prompt_injection_state='injected')`
@@ -1798,8 +1818,8 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.chatFeed.getAllChatPage(input);
   }
 
-  getLatestRun(agentId: string): ReturnType<AgentRunUsageReadModel["getLatestRun"]> {
-    return this.runUsage.getLatestRun(agentId);
+  getLatestRun(agentId: string, exactRunId?: string): ReturnType<AgentRunUsageReadModel["getLatestRun"]> {
+    return this.runUsage.getLatestRun(agentId, exactRunId);
   }
 
   getRunStatus(agentId: string, runId: string): AgentRunDto["status"] | undefined {
