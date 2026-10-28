@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -254,3 +254,42 @@ for (const engine of ['codex', 'claude']) test(`${engine}: failed assignment not
     const request = (await f.detail(worker.id)).coordinationV3.requests.find(r => r.id === result.requestIds[0]);
     assert.equal(request.state, 'failed');
   }, { diagnosticProvider: true }));
+
+
+test('reordered affected Agents do not rewrite a notice, while real changes persist across reopen', t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'notification-membership-'));
+  let workspace = new WorkspaceStore(root);
+  t.after(() => { workspace.close(); rmSync(root, { recursive: true, force: true }); });
+  const input = { projectId: 'p', kind: 'operational', status: 'open',
+    dedupeKey: 'coordination-attention:membership', title: 'Assignment needs review',
+    body: 'The outcome is uncertain.', agentId: 'worker', agentIds: ['worker', 'reviewer', 'manager'] };
+  const notice = workspace.createNotification(input);
+  const journal = path.join(root, 'workspace-events.jsonl');
+  const before = readFileSync(journal), cursor = workspace.cursor();
+  for (const agentIds of [['manager', 'worker', 'reviewer'], ['reviewer', 'manager', 'worker']]) {
+    const retained = workspace.createNotification({ ...input, agentIds });
+    assert.deepEqual(retained.agentIds, notice.agentIds, 'retain the saved presentation order');
+  }
+  assert.equal(workspace.cursor(), cursor);
+  assert.deepEqual(readFileSync(journal), before, 'reconciliation must not append duplicate updates');
+  workspace.close(); workspace = new WorkspaceStore(root);
+  workspace.createNotification({ ...input, agentIds: [...input.agentIds].reverse() });
+  assert.equal(workspace.cursor(), cursor, 'reopen must not recreate ordering churn');
+  assert.deepEqual(readFileSync(journal), before);
+
+  let changedAt = workspace.cursor();
+  const changed = workspace.createNotification({ ...input, agentIds: ['worker', 'new-reviewer'] });
+  assert.equal(workspace.readSince(changedAt).length, 1, 'new membership remains a real update');
+  assert.deepEqual(changed.agentIds, ['worker', 'new-reviewer']);
+  changedAt = workspace.cursor();
+  const detail = workspace.createNotification({ ...input, body: 'A human choice is required.', agentIds: ['new-reviewer', 'worker'] });
+  assert.equal(workspace.readSince(changedAt).length, 1, 'changed content remains visible');
+  assert.equal(detail.body, 'A human choice is required.');
+  assert.deepEqual(detail.agentIds, changed.agentIds);
+  workspace.setNotificationStatus(notice.id, 'dismissed');
+  changedAt = workspace.cursor();
+  workspace.createNotification(input);
+  assert.equal(workspace.cursor(), changedAt, 'dismissed notices stay dismissed');
+  workspace.close(); workspace = new WorkspaceStore(root);
+  assert.equal(workspace.getNotification(notice.id).status, 'dismissed');
+});

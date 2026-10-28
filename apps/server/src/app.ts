@@ -109,10 +109,6 @@ export {
   isProjectFileReferenceAllowed
 } from "./project-files.js";
 export {
-  boundedContinuationHistory,
-  boundedSeedHistory
-} from "./prompts.js";
-export {
   PROVIDER_TOOL_CONTRACT_HASH,
   providerSessionContractHash
 } from "./runtime-selection.js";
@@ -281,19 +277,43 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const { vapid, webPushConfiguration, webPushConfigurationDetail, webPushConfigured, webPushDelivery } =
     createWebPushConfiguration(opts.dataDir, workspace, publishWorkspaceSince);
   store.recoverInterruptedExecutions();
+  let closed = false;
+  const diagnosticOperations = new Set<Promise<unknown>>();
   const engines = new Map(opts.engines.map((engine) => {
-    const diagnostic = <T>(kind: string, probe: (options?: import("@ponderosa/core").EngineProbeOptions) => Promise<T>) => async (): Promise<T> => {
+    const diagnostic = <T>(kind: string, probe: (options?: import("@ponderosa/core").EngineProbeOptions) => Promise<T>) => (options?: import("@ponderosa/core").EngineProbeOptions): Promise<T> => {
+      if (closed) return Promise.reject(new Error("Server is shutting down"));
       const purpose = `${engine.adapter.id} ${kind} diagnostic`;
-      await providerProcessAuthority.terminatePurpose(purpose);
-      return probe({ onRuntimeSpawned: (raw: RuntimeProcessHandle) => {
-        providerProcessAuthority.register(providerProcessHandleFacade(raw), { purpose });
-      } });
+      const operation = (async () => {
+        await providerProcessAuthority.terminatePurpose(purpose);
+        if (closed) throw new Error("Server is shutting down");
+        try {
+          return await probe({ ...options, onRuntimeSpawned: (raw: RuntimeProcessHandle) => {
+            providerProcessAuthority.register(providerProcessHandleFacade(raw), { purpose });
+            if (closed) throw new Error("Server is shutting down");
+          } });
+        } finally {
+          // A probe admitted before shutdown may register its native child after
+          // an await. Keep storage/cleanup authority until that probe settles.
+          if (closed) await providerProcessAuthority.terminatePurpose(purpose);
+          // A failed close is not an expired availability observation: retain its
+          // exact process receipt until exit is observed, even after backoff.
+          try { providerProcessAuthority.pruneExited(); }
+          catch { app.log.warn({ engineId: engine.adapter.id, purpose }, "provider diagnostic exit could not be confirmed"); }
+        }
+      })();
+      diagnosticOperations.add(operation);
+      void operation.then(() => diagnosticOperations.delete(operation), () => diagnosticOperations.delete(operation));
+      return operation;
     };
     return [engine.adapter.id, { ...engine,
       ...(engine.authStatus ? { authStatus: diagnostic("authentication", options => engine.authStatus!(options)) } : {}),
       ...(engine.availabilityProbe ? { availabilityProbe: diagnostic("availability", options => engine.availabilityProbe!(options)) } : {}),
     }];
   }));
+  const drainEngineDiagnostics = async (): Promise<void> => {
+    await Promise.allSettled([...diagnosticOperations]);
+    await providerProcessAuthority.terminateDiagnostics();
+  };
   const applyOperatorModelOptions = (): void => {
     const models = workspace.getPreferences().claudeModelOptions.map((model) => ({
       id: model.id,
@@ -556,7 +576,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   // the durable Project deletion fence before scheduler leasing starts.
   for (const projectId of deletingProjectIds) coordinationV3.prepareProjectDeletion(projectId);
   const projectDeletionInFlightIds = new Set<string>();
-  let closed = false;
   const {
     communicationReconciliation,
     dirtyCommunicationProjects,
@@ -893,6 +912,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     terminateRuntimeHandle,
     closeRunBrowser: closeRunBrowserAfterRun,
     persistentRuntimeForTermination,
+    clearAgentResumeSession,
     clearRunLeaseTimer,
     clearRunLivenessTimer,
     renewExecutionLease,
@@ -1021,6 +1041,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     setClosed: () => { closed = true; },
     projectCommunicationArtifact,
     requestArtifactAccess,
+    drainEngineDiagnostics,
     drainEngineCapabilityDiscoveries,
     drainEngineModelCatalogDiscoveries,
     engineCapabilityDiscoveries,

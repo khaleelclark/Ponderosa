@@ -62,7 +62,7 @@ export function defaultEngineRegistrations(
       isInstalled: () => installed(codexBin),
       authStatus: options => installed(codexBin)
         ? codexAuthStatus(env, options) : Promise.resolve({ authenticated: false }),
-      availabilityProbe: options => codexAvailabilityStatus(env, undefined, () => codexAuthStatus(env, options), options),
+      availabilityProbe: options => codexAvailabilityStatus(env, undefined, () => options?.authObservation ? Promise.resolve(options.authObservation) : codexAuthStatus(env, options), options),
     },
     {
       adapter: new ClaudeAdapter({
@@ -72,7 +72,7 @@ export function defaultEngineRegistrations(
       isInstalled: () => installed(claudeBin),
       authStatus: () => installed(claudeBin)
         ? claudeAuthStatus(env) : Promise.resolve({ authenticated: false }),
-      availabilityProbe: options => claudeAvailabilityStatus(env, undefined, undefined, options),
+      availabilityProbe: options => claudeAvailabilityStatus(env, undefined, () => options?.authObservation ? Promise.resolve(options.authObservation) : claudeAuthStatus(env), options),
     },
   ];
 }

@@ -1,3 +1,4 @@
+import { providerResetAt } from "@ponderosa/core";
 import { normalizedToolResult } from "./tool-result.js";
 // Codex JSONL → normalized AgentEvent mapping. THE HEART OF THIS CHUNK.
 //
@@ -153,6 +154,8 @@ export function providerErrorCodeFromDetail(
     ? classifyProviderFailure(detail)
     : structuredCategory;
   if (category === "authentication") return "authentication_failed";
+  if (category === "throttled") return "throttled";
+  if (category === "quota_exhausted") return "quota_exhausted";
   if (category === "rate_limit") return "rate_limit";
   if (category === "capacity") return "capacity";
   if (category === "context_length") return "context_length";
@@ -181,7 +184,7 @@ export function codexErrorEvent(error: unknown, detail: string): Extract<AgentEv
   const status = record(record(info)?.[variant ?? ""])?.httpStatusCode;
   let httpStatusCode = Number.isInteger(status) && Number(status) >= 100 && Number(status) <= 599 ? Number(status) : undefined;
   const structured: Record<string, ProviderErrorCode> = {
-    contextwindowexceeded: "context_length", usagelimitexceeded: "rate_limit",
+    contextwindowexceeded: "context_length", usagelimitexceeded: "rate_limit", ratelimitexceeded: "throttled", serveroverloaded: "capacity",
     unauthorized: "authentication_failed", badrequest: "invalid_request",
   };
   let code = structured[variant?.toLowerCase() ?? ""] ??
@@ -189,6 +192,9 @@ export function codexErrorEvent(error: unknown, detail: string): Extract<AgentEv
       : httpStatusCode !== undefined && httpStatusCode >= 500 ? "network"
         : httpStatusCode !== undefined && httpStatusCode >= 400 && httpStatusCode < 500 ? "invalid_request" : undefined)
     ?? providerErrorCode(error as RawEvent["error"], "");
+  // UsageLimitExceeded also covers UsageNotIncluded in the Codex protocol.
+  // The umbrella code alone cannot prove an exhausted allowance.
+  if (variant?.toLowerCase() === "usagelimitexceeded" && detail.trim() === "To use Codex with your ChatGPT plan, upgrade to Plus: https://chatgpt.com/explore/plus.") code = "plan_entitlement";
   // Parse only this bounded, known Codex envelope. Shared public classification
   // remains opaque to arbitrary JSON and never echoes provider prose.
   if ((!code || code === "invalid_request") && detail.length <= 2_048) {
@@ -203,8 +209,23 @@ export function codexErrorEvent(error: unknown, detail: string): Extract<AgentEv
     } catch { /* Ordinary provider detail is not a JSON envelope. */ }
   }
   code ??= providerErrorCode(error as RawEvent["error"], detail);
+  if (code === "rate_limit") {
+    const explicit = classifyProviderFailure(detail);
+    if (explicit === "quota_exhausted" || explicit === "throttled") code = explicit;
+  }
+  let quotaResetAt: string | undefined;
+  // Only Codex's documented rejection envelope supplies subscription reset
+  // evidence. A generic 429 or rate-limit snapshot does not establish it.
+  if (detail.length <= 2_048) try {
+    const body = record(JSON.parse(detail)), failure = record(body?.error);
+    if ((!code || code === "rate_limit" || code === "quota_exhausted") && body?.type === "error" && body.status === 429 && failure?.type === "usage_limit_reached") {
+      code = "quota_exhausted";
+      quotaResetAt = providerResetAt(failure.resets_at);
+      httpStatusCode = 429;
+    }
+  } catch { /* No structured quota/reset evidence. */ }
   const retryAfterMs = value?.retryAfterMs;
-  return { type: "error", message: detail, category: classifyProviderFailure(detail, code), ...(code ? { code } : {}),
+  return { type: "error", message: detail, ...(quotaResetAt ? { quotaResetAt } : {}), category: classifyProviderFailure(detail, code), ...(code ? { code } : {}),
     ...(httpStatusCode !== undefined ? { httpStatusCode } : {}),
     ...(Number.isSafeInteger(retryAfterMs) && Number(retryAfterMs) >= 0 && Number(retryAfterMs) <= 86_400_000 ? { retryAfterMs: Number(retryAfterMs) } : {}),
   };

@@ -12,12 +12,14 @@ function identifier(value: unknown): value is string {
 
 /** Occupancy is one main-session request, never the aggregate result usage.
  * Input includes uncached + cache-read + cache-creation tokens (Anthropic's
- * documented total input semantics). No output-token estimate is added. */
+ * documented total input semantics). Include actual request-local output only
+ * when reported; a missing output counter remains an explicit input checkpoint. */
 export class ClaudeContextUsage {
   private accepting = false;
   private readonly submissions = new Set<string>();
   private readonly observedRequests = new Set<string>();
   private latest?: number;
+  private latestOutputIncluded = false;
 
   constructor(private readonly sessionId: string) {}
 
@@ -36,10 +38,11 @@ export class ClaudeContextUsage {
     this.submissions.clear();
   }
 
-  contextUsage(): { usedTokens: number; providerSessionGeneration: string } | undefined {
+  contextUsage(): { usedTokens: number; providerSessionGeneration: string; requestOutputIncluded: boolean } | undefined {
     return this.latest === undefined ? undefined : {
       usedTokens: this.latest,
       providerSessionGeneration: this.sessionId,
+      requestOutputIncluded: this.latestOutputIncluded,
     };
   }
 
@@ -66,18 +69,24 @@ export class ClaudeContextUsage {
     const counters = [usage.input_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens];
     if (counters.some(value => typeof value !== "number" || !Number.isSafeInteger(value) ||
         value < 0 || value > MAX_TOKENS)) return undefined;
+    const outputIncluded = usage.output_tokens !== undefined;
+    if (outputIncluded && (typeof usage.output_tokens !== "number" || !Number.isSafeInteger(usage.output_tokens) ||
+        usage.output_tokens < 0 || usage.output_tokens > MAX_TOKENS)) return undefined;
     const normalized = mapClaudeAssistantUsage(raw);
-    const usedTokens = normalized?.inputTokens;
+    const inputTokens = normalized?.inputTokens;
+    const usedTokens = inputTokens === undefined ? undefined : inputTokens + (outputIncluded ? normalized?.outputTokens ?? 0 : 0);
     if (usedTokens === undefined || usedTokens <= 0 || usedTokens > MAX_TOKENS) return undefined;
     // ponytail: retain at most 4096 identities per runtime, then fail closed
     // until replacement. A probabilistic/evicting cache could admit old replay.
     this.observedRequests.add(message.id);
     this.latest = usedTokens;
+    this.latestOutputIncluded = outputIncluded;
     return {
       type: "context_usage",
       providerSessionId: this.sessionId,
       providerSessionGeneration: this.sessionId,
       usedTokens,
+      requestOutputIncluded: outputIncluded,
     };
   }
 }

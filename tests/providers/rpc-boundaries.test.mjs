@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { JsonRpcOutputLimitError, JsonRpcProcess } from '../../packages/engines/dist/json-rpc-process.js';
-import { discoverCodexAppServerCapabilities } from '../../packages/engines/dist/codex-app-server.js';
+import { CodexAppServerSession, discoverCodexAppServerCapabilities } from '../../packages/engines/dist/codex-app-server.js';
 
 test('malformed records and late server replies stay inside the RPC boundary', { timeout: 15_000 }, () => {
   // Observe escaped failures in a disposable parent, so the red baseline cannot
@@ -113,6 +113,33 @@ test('ordinary consumed runtime notifications have no discovery lifetime cap', {
     assert.equal(count, 9);
   } finally { await rpc.close(); }
   assert.equal(rpc.isAlive(), false);
+});
+
+for (const matches of [true, false]) test(`Codex validates the exact saved thread before allowing a resumed turn; matches=${matches}`, { timeout: 5_000 }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'ponderosa-resume-'));
+  const handles = []; let session;
+  writeFileSync(path.join(root, 'app-server'), `
+    require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+      const message = JSON.parse(line); if (message.id === undefined) return;
+      const result = message.method === 'initialize' ? {userAgent:'codex/0.100.0'}
+        : {thread:{id:${JSON.stringify(matches ? 'saved-thread' : 'foreign-thread')}}};
+      console.log(JSON.stringify({id:message.id,result}));
+    });
+  `);
+  try {
+    const opening = CodexAppServerSession.open({ bin: process.execPath, cwd: root, agentId: 'owned-resume', history: [],
+      signal: new AbortController().signal, sandboxMode: 'read-only', resumeSessionId: 'saved-thread',
+      killGraceMs: 50, onRuntimeSpawned: handle => handles.push(handle) });
+    if (matches) {
+      session = await opening;
+      assert.equal(session.engineAgentId, 'saved-thread');
+      assert.equal(session.validatesResumeBeforeTurn, true);
+    } else await assert.rejects(opening, /did not confirm the requested saved session/);
+  } finally {
+    await session?.close(); await Promise.all(handles.map(handle => handle.close()));
+    assert.ok(handles.length && handles.every(handle => !handle.isAlive()), 'Owned resume probes must exit');
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 for (const trailing of [false, true]) test(`throwing notification observers fail the transport: trailing=${trailing}`, { timeout: 5_000 }, async () => {

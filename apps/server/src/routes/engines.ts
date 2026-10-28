@@ -199,7 +199,7 @@ export function registerEngineRoutes(
       } catch {
         return engineDto(registration);
       }
-      if (!auth.authenticated) return engineDto(registration);
+      if (!auth.authenticated || auth.diagnosticFailure) return engineDto(registration);
       if (!registration.availabilityProbe) {
         const refreshed = await engineDto(registration, true);
         if (refreshed.intakeReady) {
@@ -210,7 +210,7 @@ export function registerEngineRoutes(
       }
       let result: EngineAvailabilityStatus;
       try {
-        result = projectProviderAvailabilityStatus(await registration.availabilityProbe());
+        result = projectProviderAvailabilityStatus(await registration.availabilityProbe({authObservation:auth}));
       } catch (error) {
         request.log.warn({
           providerError: restrictedProviderExceptionLogDetail(error),

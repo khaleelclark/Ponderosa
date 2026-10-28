@@ -21,7 +21,7 @@ export interface UserMessageEvent {
 /** Clear a provider session while retaining the canonical agent history. */
 export interface SessionResetEvent {
   type: "session_reset";
-  reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" | "tool_contract_changed" | "provider_root_exit";
+  reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" | "tool_contract_changed" | "provider_root_exit" | "agent_cancelled";
 }
 
 /** Durable proof of the exact provider contract and artifact roots retained by
@@ -77,7 +77,7 @@ export interface CommunicationProjectionEvent {
 }
 
 /** Durable, text-minimal audit evidence for one bounded compaction-history read. */
-export interface CompactionHistoryRetrievalEvent {
+export interface CanonicalHistoryRetrievalEvent {
   type: "compaction_history_retrieval";
   executionId: string;
   runId: string;
@@ -97,12 +97,46 @@ export interface CompactionHistoryRetrievalEvent {
     communicationEventId: string;
     contentSha256: string;
     matchBasis?: "lexical";
+    startCodePoint?: number;
+    endCodePoint?: number;
+    totalCodePoints?: number;
+    complete?: boolean;
   }>;
   excludedCurrentContextEventIds: string[];
   responseUtf8Bytes: number;
   hasMore: boolean;
   durationMs: number;
 }
+
+export interface ImportedHistoryRetrievalEvent {
+  type: "compaction_history_retrieval";
+  source: "imported";
+  executionId: string;
+  runId: string;
+  action: "search" | "read";
+  archiveVersion: string;
+  query?: string;
+  reference?: string;
+  normalizedQuery?: string;
+  querySha256: string;
+  strategy?: "lexical";
+  outcome: "results" | "no_match" | "rejected";
+  reason?: string;
+  scannedMessages: number;
+  eligibleMessages: number;
+  matchedMessages: number;
+  selected: Array<{
+    reference: string;
+    contentSha256: string;
+    startCodePoint?: number;
+    endCodePoint?: number;
+  }>;
+  responseUtf8Bytes: number;
+  hasMore: boolean;
+  durationMs: number;
+}
+
+export type CompactionHistoryRetrievalEvent = CanonicalHistoryRetrievalEvent | ImportedHistoryRetrievalEvent;
 
 /** Durable manager-facing lifecycle transition for ordinary agents. */
 export interface AgentLifecycleEvent {
@@ -163,9 +197,15 @@ export interface ArtifactVisibilityEvent {
 /** Runtime completion enriched by the server with its canonical execution id. */
 export type TurnDoneLogEvent = Extract<AgentEvent, { type: "turn_done" }> & { executionId?: string };
 
+/** Host-owned binding for fresh native-command telemetry, never provider input. */
+export type ContextUsageLogEvent = Extract<AgentEvent, { type: "context_usage" }> & {
+  providerCommand?: { name: "compact"; executionId: string; fencingToken: number; invocationId: string };
+};
+
 /** Anything that can be appended to an agent's `events.jsonl`. */
 export type LogEvent = UserMessageEvent | SessionResetEvent | SessionSnapshotEvent | ContextRolloverSessionAcceptedEvent | ContinuationHandoffEvent | ContinuationHandoffConsumedEvent | CommunicationProjectionEvent | CompactionHistoryRetrievalEvent | AgentLifecycleEvent | CoordinationV3ChangedEvent | GeneratedArtifactEvent | ArtifactVisibilityEvent |
-  AgentOutputEvent | TurnDoneLogEvent | ContextRolloverTriggeredEvent | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" }> | AgentExecutionDeltaEvent;
+  AgentOutputEvent | TurnDoneLogEvent | ContextRolloverTriggeredEvent | ContextUsageLogEvent |
+  (Extract<AgentEvent, { type: "work_start" }> & { executionId: string }) | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" | "work_start" | "context_usage" }> | AgentExecutionDeltaEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-agent seq + ts. */
 export interface StoredLogEvent {

@@ -55,6 +55,14 @@ export function collectReachableArtifactIds(value: unknown, found = new Set<stri
   return found;
 }
 
+/** Offsets are UTF-16 indices into a bounded window, including enough context
+ * on each side to recognize a reference split across a history chunk. */
+export function artifactIdsIntersectingTextRange(text: string, start: number, end: number): string[] {
+  return canonicalArtifactReferenceMatches(text)
+    .filter(match => match.index < end && match.index + match.reference.length > start)
+    .map(match => match.artifactId);
+}
+
 function portableAgentTopologyError(portablePackage: AgentPortablePackageDto): string | undefined {
   if (portablePackage.kind !== "agent" && portablePackage.kind !== "organization") {
     return "Agent package kind must match its organization shape";

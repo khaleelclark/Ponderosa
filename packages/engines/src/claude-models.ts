@@ -153,7 +153,14 @@ export function claudeProviderErrorCode(rawCode: unknown, detail = ""): Provider
   const structuredProviderCategory = code
     ? classifyProviderFailure("", code)
     : "unknown";
+  const providerCategory = classifyProviderFailure(detail);
   if (structuredProviderCategory === "authentication") return "authentication_failed";
+  if (structuredProviderCategory === "quota_exhausted") return "quota_exhausted";
+  if (structuredProviderCategory === "unknown" || structuredProviderCategory === "rate_limit") {
+    if (providerCategory === "quota_exhausted" || detail.length <= 2_048 && /^you(?: have|[’']ve) hit your (?:usage )?limit\b/iu.test(detail.trim())) return "quota_exhausted";
+    if (providerCategory === "throttled") return "throttled";
+  }
+  if (structuredProviderCategory === "throttled") return "throttled";
   if (structuredProviderCategory === "rate_limit") return "rate_limit";
   if (structuredProviderCategory === "capacity") return "capacity";
   if (structuredProviderCategory === "context_length") return "context_length";
@@ -167,7 +174,6 @@ export function claudeProviderErrorCode(rawCode: unknown, detail = ""): Provider
   if (/authentication_failed|expired.*oauth|unauthori[sz]ed|sign.?in required/iu.test(combined)) {
     return "authentication_failed";
   }
-  const providerCategory = classifyProviderFailure(detail);
   if (providerCategory === "rate_limit") return "rate_limit";
   if (providerCategory === "capacity") return "capacity";
   if (providerCategory === "context_length") return "context_length";
@@ -198,6 +204,10 @@ function validationError(
         return "Claude authentication has expired. Sign in with Claude Code, then retry validation.";
       case "rate_limit":
         return "Claude limited the request. Wait before retrying validation; check provider usage information for any reset time.";
+      case "throttled":
+        return "Claude is temporarily limiting requests. Wait before retrying validation.";
+      case "quota_exhausted":
+        return "Claude usage limit reached. Check provider usage before retrying validation.";
       case "capacity":
         return "Claude is temporarily at capacity. Retry validation when capacity is available.";
       case "context_length":
@@ -264,6 +274,10 @@ function observeChildErrors(
     child.on("error", onError);
     child.once("close", () => child.off("error", onError));
   });
+  // Registration can refuse the child before its race is installed. Observe
+  // this rejection immediately; return the original promise so callers still
+  // receive spawn failures whenever registration succeeds.
+  void failure.catch(() => undefined);
   return failure;
 }
 

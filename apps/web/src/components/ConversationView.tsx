@@ -37,6 +37,7 @@ import {
 } from "../hooks/queries";
 import {
   engineIsAvailable,
+  engineUnavailableReason,
   resolveConversationEngine,
   resolveRuntimeSelection,
 } from "../conversationEngine";
@@ -782,11 +783,7 @@ export function ConversationView({
           id: option.id,
           label: option.displayName,
           disabled: !engineIsAvailable(option),
-          detail: engineIsAvailable(option)
-            ? undefined
-            : option.authentication === "authenticated"
-              ? "Access unavailable"
-              : "Signed out",
+          detail: engineUnavailableReason(option),
         }))}
         model={model}
         models={models}
@@ -1317,12 +1314,13 @@ export function ConversationView({
                       ...(argumentsText ? { argumentsText } : {}),
                     },
                   );
-                  return invocation.then(result =>
+                  return invocation.then(result => {
+                    if (result.outcome && result.outcome !== "completed") throw new Error(result.message ?? "Provider command completion is unconfirmed. Do not repeat the command.");
                     setQueuedMessageNotice(
                       result.message ??
                         `/${command.name} invoked for ${commandTargetAgent.title}.`,
-                    ),
-                  );
+                    );
+                  });
                 }
               : undefined
           }

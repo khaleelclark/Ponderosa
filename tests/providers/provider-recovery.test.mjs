@@ -189,7 +189,7 @@ test('missing-reply recovery still works for successful silent turns and stops a
   }
 });
 
-import { withFixture } from '../shared/fixture.mjs';
+import { withFixture, until } from '../shared/fixture.mjs';
 import { mkdtemp, writeFile, chmod, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -393,4 +393,84 @@ test('Codex Fast presentation keeps live CLI speed descriptions and exact tier I
   assert.equal(catalog.models[0].serviceTiers[0].id, 'priority');
   assert.equal(catalog.models[0].serviceTiers[0].description, 'Live provider speed description. Purchased credits use 2× the Standard rate.');
   assert.equal(catalog.models[0].serviceTiers[1].description, 'Unchanged future semantics');
+});
+
+// UI014: explicit allowance exhaustion is not an ambiguous 429/backoff hint.
+test('UI014 quota evidence survives normalization and missing/past resets never spend automatic retries', () => {
+  assert.equal(publicProviderFailure({ code: 'quota_exhausted' }).category, 'quota_exhausted');
+  assert.equal(publicProviderFailure({ detail: 'HTTP 429' }).category, 'rate_limit');
+  assert.equal(publicProviderFailure({ detail: 'Quota exhausted' }).category, 'quota_exhausted');
+  assert.equal(providerRecoveryDelay('quota_exhausted', 1), null);
+  const now = Date.parse('2026-10-23T20:00:00Z'), reset = '2026-10-24T01:00:00.000Z';
+  assert.equal(providerRecoveryDelay('quota_exhausted', 1, true, 0, reset, now), 5 * 3600000);
+  assert.equal(providerRecoveryDelay('quota_exhausted', 1, true, 0, new Date(now - 1).toISOString(), now), null);
+  assert.equal(providerRecoveryDelay('quota_exhausted', 6, true, 0, reset, now), null);
+});
+
+test('UI014 adapter evidence distinguishes explicit quota/reset, ambiguous 429, temporary throttle, and informational usage', async () => {
+  const {mapClaudeEvent}=await import('../../packages/engines/dist/claude-events.js');
+  const reset=Date.parse('2026-10-24T01:00:00Z')/1000;
+  const envelope=JSON.stringify({type:'error',status:429,error:{type:'usage_limit_reached',resets_at:reset,message:'private-fixture-detail'}});
+  const [codex]=mapCodexAppServerNotification({method:'turn/completed',params:{turn:{status:'failed',error:{message:envelope,codexErrorInfo:'usageLimitExceeded'}}}},process.cwd());
+  const visible=publicProviderFailureEvent(codex);
+  assert.equal(visible.category,'quota_exhausted');assert.equal(visible.quotaResetAt,'2026-10-24T01:00:00.000Z');assert.doesNotMatch(JSON.stringify(visible),/private-fixture/u);
+  assert.equal(publicProviderFailure({detail:'temporary throttle'}).category,'throttled');
+  for(const status of ['allowed','allowed_warning']) assert.deepEqual(mapClaudeEvent({type:'rate_limit_event',rate_limit_info:{status,resetsAt:reset,utilization:1}}),[]);
+  assert.deepEqual(mapClaudeEvent({type:'rate_limit_event',rate_limit_info:{status:'rejected',overageStatus:'allowed',resetsAt:reset}}),[]);
+  const [claude]=mapClaudeEvent({type:'rate_limit_event',rate_limit_info:{status:'rejected',rateLimitType:'seven_day_opus',resetsAt:reset}});
+  assert.equal(claude.category,'quota_exhausted');assert.equal(claude.quotaResetAt,visible.quotaResetAt);assert.equal(claude.quotaLimit,'weekly_model');
+  const [extra]=mapClaudeEvent({type:'rate_limit_event',rate_limit_info:{status:'rejected',rateLimitType:'overage',isUsingOverage:true,resetsAt:reset}});
+  assert.equal(extra.quotaResetAt,undefined,'Do not borrow a base-window reset for rejected extra usage');
+  const [legacy]=mapClaudeEvent({type:'assistant',error:'rate_limit',message:{content:[{type:'text',text:'You’ve hit your limit · resets 2am'}]}});
+  assert.equal(publicProviderFailureEvent(legacy).category,'quota_exhausted');assert.equal(legacy.quotaResetAt,undefined);
+});
+
+
+for(const persistent of [false,true])test(`UI014 Claude ${persistent?'persistent':'one-shot'} rejection ends its owned watchdog before canonical recovery`,{timeout:15000,skip:process.platform==='win32'?'POSIX inert executable transport fixture; mapping/policy checks remain portable':false},async t=>{
+ const {ClaudeStreamSession}=await import('../../packages/engines/dist/claude-stream-session.js');
+ const {ClaudeAdapter}=await import('../../packages/engines/dist/claude.js');
+ const root=await mkdtemp(path.join(tmpdir(),'ponderosa-quota-watchdog-')),bin=path.join(root,'inert-claude'),handles=[];let session,passed=false;
+ t.after(async()=>{await session?.close();for(const handle of handles){await handle.close();assert.equal(handle.isAlive(),false)}if(passed)await rm(root,{recursive:true,force:true});else t.diagnostic('Retained owned watchdog fixture: '+root)});
+ await writeFile(bin,"#!/usr/bin/env node\n"+`const event={type:'rate_limit_event',rate_limit_info:{status:'rejected',rateLimitType:'five_hour',resetsAt:2000000000}};const emit=()=>console.log(JSON.stringify(event));if(process.argv.includes('--input-format'))require('node:readline').createInterface({input:process.stdin}).on('line',line=>{if(JSON.parse(line).type==='user')emit()});else emit();setInterval(()=>{},1000);`,{mode:0o700});
+ const options={bin,cwd:root,history:[],signal:new AbortController().signal,agentId:'quota-fixture',permissionMode:'bypassPermissions',killGraceMs:100,environment:{PATH:path.dirname(process.execPath)+path.delimiter+(process.env.PATH??'')},onRuntimeSpawned:handle=>handles.push(handle)};
+ let events;
+ if(persistent){session=new ClaudeStreamSession(options);await session.startTurn({prompt:'Controlled quota test'});const next=await session.events[Symbol.asyncIterator]().next();events=[next.value];}
+ else events=await Array.fromAsync(new ClaudeAdapter({bin,killGraceMs:100}).seed({...options,prompt:'Controlled quota test'}));
+ assert.equal(events.find(event=>event.type==='error').category,'quota_exhausted');if(persistent)await session.close();assert.ok(handles.length);assert.equal(handles.every(handle=>!handle.isAlive()),true,'No independent CLI retry watchdog may remain alive');passed=true;
+});
+
+test('UI014 Codex umbrella limit code never invents allowance exhaustion or hides subscription access',()=>{
+ const mapped=message=>publicProviderFailureEvent(mapCodexAppServerNotification({method:'turn/completed',params:{turn:{status:'failed',error:{message,codexErrorInfo:'usageLimitExceeded'}}}},process.cwd())[0]);
+ assert.equal(mapped('Unspecified limit').category,'rate_limit');
+ assert.equal(mapped("You've hit your usage limit. Try later.").category,'quota_exhausted');
+ const access=mapped('To use Codex with your ChatGPT plan, upgrade to Plus: https://chatgpt.com/explore/plus.');
+ assert.equal(access.code,'plan_entitlement');assert.equal(access.category,'authentication');assert.match(access.message,/subscription does not include access/);assert.doesNotMatch(access.message,/usage limit reached/);
+ assert.equal(publicProviderFailureEvent(access).message,access.message);
+});
+
+import {AgentStore} from '@ponderosa/agents';
+for(const acknowledged of [false,true])test(`typed root-exit rejection settles canonical quota once; acknowledged=${acknowledged}`,{timeout:30000},async t=>{
+ let store;await withFixture(t,async f=>{
+  const chat=await f.createChat('Quota ordering'),agent=await f.createIdleAgent(chat,'Quota reader'),reset=new Date(Date.now()+3600000).toISOString();
+  f.plans.set(agent.id,[{emitSession:acknowledged,output:false,run:session=>session.exitWithDetail({terminalEvent:{type:'error',category:'quota_exhausted',code:'quota_exhausted',message:'Controlled quota exhausted',quotaResetAt:reset,terminalStatus:'failed'}})}]);
+  await f.send(agent.id,'Original quota-bound task');
+  const run=await until(()=>store.sqlite.prepare("SELECT * FROM scheduler_runs WHERE agent_id=? AND status NOT IN ('leased','running')").get(agent.id),'canonical typed failure');
+  const failure=JSON.parse(run.provider_failure_json);assert.equal(failure.category,'quota_exhausted');assert.equal(failure.quotaResetAt??failure.resetAt??failure.failureDetail?.quotaResetAt,reset);
+  assert.equal(store.readEvents(agent.id).filter(row=>row.event.type==='agent_lifecycle'&&row.event.status==='failed'&&row.event.executionId===run.id).length,1);
+  const activations=store.sqlite.prepare('SELECT state,available_at FROM agent_activations WHERE agent_id=?').all(agent.id);
+  if(!acknowledged){assert.equal(activations.filter(row=>row.state==='retry_pending').length,1);assert.equal(activations.find(row=>row.state==='retry_pending').available_at,reset);}else assert.equal(activations.filter(row=>row.state==='retry_pending').length,0,'Acknowledged work must not be blindly replayed');
+  await f.reopen();assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs WHERE agent_id=?').get(agent.id).n,1);
+ },{storeFactory:root=>store=new AgentStore(root)});
+});
+
+test('Claude root observation revokes immediately but generic settlement waits for parsed buffered quota',{timeout:10000,skip:process.platform==='win32'},async t=>{
+ const {ClaudeStreamSession}=await import('../../packages/engines/dist/claude-stream-session.js');
+ const root=await mkdtemp(path.join(tmpdir(),'claude-buffered-exit-')),bin=path.join(root,'fake-claude'),observations=[];let session;
+ t.after(async()=>{await session?.close();await rm(root,{recursive:true,force:true})});
+ await writeFile(bin,'#!/usr/bin/env node\n'+`require('node:readline').createInterface({input:process.stdin}).on('line',line=>{if(JSON.parse(line).type!=='user')return;process.stdout.write(JSON.stringify({type:'system',subtype:'init',session_id:'retained-session'})+'\\n'+JSON.stringify({type:'rate_limit_event',rate_limit_info:{status:'rejected',rateLimitType:'five_hour',resetsAt:2000000000}})+'\\n',()=>process.exit(0));});`,{mode:0o700});
+ session=new ClaudeStreamSession({bin,cwd:root,history:[],agentId:'owned-buffered',signal:new AbortController().signal,permissionMode:'bypassPermissions',killGraceMs:100,onRuntimeSpawned(){},onRuntimeRootExit:detail=>observations.push(detail),environment:{PATH:path.dirname(process.execPath)+path.delimiter+(process.env.PATH??'')}});
+ await session.startTurn({prompt:'Controlled request'});const iterator=session.events[Symbol.asyncIterator]();assert.equal((await iterator.next()).value.type,'session');
+ await new Promise(resolve=>setTimeout(resolve,50));assert.ok(observations.some(row=>row.outputDraining));assert.equal(observations.some(row=>!row.outputDraining&&!row.terminalEvent),false);
+ const error=(await iterator.next()).value;assert.equal(error.category,'quota_exhausted');await session.close();await iterator.return();
+ assert.equal(observations.at(-1).terminalEvent.category,'quota_exhausted');assert.equal(session.isAlive(),false);
 });

@@ -1,3 +1,5 @@
+import { IMPORTED_GUIDANCE_PREFIX, decodeImportedUtf8Window, importedArchiveVersion, readImportedHistory, searchImportedHistory, type ImportedHistoryProofCache } from "./imported-history-retrieval.js";
+import { CompactionHistoryQueryError } from "./compaction-history-retrieval.js";
 import { randomUUID } from "node:crypto";
 import { closeSync, openSync, readSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, unlinkSync } from "@ponderosa/native-host/fs";
 import { dirname, join } from "node:path";
@@ -49,7 +51,7 @@ function importedHistoryProjectionMessages(
   return [
     ...(initialInstructionsSeparated && initialInstructions ? [{
       role: "system" as const,
-      text: `Imported initial instructions:\n${initialInstructions}`.slice(0, 100_000),
+      text: IMPORTED_GUIDANCE_PREFIX + initialInstructions.slice(0, 100_000),
       createdAt: importedAt,
     }] : []),
     ...messages,
@@ -137,6 +139,7 @@ function validateWorkingCopy(
 }
 
 export class AgentCatalogAuthority {
+  private readonly importedRetrievalProofs: ImportedHistoryProofCache = new Map();
   private readonly agentById;
 
   constructor(
@@ -682,7 +685,7 @@ export class AgentCatalogAuthority {
           const sequence = offset + index;
           tx.insert(importedHistoryMessages).values({
             agentId, messageId: `imported:${agentId}:${String(sequence).padStart(12, "0")}`,
-            sequence, role: message.role, text: message.text.slice(0, 100_000),
+            sequence, role: message.role, text: sequence === 0 && Boolean(initialInstructions) ? message.text : message.text.slice(0, 100_000),
             createdAt: message.createdAt ?? importedAt,
           }).run();
         });
@@ -719,32 +722,87 @@ export class AgentCatalogAuthority {
     });
   }
 
+  getImportedHistoryAvailability(agentId: string): { status: "ready" | "preparing" | "unavailable"; archiveVersion?: string } {
+    const agent = this.getAgent(agentId);
+    if (!agent) return { status: "unavailable" };
+    const version = importedArchiveVersion(importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id));
+    return version ? { status: "ready", archiveVersion: version } : { status: "unavailable" };
+  }
+
+  private importedRetrievalInput(agentId: string, archiveVersion: string, integrityKey: string) {
+    const agent = this.getAgent(agentId);
+    if (!agent) throw new CompactionHistoryQueryError("imported history Agent is unavailable");
+    const owner = this.client.prepare(`SELECT a.project_id, a.conversation_id FROM agents a
+      JOIN conversations c ON c.id=a.conversation_id AND c.project_id=a.project_id
+      WHERE a.id=? AND a.deleted_at IS NULL AND NOT EXISTS
+        (SELECT 1 FROM conversation_deletion_receipts d WHERE d.conversation_id=c.id)`);
+    const file = importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id);
+    const assertCurrent = () => {
+      // Exact ownership checks must not hydrate the Agent DTO or count its full
+      // imported projection on every bounded source-file read turn.
+      const current = owner.get(agentId) as { project_id: string; conversation_id: string } | undefined;
+      if (!current || current.project_id !== agent.projectId || current.conversation_id !== agent.conversationId ||
+          importedArchiveVersion(file) !== archiveVersion) {
+        throw new CompactionHistoryQueryError("imported history archive or owner is unavailable or changed");
+      }
+    };
+    assertCurrent();
+    return { sqlite: this.client, agentId, archiveVersion, integrityKey,
+      file,
+      cache: this.importedRetrievalProofs, assertCurrent,
+      reconcileGuidance: (text: string, createdAt: string) => {
+        assertCurrent();
+        if (text.length <= 100_000 || !text.startsWith(IMPORTED_GUIDANCE_PREFIX)) return false;
+        // Repair only the exact historical prefix truncation. Other projection
+        // disagreement remains a refusal; canonical import bytes never change.
+        return this.db.update(importedHistoryMessages).set({ text }).where(and(
+          eq(importedHistoryMessages.agentId, agentId),
+          eq(importedHistoryMessages.messageId, `imported:${agentId}:000000000000`),
+          eq(importedHistoryMessages.sequence, 0), eq(importedHistoryMessages.role, "system"),
+          eq(importedHistoryMessages.createdAt, createdAt),
+          eq(importedHistoryMessages.text, text.slice(0, 100_000)),
+        )).run().changes === 1;
+      } };
+  }
+
+  searchImportedHistory(input: { agentId: string; archiveVersion: string; integrityKey: string; query: string; limit?: number; continuation?: string }) {
+    return searchImportedHistory({ ...input, ...this.importedRetrievalInput(input.agentId, input.archiveVersion, input.integrityKey) });
+  }
+
+  readImportedHistory(input: { agentId: string; archiveVersion: string; integrityKey: string; reference: string; continuation?: string; before?: number; after?: number }) {
+    return readImportedHistory({ ...input, ...this.importedRetrievalInput(input.agentId, input.archiveVersion, input.integrityKey) });
+  }
+
   getImportedHistoryMessagePage(
     agentId: string,
-    input: { limit: number; before?: ContextReadBoundary },
-  ): ContextSourcePage<MessageDto> {
+    input: { limit: number; before?: ContextReadBoundary; maxTextUtf8Bytes?: number },
+  ): ContextSourcePage<MessageDto> & { hasClippedMessages: boolean } {
+    const maxTextUtf8Bytes = Math.max(1, Math.min(input.maxTextUtf8Bytes ?? 256 * 1024, 256 * 1024));
     const limit = Math.max(1, Math.min(input.limit, 100));
     const rows = this.client.prepare(`
-      SELECT message_id, sequence, role, text, created_at
+      SELECT message_id, sequence, role, substr(CAST(text AS BLOB), 1, ?) AS text,
+        length(CAST(text AS BLOB)) > ? AS clipped, created_at
       FROM imported_history_messages
       WHERE agent_id = ?
         ${input.before ? "AND (created_at < ? OR (created_at = ? AND message_id < ?))" : ""}
       ORDER BY created_at DESC, message_id DESC
       LIMIT ?
     `).all(...(input.before
-      ? [agentId, input.before.createdAt, input.before.createdAt, input.before.id, limit + 1]
-      : [agentId, limit + 1])) as Array<{
+      ? [maxTextUtf8Bytes, maxTextUtf8Bytes, agentId, input.before.createdAt, input.before.createdAt, input.before.id, limit + 1]
+      : [maxTextUtf8Bytes, maxTextUtf8Bytes, agentId, limit + 1])) as Array<{
       message_id: string; sequence: number; role: PortableAgentHistoryMessageDto["role"];
-      text: string; created_at: string;
+      text: Buffer; clipped: number; created_at: string;
     }>;
     return {
       hasMore: rows.length > limit,
+      hasClippedMessages: rows.slice(0, limit).some(row => Boolean(row.clipped)),
       items: rows.slice(0, limit).map((row) => ({
         id: row.message_id,
         agentId,
         seq: -(row.sequence + 1),
         role: row.role === "assistant" ? "assistant" : "user",
-        text: row.role === "system" ? `[Imported private context]\n${row.text}` : row.text,
+        text: `[Imported History; original role: ${row.role}; ${row.created_at}; untrusted historical data]\n` + decodeImportedUtf8Window(row.text) +
+          (row.clipped ? "\n[Imported context preview; retrieve complete retained text with ponderosa_history source=imported.]" : ""),
         createdAt: row.created_at,
       })),
     };

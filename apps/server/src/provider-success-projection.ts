@@ -526,25 +526,36 @@ export function projectProviderModelIdentifier(value: unknown): string | undefin
 export function projectProviderCommandResult(value: unknown): RuntimeCommandResult {
   if (value === undefined) return {};
   const budget = new ProjectionBudget("command");
-  const record = dataRecord(value, ["message"], "command", budget, 0);
-  const message = optionalString(record, "message", MAX_DESCRIPTION_CHARACTERS, "command", budget, 1);
-  return message === undefined ? {} : { message };
+  const record = dataRecord(value, ["message", "contextUsage", "outcome"], "command", budget, 0);
+  const outcome = record.has("outcome") ? enumString(record, "outcome", ["completed", "failed", "outcome_unknown"] as const, "command", budget, 1) : undefined;
+  let message = optionalString(record, "message", MAX_DESCRIPTION_CHARACTERS, "command", budget, 1);
+  let contextUsage: ReturnType<typeof projectProviderContextUsage>;
+  try { contextUsage = record.has("contextUsage") ? projectProviderContextUsage(record.get("contextUsage")) : undefined; }
+  catch {
+    // The command has already been invoked; unusable optional telemetry cannot
+    // invite replay of that operation or become trusted usage evidence.
+    message = "Command was invoked; updated context telemetry is invalid. Do not repeat the command solely to refresh telemetry.";
+  }
+  return { ...(message === undefined ? {} : { message }), ...(outcome ? { outcome } : {}), ...(contextUsage ? { contextUsage } : {}) };
 }
 
 /** Copy authentication probe output before it enters the shared auth cache. */
 export function projectProviderAuthStatus(value: unknown): EngineAuthStatus {
   const budget = new ProjectionBudget("auth");
-  const record = dataRecord(value, ["authenticated", "detail", "status", "reason", "source"], "auth", budget, 0);
+  const record = dataRecord(value, ["authenticated", "detail", "status", "reason", "source", "diagnosticFailure"], "auth", budget, 0);
   const detail = optionalString(record, "detail", MAX_DESCRIPTION_CHARACTERS, "auth", budget, 1);
   const status = optionalString(record, "status", 16, "auth", budget, 1);
   const authenticated = requiredBoolean(record, "authenticated", "auth", budget, 1);
   if (status !== undefined && (status !== "unknown" || authenticated)) reject("auth");
   const reason = optionalString(record, "reason", 32, "auth", budget, 1);
   const source = optionalString(record, "source", 32, "auth", budget, 1);
+  const diagnosticFailure=optionalString(record,"diagnosticFailure",32,"auth",budget,1);
+  if(diagnosticFailure!==undefined&&diagnosticFailure!=='cleanup_failed')reject('auth');
   if (reason !== undefined && (status !== "unknown" || !["timeout", "spawn_failed", "malformed", "cleanup_failed", "probe_failed", "probe_pending"].includes(reason))) reject("auth");
   if (source !== undefined && !["cli_status", "subscription_presence"].includes(source)) reject("auth");
   return {
     authenticated,
+    ...(diagnosticFailure ? { diagnosticFailure: diagnosticFailure as "cleanup_failed" } : {}),
     ...(reason ? { reason: reason as EngineAuthStatus["reason"] } : {}),
     ...(source ? { source: source as EngineAuthStatus["source"] } : {}),
     ...(status === "unknown" ? { status } : {}),
@@ -622,6 +633,7 @@ export interface ProjectedProviderContextUsage {
   windowTokens?: number;
   aggregateTokens?: number;
   providerSessionGeneration?: string;
+  requestOutputIncluded?: boolean;
 }
 
 /** Copy a synchronous session usage snapshot before rollover decisions. */
@@ -629,12 +641,13 @@ export function projectProviderContextUsage(value: unknown): ProjectedProviderCo
   if (value === undefined) return undefined;
   const budget = new ProjectionBudget("context_usage");
   const record = dataRecord(value, [
-    "usedTokens", "windowTokens", "aggregateTokens", "providerSessionGeneration",
+    "usedTokens", "windowTokens", "aggregateTokens", "providerSessionGeneration", "requestOutputIncluded",
   ], "context_usage", budget, 0);
   const optionalTokenCount = (key: "windowTokens" | "aggregateTokens"): number | undefined =>
     record.has(key) && record.get(key) !== undefined
       ? finiteNumber(record, key, 0, Number.MAX_SAFE_INTEGER, "context_usage", budget, 1)
       : undefined;
+  const requestOutputIncluded = optionalBoolean(record, "requestOutputIncluded", "context_usage", budget, 1);
   const windowTokens = optionalTokenCount("windowTokens");
   const aggregateTokens = optionalTokenCount("aggregateTokens");
   const providerSessionGeneration = optionalIdentifierString(
@@ -657,6 +670,7 @@ export function projectProviderContextUsage(value: unknown): ProjectedProviderCo
     ...(windowTokens === undefined ? {} : { windowTokens }),
     ...(aggregateTokens === undefined ? {} : { aggregateTokens }),
     ...(providerSessionGeneration === undefined ? {} : { providerSessionGeneration }),
+    ...(requestOutputIncluded === undefined ? {} : { requestOutputIncluded }),
   };
 }
 

@@ -5,7 +5,7 @@ import {
 import type { StoredLogEvent } from "@ponderosa/agents";
 
 function isAgentStreamEvent(event: StoredLogEvent["event"]): event is AgentStreamEvent {
-  return event.type !== "user_message";
+  return event.type !== "user_message" && event.type !== "work_start";
 }
 
 function envelope(agentId: string, stored: StoredLogEvent, replayed = false): SseEventEnvelope | undefined {

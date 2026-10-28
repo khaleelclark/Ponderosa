@@ -166,17 +166,15 @@ export function registerAgentMaintenanceRoutes(
           await workingCopies.awaitUses(new Set([current.id]));
           const project = store.getProject(current.projectId);
           if (!project) return reply.code(409).send({ error: "Agent Project is unavailable" });
-          const runtime = persistentRuntimeForTermination(current.id);
-          if (runtime) {
-            await teardownPersistentRuntime(
-              current.id,
-              runtime,
-              "working-copy mode changed",
-              project.id,
-            );
+          const changed = await workingCopies.setMode(current, project, body.workingCopyMode, async () => {
+            const runtime = persistentRuntimeForTermination(current.id);
+            if (runtime) await teardownPersistentRuntime(current.id, runtime, "working-copy mode changed", project.id);
+          });
+          if (changed.workingCopy.state === "ready" &&
+              (changed.workingCopy.id !== current.workingCopy.id || changed.workingCopy.mode !== current.workingCopy.mode ||
+                changed.workingCopy.rootPath !== current.workingCopy.rootPath)) {
+            clearAgentResumeSession(current.id, "working_copy_changed");
           }
-          clearAgentResumeSession(current.id, "working_copy_changed");
-          const changed = await workingCopies.setMode(current, project, body.workingCopyMode);
           return changed;
         } catch (error) {
           return reply.code(409).send({

@@ -736,6 +736,7 @@ export function AllChatView({
       name: command.name,
       ...(argumentsText ? { argumentsText } : {}),
     });
+    if (result.outcome && result.outcome !== "completed") throw new Error(result.message ?? "Provider command completion is unconfirmed. Do not repeat the command.");
     setNotice(
       result.message ??
         `/${command.name} completed for ${activeReplyTarget?.title ?? "Agent"}.`,

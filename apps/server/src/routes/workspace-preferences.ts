@@ -275,10 +275,12 @@ export function registerWorkspacePreferenceRoutes(
       return reply.code(400).send({ error: "A chat in this folder no longer exists. Refresh and retry." });
     }
     delete patch.chatFoldersRevision;
-    const globalInstructionsChanged = patch.globalInstructions !== undefined && patch.globalInstructions !== previousPreferences.globalInstructions;
-    const profileChanged = patch.profile !== undefined && JSON.stringify(patch.profile) !== JSON.stringify(previousPreferences.profile);
     const cursor = workspace.cursor();
     const preferences = workspace.updatePreferences(patch);
+    // The store owns normalization; compare only fields delivered in the prompt.
+    const globalInstructionsChanged = preferences.globalInstructions.trim() !== previousPreferences.globalInstructions.trim();
+    const profileChanged = preferences.profile.displayName !== previousPreferences.profile.displayName ||
+      preferences.profile.handle !== previousPreferences.profile.handle;
     if (patch.claudeModelOptions !== undefined) {
       applyOperatorModelOptions();
       for (const entry of engineModelCatalogCache.values()) entry.expiresAt = 0;

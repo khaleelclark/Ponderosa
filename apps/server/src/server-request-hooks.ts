@@ -11,7 +11,7 @@ import {
   MAX_OPERATOR_AVATAR_BYTES,
   OPERATOR_AVATAR_MEDIA_TYPES,
 } from "./operator-profile-images.js";
-import { secretEqual } from "./security.js";
+import { OPERATOR_IDENTITY_HEADER, secretEqual } from "./security.js";
 import { isAgentToolRoute } from "./agent-tool-route-classification.js";
 import { localBrowserTransportPath } from "./routes/local-browsers.js";
 import { browserSessionCookie } from "./launcher-security.js";
@@ -165,6 +165,8 @@ export function registerRequestSecurityHooks(
     });
   }
 
+  const verifiedOperatorIdentities = new WeakMap<IncomingMessage, string>();
+
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     // Only the narrow extension transport uses its own unguessable, tab-scoped
@@ -210,18 +212,21 @@ export function registerRequestSecurityHooks(
       },
     );
     if (opts.networkSecurity?.mode === "reverse_proxy") {
+      let verifiedIdentity: string | undefined;
       if (allowedProxyIdentities.size > 0) {
-        const asserted = request.headers["tailscale-user-login"];
+        const asserted = request.headers[OPERATOR_IDENTITY_HEADER];
         const identity = typeof asserted === "string" ? asserted.trim().toLocaleLowerCase() : "";
         if (!identity || !allowedProxyIdentities.has(identity)) {
           return reply.code(401).send({ error: "trusted proxy operator identity required" });
         }
+        verifiedIdentity = identity;
       }
       if ((opts.launcherSecurity || opts.authToken) &&
           (browserBootstrapPath || launcherExchange)) return;
       if (opts.authToken && !validBrowserSession() && !secretEqual(provided, opts.authToken)) {
         return reply.code(401).send({ error: "reverse proxy backend authentication required" });
       }
+      if (verifiedIdentity) verifiedOperatorIdentities.set(request.raw, verifiedIdentity);
       return;
     }
     if (opts.launcherSecurity && validBrowserSession()) return;
@@ -239,14 +244,11 @@ export function registerRequestSecurityHooks(
     const now = Date.now();
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     const capability = provided ? agentMessageCapabilities.get(provided) : undefined;
-    const asserted = request.headers["tailscale-user-login"];
-    const proxyIdentity = typeof asserted === "string"
-      ? asserted.trim().toLocaleLowerCase()
-      : "";
+    const proxyIdentity = verifiedOperatorIdentities.get(request.raw);
     const source = capability
       ? `agent:${capability.agentId}`
       : opts.networkSecurity?.mode === "reverse_proxy"
-        ? `operator:${proxyIdentity}`
+        ? proxyIdentity ? `operator:${proxyIdentity}` : "operator"
         : opts.authToken || opts.launcherSecurity
           ? "operator"
           : request.ip;

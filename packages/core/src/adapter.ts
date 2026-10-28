@@ -98,6 +98,8 @@ export type EngineModelValidationError =
   | "model_not_found"
   | "authentication"
   | "rate_limit"
+  | "quota_exhausted"
+  | "throttled"
   | "capacity"
   | "context_length"
   | "organization_policy"
@@ -233,9 +235,22 @@ export type RuntimeSteerResult =
   | { status: "accepted"; turnId?: string }
   | { status: "not_active" | "not_steerable" | "unsupported"; reason?: string };
 
+export interface RuntimeContextUsage {
+  usedTokens: number;
+  windowTokens?: number;
+  aggregateTokens?: number;
+  providerSessionGeneration?: string;
+  /** False marks an input-only checkpoint. */
+  requestOutputIncluded?: boolean;
+}
+
 export interface RuntimeCommandResult {
+  /** Mutating commands distinguish observed completion from an uncertain reply. */
+  outcome?: "completed" | "failed" | "outcome_unknown";
   /** Provider-derived, human-readable result for non-mutating runtime commands. */
   message?: string;
+  /** Present only when the command verified a NEW post-command observation. */
+  contextUsage?: RuntimeContextUsage;
 }
 
 /**
@@ -264,17 +279,15 @@ export interface RuntimeProcessHandle {
 }
 
 export interface RuntimeSession extends RuntimeProcessHandle {
+  /** Opening a saved session validates its provider identity before any new turn. */
+  readonly validatesResumeBeforeTurn?: boolean;
   readonly engineAgentId: string;
   readonly events: AsyncIterable<AgentEvent>;
   /** Best-effort current context occupancy for this provider session.
-   * `usedTokens` counts everything occupying the provider's context window.
+   * `usedTokens` is the provider's current request checkpoint; an explicit
+   * false requestOutputIncluded marks a partial input-only observation.
    * `windowTokens` is present only when the provider reports it. */
-  contextUsage?(): {
-    usedTokens: number;
-    windowTokens?: number;
-    aggregateTokens?: number;
-    providerSessionGeneration?: string;
-  } | undefined;
+  contextUsage?(): RuntimeContextUsage | undefined;
   /** Provider rate-limit lines already available through this authenticated
    * runtime transport. Implementations must not add an out-of-band API call. */
   rateLimitStatus?(): Promise<string[]>;
@@ -290,6 +303,10 @@ export interface RuntimeSession extends RuntimeProcessHandle {
 }
 
 export interface ProviderRootExitDetail {
+  /** Root is gone; the adapter is draining already-emitted output for a bounded interval. */
+  outputDraining?: boolean;
+  /** Parsed structured terminal evidence, retained before generic exit handling. */
+  terminalEvent?: Extract<AgentEvent, {type:"error"}>;
   exitCode?: number | null;
   signal?: string | null;
   stderr?: string;
@@ -545,6 +562,8 @@ export interface Adapter {
 /** Reported by `/api/engines` (SPEC §8): an engine plus its live auth status. */
 export interface EngineAuthStatus {
   authenticated: boolean;
+  /** Sign-in was parsed, but its diagnostic process has not safely settled. */
+  diagnosticFailure?: "cleanup_failed";
   /** False alone is not logout evidence when the read-only probe is unknown. */
   status?: "unknown";
   reason?: "timeout" | "spawn_failed" | "malformed" | "cleanup_failed" | "probe_failed" | "probe_pending";
@@ -555,6 +574,8 @@ export interface EngineAuthStatus {
 
 /** Host-owned diagnostic process registration; never credential authority. */
 export interface EngineProbeOptions {
+  /** One validated sign-in observation reused within this explicit check. */
+  authObservation?: EngineAuthStatus;
   onRuntimeSpawned?: (handle: RuntimeProcessHandle) => void;
   signal?: AbortSignal;
 }

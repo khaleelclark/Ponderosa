@@ -1,10 +1,10 @@
 import type {
   AgentEvent,
   ProviderErrorCode,
-  ProviderFailureCategory,
   TokenUsage,
   ToolFailureCategory,
 } from "@ponderosa/core";
+import { providerResetAt, PROVIDER_FAILURE_CATEGORIES, PROVIDER_QUOTA_LIMITS } from "@ponderosa/core";
 import { isProxy } from "node:util/types";
 
 const MAX_BYTES = 4 * 1024 * 1024;
@@ -17,13 +17,10 @@ const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:@/+\-]*$/u;
 
 const ERROR_CODES = [
   "client_upgrade_required", "invalid_request",
-  "invalid_model", "model_not_found", "authentication_failed", "rate_limit", "capacity",
+  "invalid_model", "model_not_found", "authentication_failed", "rate_limit", "quota_exhausted", "throttled", "capacity",
   "context_length", "organization_policy", "plan_entitlement", "network", "provider_error",
 ] as const satisfies readonly ProviderErrorCode[];
-const FAILURE_CATEGORIES = [
-  "authentication", "rate_limit", "capacity", "context_length", "invalid_request",
-  "unavailable", "unknown",
-] as const satisfies readonly ProviderFailureCategory[];
+const FAILURE_CATEGORIES = PROVIDER_FAILURE_CATEGORIES;
 const TOOL_FAILURE_CATEGORIES = [
   "operation_not_provided", "temporary_connection_failure", "authentication_required",
   "permission_denied", "invalid_input", "permanent_failure", "connector_rate_limit",
@@ -272,27 +269,34 @@ function exact(value: unknown, keys: readonly string[], budget: Budget): DataRec
 export function projectAgentEvent(value: unknown): AgentEvent {
   const budget = new Budget();
   const envelope = record(value, ["type", ...new Set([
-    "sessionId", "providerSessionId", "providerSessionGeneration", "usedTokens", "aggregateTokens", "windowTokens",
+    "sessionId", "providerSessionId", "providerSessionGeneration", "usedTokens", "aggregateTokens", "windowTokens", "requestOutputIncluded",
     "executionId", "rolloverId", "lowWaterMark", "seedPromptUtf8Bytes", "contextSections",
     "previousProviderSessionId", "replacementProviderSessionId", "startingOccupancy", "delta", "id", "name", "input",
     "output", "isError", "failureCategory", "retryable", "command", "cwd", "callId", "path", "kind", "diff", "passed", "summary", "status",
     "controlOwner", "controlEpoch", "url", "title", "reason", "actor", "action", "level", "text", "artifactId",
     "width", "height", "size", "sha256", "workItemId", "usage", "providerRequestUsage", "message", "code",
-    "category", "remediation", "presentation", "exitCode", "signal", "retryAfterMs", "terminalStatus", "httpStatusCode",
+    "category", "remediation", "presentation", "exitCode", "signal", "retryAfterMs", "terminalStatus", "httpStatusCode", "quotaResetAt", "quotaLimit",
   ])], budget, 0);
   const type = enumeration(envelope, "type", [
-    "session", "context_usage", "context_rollover_seed_overflow", "context_rollover_completed", "text", "reasoning",
+    "work_start", "session", "context_usage", "context_rollover_seed_overflow", "context_rollover_completed", "text", "reasoning",
     "tool_call", "tool_result", "command", "file_change", "test_result", "browser_session", "browser_action",
     "browser_console", "browser_screenshot", "work_item_update", "turn_done", "error",
   ] as const, budget, 1);
 
   switch (type) {
+    case "work_start": {
+      const row = exact(value, ["kind", "callId"], budget);
+      const callId = optionalIdentifier(row, "callId", budget, 2);
+      return { type, kind: enumeration(row, "kind", ["command", "file_change", "native_tool"] as const, budget, 2),
+        ...(callId === undefined ? {} : { callId }) };
+    }
     case "session": {
       const row = exact(value, ["sessionId"], budget);
       return { type, sessionId: identifier(row, "sessionId", budget, 2) };
     }
     case "context_usage": {
-      const row = exact(value, ["providerSessionId", "providerSessionGeneration", "usedTokens", "aggregateTokens", "windowTokens"], budget);
+      const row = exact(value, ["providerSessionId", "providerSessionGeneration", "usedTokens", "aggregateTokens", "windowTokens", "requestOutputIncluded"], budget);
+      const requestOutputIncluded = optionalBoolean(row, "requestOutputIncluded", budget, 2);
       const aggregateTokens = optionalInteger(row, "aggregateTokens", budget, 2);
       const windowTokens = optionalInteger(row, "windowTokens", budget, 2, 1);
       return {
@@ -302,6 +306,7 @@ export function projectAgentEvent(value: unknown): AgentEvent {
         usedTokens: integer(row, "usedTokens", budget, 2),
         ...(aggregateTokens === undefined ? {} : { aggregateTokens }),
         ...(windowTokens === undefined ? {} : { windowTokens }),
+        ...(requestOutputIncluded === undefined ? {} : { requestOutputIncluded }),
       };
     }
     case "context_rollover_seed_overflow": {
@@ -425,16 +430,20 @@ export function projectAgentEvent(value: unknown): AgentEvent {
       return { type, ...(projectedUsage === undefined ? {} : { usage: projectedUsage }), ...(requests === undefined ? {} : { providerRequestUsage: requests }) };
     }
     case "error": {
-      const row = exact(value, ["message", "code", "category", "remediation", "terminalStatus", "httpStatusCode", "retryAfterMs"], budget);
+      const row = exact(value, ["message", "code", "category", "remediation", "terminalStatus", "httpStatusCode", "quotaResetAt", "quotaLimit", "retryAfterMs"], budget);
       const terminalStatus = optionalEnumeration(row, "terminalStatus", ["failed", "interrupted", "unknown"] as const, budget, 2);
       const code = optionalEnumeration(row, "code", ERROR_CODES, budget, 2);
       const category = optionalEnumeration(row, "category", FAILURE_CATEGORIES, budget, 2);
       const remediation = optionalString(row, "remediation", budget, 2);
+      const quotaResetAt = optionalString(row, "quotaResetAt", budget, 2);
+      if (quotaResetAt !== undefined && (category !== "quota_exhausted" || providerResetAt(quotaResetAt) !== quotaResetAt)) reject();
+      const quotaLimit = optionalEnumeration(row, "quotaLimit", PROVIDER_QUOTA_LIMITS, budget, 2);
+      if (quotaLimit && category !== "quota_exhausted") reject();
       const httpStatusCode = optionalInteger(row, "httpStatusCode", budget, 2);
       const retryAfterMs = optionalInteger(row, "retryAfterMs", budget, 2);
       if (httpStatusCode !== undefined && (httpStatusCode < 100 || httpStatusCode > 599) ||
           retryAfterMs !== undefined && retryAfterMs > 86_400_000) reject();
-      return { type, message: string(row, "message", budget, 2), ...(code === undefined ? {} : { code }), ...(category === undefined ? {} : { category }), ...(remediation === undefined ? {} : { remediation }), ...(terminalStatus === undefined ? {} : { terminalStatus }), ...(httpStatusCode === undefined ? {} : { httpStatusCode }), ...(retryAfterMs === undefined ? {} : { retryAfterMs }) };
+      return { type, message: string(row, "message", budget, 2), ...(quotaResetAt ? { quotaResetAt } : {}), ...(quotaLimit ? { quotaLimit } : {}), ...(code === undefined ? {} : { code }), ...(category === undefined ? {} : { category }), ...(remediation === undefined ? {} : { remediation }), ...(terminalStatus === undefined ? {} : { terminalStatus }), ...(httpStatusCode === undefined ? {} : { httpStatusCode }), ...(retryAfterMs === undefined ? {} : { retryAfterMs }) };
     }
   }
 }
