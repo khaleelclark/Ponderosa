@@ -14,7 +14,7 @@ test('ordinary one-shot sessions bind fresh acknowledgements and fence late canc
   const project=store.createProject({label:'Ordinary one-shot',hostPath:root,defaultEngine:'fixture',chatOwned:true});
   const chat=store.getConversation(project.lastConversationId),agent=store.createAgent(project.id,{title:'One-shot reader',engine:'fixture',conversationId:chat.id});
   const generation=randomUUID(),forged=randomUUID(),token=randomUUID(),headers={authorization:'Bearer '+token};
-  let app,passed=false,turns=0,seeds=0,release;
+  let app,passed=false,turns=0,seeds=0,release,lateAttempted=false,lateSettled=false;
   const gate=new Promise(resolve=>release=resolve),inputs=[];
   const run=async function*(opts,fresh){
     turns++;if(fresh)seeds++;
@@ -22,12 +22,14 @@ test('ordinary one-shot sessions bind fresh acknowledgements and fence late canc
     const owner=coord.activeAgentRun(agent.id);assert.ok(owner);
     inputs.push(store.getProviderInput(owner.id,true));
     if(turns===3){
-      await gate;
-      // A provider may deliver buffered events after abort. They cannot
-      // acknowledge a cancelled fence or replace the accepted generation.
-      yield {type:'session',sessionId:forged};
-      yield {type:'context_usage',providerSessionId:forged,providerSessionGeneration:forged,usedTokens:1,windowTokens:200000};
-      yield {type:'turn_done'};return;
+      try {
+        await gate;lateAttempted=true;
+        // A provider may deliver buffered events after abort. They cannot
+        // acknowledge a cancelled fence or replace the accepted generation.
+        yield {type:'session',sessionId:forged};
+        yield {type:'context_usage',providerSessionId:forged,providerSessionGeneration:forged,usedTokens:1,windowTokens:200000};
+        yield {type:'turn_done'};return;
+      } finally { lateSettled=true; }
     }
     yield {type:'session',sessionId:generation};
     const reply=await app.inject({method:'POST',url:'/api/agent-messages',headers:{authorization:'Bearer '+opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN},payload:{text:'Ordinary one-shot reply '+turns}});
@@ -54,7 +56,7 @@ test('ordinary one-shot sessions bind fresh acknowledgements and fence late canc
     assert.equal((await send()).statusCode,200);await until(()=>turns===3,'held exact one-shot continuation');
     const cancelled=coord.activeAgentRun(agent.id);assert.ok(cancelled);
     const cancel=await app.inject({method:'POST',url:'/api/agents/'+agent.id+'/cancel',headers,payload:{targetRunId:cancelled.id,idempotencyKey:randomUUID()}});assert.equal(cancel.statusCode,200,cancel.body);
-    release();await until(()=>!coord.activeAgentRun(agent.id),'late one-shot events fenced');
+    release();await until(()=>lateAttempted&&lateSettled&&!coord.activeAgentRun(agent.id),'late one-shot stream attempted and finalized behind the cancelled fence');
     assert.ok(!store.readEvents(agent.id).some(({event})=>event.type==='session'&&event.sessionId===forged||event.type==='context_usage'&&event.providerSessionGeneration===forged));
     assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM scheduler_runs WHERE agent_id=? AND provider_session_id=?').get(agent.id,forged).n,0);
     assert.equal(JSON.stringify(store.getProviderInput(inputs[0].executionId,true)),frozen);
