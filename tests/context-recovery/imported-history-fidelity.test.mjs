@@ -416,3 +416,22 @@ test('requested large neighbors cannot prevent exact forward progress through a 
   assert.equal(target.reference, hit.reference); assert.equal(target.complete, false); assert.ok(target.endCodePoint > target.startCodePoint); assert.ok(target.continuation);
   assert.ok(reassemble(f.store, f.agent.id, version, hit, retained, { before: 2, after: 2 }) > 1);
 }));
+
+
+for (const source of ['canonical', 'imported']) test(`${source} Unicode excerpts use original offsets after case-fold expansion`, t => fixture(t, async f => {
+  const text = 'İ'.repeat(300) + ' ORCHARD_MARKER ' + 'z'.repeat(300);
+  let hit;
+  if (source === 'canonical') {
+    f.store.appendCommunicationEvent({ schemaVersion: 2, eventId: randomUUID(), projectId: f.project.id, conversationId: f.chat.id,
+      sender: { kind: 'user', userId: 'local-operator' }, intent: 'user_dm', audience: { kind: 'user_agent', userId: 'local-operator', agentId: f.agent.id }, text, createdAt: new Date().toISOString() });
+    hit = f.store.searchCompactionHistory({ agentId: f.agent.id, currentConversationId: f.chat.id,
+      excludedCommunicationEventIds: new Set(), query: 'ORCHARD_MARKER' }).response.hits[0];
+  } else {
+    f.store.setImportedHistory(f.agent.id, 'Unicode excerpt fixture', [{ role: 'assistant', text }]);
+    const version = await ready(f.store, f.agent.id);
+    hit = search(f.store, f.agent.id, version, 'ORCHARD_MARKER').hits[0];
+  }
+  assert.ok(hit); assert.match(hit.excerpt.text, /ORCHARD_MARKER/);
+  assert.equal([...text].slice(hit.excerpt.startCodePoint, hit.excerpt.endCodePoint).join(''), hit.excerpt.text);
+  assert.equal(digest(hit.excerpt.text), hit.excerpt.sha256);
+}));

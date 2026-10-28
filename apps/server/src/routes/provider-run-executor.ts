@@ -922,6 +922,7 @@ export function startProviderRunExecution(
             manifestArtifactIds.splice(0, manifestArtifactIds.length, ...freshProviderInputManifest.artifactIds);
             if (freshProviderInputManifest.schemaVersion === 3) {
               runCapability.historyRetrievalBoundary = freshProviderInputManifest.historyContext?.boundary;
+              runCapability.importedHistoryArchiveVersion = freshProviderInputManifest.historyContext?.importedArchiveVersion;
               runCapability.historyRetrievalExcludedCommunicationEventIds = freshProviderInputManifest.historyContext?.fullyIncludedCommunicationEventIds ?? [];
             }
             if (persistentRuntime) {

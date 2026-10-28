@@ -867,11 +867,10 @@ function lexicalCandidateScore(text: string, normalizedQuery: string, terms: rea
   return score;
 }
 
-function excerpt(text: string, terms: readonly string[]): HistorySearchHitDto["excerpt"] {
-  const lower = text.toLocaleLowerCase();
+export function historySearchExcerpt(text: string, terms: readonly string[]): HistorySearchHitDto["excerpt"] {
   const offsets = terms.flatMap((term) => {
-    const index = lower.indexOf(term);
-    return index >= 0 ? [[...text.slice(0, index)].length] : [];
+    const match = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "iu").exec(text);
+    return match ? [[...text.slice(0, match.index)].length] : [];
   });
   const codePoints = [...text];
   const center = offsets.length ? Math.min(...offsets) : 0;
@@ -1056,7 +1055,7 @@ export function searchCompactionHistory(input: SearchCompactionHistoryInput): {
       matchBasis: "lexical",
       lexicalRank: rank,
       score: Math.round((1 / (60 + rank)) * 1_000_000) / 1_000_000,
-      excerpt: excerpt(candidate.indexed.text, terms),
+      excerpt: historySearchExcerpt(candidate.indexed.text, terms),
       ...warningsFor(candidate.indexed, matchedCorpus, input),
     });
     const bounded = base();
