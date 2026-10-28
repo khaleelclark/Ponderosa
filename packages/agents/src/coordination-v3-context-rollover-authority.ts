@@ -105,11 +105,30 @@ export class CoordinationV3ContextRolloverAuthority {
         }
         // Only future, never-attempted human input may wait across retirement.
         // All older obligations and ambiguous deliveries retain their owners.
+        // A terminal human delivery rejected before every provider boundary is
+        // retained as a failed audit, rather than provider-held unfinished work.
         const unfinished = this.sqlite.prepare(`SELECT 1 FROM scheduler_runs WHERE agent_id=?
             AND (status IN ('leased','running','outcome_unknown') OR prompt_injection_state='injecting')
           UNION ALL SELECT 1 FROM scheduler_prompt_injections injection JOIN scheduler_runs run ON run.id=injection.run_id
             WHERE run.agent_id=? AND injection.state IN ('submitted','outcome_unknown')
-          UNION ALL SELECT 1 FROM required_reply_obligations WHERE agent_id=? AND state NOT IN ('satisfied','cancelled','superseded')
+          UNION ALL SELECT 1 FROM required_reply_obligations obligation WHERE agent_id=?
+            AND obligation.state NOT IN ('satisfied','cancelled','superseded')
+            AND NOT (obligation.state='failed' AND EXISTS (
+              SELECT 1 FROM scheduler_runs failed JOIN scheduler_run_activations attached ON attached.run_id=failed.id
+                JOIN agent_activations source ON source.id=attached.activation_id
+              WHERE failed.id=obligation.run_id AND source.id=obligation.source_activation_id
+                AND failed.agent_id=obligation.agent_id AND failed.project_id=obligation.project_id
+                AND failed.scope_key=obligation.scope_key AND failed.status='failed' AND failed.terminal_at IS NOT NULL
+                AND source.kind='human_message' AND source.state='failed' AND source.terminal_at IS NOT NULL
+                AND source.terminal_outcome IS NOT NULL AND source.agent_id=failed.agent_id
+                AND source.project_id=failed.project_id AND source.scope_key=failed.scope_key
+                AND NOT EXISTS (SELECT 1 FROM scheduler_run_activations history JOIN scheduler_runs attempt ON attempt.id=history.run_id
+                  WHERE history.activation_id=source.id AND (attempt.prompt_injection_state<>'not_injected'
+                    OR attempt.provider_session_id IS NOT NULL OR attempt.started_at IS NOT NULL
+                    OR EXISTS (SELECT 1 FROM provider_inputs packet WHERE packet.scheduler_run_id=attempt.id)
+                    OR EXISTS (SELECT 1 FROM scheduler_prompt_injections injection WHERE injection.run_id=attempt.id
+                      AND (injection.state NOT IN ('pending','cancelled') OR injection.submitted_at IS NOT NULL
+                        OR injection.acknowledged_at IS NOT NULL))))))
           UNION ALL SELECT 1 FROM coordination_joins WHERE owner_agent_id=? AND state='open'
           UNION ALL SELECT 1 FROM agent_activations activation WHERE activation.agent_id=? AND (
             activation.state='outcome_unknown' OR activation.state IN ('pending','retry_pending','attached') AND (
