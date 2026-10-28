@@ -919,3 +919,353 @@ export class CodexAppServerSession implements RuntimeSession {
     for await (const notification of this.rpc.notifications) {
       if (this.nativeCommandNotifications.has(notification)) continue;
       yield* responseText.map(notification.method, notification.params);
+      if (notification.method === "thread/tokenUsage/updated") {
+        const params = notification.params as { threadId?: unknown; turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown; modelContextWindow?: unknown } } | undefined;
+        if (typeof params?.turnId === "string" && params.threadId === this.engineAgentId) {
+          const total = mapCodexTokenUsage(params.tokenUsage?.total);
+          const requestUsage = mapCodexTokenUsage(params.tokenUsage?.last);
+          if (total || requestUsage) {
+            const contextUsage = codexContextUsageSnapshot(params.tokenUsage);
+            const modelContextWindow = contextUsage?.modelContextWindow;
+            if (contextUsage) this.latestContextUsage = contextUsage;
+
+            // A resumed thread replays its prior cumulative total before the new
+            // turn's events. That checkpoint is the durable interval baseline.
+            if (total && params.turnId !== this.activeTurnId) {
+              this.baselineTotal = total;
+              this.latestTotal = total;
+            } else if (total) {
+              const usage = this.baselineTotal ? subtractUsage(total, this.baselineTotal) : undefined;
+              if (usage) this.usageByTurnId.set(params.turnId, usage);
+              else this.usageByTurnId.delete(params.turnId);
+              if (requestUsage) {
+                const checkpoint = usageCheckpointKey(total);
+                const seen = this.usageCheckpointsByTurnId.get(params.turnId) ?? new Set<string>();
+                if (!seen.has(checkpoint)) {
+                  seen.add(checkpoint);
+                  this.usageCheckpointsByTurnId.set(params.turnId, seen);
+                  const requests = this.providerRequestUsageByTurnId.get(params.turnId) ?? [];
+                  requests.push(requestUsage);
+                  this.providerRequestUsageByTurnId.set(params.turnId, requests);
+                }
+              }
+              this.latestTotal = total;
+            }
+            // A resumed thread first replays old token checkpoints. Preserve
+            // those for aggregate baselining/status, but only emit pressure
+            // observations for the currently accepted provider turn.
+            if (requestUsage && this.latestContextUsage && params.turnId === this.activeTurnId) yield {
+              type: "context_usage",
+              providerSessionId: this.engineAgentId,
+              providerSessionGeneration: this.engineAgentId,
+              usedTokens: this.latestContextUsage.usedTokens,
+              ...(this.latestContextUsage.aggregateTokens !== undefined
+                ? { aggregateTokens: this.latestContextUsage.aggregateTokens }
+                : {}),
+              ...(modelContextWindow ? { windowTokens: modelContextWindow } : {}),
+            };
+          }
+        }
+        continue;
+      }
+      if (notification.method === "turn/started") {
+        const turn = (notification.params as { turn?: { id?: string } } | undefined)?.turn;
+        if (turn?.id) this.activeTurnId = turn.id;
+      }
+      const completedTurnId = notification.method === "turn/completed"
+        ? ((notification.params as { turn?: { id?: unknown } } | undefined)?.turn?.id)
+        : undefined;
+      if (notification.method === "turn/completed") this.activeTurnId = undefined;
+      const completedRequestUsage = typeof completedTurnId === "string"
+        ? this.providerRequestUsageByTurnId.get(completedTurnId) ?? []
+        : [];
+      const completedUsage = typeof completedTurnId === "string"
+        ? this.usageByTurnId.get(completedTurnId) ?? sumProviderRequestUsage(completedRequestUsage)
+        : undefined;
+      const providerRequestUsage = completedUsage
+        ? reconcileProviderRequestUsage(completedUsage, completedRequestUsage)
+        : undefined;
+      yield* mapCodexAppServerNotification(
+        notification,
+        this.cwd,
+        completedUsage,
+        providerRequestUsage,
+      );
+      if (typeof completedTurnId === "string") {
+        this.usageByTurnId.delete(completedTurnId);
+        this.providerRequestUsageByTurnId.delete(completedTurnId);
+        this.usageCheckpointsByTurnId.delete(completedTurnId);
+        if (this.latestTotal) this.baselineTotal = this.latestTotal;
+      }
+    }
+  }
+}
+
+function zeroUsage(): TokenUsage {
+  return {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+  };
+}
+
+const USAGE_KEYS: Array<keyof TokenUsage> = [
+  "inputTokens",
+  "cachedInputTokens",
+  "cacheWriteInputTokens",
+  "outputTokens",
+  "reasoningOutputTokens",
+  "totalTokens",
+];
+
+function usageCheckpointKey(usage: TokenUsage): string {
+  return USAGE_KEYS.map((key) => usage[key] ?? "").join(":");
+}
+
+/** Keep request detail only when it reconciles to the canonical turn aggregate. */
+export function reconcileProviderRequestUsage(aggregate: TokenUsage, requests: TokenUsage[]): TokenUsage[] | undefined {
+  if (!requests.length || aggregate.inputTokens === undefined || aggregate.outputTokens === undefined) return undefined;
+  const pricingKeys: Array<keyof TokenUsage> = [
+    "inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens", "totalTokens",
+  ];
+  const sums = new Map<keyof TokenUsage, number>(pricingKeys.map((key) => [key, 0]));
+  for (const request of requests) {
+    if (request.inputTokens === undefined || request.outputTokens === undefined) return undefined;
+    const cached = request.cachedInputTokens ?? 0;
+    const cacheWrite = request.cacheWriteInputTokens ?? 0;
+    if (cached + cacheWrite > request.inputTokens) return undefined;
+    for (const key of pricingKeys) {
+      const value = request[key] ?? 0;
+      if (!Number.isSafeInteger(value) || value < 0) return undefined;
+      sums.set(key, sums.get(key)! + value);
+    }
+  }
+  for (const key of pricingKeys) {
+    if ((aggregate[key] ?? 0) !== sums.get(key)) return undefined;
+  }
+  return requests;
+}
+
+/** Recover an exact turn aggregate from Codex's per-request `last` checkpoints.
+ * This is independent of the cumulative thread baseline, which may be absent
+ * on the first successful turn after a process crash or provider retry. */
+export function sumProviderRequestUsage(requests: TokenUsage[]): TokenUsage | undefined {
+  if (!requests.length) return undefined;
+  const requiredKeys: Array<keyof TokenUsage> = ["inputTokens", "outputTokens", "totalTokens"];
+  const optionalKeys: Array<keyof TokenUsage> = ["cachedInputTokens", "cacheWriteInputTokens", "reasoningOutputTokens"];
+  const sums = new Map<keyof TokenUsage, number>();
+  for (const request of requests) {
+    if (requiredKeys.some((key) => !Number.isSafeInteger(request[key]) || request[key]! < 0)) return undefined;
+    if (optionalKeys.some((key) => request[key] !== undefined &&
+        (!Number.isSafeInteger(request[key]) || request[key]! < 0))) return undefined;
+    if ((request.cachedInputTokens ?? 0) + (request.cacheWriteInputTokens ?? 0) > request.inputTokens!) return undefined;
+    if ((request.reasoningOutputTokens ?? 0) > request.outputTokens!) return undefined;
+    for (const key of [...requiredKeys, ...optionalKeys]) {
+      if (request[key] !== undefined) sums.set(key, (sums.get(key) ?? 0) + request[key]!);
+    }
+  }
+  return {
+    inputTokens: sums.get("inputTokens")!,
+    ...(sums.has("cachedInputTokens") ? { cachedInputTokens: sums.get("cachedInputTokens")! } : {}),
+    ...(sums.has("cacheWriteInputTokens") ? { cacheWriteInputTokens: sums.get("cacheWriteInputTokens")! } : {}),
+    outputTokens: sums.get("outputTokens")!,
+    ...(sums.has("reasoningOutputTokens") ? { reasoningOutputTokens: sums.get("reasoningOutputTokens")! } : {}),
+    totalTokens: sums.get("totalTokens")!,
+  };
+}
+
+/** Delta compatible absolute thread checkpoints; any reset fails closed. */
+export function subtractUsage(total: TokenUsage, baseline: TokenUsage): TokenUsage | undefined {
+  const delta = (key: keyof TokenUsage): number | undefined => {
+    const end = total[key];
+    const start = baseline[key];
+    if (typeof end !== "number" || typeof start !== "number" || end < start) return undefined;
+    return end - start;
+  };
+  const inputTokens = delta("inputTokens");
+  const cachedInputTokens = delta("cachedInputTokens");
+  const cacheWriteInputTokens = delta("cacheWriteInputTokens");
+  const outputTokens = delta("outputTokens");
+  const reasoningOutputTokens = delta("reasoningOutputTokens");
+  const totalTokens = delta("totalTokens");
+  if (totalTokens === undefined || inputTokens === undefined || outputTokens === undefined) return undefined;
+  if ((cachedInputTokens ?? 0) + (cacheWriteInputTokens ?? 0) > inputTokens) return undefined;
+  if (reasoningOutputTokens !== undefined && reasoningOutputTokens > outputTokens) return undefined;
+  return {
+    inputTokens,
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(cacheWriteInputTokens !== undefined ? { cacheWriteInputTokens } : {}),
+    outputTokens,
+    ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    totalTokens,
+  };
+}
+
+export function mapCodexTokenUsage(value: unknown): TokenUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const number = (key: string) => typeof raw[key] === "number" && Number.isFinite(raw[key]) ? raw[key] as number : undefined;
+  const inputTokens = number("inputTokens");
+  const cachedInputTokens = number("cachedInputTokens");
+  const outputTokens = number("outputTokens");
+  const reasoningOutputTokens = number("reasoningOutputTokens");
+  const providerTotal = number("totalTokens");
+  // Codex's generated app-server TokenUsageBreakdown currently exposes cached
+  // reads but no cache-write counter. Keep that gap explicit rather than
+  // guessing from input totals; downstream TokenUsage still preserves cache
+  // writes for providers that report them canonically.
+  if ([inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, providerTotal].every((item) => item === undefined)) return undefined;
+  return {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    totalTokens: providerTotal ?? (inputTokens ?? 0) + (outputTokens ?? 0),
+  };
+}
+
+export function mapCodexAppServerNotification(
+  notification: JsonRpcNotification,
+  cwd: string,
+  usage?: TokenUsage,
+  providerRequestUsage?: TokenUsage[],
+): AgentEvent[] {
+  const params = notification.params as Record<string, unknown> | undefined;
+  if (notification.method === "ponderosa/processError") {
+    const message = String(params?.message ?? "Codex app-server stopped");
+    const code = providerErrorCodeFromDetail(message);
+    return [{ type: "error", message, ...(code ? { code } : {}) }];
+  }
+  if (notification.method === "item/agentMessage/delta") {
+    // These raw deltas have no Chat authority. eventStream separately normalizes
+    // candidate items; completed text below remains execution-scoped Work log.
+    return [];
+  }
+  if (notification.method === "item/reasoning/summaryTextDelta" || notification.method === "item/reasoning/textDelta") {
+    const delta = typeof params?.delta === "string" ? params.delta : "";
+    return delta ? [{ type: "reasoning", delta }] : [];
+  }
+  if (notification.method === "turn/completed") {
+    const turn = params?.turn as {
+      status?: string;
+      error?: { message?: string; code?: unknown; codexErrorInfo?: unknown; retryAfterMs?: unknown } | null;
+    } | undefined;
+    if (turn?.status === "failed") {
+      const message = turn.error?.message ?? "Codex turn failed";
+      return [{ ...codexErrorEvent(turn.error, message), terminalStatus: "failed" }];
+    }
+    if (turn?.status !== "completed") {
+      return [{ type: "error", terminalStatus: turn?.status === "interrupted" ? "interrupted" : "unknown", message: turn?.status === "interrupted"
+        ? "Codex turn was interrupted; successful completion was not observed."
+        : "Codex turn ended without a recognized completed status; its outcome is unconfirmed." }];
+    }
+    return [{
+      type: "turn_done",
+      ...(usage ? { usage } : {}),
+      ...(providerRequestUsage ? { providerRequestUsage } : {}),
+    }];
+  }
+  if (notification.method !== "item/started" && notification.method !== "item/completed") return [];
+  const item = object(params?.item);
+  if (!item || typeof item.type !== "string") return [{ type: "work_start", kind: "native_tool" }];
+  if (notification.method === "item/started" && (item.type === "commandExecution" || item.type === "fileChange")) {
+    const boundary: AgentEvent = { type: "work_start", kind: item.type === "commandExecution" ? "command" : "file_change",
+      ...(typeof item.id === "string" ? { callId: item.id } : {}) };
+    if (item.type === "fileChange" || typeof item.command !== "string") return [boundary];
+    return [boundary, {
+      type: "command",
+      command: item.command,
+      cwd: typeof item.cwd === "string" ? item.cwd : cwd,
+      ...(typeof item.id === "string" ? { callId: item.id } : {}),
+    }];
+  }
+  if (notification.method === "item/completed" && item.type === "commandExecution") {
+    return [{
+      type: "tool_result",
+      id: typeof item.id === "string" ? item.id : "command",
+      output: typeof item.aggregatedOutput === "string" ? sanitizeTerminalOutput(item.aggregatedOutput) : "",
+      ...commandOutcome(item.exitCode, item.signal),
+    }];
+  }
+  if (notification.method === "item/completed" && item.type === "agentMessage") {
+    return typeof item.text === "string" && item.text.trim()
+      // Each completed agentMessage is a semantic response block, not a token
+      // delta. Keep adjacent blocks separated in the durable Work log.
+      ? [{ type: "text", delta: `${item.text.trimEnd()}\n\n`,
+          ...(item.phase === "commentary" ? { presentation: "progress" as const } : {}) }]
+      : [];
+  }
+  if (notification.method === "item/completed" && item.type === "fileChange") {
+    // Completion-only/reordered edits are work evidence even without a changes payload.
+    return [{ type: "work_start", kind: "file_change",
+      ...(typeof item.id === "string" ? { callId: item.id } : {}) },
+    ...(Array.isArray(item.changes) ? item.changes : []).flatMap((change) => {
+      if (!change || typeof change !== "object") return [];
+      const value = change as { path?: unknown; kind?: unknown; diff?: unknown };
+      return typeof value.path === "string" ? [{
+        type: "file_change" as const,
+        path: value.path,
+        kind: mapFileChangeKind(typeof value.kind === "string" ? value.kind : undefined),
+        ...(typeof value.diff === "string" ? { diff: value.diff } : {}),
+        ...(typeof item.id === "string" ? { callId: item.id } : {}),
+      }] : [];
+    })];
+  }
+  if (notification.method === "item/started" && item.type === "mcpToolCall") {
+    if (item.arguments === undefined) return [{ type: "work_start", kind: "native_tool" }];
+    return [{
+      type: "tool_call",
+      id: typeof item.id === "string" ? item.id : "mcp",
+      name: `${String(item.server ?? "mcp")}.${String(item.tool ?? "tool")}`,
+      input: item.arguments,
+    }];
+  }
+  if (notification.method === "item/completed" && item.type === "mcpToolCall") {
+    const isError = Boolean(item.error);
+    return [normalizedToolResult(
+      typeof item.id === "string" ? item.id : "mcp",
+      JSON.stringify(item.result ?? item.error ?? ""),
+      isError,
+    )];
+  }
+  if (notification.method === "item/started" && item.type === "dynamicToolCall") {
+    if (item.arguments === undefined) return [{ type: "work_start", kind: "native_tool" }];
+    const namespace = typeof item.namespace === "string" && item.namespace ? `${item.namespace}.` : "";
+    return [{
+      type: "tool_call",
+      id: typeof item.id === "string" ? item.id : "dynamic-tool",
+      name: `${namespace}${String(item.tool ?? "tool")}`,
+      input: item.arguments,
+    }];
+  }
+  if (notification.method === "item/completed" && item.type === "dynamicToolCall") {
+    const isError = item.success === false;
+    let voiceReplyStreamId: string | undefined;
+    // Provider-specific content-item parsing stays in the engine. This receipt
+    // alone grants no authority; the host compares its operation and scoped stream.
+    if (item.success === true && item.tool === "ponderosa_voice_reply" &&
+        (item.namespace === undefined || item.namespace === null || item.namespace === "") &&
+        Array.isArray(item.contentItems) && item.contentItems.length === 1) {
+      const content = object(item.contentItems[0]);
+      if (content?.type === "inputText" && typeof content.text === "string") {
+        try {
+          const receipt = object(JSON.parse(content.text));
+          if (receipt?.authorized === true && typeof receipt.streamId === "string" && receipt.streamId.trim() && receipt.streamId.length <= 512) voiceReplyStreamId = receipt.streamId;
+        } catch { /* Prose/invalid receipts cannot acknowledge authorization. */ }
+      }
+    }
+    const normalized = normalizedToolResult(
+      typeof item.id === "string" ? item.id : "dynamic-tool",
+      JSON.stringify(item.contentItems ?? []), isError,
+    );
+    return [{ ...normalized, ...(voiceReplyStreamId && normalized.isError !== true ? { voiceReplyStreamId, isError: false } : {}) }];
+  }
+  // A small passive/answer allowlist, rather than a finite tool denylist. Native
+  // searches/images/collaboration/review/tool outputs, future and malformed types
+  // fence on either lifecycle edge, without inventing a public tool projection.
+  if (["agentMessage", "reasoning", "plan", "userMessage", "contextCompaction"].includes(item.type)) return [];
+  return [{ type: "work_start", kind: "native_tool" }];
+}
