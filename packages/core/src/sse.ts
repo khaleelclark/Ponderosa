@@ -11,7 +11,7 @@ export type AgentStreamEvent = Exclude<AgentEvent, { type: "text" | "reasoning" 
   | AgentExecutionDeltaEvent
   | AgentOutputEvent
   | { type: "user_message"; communicationEventId?: string; text: string; attachments?: AssetDto[] }
-  | { type: "session_reset"; reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" | "tool_contract_changed" | "provider_root_exit" }
+  | { type: "session_reset"; reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" | "tool_contract_changed" | "provider_root_exit" | "agent_cancelled" }
   | { type: "communication_projection"; communicationEventId: string; text: string; role?: "user" | "assistant" | "system"; attachments?: AssetDto[] }
   | { type: "coordination_v3_changed"; coordination: AgentCoordinationV3Dto }
   | ContextRolloverTriggeredEvent

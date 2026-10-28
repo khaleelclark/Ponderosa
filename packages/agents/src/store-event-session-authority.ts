@@ -309,7 +309,7 @@ export class AgentEventSessionAuthority {
    */
   clearResumeSession(
     agentId: string,
-    reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" | "tool_contract_changed" | "provider_root_exit",
+    reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" | "tool_contract_changed" | "provider_root_exit" | "agent_cancelled",
   ): boolean {
     const row = this.db
       .select({ id: agents.id, activeSessionId: agents.activeSessionId })

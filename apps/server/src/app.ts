@@ -912,6 +912,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     terminateRuntimeHandle,
     closeRunBrowser: closeRunBrowserAfterRun,
     persistentRuntimeForTermination,
+    clearAgentResumeSession,
     clearRunLeaseTimer,
     clearRunLivenessTimer,
     renewExecutionLease,

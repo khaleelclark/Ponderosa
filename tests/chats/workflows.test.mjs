@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { AgentStore } from '@ponderosa/agents';
 import { withFixture, until, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
 test('checks 14, 15: server drafts use revision fencing, owner isolation and durable recovery', options, t => withFixture(t, async f => {
@@ -28,21 +29,74 @@ test('checks 29, 30, 91: settings persist and invalid settings do not overwrite 
   assert.equal(prefs.maxConcurrentAgentRuns, 2); assert.equal(prefs.globalInstructions, 'Saved global guidance');
 }));
 
-test('checks 26, 35, 36: unknown commands and wrong Run cancellation fail; cancelled capabilities cannot publish', options, t => withFixture(t, async f => {
-  const chat = await f.createChat('Cancellation'), agent = await f.createAgent(chat, 'Worker');
-  const session = await f.hold(agent.id), d = await f.detail(agent.id), run = d.runs.find(x => x.status === 'running');
-  assert.ok(run);
-  assert.ok((await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'unknown-command' })).status >= 400);
-  assert.equal((await f.api('POST', `/api/agents/${agent.id}/cancel`, { targetRunId: randomUUID(), idempotencyKey: randomUUID() })).status, 409);
-  f.ok(await f.api('POST', `/api/agents/${agent.id}/cancel`, { targetRunId: run.id, idempotencyKey: randomUUID() }));
-  const late = await f.tool(session, 'ponderosa_message', { text: 'Late cancelled output' });
-  assert.ok(late.status >= 400);
-  const before = (await f.detail(agent.id)).runs.map(x => x.id);
-  await f.send(agent.id, 'New work after cancellation');
-  const next = await f.settled(agent.id, before);
-  assert.ok(next.runs.some(x => !before.includes(x.id) && x.status === 'completed'));
-  assert.ok(!next.messages.some(x => x.text.includes('Late cancelled output')));
-}));
+test('checks 26, 35, 36: unknown commands and wrong Run cancellation fail; cancelled capabilities cannot publish', options, async t => {
+  let store;
+  await withFixture(t, async f => {
+    const chat = await f.createChat('Cancellation'), agent = await f.createAgent(chat, 'Worker');
+    const session = await f.hold(agent.id), d = await f.detail(agent.id), run = d.runs.find(x => x.status === 'running');
+    assert.ok(run);
+    const packet = JSON.stringify(store.getProviderInput(run.id, true)), cancellationKey = randomUUID();
+    assert.ok((await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'unknown-command' })).status >= 400);
+    assert.equal((await f.api('POST', `/api/agents/${agent.id}/cancel`, { targetRunId: randomUUID(), idempotencyKey: randomUUID() })).status, 409);
+    f.ok(await f.api('POST', `/api/agents/${agent.id}/cancel`, { targetRunId: run.id, idempotencyKey: cancellationKey }));
+    const late = await f.tool(session, 'ponderosa_message', { text: 'Late cancelled output' });
+    assert.ok(late.status >= 400);
+    const before = (await f.detail(agent.id)).runs.map(x => x.id), turnsBefore = f.turns.length;
+    let freshSession;
+    f.plans.set(agent.id, [{ run: async next => {
+      assert.equal(session.isAlive(), false, 'New work waits for observed old-root exit');
+      assert.notEqual(next.engineAgentId, session.engineAgentId, 'Cancelled context is reconstructed, never measured as a completed turn');
+      freshSession = next.engineAgentId;
+      assert.equal((await next.tool('ponderosa_message', { text: 'Fresh independent work completed' })).success, true);
+    } }]);
+    await f.send(agent.id, 'New work after cancellation');
+    const next = await f.settled(agent.id, before);
+    assert.equal(next.runs.filter(x => !before.includes(x.id)).length, 1);
+    assert.ok(next.runs.some(x => !before.includes(x.id) && x.status === 'completed'));
+    assert.equal(f.turns.length, turnsBefore + 1);
+    assert.ok(!next.messages.some(x => x.text.includes('Late cancelled output')));
+    assert.equal(JSON.stringify(store.getProviderInput(run.id, true)), packet, 'Cancelling a cache cannot rewrite its accepted input');
+    assert.equal(store.cancelledProviderSessionForRetirement(run.id), undefined, 'A stale cancellation cannot retire the newer accepted generation');
+    f.ok(await f.api('POST', `/api/agents/${agent.id}/cancel`, { targetRunId: run.id, idempotencyKey: cancellationKey }));
+    assert.equal(store.resumeSessionId(agent.id), freshSession, 'Replayed cancellation must preserve the new accepted cache');
+  }, { storeFactory: root => store = new AgentStore(root) });
+});
+
+test('cancelled cache is retained across failed cleanup and retired only after exact observed exit', options, async t => {
+  let store, blockedSession, refuse = false, refusals = 0;
+  await withFixture(t, async f => {
+    try {
+      const chat = await f.createChat('Cancelled cleanup boundary'), agent = await f.createIdleAgent(chat, 'Cleanup worker');
+      const session = await f.hold(agent.id), run = (await f.detail(agent.id)).runs.find(x => x.status === 'running');
+      blockedSession = session.engineAgentId; refuse = true;
+      const packet = JSON.stringify(store.getProviderInput(run.id, true)), turnsBefore = f.turns.length;
+      f.ok(await f.api('POST', `/api/agents/${agent.id}/cancel`, { targetRunId: run.id, idempotencyKey: randomUUID() }));
+      await until(() => refusals > 0, 'owned cancellation cleanup refusal');
+      assert.equal(session.isAlive(), true);
+      assert.equal(store.resumeSessionId(agent.id), blockedSession, 'Failed cleanup must not clear the retained generation');
+      assert.equal((await f.tool(session, 'ponderosa_message', { text: 'Late failed-cleanup output' })).status >= 400, true);
+      f.plans.set(agent.id, [{ run: async next => {
+        assert.equal(session.isAlive(), false, 'No replacement crosses unconfirmed root exit');
+        assert.notEqual(next.engineAgentId, blockedSession);
+        assert.equal((await next.tool('ponderosa_message', { text: 'Separate work after cleanup' })).success, true);
+      } }]);
+      const before = (await f.detail(agent.id)).runs.map(x => x.id);
+      await f.send(agent.id, 'Separate independent task waiting for cancellation cleanup');
+      await until(() => refusals > 1, 'retained exact-root cleanup retry');
+      assert.equal(f.turns.length, turnsBefore, 'No input is admitted while old cleanup remains uncertain');
+      assert.equal(store.resumeSessionId(agent.id), blockedSession);
+      refuse = false;
+      const finished = await f.settled(agent.id, before);
+      assert.equal(session.isAlive(), false);
+      assert.equal(f.turns.length, turnsBefore + 1, 'Only the separate new task executes, once');
+      assert.equal(finished.runs.find(x => x.id === run.id).status, 'cancelled');
+      assert.equal(JSON.stringify(store.getProviderInput(run.id, true)), packet);
+      assert.ok(!finished.messages.some(x => x.text.includes('Late failed-cleanup output')));
+    } finally { refuse = false; }
+  }, { storeFactory: root => store = new AgentStore(root), beforeRuntimeClose: ({ sessionId }) => {
+    if (refuse && sessionId === blockedSession) { refusals++; throw Error('Controlled cancellation cleanup refusal'); }
+  } });
+});
 
 test('checks 32, 33: queued input edits and cancellation preserve exactly the remaining work', options, t => withFixture(t, async f => {
   const chat = await f.createChat('Queue'), agent = await f.createAgent(chat, 'Queue worker');

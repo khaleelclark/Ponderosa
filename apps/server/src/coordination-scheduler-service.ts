@@ -237,6 +237,7 @@ interface CoordinationSchedulerContext {
   ): Promise<string | undefined>;
   closeRunBrowser(agentId: string, run: ActiveRun, reason: string): Promise<void>;
   persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined;
+  clearAgentResumeSession(agentId: string, reason: "agent_cancelled"): boolean;
   clearRunLeaseTimer(run: ActiveRun): void;
   clearRunLivenessTimer(run: ActiveRun): void;
   renewExecutionLease(agentId: string, run: ActiveRun): boolean;
@@ -276,6 +277,7 @@ export function createCoordinationScheduler(
     terminateRuntimeHandle,
     closeRunBrowser,
     persistentRuntimeForTermination,
+    clearAgentResumeSession,
     clearRunLeaseTimer,
     clearRunLivenessTimer,
     renewExecutionLease,
@@ -286,6 +288,11 @@ export function createCoordinationScheduler(
     projectCommunicationArtifact,
     providerProcessAuthority,
   } = context;
+
+  const retireCancelledSession = (runId: string): void => {
+    const owner = store.cancelledProviderSessionForRetirement(runId);
+    if (owner) clearAgentResumeSession(owner.agentId, "agent_cancelled");
+  };
 
 return new CoordinationV3Scheduler(
   coordinationV3,
@@ -527,6 +534,7 @@ return new CoordinationV3Scheduler(
       if (!entry) {
         try {
           await providerProcessAuthority.terminateRun(operation.runId);
+          retireCancelledSession(operation.runId);
           return { accepted: true };
         } catch (error) {
           return { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
@@ -548,8 +556,12 @@ return new CoordinationV3Scheduler(
       const runtime = persistentRuntimeForTermination(agentId);
       const terminationError = await terminateRuntimeHandle(agentId, run, runtime);
       if (terminationError) return { accepted: false, retryable: true, error: terminationError };
-      try { await providerProcessAuthority.terminateRun(operation.runId); }
-      catch (error) {
+      try {
+        await providerProcessAuthority.terminateRun(operation.runId);
+        // Cancellation is not a completed-turn measurement. Only after exact
+        // observed cleanup may later independent work rebuild canonical context.
+        retireCancelledSession(operation.runId);
+      } catch (error) {
         return { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
       }
       if (activeRuns.get(agentId) === run) {
