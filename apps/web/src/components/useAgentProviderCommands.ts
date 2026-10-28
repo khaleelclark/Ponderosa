@@ -64,12 +64,6 @@ export function useAgentProviderCommands({
       name: command.name,
       ...(argumentsText ? { argumentsText } : {}),
     });
+    if (result.outcome && result.outcome !== "completed") throw new Error(result.message ?? "Provider command completion is unconfirmed. Do not repeat the command.");
     if (result.message) onNotice(result.message);
     else notify({ key: "provider-command", message: `/${command.name} Invoked` });
-  };
-  return {
-    invokeAgentCommand,
-    providerUsageState,
-    setProviderUsageState,
-  };
-}

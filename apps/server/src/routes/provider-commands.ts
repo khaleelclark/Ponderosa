@@ -103,11 +103,16 @@ export function authorizedManualRolloverConversationId(
   return sourceConversationId === agent.conversationId ? agent.conversationId : undefined;
 }
 
+class NativeContextUnavailableError extends Error {}
+
 function publicProviderCommandFailure(error: unknown): {
   error: string;
   category: ReturnType<typeof publicProviderFailure>["category"];
   remediation: string;
+  retryable?: false;
 } {
+  if (error instanceof NativeContextUnavailableError) return { error: error.message, category: "unknown",
+    remediation: "Use Context Refresh after resolving any unfinished work or uncertain outcome.", retryable: false };
   const code = guardedProviderExceptionStringProperty(error, "code")
     ?? guardedProviderExceptionStringProperty(error, "errorCode");
   const category = guardedProviderExceptionStringProperty(error, "category")
@@ -364,7 +369,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         return reply.code(409).send(publicProviderCommandFailure(error));
       }
     }
-    const invoke = async (session: RuntimeSession): Promise<{ catalog: EngineCapabilities; message?: string }> => {
+    const invoke = async (session: RuntimeSession): Promise<{ catalog: EngineCapabilities; message?: string; outcome?: "completed" | "failed" | "outcome_unknown" }> => {
       const catalog = session.capabilities
         ? projectProviderCapabilities(await session.capabilities())
         : {
@@ -388,12 +393,24 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
       }
       const commandBoundary = name === "compact" ? store.providerCommandContextBoundary(agent.id) : undefined;
       const invocationId = randomUUID();
+      if (name === "compact") {
+        if (!commandBoundary || readProviderSessionIdentifier(session) !== commandBoundary.providerSessionId) {
+          throw new NativeContextUnavailableError("Native /compact requires the accepted compatible provider runtime. Use Context Refresh to rebuild this Agent's context.");
+        }
+        // Persist before the asynchronous provider call: an acknowledgement,
+        // rejection or lost reply cannot certify the old context measurement.
+        // This internal, payload-free event never enters Chat or public SSE.
+        if (!store.beginProviderCommandContextMutation(agent.id, commandBoundary, invocationId)) {
+          throw new NativeContextUnavailableError("A previous native operation or unfinished work has unconfirmed context. Do not repeat Compact; use Context Refresh after resolving any pending work.");
+        }
+      }
       const result = projectProviderCommandResult(await session.invokeCommand(name, argumentsText));
       if (name === "compact") {
+        result.outcome ??= "outcome_unknown";
         try {
           const usage = result.contextUsage;
           const providerSessionId = readProviderSessionIdentifier(session);
-          const stored = usage && commandBoundary && providerSessionId === commandBoundary.providerSessionId &&
+          const stored = result.outcome === "completed" && usage && commandBoundary && providerSessionId === commandBoundary.providerSessionId &&
               usage.providerSessionGeneration === providerSessionId && !isClosed() &&
               !deletingAgentIds.has(agent.id) && !deletingProjectIds.has(project.id)
             ? store.recordProviderCommandContextUsage(agent.id, commandBoundary, { ...usage, providerSessionGeneration: providerSessionId }, invocationId) : undefined;
@@ -405,16 +422,16 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
             });
             if (cancelled) { scheduledSessionRollovers.delete(agent.id); notifyScheduler(); }
           } else {
-            result.message ??= "Compaction completed; updated context usage could not be recorded. Do not repeat the command solely to refresh telemetry.";
+            result.message ??= "Compaction was invoked; updated context usage could not be recorded. Do not repeat the command solely to refresh telemetry. Context Refresh is required before more work.";
           }
         } catch (error) {
-          // Native compaction succeeded. An audit/ownership/telemetry failure
+          // Native compaction was invoked. An audit/ownership/telemetry failure
           // must not turn it into a retryable command or trust a stale getter.
-          app.log.warn({ providerError: restrictedProviderExceptionLogDetail(error), agentId: agent.id }, "completed compact context observation was not recorded");
-          result.message ??= "Compaction completed; updated context usage could not be recorded. Do not repeat the command solely to refresh telemetry.";
+          app.log.warn({ providerError: restrictedProviderExceptionLogDetail(error), agentId: agent.id }, "native compact context observation was not recorded");
+          result.message ??= "Compaction was invoked; updated context usage could not be recorded. Do not repeat the command solely to refresh telemetry. Context Refresh is required before more work.";
         }
       }
-      return { catalog, ...(result.message ? { message: result.message } : {}) };
+      return { catalog, ...(result.message ? { message: result.message } : {}), ...(result.outcome ? { outcome: result.outcome } : {}) };
     };
     let releaseWorkingCopyUse: () => void;
     try {
@@ -453,6 +470,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
             invoked: true,
             name,
             catalogVersion: result.catalog.catalogVersion,
+            ...(result.outcome ? { outcome: result.outcome } : {}),
             ...(result.message ? { message: result.message } : {}),
           };
         } catch (error) {
@@ -521,7 +539,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
         });
       }
       };
-      let invocation: { catalog: EngineCapabilities; message?: string } | undefined;
+      let invocation: Awaited<ReturnType<typeof invoke>> | undefined;
       const operation = Promise.resolve().then(async () => {
       const rawSession = await providerRuntimeOperation("open provider command session", () => engine.adapter.openSession!({
         agentId: agent.id,
@@ -549,6 +567,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
           invoked: true,
           name,
           catalogVersion: invocation?.catalog.catalogVersion,
+          ...(invocation?.outcome ? { outcome: invocation.outcome } : {}),
           ...(invocation?.message ? { message: invocation.message } : {}),
         };
       } catch (error) {
@@ -598,7 +617,7 @@ app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string
 app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, reply) => {
   const agent = store.getAgent(request.params.id);
   if (!agent) return reply.code(404).send({ error: "agent not found" });
-  if (activeRuns.has(request.params.id)) {
+  if (activeRuns.has(request.params.id) || coordinationV3.activeAgentRun(request.params.id)) {
     return reply.code(409).send({ error: "cannot compact an agent with an active run", retryable: true });
   }
   try {
@@ -614,10 +633,18 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
   if (!persisted || !latestRun) {
     return reply.code(409).send({ error: "the agent has no accepted provider session to roll over" });
   }
+  const commandBoundary = store.providerCommandContextBoundary(agent.id);
+  const unmeasuredContext = !store.acceptedProviderSessionContextUsage(agent.id) && !store.acceptedProviderSessionInputEstimate(agent.id);
+  if (unmeasuredContext && (!commandBoundary || commandBoundary.providerSessionId !== persisted.sessionId ||
+      workspace.listDecisions({ projectId: agent.projectId, agentId: agent.id, status: "pending" }).length)) {
+    return reply.code(409).send({ error: "Context Refresh is waiting for unfinished work, a Decision or an uncertain outcome. Resolve the existing recovery before refreshing.", retryable: false });
+  }
   const runtime = persistentRuntimeForTermination(request.params.id);
   let usage: ReturnType<typeof readProviderContextUsage>;
   try {
-    usage = readProviderContextUsage(runtime?.session);
+    // An opaque native mutation invalidated the old getter as well as durable
+    // occupancy. Explicit idle recovery must not manufacture a new measure.
+    usage = unmeasuredContext ? undefined : readProviderContextUsage(runtime?.session);
   } catch {
     return reply.code(409).send({
       error: "Provider returned invalid structured data.",
@@ -636,13 +663,15 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
       retryable: false,
     });
   }
-  const sourceCommunication = latestRun.communicationEventId
-    ? store.getCommunicationEvent(agent.projectId, latestRun.communicationEventId)
+  const sourceRun = unmeasuredContext ? store.getLatestRun(agent.id, commandBoundary!.executionId) : latestRun;
+  if (!sourceRun) return reply.code(409).send({ error: "The exact accepted source Run is unavailable; context was retained.", retryable: false });
+  const sourceCommunication = sourceRun.communicationEventId
+    ? store.getCommunicationEvent(agent.projectId, sourceRun.communicationEventId)
     : undefined;
   const rolloverConversationId = authorizedManualRolloverConversationId(
     agent,
     sourceCommunication?.conversationId,
-    Boolean(latestRun.communicationEventId),
+    Boolean(sourceRun.communicationEventId),
   );
   let rolloverBoundary: ReturnType<typeof store.bindContextRolloverBoundary>;
   try {
@@ -673,11 +702,12 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
       ...(usage?.windowTokens !== undefined ? { contextWindow: usage.windowTokens } : {}),
       lowWaterMark: pressure.lowWaterMark,
       triggerKind: "human",
+      ...(unmeasuredContext ? { canonicalOnlyRefresh: { fencingToken: commandBoundary!.fencingToken } } : {}),
       compactionCutoffOrdinal: rolloverBoundary.canonicalOrdinal,
       compactionCutoffEventId: rolloverBoundary.communicationEventId,
       recentTail: rolloverBoundary.recentTail,
-      sourceRunId: latestRun.id,
-      sourceActivationIds: [],
+      sourceRunId: unmeasuredContext ? commandBoundary!.executionId : latestRun.id,
+      sourceActivationIds: unmeasuredContext ? coordinationV3.activationIdsAttachedToRun(commandBoundary!.executionId, agent.id) : [],
       // Scheduler authorization accepts only canonical conversation or Agent
       // scopes. The rollover ID and provider generation already provide durable
       // dedupe; inventing a command-specific scope makes the handoff Activation
@@ -691,18 +721,28 @@ app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, 
     });
   } catch (error) {
     return reply.code(409).send({
-      error: error instanceof Error && error.message === "context_refresh_already_underway"
+      error: unmeasuredContext
+        ? "Context Refresh is waiting for unfinished work or an uncertain outcome. Resolve its existing Request, Decision or recovery before refreshing."
+        : error instanceof Error && error.message === "context_refresh_already_underway"
         ? "An automatic context refresh is already underway. Wait for it to finish before requesting a manual refresh."
         : "Context refresh conflicts with an existing durable boundary.",
       code: error instanceof Error && error.message === "context_refresh_already_underway"
         ? "context_refresh_already_underway" : "context_refresh_conflict",
-      retryable: true,
+      retryable: !unmeasuredContext,
     });
+  }
+  if (unmeasuredContext) {
+    try {
+      await retireCompletedContextRolloverSession({ agentId: agent.id, projectId: agent.projectId,
+        rolloverId: requested.rollover.id, providerSessionGeneration: persisted.sessionId });
+    } catch {
+      return reply.code(409).send({ error: "Context Refresh is recorded, but the old runtime cleanup is still pending. New work remains blocked until cleanup succeeds.", retryable: false });
+    }
   }
   notifyScheduler();
   return {
     compacted: true,
-    mode: "durable_rollover" as const,
+    mode: unmeasuredContext ? "canonical_refresh" as const : "durable_rollover" as const,
     rolloverId: requested.rollover.id,
     replayed: !requested.created,
   };

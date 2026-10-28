@@ -446,7 +446,7 @@ for (const cold of [false, true]) test(`verified native compact replaces old occ
   f.commandResults.set(agent.id, () => {
     const contextUsage = { usedTokens: 25000, windowTokens: 200000, providerSessionGeneration: generation };
     f.usage.set(agent.id, contextUsage);
-    return { contextUsage };
+    return { outcome: 'completed', contextUsage };
   });
   const invoked = f.ok(await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' }));
   assert.equal(invoked.invoked, true); assert.equal(f.commands.length, 1);
@@ -499,17 +499,183 @@ for (const mode of ['stale', 'malformed', 'wrong_generation', 'leased_race']) te
       lease = coordination.leaseNextRun({ workerId: 'isolated-compact-race', leaseMs: 60000 });
       assert.ok(lease, 'A canonical lease must race before activeRuns exists');
     }
-    return { contextUsage: { usedTokens: 25000, windowTokens: 200000, providerSessionGeneration: mode === 'wrong_generation' ? 'foreign-generation' : generation } };
+    return { outcome: 'completed', contextUsage: { usedTokens: 25000, windowTokens: 200000, providerSessionGeneration: mode === 'wrong_generation' ? 'foreign-generation' : generation } };
   });
   try {
     const result = f.ok(await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' }));
-    assert.equal(result.invoked, true); assert.match(result.message, /completed.*(telemetry|context usage)/i);
+    assert.equal(result.invoked, true); assert.match(result.message, /invoked.*(telemetry|context usage)/i);
     assert.equal(f.commands.length, 1); assert.equal(commandUsageEvents(f.store, agent.id).length, 0);
     if (lease) assert.equal(coordination.activeAgentRun(agent.id).id, lease.runId, 'Command telemetry must not cancel raced work');
-    else assert.equal(f.store.acceptedProviderSessionContextUsage(agent.id).usage.usedTokens, 160000, 'Unproven reduction cannot replace the old checkpoint');
+    else {
+      assert.equal(f.store.acceptedProviderSessionContextUsage(agent.id), undefined, 'Native work invalidates pre-command occupancy even without a proven reduction');
+      assert.equal(f.store.acceptedProviderSessionInputEstimate(agent.id), undefined, 'Opaque native work cannot fall back to a plain-text estimate');
+    }
   } finally {
     if (lease) coordination.cancelAgentRun({ agentId: agent.id, expectedRunId: lease.runId, idempotencyKey: randomUUID() });
   }
+}));
+
+for (const cold of [false, true]) for (const measured of [false, true]) test(`unmeasured native compact fences ${measured ? 'measured' : 'estimated'} context after ${cold ? 'restart' : 'warm command'}`, fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
+  const chat = await f.createChat('Native command without telemetry'), agent = await f.createIdleAgent(chat, 'Exact compact owner');
+  f.capabilities.commands = [compactCommand];
+  const session = await f.hold(agent.id), packet = accepted(f.store, agent.id), frozen = JSON.stringify(packet);
+  if (measured) await checkpoint(f, agent, session, 25000);
+  await finish(f, agent, session);
+  assert.ok(measured ? f.store.acceptedProviderSessionContextUsage(agent.id) : f.store.acceptedProviderSessionInputEstimate(agent.id));
+  f.commandResults.set(agent.id, () => {
+    const fence = f.store.readEvents(agent.id).at(-1).event;
+    assert.equal(fence.type, 'work_start', 'The fence must be durable before the provider can mutate context');
+    assert.equal(fence.executionId, packet.executionId); assert.equal(fence.kind, 'native_tool');
+    return { message: 'Compaction started; completion is unconfirmed. Do not repeat the command.' };
+  });
+  const result = f.ok(await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' }));
+  assert.equal(result.invoked, true); assert.equal(f.commands.length, 1);
+  if (cold) await f.reopen();
+  assert.equal(f.store.acceptedProviderSessionContextUsage(agent.id), undefined);
+  assert.equal(f.store.acceptedProviderSessionInputEstimate(agent.id), undefined);
+  await refusedContinuation(f, agent);
+  assert.equal(f.commands.length, 1, 'Recovery cannot repeat the native operation');
+  assert.equal(JSON.stringify(f.store.getProviderInput(packet.executionId, true)), frozen);
+}, { providerValidatesResumeBeforeTurn: true }));
+
+for (const reason of ['Provider rejected the request', 'Transport closed after submission; outcome is unknown']) test(`native compact ${reason} preserves its pre-invocation accounting fence`, fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
+  const chat = await f.createChat('Uncertain native command'), agent = await f.createIdleAgent(chat, 'Native owner');
+  f.capabilities.commands = [compactCommand];
+  const session = await f.hold(agent.id), packet = accepted(f.store, agent.id), frozen = JSON.stringify(packet);
+  await checkpoint(f, agent, session, 25000); await finish(f, agent, session);
+  f.commandResults.set(agent.id, () => { throw new Error(reason); });
+  const result = await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' });
+  assert.equal(result.status, 409); assert.equal(f.commands.length, 1);
+  assert.equal(f.store.acceptedProviderSessionContextUsage(agent.id), undefined);
+  assert.equal(f.store.acceptedProviderSessionInputEstimate(agent.id), undefined);
+  await f.reopen(); await refusedContinuation(f, agent);
+  assert.equal(f.commands.length, 1);
+  assert.equal(JSON.stringify(f.store.getProviderInput(packet.executionId, true)), frozen);
+}, { providerValidatesResumeBeforeTurn: true }));
+
+test('explicit Context Refresh retires unknown idle context without inventing a provider handoff or replaying work', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
+  const chat = await f.createChat('Explicit unknown-context recovery'), agent = await f.createIdleAgent(chat, 'Refresh owner');
+  f.capabilities.commands = [compactCommand];
+  const session = await f.hold(agent.id), packet = accepted(f.store, agent.id), frozen = JSON.stringify(packet);
+  const oldGeneration = session.engineAgentId;
+  await checkpoint(f, agent, session, 25000); await finish(f, agent, session);
+  f.commandResults.set(agent.id, () => ({ outcome: 'outcome_unknown', message: 'Native completion unconfirmed. Do not repeat the command.' }));
+  f.ok(await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' }));
+  const turns = f.turns.length;
+  const refresh = f.ok(await f.api('POST', `/api/agents/${agent.id}/compact`, {}));
+  const rollover = await until(() => {
+    const r = new CoordinationV3Store(f.store.sqlite).contextRollover(refresh.rolloverId);
+    return r && ['completed', 'failed', 'outcome_unknown'].includes(r.state) ? r : false;
+  }, 'explicit canonical recovery reaches a durable terminal result');
+  assert.equal(rollover.state, 'completed'); assert.equal(rollover.completionReason, 'no_continuation_required');
+  assert.equal(rollover.handoffEventId, undefined); assert.equal(rollover.continuationActivationId, undefined);
+  assert.equal(f.turns.length, turns, 'Unknown context cannot receive an unmetered handoff turn');
+  await until(() => !session.isAlive() && !f.store.resumeSessionState(agent.id), 'owned old runtime exits before new context');
+  const next = await f.hold(agent.id), fresh = accepted(f.store, agent.id);
+  assert.notEqual(next.engineAgentId, oldGeneration); assert.equal(fresh.sourceManifest.contextBudget.occupancyBasis, 'fresh_session');
+  assert.equal(f.commands.length, 1); assert.equal(JSON.stringify(f.store.getProviderInput(packet.executionId, true)), frozen);
+  await finish(f, agent, next);
+}, { providerValidatesResumeBeforeTurn: true }));
+
+test('late compact telemetry cannot cross a newer native command marker', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  const chat = await f.createChat('Native command race'), agent = await f.createIdleAgent(chat, 'Fenced command owner');
+  f.capabilities.commands = [compactCommand];
+  const session = await f.hold(agent.id), packet = accepted(f.store, agent.id); await checkpoint(f, agent, session, 25000); await finish(f, agent, session);
+  let release, entered = 0; const gate = new Promise(resolve => { release = resolve; });
+  f.commandResults.set(agent.id, async () => {
+    if (++entered === 1) { await gate; return { outcome: 'completed', contextUsage: { usedTokens: 1000, providerSessionGeneration: session.engineAgentId } }; }
+    return { outcome: 'outcome_unknown', message: 'Completion unconfirmed; do not repeat.' };
+  });
+  const first = f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' });
+  try {
+    await until(() => entered === 1, 'first command awaits its real result');
+    // Defense in depth: even another canonical native-work owner cannot let
+    // this older command's measurement cross its later opaque boundary.
+    f.store.appendEvent(agent.id, { type: 'work_start', kind: 'native_tool', callId: randomUUID(), executionId: packet.executionId });
+    release(); f.ok(await first);
+    assert.equal(commandUsageEvents(f.store, agent.id).length, 0, 'The older invocation cannot certify a newer native mutation');
+    assert.equal(f.store.acceptedProviderSessionContextUsage(agent.id), undefined);
+    assert.equal(f.store.acceptedProviderSessionInputEstimate(agent.id), undefined);
+  } finally { release(); await first; }
+}));
+
+test('a second native command cannot certify context while the first may still mutate it', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  const chat = await f.createChat('Reverse native command race'), agent = await f.createIdleAgent(chat, 'Single mutation owner');
+  f.capabilities.commands = [compactCommand];
+  const session = await f.hold(agent.id); await checkpoint(f, agent, session, 25000); await finish(f, agent, session);
+  let release, entered = 0; const gate = new Promise(resolve => { release = resolve; });
+  f.commandResults.set(agent.id, async () => { if (++entered === 1) await gate;
+    return { outcome: 'completed', contextUsage: { usedTokens: 1000, providerSessionGeneration: session.engineAgentId } }; });
+  const first = f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' });
+  try {
+    await until(() => entered === 1, 'first native mutation remains in flight');
+    const second = await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' });
+    assert.equal(second.status, 409); assert.equal(second.body.retryable, false); assert.equal(f.commands.length, 1);
+    assert.equal(f.store.acceptedProviderSessionContextUsage(agent.id), undefined);
+    release(); f.ok(await first);
+    assert.equal(commandUsageEvents(f.store, agent.id).length, 1); assert.equal(f.store.acceptedProviderSessionContextUsage(agent.id).usage.usedTokens, 1000);
+  } finally { release(); await first; }
+}));
+
+for (const blocker of ['decision', 'old_request', 'leased', 'injected', 'outcome_unknown']) test(`unknown-context refresh preserves ${blocker} work instead of dropping it`, fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  const chat = await f.createChat('Held context recovery'), agent = await f.createIdleAgent(chat, 'Guarded recovery owner');
+  f.capabilities.commands = [compactCommand];
+  const session = await f.hold(agent.id), generation = session.engineAgentId;
+  if (blocker === 'decision') f.ok(await f.tool(session, 'ponderosa_decision', { question: 'A real human choice is still required', mode: 'text', blocking: true }));
+  if (blocker === 'old_request') {
+    const worker = await f.createIdleAgent(chat, 'Unfinished owned worker'); f.plans.set(worker.id, [{ hold: true }]);
+    f.ok(await f.tool(session, 'ponderosa_coordinate', { idempotencyKey: randomUUID(), requests: [{ recipientAgentId: worker.id, text: 'Owned unfinished work', lifetime: { kind: 'indefinite' } }] }));
+    await until(() => f.turns.some(turn => turn.agentId === worker.id), 'owned delegated work starts');
+  }
+  await checkpoint(f, agent, session, 25000); await finish(f, agent, session);
+  f.commandResults.set(agent.id, () => ({ outcome: 'outcome_unknown', message: 'Native completion unconfirmed. Do not repeat.' }));
+  f.ok(await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' }));
+  const coordination = new CoordinationV3Store(f.store.sqlite); let lease;
+  if (['leased', 'injected', 'outcome_unknown'].includes(blocker)) {
+    const now = new Date(Date.now() + 60000).toISOString();
+    coordination.enqueueMessageActivation({ projectId: chat.projectId, agentId: agent.id, scopeKey: `conversation:${chat.id}`,
+      messageId: randomUUID(), kind: 'human', payload: { text: 'Separate exact-fence controlled work' }, now });
+    lease = coordination.leaseNextRun({ workerId: 'owned-native-recovery-test', now, leaseMs: 60000 }); assert.ok(lease);
+    if (blocker !== 'leased') {
+      coordination.preparePromptInjection({ injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken, prompt: 'Owned uncertain submission', now });
+      coordination.markPromptSubmitted({ injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken, providerSessionId: generation, now });
+      if (blocker === 'outcome_unknown') coordination.recoverOrphanedRuns('new-owned-worker', now);
+    }
+  }
+  try {
+    const before = f.turns.length;
+    const refresh = await f.api('POST', `/api/agents/${agent.id}/compact`, {});
+    assert.equal(refresh.status, 409); assert.equal(f.store.resumeSessionState(agent.id).sessionId, generation);
+    assert.equal(f.commands.length, 1); assert.equal(f.turns.length, before);
+    assert.equal(f.store.sqlite.prepare("SELECT count(*) n FROM context_rollovers WHERE agent_id=? AND completion_reason='no_continuation_required'").get(agent.id).n, 0);
+  } finally { if (lease && blocker !== 'outcome_unknown') coordination.cancelAgentRun({ agentId: agent.id, expectedRunId: lease.runId, idempotencyKey: randomUUID() }); }
+}));
+
+test('canonical idle refresh preserves never-attempted future human input and dispatches it once', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  const chat = await f.createChat('Queued human context recovery'), agent = await f.createIdleAgent(chat, 'Queued recovery owner');
+  f.capabilities.commands = [compactCommand];
+  const session = await f.hold(agent.id), generation = session.engineAgentId;
+  await checkpoint(f, agent, session, 25000); await finish(f, agent, session);
+  f.commandResults.set(agent.id, () => ({ outcome: 'outcome_unknown', message: 'Native completion unconfirmed. Do not repeat.' }));
+  f.ok(await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' }));
+  const coordination = new CoordinationV3Store(f.store.sqlite);
+  const event = authored(f.store, chat, agent, 'FUTURE_HUMAN_INPUT_SURVIVES_EXPLICIT_REFRESH');
+  const activationId = coordination.enqueueMessageActivation({ projectId: chat.projectId, agentId: agent.id, scopeKey: `conversation:${chat.id}`,
+    messageId: event.eventId, kind: 'human', payload: { text: event.text, communication: event }, now: new Date(Date.now() + 2000).toISOString() });
+  const original = f.store.sqlite.prepare('SELECT id,payload_json,available_at,created_at FROM agent_activations WHERE id=?').get(activationId);
+  f.plans.set(agent.id, [{ hold: true }]); const turns = f.turns.length;
+  const refresh = f.ok(await f.api('POST', `/api/agents/${agent.id}/compact`, {}));
+  assert.equal(refresh.mode, 'canonical_refresh'); assert.equal(session.isAlive(), false);
+  assert.deepEqual(f.store.sqlite.prepare('SELECT id,payload_json,available_at,created_at FROM agent_activations WHERE id=?').get(activationId), original);
+  await until(() => f.turns.length === turns + 1, 'preserved future human input starts after retirement');
+  const next = f.sessions.get(agent.id); assert.notEqual(next.engineAgentId, generation);
+  assert.ok(supplied(accepted(f.store, agent.id)).includes('FUTURE_HUMAN_INPUT_SURVIVES_EXPLICIT_REFRESH'));
+  await finish(f, agent, next);
+  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(activationId).n, 1);
+  assert.equal(f.commands.length, 1);
 }));
 
 let broadcastSequence = 0;
