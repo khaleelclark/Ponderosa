@@ -24,10 +24,12 @@ function accepted(store, agentId) {
 
 const supplied = packet => `${packet.exactSystemPrompt ?? ''}\n${packet.exactPrompt}`;
 
-async function withBudgetFixture(t, work) {
-  let store; const pages = [], usage = new Map();
-  await withFixture(t, f => work({ ...f, store, pages, usage }), {
+async function withBudgetFixture(t, work, options = {}) {
+  let store; const pages = [], usage = new Map(), commandResults = new Map();
+  await withFixture(t, f => work({ ...f, get store() { return store; }, pages, usage, commandResults }), {
+    ...options,
     providerContextUsage: ({ agentId }) => usage.get(agentId) ?? { usedTokens: 1000, windowTokens: 200000 },
+    providerCommandResult: input => commandResults.get(input.agentId)?.(input) ?? { message: "Controlled command completed" },
     storeFactory: root => {
     store = new AgentStore(root);
     for (const name of ['getAgentPrivateContextSourcePage', 'getImportedHistoryMessagePage',
@@ -39,10 +41,10 @@ async function withBudgetFixture(t, work) {
   } });
 }
 
-async function withRuntimePoolBudgetFixture(t, maxIdleSessions, work) {
+async function withRuntimePoolBudgetFixture(t, maxIdleSessions, work, options) {
   const previous = process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;
   process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS = String(maxIdleSessions);
-  try { await withBudgetFixture(t, work); }
+  try { await withBudgetFixture(t, work, options); }
   finally {
     if (previous === undefined) delete process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;
     else process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS = previous;
@@ -398,6 +400,85 @@ for (const laterSteering of [false, true]) {
     await finish(f, agent, resumed);
   }));
 }
+
+const compactCommand = { name: 'compact', description: 'Native context compaction', source: 'adapter-implemented',
+  acceptsArguments: false, insertText: '/compact', status: 'available', invocation: 'runtime' };
+const commandUsageEvents = (store, agentId) => store.readEvents(agentId).filter(row => row.event.type === 'context_usage' && row.event.providerCommand);
+
+for (const cold of [false, true]) test(`verified native compact replaces old occupancy for ${cold ? 'cold' : 'warm'} admission`, fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
+  const chat = await f.createChat('Native compact authority'), agent = await f.createIdleAgent(chat, 'Compact reader');
+  f.capabilities.commands = [compactCommand];
+  const session = await f.hold(agent.id), generation = session.engineAgentId, original = accepted(f.store, agent.id), frozen = JSON.stringify(original);
+  await checkpoint(f, agent, session, 160000); await finish(f, agent, session);
+  f.commandResults.set(agent.id, () => {
+    const contextUsage = { usedTokens: 25000, windowTokens: 200000, providerSessionGeneration: generation };
+    f.usage.set(agent.id, contextUsage);
+    return { contextUsage };
+  });
+  const invoked = f.ok(await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' }));
+  assert.equal(invoked.invoked, true); assert.equal(f.commands.length, 1);
+  const audit = commandUsageEvents(f.store, agent.id).at(-1);
+  assert.ok(audit); assert.equal(audit.event.usedTokens, 25000);
+  assert.equal(audit.event.providerCommand.executionId, original.executionId);
+  const owner = f.store.sqlite.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=?').get(original.executionId);
+  assert.equal(audit.event.providerCommand.fencingToken, owner.fencing_token);
+  assert.equal(f.store.acceptedProviderSessionContextUsage(agent.id).usage.usedTokens, 25000);
+  if (cold) await f.reopen();
+  const next = await f.hold(agent.id), value = budget(accepted(f.store, agent.id));
+  assert.equal(next.engineAgentId, generation); assert.equal(value.occupancyTokens, 25000);
+  assert.equal(value.occupancyObservation.source, 'provider_command');
+  assert.equal(value.occupancyObservation.commandInvocationId, audit.event.providerCommand.invocationId);
+  assert.equal(value.occupancyObservation.fencingToken, owner.fencing_token);
+  assert.equal(value.occupancyObservation.observedAt, audit.ts);
+  assert.equal(JSON.stringify(f.store.getProviderInput(original.executionId, true)), frozen);
+  assert.equal(f.commands.length, 1, 'A telemetry read cannot replay native compaction');
+  await finish(f, agent, next);
+}, { providerValidatesResumeBeforeTurn: true }));
+
+test('cold native compact refuses before a throwaway command session while read-only status still works', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 0, async f => {
+  const chat = await f.createChat('Cold command boundary'), agent = await f.createIdleAgent(chat, 'Cold command owner');
+  f.capabilities.commands = [compactCommand, { ...compactCommand, name: 'status', insertText: '/status' }];
+  const session = await f.hold(agent.id), generation = session.engineAgentId;
+  await checkpoint(f, agent, session, 25000); await finish(f, agent, session);
+  await until(() => !session.isAlive(), 'idle command owner root exits');
+  const compact = await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' });
+  assert.equal(compact.status, 409); assert.match(compact.body.error, /Context Refresh/);
+  assert.equal(f.commands.length, 0, 'Native compaction cannot execute against an unrelated fresh session');
+  const status = f.ok(await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'status' }));
+  assert.equal(status.invoked, true); assert.deepEqual(f.commands.map(command => command.name), ['status']);
+  assert.equal(f.store.resumeSessionState(agent.id).sessionId, generation);
+}));
+
+for (const mode of ['stale', 'malformed', 'wrong_generation', 'leased_race']) test(`native compact keeps success without trusting ${mode} telemetry`, fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
+  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
+  const chat = await f.createChat('Rejected compact evidence'), agent = await f.createIdleAgent(chat, 'Guarded compact owner');
+  f.capabilities.commands = [compactCommand];
+  const session = await f.hold(agent.id), generation = session.engineAgentId;
+  await checkpoint(f, agent, session, 160000); await finish(f, agent, session);
+  let lease; const coordination = new CoordinationV3Store(f.store.sqlite);
+  f.commandResults.set(agent.id, () => {
+    f.usage.set(agent.id, { usedTokens: 25000, windowTokens: 200000, providerSessionGeneration: generation });
+    if (mode === 'stale') return {}; // A changed generic getter is not command freshness proof.
+    if (mode === 'malformed') return { contextUsage: { usedTokens: 'invalid', providerSessionGeneration: generation } };
+    if (mode === 'leased_race') {
+      coordination.coordinate({ projectId: chat.projectId, conversationId: chat.id, actorScope: 'user:local-operator', idempotencyKey: randomUUID(),
+        requests: [{ recipientAgentId: agent.id, lifetime: { kind: 'indefinite' }, payload: { text: 'Owned command-race fixture work' } }] });
+      lease = coordination.leaseNextRun({ workerId: 'isolated-compact-race', leaseMs: 60000 });
+      assert.ok(lease, 'A canonical lease must race before activeRuns exists');
+    }
+    return { contextUsage: { usedTokens: 25000, windowTokens: 200000, providerSessionGeneration: mode === 'wrong_generation' ? 'foreign-generation' : generation } };
+  });
+  try {
+    const result = f.ok(await f.api('POST', `/api/agents/${agent.id}/provider-commands`, { name: 'compact' }));
+    assert.equal(result.invoked, true); assert.match(result.message, /completed.*(telemetry|context usage)/i);
+    assert.equal(f.commands.length, 1); assert.equal(commandUsageEvents(f.store, agent.id).length, 0);
+    if (lease) assert.equal(coordination.activeAgentRun(agent.id).id, lease.runId, 'Command telemetry must not cancel raced work');
+    else assert.equal(f.store.acceptedProviderSessionContextUsage(agent.id).usage.usedTokens, 160000, 'Unproven reduction cannot replace the old checkpoint');
+  } finally {
+    if (lease) coordination.cancelAgentRun({ agentId: agent.id, expectedRunId: lease.runId, idempotencyKey: randomUUID() });
+  }
+}));
 
 let broadcastSequence = 0;
 function broadcast(store, chat, text) {

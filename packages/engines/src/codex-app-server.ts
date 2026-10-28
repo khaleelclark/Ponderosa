@@ -643,8 +643,14 @@ export class CodexAppServerSession implements RuntimeSession {
     if (name === "compact") {
       const previousUsageVersion = this.contextUsageGate.currentVersion();
       await this.rpc.request("thread/compact/start", { threadId: this.engineAgentId });
-      await this.contextUsageGate.waitAfter(previousUsageVersion);
-      return;
+      try {
+        await this.contextUsageGate.waitAfter(previousUsageVersion);
+      } catch {
+        // The RPC succeeded. Missing optional telemetry cannot turn a completed
+        // compaction into a retryable command failure.
+        return { message: "Compaction completed; updated context usage is unavailable. Do not repeat the command solely to refresh telemetry." };
+      }
+      return { contextUsage: this.contextUsage() };
     }
     if (name === "status") {
       const rateLimits = await optionalRequest(this.rpc, "account/rateLimits/read", undefined);

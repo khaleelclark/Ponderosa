@@ -526,9 +526,16 @@ export function projectProviderModelIdentifier(value: unknown): string | undefin
 export function projectProviderCommandResult(value: unknown): RuntimeCommandResult {
   if (value === undefined) return {};
   const budget = new ProjectionBudget("command");
-  const record = dataRecord(value, ["message"], "command", budget, 0);
-  const message = optionalString(record, "message", MAX_DESCRIPTION_CHARACTERS, "command", budget, 1);
-  return message === undefined ? {} : { message };
+  const record = dataRecord(value, ["message", "contextUsage"], "command", budget, 0);
+  let message = optionalString(record, "message", MAX_DESCRIPTION_CHARACTERS, "command", budget, 1);
+  let contextUsage: ReturnType<typeof projectProviderContextUsage>;
+  try { contextUsage = record.has("contextUsage") ? projectProviderContextUsage(record.get("contextUsage")) : undefined; }
+  catch {
+    // The command has already completed; unusable optional telemetry cannot
+    // invite replay of that operation or become trusted usage evidence.
+    message = "Command completed; updated context telemetry is invalid. Do not repeat the command solely to refresh telemetry.";
+  }
+  return { ...(message === undefined ? {} : { message }), ...(contextUsage ? { contextUsage } : {}) };
 }
 
 /** Copy authentication probe output before it enters the shared auth cache. */

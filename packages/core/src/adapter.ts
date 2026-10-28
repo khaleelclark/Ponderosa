@@ -235,9 +235,20 @@ export type RuntimeSteerResult =
   | { status: "accepted"; turnId?: string }
   | { status: "not_active" | "not_steerable" | "unsupported"; reason?: string };
 
+export interface RuntimeContextUsage {
+  usedTokens: number;
+  windowTokens?: number;
+  aggregateTokens?: number;
+  providerSessionGeneration?: string;
+  /** False marks an input-only checkpoint. */
+  requestOutputIncluded?: boolean;
+}
+
 export interface RuntimeCommandResult {
   /** Provider-derived, human-readable result for non-mutating runtime commands. */
   message?: string;
+  /** Present only when the command verified a NEW post-command observation. */
+  contextUsage?: RuntimeContextUsage;
 }
 
 /**
@@ -274,14 +285,7 @@ export interface RuntimeSession extends RuntimeProcessHandle {
    * `usedTokens` is the provider's current request checkpoint; an explicit
    * false requestOutputIncluded marks a partial input-only observation.
    * `windowTokens` is present only when the provider reports it. */
-  contextUsage?(): {
-    usedTokens: number;
-    windowTokens?: number;
-    aggregateTokens?: number;
-    providerSessionGeneration?: string;
-    /** True only when reported request-local output is included; false is an input-only checkpoint. */
-    requestOutputIncluded?: boolean;
-  } | undefined;
+  contextUsage?(): RuntimeContextUsage | undefined;
   /** Provider rate-limit lines already available through this authenticated
    * runtime transport. Implementations must not add an out-of-band API call. */
   rateLimitStatus?(): Promise<string[]>;

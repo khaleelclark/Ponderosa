@@ -45,8 +45,8 @@ export function providerInputBudget(
   usage: { usedTokens: number; windowTokens?: number; providerSessionGeneration?: string } | undefined = undefined,
   input: { resumeSessionId?: string; replacementLowWaterMark?: number; handoff?: boolean;
     postObservationUtf8Bytes?: number; estimatedSessionUtf8Bytes?: number;
-    occupancyObservation?: { source: "live_session" | "accepted_run" | "accepted_input_estimate"; providerSessionId: string;
-      observedAt?: string; sampledAt?: string; executionId?: string;
+    occupancyObservation?: { source: "live_session" | "accepted_run" | "provider_command" | "accepted_input_estimate"; providerSessionId: string;
+      observedAt?: string; sampledAt?: string; executionId?: string; commandInvocationId?: string; fencingToken?: number;
       requestOutputIncluded?: boolean; acceptedInputUtf8Bytes?: number; outputUtf8Bytes?: number; retainedStaticUtf8Bytes?: number; liveLowerBoundTokens?: number } } = {},
 ) {
   const exact = Boolean(input.resumeSessionId && usage?.providerSessionGeneration === input.resumeSessionId);
