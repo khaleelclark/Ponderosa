@@ -21,7 +21,7 @@ export interface UserMessageEvent {
 /** Clear a provider session while retaining the canonical agent history. */
 export interface SessionResetEvent {
   type: "session_reset";
-  reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" | "tool_contract_changed" | "provider_root_exit";
+  reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" | "tool_contract_changed" | "provider_root_exit" | "agent_cancelled";
 }
 
 /** Durable proof of the exact provider contract and artifact roots retained by

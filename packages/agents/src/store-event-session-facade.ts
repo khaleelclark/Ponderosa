@@ -121,7 +121,7 @@ export abstract class AgentEventSessionFacade {
       | "resume_compaction_failed"
       | "request_context_rollover"
       | "tool_contract_changed"
-      | "provider_root_exit",
+      | "provider_root_exit" | "agent_cancelled",
   ): boolean {
     return this.eventSession.clearResumeSession(agentId, reason);
   }

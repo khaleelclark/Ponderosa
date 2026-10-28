@@ -238,6 +238,7 @@ interface CoordinationSchedulerContext {
   ): Promise<string | undefined>;
   closeRunBrowser(agentId: string, run: Pick<ActiveRun, "runId" | "conversationId">, reason: string): Promise<void>;
   persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined;
+  clearAgentResumeSession(agentId: string, reason: "agent_cancelled"): boolean;
   clearRunLeaseTimer(run: ActiveRun): void;
   clearRunLivenessTimer(run: ActiveRun): void;
   renewExecutionLease(agentId: string, run: ActiveRun): boolean;
@@ -278,6 +279,7 @@ export function createCoordinationScheduler(
     terminateRuntimeHandle,
     closeRunBrowser,
     persistentRuntimeForTermination,
+    clearAgentResumeSession,
     clearRunLeaseTimer,
     clearRunLivenessTimer,
     renewExecutionLease,
@@ -315,6 +317,11 @@ export function createCoordinationScheduler(
       attachments.set(expected.id, resolved.attachment);
     }
     return [...attachments.values()];
+  };
+
+  const retireCancelledSession = (runId: string): void => {
+    const owner = store.cancelledProviderSessionForRetirement(runId);
+    if (owner) clearAgentResumeSession(owner.agentId, "agent_cancelled");
   };
 
 return new CoordinationV3Scheduler(
@@ -567,6 +574,7 @@ return new CoordinationV3Scheduler(
               ...(canonical.scope_key.startsWith('conversation:') ? {conversationId:canonical.scope_key.slice('conversation:'.length)} : {})}, "run_cancelled"),
           ]);
           if (results.some(result => result.status === 'rejected')) throw new Error('Exact provider or browser cleanup remains pending');
+          retireCancelledSession(operation.runId);
           return { accepted: true };
         } catch (error) {
           return { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
@@ -592,8 +600,12 @@ return new CoordinationV3Scheduler(
       if (cleanup.some(result => result.status === 'rejected') || termination.status === 'fulfilled' && termination.value) {
         return { accepted: false, retryable: true, error: termination.status === 'fulfilled' && termination.value || 'Exact provider or browser cleanup remains pending' };
       }
-      try { await providerProcessAuthority.terminateRun(operation.runId); }
-      catch (error) {
+      try {
+        await providerProcessAuthority.terminateRun(operation.runId);
+        // Cancellation is not a completed-turn measurement. Only after exact
+        // observed provider and browser cleanup may later independent work rebuild context.
+        retireCancelledSession(operation.runId);
+      } catch (error) {
         return { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
       }
       if (activeRuns.get(agentId) === run) {

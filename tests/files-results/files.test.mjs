@@ -390,10 +390,15 @@ test('canonical history reuses authorized artifact full-file references without 
   const {artifact}=f.ok(await f.tool(session,'ponderosa_import_file',{path:'document.txt'}));
   const sent=f.ok(await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Retained short document preview',artifactIds:[artifact.id]}));
   session.finish();await f.settled(agent.id);await f.reopen();
-  for(let index=0;index<45;index++){const event={schemaVersion:2,eventId:randomUUID(),projectId:chat.projectId,conversationId:chat.id,sender:{kind:'user',userId:'local-operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'local-operator',agentId:agent.id},text:'Newer bounded item '+index,createdAt:new Date().toISOString()};store.appendCommunicationEvent(event);store.appendEvent(agent.id,{type:'communication_projection',communicationEventId:event.eventId,text:event.text,role:'user'})}
+  for(let index=0;index<45;index++){const event={schemaVersion:2,eventId:randomUUID(),projectId:chat.projectId,conversationId:chat.id,sender:{kind:'user',userId:'local-operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'local-operator',agentId:agent.id},text:'Newer bounded item '+index+' '+('Controlled held task evidence '.repeat(150)),createdAt:new Date().toISOString()};store.appendCommunicationEvent(event);store.appendEvent(agent.id,{type:'communication_projection',communicationEventId:event.eventId,text:event.text,role:'user'})}
   // A fresh boundary, not a fabricated managed rollover, grants this canonical read.
-  f.ok(await f.api('PATCH','/api/workspace/preferences',{globalInstructions:'Read omitted evidence through the canonical history tool'}));
-  const next=await f.hold(agent.id),result=f.ok(await f.tool(next,'ponderosa_history',{action:'read',communicationEventId:sent.eventId,before:0,after:0}));
+  f.ok(await f.api('PATCH','/api/workspace/preferences',{contextRolloverTokens:75000,globalInstructions:'Read omitted evidence through the canonical history tool'}));
+  const next=await f.hold(agent.id),run=(await f.detail(agent.id)).runs.find(item=>item.status==='running');
+  const packet=store.getProviderInput(run.id,true);
+  assert.equal(packet.sourceManifest.historyContext.fullyIncludedCommunicationEventIds.includes(sent.eventId),false,'Use a real policy-budget omission, independent of message-count cutoffs');
+  assert.equal(packet.exactPrompt.includes('Retained short document preview'),false);
+  const frozen=JSON.stringify(packet),result=f.ok(await f.tool(next,'ponderosa_history',{action:'read',communicationEventId:sent.eventId,before:0,after:0}));
+  assert.equal(JSON.stringify(store.getProviderInput(run.id,true)),frozen,'Retrieval must not rewrite the accepted provider packet');
   const message=result.messages[0],reference=message.referencedFiles.find(file=>file.artifactId===artifact.id);assert.ok(reference.localPath);assert.equal(reference.sha256,createHash('sha256').update(body).digest('hex'));assert.equal(await readFile(reference.localPath,'utf8'),body);
   assert.equal(message.text,'Retained short document preview');assert.equal(message.complete,true);assert.match(result.notice,/inline.*referenced|referenced.*inline/i);
   const foreign=await f.hold(other.id),denied=await f.tool(foreign,'ponderosa_history',{action:'read',communicationEventId:sent.eventId,before:0,after:0});assert.ok(denied.status>=400);assert.doesNotMatch(JSON.stringify(denied),new RegExp(artifact.id));

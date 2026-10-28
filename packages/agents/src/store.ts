@@ -546,6 +546,19 @@ export class AgentStore extends AgentEventSessionFacade {
     return start && terminal && terminal.seq > start.seq ? { ...boundary, run, start, terminal } : undefined;
   }
 
+  /** Only the latest injected, canonically cancelled generation may be retired
+   * after the cancellation owner has observed its complete runtime cleanup. */
+  cancelledProviderSessionForRetirement(runId: string): { agentId: string; sessionId: string } | undefined {
+    const row = this.client.prepare(`SELECT r.agent_id, r.provider_session_id FROM scheduler_runs r
+      WHERE r.id=? AND r.status='cancelled' AND r.prompt_injection_state='injected'
+        AND r.provider_session_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM scheduler_runs newer WHERE newer.agent_id=r.agent_id
+            AND newer.fencing_token>r.fencing_token AND newer.prompt_injection_state<>'not_injected'
+        )`).get(runId) as { agent_id: string; provider_session_id: string } | undefined;
+    return row && this.resumeSessionId(row.agent_id) === row.provider_session_id
+      ? { agentId: row.agent_id, sessionId: row.provider_session_id } : undefined;
+  }
+
   /** Capture and recheck the canonical idle boundary around an async native
    * command. A leased Run counts as active even before it reaches activeRuns. */
   providerCommandContextBoundary(agentId: string) {
