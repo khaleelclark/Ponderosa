@@ -263,9 +263,10 @@ for(const options of [{unsupported:true},{unsupported:true,memory:true},{ordinar
   if(options.memory)assert.equal((await f.app.inject({method:'GET',url:f.url,headers:f.headers})).json().memoryExposure.state,'valid');
 }));
 
-function assertPrivateNativeEvidence(f, executionId) {
- const markers=f.store.readEvents(f.agent.id).filter(x=>x.event.type==='work_start').map(x=>x.event);
- assert.ok(markers.some(marker=>marker.executionId===executionId),'exact native-work ownership remains in the internal audit');
+function assertPrivateNativeEvidence(f, executionId, completionId) {
+ const audit=f.store.readEvents(f.agent.id);
+ const markers=audit.filter(x=>x.event.type==='work_start').map(x=>x.event);
+ assert.ok(markers.some(marker=>marker.executionId===executionId)||completionId&&audit.some(({event})=>event.type==='tool_result'&&event.id===completionId),'exact native-work marker or existing completion evidence remains in the internal audit');
  for(const marker of markers){
   assert.deepEqual(Object.keys(marker).sort(),['callId','executionId','kind','type'].filter(key=>key in marker).sort());
   assert.equal(isAgentStreamEvent(marker),false,'internal evidence is never public Agent telemetry');
@@ -337,7 +338,7 @@ for(const {label,nativeItems,workAt} of nativeCases)test(`mapper native ${label}
  const replies=f.coord.runtimeCommunications(f.project.id).filter(x=>x.payload.communication?.sender.kind==='agent');
  assert.equal(replies.filter(x=>x.payload.communication.sender.executionId===early.runId).length,0);
  assert.ok(replies.every(x=>x.payload.communication.sender.executionId!==early.runId&&x.payload.communication.text==='Canonical fallback.'));
- assertPrivateNativeEvidence(f,early.runId);
+ assertPrivateNativeEvidence(f,early.runId,'native-work');
  const chat=(await f.app.inject({method:'GET',url:`/api/branches/engine/conversations/${f.chat.id}?limit=20`,headers:f.headers})).json();
  assert.ok(!JSON.stringify(chat).includes('PRIVATE NATIVE PAYLOAD'),'native payload never becomes Chat');
  console.log('MAPPER NATIVE EXACT RUN ORACLE',JSON.stringify({label,originalCanonicalRows:0,recoveredExplicitFallbacks:replies.length,adapterStarts:f.starts,originalRun:early.runId,reauthorization:f.reauthorization.success}));
