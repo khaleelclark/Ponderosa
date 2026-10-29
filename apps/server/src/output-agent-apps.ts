@@ -50,6 +50,7 @@ export class OutputAgentApps {
     if(roles.speakerAgentId===id&&!speaker)this.pause(this.get(id));
     this.write({agentIds:enabled?[...new Set([...roles.agentIds,id])]:roles.agentIds.filter(value=>value!==id),
       speakerAgentId:speaker?id:roles.speakerAgentId===id?null:roles.speakerAgentId,initialized:speaker||roles.initialized});
+    if(speaker)this.store.sqlite.prepare('INSERT OR IGNORE INTO assistant_report_scan(speaker_agent_id,after_sequence) SELECT ?,COALESCE(MAX(sequence),0) FROM assistant_status_sources').run(id);
     return enabled?this.get(id):undefined;
   }
   status():AssistantStatusDto{
@@ -90,7 +91,7 @@ export class OutputAgentApps {
     if(!branch.versionId){
       const config={scheduleKind:'interval' as const,everyMs:600000,startsAt:new Date(Date.now()+600000).toISOString(),whenRunning:'run_latest' as const};
       const normalized=normalizeTriggerSourceConfig('schedule',config);
-      this.branches.deploy({chatId:'',branchId,expectedVersionId:'',idempotencyKey:`assistant-workflow-${key}`,definition:{schema:'ponderosa.branch.v1',name:'Assistant',trigger:{kind:'schedule',configRef:'check'},entry:'speaker',steps:[{id:'speaker',kind:'agent',target:{kind:'persistent_agent',ref:'speaker'},instructions:'Check available projects for newly completed work and issues. Report only useful changes through explicit user communication; respect notification settings.',requireUserCommunication:true}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},bindings:{agents:{speaker:imported.rootAgentId},directories:{},triggers:{check:{sourceConfig:config,enabled:true}}}},new Date().toISOString(),{sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt});
+      this.branches.deploy({chatId:'',branchId,expectedVersionId:'',idempotencyKey:`assistant-workflow-${key}`,definition:{schema:'ponderosa.branch.v1',name:'Assistant',trigger:{kind:'schedule',configRef:'check'},entry:'speaker',steps:[{id:'speaker',kind:'agent',target:{kind:'persistent_agent',ref:'speaker'},instructions:'Call ponderosa_assistant_check to check granted Projects for explicit completed work and issues. It publishes a bounded deduplicated report through notification settings. If it reports no changes or deferred, stay quiet. Do not repeat its published digest. Complete this workflow Request with ponderosa_update_request after checking.',requireUserCommunication:false}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},bindings:{agents:{speaker:imported.rootAgentId},directories:{},triggers:{check:{sourceConfig:config,enabled:true}}}},new Date().toISOString(),{sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt});
     }
     this.designate(imported.rootAgentId,true,true);this.write({setup:undefined});return this.status();
   }

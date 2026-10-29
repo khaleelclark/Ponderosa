@@ -76,6 +76,9 @@ export interface RuntimeCapabilityRestrictions {
 }
 
 export const CAPABILITY_IDS = {
+  workspaceRead:'workspace.read',
+  workspaceCreateChat:'workspace.create_chat',
+  workspaceStartWork:'workspace.start_work',
   memoryRead:"memory.read",
   memoryWrite:"memory.write",
   browserRead: "browser.read",
@@ -89,6 +92,9 @@ export const CAPABILITY_IDS = {
 } as const;
 
 export const BUILT_IN_CAPABILITIES: CapabilityDescriptor[] = [
+ {id:CAPABILITY_IDS.workspaceRead,categoryId:'agents',categoryLabel:'Agent actions',label:'Read project status',description:'Inspect registered Chats and explicit completed work or issues across Projects. Human restrictions on destination Chats also apply.',runtimeToolNames:['ponderosa_workspace_projects','ponderosa_assistant_check']},
+ {id:CAPABILITY_IDS.workspaceCreateChat,categoryId:'agents',categoryLabel:'Agent actions',label:'Create Chats',description:'Create managed empty Chats across the installation on the user’s behalf.',runtimeToolNames:['ponderosa_workspace_create_chat']},
+ {id:CAPABILITY_IDS.workspaceStartWork,categoryId:'agents',categoryLabel:'Agent actions',label:'Start work across Projects',description:'Create or ask an Agent to work in another registered Chat. Human source and destination restrictions both apply.',runtimeToolNames:['ponderosa_workspace_start_work']},
   {id:CAPABILITY_IDS.memoryRead,categoryId:"files",categoryLabel:"Files",label:"Read memory",description:"Read explicitly published Chat memory and granted installation-global memory.",runtimeToolNames:["ponderosa_local_memory_get","ponderosa_local_memory_search","ponderosa_local_memory_history"]},
   {id:CAPABILITY_IDS.memoryWrite,categoryId:"files",categoryLabel:"Files",label:"Write Chat memory",description:"Explicitly publish supplied facts to the current Chat; no Agent global writes.",runtimeToolNames:["ponderosa_local_memory_save","ponderosa_local_memory_update","ponderosa_local_memory_forget"]},
   {

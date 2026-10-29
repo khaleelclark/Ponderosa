@@ -107,26 +107,37 @@ function expectedContract(budget = new StateReadBudget()): string {
     return compiledContract = schemaSignature(sqlite);
   } finally { sqlite.close(); }
 }
-// Only the exact pre-history schema is a supported online predecessor. Build
-// its signature from the current contract; do not accept arbitrary missing DDL.
+// Only the exact pre-history and pre-workspace schemas may upgrade online.
+// Derive signatures from current DDL; arbitrary missing tables remain refused.
 let compiledHistoryPredecessor: string | undefined;
-function historyPredecessorContract(budget = new StateReadBudget()): string {
-  if (compiledHistoryPredecessor) return compiledHistoryPredecessor;
+let compiledWorkspacePredecessor: string | undefined;
+function workspacePredecessorContract(budget = new StateReadBudget(), beforeHistory = false): string {
+  const cached = beforeHistory ? compiledHistoryPredecessor : compiledWorkspacePredecessor;
+  if (cached) return cached;
   budget.allocate(8192 * 1024 + 16 * 1024 ** 2); budget.reserve(512);
   const sqlite = new Database(":memory:");
   try {
     bindStateReadBudget(sqlite, budget);
     sqlite.pragma("cache_size=-8192"); sqlite.pragma("mmap_size=0");
     initializeCurrentDatabase(sqlite); declareGeneration(sqlite);
-    sqlite.exec("DROP TABLE capability_policy_history");
-    sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0028_capability_policy_history.sql");
-    return compiledHistoryPredecessor = schemaSignature(sqlite);
+    sqlite.exec("DROP TRIGGER assistant_status_communication; DROP TRIGGER assistant_status_request; DROP TRIGGER assistant_status_run; DROP TABLE assistant_status_sources; DROP TABLE assistant_report_scan; DROP TABLE assistant_report_sources; DROP TABLE workspace_agent_actions; DELETE FROM sqlite_sequence WHERE name='assistant_status_sources'");
+    sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0029_assistant_workspace.sql");
+    if (beforeHistory) {
+      sqlite.exec("DROP TABLE capability_policy_history");
+      sqlite.prepare("DELETE FROM _schema_version WHERE name=?").run("0028_capability_policy_history.sql");
+    }
+    const signature = schemaSignature(sqlite);
+    if (beforeHistory) compiledHistoryPredecessor = signature; else compiledWorkspacePredecessor = signature;
+    return signature;
   } finally { sqlite.close(); }
+}
+function historyPredecessorContract(budget = new StateReadBudget()): string {
+  return workspacePredecessorContract(budget, true);
 }
 function verifyDatabase(sqlite: Database.Database, generationId: string,
   contract = expectedContract(), allowHistoryUpgrade = false): boolean {
   const actual = schemaSignature(sqlite), upgrade = actual !== contract;
-  if (upgrade && (!allowHistoryUpgrade || actual !== historyPredecessorContract(stateReadBudget(sqlite)))) refuse();
+  if (upgrade && (!allowHistoryUpgrade || (actual !== historyPredecessorContract(stateReadBudget(sqlite)) && actual !== workspacePredecessorContract(stateReadBudget(sqlite))))) refuse();
   withStateReads(sqlite, reads => {
     const objectCount = reads.population("sqlite_master");
     const tables = reads.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'", ["name"], 512, 1024 ** 2, objectCount);
@@ -416,7 +427,7 @@ export function admitDataDirectory(dataDir: string, primary = "ponderosa.db", in
     if (admittedSnapshot.upgrade) {
       // Recheck the live handle under the same physical lease before any write.
       // DDL, its receipt and final validation commit as one transaction.
-      verifyDatabase(sqlite, marker.generationId, historyPredecessorContract());
+      verifyDatabase(sqlite, marker.generationId, expectedContract(), true);
       const upgrading = sqlite;
       withStateReads(upgrading, () => {
         initializeCurrentDatabase(upgrading);

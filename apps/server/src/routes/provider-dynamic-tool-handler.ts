@@ -31,7 +31,8 @@ export function createProviderDynamicToolHandler(
       ? call.arguments as { agentId?: unknown }
       : {};
     const isDirectory = call.name === PONDEROSA_TEAM_DIRECTORY_TOOL.name;
-    const url = localMemoryOperation ? "/api/agent-local-memory" : call.name === PONDEROSA_VOICE_REPLY_TOOL.name ? "/api/agent-voice-reply" : call.name === PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name
+    const workspaceOperation=call.name.startsWith('ponderosa_workspace_')?call.name.slice('ponderosa_workspace_'.length):call.name==='ponderosa_assistant_check'?'check':undefined;
+    const url = workspaceOperation ? '/api/agent-workspace' : localMemoryOperation ? "/api/agent-local-memory" : call.name === PONDEROSA_VOICE_REPLY_TOOL.name ? "/api/agent-voice-reply" : call.name === PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name
       ? "/api/agent-spawn"
       : call.name === PONDEROSA_DECISION_TOOL.name
         ? "/api/agent-decisions"
@@ -63,7 +64,7 @@ export function createProviderDynamicToolHandler(
         "content-type": "application/json",
         ...(call.name === PONDEROSA_VOICE_REPLY_TOOL.name ? {"x-ponderosa-voice-operation-id":call.operationId ?? call.id} : {}),
       },
-      ...(!isDirectory ? { payload: JSON.stringify(localMemoryOperation ? {...(call.arguments&&typeof call.arguments==="object"?call.arguments:{}),operation:localMemoryOperation} : browserOperation
+      ...(!isDirectory ? { payload: JSON.stringify(workspaceOperation ? {...(call.arguments&&typeof call.arguments==='object'?call.arguments:{}),operation:workspaceOperation} : localMemoryOperation ? {...(call.arguments&&typeof call.arguments==="object"?call.arguments:{}),operation:localMemoryOperation} : browserOperation
         ? { ...(call.arguments && typeof call.arguments === "object" ? call.arguments : {}), operation: browserOperation }
         : call.name === PONDEROSA_IMPORT_FILE_TOOL.name
           ? { ...(call.arguments && typeof call.arguments === "object" ? call.arguments : {}), toolCallId: call.id }

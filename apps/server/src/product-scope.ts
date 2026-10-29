@@ -216,6 +216,8 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
   app.addHook('preHandler',async(request,reply)=>{
     if(!request.url.startsWith('/api/'))return;
     if(request.routeOptions.url==='/api/trigger-webhooks/:id')return;
+    // Workspace tools validate source Run and destination human policy across products.
+    if(request.routeOptions.url==='/api/agent-workspace')return;
     const owner=runtimeOwner(request);
     const runtimeChat=typeof owner==='string'?owner:owner?.conversationId;
     const retained=retainedRuntimeResources(store,owner);
@@ -368,6 +370,7 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
   });
   // Defense in depth for global projections; primary collections filter before pagination.
   app.addHook('preSerialization',async(request,_reply,payload)=>{
+    if(request.routeOptions.url==='/api/agent-workspace')return payload;
     if(!request.url.startsWith('/api/')||/^\/api\/branch(?:es|\-executions|\-gates)(?:\/|$)/.test(request.url))return payload;
     const product=requestProduct(request);
     const draftOwner=agentDraftOwner(store,request);

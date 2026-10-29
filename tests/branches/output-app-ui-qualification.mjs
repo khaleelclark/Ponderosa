@@ -7,12 +7,13 @@ import {readFile,mkdir,writeFile} from 'node:fs/promises';
 import {Readable} from 'node:stream';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {fixture} from '../shared/fixture.mjs';
+import {fixture,until} from '../shared/fixture.mjs';
+import {randomUUID} from 'node:crypto';
 const require=createRequire(new URL('../../apps/server/package.json',import.meta.url));
 const {chromium}=require('playwright-core');
 const root=fileURLToPath(new URL('../../',import.meta.url)),web=path.join(root,'apps/web/dist');
 const out=process.env.PONDEROSA_OUTPUT_QUALIFICATION_DIR??'/tmp/ponderosa-output-app-ui';await mkdir(out,{recursive:true});
-let browser,server;const f=await fixture();const errors=[],requests=[],fileClicks=[];
+let browser,server;const f=await fixture();const errors=[],requests=[],fileClicks=[];let workspaceActions;
 try{
  const api=await f.listen();
  const mime={'.js':'text/javascript','.css':'text/css','.html':'text/html','.woff2':'font/woff2','.png':'image/png','.svg':'image/svg+xml','.json':'application/json','.webmanifest':'application/manifest+json'};
@@ -42,10 +43,17 @@ try{
  const {conversation}=f.ok(await f.api('GET',`/api/branches/engine/conversations/${initial.app.chatId}`));
  await writeFile(path.join(conversation.workingDirectory,'output-report.md'),'# OUTPUT_FILE_CONTENT\n\n[Related report](related.md#details)\n');
  await writeFile(path.join(conversation.workingDirectory,'related.md'),'# RELATED_FILE_CONTENT\n');
- f.plans.set(initial.app.agentId,[{run:async session=>assert.equal((await session.tool('ponderosa_message',{text:'OUTPUT_UI_REPLY\n\n[Working report](output-report.md)'})).success,true)}]);
- await page.locator('[contenteditable="true"]').first().fill('Hello from the output app UI');
+ f.plans.set(initial.app.agentId,[{run:async session=>{
+  const chat=f.ok(await f.tool(session,'ponderosa_workspace_create_chat',{label:'Assistant UI requested work',engine:'codex',idempotencyKey:randomUUID()}));
+  const work=f.ok(await f.tool(session,'ponderosa_workspace_start_work',{chatId:chat.chat.id,title:'Report writer',engine:'codex',text:'Build the report requested through the Assistant composer',idempotencyKey:randomUUID()}));
+  workspaceActions={chat,work};
+  assert.equal((await session.tool('ponderosa_message',{text:'OUTPUT_UI_REPLY\n\n[Working report](output-report.md)'})).success,true);
+ }}]);
+ await page.locator('[contenteditable="true"]').first().fill('Create a Chat and start the report task');
  await page.getByRole('button',{name:'Send message',exact:true}).click();
  await page.getByText('OUTPUT_UI_REPLY',{exact:true}).waitFor({timeout:20000});
+ assert.notEqual(workspaceActions.chat.chat.projectId,initial.app.projectId);assert.equal(workspaceActions.work.sourceAgentId,initial.app.agentId);
+ await until(()=>f.turns.some(turn=>turn.agentId===workspaceActions.work.agentId&&JSON.stringify(turn.input).includes('Build the report requested through the Assistant composer')),'cross-project UI request reaches target provider');
  // Click the actual authored file link and inspect the separate, fresh app tab.
  for(const entry of ['/assistant',initial.app.url]){
   await page.goto(origin+entry);
@@ -75,7 +83,8 @@ try{
  const status=f.ok(await f.api('GET','/api/branches/assistant'));assert.equal(status.app.everyMs,1200000);
  await page.goto(origin+status.app.url);await page.getByRole('textbox').first().waitFor();
  await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(out,'output-phone.png'),fullPage:true});
+ await page.goto(origin+'/messages');await page.getByRole('heading',{name:'Inbox',exact:true}).waitFor({timeout:20000});await page.screenshot({path:path.join(out,'inbox.png'),fullPage:true});
  assert.deepEqual(errors,[]);assert.deepEqual(requests.filter(item=>item.status>=400),[]);assert.ok(requests.some(item=>item.path.includes('/agents/')&&item.status===200));
- await writeFile(path.join(out,'result.json'),JSON.stringify({checksPassed:true,freshWorkspaceInitialization:true,app:status.app,errors,requests,fileClicks,screenshots:['assistant-desktop.png','assistant-settings.png','output-phone.png','assistant-file.png','output-file.png'],limit:'Controlled provider, not real phone audio, complete usability or blind judging.'},null,2));
+ await writeFile(path.join(out,'result.json'),JSON.stringify({checksPassed:true,freshWorkspaceInitialization:true,app:status.app,errors,requests,fileClicks,workspaceActions,screenshots:['assistant-desktop.png','assistant-settings.png','output-phone.png','assistant-file.png','output-file.png','inbox.png'],limit:'Controlled provider, not real phone audio, complete usability or blind judging.'},null,2));
  console.log(JSON.stringify({checksPassed:true,out,requestCount:requests.length}));
 }finally{await browser?.close();if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}await f.dispose();}

@@ -17,6 +17,14 @@ const REQUEST_LIFETIME_SCHEMA = {
   ],
 } as const;
 
+/** Installation workspace actions retain their source Run and recheck human policy. */
+export const PONDEROSA_WORKSPACE_TOOLS: RuntimeDynamicToolSpec[] = [
+ {name:'ponderosa_workspace_projects',description:'List a bounded page of registered Chats/Projects and Agents available under current human workspace-read settings. Returns stable IDs; no private message history. Use afterId for another page.',inputSchema:{type:'object',additionalProperties:false,properties:{afterId:{type:'string'}}}},
+ {name:'ponderosa_workspace_create_chat',description:'Create a managed empty Chat on the user’s behalf. Uses existing human workspace/default-provider settings; never changes access. Supply the same idempotencyKey to recover an uncertain result. Returns exact Chat/Project and source action receipt.',inputSchema:{type:'object',additionalProperties:false,required:['label','engine','idempotencyKey'],properties:{steeringInjectionId:{type:'string'},label:{type:'string'},engine:{type:'string'},idempotencyKey:{type:'string'}}}},
+ {name:'ponderosa_workspace_start_work',description:'Start work in a registered Chat, including another Project, under human source and destination settings. Give chatId, text, idempotencyKey and either an existing agentId or a title/engine for a new Agent. Creates ordinary next-Run work, never interrupts. Returns canonical task/activation and source provenance. Use the same key after uncertainty.',inputSchema:{type:'object',additionalProperties:false,required:['chatId','text','idempotencyKey'],properties:{steeringInjectionId:{type:'string'},chatId:{type:'string'},agentId:{type:'string'},title:{type:'string'},engine:{type:'string'},text:{type:'string'},idempotencyKey:{type:'string'}}}},
+ {name:'ponderosa_assistant_check',description:'Current Assistant speaker: check granted Projects for explicit completed work and issues. Publishes one bounded, deduplicated digest at most once per configured interval via normal quiet/unread and notification settings. No changes means no message. Do not repeat a digest through ponderosa_message. Returns source evidence IDs and publication status.',inputSchema:{type:'object',additionalProperties:false,properties:{steeringInjectionId:{type:'string'}}}},
+];
+
 /** Communication V3 provider surface. Common delegation forms keep Request and
  * Join mechanics server-owned; advanced forms remain available for unusual
  * lifetimes, quorum conditions, and exact recovery. */
@@ -484,6 +492,7 @@ export const PONDEROSA_IMPORT_FILE_TOOL: RuntimeDynamicToolSpec = {
 /** One canonical provider-visible tool surface. Engine adapters may rename a
  * tool for their native protocol, but they must derive from this exact list. */
 export const PONDEROSA_RUNTIME_TOOLS: RuntimeDynamicToolSpec[] = [
+  ...PONDEROSA_WORKSPACE_TOOLS,
   PONDEROSA_CREATE_MANAGED_AGENT_TOOL,
   PONDEROSA_DECISION_TOOL,
   PONDEROSA_MANAGE_TOOL,

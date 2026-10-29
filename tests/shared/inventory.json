@@ -1609,6 +1609,14 @@
       "lane": "server",
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built DEV workspaces; owned inert provider, no provider account"
+    },
+    {
+      "path": "tests/branches/assistant-workspace.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, current built native workspaces, inert provider fixture; no provider account",
+      "origin": "Current-master Branch API ownership, Chat lifecycle reuse and favorite/folder persistence"
     }
   ],
   "retainedReleasePayload": [
