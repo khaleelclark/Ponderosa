@@ -83,7 +83,7 @@ export function reduceInboxSubmissionIntent(
   return { ...state, epoch: state.epoch + 1 };
 }
 
-/** Exact runtime scalars that can be emitted by the selected All Messages action. */
+/** Exact runtime scalars that can be emitted by the selected Inbox action. */
 export function inboxRuntimePayloadSnapshot(input: {
   newAgentRequested: boolean;
   recipientCount: number;

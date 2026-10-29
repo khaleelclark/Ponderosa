@@ -1377,7 +1377,7 @@
       "lane": "server",
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24 built server; isolated canonical stores/inert providers; injected host samples only",
-      "origin": "UI 013 batch health/admission projection across Chat/Agent/All Messages/receipt refresh and single admission after recovery"
+      "origin": "UI 013 batch health/admission projection across Chat/Agent/Inbox/receipt refresh and single admission after recovery"
     },
     {
       "path": "tests/providers/provider-limit-feedback.test.mjs",

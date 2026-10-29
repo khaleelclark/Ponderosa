@@ -1766,7 +1766,7 @@ export class WorkspaceStore {
 
   /** Produce exact, identity-deduped unread projections without exposing the
    * underlying notification collection. The caller bounds which resource
-   * scopes are returned; workspace and All Messages remain scalar summaries. */
+   * scopes are returned; workspace and Inbox remain scalar summaries. */
   notificationProjection(input: {
     projectIds: readonly string[];
     conversationIds: readonly string[];

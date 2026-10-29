@@ -242,7 +242,7 @@ export function routeReturnTarget(returnTo: string | undefined, fallback: Route)
 }
 
 export function routeReturnLabel(target: Route): string {
-  return target.kind === "conversation" ? "Back to Chat" : target.kind === "agent" ? "Back to Agent" : target.kind === "inbox" ? "Back to Messages" : "Back to Home";
+  return target.kind === "conversation" ? "Back to Chat" : target.kind === "agent" ? "Back to Agent" : target.kind === "inbox" ? "Back to Inbox" : "Back to Home";
 }
 
 export function parseRouteLocation(

@@ -66,7 +66,7 @@ export function registerSearchRoutes(
       let combined: CombinedCursor | undefined;
       if (request.query.cursor) {
         const parsed = JSON.parse(Buffer.from(request.query.cursor, "base64url").toString("utf8")) as Partial<CombinedCursor>;
-        if (parsed.v !== 1 || parsed.productScope!==requestProduct(request)) throw new Error("invalid All Chat cursor");
+        if (parsed.v !== 1 || parsed.productScope!==requestProduct(request)) throw new Error("invalid Inbox cursor");
         combined = parsed as CombinedCursor;
       }
       const messagePage = combined?.messagesDone
@@ -158,7 +158,7 @@ export function registerSearchRoutes(
         },
       } satisfies InboxPageDto;
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid All Chat cursor" });
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid Inbox cursor" });
     }
   });
 }

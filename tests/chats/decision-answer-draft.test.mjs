@@ -77,7 +77,7 @@ test('failed load and mismatched attachment ownership block editing rather than 
   const bad=fixture();bad.setCanonical({attachmentIds:['foreign'],attachments:[{id:'foreign',ownerId:'another-decision'}]});await bad.start();assert.equal(bad.value.ready,false);assert.match(bad.value.loadError,/could not be verified/);assert.equal(bad.calls.put.length,0);bad.unmount();
 });
 
-test('Chat and All Messages retain attachment-only answers through their shared timeline choice',()=>{
+test('Chat and Inbox retain attachment-only answers through their shared timeline choice',()=>{
   const decision={mode:'text',options:[],response:{attachments:[{id:'evidence'}]}};
   assert.equal(decisionChoice(decision),'Attached evidence');assert.equal(decisionResponseChoice(decision),'Attached evidence');assert.equal(decisionResponseVerb(decision),'Answered');
   assert.equal(decisionChoice({...decision,response:{text:'Full answer',attachments:[{id:'evidence'}]}}),'Full answer');

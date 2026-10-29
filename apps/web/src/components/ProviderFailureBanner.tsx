@@ -65,7 +65,7 @@ export function ProviderFailureBanner({ messages, agents, projectId, hasMore, on
       <DialogTitle>Provider interruptions</DialogTitle>
       <DialogContent dividers sx={{ overflowWrap: "anywhere" }}>
         <Stack spacing={2}>
-          {hasMore ? <Alert severity="warning">Showing up to 100 affected messages. More affected work remains available in Agent activity and All Messages.</Alert> : null}
+          {hasMore ? <Alert severity="warning">Showing up to 100 affected messages. More affected work remains available in Agent activity and Inbox.</Alert> : null}
           {rows.map(({ receipt, text }) => {
             const failure = receipt.providerFailure!;
             return <Box key={receipt.activationId}>

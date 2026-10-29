@@ -113,7 +113,7 @@ test('product collections filter before paging and bind continuations to their p
  }
 }));
 
-test('search, All Chat, file search, usage and preferences retain product ownership across restart',async t=>withFixture(t,async f=>{
+test('search, Inbox, file search, usage and preferences retain product ownership across restart',async t=>withFixture(t,async f=>{
  const {branch,products}=await setup(f),marker=`scoped${randomUUID().replaceAll('-','')}`;
  for(const product of ['dev','branches'])for(const {chat,agent} of products[product]){
   f.ok(await f.api('POST',`${prefix(product)}/conversations/${chat.id}/messages`,{text:`${marker} ${product}`,idempotencyKey:randomUUID()}));

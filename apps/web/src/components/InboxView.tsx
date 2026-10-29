@@ -1376,7 +1376,7 @@ export function InboxView({
         canonicalCommunicationIds={items.map(item => item.communicationEventId)}
         layout="workspace"
         layoutKey={layoutKey}
-        label="All messages"
+        label="Inbox"
         follow={{ kind: "latest" }}
         history={{
           kind: "cursor",

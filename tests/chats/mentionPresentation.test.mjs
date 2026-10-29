@@ -214,7 +214,7 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
 });
 
 
-test('All Messages keeps provider command output visible and uses shared feedback only for an acknowledgment', async () => {
+test('Inbox keeps provider command output visible and uses shared feedback only for an acknowledgment', async () => {
   const { readFile } = await import('node:fs/promises');
   const vm = await import('node:vm');
   const ts = await import('typescript');
