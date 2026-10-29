@@ -216,6 +216,7 @@ export function AgentDuplicateDialog({
     onConfirm={() => void duplicate()}>
     <Stack spacing={2} sx={{ pt: 1 }}>
       <Typography variant="body2" color="text.secondary">Source: {source.title}</Typography>
+      <Typography variant="body2" color="text.secondary">Duplicates omit output and speaker roles.</Typography>
       <PackageChoices organization={organization} mode={mode} agentCount={included.length}
         onOrganizationChange={setOrganization} onModeChange={setMode} />
       <FormControl fullWidth size="small">

@@ -6,6 +6,7 @@ interface PreviewRequest {
 
 interface PortableAgentPreview {
   sourceLabel: string;
+  hasOutputRoles: boolean;
   sourceProjectInstructions?: string;
   mode: "template" | "full";
   kind: "agent" | "organization";
@@ -103,6 +104,7 @@ worker.onmessage = async (event: MessageEvent<PreviewRequest>) => {
     const response: PreviewResponse = {
       id,
       preview: {
+        hasOutputRoles: Array.isArray(value.outputRoles)&&value.outputRoles.length>0,
         sourceLabel: value.sourceLabel.slice(0, 240),
         ...(value.mode === "full" && typeof value.sourceProjectInstructions === "string"
           ? { sourceProjectInstructions: value.sourceProjectInstructions } : {}),

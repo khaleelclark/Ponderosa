@@ -241,6 +241,7 @@ export interface InstalledBranchPackage {
  definition:BranchDefinition;chats:BranchPackageChat[];agentBindings:Record<string,{chatRef:string;agentRef:string}>;
  limits:BranchLimits;parameters?:Record<string,string|number|boolean>;
  triggers?:BranchBindings['triggers'];engines?:BranchBindings['engines'];
+ outputRoles?:Array<{chatRef:string;agentRef:string;output:boolean;speaker:boolean}>;
 }
 
 export interface BranchLifecycleDto {
@@ -260,7 +261,7 @@ export interface BranchFullImportAgentReviewDto {
  history:{messages:number;bytes:number;roles:{user:number;assistant:number;system:number}};
  artifacts:{count:number;bytes:number;items:Array<{name:string;kind:string;mediaType:string;bytes:number}>};
 }
-export interface BranchInstallationPreviewDto {id:string;operations:BranchInstallationOperationDto[];fullImportReview?:{mode:'full';warning:string;agents:BranchFullImportAgentReviewDto[]}}
+export interface BranchInstallationPreviewDto {id:string;outputRoleReview?:import('./dto/agents.js').OutputRoleImportReviewDto;operations:BranchInstallationOperationDto[];fullImportReview?:{mode:'full';warning:string;agents:BranchFullImportAgentReviewDto[]}}
 
 /** Scoped picker context comes from canonical membership, independent of search pagination. */
 export type BranchAgentChoiceDto = import('./dto/agents.js').AgentDto & { hasTeam:boolean; chatTitle:string; managerTitle?:string };

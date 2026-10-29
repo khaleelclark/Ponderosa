@@ -1,3 +1,4 @@
+import type {OutputAgentApps} from '../output-agent-apps.js';
 import {localMemoryFor} from '../local-memory.js';
 import {validateMemorySnapshot} from '../portable-memory-snapshot.js';
 import {executionArchive,validateExecutionArchive,EXECUTION_ARCHIVE_MEDIA_TYPE} from '../portable-execution-archive.js';
@@ -118,6 +119,7 @@ export function registerAgentPackageRoutes(
     agentMessages,
     createOperationalNotification,
   } = context;
+  let outputApps:OutputAgentApps|undefined;
   const blobImportContentType = "application/vnd.ponderosa.agent-import";
   const importOperationDirectory = path.join(context.dataDir, "agent-import-operations");
   const operationPath = (id: string) => path.join(importOperationDirectory, `${id}.json`);
@@ -426,7 +428,7 @@ export function registerAgentPackageRoutes(
     });
   const stagedImportParser = (jsonEnvelope = false): FastifyContentTypeParser => (request, payload, done) => {
       void (async () => {
-        const allowedRoutes = jsonEnvelope ? ['/api/projects/:id/import-agents'] : ['/api/projects/:id/agent-import-operations','/api/projects/:id/import-agent-package'];
+        const allowedRoutes = jsonEnvelope ? ['/api/projects/:id/import-agents'] : ['/api/projects/:id/agent-import-operations','/api/projects/:id/import-agent-package','/api/projects/:id/agent-role-preview'];
         if(request.method!=='POST'||!allowedRoutes.includes(request.routeOptions.url??''))throw Object.assign(new Error('Agent package media is only accepted by upload routes'),{statusCode:415});
         await operationHydration;
         await fs.mkdir(importOperationDirectory, { recursive: true });
@@ -454,7 +456,7 @@ export function registerAgentPackageRoutes(
               headerParts.push(Buffer.from(bytes.subarray(0,separator<0?bytes.length:separator)));
               if(separator>=0){
                 const value=validatedObject(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(headerParts))),'Agent upload metadata');
-                exactObjectFields(value,['conversationId','engineMapping','acknowledgeElevatedManagementPermissions','chatInstructionsResolution'],'Agent upload metadata');
+                exactObjectFields(value,['conversationId','engineMapping','acknowledgeElevatedManagementPermissions','chatInstructionsResolution','outputRoleReviewId'],'Agent upload metadata');
                 const projectId=(request.params as {id:string}).id,destination=typeof value.conversationId==='string'?store.getConversation(value.conversationId):undefined;
                 if(!destination||destination.projectId!==projectId||!resourceInProduct(store,'conversation',destination.id,requestProduct(request)))throw Object.assign(new Error('The destination Chat is unavailable in this product'),{statusCode:404});
                 metadata=value as unknown as StagedImportUpload['metadata'];
@@ -746,6 +748,7 @@ export function registerAgentPackageRoutes(
       portable.memory=[];
       for(const [chatId,ids] of groups)portable.memory.push({snapshot:await localMemoryFor(app)!.exportPackageMemory(chatId,ids),agentRefs:Object.fromEntries(ids.map(id=>[id,id]))});
     }
+    const roles=outputApps?.portableRoles([...included]);if(roles?.length)portable.outputRoles=roles;
     agentPackageJsonUtf8Bytes(portable);
     return portable;
   };
@@ -878,6 +881,18 @@ export function registerAgentPackageRoutes(
       /^[a-f0-9]{64}$/u.test(record.expectedDestinationSha256);
   };
 
+  type RoleResult=ImportAgentPackageResponse&{outputRoleFinalization?:{reviewId:string;binding:string;mapping:Record<string,string>;done?:boolean}};
+  const finishRoles=(operationId:string):ImportAgentPackageResponse=>{
+    const operation=store.getAgentCreationOperation(operationId)!;const result=operation.result as RoleResult;
+    const intent=result.outputRoleFinalization;
+    if(intent&&!intent.done){
+      if(!outputApps)throw new Error('Output role service unavailable');
+      outputApps.finalizeImport(intent.reviewId,intent.binding,operationId,intent.mapping);
+      intent.done=true;store.updateAgentCreationOperation(operationId,{result});
+      outputApps.finishImport(intent.reviewId);
+    }
+    return result;
+  };
   const importPackage = async (
     projectId: string,
     body: ImportAgentPackageRequest,
@@ -894,7 +909,7 @@ export function registerAgentPackageRoutes(
         importBody = validatedObject(body, "Agent import request");
         exactObjectFields(
           importBody,
-          ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution"],
+          ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution", "outputRoleReviewId"],
           "Agent import request",
         );
         if (!validChatInstructionsResolution(importBody.chatInstructionsResolution) ||
@@ -929,6 +944,7 @@ export function registerAgentPackageRoutes(
             package: importBody.package,
             conversationId: importBody.conversationId,
             engineMapping: normalizedEngineMapping,
+            ...(importBody.outputRoleReviewId ? {outputRoleReviewId:importBody.outputRoleReviewId} : {}),
             ...(importBody.chatInstructionsResolution ? { chatInstructionsResolution: importBody.chatInstructionsResolution } : {}),
             acknowledgeElevatedManagementPermissions:
               importBody.acknowledgeElevatedManagementPermissions ?? false,
@@ -957,7 +973,7 @@ export function registerAgentPackageRoutes(
         return reply.code(409).send({error:"Agent import destination does not match its durable owner"});
       }
       if (durableOperation.status === "completed" && durableOperation.result) {
-        return reply.code(200).send(durableOperation.result);
+        return reply.code(200).send(finishRoles(durableOperation.id));
       }
       if (durableOperation.status === "canonical_committed" || durableOperation.status === "rolling_back") {
         return reply.code(409).send({
@@ -1041,6 +1057,7 @@ export function registerAgentPackageRoutes(
       let operationAgentIds: string[] = [];
       let rollbackArtifacts: PlannedArtifact[] = [];
       let appliedChatInstructions: string | undefined;
+      let roleIntent:RoleResult["outputRoleFinalization"];
       try {
       await onPhase?.("creating_records");
       signal?.throwIfAborted();
@@ -1053,6 +1070,12 @@ export function registerAgentPackageRoutes(
         const validated = validatePortableAgentPackage(body?.package);
         portablePackage = validated.package;
         importSourceLabel = portablePackage.sourceLabel.slice(0,240);
+        if(portablePackage.outputRoles?.length&&!branchHooks){
+          if(!outputApps||typeof body.outputRoleReviewId!=='string')throw new Error('Review imported output roles before confirming');
+          const binding=await portableImportPayloadHash({package:portablePackage,destination:conversation.id});
+          outputApps.claimImport(body.outputRoleReviewId,binding,creationOperationId!);
+          roleIntent={reviewId:body.outputRoleReviewId,binding,mapping:{}};
+        }
         const elevatedAgentRefs = portablePackage.agents.filter(node =>
           node.managementPermissions.allowAutomaticDescendantDeletion ||
           node.managementPermissions.allowAutomaticDescendantReorganization).map(node=>node.ref);
@@ -1507,7 +1530,8 @@ export function registerAgentPackageRoutes(
           publicationById.get(artifact.id)!,
         );
       }
-      const response: ImportAgentPackageResponse = {
+      const response: RoleResult = {
+        ...(roleIntent?{outputRoleFinalization:{...roleIntent,mapping:Object.fromEntries([...created].map(([ref,agent])=>[ref,agent.id]))}}:{}),
         rootAgentId: created.get(portablePackage.rootRef)!.id,
         agentIds: [...created.values()].map((agent) => agent.id),
       };
@@ -1527,6 +1551,7 @@ export function registerAgentPackageRoutes(
           }
         }
         signal?.throwIfAborted();
+        if(roleIntent)outputApps!.checkImport(roleIntent.reviewId,roleIntent.binding,creationOperationId);
         store.sqlite.transaction(() => {
           branchHooks?.commit(response);
           store.updateAgentCreationOperation(creationOperationId!, {
@@ -1534,6 +1559,7 @@ export function registerAgentPackageRoutes(
           });
         })();
         for (const agentId of operationAgentIds) deletingAgentIds.delete(agentId);
+        finishRoles(creationOperationId);
       }
       try {
         appendWorkspace({
@@ -1552,6 +1578,9 @@ export function registerAgentPackageRoutes(
       }
       return reply.code(201).send(response);
       } catch (error) {
+        if(creationOperationId&&store.getAgentCreationOperation(creationOperationId)?.status==='completed'){
+          return reply.code(409).send({error:'Imported resources committed; output role finalization needs recovery/review: '+(error as Error).message,operationId:creationOperationId});
+        }
         let rollbackComplete = true;
         if(creationOperationId){
           store.updateAgentCreationOperation(creationOperationId,{status:'rolling_back'});
@@ -1629,6 +1658,7 @@ export function registerAgentPackageRoutes(
           }
         }
         if (operationAgentsRemain) rollbackComplete = false;
+        if(rollbackComplete&&roleIntent)outputApps?.abandonReview(roleIntent.reviewId);
         if (creationOperationId) {
           store.updateAgentCreationOperation(creationOperationId, {
             status: rollbackComplete ? "rolled_back" : "rolling_back",
@@ -1713,6 +1743,7 @@ export function registerAgentPackageRoutes(
     };
     let committedResult: ImportAgentPackageResponse | undefined;
     let retainPayloadForRecovery = false;
+    let committedCreationId:string|undefined;
     try {
       const durablePayloadPath = payloadPath(operationId);
       if (await sha256File(durablePayloadPath) !== operation.payloadHash) {
@@ -1729,8 +1760,9 @@ export function registerAgentPackageRoutes(
         payloadHash: operation.payloadHash,
         conversationId: metadata.conversationId,
       }).operation;
+      committedCreationId=creationOperation.id;
       if (creationOperation.status === "completed" && creationOperation.result) {
-        const result = creationOperation.result as ImportAgentPackageResponse;
+        const result = finishRoles(creationOperation.id);
         committedResult = result;
         await update({ phase: "completed", status: "completed", result });
         for (const agentId of creationOperation.agentIds) deletingAgentIds.delete(agentId);
@@ -1783,6 +1815,12 @@ export function registerAgentPackageRoutes(
       } catch { /* completion remains authoritative */ }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Import failed";
+      if(committedCreationId&&store.getAgentCreationOperation(committedCreationId)?.status==='completed'&&!committedResult){
+        retainPayloadForRecovery=true;
+        await update({phase:'finalizing',status:'pending',error:message.slice(0,1000),outputRoleRecoveryId:committedCreationId});
+        try{createOperationalNotification({dedupeKey:'import-role-recovery:'+committedCreationId,category:'system',severity:'attention',title:'Imported output roles need review',body:message.slice(0,1000),projectId:operation.projectId,conversationId:operation.conversationId,action:{kind:'open_project',targetId:operation.projectId}});}catch{/* Durable role recovery remains visible on the import operation. */}
+        return;
+      }
       if (committedResult) {
         // The imported Agents are authoritative. If the acknowledgement write
         // failed, leave the durable operation pending so startup can replay it;
@@ -1826,6 +1864,39 @@ export function registerAgentPackageRoutes(
     }
   });
 
+  app.post<{Params:{id:string;operationId:string};Body?:{reviewId?:string}}>('/api/projects/:id/agent-role-finalizations/:operationId',async(request,reply)=>{
+    try{
+      const op=store.getAgentCreationOperation(request.params.operationId),result=op?.result as RoleResult|undefined,intent=result?.outputRoleFinalization;
+      if(!op||op.projectId!==request.params.id||!op.conversationId||!resourceInProduct(store,'conversation',op.conversationId,requestProduct(request))||op.status!=='completed'||!intent)return reply.code(404).send({error:'Committed role import unavailable'});
+      const body=request.body??{};exactObjectFields(validatedObject(body,'Role confirmation'),['reviewId'],'Role confirmation');
+      if(body.reviewId!==undefined&&typeof body.reviewId!=='string')throw new Error('Invalid role review');
+      if(intent.done){for(const background of operationCache.values())if(background.projectId===op.projectId&&background.requestId===op.idempotencyKey)setImmediate(()=>void runBackgroundImport(background.id));return result;}
+      if(!outputApps)throw new Error('Output role service unavailable');
+
+      if(body.reviewId===undefined){
+        try{const result=finishRoles(op.id);for(const background of operationCache.values())if(background.projectId===op.projectId&&background.requestId===op.idempotencyKey)setImmediate(()=>void runBackgroundImport(background.id));return result;}catch{/* A changed state needs an explicit new review. */}
+        return outputApps.reReviewImport(intent.reviewId,intent.binding,op.id,intent.mapping);
+      }
+      if(typeof body.reviewId!=='string')throw new Error('Invalid role review');
+      outputApps.claimImport(body.reviewId,intent.binding,op.id);
+      const old=intent.reviewId;intent.reviewId=body.reviewId;store.updateAgentCreationOperation(op.id,{result});outputApps.abandonReview(old);
+      const finalized=finishRoles(op.id);
+      for(const background of operationCache.values())if(background.projectId===op.projectId&&background.requestId===op.idempotencyKey)setImmediate(()=>void runBackgroundImport(background.id));
+      return finalized;
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
+  app.post<{Params:{id:string};Body:StagedImportUpload}>('/api/projects/:id/agent-role-preview',{bodyLimit:maximumImportBytes,preHandler:claimUpload},async(request,reply)=>{
+    try{
+      const {metadata,portable}=await parsePortablePackageFile(request.body.pathname);
+      validatePortableAgentPackage(portable);
+      const chat=store.getConversation(metadata.conversationId);
+      if(!chat||chat.projectId!==request.params.id||!resourceInProduct(store,'conversation',chat.id,requestProduct(request)))return reply.code(404).send({error:'Import destination unavailable'});
+      if(!outputApps)throw new Error('Output role service unavailable');
+      const binding=await portableImportPayloadHash({package:portable,destination:chat.id});
+      return outputApps.reviewImport(portable.outputRoles??[],binding,Boolean(chat.branchId&&!chat.executionId));
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+    finally{await cleanupUpload(request.body);}
+  });
   app.post<{
     Params: { id: string };
     Headers: { "idempotency-key"?: string };
@@ -2096,6 +2167,7 @@ export function registerAgentPackageRoutes(
             ),
           );
         }
+        delete prepared.portable.outputRoles; // Copy is not a reviewed output-role import.
         portable = rootTitle
           ? {
               ...prepared.portable,
@@ -2151,7 +2223,13 @@ export function registerAgentPackageRoutes(
       });
     }),
   );
+  app.addHook('onReady',async()=>{
+    for(const row of store.sqlite.prepare("SELECT id FROM agent_creation_operations WHERE status='completed' AND json_type(result_json,'$.outputRoleFinalization')='object' AND COALESCE(json_extract(result_json,'$.outputRoleFinalization.done'),0)=0 LIMIT 64").all() as Array<{id:string}>){
+      try{finishRoles(row.id);}catch(error){try{createOperationalNotification({dedupeKey:'import-role-recovery:'+row.id,category:'system',severity:'attention',title:'Imported output roles need review',body:(error as Error).message,projectId:store.getAgentCreationOperation(row.id)!.projectId,conversationId:store.getAgentCreationOperation(row.id)!.conversationId,action:{kind:'open_agent',targetId:(store.getAgentCreationOperation(row.id)!.result as ImportAgentPackageResponse).rootAgentId}});}catch{/* Durable receipt remains pending role recovery. */}}
+    }
+  });
   return {packageEngine:{
+    setOutputApps(owner:OutputAgentApps){outputApps=owner;},
     validateAgent(pkg,mapping) {
       if(pkg.memory?.length){const memory=localMemoryFor(app);if(!memory)throw new Error('Package contains memory; configure destination local memory before importing');for(const entry of pkg.memory)validateMemorySnapshot(entry.snapshot,memory.core.database.raw.signature);}
       for (const node of validatePortableAgentPackage(pkg).package.agents) {

@@ -40,9 +40,12 @@ preferences PATCH cannot write these role fields; dedicated role routes validate
 current ownership. Setup pins its import timestamp/model/effort and idempotency
 keys so a retry cannot substitute a different import. A disable during setup
 prevents later designation; any created user-owned resources remain for review.
-These local roles are not part of Agent/organization imports or exports, so an
-import cannot acquire speaker authority. Role-collision import preview/dialog
-for future role-bearing portable workflows is not implemented in this slice.
+Portable packages can declare output/speaker intent using included logical refs.
+Server-backed import review controls whether that intent is activated; local
+pointers, setup state and access grants are never transported. Existing speakers
+are preserved and collision dialogs leave imported speaker intent inactive while
+retaining eligible outputs. Core Chat imports disclose inactive roles. See
+[portable output roles](portable-output-roles.md) for review and recovery rules.
 
 The existing cross-Ponderosa message UI is labeled **Inbox**, including navigation,
 page titles, accessibility labels and composer hint. Its existing `/messages`

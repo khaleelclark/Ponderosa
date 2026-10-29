@@ -1,3 +1,4 @@
+import {validateOutputRoles} from './portable-output-roles.js';
 import {validateMemorySnapshot} from './portable-memory-snapshot.js';
 import {AGENT_PACKAGE_MAX_AGENTS,agentPackageJsonUtf8Bytes,agentPackageTextIsWellFormed,AGENT_PACKAGE_ARTIFACT_MAX_BYTES,AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL,type AgentPortablePackageDto,type PortableArtifactDto} from '@ponderosa/core';
 import {CANONICAL_ARTIFACT_ID,portableAgentTopologyError} from './artifact-refs.js';
@@ -14,13 +15,14 @@ export interface ValidatedPortableAgentPackage {
 /** Mutation-free parser shared by standalone and Branch package imports. */
 export function validatePortableAgentPackage(value:unknown):ValidatedPortableAgentPackage {
   const record=validatedObject(value,'Agent package');
-  exactObjectFields(record,['schema','mode','kind','exportedAt','sourceLabel','sourceProjectInstructions','rootRef','agents','memory'],'Agent package');
+  exactObjectFields(record,['schema','mode','kind','exportedAt','sourceLabel','sourceProjectInstructions','rootRef','agents','memory','outputRoles'],'Agent package');
   if(record.schema!=='ponderosa.agent-package.v1'||(record.mode!=='template'&&record.mode!=='full')||!Array.isArray(record.agents)||record.agents.length<1)throw new Error('invalid Ponderosa Agent package');
   if(record.agents.length>AGENT_PACKAGE_MAX_AGENTS)throw Object.assign(new Error(`Agent package contains ${record.agents.length} Agents; the limit is ${AGENT_PACKAGE_MAX_AGENTS}`),{statusCode:413});
   if(typeof record.exportedAt!=='string'||!Number.isFinite(Date.parse(record.exportedAt))||typeof record.sourceLabel!=='string'||(record.sourceProjectInstructions!==undefined&&(typeof record.sourceProjectInstructions!=='string'||record.sourceProjectInstructions.length>100_000)))throw new Error('Agent package metadata is invalid');
   if(record.mode==='template'&&record.sourceProjectInstructions!==undefined)throw new Error('template packages cannot contain full-mode Project context');
   const portable=record as unknown as AgentPortablePackageDto;
   const topologyError=portableAgentTopologyError(portable);if(topologyError)throw new Error(topologyError);
+  validateOutputRoles(portable.outputRoles,new Set(portable.agents.map(a=>a.ref)));
   agentPackageJsonUtf8Bytes(portable);
   const artifactBytes=new Map<PortableArtifactDto,number>(),artifactRefs=new Set<string>();let totalArtifactBytes=0;
   for(const candidate of portable.agents as unknown[]){

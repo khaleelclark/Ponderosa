@@ -148,6 +148,9 @@ export interface PortableChatMemorySnapshotDto {
   schema:'ponderosa.chat-memory.v1';signature:string;sourceChatId:string;agentIds:string[];excludedScopes:['global'];chunks:PortableMemoryRowDto[];conflicts:PortableMemoryRowDto[];
 }
 export interface PortablePackageMemoryDto {snapshot:PortableChatMemorySnapshotDto;agentRefs:Record<string,string>}
+/** Portable intent only; the destination import review controls activation. */
+export interface PortableOutputRoleDto { ref: string; output: boolean; speaker: boolean }
+export interface OutputRoleImportReviewDto { id: string; warning?: string; inactive: boolean; speaker: 'activate' | 'inactive' | 'unchanged'; targets: Array<{ref:string;output:boolean;speaker:boolean}> }
 export interface AgentPortablePackageDto {
   schema: "ponderosa.agent-package.v1";
   mode: AgentExportMode;
@@ -158,6 +161,7 @@ export interface AgentPortablePackageDto {
   sourceProjectInstructions?: string;
   rootRef: string;
   agents: PortableAgentNodeDto[];
+  outputRoles?: PortableOutputRoleDto[];
   /** Full-mode selected Chat/team and included Agent private memory; grants are never transported. */
   memory?: PortablePackageMemoryDto[];
 }
@@ -168,6 +172,7 @@ export interface AgentImportChatInstructionsResolution {
 }
 export interface ImportAgentPackageRequest {
   package: AgentPortablePackageDto;
+  outputRoleReviewId?: string;
   conversationId: string;
   engineMapping: Record<string, string>;
   chatInstructionsResolution?: AgentImportChatInstructionsResolution;
@@ -213,6 +218,7 @@ export interface AgentImportOperationDto {
   createdAt: string;
   updatedAt: string;
   result?: ImportAgentPackageResponse;
+  outputRoleRecoveryId?: string;
   error?: string;
 }
 

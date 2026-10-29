@@ -823,6 +823,13 @@ export const realApi = {
       body: JSON.stringify(request satisfies ImportAgentPackageRequest),
     });
   },
+  recoverAgentOutputRoles(projectId:string,operationId:string,reviewId?:string):Promise<import('@ponderosa/core').OutputRoleImportReviewDto|ImportAgentPackageResponse>{
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-role-finalizations/${encodeURIComponent(operationId)}`,{method:'POST',body:JSON.stringify(reviewId?{reviewId}:{})});
+  },
+  previewAgentOutputRoles(projectId:string,packageBlob:Blob,metadata:Omit<ImportAgentPackageRequest,'package'>):Promise<import('@ponderosa/core').OutputRoleImportReviewDto>{
+    const body=new Blob([`${JSON.stringify(metadata)}\n`,packageBlob],{type:'application/vnd.ponderosa.agent-import'});
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-role-preview`,{method:'POST',headers:{'content-type':body.type},body});
+  },
   importAgentPackageBlob(
     projectId: string,
     packageBlob: Blob,

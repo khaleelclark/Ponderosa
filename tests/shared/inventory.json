@@ -1639,6 +1639,14 @@
       "lane": "web",
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24; standard library only; overlay exit connected/visible/hidden fallback regression"
+    },
+    {
+      "path": "tests/branches/output-role-import.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces; inert controlled adapters and private stores, no provider account",
+      "origin": "Portable output/speaker import declarations, human review, cross-store finalization/recovery and singleton fences"
     }
   ],
   "retainedReleasePayload": [
@@ -1882,6 +1890,13 @@
       "path": "tests/workspace-navigation/search-accessibility.mjs",
       "moduleBase": "apps/server/package.json",
       "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/output-role-import-ui.mjs",
+      "feature": "branches",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built web/server and installed Chromium; actual organization and Branch dialogs on controlled disposable providers",
+      "origin": "A21 collision dialog and role publication/restart browser qualification"
     }
   ],
   "support": [

@@ -78,7 +78,8 @@ fixture source's due marker rather than waiting ten real minutes.
 
 This is the cross-project/action/report slice. No native audio/call latency,
 real-provider inference, complete UI streaming, subjective panel acceptance,
-API-key mode or role-bearing workflow import collision dialog is qualified here.
+API-key mode is qualified here. Portable output/speaker import review is covered
+separately in [portable output roles](portable-output-roles.md).
 Independent review and integrated-candidate checks remain required.
 
 ## Inbox rename

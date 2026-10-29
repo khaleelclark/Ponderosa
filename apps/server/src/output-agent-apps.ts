@@ -1,4 +1,6 @@
 import {randomUUID} from 'node:crypto';
+import {stableJson} from '@ponderosa/agents';
+import type {PortableOutputRoleDto,OutputRoleImportReviewDto} from '@ponderosa/core';
 import type {AgentStore,BranchStore,WorkspaceStore} from '@ponderosa/agents';
 import type {AssistantStatusDto,OutputAgentAppDto,AgentPortablePackageDto} from '@ponderosa/core';
 import type {ChatCreator} from './routes/projects.js';
@@ -15,8 +17,63 @@ export class OutputAgentApps {
   private roles(){return this.workspace.getPreferences().outputApps??{agentIds:[],speakerAgentId:null,initialized:false};}
   private write(patch:Partial<NonNullable<ReturnType<WorkspaceStore['getPreferences']>['outputApps']>>){
     const cursor=this.workspace.cursor();
-    this.workspace.updatePreferences({outputApps:{...this.roles(),...patch}});this.publishSince?.(cursor);
+    this.workspace.updatePreferences({outputApps:{...this.roles(),...patch,...(!Object.keys(patch).every(key=>key==='importReviews')?{roleEpoch:(this.roles().roleEpoch??0)+1}:{})}});
+    try{this.publishSince?.(cursor);}catch{/* Journal success is durable; notification is recoverable. */}
   }
+  portableRoles(ids:string[]):PortableOutputRoleDto[]{
+    const roles=this.roles();return ids.filter(id=>roles.agentIds.includes(id)).flatMap(id=>{try{this.owner(id);return [{ref:id,output:true,speaker:roles.speakerAgentId===id}];}catch(error){if(!(error instanceof OutputAppUnavailableError))throw error;return [];}});
+  }
+  private roleState(){return stableJson({epoch:this.roles().roleEpoch??0,speaker:this.status().app?.agentId??null,setup:this.roles().setup?.key??null});}
+  reviewImport(targets:PortableOutputRoleDto[],binding:string,eligible:boolean,mapping:Record<string,string>={},keepInactive=false):OutputRoleImportReviewDto {
+    const reviews={...this.roles().importReviews};
+    for(const [key,value]of Object.entries(reviews)){
+      const creation=value.operationId?this.store.getAgentCreationOperation(value.operationId):undefined;
+      const plan=value.operationId?this.store.sqlite.prepare('SELECT state FROM branch_installation_plans WHERE id=?').get(value.operationId) as {state:string}|undefined:undefined;
+      if((!value.operationId&&Date.parse(value.createdAt)<Date.now()-86400000)||creation?.status==='rolled_back'||(creation?.status==='completed'&&(creation.result as {outputRoleFinalization?:{done?:boolean}}|undefined)?.outputRoleFinalization?.done)||(plan&&(['canceled','expired','review_required'].includes(plan.state)||(plan.state==='completed'&&value.applied))))delete reviews[key];
+    }
+    if(Object.keys(reviews).length>=64)throw new Error('Too many pending output-role reviews; finish existing imports');
+    const current=this.status().app?.agentId,proposed=targets.find(t=>t.speaker),same=proposed&&mapping[proposed.ref]===current;
+    const collision=Boolean(proposed&&current&&!same),pending=Boolean(proposed&&this.roles().setup&&!same),inactive=!eligible||collision||pending||keepInactive;
+    const warning=[collision?'You already have a Ponderosa speaker. The imported speaker will be disabled.':undefined,!eligible?'Output and speaker roles remain inactive in this Core Chat.':undefined,pending?'Assistant setup is pending. The imported speaker will be disabled.':undefined,keepInactive&&!collision&&!pending?'The previously reviewed imported speaker remains disabled.':undefined].filter(Boolean).join(' ')||undefined;
+    const review:OutputRoleImportReviewDto={id:randomUUID(),warning,inactive,speaker:proposed?(inactive?'inactive':'activate'):'unchanged',targets};
+    reviews[review.id]={binding,state:this.roleState(),targetEpochs:Object.fromEntries(targets.map(target=>[target.ref,this.roles().agentEpochs?.[mapping[target.ref]??'']??0])),eligible,createdAt:new Date().toISOString(),review};this.write({importReviews:reviews});return review;
+  }
+  checkImport(id:string,binding:string,operationId?:string){
+    const entry=this.roles().importReviews?.[id];
+    if(!entry||entry.binding!==binding||(entry.operationId&&entry.operationId!==operationId))throw Object.assign(new Error('Output role review changed; review the package again'),{statusCode:409});
+    if(!entry.applied&&entry.review.speaker!=='inactive'&&entry.state!==this.roleState())throw Object.assign(new Error('Ponderosa speaker state changed; review the package again'),{statusCode:409});
+    return entry;
+  }
+  reReviewImport(id:string,binding:string,operationId:string,mapping:Record<string,string>){
+    const old=this.roles().importReviews?.[id];if(!old||old.binding!==binding||old.operationId!==operationId||old.applied)throw new Error('Import does not need a new role review');
+    return this.reviewImport(old.review.targets,binding,old.eligible,mapping,old.review.speaker==='inactive');
+  }
+  abandonReview(id:string){const entry=this.roles().importReviews?.[id];if(!entry||entry.applied)return;const reviews={...this.roles().importReviews};delete reviews[id];this.write({importReviews:reviews});}
+  claimImport(id:string,binding:string,operationId:string){const entry=this.checkImport(id,binding,operationId);if(!entry.operationId)this.write({importReviews:{...this.roles().importReviews,[id]:{...entry,operationId}}});}
+  finalizeImport(id:string,binding:string,operationId:string,mapping:Record<string,string>){
+    const entry=this.checkImport(id,binding,operationId);if(entry.applied)return;
+    if(entry.operationId!==operationId)throw new Error('Output role import is not durably claimed');
+    const roles=this.roles(),ids=new Set(roles.agentIds);let speaker=roles.speakerAgentId;
+    if(entry.eligible)for(const target of entry.review.targets){
+      const local=mapping[target.ref];if((roles.agentEpochs?.[local??'']??0)!==(entry.targetEpochs[target.ref]??0))throw Object.assign(new Error('An imported output designation changed; review the roles again'),{statusCode:409});
+    }
+    const agentEpochs={...roles.agentEpochs};
+    if(entry.eligible)for(const target of entry.review.targets){
+      const local=mapping[target.ref];if(!local)throw new Error('Imported output role mapping is incomplete');this.owner(local);
+      agentEpochs[local]=(agentEpochs[local]??0)+1;
+      if(target.output)ids.add(local);else ids.delete(local);
+      if(speaker===local&&!target.speaker){this.pause(this.get(local));speaker=null;}
+      if(target.speaker&&entry.review.speaker==='activate'){
+        const current=this.status().app?.agentId;if(current&&current!==local)throw Object.assign(new Error('Ponderosa speaker changed; review the package again'),{statusCode:409});speaker=local;
+      }
+    }
+    // Pin the report cursor once before the journal boundary; retry never resets it.
+    this.initializeReportScan(speaker);
+    // Role effects and applied marker share ONE journal append, never a SQLite callback.
+    this.write({agentIds:[...ids],agentEpochs,speakerAgentId:speaker,initialized:speaker?true:roles.initialized,importReviews:{...roles.importReviews,[id]:{...entry,applied:true}}});
+  }
+  finishImport(id:string){const entry=this.roles().importReviews?.[id];if(!entry?.applied)return;const reviews={...this.roles().importReviews};delete reviews[id];this.write({importReviews:reviews});}
+  private initializeReportScan(id:string|null){if(id)this.store.sqlite.prepare('INSERT OR IGNORE INTO assistant_report_scan(speaker_agent_id,after_sequence) SELECT ?,COALESCE(MAX(sequence),0) FROM assistant_status_sources').run(id);}
   private owner(id:string){
     const agent=this.store.getAgent(id),chat=agent&&this.store.getConversation(agent.conversationId??'');
     if(!agent||!chat?.branchId||chat.executionId||!this.store.sqlite.prepare('SELECT 1 FROM branches WHERE id=? AND deleting=0').get(chat.branchId)||
@@ -48,9 +105,9 @@ export class OutputAgentApps {
       if(existing)throw new Error('A Ponderosa speaker already exists. Remove its speaker role first.');
     }
     if(roles.speakerAgentId===id&&!speaker)this.pause(this.get(id));
-    this.write({agentIds:enabled?[...new Set([...roles.agentIds,id])]:roles.agentIds.filter(value=>value!==id),
+    this.write({agentEpochs:{...roles.agentEpochs,[id]:(roles.agentEpochs?.[id]??0)+1},agentIds:enabled?[...new Set([...roles.agentIds,id])]:roles.agentIds.filter(value=>value!==id),
       speakerAgentId:speaker?id:roles.speakerAgentId===id?null:roles.speakerAgentId,initialized:speaker||roles.initialized});
-    if(speaker)this.store.sqlite.prepare('INSERT OR IGNORE INTO assistant_report_scan(speaker_agent_id,after_sequence) SELECT ?,COALESCE(MAX(sequence),0) FROM assistant_status_sources').run(id);
+    if(speaker)this.initializeReportScan(id);
     return enabled?this.get(id):undefined;
   }
   status():AssistantStatusDto{
@@ -62,7 +119,7 @@ export class OutputAgentApps {
     const roles=this.roles();let app:OutputAgentAppDto|undefined;
     if(roles.speakerAgentId)try{app=this.get(roles.speakerAgentId);}catch(error){if(!(error instanceof OutputAppUnavailableError))throw error;}
     if(app)this.pause(app);
-    this.write({speakerAgentId:null,initialized:true,setup:undefined});return this.status();
+    this.write({agentEpochs:{...roles.agentEpochs,...(roles.speakerAgentId?{[roles.speakerAgentId]:(roles.agentEpochs?.[roles.speakerAgentId]??0)+1}:{})},speakerAgentId:null,initialized:true,setup:undefined});return this.status();
   }
   initialize(force=false):Promise<AssistantStatusDto>{
     if(this.pending)return this.pending;
@@ -87,6 +144,7 @@ export class OutputAgentApps {
     const chat=await this.createChat({label:'Assistant',defaultEngine:engine},`assistant-chat-${key}`,{branchId});
     const imported=await this.packageEngine.importAgent(chat.projectId,chat.id,pkg,{[engine]:engine},`assistant-agent-${key}`);
     if(this.roles().setup?.key!==key)return this.status(); // A human disabled it while provisioning.
+    if(this.status().enabled){this.write({setup:undefined});return this.status();}
     const branch=this.branches.getBranch(branchId)!;
     if(!branch.versionId){
       const config={scheduleKind:'interval' as const,everyMs:600000,startsAt:new Date(Date.now()+600000).toISOString(),whenRunning:'run_latest' as const};

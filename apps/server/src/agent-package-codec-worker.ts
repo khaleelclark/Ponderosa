@@ -29,7 +29,7 @@ async function parse(): Promise<void> {
   let canonicalPayloadHash: string | undefined;
   if (input.jsonEnvelope) {
     const envelope = validatedObject(portable, "Agent import request");
-    exactObjectFields(envelope, ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution"], "Agent import request");
+    exactObjectFields(envelope, ["package", "conversationId", "engineMapping", "acknowledgeElevatedManagementPermissions", "chatInstructionsResolution", "outputRoleReviewId"], "Agent import request");
     metadata = Object.fromEntries(Object.entries(envelope).filter(([key]) => key !== "package"));
     try { agentPackageJsonUtf8Bytes(metadata, AGENT_PACKAGE_METADATA_MAX_BYTES); }
     catch (error) {
@@ -56,6 +56,7 @@ async function parse(): Promise<void> {
       package: portable,
       conversationId: metadata.conversationId,
       engineMapping: Object.fromEntries(Object.entries(mapping).map(([source, target]) => [source, (target as string).trim()])),
+      ...(metadata.outputRoleReviewId ? {outputRoleReviewId:metadata.outputRoleReviewId} : {}),
       ...(metadata.chatInstructionsResolution ? { chatInstructionsResolution: metadata.chatInstructionsResolution } : {}),
       acknowledgeElevatedManagementPermissions: metadata.acknowledgeElevatedManagementPermissions ?? false,
     }, { maxDepth: 64, maxNodes: AGENT_PACKAGE_MAX_BYTES })) hash.update(part);
