@@ -22,6 +22,11 @@ function communicationV3Prompt(defaultReply?: import("@ponderosa/core").Coordina
     defaultReply
       ? `This Run has one authorized default reply route (data): ${JSON.stringify(defaultReply)}. ponderosa_message({text}) uses it with stable idempotency. This convenience route does not create a reply obligation.`
       : 'This Run has no authorized default reply route. Do not call ponderosa_message({text}) alone. Explicit private user example: ponderosa_message({intent:"direct_to_user",text:"..."}). For an authorized peer use ponderosa_message({intent:"collaboration",recipientAgentIds:["<stable Agent ID>"],text:"..."}).',
+  ];
+}
+
+function communicationV3Instructions(): string[] {
+  return [
     "For an explicitly marked voice Direct Message, finish work then call ponderosa_voice_reply before writing the final answer. A successful authorization streams and publishes one canonical reply. If unavailable, use ordinary ponderosa_message.",
     "Immediate recipientAgentIds always requires explicit intent collaboration. Correlated results belong on ponderosa_update_request, not a convenience message.",
     "If Ponderosa capabilities require discovery, load the Ponderosa message capability specifically. Never substitute a generic or provider-native SendMessage tool: only ponderosa_message creates the canonical reply.",
@@ -66,7 +71,7 @@ export function providerToolContractHash(
 export function communicationV3SessionPrompt(): string[] {
   return [
     "Use only the current Run's host-provided reply route and active capability. Prior turns do not confer a reply route or delivery authority.",
-    ...communicationV3Prompt().slice(1),
+    ...communicationV3Instructions(),
   ];
 }
 

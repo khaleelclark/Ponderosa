@@ -4,6 +4,7 @@ import {
   normalizeRestrictedCapabilityIds,
   parseConnectorCapabilityId,
   resolveCapabilityPolicy,
+  type CapabilityPolicyHistory,
   type CapabilityPolicyLayer,
   type CapabilityPolicyRecord,
   type CapabilityScopeKind,
@@ -72,6 +73,8 @@ export class CapabilityPolicyStore {
     scopeId: string;
     expectedRevision: number;
     restrictedCapabilityIds: readonly string[];
+    actor?: "operator" | "system";
+    reason?: string;
   }): CapabilityPolicyRecord {
     const scopeId = input.scopeId.trim();
     if (!scopeId) throw new Error("Capability policy scope ID is required");
@@ -92,8 +95,25 @@ export class CapabilityPolicyStore {
           restricted_capability_ids_json = excluded.restricted_capability_ids_json,
           updated_at = excluded.updated_at
       `).run(input.scopeKind, scopeId, revision, JSON.stringify(ids), now);
+      this.sqlite.prepare(`INSERT INTO capability_policy_history
+        (scope_kind, scope_id, revision, before_json, after_json, actor, reason, changed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(input.scopeKind, scopeId, revision, JSON.stringify(current?.restrictedCapabilityIds ?? []),
+          JSON.stringify(ids), input.actor ?? "system", input.reason ?? "Capability policy store update", now);
       return this.get(input.scopeKind, scopeId)!;
     })();
+  }
+
+  history(scopeKind: CapabilityScopeKind, scopeId: string, beforeRevision?: number): CapabilityPolicyHistory {
+    const rows = this.sqlite.prepare(`SELECT revision, before_json, after_json, actor, reason, changed_at
+      FROM capability_policy_history WHERE scope_kind = ? AND scope_id = ? AND revision < ?
+      ORDER BY revision DESC LIMIT 51`).all(scopeKind, scopeId, beforeRevision ?? Number.MAX_SAFE_INTEGER) as Array<{
+        revision: number; before_json: string; after_json: string; actor: "operator" | "system"; reason: string; changed_at: string;
+      }>;
+    const changes = rows.slice(0, 50).map(row => ({revision: row.revision,
+      before: parseIds(row.before_json), after: parseIds(row.after_json), actor: row.actor,
+      reason: row.reason, changedAt: row.changed_at}));
+    return {changes, ...(rows.length > 50 ? {nextBeforeRevision: changes.at(-1)!.revision} : {})};
   }
 
   resolveForProduct(product: "interactive" | "branches"): EffectiveCapabilityPolicy {

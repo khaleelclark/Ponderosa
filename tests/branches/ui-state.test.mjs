@@ -1569,3 +1569,17 @@ test('shared Browser voice settings use a section heading without skipping level
  const html=renderToStaticMarkup(React.createElement(BrowserVoiceSettings,{preferences:{speech:{speed:1}},onPreferences(){}}));
  assert.match(html,/<h2[^>]*>Browser voice<\/h2>/);
 });
+
+test('shared permission Settings expose durable before/after audit records for both products',async()=>{
+ const {QueryClient,QueryClientProvider}=await import('@tanstack/react-query');
+ const {CapabilityPolicyEditor}=await import('../../apps/web/src/components/CapabilityPolicyEditor.tsx');
+ for(const endpoint of ['/api/workspace/capabilities','/api/branches/fixture/capabilities']){
+  const client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}});
+  client.setQueryData(['capability-policy',endpoint],{policy:{scopeKind:'product',scopeId:'fixture',revision:2,restrictedCapabilityIds:[]},effective:{restrictedCapabilityIds:[],restrictionSources:{}},catalog:[]});
+  client.setQueryData(['capability-history',endpoint,2],{pages:[{changes:[{revision:2,before:['memory.write'],after:[],actor:'operator',reason:'Human changed permissions',changedAt:'2026-10-29T12:00:00.000Z'}]}],pageParams:[undefined]});
+  try{
+   const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'product'}))));
+   for(const text of ['Permission change history','Revision 2','Operator','Restricted before:','memory.write','Restricted after:','None','Human changed permissions'])assert.ok(html.includes(text),text);
+  }finally{client.clear()}
+ }
+});

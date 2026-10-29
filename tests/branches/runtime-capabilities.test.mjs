@@ -117,3 +117,24 @@ test('cold permission reads and saves survive the ordinary socket idle limit whi
   assert.equal(response.status,200);const result=await response.json();assert.equal(result.policy.revision,method==='PUT'?1:0);if(method==='PUT')assert.ok(result.policy.restrictedCapabilityIds.includes(CAPABILITY_IDS.hostFileImport));
  },{socketIdleTimeoutMs:50,capabilityCatalog:async()=>{await new Promise(resolve=>setTimeout(resolve,150));return {steering:true,persistentSessions:true,commands:[],mcpServers:[],composerCapabilities:[]}}});
 });
+
+test('operator permission history retains before/after, rejects stale writes, and survives restart for both products',{timeout:30000},async t=>{
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Permission audit'),agent=await f.createIdleAgent(chat,'Audit owner');
+  const branch=f.ok(await f.api('POST','/api/branches',{name:'Audited branch',idempotencyKey:randomUUID()}));
+  for(const url of [`/api/agents/${agent.id}/capabilities`,`/api/branches/${branch.id}/capabilities`]){
+   assert.deepEqual(f.ok(await f.api('GET',`${url}/history`)).changes,[]);
+   f.ok(await f.api('PUT',url,{revision:0,restrictedCapabilityIds:[CAPABILITY_IDS.hostFileImport]}));
+   f.ok(await f.api('PUT',url,{revision:1,restrictedCapabilityIds:[]}));
+   assert.equal((await f.api('PUT',url,{revision:1,restrictedCapabilityIds:[CAPABILITY_IDS.browserRead]})).status,409);
+   let history=f.ok(await f.api('GET',`${url}/history`));
+   assert.deepEqual(history.changes.map(c=>[c.revision,c.before,c.after,c.actor]),[
+    [2,[CAPABILITY_IDS.hostFileImport],[],'operator'],[1,[],[CAPABILITY_IDS.hostFileImport],'operator']]);
+   assert.ok(history.changes.every(c=>c.reason.includes('Human updated')&&!Number.isNaN(Date.parse(c.changedAt))));
+   assert.deepEqual(f.ok(await f.api('GET',`${url}/history?beforeRevision=2`)).changes.map(c=>c.revision),[1]);
+   assert.equal((await f.api('GET',`${url}/history?beforeRevision=bad`)).status,400);
+   await f.reopen();assert.deepEqual(f.ok(await f.api('GET',`${url}/history`)),history);
+  }
+  assert.equal((await f.api('GET',`/api/branches/${branch.id}/agents/${agent.id}/capabilities/history`)).status,404);
+ });
+});

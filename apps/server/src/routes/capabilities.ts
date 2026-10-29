@@ -79,10 +79,16 @@ export function registerCapabilityRoutes(app:FastifyInstance,context:Context):vo
   ['/api/branches/:id/capabilities','branch',true],['/api/branches/:id/chats/:chatId/capabilities','chat',true],['/api/branches/:id/agents/:agentId/capabilities','agent',true],
  ] as const){
   app.get(path,async(request,reply)=>{request.raw.socket.setTimeout?.(app.server.requestTimeout||120_000);try{return await response(scopeFor(request,kind,branchRoute))}catch(error){if(error instanceof CapabilityOwnerError)return reply.code(404).send({error:error.message});throw error}});
+  app.get(`${path}/history`,async(request,reply)=>{try{
+   const scope=scopeFor(request,kind,branchRoute),raw=(request.query as {beforeRevision?:string}).beforeRevision;
+   const beforeRevision=raw===undefined?undefined:Number(raw);
+   if(beforeRevision!==undefined&&(!Number.isSafeInteger(beforeRevision)||beforeRevision<1))return reply.code(400).send({error:"Invalid history revision"});
+   return policies.history(scope.kind,scope.id,beforeRevision);
+  }catch(error){if(error instanceof CapabilityOwnerError)return reply.code(404).send({error:error.message});throw error}});
   app.put(path,async(request,reply)=>{request.raw.socket.setTimeout?.(app.server.requestTimeout||120_000);try{
    const scope=scopeFor(request,kind,branchRoute),body=request.body as {revision:number;restrictedCapabilityIds:string[]};
    if(!body||!Number.isSafeInteger(body.revision)||body.revision<0||!Array.isArray(body.restrictedCapabilityIds)||!body.restrictedCapabilityIds.every(id=>typeof id==='string'&&(BUILT_IN_CAPABILITIES.some(item=>item.id===id)||parseConnectorCapabilityId(id))))throw new Error('Invalid capability policy');
-   policies.put({scopeKind:scope.kind,scopeId:scope.id,expectedRevision:body.revision,restrictedCapabilityIds:body.restrictedCapabilityIds});
+   policies.put({scopeKind:scope.kind,scopeId:scope.id,expectedRevision:body.revision,restrictedCapabilityIds:body.restrictedCapabilityIds,actor:"operator",reason:"Human updated tool permissions through Settings or the operator API"});
    return await response(scope);
   }catch(error){return reply.code(error instanceof CapabilityPolicyRevisionConflictError?409:error instanceof CapabilityOwnerError?404:400).send({error:(error as Error).message,...(error instanceof CapabilityPolicyRevisionConflictError?{current:error.current}:{})})}});
  }

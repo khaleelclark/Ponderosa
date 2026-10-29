@@ -50,6 +50,18 @@ export interface CapabilityCatalogEntry extends CapabilityDescriptor {
   includedTools?: CapabilityTool[];
   toolDetailsReason?: string;
 }
+export interface CapabilityPolicyChange {
+  revision: number;
+  before: string[];
+  after: string[];
+  actor: "operator" | "system";
+  reason: string;
+  changedAt: string;
+}
+export interface CapabilityPolicyHistory {
+  changes: CapabilityPolicyChange[];
+  nextBeforeRevision?: number;
+}
 export interface CapabilityPolicyResponse {
   policy: CapabilityPolicyRecord;
   effective: EffectiveCapabilityPolicy;

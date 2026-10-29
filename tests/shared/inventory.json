@@ -1556,6 +1556,22 @@
       "moduleBase": "apps/web/package.json",
       "requirements": "Node24, built web assets; generated startup script in VM and existing theme owner, no native Android claim",
       "origin": "Android PWA browser metadata and prepaint theme consistency"
+    },
+    {
+      "path": "tests/branches/capability-history.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server; disposable stores and controlled providers; no provider account",
+      "origin": "Phase2 permission history and concise protocol regression"
+    },
+    {
+      "path": "tests/chats/protocol-efficiency.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server; disposable stores and controlled providers; no provider account",
+      "origin": "Phase2 permission history and concise protocol regression"
     }
   ],
   "retainedReleasePayload": [

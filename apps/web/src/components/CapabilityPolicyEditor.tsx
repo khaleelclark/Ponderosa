@@ -1,8 +1,8 @@
 import BlockOutlinedIcon from "@mui/icons-material/BlockOutlined";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
-import {Alert,Box,Button,Chip,Divider,FormControlLabel,Paper,Skeleton,Stack,Switch,Typography} from "@mui/material";
-import type {CapabilityPolicyResponse,CapabilityScopeKind} from "@ponderosa/core";
-import {useMutation,useQuery,useQueryClient} from "@tanstack/react-query";
+import {Accordion,AccordionDetails,AccordionSummary,Alert,Box,Button,Chip,Divider,FormControlLabel,Paper,Skeleton,Stack,Switch,Typography} from "@mui/material";
+import type {CapabilityPolicyHistory,CapabilityPolicyResponse,CapabilityScopeKind} from "@ponderosa/core";
+import {useInfiniteQuery,useMutation,useQuery,useQueryClient} from "@tanstack/react-query";
 import {useEffect,useMemo,useRef,useState} from "react";
 import {currentProductScope} from "../api/productScope";
 import {useUnsavedForm} from "../reloadSafety";
@@ -22,6 +22,11 @@ export function CapabilityPolicyEditor(props: CapabilityPolicyEditorProps): JSX.
 function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Capabilities",description,immediateSave=false,onDirtyChange,onSavingChange}: CapabilityPolicyEditorProps): JSX.Element {
   const client=useQueryClient(),notify=useMutationNotification();
   const query=useQuery({queryKey:["capability-policy",endpoint],queryFn:()=>requestJson<CapabilityPolicyResponse>(endpoint)});
+  const [historyOpen,setHistoryOpen]=useState(false);
+  const history=useInfiniteQuery({queryKey:["capability-history",endpoint,query.data?.policy.revision],
+    initialPageParam:undefined as number|undefined, enabled:historyOpen,
+    queryFn:({pageParam})=>requestJson<CapabilityPolicyHistory>(`${endpoint}/history${pageParam===undefined?"":`?beforeRevision=${pageParam}`}`),
+    getNextPageParam:page=>page.nextBeforeRevision});
   const [draft,setDraft]=useState<CapabilityDraft>(),writing=useRef(false);
   useEffect(()=>{setDraft(undefined);save.reset()},[endpoint]);
   useEffect(()=>{if(query.data)setDraft(current=>reconcileCapabilityDraft(current,query.data!.policy))},[query.data]);
@@ -68,6 +73,22 @@ function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Capabilities",
       })}
     </Paper>)}
     </Box>
+    <Accordion expanded={historyOpen} onChange={(_,expanded)=>setHistoryOpen(expanded)}>
+      <AccordionSummary>Permission change history</AccordionSummary>
+      <AccordionDetails><Stack spacing={2}>
+        <Typography variant="body2">Recorded since upgrade. Operator changes come from Settings or the operator API.</Typography>
+        {history.isPending&&<Typography role="status">Loading history…</Typography>}
+        {history.error&&<Alert severity="error">Permission history could not be loaded. {history.error.message}<Button onClick={()=>void history.refetch()}>Retry</Button></Alert>}
+        {history.data?.pages.flatMap(page=>page.changes).map(change=><Box key={change.revision} sx={{overflowWrap:"anywhere"}}>
+          <Typography fontWeight={650}>Revision {change.revision} · {change.actor === "operator" ? "Operator" : "System"} · {change.changedAt}</Typography>
+          <Typography variant="body2">{change.reason}</Typography>
+          <Typography variant="body2">Restricted before: {change.before.join(", ")||"None"}</Typography>
+          <Typography variant="body2">Restricted after: {change.after.join(", ")||"None"}</Typography>
+        </Box>)}
+        {history.data&&!history.data.pages[0]?.changes.length&&<Typography>No recorded changes.</Typography>}
+        {history.hasNextPage&&<Button disabled={history.isFetchingNextPage} onClick={()=>void history.fetchNextPage()}>Load earlier changes</Button>}
+      </Stack></AccordionDetails>
+    </Accordion>
     {!immediateSave&&<Stack direction="row" gap={1}><Button variant="contained" disabled={!dirty||conflict||save.isPending} onClick={()=>save.mutate(draft!)}>{save.isPending?"Saving…":"Save capabilities"}</Button>{dirty&&<Button disabled={save.isPending} onClick={()=>setDraft({restricted:query.data!.policy.restrictedCapabilityIds,baseline:query.data!.policy.restrictedCapabilityIds,revision:query.data!.policy.revision})}>Discard</Button>}</Stack>}
   </Stack>;
 }
